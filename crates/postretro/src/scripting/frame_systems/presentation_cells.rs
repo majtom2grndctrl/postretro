@@ -30,7 +30,7 @@ pub(crate) struct PresentationCellStore {
     /// scope (a structurally-identical retained-diff reuse) must NOT reset a cell a
     /// `.set()` already changed. A scope dropping out of the retained set clears
     /// this so a later re-introduction re-seeds from initials.
-    seeded: HashSet<String>,
+    seeded: HashMap<String, u64>,
 }
 
 impl PresentationCellStore {
@@ -56,9 +56,16 @@ impl PresentationCellStore {
     /// the same scope is a no-op, so a `.set()` value is never clobbered by a
     /// re-seed. An individual cell is only seeded when absent, so a write that
     /// landed before the first seed (same-frame ordering) also survives.
-    fn seed_scope(&mut self, local_state: &LocalState) {
-        if !self.seeded.insert(local_state.scope.clone()) {
-            return;
+    fn seed_scope(&mut self, local_state: &LocalState, push: u64) {
+        match self.seeded.insert(local_state.scope.clone(), push) {
+            // Same push as last seeded: leave written cells alone.
+            Some(seeded_push) if seeded_push == push => return,
+            // A new push of the scope (closed and reopened between two
+            // reconciles): the old push's cells must not leak into it.
+            Some(_) => self
+                .cells
+                .retain(|(scope, _), _| scope != &local_state.scope),
+            None => {}
         }
         for (name, init) in &local_state.cells {
             let key = (local_state.scope.clone(), name.clone());
@@ -78,27 +85,42 @@ impl PresentationCellStore {
     /// including visually occluded ones, plus composed always-on layers); the
     /// walk collects each `localState` scope declaration.
     pub(crate) fn reconcile(&mut self, trees: &[&AnchoredTree]) {
-        let mut declarations: HashMap<String, &LocalState> = HashMap::new();
-        for tree in trees {
+        let pushes: Vec<(u64, &AnchoredTree)> = trees.iter().map(|tree| (0, *tree)).collect();
+        self.reconcile_pushes(&pushes);
+    }
+
+    /// [`Self::reconcile`] with each tree's push identity (`0` for a tree with
+    /// none, such as an always-on layer). A scope whose push identity changed
+    /// since it was seeded was closed and reopened between two reconciles, so it
+    /// re-seeds from its initials instead of inheriting the old push's cells.
+    pub(crate) fn reconcile_pushes(&mut self, trees: &[(u64, &AnchoredTree)]) {
+        let mut declarations: HashMap<String, (u64, &LocalState)> = HashMap::new();
+        for (push, tree) in trees {
             // Walks the DESCRIPTOR (`tree.root`), never the visible/taffy tree, so a
             // `visibleWhen` flip (M13 G2, Task 2b — applied only in the layout/draw/
             // focus walks) never drops a hidden subtree's `localState` cells.
-            collect_local_states(&tree.root, &mut declarations);
+            let mut found: HashMap<String, &LocalState> = HashMap::new();
+            collect_local_states(&tree.root, &mut found);
+            for (scope, local_state) in found {
+                declarations.entry(scope).or_insert((*push, local_state));
+            }
         }
 
-        // Seed newly-retained scopes (idempotent per scope id).
+        // Seed newly-retained scopes (idempotent per scope id and push).
         // Sort for deterministic seed-warn ordering and stable behavior.
         let mut scopes: Vec<&String> = declarations.keys().collect();
         scopes.sort();
         for scope in scopes {
-            self.seed_scope(declarations[scope]);
+            let (push, local_state) = declarations[scope];
+            self.seed_scope(local_state, push);
         }
 
         // Drop cells whose declaring scope is no longer retained.
         let present: HashSet<&str> = declarations.keys().map(String::as_str).collect();
         self.cells
             .retain(|(scope, _), _| present.contains(scope.as_str()));
-        self.seeded.retain(|scope| present.contains(scope.as_str()));
+        self.seeded
+            .retain(|scope, _| present.contains(scope.as_str()));
     }
 
     /// Snapshot the store for the frame's read snapshot. A plain clone of the
@@ -236,6 +258,27 @@ mod tests {
                 })],
             }),
         )
+    }
+
+    #[test]
+    fn reopened_scope_reseeds_even_without_an_intervening_reconcile() {
+        let mut store = PresentationCellStore::new();
+        let tree = scoped_tree("tabs", &[("tab", CellInit::String("controls".into()))]);
+        store.reconcile_pushes(&[(1, &tree)]);
+        store.write(
+            "tabs".into(),
+            "tab".into(),
+            SlotValue::String("graphics".into()),
+        );
+        // Closed and reopened between two renders: same name, same descriptor,
+        // new push identity. No reconcile saw the scope absent.
+        store.reconcile_pushes(&[(2, &tree)]);
+        assert_eq!(
+            store
+                .snapshot()
+                .get(&("tabs".to_string(), "tab".to_string())),
+            Some(&SlotValue::String("controls".into())),
+        );
     }
 
     #[test]

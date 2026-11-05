@@ -367,12 +367,17 @@ impl App {
         // Reconcile against every tree the frontend would retain as well, so
         // the menu under a backdrop load keeps its local state.
         let always_on = session.modal_stack.always_on_layers();
-        let retained: Vec<&postretro_ui::descriptor::AnchoredTree> =
-            std::iter::once(&entry.descriptor)
-                .chain(always_on.iter().map(|layer| &layer.descriptor))
-                .chain(session.modal_stack.retained_descriptors())
+        let retained: Vec<(u64, &postretro_ui::descriptor::AnchoredTree)> =
+            std::iter::once((0, &entry.descriptor))
+                .chain(always_on.iter().map(|layer| (0, &layer.descriptor)))
+                .chain(
+                    session
+                        .modal_stack
+                        .retained_pushes()
+                        .map(|(push, descriptor)| (push.id(), descriptor)),
+                )
                 .collect();
-        session.presentation_cells.reconcile(&retained);
+        session.presentation_cells.reconcile_pushes(&retained);
         let cell_values = session.presentation_cells.snapshot();
         let slot_values = Self::build_ui_display_slot_snapshot(
             &session.scripting.script_ctx.slot_table.borrow(),

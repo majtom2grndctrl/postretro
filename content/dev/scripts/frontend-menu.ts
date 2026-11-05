@@ -442,10 +442,10 @@ function optionChoices(choices: ReturnType<typeof Button>[]) {
 
 // The options screen is tabbed. The selected tab is a presentation-local cell
 // (`ui.createLocalState`), never a player option: it lives only while the tree
-// is retained, so each open starts on CONTROLS. The pattern is the tabs demo's
-// (`tabs-demo.ts`): each tab button's predicate drives both the styleRanges
-// highlight and the a11y `selected` state, its `onPress` names a `cellWrite`
-// reaction, and `Switch` hides every panel but the active one.
+// is retained, so each open starts on CONTROLS. Each tab button's predicate
+// drives both the styleRanges highlight and the a11y `selected` state, its
+// `onPress` names a `cellWrite` reaction, and `Switch` hides every panel but
+// the active one.
 const optionsTabState = ui.createLocalState({ tab: "controls" });
 const optionsTab = optionsTabState.cells.tab;
 

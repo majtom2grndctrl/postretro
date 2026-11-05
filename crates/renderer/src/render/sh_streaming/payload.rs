@@ -1,7 +1,7 @@
 //! Parsed sparse cluster payloads and renderer-local upload plans.
 //!
 //! These types are intentionally CPU-only. They borrow no wgpu state and
-//! exist only until the owning drain has written its validated row data.
+//! exist only until their drain has written its validated row data.
 
 use super::*;
 
@@ -10,14 +10,13 @@ pub(super) struct ParsedSparseRow {
     pub(super) row: u32,
     pub(super) entry_count: u32,
     pub(super) tile_f16_count: u32,
-    pub(super) role: u32,
     pub(super) lights: Vec<u32>,
     pub(super) entry_tile_f16_offsets: Vec<u32>,
     pub(super) tile_f16: Vec<u16>,
 }
 
-/// A fully parsed, ownership-checked sparse row with its renderer-local
-/// first-fit ranges. It owns only the transient decoded values needed for the
+/// A fully parsed sparse row this install writes first, with its
+/// renderer-local first-fit ranges. It owns only the transient decoded values needed for the
 /// immediate queue upload; no cluster payload is retained after installation.
 #[derive(Debug)]
 pub(super) struct SparseInstallPlan {
@@ -47,7 +46,6 @@ impl SparseInstallPlan {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(DirectSparseRowUpload {
             row: self.payload.row,
-            role: self.payload.role,
             entry_start: self.entries.start,
             entry_end,
             tile_f16_start: self.tiles.start,
@@ -117,9 +115,9 @@ pub(super) fn parse_sparse_rows(
             u32_at(bytes, offset + 4).ok_or(malformed(cluster_id, "truncated sparse row"))?;
         let count =
             u32_at(bytes, offset + 8).ok_or(malformed(cluster_id, "truncated sparse row"))?;
-        let role =
-            u32_at(bytes, offset + 12).ok_or(malformed(cluster_id, "truncated sparse row"))?;
-        if first_entry != expected_entry || role > 2 {
+        // The record's fourth word is a retired id-50 field, checked by the
+        // format crate and read by nothing here.
+        if first_entry != expected_entry {
             return Err(malformed(
                 cluster_id,
                 "sparse row records are not canonical",
@@ -132,7 +130,6 @@ pub(super) fn parse_sparse_rows(
             row,
             entry_count: count,
             tile_f16_count: 0,
-            role,
             lights: Vec::with_capacity(count as usize),
             entry_tile_f16_offsets: Vec::with_capacity(count as usize),
             tile_f16: Vec::new(),

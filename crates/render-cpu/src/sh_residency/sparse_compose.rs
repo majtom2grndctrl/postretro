@@ -1,9 +1,9 @@
 // Sparse residency capacities derived from the stream manifest alone: the
-// per-owner backing floors, the compose-planner row space, and each sparse
+// per-cluster backing floors, the compose-planner row space, and each sparse
 // compose family's row tables and minimum backing.
 // See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
@@ -13,9 +13,9 @@ use postretro_level_loader::{
 
 use super::{ANIMATED_DIRECT_DELTA_ID, DIRECT_DELTA_ID, INDIRECT_DELTA_ID, ShResidencyDrainError};
 
-/// Physical entry/f16 backing needed to install every owned row in one
-/// canonical cluster. Values include the allocator's missing-row sentinel
-/// and f16 word alignment, but never reserve all legacy CSR payloads.
+/// Physical entry/f16 backing needed to install every row of the largest
+/// single cluster. Values include the allocator's missing-row sentinel and
+/// f16 word alignment, but never reserve all legacy CSR payloads.
 pub type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
 
 /// One sparse compose family's row tables and minimum backing, independent
@@ -35,13 +35,13 @@ pub struct SparseComposeLayout {
 }
 
 impl SparseComposeLayout {
-    /// Entry backing: the largest canonical row (plus the missing-row
+    /// Entry backing: the largest row (plus the missing-row
     /// sentinel), raised to `floor`'s entries.
     pub fn entry_capacity(&self, floor: Option<(u32, u32)>) -> u32 {
         self.entry_minimum.max(floor.map_or(1, |floor| floor.0))
     }
 
-    /// Packed f16 tile backing: the largest canonical row, word aligned with
+    /// Packed f16 tile backing: the largest row, word aligned with
     /// the sentinel word, raised to `floor`'s tiles.
     pub fn tile_f16_capacity(&self, floor: Option<(u32, u32)>) -> u32 {
         self.tile_f16_minimum.max(floor.map_or(2, |floor| floor.1))
@@ -89,104 +89,104 @@ fn checked_cell_count(dimensions: [u32; 3]) -> Result<u32, ShResidencyDrainError
     })
 }
 
-/// Derive an initial sparse backing floor from id-49 ownership, not from the
-/// complete legacy CSR body.  Each owner total represents the exact worst
-/// case for one ready cluster (multiple rows included), so a normal cluster
+/// Derive an initial sparse backing floor from what each cluster names in
+/// id 49, not from the complete legacy CSR body. `cluster_rows` holds each
+/// cluster's `(section_id, row)` pairs, indexed by cluster. A cluster's total
+/// is the worst case for it alone (multiple rows included), so a cluster
 /// cannot stall after its first row merely because its second row needs a
-/// separate allocation.  Later residency pressure grows the pool
+/// separate allocation. Later residency pressure grows the pool
 /// append-preservingly; this floor is deliberately bounded and never turns
 /// the streamed path into a whole-resident copy.
 pub fn sparse_capacity_floors(
     sources: &ShStreamSourceMetadata,
-    sparse_row_owner: &BTreeMap<(u32, u32), u32>,
+    cluster_rows: &[BTreeSet<(u32, u32)>],
 ) -> Result<SparseCapacityFloors, ShResidencyDrainError> {
-    let mut by_owner = BTreeMap::<(u32, u32), (u32, u32)>::new();
-    for (&(section_id, row), &owner) in sparse_row_owner {
-        let source = match section_id {
-            INDIRECT_DELTA_ID => sources.indirect_delta.as_ref(),
-            DIRECT_DELTA_ID => sources.direct_delta.as_ref(),
-            ANIMATED_DIRECT_DELTA_ID => sources.animated_direct_delta.as_ref(),
-            _ => None,
-        }
-        .ok_or(ShResidencyDrainError::MalformedChunk {
-            cluster_id: owner,
-            reason: "id-49 names a sparse source omitted by stream metadata",
-        })?;
-        let index = usize::try_from(row).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let start =
-            *source
-                .affinity_offsets
-                .get(index)
-                .ok_or(ShResidencyDrainError::MalformedChunk {
-                    cluster_id: owner,
-                    reason: "id-49 sparse row lacks a CSR start",
-                })?;
-        let end = *source.affinity_offsets.get(index + 1).ok_or(
-            ShResidencyDrainError::MalformedChunk {
-                cluster_id: owner,
-                reason: "id-49 sparse row lacks a CSR end",
-            },
-        )?;
-        let level = Level::from_u8(*source.cell_levels.get(index).ok_or(
-            ShResidencyDrainError::MalformedChunk {
-                cluster_id: owner,
-                reason: "id-49 sparse row lacks its reconstruction level",
-            },
-        )?)
-        .ok_or(ShResidencyDrainError::MalformedChunk {
-            cluster_id: owner,
-            reason: "id-49 sparse row has an invalid reconstruction level",
-        })?;
-        let mask =
-            *source
-                .valid_probe_masks
-                .get(index)
-                .ok_or(ShResidencyDrainError::MalformedChunk {
-                    cluster_id: owner,
-                    reason: "id-49 sparse row lacks its valid-probe mask",
-                })?;
-        let entries = end
-            .checked_sub(start)
-            .ok_or(ShResidencyDrainError::MalformedChunk {
-                cluster_id: owner,
-                reason: "streamed sparse CSR offsets are not monotonic",
-            })?;
-        let per_entry = u32::try_from(
-            stored_delta_tiles(level, mask)
-                .checked_mul(delta_probe_f16_stride(source.tile_dimension))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?,
-        )
-        .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let tiles = entries
-            .checked_mul(per_entry)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let total = by_owner.entry((section_id, owner)).or_insert((0, 0));
-        total.0 = total
-            .0
-            .checked_add(entries)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        total.1 = total
-            .1
-            .checked_add(tiles)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    }
-
     let mut floors = SparseCapacityFloors::new();
-    for ((section_id, _), (entries, tiles)) in by_owner {
-        let floor = floors.entry(section_id).or_insert((1, 2));
-        floor.0 = floor.0.max(
-            entries
-                .checked_add(1)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?,
-        );
-        let aligned_tiles = tiles
-            .checked_add(tiles & 1)
-            .and_then(|count| count.checked_add(2))
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        floor.1 = floor.1.max(aligned_tiles);
+    for (cluster_id, rows) in cluster_rows.iter().enumerate() {
+        let cluster_id =
+            u32::try_from(cluster_id).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
+        let mut totals = BTreeMap::<u32, (u32, u32)>::new();
+        for &(section_id, row) in rows {
+            let (entries, tiles) = sparse_row_demand(sources, cluster_id, section_id, row)?;
+            let total = totals.entry(section_id).or_insert((0, 0));
+            total.0 = total
+                .0
+                .checked_add(entries)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            total.1 = total
+                .1
+                .checked_add(tiles)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        }
+        for (section_id, (entries, tiles)) in totals {
+            let floor = floors.entry(section_id).or_insert((1, 2));
+            floor.0 = floor.0.max(
+                entries
+                    .checked_add(1)
+                    .ok_or(ShResidencyDrainError::SlotOverflow)?,
+            );
+            let aligned_tiles = tiles
+                .checked_add(tiles & 1)
+                .and_then(|count| count.checked_add(2))
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            floor.1 = floor.1.max(aligned_tiles);
+        }
     }
-
     Ok(floors)
+}
+
+/// One sparse row's entries and f16 tile halves, from its CSR metadata.
+fn sparse_row_demand(
+    sources: &ShStreamSourceMetadata,
+    cluster_id: u32,
+    section_id: u32,
+    row: u32,
+) -> Result<(u32, u32), ShResidencyDrainError> {
+    let malformed = |reason| ShResidencyDrainError::MalformedChunk { cluster_id, reason };
+    let source = match section_id {
+        INDIRECT_DELTA_ID => sources.indirect_delta.as_ref(),
+        DIRECT_DELTA_ID => sources.direct_delta.as_ref(),
+        ANIMATED_DIRECT_DELTA_ID => sources.animated_direct_delta.as_ref(),
+        _ => None,
+    }
+    .ok_or(malformed(
+        "id-49 names a sparse source omitted by stream metadata",
+    ))?;
+    let index = usize::try_from(row).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
+    let start = *source
+        .affinity_offsets
+        .get(index)
+        .ok_or(malformed("id-49 sparse row lacks a CSR start"))?;
+    let end = *source
+        .affinity_offsets
+        .get(index + 1)
+        .ok_or(malformed("id-49 sparse row lacks a CSR end"))?;
+    let level = Level::from_u8(
+        *source
+            .cell_levels
+            .get(index)
+            .ok_or(malformed("id-49 sparse row lacks its reconstruction level"))?,
+    )
+    .ok_or(malformed(
+        "id-49 sparse row has an invalid reconstruction level",
+    ))?;
+    let mask = *source
+        .valid_probe_masks
+        .get(index)
+        .ok_or(malformed("id-49 sparse row lacks its valid-probe mask"))?;
+    let entries = end
+        .checked_sub(start)
+        .ok_or(malformed("streamed sparse CSR offsets are not monotonic"))?;
+    let per_entry = u32::try_from(
+        stored_delta_tiles(level, mask)
+            .checked_mul(delta_probe_f16_stride(source.tile_dimension))
+            .ok_or(ShResidencyDrainError::SlotOverflow)?,
+    )
+    .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
+    let tiles = entries
+        .checked_mul(per_entry)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    Ok((entries, tiles))
 }
 
 /// Affinity-row id space for dense compose-planner state: the 4×4×4 brick
@@ -214,7 +214,7 @@ pub fn compose_row_capacity(
 }
 
 /// One sparse compose family's layout: its source's row tables (validated
-/// for consistency) and largest canonical row, or with no source the
+/// for consistency) and largest row, or with no source the
 /// base-only tables derived from the id-34 projection, which the indirect
 /// compose still runs for the id-34 → total copy.
 pub fn sparse_compose_capacity(
@@ -278,7 +278,7 @@ pub fn sparse_compose_capacity(
             valid_probe_masks: source.valid_probe_masks.clone(),
             cell_levels: source.cell_levels.clone(),
             animation_descriptor_indices: source.animation_descriptor_indices.clone(),
-            // One largest canonical row is sufficient for the initial sparse
+            // One largest row is sufficient for the initial sparse
             // floor. Pool growth adds backing rather than retaining every
             // legacy CSR payload at level installation.
             entry_minimum: max_row_entries

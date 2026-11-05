@@ -101,20 +101,9 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
     let mut f = UploadOrderSh::with_map(&device, &raw, 128, map);
     f.state = ShResidencyState::from_manifest(manifest, &world.cells).unwrap();
     let mut limits = device.limits();
-    limits.max_texture_array_layers = 4;
+    limits.max_texture_array_layers = 2;
     assert!(limits.max_texture_array_layers <= device.limits().max_texture_array_layers);
-    let largest = f
-        .state
-        .nodes_by_owner
-        .values()
-        .map(|nodes| {
-            nodes
-                .iter()
-                .map(|node| f.state.node_layouts[node].tile_count)
-                .sum::<u32>()
-        })
-        .max()
-        .unwrap();
+    let largest = f.state.initial_dense_slots.minimum;
     let whole = f
         .state
         .node_layouts
@@ -201,9 +190,8 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
             (shape.tiles_per_row, shape.tiles_per_layer),
             (initial.tiles_per_row, initial.tiles_per_layer)
         );
-        // Canonical stencil halos make a later cluster depend on previous
-        // owners. Match the production issuer: compose and promote an owner
-        // before requesting its dependent, retaining every earlier resident.
+        // Compose and promote each cluster before the next, retaining every
+        // earlier resident, so each drain proves one cluster sampleable.
         f.compose(&device, &queue);
         f.state
             .drain(
@@ -814,7 +802,7 @@ fn sh_growth_retained_metadata_error_precedes_dense_device_limit() {
         error,
         ShResidencyDrainError::MalformedChunk {
             cluster_id: 0,
-            reason: "canonical node lacks id-34 prefix metadata",
+            reason: "node lacks id-34 prefix metadata",
         }
     ));
     assert_eq!(f.state.dense_slots, before_dense);
@@ -839,8 +827,8 @@ fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
         .with_empty_rows(27, &[0]);
     let mut f = UploadOrderSh::with_map(&device, &raw, 64, map);
     let ready = loader_validated_chunk(&f);
-    let node = f.state.nodes_by_owner[&0][0];
-    // An existing canonical CPU range outside the 27-bit wire address space
+    let node = f.state.dense_node[0].unwrap();
+    // An existing CPU range outside the 27-bit wire address space
     // reaches the real patch rewrite, without allocating a huge GPU atlas.
     let range = crate::render::sh_streaming::PoolRange {
         start: 1 << 27,
@@ -871,7 +859,7 @@ fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
     assert!(f.state.installed.is_empty());
     assert_eq!(f.growth_events(), 0);
     eprintln!(
-        "[ShGrowthProof] loader-valid canonical cluster slot overflow escapes drain classifier; ran on GPU"
+        "[ShGrowthProof] loader-valid cluster slot overflow escapes drain classifier; ran on GPU"
     );
 }
 
@@ -1119,18 +1107,7 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
                 extra,
             )
             .unwrap();
-        let minimum = f
-            .state
-            .nodes_by_owner
-            .values()
-            .map(|nodes| {
-                nodes
-                    .iter()
-                    .map(|node| f.state.node_layouts[node].tile_count)
-                    .sum::<u32>()
-            })
-            .max()
-            .unwrap();
+        let minimum = f.state.initial_dense_slots.minimum;
         let whole = f
             .state
             .node_layouts

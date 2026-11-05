@@ -9,8 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::SectionId;
 #[cfg(test)]
-use postretro_level_format::cluster_directory::ClusterRangeRole;
-#[cfg(test)]
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest};
@@ -25,6 +23,8 @@ use super::renderer_types::{
 };
 
 mod allocator;
+#[cfg(test)]
+mod cluster_demand_tests;
 mod compose_plan;
 #[cfg(test)]
 mod compose_plan_oracle;
@@ -42,8 +42,6 @@ mod install_journal;
 #[cfg(test)]
 mod install_tests;
 mod lifecycle;
-#[cfg(test)]
-mod node_ownership_tests;
 mod ownership;
 mod patches;
 mod payload;
@@ -61,6 +59,9 @@ mod setup;
 #[cfg(test)]
 pub(in crate::render) use setup::residency_plan_summary;
 mod sparse_install;
+mod storage_refs;
+#[cfg(test)]
+mod storage_refs_tests;
 #[cfg(test)]
 mod tests;
 
@@ -78,7 +79,7 @@ use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, u32_bytes};
 use install::InstallGpu;
 use install_journal::InstallJournal;
 use ownership::{StoredNode, StoredNodeLayout, rewrite_slot};
-use patches::SlotRun;
+use patches::{ChunkPatches, SlotRun};
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 pub(crate) use pipelines::StreamingShPipelines;
 #[cfg(feature = "dev-tools")]
@@ -86,6 +87,7 @@ pub(in crate::render) use probe_diagnostics::ProbeResidencyClass;
 use row_bitset::{RowBitSet, RowQueue};
 use row_refs::{RowRefTable, RowSet, decrement_row_ref, increment_row_ref, row_counts};
 use sample_region_index::SampleRegionIndex;
+use storage_refs::StorageRefs;
 
 const PROBE_PATCH_BLOCK: u32 = 0;
 const ISOLATED_ATLAS_BLOCK: u32 = 1;
@@ -104,8 +106,8 @@ const ANIMATED_DIRECT_DELTA_ID: u32 = SectionId::AnimatedDirectShDeltaVolumes as
 
 pub use postretro_render_cpu::sh_residency::ShResidencyDrainError;
 use postretro_render_cpu::sh_residency::{
-    InitialDenseSlots, NodeMap, ShResidencyPlan, SparseCapacityFloors, SparseComposeLayout,
-    SparseComposeLayouts,
+    DenseSpans, InitialDenseSlots, NodeMap, ShResidencyPlan, SparseCapacityFloors,
+    SparseComposeLayout, SparseComposeLayouts,
 };
 #[cfg(test)]
 use postretro_render_cpu::sh_residency::{
@@ -130,7 +132,7 @@ pub struct ShComposePassDiagnostics {
     pub resident_rows_still_lagging: u64,
 }
 
-/// A plain-data read of renderer ownership.  This intentionally reports pool
+/// A plain-data read of renderer residency.  This intentionally reports pool
 /// capacity and logical occupancy separately: one is physical GPU backing,
 /// while the other is only the live subset within it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -215,7 +217,9 @@ impl From<crate::render::uploads::UploadError> for ShResidencyDrainError {
 #[derive(Debug)]
 struct InstalledCluster {
     patches: Vec<InstalledProbe>,
-    owned_nodes: Vec<StoredNode>,
+    /// Each of these holds one `StorageRefs` reference, as does every patch's
+    /// word and every sparse row below.
+    referenced_nodes: Vec<StoredNode>,
     sparse_rows: Vec<(u32, u32)>,
     required_indirect_epoch: u64,
     required_direct_epoch: u64,
@@ -239,15 +243,17 @@ pub(super) struct ShResidencyState {
     grid_dimensions: [u32; 3],
     generation: u64,
     targets: BTreeSet<u32>,
-    dense_owner: Vec<Option<u32>>,
     dense_node: Vec<Option<StoredNode>>,
     dense_node_local_slot: Vec<Option<u32>>,
     node_layouts: NodeMap<StoredNodeLayout>,
-    node_owner: NodeMap<u32>,
-    nodes_by_owner: BTreeMap<u32, Vec<StoredNode>>,
+    /// Read only by dev-tools probe classification and the plan summary.
+    #[cfg_attr(
+        not(any(test, feature = "dev-tools", feature = "test-seams")),
+        allow(dead_code)
+    )]
+    dense_spans: DenseSpans,
     node_slots: BTreeMap<StoredNode, PoolRange>,
-    owner_dependencies: Vec<BTreeSet<u32>>,
-    sparse_row_owner: BTreeMap<(u32, u32), u32>,
+    storage_refs: StorageRefs,
     sparse_capacity_floors: SparseCapacityFloors,
     dense_slots: FirstFitRanges,
     sparse_pools: BTreeMap<u32, SparsePool>,
@@ -362,12 +368,6 @@ impl ShResidencyState {
                     .and_then(|entries| bytes.checked_add(entries))
             })
             .expect("validated streamed logical occupancy must fit u64")
-    }
-
-    fn missing_owner(&self, cluster_id: u32) -> bool {
-        self.owner_dependencies
-            .get(cluster_id as usize)
-            .is_some_and(|owners| owners.iter().any(|owner| !self.sampleable.contains(owner)))
     }
 }
 

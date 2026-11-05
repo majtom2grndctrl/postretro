@@ -202,7 +202,7 @@ impl SparsePool {
         if self.live.contains_key(&row) {
             return Err(ShResidencyDrainError::MalformedChunk {
                 cluster_id: 0,
-                reason: "sparse row already has a live owner",
+                reason: "sparse row is already live",
             });
         }
         // The GPU carrier packs two f16 halves per u32.  Rows may contain an

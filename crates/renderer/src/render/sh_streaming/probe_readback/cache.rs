@@ -33,8 +33,8 @@ impl StreamedProbeReadback {
     }
 
     pub(in crate::render::sh_streaming) fn retire_slots(&mut self, range: Range<u32>) {
-        // allocate_owned_nodes/journal_allocate_node reserve a whole StoredNode;
-        // evict releases that same range atomically. L1's word names its base,
+        // journal_reference_node reserves a whole StoredNode, and the last
+        // reference releases that same range atomically. L1's word names its base,
         // so retiring the base rejects every corner read in that node.
         let retired: Vec<_> = self
             .slot_incarnations

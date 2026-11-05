@@ -148,6 +148,8 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
     .unwrap();
     let mut payload = Vec::new();
     let mut index = Vec::new();
+    // The v2 format still prices a chunk by the nodes it reaches first.
+    let mut seen_nodes = std::collections::BTreeSet::new();
     for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
         // The canonical directory includes stencil halos and whole-node
         // expansion. Derive every count from that output, not a nominal box.
@@ -166,17 +168,15 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
         nodes.sort_by_key(|node| residency.node_layouts[node].global_base_slot);
         let mut closure = std::collections::BTreeMap::new();
         let mut tiles = 0;
+        let mut first_reached_tiles = 0;
         for node in nodes {
             closure.insert(node, tiles);
-            tiles += residency.node_layouts[&node].tile_count;
+            let tile_count = residency.node_layouts[&node].tile_count;
+            tiles += tile_count;
+            if seen_nodes.insert(node) {
+                first_reached_tiles += tile_count;
+            }
         }
-        let owned_tiles: u32 = residency
-            .nodes_by_owner
-            .get(&(cluster_id as u32))
-            .into_iter()
-            .flatten()
-            .map(|node| residency.node_layouts[node].tile_count)
-            .sum();
         let isolated = cluster_sh_isolated_atlas_array_layout(tiles).unwrap();
         let atlas_bytes = isolated.layer_count as usize
             * isolated.atlas_width as usize
@@ -218,7 +218,7 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
             payload_offset: payload.len() as u64,
             payload_len: chunk.len() as u64,
             decoded_bytes: (patches as usize * 16 + 20 + atlas_bytes) as u64,
-            requested_resident_bytes: u64::from(owned_tiles) * 512,
+            requested_resident_bytes: u64::from(first_reached_tiles) * 512,
             stored_tile_count: tiles,
             dense_patch_count: patches,
             affinity_patch_count: 0,

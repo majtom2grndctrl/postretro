@@ -175,6 +175,17 @@ impl UploadOrderSh {
         queue: &UploadQueue,
         clusters: &[u32],
     ) -> Result<postretro_level_loader::ShDrainOutcome, ShResidencyDrainError> {
+        self.drain_batch(device, queue, ShDrainBatch::default(), clusters)
+    }
+
+    /// `batch`'s target deltas and evictions, with `clusters` ready.
+    pub(in crate::render::sh_streaming) fn drain_batch(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &UploadQueue,
+        batch: ShDrainBatch,
+        clusters: &[u32],
+    ) -> Result<postretro_level_loader::ShDrainOutcome, ShResidencyDrainError> {
         let ready = clusters
             .iter()
             .map(|&cluster| self.prepared(cluster))
@@ -188,7 +199,7 @@ impl UploadOrderSh {
                 generation: self.state.generation,
                 content_tag: self.state.content_tag,
                 ready,
-                ..Default::default()
+                ..batch
             },
         )
     }
@@ -319,3 +330,5 @@ impl UploadOrderSh {
 
 #[path = "limit_tests.rs"]
 mod limit_tests;
+#[path = "shared_storage_tests.rs"]
+mod shared_storage_tests;

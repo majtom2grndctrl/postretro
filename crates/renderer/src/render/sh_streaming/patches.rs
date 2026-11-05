@@ -1,8 +1,9 @@
-//! Canonical dense-patch rewrites over the shared slot pool.
+//! Dense-patch rewrites over the shared slot pool.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use super::*;
 
-/// One canonical node's tiles: `len` consecutive closure-local slots of an
+/// One stored node's tiles: `len` consecutive closure-local slots of an
 /// id-50 isolated atlas that land on `len` consecutive live pool slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SlotRun {
@@ -11,29 +12,104 @@ pub(super) struct SlotRun {
     pub(super) len: u32,
 }
 
+/// The nodes a chunk's probe patches name, in `StoredNode` order.
+#[derive(Debug, Default)]
+pub(super) struct ChunkNodes {
+    pub(super) referenced: Vec<StoredNode>,
+    /// The nodes nothing held until this install, whose tiles it uploads.
+    pub(super) first_written: BTreeSet<StoredNode>,
+}
+
+/// A chunk's probes after rewriting their addresses.
+#[derive(Debug, Default)]
+pub(super) struct ChunkPatches {
+    /// Every probe the chunk names; each one holds a word reference.
+    pub(super) probes: Vec<InstalledProbe>,
+    /// The dense indices whose words this install wrote first.
+    pub(super) first_written: Vec<u32>,
+}
+
+/// A chunk's probe-patch block, length-checked.
+fn probe_patch_bytes(
+    cluster_id: u32,
+    chunk: &DecodedClusterShPayload,
+) -> Result<&[u8], ShResidencyDrainError> {
+    let block = chunk
+        .blocks
+        .iter()
+        .find(|block| block.kind == PROBE_PATCH_BLOCK)
+        .ok_or(malformed(cluster_id, "chunk has no probe-patch block"))?;
+    let bytes = chunk.block_bytes(block);
+    if bytes.len() != block.element_count as usize * 16 {
+        return Err(malformed(cluster_id, "probe-patch block length is invalid"));
+    }
+    Ok(bytes)
+}
+
 impl ShResidencyState {
+    /// Reference every node the chunk's patches name, allocating the ones
+    /// nothing holds. Node identity comes from id-34 metadata, so any chunk
+    /// naming a node can write it.
+    pub(super) fn reference_chunk_nodes(
+        &mut self,
+        journal: &mut InstallJournal,
+        cluster_id: u32,
+        chunk: &DecodedClusterShPayload,
+    ) -> Result<ChunkNodes, ShResidencyDrainError> {
+        let bytes = probe_patch_bytes(cluster_id, chunk)?;
+        let mut nodes = BTreeSet::new();
+        // A node covers a brick of probes, so consecutive patches mostly
+        // repeat it.
+        let mut last_node = None;
+        for offset in (0..bytes.len()).step_by(16) {
+            let dense =
+                u32_at(bytes, offset).ok_or(malformed(cluster_id, "truncated probe patch"))?;
+            let node = self
+                .dense_node
+                .get(dense as usize)
+                .copied()
+                .flatten()
+                .ok_or(malformed(cluster_id, "patch names an invalid dense probe"))?;
+            if last_node != Some(node) {
+                nodes.insert(node);
+                last_node = Some(node);
+            }
+        }
+        let mut result = ChunkNodes {
+            referenced: Vec::with_capacity(nodes.len()),
+            first_written: BTreeSet::new(),
+        };
+        for node in nodes {
+            let tile_count = self
+                .node_layouts
+                .get(&node)
+                .ok_or(malformed(cluster_id, "node lacks id-34 prefix metadata"))?
+                .tile_count;
+            if self.journal_reference_node(journal, node, tile_count)? {
+                result.first_written.insert(node);
+            }
+            result.referenced.push(node);
+        }
+        Ok(result)
+    }
+
+    /// Rewrite and reference every probe the chunk names. Each word is fully
+    /// determined by id-34 metadata and its node's live slot, so a word another
+    /// cluster already wrote stays as it is.
     pub(super) fn install_patches(
         &mut self,
         journal: &mut InstallJournal,
         cluster_id: u32,
         chunk: &DecodedClusterShPayload,
-    ) -> Result<Vec<InstalledProbe>, ShResidencyDrainError> {
-        let Some(block) = chunk
-            .blocks
-            .iter()
-            .find(|block| block.kind == PROBE_PATCH_BLOCK)
-        else {
-            return Err(malformed(cluster_id, "chunk has no probe-patch block"));
+    ) -> Result<ChunkPatches, ShResidencyDrainError> {
+        let bytes = probe_patch_bytes(cluster_id, chunk)?;
+        let mut patches = ChunkPatches {
+            probes: Vec::with_capacity(bytes.len() / 16),
+            first_written: Vec::new(),
         };
-        let bytes = chunk.block_bytes(block);
-        if bytes.len() != block.element_count as usize * 16 {
-            return Err(malformed(cluster_id, "probe-patch block length is invalid"));
-        }
-        let mut patched = Vec::with_capacity(block.element_count as usize);
-        // Consecutive patches mostly share a node (a node covers a brick of
-        // probes), so reuse the last node's checked owner and live range
-        // instead of searching the node maps once per probe.
-        let mut last_node: Option<(StoredNode, u32, Option<PoolRange>)> = None;
+        // Consecutive patches mostly share a node, so reuse the last node's
+        // live range instead of searching the node map once per probe.
+        let mut last_node: Option<(StoredNode, PoolRange)> = None;
         for offset in (0..bytes.len()).step_by(16) {
             let dense =
                 u32_at(bytes, offset).ok_or(malformed(cluster_id, "truncated probe patch"))?;
@@ -50,12 +126,6 @@ impl ShResidencyState {
                     cluster_id,
                     "truncated probe mean-square distance",
                 ))?;
-            let Some(owner) = self.dense_owner.get(dense as usize).copied().flatten() else {
-                return Err(ShResidencyDrainError::MissingDenseOwner {
-                    cluster_id,
-                    dense_index: dense,
-                });
-            };
             let Some(node) = self.dense_node.get(dense as usize).copied().flatten() else {
                 return Err(malformed(cluster_id, "patch names an invalid dense probe"));
             };
@@ -69,30 +139,18 @@ impl ShResidencyState {
                     "probe patch flags disagree with retained id-34 node metadata",
                 ));
             }
-            let node_slot = match last_node {
-                Some((cached, _, slot)) if cached == node => slot,
+            let slot = match last_node {
+                Some((cached, slot)) if cached == node => slot,
                 _ => {
-                    let node_owner = self.node_owner.get(&node).copied().ok_or(
-                        ShResidencyDrainError::MissingDenseOwner {
-                            cluster_id,
-                            dense_index: dense,
-                        },
-                    )?;
-                    if node_owner != cluster_id && !self.installed.contains_key(&node_owner) {
-                        return Err(malformed(cluster_id, "node owner was not installed first"));
-                    }
-                    let slot = self.node_slots.get(&node).copied();
-                    last_node = Some((node, node_owner, slot));
+                    let slot = self
+                        .node_slots
+                        .get(&node)
+                        .copied()
+                        .ok_or(malformed(cluster_id, "stored node slot was not allocated"))?;
+                    last_node = Some((node, slot));
                     slot
                 }
             };
-            if owner != cluster_id {
-                continue;
-            }
-            let slot = node_slot.ok_or(malformed(
-                cluster_id,
-                "canonical node slot was not allocated",
-            ))?;
             let local_slot = self
                 .dense_node_local_slot
                 .get(dense as usize)
@@ -112,7 +170,7 @@ impl ShResidencyState {
             if local_slot >= slot.len {
                 return Err(malformed(
                     cluster_id,
-                    "node-local stored rank exceeds canonical live slot range",
+                    "node-local stored rank exceeds live slot range",
                 ));
             }
             let slot = slot
@@ -120,35 +178,36 @@ impl ShResidencyState {
                 .checked_add(local_slot)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
             let rewritten = rewrite_slot(word, slot)?;
-            self.journal_compose_word(journal, cluster_id, dense, rewritten)?;
-            patched.push(InstalledProbe {
+            if self.journal_reference_word(journal, dense)? {
+                self.journal_compose_word(journal, dense, rewritten)?;
+                patches.first_written.push(dense);
+            } else {
+                debug_assert_eq!(
+                    self.compose_words[dense as usize], rewritten,
+                    "a shared probe word follows its node's live slot"
+                );
+            }
+            patches.probes.push(InstalledProbe {
                 dense,
                 mean_distance,
                 mean_sq_distance,
             });
         }
-        Ok(patched)
+        Ok(patches)
     }
 
-    /// Translate the id-50 closure-relative stored-tile ranks into the live
-    /// canonical node ranges. The source rank is intentionally revalidated
-    /// here rather than trusted from the loader: it must be one contiguous,
-    /// globally-prefix-ordered closure, and a node may only contribute tile
-    /// uploads from its canonical writer.
+    /// Translate the id-50 closure-relative stored-tile ranks into live node
+    /// ranges. The source rank is intentionally revalidated here rather than
+    /// trusted from the loader: it must be one contiguous, globally-prefix-
+    /// ordered closure, and only `first_written` nodes contribute tile
+    /// uploads, because a live node already holds these bytes.
     pub(super) fn local_to_live_slots(
         &self,
         cluster_id: u32,
         chunk: &DecodedClusterShPayload,
+        first_written: &BTreeSet<StoredNode>,
     ) -> Result<Vec<SlotRun>, ShResidencyDrainError> {
-        let patch_block = chunk
-            .blocks
-            .iter()
-            .find(|block| block.kind == PROBE_PATCH_BLOCK)
-            .ok_or(malformed(cluster_id, "chunk has no probe-patch block"))?;
-        let bytes = chunk.block_bytes(patch_block);
-        if bytes.len() != patch_block.element_count as usize * 16 {
-            return Err(malformed(cluster_id, "probe-patch block length is invalid"));
-        }
+        let bytes = probe_patch_bytes(cluster_id, chunk)?;
         let isolated = chunk
             .blocks
             .iter()
@@ -190,10 +249,10 @@ impl ShResidencyState {
                 continue;
             }
             last_node = Some((node, base));
-            let layout = self.node_layouts.get(&node).ok_or(malformed(
-                cluster_id,
-                "canonical node lacks id-34 prefix metadata",
-            ))?;
+            let layout = self
+                .node_layouts
+                .get(&node)
+                .ok_or(malformed(cluster_id, "node lacks id-34 prefix metadata"))?;
             if base
                 .checked_add(layout.tile_count)
                 .is_none_or(|end| end > isolated.element_count)
@@ -231,10 +290,10 @@ impl ShResidencyState {
         let mut expected_base = 0u32;
         let mut local_to_live = Vec::new();
         for (_, node, source_base) in ordered {
-            let layout = self.node_layouts.get(&node).ok_or(malformed(
-                cluster_id,
-                "canonical node lacks id-34 prefix metadata",
-            ))?;
+            let layout = self
+                .node_layouts
+                .get(&node)
+                .ok_or(malformed(cluster_id, "node lacks id-34 prefix metadata"))?;
             if source_base != expected_base {
                 return Err(malformed(
                     cluster_id,
@@ -244,21 +303,18 @@ impl ShResidencyState {
             expected_base = expected_base
                 .checked_add(layout.tile_count)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            // Halo chunks carry this source closure so their probe words can
-            // be verified, but only its canonical owner ever uploads the
-            // shared physical tiles.
-            if self.node_owner.get(&node).copied() != Some(cluster_id) {
+            // Every chunk carries its whole closure so its probe words can be
+            // verified, but a node's tiles upload only with its first writer.
+            if !first_written.contains(&node) {
                 continue;
             }
-            let live = self.node_slots.get(&node).copied().ok_or(malformed(
-                cluster_id,
-                "canonical node slot was not allocated",
-            ))?;
+            let live = self
+                .node_slots
+                .get(&node)
+                .copied()
+                .ok_or(malformed(cluster_id, "stored node slot was not allocated"))?;
             if live.len != layout.tile_count {
-                return Err(malformed(
-                    cluster_id,
-                    "canonical live node range has wrong length",
-                ));
+                return Err(malformed(cluster_id, "live node range has wrong length"));
             }
             if layout.tile_count != 0 {
                 local_to_live.push(SlotRun {

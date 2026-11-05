@@ -15,8 +15,8 @@ pub struct StoredNode {
 }
 
 /// Global stored-node metadata is retained only to translate a chunk-local
-/// rank to the canonical owner's allocation. It is not a host copy of atlas
-/// payload bytes.
+/// rank to the node's live allocation. It is not a host copy of atlas payload
+/// bytes.
 #[derive(Debug, Clone, Copy)]
 pub struct StoredNodeLayout {
     pub global_base_slot: u32,
@@ -32,7 +32,7 @@ pub struct DenseNodeLayout {
 /// Rebuild the v11 stored-node prefix from the always-resident id-34
 /// projection. The stream wire's local rank is closure-relative; installs use
 /// this retained layout to recover the rank *within* the node before adding
-/// the canonical live pool base.
+/// the live pool base.
 pub fn derive_dense_node_layout(
     base: &ShStreamBaseMetadata,
 ) -> Result<DenseNodeLayout, ShResidencyDrainError> {

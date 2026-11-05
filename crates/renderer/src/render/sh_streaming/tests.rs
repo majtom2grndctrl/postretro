@@ -157,7 +157,9 @@ fn prepared(cluster_id: u32, generation: u64, content_tag: [u8; 32]) -> Prepared
 }
 
 #[test]
-fn dense_patch_owner_is_the_lowest_cluster_containing_the_probe() {
+fn overlapping_dense_ranges_are_both_named_and_counted_in_each_clusters_demand() {
+    // Two clusters naming the same brick: neither is a writer in the plan, and
+    // each cluster's own demand covers the whole node.
     let directory = ClusterDirectorySection {
         runtime_cell_count: 0,
         primitive_limit: 0,
@@ -170,24 +172,8 @@ fn dense_patch_owner_is_the_lowest_cluster_containing_the_probe() {
         }],
         members: Vec::new(),
         ranges: vec![
-            // A lower-id halo is still the canonical dense-patch writer.
-            // Unlike sparse CSR rows, dense ownership is deliberately
-            // derived from the lowest containing cluster, not id-49's
-            // owner field.
-            ClusterRangeRecord {
-                resource_index: 0,
-                start: 0,
-                count: 64,
-                owner_cluster_id: 1,
-                role: ClusterRangeRole::Halo,
-            },
-            ClusterRangeRecord {
-                resource_index: 0,
-                start: 0,
-                count: 64,
-                owner_cluster_id: 1,
-                role: ClusterRangeRole::Owned,
-            },
+            range(0, 0, 64, 1, ClusterRangeRole::Halo),
+            range(0, 0, 64, 1, ClusterRangeRole::Owned),
         ],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
@@ -201,12 +187,20 @@ fn dense_patch_owner_is_the_lowest_cluster_containing_the_probe() {
     )
     .unwrap();
 
-    assert_eq!(state.dense_owner[0], Some(0));
-    assert_eq!(state.nodes_by_owner[&0].len(), 1);
+    let mut naming = Vec::new();
+    state.dense_spans.any_cluster_naming(0, |cluster| {
+        naming.push(cluster);
+        false
+    });
+    naming.sort_unstable();
+    assert_eq!(naming, [0, 1]);
+    let tiles = state.node_layouts[&state.dense_node[0].unwrap()].tile_count;
+    assert_eq!(state.initial_dense_slots.minimum, tiles);
+    assert_eq!(state.initial_dense_slots.whole, tiles);
 }
 
 #[test]
-fn sparse_owner_halo_ranges_keep_the_writer_for_ids_27_41_and_45() {
+fn sparse_halo_ranges_size_every_family_from_each_clusters_own_rows() {
     let resources = vec![
         ClusterResourceRecord {
             section_id: INDIRECT_BASE_ID,
@@ -257,19 +251,17 @@ fn sparse_owner_halo_ranges_keep_the_writer_for_ids_27_41_and_45() {
         &all_sparse_sources(),
         &[],
     )
-    .expect("overlapping sparse ownership is valid");
+    .expect("overlapping sparse ranges are valid");
 
+    // A halo-only cluster needs the row's full backing to install alone: one
+    // entry plus the missing-row sentinel, in every family.
     for section_id in [INDIRECT_DELTA_ID, DIRECT_DELTA_ID, ANIMATED_DIRECT_DELTA_ID] {
-        assert_eq!(state.sparse_row_owner[&(section_id, 0)], 1);
+        assert_eq!(state.sparse_capacity_floors[&section_id].0, 2);
     }
-    // The lower-id halo must wait for each sparse canonical writer. Dense
-    // patch ownership is deliberately different and remains lower-id.
-    assert_eq!(state.dense_owner[0], Some(0));
-    assert!(state.owner_dependencies[0].contains(&1));
 }
 
 #[test]
-fn dense_patch_writer_waits_for_a_different_stored_node_owner() {
+fn one_stored_node_can_serve_clusters_naming_distinct_probes() {
     let directory = ClusterDirectorySection {
         runtime_cell_count: 0,
         primitive_limit: 0,
@@ -295,12 +287,15 @@ fn dense_patch_writer_waits_for_a_different_stored_node_owner() {
         &postretro_level_loader::ShStreamSourceMetadata::default(),
         &[],
     )
-    .expect("one stored node can contain patches owned by distinct clusters");
+    .expect("one stored node can contain probes named by distinct clusters");
 
+    // Either cluster alone needs the whole node: its chunk carries every tile.
     let node = state.dense_node[1].expect("second valid probe has a stored node");
-    assert_eq!(state.dense_owner[1], Some(1));
-    assert_eq!(state.node_owner[&node], 0);
-    assert!(state.owner_dependencies[1].contains(&0));
+    assert_eq!(state.dense_node[0], Some(node));
+    assert_eq!(
+        state.initial_dense_slots.minimum,
+        state.node_layouts[&node].tile_count
+    );
 }
 
 #[test]
@@ -390,15 +385,12 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         #[cfg(feature = "dev-tools")]
         probe_readback: Default::default(),
         targets: BTreeSet::new(),
-        dense_owner: Vec::new(),
         dense_node: Vec::new(),
         dense_node_local_slot: Vec::new(),
         node_layouts: NodeMap::default(),
-        node_owner: NodeMap::default(),
-        nodes_by_owner: BTreeMap::new(),
+        dense_spans: DenseSpans::default(),
         node_slots: BTreeMap::new(),
-        owner_dependencies: Vec::new(),
-        sparse_row_owner: BTreeMap::new(),
+        storage_refs: StorageRefs::with_probe_count(0),
         sparse_capacity_floors: BTreeMap::new(),
         dense_slots: FirstFitRanges::default(),
         sparse_pools: BTreeMap::new(),
@@ -485,7 +477,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
 }
 
 #[test]
-fn sparse_floor_covers_the_sum_of_a_cluster_owned_rows() {
+fn sparse_floor_covers_the_sum_of_one_clusters_rows() {
     let source = postretro_level_loader::ShStreamSparseMetadata {
         section_id: INDIRECT_DELTA_ID,
         internal_version: 1,
@@ -502,12 +494,13 @@ fn sparse_floor_covers_the_sum_of_a_cluster_owned_rows() {
         indirect_delta: Some(source),
         ..Default::default()
     };
-    let owners = BTreeMap::from([((INDIRECT_DELTA_ID, 0), 3), ((INDIRECT_DELTA_ID, 1), 3)]);
-    let floors = sparse_capacity_floors(&sources, &owners).unwrap();
+    let both_rows = BTreeSet::from([(INDIRECT_DELTA_ID, 0), (INDIRECT_DELTA_ID, 1)]);
+    let floors =
+        sparse_capacity_floors(&sources, &[BTreeSet::new(), both_rows.clone(), both_rows]).unwrap();
 
-    // The old largest-row rule would have produced four entries. Both
-    // rows are owned by cluster 3, so its first install needs 2 + 3 plus
-    // the missing-row sentinel.
+    // The old largest-row rule would have produced four entries. One cluster
+    // names both rows, so its first install needs 2 + 3 plus the missing-row
+    // sentinel. A second cluster naming the same rows raises nothing.
     assert_eq!(floors[&INDIRECT_DELTA_ID].0, 6);
     assert_eq!(floors[&INDIRECT_DELTA_ID].1 % 2, 0);
 }
@@ -651,11 +644,10 @@ fn only_retiring_generation_pressure_is_deferred() {
 }
 
 #[test]
-fn halo_only_closure_requires_no_unrecorded_compose_epoch() {
-    // A dependent can retain a complete id34/id35 closure and sparse halo
-    // block without publishing any canonical patch or CSR pair. It must
-    // promote at the current epoch rather than wait forever for work that
-    // was correctly skipped.
+fn a_cluster_that_wrote_nothing_adds_no_compose_epoch_of_its_own() {
+    // A cluster whose storage is all live publishes no new word or CSR pair.
+    // Its own writes must not raise the epoch, or it would wait forever for
+    // work that was correctly skipped; any wait comes from pending installs.
     assert_eq!(
         required_compose_epochs(11, 13, true, false, []),
         Ok((11, 13))
@@ -680,81 +672,19 @@ fn all_family_writes_wait_for_both_next_compose_epochs_before_sampleability() {
 
     let installed = InstalledCluster {
         patches: Vec::new(),
-        owned_nodes: Vec::new(),
+        referenced_nodes: Vec::new(),
         sparse_rows: Vec::new(),
         required_indirect_epoch,
         required_direct_epoch,
     };
-    let no_dependencies = BTreeSet::new();
 
     // The installation drain starts at 41/71. A later drain can sample only
     // after both the indirect (id34/id27) and direct (id35/id41/id45)
     // compose passes have completed their required next epoch.
-    assert!(!rows::installed_cluster_is_sampleable(
-        &installed,
-        &no_dependencies,
-        &BTreeSet::new(),
-        41,
-        71,
-    ));
-    assert!(!rows::installed_cluster_is_sampleable(
-        &installed,
-        &no_dependencies,
-        &BTreeSet::new(),
-        42,
-        71,
-    ));
-    assert!(!rows::installed_cluster_is_sampleable(
-        &installed,
-        &no_dependencies,
-        &BTreeSet::new(),
-        41,
-        72,
-    ));
-    assert!(rows::installed_cluster_is_sampleable(
-        &installed,
-        &no_dependencies,
-        &BTreeSet::new(),
-        42,
-        72,
-    ));
-}
-
-#[test]
-fn promotion_waits_for_the_next_drain_after_all_required_compose_passes() {
-    let installed = InstalledCluster {
-        patches: Vec::new(),
-        owned_nodes: Vec::new(),
-        sparse_rows: Vec::new(),
-        required_indirect_epoch: 8,
-        required_direct_epoch: 5,
-    };
-    let dependencies = BTreeSet::from([3]);
-
-    // The install drain recorded work, but sampled indirection must retain its
-    // old contents until both passes have encoded and the owner is sampleable
-    // in the next drain.
-    assert!(!rows::installed_cluster_is_sampleable(
-        &installed,
-        &dependencies,
-        &BTreeSet::new(),
-        8,
-        5,
-    ));
-    assert!(!rows::installed_cluster_is_sampleable(
-        &installed,
-        &dependencies,
-        &BTreeSet::from([3]),
-        7,
-        5,
-    ));
-    assert!(rows::installed_cluster_is_sampleable(
-        &installed,
-        &dependencies,
-        &BTreeSet::from([3]),
-        8,
-        5,
-    ));
+    assert!(!rows::installed_cluster_is_sampleable(&installed, 41, 71));
+    assert!(!rows::installed_cluster_is_sampleable(&installed, 42, 71));
+    assert!(!rows::installed_cluster_is_sampleable(&installed, 41, 72));
+    assert!(rows::installed_cluster_is_sampleable(&installed, 42, 72));
 }
 
 #[test]

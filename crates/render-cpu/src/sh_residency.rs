@@ -7,16 +7,16 @@ use std::fmt;
 
 use postretro_level_format::SectionId;
 
+mod dense_spans;
 mod node_map;
-mod node_ownership;
 mod ownership;
 mod plan;
 mod sample_region_tables;
 mod sample_regions;
 mod sparse_compose;
 
+pub use dense_spans::{DenseSpan, DenseSpans};
 pub use node_map::NodeMap;
-pub use node_ownership::{NodeOwnership, derive_node_ownership, derive_owner_dependencies};
 pub use ownership::{
     DenseNodeLayout, StoredNode, StoredNodeLayout, affinity_index, dense_index,
     derive_dense_node_layout,
@@ -59,8 +59,8 @@ pub enum ShResidencyDrainError {
         cluster_id: u32,
         reason: &'static str,
     },
-    MissingDenseOwner {
-        cluster_id: u32,
+    /// A valid probe no cluster names, so no chunk can ever install it.
+    UncoveredDenseProbe {
         dense_index: u32,
     },
     SlotOverflow,
@@ -108,13 +108,9 @@ impl fmt::Display for ShResidencyDrainError {
                     "SH cluster {cluster_id} has malformed renderer payload: {reason}"
                 )
             }
-            Self::MissingDenseOwner {
-                cluster_id,
-                dense_index,
-            } => write!(
-                f,
-                "SH cluster {cluster_id} patches dense probe {dense_index} without a canonical owner"
-            ),
+            Self::UncoveredDenseProbe { dense_index } => {
+                write!(f, "SH dense probe {dense_index} is named by no cluster")
+            }
             Self::SlotOverflow => write!(
                 f,
                 "SH streamed pool address exceeds probe indirection capacity"

@@ -35,10 +35,10 @@ pub(crate) struct InitialPoolFloor {
     pub(crate) dense_slots: u32,
     pub(crate) whole_dense_slots: u32,
     pub(crate) sparse_capacities: BTreeMap<u32, (u32, u32)>,
-    /// Exact physical backing needed for the largest canonical dense writer,
+    /// Exact physical backing needed for the largest single cluster's nodes,
     /// including atlas-layer padding across the coupled id-34/id-35 group.
     pub(crate) dense_group_minimum_bytes: u64,
-    /// Exact physical backing needed for each present sparse writer family.
+    /// Exact physical backing needed for each present sparse family.
     /// Fixed CSR metadata remains a separate renderer charge.
     pub(crate) sparse_group_minimum_bytes: BTreeMap<u32, u64>,
     pub(crate) effective_floor_bytes: u64,
@@ -70,10 +70,10 @@ impl SparsePlan {
 
 /// Plans the exact initial streamed-pool floor without creating GPU objects.
 ///
-/// The dense minimum is the largest canonical writer closure needed to admit
-/// one cluster; its whole-level counterpart is the id-34 global stored-node
-/// prefix total. Sparse minima are likewise largest owner-cluster capacities,
-/// including their reserved missing-row entry/word. Each family receives its
+/// The dense minimum is the stored nodes of the largest single cluster, enough
+/// to admit it with nothing else resident; its whole-level counterpart is the
+/// id-34 global stored-node prefix total. Sparse minima are likewise largest
+/// single-cluster capacities, including their reserved missing-row entry/word. Each family receives its
 /// proportional share of the post-fixed/scatter budget, then keeps the larger
 /// of that share and its required minimum.
 #[allow(clippy::too_many_arguments)]

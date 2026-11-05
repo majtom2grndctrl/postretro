@@ -1,4 +1,5 @@
-//! Sparse-row ownership planning and bounded pool growth.
+//! Sparse-row reference planning and bounded pool growth.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use super::*;
 
@@ -34,31 +35,17 @@ impl ShResidencyState {
                 if !seen.insert((block.section_id, row.row)) {
                     return Err(malformed(cluster_id, "chunk repeats a sparse row"));
                 }
-                let expected_owner = self
-                    .sparse_row_owner
-                    .get(&(block.section_id, row.row))
-                    .copied()
-                    .ok_or(malformed(cluster_id, "sparse row has no id-49 owner"))?;
-                match row.role {
-                    1 if expected_owner == cluster_id => {
-                        collected.push((block.section_id, row));
-                    }
-                    2 if expected_owner != cluster_id => {}
-                    _ => {
-                        return Err(malformed(
-                            cluster_id,
-                            "sparse row role disagrees with id-49 owner",
-                        ));
-                    }
-                }
+                collected.push((block.section_id, row));
             }
         }
         Ok(collected)
     }
 
-    /// Allocate a complete already-validated batch. The install journal
-    /// restores every CPU mirror if any later row cannot reserve its
-    /// entry/tile ranges; queue writes have not started yet.
+    /// Reference every row of an already-validated chunk and allocate the
+    /// ones it writes first. Returns the rows to upload; a row already live
+    /// keeps its one copy. The install journal restores every CPU mirror if
+    /// any later row cannot reserve its entry/tile ranges; queue writes have
+    /// not started yet.
     pub(super) fn allocate_sparse_rows(
         &mut self,
         journal: &mut InstallJournal,
@@ -72,6 +59,9 @@ impl ShResidencyState {
                     cluster_id,
                     "sparse source disappeared during install",
                 ));
+            }
+            if !self.journal_reference_sparse_row(journal, (section_id, payload.row))? {
+                continue;
             }
             let (entries, tiles) = self
                 .journal_install_sparse_row(

@@ -474,25 +474,26 @@ impl DefenseParameterSource for DefenseParameters {
 fn bind_value(scope: &LayerScope, label: String, value: &NumberOrIr) -> BoundValue {
     match value {
         NumberOrIr::Literal(_) => BoundValue::Literal,
-        NumberOrIr::Ir(node) => match {
+        NumberOrIr::Ir(node) => {
             scope.binding_per_entity.set(false);
-            bind_node(scope, node)
-        } {
-            Ok(program) => BoundValue::Expr {
-                program,
-                label,
-                warned: Cell::new(false),
-                global: !scope.binding_per_entity.get(),
-                shared: Cell::new(None),
-            },
-            // Load validation refused such content, so this is a defect.
-            Err(reason) => {
-                log::warn!(
-                    "[Defense] {label} did not bind: {reason}; it keeps its literal default"
-                );
-                BoundValue::Literal
+            let bound = bind_node(scope, node);
+            match bound {
+                Ok(program) => BoundValue::Expr {
+                    program,
+                    label,
+                    warned: Cell::new(false),
+                    global: !scope.binding_per_entity.get(),
+                    shared: Cell::new(None),
+                },
+                // Load validation refused such content, so this is a defect.
+                Err(reason) => {
+                    log::warn!(
+                        "[Defense] {label} did not bind: {reason}; it keeps its literal default"
+                    );
+                    BoundValue::Literal
+                }
             }
-        },
+        }
     }
 }
 

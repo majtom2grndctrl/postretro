@@ -1,7 +1,7 @@
 // `applyDamage` reaction primitive: route a fixed damage amount through the
 // contextual health chokepoint for every entity matching the reaction's
-// tag. The player-side damage stand-in and the only non-weapon damage producer
-// in M10; death is resolved by the next death-sweep pass, never here.
+// tag. The reaction-driven damage producer outside weapons; death is resolved
+// by the next death-sweep pass, never here.
 // See: context/lib/scripting.md §10 (Reaction Primitives)
 
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,9 @@ pub fn validate_apply_damage_args(
 /// - Empty target set → no-op, debug log.
 /// - `amount` negative or non-finite → `log::warn!` and no-op for the whole
 ///   dispatch (healing is out of scope; the chokepoint only ever reduces HP).
+/// - A `type` that is not a registered damage type → `log::warn!` and no-op
+///   for the whole dispatch (it is not treated as absent, so the default type
+///   is not substituted). An absent `type` deals the mod's default type.
 /// - Target missing a `Health` component → `log::warn!`, skip (tag matched a
 ///   non-damageable entity — most likely a tag typo). Other targets still take
 ///   damage.

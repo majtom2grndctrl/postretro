@@ -51,7 +51,7 @@ fn state(ctx: &ScriptCtx, id: EntityId, name: &str) -> f32 {
         .get(name)
 }
 
-// Q1: the policy reads the hit's layer facts, the target's own layer and the
+// Q1: The policy reads the hit's layer facts, the target's own layer and the
 // source player's layer.
 #[test]
 fn impact_policy_reads_layer_facts_and_target_layers() {
@@ -176,7 +176,7 @@ fn overlay_bad_layer_reference_skips_shield_pair() {
     );
 }
 
-// Q11: a `@state.shield` pair stays author data: hits never drain it, and
+// Q11: A `@state.shield` pair stays author data: hits never drain it, and
 // hide-at-full counts it.
 #[test]
 fn state_shield_overlay_is_author_data_never_drained() {

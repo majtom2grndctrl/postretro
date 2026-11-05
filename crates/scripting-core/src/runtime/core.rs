@@ -771,15 +771,18 @@ impl ScriptRuntime {
                 &mut ctx.slot_table.borrow_mut(),
             );
 
-            // One mutable registry borrow commits the staged whole snapshot, so
-            // a render frame cannot observe new descriptors without their
-            // matching mod-global weapon-placement default.
+            // Commit the defense vocabulary first: it replaces the layer slot
+            // family and the registry copy whole, so a removed layer's slots go
+            // with it before the descriptor snapshot below is applied.
             let next_defense = match &result.status {
                 StagedManifestBuildStatus::Built(manifest) => manifest.defense.clone(),
                 _ => Default::default(),
             };
             crate::defense_vocabulary::commit_defense_vocabulary(ctx, next_defense);
             let previous_life_state_names = ctx.data_registry.borrow().life_state_names.clone();
+            // One mutable registry borrow commits the staged whole snapshot, so
+            // a render frame cannot observe new descriptors without their
+            // matching mod-global weapon-placement default.
             {
                 let mut data_registry = ctx.data_registry.borrow_mut();
                 let mut faction_sentiment = ctx.faction_sentiment.borrow_mut();

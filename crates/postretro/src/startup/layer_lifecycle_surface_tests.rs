@@ -2,7 +2,7 @@
 // each seat's layer values, both spawn paths restore them against the
 // capacity the seat's per-owner values give once the seat binds, a hot reload
 // keeps them by name, and post-tick hits stamp the tick they follow.
-// See: context/lib/scripting.md §11 (Defense layers) · plans E16 §Pinned orderings
+// See: context/lib/scripting.md §11 (Defense layers)
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -220,7 +220,7 @@ fn approx(actual: f32, expected: f32) {
     );
 }
 
-// L5 / R-P6: carried layers clamp against the per-owner capacity in place
+// L5 / R-P6: Carried layers clamp against the per-owner capacity in place
 // once the seat binds; a seat carrying health 0 arrives full.
 #[test]
 fn carried_layer_clamps_against_per_owner_capacity() {
@@ -242,7 +242,7 @@ fn carried_layer_clamps_against_per_owner_capacity() {
     assert_eq!(w.shield(other), (150.0, 150.0));
 }
 
-// L1: across a level change, restart or rejoin the carry clamps; a hot
+// L1: Across a level change, restart or rejoin the carry clamps; a hot
 // reload keeps the value by name.
 #[test]
 fn layer_values_carry_and_hot_reload_by_name() {
@@ -304,7 +304,7 @@ fn layer_values_carry_and_hot_reload_by_name() {
     );
 }
 
-// R10 / R-P13: the stamp is not carried, so the first tick after arrival
+// R10 / R-P13: The stamp is not carried, so the first tick after arrival
 // recharges before that tick's hits; the next recharge waits a full delay.
 #[test]
 fn carried_layer_recharges_first_tick_after_arrival() {
@@ -328,7 +328,7 @@ fn carried_layer_recharges_first_tick_after_arrival() {
     approx(w.shield(host).0, 102.0);
 }
 
-// R11 / R-P2: a hit after a tick's simulation (frame-end script damage in
+// R11 / R-P2: A hit after a tick's simulation (frame-end script damage in
 // single player, a host-flushed client hit in co-op) stamps the tick it
 // follows, as an in-tick hit does.
 #[test]
@@ -359,7 +359,7 @@ fn post_tick_hits_stamp_the_tick_they_follow() {
     approx(w.shield(host).0, 141.0);
 }
 
-// L7 / R-P16, R-P24: a join seed landing through the host's seed path marks
+// L7 / R-P16, R-P24: A join seed landing through the host's seed path marks
 // the seat's pawn; the next tick start redoes the spawn fill, before that
 // tick's hits, only for a layer full at its pre-seed capacity.
 #[test]
@@ -400,7 +400,7 @@ fn late_join_seed_refills_only_layers_full_at_pre_seed_capacity() {
     }
 }
 
-// L6: a fresh joiner whose seed lands before its pawn materializes arrives
+// L6: A fresh joiner whose seed lands before its pawn materializes arrives
 // full at the seeded capacity: the seat bind evaluates with the seed's
 // per-owner values in place.
 #[test]

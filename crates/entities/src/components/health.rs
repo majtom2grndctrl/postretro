@@ -1,6 +1,7 @@
 // Health component: descriptor-authored hit points plus the damage chokepoint.
 // Spawn and hot reload set `max` and the optional hitbox; `current` is live HP
-// that damage mutates and a later death sweep resolves.
+// that damage mutates and a later death sweep resolves. Health is the last
+// pool a hit reaches: any defense layers on the entity drain first.
 //
 // See: context/lib/entity_model.md §2 (Health component), §7 (Collision / hit targeting)
 
@@ -181,9 +182,15 @@ pub fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthCo
         .map(|health| (pawn, health.clone()))
 }
 
-/// The damage chokepoint every producer routes through. Subtracts the payload's
-/// `amount` from the entity's current HP, flooring at zero. Returns whether a
-/// positive finite impact landed and was published. Non-positive/non-finite
+/// The damage chokepoint every producer routes through. The payload's `amount`
+/// is raw damage: it drains the entity's defense layers in order, then health,
+/// and current HP floors at zero. Each pool's multiplier is its damage-type
+/// matrix entry times that pool's own resist for the hit's type (a payload with
+/// no type deals the mod's default type, or ×1 everywhere when there is none).
+/// A layer takes raw × multiplier; when that empties it, only the raw it could
+/// not absorb spills to the next pool, and health takes the raw remainder times
+/// its multiplier. Returns whether a positive finite impact landed and was
+/// published, even when layers absorbed all of it. Non-positive/non-finite
 /// payloads, stale entities, and entities without `Health` are no-ops.
 ///
 /// Damage arrives only as a [`DamagePayload`] (never a bare scalar); spatial
@@ -672,7 +679,7 @@ mod tests {
         assert_eq!(entries[0].source_id, "weapon.plasma");
         assert_eq!(
             entries[0].accumulated_damage, 115.0,
-            "ledger records the full payload amount that reached the chokepoint"
+            "ledger records points dealt, unclamped by remaining HP; with no layers and no type that equals the raw amount"
         );
         assert_eq!(entries[0].hit_count, 2);
         assert_eq!(entries[0].last_hit_damage, 90.0);

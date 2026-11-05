@@ -28,6 +28,19 @@ pub fn warn_unknown_slot_binds<'a, T: serde::Serialize + 'a>(
     warned
 }
 
+/// Keys a store-slot binding object carries beside `slot`: a text or slider
+/// bind's `format` and `tween`, and a predicate's `equals` and `compare`.
+const BIND_KEYS: [&str; 5] = ["slot", "format", "tween", "equals", "compare"];
+
+/// The slot a `{ slot }` binding object names. An object with any other key
+/// is a widget or an unrelated record, not a binding.
+fn bind_slot(object: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
+    if !object.keys().all(|key| BIND_KEYS.contains(&key.as_str())) {
+        return None;
+    }
+    object.get("slot")?.as_str()
+}
+
 fn collect(
     value: &serde_json::Value,
     slots: &SlotTable,
@@ -36,7 +49,7 @@ fn collect(
 ) {
     match value {
         serde_json::Value::Object(object) => {
-            if let Some(name) = object.get("slot").and_then(serde_json::Value::as_str)
+            if let Some(name) = bind_slot(object)
                 && slots.get(name).is_none()
                 && seen.insert(name.to_string())
             {
@@ -130,5 +143,20 @@ mod tests {
             log::Level::Warn,
             "bind names unknown slot `player.defense.armor`;",
         );
+    }
+
+    // An object carrying `slot` beside non-binding keys is not a slot bind.
+    #[test]
+    fn unrelated_slot_key_does_not_warn() {
+        let slots = SlotTable::new();
+        let tree = serde_json::json!({ "root": { "kind": "panel", "slot": "not.a.slot",
+            "children": [
+                { "kind": "text", "bind": { "slot": "hud.x", "format": "{}",
+                  "tween": { "durationMs": 1.0, "easing": "linear" } } },
+            ] } });
+
+        let warned = warn_unknown_slot_binds([&tree], &slots);
+
+        assert_eq!(warned, ["hud.x"]);
     }
 }

@@ -445,7 +445,7 @@ pub fn update_client_overlay_anchors(
 /// Hide-at-full on a client: full only when health and the pushed shield
 /// pair are both full. No pair (0 / 0 included) counts as full.
 fn hidden_at_full(hide_at_full: bool, health: f32, shield: f32, has_shield: bool) -> bool {
-    hide_at_full && health == 1.0 && (!has_shield || shield >= 1.0)
+    hide_at_full && health >= 1.0 && (!has_shield || shield >= 1.0)
 }
 
 fn stamp(

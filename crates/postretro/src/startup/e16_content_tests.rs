@@ -3,7 +3,7 @@
 // vocabulary and author the same defense descriptors, the dev mod loads
 // clean, its weapons name their types, and an unnamed definer fails with the
 // binding-name diagnostic in each runtime.
-// See: context/lib/scripting.md §11 (Defense layers) · plans E16 §Acceptance (D1, D4, X3, Q8)
+// See: context/lib/scripting.md §11 (Defense layers)
 
 use std::path::{Path, PathBuf};
 
@@ -83,7 +83,7 @@ fn defense_shape(manifest: &ModManifestResult, name: &str) -> serde_json::Value 
     serde_json::json!({ "health": health, "weapon": weapon })
 }
 
-// D1: the TS dev mod and its Luau mirror register one vocabulary and author
+// D1: The TS dev mod and its Luau mirror register one vocabulary and author
 // identical defense descriptors, reactions and policies; handles cross as
 // `{ kind, name }`.
 #[test]
@@ -162,7 +162,7 @@ fn e16_ts_and_luau_mods_produce_identical_vocabulary_manifests() {
     assert_eq!(pads(&ts), pads(&luau));
 }
 
-// D1: a Luau descriptor module that requires the vocabulary module again
+// D1: A Luau descriptor module that requires the vocabulary module again
 // gets handles naming the layers `defineMod` registered, and loads.
 #[test]
 fn luau_descriptor_requiring_defenses_again_resolves_registered_layers() {
@@ -189,7 +189,7 @@ fn luau_descriptor_requiring_defenses_again_resolves_registered_layers() {
     }
 }
 
-// Q8: the dev mod, with its E16 content, initializes without a warning.
+// Q8: The dev mod, with its E16 content, initializes without a warning.
 #[test]
 fn dev_mod_loads_clean_with_e16_content() {
     let capture = LogCapture::start();
@@ -217,7 +217,7 @@ fn dev_mod_loads_clean_with_e16_content() {
     );
 }
 
-// X3: every dev-mod weapon names its type: the plasma bolt plasma, the
+// X3: Every dev-mod weapon names its type: the plasma bolt plasma, the
 // rocket explosive, the triangle guns shock and corrosive, the rest ballistic.
 #[test]
 fn dev_weapons_name_their_damage_types() {

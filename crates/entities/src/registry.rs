@@ -1360,9 +1360,6 @@ impl EntityRegistry {
             .ok_or(RegistryError::ProjectilePresentationAgeNotFound { id })
     }
 
-    /// Publish one damage-chokepoint dispatch for the engine's impact-policy
-    /// consumer. This is intentionally separate from component columns: it is
-    /// ephemeral per-fire data, not persistent entity state.
     /// The committed damage vocabulary.
     pub fn defense_vocabulary(
         &self,
@@ -1436,6 +1433,9 @@ impl EntityRegistry {
         self.host_tick
     }
 
+    /// Publish one damage-chokepoint dispatch for the engine's impact-policy
+    /// consumer. This is intentionally separate from component columns: it is
+    /// ephemeral per-fire data, not persistent entity state.
     pub(crate) fn push_impact_dispatch(&mut self, dispatch: ImpactDispatch) {
         self.impact_dispatches.push(dispatch);
     }

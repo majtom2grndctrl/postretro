@@ -158,7 +158,7 @@ fn impact_grant_layer_binds_only_a_declared_layer_handle() {
     assert_eq!(error, "grantLayer `amount` must evaluate to a number");
 }
 
-// G14 / R-P7: one tick's grants and hits, in stage order, each seeing the
+// G14 / R-P7: One tick's grants and hits, in stage order, each seeing the
 // last: a trigger grant, an NPC melee, a hitscan whose policy grants the
 // damager, then frame-end script damage, which runs no policy but still
 // reports the break on its dispatch.

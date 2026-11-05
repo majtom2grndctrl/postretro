@@ -1,5 +1,5 @@
 //! Reaction primitives for additive engine-owned resources.
-//! See: context/lib/scripting.md §10.8.
+//! See: context/lib/scripting.md §10.8 (Additive Resource Grants).
 
 use serde::{Deserialize, Serialize};
 
@@ -105,11 +105,8 @@ pub(crate) fn dispatch_layer(
         return Ok(());
     }
     for &target in targets {
-        match grant_layer(registry, target, &layer, args.amount) {
-            GrantOutcome::Applied
-            | GrantOutcome::SkippedNoComponent
-            | GrantOutcome::SkippedInvalidAmount => {}
-        }
+        // The chokepoint warns on a skipped target; fan-out continues.
+        grant_layer(registry, target, &layer, args.amount);
     }
     Ok(())
 }

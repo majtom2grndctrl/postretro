@@ -20,8 +20,8 @@ mod grant;
 pub(crate) mod health;
 #[cfg(feature = "test-support")]
 pub mod health;
-/// Install-time check of a `.damage` step's args against the vocabulary.
 pub use grant::validate_grant_layer_args;
+/// Install-time check of a `.damage` step's args against the vocabulary.
 pub use health::reactions::validate_apply_damage_args;
 
 /// Check a reaction step's defense references against the committed

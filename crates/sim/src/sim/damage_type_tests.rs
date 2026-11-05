@@ -1,6 +1,6 @@
 // Typed drain through the chokepoint: the mod-wide matrix, pool-local
 // resistances, the default type and the impact facts each hit reports.
-// See: context/lib/scripting.md §11 (Defense layers) · plans E16 §Pinned orderings
+// See: context/lib/scripting.md §11 (Defense layers)
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

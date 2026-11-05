@@ -3,7 +3,7 @@
 // lifecycle refills (`settle`), the spawn fill, the hot-reload rebuild, the
 // carry restore and the grant chokepoint. A new writer must join this list on
 // purpose.
-// See: context/lib/scripting.md §11 (Defense layers) · plans E16 §Acceptance (G15)
+// See: context/lib/scripting.md §11 (Defense layers)
 
 use std::path::{Path, PathBuf};
 

@@ -1,6 +1,6 @@
 // Expression layer parameters on the host: tick-start evaluation and clamp,
 // last-good fault handling, spawn evaluation, and the per-tick cost bounds.
-// See: context/lib/scripting.md §11 (Defense layers) · plans E16 §Pinned orderings
+// See: context/lib/scripting.md §11 (Defense layers)
 
 use std::sync::Arc;
 
@@ -611,7 +611,7 @@ fn per_entity_reads_evaluate_per_entity_and_global_reads_share() {
 
 // Owner amendment (2026-11-05): a shared global-only result gives each entity
 // what evaluating it per entity would; spawn, seat bind and grants after a
-// mid-tick store write read the live store (R-P5, R-P18, R-P37).
+// mid-tick store write read the live store.
 #[test]
 fn shared_global_parameter_matches_per_entity_evaluation() {
     let capture = LogCapture::start();

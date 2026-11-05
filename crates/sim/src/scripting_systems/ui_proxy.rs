@@ -338,6 +338,9 @@ impl PlayerHudStatePublisher {
     fn publish_defense_layers(&mut self, registry: &EntityRegistry) {
         let pawn = registry.local_player_movement_pawn();
         let mut slots = self.ctx.slot_table.borrow_mut();
+        // Walking the whole table keeps this allocation-free: building the
+        // registered `player.defense.*` names to look up would allocate per
+        // publish, and the table is small.
         for (name, record) in slots.iter_mut() {
             let Some(value) = pawn.and_then(|pawn| defense_slot_value(registry, name, pawn)) else {
                 if defense_slot(name).is_some() && record.value.is_some() {

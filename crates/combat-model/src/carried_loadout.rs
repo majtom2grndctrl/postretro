@@ -87,9 +87,13 @@ pub fn restore_carried_layers(
             .find(|layer| layer.name == *name)
         {
             layer.refill = LayerRefill::Restore(*value);
+            // `max(0.0)` maps a NaN carried value to 0, so keep max-then-min
+            // rather than `clamp`, which would pass NaN through.
             layer.value = value.max(0.0).min(layer.capacity);
         }
     }
+    // The pawn was just read, so a failed write only means it despawned; the
+    // restore is then moot.
     let _ = registry.set_component(pawn, component);
 }
 

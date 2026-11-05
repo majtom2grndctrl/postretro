@@ -216,7 +216,7 @@ fn registering_a_layer_changes_fingerprint_not_wire_version() {
     );
 }
 
-// R16: a connected client runs no layer step of its own; each owner reads
+// R16: A connected client runs no layer step of its own; each owner reads
 // its layer from the host's frames alone, so the value moves only when the
 // host's recharge moves it.
 #[test]

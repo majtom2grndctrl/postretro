@@ -92,14 +92,12 @@ pub fn validate_consequential_args(
     }
 
     if primitive == "grantLayer" {
-        // The layer reference is checked against the vocabulary at install;
-        // here only its shape. No amount fills to capacity.
-        let layer = object
-            .get("layer")
-            .ok_or_else(|| fail("`grantLayer` `args.layer` must be a layer handle".to_string()))?;
-        crate::defense::HandleRef::from_json(layer)
-            .and_then(|handle| handle.expect_layer().map(|_| ()))
-            .map_err(|error| fail(format!("`grantLayer` `args.layer`: {error}")))?;
+        // The layer reference itself is checked at install, where a bad one
+        // (a bare string, a type handle, an unregistered name) drops only
+        // this reaction. Here only the amount: none fills to capacity.
+        if !object.contains_key("layer") {
+            return Err(fail("`grantLayer` `args.layer` is missing".to_string()));
+        }
         if let Some(amount) = object.get("amount") {
             finite_f32(Some(amount))
                 .map_err(|detail| fail(format!("`grantLayer` `args.amount` {detail}")))?;

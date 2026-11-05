@@ -1,6 +1,6 @@
-// `grantLayer` is a resource grant: a non-finite amount or a malformed layer
-// reference rejects the whole level manifest in both runtimes, as a bad
-// `grantHealth` does. Vocabulary membership is checked later, at install.
+// `grantLayer` is a resource grant: a non-finite amount rejects the whole
+// level manifest in both runtimes, as a bad `grantHealth` does. A bad layer
+// reference parses, and install drops only the reaction holding it.
 // See: context/lib/scripting.md §11 (Defense layers)
 
 use super::super::*;
@@ -41,16 +41,6 @@ fn grant_layer_non_finite_amount_rejects_manifest() {
             format!("{{layer={SHIELD_LUA},amount=math.huge}}"),
             "amount",
         ),
-        (
-            "{layer:'shield'}".to_string(),
-            "{layer='shield'}".to_string(),
-            "`grantLayer` `args.layer`",
-        ),
-        (
-            "{layer:{kind:'damageType',name:'shock'}}".to_string(),
-            "{layer={kind='damageType',name='shock'}}".to_string(),
-            "expected a defense layer handle",
-        ),
     ] {
         let (js, lua) = manifests(&js_args, &lua_args);
         let js = js.expect_err("a bad grant rejects the JS manifest");
@@ -62,7 +52,16 @@ fn grant_layer_non_finite_amount_rejects_manifest() {
 
 #[test]
 fn grant_layer_with_a_layer_and_an_optional_amount_parses_in_both_runtimes() {
+    // A bad reference parses too: install drops only its reaction.
     for (js_args, lua_args) in [
+        (
+            "{layer:'shield'}".to_string(),
+            "{layer='shield'}".to_string(),
+        ),
+        (
+            "{layer:{kind:'damageType',name:'shock'}}".to_string(),
+            "{layer={kind='damageType',name='shock'}}".to_string(),
+        ),
         (
             format!("{{layer:{SHIELD_JS}}}"),
             format!("{{layer={SHIELD_LUA}}}"),

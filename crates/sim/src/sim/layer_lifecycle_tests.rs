@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use postretro_combat_model::{CarriedState, restore_carried_layers};
 use postretro_entities::ScriptCtx;
 use postretro_entities::components::defense_layers::{
-    DefenseLayersComponent, mark_layers_for_join_seed, refill_layers_on_respawn,
+    DefenseLayersComponent, LayerRefill, refill_layers_on_respawn, settle_layers_now,
 };
 use postretro_entities::components::grant::{grant_health, grant_layer};
 use postretro_entities::components::health::{HealthComponent, set_health_absolute};
@@ -457,14 +457,16 @@ fn seat_bind_evaluates_per_owner_capacity_and_restores_carry() {
     capture.assert_not_logged(log::Level::Warn, "faulted");
 }
 
-// A landed seed redoes the spawn
-// fill at the next tick start, before its hits, only for a layer full at
-// its pre-seed capacity, however it got full.
+// A landed seed redoes the spawn fill at once, the way the host's seed path
+// settles it, only for a layer full at its pre-seed capacity, however it got
+// full. Nothing that lands before the next tick start changes the outcome.
 #[test]
 fn join_seed_refills_only_layers_full_at_pre_seed_capacity() {
     let seed_to = |ctx: &ScriptCtx, pawn: EntityId, value: f32| {
         set_seat_cap(ctx, Seat(1), value);
-        mark_layers_for_join_seed(&mut ctx.registry.borrow_mut(), pawn);
+        settle_layers_now(&mut ctx.registry.borrow_mut(), pawn, |component| {
+            component.mark_unmarked(LayerRefill::IfFull);
+        });
     };
     let seed = |ctx: &ScriptCtx, pawn: EntityId| seed_to(ctx, pawn, 100.0);
     // Full 50 / 50 refills to 150; 30 / 50 keeps 30.
@@ -477,6 +479,11 @@ fn join_seed_refills_only_layers_full_at_pre_seed_capacity() {
         }
         tick(&ctx);
         seed(&ctx, pawn);
+        assert_eq!(
+            layer(&ctx, pawn, "shield"),
+            (expected, 150.0),
+            "{pre_hit:?}: settled at the seed"
+        );
         tick(&ctx);
         assert_eq!(
             layer(&ctx, pawn, "shield"),
@@ -491,6 +498,14 @@ fn join_seed_refills_only_layers_full_at_pre_seed_capacity() {
     tick(&ctx);
     hit(&ctx, pawn, 20.0, None);
     assert_eq!(layer(&ctx, pawn, "shield"), (130.0, 150.0));
+    // A zero grant between the seed and the next tick start evaluates the
+    // raised capacity, and the pawn still ends full at it.
+    let ctx = per_owner_pawn(50.0, 0.0);
+    let pawn = spawn_seated(&ctx, Seat(1));
+    seed(&ctx, pawn);
+    grant_layer(&mut ctx.registry.borrow_mut(), pawn, "shield", Some(0.0));
+    tick(&ctx);
+    assert_eq!(layer(&ctx, pawn, "shield"), (150.0, 150.0));
     // Hit, then a grant refill, before the seed.
     let ctx = per_owner_pawn(50.0, 0.0);
     let pawn = spawn_seated(&ctx, Seat(1));

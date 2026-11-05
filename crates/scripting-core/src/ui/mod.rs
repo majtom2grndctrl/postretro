@@ -1,3 +1,4 @@
+pub mod bind_diagnostics;
 pub mod descriptor;
 pub mod layout;
 pub mod style_ranges;

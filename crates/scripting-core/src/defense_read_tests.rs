@@ -1,6 +1,6 @@
 // Player-layer reads by scope: a plain read in a player-event condition is
 // the evaluated player, `byPlayer(on.player)` is the event's player, an
-// unregistered layer fails the bind, and a UI binding to one warns once.
+// unregistered layer fails the bind.
 // See: context/lib/scripting.md §11 (Defense layers), §12 (Player events)
 
 use std::sync::Arc;
@@ -11,7 +11,6 @@ use postretro_foundation::defense::DefenseVocabulary;
 use postretro_foundation::{
     BakedIr, BindingScope, CURRENT_IR_VERSION, IrNode, IrValue, Seat, bind, eval_value,
 };
-use postretro_test_log_capture::LogCapture;
 
 use crate::ir_player_scope::PlayerConditionScope;
 use crate::ir_scopes::DispatchScope;
@@ -119,32 +118,4 @@ fn on_player_layer_read_reads_the_event_player() {
         assert_eq!(number(&program, &scope), 100.0);
     }
     assert!(bind(&read("player.defense.armor", Some("@player")), &scope).is_err());
-}
-
-// D6 (UI): a binding to an unregistered layer warns once when its trees
-// register.
-#[test]
-fn unknown_layer_binding_warns_once_at_tree_build() {
-    let capture = LogCapture::start();
-    let vocabulary = DefenseVocabulary {
-        layers: vec!["shield".to_string()],
-        ..Default::default()
-    };
-    let tree = serde_json::json!({
-        "root": { "kind": "panel", "children": [
-            { "kind": "bar", "bind": { "slot": "player.defense.armor" },
-              "max": { "slot": "player.defense.armor.capacity" } },
-            { "kind": "bar", "bind": { "slot": "player.defense.armor" } },
-            { "kind": "bar", "bind": { "slot": "player.defense.shield" } },
-        ] }
-    });
-    let warned = crate::defense_vocabulary::warn_unknown_layer_bindings([&tree], &vocabulary);
-    assert_eq!(
-        warned,
-        ["player.defense.armor", "player.defense.armor.capacity"]
-    );
-    capture.assert_logged_once(
-        log::Level::Warn,
-        "a binding reads `player.defense.armor`, which names no defense layer",
-    );
 }

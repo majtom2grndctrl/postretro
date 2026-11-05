@@ -247,9 +247,9 @@ pub(crate) fn install_world_cpu_with_models(
                 validate_sequence_primitives(manifest.reactions, sequence_registry);
             // Register level-scope UI trees before the data-script VM context drops
             // and before the manifest is consumed by the data registry.
-            postretro_scripting_core::defense_vocabulary::warn_unknown_layer_bindings(
+            postretro_scripting_core::ui::bind_diagnostics::warn_unknown_slot_binds(
                 manifest.ui_trees.iter().map(|registered| &registered.tree),
-                script_ctx.registry.borrow().defense_vocabulary(),
+                &script_ctx.slot_table.borrow(),
             );
             modal_stack.register_script_trees(
                 std::mem::take(&mut manifest.ui_trees),

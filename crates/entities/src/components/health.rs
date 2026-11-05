@@ -10,12 +10,8 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::HealthDescriptor;
-use crate::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
-use postretro_foundation::{DamagePayload, IrType, IrValue};
-
-/// Maximum number of exact contributor source ids retained per target before
-/// later distinct sources collapse into the overflow bucket.
-pub const CONTRIBUTOR_LEDGER_CAPACITY: usize = 8;
+use crate::registry::{EntityId, EntityRegistry};
+use postretro_foundation::DamagePayload;
 
 /// One world-aligned AABB hitbox, fixed per archetype. Health-bearing entities
 /// are valid hitscan and swept-projectile targets when they carry this hitbox
@@ -25,31 +21,6 @@ pub const CONTRIBUTOR_LEDGER_CAPACITY: usize = 8;
 pub struct Hitbox {
     pub half_extents: Vec3,
     pub offset: Vec3,
-}
-
-/// Facts supplied to [`HealthComponent::record_contributor_damage`].
-///
-/// This is intentionally narrower than [`DamageContext`]: it describes only
-/// the already-mitigated hit recorded in the target-owned contributor ledger.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContributorLedgerRecord {
-    pub source_id: String,
-    pub damage: f32,
-    pub zone: Option<String>,
-    pub attacker: Option<EntityId>,
-    pub weapon: Option<EntityId>,
-}
-
-impl ContributorLedgerRecord {
-    pub fn new(source_id: impl Into<String>, damage: f32) -> Self {
-        Self {
-            source_id: source_id.into(),
-            damage,
-            zone: None,
-            attacker: None,
-            weapon: None,
-        }
-    }
 }
 
 /// Attribution facts that travel beside a [`DamagePayload`] at the health
@@ -93,228 +64,15 @@ pub enum DamageProducer {
     AppDrain,
 }
 
-/// Exact numeric IR vocabulary published by every impact dispatch.
-///
-/// The command-target tokens are intentionally absent: the IR only carries
-/// numbers and booleans, while entity references travel on a separate channel.
-pub const IMPACT_AMOUNT_INPUT: &str = "@impact.amount";
-pub const IMPACT_HEALTH_BEFORE_INPUT: &str = "@impact.healthBefore";
-pub const IMPACT_HEALTH_AFTER_INPUT: &str = "@impact.healthAfter";
-pub const IMPACT_MAX_HEALTH_INPUT: &str = "@impact.maxHealth";
-
-pub const IMPACT_DISPATCH_INPUTS: [(&str, IrType); 4] = [
-    (IMPACT_AMOUNT_INPUT, IrType::Number),
-    (IMPACT_HEALTH_BEFORE_INPUT, IrType::Number),
-    (IMPACT_HEALTH_AFTER_INPUT, IrType::Number),
-    (IMPACT_MAX_HEALTH_INPUT, IrType::Number),
-];
-
-/// Exact command-target token for the damaged entity in an impact dispatch.
-pub const IMPACT_TARGET_TOKEN: &str = "@impact.target";
-
-/// Exact command-target token for the attacker in an impact dispatch.
-pub const IMPACT_SOURCE_TOKEN: &str = "@impact.source";
-
-/// One observable fire of the damage chokepoint.
-///
-/// Numeric fields bind through [`IMPACT_DISPATCH_INPUTS`]. `target` and
-/// `source` are opaque command-target values keyed by [`IMPACT_TARGET_TOKEN`]
-/// and [`IMPACT_SOURCE_TOKEN`], respectively; they are never IR leaves.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImpactDispatch {
-    pub amount: f32,
-    pub health_before: f32,
-    /// The raw post-subtraction value before the stored health is floored.
-    pub health_after: f32,
-    pub max_health: f32,
-    pub target: EntityId,
-    pub source: Option<EntityId>,
-    pub producer: DamageProducer,
-    /// World-space contact point carried from [`DamageContext::point`].
-    /// Evaluator-only: never an IR input, so [`Self::ir_values`] omits it.
-    pub point: Option<Vec3>,
-}
-
-impl ImpactDispatch {
-    /// Values for the numeric half of the impact dispatch scope, ordered by
-    /// the fixed vocabulary so a later consumer can seed a bound scope directly.
-    pub fn ir_values(&self) -> [(&'static str, IrValue); 4] {
-        [
-            (IMPACT_AMOUNT_INPUT, IrValue::Number(self.amount)),
-            (
-                IMPACT_HEALTH_BEFORE_INPUT,
-                IrValue::Number(self.health_before),
-            ),
-            (
-                IMPACT_HEALTH_AFTER_INPUT,
-                IrValue::Number(self.health_after),
-            ),
-            (IMPACT_MAX_HEALTH_INPUT, IrValue::Number(self.max_health)),
-        ]
-    }
-}
-
-/// Exact per-source contributor facts retained by a health component.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContributorLedgerEntry {
-    pub source_id: String,
-    pub accumulated_damage: f32,
-    pub hit_count: u32,
-    pub last_hit_damage: f32,
-    pub last_hit_zone: Option<String>,
-    pub last_attacker: Option<EntityId>,
-    pub last_weapon: Option<EntityId>,
-}
-
-impl ContributorLedgerEntry {
-    fn from_record(record: ContributorLedgerRecord) -> Self {
-        Self {
-            source_id: record.source_id,
-            accumulated_damage: record.damage,
-            hit_count: 1,
-            last_hit_damage: record.damage,
-            last_hit_zone: record.zone,
-            last_attacker: record.attacker,
-            last_weapon: record.weapon,
-        }
-    }
-
-    fn record_hit(&mut self, record: ContributorLedgerRecord) {
-        self.accumulated_damage += record.damage;
-        self.hit_count += 1;
-        self.last_hit_damage = record.damage;
-        self.last_hit_zone = record.zone;
-        self.last_attacker = record.attacker;
-        self.last_weapon = record.weapon;
-    }
-}
-
-/// Reduced facts for distinct source ids that arrived after the exact ledger
-/// filled. It deliberately has no source id, so exact-source queries never
-/// mistake overflow damage for a retained contributor.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContributorLedgerOverflow {
-    pub accumulated_damage: f32,
-    pub hit_count: u32,
-    pub last_hit_damage: f32,
-    pub last_hit_zone: Option<String>,
-    pub last_attacker: Option<EntityId>,
-    pub last_weapon: Option<EntityId>,
-}
-
-impl ContributorLedgerOverflow {
-    fn from_record(record: ContributorLedgerRecord) -> Self {
-        Self {
-            accumulated_damage: record.damage,
-            hit_count: 1,
-            last_hit_damage: record.damage,
-            last_hit_zone: record.zone,
-            last_attacker: record.attacker,
-            last_weapon: record.weapon,
-        }
-    }
-
-    fn record_hit(&mut self, record: ContributorLedgerRecord) {
-        self.accumulated_damage += record.damage;
-        self.hit_count += 1;
-        self.last_hit_damage = record.damage;
-        self.last_hit_zone = record.zone;
-        self.last_attacker = record.attacker;
-        self.last_weapon = record.weapon;
-    }
-}
-
-/// Bounded target-owned contributor ledger. The first
-/// [`CONTRIBUTOR_LEDGER_CAPACITY`] distinct source ids remain exact; any later
-/// distinct source rolls into `overflow`.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct ContributorLedger {
-    entries: Vec<ContributorLedgerEntry>,
-    overflow: Option<ContributorLedgerOverflow>,
-}
-
-/// Frozen non-player kill credit captured at the first zero-HP latch.
-///
-/// This lives with the latch rather than in a simulation-side map so a direct
-/// registry despawn drops it with the component and an eventually recycled id
-/// cannot inherit stale credit. The frame-end deferred-removal pass hands a
-/// pre-despawn snapshot to its callback only after successful removal.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingKillCredit {
-    pub tags: Vec<String>,
-    pub contributor_ledger: ContributorLedger,
-}
-
-impl ContributorLedger {
-    pub fn record(&mut self, record: ContributorLedgerRecord) {
-        if !record.damage.is_finite() || record.damage <= 0.0 {
-            return;
-        }
-
-        if let Some(entry) = self
-            .entries
-            .iter_mut()
-            .find(|entry| entry.source_id == record.source_id)
-        {
-            entry.record_hit(record);
-            return;
-        }
-
-        if self.entries.len() < CONTRIBUTOR_LEDGER_CAPACITY {
-            self.entries
-                .push(ContributorLedgerEntry::from_record(record));
-            return;
-        }
-
-        match &mut self.overflow {
-            Some(overflow) => overflow.record_hit(record),
-            None => self.overflow = Some(ContributorLedgerOverflow::from_record(record)),
-        }
-    }
-
-    pub fn entries(&self) -> &[ContributorLedgerEntry] {
-        &self.entries
-    }
-
-    pub fn overflow(&self) -> Option<&ContributorLedgerOverflow> {
-        self.overflow.as_ref()
-    }
-
-    pub fn recorded_damage_by_source(&self, source_id: &str) -> Option<f32> {
-        self.entries
-            .iter()
-            .find(|entry| entry.source_id == source_id)
-            .map(|entry| entry.accumulated_damage)
-    }
-
-    pub fn total_recorded_damage(&self) -> f32 {
-        let exact = self
-            .entries
-            .iter()
-            .map(|entry| entry.accumulated_damage)
-            .sum::<f32>();
-        exact
-            + self
-                .overflow
-                .as_ref()
-                .map(|overflow| overflow.accumulated_damage)
-                .unwrap_or(0.0)
-    }
-
-    pub fn total_recorded_hits(&self) -> u32 {
-        let exact = self
-            .entries
-            .iter()
-            .map(|entry| entry.hit_count)
-            .sum::<u32>();
-        exact
-            + self
-                .overflow
-                .as_ref()
-                .map(|overflow| overflow.hit_count)
-                .unwrap_or(0)
-    }
-}
+pub use super::contributor_ledger::{
+    CONTRIBUTOR_LEDGER_CAPACITY, ContributorLedger, ContributorLedgerEntry,
+    ContributorLedgerOverflow, ContributorLedgerRecord, PendingKillCredit,
+};
+pub use super::impact_dispatch::{
+    IMPACT_AMOUNT_INPUT, IMPACT_DISPATCH_INPUTS, IMPACT_HEALTH_AFTER_INPUT,
+    IMPACT_HEALTH_BEFORE_INPUT, IMPACT_MAX_HEALTH_INPUT, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN,
+    ImpactDispatch,
+};
 
 // Not `Copy`: `zone_multipliers` carries a heap-backed `HashMap`, so
 // `HealthComponent` clones rather than copies. (`max`/`current`/`hitbox` stay
@@ -468,53 +226,12 @@ pub fn apply_damage_with_context(
     // no-op rather than a modelling error. Post-mortem hits must not revise
     // the perception state frozen by the lethal hit.
     if target_was_live {
-        let attacker_transform = context
-            .attacker
-            .and_then(|attacker| registry.get_component::<Transform>(attacker).ok().copied());
-        let damaged_transform = registry.get_component::<Transform>(id).ok().copied();
-        if let Ok(ComponentValue::Brain(brain)) =
-            registry.get_component_value_mut(id, ComponentKind::Brain)
-        {
-            brain.time_since_damage_ms = 0.0;
-            // A concrete attacker is valuable even when it lacks a transform: the
-            // per-candidate ledger is identity-based, while bearing/last-known
-            // position below deliberately require spatial provenance. Contextless
-            // damage still resets generic recency but creates no ledger entry.
-            if let Some(attacker) = context.attacker {
-                brain.record_attacker_damage(attacker, payload.amount);
-            }
-            // Bearing is meaningful only for this hit. A contextless hit must not
-            // make an older directional stimulus look recent again.
-            brain.damage_bearing = 0.0;
-            brain.damage_source_known = attacker_transform.is_some();
-            if let Some(attacker_transform) = attacker_transform {
-                brain.last_known_target_pos = Some(attacker_transform.position);
-                if let Some(damaged_transform) = damaged_transform {
-                    let forward = damaged_transform.rotation * Vec3::Z;
-                    let toward_attacker = attacker_transform.position - damaged_transform.position;
-                    let forward_xz_len_sq = forward.x * forward.x + forward.z * forward.z;
-                    let attacker_xz_len_sq = toward_attacker.x * toward_attacker.x
-                        + toward_attacker.z * toward_attacker.z;
-                    if forward_xz_len_sq.is_finite()
-                        && attacker_xz_len_sq.is_finite()
-                        && forward_xz_len_sq > 1.0e-8
-                        && attacker_xz_len_sq > 1.0e-8
-                    {
-                        let forward_inverse_length = forward_xz_len_sq.sqrt().recip();
-                        let attacker_inverse_length = attacker_xz_len_sq.sqrt().recip();
-                        let forward_x = forward.x * forward_inverse_length;
-                        let forward_z = forward.z * forward_inverse_length;
-                        let attacker_x = toward_attacker.x * attacker_inverse_length;
-                        let attacker_z = toward_attacker.z * attacker_inverse_length;
-                        let dot = forward_x * attacker_x + forward_z * attacker_z;
-                        let signed_cross = forward_z * attacker_x - forward_x * attacker_z;
-                        brain.damage_bearing = signed_cross
-                            .atan2(dot)
-                            .clamp(-std::f32::consts::PI, std::f32::consts::PI);
-                    }
-                }
-            }
-        }
+        super::damage_perception::record_damage_perception(
+            registry,
+            id,
+            context.attacker,
+            payload.amount,
+        );
     }
     registry.push_impact_dispatch(ImpactDispatch {
         amount: payload.amount,
@@ -555,6 +272,7 @@ mod tests {
     use super::*;
     use crate::data_descriptors::HitboxDescriptor;
     use crate::registry::Transform;
+    use postretro_foundation::{IrType, IrValue};
 
     fn descriptor(max: f32) -> HealthDescriptor {
         HealthDescriptor {

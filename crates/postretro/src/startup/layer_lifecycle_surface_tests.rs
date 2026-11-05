@@ -1,7 +1,9 @@
 // Defense layers across the production lifecycle: a level unload harvests
 // each seat's layer values, both spawn paths restore them against the
-// capacity the seat's per-owner values give once the seat binds, a hot reload
-// keeps them by name, and post-tick hits stamp the tick they follow.
+// capacity the seat's per-owner values give once the seat binds, a join seed
+// settles them at once, a hot reload keeps them by name, a staged commit with
+// no level installs the evaluator, and post-tick hits stamp the tick they
+// follow.
 // See: context/lib/scripting.md §11 (Defense layers)
 
 use std::collections::{BTreeSet, HashMap};

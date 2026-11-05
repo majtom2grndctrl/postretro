@@ -56,7 +56,8 @@ fn run_level_script(entry: &Path) -> LevelManifest {
             compiled_bytes: source.into_bytes(),
             source_path: entry.to_string_lossy().into_owned(),
         },
-        entry.parent().unwrap(),
+        // The mod root, so `./scripts/defenses.luau` resolves.
+        entry.parent().unwrap().parent().unwrap(),
     )
 }
 

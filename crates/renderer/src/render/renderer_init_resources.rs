@@ -455,6 +455,34 @@ pub(crate) fn build_uniform_bind_groups(
     }
 }
 
+/// One label per GPU timing pair, indexed by its `TIMING_PAIR_*` constant.
+fn timing_pass_labels() -> Vec<&'static str> {
+    let mut pass_labels = vec![""; TIMING_PAIR_COUNT];
+    pass_labels[TIMING_PAIR_CULL] = "cull";
+    pass_labels[TIMING_PAIR_ANIMATED_LM_COMPOSE] = "animated_lm_compose";
+    pass_labels[TIMING_PAIR_DEPTH_PREPASS] = "depth_prepass";
+    pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
+    pass_labels[TIMING_PAIR_FORWARD] = "forward";
+    pass_labels[TIMING_PAIR_SH_COMPOSE] = "sh_compose";
+    pass_labels[TIMING_PAIR_DIRECT_SH_COMPOSE] = "direct_sh_compose";
+    pass_labels[TIMING_PAIR_PROMOTED_DEPTH_CACHE] = "promoted_depth_cache_upper";
+    pass_labels[TIMING_PAIR_SMOKE] = "smoke";
+    pass_labels[TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE] = "animated_direct_sh_compose";
+    pass_labels[TIMING_PAIR_BLOOM] = "bloom";
+    pass_labels[TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE] = "billboard_direct_scatter_compose";
+    pass_labels[TIMING_PAIR_DYNAMIC_SPOT_DEPTH] = "dynamic_spot_depth_upper";
+    pass_labels[TIMING_PAIR_DYNAMIC_CUBE_DEPTH] = "dynamic_cube_depth_upper";
+    pass_labels[TIMING_PAIR_RESOLVE] = "resolve";
+    pass_labels[TIMING_PAIR_FLUID_SURFACE] = "fluid_surface";
+    pass_labels[TIMING_PAIR_FLUID_REFLECTION] = "fluid_reflection";
+    pass_labels[TIMING_PAIR_PLANAR_REFLECTION] = "planar_reflection";
+    pass_labels[TIMING_PAIR_PLANAR_FORWARD] = "planar_forward";
+    pass_labels[TIMING_PAIR_KINEMATIC_BRUSH] = "kinematic_brush";
+    pass_labels[TIMING_PAIR_SKINNED_MESH] = "skinned_mesh";
+    pass_labels[TIMING_PAIR_VIEWMODEL] = "viewmodel";
+    pass_labels
+}
+
 pub(crate) fn build_frame_timing(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -462,29 +490,7 @@ pub(crate) fn build_frame_timing(
 ) -> Option<FrameTiming> {
     if enable_gpu_timing {
         log::info!("[Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)");
-        let mut pass_labels = vec![""; TIMING_PAIR_COUNT];
-        pass_labels[TIMING_PAIR_CULL] = "cull";
-        pass_labels[TIMING_PAIR_ANIMATED_LM_COMPOSE] = "animated_lm_compose";
-        pass_labels[TIMING_PAIR_DEPTH_PREPASS] = "depth_prepass";
-        pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
-        pass_labels[TIMING_PAIR_FORWARD] = "forward";
-        pass_labels[TIMING_PAIR_SH_COMPOSE] = "sh_compose";
-        pass_labels[TIMING_PAIR_DIRECT_SH_COMPOSE] = "direct_sh_compose";
-        pass_labels[TIMING_PAIR_PROMOTED_DEPTH_CACHE] = "promoted_depth_cache_upper";
-        pass_labels[TIMING_PAIR_SMOKE] = "smoke";
-        pass_labels[TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE] = "animated_direct_sh_compose";
-        pass_labels[TIMING_PAIR_BLOOM] = "bloom";
-        pass_labels[TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE] =
-            "billboard_direct_scatter_compose";
-        pass_labels[TIMING_PAIR_DYNAMIC_SPOT_DEPTH] = "dynamic_spot_depth_upper";
-        pass_labels[TIMING_PAIR_DYNAMIC_CUBE_DEPTH] = "dynamic_cube_depth_upper";
-        pass_labels[TIMING_PAIR_RESOLVE] = "resolve";
-        pass_labels[TIMING_PAIR_FLUID_SURFACE] = "fluid_surface";
-        pass_labels[TIMING_PAIR_FLUID_REFLECTION] = "fluid_reflection";
-        pass_labels[TIMING_PAIR_PLANAR_REFLECTION] = "planar_reflection";
-        pass_labels[TIMING_PAIR_PLANAR_FORWARD] = "planar_forward";
-        pass_labels[TIMING_PAIR_KINEMATIC_BRUSH] = "kinematic_brush";
-        Some(FrameTiming::new(device, queue, pass_labels))
+        Some(FrameTiming::new(device, queue, timing_pass_labels()))
     } else {
         None
     }
@@ -525,6 +531,15 @@ pub(crate) fn build_initial_uniform_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A forgotten label would log and report a blank pass name.
+    #[test]
+    fn every_timing_pair_has_a_unique_label() {
+        let labels = timing_pass_labels();
+        assert!(labels.iter().all(|label| !label.is_empty()));
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len());
+    }
 
     // Regression: enabling only TIMESTAMP_QUERY let encoder-level timing reach
     // wgpu without its separately required device feature and panic at runtime.

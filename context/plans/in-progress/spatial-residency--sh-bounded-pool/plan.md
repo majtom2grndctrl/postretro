@@ -24,6 +24,12 @@ Eight recorded runs, hallway and `campaign-test`, HEAD at 9d37ea6c9 against `tod
 - Cluster rule: no mandatory refusals and no growth at 2 layers, but 7 hallway shots exceed noise in all pairings, with mixed signs at one location (0136a +2.3, 0136s −3.2). Same confound; the same rerun settles it.
 - Walk: mandatory union 159,554; live p50 131,472, max 203,315. Evictions 668–670 against about 1,041. Re-reads 468–470 against about 904. Peak `ioreg` in-use 3.0 against 4.1 GB.
 
+**Static-only batch (mask `0x2`), 8 of 8 valid.** All 217 `campaign-test` held frames are within noise; 185 have real static light, and the frames at 1,392 m and 1,416 m are not among them, so that match says nothing there. Hallway held frames match (block 0.05, signed 0.000). Only 0184s stays signed beyond noise (+5.25 to +6.79), and it and 0185a show different geometry, both lit: a mover at a different moment.
+
+**Clock.** HEAD reaches each point sooner, by 2.8 s at the hallway's end and about 1.1 s at `campaign-test`'s dark bands, because it stalls less (frames over 50 ms total 10.0 s against 13.0 s). Animated light and movers therefore sit at a different phase at matched poses. There is no frame-cost regression.
+
+**Equal clock against equal pose, `campaign-test` 1,370–1,430 m.** Mean difference falls from 2.4–2.6 of 255 at equal pose to 0.10–0.17 at equal clock. Only 3 and 7 shot pairs line up, at differing poses, so this is strong but thin. Held frames with an absent cluster fell outside that comparison, so that case is untested there; HEAD shows one absent cluster at 1,416 m where `today` shows none. A pinned-clock rerun would settle both, but needs a cold rebuild the disk budget does not allow now.
+
 ## Corrections
 
 - "Id 49 is emitted at pack, after id 51 exists, so the bound needs no new stage" → the directory is built in the uncached `StageId::ClusterDirectory` stage (`pipeline.rs:2092`) and serialized at `pack/section_plan.rs:497`. Per-cluster node sets exist only in `ChunkPlan` (`pack/cluster_sh_payloads/dense.rs:47-98`), which is built at `pack.rs:630` from a shared borrow of the directory. No new stage is needed, but plumbing is: lift `ChunkPlan`'s sets out, compute the bound in pack, pass it to id-49 serialization as an argument, and return it through `PrlFootprint` for the Build Summary (printed at `pipeline.rs:2175-2181`).

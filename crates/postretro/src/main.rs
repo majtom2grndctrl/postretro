@@ -3571,18 +3571,18 @@ impl App {
     ///   `PushTree`'s name through the stack's registry (unknown name warns +
     ///   no-op, never a panic). The top tree's capture mode is reconciled with the
     ///   input seam + focus afterward by `reconcile_ui_focus`.
-    /// - `SetState` → a literal takes the existing readonly-gated JSON write;
-    ///   an install-bound runtime value evaluates against live slots at this
-    ///   game-logic write point (invalid/readonly/non-projectable IR warns and
-    ///   no-ops).
+    /// - `SetState` → only a queue with no state sink queues one; a session's
+    ///   reactions write at dispatch. A literal takes the readonly-gated JSON
+    ///   write; an install-bound runtime value evaluates against live slots
+    ///   (invalid/readonly/non-projectable IR warns and no-ops).
     /// - `SetSentiment` / `AdjustSentiment` → resolve authored faction names
     ///   against immutable content and mutate the live overlay after the tick;
     ///   unknown names and malformed values warn and no-op.
-    /// - `AppendText` / `BackspaceText` / `ClearText` → readonly-gated text edits
-    ///   to a writable String slot at the game-logic stage, through the same
+    /// - `AppendText` / `BackspaceText` / `ClearText` → the text-entry
+    ///   surface's keystrokes (a reaction's text edit writes at dispatch).
+    ///   Readonly-gated edits to a writable String slot, through the same
     ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
-    ///   backspace is a silent no-op; unknown/non-String slot logs). M13 Text
-    ///   Entry, Task 1.
+    ///   backspace is a silent no-op; unknown/non-String slot logs).
     fn dispatch_system_commands(&mut self) {
         // `dispatch_system_commands` stays on `App` (it calls App-bound lifecycle
         // methods). The script tranche, audio, and the decay/presentation systems
@@ -3780,9 +3780,9 @@ impl App {
                     dispatch_source,
                     dispatch_values,
                 } => {
-                    // Reactions fired by address write at dispatch through the
-                    // installed sink; a queued write (a direct push) applies here
-                    // under the same rule.
+                    // The no-sink path: a session's reactions write at dispatch
+                    // through the installed sink, so a queued write only comes
+                    // from a queue without one. It applies under the same rule.
                     if let Some(session) = self.session.as_ref() {
                         session
                             .scripting
@@ -3834,61 +3834,6 @@ impl App {
                         );
                     }
                 }
-                SystemReactionCommand::AddOwnerSlot { slot, seats, delta } => {
-                    // The reaction dispatcher resolves concrete seats at fire
-                    // time, but a disconnect/release can happen before this
-                    // app-frame drain. Never recreate a released owner's value.
-                    for seat in seats {
-                        let seat_is_live = self.session.as_ref().is_some_and(|session| {
-                            session
-                                .seat_table
-                                .as_ref()
-                                .is_some_and(|seat_table| seat_table.contains_seat(seat))
-                        });
-                        if !seat_is_live {
-                            continue;
-                        }
-
-                        let mut slot_table = script_ctx.slot_table.borrow_mut();
-                        let Some(record) = slot_table.get_mut(&slot) else {
-                            log::warn!(
-                                "[Scripting] addSlot references missing slot `{slot}` at drain; skipping"
-                            );
-                            continue;
-                        };
-                        if !record.schema.per_owner {
-                            log::warn!(
-                                "[Scripting] addSlot requires per-owner slot `{slot}`; skipping"
-                            );
-                            continue;
-                        }
-                        if record.schema.readonly {
-                            log::warn!(
-                                "[Scripting] addSlot rejects readonly slot `{slot}`; skipping"
-                            );
-                            continue;
-                        }
-                        let Some(postretro_entities::SlotValue::Number(current)) =
-                            record.per_seat_value(seat)
-                        else {
-                            log::warn!(
-                                "[Scripting] addSlot requires numeric slot `{slot}`; skipping"
-                            );
-                            continue;
-                        };
-                        let next = postretro_scripting_core::store_bridge::validate_slot_value(
-                            &slot,
-                            &record.schema,
-                            postretro_entities::SlotValue::Number(*current + delta),
-                        );
-                        match next {
-                            Ok(next) => record.set_per_seat_value(seat, next),
-                            Err(error) => log::warn!(
-                                "[Scripting] addSlot for `{slot}` failed validation; skipping: {error}"
-                            ),
-                        }
-                    }
-                }
                 SystemReactionCommand::CellWrite { scope, cell, value } => {
                     // Presentation-cell write at the game-logic stage (M13 G1b,
                     // Task 5): routes into the app-side `PresentationCellStore`,
@@ -3905,27 +3850,28 @@ impl App {
                         ),
                     }
                 }
+                // Text-entry keystrokes, and a reaction's text edit on a queue
+                // with no state sink. Same write and warnings as the sink.
                 SystemReactionCommand::AppendText { slot, text } => {
-                    // Readonly-gated text edit at the game-logic stage (same
-                    // writable-slot gate as setState): readonly warns + no-ops;
-                    // unknown/non-String slot logs — never a panic.
-                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Append(&text)) {
-                        log::warn!("[Scripting] appendText to `{slot}` failed: {err}");
-                    }
+                    scripting_systems::system_reactions::apply_text_edit_command(
+                        &script_ctx,
+                        &slot,
+                        &postretro_entities::TextEditCommand::Append(text),
+                    );
                 }
                 SystemReactionCommand::BackspaceText { slot } => {
-                    // Empty backspace is a silent no-op inside `apply_text_edit`.
-                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Backspace) {
-                        log::warn!("[Scripting] backspaceText to `{slot}` failed: {err}");
-                    }
+                    scripting_systems::system_reactions::apply_text_edit_command(
+                        &script_ctx,
+                        &slot,
+                        &postretro_entities::TextEditCommand::Backspace,
+                    );
                 }
                 SystemReactionCommand::ClearText { slot } => {
-                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Clear) {
-                        log::warn!("[Scripting] clearText to `{slot}` failed: {err}");
-                    }
+                    scripting_systems::system_reactions::apply_text_edit_command(
+                        &script_ctx,
+                        &slot,
+                        &postretro_entities::TextEditCommand::Clear,
+                    );
                 }
             }
         }

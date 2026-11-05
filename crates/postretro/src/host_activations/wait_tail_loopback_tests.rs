@@ -336,7 +336,6 @@ fn s36_client_reads_across_its_own_dropped_write() {
             ],
         )],
     );
-    h.apply_slot_writes = true;
     for app in std::iter::once(&mut h.host).chain(h.peers.iter_mut().map(|peer| &mut peer.app)) {
         let ctx = script_ctx(app);
         let session = app.session.as_mut().unwrap();
@@ -1149,4 +1148,46 @@ fn level_load_ir_set_state_evaluates_at_dispatch_on_every_machine() {
         );
     }
     capture.assert_not_logged(log::Level::Warn, "was not bound at level install");
+}
+
+// Body order: a body's text edits land at dispatch like its `setState`, so a
+// clear before a write cannot erase it at the drain, and an append after a
+// write extends it, on every machine. Nothing is left queued for the drain.
+#[test]
+fn level_load_text_edits_land_at_dispatch_in_body_order_on_every_machine() {
+    let (_hook, _notes) = counted_notes(&fixture_world());
+    let capture = LogCapture::start();
+    let h = Harness::with_shared_reactions(
+        fixture_world(),
+        vec![body(
+            "levelLoad",
+            vec![
+                system_step("clearText", json!({ "slot": "tail.entry" })),
+                system_step("setState", json!({ "slot": "tail.entry", "value": "P" })),
+                system_step("appendText", json!({ "slot": "tail.entry", "text": "Q" })),
+            ],
+        )],
+    );
+    for app in std::iter::once(&h.host).chain(h.peers.iter().map(|peer| &peer.app)) {
+        let ctx = script_ctx(app);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("tail.entry")
+                .and_then(|record| record.value.clone()),
+            Some(postretro_entities::SlotValue::String("PQ".into())),
+            "clear, write and append applied in body order when the install's dispatch returned"
+        );
+        assert!(
+            !ctx.system_commands.take().iter().any(|command| matches!(
+                command,
+                SystemReactionCommand::AppendText { .. }
+                    | SystemReactionCommand::BackspaceText { .. }
+                    | SystemReactionCommand::ClearText { .. }
+                    | SystemReactionCommand::SetState { .. }
+            )),
+            "no store write waits for the drain"
+        );
+    }
+    capture.assert_not_logged(log::Level::Warn, "`tail.entry` failed");
 }

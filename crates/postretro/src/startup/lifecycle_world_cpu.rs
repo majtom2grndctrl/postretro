@@ -591,7 +591,9 @@ pub(crate) fn install_world_cpu_with_models(
     // previously discarded here, so a `fire` step in `levelLoad` dispatched
     // nothing. A `wait` step enrolls its tail and returns before this point.
     // Every machine fires `levelLoad` at its own install, for a level the host
-    // started: its `wait` tails count on the host timeline.
+    // started: its `wait` tails count on the host timeline. Its store writes
+    // land here, at dispatch. On a connected client they meet the level's
+    // local defaults: the network baseline applies after install returns.
     let level_load_chained = fire_named_event_with_sequences(
         "levelLoad",
         &script_ctx.data_registry.borrow(),

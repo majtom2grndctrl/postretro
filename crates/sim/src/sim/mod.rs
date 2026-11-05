@@ -841,6 +841,11 @@ where
                     },
                 );
         } else {
+            // Literal fixtures only. This borrow spans command application, so
+            // a bound `grantLayer` panics here when the registry's layer
+            // parameters read this same slot table (an expression capacity).
+            // Narrowing it means threading the `RefCell` into bound-command
+            // execution; the script-context path borrows per write.
             let mut slot_table = trigger_context.slot_table.borrow_mut();
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
                 alive_players,

@@ -1372,3 +1372,79 @@ fn screen_shake_zero_amplitude_accepted_enqueues_command() {
         }]
     );
 }
+
+fn text_slot(default: &str) -> SlotRecord {
+    SlotRecord::new(SlotSchema {
+        slot_type: SlotType::String,
+        default: Some(SlotValue::String(default.into())),
+        range: None,
+        persist: false,
+        readonly: false,
+        ownership: SlotOwnership::Mod,
+        network: Default::default(),
+        per_owner: false,
+        accumulate: None,
+    })
+}
+
+#[test]
+fn installed_sink_applies_text_edits_and_set_state_in_call_order() {
+    let mut r = SystemReactionRegistry::new();
+    register_system_reaction_primitives(&mut r);
+    let ctx = ScriptCtx::new();
+    ctx.slot_table
+        .borrow_mut()
+        .insert("ui.entry".into(), text_slot("typed"))
+        .unwrap();
+    SystemStateSink::install(&ctx, std::rc::Rc::default());
+    let text = |ctx: &ScriptCtx| {
+        ctx.slot_table
+            .borrow()
+            .get("ui.entry")
+            .unwrap()
+            .value
+            .clone()
+    };
+
+    let queue = &ctx.system_commands;
+    r.dispatch(
+        "clearText",
+        &serde_json::json!({ "slot": "ui.entry" }),
+        queue,
+    )
+    .unwrap();
+    r.dispatch(
+        "setState",
+        &serde_json::json!({ "slot": "ui.entry", "value": "P" }),
+        queue,
+    )
+    .unwrap();
+    assert_eq!(text(&ctx), Some(SlotValue::String("P".into())));
+    r.dispatch(
+        "appendText",
+        &serde_json::json!({ "slot": "ui.entry", "text": "Q" }),
+        queue,
+    )
+    .unwrap();
+    assert_eq!(text(&ctx), Some(SlotValue::String("PQ".into())));
+    r.dispatch(
+        "backspaceText",
+        &serde_json::json!({ "slot": "ui.entry" }),
+        queue,
+    )
+    .unwrap();
+    assert_eq!(text(&ctx), Some(SlotValue::String("P".into())));
+    assert!(queue.is_empty(), "nothing waits for the drain");
+}
+
+#[test]
+fn installed_sink_does_not_keep_its_context_alive() {
+    let ctx = ScriptCtx::new();
+    SystemStateSink::install(&ctx, std::rc::Rc::default());
+    let slot_table = std::rc::Rc::downgrade(&ctx.slot_table);
+    drop(ctx);
+    assert!(
+        slot_table.upgrade().is_none(),
+        "the queue owns the sink, so a strong context in it would be a cycle"
+    );
+}

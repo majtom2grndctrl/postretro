@@ -312,7 +312,8 @@ impl SystemReactionIrBindings {
     /// Apply one system `setState`: a bound IR value evaluates against live
     /// slots, a literal goes through the readonly-, range- and per-owner-gated
     /// JSON write. Reactions fired by address call this at dispatch through
-    /// [`SystemStateSink`]; the frame-end drain calls it for queued writes.
+    /// [`SystemStateSink`]; the frame-end drain calls it for a write queued
+    /// where no sink is installed.
     pub fn apply_set_state(
         &self,
         script_ctx: &ScriptCtx,
@@ -342,12 +343,16 @@ impl SystemReactionIrBindings {
     }
 }
 
-/// The dispatch-time `setState` sink: holds the session's bound `setState`
-/// IR so a reaction fired by address writes the store at dispatch, in body
-/// order, on every machine.
+/// The dispatch-time store-write sink: holds the session's bound `setState`
+/// IR so a reaction fired by address writes the store (`setState`, text
+/// edits) at dispatch, in body order, on every machine.
+///
+/// It holds the context weakly: the context's system queue owns the sink, so a
+/// strong clone would be a cycle. A write after the context has dropped finds
+/// no session and does nothing.
 pub struct SystemStateSink {
     bindings: std::rc::Rc<std::cell::RefCell<SystemReactionIrBindings>>,
-    script_ctx: ScriptCtx,
+    script_ctx: postretro_entities::WeakScriptCtx,
 }
 
 impl SystemStateSink {
@@ -359,7 +364,7 @@ impl SystemStateSink {
         let sink: std::rc::Rc<dyn postretro_entities::reactions::system_commands::StateWriteSink> =
             std::rc::Rc::new(Self {
                 bindings,
-                script_ctx: script_ctx.clone(),
+                script_ctx: script_ctx.downgrade(),
             });
         script_ctx.system_commands.set_state_sink(Some(sink));
     }
@@ -372,12 +377,42 @@ impl postretro_entities::reactions::system_commands::StateWriteSink for SystemSt
         value: &serde_json::Value,
         context: &postretro_entities::reactions::system_commands::SystemCommandFireContext,
     ) {
+        let Some(script_ctx) = self.script_ctx.upgrade() else {
+            return;
+        };
         self.bindings.borrow().apply_set_state(
-            &self.script_ctx,
+            &script_ctx,
             slot,
             value,
             &context.source,
             &context.values,
         );
+    }
+
+    fn edit_text(&self, slot: &str, edit: &postretro_entities::TextEditCommand) {
+        let Some(script_ctx) = self.script_ctx.upgrade() else {
+            return;
+        };
+        apply_text_edit_command(&script_ctx, slot, edit);
+    }
+}
+
+/// Apply one text edit through the readonly-gated store write. Readonly warns
+/// and no-ops, an empty backspace is silent, and an unknown or non-String slot
+/// warns; none panics. The dispatch-time sink and the frame-end drain share it.
+pub fn apply_text_edit_command(
+    script_ctx: &ScriptCtx,
+    slot: &str,
+    edit: &postretro_entities::TextEditCommand,
+) {
+    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
+    use postretro_entities::TextEditCommand;
+    let (primitive, edit) = match edit {
+        TextEditCommand::Append(text) => ("appendText", TextEdit::Append(text)),
+        TextEditCommand::Backspace => ("backspaceText", TextEdit::Backspace),
+        TextEditCommand::Clear => ("clearText", TextEdit::Clear),
+    };
+    if let Err(err) = apply_text_edit(script_ctx, slot, edit) {
+        log::warn!("[Scripting] {primitive} to `{slot}` failed: {err}");
     }
 }

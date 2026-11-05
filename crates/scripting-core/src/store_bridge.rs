@@ -838,8 +838,8 @@ fn slot_value_kind(value: &SlotValue) -> &'static str {
 }
 
 /// Add `delta` to one seat's value of a per-owner, writable, numeric slot,
-/// range-checked like any store write. Reactions fired by address apply this
-/// at dispatch; the app drain applies queued additions with the same rule.
+/// range-checked like any store write. A reaction's `addSlot` applies this at
+/// dispatch, for each seat it resolved.
 pub fn add_owner_slot_value(
     slot_table: &mut crate::slot_table::SlotTable,
     slot: &str,

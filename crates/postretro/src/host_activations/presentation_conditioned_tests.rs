@@ -1620,7 +1620,6 @@ end
     let session = h.host.session.as_ref().unwrap();
     let fired = postretro_sim::scripting::reactions::dispatch_state_crossings_with_sequences(
         &mut detector,
-        &ctx.slot_table.borrow(),
         &ctx.data_registry.borrow(),
         &session.scripting.sequence_registry,
         &session.scripting.reaction_registry,

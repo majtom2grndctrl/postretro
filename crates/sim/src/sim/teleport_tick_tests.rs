@@ -1083,7 +1083,6 @@ fn teleport_frame_end_mutation_progress_arm_and_crossing_disarm_govern_the_first
         .value = Some(SlotValue::Number(1.0));
     let crossed = crate::scripting::reactions::dispatch_state_crossings_with_sequences(
         &mut crossings,
-        &rig.ctx.slot_table.borrow(),
         &rig.ctx.data_registry.borrow(),
         &rig.steps,
         &ReactionPrimitiveRegistry::new(),

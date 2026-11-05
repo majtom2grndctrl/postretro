@@ -209,8 +209,9 @@ pub(super) fn dispatch_add_owner_slot(
 }
 
 /// System-reaction arm: no entity targets. The handler parses `args` and
-/// enqueues a typed command; the app drains the queue once per frame. A system
-/// body and a system sequence step share it.
+/// enqueues a typed command the app drains once per frame; a store write
+/// (`setState`, a text edit) lands at once through the queue's state sink
+/// when one is installed. A system body and a system sequence step share it.
 pub(super) fn dispatch_system_reaction(
     primitive: &str,
     args: &serde_json::Value,

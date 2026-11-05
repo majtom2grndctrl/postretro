@@ -1007,8 +1007,8 @@ fn build_scripting_core(
     let shake_decay = scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone());
     let input_mode_tracker =
         scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
-    // Reactions fired by address write `setState` at dispatch through this
-    // sink, in body order (scripting.md §12, Body order).
+    // Reactions fired by address write `setState` and text edits at dispatch
+    // through this sink, in body order (scripting.md §12, Body order).
     let system_reaction_ir_bindings = std::rc::Rc::new(std::cell::RefCell::new(
         scripting_systems::system_reactions::SystemReactionIrBindings::default(),
     ));

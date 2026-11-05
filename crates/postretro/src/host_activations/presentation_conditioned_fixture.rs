@@ -486,17 +486,6 @@ fn land_client_tails(app: &mut App, clock: f64, host_level_tick: Option<f64>) {
         &ctx,
     );
 }
-/// Apply the `setState` commands among `commands` through the app drain, as
-/// the frame-end drain applies them.
-fn apply_slot_writes(app: &mut App, commands: &[SystemReactionCommand]) {
-    let ctx = script_ctx(app);
-    for command in commands {
-        if matches!(command, SystemReactionCommand::SetState { .. }) {
-            ctx.system_commands.push(command.clone());
-        }
-    }
-    app.dispatch_system_commands();
-}
 fn sample(app: &mut App, clock: f64) -> Vec<f32> {
     sample_delta(app, clock, DT as f32)
 }
@@ -548,8 +537,6 @@ struct Harness {
     host_commands: Vec<SystemReactionCommand>,
     /// Run every machine's `wait` scheduler in `step`, as the frame loop does.
     drive_schedulers: bool,
-    /// Apply each machine's landed `setState` commands through its app drain.
-    apply_slot_writes: bool,
 }
 impl Harness {
     fn new() -> Self {
@@ -650,7 +637,6 @@ impl Harness {
             players,
             host_commands: Vec::new(),
             drive_schedulers,
-            apply_slot_writes: false,
         }
     }
     fn connect_late(&mut self) {
@@ -769,11 +755,7 @@ impl Harness {
             // then serialization, which stamps the level tick they reached.
             if self.drive_schedulers {
                 land_host_tails(&mut self.host, self.clock, ticks);
-                let seen = self.host_commands.len();
                 self.route();
-                if self.apply_slot_writes {
-                    apply_slot_writes(&mut self.host, &self.host_commands[seen..]);
-                }
             }
             self.publish();
         }
@@ -788,12 +770,8 @@ impl Harness {
                     // extrapolated on its own level clock and RTT.
                     let reading = peer.replication.host_level_tick(peer.clock, peer.rtt);
                     land_client_tails(&mut peer.app, peer.clock, reading);
-                    let seen = peer.commands.len();
                     peer.commands
                         .extend(script_ctx(&peer.app).system_commands.take());
-                    if self.apply_slot_writes {
-                        apply_slot_writes(&mut peer.app, &peer.commands[seen..]);
-                    }
                 }
                 peer.sample();
             }

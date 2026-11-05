@@ -347,6 +347,19 @@ pub trait DefenseParameterSource {
         component: &mut DefenseLayersComponent,
     );
 
+    /// [`Self::evaluate`] from the tick-start step: an expression that reads
+    /// only global values may evaluate once per descriptor and field that
+    /// tick and share its result. Only the step calls this; spawn, respawn,
+    /// seat bind and grants evaluate per entity against the live store.
+    fn evaluate_at_tick_start(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+        component: &mut DefenseLayersComponent,
+    ) {
+        self.evaluate(registry, entity, component);
+    }
+
     /// Evaluate only layer `index`'s capacity, as a grant does: the result
     /// becomes the capacity in force, and the entity's last good value.
     fn evaluate_capacity(

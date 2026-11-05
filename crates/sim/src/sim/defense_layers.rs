@@ -30,7 +30,7 @@ pub fn recharge_defense_layers(registry: &mut EntityRegistry) {
         // force before this evaluation, and lands before this tick's hits.
         component.resolve_refills();
         if let Some(source) = &source {
-            source.evaluate(registry, id, component);
+            source.evaluate_at_tick_start(registry, id, component);
         }
         component.settle();
         let live = registry

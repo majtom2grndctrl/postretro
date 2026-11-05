@@ -553,13 +553,145 @@ fn literal_layer_parameters_never_evaluate_per_tick() {
         (100.0, 100.0),
         "recharge still ramps at the literal rate"
     );
-    let expression_ids: Vec<EntityId> = (0..2).map(|_| spawn(&ctx, "expression")).collect();
+    let _expression: Vec<EntityId> = (0..3).map(|_| spawn(&ctx, "expression")).collect();
     EVALUATIONS.with(|count| count.set(0));
     tick(&ctx);
     assert_eq!(
         EVALUATIONS.with(|count| count.get()),
-        expression_ids.len(),
-        "one evaluation per entity of the expression descriptor per tick, none for the rest"
+        1,
+        "a global-only rate evaluates once per tick, however many entities carry it, none for the rest"
+    );
+}
+
+// Owner amendment (2026-11-05): an expression reading the entity's own state
+// evaluates per entity; a descriptor mixing a global capacity with a
+// per-entity rate counts one capacity evaluation plus one rate evaluation per
+// entity, and each entity's rate follows its own state.
+#[test]
+fn per_entity_reads_evaluate_per_entity_and_global_reads_share() {
+    let mut per_entity = layer(lit(100.0));
+    per_entity.delay = Some(lit(0.0));
+    per_entity.rate = Some(expr(input("@state.tier")));
+    let mut mixed = layer(expr(input("tune.cap")));
+    mixed.delay = Some(lit(0.0));
+    mixed.rate = Some(expr(input("@state.tier")));
+    let ctx = session(vec![
+        ("per_entity", false, health(vec![per_entity])),
+        ("mixed", false, health(vec![mixed])),
+    ]);
+    let per_entity_ids: Vec<EntityId> = (0..3).map(|_| spawn(&ctx, "per_entity")).collect();
+    EVALUATIONS.with(|count| count.set(0));
+    tick(&ctx);
+    assert_eq!(EVALUATIONS.with(|count| count.get()), 3, "one per entity");
+    for id in per_entity_ids {
+        ctx.registry.borrow_mut().despawn(id).unwrap();
+    }
+    let mixed_ids: Vec<EntityId> = (0..3).map(|_| spawn(&ctx, "mixed")).collect();
+    for (tier, &id) in mixed_ids.iter().enumerate() {
+        ctx.registry
+            .borrow_mut()
+            .entity_state_mut(id)
+            .unwrap()
+            .set("tier", 60.0 * tier as f32);
+        hit(&ctx, id, 50.0, None);
+    }
+    EVALUATIONS.with(|count| count.set(0));
+    tick(&ctx);
+    assert_eq!(
+        EVALUATIONS.with(|count| count.get()),
+        1 + 3,
+        "one shared capacity evaluation plus one rate evaluation per entity"
+    );
+    let values: Vec<f32> = mixed_ids.iter().map(|&id| shield(&ctx, id).0).collect();
+    assert!(
+        approx(values[0], 50.0) && approx(values[1], 51.0) && approx(values[2], 52.0),
+        "{values:?}"
+    );
+}
+
+// Owner amendment (2026-11-05): a shared global-only result gives each entity
+// what evaluating it per entity would; spawn, seat bind and grants after a
+// mid-tick store write read the live store (R-P5, R-P18, R-P37).
+#[test]
+fn shared_global_parameter_matches_per_entity_evaluation() {
+    let capture = LogCapture::start();
+    let ctx = session(vec![
+        ("enemy", false, health(vec![layer(expr(input("tune.cap")))])),
+        (
+            "faulty",
+            false,
+            health(vec![layer(expr(div(
+                input("tune.cap"),
+                input("tune.ward"),
+            )))]),
+        ),
+        ("pawn", true, health(vec![layer(expr(input("tune.cap")))])),
+    ]);
+    // Three entities at 20, 60 and 100 of 100; lowering `cap` clamps each.
+    let ids: Vec<EntityId> = (0..3).map(|_| spawn(&ctx, "enemy")).collect();
+    hit(&ctx, ids[0], 80.0, None);
+    hit(&ctx, ids[1], 40.0, None);
+    set_global(&ctx, "tune.cap", 50.0);
+    tick(&ctx);
+    let read: Vec<(f32, f32)> = ids.iter().map(|&id| shield(&ctx, id)).collect();
+    assert_eq!(read, [(20.0, 50.0), (50.0, 50.0), (50.0, 50.0)]);
+
+    // A spawns while the expression is good; B spawns while it faults.
+    set_global(&ctx, "tune.cap", 100.0);
+    set_global(&ctx, "tune.ward", 1.0);
+    let a = spawn(&ctx, "faulty");
+    set_global(&ctx, "tune.ward", 0.0);
+    let b = spawn(&ctx, "faulty");
+    for _ in 0..3 {
+        tick(&ctx);
+        assert_eq!(shield(&ctx, a).1, 100.0);
+        assert_eq!(shield(&ctx, b).1, 0.0);
+    }
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "descriptor `faulty` `components.health.layers[0].capacity` faulted",
+    );
+    set_global(&ctx, "tune.ward", 1.0);
+    tick(&ctx);
+    assert_eq!(shield(&ctx, a), (100.0, 100.0));
+    assert_eq!(shield(&ctx, b), (0.0, 100.0));
+
+    // After the step, a store write raising `cap`: existing entities keep the
+    // tick's capacity; a spawn, a seat bind and a grant read the live store.
+    set_global(&ctx, "tune.cap", 100.0);
+    tick(&ctx);
+    let pawn = spawn(&ctx, "pawn");
+    assert_eq!(shield(&ctx, pawn), (100.0, 100.0));
+    set_global(&ctx, "tune.cap", 150.0);
+    assert_eq!(
+        shield(&ctx, ids[2]),
+        (50.0, 100.0),
+        "existing entities keep 100 this tick"
+    );
+    let spawned = spawn(&ctx, "enemy");
+    assert_eq!(
+        shield(&ctx, spawned),
+        (150.0, 150.0),
+        "a spawn reads the live store"
+    );
+    ctx.registry
+        .borrow_mut()
+        .bind_pawn_seat(pawn, postretro_foundation::Seat(1));
+    assert_eq!(
+        shield(&ctx, pawn),
+        (150.0, 150.0),
+        "a seat bind reads the live store"
+    );
+    postretro_entities::components::grant::grant_layer(
+        &mut ctx.registry.borrow_mut(),
+        ids[2],
+        "shield",
+        None,
+    );
+    assert_eq!(
+        shield(&ctx, ids[2]),
+        (150.0, 150.0),
+        "a grant reads the live store"
     );
 }
 

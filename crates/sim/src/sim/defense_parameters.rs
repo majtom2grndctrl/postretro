@@ -60,6 +60,9 @@ pub struct LayerScope {
     /// A per-owner read on a pawn no seat owns yet: not a fault. The value
     /// waits for the seat bind, which evaluates again.
     unseated: Cell<bool>,
+    /// Set while binding when the expression reads the entity's own state or
+    /// a player's per-owner value: it cannot share one result per descriptor.
+    binding_per_entity: Cell<bool>,
 }
 
 /// One expression's outcome.
@@ -82,6 +85,7 @@ impl LayerScope {
             seat: Cell::new(None),
             missing: Cell::new(false),
             unseated: Cell::new(false),
+            binding_per_entity: Cell::new(false),
         }
     }
 
@@ -152,6 +156,9 @@ impl BindingScope for LayerScope {
             })
         })
         .ok()?;
+        if !matches!(read, LayerRead::Global) {
+            self.binding_per_entity.set(true);
+        }
         let handle = match read {
             LayerRead::State(state) => {
                 let index = Self::intern(&self.state_names, &state);
@@ -215,6 +222,12 @@ enum BoundValue {
         /// `descriptor `name` key.path`, for the one fault warning.
         label: String,
         warned: Cell<bool>,
+        /// Reads only global slots and constants, so one tick-start result
+        /// serves every entity of the descriptor.
+        global: bool,
+        /// That shared result: the host tick it was evaluated on, and the
+        /// clamped value or `None` for a fault.
+        shared: Cell<Option<(u64, Option<f32>)>>,
     },
 }
 
@@ -282,21 +295,44 @@ impl DefenseParameters {
             .set_defense_parameters(Some(source));
     }
 
-    fn evaluate_into(&self, value: &BoundValue, range: (f32, f32), target: &mut f32) {
+    /// Evaluate one parameter into `target`: a good result, clamped, replaces
+    /// it; a fault keeps it and warns once for the descriptor and field.
+    /// `shared_tick` is the host tick when the tick-start step calls: a
+    /// global-only expression then evaluates once that tick and every later
+    /// entity of the descriptor reads the same result.
+    fn evaluate_into(
+        &self,
+        value: &BoundValue,
+        range: (f32, f32),
+        target: &mut f32,
+        shared_tick: Option<u64>,
+    ) {
         let BoundValue::Expr {
             program,
             label,
             warned,
+            global,
+            shared,
         } = value
         else {
             return;
         };
-        let value = match self.scope.evaluate(program) {
-            Evaluated::Unseated => return,
-            Evaluated::Value(value) => clamp_parameter(value, range),
-            Evaluated::Fault => None,
+        let tick = shared_tick.filter(|_| *global);
+        let result = match (tick, shared.get()) {
+            (Some(tick), Some((filled, result))) if filled == tick => result,
+            _ => {
+                let result = match self.scope.evaluate(program) {
+                    Evaluated::Unseated => return,
+                    Evaluated::Value(value) => clamp_parameter(value, range),
+                    Evaluated::Fault => None,
+                };
+                if let Some(tick) = tick {
+                    shared.set(Some((tick, result)));
+                }
+                result
+            }
         };
-        match value {
+        match result {
             Some(value) => *target = value,
             None => {
                 if !warned.replace(true) {
@@ -308,24 +344,30 @@ impl DefenseParameters {
         }
     }
 
-    fn evaluate_resists(&self, bound: &[(String, BoundValue)], resists: &mut [Resist]) {
+    fn evaluate_resists(
+        &self,
+        bound: &[(String, BoundValue)],
+        resists: &mut [Resist],
+        shared_tick: Option<u64>,
+    ) {
         for (damage_type, value) in bound {
             if let Some(resist) = resists
                 .iter_mut()
                 .find(|resist| resist.damage_type == *damage_type)
             {
-                self.evaluate_into(value, MULTIPLIER_RANGE, &mut resist.value);
+                self.evaluate_into(value, MULTIPLIER_RANGE, &mut resist.value, shared_tick);
             }
         }
     }
-}
 
-impl DefenseParameterSource for DefenseParameters {
-    fn evaluate(
+    /// Evaluate every expression parameter of `component` for `entity`.
+    /// `shared_tick` is set only by the tick-start step.
+    fn evaluate_with(
         &self,
         registry: &EntityRegistry,
         entity: EntityId,
         component: &mut DefenseLayersComponent,
+        shared_tick: Option<u64>,
     ) {
         if !self.authoritative.get() {
             return;
@@ -350,20 +392,47 @@ impl DefenseParameterSource for DefenseParameters {
                 &bound_layer.capacity,
                 LAYER_CAPACITY_RANGE,
                 &mut layer.capacity,
+                shared_tick,
             );
             self.evaluate_into(
                 &bound_layer.delay,
                 LAYER_DELAY_MS_RANGE,
                 &mut layer.recharge_delay_ms,
+                shared_tick,
             );
             self.evaluate_into(
                 &bound_layer.rate,
                 LAYER_RATE_RANGE,
                 &mut layer.recharge_rate,
+                shared_tick,
             );
-            self.evaluate_resists(&bound_layer.resist, &mut layer.resist);
+            self.evaluate_resists(&bound_layer.resist, &mut layer.resist, shared_tick);
         }
-        self.evaluate_resists(&bound.health_resist, &mut component.health_resist);
+        self.evaluate_resists(
+            &bound.health_resist,
+            &mut component.health_resist,
+            shared_tick,
+        );
+    }
+}
+
+impl DefenseParameterSource for DefenseParameters {
+    fn evaluate(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+        component: &mut DefenseLayersComponent,
+    ) {
+        self.evaluate_with(registry, entity, component, None);
+    }
+
+    fn evaluate_at_tick_start(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+        component: &mut DefenseLayersComponent,
+    ) {
+        self.evaluate_with(registry, entity, component, Some(registry.host_tick()));
     }
 
     fn evaluate_capacity(
@@ -397,6 +466,7 @@ impl DefenseParameterSource for DefenseParameters {
             &bound_layer.capacity,
             LAYER_CAPACITY_RANGE,
             &mut layer.capacity,
+            None,
         );
     }
 }
@@ -404,11 +474,16 @@ impl DefenseParameterSource for DefenseParameters {
 fn bind_value(scope: &LayerScope, label: String, value: &NumberOrIr) -> BoundValue {
     match value {
         NumberOrIr::Literal(_) => BoundValue::Literal,
-        NumberOrIr::Ir(node) => match bind_node(scope, node) {
+        NumberOrIr::Ir(node) => match {
+            scope.binding_per_entity.set(false);
+            bind_node(scope, node)
+        } {
             Ok(program) => BoundValue::Expr {
                 program,
                 label,
                 warned: Cell::new(false),
+                global: !scope.binding_per_entity.get(),
+                shared: Cell::new(None),
             },
             // Load validation refused such content, so this is a defect.
             Err(reason) => {

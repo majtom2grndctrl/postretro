@@ -203,12 +203,22 @@ pub enum Recipients {
     Skip,
 }
 
+/// Applies a reaction's `setState` at dispatch, so a body's later steps see
+/// the write (body order). The binary installs one holding the session's
+/// bound `setState` IR; each machine's existing write gates apply inside it.
+pub trait StateWriteSink {
+    fn set_state(&self, slot: &str, value: &serde_json::Value, context: &SystemCommandFireContext);
+}
+
 /// One ordered queue includes both local work and routed presentation.
 #[derive(Clone, Default)]
 pub struct SystemCommandQueue {
     commands: Rc<RefCell<Vec<(Recipients, SystemReactionCommand)>>>,
     fire_context: Rc<RefCell<SystemCommandFireContext>>,
     warned_audiences: Rc<RefCell<HashSet<(String, &'static str)>>>,
+    /// Where `setState` writes at dispatch. Absent, it queues for the
+    /// frame-end drain as before.
+    state_sink: Rc<RefCell<Option<Rc<dyn StateWriteSink>>>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -273,6 +283,29 @@ impl SystemCommandQueue {
     ) -> SystemCommandFireContext {
         std::mem::replace(&mut *self.fire_context.borrow_mut(), context)
     }
+    /// Install (or clear) the dispatch-time `setState` sink.
+    pub fn set_state_sink(&self, sink: Option<Rc<dyn StateWriteSink>>) {
+        *self.state_sink.borrow_mut() = sink;
+    }
+
+    /// A reaction's `setState`: written at once through the installed sink,
+    /// or queued for the frame-end drain when none is installed.
+    pub fn set_state(&self, slot: String, value: serde_json::Value) {
+        let sink = self.state_sink.borrow().clone();
+        match sink {
+            Some(sink) => sink.set_state(&slot, &value, &self.fire_context.borrow()),
+            None => {
+                let context = self.fire_context.borrow().clone();
+                self.push(SystemReactionCommand::SetState {
+                    slot,
+                    value,
+                    dispatch_source: context.source,
+                    dispatch_values: context.values,
+                });
+            }
+        }
+    }
+
     pub fn fire_context(&self) -> SystemCommandFireContext {
         self.fire_context.borrow().clone()
     }

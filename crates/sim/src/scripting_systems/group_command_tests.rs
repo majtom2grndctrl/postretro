@@ -224,16 +224,19 @@ impl Fixture {
         self.log.borrow().clone()
     }
 
-    fn queued_xp_seats(&self) -> Vec<Seat> {
-        self.ctx
-            .system_commands
-            .take()
-            .into_iter()
-            .flat_map(|command| match command {
-                SystemReactionCommand::AddOwnerSlot { seats, .. } => seats,
-                _ => Vec::new(),
-            })
-            .collect()
+    /// A seat's `currency.xp`. `addSlot` writes at dispatch (body order), so
+    /// the store holds every fire's addition at once.
+    fn xp(&self, seat: Seat) -> f32 {
+        match self
+            .ctx
+            .slot_table
+            .borrow()
+            .get(XP_SLOT)
+            .and_then(|record| record.per_seat_value(seat).cloned())
+        {
+            Some(postretro_entities::SlotValue::Number(value)) => value,
+            other => panic!("xp for {seat:?} is {other:?}"),
+        }
     }
 }
 
@@ -773,11 +776,8 @@ fn disconnect_hold_skips_the_pawn_for_every_player_verb_and_reclaim_restores_it(
         "the local pawn is reached"
     );
     assert_eq!(fx.ammo(local), 4);
-    assert_eq!(
-        fx.queued_xp_seats(),
-        vec![Seat(0)],
-        "addSlot skips the held seat"
-    );
+    assert_eq!(fx.xp(Seat(0)), 1.0, "addSlot reaches the local seat");
+    assert_eq!(fx.xp(remote_seat), 0.0, "addSlot skips the held seat");
 
     // Reclaim: the same player identity takes its held seat back with a fresh
     // pawn.
@@ -787,7 +787,12 @@ fn disconnect_hold_skips_the_pawn_for_every_player_verb_and_reclaim_restores_it(
     fire_all(&fx);
     assert_eq!(fx.health(reclaimed_pawn), START_HEALTH + 15.0);
     assert_eq!(fx.ammo(reclaimed_pawn), 4);
-    assert_eq!(fx.queued_xp_seats(), vec![Seat(0), remote_seat]);
+    assert_eq!(fx.xp(Seat(0)), 2.0);
+    assert_eq!(
+        fx.xp(remote_seat),
+        1.0,
+        "the reclaimed seat is reached again"
+    );
 }
 
 // ---------------------------------------------------------------------------

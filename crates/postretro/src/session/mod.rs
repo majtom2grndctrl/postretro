@@ -408,8 +408,10 @@ pub(crate) struct ScriptingCore {
     /// IR. Descriptors and queued commands retain raw JSON at the entities
     /// boundary; this binary-side table owns scope-specialized programs and
     /// known rejected command identities for the active reaction set.
-    pub(crate) system_reaction_ir_bindings:
-        scripting_systems::system_reactions::SystemReactionIrBindings,
+    /// Shared with the system queue's dispatch-time `setState` sink.
+    pub(crate) system_reaction_ir_bindings: std::rc::Rc<
+        std::cell::RefCell<scripting_systems::system_reactions::SystemReactionIrBindings>,
+    >,
 
     /// Install-time bindings for script-authored numeric slot accumulators.
     pub(crate) slot_accumulator_bindings:
@@ -1005,6 +1007,15 @@ fn build_scripting_core(
     let shake_decay = scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone());
     let input_mode_tracker =
         scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
+    // Reactions fired by address write `setState` at dispatch through this
+    // sink, in body order (scripting.md §12, Body order).
+    let system_reaction_ir_bindings = std::rc::Rc::new(std::cell::RefCell::new(
+        scripting_systems::system_reactions::SystemReactionIrBindings::default(),
+    ));
+    scripting_systems::system_reactions::SystemStateSink::install(
+        &script_ctx,
+        system_reaction_ir_bindings.clone(),
+    );
 
     let scripting = ScriptingCore {
         command_diagnostics,
@@ -1018,7 +1029,7 @@ fn build_scripting_core(
         sequence_registry,
         reaction_registry,
         system_registry,
-        system_reaction_ir_bindings: Default::default(),
+        system_reaction_ir_bindings,
         slot_accumulator_bindings: Default::default(),
         scheduler,
         player_hud_state,

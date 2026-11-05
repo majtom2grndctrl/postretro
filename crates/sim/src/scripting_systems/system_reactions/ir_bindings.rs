@@ -307,3 +307,77 @@ impl SystemReactionIrBindings {
 pub fn is_ir_node(value: &serde_json::Value) -> bool {
     value.is_object()
 }
+
+impl SystemReactionIrBindings {
+    /// Apply one system `setState`: a bound IR value evaluates against live
+    /// slots, a literal goes through the readonly-, range- and per-owner-gated
+    /// JSON write. Reactions fired by address call this at dispatch through
+    /// [`SystemStateSink`]; the frame-end drain calls it for queued writes.
+    pub fn apply_set_state(
+        &self,
+        script_ctx: &ScriptCtx,
+        slot: &str,
+        value: &serde_json::Value,
+        dispatch_source: &str,
+        dispatch_values: &[(String, postretro_foundation::IrValue)],
+    ) {
+        if is_ir_node(value) {
+            match self.dispatch(slot, value, dispatch_source, dispatch_values, script_ctx) {
+                // Rejected IR was already diagnosed at install, or by `dispatch`
+                // itself; it never falls through to the literal write path.
+                SystemReactionIrDispatch::Evaluated | SystemReactionIrDispatch::Rejected => {}
+                SystemReactionIrDispatch::Unknown => {
+                    log::warn!(
+                        "[Scripting] setState runtime value for `{slot}` was not bound at level install; skipping"
+                    );
+                }
+            }
+        } else if self.rejects_literal(slot, value) {
+            // Install-time binding already named the reaction and slot.
+        } else if let Err(err) =
+            crate::scripting::primitives::store::write_state_slot_json(script_ctx, slot, value)
+        {
+            log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+        }
+    }
+}
+
+/// The dispatch-time `setState` sink: holds the session's bound `setState`
+/// IR so a reaction fired by address writes the store at dispatch, in body
+/// order, on every machine.
+pub struct SystemStateSink {
+    bindings: std::rc::Rc<std::cell::RefCell<SystemReactionIrBindings>>,
+    script_ctx: ScriptCtx,
+}
+
+impl SystemStateSink {
+    /// Install a sink on `script_ctx`'s system queue over `bindings`.
+    pub fn install(
+        script_ctx: &ScriptCtx,
+        bindings: std::rc::Rc<std::cell::RefCell<SystemReactionIrBindings>>,
+    ) {
+        let sink: std::rc::Rc<dyn postretro_entities::reactions::system_commands::StateWriteSink> =
+            std::rc::Rc::new(Self {
+                bindings,
+                script_ctx: script_ctx.clone(),
+            });
+        script_ctx.system_commands.set_state_sink(Some(sink));
+    }
+}
+
+impl postretro_entities::reactions::system_commands::StateWriteSink for SystemStateSink {
+    fn set_state(
+        &self,
+        slot: &str,
+        value: &serde_json::Value,
+        context: &postretro_entities::reactions::system_commands::SystemCommandFireContext,
+    ) {
+        self.bindings.borrow().apply_set_state(
+            &self.script_ctx,
+            slot,
+            value,
+            &context.source,
+            &context.values,
+        );
+    }
+}

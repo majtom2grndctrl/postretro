@@ -168,7 +168,6 @@ use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 // See: context/lib/networking.md
 use crate::netcode::frame_order;
 use crate::render::Renderer;
-use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
     apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
     collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
@@ -3762,57 +3761,21 @@ impl App {
                     dispatch_source,
                     dispatch_values,
                 } => {
-                    if crate::scripting::reactions::system_commands::is_ir_node(&value) {
-                        let outcome = self.session.as_ref().map_or(
-                            SystemReactionIrDispatch::Unknown,
-                            |session| {
-                                session.scripting.system_reaction_ir_bindings.dispatch(
-                                    &slot,
-                                    &value,
-                                    &dispatch_source,
-                                    &dispatch_values,
-                                    &script_ctx,
-                                )
-                            },
-                        );
-                        match outcome {
-                            SystemReactionIrDispatch::Evaluated
-                            | SystemReactionIrDispatch::Rejected => {
-                                // Rejected IR was already diagnosed: during install, or by
-                                // `dispatch` itself, which warns once per binding for a
-                                // `byPlayer(on.player)` value reached outside a player
-                                // event. It must never fall through to the literal write
-                                // path, and repeated fires are a safe no-op rather than a
-                                // per-dispatch warning.
-                            }
-                            SystemReactionIrDispatch::Unknown => {
-                                // This command is not from the current install table (for
-                                // example, a stale queue entry after a rebuild), so retain a
-                                // diagnostic instead of silently accepting an unbound write.
-                                log::warn!(
-                                    "[Scripting] setState runtime value for `{slot}` was not bound at level install; skipping"
-                                );
-                            }
-                        }
-                    } else if self.session.as_ref().is_some_and(|session| {
+                    // Reactions fired by address write at dispatch through the
+                    // installed sink; a queued write (a direct push) applies here
+                    // under the same rule.
+                    if let Some(session) = self.session.as_ref() {
                         session
                             .scripting
                             .system_reaction_ir_bindings
-                            .rejects_literal(&slot, &value)
-                    }) {
-                        // Install-time binding already named the reaction and slot.
-                        // Never route the rejected per-owner write through the
-                        // scalar JSON fallback.
-                    } else if let Err(err) =
-                        crate::scripting::primitives::store::write_state_slot_json(
-                            &script_ctx,
-                            &slot,
-                            &value,
-                        )
-                    {
-                        // Literal behavior stays on the existing readonly-gated
-                        // JSON path, including target range validation/clamping.
-                        log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                            .borrow()
+                            .apply_set_state(
+                                &script_ctx,
+                                &slot,
+                                &value,
+                                &dispatch_source,
+                                &dispatch_values,
+                            );
                     }
                 }
                 SystemReactionCommand::SetSentiment { from, to, value } => {

@@ -338,13 +338,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("setState: failed to deserialize args: {e}"),
             })?;
-        let fire_context = queue.fire_context();
-        queue.push(SystemReactionCommand::SetState {
-            slot: parsed.slot,
-            value: parsed.value,
-            dispatch_source: fire_context.source,
-            dispatch_values: fire_context.values,
-        });
+        queue.set_state(parsed.slot, parsed.value);
         Ok(())
     });
     // Sentiment writes are consequential system reactions like `setState`, but
@@ -574,7 +568,9 @@ struct SlotOnlyArgs {
 }
 
 mod ir_bindings;
-pub use ir_bindings::{SystemReactionIrBindings, SystemReactionIrDispatch, is_ir_node};
+pub use ir_bindings::{
+    SystemReactionIrBindings, SystemReactionIrDispatch, SystemStateSink, is_ir_node,
+};
 
 #[cfg(test)]
 mod tests;

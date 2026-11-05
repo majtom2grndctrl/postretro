@@ -36,6 +36,7 @@ impl App {
         session
             .scripting
             .system_reaction_ir_bindings
+            .borrow_mut()
             .rebuild(&script_ctx.data_registry.borrow(), &script_ctx);
     }
 

@@ -735,8 +735,6 @@ fn fire_named_event_unknown_name_returns_empty() {
 
 #[test]
 fn add_slot_tag_target_resolves_owner_seat_for_level_load_and_crossing_dispatch() {
-    use crate::reaction_registry::SystemReactionCommand;
-
     let script_ctx = ScriptCtx::new();
     script_ctx
         .slot_table
@@ -778,15 +776,74 @@ fn add_slot_tag_target_resolves_owner_seat_for_level_load_and_crossing_dispatch(
         None,
     );
 
+    // Body order: the addition lands at dispatch, not on the drain queue.
+    assert!(script_ctx.system_commands.take().is_empty());
     assert_eq!(
-        script_ctx.system_commands.take(),
-        vec![SystemReactionCommand::AddOwnerSlot {
-            slot: "currency.xp".to_string(),
-            seats: vec![Seat(4)],
-            delta: 3.0,
-        }],
+        script_ctx
+            .slot_table
+            .borrow()
+            .get("currency.xp")
+            .and_then(|record| record.per_seat_value(Seat(4)).cloned()),
+        Some(postretro_entities::SlotValue::Number(3.0)),
         "the same tag resolver is used by level-load and crossing named dispatches"
     );
+}
+
+#[test]
+fn address_fired_write_to_released_seat_warns_and_skips() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let script_ctx = ScriptCtx::new();
+    script_ctx
+        .slot_table
+        .borrow_mut()
+        .insert("currency.xp".into(), per_owner_number_slot(0.0))
+        .expect("new owner slot");
+    let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
+    {
+        let mut registry = script_ctx.registry.borrow_mut();
+        registry
+            .set_tags(pawn, vec!["players".to_string()])
+            .unwrap();
+        registry.bind_pawn_seat(pawn, Seat(4));
+        // The seat is released earlier in the frame.
+        registry.clear_pawn_seat(pawn);
+    }
+    let mut data = DataRegistry::new();
+    data.populate_level(
+        vec![NamedReaction {
+            name: "crossing".to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "addSlot".to_string(),
+                target: None,
+                kind: None,
+                tag: Some("players".to_string()),
+                on_complete: None,
+                args: serde_json::json!({ "slot": "currency.xp", "delta": 3.0 }),
+            }),
+        }],
+        Vec::new(),
+        &[],
+    );
+    fire_named_event_with_sequences(
+        "crossing",
+        &data,
+        &SequencedPrimitiveRegistry::new(),
+        &ReactionPrimitiveRegistry::new(),
+        &SystemReactionRegistry::new(),
+        &script_ctx,
+        None,
+    );
+    capture.assert_logged_once(log::Level::Warn, "has no player seat; skipping");
+    assert_eq!(
+        script_ctx
+            .slot_table
+            .borrow()
+            .get("currency.xp")
+            .and_then(|record| record.per_seat_value(Seat(4)).cloned()),
+        Some(postretro_entities::SlotValue::Number(0.0)),
+        "the released seat holds no written value"
+    );
+    assert!(script_ctx.system_commands.take().is_empty());
 }
 
 #[test]

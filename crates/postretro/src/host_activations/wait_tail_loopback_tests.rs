@@ -343,6 +343,7 @@ fn s36_client_reads_across_its_own_dropped_write() {
         session
             .scripting
             .system_reaction_ir_bindings
+            .borrow_mut()
             .rebuild(&ctx.data_registry.borrow(), &ctx);
     }
     let capture = LogCapture::start();
@@ -544,21 +545,41 @@ fn client_landing_drops_host_consequences_and_lands_machine_local_steps() {
             })
             .collect()
     };
+    // Body order: landed `setState` steps write the store at landing on
+    // every machine instead of queuing (scripting.md §12).
     assert_eq!(
         kinds(&h.host_commands),
         [
-            "setState tail.shared",
             "setGhostAudio",
             "loadLevel",
-            "setState tail.shared",
             "playSound y",
             "showDialog objective",
-            "setState tail.entry",
         ]
     );
     assert_eq!(
+        number(&h.host, "tail.shared"),
+        2.0,
+        "the landed body and its fired reaction wrote in order"
+    );
+    let entry = |app: &App| {
+        script_ctx(app)
+            .slot_table
+            .borrow()
+            .get("tail.entry")
+            .and_then(|record| record.value.clone())
+    };
+    assert_eq!(
+        entry(&h.host),
+        Some(postretro_entities::SlotValue::String(String::new()))
+    );
+    assert_eq!(
+        entry(&h.peers[0].app),
+        Some(postretro_entities::SlotValue::String(String::new())),
+        "the client lands the machine-local write"
+    );
+    assert_eq!(
         kinds(&h.peers[0].commands),
-        ["playSound y", "showDialog objective", "setState tail.entry"]
+        ["playSound y", "showDialog objective"]
     );
 }
 
@@ -1098,4 +1119,34 @@ fn host_stall_holds_the_client_reading_and_it_lands_with_the_host() {
     assert_eq!(plays(&h.peers[0].commands, "x"), 1);
     assert_eq!(pending(&h.peers[0].app), 0);
     assert_tail_quiet(&capture);
+}
+
+// E16 body order: a `levelLoad` body's store writes land at dispatch on every
+// machine, so a later step in the same body reads them, and an IR value meets
+// the bindings this install rebuilt before firing.
+#[test]
+fn level_load_ir_set_state_evaluates_at_dispatch_on_every_machine() {
+    let (_hook, _notes) = counted_notes(&fixture_world());
+    let capture = LogCapture::start();
+    let h = Harness::with_shared_reactions(
+        fixture_world(),
+        vec![body(
+            "levelLoad",
+            vec![
+                system_step("setState", json!({ "slot": "tail.shared", "value": 3 })),
+                system_step(
+                    "setState",
+                    json!({ "slot": "tail.local", "value": { "op": "input", "name": "tail.shared" } }),
+                ),
+            ],
+        )],
+    );
+    for app in std::iter::once(&h.host).chain(h.peers.iter().map(|peer| &peer.app)) {
+        assert_eq!(
+            number(app, "tail.local"),
+            3.0,
+            "the second step read the first step's write when the install's dispatch returned"
+        );
+    }
+    capture.assert_not_logged(log::Level::Warn, "was not bound at level install");
 }

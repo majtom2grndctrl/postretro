@@ -173,7 +173,7 @@ impl App {
             let script_ctx = session.scripting.script_ctx.clone();
             crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
                 &script_ctx,
-                &session.scripting.system_reaction_ir_bindings,
+                &session.scripting.system_reaction_ir_bindings.borrow(),
             );
         }
         self.rebuild_active_reaction_subscribers();

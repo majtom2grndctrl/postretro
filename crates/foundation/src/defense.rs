@@ -35,6 +35,18 @@ pub const DEFENSE_CAPACITY_SUFFIX: &str = ".capacity";
 /// Prefix of the per-entity layer IR inputs.
 pub const DEFENSE_INPUT_PREFIX: &str = "@defense.";
 
+/// Parse a per-entity layer input, `@defense.<layer>` or
+/// `@defense.<layer>.capacity`, into the layer name and whether it reads
+/// capacity. Layer names hold no `.`, so the suffix is unambiguous.
+pub fn defense_input(name: &str) -> Option<(&str, bool)> {
+    let rest = name.strip_prefix(DEFENSE_INPUT_PREFIX)?;
+    let (layer, capacity) = match rest.strip_suffix(DEFENSE_CAPACITY_SUFFIX) {
+        Some(layer) => (layer, true),
+        None => (rest, false),
+    };
+    (!layer.is_empty() && !layer.contains('.')).then_some((layer, capacity))
+}
+
 /// A layer or damage-type handle as it crosses from either SDK: exactly its
 /// `kind` and `name`. A bare string fails this parse; the other `kind`
 /// parses, and each surface then checks the variant it expects.

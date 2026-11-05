@@ -1682,3 +1682,20 @@ fn no_damaged_enemy_config_host_and_client_passes_keep_revive_markers() {
         assert!(peer.pool.has_overlay(MARKER, remote), "client at {time}");
     }
 }
+
+// Q3 (client): hide-at-full counts the pushed shield pair as the host does.
+#[test]
+fn client_overlay_hide_at_full_counts_shield_pair() {
+    use super::hidden_at_full;
+    assert!(hidden_at_full(true, 1.0, 1.0, true), "both full");
+    assert!(
+        !hidden_at_full(true, 1.0, 0.5, true),
+        "full health, half shield: shown"
+    );
+    assert!(!hidden_at_full(true, 0.5, 1.0, true));
+    assert!(
+        hidden_at_full(true, 1.0, 0.0, false),
+        "no pair counts as full"
+    );
+    assert!(!hidden_at_full(false, 1.0, 1.0, true), "hideAtFull off");
+}

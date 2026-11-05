@@ -281,6 +281,19 @@ fn refused_rows() -> Vec<(IrNode, &'static str)> {
             input("player.assistProgress", Some(HELPER)),
             "depends on this pair evaluation",
         ),
+        // Q6: a pair expression cannot read a defense layer, by a side or plain.
+        (
+            input("player.defense.shield", Some(HELPER)),
+            "cannot read a defense layer",
+        ),
+        (
+            input("player.defense.shield.capacity", Some(TARGET)),
+            "cannot read a defense layer",
+        ),
+        (
+            input("player.defense.shield", None),
+            "cannot read a defense layer",
+        ),
         (
             input("player.assistReceivedProgress", Some(TARGET)),
             "depends on this pair evaluation",

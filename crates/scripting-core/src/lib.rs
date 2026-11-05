@@ -41,6 +41,8 @@ pub mod ir {
     mod ui_predicate_parity_tests;
 }
 
+#[cfg(test)]
+mod defense_read_tests;
 pub mod defense_vocabulary;
 
 #[path = "ir/scopes.rs"]

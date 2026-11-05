@@ -37,6 +37,8 @@ pub use damaged_enemy_overlay::{
 mod assistable_overlay;
 mod damaged_enemy_overlay;
 #[cfg(test)]
+mod defense_read_tests;
+#[cfg(test)]
 mod grant_layer_tests;
 mod source_life_state;
 #[cfg(test)]
@@ -298,8 +300,20 @@ impl ImpactPolicyRuntime {
                     continue;
                 }
             };
-            match bind_damaged_enemies_overlay(template, world_anchor, overlay.max_visible, source)
-            {
+            let layers = self
+                .ctx
+                .registry
+                .borrow()
+                .defense_vocabulary()
+                .layers
+                .clone();
+            match bind_damaged_enemies_overlay(
+                template,
+                world_anchor,
+                overlay.max_visible,
+                source,
+                layers,
+            ) {
                 Ok(binding) => self.presentation_overlays.push(binding),
                 Err(error) => {
                     log::warn!("[Impact] presentation overlay was skipped during bind: {error}")

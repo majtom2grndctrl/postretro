@@ -29,6 +29,10 @@ pub enum EntityInputHandle {
     /// `@impact.type.<name>`: whether this hit dealt the registered type at
     /// this index.
     ImpactType(u16),
+    /// `impact.target.defense(h)`: a target layer read, by bound index.
+    Defense(usize),
+    /// `h.current.byPlayer(impact.source)`: the source player's layer read.
+    OwnedDefense(usize),
 }
 
 /// A resolved output in an [`EntityScope`].
@@ -73,6 +77,11 @@ pub struct EntityScope {
     owner_life_state: Option<u8>,
     /// The damage type this fire's hit dealt, refreshed each fire.
     impact_type: Option<u16>,
+    /// The target's layer reads, snapshotted with its state.
+    target_defense: crate::components::defense_layers::DefenseReads,
+    /// The source player's layer reads; none for a source that is not a
+    /// player pawn.
+    owner_defense: crate::components::defense_layers::DefenseReads,
     /// Engine owner reads already warned about, one bit per
     /// `PlayerSlot::index()`: an absent value warns once per scope, not once
     /// per hit.
@@ -113,6 +122,8 @@ impl EntityScope {
             owner_engine: [None; PlayerSlot::ALL.len()],
             owner_life_state: None,
             impact_type: None,
+            target_defense: Default::default(),
+            owner_defense: Default::default(),
             warned_owned_engine: std::cell::Cell::new(0),
             warned_owned_store: RefCell::new(Vec::new()),
         }
@@ -174,6 +185,8 @@ impl EntityScope {
         drop(snapshot);
         drop(names);
 
+        self.target_defense.seed(registry, Some(target));
+
         let handles = self.store_handles.borrow();
         let mut store_snapshot = self.store_snapshot.borrow_mut();
         for (index, handle) in handles.iter().enumerate() {
@@ -192,6 +205,7 @@ impl EntityScope {
         let player_source = source.filter(|source| is_player_pawn(registry, *source));
         self.owner_life_state =
             player_source.and_then(|source| player_life_state(registry, source));
+        self.owner_defense.seed(registry, player_source);
         for slot in PlayerSlot::ALL {
             self.owner_engine[slot.index()] = player_source.and_then(|source| {
                 StoreScope::project_slot_value(
@@ -347,6 +361,18 @@ impl BindingScope for EntityScope {
             });
         }
 
+        // A layer no `defineMod` registers fails the bind, so the policy
+        // holding it drops at install.
+        if let Some((layer, capacity)) = postretro_foundation::defense::defense_input(name) {
+            if !self.declares_defense_layer(layer) {
+                return None;
+            }
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::Defense(self.target_defense.bind(layer, capacity)),
+                ir_type: IrType::Number,
+            });
+        }
+
         self.dispatch.resolve_input(name).and_then(|resolved| {
             let handle = match resolved.handle {
                 DispatchInputHandle::Dispatch(index) => EntityInputHandle::Dispatch(index),
@@ -383,6 +409,15 @@ impl BindingScope for EntityScope {
             return Some(ResolvedInput {
                 handle: EntityInputHandle::OwnedEngine(slot),
                 ir_type: slot.ir_type(),
+            });
+        }
+        if let Some((layer, capacity)) = crate::player_slots::defense_slot(name) {
+            if !self.declares_defense_layer(layer) {
+                return None;
+            }
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::OwnedDefense(self.owner_defense.bind(layer, capacity)),
+                ir_type: IrType::Number,
             });
         }
         self.dispatch
@@ -435,6 +470,13 @@ impl BindingScope for EntityScope {
                 IrValue::Bool(self.owner_life_state == Some(*id))
             }
             EntityInputHandle::ImpactType(index) => IrValue::Bool(self.impact_type == Some(*index)),
+            // An entity without that layer reads 0, as an unset state does.
+            EntityInputHandle::Defense(index) => {
+                IrValue::Number(self.target_defense.get(*index).unwrap_or(0.0))
+            }
+            EntityInputHandle::OwnedDefense(index) => {
+                IrValue::Number(self.owner_defense.get(*index).unwrap_or(0.0))
+            }
         }
     }
 

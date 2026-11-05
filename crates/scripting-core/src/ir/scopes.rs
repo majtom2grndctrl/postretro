@@ -77,6 +77,17 @@ pub struct StoreScope {
 }
 
 impl StoreScope {
+    /// Whether the committed vocabulary declares layer kind `name`: a layer
+    /// read of any other name fails its bind.
+    pub fn declares_defense_layer(&self, name: &str) -> bool {
+        self.ctx
+            .registry
+            .borrow()
+            .defense_vocabulary()
+            .layer_index(name)
+            .is_some()
+    }
+
     /// An engine-policy scope: writes bypass the readonly flag through the
     /// validated engine path.
     pub fn engine(ctx: ScriptCtx) -> Self {
@@ -191,6 +202,8 @@ pub enum EventPlayerHandle {
     Engine(PlayerSlot),
     /// A mod per-owner slot, read for the fire's seat.
     Store(StoreHandle),
+    /// A layer read, `player.defense.<name>[.capacity]`, by bound index.
+    Defense(usize),
 }
 
 /// The event player a player-event fire seeds: their engine per-player values,
@@ -200,6 +213,8 @@ pub enum EventPlayerHandle {
 struct EventPlayerSnapshot {
     seat: Option<Seat>,
     engine: [Option<IrValue>; PlayerSlot::ALL.len()],
+    /// The event player's layer reads.
+    defense: crate::components::defense_layers::DefenseReads,
     /// Set when a read found no value; the caller skips the write.
     missing: std::cell::Cell<bool>,
 }
@@ -269,6 +284,7 @@ impl DispatchScope {
                 )
             });
         }
+        snapshot.defense.seed(registry, pawn);
         snapshot.missing.set(false);
     }
 
@@ -288,6 +304,12 @@ impl DispatchScope {
                 self.event_player
                     .as_ref()
                     .and_then(|snapshot| snapshot.engine[slot.index()]),
+            ),
+            EventPlayerHandle::Defense(index) => (
+                IrType::Number,
+                self.event_player
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.defense.get(*index).map(IrValue::Number)),
             ),
             EventPlayerHandle::Store(handle) => {
                 let seat = self
@@ -401,6 +423,18 @@ impl BindingScope for DispatchScope {
             return Some(ResolvedInput {
                 handle: DispatchInputHandle::EventPlayer(EventPlayerHandle::Engine(slot)),
                 ir_type: slot.ir_type(),
+            });
+        }
+        if let Some((layer, capacity)) = crate::player_slots::defense_slot(name) {
+            if !self.store.declares_defense_layer(layer) {
+                return None;
+            }
+            let snapshot = self.event_player.as_ref()?;
+            return Some(ResolvedInput {
+                handle: DispatchInputHandle::EventPlayer(EventPlayerHandle::Defense(
+                    snapshot.defense.bind(layer, capacity),
+                )),
+                ir_type: IrType::Number,
             });
         }
         self.store

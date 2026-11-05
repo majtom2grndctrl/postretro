@@ -383,6 +383,8 @@ export interface TargetHandle {
   /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
   adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   state(name: string): NumberRef;
+  /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0. */
+  defense(layer: import("postretro").DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
   setState(name: string, value: NumberValue): Effect;
 }
 
@@ -510,6 +512,17 @@ function sentimentImpactEffect(
   } as ImpactEffectWire as unknown as Effect;
 }
 
+/** The `@defense.` input a layer handle reads; a bad reference (a bare string,
+ * a damage-type handle) names no layer, so its bind fails at install. */
+function defenseInput(layer: unknown, capacity: boolean): string {
+  const handle = layer as { kind?: unknown; name?: unknown } | null;
+  const name =
+    handle !== null && typeof handle === "object" && handle.kind === "defenseLayer" && typeof handle.name === "string"
+      ? handle.name
+      : "@invalid";
+  return `@defense.${name}${capacity ? ".capacity" : ""}`;
+}
+
 const IMPACT_TARGET: TargetHandle = Object.freeze({
   healthBefore: numberRef({ op: "input", name: "@impact.healthBefore" }),
   healthAfter: numberRef({ op: "input", name: "@impact.healthAfter" }),
@@ -530,6 +543,12 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
   },
   state(name) {
     return numberRef({ op: "input", name: `@state.${name}` });
+  },
+  defense(layer) {
+    return Object.freeze({
+      current: numberRef({ op: "input", name: defenseInput(layer, false) }),
+      capacity: numberRef({ op: "input", name: defenseInput(layer, true) }),
+    });
   },
   setState(name, value) {
     return impactEffect("setState", { name, value: numberNode(value) });

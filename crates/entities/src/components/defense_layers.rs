@@ -279,6 +279,59 @@ pub fn mark_layers_for_join_seed(registry: &mut EntityRegistry, pawn: EntityId) 
     let _ = registry.set_component(pawn, component);
 }
 
+/// The layer reads one IR scope has bound — `(layer, reads capacity)` — and
+/// each one's value for the entity last seeded. Binding grows the lists;
+/// seeding refills the values in place, so a per-fire seed allocates
+/// nothing. A read of a layer the entity lacks is `None`.
+#[derive(Debug, Default)]
+pub struct DefenseReads {
+    reads: std::cell::RefCell<Vec<(String, bool)>>,
+    values: std::cell::RefCell<Vec<Option<f32>>>,
+}
+
+impl DefenseReads {
+    /// Intern one read, returning its stable index.
+    pub fn bind(&self, layer: &str, capacity: bool) -> usize {
+        let mut reads = self.reads.borrow_mut();
+        if let Some(index) = reads
+            .iter()
+            .position(|(bound, cap)| bound == layer && *cap == capacity)
+        {
+            return index;
+        }
+        reads.push((layer.to_string(), capacity));
+        self.values.borrow_mut().push(None);
+        reads.len() - 1
+    }
+
+    /// Snapshot every bound read for `entity` (none: every read absent).
+    pub fn seed(&self, registry: &EntityRegistry, entity: Option<EntityId>) {
+        let component = entity.and_then(|entity| {
+            registry
+                .get_component::<DefenseLayersComponent>(entity)
+                .ok()
+        });
+        let reads = self.reads.borrow();
+        let mut values = self.values.borrow_mut();
+        for (value, (layer, capacity)) in values.iter_mut().zip(reads.iter()) {
+            *value = component
+                .and_then(|component| component.layer(layer))
+                .map(|layer| {
+                    if *capacity {
+                        layer.capacity
+                    } else {
+                        layer.value
+                    }
+                });
+        }
+    }
+
+    /// The seeded value of read `index`, `None` when the entity lacks it.
+    pub fn get(&self, index: usize) -> Option<f32> {
+        self.values.borrow().get(index).copied().flatten()
+    }
+}
+
 /// The host's evaluator of expression layer parameters, installed on the
 /// registry by the simulation. A connected client installs none, so it
 /// evaluates nothing.

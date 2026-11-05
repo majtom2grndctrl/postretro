@@ -480,6 +480,7 @@ export type TargetHandle = {
   --- values degrade the relationship; positive values strengthen its bond.
   adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
   state: (self: TargetHandle, name: string) -> NumberRef,
+  defense: (self: TargetHandle, layer: DefenseLayer) -> { current: NumberRef, capacity: NumberRef },
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
 
@@ -695,6 +696,16 @@ local function sentimentImpactEffect(
   end
 end
 
+-- The `@defense.` input a layer handle reads; a bad reference (a bare string,
+-- a damage-type handle) names no layer, so its bind fails at install.
+local function defenseInput(layer: any, capacity: boolean): string
+  local name = "@invalid"
+  if type(layer) == "table" and layer.kind == "defenseLayer" and type(layer.name) == "string" then
+    name = layer.name
+  end
+  return "@defense." .. name .. (if capacity then ".capacity" else "")
+end
+
 IMPACT_TARGET = table.freeze({
   healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
   healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
@@ -717,6 +728,12 @@ IMPACT_TARGET = table.freeze({
   end,
   state = function(_self: TargetHandle, name: string): NumberRef
     return numberRef({ op = "input", name = "@state." .. name })
+  end,
+  defense = function(_self: TargetHandle, layer: DefenseLayer)
+    return table.freeze({
+      current = numberRef({ op = "input", name = defenseInput(layer, false) }),
+      capacity = numberRef({ op = "input", name = defenseInput(layer, true) }),
+    })
   end,
   setState = function(_self: TargetHandle, name: string, value: NumberValue): Effect
     return impactEffect("setState", { name = name, value = numberNode(value) })

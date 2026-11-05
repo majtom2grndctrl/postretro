@@ -762,6 +762,9 @@ export type TargetHandle = {
   --- values degrade the relationship; positive values strengthen its bond.
   adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
   state: (self: TargetHandle, name: string) -> NumberRef,
+  --- The impact target's own layer, read before this fire's effects. A target
+  --- without that layer reads 0; a bad reference drops the policy at install.
+  defense: (self: TargetHandle, layer: DefenseLayer) -> { current: NumberRef, capacity: NumberRef },
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
 export type SourceHandle = {
@@ -822,6 +825,8 @@ export type PresentationTemplateProps = {
 }
 export type OverlayEntity = {
   state: (self: OverlayEntity, name: string) -> RuntimeValue,
+  --- The sampled entity's own layer; without it, 0 / 0 and no shield pair.
+  defense: (self: OverlayEntity, layer: DefenseLayer) -> { current: RuntimeValue, capacity: RuntimeValue },
 }
 export type DamagedEnemiesProps = {
   lingerMs: number,
@@ -1979,6 +1984,9 @@ declare candidate: CandidateInputs
 
 --- Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them.
 declare function state(name: string): RuntimeGuardNode
+
+--- Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current:le(0)`. An entity without the layer reads `0`; a bad reference fails load.
+declare function defense(layer: DefenseLayer): { current: RuntimeGuardNode, capacity: RuntimeGuardNode }
 
 -- UI navigation intents — the closed gamepad-first nav vocabulary the input
 -- stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that UI

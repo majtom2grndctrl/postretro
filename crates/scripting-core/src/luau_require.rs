@@ -465,6 +465,7 @@ mod tests {
                 "assist",
                 "brain",
                 "candidate",
+                "defense",
                 "state",
                 "emitter",
                 "smokeEmitter",

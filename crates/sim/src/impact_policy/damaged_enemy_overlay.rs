@@ -65,6 +65,14 @@ pub(super) struct BoundOverlayShield {
 pub(super) struct OverlayStateScope {
     names: RefCell<Vec<String>>,
     values: RefCell<Vec<f32>>,
+    /// The layer kinds the committed vocabulary declares: `entity.defense(h)`
+    /// of any other name fails its bind.
+    layers: Vec<String>,
+    /// `entity.defense(h)` reads of the sampled entity's layers.
+    defense: postretro_entities::components::defense_layers::DefenseReads,
+    /// The undeclared layer a failed bind named, so install can skip only the
+    /// shield pair that holds it.
+    unknown_layer: RefCell<Option<String>>,
 }
 
 impl OverlayStateScope {
@@ -77,14 +85,32 @@ impl OverlayStateScope {
         for (index, name) in names.iter().enumerate() {
             values[index] = state.map_or(0.0, |state| state.get(name));
         }
+        self.defense.seed(registry, Some(entity));
     }
 }
 
+/// An overlay input handle: an `@state.*` field or an `entity.defense(h)` read.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum OverlayInput {
+    State(usize),
+    Defense(usize),
+}
+
 impl BindingScope for OverlayStateScope {
-    type InputHandle = usize;
+    type InputHandle = OverlayInput;
     type OutputHandle = ();
 
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        if let Some((layer, capacity)) = postretro_foundation::defense::defense_input(name) {
+            if !self.layers.iter().any(|declared| declared == layer) {
+                *self.unknown_layer.borrow_mut() = Some(layer.to_string());
+                return None;
+            }
+            return Some(ResolvedInput {
+                handle: OverlayInput::Defense(self.defense.bind(layer, capacity)),
+                ir_type: IrType::Number,
+            });
+        }
         let state_name = name.strip_prefix("@state.")?;
         if state_name.is_empty() {
             return None;
@@ -100,7 +126,7 @@ impl BindingScope for OverlayStateScope {
                 index
             });
         Some(ResolvedInput {
-            handle: index,
+            handle: OverlayInput::State(index),
             ir_type: IrType::Number,
         })
     }
@@ -110,7 +136,15 @@ impl BindingScope for OverlayStateScope {
     }
 
     fn read(&self, handle: &Self::InputHandle) -> IrValue {
-        IrValue::Number(self.values.borrow().get(*handle).copied().unwrap_or(0.0))
+        match handle {
+            OverlayInput::State(index) => {
+                IrValue::Number(self.values.borrow().get(*index).copied().unwrap_or(0.0))
+            }
+            // An entity without that layer reads 0 / 0: no shield pair.
+            OverlayInput::Defense(index) => {
+                IrValue::Number(self.defense.get(*index).unwrap_or(0.0))
+            }
+        }
     }
 
     fn write(&mut self, _handle: &Self::OutputHandle, _value: IrValue) {}
@@ -264,7 +298,8 @@ impl ImpactPolicyRuntime {
                         binding.hide_at_full
                             && registry
                                 .get_component::<postretro_entities::components::health::HealthComponent>(entity)
-                                .is_ok_and(|health| health.current == health.max),
+                                .is_ok_and(|health| health.current == health.max)
+                            && shield_pair_full(fact),
                     );
                 } else {
                     pool.evict_overlay(
@@ -276,6 +311,12 @@ impl ImpactPolicyRuntime {
         }
         frame
     }
+}
+
+/// Hide-at-full counts the overlay's shield pair: full when there is none
+/// (0 / 0 included) or its value has reached its max.
+pub(super) fn shield_pair_full(fact: &DamagedEnemyOverlayFact) -> bool {
+    !fact.has_shield || fact.shield_fraction >= 1.0
 }
 
 pub(super) fn sample_overlay_fact(
@@ -317,18 +358,31 @@ pub(super) fn bind_damaged_enemies_overlay(
     world_anchor: PresentationWorldAnchor,
     max_visible: usize,
     source: DamagedEnemiesOverlay,
+    layers: Vec<String>,
 ) -> Result<BoundPresentationOverlay, String> {
-    let scope = OverlayStateScope::default();
+    let scope = OverlayStateScope {
+        layers,
+        ..Default::default()
+    };
     let linger_seconds = f64::from(source.linger_ms) / 1_000.0;
     let hide_at_full = source.hide_at_full;
-    let shield = source
-        .shield
-        .map(|shield| {
-            let value = bind_overlay_number(&shield.value, &scope, "shield.value")?;
-            let max = bind_overlay_number(&shield.max, &scope, "shield.max")?;
-            Ok::<BoundOverlayShield, String>(BoundOverlayShield { value, max })
-        })
-        .transpose()?;
+    let shield = match source.shield.map(|shield| {
+        let value = bind_overlay_number(&shield.value, &scope, "shield.value")?;
+        let max = bind_overlay_number(&shield.max, &scope, "shield.max")?;
+        Ok::<BoundOverlayShield, String>(BoundOverlayShield { value, max })
+    }) {
+        None => None,
+        Some(Ok(shield)) => Some(shield),
+        // A bad layer reference skips only the shield pair.
+        Some(Err(error)) if scope.unknown_layer.borrow().is_some() => {
+            log::warn!(
+                "[Impact] damaged-enemies overlay shield pair skipped: `{}` names no defense layer `defineMod` registers ({error})",
+                scope.unknown_layer.borrow().as_deref().unwrap_or_default()
+            );
+            None
+        }
+        Some(Err(error)) => return Err(error),
+    };
     Ok(BoundPresentationOverlay {
         template,
         world_anchor,

@@ -93,4 +93,24 @@ function BrainSdk.state(name: string): RuntimeGuardNode
   return input("@state." .. name)
 end
 
+-- The `@defense.` input a layer handle reads; a bad reference (a bare string,
+-- a damage-type handle) names no layer, so its bind fails at install.
+local function defenseInput(layer: any, capacity: boolean): string
+  local name = "@invalid"
+  if type(layer) == "table" and layer.kind == "defenseLayer" and type(layer.name) == "string" then
+    name = layer.name
+  end
+  return "@defense." .. name .. (if capacity then ".capacity" else "")
+end
+
+--- Read the brain entity's own defense layer as guard inputs, as `state(name)`
+--- reads its own state: `defense(armor).current:le(0)`. An entity without the
+--- layer reads `0`.
+function BrainSdk.defense(layer: any): { current: RuntimeGuardNode, capacity: RuntimeGuardNode }
+  return table.freeze({
+    current = input(defenseInput(layer, false)),
+    capacity = input(defenseInput(layer, true)),
+  })
+end
+
 return BrainSdk

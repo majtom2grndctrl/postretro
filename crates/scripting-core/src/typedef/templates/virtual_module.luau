@@ -220,6 +220,8 @@ export type PostretroModule = {
   candidate: CandidateInputs,
   --- Build a `@state.<name>` guard input leaf for a per-entity state field.
   state: typeof(state),
+  --- Build `@defense.<name>` guard input leaves for the brain's own layer.
+  defense: typeof(defense),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

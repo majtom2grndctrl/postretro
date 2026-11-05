@@ -524,6 +524,8 @@
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
     state(name: string): NumberRef;
+    /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0; a bad reference drops the policy at install. */
+    defense(layer: DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
     setState(name: string, value: NumberValue): Effect;
   }
   export interface SourceHandle {
@@ -1350,6 +1352,9 @@
 
   /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
   export function state(name: string): RuntimeGuardNode;
+
+  /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
+  export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

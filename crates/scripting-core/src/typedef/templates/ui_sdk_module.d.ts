@@ -132,7 +132,11 @@ declare module "postretro/ui" {
     spawnScatter: { radius: number };
     worldAnchor?: { socket?: string; offsetY: number };
   }>;
-  export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
+  /** The sampled entity: its own state, and its own layer as `current` / `capacity` (an entity without the layer reads 0 / 0; a bad reference skips the shield pair at install). */
+  export type OverlayEntity = Readonly<{
+    state(name: string): RuntimeValue;
+    defense(layer: import("postretro").DefenseLayer): Readonly<{ current: RuntimeValue; capacity: RuntimeValue }>;
+  }>;
   export type DamagedEnemiesProps = {
     lingerMs: number;
     hideAtFull: boolean;

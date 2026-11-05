@@ -88,6 +88,8 @@ pub(crate) enum BrainInputHandle {
     Fixed(usize),
     /// Index into the interned `@state.*` snapshot.
     State(usize),
+    /// Index into the bound `@defense.*` reads of the brain's own layers.
+    Defense(usize),
 }
 
 /// Values whose meaning changes with the activity level currently being
@@ -147,6 +149,8 @@ pub(crate) struct BrainScope {
     /// The per-enemy snapshot of those fields. Grown only at bind, written by
     /// index at refresh — nothing here allocates once binding has settled.
     state_values: RefCell<Vec<f32>>,
+    /// The brain entity's own layer reads, refreshed in place like state.
+    defense: postretro_entities::components::defense_layers::DefenseReads,
 }
 
 impl BrainScope {
@@ -165,6 +169,7 @@ impl BrainScope {
             fixed,
             state_names: RefCell::new(Vec::new()),
             state_values: RefCell::new(Vec::new()),
+            defense: Default::default(),
         }
     }
 
@@ -219,6 +224,7 @@ impl BrainScope {
             IrValue::Bool(facts.damage_source_known),
         ];
 
+        self.defense.seed(registry, Some(entity));
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
         let names = self.state_names.borrow();
         let mut values = self.state_values.borrow_mut();
@@ -268,6 +274,10 @@ impl BindingScope for BrainScope {
                 handle: BrainInputHandle::State(self.intern_state_field(field)),
                 ir_type: IrType::Number,
             }),
+            BrainInputRef::Defense { layer, capacity } => Some(ResolvedInput {
+                handle: BrainInputHandle::Defense(self.defense.bind(layer, capacity)),
+                ir_type: IrType::Number,
+            }),
         }
     }
 
@@ -283,6 +293,10 @@ impl BindingScope for BrainScope {
         match handle {
             BrainInputHandle::Fixed(index) => self.fixed[*index],
             BrainInputHandle::State(index) => IrValue::Number(self.state_values.borrow()[*index]),
+            // An entity without that layer reads 0, as an unset state does.
+            BrainInputHandle::Defense(index) => {
+                IrValue::Number(self.defense.get(*index).unwrap_or(0.0))
+            }
         }
     }
 
@@ -523,6 +537,63 @@ mod tests {
                  — add one alongside the new `refresh` slot"
             ),
         }
+    }
+
+    // Q2: a guard reads the brain entity's own layer as `state(name)` reads
+    // its own state, and flips when that layer breaks.
+    #[test]
+    fn brain_guard_transitions_when_own_armor_breaks() {
+        use postretro_entities::components::defense_layers::{
+            DefenseLayer, DefenseLayersComponent,
+        };
+        let (mut registry, enemy, target) = seeded_registry();
+        let armor = |value: f32| DefenseLayersComponent {
+            descriptor: None,
+            layers: vec![DefenseLayer {
+                name: "armor".to_string(),
+                value,
+                capacity: 50.0,
+                recharge_delay_ms: 0.0,
+                recharge_rate: 0.0,
+                resist: Vec::new(),
+                refill: Default::default(),
+            }],
+            health_resist: Vec::new(),
+            last_hit_tick: None,
+        };
+        registry.set_component(enemy, armor(20.0)).unwrap();
+        let mut scope = BrainScope::for_validation();
+        let guard = IrNode::Le {
+            a: Box::new(input("@defense.armor")),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(0.0),
+            }),
+        };
+        bind_brain_guard(&guard).expect("guard passes declaration-time validation");
+        let program = bind(
+            &BakedIr {
+                version: CURRENT_IR_VERSION,
+                output: None,
+                root: guard,
+            },
+            &scope,
+        )
+        .expect("guard binds at runtime");
+        let capacity = bind_read("@defense.armor.capacity", &scope);
+
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(eval_value(&program, &scope), IrValue::Bool(false));
+        assert_number(eval_value(&capacity, &scope), 50.0);
+        registry.set_component(enemy, armor(0.0)).unwrap();
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(
+            eval_value(&program, &scope),
+            IrValue::Bool(true),
+            "broken armor"
+        );
+        // The other enemy carries no armor: it reads 0, as unset state does.
+        scope.refresh(&registry, target, engaged_facts(enemy));
+        assert_number(eval_value(&capacity, &scope), 0.0);
     }
 
     #[test]

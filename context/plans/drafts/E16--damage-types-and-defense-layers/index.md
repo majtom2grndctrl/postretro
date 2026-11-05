@@ -1,6 +1,6 @@
 # E16--damage-types-and-defense-layers
 
-Brief · resumable · Epic 16 · reads: `context/lib/scripting.md` §1, §10.4, §10.5, §10.8, §11, §12 · `context/lib/entity_model.md` §1, §Components · `context/lib/networking.md` §What gates, and what replicates instead, §Version gates · read at 44881f79
+Brief · resumable · Epic 16 · reads: `context/lib/scripting.md` §1, §2, §5, §10.4, §10.5, §10.8, §11, §12 · `context/lib/entity_model.md` §1, §Components · `context/lib/networking.md` §What gates, and what replicates instead, §Version gates · read at 44881f79
 
 ## Problem
 The owner wants to prototype Borderlands-style combat: shields that soak damage and recharge after a delay, armor that resists some damage types and is weak to others, and gear or leveling that changes how a defense performs. None of it can be authored today:
@@ -8,7 +8,7 @@ The owner wants to prototype Borderlands-style combat: shields that soak damage 
 - **Hits carry no damage type.** The damage payload holds an amount and an impulse, nothing else.
 
 When this is done, a mod:
-- **Declares the vocabulary.** It names its damage types and defense layer kinds.
+- **Declares the vocabulary.** It names its damage types and defense layer kinds by the keys it registers them under.
 - **Stacks layers on descriptors.** Each descriptor stacks layers that drain before health on every damage source, scaled per damage type.
 - **Authors recharge.** Each layer's capacity and recharge are literals or expressions over the mod's state.
 
@@ -16,27 +16,29 @@ HUDs, the enemy overlay, impact policies and enemy brains can all read the resul
 
 ## Decisions
 - **Defense layers are an engine-owned noun with author-named instances:** the engine owns each layer's current value and its drain and recharge system, and authors name layer kinds mod-wide and attach them to descriptors. This follows `entity_model.md` §1 (shields are an engine noun) and `scripting.md` §11 ("the engine ships the component and its per-tick system; the author ships the policy"), and deliberately diverges from the roadmap's per-entity `@state` home (`research.md` §Layer home). Author `@state` shields keep working where they're read today (the overlay), and the engine never drains them.
-- **Mod-wide vocabularies follow factions:** `defineDefenseLayer(name)` and `defineDamageType(name, { against })` handles go in `defineMod({ defenseLayers, damageTypes })`, and components reference both by name. Load fails, naming the key path, on a duplicate declared name, a layer declared as `health`, a layer kind listed twice in one descriptor's `layers`, or an undeclared layer or type in a descriptor or an IR expression (impact policy, brain guard, overlay, layer parameter); a reaction naming one (`grantLayer`, `.damage`) is dropped at install with a log naming it, following the existing install-drop precedent. The `health` block now rejects unknown keys; today it silently ignores them.
+- **Vocabulary names come from `defineMod` keys:** `defineDefenseLayer()` and `defineDamageType(matrix, options?)` take no name; `defineMod({ defenseLayers, damageTypes })` names each handle by its key and resolves every handle reference by object identity before the manifest crosses the FFI, as it resolves store handles and turns store schema keys into slot names (`scripting.md` §5). Descriptors, reactions and expressions hold handles, never strings; matrix and `resist` keys are plain names equal to the keys. This sets the key-derived naming pattern; factions keep strings for now (`research.md` §Key-derived names).
+- **Load fails, naming the key path,** on a handle in a descriptor, reaction or expression that is not registered in `defineMod`, one handle registered under two keys, an entry that is not a handle of its kind, a layer registered under the key `health`, a matrix key naming neither a registered layer nor `health`, a `resist` key naming no registered type, or a layer kind listed twice in one descriptor's `layers`. The `health` block now rejects unknown keys; today it silently ignores them.
 - **Layers live inside `health`, in drain order.** Each entry is `{ layer, capacity, rechargeDelayMs?, rechargeRate? }`; omitted, the delay is 3000 and the rate 0, and rate 0 never recharges, which is armor. Literal ranges are capacity [0, 1e6], delay [0, 60000] ms and rate [0, 1e6] points/s, and a literal outside its range rejects load.
 - **A layer parameter is a literal or a Number expression, so it changes by derivation, not by writes.** This follows `assistable.radius` / `holdMs` (`plans/done/E18--player-revive-assist`): leveling and gear raise a store slot the expression reads, so persistence and co-op stay single-source and no write verb exists. The scope reads global store values, the entity's own `@state.*`, and, on the player entity only, its seat's per-owner store slots, as plain reads; a per-owner read on any other descriptor rejects load, and a per-player engine-slot read rejects load on every descriptor.
 - **Parameters are host-evaluated, and a store change shows by the next tick.** Results clamp into the literal ranges. Lowering capacity clamps the current value down; raising it never fills the layer on its own.
 - **An expression fault, a non-finite result included, keeps that entity's last good value.** This sets a new precedent: assist falls back to 0, and this deliberately diverges because falling to 0 would clamp a live layer to zero. Before any good value, a faulted parameter uses that field's omitted default, or 0 for capacity; the warning fires once per descriptor and field, and hot reload re-arms it.
 - **Authors refill layers with an additive grant that matches its siblings exactly:** `grantLayer(layer, amount?)` joins `grantHealth` and `grantAmmo` (`scripting.md` §10.8) through the one grant chokepoint, with a literal finite amount on group and subject tokens and a Number expression on `impact.source`; an omitted amount fills to capacity, a negative amount warns and does nothing, and a recipient without that layer warns and is skipped. A grant evaluates the layer's capacity when it applies, so an impact policy's grant sees that policy's earlier writes, and that evaluation holds from then on, for later hits and as the entity's last good value: the value clamps to it, then the grant adds.
 - **A reaction body's store writes, grants and damage land in body order on every source.** This changes engine behavior (`scripting.md` §10.4): on a reaction fired by address (crossings, `levelLoad`, `fire` targets), the host applies store writes (`addSlot`, `setState`) at dispatch, as `grantHealth` and `.damage` do, not at the frame-end drain. Authors read a body top to bottom, so an earlier step is in force for every later one (`research.md` §Body order).
-- **A mod-wide matrix plus per-descriptor resistances decide how much a typed hit drains:** `defineDamageType(name, { against: { <layer kind> | health: m } })` sets how much one raw point of that type takes from each pool, with a missing entry at 1, and `health: { resist: { <type>: m } }` multiplies every pool for that type on that entity; multipliers fall in [0, 64]. Untyped damage is ×1 everywhere, so a mod without types or layers behaves as it does today, except that hide-at-full also counts an overlay's shield pair. Policies read a Bool per declared type, and type identity never enters the IR as a value (`research.md` §Commitments touched).
-- **Drain order and spillover are engine rules in the damage chokepoint, for every producer (owner: every source drains, Borderlands lean).** The incoming amount, after hit zones as today, meets each layer in order: a layer above zero takes `raw × m`, and when it empties only the raw remainder it could not absorb moves on, so a shock bonus against shields never carries over to flesh. A multiplier of 0 bypasses a layer without touching it, a zero-valued layer is skipped, health takes the remainder × its multiplier, and the death latch, the sweep and `target_was_live` keep reading health only.
+- **A mod-wide matrix plus per-descriptor resistances decide how much a typed hit drains:** `defineDamageType({ <layer> | health: m })` sets how much one raw point of that type takes from each pool, where m is a multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing entry is ×1, and `health: "bypass"` rejects load. `health: { resist: { <type>: m } }` multiplies every pool for that type on that entity, m in [0, 64]. Untyped damage is ×1 everywhere, so a mod without types or layers behaves as it does today, except that hide-at-full also counts an overlay's shield pair. Policies read a Bool per registered type, and type identity never enters the IR as a value (`research.md` §Commitments touched).
+- **Drain order and spillover are engine rules in the damage chokepoint, for every producer (owner: every source drains, Borderlands lean).** The incoming amount, after hit zones as today, meets each layer in order: a layer above zero takes `raw × m`, and when it empties only the raw remainder it could not absorb moves on, so a shock bonus against shields never carries over to flesh, and a layer at ×0 stops the whole hit while above zero, draining nothing. `"bypass"` passes a layer untouched, a zero-valued layer is skipped whatever its multiplier, health takes the remainder × its multiplier, and the death latch, the sweep and `target_was_live` keep reading health only.
 - **Spillover, recharge shape and no-fill-on-raise are engine taste points.** `scripting.md` §1 says the engine owns no game's taste and §11 places recharge curves in author policy; these defaults diverge because each ships a Borderlands-correct rule a novice can use untouched. Each grows along a named axis whose extensions default to today's rule: spillover and recharge shape along the authored-policy axes in Non-goals, fill on raise through `grantLayer`.
-- **Every producer carries a type.** Weapons carry a weapon-level `damageType` (hitscan, projectiles, splash, NPC ranged attacks and traps), NPC melee attacks carry `attacks.<name>.damageType` (beside `weapon` it rejects load, as inline contact stats do), movers carry the FGD KVP `crush_damage_type`, and the script verb `.damage(n, { type })` takes the damage-type handle. An unknown name in FGD warns once at level load and applies untyped, because level content is not mod vocabulary.
-- **Recharge is an engine per-tick host step at tick start, so every hit in tick N lands after that tick's recharge.** Any hit with a positive incoming amount, wherever it lands, restarts every one of the entity's layer delays, even a hit fully absorbed or bypassed. The last-hit stamp is live state: time spent latched counts toward the delay and hits on a latched entity still restamp. Only a hit sets the stamp; spawn, respawn, carry and grants never touch it, so a layer below capacity with no hit since arrival recharges from its first tick.
+- **Every producer carries a type.** Weapons carry a weapon-level `damageType` (hitscan, projectiles, splash, NPC ranged attacks and traps), NPC melee attacks carry `attacks.<name>.damageType` (beside `weapon` it rejects load, as inline contact stats do), movers carry the FGD KVP `crush_damage_type`, and the script verb `.damage(n, { type })` takes the damage-type handle. The FGD value is a damage type's key; an unknown one warns once at level load and applies untyped, because level content is not mod vocabulary.
+- **Recharge is an engine per-tick host step at tick start, so every hit in tick N lands after that tick's recharge.** Any hit with a positive incoming amount, wherever it lands, restarts every one of the entity's layer delays, even one fully absorbed, blocked or bypassed. The last-hit stamp is live state: time spent latched counts toward the delay and hits on a latched entity still restamp. Only a hit sets the stamp; spawn, respawn, carry and grants never touch it, so a layer below capacity with no hit since arrival recharges from its first tick.
 - **Recharge skips any entity at health ≤ 0, latched or not, though a lowered capacity still clamps its layers.** Respawn refills every layer to capacity, and `setHealth` and `grantHealth` leave layers alone.
 - **Layer values follow health's lifecycle:** spawn fills every layer, and a fresh co-op join arrives full at its seeded capacity, while a layer not full at its pre-seed capacity when the seed lands keeps its value. Level change, same-map restart and rejoin carry each value only when health carries, clamped to the arrival capacity evaluated with the seat's per-owner values. Hot reload keeps each layer's value by name, clamps kept layers, fills added ones and drops removed ones.
 - **One quantity, "points dealt", means damage everywhere downstream of the chokepoint.** Points dealt is the total drained from layers plus health after type multipliers and resistances, and `@impact.amount` is points dealt, matching `research/combat-events.md`'s post-mitigation `damage`, because the plain name serves the common reader: damage numbers, lifesteal, stagger. `@impact.raw` is the incoming amount after hit zones and before type and layers (combat-events' `rawDamage`), `@impact.absorbed` is the layers' share of points dealt, and `healthBefore` / `healthAfter` stay health-only, so an unfloored `healthAfter` still yields overkill.
-- **`@impact.broke` is true when this hit took some layer from above zero to zero, and each declared type adds a Bool.** The contributor ledger, kill credit and brain threat record points dealt, so a player who only stripped a shield is a contributor. Brain damage recency resets on any hit to a live target with a positive raw amount, and a hit on a target that is not live (latched, or at health ≤ 0) credits no contributor and leaves brain memory as the lethal hit froze it, while its impact facts stay truthful, so rewards gate in policy.
+- **`@impact.broke` is true when this hit took some layer from above zero to zero, and each registered type adds a Bool.** The contributor ledger, kill credit and brain threat record points dealt, so a player who only stripped a shield is a contributor. Brain damage recency resets on any hit to a live target with a positive raw amount, and a hit on a target that is not live (latched, or at health ≤ 0) credits no contributor and leaves brain memory as the lethal hit froze it, while its impact facts stay truthful, so rewards gate in policy.
 - **A layer handle's `.current` / `.capacity` is a per-player read over the player's owner-private layer slots:** a plain read means the local player wherever a plain per-player read does (HUD `Bar`, store, crossings, plain impact-policy reads), and the evaluated player in a player-event condition. It takes `byPlayer` with `impact.source` and `on.player` only, and a layer read inside an interaction-pair expression rejects load, so pair-scope layer reads stay a non-goal.
 - **Reads of a specific entity go through per-scope accessors that follow each scope's `state(name)`:** `impact.target.defense(h)` in an impact policy, the free function `defense(h)` in a brain guard (the brain's own entity), and `entity.defense(h)` in the overlay's `damagedEnemies` callbacks, each yielding `.current` / `.capacity` in that scope's value form. The overlay's "hide at full" counts its own shield pair: an entity is full only when health and that pair are both full.
-- **The player's layer slots are owner-private:** `player.defense.<name>` and `player.defense.<name>.capacity`, keyed by declared layer name, read absent for a pawn without that layer. Declaring a layer changes the state-schema fingerprint, not `WIRE_VERSION`, as the owner-private weapon-sample slots did (`networking.md` §Version gates).
+- **The player's layer slots are owner-private:** `player.defense.<name>` and `player.defense.<name>.capacity`, keyed by layer name, read absent for a pawn without that layer. Registering a layer changes the state-schema fingerprint, not `WIRE_VERSION`, as the owner-private weapon-sample slots did (`networking.md` §Version gates).
+- **Damage over time will enter through this brief's surfaces:** `defineDamageType`'s options argument is reserved for status options, and an unknown option key rejects load today; `.damage(n, { type })` stays an options object so later fields (`source`, `status`) fit; and every damage tick, from any future producer, goes through the damage chokepoint with a type and a source, so it drains layers and credits (`research.md` §Damage over time).
 - **Non-goals:**
-  - Status effects and damage over time: roadmap `status effects / DoT` owns them.
+  - Status effects and damage over time: roadmap `status effects / DoT` owns them, and depends on this brief.
   - Crits: roadmap `crit math` owns them.
   - Shield special effects (nova, spike, absorb-to-ammo): roadmap `shields + shield types`, narrowed to special effects, owns them.
   - Authored recharge and overflow (per-layer `overflow`, recharge-scope inputs, a per-layer recharge expression): roadmap `authored defense-layer recharge and overflow policy`, added at promotion, owns them.
@@ -48,17 +50,22 @@ HUDs, the enemy overlay, impact policies and enemy brains can all read the resul
 
 ### Scripting surface
 ```ts
-// scripts/defenses.ts — mod-wide vocabulary in its own module, as the dev mod's faction names live in scripts/ modules
-import { defineDamageType, defineDefenseLayer } from "postretro";
-export const shield = defineDefenseLayer("shield");
-export const armor = defineDefenseLayer("armor");
-export const shock = defineDamageType("shock", { against: { shield: 2, armor: 0.5, health: 0.75 } });
-export const corrosive = defineDamageType("corrosive", { against: { shield: 0.5, armor: 2 } });
+// scripts/defenses.ts — layer kinds; the key each is registered under is its name
+import { defineDefenseLayer } from "postretro";
+export const shield = defineDefenseLayer();
+export const armor = defineDefenseLayer();
 
-// every other file below imports the handles from there, never from start-script.ts, which imports them all
-import { armor, corrosive, shield, shock } from "./defenses"; // "./scripts/defenses" from start-script.ts
-import { defense, defineEntity, defineImpactEvent, defineMod, defineReaction,
-  getMapEntities, npcs, read, when, type PlayerEventParams, type TriggerEventParams } from "postretro";
+// scripts/damage-types.ts — the matrix comes first; its keys are layer names or health
+import { defineDamageType } from "postretro";
+export const shock = defineDamageType({ shield: 2, armor: 0.5, health: 0.75 });
+export const corrosive = defineDamageType({ shield: 0.5, armor: 2 });
+export const flechette = defineDamageType({ shield: "bypass", armor: 0 }); // slips past shields; standing armor stops it whole
+
+// every file below imports handles from those two modules; start-script.ts imports them only to register them
+import { armor, shield } from "./defenses";
+import { corrosive, shock } from "./damage-types";
+import { defense, defineEntity, defineImpactEvent, defineReaction, defineTriggerEvent,
+  npcs, read, when, type PlayerEventParams, type TriggerEventParams } from "postretro";
 import { Bar, damagedEnemies } from "postretro/ui";
 import { progression } from "./combat-lifecycle"; // gains per-owner `shieldCapacity` and `shieldTech`, shaped like `xp`
 import { leveling } from "./leveling";
@@ -66,19 +73,19 @@ import { leveling } from "./leveling";
 
 // player.ts components — capacity and recharge read per-owner progression
 health: { max: 100, layers: [{
-  layer: "shield", capacity: read(progression.shieldCapacity).plus(50),
+  layer: shield, capacity: read(progression.shieldCapacity).plus(50),
   rechargeDelayMs: 2500, rechargeRate: read(progression.shieldTech).times(4).plus(20),
 }] },
 
 // reference-enemy.ts components — armored, shock-resistant, a corrosive claw, retreats once its armor breaks
-health: { max: 70, layers: [{ layer: "armor", capacity: 120 }], resist: { shock: 0.5 } },
+health: { max: 70, layers: [{ layer: armor, capacity: 120 }], resist: { shock: 0.5 } },
 behavior: { /* … */
-  attacks: { claw: { damage: 15, damageType: "corrosive", maxRange: 2, cooldownMs: 800 } },
+  attacks: { claw: { damage: 15, damageType: corrosive, maxRange: 2, cooldownMs: 800 } },
   transitions: { engage: [{ to: "retreat", when: defense(armor).current.le(0) }] }, // own layer, as `state(name)` reads own state
 },
 
 // a weapon-level type, and typed script damage
-const arcRifle = defineEntity({ canonicalName: "arc_rifle", components: { weapon: { damage: 12, damageType: "shock", /* … */ } } });
+const arcRifle = defineEntity({ canonicalName: "arc_rifle", components: { weapon: { damage: 12, damageType: shock, /* … */ } } });
 const overload = defineReaction("turret.overload", npcs({ tag: "turret" }).damage(40, { type: shock }));
 
 // player-events.ts — the existing level-up also raises capacity, then fills health and shield to the new capacity
@@ -87,10 +94,9 @@ const levelUp = defineReaction("leveling.levelUp", (on: PlayerEventParams) => [
   on.player.addSlot(progression.shieldCapacity, 25), on.player.grantHealth(100), on.player.grantLayer(shield),
 ]);
 
-// combat-demo-reaction.ts setupLevel — a booster pad adds 25, bound as the ammo pickup is
-const booster = defineReaction("combat.shieldBooster", (on: TriggerEventParams) => on.activators.grantLayer(shield, 25));
-reactions.push(booster);
-triggerEvents.push(...getMapEntities("trigger", { tag: "shield_booster" }).map((pad) => pad.on("enter", [booster])));
+// combat-lifecycle.ts — a booster pad adds 25: a mod-global rule over every volume tagged shield_booster
+export const booster = defineReaction("combat.shieldBooster", (on: TriggerEventParams) => on.activators.grantLayer(shield, 25));
+export const boosterPads = defineTriggerEvent({ tag: "shield_booster", event: "enter", fire: [booster] });
 
 // hud.ts — the local player's shield bar
 const shieldBar = Bar({ bind: shield.current, max: shield.capacity, fill: [0.3, 0.6, 1, 1], background: [0.05, 0.07, 0.1, 0.9] });
@@ -106,17 +112,22 @@ export const shieldBreak = defineImpactEvent("shield-break", { tag: "enemy" }, (
   when(impact.target.defense(armor).current.le(0), [impact.target.setState("exposed", 1)]),
 ]);
 
-// start-script.ts — registration
-defineMod({ defenseLayers: [shield, armor], damageTypes: [shock, corrosive], events: [/* … */ shieldBreak], /* … */ });
+// start-script.ts — registration: each export's key names its handle
+import { defineMod } from "postretro";
+import * as defenseLayers from "./scripts/defenses";
+import * as damageTypes from "./scripts/damage-types";
+import { booster, boosterPads, shieldBreak } from "./scripts/combat-lifecycle";
+export default defineMod({ defenseLayers, damageTypes, reactions: [/* … */ booster],
+  triggerEvents: [/* … */ boosterPads], events: [/* … */ shieldBreak], /* … */ });
 ```
-Luau mirrors every name, with each accessor following its `state(name)` twin: `Postretro.defineDefenseLayer("shield")`, `shield.current`, `defense(armor).current:le(0)`, `impact.target:defense(armor)`, `entity:defense(shield)`, `impact.type(shock)`, and so on. Both runtimes ship.
+Luau mirrors every name, with each accessor following its `state(name)` twin: `Postretro.defineDefenseLayer()`, `Postretro.defineDamageType({ shield = 2, armor = 0.5, health = 0.75 })`, `defineMod({ defenseLayers = require("./scripts/defenses.luau"), damageTypes = require("./scripts/damage-types.luau"), … })`, `shield.current`, `defense(armor).current:le(0)`, `impact.target:defense(armor)`, `entity:defense(shield)`, `impact.type(shock)`, and so on. Both runtimes ship.
 
 ## Acceptance
 
 ### Declaration and validation
-- [ ] A mod that declares layer kinds and damage types loads, in TS and in Luau, producing identical descriptors.
-- [ ] Load fails, naming the key path, for each of: an undeclared layer in `layers` or `against`; an undeclared type in `resist`, a weapon or an attack; `damageType` on an attack that names a `weapon`; a duplicate declared name; a layer named `health`; a layer kind listed twice in one descriptor's `layers`; an out-of-range literal; an unknown key inside `health`. A valid sibling of each loads, including one descriptor listing two different layer kinds.
-- [ ] An undeclared layer or type read in an impact policy, a brain guard, an overlay callback or a layer parameter fails load naming the key path. A grantLayer or `.damage` reaction naming one is dropped at install with a log naming the reaction, and its siblings install.
+- [ ] A mod that registers layer kinds and damage types through `defineMod` keys loads, in TS and in Luau, producing identical descriptors, each layer and type named by its key.
+- [ ] Load fails, naming the key path, for each of: a layer handle in `layers`, or a type handle on a weapon or an attack, that is not registered in `defineMod`; one handle registered under two keys; a layer registered under the key `health`; a matrix key naming no registered layer and not `health`; a `resist` key naming no registered type; a `defenseLayers` or `damageTypes` entry that is not a handle of that kind; a matrix value that is neither a multiplier in [0, 64] nor `"bypass"`; `health: "bypass"`; an unknown key in `defineDamageType`'s options; `damageType` on an attack that names a `weapon`; a layer kind listed twice in one descriptor's `layers`; an out-of-range literal; an unknown key inside `health`. A valid sibling of each loads, including one descriptor listing two different layer kinds and a matrix mixing multipliers, `0` and `"bypass"`.
+- [ ] An unregistered handle read in an impact policy, a brain guard, an overlay callback, a HUD binding or a layer parameter, or passed to a `grantLayer` or `.damage` reaction, fails load naming the key path.
 - [ ] A layer expression with a per-owner read loads on the player entity and fails load on an enemy descriptor.
 - [ ] An unknown FGD `crush_damage_type` warns once at level load and crushes untyped.
 
@@ -124,9 +135,10 @@ Luau mirrors every name, with each accessor following its `state(name)` twin: `P
 - [ ] A mod with no types or layers: health results and every existing impact fact are identical to before, so the existing chokepoint, contributor-ledger, impact-policy and overlay tests pass unmodified, except where hide-at-full now also counts an overlay's shield pair.
 - [ ] Ordered spillover: shield 30, armor 50, health 100; an untyped 100 leaves 0 / 0 / 80.
 - [ ] Spillover in raw units: shock (shield ×2, health ×0.75) for 20 against shield 30 empties the shield on 15 raw, and health loses 3.75.
-- [ ] Multiplier 0 on a layer leaves it untouched and passes the hit on. Multiplier 0 on health deals no health damage. `resist` scales on top, and `resist` 0 makes the entity immune to that type. An immune hit still restarts the delay and credits no contributor (R-P11).
+- [ ] `"bypass"` on a layer leaves it untouched and passes the hit on. Multiplier 0 on health deals no health damage. `resist` scales on top, and `resist` 0 makes the entity immune to that type. An immune hit still restarts the delay and credits no contributor (R-P11).
+- [ ] Multiplier 0 on a layer above zero stops the whole hit: it drains nothing, nothing spills past it, and the impact dispatches with amount 0, absorbed 0 and no broke, while the delay restarts and the attacker is not a contributor (R-P29). The same layer at zero is skipped, and the hit drains the next pool (R-P30).
 - [ ] A fully absorbed hit leaves health unchanged, dispatches the impact with `absorbed` and `amount` both equal to the points drained, and never latches death.
-- [ ] For a shock 20 hit on shield 30 with health ×0.75: `raw` is 20, `amount` is 33.75 (30 shield + 3.75 health), `absorbed` is 30, and `healthBefore − healthAfter` is 3.75. For a hit bypassing every layer, `absorbed` is 0 and `amount` equals the health lost.
+- [ ] For a shock 20 hit on shield 30 with health ×0.75: `raw` is 20, `amount` is 33.75 (30 shield + 3.75 health), `absorbed` is 30, and `healthBefore − healthAfter` is 3.75. For a hit that bypasses or skips every layer, `absorbed` is 0 and `amount` equals the health lost.
 - [ ] A zero-valued layer is skipped and never reports `broke`.
 - [ ] Two hits on one tick drain in order: the second sees the first's result, and only the hit that empties a layer reports `broke`.
 - [ ] Each producer drains a test shield by its type's multiplier: hitscan, direct projectile, splash, NPC melee, NPC ranged, trap, crush and the script verb, and a host-validated client hit, typed from the host's weapon descriptor.
@@ -137,7 +149,7 @@ Luau mirrors every name, with each accessor following its `state(name)` twin: `P
 
 ### Recharge
 - [ ] Nothing recharges before the delay. After it, the layer ramps at the rate and stops at capacity.
-- [ ] A hit mid-ramp restarts the delay; so does a fully absorbed or bypassed hit. A rate-0 layer never recharges. A delay of 0 starts recharging on the next tick.
+- [ ] A hit mid-ramp restarts the delay; so does a fully absorbed, blocked or bypassed hit. A rate-0 layer never recharges. A delay of 0 starts recharging on the next tick.
 - [ ] An entry that omits rechargeDelayMs first recharges 3000 ms after a hit, and one that omits rechargeRate never recharges.
 - [ ] A delay lowered mid-delay, by a store write or a hot reload, applies from the next tick against the original hit: a hit on tick N, then a delay cut from 3000 to 500 ms on tick N+60, first recharges on tick N+61 (R-P20).
 - [ ] A hit on the tick the delay expires: that tick's recharge applies first, the hit then drains, and the delay restarts.
@@ -185,7 +197,7 @@ Luau mirrors every name, with each accessor following its `state(name)` twin: `P
 - [ ] A player who only drained an enemy's shield is credited as a contributor when the enemy dies. Brain threat counts points dealt. A fully absorbed hit resets brain damage recency.
 - [ ] The Scripting surface example runs as `content/dev` content and loads clean in both runtimes.
 - [ ] `docs/scripting-reference.md` documents the vocabulary, the drain rules and a Borderlands recipe. Every command in it runs from an SDK bundle.
-- [ ] Declaring a layer adds its current and capacity slots and changes the state-schema fingerprint, and WIRE_VERSION is unchanged.
+- [ ] Registering a layer adds its current and capacity slots and changes the state-schema fingerprint, and WIRE_VERSION is unchanged.
 - [ ] An overlay bound to @state.shield reads its value as it does today, and hide-at-full counts it: at full health with @state.shield below its max, the overlay stays shown. No hit or recharge ever changes @state.shield.
 
 ### Manual
@@ -194,17 +206,19 @@ Luau mirrors every name, with each accessor following its `state(name)` twin: `P
 - [ ] HUD shield bar and enemy overlay shield read correctly. A co-op client's HUD bar tracks the host at the lag profile.
 
 ## Path
-- **Seams:** `apply_damage_with_context` and `DamageContext` (health.rs); `DamagePayload` (foundation_pods.rs); `HealthDescriptor` and its validation (combat.rs); faction drains and resolution (`drain_factions_js`, `resolve_entity_faction_indices`) as the vocabulary precedent; `NumberOrIr` and `AssistPairTable::bind` as the literal-or-expression precedent; `PlayerConditionScope` as the "plain read means this player" precedent for the parameter scope, minus its engine slots; `IMPACT_DISPATCH_INPUTS` and `EntityScope`; `BrainInputRef::State` and `OverlayStateScope` for the `@defense.` family, with `TargetHandle.state`, brain `state` and `OverlayEntity.state` (TS and Luau) as the accessor spellings (the brain `defense` exports from `"postretro"` beside `state` and builds `.current` / `.capacity` through `runtime.read`, so `.le` returns a guard node; its Luau global joins the prelude's brain globals beside `state`); `classify_pair_read` for the pair-scope rejection; `PlayerSlot`, `engine_state_catalog`, `owner_private_source_value` and `MIRRORED_GAME_STATE_LEAVES` for the owner-private family; `CarriedState` and `CarriedField` (the destructure has no wildcard); `respawn::drain` and `begin_tick` for recharge placement.
+- **Seams:** `apply_damage_with_context` and `DamageContext` (health.rs); `DamagePayload` (foundation_pods.rs); `HealthDescriptor` and its validation (combat.rs); faction drains and resolution (`drain_factions_js`, `resolve_entity_faction_indices`) as the Rust-side vocabulary precedent; `defineMod` and its `storeDeclarations` identity map (`data_script.ts` / `.luau`) as the registration precedent; `NumberOrIr` and `AssistPairTable::bind` as the literal-or-expression precedent; `PlayerConditionScope` as the "plain read means this player" precedent for the parameter scope, minus its engine slots; `IMPACT_DISPATCH_INPUTS` and `EntityScope`; `BrainInputRef::State` and `OverlayStateScope` for the `@defense.` family, with `TargetHandle.state`, brain `state` and `OverlayEntity.state` (TS and Luau) as the accessor spellings (the brain `defense` exports from `"postretro"` beside `state` and builds `.current` / `.capacity` through `runtime.read`, so `.le` returns a guard node; its Luau global joins the prelude's brain globals beside `state`); `classify_pair_read` for the pair-scope rejection; `PlayerSlot`, `engine_state_catalog`, `owner_private_source_value` and `MIRRORED_GAME_STATE_LEAVES` for the owner-private family; `CarriedState` and `CarriedField` (the destructure has no wildcard); `respawn::drain` and `begin_tick` for recharge placement.
+- **Key-derived names.** A handle has no name until `defineMod` registers it, so every node that captures one (descriptor field, reaction argument, IR leaf, HUD binding) keeps the handle, and `defineMod` rewrites it to its key before return (`research.md` §Key-derived names). The script compiler rejects namespace imports only from bare SDK specifiers (`validate_bare_sdk_imports`), and no test covers a local `import * as`; add one in the first slice. TypeScript may narrow matrix keys to the registered layer names through a key type the layers module exports; without it, keys are checked only at load.
 - **Evaluation and recharge placement.** Parameters evaluate each tick at tick start, then clamp, then recharge runs (R-P19), for every entity, with only the recharge step skipping health ≤ 0 (R-P23); hits in a tick use the capacity in force (R-P4). Spawn (R-P5, R-P17), respawn (R-P4, R-P27), hot reload (R-P15) and every grant (R-P18, R-P21) evaluate capacity on demand instead; an impact-policy grant evaluates when its planned effect applies, not against the plan snapshot (`evaluate_pending_in_tick_impacts`). Recharge runs after the respawn drain. The chokepoint stamps the host tick of the last hit, which covers hits that land outside the tick (R-P2, R-P3, `research.md` §Damage chokepoint), and expiry compares ticks since the stamp with the delay in force; store the stamp, never a deadline (R-P20).
 - **Body order.** On player and trigger events, `grantLayer` binds as a consequential in-tick command beside `grantHealth` and `addSlot`. On reactions fired by address, the host's `dispatch_add_owner_slot` writes the slot instead of pushing `SystemReactionCommand::AddOwnerSlot`, and a `setState` step writes instead of queuing `SystemReactionCommand::SetState`; the drain's seat-liveness, readonly and range checks (`dispatch_system_commands`, `main.rs`) move to dispatch, so dispatch needs a seat-liveness view and the session's `SetState` IR bindings in reach. The `owner_slot_writes_enabled` client gate is unchanged. On that path `grantLayer` then applies at dispatch beside `grantHealth`. `fire` targets still run after the firing body, so pin S27 (`plans/done/reaction-body-composition/research.md`) stays green; crossing evaluation and client persistence run after dispatch and see every write (`research.md` §Body order).
 - **Join seed.** A seed can land after the pawn participates (`join_seed.rs`), so redo the spawn fill when it lands only for a layer still full at its pre-seed capacity (R-P16, R-P25), before the first hit of the next tick (R-P24).
 - **Owner-private family.** A new name-keyed slot family, read through the one pawn-to-value lookup (`research.md` §Co-op).
 - **Chosen shape vs the strongest rival.** Chosen: an engine layer stack with an authored matrix and expression parameters. Strongest rival: the same engine storage, drain and last-hit stamp, but recharge (and optionally overflow) authored as an IR expression over a layer-local scope (current, capacity, time since hit, tick delta). That is `scripting.md` §11's split read literally, and the hot IR write path `plans/done/M14--movement-dash-runtime-values` earmarked shield recharge for. The chosen shape grows into it along the recharge-shape axis in Non-goals without breaking a mod. Not now, because it builds the per-entity IR write path before any mod needs more than delay-then-rate. A weaker rival, author `@state` layers, fails for the reasons in `research.md` §Layer home.
-- **First slice:** one player shield end to end, covering descriptor, drain, literal recharge and the owner-private read on a connected client. That slice falsifies the riskiest pieces: the new owner-private family and the tick-start recharge order.
+- **First slice:** one player shield end to end, covering key-derived registration, descriptor, drain, literal recharge and the owner-private read on a connected client. That slice falsifies the riskiest pieces: the new owner-private family and the tick-start recharge order.
 - **Split first.** These files run past ~800 lines: `impact_policy.rs`, `state_slots.rs`, `scopes.rs`, `combat.rs`, `health.rs`. Split each first where the brief extends it: behavior-preserving, in its own commit.
 - **Coordinate with the drafts.** On landing, revise `E10--enemy-stagger` (accumulate points dealt) and `coop--predicted-combat-feedback` to the points-dealt vocabulary (`research.md` §Amount consumers).
 
 ## Open questions
+- How a level data script's definitions (`setupLevel` reactions, impact events, crossings, UI trees) reference layer and type handles. That VM never runs `defineMod`, so a handle it imports is never registered and, by the load-fail rule, every such reference fails (`research.md` §Key-derived names) — owner: project owner — **blocks build**
 - Whether layers get a per-tick cost bound (count of layered entities × expression size) beyond the IR's own depth and node caps — **delegated**: measure on the dev mod and report in the plan of record.
 - Whether a connected client's own local `setState` also moves to dispatch, or stays on the frame-end drain — **delegated**: the Decision pins only the host; choose what keeps client body order and the owner-slot write gate simple, and report it in the plan of record.
 
@@ -212,14 +226,14 @@ Luau mirrors every name, with each accessor following its `state(name)` twin: `P
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| Layer declaration | executor | `defenseLayers` | `defineDefenseLayer(name)` | `Postretro.defineDefenseLayer(name)` | n/a |
-| Damage type declaration | executor | `damageTypes`, `against` | `defineDamageType(name, { against })` | `Postretro.defineDamageType(name, { against = … })` | n/a |
-| Descriptor layer entry | executor | `layers[].layer`, `capacity`, `rechargeDelayMs`, `rechargeRate` | same | same | n/a |
-| Resistances | executor | `health.resist` | same | same | n/a |
-| Weapon / attack type | executor | `damageType` in `components.weapon` and in an inline `behavior.attacks.<name>` | same | same | n/a |
-| Crush type | executor | n/a | n/a | n/a | `crush_damage_type` |
-| Script damage type | `ApplyDamageArgs` field | `{ amount, type }` (declared name) | `.damage(n, { type: handle })` | `:damage(n, { type = handle })` | n/a |
-| Player layer read (owner-private) | catalog rows per declared layer | slot names `player.defense.<name>`, `player.defense.<name>.capacity` | `handle.current`, `handle.capacity` (`PlayerComputedRef`): `Bar` `bind` / `max`, `read()`, crossings, `.byPlayer(impact.source | on.player)` | `handle.current`, `handle.capacity`, `:byPlayer(…)` | n/a |
+| Layer declaration | executor | `defenseLayers`, keyed by layer name | `defineDefenseLayer()`, no arguments; named by its key in `defineMod({ defenseLayers })` | `Postretro.defineDefenseLayer()`; named by its key in `defineMod({ defenseLayers = … })` | n/a |
+| Damage type declaration | executor | `damageTypes`, keyed by type name: matrix `{ <layer> \| health: m \| "bypass" }`, options `{}` (reserved) | `defineDamageType(matrix, options?)`; named by its key in `defineMod({ damageTypes })` | `Postretro.defineDamageType(matrix, options?)`; named by its key in `defineMod({ damageTypes = … })` | n/a |
+| Descriptor layer entry | executor | `layers[].layer` (layer name), `capacity`, `rechargeDelayMs`, `rechargeRate` | same, with `layer` a layer handle | same, with `layer` a layer handle | n/a |
+| Resistances | executor | `health.resist`, keyed by type name | same | same | n/a |
+| Weapon / attack type | executor | `damageType` (type name) in `components.weapon` and in an inline `behavior.attacks.<name>` | same, with a type handle | same, with a type handle | n/a |
+| Crush type | executor | n/a | n/a | n/a | `crush_damage_type` (type name) |
+| Script damage type | `ApplyDamageArgs` field | `{ amount, type }` (type name) | `.damage(n, { type: handle })` | `:damage(n, { type = handle })` | n/a |
+| Player layer read (owner-private) | catalog rows per registered layer | slot names `player.defense.<name>`, `player.defense.<name>.capacity` | `handle.current`, `handle.capacity` (`PlayerComputedRef`): `Bar` `bind` / `max`, `read()`, crossings, `.byPlayer(impact.source \| on.player)` | `handle.current`, `handle.capacity`, `:byPlayer(…)` | n/a |
 | Entity layer read (per-scope accessor) | IR inputs | `@defense.<name>`, `@defense.<name>.capacity` | `impact.target.defense(handle)`, brain free function `defense(handle)`, overlay `entity.defense(handle)`, each with `.current` / `.capacity` | `impact.target:defense(handle)`, global `defense(handle)`, `entity:defense(handle)` | n/a |
 | Impact facts | IR inputs | `@impact.raw`, `@impact.absorbed`, `@impact.broke`, `@impact.type.<name>` (`@impact.amount` keeps its name, now points dealt) | `impact.raw`, `impact.absorbed`, `impact.broke`, `impact.type(handle)` | same, as plain fields: `impact.type(handle)` | n/a |
 | Layer grant | grant chokepoint | `grantLayer` `{ layer, amount? }` (literal on group and subject tokens, Number expression on `@impact.source`) | `.grantLayer(handle, amount?)` on `players()`, the subject tokens (`on.activators`, `on.player`, …) and `impact.source` | `:grantLayer(handle, amount?)` | n/a |

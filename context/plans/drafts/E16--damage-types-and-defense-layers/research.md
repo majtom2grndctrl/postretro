@@ -85,6 +85,39 @@ Drafts that read the amount:
 - `plans/done/E16--combat-presentation-substrate`: the overlay `shield` reads `@state.shield`, with absorption deferred to Damage & Defenses.
 - `plans/done/M10--skeletal-hit-zones`: zone multipliers apply before the chokepoint. The brief keeps that order: zone, then type and layers.
 
+## Key-derived names
+
+- **Precedent, and where it stops.** `defineMod` maps each store handle to its declaration through an identity map (`storeDeclarations`, `data_script.ts` / `.luau`) before the manifest crosses, and store schema keys become slot names (`scripting.md` §5). That covers registration only. A store *reference* in a reaction or an expression carries its dotted name inside the handle, because `defineStore` takes an explicit namespace. A layer or type handle has no name until `defineMod` registers it, so every node that captures one defers its name to registration.
+- **Rivals.** Binding-name sugar (`scripts-build` derives a `defineStore` / `defineImpactEvent` name from its top-level binding, `plans/done/descriptor-identity-and-naming-sugar`) is TypeScript-only; object keys exist in both runtimes, and a Luau module's returned table yields the same keys through `require`. An explicit name field, as ghost styles keep "because map files reference it as a string" (`scripting.md` §2), is not needed: the only map-file reference is `crush_damage_type`, and it names the key.
+- **Rename cost.** Renaming an export renames the vocabulary entry. An FGD value naming the old key warns and crushes untyped, and the `player.defense.<name>` slots change name, and the state-schema fingerprint with them.
+- **Namespace imports.** `import * as` registers every runtime export of the module, which is why an entry that is not a handle of its kind fails load. The script compiler rejects namespace imports only from bare SDK specifiers (`validate_bare_sdk_imports`); a local one is untested.
+- **Level data scripts.** `setupLevel` runs in its own short-lived VM (`scripting.md` §2) and never calls `defineMod`. A handle it imports from `scripts/defenses` is a fresh object that no `defineMod` registered, so the brief's load-fail rule rejects every layer or type reference in level-local content. The brief's example binds its booster pad as a mod-global trigger event for that reason; the general answer is the brief's blocking open question.
+- **Factions.** `defineFaction(name)` keeps its string. Adopting the key-derived pattern is a roadmap follow-up.
+
+## Matrix values
+
+- With raw-remainder spillover, a layer above zero at ×0 never empties, so it absorbs the whole hit and drains nothing. That is what 0 means arithmetically; treating it as a bypass special-cased the arithmetic and left no way to say "this layer stops this type". Bypass is a different intent, so it gets its own literal.
+- `resist` multiplies multipliers. `resist` 0 makes every layer above zero block and health take nothing, so the entity is immune, as R-P11 pins. A `"bypass"` layer has no multiplier for `resist` to scale.
+- `health: "bypass"` would pass the hit to no further pool, the same result as `health: 0`; rejecting it keeps one spelling per result.
+- A blocked hit has a positive raw amount, so it restamps and resets brain recency, and its points dealt are 0, so it credits nothing (R-P29). The same rules already govern the resist-0 immune hit.
+
+## Damage over time
+
+The roadmap's `status effects / DoT` item owns statuses, as an engine per-tick component whose ticks emit through the combat-events chokepoint. The brief leaves three doors open: `defineDamageType`'s reserved options argument, `.damage(n, { type })` as an options object, and the rule that every damage tick goes through the chokepoint with a type and a source.
+
+**Non-binding sketch** for the DoT brief to start from. Nothing here ships with this brief, and `defineStatus` is not an SDK name:
+```ts
+export const burning = defineStatus({ damage: 3, type: burn, tickMs: 500, durationMs: 4000, stacking: "refresh" });
+export const burn = defineDamageType({ health: 1.5, shield: 0.5 }, { inflicts: burning });
+```
+Questions the sketch leaves open:
+- **Cycle.** `burning` names `burn` and `burn` names `burning`, so as two consts one reads the other before it exists; one side must reference the other lazily, by key, or by nesting the status inside the type.
+- **Stacking.** Whether a second application refreshes, stacks intensity, stacks independent instances or is ignored, and whether the policy belongs to the status or to the target.
+- **Refresh.** What a refresh resets (duration, tick phase, source) and whether a weaker application can refresh a stronger one.
+- **Application chance.** Whether the chance to inflict lives on the weapon, on the damage type or on both, and how it combines with per-hit facts such as zone or broke.
+- **Networking.** Statuses resolve on the host; whether a client sees status presence, remaining duration or only the resulting damage, and through which replication family.
+- **Presentation.** How a HUD, the enemy overlay and impact policies observe a status, and whether each tick dispatches an impact or ticks stay policy-silent as script damage is today.
+
 ## Body order
 
 Today a reaction's store writes do not apply at one moment on every source. Source:
@@ -131,6 +164,8 @@ The brief moves the host's store writes to dispatch, so every step lands in body
 | R-P26 | A pawn at shield 0 / 100, health 100, delay running. A crossing fires a reaction whose body is players().grantLayer(shield, 25), then players().damage(20). Variant: the reverse body order. | A body's store writes, grants and damage land at dispatch, in body order, on every source. | The grant brings the shield to 25 / 100, and the damage drains it to 5 / 100 with no broke; health stays 100. In the variant the damage takes health to 80 with absorbed 0, and the grant then leaves the shield at 25 / 100. |
 | R-P27 | A pawn with capacity read(progression.shieldCapacity).plus(50) at 100, delay 3000 ms, rate 60 points/s, 60 Hz. A lethal hit lands on tick N, and the pawn respawns at the start of tick N+60 at 100 / 100. A store write on tick N+60 raises capacity to 150, and nothing hits it again. | Only a hit sets the stamp. Respawn evaluates capacity itself and refills every layer, and neither sets nor clears the stamp. Latched time counts toward the delay. | Tick N+61 reads 100 / 150. Nothing recharges before tick N+180, and tick N+180's recharge makes it 101 / 150. |
 | R-P28 | A fresh joiner whose capacity is read(progression.shieldCapacity), with the seat default 0, materializes at 0 / 0. Its seed carries shieldCapacity 150 and lands between ticks. Rate 60 points/s. | A layer at 0 / 0 is full at its pre-seed capacity, so the seed redoes its fill. | The first tick after the seed lands reads 150 / 150, not 1 / 150. |
+| R-P29 | Type flechette: `{ shield: "bypass", armor: 0 }`. A live enemy at shield 30, armor 50, health 100, with a brain. A flechette hit for 20. | `"bypass"` passes a layer untouched. A ×0 layer above zero absorbs the whole hit and drains nothing, so nothing spills. Restamping and recency follow raw; credit follows points dealt. | Shield 30, armor 50, health 100. The impact dispatches with raw 20, amount 0, absorbed 0 and no broke. The delay restarts, brain damage recency resets, and the attacker is not a contributor. |
+| R-P30 | The same type and enemy, with armor already at 0 / 50. A flechette hit for 20. | A zero-valued layer is skipped whatever its multiplier. | Shield 30, armor 0, health 80. The impact dispatches with amount 20, absorbed 0 and no broke. |
 
 ## Roadmap updates at promotion
 
@@ -139,4 +174,6 @@ The brief moves the host's store writes to dispatch, so every step lands in body
 - Reword the pair-scope item toward layer reads.
 - Fold "Local-slot crossing origin" into `coop--client-leave-session` and fix its stale reference.
 - Add an item for teammate shield bars: a replication decision for owner-private layer values.
+- Note on "status effects / DoT" that it depends on this brief and starts from its non-binding DoT sketch.
+- Add a follow-up: factions adopt key-derived names (`defineFaction()` with no name, registered by `defineMod({ factions })` keys).
 - Add an item, "authored defense-layer recharge and overflow policy": a per-layer `overflow` option (gate, scaled), recharge-scope inputs (time since hit, the layer's own value) and a per-layer recharge expression. It carries the IR write path `plans/done/M14--movement-dash-runtime-values` earmarked for shield recharge.

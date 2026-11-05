@@ -1,6 +1,6 @@
 # spatial-residency--sh-bounded-pool research
 
-Raw data lives on local branch `spike/memory-measure-tour`, worktree `grab-bag-next`, under `context/plans/drafts/E20--memory-visibility/measurement/`, uncommitted. One Mac, Radeon Pro 5300M 4 GB, Metal.
+Raw data was discarded after this summary. Spike walk, shot and diff code stays on local branch `spike/memory-measure-tour`. One Mac, Radeon Pro 5300M 4 GB, Metal.
 
 ## Allocation, hallway, today
 

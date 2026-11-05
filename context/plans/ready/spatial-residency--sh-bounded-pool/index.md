@@ -83,7 +83,7 @@ All on the Mac 5300M, Metal, windowed, cold PRL rebaked at this commit, using `M
 ## Path
 Non-binding.
 - **Riskiest assumption first.** First slice: bound, hold with honest miss counting and capacity-aware eviction, on a 2-layer pool, today's clusters. It proves held frames, traces refusal rendering and settles the cluster rule before format work depends on them. If the rule fails, try 16 cells, then 8.
-- **Runtime seams.** `derive_node_ownership`, `request_owner_closure`, `dependent_first_release_order`, `sparse_capacity_floors`. `RowRefTable` already counts affinity rows. The spike's diff shows one working shape, not production code.
+- **Runtime seams.** `derive_node_ownership`, `request_owner_closure`, `dependent_first_release_order`, `sparse_capacity_floors`. `RowRefTable` already counts affinity rows. Local branch `spike/memory-measure-tour` shows one working shape, not production code, and holds the walk and frame-diff tools the manual rows need.
 - **Sizing and eviction seams.** `plan_initial_pool_floor`, `grow_dense`, `apply_budget_policy`, `is_pressure_eligible`. Lightmap `growth_reserve_layers` is a sibling precedent, not a match.
 - **Hold seams.** `PathDemand::of`, `LightmapDemand::update`. `begin_drain` carries the Settling flag and `update_targets` does not, so it needs plumbing. Tests `non_portal_path_keeps_sh_visible_and_stage_lead_classes`, `planar_mirror_adds_no_sh_reads_on_main_fallback`.
 - **Compiler seams.** Id 49 is emitted at pack, after id 51 exists, so the bound needs no new stage. Selection in `cluster_directory_bake`; `requested_resident_bytes` in `pack/cluster_sh_payloads`; Build Summary precedent in `mover_light_gate/summary.rs`.

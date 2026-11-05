@@ -348,6 +348,8 @@ Placed mesh entities carry `Transform.scale = 1`; no FGD or descriptor scale ove
 
 Solver uses a rigid, proper socket frame at its reference pose. Invalid, sheared, or reflected frames are rejected. Geometric barrel/up detection is an unverified assist, never authoring truth. `socket_dump` is a diagnostic/parity tool, not a required author workflow.
 
+**Mixamo licence.** Mixamo assets may live in a project's repo and ship in its game. They may not be offered as downloads for other creators. An SDK bundle copies the mod tree whole (`build_pipeline.md` §SDK bundle), so a published bundle carries any Mixamo assets in that tree.
+
 ---
 
 ## 8. Resource Ownership

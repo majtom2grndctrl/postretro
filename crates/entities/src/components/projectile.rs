@@ -34,7 +34,10 @@ pub struct ProjectileComponent {
     #[serde(default)]
     pub knockback_impulse: [f32; 3],
     pub credit_source: String,
-    /// The shot's registered damage type, frozen at fire.
+    /// The shot's registered damage-type index, resolved at fire. A shot is
+    /// short-lived, so the index is kept: a hot reload that reorders the types
+    /// while it flies may retype it, and an index past the live vocabulary
+    /// deals the default type.
     #[serde(default)]
     pub damage_type: Option<u16>,
     pub owner_pawn: EntityId,

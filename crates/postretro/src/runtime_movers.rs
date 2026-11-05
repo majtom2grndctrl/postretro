@@ -541,17 +541,20 @@ fn spawn_from_geometry_with_auto_close_default(
             );
             component.block_policy = block_policy_from_loaded(mover)?;
             component.crush_damage = mover.crush_damage;
-            component.crush_damage_type = mover.crush_damage_type.as_deref().and_then(|name| {
-                let index = registry.damage_type_index(Some(name));
-                if index.is_none() && warned_crush_types.insert(name.to_string()) {
-                    log::warn!(
-                        "[Loader] kinematic mover {} (`{}`) names unknown crush_damage_type `{name}`; it crushes with the default damage type",
-                        mover.mover_id,
-                        mover.name
-                    );
-                }
-                index
-            });
+            // The name is kept and resolved on each hit; this check only
+            // warns. The level still loads, and the mover deals the default
+            // type while the name stays unregistered.
+            if let Some(name) = mover.crush_damage_type.as_deref()
+                && registry.damage_type_index(Some(name)).is_none()
+                && warned_crush_types.insert(name.to_string())
+            {
+                log::warn!(
+                    "[Loader] kinematic mover {} (`{}`) names unknown crush_damage_type `{name}`; it crushes with the default damage type",
+                    mover.mover_id,
+                    mover.name
+                );
+            }
+            component.crush_damage_type = mover.crush_damage_type.clone();
             component.crush_interval_ms = mover.crush_interval_ms;
             component.auto_close_ms = mover.auto_close_ms.unwrap_or(mod_auto_close_ms);
             if component.auto_close_ms > 0.0 && component.waypoints.len() < 2 {
@@ -1423,27 +1426,29 @@ pub(crate) mod tests {
             let mover = registry
                 .get_component::<KinematicMoverComponent>(id)
                 .unwrap();
+            assert_eq!(mover.crush_damage_type.as_deref(), Some("missing"));
             assert_eq!(
-                mover.crush_damage_type, None,
+                registry.damage_type_index(mover.crush_damage_type.as_deref()),
+                None,
                 "an unknown name counts as absent, so the crush deals the default type"
             );
         }
         capture.assert_logged_once(log::Level::Warn, "unknown crush_damage_type `missing`");
 
-        // A registered name resolves to its index; a new level load warns again.
+        // A registered name is kept as authored and resolves on each hit.
         let mut known = geometry.clone();
         known.movers[0].crush_damage_type = Some("ballistic".to_string());
         known.movers[1].crush_damage_type = None;
         let mut registry_b = EntityRegistry::new();
         registry_b.set_defense_vocabulary(std::sync::Arc::clone(registry.defense_vocabulary()));
         let id = spawn_from_geometry(&mut registry_b, &known).unwrap()[0];
-        assert_eq!(
-            registry_b
-                .get_component::<KinematicMoverComponent>(id)
-                .unwrap()
-                .crush_damage_type,
-            Some(0)
-        );
+        let crush_type = registry_b
+            .get_component::<KinematicMoverComponent>(id)
+            .unwrap()
+            .crush_damage_type
+            .clone();
+        assert_eq!(crush_type.as_deref(), Some("ballistic"));
+        assert_eq!(registry_b.damage_type_index(crush_type.as_deref()), Some(0));
     }
 
     #[test]

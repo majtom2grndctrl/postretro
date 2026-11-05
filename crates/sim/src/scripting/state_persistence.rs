@@ -409,6 +409,14 @@ pub fn join_seed_from_persisted_state(
     slots
 }
 
+/// What [`apply_join_seed`] did: how many seed entries it wrote, and a
+/// warning for each one it rejected.
+#[derive(Debug, Default)]
+pub struct JoinSeedOutcome {
+    pub applied: usize,
+    pub warnings: Vec<String>,
+}
+
 /// Validate and apply an admitted player's join seed through the same durable
 /// identity and schema checks used by the restore path. A join seed is stricter
 /// about bounded numbers: out-of-range values are rejected rather than clamped
@@ -419,7 +427,7 @@ pub fn apply_join_seed(
     committed_store_slots: &BTreeSet<String>,
     seat: Seat,
     slots: BTreeMap<String, JoinSeedValue>,
-) -> Vec<String> {
+) -> JoinSeedOutcome {
     let authored_by_key = identity
         .map(|ledger| {
             ledger
@@ -431,6 +439,7 @@ pub fn apply_join_seed(
         })
         .unwrap_or_default();
     let mut warnings = Vec::new();
+    let mut applied = 0;
 
     for (durable_key, seed_value) in slots {
         let Some(name) = authored_by_key.get(durable_key.as_str()).copied() else {
@@ -457,12 +466,15 @@ pub fn apply_join_seed(
             Ok((_value, Some(warning))) => warnings.push(format!(
                 "join seed value for slot `{name}` is out of range; ignoring it ({warning})"
             )),
-            Ok((value, None)) => record.set_per_seat_value(seat, value),
+            Ok((value, None)) => {
+                record.set_per_seat_value(seat, value);
+                applied += 1;
+            }
             Err(warning) => warnings.push(format!("join seed {warning}")),
         }
     }
 
-    warnings
+    JoinSeedOutcome { applied, warnings }
 }
 
 /// Build the client-only document. It preserves retained player entries while
@@ -2278,7 +2290,7 @@ mod tests {
         let identity = fixture_identity();
         let membership = identity_membership(Some(&identity));
 
-        let warnings = apply_join_seed(
+        let outcome = apply_join_seed(
             &mut table,
             Some(&identity),
             &membership,
@@ -2291,7 +2303,8 @@ mod tests {
             ]),
         );
 
-        assert_eq!(warnings.len(), 3);
+        assert_eq!(outcome.warnings.len(), 3);
+        assert_eq!(outcome.applied, 1);
         assert_eq!(
             table.get("game.xp").unwrap().per_seat_value(Seat(7)),
             Some(&SlotValue::Number(42.0))
@@ -2316,7 +2329,7 @@ mod tests {
         let identity = fixture_identity();
         let membership = identity_membership(Some(&identity));
 
-        let warnings = apply_join_seed(
+        let outcome = apply_join_seed(
             &mut table,
             Some(&identity),
             &membership,
@@ -2327,7 +2340,8 @@ mod tests {
             )]),
         );
 
-        assert_eq!(warnings.len(), 1);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(outcome.applied, 0);
         assert_eq!(
             table.get("game.xp").unwrap().per_seat_value(Seat(7)),
             Some(&SlotValue::Number(0.0))

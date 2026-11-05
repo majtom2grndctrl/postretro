@@ -282,6 +282,12 @@ impl App {
                         &mut session.client_overlay_facts,
                         &mut session.host_overlay_fact_tracker,
                     );
+                    // The committed vocabulary and descriptors are live now.
+                    // Spawns before the next level install evaluate layer
+                    // parameters against them, not the previous commit's.
+                    postretro_sim::sim::defense_parameters::DefenseParameters::install(
+                        &session.scripting.script_ctx,
+                    );
                 }
                 self.install_presentation_templates(presentation_templates);
                 if let Some(endpoint) = self

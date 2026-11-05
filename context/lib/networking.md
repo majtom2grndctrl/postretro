@@ -916,7 +916,9 @@ there. Which resource the active weapon runs is not replicated: every role publi
 from its own active weapon, as it does the weapon name, so it leads the host-correlated
 values by up to a round trip after a local switch. A pawn with no inventory sends the
 HUD's reload defaults (no progress, not reloading) attributed to slot 0. `Unset` skips the
-write for plain and correlated slots alike, and a correlated slot is sent only from its
+write for plain and correlated slots alike, except a defense-layer slot: there it is the
+host's absence for a pawn without that layer and clears the owner's slot, so a layer the
+pawn loses never stays at its last value. A correlated slot is sent only from its
 projection, never from a plain table value. **Client fire prediction is presentation-gated
 only.** Every due shot predicts, resolves, and declares its contacts, including every shot
 in a multi-tick frame. Stale resource samples cannot stop semantic attempts or

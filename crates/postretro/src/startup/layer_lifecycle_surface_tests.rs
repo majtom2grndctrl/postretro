@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use glam::Vec3;
 use postretro_entities::components::defense_layers::DefenseLayersComponent;
+use postretro_entities::components::grant::grant_layer;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
@@ -211,6 +212,27 @@ impl World {
             .unwrap()
             .set_per_seat_value(seat, SlotValue::Number(value));
     }
+
+    /// Land a seed carrying `e16.shieldCapacity` = 100 for seat 1 through the
+    /// host's seed path.
+    fn seed_joiner(&self) {
+        let mut ledger = postretro_scripting_core::store_identity::StoreIdentityLedger::empty();
+        ledger
+            .slots
+            .insert(CAPACITY_SLOT.to_string(), "e16-cap".to_string());
+        crate::apply_host_join_seed(
+            &self.ctx,
+            &mut self.ctx.registry.borrow_mut(),
+            Some(&ledger),
+            &BTreeSet::from([CAPACITY_SLOT.to_string()]),
+            Seat(1),
+            [(
+                "e16-cap".to_string(),
+                postretro_net::wire::JoinSeedValue::Number(100.0),
+            )]
+            .into(),
+        );
+    }
 }
 
 fn approx(actual: f32, expected: f32) {
@@ -359,9 +381,9 @@ fn post_tick_hits_stamp_the_tick_they_follow() {
     approx(w.shield(host).0, 141.0);
 }
 
-// A join seed landing through the host's seed path marks
-// the seat's pawn; the next tick start redoes the spawn fill, before that
-// tick's hits, only for a layer full at its pre-seed capacity.
+// A join seed landing through the host's seed path settles the seat's pawn
+// at once: it redoes the spawn fill, before the next tick's hits, only for a
+// layer full at its pre-seed capacity.
 #[test]
 fn late_join_seed_refills_only_layers_full_at_pre_seed_capacity() {
     for pre_hit in [None, Some(20.0)] {
@@ -373,22 +395,9 @@ fn late_join_seed_refills_only_layers_full_at_pre_seed_capacity() {
         if let Some(amount) = pre_hit {
             w.hit(joiner, amount, DamageProducer::InTick);
         }
-        let mut ledger = postretro_scripting_core::store_identity::StoreIdentityLedger::empty();
-        ledger
-            .slots
-            .insert(CAPACITY_SLOT.to_string(), "e16-cap".to_string());
-        crate::apply_host_join_seed(
-            &w.ctx,
-            &mut w.ctx.registry.borrow_mut(),
-            Some(&ledger),
-            &BTreeSet::from([CAPACITY_SLOT.to_string()]),
-            Seat(1),
-            [(
-                "e16-cap".to_string(),
-                postretro_net::wire::JoinSeedValue::Number(100.0),
-            )]
-            .into(),
-        );
+        w.seed_joiner();
+        let expected = if pre_hit.is_none() { 150.0 } else { 30.0 };
+        assert_eq!(w.shield(joiner), (expected, 150.0), "settled at the seed");
         w.tick();
         if pre_hit.is_none() {
             assert_eq!(w.shield(joiner), (150.0, 150.0));
@@ -400,6 +409,20 @@ fn late_join_seed_refills_only_layers_full_at_pre_seed_capacity() {
     }
 }
 
+// A `grantLayer(shield, 0)` landing between the seed and the next tick start
+// evaluates the seeded capacity; the joiner still ends full at it.
+#[test]
+fn join_seed_refill_holds_through_a_zero_grant_before_the_next_tick() {
+    let mut w = world();
+    w.set_capacity(Seat(1), 0.0);
+    let (_, joiner) = w.materialize();
+    assert_eq!(w.shield(joiner), (50.0, 50.0));
+    w.seed_joiner();
+    grant_layer(&mut w.ctx.registry.borrow_mut(), joiner, "shield", Some(0.0));
+    w.tick();
+    assert_eq!(w.shield(joiner), (150.0, 150.0));
+}
+
 // A fresh joiner whose seed lands before its pawn materializes arrives
 // full at the seeded capacity: the seat bind evaluates with the seed's
 // per-owner values in place.
@@ -407,23 +430,8 @@ fn late_join_seed_refills_only_layers_full_at_pre_seed_capacity() {
 fn fresh_join_arrives_full_at_seeded_capacity() {
     let mut w = world();
     w.set_capacity(Seat(1), 0.0);
-    let mut ledger = postretro_scripting_core::store_identity::StoreIdentityLedger::empty();
-    ledger
-        .slots
-        .insert(CAPACITY_SLOT.to_string(), "e16-cap".to_string());
-    // No pawn holds seat 1 yet, so the seed marks nothing.
-    crate::apply_host_join_seed(
-        &w.ctx,
-        &mut w.ctx.registry.borrow_mut(),
-        Some(&ledger),
-        &BTreeSet::from([CAPACITY_SLOT.to_string()]),
-        Seat(1),
-        [(
-            "e16-cap".to_string(),
-            postretro_net::wire::JoinSeedValue::Number(100.0),
-        )]
-        .into(),
-    );
+    // No pawn holds seat 1 yet, so the seed settles nothing.
+    w.seed_joiner();
     let (_, joiner) = w.materialize();
     assert_eq!(
         w.shield(joiner),
@@ -432,4 +440,105 @@ fn fresh_join_arrives_full_at_seeded_capacity() {
     );
     w.tick();
     assert_eq!(w.shield(joiner), (150.0, 150.0));
+}
+
+/// A raw manifest whose player carries a `shield` layer with the expression
+/// capacity `const(capacity - 10) + const(10)`.
+fn write_shield_manifest(root: &std::path::Path, capacity: f32) {
+    let shield = serde_json::json!({"kind": "defenseLayer", "name": "shield"});
+    let capacity = serde_json::to_value(IrNode::Add {
+        a: Box::new(IrNode::Const {
+            value: IrValue::Number(capacity - 10.0),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(10.0),
+        }),
+    })
+    .unwrap();
+    let manifest = serde_json::json!({
+        "name": "Shield reload", "id": "shield-reload", "version": "1",
+        "defenseLayers": [shield],
+        "entities": [{"canonicalName": "player", "components": {
+            "movement": {
+                "capsule": {"radius": 0.4, "halfHeight": 0.8, "eyeHeight": 0.5},
+                "ground": {"speed": {"walk": 7, "run": 11, "crouch": 3}, "accel": 10,
+                    "stepHeight": 0.3, "maxSlope": 45},
+                "air": {"forwardSteer": 0, "accel": 0.7, "maxControlSpeed": 0.5,
+                    "bunnyHop": false, "jumps": 0, "jumpVelocity": 5.5, "jumpCeiling": 0},
+                "fall": {"terminalVelocity": 40}
+            },
+            "health": {"max": 100, "layers": [{"layer": shield, "capacity": capacity}]}
+        }}]
+    });
+    std::fs::write(
+        root.join("start-script.js"),
+        format!("globalThis.__postretroModManifest = {manifest};"),
+    )
+    .unwrap();
+}
+
+/// Queue a staged build of `root` and poll the App's commit until it lands.
+fn commit_staged(app: &mut crate::App, root: &std::path::Path) {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let generation = app
+        .session
+        .as_mut()
+        .unwrap()
+        .scripting
+        .script_runtime
+        .enqueue_staged_manifest_build(root)
+        .expect("staged build queued")
+        .expect("debug builds stage manifest reloads");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        app.poll_staged_manifest_results();
+        if app
+            .session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_runtime
+            .committed_staged_manifest_generation()
+            == Some(generation)
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "staged build {generation} never committed: {:#?}",
+            capture.records()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+// A staged commit with no level installed installs the layer evaluator over
+// the committed descriptors: a spawn before the next level install evaluates
+// the reloaded expression capacity, not the previous commit's.
+#[test]
+fn staged_commit_without_a_level_installs_the_layer_evaluator() {
+    let mut app = test_app();
+    let root = tempfile::tempdir().unwrap();
+    for capacity in [40.0, 70.0] {
+        write_shield_manifest(root.path(), capacity);
+        commit_staged(&mut app, root.path());
+    }
+    assert!(!app.has_installed_level());
+    let ctx = script_ctx(&app);
+    let descriptors = ctx.data_registry.borrow().entities.clone();
+    let pawn = spawn_from_player_starts_with_carried_loadout(
+        &[placement(0.0)],
+        &descriptors,
+        &mut ctx.registry.borrow_mut(),
+        None,
+        None,
+    )
+    .expect("the reloaded player descriptor spawns")
+    .pawn;
+    let registry = ctx.registry.borrow();
+    let layer = &registry
+        .get_component::<DefenseLayersComponent>(pawn)
+        .unwrap()
+        .layers[0];
+    assert_eq!((layer.value, layer.capacity), (70.0, 70.0));
 }

@@ -1342,9 +1342,11 @@ impl ClientStateApply {
     }
 
     /// Map a validated record's `StateSlotId` to its dotted slot name and engine value,
-    /// or `None` to skip the slot write. An `Unset` skips the write for every wire
-    /// shape, plain or correlated: it clears no Phase 3.5 player slot, and carries no
-    /// host wieldable slot to attribute a correlated absence to (that is `[slot]`).
+    /// or `None` to skip the slot write. An `Unset` clears a defense-layer slot
+    /// (`player.defense.<name>[.capacity]`), whose absence the host sends that
+    /// way. Any other slot skips the write, plain or correlated: it clears no
+    /// Phase 3.5 player slot, and carries no host wieldable slot to attribute a
+    /// correlated absence to (that is `[slot]`).
     /// An unmapped id never reaches here — the batch was schema-validated. The schema
     /// borrow is taken read-only.
     fn write_for(
@@ -1362,6 +1364,17 @@ impl ClientStateApply {
             return Ok(None);
         };
         if matches!(value, WireSlotValue::Unset) {
+            // A defense-layer slot's `Unset` is the host's absence for a pawn
+            // without that layer: it clears the slot.
+            if entry.wire_shape == ReplicatedWireShape::Plain
+                && postretro_scripting_core::player_slots::defense_slot(&entry.name).is_some()
+            {
+                return Ok(Some(PendingSlotWrite {
+                    name: entry.name,
+                    value: None,
+                    wieldable_slot: None,
+                }));
+            }
             return Ok(None);
         }
         match entry.wire_shape {

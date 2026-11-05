@@ -1,6 +1,7 @@
 // Player-layer reads by scope: a plain read in a player-event condition is
-// the evaluated player, `byPlayer(on.player)` is the event's player, an
-// unregistered layer fails the bind.
+// the evaluated player, `byPlayer(on.player)` is the event's player,
+// `byPlayer(impact.source)` is the damager, an unregistered layer fails the
+// bind, and a pawn without the layer reads absent on each path.
 // See: context/lib/scripting.md §11 (Defense layers), §12 (Player events)
 
 use std::sync::Arc;
@@ -12,8 +13,11 @@ use postretro_foundation::{
     BakedIr, BindingScope, CURRENT_IR_VERSION, IrNode, IrValue, Seat, bind, eval_value,
 };
 
+use crate::components::health::{DamageProducer, ImpactDispatch};
 use crate::ir_player_scope::PlayerConditionScope;
-use crate::ir_scopes::DispatchScope;
+use crate::ir_scopes::{DispatchScope, EntityScope};
+use log::Level;
+use postretro_test_log_capture::LogCapture;
 
 fn ctx() -> ScriptCtx {
     let ctx = ScriptCtx::new();
@@ -118,4 +122,74 @@ fn on_player_layer_read_reads_the_event_player() {
         assert_eq!(number(&program, &scope), 100.0);
     }
     assert!(bind(&read("player.defense.armor", Some("@player")), &scope).is_err());
+}
+
+// `byPlayer(on.player)` of a pawn without the layer reads absent: the scope
+// flags the fire missing, so the caller warns and skips the write.
+#[test]
+fn on_player_layer_read_of_a_pawn_without_the_layer_is_missing() {
+    let ctx = ctx();
+    let shielded = pawn(&ctx, Seat(1), Some(30.0));
+    let bare = pawn(&ctx, Seat(2), None);
+    let mut scope = DispatchScope::player_event(ctx.clone(), &[]);
+    let current = bind(&read("player.defense.shield", Some("@player")), &scope).expect("binds");
+
+    scope.seed_event_player(&ctx.registry.borrow(), Some(bare));
+    let _ = eval_value(&current, &scope);
+    assert!(scope.take_missing_event_player_value(), "absent without the layer");
+
+    scope.seed_event_player(&ctx.registry.borrow(), Some(shielded));
+    assert_eq!(number(&current, &scope), 30.0);
+    assert!(!scope.take_missing_event_player_value());
+}
+
+fn impact_from(target: EntityId, source: Option<EntityId>) -> ImpactDispatch {
+    ImpactDispatch {
+        amount: 1.0,
+        raw: 1.0,
+        absorbed: 0.0,
+        broke: false,
+        damage_type: None,
+        health_before: 10.0,
+        health_after: 9.0,
+        max_health: 10.0,
+        target,
+        source,
+        producer: DamageProducer::InTick,
+        point: None,
+    }
+}
+
+// `byPlayer(impact.source)` of a source without the layer reads absent, as an
+// absent engine owner read does in an impact policy: zero, warned once per
+// read however many hits read it. A source with the layer reads its value.
+#[test]
+fn impact_source_layer_read_of_a_source_without_the_layer_reads_zero_and_warns_once() {
+    let ctx = ctx();
+    let shielded = pawn(&ctx, Seat(1), Some(30.0));
+    let bare = pawn(&ctx, Seat(2), None);
+    let npc = ctx.registry.borrow_mut().spawn(Transform::default());
+    let target = ctx.registry.borrow_mut().spawn(Transform::default());
+    let mut scope = EntityScope::impact(ctx.clone());
+    let current =
+        bind(&read("player.defense.shield", Some("@impact.source")), &scope).expect("binds");
+
+    let capture = LogCapture::start();
+    for source in [Some(bare), Some(npc), None, Some(bare)] {
+        scope
+            .seed_impact(&impact_from(target, source))
+            .expect("impact fire seeds");
+        assert_eq!(number(&current, &scope), 0.0, "absent reads zero");
+    }
+    capture.assert_logged_once(
+        Level::Warn,
+        "owner read for slot `player.defense.shield`: the impact source is not a player or has no value; using zero",
+    );
+
+    capture.clear();
+    scope
+        .seed_impact(&impact_from(target, Some(shielded)))
+        .expect("impact fire seeds");
+    assert_eq!(number(&current, &scope), 30.0);
+    capture.assert_not_logged(Level::Warn, "owner read for slot `player.defense.shield`");
 }

@@ -277,3 +277,62 @@ fn connected_client_reads_layers_only_from_host() {
         other => panic!("client A reads {other:?}"),
     }
 }
+
+// A pawn that loses its layer (a hot reload drops it, or a respawn into a
+// descriptor without it) reads absent on its client as on the host: the host
+// sends the absence as a clear, never leaving the client on the last value.
+#[test]
+fn a_lost_layer_clears_the_owners_slot() {
+    let mut session = Session::new();
+    let pawn_a = session
+        .host
+        .registry
+        .borrow()
+        .pawn_for_seat(Seat(1))
+        .expect("client A's pawn holds seat 1");
+    let client_a = |session: &Session, name: &str| slot(&session.clients[0].1, name);
+    session.frame();
+    assert_eq!(
+        client_a(&session, "player.defense.shield"),
+        Some(SlotValue::Number(30.0))
+    );
+
+    {
+        let mut registry = session.host.registry.borrow_mut();
+        registry
+            .remove_component::<DefenseLayersComponent>(pawn_a)
+            .unwrap();
+        registry
+            .remove_component::<DefenseLayersComponent>(session.host_pawn)
+            .unwrap();
+    }
+    session.frame();
+    assert_eq!(client_a(&session, "player.defense.shield"), None);
+    assert_eq!(client_a(&session, "player.defense.shield.capacity"), None);
+    assert_eq!(
+        slot(&session.host, "player.defense.shield"),
+        None,
+        "the host's own pawn clears too"
+    );
+    // Acknowledged, the clear holds; client B never had the layer.
+    session.frame();
+    assert_eq!(client_a(&session, "player.defense.shield"), None);
+    assert_eq!(slot(&session.clients[1].1, "player.defense.shield"), None);
+
+    // Regaining the layer replicates its value again.
+    session
+        .host
+        .registry
+        .borrow_mut()
+        .set_component(pawn_a, shield(50.0, 50.0))
+        .unwrap();
+    session.frame();
+    assert_eq!(
+        client_a(&session, "player.defense.shield"),
+        Some(SlotValue::Number(50.0))
+    );
+    assert_eq!(
+        client_a(&session, "player.defense.shield.capacity"),
+        Some(SlotValue::Number(50.0))
+    );
+}

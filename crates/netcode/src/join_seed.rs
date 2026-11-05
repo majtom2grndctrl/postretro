@@ -347,7 +347,9 @@ mod tests {
             panic!("initial poll must apply its buffered seed at participation");
         };
         assert!(
-            apply_join_seed(&mut table, Some(&identity), &membership, seat, values,).is_empty()
+            apply_join_seed(&mut table, Some(&identity), &membership, seat, values)
+                .warnings
+                .is_empty()
         );
         table
             .get_mut("game.xp")
@@ -415,7 +417,9 @@ mod tests {
         };
         assert_eq!(routed_client, client_id);
         assert!(
-            apply_join_seed(&mut table, Some(&identity), &membership, seat, values,).is_empty()
+            apply_join_seed(&mut table, Some(&identity), &membership, seat, values)
+                .warnings
+                .is_empty()
         );
         assert_eq!(
             table

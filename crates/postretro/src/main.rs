@@ -1880,18 +1880,28 @@ fn apply_host_join_seed(
     seat: Seat,
     slots: BTreeMap<String, postretro_net::wire::JoinSeedValue>,
 ) {
-    for warning in apply_join_seed(
+    // Bound so the slot-table borrow ends before the layers evaluate.
+    let outcome = apply_join_seed(
         &mut script_ctx.slot_table.borrow_mut(),
         identity,
         committed_store_slots,
         seat,
         slots,
-    ) {
+    );
+    for warning in &outcome.warnings {
         log::warn!("[Net] {warning}");
     }
-    // The seat's layers redo their spawn fill at the next tick start.
+    if outcome.applied == 0 {
+        return;
+    }
+    // Settle now, as seat bind does: fullness is judged against the pre-seed
+    // capacity and refills to the seeded one before a grant, hit or level
+    // change can land.
     if let Some(pawn) = registry.pawn_for_seat(seat) {
-        postretro_entities::components::defense_layers::mark_layers_for_join_seed(registry, pawn);
+        use postretro_entities::components::defense_layers::{LayerRefill, settle_layers_now};
+        settle_layers_now(registry, pawn, |component| {
+            component.mark_unmarked(LayerRefill::IfFull);
+        });
     }
 }
 

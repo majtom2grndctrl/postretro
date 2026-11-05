@@ -32,6 +32,9 @@ pub enum EntityInputHandle {
     /// `impact.target.defense(h)`: a target layer read, by bound index.
     Defense(usize),
     /// `h.current.byPlayer(impact.source)`: the source player's layer read.
+    /// A source without that layer (a pawn that lacks it, or a source that is
+    /// not a player) reads absent, as an engine per-player slot does here:
+    /// zero, with one warning per scope and read.
     OwnedDefense(usize),
 }
 
@@ -82,6 +85,11 @@ pub struct EntityScope {
     /// The source player's layer reads; none for a source that is not a
     /// player pawn.
     owner_defense: crate::components::defense_layers::DefenseReads,
+    /// The slot name of each `owner_defense` read, by bound index, for the
+    /// absent-read warning.
+    owner_defense_names: RefCell<Vec<String>>,
+    /// `owner_defense` reads already warned about as absent, by bound index.
+    warned_owned_defense: RefCell<Vec<usize>>,
     /// Engine owner reads already warned about, one bit per
     /// `PlayerSlot::index()`: an absent value warns once per scope, not once
     /// per hit.
@@ -124,6 +132,8 @@ impl EntityScope {
             impact_type: None,
             target_defense: Default::default(),
             owner_defense: Default::default(),
+            owner_defense_names: RefCell::new(Vec::new()),
+            warned_owned_defense: RefCell::new(Vec::new()),
             warned_owned_engine: std::cell::Cell::new(0),
             warned_owned_store: RefCell::new(Vec::new()),
         }
@@ -229,6 +239,26 @@ impl EntityScope {
             }
             slot.ir_type().zero()
         })
+    }
+
+    /// The source player's layer read `index`. A layer the source lacks is
+    /// absent (`context/lib/scripting.md` §5, Defense layer slots); like an
+    /// absent engine owner read it reads zero and warns once per scope and
+    /// read.
+    fn read_owned_defense(&self, index: usize) -> IrValue {
+        if let Some(value) = self.owner_defense.get(index) {
+            return IrValue::Number(value);
+        }
+        let mut warned = self.warned_owned_defense.borrow_mut();
+        if !warned.contains(&index) {
+            warned.push(index);
+            let names = self.owner_defense_names.borrow();
+            let name = names.get(index).map_or("player.defense", String::as_str);
+            log::warn!(
+                "[Impact] owner read for slot `{name}`: the impact source is not a player or has no value; using zero"
+            );
+        }
+        IrValue::Number(0.0)
     }
 
     fn bind_state_name(&self, name: &str) -> usize {
@@ -415,8 +445,13 @@ impl BindingScope for EntityScope {
             if !self.declares_defense_layer(layer) {
                 return None;
             }
+            let index = self.owner_defense.bind(layer, capacity);
+            let mut names = self.owner_defense_names.borrow_mut();
+            if index == names.len() {
+                names.push(name.to_string());
+            }
             return Some(ResolvedInput {
-                handle: EntityInputHandle::OwnedDefense(self.owner_defense.bind(layer, capacity)),
+                handle: EntityInputHandle::OwnedDefense(index),
                 ir_type: IrType::Number,
             });
         }
@@ -474,9 +509,7 @@ impl BindingScope for EntityScope {
             EntityInputHandle::Defense(index) => {
                 IrValue::Number(self.target_defense.get(*index).unwrap_or(0.0))
             }
-            EntityInputHandle::OwnedDefense(index) => {
-                IrValue::Number(self.owner_defense.get(*index).unwrap_or(0.0))
-            }
+            EntityInputHandle::OwnedDefense(index) => self.read_owned_defense(*index),
         }
     }
 

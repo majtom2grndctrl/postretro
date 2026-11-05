@@ -202,7 +202,10 @@ pub enum EventPlayerHandle {
     Engine(PlayerSlot),
     /// A mod per-owner slot, read for the fire's seat.
     Store(StoreHandle),
-    /// A layer read, `player.defense.<name>[.capacity]`, by bound index.
+    /// A layer read, `player.defense.<name>[.capacity]`, by bound index. A
+    /// pawn without that layer reads absent, as any event-player value with no
+    /// source does: the read marks the fire missing and the caller warns and
+    /// skips the write.
     Defense(usize),
 }
 

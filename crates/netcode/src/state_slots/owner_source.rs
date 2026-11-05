@@ -20,8 +20,10 @@ pub(super) fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<
 /// weapon cooldown, ammo, heat,
 /// cell, and reload state resolve through its `Inventory` to the sibling
 /// `WeaponComponent`;
-/// ammo reserve reads the owning pawn's `AmmoReserve`. Per-owner mod slots read
-/// the value for this pawn's seat before the global fallback. Any other
+/// ammo reserve reads the owning pawn's `AmmoReserve`; a defense-layer slot reads
+/// the pawn's layer, and a pawn without it yields `Unset`, which clears the
+/// owner's slot. Per-owner mod slots read the value for this pawn's seat before
+/// the global fallback. Any other
 /// owner-private slot falls back to the slot table's current global value.
 /// `None` when no source value exists.
 pub(super) fn owner_private_source_value(
@@ -32,6 +34,17 @@ pub(super) fn owner_private_source_value(
     _weapon_owners: &WeaponOwners,
     weapon_slots: &WeaponSlotProjection,
 ) -> Option<WireSlotValue> {
+    if let Some(value) =
+        postretro_scripting_core::player_slots::defense_slot_value(registry, name, pawn)
+    {
+        // A pawn without the layer reads absent on its client as on the host,
+        // so the absence is sent as `Unset`, the client's clear. Sending
+        // nothing would leave a layer the pawn lost at its last value there.
+        return match value {
+            Some(value) => slot_value_to_wire(&value),
+            None => Some(WireSlotValue::Unset),
+        };
+    }
     if let Some(value) = pawn_component_slot_for_pawn(registry, name, pawn) {
         // A pawn with no source sends nothing rather than falling through to
         // the global scalar, which is the host's own value.
@@ -202,11 +215,6 @@ pub(super) fn pawn_component_slot_for_pawn(
     name: &str,
     pawn: EntityId,
 ) -> Option<Option<SlotValue>> {
-    if let Some(value) =
-        postretro_scripting_core::player_slots::defense_slot_value(registry, name, pawn)
-    {
-        return Some(value);
-    }
     let slot = PlayerSlot::from_name(name).filter(|slot| !slot.reads_active_weapon())?;
     Some(player_slot_value(registry, slot, pawn))
 }

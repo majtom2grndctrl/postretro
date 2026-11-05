@@ -31,8 +31,9 @@ pub struct DefenseLayer {
     /// layer only.
     pub resist: Vec<Resist>,
     /// A lifecycle refill waiting for the next evaluation of this layer's
-    /// parameters: seat bind, or the tick start after a join seed or a hot
-    /// reload. Host-only bookkeeping, never replicated.
+    /// parameters: the tick start after a hot reload, or a seat bind, join
+    /// seed or respawn, which settle at once. Host-only bookkeeping, never
+    /// replicated.
     #[serde(default)]
     pub refill: LayerRefill,
 }
@@ -241,7 +242,7 @@ fn keep_last_good_resists(
 
 /// Evaluate `id`'s layer parameters now and settle its pending refills,
 /// after `prepare` marks them. Paths where the next tick start is too late
-/// use this: seat bind and respawn.
+/// use this: seat bind, join seed and respawn.
 pub fn settle_layers_now(
     registry: &mut EntityRegistry,
     id: EntityId,
@@ -277,17 +278,6 @@ pub fn refill_layers_on_respawn(registry: &mut EntityRegistry, pawn: EntityId) {
             layer.refill = LayerRefill::Fill;
         }
     });
-}
-
-/// A join seed landed for `pawn`'s seat: at the next tick start, before any
-/// hit, redo the spawn fill for each layer full at its pre-seed capacity.
-pub fn mark_layers_for_join_seed(registry: &mut EntityRegistry, pawn: EntityId) {
-    let Ok(component) = registry.get_component::<DefenseLayersComponent>(pawn) else {
-        return;
-    };
-    let mut component = component.clone();
-    component.mark_unmarked(LayerRefill::IfFull);
-    let _ = registry.set_component(pawn, component);
 }
 
 /// The layer reads one IR scope has bound — `(layer, reads capacity)` — and

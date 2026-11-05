@@ -542,6 +542,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
         .field("knockback?", "KnockbackDescriptor", "Optional direct-hit push. Applies per hitscan pellet or projectile entity contact, independently of damage. Composes with splash.knockback when both are authored.")
         .field("damage", "f32", "Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0.")
+        .field("damageType?", "DamageType", "Optional damage type this weapon deals, a handle `defineMod({ damageTypes })` registers. Omit to deal the mod's `defaultDamageType`. Applies to every direct hit and splash.")
         .field("pelletCount?", "u32", "Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.")
         .field("spreadDegrees?", "f32", "Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).")
         .field("bloomPerShotDegrees?", "f32", "Hitscan-only sustained-fire bloom added after each resolved hitscan shell, in degrees. Range: 0..=45; defaults to 0.")
@@ -640,10 +641,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("AttackParams")
-        .doc("One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds.")
+        .doc("One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds.")
         .alias(
-            "{ weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string }",
-            "{ weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }",
+            "{ weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string }",
+            "{ weapon: never?, damage: number, damageType: DamageType?, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, damageType: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }",
         )
         .finish();
     registry

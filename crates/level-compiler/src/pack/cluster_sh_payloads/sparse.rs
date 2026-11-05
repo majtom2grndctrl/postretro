@@ -182,6 +182,20 @@ impl<'a> SparseSource<'a> {
         .map_err(Into::into)
     }
 
+    /// `(entries, tile_f16)` of every row, in the pools' units: a row holds
+    /// `tile_count` f16 values for each of its entries.
+    pub(super) fn row_units(&self) -> anyhow::Result<Vec<(u32, u32)>> {
+        (0..u32::try_from(self.valid_probe_masks.len())?)
+            .map(|row| {
+                let entries = self.entry_count(row)?;
+                let tile_f16 = entries
+                    .checked_mul(self.tile_count(row)?)
+                    .ok_or_else(|| anyhow::anyhow!("id-50 sparse row tile count overflow"))?;
+                Ok((entries, tile_f16))
+            })
+            .collect()
+    }
+
     fn tile_range(&self, row: u32) -> anyhow::Result<Vec<&'a [u16]>> {
         self.entry_range(row)?
             .map(|entry| {
@@ -245,16 +259,27 @@ pub(super) fn encode_sparse_block(
                 .ok_or_else(|| anyhow::anyhow!("id-50 sparse tile cursor overflow"))?;
         }
     }
+    // A row's hash covers its lights and tile bytes and none of the cursors
+    // above, which depend on what else this chunk carries.
+    let mut row_hashes = Vec::with_capacity(rows.len());
     for row in rows {
-        for entry_tiles in source.tile_range(*row)? {
+        let mut hasher = blake3::Hasher::new();
+        let entries = source.entry_range(*row)?;
+        for (entry, entry_tiles) in entries.zip(source.tile_range(*row)?) {
+            hasher.update(&source.affinity_lights[entry].to_le_bytes());
+            hasher.update(&u64::try_from(entry_tiles.len())?.to_le_bytes());
+            let tiles_start = body.len();
             for value in entry_tiles {
                 body.extend_from_slice(&value.to_le_bytes());
             }
+            hasher.update(&body[tiles_start..]);
         }
+        row_hashes.push(hasher.finalize());
     }
     Ok(EncodedSparse {
         section_id: source.section_id,
         rows: rows.to_vec(),
+        row_hashes,
         body,
     })
 }

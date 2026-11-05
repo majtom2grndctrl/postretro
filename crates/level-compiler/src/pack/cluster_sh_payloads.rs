@@ -19,12 +19,15 @@ use postretro_level_format::cluster_sh_payloads::{
 };
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
+use super::sh_mandatory_bound::ClusterStorageDemand;
 use super::{FinalizedShEmissionView, FinalizedShPackSources, PlannedSection};
 
 #[path = "cluster_sh_payloads/atlas.rs"]
 mod atlas;
 #[path = "cluster_sh_payloads/dense.rs"]
 mod dense;
+#[path = "cluster_sh_payloads/shared_bytes.rs"]
+mod shared_bytes;
 #[path = "cluster_sh_payloads/sparse.rs"]
 mod sparse;
 #[path = "cluster_sh_payloads/wire.rs"]
@@ -32,6 +35,7 @@ mod wire;
 
 use dense::ChunkPlan;
 use dense::DenseNode;
+use shared_bytes::SharedBytesCheck;
 use sparse::SparseSources;
 use wire::{
     BLOCK_KIND_ISOLATED_ATLAS, BLOCK_KIND_PROBE_PATCHES, EncodedBlock, EncodedSparse,
@@ -45,9 +49,15 @@ pub(super) struct ClusterPayloadSpool {
     section: ClusterShPayloadsSection,
     payload_len: u64,
     spool: NamedTempFile,
+    storage_demand: ClusterStorageDemand,
 }
 
 impl ClusterPayloadSpool {
+    /// What each cluster's chunk stores, for the mandatory bound.
+    pub(super) fn storage_demand(&self) -> &ClusterStorageDemand {
+        &self.storage_demand
+    }
+
     pub(super) fn into_planned_section(self) -> anyhow::Result<PlannedSection<'static>> {
         let metadata = self
             .section
@@ -95,12 +105,19 @@ pub(super) fn build_cluster_payload_spool(
         emission.animated_direct_delta,
     )?;
     let plan = ChunkPlan::new(validation_inputs, sparse_sources)?;
+    let storage_demand = plan.storage_demand()?;
     let mut spool = create_spool(output)?;
     let mut index = Vec::with_capacity(directory.clusters.len());
     let mut payload_len = 0u64;
+    let mut shared_bytes = SharedBytesCheck::default();
 
     for cluster_id in 0..u32::try_from(directory.clusters.len())? {
-        let chunk = plan.encode_chunk(cluster_id, sources.octahedral, sources.direct)?;
+        let chunk = plan.encode_chunk(
+            cluster_id,
+            sources.octahedral,
+            sources.direct,
+            &mut shared_bytes,
+        )?;
         let chunk_len = u64::try_from(chunk.bytes.len())?;
         spool.as_file_mut().write_all(&chunk.bytes)?;
         index.push(ClusterShPayloadsIndexRecord {
@@ -147,6 +164,7 @@ pub(super) fn build_cluster_payload_spool(
         section,
         payload_len,
         spool,
+        storage_demand,
     })
 }
 
@@ -172,6 +190,10 @@ fn create_spool(output: &Path) -> anyhow::Result<NamedTempFile> {
             )
         })
 }
+
+#[cfg(test)]
+#[path = "cluster_sh_payloads/shared_storage_tests.rs"]
+mod shared_storage_tests;
 
 #[cfg(test)]
 mod tests {

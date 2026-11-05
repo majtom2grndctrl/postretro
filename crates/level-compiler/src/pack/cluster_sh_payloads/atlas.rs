@@ -13,6 +13,9 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::{BLOCK_KIND_ISOLATED_ATLAS, DenseNode, EncodedBlock, push_u32};
 
+/// Format, slot count, width, height, layers.
+const ISOLATED_ATLAS_HEADER_BYTES: usize = 20;
+
 #[derive(Clone, Copy)]
 pub(super) struct DenseAtlasGeometry {
     dimensions: [u32; 2],
@@ -57,7 +60,7 @@ impl EncodedBlock {
             .ok_or_else(|| anyhow::anyhow!("id-50 isolated atlas layout exceeds format cap"))?;
         let rgba = isolated_rgba16f_atlas(source_atlas, source_geometry, nodes, &layout)?;
         let payload = encode_isolated_atlas_payload(&rgba, &layout, format)?;
-        let mut body = Vec::with_capacity(20 + payload.len());
+        let mut body = Vec::with_capacity(ISOLATED_ATLAS_HEADER_BYTES + payload.len());
         push_u32(&mut body, format);
         push_u32(&mut body, slot_count);
         push_u32(&mut body, layout.atlas_width);
@@ -70,6 +73,70 @@ impl EncodedBlock {
             element_count: slot_count,
             body,
         })
+    }
+
+    /// Feed `node`'s tiles, as this encoded atlas stores them, to `hasher`.
+    /// Whole tiles only: a chunk's padding and a node's place in the atlas
+    /// depend on what else the chunk carries, so they must not reach the hash.
+    pub(super) fn hash_node_tiles(
+        &self,
+        node: &DenseNode,
+        hasher: &mut blake3::Hasher,
+    ) -> anyhow::Result<()> {
+        let header = self
+            .body
+            .get(..ISOLATED_ATLAS_HEADER_BYTES)
+            .ok_or_else(|| anyhow::anyhow!("id-50 isolated atlas lacks a header"))?;
+        let word = |index: usize| {
+            u32::from_le_bytes([
+                header[index * 4],
+                header[index * 4 + 1],
+                header[index * 4 + 2],
+                header[index * 4 + 3],
+            ])
+        };
+        let (format, slot_count) = (word(0), word(1));
+        let layout = cluster_sh_isolated_atlas_array_layout(slot_count)
+            .ok_or_else(|| anyhow::anyhow!("id-50 isolated atlas layout exceeds format cap"))?;
+        let width = usize::try_from(layout.atlas_width)?;
+        let height = usize::try_from(layout.atlas_height)?;
+        // A tile is one run of `run_bytes` on each of `run_count` rows of the
+        // format's storage: texel rows, or rows of 4×4 BC6H blocks. BC6H only
+        // splits on tile edges when the atlas is whole tiles, which 8×8 tiles
+        // of 4×4 blocks are.
+        anyhow::ensure!(
+            width % 8 == 0 && height % 8 == 0,
+            "id-50 isolated atlas {width}x{height} is not whole 8x8 tiles"
+        );
+        let (run_count, run_bytes, row_bytes, layer_bytes) = match format {
+            IRRADIANCE_FORMAT_RGBA16F => (8, 8 * 8, width * 8, width * height * 8),
+            IRRADIANCE_FORMAT_BC6H => (2, 2 * 16, width / 4 * 16, (width / 4) * (height / 4) * 16),
+            _ => anyhow::bail!("id-50 dense source uses unknown irradiance format {format}"),
+        };
+        let payload = &self.body[ISOLATED_ATLAS_HEADER_BYTES..];
+        for node_offset in 0..node.stored_tile_count {
+            let local_slot = node
+                .local_base
+                .checked_add(node_offset)
+                .ok_or_else(|| anyhow::anyhow!("id-50 local stored slot overflow"))?;
+            let [layer, tile_x, tile_y] = irradiance_array_tile_location(
+                usize::try_from(local_slot)?,
+                layout.tiles_per_layer,
+                layout.atlas_tiles_per_row,
+            );
+            let tile_start = usize::try_from(layer)? * layer_bytes
+                + usize::try_from(tile_y)? * run_count * row_bytes
+                + usize::try_from(tile_x)? * run_bytes;
+            for run in 0..run_count {
+                let start = tile_start + run * row_bytes;
+                hasher.update(
+                    payload
+                        .get(start..start + run_bytes)
+                        .ok_or_else(|| anyhow::anyhow!("id-50 tile exceeds isolated atlas"))?,
+                );
+            }
+        }
+        Ok(())
     }
 }
 

@@ -10,7 +10,7 @@ use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
     CLUSTER_FLAG_INDIVISIBLE_OVERSIZE, CLUSTER_HINT_FLAG_PINNED, CanonicalCellPartition,
     ClusterDirectorySection, ClusterDirectoryValidationInputs, ClusterHintRecord, ClusterRecord,
-    ShMandatoryBoundEntry, canonical_cell_partition, populate_canonical_resource_ranges,
+    canonical_cell_partition, populate_canonical_resource_ranges,
 };
 use postretro_level_format::portals::PortalsSection;
 
@@ -168,7 +168,8 @@ fn bake_cluster_directory_with_hints_and_limits(
         ranges: Vec::new(),
         seam_portal_ids: streaming_hints.seam_portal_ids.clone(),
         cluster_hints,
-        mandatory_bound: initial_sh_mandatory_bound(),
+        // Pack computes the bound from its chunk node sets, after this bake.
+        mandatory_bound: Vec::new(),
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells,
@@ -202,13 +203,6 @@ fn bake_cluster_directory_with_hints_and_limits(
         },
         directory,
     })
-}
-
-/// Id-49 bound entries of a freshly baked directory: none, so it writes
-/// `bound_count` 0. The bound prices per-cluster node sets, which exist only
-/// once pack has built `ChunkPlan`, after this directory.
-fn initial_sh_mandatory_bound() -> Vec<ShMandatoryBoundEntry> {
-    Vec::new()
 }
 
 fn cluster_hints_for_partition(

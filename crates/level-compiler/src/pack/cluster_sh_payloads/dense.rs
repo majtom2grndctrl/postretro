@@ -16,7 +16,9 @@ use postretro_level_format::sh_volume::{
     OctahedralShProbe, OctahedralShVolumeSection, validate_probe_metadata,
 };
 
+use super::super::sh_mandatory_bound::{ClusterLists, ClusterStorageDemand, SparseFamilyDemand};
 use super::atlas::DenseAtlasGeometry;
+use super::shared_bytes::SharedBytesCheck;
 use super::sparse::{SparseSources, affinity_indices, encode_sparse_block};
 use super::{BLOCK_KIND_PROBE_PATCHES, EncodedBlock, EncodedSparse, encode_chunk_wire, push_u32};
 
@@ -92,6 +94,7 @@ impl<'a> ChunkPlan<'a> {
         cluster_id: u32,
         indirect_source: &OctahedralShVolumeSection,
         direct_source: Option<&DirectShVolumeSection>,
+        shared_bytes: &mut SharedBytesCheck,
     ) -> anyhow::Result<EncodedChunk> {
         let dense_indices = dense_indices(self.inputs.directory, cluster_id)?
             .into_iter()
@@ -113,7 +116,9 @@ impl<'a> ChunkPlan<'a> {
         for source in self.sparse_sources.iter() {
             let rows = affinity_indices(self.inputs.directory, cluster_id, source.section_id)?;
             if !rows.is_empty() {
-                sparse_chunks.push(encode_sparse_block(source, &rows)?);
+                let sparse = encode_sparse_block(source, &rows)?;
+                shared_bytes.record_rows(cluster_id, &sparse)?;
+                sparse_chunks.push(sparse);
             }
         }
         let affinity_patch_count = sparse_chunks.iter().try_fold(0u32, |total, sparse| {
@@ -151,6 +156,7 @@ impl<'a> ChunkPlan<'a> {
                     &dense_nodes,
                 )?);
             }
+            shared_bytes.record_nodes(cluster_id, &dense_nodes, &blocks)?;
         }
         blocks.extend(sparse_chunks.into_iter().map(EncodedSparse::into_block));
         blocks.sort_by_key(|block| (block.section_id, block.kind));
@@ -168,6 +174,50 @@ impl<'a> ChunkPlan<'a> {
             stored_tile_count,
             dense_patch_count,
             affinity_patch_count,
+        })
+    }
+
+    /// What each cluster stores, for the mandatory bound. These are the same
+    /// sets the chunks are encoded from, so the bound cannot price anything
+    /// but what a chunk carries.
+    pub(super) fn storage_demand(&self) -> anyhow::Result<ClusterStorageDemand> {
+        let directory = self.inputs.directory;
+        let mut cluster_nodes = ClusterLists::default();
+        for nodes in &self.dense_nodes {
+            let nodes = nodes
+                .iter()
+                .map(|node| u32::try_from(*node))
+                .collect::<Result<Vec<_>, _>>()?;
+            cluster_nodes.push(nodes);
+        }
+        let mut families = Vec::with_capacity(self.sparse_sources.iter().count());
+        for (resource_index, resource) in directory.resources.iter().enumerate() {
+            let Some(source) = self
+                .sparse_sources
+                .iter()
+                .find(|source| source.section_id == resource.section_id)
+            else {
+                continue;
+            };
+            let mut cluster_rows = ClusterLists::default();
+            for cluster_id in 0..u32::try_from(directory.clusters.len())? {
+                cluster_rows.push(affinity_indices(directory, cluster_id, source.section_id)?);
+            }
+            families.push(SparseFamilyDemand {
+                resource_index: u32::try_from(resource_index)?,
+                cluster_rows,
+                row_units: source.row_units()?,
+            });
+        }
+        Ok(ClusterStorageDemand {
+            cluster_nodes,
+            node_slots: self
+                .prefix
+                .bricks
+                .iter()
+                .map(|brick| brick.stored_tile_count)
+                .collect(),
+            families,
         })
     }
 

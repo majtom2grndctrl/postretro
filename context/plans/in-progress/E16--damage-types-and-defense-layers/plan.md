@@ -48,6 +48,10 @@ Source is unchanged since the brief's `read at` 44881f79: only `context/` and `R
 - **Luau resolves a relative `require` against the mod root.** → The dev Luau scripts require `./scripts/defenses.luau` and `./scripts/damage-types.luau`; harnesses root their Luau state at `content/dev`. `faction-sentiment.luau`'s existing `require("./reference-enemy.luau")` predates E16 and would not resolve under that rule; it is flagged to the owner, not changed here.
 - **Hot reload defers its first evaluation to the next tick start.** R-P15's ordering column says a reload "evaluates the new parameters itself, as spawn does". T7 built it otherwise: `DefenseLayersComponent::refreshed` keeps values and last good parameters by name and marks added layers to fill, and the next tick start evaluates, before any hit. R-P15's outcome ("the first tick after the reload") holds. On the owner's direction (2026-11-05), the amendment Decision and the Path's placement bullet now say so; the pin row stays as written.
 
+- **Text edits are body verbs too.** research.md §Body order says text-entry edits are not reaction steps and stay on the drain. `appendText`, `backspaceText` and `clearText` are also body-reachable system reactions, so `[clearText(x), setState(x, "P")]` ended `""`. → A body's text edit writes at dispatch through the same sink as `setState` (`StateWriteSink::edit_text`). Hardware keystrokes from the text-entry path still push onto the queue and land at the drain. On-screen keyboard keys fire reactions, so theirs land at dispatch. Proof: `level_load_text_edits_land_at_dispatch_in_body_order_on_every_machine`, `installed_sink_applies_text_edits_and_set_state_in_call_order`.
+- **`levelLoad` writes now land at install, not at reveal.** This follows from the body-order Decision and has two consequences the brief does not pin. (a) A load abandoned before reveal keeps its `levelLoad` store writes, because the slot table outlives the level; before, the queued writes were discarded. (b) On a connected client, a `levelLoad` IR `setState` that reads a host-replicated slot evaluates before the host baseline arrives, so it reads that slot's local value. → Comments in `lifecycle_net.rs` and `lifecycle_world_cpu.rs` state both. Raised with the owner at T12.
+- **Review-panel fixes beyond the brief's text.** Absent-layer reads through `impact.source` now read 0 and warn once per read, matching the scope's other absent owner reads, where they read 0 silently. A pawn that loses a layer now replicates `Unset` for its owner-private defense slots, and the client clears them (`networking.md` names the exception). The crush damage type is stored by name and resolved on each hit, so a hot reload that reorders `damageTypes` can't retype a crusher. `drain_hit` falls back to the default type for an out-of-range explicit index.
+
 ## Delegated answers
 
 - **Where the layer storage lives.** Per-entity layer values, last good parameter values and the last-hit stamp are a POD component column in `entities`, the registry's closed vocabulary. Matrix math, drain order and recharge live in `combat-model` (pure, unit-testable) and `sim`. This keeps domain logic out of the `entities` chokepoint (development_guide §Layering invariants).
@@ -58,97 +62,97 @@ Source is unchanged since the brief's `read at` 44881f79: only `context/` and `R
 
 Test names are the planned focused tests. Each lands in the crate shown, and each run confirms the filter matched.
 
-| AC | Row | Proof | Status |
-|---|---|---|---|
-| D1 | TS/Luau declare and register, identical descriptors; handles cross as `{kind,name}`; Luau re-`require` resolves | `postretro`: `e16_ts_and_luau_mods_produce_identical_vocabulary_manifests` (dev TS + `e16-luau-mod` fixture), `luau_descriptor_requiring_defenses_again_resolves_registered_layers` | achievable as stated |
-| D2 | level script `impact.type(shock)` policy and `.damage(n,{type})` | `postretro`: `level_script_handles_reference_registered_vocabulary` | achievable as stated |
-| D3 | level re-declare / Luau re-require uses manifest matrix | `postretro`: `redeclared_damage_type_drains_by_the_registered_matrix` | achievable as stated |
-| D4 | sugar diagnostic cases; explicit and computed names load | `script-compiler`: `binding_name_sugar_names_defense_layers_and_damage_types`, `binding_name_sugar_leaves_non_object_first_args_explicit`; `postretro`: `defense_definers_without_name_raise_binding_name_diagnostic` (TS + Luau) | achievable as stated |
-| D5 | load-fail list with valid siblings | `scripting-core`: table test `defense_vocabulary_load_failures_name_the_key_path` + `defense_vocabulary_valid_siblings_load` | achievable as stated |
-| D6 | bad reference per surface: install drop, HUD warn, overlay skip, unknown `.damage` key | `postretro`: `bad_defense_reference_drops_only_its_definition_at_install`; `ui`: `unknown_layer_binding_warns_once_at_tree_build`; `sim`: `overlay_bad_layer_reference_skips_shield_pair` | achievable as stated |
-| D7 | per-owner layer expr loads on player, fails on enemy | `scripting-core`: `layer_expression_per_owner_read_is_player_only` | achievable as stated |
-| D8 | unknown `crush_damage_type` warns once per name per load | `postretro`: `unknown_crush_damage_type_warns_once_and_crushes_as_default` | achievable as stated (PRL V8 — see Corrections) |
-| X1 | no-vocabulary parity; existing suites unmodified (except hide-at-full shield pair) | existing chokepoint / ledger / impact-policy / overlay suites green unmodified; diff review of test files | achievable as stated |
-| X2 | no default = ×1 untyped; default ballistic melee/script/crush (R-P36) | `sim`: `default_damage_type_types_every_untyped_producer` | achievable as stated |
-| X3 | dev weapons typed; ballistic ×0.8 armor; plasma numbers | `postretro`: `dev_weapons_name_their_damage_types`; `sim`: `plasma_bolt_strips_shield_and_spills_to_health` | achievable as stated |
-| X4 | rocket splash explosive numbers | `sim`: `explosive_splash_cracks_armor_and_flesh` (from T3) | achievable as stated |
-| X5 | harnesses loading dev scripts pass, both runtimes | `scripting-core` `tests::behavior` / `tests::sounds`, `ai` `ai_tests`, `sim` `real_dummy_hit_tests`, `postretro` `conditioned_tests` green | achievable as stated |
-| X6 | ordered spillover 0/0/80 | `combat-model`: `untyped_hit_spills_in_layer_order` | achievable as stated |
-| X7 | dev default 0/0/92.5; R-P12 variant | `combat-model`: `ballistic_default_spills_raw_remainder`; `sim`: `latched_armor_hit_under_ballistic_default` | achievable as stated |
-| X8 | shock 20 raw spillover | `combat-model`: `spillover_carries_raw_not_scaled_remainder` | achievable as stated |
-| X9 | bypass / health 0 / immune (R-P30, R-P11) | `combat-model`: `bypass_passes_layer_untouched_whatever_its_resist`, `zero_health_multiplier_deals_no_health_damage`; `sim`: `resist_zero_everywhere_is_immune_but_restamps` | achievable as stated |
-| X10 | layer resist scales only its layer (R-P32) | `combat-model`: `layer_resist_scales_that_layer_only` | achievable as stated |
-| X11 | `health.resist` scales only health (R-P33) | `combat-model`: `health_resist_scales_health_only` | achievable as stated |
-| X12 | shield resist 0 absorbs everything (R-P34) | `combat-model` + `sim`: `zero_resist_layer_absorbs_while_above_zero` | achievable as stated |
-| X13 | expression resist tracks store next tick, clamps (R-P35) | `sim`: `expression_resist_applies_from_next_tick_and_clamps` | achievable as stated |
-| X14 | ×0 layer stops the hit (R-P29, R-P31, R-P30) | `combat-model` + `sim`: `zero_multiplier_layer_stops_the_rest_of_the_hit` | achievable as stated |
-| X15 | fully absorbed hit facts, no latch | `sim`: `fully_absorbed_hit_dispatches_and_never_latches` | achievable as stated |
-| X16 | shock 20 facts raw/amount/absorbed/health delta; bypass-all absorbed 0 | `sim`: `impact_facts_split_raw_points_dealt_and_absorbed` | achievable as stated |
-| X17 | zero-valued layer skipped, no broke | `combat-model`: `empty_layer_is_skipped_and_never_breaks` | achievable as stated |
-| X18 | two hits one tick in order, one broke | `sim`: `same_tick_hits_drain_in_order_and_only_the_emptying_hit_breaks` | achievable as stated |
-| X19 | every producer drains by type, incl. host-validated client hit | `sim`: `every_producer_drains_a_shield_by_its_type`; `netcode`: `host_validated_client_hit_takes_type_from_host_weapon` | achievable as stated |
-| X20 | stage order crush → hitscan → flushed client hit (R-P1) | `postretro`: `producers_drain_in_stage_order_then_flushed_client_hit` | achievable as stated |
-| X21 | capacity-0 layer (R-P9) | `sim`: `capacity_zero_layer_is_present_skipped_and_full` | achievable as stated |
-| X22 | lethal overkill (R-P10) | `sim`: `lethal_hit_counts_overkill_into_points_dealt` | achievable as stated |
-| X23 | not-live hit drains, no credit; broke policy runs (R-P12, R-P22) | `sim`: `hit_on_latched_target_drains_and_reports_but_credits_nothing` | achievable as stated |
-| R1 | no recharge before delay; ramp to cap | `sim`: `layer_recharges_after_delay_at_rate_and_stops_at_capacity` | achievable as stated |
-| R2 | mid-ramp, absorbed/blocked/bypassed restart; rate 0; delay 0 | `sim`: `any_positive_raw_hit_restarts_every_layer_delay` | achievable as stated |
-| R3 | omitted defaults 3000 / 0 | `sim`: `omitted_recharge_fields_default_to_3000ms_and_never` | achievable as stated |
-| R4 | delay lowered mid-delay (R-P20) | `sim`: `lowered_delay_applies_against_the_original_hit` | achievable as stated |
-| R5 | hit on expiry tick | `sim`: `expiry_tick_recharges_before_that_ticks_hit` | achievable as stated |
-| R6 | expression tracks; fault keeps last good; warn once per descriptor+field; hot reload re-arms | `sim`: `faulted_layer_parameter_keeps_last_good_and_warns_once_per_field` | achievable as stated |
-| R7 | capacity fault at spawn (R-P17, R-P19) | `sim`: `capacity_faulting_at_spawn_spawns_empty_and_recharges_unhit` | achievable as stated |
-| R8 | own `@state.tier` tracks; engine-slot and `defense(h)` reads fail load | `sim`: `layer_capacity_tracks_own_state`; `scripting-core`: `layer_parameter_rejects_engine_and_defense_reads` | achievable as stated |
-| R9 | latched / zero-health no recharge; clamp still runs (R-P23) | `sim`: `zero_health_entities_clamp_but_never_recharge` | achievable as stated |
-| R10 | revive after long latch (R-P14); carried recharges at once (R-P13) | `sim`: `revived_pawn_recharges_on_first_live_tick`; `postretro`: `carried_layer_recharges_first_tick_after_arrival` | achievable as stated |
-| R11 | post-tick hits stamp like in-tick (R-P2), co-op and SP | `postretro`: `post_tick_hits_stamp_the_tick_they_follow` | achievable as stated |
-| R12 | only a hit stamps (R-P27) | `sim`: `respawn_neither_sets_nor_clears_the_last_hit_stamp` | achievable as stated |
-| R13 | tick-exact expiry after long uptime (R-P3) | `sim`: `delay_expiry_counts_whole_ticks_after_long_uptime` | achievable as stated |
-| R14 | respawn fills to capacity in force; mid-tick lowered capacity next tick (R-P4) | `sim`: `respawn_fills_to_capacity_in_force` | achievable as stated |
-| R15 | expression clamps; non-finite is a fault | `sim`: `layer_expression_results_clamp_into_literal_ranges` | achievable as stated |
-| R16 | connected client runs no recharge/eval; host-only fault warn | `netcode`: `connected_client_reads_layers_only_from_host` (session harness; see Corrections); `sim`: `connected_client_evaluates_no_layer_parameter` | achievable as stated |
-| C1 | literal params evaluate 0 times; one expression descriptor counts per entity | `sim`: `literal_layer_parameters_never_evaluate_per_tick` (test-only counter) | achievable as stated |
-| C2 | step visits only layered entities | `sim`: `layer_step_visits_only_layered_entities` | achievable as stated |
-| C3 | zero heap allocations per tick | `sim`: `layer_step_performs_zero_heap_allocations` (sim test allocator + positive control; see Corrections) | achievable as stated |
-| C4 | depth 32 / 256-node cap | `scripting-core`: `layer_expression_caps_at_depth_32_and_256_nodes` | achievable as stated |
-| G1 | `grantLayer` fill / add, no delay reset | `sim`: `grant_layer_fills_or_adds_without_moving_the_stamp` | achievable as stated |
-| G2 | level-up raise + grants same tick, capacity ≥ current | `sim`: `level_up_raises_capacity_then_fills_on_the_same_tick` | achievable as stated |
-| G3 | crossing raise then grant fills to new cap | `postretro`: `crossing_body_raises_capacity_then_grants_in_body_order` | achievable as stated |
-| G4 | host crossing `setState` global then `players().grantLayer` | `postretro`: `crossing_set_state_then_grant_layer_reads_new_capacity` | achievable as stated |
-| G5 | SP UI press writes before same-frame ticks; still frame N+1 | `postretro`: `ui_press_store_write_lands_before_that_frames_ticks` | achievable as stated |
-| G6 | grant/damage body order (R-P26) | `postretro`: `body_grant_and_damage_apply_in_body_order` | achievable as stated |
-| G7 | released-seat write warns and skips at dispatch | `postretro`: `address_fired_write_to_released_seat_warns_and_skips` (tag path; see Corrections) | achievable as stated |
-| G8 | client own-state crossing / `levelLoad` local writes in store at dispatch; `addSlot` refused | `postretro` (loopback): `client_by_address_local_writes_land_at_dispatch` | achievable as stated |
-| G9 | `levelLoad` IR `setState` evaluated at dispatch, no unbound warning | `postretro`: `level_load_ir_set_state_evaluates_at_dispatch_on_every_machine` | achievable as stated |
-| G10 | impact policy raise then `impact.source.grantLayer` 150/150 | `sim`: `impact_policy_grant_evaluates_capacity_when_applied` | achievable as stated |
-| G11 | grant clamps then adds (R-P18, R-P21) | `sim`: `grant_clamps_to_evaluated_capacity_then_adds` | achievable as stated |
-| G12 | negative warns; missing layer skips; impact.source credits flushed hit | `sim`: `grant_layer_rejects_negative_and_skips_missing_layer`; `netcode`: `flushed_client_hit_policy_grants_the_damager` (see Corrections) | achievable as stated |
-| G13 | `absorbed.times(0.25)` grants 10; non-finite rejects manifest both runtimes | `sim`: `impact_source_grant_layer_reads_absorbed`; `scripting-core`: `grant_layer_non_finite_amount_rejects_manifest` (see Corrections) | achievable as stated |
-| G14 | tick order of grants and hits (R-P7) | `sim`: `grants_and_hits_apply_in_tick_order` (see Corrections); latch half `grant_layer_on_a_latched_entity_fills_and_leaves_the_latch` | achievable as stated |
-| G15 | call-site gate on layer value writes | `postretro`: `layer_value_writes_stay_behind_named_call_sites` (source scan) | achievable as stated |
-| L1 | level change / restart / rejoin carry clamped; spawn fills; hot reload (R-P15) | `postretro`: `layer_values_carry_and_hot_reload_by_name` | achievable as stated |
-| L2 | mid-tick spawn full at once (R-P5) | `sim`: `trigger_spawned_entity_is_full_before_same_tick_hit` | achievable as stated |
-| L3 | hot reload keeps values / stamp by name; faulting edit (R-P8) | `sim`: `hot_reload_keeps_layer_values_and_stamp_by_name` | achievable as stated |
-| L4 | `setHealth`/`grantHealth` leave layers; respawn fills; carry restores | `sim`: `health_writes_leave_layers_alone` | achievable as stated |
-| L5 | carried per-owner capacity 120/150; carried health 0 arrives full (R-P6) | `postretro`: `carried_layer_clamps_against_per_owner_capacity` | achievable as stated |
-| L6 | fresh join arrives full at seeded capacity | `postretro`: `fresh_join_arrives_full_at_seeded_capacity` (lifecycle harness; see Corrections) | achievable as stated |
-| L7 | late seed refill rules (R-P16, R-P24, R-P25, R-P28) | `postretro`: `late_join_seed_refills_only_layers_full_at_pre_seed_capacity` | achievable as stated |
-| Q1 | impact policy reads facts + target accessor; plain read = local player | `sim`: `impact_policy_reads_layer_facts_and_target_layers` | achievable as stated |
-| Q2 | brain guard reads own layer, transitions on break | `ai`: `brain_guard_transitions_when_own_armor_breaks` | achievable as stated |
-| Q3 | overlay shield pair; hide-at-full counts pair, host and client | `sim`: `overlay_shield_pair_reads_entity_layer_and_counts_for_hide_at_full`; `netcode`: `client_overlay_hide_at_full_counts_shield_pair` | achievable as stated |
-| Q4 | player read host/client; absent without layer | `netcode`: `player_layer_slots_read_host_value_or_absent` (from T2; see Corrections) | achievable as stated |
-| Q5 | two clients each get only own slots | `netcode`: `defense_slots_reach_only_their_owner` | achievable as stated |
-| Q6 | player-event condition, `byPlayer`, pair-scope reject | `sim`: `player_event_condition_layer_read_means_evaluated_player`; `scripting-core`: `pair_expression_layer_read_fails_load` | achievable as stated |
-| Q7 | shield-only contributor; threat by points dealt; absorbed hit resets recency | `sim`: `shield_only_damage_credits_contributor_and_threat` | achievable as stated |
-| Q8 | Scripting surface example as `content/dev`; Luau mirror fixture identical | `postretro`: `dev_mod_loads_clean_with_e16_content`, D1's identity test | achievable as stated |
-| Q9 | docs vocabulary + drain rules + recipe; commands run from a bundle | `docs/scripting-reference.md` edit; review against `sdk-dist` command set | achievable as stated |
-| Q10 | layer adds slots, fingerprint changes, `WIRE_VERSION` unchanged | `netcode`: `registering_a_layer_changes_fingerprint_not_wire_version` | achievable as stated |
-| Q11 | `@state.shield` overlay unchanged; hide-at-full counts it; never drained | `sim`: `state_shield_overlay_is_author_data_never_drained` | achievable as stated |
-| M1 | playtest dev arsenal matrix | owner, in-engine | manual |
-| M2 | playtest `arc_rifle` / `acid_rifle` triangle | owner, in-engine | manual |
-| M3 | player shield feel, progression bump | owner, in-engine | manual |
-| M4 | HUD bar + overlay; co-op client at lag profile | owner, in-engine | manual |
-| M5 | layer stress run, Mac perf target | `sim` `#[ignore]` `layer_step_stress_1000_layered_entities`; Linux `--release` proxy recorded here; Mac number owner-run | manual |
+| AC | Row | Proof | Status | Result |
+|---|---|---|---|---|
+| D1 | TS/Luau declare and register, identical descriptors; handles cross as `{kind,name}`; Luau re-`require` resolves | `postretro`: `e16_ts_and_luau_mods_produce_identical_vocabulary_manifests` (dev TS + `e16-luau-mod` fixture), `luau_descriptor_requiring_defenses_again_resolves_registered_layers` | achievable as stated | pass |
+| D2 | level script `impact.type(shock)` policy and `.damage(n,{type})` | `postretro`: `level_script_handles_reference_registered_vocabulary` | achievable as stated | pass |
+| D3 | level re-declare / Luau re-require uses manifest matrix | `postretro`: `redeclared_damage_type_drains_by_the_registered_matrix` | achievable as stated | pass |
+| D4 | sugar diagnostic cases; explicit and computed names load | `script-compiler`: `binding_name_sugar_names_defense_layers_and_damage_types`, `binding_name_sugar_leaves_non_object_first_args_explicit`; `postretro`: `defense_definers_without_name_raise_binding_name_diagnostic` (TS + Luau) | achievable as stated | pass |
+| D5 | load-fail list with valid siblings | `foundation`: `vocabulary_load_failures_name_the_key_path`; `scripting-core`: `bad_layer_references_fail_load_naming_the_key_path`, `luau_layer_names_outside_the_grammar_fail_load`, `a_valid_vocabulary_with_both_resists_and_a_mixed_matrix_loads` | achievable as stated | pass |
+| D6 | bad reference per surface: install drop, HUD warn, overlay skip, unknown `.damage` key | `postretro`: `bad_defense_reference_drops_only_its_definition_at_install`; `ui`: `unknown_layer_binding_warns_once_at_tree_build`; `sim`: `overlay_bad_layer_reference_skips_shield_pair` | achievable as stated | pass |
+| D7 | per-owner layer expr loads on player, fails on enemy | `scripting-core`: `layer_expression_per_owner_read_is_player_only` | achievable as stated | pass |
+| D8 | unknown `crush_damage_type` warns once per name per load | `postretro`: `unknown_crush_damage_type_warns_once_and_crushes_as_default` | achievable as stated (PRL V8 — see Corrections) | pass |
+| X1 | no-vocabulary parity; existing suites unmodified (except hide-at-full shield pair) | existing chokepoint / ledger / impact-policy / overlay suites green unmodified; diff review of test files | achievable as stated | pass (suites green; test edits beyond the shield pair follow the body-order change and typedef counts) |
+| X2 | no default = ×1 untyped; default ballistic melee/script/crush (R-P36) | `sim`: `default_damage_type_types_every_untyped_producer` | achievable as stated | pass |
+| X3 | dev weapons typed; ballistic ×0.8 armor; plasma numbers | `postretro`: `dev_weapons_name_their_damage_types`; `sim`: `plasma_bolt_strips_shield_and_spills_to_health` | achievable as stated | pass |
+| X4 | rocket splash explosive numbers | `sim`: `explosive_splash_cracks_armor_and_flesh` (from T3) | achievable as stated | pass |
+| X5 | harnesses loading dev scripts pass, both runtimes | `scripting-core` `tests::behavior` / `tests::sounds`, `ai` `ai_tests`, `sim` `real_dummy_hit_tests`, `postretro` `conditioned_tests` green | achievable as stated | pass |
+| X6 | ordered spillover 0/0/80 | `combat-model`: `untyped_hit_spills_in_layer_order` | achievable as stated | pass |
+| X7 | dev default 0/0/92.5; R-P12 variant | `foundation`: `ballistic_default_spills_raw_remainder`; `sim`: `ballistic_default_spills_raw_remainder_through_layers`, `hit_on_latched_target_drains_and_reports_but_credits_nothing` (R-P12 variant) | achievable as stated | pass |
+| X8 | shock 20 raw spillover | `combat-model`: `spillover_carries_raw_not_scaled_remainder` | achievable as stated | pass |
+| X9 | bypass / health 0 / immune (R-P30, R-P11) | `foundation`: `bypass_passes_layer_untouched_whatever_its_resist`; `sim`: `bypass_and_zero_multipliers_on_each_pool`, `resist_zero_everywhere_is_immune_but_restamps_and_credits_nothing` | achievable as stated | pass |
+| X10 | layer resist scales only its layer (R-P32) | `combat-model`: `layer_resist_scales_that_layer_only` | achievable as stated | pass |
+| X11 | `health.resist` scales only health (R-P33) | `combat-model`: `health_resist_scales_health_only` | achievable as stated | pass |
+| X12 | shield resist 0 absorbs everything (R-P34) | `combat-model` + `sim`: `zero_resist_layer_absorbs_while_above_zero` | achievable as stated | pass |
+| X13 | expression resist tracks store next tick, clamps (R-P35) | `sim`: `expression_resist_applies_from_next_tick_and_clamps` | achievable as stated | pass |
+| X14 | ×0 layer stops the hit (R-P29, R-P31, R-P30) | `combat-model` + `sim`: `zero_multiplier_layer_stops_the_rest_of_the_hit` | achievable as stated | pass |
+| X15 | fully absorbed hit facts, no latch | `sim`: `fully_absorbed_hit_dispatches_and_never_latches` | achievable as stated | pass |
+| X16 | shock 20 facts raw/amount/absorbed/health delta; bypass-all absorbed 0 | `sim`: `spillover_carries_raw_not_scaled_remainder` (with the bypass-all half) | achievable as stated | pass |
+| X17 | zero-valued layer skipped, no broke | `combat-model`: `empty_layer_is_skipped_and_never_breaks` | achievable as stated | pass |
+| X18 | two hits one tick in order, one broke | `sim`: `two_hits_on_one_tick_drain_in_order_and_only_the_emptying_hit_breaks` | achievable as stated | pass |
+| X19 | every producer drains by type, incl. host-validated client hit | one test per producer: `sim` `hitscan_impacts_carry_their_weapons_damage_type`, `projectile_launches_freeze_their_weapons_damage_type`, `direct_projectile_hit_drains_a_shield_by_its_frozen_damage_type`, `splash_drains_a_shield_by_its_shots_damage_type`, `default_damage_type_types_every_untyped_producer`; `physics` `crush_deals_its_crush_damage_type`; `ai` `contact_attack_deals_its_damage_type`; `netcode` `host_validated_client_hit_takes_type_from_host_weapon`; `postretro` `redeclared_damage_type_drains_by_the_registered_matrix` | achievable as stated | pass |
+| X20 | stage order crush → hitscan → flushed client hit (R-P1) | `netcode`: `producers_drain_in_stage_order_then_flushed_client_hit` (each stage's own function in production order; the crush-before-weapons sequence is `simulate_started_tick`'s code order) | achievable as stated | pass |
+| X21 | capacity-0 layer (R-P9) | `sim`: `capacity_zero_layer_is_present_and_skipped`, `overlay_shield_pair_reads_entity_layer_and_counts_for_hide_at_full` | achievable as stated | pass |
+| X22 | lethal overkill (R-P10) | `sim`: `lethal_hit_counts_overkill_into_points_dealt` | achievable as stated | pass |
+| X23 | not-live hit drains, no credit; broke policy runs (R-P12, R-P22) | `sim`: `hit_on_latched_target_drains_and_reports_but_credits_nothing` | achievable as stated | pass |
+| R1 | no recharge before delay; ramp to cap | `sim`: `layer_recharges_after_delay_at_rate_and_stops_at_capacity` | achievable as stated | pass |
+| R2 | mid-ramp, absorbed/blocked/bypassed restart; rate 0; delay 0 | `sim`: `any_positive_raw_hit_restarts_every_layer_delay` | achievable as stated | pass |
+| R3 | omitted defaults 3000 / 0 | `sim`: `omitted_recharge_fields_default_to_3000ms_and_never` | achievable as stated | pass |
+| R4 | delay lowered mid-delay (R-P20) | `sim`: `lowered_delay_applies_against_the_original_hit` | achievable as stated | pass |
+| R5 | hit on expiry tick | `sim`: `expiry_tick_recharges_before_that_ticks_hit` | achievable as stated | pass |
+| R6 | expression tracks; fault keeps last good; warn once per descriptor+field; hot reload re-arms | `sim`: `faulted_layer_parameter_keeps_last_good_and_warns_once_per_field` | achievable as stated | pass |
+| R7 | capacity fault at spawn (R-P17, R-P19) | `sim`: `capacity_faulting_at_spawn_spawns_empty_and_recharges_unhit` | achievable as stated | pass |
+| R8 | own `@state.tier` tracks; engine-slot and `defense(h)` reads fail load | `sim`: `layer_capacity_tracks_own_state`; `scripting-core`: `layer_parameter_rejects_engine_and_defense_reads` | achievable as stated | pass |
+| R9 | latched / zero-health no recharge; clamp still runs (R-P23) | `sim`: `zero_health_entities_clamp_but_never_recharge` | achievable as stated | pass |
+| R10 | revive after long latch (R-P14); carried recharges at once (R-P13) | `sim`: `revived_pawn_recharges_on_first_live_tick`; `postretro`: `carried_layer_recharges_first_tick_after_arrival` | achievable as stated | pass |
+| R11 | post-tick hits stamp like in-tick (R-P2), co-op and SP | `postretro`: `post_tick_hits_stamp_the_tick_they_follow` | achievable as stated | pass |
+| R12 | only a hit stamps (R-P27) | `sim`: `respawn_neither_sets_nor_clears_the_last_hit_stamp` | achievable as stated | pass |
+| R13 | tick-exact expiry after long uptime (R-P3) | `sim`: `delay_expiry_counts_whole_ticks_after_long_uptime` | achievable as stated | pass |
+| R14 | respawn fills to capacity in force; mid-tick lowered capacity next tick (R-P4) | `sim`: `respawn_fills_to_capacity_in_force` | achievable as stated | pass |
+| R15 | expression clamps; non-finite is a fault | `sim`: `layer_expression_results_clamp_into_literal_ranges` | achievable as stated | pass |
+| R16 | connected client runs no recharge/eval; host-only fault warn | `netcode`: `connected_client_reads_layers_only_from_host` (session harness; see Corrections); `sim`: `connected_client_evaluates_no_layer_parameter` | achievable as stated | pass |
+| C1 | literal params evaluate 0 times; one expression descriptor counts per entity | `sim`: `literal_layer_parameters_never_evaluate_per_tick` (test-only counter) | achievable as stated | pass |
+| C2 | step visits only layered entities | `sim`: `layer_step_visits_only_layered_entities` | achievable as stated | pass |
+| C3 | zero heap allocations per tick | `sim`: `layer_step_performs_zero_heap_allocations` (sim test allocator + positive control; see Corrections) | achievable as stated | pass |
+| C4 | depth 32 / 256-node cap | `scripting-core`: `layer_expression_caps_at_depth_32_and_256_nodes` | achievable as stated | pass |
+| G1 | `grantLayer` fill / add, no delay reset | `sim`: `grant_layer_fills_or_adds_without_moving_the_stamp` | achievable as stated | pass |
+| G2 | level-up raise + grants same tick, capacity ≥ current | `sim`: `level_up_raises_capacity_then_fills_on_the_same_tick` | achievable as stated | pass |
+| G3 | crossing raise then grant fills to new cap | `postretro`: `crossing_body_raises_capacity_then_grants_in_body_order` | achievable as stated | pass |
+| G4 | host crossing `setState` global then `players().grantLayer` | `postretro`: `crossing_set_state_then_grant_layer_reads_new_capacity` | achievable as stated | pass |
+| G5 | SP UI press writes before same-frame ticks; still frame N+1 | `postretro`: `ui_press_store_write_lands_before_that_frames_ticks` (the taken Confirm is relayed to the press; the focus engine is not driven) | achievable as stated | pass |
+| G6 | grant/damage body order (R-P26) | `postretro`: `body_grant_and_damage_apply_in_body_order` | achievable as stated | pass |
+| G7 | released-seat write warns and skips at dispatch | `postretro`: `address_fired_write_to_released_seat_warns_and_skips` (tag path; see Corrections) | achievable as stated | pass |
+| G8 | client own-state crossing / `levelLoad` local writes in store at dispatch; `addSlot` refused | `postretro` (loopback): `level_load_ir_set_state_evaluates_at_dispatch_on_every_machine`, `own_state_crossing_local_set_state_lands_at_dispatch_on_a_client` | achievable as stated | pass |
+| G9 | `levelLoad` IR `setState` evaluated at dispatch, no unbound warning | `postretro`: `level_load_ir_set_state_evaluates_at_dispatch_on_every_machine` | achievable as stated | pass |
+| G10 | impact policy raise then `impact.source.grantLayer` 150/150 | `sim`: `impact_policy_grant_evaluates_capacity_when_applied` | achievable as stated | pass |
+| G11 | grant clamps then adds (R-P18, R-P21) | `sim`: `grant_clamps_to_evaluated_capacity_then_adds` | achievable as stated | pass |
+| G12 | negative warns; missing layer skips; impact.source credits flushed hit | `sim`: `grant_layer_rejects_negative_and_skips_missing_layer`; `netcode`: `flushed_client_hit_policy_grants_the_damager` (see Corrections) | achievable as stated | pass |
+| G13 | `absorbed.times(0.25)` grants 10; non-finite rejects manifest both runtimes | `sim`: `impact_source_grant_layer_reads_absorbed`; `scripting-core`: `grant_layer_non_finite_amount_rejects_manifest` (see Corrections) | achievable as stated | pass |
+| G14 | tick order of grants and hits (R-P7) | `sim`: `grants_and_hits_apply_in_tick_order` (see Corrections); latch half `grant_layer_on_a_latched_entity_fills_and_leaves_the_latch` | achievable as stated | pass |
+| G15 | call-site gate on layer value writes | `postretro`: `layer_value_writes_stay_behind_named_call_sites` (source scan) | achievable as stated | pass |
+| L1 | level change / restart / rejoin carry clamped; spawn fills; hot reload (R-P15) | `postretro`: `layer_values_carry_and_hot_reload_by_name` | achievable as stated | pass |
+| L2 | mid-tick spawn full at once (R-P5) | `sim`: `trigger_spawned_entity_is_full_before_same_tick_hit` | achievable as stated | pass |
+| L3 | hot reload keeps values / stamp by name; faulting edit (R-P8) | `sim`: `hot_reload_keeps_layer_values_and_stamp_by_name` | achievable as stated | pass |
+| L4 | `setHealth`/`grantHealth` leave layers; respawn fills; carry restores | `sim`: `health_writes_leave_layers_alone` | achievable as stated | pass |
+| L5 | carried per-owner capacity 120/150; carried health 0 arrives full (R-P6) | `postretro`: `carried_layer_clamps_against_per_owner_capacity` | achievable as stated | pass |
+| L6 | fresh join arrives full at seeded capacity | `postretro`: `fresh_join_arrives_full_at_seeded_capacity` (lifecycle harness; see Corrections) | achievable as stated | pass |
+| L7 | late seed refill rules (R-P16, R-P24, R-P25, R-P28) | `postretro`: `late_join_seed_refills_only_layers_full_at_pre_seed_capacity` | achievable as stated | pass |
+| Q1 | impact policy reads facts + target accessor; plain read = local player | `sim`: `impact_policy_reads_layer_facts_and_target_layers` | achievable as stated | pass |
+| Q2 | brain guard reads own layer, transitions on break | `ai`: `brain_guard_transitions_when_own_armor_breaks` | achievable as stated | pass |
+| Q3 | overlay shield pair; hide-at-full counts pair, host and client | `sim`: `overlay_shield_pair_reads_entity_layer_and_counts_for_hide_at_full`; `netcode`: `client_overlay_hide_at_full_counts_shield_pair` | achievable as stated | pass |
+| Q4 | player read host/client; absent without layer | `netcode`: `player_layer_slots_read_host_value_or_absent` (from T2; see Corrections) | achievable as stated | pass |
+| Q5 | two clients each get only own slots | `netcode`: `defense_slots_reach_only_their_owner` | achievable as stated | pass |
+| Q6 | player-event condition, `byPlayer`, pair-scope reject | `scripting-core`: `player_event_condition_layer_read_means_evaluated_player`, `on_player_layer_read_reads_the_event_player`, `pair_scope_rejected_rows_fail_the_runtime_bind_with_their_reason` | achievable as stated | pass |
+| Q7 | shield-only contributor; threat by points dealt; absorbed hit resets recency | `sim`: `shield_only_damage_credits_the_attacker_as_a_contributor`, `shield_absorbed_hit_raises_threat_by_points_dealt_and_resets_recency` | achievable as stated | pass |
+| Q8 | Scripting surface example as `content/dev`; Luau mirror fixture identical | `postretro`: `dev_mod_loads_clean_with_e16_content`, D1's identity test | achievable as stated | pass |
+| Q9 | docs vocabulary + drain rules + recipe; commands run from a bundle | `docs/scripting-reference.md` edit; review against `sdk-dist` command set | achievable as stated | pass (reviewed) |
+| Q10 | layer adds slots, fingerprint changes, `WIRE_VERSION` unchanged | `netcode`: `registering_a_layer_changes_fingerprint_not_wire_version` | achievable as stated | pass |
+| Q11 | `@state.shield` overlay unchanged; hide-at-full counts it; never drained | `sim`: `state_shield_overlay_is_author_data_never_drained` | achievable as stated | pass |
+| M1 | playtest dev arsenal matrix | owner, in-engine | manual | manual (owner) |
+| M2 | playtest `arc_rifle` / `acid_rifle` triangle | owner, in-engine | manual | manual (owner) |
+| M3 | player shield feel, progression bump | owner, in-engine | manual | manual (owner) |
+| M4 | HUD bar + overlay; co-op client at lag profile | owner, in-engine | manual | manual (owner) |
+| M5 | layer stress run, Mac perf target | `sim` `#[ignore]` `layer_step_stress_1000_layered_entities`; Linux `--release` proxy recorded here; Mac number owner-run | manual | manual (Linux proxy below; Mac owner-run) |
 
 ## Tasks
 
@@ -167,7 +171,7 @@ Each task commits on completion with its row update here. Cargo runs are sequent
 | 9 | **Dev content and harnesses.** `content/dev` vocabulary modules, typed weapons (plasma, explosive, the rest ballistic, `enemy_rifle` included), the armored and shock-resistant reference enemy with the corrosive claw and retreat guard (TS and Luau), `reference_enemy_shielded`, `arc_rifle`, `acid_rifle`, player shield, HUD bar, overlay pair, `shieldBreak`, booster pads, level-up, and minted identities for the new persisted slots (`postretro-tool mint-identity dev`). Update the harnesses named in the Path and in Corrections. Add the committed `e16-luau-mod` fixture. Proof: D1, D3, D4 (TS and Luau load half), X3, X5, Q8. | integrating executor | 6, 7, 8 |  done. `content/dev` gains `defenses` and `damage-types` modules (TS and Luau). It registers `shield`, `armor`, six damage types and `ballistic` as the default. Every dev-mod weapon is typed. The player carries the per-owner shield (`progression.shieldCapacity`, `shieldTech`, `shockWard`, identities minted). The reference enemy (TS and Luau) gains armor 120, shock-resistant flesh, the corrosive claw and the armor-break retreat. `damage-triangle.ts` adds `arc_rifle`, `acid_rifle`, `reference_enemy_shielded` and `turret.overload`. The HUD gains a shield bar; the overlay gains its shield pair. `combat-lifecycle.ts` adds the booster pads and `shieldBreak`. The level-up raises capacity and refills, in both twins and the coop Luau copy. Harness updates: the AI harness stubs `defense` and `require`, and its oracle gains the claw and the retreat; its graph fixtures carry 120 armor. The twin and sound harnesses resolve the vocabulary. `initialize_dev_mod` commits the vocabulary and installs parameters. The player-event harnesses declare the new slot and root at the mod. Proofs: `postretro` `e16_content_tests` (D1 identity against the committed `e16-luau-mod` fixture, D1 re-require, Q8, X3, D4 runtime half), `redeclared_damage_type_drains_by_the_registered_matrix` (D3), `fresh_join_arrives_full_at_seeded_capacity` (L6); `netcode` `connected_client_reads_layers_only_from_host` (R16). The script-compiler D4 halves and X3/X4 sim numbers are from T2/T3. X5: every harness named is green. All 2431 `postretro` binary tests and every core library suite are green; clippy is clean apart from the pre-existing `state_crossings.rs` warning. Owner flag: `mint-identity` places its separating comma on its own line (filed as a separate task); `faction-sentiment.luau`'s relative require (see Corrections). |
 | 10 | **Docs.** `docs/scripting-reference.md` covers vocabulary, drain rules, recharge, grants and reads, plus a Borderlands recipe. Every command must be bundle-runnable. Proof: Q9. | integrating executor | 9 |  done. `docs/scripting-reference.md` gains "Defense layers and damage types" after `components.health`. It covers: declaring and registering (binding-name naming, registration in force, the default type, handles as `{ kind, name }`); the matrix table; layer fields with ranges and defaults; expression parameters and their read rules; the drain steps and impact facts; typed producers; recharge; grants on every surface; lifecycle; player and entity reads, hide-at-full and bad references per surface; and a recharging-shield recipe. `applyDamage` and the grant section cross-link it. `docs/level_design.md` documents `crush_damage_type`. The only command, `bin/postretro-tool mint-identity <mod>`, is the bundle spelling the docs already use. No `cargo run -p xtask` command appears in `docs/`. Q9. |
 | 11 | **Stress harness.** An `#[ignore]` sim harness per M5's inputs, with a Linux `--release` proxy measured and recorded below. The Mac run stays with the owner. Proof: M5 (proxy). | integrating executor | 4 |  done. `sim` `layer_stress_tests.rs`, `#[ignore]`d, run with `cargo test --release -p postretro-sim --lib -- --ignored --nocapture layer_step_stress`. Measured and recorded under Stress measurement, with a cost finding flagged to the owner. M5 (proxy). Owner amendment (2026-11-05): shared evaluation of global-only parameters, built in `defense_parameters.rs` (`BoundValue::Expr { global, shared }`, `DefenseParameterSource::evaluate_at_tick_start`, called only by `recharge_defense_layers`). Proofs: `literal_layer_parameters_never_evaluate_per_tick` (amended count), `per_entity_reads_evaluate_per_entity_and_global_reads_share`, `shared_global_parameter_matches_per_entity_evaluation`; re-measured under Stress measurement. Amendment reviewed twice by `/review-brief` (round 1: 2 Blockers, applied or owner-resolved; round 2: none). |
-| 12 | **Preflight, review panel and fix loop, then the full gate** (including `--features postretro/dev-tools`). | integrating executor | 1–11 | |
+| 12 | **Preflight, review panel and fix loop, then the full gate** (including `--features postretro/dev-tools`). | integrating executor | 1–11 | done. Preflight passed. The review panel ran 8 lenses (one 🔴, about ten 🟡, ~20 🟢); all were fixed except the two `levelLoad` timing consequences raised with the owner (Corrections). The AC-to-proof table now names each row's proving test and its result. The missing proofs for X20, G5, G8 (crossing half), Q7 (threat half) and X19 (splash, direct projectile) are added and pass. Gate after fixes: every core library suite, the `postretro` binary suite (2434) and the binary suite with `dev-tools` (2468) are green. |
 
 ## Stress measurement
 

@@ -120,7 +120,7 @@ mod tests {
         capture.assert_logged_once(log::Level::Warn, "bind names unknown slot `hud.scroe`");
     }
 
-    // D6 (UI): a bind to a layer no `defineMod` registers names an unknown
+    // A bind to a layer no `defineMod` registers names an unknown
     // slot, so it warns the same way.
     #[test]
     fn unknown_layer_binding_warns_once_at_tree_build() {

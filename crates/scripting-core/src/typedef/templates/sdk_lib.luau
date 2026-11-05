@@ -825,7 +825,8 @@ export type PresentationTemplateProps = {
 }
 export type OverlayEntity = {
   state: (self: OverlayEntity, name: string) -> RuntimeValue,
-  --- The sampled entity's own layer; without it, 0 / 0 and no shield pair.
+  --- The sampled entity's own layer as `current` / `capacity`. An entity without
+  --- the layer reads 0 / 0; a bad reference skips the shield pair.
   defense: (self: OverlayEntity, layer: DefenseLayer) -> { current: RuntimeValue, capacity: RuntimeValue },
 }
 export type DamagedEnemiesProps = {
@@ -1402,7 +1403,9 @@ export type ModManifestInput = {
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 --- A registered defense layer kind. It crosses the manifest as `{ kind, name }`.
---- `current` and `capacity` read the local player's layer.
+--- `current` and `capacity` read the local player's layer
+--- (`player.defense.<name>` and `player.defense.<name>.capacity`); a pawn
+--- without the layer reads absent.
 export type DefenseLayer = {
   kind: "defenseLayer",
   name: string,

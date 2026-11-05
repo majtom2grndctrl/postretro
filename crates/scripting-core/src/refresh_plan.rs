@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::components::billboard_emitter::BillboardEmitterComponent;
+use crate::components::defense_layers::DefenseLayersComponent;
 use crate::components::health::HealthComponent;
 use crate::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::components::mesh::MeshComponent;
@@ -313,6 +314,7 @@ fn plan_existing_descriptor(
                     entity,
                     kind: component.component_kind(),
                 });
+                plan_defense_layers_removal(entity, component, registry, plan);
             }
         } else if live_exists {
             plan.diagnostic(
@@ -346,6 +348,7 @@ fn plan_removed_descriptor(
                     entity,
                     kind: component.component_kind(),
                 });
+                plan_defense_layers_removal(entity, component, registry, plan);
                 removed_any = true;
             }
         } else if live_exists {
@@ -426,17 +429,74 @@ fn plan_component_replace(
     };
 
     match result {
-        Ok(component) => {
+        Ok(refreshed) => {
             log::debug!(
                 "[Scripting] descriptor refresh will replace {:?} on entity {} for `{}`: compatible refreshed descriptor",
-                component.kind(),
+                refreshed.kind(),
                 entity,
                 provenance.canonical_name,
             );
-            plan.actions
-                .push(DescriptorRefreshAction::Replace { entity, component });
+            plan.actions.push(DescriptorRefreshAction::Replace {
+                entity,
+                component: refreshed,
+            });
+            if component == DescriptorComponentKind::Health {
+                plan_defense_layers_refresh(entity, provenance, new_descriptor, registry, plan);
+            }
         }
         Err(reason) => plan.keep_old(entity, &provenance.canonical_name, component, reason),
+    }
+}
+
+/// Defense layers ride with health: rebuild them by layer name, keeping
+/// values, last good parameters and the last-hit stamp; add a layered
+/// component the edit introduced, or remove one it dropped.
+fn plan_defense_layers_refresh(
+    entity: EntityId,
+    provenance: &DescriptorProvenance,
+    new_descriptor: &EntityTypeDescriptor,
+    registry: &EntityRegistry,
+    plan: &mut DescriptorRefreshPlan,
+) {
+    let live = registry
+        .get_component::<DefenseLayersComponent>(entity)
+        .ok();
+    let refreshed = new_descriptor
+        .health
+        .as_ref()
+        .and_then(|health| DefenseLayersComponent::refreshed(live, health));
+    match refreshed {
+        Some(mut refreshed) => {
+            refreshed.descriptor = Some(provenance.canonical_name.clone());
+            plan.actions.push(DescriptorRefreshAction::Replace {
+                entity,
+                component: ComponentValue::DefenseLayers(refreshed),
+            });
+        }
+        None if live.is_some() => plan.actions.push(DescriptorRefreshAction::Remove {
+            entity,
+            kind: ComponentKind::DefenseLayers,
+        }),
+        None => {}
+    }
+}
+
+/// Removing health removes the layers that drain before it.
+fn plan_defense_layers_removal(
+    entity: EntityId,
+    component: DescriptorComponentKind,
+    registry: &EntityRegistry,
+    plan: &mut DescriptorRefreshPlan,
+) {
+    if component == DescriptorComponentKind::Health
+        && registry
+            .get_component::<DefenseLayersComponent>(entity)
+            .is_ok()
+    {
+        plan.actions.push(DescriptorRefreshAction::Remove {
+            entity,
+            kind: ComponentKind::DefenseLayers,
+        });
     }
 }
 

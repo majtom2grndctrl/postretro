@@ -6994,6 +6994,7 @@ mod tests {
                         recharge_delay_ms: 0.0,
                         recharge_rate: 0.0,
                         resist: Vec::new(),
+                        refill: Default::default(),
                     }],
                     health_resist: Vec::new(),
                     last_hit_tick: None,

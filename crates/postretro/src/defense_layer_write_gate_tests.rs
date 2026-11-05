@@ -1,6 +1,8 @@
 // Source gate: a defense layer's value changes only at its named call sites —
-// the damage chokepoint's drain, the tick-start clamp and recharge, the spawn
-// fill and the grant chokepoint. A new writer must join this list on purpose.
+// the damage chokepoint's drain, the tick-start recharge, the clamp and
+// lifecycle refills (`settle`), the spawn fill, the hot-reload rebuild, the
+// carry restore and the grant chokepoint. A new writer must join this list on
+// purpose.
 // See: context/lib/scripting.md §11 (Defense layers) · plans E16 §Acceptance (G15)
 
 use std::path::{Path, PathBuf};
@@ -9,8 +11,14 @@ use std::path::{Path, PathBuf};
 /// hold a write, so the gate cannot pass by matching nothing.
 const NAMED_CALL_SITES: &[(&str, &str)] = &[
     ("entities/src/components/defense_layers.rs", "fill"),
+    ("entities/src/components/defense_layers.rs", "settle"),
+    ("entities/src/components/defense_layers.rs", "refreshed"),
     ("entities/src/components/defense_layers.rs", "drain_hit"),
     ("entities/src/components/grant.rs", "grant_layer"),
+    (
+        "combat-model/src/carried_loadout.rs",
+        "restore_carried_layers",
+    ),
     ("sim/src/sim/defense_layers.rs", "recharge_defense_layers"),
     (
         "sim/src/scripting/builtins/data_archetype.rs",
@@ -68,6 +76,10 @@ fn writes_layer_value(line: &str) -> bool {
     let code = line.split("//").next().unwrap_or("");
     let assigns = |place: &str| {
         code.match_indices(place).any(|(at, _)| {
+            // A resistance's `.value` is a parameter, not a pool's value.
+            if code[..at].trim_end().ends_with("resist") {
+                return false;
+            }
             let rest = code[at + place.len()..].trim_start();
             ["=", "+=", "-=", "*=", "/="]
                 .iter()
@@ -168,6 +180,7 @@ fn the_write_gate_flags_a_stray_writer() {
     assert!(!writes_layer_value("    if layer.value == 0.0 {"));
     assert!(!writes_layer_value("    let value = layer.value;"));
     assert!(!writes_layer_value("    // layer.value = 0.0;"));
+    assert!(!writes_layer_value("            resist.value = old.value;"));
     let lines = [
         "pub(crate) fn drain_hit(",
         "    let x = 1;",

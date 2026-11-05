@@ -977,6 +977,16 @@ impl EntityRegistry {
     pub fn bind_pawn_seat(&mut self, pawn: EntityId, seat: Seat) {
         self.pawn_seats.retain(|_, owner| *owner != seat);
         self.pawn_seats.insert(pawn, seat);
+        // Layer capacities that read the seat's per-owner values evaluate now.
+        crate::components::defense_layers::settle_layers_on_seat_bind(self, pawn);
+    }
+
+    /// The pawn `seat` owns, if any.
+    #[must_use]
+    pub fn pawn_for_seat(&self, seat: Seat) -> Option<EntityId> {
+        self.pawn_seats
+            .iter()
+            .find_map(|(pawn, owner)| (*owner == seat).then_some(*pawn))
     }
 
     /// Drop `pawn`'s seat ownership. A pawn with no entry is not an error: the

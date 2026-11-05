@@ -1874,6 +1874,7 @@ fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> boo
 /// warned and skipped before owner-private replication observes the values.
 fn apply_host_join_seed(
     script_ctx: &postretro_entities::ScriptCtx,
+    registry: &mut postretro_entities::EntityRegistry,
     identity: Option<&postretro_scripting_core::store_identity::StoreIdentityLedger>,
     committed_store_slots: &BTreeSet<String>,
     seat: Seat,
@@ -1887,6 +1888,10 @@ fn apply_host_join_seed(
         slots,
     ) {
         log::warn!("[Net] {warning}");
+    }
+    // The seat's layers redo their spawn fill at the next tick start.
+    if let Some(pawn) = registry.pawn_for_seat(seat) {
+        postretro_entities::components::defense_layers::mark_layers_for_join_seed(registry, pawn);
     }
 }
 
@@ -2829,6 +2834,7 @@ impl App {
                         };
                         apply_host_join_seed(
                             &script_ctx,
+                            &mut registry,
                             join_seed_identity.as_ref(),
                             &join_seed_membership,
                             seat,
@@ -2887,6 +2893,7 @@ impl App {
                             netcode::ParticipationSeed::None => {}
                             netcode::ParticipationSeed::Apply(slots) => apply_host_join_seed(
                                 &script_ctx,
+                                &mut registry,
                                 join_seed_identity.as_ref(),
                                 &join_seed_membership,
                                 seat,
@@ -4172,6 +4179,7 @@ impl App {
                                         };
                                         apply_host_join_seed(
                                             &script_ctx,
+                                            &mut registry,
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,
@@ -4253,6 +4261,7 @@ impl App {
                                     netcode::ParticipationSeed::Apply(slots) => {
                                         apply_host_join_seed(
                                             &script_ctx,
+                                            &mut registry,
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,

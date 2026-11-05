@@ -57,6 +57,18 @@ pub struct LayerScope {
     seat: Cell<Option<Seat>>,
     /// A read found no value this evaluation: the result is a fault.
     missing: Cell<bool>,
+    /// A per-owner read on a pawn no seat owns yet: not a fault. The value
+    /// waits for the seat bind, which evaluates again.
+    unseated: Cell<bool>,
+}
+
+/// One expression's outcome.
+enum Evaluated {
+    Value(f32),
+    /// A missing read or non-finite arithmetic: keep the last good value.
+    Fault,
+    /// The pawn has no seat yet: keep the value in force, silently.
+    Unseated,
 }
 
 impl LayerScope {
@@ -69,6 +81,7 @@ impl LayerScope {
             slot_names: RefCell::new(Vec::new()),
             seat: Cell::new(None),
             missing: Cell::new(false),
+            unseated: Cell::new(false),
         }
     }
 
@@ -104,15 +117,22 @@ impl LayerScope {
         }
     }
 
-    /// One expression's value, or `None` on a fault: a missing read or
-    /// non-finite arithmetic.
-    fn evaluate(&self, program: &BoundProgram<LayerScope>) -> Option<f32> {
+    /// One expression's outcome: its value, a fault (a missing read or
+    /// non-finite arithmetic), or a per-owner read waiting on a seat.
+    fn evaluate(&self, program: &BoundProgram<LayerScope>) -> Evaluated {
         #[cfg(test)]
         EVALUATIONS.with(|count| count.set(count.get() + 1));
         self.missing.set(false);
-        match eval_value_checked(program, self) {
-            Ok(IrValue::Number(value)) if value.is_finite() && !self.missing.get() => Some(value),
-            _ => None,
+        self.unseated.set(false);
+        let result = eval_value_checked(program, self);
+        if self.unseated.get() {
+            return Evaluated::Unseated;
+        }
+        match result {
+            Ok(IrValue::Number(value)) if value.is_finite() && !self.missing.get() => {
+                Evaluated::Value(value)
+            }
+            _ => Evaluated::Fault,
         }
     }
 }
@@ -171,7 +191,7 @@ impl BindingScope for LayerScope {
             }
             LayerInput::PerOwner(index) => {
                 let Some(seat) = self.seat.get() else {
-                    self.missing.set(true);
+                    self.unseated.set(true);
                     return IrValue::Number(0.0);
                 };
                 let names = self.slot_names.borrow();
@@ -271,11 +291,12 @@ impl DefenseParameters {
         else {
             return;
         };
-        match self
-            .scope
-            .evaluate(program)
-            .and_then(|value| clamp_parameter(value, range))
-        {
+        let value = match self.scope.evaluate(program) {
+            Evaluated::Unseated => return,
+            Evaluated::Value(value) => clamp_parameter(value, range),
+            Evaluated::Fault => None,
+        };
+        match value {
             Some(value) => *target = value,
             None => {
                 if !warned.replace(true) {

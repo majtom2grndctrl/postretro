@@ -30,6 +30,26 @@ pub struct DefenseLayer {
     /// This layer's own resistance per damage type: scales that type on this
     /// layer only.
     pub resist: Vec<Resist>,
+    /// A lifecycle refill waiting for the next evaluation of this layer's
+    /// parameters: seat bind, or the tick start after a join seed or a hot
+    /// reload. Host-only bookkeeping, never replicated.
+    #[serde(default)]
+    pub refill: LayerRefill,
+}
+
+/// What the next evaluation does to a layer's value, after it clamps.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum LayerRefill {
+    #[default]
+    None,
+    /// Fill to the capacity just evaluated: a layer a hot reload added.
+    Fill,
+    /// Fill only if the layer is full at the capacity in force before the
+    /// evaluation, 0 / 0 included: the spawn fill redone with a seat's
+    /// per-owner values once they arrive.
+    IfFull,
+    /// A carried value, clamped to the capacity just evaluated.
+    Restore(f32),
 }
 
 /// One pool's resistance to one damage type, in force. A type with no entry
@@ -92,6 +112,7 @@ impl DefenseLayersComponent {
                             literal_or(value, DEFAULT_RECHARGE_RATE, LAYER_RATE_RANGE)
                         }),
                     resist: resists_from(&entry.resist),
+                    refill: LayerRefill::None,
                 }
             })
             .collect();
@@ -114,6 +135,148 @@ impl DefenseLayersComponent {
             layer.value = layer.capacity;
         }
     }
+
+    /// Mark every layer with no pending refill as `refill`.
+    pub fn mark_unmarked(&mut self, refill: LayerRefill) {
+        for layer in &mut self.layers {
+            if layer.refill == LayerRefill::None {
+                layer.refill = refill;
+            }
+        }
+    }
+
+    /// Before an evaluation: settle each `IfFull` mark against the capacity in
+    /// force now, as a fill or nothing.
+    pub fn resolve_refills(&mut self) {
+        for layer in &mut self.layers {
+            if layer.refill == LayerRefill::IfFull {
+                layer.refill = if layer.value >= layer.capacity {
+                    LayerRefill::Fill
+                } else {
+                    LayerRefill::None
+                };
+            }
+        }
+    }
+
+    /// After an evaluation: clamp each layer to the capacity just evaluated,
+    /// then apply and clear its pending refill.
+    pub fn settle(&mut self) {
+        for layer in &mut self.layers {
+            layer.value = match layer.refill {
+                LayerRefill::Fill => layer.capacity,
+                LayerRefill::Restore(carried) => carried.max(0.0).min(layer.capacity),
+                LayerRefill::None | LayerRefill::IfFull => layer.value.min(layer.capacity),
+            };
+            layer.refill = LayerRefill::None;
+        }
+    }
+
+    /// Rebuild from an edited descriptor on hot reload, matching layers by
+    /// name in the new order. A kept layer keeps its value and, for each
+    /// expression parameter, its last good value; a literal takes the new
+    /// literal. A new layer fills when its parameters next evaluate. The
+    /// last-hit stamp stays. `None` when the edit lists no layers and no
+    /// health resistance.
+    pub fn refreshed(live: Option<&Self>, desc: &HealthDescriptor) -> Option<Self> {
+        let mut fresh = Self::from_descriptor(desc)?;
+        let Some(live) = live else {
+            fresh.mark_unmarked(LayerRefill::Fill);
+            return Some(fresh);
+        };
+        for (layer, entry) in fresh.layers.iter_mut().zip(&desc.layers) {
+            let Some(old) = live.layer(&layer.name) else {
+                layer.refill = LayerRefill::Fill;
+                continue;
+            };
+            layer.value = old.value;
+            layer.refill = old.refill;
+            if is_ir(&entry.capacity) {
+                layer.capacity = old.capacity;
+            }
+            if entry.recharge_delay_ms.as_ref().is_some_and(is_ir) {
+                layer.recharge_delay_ms = old.recharge_delay_ms;
+            }
+            if entry.recharge_rate.as_ref().is_some_and(is_ir) {
+                layer.recharge_rate = old.recharge_rate;
+            }
+            keep_last_good_resists(&mut layer.resist, &old.resist, &entry.resist);
+        }
+        keep_last_good_resists(&mut fresh.health_resist, &live.health_resist, &desc.resist);
+        fresh.descriptor = live.descriptor.clone();
+        fresh.last_hit_tick = live.last_hit_tick;
+        Some(fresh)
+    }
+}
+
+fn is_ir(value: &NumberOrIr) -> bool {
+    matches!(value, NumberOrIr::Ir(_))
+}
+
+/// An expression resist keeps the live entity's last good value for its type.
+fn keep_last_good_resists(
+    fresh: &mut [Resist],
+    old: &[Resist],
+    authored: &BTreeMap<String, NumberOrIr>,
+) {
+    for resist in fresh {
+        if authored.get(&resist.damage_type).is_some_and(is_ir)
+            && let Some(old) = old.iter().find(|old| old.damage_type == resist.damage_type)
+        {
+            resist.value = old.value;
+        }
+    }
+}
+
+/// Evaluate `id`'s layer parameters now and settle its pending refills,
+/// after `prepare` marks them. Paths where the next tick start is too late
+/// use this: seat bind and respawn.
+pub fn settle_layers_now(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    prepare: impl FnOnce(&mut DefenseLayersComponent),
+) {
+    let Ok(component) = registry.get_component::<DefenseLayersComponent>(id) else {
+        return;
+    };
+    let mut component = component.clone();
+    prepare(&mut component);
+    component.resolve_refills();
+    if let Some(source) = registry.defense_parameters().cloned() {
+        source.evaluate(registry, id, &mut component);
+    }
+    component.settle();
+    let _ = registry.set_component(id, component);
+}
+
+/// A seat just bound `pawn`: its per-owner values are now readable. Redo the
+/// spawn fill for each layer still full at the capacity it had, and apply a
+/// carried value waiting on the seat.
+pub fn settle_layers_on_seat_bind(registry: &mut EntityRegistry, pawn: EntityId) {
+    settle_layers_now(registry, pawn, |component| {
+        component.mark_unmarked(LayerRefill::IfFull);
+    });
+}
+
+/// Respawn evaluates capacity itself and refills every layer. The last-hit
+/// stamp is neither set nor cleared.
+pub fn refill_layers_on_respawn(registry: &mut EntityRegistry, pawn: EntityId) {
+    settle_layers_now(registry, pawn, |component| {
+        for layer in &mut component.layers {
+            layer.refill = LayerRefill::Fill;
+        }
+    });
+}
+
+/// A join seed landed for `pawn`'s seat: at the next tick start, before any
+/// hit, redo the spawn fill for each layer full at its pre-seed capacity.
+pub fn mark_layers_for_join_seed(registry: &mut EntityRegistry, pawn: EntityId) {
+    let Ok(component) = registry.get_component::<DefenseLayersComponent>(pawn) else {
+        return;
+    };
+    let mut component = component.clone();
+    component.mark_unmarked(LayerRefill::IfFull);
+    let _ = registry.set_component(pawn, component);
 }
 
 /// The host's evaluator of expression layer parameters, installed on the

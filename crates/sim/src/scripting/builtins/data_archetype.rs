@@ -997,6 +997,7 @@ pub fn spawn_from_player_starts_with_carried_loadout(
         if is_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
             restore_carried_health(carried_loadout, registry, id);
+            postretro_combat_model::restore_carried_layers(carried_loadout, registry, id);
             crate::sim::player_life::restore_carried_life_state(
                 carried_loadout,
                 registry,

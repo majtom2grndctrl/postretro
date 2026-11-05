@@ -17,6 +17,8 @@ pub(crate) mod defense_parameter_tests;
 pub mod defense_parameters;
 #[cfg(test)]
 mod grant_layer_tests;
+#[cfg(test)]
+mod layer_lifecycle_tests;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;

@@ -1,6 +1,7 @@
 // The per-tick defense-layer step: evaluate each layer's expression
-// parameters, clamp the layer to its capacity in force, then recharge it once
-// its delay has passed since the entity's last hit.
+// parameters, clamp the layer to its capacity in force and apply any pending
+// lifecycle refill, then recharge it once its delay has passed since the
+// entity's last hit.
 // See: context/lib/scripting.md §11 (Defense layers) · context/lib/entity_model.md §Components
 
 use postretro_entities::components::health::HealthComponent;
@@ -25,12 +26,13 @@ pub fn recharge_defense_layers(registry: &mut EntityRegistry) {
     registry.for_each_defense_layers_lent(|registry, id, component| {
         #[cfg(test)]
         VISITED.with(|count| count.set(count.get() + 1));
+        // A join seed's or hot reload's pending refill reads the capacity in
+        // force before this evaluation, and lands before this tick's hits.
+        component.resolve_refills();
         if let Some(source) = &source {
             source.evaluate(registry, id, component);
         }
-        for layer in &mut component.layers {
-            layer.value = layer.value.min(layer.capacity);
-        }
+        component.settle();
         let live = registry
             .get_component::<HealthComponent>(id)
             .is_ok_and(|health| health.current > 0.0);

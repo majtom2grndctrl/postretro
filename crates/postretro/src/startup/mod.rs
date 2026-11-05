@@ -21,6 +21,8 @@ mod fluids_swim_surface_tests;
 mod ghost_links_surface_tests;
 #[cfg(test)]
 mod grant_layer_surface_tests;
+#[cfg(test)]
+mod layer_lifecycle_surface_tests;
 pub(crate) mod level_loads;
 mod life_state_validation;
 pub(crate) mod lifecycle;

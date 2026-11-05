@@ -134,7 +134,7 @@ fn shield_overlay(value: &str, max: &str) -> BoundPresentationOverlay {
     .expect("the overlay binds")
 }
 
-// Q3 (host): the overlay's shield pair reads the entity's own layer, and
+// Host side: the overlay's shield pair reads the entity's own layer, and
 // hide-at-full needs that pair full too; a capacity-0 layer counts as full.
 #[test]
 fn overlay_shield_pair_reads_entity_layer_and_counts_for_hide_at_full() {
@@ -164,7 +164,7 @@ fn overlay_shield_pair_reads_entity_layer_and_counts_for_hide_at_full() {
     assert!(shield_pair_full(&fact), "a capacity-0 layer counts as full");
 }
 
-// D6 (overlay): a bad layer reference skips only the shield pair.
+// A bad layer reference skips only the shield pair.
 #[test]
 fn overlay_bad_layer_reference_skips_shield_pair() {
     let capture = LogCapture::start();

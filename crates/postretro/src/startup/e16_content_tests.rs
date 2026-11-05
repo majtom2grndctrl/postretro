@@ -1,4 +1,4 @@
-// E16's shipped content in both runtimes: the dev mod (TypeScript) and the
+// The shipped defense-layer content in both runtimes: the dev mod (TypeScript) and the
 // committed `e16-luau-mod` fixture (its Luau mirror) register the same
 // vocabulary and author the same defense descriptors, the dev mod loads
 // clean, its weapons name their types, and an unnamed definer fails with the
@@ -189,7 +189,7 @@ fn luau_descriptor_requiring_defenses_again_resolves_registered_layers() {
     }
 }
 
-// The dev mod, with its E16 content, initializes without a warning.
+// The dev mod, with its defense-layer content, initializes without a warning.
 #[test]
 fn dev_mod_loads_clean_with_e16_content() {
     let capture = LogCapture::start();
@@ -198,7 +198,7 @@ fn dev_mod_loads_clean_with_e16_content() {
         .records()
         .into_iter()
         .filter(|record| record.level <= log::Level::Warn)
-        // Predates E16; `ghost_links_surface_tests` allows the same lint.
+        // Predates the defense-layer content; `ghost_links_surface_tests` allows the same lint.
         .filter(|record| {
             !record
                 .message
@@ -256,7 +256,7 @@ fn dev_weapons_name_their_damage_types() {
     );
 }
 
-// D4 (runtime half): an unnamed definer outside a direct top-level binding
+// An unnamed definer outside a direct top-level binding
 // fails with the binding-name diagnostic, in both runtimes.
 #[test]
 fn defense_definers_without_name_raise_binding_name_diagnostic() {

@@ -1,5 +1,5 @@
 --!strict
--- Luau mirror of the dev mod's E16 combat rules: the shield progression
+-- Luau mirror of the dev mod's combat rules: the shield progression
 -- slots, the booster pads and `shieldBreak`. Requires the vocabulary modules
 -- again; each require only returns handles, and `defineMod` registers the
 -- declarations in force.

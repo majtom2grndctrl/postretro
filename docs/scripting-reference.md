@@ -435,9 +435,13 @@ Luau passes each name explicitly: `Postretro.defineDefenseLayer("shield")`,
 `Postretro.defineDamageType("plasma", { shield = 1.5, armor = 0.5 })`.
 
 - **Names.** In TypeScript, a definer with no name must be the whole
-  initializer of a top-level `const` — scripts-build names it by its binding.
-  Anywhere else (inside an array, a function, a re-export), pass the name. A
-  name is 1–64 bytes of letters, digits, `_` and `-`; `health` is reserved.
+  initializer of a top-level `const`, `let` or `var` (exported or not) —
+  scripts-build names it by its binding. A `defineDamageType` call also needs
+  its matrix as an object literal, not a variable. Anywhere else (inside an
+  array, a function, a destructuring pattern, a re-export), pass the name. A
+  name is 1–64 bytes of ASCII letters, digits, `_` and `-`, for layers and
+  damage types alike. Only a layer name reserves `health`; a damage type may
+  be named `health`.
 - **Registration.** The lists in `defineMod` are the declarations in force. A
   level script or a second `require` that re-runs a declaration only gets a
   handle: a hit typed by a level's re-declared `shock` drains by the matrix
@@ -550,7 +554,8 @@ evaluation holds from then on. It never restarts the recharge delay.
 | A player event's player | `on.player.grantLayer(shield)` |
 | The impact's damager | `impact.source.grantLayer(shield, impact.absorbed.times(0.25))` |
 
-A negative or non-finite amount warns and does nothing; a recipient without
+A non-finite amount is rejected when the manifest loads, as it is for
+`grantHealth`. A negative amount warns and does nothing; a recipient without
 that layer warns and is skipped.
 
 ### Lifecycle
@@ -674,6 +679,7 @@ defineEntity({
 | Field | Type | Description |
 |-------|------|-------------|
 | `damage` | `number` | Base damage payload per resolved shot. Must be finite and `>= 0.0`. |
+| `damageType` | damage-type handle (optional) | The type each hit deals. Omitted, the hit takes the mod's `defaultDamageType`. |
 | `range` | `number` | Maximum hitscan distance in meters, or the second travel cap for a projectile. Must be finite and `> 0.0`. |
 | `primary` | `WeaponActivationDescriptor` | Required primary action: trigger, recovery, and a bounded shot/wait program. |
 | `secondary` | `WeaponActivationDescriptor` (optional) | Alternate-fire action. Both actions share weapon tuning, resource storage, and recovery. |
@@ -1595,8 +1601,11 @@ An entry in `attacks` has one of two mutually exclusive forms. Use the contact
 form for an immediate direct-impact attack:
 
 ```typescript
-slam: { damage: 8, maxRange: 2, cooldownMs: 1200 }
+slam: { damage: 8, damageType: ballistic, maxRange: 2, cooldownMs: 1200 }
 ```
+
+`damageType` is an optional damage-type handle beside `damage`; omitted, the
+hit takes the mod's `defaultDamageType`.
 
 Use the weapon form when the attack should use a weapon descriptor, including a
 traveling projectile. `weapon` supplies the damage, range, and cooldown; keep
@@ -2277,9 +2286,9 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
-| player group | `players()` | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
 
@@ -3260,8 +3269,8 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
-| A `grantHealth` / `grantAmmo` / `addSlot` reaction body names not exactly one recipient: a group `kind` (with or without a tag), a non-empty tag, or the `@activators` target | Rejected with its whole manifest while its descriptors load: the setup manifest in a level script, the mod manifest in a mod-global reaction. |
-| `grantHealth` / `grantAmmo` amount, or `addSlot` delta, is not a finite `f32`-representable JSON number | Rejected while its descriptor loads (see below). |
+| A `grantHealth` / `grantAmmo` / `grantLayer` / `addSlot` reaction body names not exactly one recipient: a group `kind` (with or without a tag), a non-empty tag, or the `@activators` target | Rejected with its whole manifest while its descriptors load: the setup manifest in a level script, the mod manifest in a mod-global reaction. |
+| `grantHealth` / `grantAmmo` amount, a given `grantLayer` amount, or `addSlot` delta, is not a finite `f32`-representable JSON number | Rejected while its descriptor loads (see below). |
 | `grantAmmo` pool key is malformed | Rejected while its descriptor loads, using the weapon-resource identifier grammar (see below). |
 | A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
 | A `setLifeState` / `respawn` state name is malformed, or `respawn` `health` is not a number | Rejects the manifest while the descriptor loads. |
@@ -3269,7 +3278,7 @@ export function setupLevel(): LevelManifest {
 
 The amount and pool-key rules apply to the command whether it is a reaction body or a sequence step, for group and subject-token commands alike. What a failure rejects depends on where the command sits:
 
-- A bad `grantHealth`, `grantAmmo` or `addSlot` **reaction body** rejects its whole manifest: the setup manifest in a level script, the mod manifest in a mod-global reaction.
+- A bad `grantHealth`, `grantAmmo`, `grantLayer` or `addSlot` **reaction body** rejects its whole manifest: the setup manifest in a level script, the mod manifest in a mod-global reaction.
 - A bad **sequence step** in a level script skips that one reaction, with a warning naming it; the level's other reactions install.
 - In a **mod-global** reaction, any failing step rejects the whole mod manifest.
 

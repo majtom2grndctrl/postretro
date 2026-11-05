@@ -1,8 +1,8 @@
-// M5's layer stress run: the layer step's CPU time per tick and its heap
+// Layer stress run: the layer step's CPU time per tick and its heap
 // allocations over a synthetic registry, expression parameters at the node
 // cap against an all-literal baseline. `#[ignore]`d: run it on purpose with
 //   cargo test --release -p postretro-sim --lib -- --ignored --nocapture layer_step_stress
-// See: plans E16 §Acceptance (Manual: layer stress run) · research.md §Per-tick cost
+// See: context/lib/scripting.md §11 (Defense layers)
 
 use std::time::{Duration, Instant};
 

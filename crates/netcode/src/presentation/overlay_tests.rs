@@ -1683,7 +1683,7 @@ fn no_damaged_enemy_config_host_and_client_passes_keep_revive_markers() {
     }
 }
 
-// Q3 (client): hide-at-full counts the pushed shield pair as the host does.
+// Client side: hide-at-full counts the pushed shield pair as the host does.
 #[test]
 fn client_overlay_hide_at_full_counts_shield_pair() {
     use super::hidden_at_full;

@@ -1,5 +1,5 @@
 --!strict
--- Luau mirror of the dev mod's E16 descriptors: the shielded player, the
+-- Luau mirror of the dev mod's descriptors: the shielded player, the
 -- armored reference enemy's health, the shielded variant and the triangle
 -- guns. Requires the vocabulary modules again, as a descriptor module does.
 

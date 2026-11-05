@@ -282,11 +282,11 @@ function PresentationSdk.definePresentationTemplate(id: string, props: Presentat
 end
 
 -- The `@defense.` input a layer handle reads; a bad reference (a bare string,
--- a damage-type handle) names no layer, so its bind fails at install.
+-- a damage-type handle) names no layer, so the shield pair is skipped.
 local function defenseInput(layer: any, capacity: boolean): string
   local name = "@invalid"
-  if type(layer) == "table" and layer.kind == "defenseLayer" and type(layer.name) == "string" then
-    name = layer.name
+  if type(layer) == "table" and rawget(layer, "kind") == "defenseLayer" and type(rawget(layer, "name")) == "string" then
+    name = rawget(layer, "name")
   end
   return "@defense." .. name .. (if capacity then ".capacity" else "")
 end

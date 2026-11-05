@@ -52,7 +52,7 @@ export interface NpcGroup {
   /** Apply a typed partial to each NPC's state. */
   update(fields: NpcStateUpdateArgs): GroupCommand;
   /** Damage each NPC by a finite, non-negative amount. */
-  damage(amount: number): GroupCommand;
+  damage(amount: number, options?: DamageOptions): GroupCommand;
 }
 
 /**
@@ -62,7 +62,7 @@ export interface NpcGroup {
  */
 export interface PlayerGroup {
   /** Damage each player by a finite, non-negative amount. */
-  damage(amount: number): GroupCommand;
+  damage(amount: number, options?: DamageOptions): GroupCommand;
   /** Add health to each player. */
   grantHealth(amount: number): GroupCommand;
   /** Enter an authored life state. */
@@ -113,7 +113,7 @@ declare const playerTargetBrand: unique symbol;
 export interface ActivatorsTarget {
   readonly [activatorsTargetBrand]: true;
   /** Damage this fire's activators. */
-  damage(amount: number): SubjectTokenCommand;
+  damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
   /** Add health to this fire's activators. */
   grantHealth(amount: number): SubjectTokenCommand;
   /** Enter an authored life state. */
@@ -136,7 +136,7 @@ export interface ActivatorsTarget {
 export interface PlayerTarget {
   readonly [playerTargetBrand]: true;
   /** Damage this event's player. */
-  damage(amount: number): SubjectTokenCommand;
+  damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
   /** Add health to this event's player. */
   grantHealth(amount: number): SubjectTokenCommand;
   /** Enter an authored life state. */

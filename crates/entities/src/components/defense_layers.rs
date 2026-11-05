@@ -175,24 +175,35 @@ impl DefenseLayersComponent {
     /// Rebuild from an edited descriptor on hot reload, matching layers by
     /// name in the new order. A kept layer keeps its value and, for each
     /// expression parameter, its last good value; a literal takes the new
-    /// literal. A new layer fills when its parameters next evaluate. The
+    /// literal, and a kept value is clamped to a literal capacity at once (an
+    /// expression capacity clamps at the next `settle`). A new layer with a
+    /// literal capacity is full at once and carries no mark; one with an
+    /// expression capacity fills when its parameters next evaluate. The
     /// last-hit stamp stays. `None` when the edit lists no layers and no
     /// health resistance.
     pub fn refreshed(live: Option<&Self>, desc: &HealthDescriptor) -> Option<Self> {
         let mut fresh = Self::from_descriptor(desc)?;
         let Some(live) = live else {
-            fresh.mark_unmarked(LayerRefill::Fill);
+            for (layer, entry) in fresh.layers.iter_mut().zip(&desc.layers) {
+                if is_ir(&entry.capacity) {
+                    layer.refill = LayerRefill::Fill;
+                }
+            }
             return Some(fresh);
         };
         for (layer, entry) in fresh.layers.iter_mut().zip(&desc.layers) {
             let Some(old) = live.layer(&layer.name) else {
-                layer.refill = LayerRefill::Fill;
+                if is_ir(&entry.capacity) {
+                    layer.refill = LayerRefill::Fill;
+                }
                 continue;
             };
             layer.value = old.value;
             layer.refill = old.refill;
             if is_ir(&entry.capacity) {
                 layer.capacity = old.capacity;
+            } else {
+                layer.value = layer.value.min(layer.capacity);
             }
             if entry.recharge_delay_ms.as_ref().is_some_and(is_ir) {
                 layer.recharge_delay_ms = old.recharge_delay_ms;
@@ -458,5 +469,143 @@ fn literal_or(value: &NumberOrIr, fallback: f32, range: (f32, f32)) -> f32 {
     match value {
         NumberOrIr::Literal(literal) => clamp_parameter(*literal, range).unwrap_or(fallback),
         NumberOrIr::Ir(_) => fallback,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::registry::Transform;
+    use postretro_foundation::defense::{DamageTypeDeclaration, DefenseVocabulary, HandleRef};
+    use postretro_foundation::{AuthoredHandle, DefenseLayerEntry, IrNode, IrValue};
+
+    fn declaration(name: &str, health: f32) -> DamageTypeDeclaration {
+        DamageTypeDeclaration {
+            name: name.to_string(),
+            matrix: BTreeMap::from([(HEALTH_POOL.to_string(), PoolMultiplier::Scale(health))]),
+        }
+    }
+
+    fn entry(capacity: NumberOrIr) -> DefenseLayerEntry {
+        DefenseLayerEntry {
+            layer: AuthoredHandle::from_handle(&HandleRef::DefenseLayer {
+                name: "shield".to_string(),
+            }),
+            capacity,
+            recharge_delay_ms: None,
+            recharge_rate: None,
+            resist: BTreeMap::new(),
+        }
+    }
+
+    fn descriptor(layers: Vec<DefenseLayerEntry>) -> HealthDescriptor {
+        HealthDescriptor {
+            layers,
+            ..HealthDescriptor::default()
+        }
+    }
+
+    fn expression() -> NumberOrIr {
+        NumberOrIr::Ir(IrNode::Const {
+            value: IrValue::Number(50.0),
+        })
+    }
+
+    fn registry_with_pool(vocabulary: DefenseVocabulary) -> (EntityRegistry, EntityId) {
+        let mut registry = EntityRegistry::new();
+        registry.set_defense_vocabulary(Arc::new(vocabulary));
+        let id = registry.spawn(Transform::default());
+        let component = DefenseLayersComponent {
+            layers: vec![DefenseLayer {
+                name: "shield".to_string(),
+                value: 0.0,
+                capacity: 0.0,
+                recharge_delay_ms: 0.0,
+                recharge_rate: 0.0,
+                resist: Vec::new(),
+                refill: LayerRefill::None,
+            }],
+            ..DefenseLayersComponent::default()
+        };
+        registry.set_component(id, component).unwrap();
+        (registry, id)
+    }
+
+    #[test]
+    fn out_of_range_explicit_type_deals_the_default_type() {
+        let (mut registry, id) = registry_with_pool(DefenseVocabulary {
+            layers: vec!["shield".to_string()],
+            damage_types: vec![declaration("plain", 1.0), declaration("heavy", 2.0)],
+            default_damage_type: Some(1),
+        });
+        let (outcome, dealt) = drain_hit(&mut registry, id, 10.0, Some(9));
+        assert_eq!(dealt, Some(1));
+        assert_eq!(outcome.health_loss, 20.0);
+    }
+
+    #[test]
+    fn out_of_range_explicit_type_without_default_is_untyped() {
+        let (mut registry, id) = registry_with_pool(DefenseVocabulary {
+            layers: vec!["shield".to_string()],
+            damage_types: vec![declaration("heavy", 2.0)],
+            default_damage_type: None,
+        });
+        let (outcome, dealt) = drain_hit(&mut registry, id, 10.0, Some(9));
+        assert_eq!(dealt, None);
+        assert_eq!(outcome.health_loss, 10.0);
+    }
+
+    #[test]
+    fn huge_raw_against_a_x64_health_pool_stays_finite() {
+        let (mut registry, id) = registry_with_pool(DefenseVocabulary {
+            layers: vec!["shield".to_string()],
+            damage_types: vec![declaration("crush", 64.0)],
+            default_damage_type: None,
+        });
+        let (outcome, _) = drain_hit(&mut registry, id, 1.0e38, Some(0));
+        assert!(outcome.health_loss.is_finite());
+        assert!(outcome.points_dealt.is_finite());
+    }
+
+    #[test]
+    fn refreshed_clamps_a_kept_layer_to_a_lowered_literal_capacity() {
+        let live =
+            DefenseLayersComponent::from_descriptor(&descriptor(vec![entry(NumberOrIr::Literal(
+                100.0,
+            ))]))
+            .unwrap();
+        let refreshed = DefenseLayersComponent::refreshed(
+            Some(&live),
+            &descriptor(vec![entry(NumberOrIr::Literal(40.0))]),
+        )
+        .unwrap();
+        let layer = refreshed.layer("shield").unwrap();
+        assert_eq!(layer.capacity, 40.0);
+        assert_eq!(layer.value, 40.0);
+        assert_eq!(layer.refill, LayerRefill::None);
+    }
+
+    #[test]
+    fn refreshed_adds_a_literal_layer_full_with_no_mark() {
+        let live = DefenseLayersComponent::from_descriptor(&descriptor(Vec::new()));
+        let refreshed = DefenseLayersComponent::refreshed(
+            live.as_ref(),
+            &descriptor(vec![entry(NumberOrIr::Literal(30.0))]),
+        )
+        .unwrap();
+        let layer = refreshed.layer("shield").unwrap();
+        assert_eq!(layer.value, 30.0);
+        assert_eq!(layer.refill, LayerRefill::None);
+    }
+
+    #[test]
+    fn refreshed_marks_an_added_expression_layer_to_fill() {
+        let refreshed =
+            DefenseLayersComponent::refreshed(None, &descriptor(vec![entry(expression())]))
+                .unwrap();
+        assert_eq!(refreshed.layers[0].refill, LayerRefill::Fill);
     }
 }

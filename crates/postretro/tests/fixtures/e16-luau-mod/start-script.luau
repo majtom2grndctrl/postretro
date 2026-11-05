@@ -1,5 +1,5 @@
 --!strict
--- The committed Luau mirror of E16's scripting surface: a mod that registers
+-- The committed Luau mirror of the dev mod's defense-layer scripting surface: a mod that registers
 -- the dev vocabulary, carries shielded and armored descriptors, and installs
 -- the booster pads, the shield-break policy and a typed overload. Tests copy
 -- this directory whole into a temporary mod root.

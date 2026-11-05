@@ -167,7 +167,7 @@ export function state(name: string): RuntimeGuardNode {
 }
 
 /** The `@defense.` input a layer handle reads; a bad reference (a bare string,
- * a damage-type handle) names no layer, so its bind fails at install. */
+ * a damage-type handle) names no layer, so the read fails load. */
 function defenseInput(layer: unknown, capacity: boolean): string {
   const handle = layer as { kind?: unknown; name?: unknown } | null;
   const name =

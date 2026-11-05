@@ -1121,7 +1121,7 @@ fn host_stall_holds_the_client_reading_and_it_lands_with_the_host() {
     assert_tail_quiet(&capture);
 }
 
-// E16 body order: a `levelLoad` body's store writes land at dispatch on every
+// Body order: a `levelLoad` body's store writes land at dispatch on every
 // machine, so a later step in the same body reads them, and an IR value meets
 // the bindings this install rebuilt before firing.
 #[test]

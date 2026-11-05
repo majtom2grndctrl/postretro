@@ -128,7 +128,7 @@ export type NpcStateUpdateArgs = { aggro: boolean? }
 --- length; indexing anything but a verb raises.
 export type NpcGroup = {
   update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
-  damage: (self: NpcGroup, amount: number) -> GroupCommand,
+  damage: (self: NpcGroup, amount: number, options: DamageOptions?) -> GroupCommand,
 }
 
 --- Options for relocating a player to its seat placement on the next tick.
@@ -141,7 +141,7 @@ export type RespawnOptions = { health: number?, lifeState: string? }
 --- Every seat-bound player pawn. Opaque: no members, no length; indexing
 --- anything but a verb raises.
 export type PlayerGroup = {
-  damage: (self: PlayerGroup, amount: number) -> GroupCommand,
+  damage: (self: PlayerGroup, amount: number, options: DamageOptions?) -> GroupCommand,
   grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
   setLifeState: (self: PlayerGroup, name: string) -> GroupCommand,
   respawn: (self: PlayerGroup, options: RespawnOptions?) -> GroupCommand,
@@ -363,7 +363,7 @@ export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
 --- The pawns that caused the current trigger edge. Legal only before any `wait`.
 export type ActivatorsTarget = {
-  damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  damage: (self: ActivatorsTarget, amount: number, options: DamageOptions?) -> SubjectTokenCommand,
   grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   setLifeState: (self: ActivatorsTarget, name: string) -> SubjectTokenCommand,
   respawn: (self: ActivatorsTarget, options: RespawnOptions?) -> SubjectTokenCommand,
@@ -375,7 +375,7 @@ export type ActivatorsTarget = {
 --- the owner `byPlayer(on.player)` reads. Legal only before any `wait`.
 export type PlayerTarget = {
   __playerTarget: true,
-  damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  damage: (self: PlayerTarget, amount: number, options: DamageOptions?) -> SubjectTokenCommand,
   grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   setLifeState: (self: PlayerTarget, name: string) -> SubjectTokenCommand,
   respawn: (self: PlayerTarget, options: RespawnOptions?) -> SubjectTokenCommand,
@@ -700,8 +700,8 @@ end
 -- a damage-type handle) names no layer, so its bind fails at install.
 local function defenseInput(layer: any, capacity: boolean): string
   local name = "@invalid"
-  if type(layer) == "table" and layer.kind == "defenseLayer" and type(layer.name) == "string" then
-    name = layer.name
+  if type(layer) == "table" and rawget(layer, "kind") == "defenseLayer" and type(rawget(layer, "name")) == "string" then
+    name = rawget(layer, "name")
   end
   return "@defense." .. name .. (if capacity then ".capacity" else "")
 end

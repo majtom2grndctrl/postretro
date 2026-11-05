@@ -14,6 +14,7 @@ import {
   stateEquals,
 } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
+import { shield } from "./defenses";
 import { BLEED_OUT_MS } from "./player-death";
 
 export const hudTheme = defineTheme({
@@ -116,8 +117,17 @@ const bar = Bar({
   },
 });
 
-// Health stands alone in the lower-left corner: just the numeric readout and the
-// health bar, so the panel shrink-wraps to its content.
+// The local player's shield sits above health; a pawn without the layer reads
+// absent and the bar shows empty.
+const shieldBar = Bar({
+  bind: shield.current,
+  max: shield.capacity,
+  fill: [0.3, 0.6, 1, 1],
+  background: [0.05, 0.07, 0.1, 0.9],
+});
+
+// Health stands alone in the lower-left corner: just the numeric readout, the
+// shield bar and the health bar, so the panel shrink-wraps to its content.
 export const hud = defineUiTree({
   name: "hud",
   alwaysOn: true,
@@ -130,7 +140,7 @@ export const hud = defineUiTree({
         align: "stretch",
         fill: color.hud.panel,
       },
-      [status, bar],
+      [status, shieldBar, bar],
     ),
   ),
 });

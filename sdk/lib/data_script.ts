@@ -784,11 +784,40 @@ function lowerAssistableReferences(descriptor: import("postretro").EntityTypeDes
   }
 }
 
+/**
+ * Replaces each fluent ref in a health layer's parameters and in each
+ * `resist` (a layer's and health's own) with its IR, as `assistable` does.
+ */
+function lowerDefenseLayerReferences(descriptor: import("postretro").EntityTypeDescriptor): void {
+  const health = descriptor.components?.health as
+    | { layers?: unknown; resist?: unknown }
+    | null
+    | undefined;
+  if (health === null || typeof health !== "object") return;
+  const lowerResist = (resist: unknown) => {
+    if (resist === null || typeof resist !== "object") return;
+    const map = resist as Record<string, unknown>;
+    for (const key of Object.keys(map)) map[key] = loweredValue(map[key]);
+  };
+  if (Array.isArray(health.layers)) {
+    for (const entry of health.layers) {
+      if (entry === null || typeof entry !== "object") continue;
+      const fields = entry as Record<string, unknown>;
+      for (const field of ["capacity", "rechargeDelayMs", "rechargeRate"]) {
+        if (fields[field] !== undefined) fields[field] = loweredValue(fields[field]);
+      }
+      lowerResist(fields.resist);
+    }
+  }
+  lowerResist(health.resist);
+}
+
 export function defineEntity<T>(
   descriptor: T & import("postretro").EntityTypeDescriptor,
 ): T {
   lowerLoadoutReferences(descriptor);
   lowerAssistableReferences(descriptor);
+  lowerDefenseLayerReferences(descriptor);
   return descriptor;
 }
 

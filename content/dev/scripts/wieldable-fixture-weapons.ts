@@ -1,4 +1,5 @@
 import { activation, defineEntity } from "postretro";
+import { ballistic } from "./damage-types";
 
 const SMG_MODEL = "models/cyberpunk_weapons/smg/model.gltf";
 const SHOTGUN_MODEL = "models/cyberpunk_weapons/shotgun/model.gltf";
@@ -8,6 +9,7 @@ export const wieldableFixtureAutoEntity = defineEntity({
   components: {
     weapon: {
       damage: 8.0,
+      damageType: ballistic,
       range: 48.0,
       primary: { trigger: "press", recoveryMs: 240.0, steps: [activation.shot()] },
       resolution: "hitscan",
@@ -34,6 +36,7 @@ export const wieldableFixturePressEntity = defineEntity({
   components: {
     weapon: {
       damage: 18.0,
+      damageType: ballistic,
       range: 48.0,
       primary: { trigger: "press", recoveryMs: 600.0, steps: [activation.shot()] },
       resolution: "hitscan",

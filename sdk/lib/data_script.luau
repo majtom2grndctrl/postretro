@@ -998,9 +998,41 @@ local function lowerAssistableReferences(descriptor: EntityTypeDescriptor)
   end
 end
 
+-- Replace each fluent ref in a health layer's parameters and in each `resist`
+-- (a layer's and health's own) with its IR, as `assistable` does.
+local function lowerDefenseLayerReferences(descriptor: EntityTypeDescriptor)
+  local components = (descriptor :: any).components
+  local health = if type(components) == "table" then components.health else nil
+  if type(health) ~= "table" then
+    return
+  end
+  local function lowerResist(resist: any)
+    if type(resist) ~= "table" then
+      return
+    end
+    for key, value in pairs(resist) do
+      resist[key] = loweredValue(value)
+    end
+  end
+  if type(health.layers) == "table" then
+    for _, entry in ipairs(health.layers) do
+      if type(entry) == "table" then
+        for _, field in { "capacity", "rechargeDelayMs", "rechargeRate" } do
+          if entry[field] ~= nil then
+            entry[field] = loweredValue(entry[field])
+          end
+        end
+        lowerResist(entry.resist)
+      end
+    end
+  end
+  lowerResist(health.resist)
+end
+
 function DataScriptSdk.defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
   lowerLoadoutReferences(descriptor)
   lowerAssistableReferences(descriptor)
+  lowerDefenseLayerReferences(descriptor)
   return descriptor
 end
 

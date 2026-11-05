@@ -4,12 +4,16 @@
 
 local Postretro = require("postretro")
 local UI = require("postretro/ui")
+local Defenses = require("./defenses.luau")
 
 -- Mirror combat-lifecycle.ts and leveling.ts; the mod manifest registers both
 -- stores, so these declarations only supply the slot refs.
 local progression = Postretro.defineStore("progression", {
   xp = { type = "number", default = 0, perOwner = true, persist = true, network = "ownerPrivate" },
   teamKills = { type = "number", default = 0, network = "shared" },
+  shieldCapacity = { type = "number", default = 0, perOwner = true, persist = true, network = "ownerPrivate" },
+  shieldTech = { type = "number", default = 0, perOwner = true, persist = true, network = "ownerPrivate" },
+  shockWard = { type = "number", default = 0, perOwner = true, persist = true, network = "ownerPrivate" },
 })
 local leveling = Postretro.defineStore("leveling", {
   level = { type = "number", default = 1, perOwner = true, network = "ownerPrivate" },
@@ -28,6 +32,11 @@ local levelUp = Postretro.defineReaction("leveling.levelUp", function(on)
     UI.playSound("sfx/test_tone"),
     UI.flashScreen({ 1, 0.9, 0.3, 0.4 }, 300),
     UI.screenShake(6, 350, 18),
+    -- The level-up also raises shield capacity, then fills health and the
+    -- shield to the new capacity, in body order.
+    on.player:addSlot(progression.shieldCapacity, 25),
+    on.player:grantHealth(100),
+    on.player:grantLayer(Defenses.shield),
   }
 end)
 local scald = Postretro.defineReaction("heat.scald", function(on)

@@ -12,6 +12,7 @@ import {
   definePresentationTemplate,
   fact,
 } from "postretro/ui";
+import { shield } from "./defenses";
 
 export const damageNumber = definePresentationTemplate({
   root: Text({
@@ -60,7 +61,16 @@ export const damagedEnemyBar = definePresentationTemplate({
 });
 
 export const damagedEnemyOverlay = defineOverlay({
-  over: damagedEnemies({ lingerMs: 2_500, hideAtFull: true }),
+  // The shield pair reads each enemy's own layer; hide-at-full needs health
+  // and this pair both full.
+  over: damagedEnemies({
+    lingerMs: 2_500,
+    hideAtFull: true,
+    shield: {
+      value: (entity) => entity.defense(shield).current,
+      max: (entity) => entity.defense(shield).capacity,
+    },
+  }),
   template: damagedEnemyBar,
   maxVisible: 8,
 });

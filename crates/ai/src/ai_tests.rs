@@ -8987,6 +8987,19 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "engage".to_string(),
                     vec![
                         edge("retreat", anchor_beyond(LEASH_RANGE)),
+                        // Its own armor broken: `defense(armor).current.le(0)`.
+                        edge(
+                            "retreat",
+                            IrNode::Le {
+                                a: Box::new(IrNode::Input {
+                                    name: "@defense.armor".to_string(),
+                                    owner: None,
+                                }),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(0.0),
+                                }),
+                            },
+                        ),
                         edge(
                             "investigate",
                             IrNode::Ge {
@@ -9064,6 +9077,22 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     damage_type: None,
                 },
             ),
+            (
+                "claw".to_string(),
+                AttackParams {
+                    sound: None,
+                    weapon: None,
+                    damage: Some(15.0),
+                    max_range: Some(2.0),
+                    cooldown_ms: Some(800.0),
+                    engagement_radius: None,
+                    standoff_distance: None,
+                    damage_type: Some(postretro_foundation::AuthoredHandle(serde_json::json!({
+                        "kind": "damageType",
+                        "name": "corrosive",
+                    }))),
+                },
+            ),
         ]),
         engagement_radius: Some(JAB_RANGE),
         move_speed: 3.0,
@@ -9107,9 +9136,47 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     let define_entity = lua
         .create_function(|_, descriptor: mlua::Table| Ok(descriptor))
         .expect("stub defineEntity");
+    let defense: mlua::Function = brain_sdk
+        .get("defense")
+        .expect("brain.luau exports `defense`");
     globals.set("brain", brain).unwrap();
     globals.set("candidate", candidate).unwrap();
+    globals.set("defense", defense).unwrap();
     globals.set("defineEntity", define_entity).unwrap();
+    // No prelude, so no `require`: the enemy's two vocabulary modules resolve
+    // to tables of name-carrying handles, as the real modules return.
+    let require = lua
+        .create_function(|lua, path: String| {
+            let handles = lua.create_table()?;
+            let (kind, names): (&str, &[&str]) = match path.as_str() {
+                "./defenses.luau" => ("defenseLayer", &["shield", "armor"]),
+                "./damage-types.luau" => (
+                    "damageType",
+                    &[
+                        "ballistic",
+                        "plasma",
+                        "explosive",
+                        "shock",
+                        "corrosive",
+                        "flechette",
+                    ],
+                ),
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "unexpected require `{other}`"
+                    )));
+                }
+            };
+            for name in names {
+                let handle = lua.create_table()?;
+                handle.set("kind", kind)?;
+                handle.set("name", *name)?;
+                handles.set(*name, handle)?;
+            }
+            Ok(handles)
+        })
+        .expect("stub require");
+    globals.set("require", require).unwrap();
 
     let module: mlua::Table = lua
         .load(ENTITIES_LUAU_SRC)

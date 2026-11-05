@@ -11,6 +11,21 @@ import {
   sentiment,
 } from "postretro";
 import { onStateCrossing } from "postretro/ui";
+import { armor, shield } from "./scripts/defenses";
+import {
+  ballistic,
+  corrosive,
+  explosive,
+  flechette,
+  plasma,
+  shock,
+} from "./scripts/damage-types";
+import {
+  acidRifleEntity,
+  arcRifleEntity,
+  overload,
+  shieldedEnemyEntity,
+} from "./scripts/damage-triangle";
 import { playerEntity } from "./scripts/player";
 import { setupPlayerDeath } from "./scripts/player-death";
 import { coopPresentationEntities, coopDummyLifecycle, coopWeaponLifecycle } from "./scripts/coop-presentation-entities";
@@ -89,10 +104,13 @@ import {
 } from "./scripts/frontend-menu";
 import {
   ammoOnKill,
+  booster,
+  boosterPads,
   combatDummyLifecycle,
   combatZombieLifecycle,
   enemyDeath,
   progression,
+  shieldBreak,
 } from "./scripts/combat-lifecycle";
 import { runCounter } from "./scripts/run-counter";
 import { closetStore } from "./scripts/closet-store";
@@ -186,6 +204,8 @@ export default defineMod({
     ...positionalSoundReactions,
     markSwimming,
     splashSound,
+    booster,
+    overload,
   ],
   // Host decisions per player, with own-state feedback local to each machine.
   playerEvents: [
@@ -210,9 +230,15 @@ export default defineMod({
     combatZombieLifecycle,
     factionSentimentBackstab,
     ...playerDeath.events,
+    shieldBreak,
   ],
-  triggerEvents: factionSentimentTriggerEvents,
+  triggerEvents: [...factionSentimentTriggerEvents, boosterPads],
   stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],
+  // Registration lists each handle, as `stores` does; the default is one of
+  // them, dealt by anything that names no type.
+  defenseLayers: [shield, armor],
+  damageTypes: [ballistic, plasma, explosive, shock, corrosive, flechette],
+  defaultDamageType: ballistic,
   // Ghost styles a map's `ghost_link` names through its `ghost_style` key. The
   // ghost-link fixture (maps/ghost-links.map) names `echo`, which carries the
   // partner's sounds through the Ghost bus above.
@@ -321,6 +347,10 @@ export default defineMod({
     cyberpunkWarriorEntity,
     sciFiTrooperEntity,
     referenceEnemyEntity,
+    // DEV FIXTURE: the damage-triangle playtest (scripts/damage-triangle.ts).
+    shieldedEnemyEntity,
+    arcRifleEntity,
+    acidRifleEntity,
     enemyRifleEntity,
     limitatorEntity,
     // Crossfire reference controls. Place `crossfire_raider` with either a

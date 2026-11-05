@@ -6,6 +6,7 @@
 // dev play; weapon keys name curated clips.
 
 import { activation, brain, defineEntity, defineReaction } from "postretro";
+import { ballistic } from "./damage-types";
 import type { EmitterParams } from "postretro";
 import { playSound } from "postretro/ui";
 
@@ -18,6 +19,7 @@ export const positionalSoundShotgunEntity = defineEntity({
   components: {
     weapon: {
       damage: 3.0,
+      damageType: ballistic,
       pelletCount: 8,
       spreadDegrees: 5,
       range: 64.0,

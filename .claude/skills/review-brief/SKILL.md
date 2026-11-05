@@ -1,14 +1,12 @@
 ---
 name: review-brief
 description: >
-  Detail review of a problem brief in `context/plans/drafts/`. Three
-  lenses — premise, rows, subtract — each confined to the sections it may
-  change: a review pass adds Acceptance rows and research pin rows only; the
-  loop's fix step adds meaning-preserving edits, and every finding that changes
-  a Decision or an Acceptance measurement goes to the owner.
-  Runs as a review → fix → self-review →
-  re-review loop after /validate-plan returns Direction sound, before
-  promotion.
+  Detail review of a problem brief in `context/plans/drafts/`. Three lenses
+  — premise, rows, subtract — each confined to the sections one edit table
+  allows. Runs as a review → fix → self-review → re-review loop after
+  /validate-plan returns Direction sound, before promotion. A false Decision
+  premise, a change to what a Decision or Acceptance row means, and any
+  finding on the modder-facing blocks go to the owner.
 argument-hint: "[brief-name]"
 ---
 
@@ -24,16 +22,19 @@ The lenses find real defects. The boundary on where their output may land keeps 
 
 ## What may change
 
-| Section | Reviewer may | Applier may |
-|---|---|---|
-| Problem | Report a cause it cannot confirm | Nothing |
-| Decisions | Report a false premise, a Path sentence wearing a Decision's clothes, a non-goal missing its warrant | Nothing |
-| Acceptance | Propose a new row; propose a completion of an existing row | Add rows; apply a completion that does not change what the row measures |
-| Path | Nothing — a stale Path claim is the executor's, reported in `plan.md` | Nothing |
-| Open questions | Report an unmarked entry | Nothing |
-| `research.md` | Propose pin-table rows | Add rows |
+One table governs every edit. *Review pass* is what a single review's step 3 applies. *Loop fix* is what the loop's Fix and Self-review steps add.
 
-A "completion" finishes what a row already meant — names the edge it implied, adds the permit case beside its refuse case. Anything that changes the measurement is the owner's, surfaced with the proposed text.
+| Section | Reviewer reports | Review pass applies | Loop fix applies |
+|---|---|---|---|
+| Problem | A cause it cannot confirm | Nothing | Wording and coherence edits that keep the basis. A changed basis is the owner's |
+| Decisions | A false premise, a Path sentence wearing a Decision's clothes, a non-goal missing its warrant | Nothing | Wording tightened with its meaning unchanged. A false premise is the owner's |
+| Scripting surface, Boundary inventory, Wire format | Any defect | Nothing | Nothing. Every finding is the owner's: a name, casing, argument order, default, or byte layout is a one-way door for mods |
+| Acceptance | A new row; a completion of an existing row | Add rows; apply a completion that does not change what the row measures | Same |
+| Path | A stale or contradicted claim | Nothing | Correct the claim, cited by symbol |
+| Open questions | An unmarked entry | Nothing | Mark an unmarked entry; clarify wording. Never resolve, delete, or re-mark a **blocks build** or **delegated** entry |
+| `research.md` | Pin-table rows | Add rows | Add rows |
+
+A "completion" finishes what a row already meant — names the edge it implied, adds the permit case beside its refuse case. Anything that changes the measurement is the owner's, surfaced with the proposed text. A finding with no legal target is an owner item, not an exception.
 
 ## Process
 
@@ -92,7 +93,7 @@ Read all three files. Merge rows that pin the same ordering — lenses cannot se
 
 - Append `research-row` findings to the pin table, and `acceptance-row` findings to Acceptance, each row citing its pin.
 - Apply a completion to an existing row only when it does not change the measurement. When in doubt it does.
-- Everything targeted `owner` goes in the report, grouped by section, with the proposed text. A review pass applies nothing to Problem, Decisions, Path or Open questions, whatever the severity; the loop's Fix step below owns those edits.
+- Everything targeted `owner` goes in the report, grouped by section, with the proposed text. A review pass applies only what the table's *Review pass* column allows, whatever the severity.
 
 Read the diff against the snapshot, not the result. Then re-read Decisions against the rows you added: a row that is only satisfiable by a mechanism no Decision names is a missing Decision, and that is an owner item too.
 
@@ -120,16 +121,18 @@ Stop on one review with no Blockers, or two consecutive reviews with one Blocker
 Stop for the owner at once when:
 
 - A fix would change what a Decision means or what an Acceptance row measures.
+- A Decision's premise is false.
+- A finding lands on the Scripting surface, Boundary inventory, or Wire format.
 - A Blocker needs an owner decision.
 - A round's fixes manufacture the next round's Blockers. The Decisions are wrong; that is `/validate-plan`.
 
-Fix authority in the loop: Acceptance, `research.md`, Path, and Open questions are editable. A Decision changes only to correct a false premise or tighten wording with its meaning unchanged. Reviewer prose never lands in a Decision as a new clause.
+Loop edits follow the table's *Loop fix* column. Reviewer prose never lands in a Decision as a new clause.
 
 Report once, when the loop ends: reviews run, Blockers per review, fixes applied, findings skipped and why, owner items.
 
 ## Working rules
 
-- The table under **What may change** is the skill. A finding with no legal target is an owner item, not an exception.
-- Reviewers never edit. The orchestrator edits only rows.
+- The table under **What may change** is the skill.
+- Reviewers never edit. The orchestrator edits only where the table allows.
 - Every round ends in the stop rule or the owner. Convergence by accretion is the failure to prevent; a brief still producing Blockers after four reviews has wrong Decisions, and that is `/validate-plan`.
 - No padding, no praise, no emojis. Match the voice of `/draft-brief`.

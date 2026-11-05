@@ -5,7 +5,7 @@ description: >
   repo-aware executor. Records the problem, decisions, acceptance criteria,
   and a non-binding path. Chooses compact or resumable execution before prose
   grows around the work. Use after /draft-session routes work to a brief.
-  Promotion follows /validate-plan and owner sign-off.
+  Promotion follows /validate-plan, detail review, and owner sign-off.
 argument-hint: "[feature-name]"
 ---
 
@@ -22,7 +22,7 @@ A brief is written for a reader with the repo. One integrating executor owns the
 ## Rules
 
 1. **Nothing is restated for an agent that cannot see the rest.** Every executor gets the whole brief, relevant research and context, and the source tree. There is no task-paragraph contract.
-2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim is reported in the plan of record, not fixed in a review round. No line numbers.
+2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim found at build is reported in the plan of record. No line numbers.
 3. **Execution weight follows coordination cost.** Cross-boundary contracts add detail to the brief. They do not alone require resumable execution. Choose resumable mode only when durable checkpoints or handoffs will earn their cost.
 
 ## Process
@@ -161,7 +161,7 @@ Do not update `context/lib/` during drafting. Durable capture happens at promoti
 
 ### 6. Validate direction
 
-Run `/validate-plan <name>`. 
+Run `/validate-plan <name>`.
 
 Surface the verdict and read it as a fresh reader would; do not rebut it from inside the session that drafted the brief. Never act on *Reshape*, *Not a brief*, or *Under-scoped* unilaterally — those are owner decisions.
 
@@ -181,6 +181,7 @@ Between draft and promotion the owner and the drafter resolve **blocks build** q
 
 A brief is ready when:
 - `/validate-plan` returned *Direction sound*, or the owner accepted a reshape and the brief reflects it
+- Detail review reached its stop rule, and the owner has seen its owner items
 - No **blocks build** entries remain; every surviving entry is **delegated**
 - The owner signs off
 

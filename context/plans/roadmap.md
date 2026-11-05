@@ -14,6 +14,7 @@
 The skinned-mesh render path, combat loop, navigation, statechart behavior, line-of-sight, and faction sentiment have all shipped. What remains is follow-up.
 
 - [ ] **Runtime-movable home anchor** *(additive; deferred to a named consumer)* — a write path to `BrainComponent.home_anchor` (a set-piece re-homes an enemy: rotate a guard post, relocate a patrol) plus the re-path to the new anchor, authored as an additive consequential verb in E18's enemy-command family (`updateEnemyState` / `enemies({ tag })` precedent). Built when a set-piece wants it, not before.
+- [ ] **Faction binding-name sugar** — `defineFaction()` with no name, named by its binding, as `ready/E16--damage-types-and-defense-layers/` names damage types and defense layers. Until then factions keep their explicit string.
 - [ ] **Movement-feel capstone** — integrated tuning pass across the landed feel specs on the movement-feel fixture, plus durable capture: steering pipeline order-of-operations, determinism invariants, and tuning vocabulary migrate into a `context/lib/` enemy-AI doc with an index-router entry. Closes the follow-up wave.
 
 ---
@@ -70,7 +71,7 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
 
 - [ ] **coop--pre-arm-fire-resolves-slot-zero** — before a connected client's pawn arms, its Input carries `firing_slot` 0, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot. Traced in source, not yet seen in play. Trace: `context/plans/done/coop--client-inventory-awaits-tuning/research.md`. Needs a draft session.
 
-- [ ] **Local-slot crossing origin** — classify crossings over a machine's own local or owner-private slots as `LocalPlayer` origin, or a sibling origin. Those crossings speak for this machine, not the shared world, yet every crossing fires as `EveryMachine` today. `drafts/reaction-body-composition`'s local-only class and `coop--client-leave-session`'s `FireOrigin::LocalPlayer` need one shared classification. After `coop--client-leave-session`, which adds the origin for player input only. Needs a draft session.
+- [ ] **Local-slot crossing origin** — folded into `drafts/coop--client-leave-session/`. Crossings over a machine's own local or owner-private slots speak for this machine, not the shared world, yet fire under the every-machine origin with an own-state source; `done/reaction-body-composition`'s local-only class and that draft's `FireOrigin::LocalPlayer` need one shared classification. No defect is observed.
 
 **Testable outcome:** two-plus players use the selected hosted-session flow, with one joining mid-level and another dropping while the session survives, through a mod-authored lobby.
 
@@ -104,11 +105,13 @@ Organized as five milestones along dependency seams. Shipped: the impact-policy 
 
 ### Damage & Defenses
 
-- [ ] **damage types / elemental** — a damage type grows inside the payload; unlocks the combat-events `element` / `damageOf(element)` facts.
+- [ ] **damage types / elemental** — mod-registered damage types on every hit, scaling drain per pool through an authored matrix and pool-scoped resist; the substrate for the combat-events `element` / `damageOf(element)` facts. Ready: `ready/E16--damage-types-and-defense-layers/`.
 - [ ] **crit math** — a crit multiplier and flag, applied per hit zone.
-- [ ] **status effects / DoT** — a new engine-owned per-tick component (burn / shock / corrode) with duration and stacking; DoT ticks are server-authoritative and emit through the combat-events chokepoint.
-- [ ] **damage application order** — the `applyDamage` chokepoint drains author-nominated absorption layers before health, in an authored order. Today the chokepoint reduces health then fires the impact policy, so a shield can only refund health post-hit, never absorb before it. The engine owns only the drain order; each layer's value, max, recharge, and type stay author state (per-entity `@state`) + IR policy. Foundation for shields.
-- [ ] **shields + shield types** — shields as author-declared state layered over health through damage application order: recharge authored as IR *policy* (fast like Halo, slow-and-delayed like Borderlands), elemental shield types, resistance interactions; unlocks the combat-events `brokeShield` fact.
+- [ ] **status effects / DoT** — a new engine-owned per-tick component (burn / shock / corrode) with duration and stacking; DoT ticks are server-authoritative and emit through the combat-events chokepoint. Depends on `ready/E16--damage-types-and-defense-layers/`: every DoT tick enters the damage chokepoint with a type and a source, so it drains layers and credits. Start from that brief's non-binding DoT sketch (its `research.md` §Damage over time).
+- [ ] **damage application order** — the damage chokepoint drains engine-owned defense layers (author-named shields, armor) before health for every producer, with delay-then-rate recharge and literal-or-expression parameters. Today it reduces health first, so a shield can only refund health after a hit. Foundation for shields. Ready: `ready/E16--damage-types-and-defense-layers/` (with damage types).
+- [ ] **shield types** — shield special effects (nova, spike, absorb-to-ammo) through `defineDefenseLayer`'s reserved options. Layers, recharge and resistances belong to damage application order.
+- [ ] **authored defense-layer recharge and overflow policy** — a per-layer `overflow` option (gate, scaled), recharge-scope inputs (time since hit, the layer's own value) and a per-layer recharge expression, each defaulting to the engine's delay-then-rate recharge and raw-remainder spillover. Carries the IR write path `plans/done/M14--movement-dash-runtime-values` earmarked for shield recharge. After damage application order.
+- [ ] **teammate shield bars** — a replication decision for defense-layer values, which damage application order keeps owner-private, so a teammate HUD can show a teammate's shield.
 
 ### Weapon Feel
 
@@ -140,7 +143,7 @@ Trigger fan-out, activation policy, dispatch parameters, enemy groups, spawning,
 
 - [x] **R — Respawn + player-leave policy.** Author-named player life states, capability gates, respawn and the rejoin map; player-leave keeps the harvest-and-hold contract. Shipped: `plans/done/E18--player-life-states/`.
 - [x] **Player revive and second wind.** Teammate assist (hold-to-revive with client prediction), impact-policy life-state reads and effects, and a world-anchored revive marker over downed teammates. Done (`context/plans/done/E18--player-revive-assist/`).
-- [ ] **Per-entity state reads in interaction-pair expressions.** `@state.*` side reads in pair expressions such as revive's `assistable`, so a helper's or target's per-entity state can scale a revive. Waits on the cross-entity state-read write path (`scripting.md` §11).
+- [ ] **Defense-layer reads in interaction-pair expressions.** A helper's or target's defense layer read in pair expressions such as revive's `assistable`, so a shield can scale a revive; such a read rejects load until then. A small additive change to the pair scope, after `ready/E16--damage-types-and-defense-layers/`. Per-entity `@state.*` side reads, the item's original scope, wait on the cross-entity state-read write path (`scripting.md` §11), and the per-owner store already covers their use case (the healer recipe in `docs/scripting-reference.md`).
 - [ ] **Life-state drop capability.** A `drop` profile key, separate from `switchWeapon`. Today `switchWeapon: false` also refuses drop, because drop repoints the active slot, so an author can't let a downed player drop a weapon while switching stays refused.
 - [ ] **E — Playable encounter.** One authored reveal-closet set-piece that proves the loop is fun — the capstone consuming A–R. Its sealed closets motivate E17-F (doors as occluders); E18-E is that spec's consumer, not the reverse.
 

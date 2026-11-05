@@ -128,8 +128,6 @@ fn trace_controller() -> ShResidencyController {
                 .collect()
         })
         .collect();
-    let mut owners = vec![Vec::new(); CLUSTERS];
-    owners[5] = vec![4];
     let mut priorities = vec![0; CLUSTERS];
     priorities[7] = 3;
     priorities[9] = 2;
@@ -137,7 +135,6 @@ fn trace_controller() -> ShResidencyController {
         hinted_topology(
             (0..CLUSTERS as u32).collect(),
             chain,
-            owners,
             vec![8; CLUSTERS],
             vec![SeamPortalEndpoint {
                 portal_id: 0,
@@ -265,19 +262,11 @@ fn record_drain(controller: &ShResidencyController, batch: &ShDrainBatch, out: &
         admitted.join(", ")
     )
     .unwrap();
-    // Ready work the drain left behind, in cluster-id order: either stopped
-    // by the byte budget or waiting on an owner that is not yet sampleable.
+    // Ready work the byte budget left behind, in cluster-id order.
     let left: Vec<String> = controller
         .ready
         .iter()
-        .map(|(&cluster_id, ready)| {
-            let why = if controller.ready_for_install(cluster_id) {
-                "budget"
-            } else {
-                "owner-wait"
-            };
-            format!("{cluster_id} {}B {why}", ready.byte_charge)
-        })
+        .map(|(&cluster_id, ready)| format!("{cluster_id} {}B budget", ready.byte_charge))
         .collect();
     if !left.is_empty() {
         writeln!(out, "  ready left: [{}]", left.join(", ")).unwrap();

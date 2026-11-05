@@ -1,14 +1,11 @@
 //! Measurement harness: SH and lightmap mandatory demand per camera cell under the id-51 reach.
 //! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency, Lightmap cell-block residency)
 
-// The go/no-go check for an id-51 mandatory tier: whether its worst cell,
-// with fixed metadata, fits the SH floor. For every camera cell (not solid,
-// not exterior), the SH mandatory tier the id-51 reach would hold: the
-// clusters of the cell's id-51 entries with lead <= L (lead 0 is the cell's
-// own dilated visible set, so Visible is inside it), plus pinned clusters,
-// closed over baked owners. Bytes are the controller's logical charge per
-// cluster (`requested_resident_bytes`), the figure its 256 MiB floor
-// compares after fixed metadata and whole-resident scatter. Beside it, the
+// For every camera cell (not solid, not exterior), the SH mandatory tier the
+// id-51 reach would hold: the clusters of the cell's id-51 entries with lead
+// <= L (lead 0 is the cell's own dilated visible set, so Visible is inside
+// it), plus pinned clusters. Clusters are the unit: they share nodes and
+// rows, so their chunk figures do not add up to resident bytes. Beside it, the
 // lightmap's mandatory blocks for the same cell and L, as its controller
 // demands them: the blocks of those cells plus pinned blocks. A block is a
 // pair when it carries an id-42 shadowmask half. Pool layers are the 2048²
@@ -27,7 +24,7 @@
 //     -- --ignored --nocapture
 //
 // Optional: `POSTRETRO_SH_REACH_LEADS` = comma-separated metres (default
-// `16,32`; the first is the gate's L). `POSTRETRO_SH_REACH_CSV` = a path to
+// `16,32`). `POSTRETRO_SH_REACH_CSV` = a path to
 // write every camera cell's row at every lead; unset prints the rows.
 
 use std::collections::BTreeSet;
@@ -48,10 +45,9 @@ use crate::streaming::cluster_hints::{ClusterHints, decode_level_hints};
 const PRL_ENV: &str = "POSTRETRO_SH_REACH_PRL";
 const LEADS_ENV: &str = "POSTRETRO_SH_REACH_LEADS";
 const CSV_ENV: &str = "POSTRETRO_SH_REACH_CSV";
-const GATE_FLOOR_BYTES: u64 = super::budget::DEFAULT_GPU_FLOOR_BYTES;
 const MIB: f64 = 1024.0 * 1024.0;
 const CSV_HEADER: &str = "lead_m,camera_cell,center_x,center_y,center_z,mandatory_cells,\
-     sh_clusters,sh_bytes,lightmap_blocks,lightmap_pairs,lightmap_half_bytes,\
+     sh_clusters,lightmap_blocks,lightmap_pairs,lightmap_half_bytes,\
      shadowmask_half_bytes,lightmap_pair_bytes,lightmap_pool_layers";
 
 /// The level's streamed blocks: the controller's block map plus each block's
@@ -70,7 +66,6 @@ struct CellSample {
     /// Id-51 entries within the lead: the cells whose units are mandatory.
     mandatory_cells: u32,
     sh_clusters: u32,
-    sh_bytes: u64,
     lightmap_blocks: u32,
     /// Blocks carrying both an id-22 and an id-42 half.
     lightmap_pairs: u32,
@@ -78,19 +73,6 @@ struct CellSample {
     shadowmask_half_bytes: u64,
     lightmap_pair_bytes: u64,
     lightmap_pool_layers: u32,
-}
-
-/// Every owner a cluster set needs, transitively: the closure the controller
-/// adds for Visible and Pinned targets (`close_owner_targets`).
-fn close_owners(topology: &PlannerTopology, clusters: &mut BTreeSet<u32>) {
-    let mut stack: Vec<u32> = clusters.iter().copied().collect();
-    while let Some(cluster) = stack.pop() {
-        for &owner in &topology.owners[cluster as usize] {
-            if clusters.insert(owner) {
-                stack.push(owner);
-            }
-        }
-    }
 }
 
 fn sample_cell(
@@ -117,11 +99,6 @@ fn sample_cell(
         .map(|&cell| hints.cell_to_cluster[cell as usize])
         .collect();
     clusters.extend(hints.pinned.iter().copied());
-    close_owners(topology, &mut clusters);
-    let sh_bytes = clusters
-        .iter()
-        .map(|&cluster| topology.requested_resident_bytes[cluster as usize])
-        .sum();
 
     let data = &world.cells[camera_cell as usize];
     let mut sample = CellSample {
@@ -129,7 +106,6 @@ fn sample_cell(
         center: (data.bounds_min + data.bounds_max) * 0.5,
         mandatory_cells: within.len() as u32,
         sh_clusters: clusters.len() as u32,
-        sh_bytes,
         lightmap_blocks: 0,
         lightmap_pairs: 0,
         lightmap_half_bytes: 0,
@@ -193,14 +169,13 @@ fn print_counts(label: &str, samples: &[CellSample], field: fn(&CellSample) -> u
 fn csv_row(out: &mut String, metres: f32, s: &CellSample) {
     writeln!(
         out,
-        "{metres},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
+        "{metres},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}",
         s.camera_cell,
         s.center.x,
         s.center.y,
         s.center.z,
         s.mandatory_cells,
         s.sh_clusters,
-        s.sh_bytes,
         s.lightmap_blocks,
         s.lightmap_pairs,
         s.lightmap_half_bytes,
@@ -218,7 +193,7 @@ fn report_lead(
     metres: f32,
     camera_cells: &[u32],
     rows: &mut String,
-) -> u64 {
+) -> u32 {
     let lead = (metres * LEAD_UNITS_PER_METRE as f32).round() as u32;
     let samples: Vec<CellSample> = camera_cells
         .iter()
@@ -229,14 +204,13 @@ fn report_lead(
     }
     let worst = samples
         .iter()
-        .max_by_key(|sample| sample.sh_bytes)
+        .max_by_key(|sample| sample.sh_clusters)
         .copied()
         .expect("camera cells");
     println!("\n## L = {metres} m ({} camera cells)", samples.len());
     print_counts("mandatory cells", &samples, |s| {
         u64::from(s.mandatory_cells)
     });
-    print_bytes("SH mandatory bytes", &samples, |s| s.sh_bytes);
     print_counts("SH mandatory clusters", &samples, |s| {
         u64::from(s.sh_clusters)
     });
@@ -257,15 +231,14 @@ fn report_lead(
         println!("lightmap: not streamed in this PRL");
     }
     println!(
-        "worst SH cell {}: {} clusters, {:.3} MiB SH; lightmap {} blocks, {:.3} MiB, {} layers",
+        "worst SH cell {}: {} clusters; lightmap {} blocks, {:.3} MiB, {} layers",
         worst.camera_cell,
         worst.sh_clusters,
-        mib(worst.sh_bytes),
         worst.lightmap_blocks,
         mib(worst.lightmap_pair_bytes),
         worst.lightmap_pool_layers,
     );
-    worst.sh_bytes
+    worst.sh_clusters
 }
 
 fn load_blocks(world: &LevelWorld, hints: &ClusterHints) -> Option<Blocks> {
@@ -316,24 +289,13 @@ fn sh_reach_mandatory_bytes_from_prl() {
             !data.is_solid && !data.is_exterior
         })
         .collect();
-    let whole_map: u64 = topology.requested_resident_bytes.iter().sum();
-    let pinned: BTreeSet<u32> = {
-        let mut set = hints.pinned.clone();
-        close_owners(&topology, &mut set);
-        set
-    };
     println!(
-        "PRL: {path}\n{} cells ({} camera), {} clusters ({:.3} MiB whole map), \
-         pinned + owners {} clusters ({:.3} MiB), id-51 max lead {:.1} m, {} entries",
+        "PRL: {path}\n{} cells ({} camera), {} clusters, {} pinned, \
+         id-51 max lead {:.1} m, {} entries",
         world.cells.len(),
         camera_cells.len(),
         topology.cluster_count(),
-        mib(whole_map),
-        pinned.len(),
-        mib(pinned
-            .iter()
-            .map(|&c| topology.requested_resident_bytes[c as usize])
-            .sum()),
+        hints.pinned.len(),
         residency_set.max_lead as f32 / LEAD_UNITS_PER_METRE as f32,
         residency_set.entries.len(),
     );
@@ -350,9 +312,8 @@ fn sh_reach_mandatory_bytes_from_prl() {
     }
 
     let mut rows = format!("{CSV_HEADER}\n");
-    let mut gate_max = 0;
-    for (index, &metres) in leads.iter().enumerate() {
-        let max = report_lead(
+    for &metres in &leads {
+        let worst_clusters = report_lead(
             &world,
             &topology,
             blocks.as_ref(),
@@ -360,17 +321,11 @@ fn sh_reach_mandatory_bytes_from_prl() {
             &camera_cells,
             &mut rows,
         );
-        if index == 0 {
-            gate_max = max;
-        }
+        println!(
+            "L = {metres} m: worst-cell SH mandatory {worst_clusters} of {} clusters",
+            topology.cluster_count()
+        );
     }
-    println!(
-        "\nGate (L = {} m): worst-cell SH mandatory {:.3} MiB of the {:.0} MiB floor, \
-         before fixed metadata and whole-resident scatter",
-        leads[0],
-        mib(gate_max),
-        mib(GATE_FLOOR_BYTES)
-    );
     match std::env::var(CSV_ENV) {
         Ok(csv) => {
             std::fs::write(&csv, rows).expect("write per-cell CSV");

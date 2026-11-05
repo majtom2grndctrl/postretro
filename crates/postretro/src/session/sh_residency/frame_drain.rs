@@ -47,7 +47,8 @@ impl ShStreamingSession {
     ///
     /// Promotion runs before the target update, so a cluster composed last
     /// frame is Sampleable when this frame's visible misses are counted: the
-    /// frame draws it lit. A settling frame counts no visible miss.
+    /// frame draws it lit. A settling frame demands in full on every path
+    /// and counts no visible miss.
     pub(in crate::session) fn begin_drain(
         &mut self,
         visible_cells: &VisibleCells,
@@ -56,7 +57,7 @@ impl ShStreamingSession {
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
-        self.suspend_visible_misses(settling);
+        self.set_full_demand(settling);
         match self.mode {
             ShStreamingMode::SyncProof => {
                 self.promote_composed_clusters();

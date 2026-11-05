@@ -16,7 +16,6 @@ fn independent(count: usize) -> ShResidencyController {
     controller(topology(
         (0..count as u32).collect(),
         vec![vec![]; count],
-        vec![vec![]; count],
         vec![1; count],
     ))
 }
@@ -85,13 +84,6 @@ fn assert_ledger(controller: &ShResidencyController) {
         })
         .count();
     assert_eq!(controller.permits_in_use(), held);
-    assert_eq!(controller.request_owners.len(), held);
-    for &cluster_id in controller.request_owners.keys() {
-        assert!(matches!(
-            controller.states[cluster_id as usize].state,
-            ClusterResidencyState::Queued | ClusterResidencyState::Ready
-        ));
-    }
     let bytes: u64 = controller
         .ready
         .values()
@@ -243,13 +235,13 @@ fn refusal_counts_only_new_visible_episodes_without_rebucketing() {
 #[test]
 fn settling_refusal_holds_mandatory_and_reveal_counts_first_device_limit_miss() {
     let mut c = independent(1);
-    c.suspend_visible_misses(true);
+    c.set_full_demand(true);
     view(&mut c, &[0], 0.0);
     refusal(&mut c, 0);
     view(&mut c, &[0], 10.0);
     assert_eq!(c.unsettled_targets(), Some(1));
     assert_eq!(c.counters().misses, 0);
-    c.suspend_visible_misses(false);
+    c.set_full_demand(false);
     view(&mut c, &[0], 10.1);
     assert_eq!(c.counters().miss_buckets.device_limited, 1);
     assert_eq!(c.unsettled_targets(), Some(1));
@@ -259,11 +251,11 @@ fn settling_refusal_holds_mandatory_and_reveal_counts_first_device_limit_miss() 
 #[test]
 fn refusal_in_reveal_drain_preserves_the_reveal_frames_existing_miss() {
     let mut c = independent(1);
-    c.suspend_visible_misses(true);
+    c.set_full_demand(true);
     view(&mut c, &[0], 0.0);
     c.take_next_request().unwrap().unwrap();
     ready_requested(&mut c, 0);
-    c.suspend_visible_misses(false);
+    c.set_full_demand(false);
     view(&mut c, &[0], 10.1);
     assert_eq!(c.counters().miss_buckets.held_by_drain_budget, 1);
     refuse_batch(&mut c, &[0]);
@@ -279,7 +271,6 @@ fn refused_optional_seam_target_does_not_hold_settling() {
     let mut c = controller(hinted_topology(
         vec![0, 1],
         vec![vec![]; 2],
-        vec![vec![]; 2],
         vec![1; 2],
         vec![SeamPortalEndpoint {
             portal_id: 0,
@@ -289,7 +280,7 @@ fn refused_optional_seam_target_does_not_hold_settling() {
         BTreeSet::new(),
         vec![],
     ));
-    c.suspend_visible_misses(true);
+    c.set_full_demand(true);
     view(&mut c, &[0], 0.0);
     mark_sampleable(&mut c, 0);
     refusal(&mut c, 1);
@@ -372,40 +363,40 @@ fn refusal_read_retry_sequences_preserve_the_lifetime_read_budget_and_warning() 
 }
 
 #[test]
-fn refused_owner_blocks_all_dependent_reads_bytes_and_permits_until_retry_is_sampleable() {
-    let mut c = controller(topology(
-        vec![0, 1, 2],
-        vec![vec![]; 3],
-        vec![vec![2], vec![2], vec![]],
-        vec![1; 3],
-    ));
+fn refusal_blocks_only_the_refused_cluster_until_it_leaves_and_returns() {
+    let mut c = independent(2);
     view(&mut c, &[0, 1], 0.0);
-    refusal(&mut c, 2);
+    refusal(&mut c, 0);
     for now in [0.1, 1.0, 3.0] {
         view(&mut c, &[0, 1], now);
-        assert!(c.take_requests().unwrap().is_empty());
-        for id in [0, 1] {
-            assert_eq!(c.state(id), Some(ClusterResidencyState::Absent));
-        }
-        assert_eq!(c.permits_in_use(), 0);
+        assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
         assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
     }
+    assert_eq!(
+        c.take_next_request().unwrap().unwrap().cluster_id,
+        1,
+        "a refusal holds no other cluster back"
+    );
+    assert!(c.take_requests().unwrap().is_empty());
+    ready_requested(&mut c, 1);
+    install_ready(&mut c, &[1]);
+    c.promote_composed_clusters();
+    assert_eq!(c.state(1), Some(ClusterResidencyState::Sampleable));
+
     view(&mut c, &[], 3.1);
     view(&mut c, &[], 5.11);
     view(&mut c, &[0, 1], 5.2);
-    let request = c.take_next_request().unwrap().unwrap();
-    assert_eq!(request.cluster_id, 2);
-    ready_requested(&mut c, 2);
-    let batch = c.take_async_drain_batch().unwrap();
-    assert_eq!(batch.ready.len(), 1);
-    c.apply_drain_outcome(ShDrainOutcome {
-        accepted: vec![2],
-        ..ShDrainOutcome::default()
-    })
-    .unwrap();
-    assert!(c.take_requests().unwrap().is_empty());
+    let requests = c.take_requests().unwrap();
+    assert_eq!(requests.first().unwrap().cluster_id, 0);
+    for request in &requests {
+        ready_requested(&mut c, request.cluster_id);
+    }
+    install_ready(
+        &mut c,
+        &requests.iter().map(|r| r.cluster_id).collect::<Vec<_>>(),
+    );
     c.promote_composed_clusters();
-    assert_eq!(c.take_requests().unwrap().len(), 2);
+    assert!(c.all_targets_sampleable());
     assert_ledger(&c);
 }
 
@@ -422,133 +413,111 @@ fn install_ready(controller: &mut ShResidencyController, expected: &[u32]) {
         .unwrap();
 }
 
-/// Reads 3 through the diamond 3 → {1, 2} → 0 and 4 directly through 0.
-/// Both reads outlive departure and confirmed eviction of all three owners.
-fn queued_behind_evicted_diamond() -> (ShResidencyController, ShClusterRequest, ShClusterRequest) {
-    let mut c = controller(topology(
-        (0..6).collect(),
-        vec![vec![]; 6],
-        vec![vec![], vec![0], vec![0], vec![1, 2], vec![0], vec![]],
-        vec![1; 6],
-    ));
-    view(&mut c, &[3, 4], 0.0);
-    assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
-    ready_requested(&mut c, 0);
-    install_ready(&mut c, &[0]);
-    c.promote_composed_clusters();
-    for id in [1, 2] {
-        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, id);
+/// Clusters 0, 1 and 2 resident, departed and evicted while reads of 3 and 4
+/// stay in flight. Cluster 0 is then back in view, read afresh beside them.
+fn old_reads_outlive_eviction() -> (ShResidencyController, ShClusterRequest, ShClusterRequest) {
+    let mut c = independent(6);
+    view(&mut c, &[0, 1, 2], 0.0);
+    assert_eq!(c.take_requests().unwrap().len(), 3);
+    for id in [0, 1, 2] {
         ready_requested(&mut c, id);
     }
-    let direct = c.take_next_request().unwrap().unwrap();
-    assert_eq!(direct.cluster_id, 4);
-    install_ready(&mut c, &[1, 2]);
+    install_ready(&mut c, &[0, 1, 2]);
     c.promote_composed_clusters();
-    let transitive = c.take_next_request().unwrap().unwrap();
-    assert_eq!(transitive.cluster_id, 3);
+    view(&mut c, &[0, 1, 2, 3, 4], 0.05);
+    let old_three = c.take_next_request().unwrap().unwrap();
+    assert_eq!(old_three.cluster_id, 3);
+    let old_four = c.take_next_request().unwrap().unwrap();
+    assert_eq!(old_four.cluster_id, 4);
     assert_ledger(&c);
 
-    view(&mut c, &[], 0.1);
-    view(&mut c, &[], 2.2);
+    view(&mut c, &[3, 4], 0.1);
+    view(&mut c, &[3, 4], 2.2);
     let batch = c.take_async_drain_batch().unwrap();
     assert!(batch.ready.is_empty());
-    assert_eq!(
-        batch.evictions.iter().copied().collect::<BTreeSet<_>>(),
-        BTreeSet::from([0, 1, 2])
-    );
+    assert_eq!(batch.evictions, vec![0, 1, 2]);
     c.apply_drain_outcome(ShDrainOutcome {
         evicted: vec![0, 1, 2],
         ..ShDrainOutcome::default()
     })
     .unwrap();
-    view(&mut c, &[3, 4], 2.3);
+    view(&mut c, &[0, 3, 4], 2.3);
     assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
     assert!(c.states[0].failure.is_none());
-    assert!(c.take_requests().unwrap().is_empty());
     assert_eq!(c.permits_in_use(), 2);
-    (c, transitive, direct)
+    (c, old_three, old_four)
 }
 
-// Regression: a dependent's old read retained its permit and payload indefinitely
-// after its evicted owner was reread and refused at a device limit.
+// Regression: an old read retained its permit and payload indefinitely after
+// the cluster it waited on was reread and refused at a device limit.
 #[test]
-fn evicted_owner_waits_for_old_reads_then_refusal_releases_transitive_ready_work() {
+fn a_reread_refused_beside_old_reads_leaves_each_read_to_finish_on_its_own() {
     for completion in ["prepared", "failed", "cancelled"] {
-        let (mut c, transitive, direct) = queued_behind_evicted_diamond();
-        ready_requested(&mut c, direct.cluster_id);
-        assert!(
-            c.take_requests().unwrap().is_empty(),
-            "transitive read still holds its owner"
-        );
-        let mut stale = transitive;
+        let (mut c, old_three, old_four) = old_reads_outlive_eviction();
+        ready_requested(&mut c, old_four.cluster_id);
+        let mut stale = old_three;
         stale.generation += 1;
         c.admit_cancelled_request(stale).unwrap();
         assert!(!c.admit_failed_request(stale).unwrap());
-        let mut stale_payload = prepared(&c, transitive.cluster_id);
+        let mut stale_payload = prepared(&c, old_three.cluster_id);
         stale_payload.generation = stale.generation;
         assert_eq!(
             c.admit_prepared(stale_payload).unwrap(),
             ShDrainAdmission::DroppedStale
         );
-        assert!(c.take_requests().unwrap().is_empty());
         assert_eq!(c.permits_in_use(), 2);
         assert_ledger(&c);
 
+        let reread = c.take_next_request().unwrap().unwrap();
+        assert_eq!(
+            reread.cluster_id, 0,
+            "no read waits on another cluster's read"
+        );
+        assert_eq!(c.counters().rereads, 1);
+        ready_requested(&mut c, 0);
+        let batch = c.take_async_drain_batch().unwrap();
+        assert_eq!(batch.ready.len(), 2);
+        c.apply_drain_outcome(ShDrainOutcome {
+            refused: vec![0],
+            accepted: vec![4],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+        assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+        assert_eq!(c.state(4), Some(ClusterResidencyState::InstalledUncomposed));
+        assert!(c.states[4].failure.is_none());
+        assert_eq!(c.state(3), Some(ClusterResidencyState::Queued));
+        assert!(c.matches_queued_request(old_three));
+
         match completion {
-            "prepared" => ready_requested(&mut c, transitive.cluster_id),
-            "failed" => assert!(c.admit_failed_request(transitive).unwrap()),
-            "cancelled" => c.admit_cancelled_request(transitive).unwrap(),
+            "prepared" => ready_requested(&mut c, old_three.cluster_id),
+            "failed" => assert!(c.admit_failed_request(old_three).unwrap()),
+            "cancelled" => c.admit_cancelled_request(old_three).unwrap(),
             _ => unreachable!(),
         }
         assert_ledger(&c);
-        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
-        ready_requested(&mut c, 0);
-        refuse_batch(&mut c, &[0]);
-        assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
-        assert_eq!(c.state(4), Some(ClusterResidencyState::Absent));
-        assert!(c.states[4].failure.is_none());
-        if completion == "failed" {
-            assert_eq!(c.state(3), Some(ClusterResidencyState::Failed));
-            let failure = c.states[3].failure.unwrap();
-            assert_eq!(failure.cause, FailureCause::Read);
-            assert!(!failure.retry_spent);
-        } else {
-            assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
-            assert!(c.states[3].failure.is_none());
+        match completion {
+            "prepared" => assert_eq!(c.state(3), Some(ClusterResidencyState::Ready)),
+            "failed" => {
+                assert_eq!(c.state(3), Some(ClusterResidencyState::Failed));
+                let failure = c.states[3].failure.unwrap();
+                assert_eq!(failure.cause, FailureCause::Read);
+                assert!(!failure.retry_spent);
+            }
+            _ => {
+                assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
+                assert!(c.states[3].failure.is_none());
+            }
         }
-        assert_eq!(c.permits_in_use(), 0);
-        assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
-        assert!(c.take_requests().unwrap().is_empty());
-        assert_ledger(&c);
-        let after_refusal = c.report_snapshot();
-        c.admit_cancelled_request(transitive).unwrap();
-        assert!(!c.admit_failed_request(transitive).unwrap());
-        assert_eq!(c.report_snapshot(), after_refusal);
+        let after_completion = c.report_snapshot();
+        c.admit_cancelled_request(old_three).unwrap();
+        assert!(!c.admit_failed_request(old_three).unwrap());
+        assert_eq!(c.report_snapshot(), after_completion);
 
-        leave_and_return(&mut c, 3, 3.0);
+        leave_and_return(&mut c, 0, 3.0);
         assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
         ready_requested(&mut c, 0);
         install_ready(&mut c, &[0]);
-        assert!(c.take_requests().unwrap().is_empty());
-        c.promote_composed_clusters();
-        assert_eq!(
-            c.take_requests()
-                .unwrap()
-                .iter()
-                .map(|r| r.cluster_id)
-                .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        for id in [1, 2] {
-            ready_requested(&mut c, id);
-        }
-        install_ready(&mut c, &[1, 2]);
-        assert!(c.take_requests().unwrap().is_empty());
-        c.promote_composed_clusters();
-        let fresh = c.take_next_request().unwrap().unwrap();
-        assert_eq!(fresh.cluster_id, 3);
-        ready_requested(&mut c, 3);
-        install_ready(&mut c, &[3]);
         c.promote_composed_clusters();
         assert!(c.all_targets_sampleable());
         assert_eq!(c.permits_in_use(), 0);
@@ -557,12 +526,9 @@ fn evicted_owner_waits_for_old_reads_then_refusal_releases_transitive_ready_work
 }
 
 #[test]
-fn refusal_preflights_dependent_cleanup_before_evictions_and_other_outcome_changes() {
+fn refusal_preflight_rejects_the_whole_outcome_before_evictions_and_other_changes() {
     for corrupt_permits in [false, true] {
-        let (mut c, _, _) = queued_behind_evicted_diamond();
-        for id in [3, 4] {
-            ready_requested(&mut c, id);
-        }
+        let (mut c, _, _) = old_reads_outlive_eviction();
         assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
         ready_requested(&mut c, 0);
         mark_sampleable(&mut c, 5);
@@ -570,12 +536,11 @@ fn refusal_preflights_dependent_cleanup_before_evictions_and_other_outcome_chang
         assert_eq!(batch.evictions, vec![5]);
         assert_eq!(batch.ready.len(), 1);
         if corrupt_permits {
-            c.permits_in_use = 1;
+            c.permits_in_use = 0;
         } else {
-            c.accounting.cpu.ready.current_bytes = 4;
+            c.accounting.cpu.ready.current_bytes = 0;
         }
         let before = c.report_snapshot();
-        let owners = c.request_owners.clone();
         let in_drain = c.in_drain.clone();
         let outcome = || ShDrainOutcome {
             refused: vec![0],
@@ -587,127 +552,114 @@ fn refusal_preflights_dependent_cleanup_before_evictions_and_other_outcome_chang
             Err(ShResidencyControllerError::AccountingUnderflow(_))
         ));
         assert_eq!(c.report_snapshot(), before);
-        assert_eq!(c.request_owners, owners);
         assert_eq!(c.in_drain, in_drain);
-        assert_eq!(c.ready.keys().copied().collect::<Vec<_>>(), vec![3, 4]);
         assert_eq!(c.in_drain_evictions, BTreeSet::from([5]));
         assert!(c.states[0].failure.is_none());
 
         c.permits_in_use = 3;
-        c.accounting.cpu.ready.current_bytes = 12;
+        c.accounting.cpu.ready.current_bytes = 4;
         c.apply_drain_outcome(outcome()).unwrap();
         assert_eq!(c.state(5), Some(ClusterResidencyState::Absent));
-        assert_eq!(c.permits_in_use(), 0);
+        assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+        assert_eq!(c.permits_in_use(), 2, "the old reads keep their permits");
         assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
         assert_ledger(&c);
     }
 }
 
 #[test]
-fn overlapping_refused_owners_release_their_shared_ready_dependent_once() {
-    let (mut c, _, _) = queued_behind_evicted_diamond();
-    for id in [3, 4] {
-        ready_requested(&mut c, id);
-    }
-    assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
-    ready_requested(&mut c, 0);
-    install_ready(&mut c, &[0]);
-    c.promote_composed_clusters();
-    for id in [1, 2] {
-        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, id);
+fn two_refusals_in_one_outcome_leave_accepted_and_resident_work_alone() {
+    let mut c = independent(4);
+    view(&mut c, &[0, 1, 2, 3], 0.0);
+    mark_sampleable(&mut c, 0);
+    assert_eq!(c.take_requests().unwrap().len(), 3);
+    for id in [1, 2, 3] {
         ready_requested(&mut c, id);
     }
     let batch = c.take_async_drain_batch().unwrap();
-    assert_eq!(
-        batch
-            .ready
-            .iter()
-            .map(|p| p.chunk.cluster_id)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 4]
-    );
+    assert_eq!(batch.ready.len(), 3);
     assert!(batch.evictions.is_empty());
     c.apply_drain_outcome(ShDrainOutcome {
         refused: vec![1, 2],
-        accepted: vec![4],
+        accepted: vec![3],
         ..ShDrainOutcome::default()
     })
     .unwrap();
     for id in [1, 2] {
         assert_eq!(c.state(id), Some(ClusterResidencyState::Failed));
     }
-    assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
-    assert!(c.states[3].failure.is_none());
     assert_eq!(c.state(0), Some(ClusterResidencyState::Sampleable));
-    assert_eq!(c.state(4), Some(ClusterResidencyState::InstalledUncomposed));
+    assert_eq!(c.state(3), Some(ClusterResidencyState::InstalledUncomposed));
     assert_eq!(c.permits_in_use(), 0);
     assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
     assert_ledger(&c);
 }
 
-// Regression: all permits could remain Ready behind an evicted owner, leaving
-// no permit for the reread that would make any of those payloads installable.
+// Regression: all permits could sit Ready, leaving no permit for the next read.
+// Every Ready payload installs on its own, so a drain frees them.
 #[test]
-fn full_ready_permits_reclaim_only_dependents_for_mandatory_and_optional_owner_reads() {
+fn full_ready_permits_drain_then_free_mandatory_and_optional_reads() {
     for optional in [false, true] {
-        let mut owners = vec![vec![], vec![0], vec![0]];
-        owners.extend(vec![vec![1, 2]; 7]);
-        owners.push(vec![]);
-        let mut c = controller(topology(
-            (0..11).collect(),
-            vec![vec![]; 11],
-            owners,
-            vec![1; 11],
-        ));
+        let mut c = independent(11);
         let visible: Vec<_> = (3..11).collect();
         view(&mut c, &visible, 0.0);
-        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
-        ready_requested(&mut c, 0);
-        install_ready(&mut c, &[0]);
-        c.promote_composed_clusters();
-        for id in [1, 2] {
-            assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, id);
+        assert_eq!(c.take_requests().unwrap().len(), MAX_STREAM_PERMITS);
+        for &id in &visible {
             ready_requested(&mut c, id);
         }
-        install_ready(&mut c, &[1, 2]);
-        c.promote_composed_clusters();
-        assert_eq!(c.take_requests().unwrap().len(), MAX_STREAM_PERMITS);
-        view(&mut c, &[10], 0.1);
-        view(&mut c, &[10], 2.2);
-        let batch = c.take_async_drain_batch().unwrap();
-        assert_eq!(
-            batch.evictions.iter().copied().collect::<BTreeSet<_>>(),
-            BTreeSet::from([0, 1, 2])
+        // Cluster 0 is next, at its class, and was evicted once.
+        c.states[0].evicted = true;
+        if optional {
+            let rows: Vec<_> = std::iter::once(0)
+                .chain(visible.iter().copied())
+                .map(|id| (0, id, 24))
+                .collect();
+            let set = residency_set(11, &rows, 32);
+            let stage = CellDemand::new(set.max_lead);
+            let all = VisibleCells::Culled(visible.clone());
+            c.update_targets(&all, Some(stage.frame(&set, 0, PORTAL, &all)), 0.1)
+                .unwrap();
+        } else {
+            let mut wider = visible.clone();
+            wider.push(0);
+            view(&mut c, &wider, 0.1);
+        }
+        assert_eq!(c.permits_in_use(), MAX_STREAM_PERMITS);
+        assert!(
+            c.take_next_request().unwrap().is_none(),
+            "every permit is held"
         );
+        assert_ledger(&c);
+
+        // Five payloads stay: past the optional reservation, inside the limit.
+        let batch = c.take_async_drain_batch().unwrap();
+        let mut ready = batch.ready.into_iter();
+        let accepted: Vec<_> = ready.by_ref().take(3).map(|p| p.chunk.cluster_id).collect();
         c.apply_drain_outcome(ShDrainOutcome {
-            evicted: vec![0, 1, 2],
+            accepted,
+            deferred: ready.collect(),
             ..ShDrainOutcome::default()
         })
         .unwrap();
-        if optional {
-            let rows: Vec<_> = visible.iter().map(|&id| (0, id, 24)).collect();
-            let set = residency_set(11, &rows, 32);
-            let stage = CellDemand::new(set.max_lead);
-            let none_visible = VisibleCells::Culled(vec![]);
-            c.update_targets(
-                &none_visible,
-                Some(stage.frame(&set, 0, PORTAL, &none_visible)),
-                2.3,
-            )
-            .unwrap();
-        } else {
-            view(&mut c, &visible, 2.3);
-        }
-        assert!(c.take_requests().unwrap().is_empty());
-        for id in &visible {
-            ready_requested(&mut c, *id);
-        }
-        assert_eq!(c.permits_in_use(), MAX_STREAM_PERMITS);
+        assert_eq!(c.permits_in_use(), 5);
         assert_ledger(&c);
+
+        if optional {
+            assert!(
+                c.take_next_request().unwrap().is_none(),
+                "optional reads stop at the reservation"
+            );
+            let batch = c.take_async_drain_batch().unwrap();
+            let accepted = batch.ready.iter().map(|p| p.chunk.cluster_id).collect();
+            c.apply_drain_outcome(ShDrainOutcome {
+                accepted,
+                ..ShDrainOutcome::default()
+            })
+            .unwrap();
+        }
 
         c.counters.rereads = u64::MAX;
         let before = c.report_snapshot();
-        let held_owners = c.request_owners.clone();
         assert!(matches!(
             c.take_next_request(),
             Err(ShResidencyControllerError::AccountingOverflow(
@@ -715,219 +667,37 @@ fn full_ready_permits_reclaim_only_dependents_for_mandatory_and_optional_owner_r
             ))
         ));
         assert_eq!(c.report_snapshot(), before);
-        assert_eq!(c.request_owners, held_owners);
-        assert_eq!(c.ready.len(), MAX_STREAM_PERMITS);
+        assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
         c.counters.rereads = 0;
 
-        let owner = c.take_next_request().unwrap().unwrap();
-        assert_eq!(owner.cluster_id, 0);
-        assert_eq!(owner.mandatory, !optional);
-        assert_eq!(
-            c.permits_in_use(),
-            if optional {
-                MAX_OPTIONAL_STREAM_PERMITS
-            } else {
-                MAX_STREAM_PERMITS
-            }
-        );
-        assert_eq!(c.state(10), Some(ClusterResidencyState::Ready));
-        assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
-        assert!(c.states[3].failure.is_none());
-        assert_ledger(&c);
-        ready_requested(&mut c, 0);
-        let batch = c.take_async_drain_batch().unwrap();
-        assert_eq!(
-            batch
-                .ready
-                .iter()
-                .map(|p| p.chunk.cluster_id)
-                .collect::<Vec<_>>(),
-            vec![0, 10]
-        );
-        let unrelated = batch
-            .ready
-            .into_iter()
-            .find(|p| p.chunk.cluster_id == 10)
-            .unwrap();
-        c.apply_drain_outcome(ShDrainOutcome {
-            refused: vec![0],
-            deferred: vec![unrelated],
-            ..ShDrainOutcome::default()
-        })
-        .unwrap();
-        assert_eq!(c.permits_in_use(), 1);
-        assert_eq!(c.accounting().cpu.ready.current_bytes, 4);
-        assert_eq!(c.state(10), Some(ClusterResidencyState::Ready));
-        for id in 3..10 {
-            assert_eq!(c.state(id), Some(ClusterResidencyState::Absent));
-            assert!(c.states[id as usize].failure.is_none());
-        }
-        assert_ledger(&c);
-        assert!(c.take_requests().unwrap().is_empty());
-        install_ready(&mut c, &[10]);
-        assert_eq!(c.permits_in_use(), 0);
+        let request = c.take_next_request().unwrap().unwrap();
+        assert_eq!(request.cluster_id, 0);
+        assert_eq!(request.mandatory, !optional);
+        assert_eq!(c.counters().rereads, 1);
         assert_ledger(&c);
     }
 }
 
-// Regression: after mandatory reads became optional, neither of two owner
-// cohorts could alone free the five permits needed to restore the reservation.
 #[test]
-fn optional_owner_recovery_reclaims_across_stalled_cohorts_and_preserves_other_work() {
-    for unrelated in [false, true] {
-        let cohort_size = if unrelated { 3 } else { 4 };
-        let mut owners = vec![vec![], vec![]];
-        for owner in [0, 1] {
-            owners.extend(vec![vec![owner]; cohort_size]);
-        }
-        if unrelated {
-            owners.extend(vec![vec![], vec![]]);
-        }
-        let mut c = controller(topology(
-            (0..10).collect(),
-            vec![vec![]; 10],
-            owners,
-            vec![1; 10],
-        ));
-        let leaves: Vec<_> = (2..10).collect();
-        view(&mut c, &leaves, 0.0);
-        for owner in [0, 1] {
-            assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, owner);
-            ready_requested(&mut c, owner);
-        }
-        install_ready(&mut c, &[0, 1]);
-        c.promote_composed_clusters();
-        let old_requests = c.take_requests().unwrap();
-        assert_eq!(old_requests.len(), MAX_STREAM_PERMITS);
-        assert!(old_requests.iter().all(|r| r.mandatory));
-        let remaining_view: &[u32] = if unrelated { &[8, 9] } else { &[] };
-        view(&mut c, remaining_view, 0.1);
-        view(&mut c, remaining_view, 2.2);
-        let batch = c.take_async_drain_batch().unwrap();
-        assert_eq!(batch.evictions, vec![0, 1]);
-        c.apply_drain_outcome(ShDrainOutcome {
-            evicted: batch.evictions,
-            ..ShDrainOutcome::default()
-        })
-        .unwrap();
-        let rows: Vec<_> = leaves.iter().map(|&id| (0, id, 24)).collect();
-        let set = residency_set(10, &rows, 32);
-        let stage = CellDemand::new(set.max_lead);
-        let none_visible = VisibleCells::Culled(vec![]);
-        c.update_targets(
-            &none_visible,
-            Some(stage.frame(&set, 0, PORTAL, &none_visible)),
-            2.3,
-        )
-        .unwrap();
-        for owner in [0, 1] {
-            assert_eq!(c.states[owner].class, Some(TargetClass::Band));
-        }
-        for &id in &leaves {
-            if !unrelated || id != 9 {
-                ready_requested(&mut c, id);
-            }
-        }
-        assert_eq!(c.permits_in_use(), MAX_STREAM_PERMITS);
-        assert_ledger(&c);
-
-        for owner in [0, 1] {
-            let request = c
-                .take_next_request()
-                .unwrap()
-                .expect("blocked cohorts must free an owner read");
-            assert_eq!(request.cluster_id, owner);
-            assert!(!request.mandatory);
-            assert_eq!(c.permits_in_use(), MAX_OPTIONAL_STREAM_PERMITS);
-            if unrelated {
-                assert_eq!(c.state(8), Some(ClusterResidencyState::Ready));
-                let old = *old_requests.iter().find(|r| r.cluster_id == 9).unwrap();
-                assert!(c.matches_queued_request(old));
-            }
-            assert_ledger(&c);
-        }
-        for owner in [0, 1] {
-            ready_requested(&mut c, owner);
-        }
-        let batch = c.take_async_drain_batch().unwrap();
-        assert_eq!(
-            batch
-                .ready
-                .iter()
-                .map(|p| p.chunk.cluster_id)
-                .collect::<Vec<_>>(),
-            if unrelated { vec![0, 1, 8] } else { vec![0, 1] }
-        );
-        c.apply_drain_outcome(ShDrainOutcome {
-            accepted: vec![0, 1],
-            deferred: batch
-                .ready
-                .into_iter()
-                .filter(|p| p.chunk.cluster_id == 8)
-                .collect(),
-            ..ShDrainOutcome::default()
-        })
-        .unwrap();
-        c.promote_composed_clusters();
-        if unrelated {
-            ready_requested(&mut c, 9);
-        }
-        install_ready(&mut c, &[8, 9]);
-        c.promote_composed_clusters();
-        assert_eq!(c.permits_in_use(), 0);
-        assert_ledger(&c);
-
-        // Every reclaimed payload can be read afresh once its owner is sampleable.
-        for _ in 0..2 {
-            let requests = c.take_requests().unwrap();
-            assert!(!requests.is_empty());
-            assert!(requests.len() <= MAX_OPTIONAL_STREAM_PERMITS);
-            let ids: Vec<_> = requests.iter().map(|r| r.cluster_id).collect();
-            for &id in &ids {
-                assert!(c.states[id as usize].failure.is_none());
-                ready_requested(&mut c, id);
-            }
-            install_ready(&mut c, &ids);
-            c.promote_composed_clusters();
-            assert_ledger(&c);
-        }
-        assert!(c.all_targets_sampleable());
-        assert_eq!(c.permits_in_use(), 0);
-    }
-}
-
-#[test]
-fn device_limit_owner_dominates_read_failure_anywhere_in_closure_in_either_order() {
-    for owners in [vec![1, 2], vec![2, 1]] {
-        let mut c = controller(topology(
-            vec![0, 1, 2, 3],
-            vec![vec![]; 4],
-            vec![owners, vec![], vec![3], vec![]],
-            vec![1; 4],
-        ));
+fn device_limit_and_read_failure_each_count_for_their_own_cluster() {
+    for read_failure_first in [false, true] {
+        let mut c = independent(2);
+        let (failed, refused) = if read_failure_first { (0, 1) } else { (1, 0) };
         // Prepare both failure causes while not presenting a frame.
-        c.suspend_visible_misses(true);
-        view(&mut c, &[0], 0.0);
+        c.set_full_demand(true);
+        view(&mut c, &[0, 1], 0.0);
         let requests = c.take_requests().unwrap();
-        assert_eq!(
-            requests
-                .iter()
-                .map(|r| r.cluster_id)
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([1, 3])
-        );
+        assert_eq!(requests.len(), 2);
         assert!(
-            c.admit_failed_request(*requests.iter().find(|r| r.cluster_id == 1).unwrap())
+            c.admit_failed_request(*requests.iter().find(|r| r.cluster_id == failed).unwrap())
                 .unwrap()
         );
-        ready_requested(&mut c, 3);
-        refuse_batch(&mut c, &[3]);
-        c.suspend_visible_misses(false);
-        view(&mut c, &[0], 0.1);
+        ready_requested(&mut c, refused);
+        refuse_batch(&mut c, &[refused]);
+        c.set_full_demand(false);
+        view(&mut c, &[0, 1], 0.1);
         assert_eq!(c.counters().miss_buckets.device_limited, 1);
-        assert_eq!(c.counters().miss_buckets.failed, 0);
-        assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
-        assert_eq!(c.state(2), Some(ClusterResidencyState::Absent));
+        assert_eq!(c.counters().miss_buckets.failed, 1);
         assert_eq!(c.permits_in_use(), 0);
         assert_bucket_total(&c);
     }
@@ -955,12 +725,11 @@ fn later_eviction_does_not_wake_targeted_refusal_and_refusal_does_not_request_ev
 }
 
 #[test]
-fn refusal_does_not_evict_pin_lead_owner_or_optional_residents_when_floor_covers_targets() {
+fn refusal_does_not_evict_pin_lead_visible_or_optional_residents_when_floor_covers_targets() {
     let mut c = controller_with_nominal_budget(
         hinted_topology(
             vec![0, 1, 2, 3, 4, 5],
             vec![vec![]; 6],
-            vec![vec![3], vec![], vec![], vec![], vec![], vec![]],
             vec![1; 6],
             vec![],
             BTreeSet::from([1]),
@@ -970,7 +739,7 @@ fn refusal_does_not_evict_pin_lead_owner_or_optional_residents_when_floor_covers
     );
     let set = residency_set(6, &[(0, 2, 4), (0, 4, 24)], 32);
     let stage = CellDemand::new(set.max_lead);
-    let visible = VisibleCells::Culled(vec![0, 5]);
+    let visible = VisibleCells::Culled(vec![0, 3, 5]);
     c.update_targets(&visible, Some(stage.frame(&set, 0, PORTAL, &visible)), 0.0)
         .unwrap();
     for id in [0, 1, 2, 3, 4] {
@@ -996,7 +765,6 @@ fn optional_refusal_is_skipped_only_by_trim_and_does_not_inflate_protected_overs
     let mut c = controller_with_nominal_budget(
         hinted_topology(
             vec![0, 1],
-            vec![vec![]; 2],
             vec![vec![]; 2],
             vec![8; 2],
             vec![SeamPortalEndpoint {
@@ -1047,7 +815,6 @@ fn early_seam_reentry_never_wakes_on_time_alone_and_later_reentry_does() {
     let mut c = controller(hinted_topology(
         vec![0, 1, 2],
         vec![vec![]; 3],
-        vec![vec![]; 3],
         vec![1; 3],
         vec![SeamPortalEndpoint {
             portal_id: 0,
@@ -1086,7 +853,6 @@ fn early_seam_reentry_never_wakes_on_time_alone_and_later_reentry_does() {
 fn rapid_seam_flicker_reads_refused_cluster_at_most_once_per_hysteresis_window() {
     let mut c = controller(hinted_topology(
         vec![0, 1, 2],
-        vec![vec![]; 3],
         vec![vec![]; 3],
         vec![1; 3],
         vec![SeamPortalEndpoint {
@@ -1131,10 +897,8 @@ fn rapid_seam_flicker_reads_refused_cluster_at_most_once_per_hysteresis_window()
 
 #[test]
 fn rapid_horizon_churn_under_pressure_keeps_targeted_refusal_failed() {
-    let mut c = controller_with_nominal_budget(
-        topology(vec![0, 1, 2], vec![vec![]; 3], vec![vec![]; 3], vec![8; 3]),
-        24,
-    );
+    let mut c =
+        controller_with_nominal_budget(topology(vec![0, 1, 2], vec![vec![]; 3], vec![8; 3]), 24);
     view(&mut c, &[1, 2], 0.0);
     for id in [1, 2] {
         mark_sampleable(&mut c, id);
@@ -1161,21 +925,14 @@ fn rapid_horizon_churn_under_pressure_keeps_targeted_refusal_failed() {
 }
 
 #[test]
-fn pressure_suppression_of_dependent_cannot_churn_its_refused_owner() {
-    let mut c = controller_with_nominal_budget(
-        topology(
-            vec![0, 1, 2, 3],
-            vec![vec![]; 4],
-            vec![vec![], vec![0], vec![], vec![]],
-            vec![8; 4],
-        ),
-        32,
-    );
+fn pressure_on_band_work_cannot_churn_a_refused_band_cluster() {
+    let mut c =
+        controller_with_nominal_budget(topology(vec![0, 1, 2, 3], vec![vec![]; 4], vec![8; 4]), 32);
     view(&mut c, &[2, 3], 0.0);
     for id in [2, 3] {
         mark_sampleable(&mut c, id);
     }
-    let set = residency_set(4, &[(2, 1, 24), (3, 1, 24)], 32);
+    let set = residency_set(4, &[(2, 0, 24), (2, 1, 24), (3, 0, 24), (3, 1, 24)], 32);
     let stage = CellDemand::new(set.max_lead);
     let update = |c: &mut ShResidencyController, camera, now| {
         let visible = VisibleCells::Culled(vec![camera]);
@@ -1194,59 +951,51 @@ fn pressure_suppression_of_dependent_cannot_churn_its_refused_owner() {
     })
     .unwrap();
     c.accounting.add_logical(16).unwrap();
-    let mut last_retry = 0.0;
     for tick in 1..=400 {
         let now = f64::from(tick) / 60.0;
-        // Each pair has a stable horizon frame in which suppression removes the owner,
-        // followed by a changed horizon that can restore the dependent and owner.
+        // Each pair has a stable horizon frame in which pressure suppresses
+        // the band, followed by a changed horizon that restores it.
         let camera = if (tick / 2) % 2 == 0 { 2 } else { 3 };
-        let before = c.counters().retries;
         update(&mut c, camera, now);
-        if c.counters().retries > before {
-            assert!(now - last_retry >= HYSTERESIS_SECONDS);
-            last_retry = now;
-        }
         let batch = c.take_async_drain_batch().unwrap();
         assert!(batch.evictions.is_empty());
         c.apply_drain_outcome(ShDrainOutcome::default()).unwrap();
-        // A refused owner cannot acquire a dependent permit. Once a retry becomes
-        // Absent the ordinary trim may suppress it too; it still does no I/O here.
         assert!(c.take_requests().unwrap().is_empty());
         assert_eq!(c.state(1), Some(ClusterResidencyState::Absent));
         assert_eq!(c.permits_in_use(), 0);
         assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
-        if c.state(0) == Some(ClusterResidencyState::Failed) && c.is_targeted(0) {
-            assert!(!c.states[0].suppressed, "trim must skip the refused owner");
-        }
+        // Trim skips the refused cluster, so it stays targeted and never
+        // earns the leave-and-return retry.
+        assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+        assert!(c.is_targeted(0));
+        assert!(
+            !c.states[0].suppressed,
+            "trim must skip the refused cluster"
+        );
     }
+    assert_eq!(c.counters().retries, 0);
 }
 
 #[test]
-fn newly_visible_dependent_counts_refused_owner_before_it_enters_the_target_set() {
-    let mut c = controller(topology(
-        vec![0, 1],
-        vec![vec![]; 2],
-        vec![vec![1], vec![]],
-        vec![1; 2],
-    ));
-    c.suspend_visible_misses(true);
+fn newly_visible_refused_cluster_counts_device_limited_before_it_reenters_the_target_set() {
+    let mut c = independent(2);
+    c.set_full_demand(true);
     view(&mut c, &[1], 0.0);
     refusal(&mut c, 1);
-    assert!(!c.is_targeted(0));
-    c.suspend_visible_misses(false);
-    view(&mut c, &[0], 0.1);
+    view(&mut c, &[], 0.1);
+    view(&mut c, &[], 2.2);
+    assert!(!c.is_targeted(1));
+    c.set_full_demand(false);
+    view(&mut c, &[1], 2.3);
     assert_eq!(c.counters().miss_buckets.device_limited, 1);
     assert_eq!(c.counters().miss_buckets.outside_reach, 0);
-    assert!(c.take_requests().unwrap().is_empty());
     assert_bucket_total(&c);
 }
 
 #[test]
 fn ordinary_pressure_eviction_in_refusal_drain_does_not_trigger_further_eviction() {
-    let mut c = controller_with_nominal_budget(
-        topology(vec![0, 1, 2], vec![vec![]; 3], vec![vec![]; 3], vec![8; 3]),
-        16,
-    );
+    let mut c =
+        controller_with_nominal_budget(topology(vec![0, 1, 2], vec![vec![]; 3], vec![8; 3]), 16);
     let set = residency_set(3, &[(2, 1, 24)], 32);
     let stage = CellDemand::new(set.max_lead);
     let visible = VisibleCells::Culled(vec![0, 2]);
@@ -1279,18 +1028,11 @@ fn ordinary_pressure_eviction_in_refusal_drain_does_not_trigger_further_eviction
 }
 
 #[test]
-fn lifting_owner_suppression_without_a_horizon_change_does_not_retry_refusal() {
-    let mut c = controller_with_nominal_budget(
-        topology(
-            vec![0, 1, 2],
-            vec![vec![]; 3],
-            vec![vec![], vec![0], vec![]],
-            vec![8; 3],
-        ),
-        32,
-    );
+fn lifting_suppression_without_a_horizon_change_does_not_retry_refusal() {
+    let mut c =
+        controller_with_nominal_budget(topology(vec![0, 1, 2], vec![vec![]; 3], vec![8; 3]), 32);
     mark_sampleable(&mut c, 2);
-    let set = residency_set(3, &[(2, 1, 24)], 32);
+    let set = residency_set(3, &[(2, 0, 24), (2, 1, 24)], 32);
     let stage = CellDemand::new(set.max_lead);
     let visible = VisibleCells::Culled(vec![2]);
     let update = |c: &mut ShResidencyController, now| {
@@ -1307,13 +1049,21 @@ fn lifting_owner_suppression_without_a_horizon_change_does_not_retry_refusal() {
     let batch = c.take_async_drain_batch().unwrap();
     assert!(batch.evictions.is_empty());
     c.apply_drain_outcome(ShDrainOutcome::default()).unwrap();
+    assert!(c.states[1].suppressed);
     update(&mut c, 0.1);
-    assert!(!c.is_targeted(0));
+    assert!(!c.is_targeted(1));
     c.update_gpu_charges(FixedGpuCharges::default()).unwrap();
     update(&mut c, 3.0);
     assert!(c.is_targeted(0));
     assert!(c.is_targeted(1));
     assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
-    assert!(c.take_requests().unwrap().is_empty());
+    assert_eq!(
+        c.take_requests()
+            .unwrap()
+            .iter()
+            .map(|r| r.cluster_id)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
     assert_eq!(c.counters().retries, 0);
 }

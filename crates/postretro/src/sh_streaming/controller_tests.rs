@@ -17,13 +17,11 @@ use postretro_level_format::cell_residency_set::CellResidencySetSection;
 pub(super) fn topology(
     cell_to_cluster: Vec<u32>,
     adjacency: Vec<Vec<u32>>,
-    owners: Vec<Vec<u32>>,
     requested_resident_bytes: Vec<u64>,
 ) -> PlannerTopology {
     hinted_topology(
         cell_to_cluster,
         adjacency,
-        owners,
         requested_resident_bytes,
         Vec::new(),
         Default::default(),
@@ -34,14 +32,12 @@ pub(super) fn topology(
 pub(super) fn hinted_topology(
     cell_to_cluster: Vec<u32>,
     adjacency: Vec<Vec<u32>>,
-    owners: Vec<Vec<u32>>,
     requested_resident_bytes: Vec<u64>,
     seam_portals: Vec<SeamPortalEndpoint>,
     pinned_clusters: std::collections::BTreeSet<u32>,
     authored_priorities: Vec<u32>,
 ) -> PlannerTopology {
     let cluster_count = adjacency.len();
-    assert_eq!(owners.len(), cluster_count);
     assert_eq!(requested_resident_bytes.len(), cluster_count);
     let priority = if authored_priorities.is_empty() {
         vec![0; cluster_count]
@@ -60,7 +56,6 @@ pub(super) fn hinted_topology(
         }),
         adjacency,
         seam_portals,
-        owners,
         requested_resident_bytes,
         // Distinct from `prepared`'s four decoded bytes, so tests can tell
         // encoded and decoded accounting apart.
@@ -257,7 +252,6 @@ fn no_hint_controller_trace_preserves_target_request_suppression_and_eviction_or
         topology(
             vec![0, 1, 2, 3],
             vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
-            vec![vec![], vec![], vec![], vec![]],
             vec![8; 4],
         ),
         8,
@@ -408,7 +402,6 @@ fn closed_door_visibility_promotes_only_the_loader_resolved_seam_endpoint() {
     let mut controller = controller(hinted_topology(
         vec![0, 1],
         vec![vec![1], vec![0]],
-        vec![vec![], vec![]],
         vec![4, 4],
         vec![SeamPortalEndpoint {
             portal_id: 0,
@@ -629,14 +622,12 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_far_cluster_resident_befo
         .update_targets_two_hop(&visible, Some(near_cell as usize), 0.0)
         .unwrap();
     let far_cluster = controller.topology.hints.cell_to_cluster[far_cell as usize];
-    // The near cell holds the doorway's air out to the divider's far face, so
-    // its probe range reaches probes the far cluster writes; the far
-    // cluster then arrives as the near cluster's owner, a class above the
-    // seam warm. Synthetic topologies pin `SeamWarm` alone.
+    // The seam alone warms the far endpoint: nothing about the near cluster
+    // pulls it in.
     assert_eq!(
         controller.states[far_cluster as usize].class,
-        Some(TargetClass::Visible),
-        "the far endpoint is resident before the door opens, as the near cluster's owner"
+        Some(TargetClass::SeamWarm),
+        "the far endpoint is resident before the door opens"
     );
     assert_eq!(
         culled_ids(&visible),
@@ -645,13 +636,13 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_far_cluster_resident_befo
     );
 }
 
+// AC 11: a pin names one cluster, and nothing else follows it.
 #[test]
-fn resident_pins_and_owner_closure_survive_empty_visibility_and_pressure() {
+fn pin_makes_only_its_cluster_resident() {
     let mut controller = controller_with_nominal_budget(
         hinted_topology(
             vec![0, 1],
             vec![vec![], vec![]],
-            vec![vec![], vec![0]],
             vec![8, 8],
             Vec::new(),
             std::collections::BTreeSet::from([1]),
@@ -664,30 +655,62 @@ fn resident_pins_and_owner_closure_survive_empty_visibility_and_pressure() {
         .unwrap();
     assert_eq!(
         controller.targets.iter().copied().collect::<Vec<_>>(),
-        vec![0, 1]
+        vec![1]
     );
-    assert_eq!(controller.states[0].class, Some(TargetClass::Pinned));
     assert_eq!(controller.states[1].class, Some(TargetClass::Pinned));
+    assert_eq!(controller.states[0].class, None);
 
-    mark_sampleable(&mut controller, 0);
-    mark_sampleable(&mut controller, 1);
+    let requests = controller.take_requests().unwrap();
+    assert_eq!(
+        requests.iter().map(|r| r.cluster_id).collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert!(requests[0].mandatory);
+    assert_eq!(
+        controller.admit_prepared(prepared(&controller, 1)).unwrap(),
+        ShDrainAdmission::Ready
+    );
+    accept_ready(&mut controller);
+    controller.promote_composed_clusters();
+    assert_eq!(controller.state(1), Some(ClusterResidencyState::Sampleable));
+    assert_eq!(controller.state(0), Some(ClusterResidencyState::Absent));
+
     let batch = controller.take_async_drain_batch().unwrap();
     assert!(batch.evictions.is_empty());
     assert!(controller.states.iter().all(|state| !state.suppressed));
     assert_eq!(
         controller.report_snapshot().non_evictable_overshoot_bytes,
-        15,
-        "pins retain their closure instead of being silently selected as victims"
+        7,
+        "a pin stays resident under pressure instead of being selected as a victim"
     );
 }
 
+// AC 11: an authored priority raises the named cluster alone.
 #[test]
-fn seam_activation_unsuppresses_its_owner_closure_without_a_horizon_change() {
+fn priority_hint_raises_only_its_cluster() {
+    let mut controller = controller(hinted_topology(
+        vec![0, 1, 2],
+        vec![vec![1, 2], vec![0, 2], vec![0, 1]],
+        vec![4; 3],
+        Vec::new(),
+        Default::default(),
+        vec![0, 0, 3],
+    ));
+    controller
+        .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+        .unwrap();
+    assert_eq!(controller.states[1].class, Some(TargetClass::Band));
+    assert_eq!(controller.states[1].effective_priority, 0);
+    assert_eq!(controller.states[2].class, Some(TargetClass::Band));
+    assert_eq!(controller.states[2].effective_priority, 3);
+}
+
+#[test]
+fn seam_activation_unsuppresses_only_its_far_cluster_without_a_horizon_change() {
     let mut controller = controller_with_nominal_budget(
         hinted_topology(
             vec![0, 1, 2],
             vec![vec![1, 2], vec![0, 2], vec![0, 1]],
-            vec![vec![], vec![2], vec![]],
             vec![4; 3],
             vec![SeamPortalEndpoint {
                 portal_id: 0,
@@ -718,10 +741,9 @@ fn seam_activation_unsuppresses_its_owner_closure_without_a_horizon_change() {
     );
     assert_eq!(controller.states[1].class, Some(TargetClass::SeamWarm));
     assert_eq!(controller.states[1].effective_priority, 1);
-    assert_eq!(controller.states[2].class, Some(TargetClass::SeamWarm));
-    assert_eq!(controller.states[2].effective_priority, 3);
     assert!(!controller.states[1].suppressed);
-    assert!(!controller.states[2].suppressed);
+    assert!(controller.states[2].suppressed, "no seam names cluster 2");
+    assert!(!controller.is_targeted(2));
 }
 
 #[test]
@@ -730,7 +752,6 @@ fn optional_priority_orders_requests_and_pressure_before_seam_work() {
         hinted_topology(
             vec![0, 1, 2, 3],
             vec![vec![1, 2], vec![0], vec![0], vec![]],
-            vec![vec![], vec![], vec![], vec![]],
             vec![4; 4],
             vec![SeamPortalEndpoint {
                 portal_id: 7,
@@ -769,7 +790,6 @@ fn pressure_keeps_high_priority_optional_when_its_cluster_id_is_lower() {
         hinted_topology(
             vec![0, 1, 2],
             vec![vec![1, 2], vec![0], vec![0]],
-            vec![vec![], vec![], vec![]],
             vec![4; 3],
             Vec::new(),
             Default::default(),
@@ -798,7 +818,6 @@ fn large_map_allocation_fixture_keeps_limited_visible_request_below_whole_load()
     let mut controller = ShResidencyController::for_test_with_budget(
         topology(
             vec![0, 1, 2, 3, 4, 5, 6, 7],
-            vec![vec![]; 8],
             vec![vec![]; 8],
             fixture.cluster_requested_bytes.clone(),
         ),
@@ -831,7 +850,7 @@ fn large_map_allocation_fixture_keeps_limited_visible_request_below_whole_load()
 
 #[test]
 fn async_completion_identity_rejects_changed_hash_and_returns_departed_permit() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![4]));
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![4]));
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -999,7 +1018,6 @@ fn real_visibility_zero_one_many_targets_and_next_frame_promotion() {
     let mut one_controller = controller(topology(
         vec![0, 1, 2],
         vec![vec![], vec![], vec![]],
-        vec![vec![], vec![], vec![]],
         vec![4, 8, 16],
     ));
     one_controller.update_targets(&zero, None, 0.0).unwrap();
@@ -1054,7 +1072,6 @@ fn real_visibility_zero_one_many_targets_and_next_frame_promotion() {
     let mut many_controller = controller(topology(
         vec![0, 1, 2],
         vec![vec![], vec![], vec![]],
-        vec![vec![], vec![], vec![]],
         vec![4, 8, 16],
     ));
     many_controller
@@ -1093,7 +1110,6 @@ fn visible_cells_drive_two_hop_targets_and_time_based_hysteresis() {
     let mut controller = controller(topology(
         vec![0, 1, 2, 3],
         vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
-        vec![vec![], vec![], vec![], vec![]],
         vec![1; 4],
     ));
 
@@ -1128,55 +1144,20 @@ fn visible_cells_drive_two_hop_targets_and_time_based_hysteresis() {
 }
 
 #[test]
-fn owner_installs_and_promotes_before_dependent_halo_is_drained() {
-    let mut controller = controller(topology(
-        vec![0, 1],
-        vec![vec![], vec![]],
-        vec![vec![], vec![0]],
-        vec![8, 16],
-    ));
+fn halo_cluster_installs_and_promotes_with_no_other_cluster_resident() {
+    let mut controller = controller(topology(vec![0, 1], vec![vec![], vec![]], vec![8, 16]));
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![1]), Some(1), 0.0)
         .unwrap();
     assert!(
-        controller.is_targeted(0),
-        "owner closure must target the owner"
-    );
-
-    queue_ready(&mut controller, 0);
-    let owner_batch = controller.take_drain_batch().unwrap();
-    assert_eq!(
-        owner_batch
-            .ready
-            .iter()
-            .map(|prepared| prepared.chunk.cluster_id)
-            .collect::<Vec<_>>(),
-        vec![0]
-    );
-    controller
-        .apply_drain_outcome(ShDrainOutcome {
-            accepted: vec![0],
-            ..ShDrainOutcome::default()
-        })
-        .unwrap();
-    assert_eq!(
-        controller.state(0),
-        Some(ClusterResidencyState::InstalledUncomposed)
-    );
-    assert!(
-        !controller.all_targets_sampleable(),
-        "an accepted cluster remains unavailable until a successful compose frame completes"
-    );
-    controller.promote_composed_clusters();
-    assert!(
-        !controller.all_targets_sampleable(),
-        "the halo remains targeted and is not yet sampleable"
+        !controller.is_targeted(0),
+        "nothing pulls in another cluster"
     );
 
     queue_ready(&mut controller, 1);
-    let halo_batch = controller.take_drain_batch().unwrap();
+    let batch = controller.take_drain_batch().unwrap();
     assert_eq!(
-        halo_batch
+        batch
             .ready
             .iter()
             .map(|prepared| prepared.chunk.cluster_id)
@@ -1189,19 +1170,22 @@ fn owner_installs_and_promotes_before_dependent_halo_is_drained() {
             ..ShDrainOutcome::default()
         })
         .unwrap();
-    assert!(!controller.all_targets_sampleable());
+    assert_eq!(
+        controller.state(1),
+        Some(ClusterResidencyState::InstalledUncomposed)
+    );
+    assert!(
+        !controller.all_targets_sampleable(),
+        "an accepted cluster remains unavailable until a successful compose frame completes"
+    );
     controller.promote_composed_clusters();
     assert!(controller.all_targets_sampleable());
+    assert_eq!(controller.state(0), Some(ClusterResidencyState::Absent));
 }
 
 #[test]
-fn missing_owner_defers_a_ready_halo_without_transferring_ownership() {
-    let mut controller = controller(topology(
-        vec![0, 1],
-        vec![vec![], vec![]],
-        vec![vec![], vec![0]],
-        vec![1, 1],
-    ));
+fn ready_cluster_is_offered_with_no_other_cluster_resident() {
+    let mut controller = controller(topology(vec![0, 1], vec![vec![], vec![]], vec![1, 1]));
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![1]), Some(1), 0.0)
         .unwrap();
@@ -1223,14 +1207,14 @@ fn missing_owner_defers_a_ready_halo_without_transferring_ownership() {
         .unwrap();
 
     let batch = controller.take_drain_batch().unwrap();
-    assert!(batch.ready.is_empty());
-    assert_eq!(controller.state(1), Some(ClusterResidencyState::Ready));
-    assert!(controller.ready.contains_key(&1));
+    assert_eq!(batch.ready.len(), 1);
+    assert_eq!(batch.ready[0].chunk.cluster_id, 1);
+    assert!(!controller.ready.contains_key(&1));
 }
 
 #[test]
 fn zero_one_and_many_cluster_lifecycles_keep_reset_and_install_caps_bounded() {
-    let mut empty = controller(topology(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+    let mut empty = controller(topology(Vec::new(), Vec::new(), Vec::new()));
     empty
         .update_targets(&VisibleCells::DrawAll, None, 0.0)
         .unwrap();
@@ -1239,7 +1223,7 @@ fn zero_one_and_many_cluster_lifecycles_keep_reset_and_install_caps_bounded() {
         Some(Vec::new())
     );
 
-    let mut one = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![32]));
+    let mut one = controller(topology(vec![0], vec![vec![]], vec![32]));
     one.update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
     queue_ready(&mut one, 0);
@@ -1251,7 +1235,6 @@ fn zero_one_and_many_cluster_lifecycles_keep_reset_and_install_caps_bounded() {
 
     let mut many = controller(topology(
         vec![0, 1, 2],
-        vec![vec![], vec![], vec![]],
         vec![vec![], vec![], vec![]],
         vec![1, 1, 1],
     ));
@@ -1269,7 +1252,7 @@ fn zero_one_and_many_cluster_lifecycles_keep_reset_and_install_caps_bounded() {
 
 #[test]
 fn old_generation_completion_cannot_consume_a_new_request_permit() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![1]));
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![1]));
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -1292,7 +1275,7 @@ fn old_generation_completion_cannot_consume_a_new_request_permit() {
 
 #[test]
 fn late_completion_after_hysteresis_is_dropped_before_renderer_install() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![4]));
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![4]));
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -1336,7 +1319,6 @@ fn lifecycle_permits_bound_queued_work() {
     let mut controller = controller(topology(
         (0..cluster_count as u32).collect(),
         vec![vec![]; cluster_count],
-        vec![vec![]; cluster_count],
         vec![1; cluster_count],
     ));
     controller
@@ -1353,14 +1335,11 @@ fn lifecycle_permits_bound_queued_work() {
     assert_eq!(controller.permits_in_use(), MAX_STREAM_PERMITS);
 }
 
-// Regression: an owner left on the walk's path by an early return read as a
-// cycle when a sibling branch reached it again (a diamond, not a cycle).
 #[test]
-fn owner_walk_revisiting_a_blocked_owner_is_not_a_cycle() {
+fn in_flight_work_holds_no_other_cluster_read_back() {
     let mut controller = controller(topology(
         vec![0, 1, 2, 3],
-        vec![vec![], vec![], vec![], vec![]],
-        vec![vec![1, 2], vec![3], vec![1], vec![]],
+        vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
         vec![1; 4],
     ));
     controller
@@ -1368,53 +1347,21 @@ fn owner_walk_revisiting_a_blocked_owner_is_not_a_cycle() {
         .unwrap();
     assert_eq!(
         controller
-            .take_next_request()
+            .take_requests()
             .unwrap()
-            .map(|r| r.cluster_id),
-        Some(3)
-    );
-    // Cluster 1 is now blocked behind queued 3; cluster 2 reaches 1 again.
-    controller
-        .take_next_request()
-        .expect("an acyclic owner graph never reports a cycle");
-}
-
-// Regression: an absent owner blocked behind a queued grand-owner let the walk
-// fall through and request the dependent ahead of its owner.
-#[test]
-fn owner_blocked_behind_in_flight_work_defers_its_dependents() {
-    let mut controller = controller(topology(
-        vec![0, 1, 2, 3],
-        vec![vec![], vec![], vec![], vec![]],
-        vec![vec![1, 2], vec![3], vec![1], vec![]],
-        vec![1; 4],
-    ));
-    controller
-        .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
-        .unwrap();
-    assert_eq!(
-        controller
-            .take_next_request()
-            .unwrap()
-            .map(|r| r.cluster_id),
-        Some(3)
-    );
-    assert_eq!(
-        controller
-            .take_next_request()
-            .unwrap()
-            .map(|r| r.cluster_id),
-        None,
-        "clusters 0, 1, and 2 all wait on queued owner 3"
+            .iter()
+            .map(|request| request.cluster_id)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "visible first, then the band nearest first, each behind the last in flight"
     );
 }
 
 #[test]
-fn visible_dependency_owner_beats_a_hysteresis_ready_backlog() {
+fn visible_cluster_beats_a_hysteresis_ready_backlog() {
     let mut controller = controller(topology(
         vec![0, 1, 2, 3],
         vec![vec![], vec![], vec![], vec![]],
-        vec![vec![], vec![0], vec![], vec![]],
         vec![1; 4],
     ));
     controller
@@ -1425,6 +1372,7 @@ fn visible_dependency_owner_beats_a_hysteresis_ready_backlog() {
         .update_targets_two_hop(&VisibleCells::Culled(vec![1]), Some(1), 0.5)
         .unwrap();
 
+    queue_ready(&mut controller, 1);
     queue_ready(&mut controller, 0);
     queue_ready(&mut controller, 2);
     queue_ready(&mut controller, 3);
@@ -1435,14 +1383,14 @@ fn visible_dependency_owner_beats_a_hysteresis_ready_backlog() {
             .iter()
             .map(|prepared| prepared.chunk.cluster_id)
             .collect::<Vec<_>>(),
-        vec![0, 2, 3],
-        "the visible cluster's owner must not wait behind hysteresis work"
+        vec![1, 0, 2, 3],
+        "the visible cluster must not wait behind hysteresis work"
     );
 }
 
 #[test]
 fn a_failure_identity_warns_once_and_spends_only_one_leave_and_reenter_retry() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![1]));
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![1]));
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -1478,7 +1426,7 @@ fn a_failure_identity_warns_once_and_spends_only_one_leave_and_reenter_retry() {
 
 #[test]
 fn failure_warning_resets_when_hash_generation_or_content_tag_identity_changes() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![1]));
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![1]));
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -1527,14 +1475,12 @@ fn failure_warning_resets_when_hash_generation_or_content_tag_identity_changes()
 
 #[test]
 fn generation_clock_exhaustion_rejects_a_new_session_without_wraparound() {
-    let empty_topology = topology(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let empty_topology = topology(Vec::new(), Vec::new(), Vec::new());
     let clock = FixedGenerationClock::new(u64::MAX);
     let controller = ShResidencyController::for_test(empty_topology, &clock).unwrap();
     assert_eq!(controller.generation(), u64::MAX);
-    let next = ShResidencyController::for_test(
-        topology(Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-        &clock,
-    );
+    let next =
+        ShResidencyController::for_test(topology(Vec::new(), Vec::new(), Vec::new()), &clock);
     assert!(matches!(
         next,
         Err(ShResidencyControllerError::GenerationExhausted)
@@ -1542,22 +1488,18 @@ fn generation_clock_exhaustion_rejects_a_new_session_without_wraparound() {
 }
 
 #[test]
-fn departed_residents_wait_for_hysteresis_then_evict_dependents_before_owners() {
-    let mut controller = controller_with_nominal_budget(
-        topology(
-            vec![0, 1],
-            vec![vec![], vec![]],
-            vec![vec![], vec![0]],
-            vec![8, 8],
-        ),
-        64,
-    );
+fn departed_residents_wait_for_hysteresis_then_evict_in_eviction_key_order() {
+    let mut controller =
+        controller_with_nominal_budget(topology(vec![0, 1], vec![vec![], vec![]], vec![8, 8]), 64);
     controller
-        .update_targets_two_hop(&VisibleCells::Culled(vec![1]), Some(1), 0.0)
+        .update_targets(&VisibleCells::Culled(vec![0, 1]), None, 0.0)
         .unwrap();
     let _ = controller.take_async_drain_batch().unwrap();
     mark_sampleable(&mut controller, 0);
     mark_sampleable(&mut controller, 1);
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), None, 0.05)
+        .unwrap();
 
     controller
         .update_targets(&VisibleCells::Culled(Vec::new()), None, 0.1)
@@ -1578,7 +1520,7 @@ fn departed_residents_wait_for_hysteresis_then_evict_dependents_before_owners() 
     assert_eq!(
         batch.evictions,
         vec![1, 0],
-        "a dependent must leave before its baked owner"
+        "the least recently visible cluster leaves first"
     );
 
     controller
@@ -1594,7 +1536,7 @@ fn departed_residents_wait_for_hysteresis_then_evict_dependents_before_owners() 
 #[test]
 fn sync_proof_drain_keeps_departed_residents_without_budget_eviction() {
     let mut controller =
-        controller_with_nominal_budget(topology(vec![0], vec![vec![]], vec![vec![]], vec![12]), 8);
+        controller_with_nominal_budget(topology(vec![0], vec![vec![]], vec![12]), 8);
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -1623,7 +1565,6 @@ fn pressure_suppresses_band_persistently_without_evicting_visible_work() {
         topology(
             vec![0, 1, 2, 3],
             vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
-            vec![vec![], vec![], vec![], vec![]],
             vec![8, 8, 8, 8],
         ),
         8,
@@ -1666,14 +1607,13 @@ fn pressure_suppresses_band_persistently_without_evicting_visible_work() {
     assert!(controller.is_targeted(3));
 }
 
-// Regression: raw horizon bytes cleared suppression while its owner closure remained over budget.
+// Regression: raw horizon bytes cleared suppression while the restored target set remained over budget.
 #[test]
-fn pressure_recovery_waits_until_owner_closed_horizon_fits() {
+fn pressure_recovery_waits_until_the_restored_target_set_fits() {
     let mut controller = ShResidencyController::for_test_with_budget(
         topology(
             vec![0, 1, 2],
-            vec![vec![1], vec![0], vec![]],
-            vec![vec![], vec![2], vec![]],
+            vec![vec![2], vec![2], vec![0, 1]],
             vec![8, 8, 8],
         ),
         &FixedGenerationClock::new(1),
@@ -1709,7 +1649,10 @@ fn pressure_recovery_waits_until_owner_closed_horizon_fits() {
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 1.0)
         .unwrap();
     assert!(!controller.is_targeted(1));
-    assert!(!controller.is_targeted(2));
+    assert!(
+        controller.is_targeted(2),
+        "pressure trims one cluster, not its neighbours"
+    );
     assert!(controller.take_next_request().unwrap().is_none());
 
     controller
@@ -1727,12 +1670,11 @@ fn pressure_recovery_waits_until_owner_closed_horizon_fits() {
 }
 
 #[test]
-fn pressure_rechecks_a_band_owner_after_its_band_dependent_is_suppressed() {
+fn pressure_keeps_suppressing_band_work_until_projected_demand_fits() {
     let mut controller = controller_with_nominal_budget(
         topology(
             vec![0, 1, 2],
             vec![vec![1], vec![0, 2], vec![1]],
-            vec![vec![], vec![2], vec![]],
             vec![8, 8, 8],
         ),
         8,
@@ -1755,13 +1697,12 @@ fn pressure_rechecks_a_band_owner_after_its_band_dependent_is_suppressed() {
 }
 
 #[test]
-fn pressure_owner_recheck_does_not_log_a_transient_overshoot() {
+fn pressure_that_trims_to_fit_logs_no_overshoot() {
     let capture = LogCapture::start();
     let mut controller = controller_with_nominal_budget(
         topology(
             vec![0, 1, 2],
             vec![vec![1], vec![0, 2], vec![1]],
-            vec![vec![], vec![2], vec![]],
             vec![8, 8, 8],
         ),
         8,
@@ -1787,15 +1728,8 @@ fn pressure_owner_recheck_does_not_log_a_transient_overshoot() {
 
 #[test]
 fn pressure_does_not_evict_a_just_installed_band_cluster() {
-    let mut controller = controller_with_nominal_budget(
-        topology(
-            vec![0, 1],
-            vec![vec![1], vec![0]],
-            vec![vec![], vec![]],
-            vec![8, 8],
-        ),
-        8,
-    );
+    let mut controller =
+        controller_with_nominal_budget(topology(vec![0, 1], vec![vec![1], vec![0]], vec![8, 8]), 8);
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -1814,7 +1748,7 @@ fn pressure_does_not_evict_a_just_installed_band_cluster() {
 fn non_evictable_overshoot_logs_once_per_onset_and_remains_separate_from_replacement_peak() {
     let capture = LogCapture::start();
     let mut controller =
-        controller_with_nominal_budget(topology(vec![0], vec![vec![]], vec![vec![]], vec![12]), 8);
+        controller_with_nominal_budget(topology(vec![0], vec![vec![]], vec![12]), 8);
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
@@ -1833,12 +1767,11 @@ fn non_evictable_overshoot_logs_once_per_onset_and_remains_separate_from_replace
 }
 
 #[test]
-fn a_pinned_band_owner_counts_as_non_evictable_overshoot() {
+fn a_just_installed_band_cluster_counts_as_non_evictable_overshoot() {
     let mut controller = controller_with_nominal_budget(
         topology(
             vec![0, 1, 2],
             vec![vec![1], vec![0, 2], vec![1]],
-            vec![vec![], vec![2], vec![]],
             vec![8, 8, 8],
         ),
         8,
@@ -1846,6 +1779,8 @@ fn a_pinned_band_owner_counts_as_non_evictable_overshoot() {
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
+    controller.states[1].state = ClusterResidencyState::InstalledUncomposed;
+    controller.accounting.add_logical(8).unwrap();
 
     let _ = controller.take_async_drain_batch().unwrap();
     assert_eq!(controller.non_evictable_overshoot_bytes(), 8);
@@ -1853,15 +1788,8 @@ fn a_pinned_band_owner_counts_as_non_evictable_overshoot() {
 
 #[test]
 fn outcome_preflight_does_not_evict_before_later_install_counter_overflow() {
-    let mut controller = controller_with_nominal_budget(
-        topology(
-            vec![0, 1],
-            vec![vec![], vec![]],
-            vec![vec![], vec![]],
-            vec![4, 4],
-        ),
-        16,
-    );
+    let mut controller =
+        controller_with_nominal_budget(topology(vec![0, 1], vec![vec![], vec![]], vec![4, 4]), 16);
     controller
         .update_targets_two_hop(&VisibleCells::Culled(vec![0, 1]), Some(0), 0.0)
         .unwrap();
@@ -1904,11 +1832,10 @@ fn outcome_preflight_does_not_evict_before_later_install_counter_overflow() {
 
 #[test]
 fn settle_check_waits_on_each_sh_settle_tier_and_ignores_optional_targets() {
-    // Cluster 0 is drawn and owned by 2; 1 neighbours 0 (band); 3 is pinned.
+    // Cluster 0 is drawn; 2 is in the lead; 1 is in the band; 3 is pinned.
     let mut controller = controller(hinted_topology(
         vec![0, 1, 2, 3],
         vec![vec![1], vec![0], vec![], vec![]],
-        vec![vec![2], vec![], vec![], vec![]],
         vec![4, 8, 16, 32],
         Vec::new(),
         [3].into_iter().collect(),
@@ -1919,17 +1846,20 @@ fn settle_check_waits_on_each_sh_settle_tier_and_ignores_optional_targets() {
         None,
         "no view yet: not asked, not settled"
     );
+    let set = residency_set(4, &[(0, 1, 24), (0, 2, 4)], 32);
+    let stage = CellDemand::new(set.max_lead);
+    let visible = VisibleCells::Culled(vec![0]);
     controller
-        .update_targets_two_hop(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+        .update_targets(&visible, Some(stage.frame(&set, 0, PORTAL, &visible)), 0.0)
         .unwrap();
     assert!(
         controller.is_targeted(1),
-        "the neighbour is an optional target"
+        "the band cluster is an optional target"
     );
     assert_eq!(
         controller.unsettled_targets(),
         Some(3),
-        "visible, owner, pin"
+        "visible, lead, pin"
     );
 
     for (cluster_id, remaining) in [(0, 2), (2, 1), (3, 0)] {

@@ -19,7 +19,7 @@ impl ShResidencyController {
 
     /// Async-only drain policy. Departed residents leave before pressure can
     /// suppress cold band work, and every eviction remains only a request until
-    /// the renderer confirms that no installed dependent pins its owner.
+    /// the renderer reports the release.
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn take_async_drain_batch(
         &mut self,
@@ -113,10 +113,9 @@ impl ShResidencyController {
             batch.evictions = self.departed_eviction_order();
         }
         self.in_drain_evictions = batch.evictions.iter().copied().collect();
+        // `drop_departed_ready` above left only targeted payloads, and no
+        // cluster waits on another, so every one of them is installable.
         for (&cluster_id, ready) in &self.ready {
-            if !self.ready_for_install(cluster_id) {
-                continue;
-            }
             let state = &self.states[cluster_id as usize];
             drain.offer(DrainItem {
                 rank: DrainRank::sh(

@@ -12,7 +12,7 @@ use postretro_level_loader::{
     LightmapDrainOutcome, PrlLoadError, ShStreamManifest, ShStreamingMode,
 };
 use postretro_renderer::{LightmapResidencyDrainError, ShResidencySnapshot};
-use postretro_visibility::VisibleCells;
+use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::*;
 use crate::lightmap_streaming::controller::BlockPhase;
@@ -437,6 +437,73 @@ fn sh_only_level_streams_through_the_level_drain_step_and_retires_cleanly() {
         baseline,
         "workers, issuer and session released"
     );
+}
+
+// The frame's Settling flag reaches SH through the production drain step: on
+// one fallback frame a Running frame holds its drawn cluster, reading nothing,
+// and a Settling frame demands it in full.
+#[test]
+fn settling_flag_lifts_the_sh_hold_through_the_level_drain_step() {
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+    let mut sh = Some(sh_session(manifest, ShStreamingMode::SyncProof));
+    let mut level = LevelStreaming::default();
+    let set = residency_set(1, &[], 32);
+    level.install_cell_demand(CellDemand::new(set.max_lead));
+    let visible = VisibleCells::Culled(vec![0]);
+    let cpu = StageFrame::default();
+    let solid = StreamingFrame {
+        path: VisibilityPath::SolidCellFallback,
+        ..frame(&visible, 0, &cpu)
+    };
+
+    let held = level.prepare_drains(&mut sh, Some(&set), solid).unwrap();
+    assert!(held.ready.is_empty());
+    assert_eq!(sh.as_ref().unwrap().settle_set_targets(), Some(0));
+
+    let settling = StreamingFrame {
+        settling: true,
+        ..solid
+    };
+    let batch = level.prepare_drains(&mut sh, Some(&set), settling).unwrap();
+    assert_eq!(batch.ready.len(), 1);
+    assert_eq!(sh.as_ref().unwrap().settle_set_targets(), Some(1));
+}
+
+// No usable id 51, or no camera cell, hands SH no demand frame: nothing holds,
+// so a fallback frame still reads what it draws.
+#[test]
+fn a_frame_without_id51_demand_reads_its_drawn_cluster_on_a_fallback() {
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+    let set = residency_set(1, &[], 32);
+    let visible = VisibleCells::Culled(vec![0]);
+    let cpu = StageFrame::default();
+    let solid = StreamingFrame {
+        path: VisibilityPath::SolidCellFallback,
+        ..frame(&visible, 0, &cpu)
+    };
+    for (residency_set, frame) in [
+        (None, solid),
+        (
+            Some(&set),
+            StreamingFrame {
+                camera_cell: None,
+                ..solid
+            },
+        ),
+    ] {
+        let mut sh = Some(sh_session(
+            Arc::clone(&manifest),
+            ShStreamingMode::SyncProof,
+        ));
+        let mut level = LevelStreaming::default();
+        level.install_cell_demand(CellDemand::new(set.max_lead));
+        let batch = level.prepare_drains(&mut sh, residency_set, frame).unwrap();
+        assert_eq!(batch.ready.len(), 1);
+    }
 }
 
 // Settling's drains make the presented pose's lightmap set resident through

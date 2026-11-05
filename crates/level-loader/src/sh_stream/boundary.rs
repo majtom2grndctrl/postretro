@@ -106,9 +106,8 @@ impl ShDrainBatch {
                 "target-add and target-remove must not name the same cluster",
             ));
         }
-        // The planner may list a dependent before a lower-ID owner. The
-        // renderer computes its own dependency-safe release sequence, so
-        // eviction IDs must be unique and in range, but not numerically sorted.
+        // The planner lists evictions in policy order, so eviction IDs must
+        // be unique and in range, but not numerically sorted.
         validate_unique_cluster_ids(&self.evictions, cluster_count, "evictions")?;
         let mut ready_ids = std::collections::BTreeSet::new();
         for prepared in &self.ready {
@@ -143,7 +142,7 @@ pub struct ShDrainOutcome {
     pub refused: Vec<u32>,
     pub deferred: Vec<PreparedShCluster>,
     /// Clusters actually released by the renderer, not merely requested for
-    /// eviction. An installed owner may remain pinned by a dependent.
+    /// eviction.
     pub evicted: Vec<u32>,
 }
 

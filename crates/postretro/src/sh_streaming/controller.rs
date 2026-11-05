@@ -18,6 +18,8 @@ use crate::streaming::drain_budget::DrainClass;
 
 #[path = "drain.rs"]
 mod drain;
+#[path = "hold.rs"]
+mod hold;
 #[path = "lifecycle.rs"]
 mod lifecycle;
 #[path = "pressure.rs"]
@@ -57,8 +59,7 @@ pub(crate) struct ShClusterRequest {
     pub(crate) cluster_id: u32,
     pub(crate) chunk_hash: [u8; 32],
     /// The cluster's class was in the mandatory tier (`Visible`, `Pinned` or
-    /// `Lead`, owner closure included) when requested. Mandatory reads are
-    /// served before optional ones.
+    /// `Lead`) when requested. Mandatory reads are served before optional ones.
     pub(crate) mandatory: bool,
 }
 
@@ -78,8 +79,6 @@ pub(crate) enum ShResidencyControllerError {
     InvalidMonotonicTime,
     #[error("SH streaming planner topology is invalid: {0}")]
     InvalidTopology(String),
-    #[error("SH streaming owner dependency graph contains a cycle at cluster {0}")]
-    OwnerCycle(u32),
     #[error("SH streaming accounting overflow while charging {0}")]
     AccountingOverflow(&'static str),
     #[error("SH streaming accounting underflow while releasing {0}")]
@@ -113,8 +112,7 @@ impl TargetClass {
     }
 
     /// In the set a level entry waits on before its first frame: the
-    /// mandatory tier. Owners take their dependent's class, so the closure of
-    /// a settle target is one too.
+    /// mandatory tier.
     const fn is_settle_target(self) -> bool {
         self.is_mandatory()
     }
@@ -133,8 +131,8 @@ impl TargetClass {
     }
 }
 
-/// The class/priority pair propagated through owner closure. Priority only
-/// belongs to cold optional work; protected classes intentionally carry zero
+/// A target's class and priority. Priority only belongs to cold optional
+/// work; protected classes intentionally carry zero
 /// so authored policy cannot reorder visible, pinned, or retained work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TargetDirective {
@@ -307,12 +305,12 @@ impl ShLevelTopology {
         format!("{:?}", self.topology)
     }
 
-    /// Drop the last cluster's owner list, so the controller refuses the
+    /// Drop the last cluster's chunk hash, so the controller refuses the
     /// topology (its tables' lengths disagree): a stand-in for a rejection
     /// no checked level provokes.
     #[cfg(test)]
     pub(crate) fn break_for_tests(&mut self) {
-        self.topology.owners.pop();
+        self.topology.chunk_hashes.pop();
     }
 }
 
@@ -339,9 +337,6 @@ pub(crate) struct ShResidencyController {
     in_drain: BTreeMap<u32, u64>,
     in_drain_evictions: BTreeSet<u32>,
     permits_in_use: usize,
-    /// One transitive closure per held permit, at most MAX_STREAM_PERMITS.
-    /// Cached at request time so waiting on an old read never rewalks topology.
-    request_owners: BTreeMap<u32, BTreeSet<u32>>,
     accounting: ShResidencyAccounting,
     non_evictable_overshoot_bytes: u64,
     overshoot_reported: bool,
@@ -349,8 +344,11 @@ pub(crate) struct ShResidencyController {
     /// Targets have been derived from a view at least once. Until then an
     /// empty target set means "not yet asked", not "nothing to hold".
     demand_updated: bool,
-    /// Settling: no frame is presented, so no visible miss is counted.
-    misses_suspended: bool,
+    /// Settling and capture's preload: the frame waits on its whole view, so
+    /// every path demands what it draws, and no frame is presented, so no
+    /// visible miss is counted.
+    full_demand: bool,
+    hold: hold::HoldState,
     counters: ShResidencyCounters,
 }
 
@@ -402,8 +400,7 @@ impl ShResidencyController {
             .filter(|&generation| generation != 0)
             .ok_or(ShResidencyControllerError::GenerationExhausted)?;
         let cluster_count = topology.cluster_count();
-        if topology.owners.len() != cluster_count
-            || topology.requested_resident_bytes.len() != cluster_count
+        if topology.requested_resident_bytes.len() != cluster_count
             || topology.encoded_chunk_bytes.len() != cluster_count
             || topology.chunk_hashes.len() != cluster_count
         {
@@ -432,13 +429,13 @@ impl ShResidencyController {
             in_drain: BTreeMap::new(),
             in_drain_evictions: BTreeSet::new(),
             permits_in_use: 0,
-            request_owners: BTreeMap::new(),
             accounting: ShResidencyAccounting::new(gpu_budget)?,
             non_evictable_overshoot_bytes: 0,
             overshoot_reported: false,
             prior_visible_misses: BTreeSet::new(),
             demand_updated: false,
-            misses_suspended: false,
+            full_demand: false,
+            hold: hold::HoldState::default(),
             counters: ShResidencyCounters::default(),
         })
     }
@@ -485,17 +482,18 @@ impl ShResidencyController {
         &self.targets
     }
 
-    /// While true (Settling), target updates count no visible miss and leave
-    /// the per-episode record alone, so the reveal frame counts fresh.
-    pub(crate) fn suspend_visible_misses(&mut self, suspended: bool) {
-        self.misses_suspended = suspended;
+    /// While true (Settling, capture's preload), every path demands what it
+    /// draws as Visible, so no frame holds and a level never starts dark.
+    /// Target updates count no visible miss and leave the per-episode record
+    /// alone, so the reveal frame counts fresh.
+    pub(crate) fn set_full_demand(&mut self, full_demand: bool) {
+        self.full_demand = full_demand;
     }
 
-    /// Settle-set targets (the mandatory tier: Visible, Pinned and Lead,
-    /// owner closure included) not yet Sampleable, as of the latest target
-    /// update. `None` before the first update: the controller has not been
-    /// asked for a view yet. A failed target stays unsettled; the settle
-    /// timeout bounds it.
+    /// Settle-set targets (the mandatory tier: Visible, Pinned and Lead) not
+    /// yet Sampleable, as of the latest target update. `None` before the
+    /// first update: the controller has not been asked for a view yet. A
+    /// failed target stays unsettled; the settle timeout bounds it.
     pub(crate) fn unsettled_targets(&self) -> Option<usize> {
         self.demand_updated.then(|| {
             self.targets
@@ -599,15 +597,6 @@ impl ShResidencyController {
         self.reach.lead_of(cluster_id)
     }
 
-    fn ready_for_install(&self, cluster_id: u32) -> bool {
-        self.targets.contains(&cluster_id)
-            && self.topology.owners[cluster_id as usize]
-                .iter()
-                .all(|&owner| {
-                    self.states[owner as usize].state == ClusterResidencyState::Sampleable
-                })
-    }
-
     fn request_permit_limit(&self, cluster_id: u32) -> usize {
         if self.states[cluster_id as usize]
             .class
@@ -617,29 +606,6 @@ impl ShResidencyController {
         } else {
             MAX_OPTIONAL_STREAM_PERMITS
         }
-    }
-
-    fn ready_dependents(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
-        self.ready.keys().copied().filter(move |cluster_id| {
-            self.request_owners
-                .get(cluster_id)
-                .is_some_and(|owners| owners.contains(&owner))
-        })
-    }
-
-    fn ready_reclaim_candidates(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
-        // Several stalled cohorts may jointly exceed the optional reservation.
-        // Reclaim this owner's dependents first, then other payloads which need
-        // an absent owner. Installable work and pending reads stay intact.
-        self.ready_dependents(owner)
-            .chain(self.ready.keys().copied().filter(move |cluster_id| {
-                self.request_owners.get(cluster_id).is_some_and(|owners| {
-                    !owners.contains(&owner)
-                        && owners.iter().any(|&missing| {
-                            self.states[missing as usize].state == ClusterResidencyState::Absent
-                        })
-                })
-            }))
     }
 
     fn mark_failed(&mut self, cluster_id: u32) -> Result<bool, ShResidencyControllerError> {
@@ -657,7 +623,7 @@ impl ShResidencyController {
             cluster_id,
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
         };
-        self.release_permit(cluster_id)?;
+        self.release_permit()?;
         let state = &mut self.states[cluster_id as usize];
         let same_identity = state
             .failure
@@ -683,11 +649,10 @@ impl ShResidencyController {
         self.accounting.cpu.ready.remove(bytes, "ready bytes")
     }
 
-    fn release_permit(&mut self, cluster_id: u32) -> Result<(), ShResidencyControllerError> {
+    fn release_permit(&mut self) -> Result<(), ShResidencyControllerError> {
         self.permits_in_use = self.permits_in_use.checked_sub(1).ok_or(
             ShResidencyControllerError::AccountingUnderflow("stream permits"),
         )?;
-        self.request_owners.remove(&cluster_id);
         Ok(())
     }
 
@@ -771,3 +736,7 @@ mod refusal_tests;
 #[cfg(test)]
 #[path = "controller_planar_tests.rs"]
 mod planar_tests;
+
+#[cfg(test)]
+#[path = "controller_hold_tests.rs"]
+mod hold_tests;

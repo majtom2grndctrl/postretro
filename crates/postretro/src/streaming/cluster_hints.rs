@@ -11,7 +11,7 @@ use thiserror::Error;
 
 /// Pins, prefetch priorities, and the cell-to-cluster map, from id 49 alone:
 /// no id 50 is needed, so a resource streams its hints on a level whose SH
-/// loads whole. Resource-specific policy, such as SH's owner closure, stays
+/// loads whole. Resource-specific policy, such as SH's class ranking, stays
 /// with the resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClusterHints {

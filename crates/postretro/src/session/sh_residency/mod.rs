@@ -328,15 +328,15 @@ impl ShStreamingSession {
         self.controller.all_targets_sampleable()
     }
 
-    /// While true, target updates count no visible miss. Settling sets it
-    /// per drain; capture's preload sets it around its settle.
-    pub(crate) fn suspend_visible_misses(&mut self, suspended: bool) {
-        self.controller.suspend_visible_misses(suspended);
+    /// While true, no frame holds and target updates count no visible miss.
+    /// Settling sets it per drain; capture's preload sets it around its settle.
+    pub(crate) fn set_full_demand(&mut self, full_demand: bool) {
+        self.controller.set_full_demand(full_demand);
     }
 
-    /// Settle-set targets (the mandatory tier: Visible, Pinned, Lead, with
-    /// owners) not yet sampleable; `None` before the first target update.
-    /// See the controller's `unsettled_targets`.
+    /// Settle-set targets (the mandatory tier: Visible, Pinned, Lead) not yet
+    /// sampleable; `None` before the first target update. See the
+    /// controller's `unsettled_targets`.
     pub(crate) fn unsettled_targets(&self) -> Option<usize> {
         self.controller.unsettled_targets()
     }

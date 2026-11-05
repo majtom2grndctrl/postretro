@@ -2,7 +2,6 @@
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
 
 use super::*;
 
@@ -15,14 +14,7 @@ impl ShResidencyController {
         let nominal = self.accounting.nominal_cluster_bytes()?;
         let mut projected = self.projected_logical_demand()?;
 
-        // Only cold optional work is pressure-eligible. A target owner is
-        // pinned while any other target still depends on it; owner closure is
-        // then preserved before the renderer independently checks installed
-        // dependencies at the release boundary.
-        // Recompute eligibility after every suppression. A band owner may
-        // initially be pinned only by a colder band dependent; once that
-        // dependent leaves, the owner is eligible in this same bounded drain
-        // rather than forcing an avoidable growth/extra-frame residency.
+        // Only cold optional work is pressure-eligible.
         while projected > nominal {
             let Some(cluster_id) = self
                 .targets
@@ -63,8 +55,8 @@ impl ShResidencyController {
             self.targets.remove(&cluster_id);
             projected = projected.saturating_sub(released);
         }
-        // Owner safety can change as optional dependents yield. Report only
-        // the demand still protected after the final target set is selected.
+        // Report only the demand still protected after the final target set
+        // is selected.
         let protected = self.non_evictable_target_bytes()?;
         self.set_non_evictable_overshoot(protected.saturating_sub(nominal));
         Ok(())
@@ -81,10 +73,9 @@ impl ShResidencyController {
     fn non_evictable_target_bytes(&self) -> Result<u64, ShResidencyControllerError> {
         self.targets.iter().try_fold(0u64, |total, &cluster_id| {
             // Optional work normally yields to pressure, but it becomes
-            // non-evictable when it was just installed or is an owner still
-            // needed by another target. Count that pinned work with visible,
-            // resident, and hysteresis targets so a real floor overage is
-            // never hidden behind its current class.
+            // non-evictable when it was just installed. Count that work with
+            // visible, resident, and hysteresis targets so a real floor
+            // overage is never hidden behind its current class.
             if self.pressure_evictable_optional(cluster_id) {
                 return Ok(total);
             }
@@ -118,19 +109,15 @@ impl ShResidencyController {
 
     fn pressure_evictable_optional(&self, cluster_id: u32) -> bool {
         let state = &self.states[cluster_id as usize];
-        if !state.class.is_some_and(TargetClass::is_pressure_eligible)
-            || state.state == ClusterResidencyState::InstalledUncomposed
-        {
-            return false;
-        }
-        !self.targets.iter().any(|&dependent| {
-            dependent != cluster_id
-                && self.topology.owners[dependent as usize].contains(&cluster_id)
-        })
+        state.class.is_some_and(TargetClass::is_pressure_eligible)
+            && state.state != ClusterResidencyState::InstalledUncomposed
     }
 
+    /// Expired hysteresis departures are released first, then pressure-only
+    /// evictions, the remaining optional work. Each group is ordered by the
+    /// eviction key, whose cluster-id tie-break keeps the order deterministic.
     pub(super) fn departed_eviction_order(&self) -> Vec<u32> {
-        let eligible: BTreeSet<_> = self
+        let mut ordered: Vec<u32> = self
             .states
             .iter()
             .enumerate()
@@ -142,46 +129,12 @@ impl ShResidencyController {
                 .then_some(cluster_id as u32)
             })
             .collect();
-        // Expired hysteresis departures are released first. Pressure-only
-        // evictions are the remaining optional work; victim selection already
-        // used the pressure comparator. Release IDs follow the canonical
-        // dependency-safe drain ordering, not that selection sequence.
-        let departed: BTreeSet<_> = eligible
-            .iter()
-            .copied()
-            .filter(|&cluster_id| !self.states[cluster_id as usize].suppressed)
-            .collect();
-        let pressured: BTreeSet<_> = eligible.difference(&departed).copied().collect();
-        let mut ordered = self.dependent_first_eviction_order(departed);
-        ordered.extend(self.dependent_first_eviction_order(pressured));
-        ordered
-    }
-
-    fn dependent_first_eviction_order(&self, mut remaining: BTreeSet<u32>) -> Vec<u32> {
-        let mut ordered = Vec::with_capacity(remaining.len());
-        while !remaining.is_empty() {
-            let mut leaves: Vec<_> = remaining
-                .iter()
-                .copied()
-                .filter(|&candidate| {
-                    !remaining.iter().any(|&dependent| {
-                        dependent != candidate
-                            && self.topology.owners[dependent as usize].contains(&candidate)
-                    })
-                })
-                .collect();
-            // Planner topology rejects owner cycles. The deterministic fallback
-            // still avoids an infinite loop if a malformed test fixture slips
-            // through a future construction path.
-            if leaves.is_empty() {
-                leaves.extend(remaining.iter().copied());
-            }
-            leaves.sort_by(|left, right| self.compare_eviction_keys(*left, *right));
-            for cluster_id in leaves {
-                remaining.remove(&cluster_id);
-                ordered.push(cluster_id);
-            }
-        }
+        ordered.sort_by(|&left, &right| {
+            self.states[left as usize]
+                .suppressed
+                .cmp(&self.states[right as usize].suppressed)
+                .then_with(|| self.compare_eviction_keys(left, right))
+        });
         ordered
     }
 

@@ -24,7 +24,6 @@ fn one_cell_per_cluster(count: usize) -> PlannerTopology {
     topology(
         (0..count as u32).collect(),
         vec![Vec::new(); count],
-        vec![Vec::new(); count],
         vec![1; count],
     )
 }
@@ -140,7 +139,6 @@ fn sh_mandatory_tier_is_id51_reach_within_lead() {
     let mut controller = controller(topology(
         vec![0, 1, 2, 3, 4, 4],
         vec![Vec::new(); 5],
-        vec![Vec::new(); 5],
         vec![1; 5],
     ));
     let set = residency_set(
@@ -219,7 +217,6 @@ fn sh_without_id51_targets_no_lead_or_band_tier() {
     let mut controller = controller(hinted_topology(
         vec![0, 1, 2, 3],
         vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
-        vec![vec![], vec![], vec![], vec![2]],
         vec![1; 4],
         Vec::new(),
         [1].into_iter().collect(),
@@ -230,12 +227,12 @@ fn sh_without_id51_targets_no_lead_or_band_tier() {
         .unwrap();
     assert_eq!(
         controller.targets().clone(),
-        ids(&[1, 2, 3]),
-        "visible 3, its owner 2, and pin 1: no neighbour, lead or band"
+        ids(&[1, 3]),
+        "visible 3 and pin 1: no neighbour, lead or band"
     );
     assert!(clusters_of_class(&controller, TargetClass::Lead).is_empty());
     assert!(clusters_of_class(&controller, TargetClass::Band).is_empty());
-    assert_eq!(controller.unsettled_targets(), Some(3));
+    assert_eq!(controller.unsettled_targets(), Some(2));
 }
 
 #[test]
@@ -282,7 +279,6 @@ fn authored_priority_outranks_reach_lead_in_request_order() {
     let mut controller = controller(hinted_topology(
         (0..6).collect(),
         vec![Vec::new(); 6],
-        vec![Vec::new(); 6],
         vec![1; 6],
         Vec::new(),
         Default::default(),
@@ -305,14 +301,7 @@ fn authored_priority_outranks_reach_lead_in_request_order() {
 fn band_yields_farthest_lead_first_mandatory_never_refused() {
     let set = corridor_set();
     let stage = CellDemand::new(set.max_lead);
-    let sized = || {
-        topology(
-            (0..6).collect(),
-            vec![Vec::new(); 6],
-            vec![Vec::new(); 6],
-            vec![8; 6],
-        )
-    };
+    let sized = || topology((0..6).collect(), vec![Vec::new(); 6], vec![8; 6]);
 
     // Visible 0 and lead 1, 2 take 24 bytes; one band cluster fits beside them.
     let mut controller = budgeted(sized(), 32);
@@ -346,12 +335,12 @@ fn band_yields_farthest_lead_first_mandatory_never_refused() {
 }
 
 #[test]
-fn non_portal_path_keeps_sh_visible_and_stage_lead_classes() {
+fn non_portal_path_holds_drawn_clusters_and_keeps_stage_lead_classes() {
     let mut controller = controller(one_cell_per_cluster(6));
     let set = corridor_set();
     let stage = CellDemand::new(set.max_lead);
-    // A frustum fallback draws 5: SH still requests every drawn cluster as
-    // Visible, and its reach is the camera cell's baked set.
+    // A frustum fallback draws 5: an absent drawn cluster is not targeted,
+    // and the reach is the camera cell's baked set.
     reach_update(
         &mut controller,
         &stage,
@@ -361,21 +350,19 @@ fn non_portal_path_keeps_sh_visible_and_stage_lead_classes() {
         &[0, 5],
         0.0,
     );
-    assert_eq!(
-        clusters_of_class(&controller, TargetClass::Visible),
-        ids(&[0, 5])
-    );
+    assert!(clusters_of_class(&controller, TargetClass::Visible).is_empty());
     assert_eq!(
         clusters_of_class(&controller, TargetClass::Lead),
-        ids(&[1, 2])
+        ids(&[0, 1, 2]),
+        "drawn cluster 0 is absent, so only its lead class demands it"
     );
     assert_eq!(
         clusters_of_class(&controller, TargetClass::Band),
         ids(&[3, 4])
     );
+    assert!(!controller.is_targeted(5));
 
-    // A solid camera cell with no baked set keeps the reach; cluster 0, no
-    // longer drawn, falls back to its lead class.
+    // A solid camera cell with no baked set keeps the reach.
     reach_update(
         &mut controller,
         &stage,
@@ -403,12 +390,7 @@ fn async_frame_requests_nothing_its_own_budget_policy_suppresses() {
     let set = corridor_set();
     let stage = CellDemand::new(set.max_lead);
     let mut controller = budgeted(
-        topology(
-            (0..6).collect(),
-            vec![Vec::new(); 6],
-            vec![Vec::new(); 6],
-            vec![8; 6],
-        ),
+        topology((0..6).collect(), vec![Vec::new(); 6], vec![8; 6]),
         24,
     );
     reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.0);
@@ -547,7 +529,7 @@ fn byte_budget_stops_rather_than_skipping_to_smaller_work() {
 
 #[test]
 fn cancelled_request_on_a_retargeted_cluster_returns_to_absent_without_failure() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![1]));
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![1]));
     let capture = LogCapture::start();
     controller
         .update_targets(&VisibleCells::Culled(vec![0]), None, 0.0)
@@ -592,7 +574,7 @@ fn cancelled_request_on_a_retargeted_cluster_returns_to_absent_without_failure()
 
 #[test]
 fn cancelled_request_with_a_foreign_identity_is_ignored() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![1]));
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![1]));
     controller
         .update_targets(&VisibleCells::Culled(vec![0]), None, 0.0)
         .unwrap();
@@ -612,7 +594,6 @@ fn requests_for_visible_and_pinned_targets_are_mandatory() {
     let mut controller = controller(hinted_topology(
         vec![0, 1, 2],
         vec![vec![1], vec![0], Vec::new()],
-        vec![Vec::new(); 3],
         vec![1; 3],
         Vec::new(),
         BTreeSet::from([2]),
@@ -677,15 +658,8 @@ fn band_requests_leave_permits_for_mandatory_work() {
 
 #[test]
 fn admission_counts_every_discarded_completed_read() {
-    let mut controller = controller_with_nominal_budget(
-        topology(
-            vec![0, 1],
-            vec![vec![], vec![]],
-            vec![vec![], vec![]],
-            vec![1, 1],
-        ),
-        64,
-    );
+    let mut controller =
+        controller_with_nominal_budget(topology(vec![0, 1], vec![vec![], vec![]], vec![1, 1]), 64);
     controller
         .update_targets(&VisibleCells::Culled(vec![0, 1]), None, 0.0)
         .unwrap();
@@ -901,56 +875,11 @@ fn target_cluster_one_as_lead(controller: &mut ShResidencyController, now: f64) 
     assert!(controller.is_targeted(1));
 }
 
-/// Six clusters, one cell each; cluster 1 is a lead target owned by
-/// `owners_of_one`, which its owner closure targets too.
-fn cluster_one_lead(owners_of_one: &[u32]) -> ShResidencyController {
-    let mut owners = vec![Vec::new(); 6];
-    owners[1] = owners_of_one.to_vec();
-    let mut controller = controller(topology(
-        (0..6).collect(),
-        vec![Vec::new(); 6],
-        owners,
-        vec![1; 6],
-    ));
+/// Six clusters, one cell each; cluster 1 is a lead target.
+fn cluster_one_lead() -> ShResidencyController {
+    let mut controller = controller(topology((0..6).collect(), vec![Vec::new(); 6], vec![1; 6]));
     target_cluster_one_as_lead(&mut controller, 0.0);
     let _ = controller.take_async_drain_batch().unwrap();
-    controller
-}
-
-/// Cluster 1 is ready while its owner 2 is read again. Its read was in flight
-/// when both left the targets and 2 was evicted; it lands once both return.
-fn ready_behind_an_evicted_owner() -> ShResidencyController {
-    let mut controller = cluster_one_lead(&[2]);
-    assert_eq!(
-        controller.take_next_request().unwrap().unwrap().cluster_id,
-        2
-    );
-    admit_ready(&mut controller, 2);
-    assert_eq!(take_batch(&mut controller, true), vec![2]);
-    controller.promote_composed_clusters();
-    assert_eq!(
-        controller.take_next_request().unwrap().unwrap().cluster_id,
-        1
-    );
-
-    controller
-        .update_targets(&VisibleCells::Culled(Vec::new()), None, 0.1)
-        .unwrap();
-    controller
-        .update_targets(&VisibleCells::Culled(Vec::new()), None, 2.2)
-        .unwrap();
-    let batch = controller.take_async_drain_batch().unwrap();
-    assert_eq!(batch.evictions, vec![2]);
-    controller
-        .apply_drain_outcome(ShDrainOutcome {
-            evicted: batch.evictions,
-            ..ShDrainOutcome::default()
-        })
-        .unwrap();
-
-    target_cluster_one_as_lead(&mut controller, 2.3);
-    admit_ready(&mut controller, 1);
-    assert_eq!(controller.state(2), Some(ClusterResidencyState::Absent));
     controller
 }
 
@@ -963,8 +892,8 @@ fn admit_ready(controller: &mut ShResidencyController, cluster_id: u32) {
 }
 
 // Each visible miss lands in exactly one bucket, and every bucket is
-// reachable. A cluster waiting on its owner closure takes the owner's
-// bucket. Each case readies cluster 1, then makes it visible.
+// reachable. A cluster's own state names its bucket: no cluster waits on
+// another. Each case readies cluster 1, then makes it visible.
 #[test]
 fn visible_miss_lands_in_exactly_one_bucket() {
     const OUTSIDE_REACH: usize = 0;
@@ -974,7 +903,7 @@ fn visible_miss_lands_in_exactly_one_bucket() {
     const COMPOSE: usize = 4;
     const FAILED: usize = 5;
     type Setup = fn() -> ShResidencyController;
-    let cases: [(&str, Setup, usize); 11] = [
+    let cases: [(&str, Setup, usize); 7] = [
         (
             "outside reach",
             || controller(one_cell_per_cluster(6)),
@@ -988,12 +917,7 @@ fn visible_miss_lands_in_exactly_one_bucket() {
                 let set = residency_set(6, &[(0, 1, 20)], 32);
                 let stage = CellDemand::new(set.max_lead);
                 let mut controller = budgeted(
-                    topology(
-                        (0..6).collect(),
-                        vec![Vec::new(); 6],
-                        vec![Vec::new(); 6],
-                        vec![8; 6],
-                    ),
+                    topology((0..6).collect(), vec![Vec::new(); 6], vec![8; 6]),
                     4,
                 );
                 reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.0);
@@ -1005,10 +929,11 @@ fn visible_miss_lands_in_exactly_one_bucket() {
             },
             PRESSURE,
         ),
+        ("targeted, no permit yet", cluster_one_lead, IN_FLIGHT),
         (
             "in flight",
             || {
-                let mut controller = cluster_one_lead(&[]);
+                let mut controller = cluster_one_lead();
                 let request = controller.take_next_request().unwrap().unwrap();
                 assert_eq!(request.cluster_id, 1);
                 controller
@@ -1016,29 +941,9 @@ fn visible_miss_lands_in_exactly_one_bucket() {
             IN_FLIGHT,
         ),
         (
-            "owner in flight",
-            || {
-                let mut controller = cluster_one_lead(&[2]);
-                let request = controller.take_next_request().unwrap().unwrap();
-                assert_eq!(request.cluster_id, 2, "the owner reads first");
-                controller
-            },
-            IN_FLIGHT,
-        ),
-        (
-            "ready behind an owner in flight",
-            || {
-                let mut controller = ready_behind_an_evicted_owner();
-                let request = controller.take_next_request().unwrap().unwrap();
-                assert_eq!(request.cluster_id, 2);
-                controller
-            },
-            IN_FLIGHT,
-        ),
-        (
             "drain budget",
             || {
-                let mut controller = cluster_one_lead(&[]);
+                let mut controller = cluster_one_lead();
                 let _ = controller.take_next_request().unwrap().unwrap();
                 admit_ready(&mut controller, 1);
                 controller
@@ -1046,19 +951,9 @@ fn visible_miss_lands_in_exactly_one_bucket() {
             DRAIN_BUDGET,
         ),
         (
-            "owner held by drain budget",
-            || {
-                let mut controller = cluster_one_lead(&[2]);
-                let _ = controller.take_next_request().unwrap().unwrap();
-                admit_ready(&mut controller, 2);
-                controller
-            },
-            DRAIN_BUDGET,
-        ),
-        (
             "compose",
             || {
-                let mut controller = cluster_one_lead(&[]);
+                let mut controller = cluster_one_lead();
                 let _ = controller.take_next_request().unwrap().unwrap();
                 admit_ready(&mut controller, 1);
                 assert_eq!(take_batch(&mut controller, true), vec![1]);
@@ -1067,39 +962,11 @@ fn visible_miss_lands_in_exactly_one_bucket() {
             COMPOSE,
         ),
         (
-            "ready behind an owner awaiting compose",
-            || {
-                let mut controller = ready_behind_an_evicted_owner();
-                let _ = controller.take_next_request().unwrap().unwrap();
-                admit_ready(&mut controller, 2);
-                assert_eq!(
-                    take_batch(&mut controller, true),
-                    vec![2],
-                    "cluster 1 is not offered ahead of its owner"
-                );
-                controller
-            },
-            COMPOSE,
-        ),
-        (
             "failed",
             || {
-                let mut controller = cluster_one_lead(&[]);
+                let mut controller = cluster_one_lead();
                 let request = controller.take_next_request().unwrap().unwrap();
                 controller.admit_failed_request(request).unwrap();
-                controller
-            },
-            FAILED,
-        ),
-        (
-            "failed owner",
-            || {
-                // Cluster 1 is never requested past its failed owner.
-                let mut controller = cluster_one_lead(&[2]);
-                let request = controller.take_next_request().unwrap().unwrap();
-                assert_eq!(request.cluster_id, 2);
-                controller.admit_failed_request(request).unwrap();
-                assert!(controller.take_next_request().unwrap().is_none());
                 controller
             },
             FAILED,
@@ -1137,14 +1004,14 @@ fn visible_miss_lands_in_exactly_one_bucket() {
 #[test]
 fn settling_records_no_visible_miss() {
     let mut controller = controller(one_cell_per_cluster(2));
-    controller.suspend_visible_misses(true);
+    controller.set_full_demand(true);
     for frame in 0..3 {
         controller
             .update_targets(&VisibleCells::Culled(vec![0]), None, f64::from(frame) * 0.1)
             .unwrap();
     }
     assert_eq!(controller.counters().misses, 0);
-    controller.suspend_visible_misses(false);
+    controller.set_full_demand(false);
     controller
         .update_targets(&VisibleCells::Culled(vec![0]), None, 0.4)
         .unwrap();
@@ -1161,14 +1028,14 @@ fn settled_reveal_frame_counts_no_sh_miss() {
     let set = corridor_set();
     let stage = CellDemand::new(set.max_lead);
     let mut controller = controller(one_cell_per_cluster(6));
-    controller.suspend_visible_misses(true);
+    controller.set_full_demand(true);
     let mut now = 0.0;
     while controller.unsettled_targets() != Some(0) {
         reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0, 5], now);
         stream_until_idle(&mut controller);
         now += 0.1;
     }
-    controller.suspend_visible_misses(false);
+    controller.set_full_demand(false);
     reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0, 5], now);
     assert_eq!(controller.counters().misses, 0);
 }

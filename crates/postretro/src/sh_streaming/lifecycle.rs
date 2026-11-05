@@ -63,60 +63,19 @@ impl ShResidencyController {
     pub(crate) fn take_next_request(
         &mut self,
     ) -> Result<Option<ShClusterRequest>, ShResidencyControllerError> {
-        if self.permits_in_use >= MAX_STREAM_PERMITS && self.ready.is_empty() {
+        if self.permits_in_use >= MAX_STREAM_PERMITS {
             return Ok(None);
         }
-        let Some(cluster_id) = self.next_request_cluster()? else {
+        let Some(cluster_id) = self.next_request_cluster() else {
             return Ok(None);
         };
-        let owners = self.request_owner_closure(cluster_id)?;
-        // Old Ready dependents can fill every permit after their owners leave.
-        // Release only the payloads needed to let this owner read, respecting
-        // the optional reservation too. No physical read is cancelled here.
-        let needed = self
-            .permits_in_use
-            .saturating_sub(self.request_permit_limit(cluster_id) - 1);
-        let release_ready: Vec<_> = self
-            .ready_reclaim_candidates(cluster_id)
-            .take(needed)
-            .collect();
-        let mut accounting = self.accounting;
-        for dependent in &release_ready {
-            accounting
-                .cpu
-                .ready
-                .remove(self.ready[dependent].byte_charge, "ready bytes")?;
+        if self.states[cluster_id as usize].evicted {
+            Self::increment_counter(&mut self.counters.rereads, "stream re-reads")?;
         }
-        let permits = self
-            .permits_in_use
-            .checked_sub(release_ready.len())
-            .ok_or(ShResidencyControllerError::AccountingUnderflow(
-                "stream permits",
-            ))?
-            .checked_add(1)
-            .ok_or(ShResidencyControllerError::AccountingOverflow(
-                "stream permits",
-            ))?;
-        let rereads = if self.states[cluster_id as usize].evicted {
-            self.counters.rereads.checked_add(1).ok_or(
-                ShResidencyControllerError::AccountingOverflow("stream re-reads"),
-            )?
-        } else {
-            self.counters.rereads
-        };
-        for dependent in release_ready {
-            self.ready.remove(&dependent);
-            self.request_owners.remove(&dependent);
-            self.states[dependent as usize].state = ClusterResidencyState::Absent;
-        }
-        self.accounting = accounting;
-        self.permits_in_use = permits;
-        self.counters.rereads = rereads;
-        self.request_owners.insert(cluster_id, owners);
+        self.permits_in_use += 1;
         let state = &mut self.states[cluster_id as usize];
         state.state = ClusterResidencyState::Queued;
         state.evicted = false;
-        let state = &self.states[cluster_id as usize];
         let mandatory = state.class.is_some_and(TargetClass::is_mandatory);
         Ok(Some(ShClusterRequest {
             generation: self.generation,
@@ -125,28 +84,6 @@ impl ShResidencyController {
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
             mandatory,
         }))
-    }
-
-    fn request_owner_closure(
-        &self,
-        cluster_id: u32,
-    ) -> Result<BTreeSet<u32>, ShResidencyControllerError> {
-        let mut owners = BTreeSet::new();
-        let mut pending = vec![cluster_id];
-        while let Some(current) = pending.pop() {
-            let direct = self.topology.owners.get(current as usize).ok_or_else(|| {
-                ShResidencyControllerError::InvalidTopology("owner map is incomplete".into())
-            })?;
-            for &owner in direct {
-                if owner == cluster_id {
-                    return Err(ShResidencyControllerError::OwnerCycle(cluster_id));
-                }
-                if owners.insert(owner) {
-                    pending.push(owner);
-                }
-            }
-        }
-        Ok(owners)
     }
 
     /// A request the I/O issuer skipped because its cluster left the target
@@ -164,7 +101,7 @@ impl ShResidencyController {
         }
         let mut cancelled_requests = self.counters.cancelled_requests;
         Self::increment_counter(&mut cancelled_requests, "cancelled requests")?;
-        self.release_permit(request.cluster_id)?;
+        self.release_permit()?;
         self.states[request.cluster_id as usize].state = ClusterResidencyState::Absent;
         self.counters.cancelled_requests = cancelled_requests;
         Ok(())
@@ -183,7 +120,7 @@ impl ShResidencyController {
             return Ok(false);
         }
         if !self.targets.contains(&request.cluster_id) {
-            self.release_permit(request.cluster_id)?;
+            self.release_permit()?;
             self.states[request.cluster_id as usize].state = ClusterResidencyState::Absent;
             return Ok(false);
         }
@@ -249,7 +186,7 @@ impl ShResidencyController {
         }
         if !self.targets.contains(&cluster_id) {
             if state.state == ClusterResidencyState::Queued {
-                self.release_permit(cluster_id)?;
+                self.release_permit()?;
                 self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
             }
             return Ok(ShDrainAdmission::DroppedNotTargeted);
@@ -331,12 +268,10 @@ impl ShResidencyController {
                 ));
             }
         }
-        let dependent_ready = self.refusal_ready_dependents(&outcome)?;
-        self.preflight_drain_outcome(&outcome, &dependent_ready)?;
+        self.preflight_drain_outcome(&outcome)?;
 
-        // The renderer reports only actual releases. A pinned owner stays in
-        // this controller's logical ledger and is retried later, so releasing
-        // a dependent can never underflow the owner charge.
+        // The renderer reports only actual releases; a cluster it kept stays
+        // in this controller's logical ledger and is retried later.
         for cluster_id in &outcome.evicted {
             self.accounting
                 .remove_logical(self.topology.requested_resident_bytes[*cluster_id as usize])
@@ -355,7 +290,7 @@ impl ShResidencyController {
                 .expect("outcome ids were checked");
             self.release_ready_charge(byte_charge)
                 .expect("preflight validated accepted ready bytes");
-            self.release_permit(cluster_id)
+            self.release_permit()
                 .expect("preflight validated accepted permit");
             self.accounting
                 .add_logical(self.topology.requested_resident_bytes[cluster_id as usize])
@@ -371,7 +306,7 @@ impl ShResidencyController {
                 .expect("outcome ids were checked");
             self.release_ready_charge(byte_charge)
                 .expect("preflight validated dropped ready bytes");
-            self.release_permit(cluster_id)
+            self.release_permit()
                 .expect("preflight validated dropped permit");
             self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
         }
@@ -411,52 +346,7 @@ impl ShResidencyController {
             );
             self.states[cluster_id as usize].state = ClusterResidencyState::Ready;
         }
-        // Old reads can finish after their owners were evicted. Their Ready
-        // payloads must not park behind a failed owner, and dropping them must
-        // preserve their independent read-failure history.
-        for cluster_id in dependent_ready {
-            let ready = self
-                .ready
-                .remove(&cluster_id)
-                .expect("preflight validated retained or deferred dependent");
-            self.release_ready_charge(ready.byte_charge)
-                .expect("preflight validated dependent ready bytes");
-            self.release_permit(cluster_id)
-                .expect("preflight validated dependent permit");
-            self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
-        }
         Ok(())
-    }
-
-    fn refusal_ready_dependents(
-        &self,
-        outcome: &ShDrainOutcome,
-    ) -> Result<Vec<u32>, ShResidencyControllerError> {
-        let mut dependent_ready = Vec::new();
-        if outcome.refused.is_empty() {
-            return Ok(dependent_ready);
-        }
-        // At most eight permits hold closures. Request scheduling prevents
-        // refusal while an old dependent is still physically Queued.
-        for (&cluster_id, owners) in &self.request_owners {
-            if !outcome.refused.iter().any(|owner| owners.contains(owner)) {
-                continue;
-            }
-            if self.states[cluster_id as usize].state != ClusterResidencyState::Ready
-                || outcome.accepted.contains(&cluster_id)
-                || outcome.refused.contains(&cluster_id)
-            {
-                return Err(ShResidencyControllerError::InvalidDrainOutcome(
-                    "renderer refused an owner before its dependent work could be dropped".into(),
-                ));
-            }
-            // Dropped work already releases its charge in the outcome. Retained
-            // and deferred work share the cleanup after deferred payloads return.
-            if !outcome.dropped.contains(&cluster_id) {
-                dependent_ready.push(cluster_id);
-            }
-        }
-        Ok(dependent_ready)
     }
 
     /// Validate every arithmetic transition before mutating controller state.
@@ -465,7 +355,6 @@ impl ShResidencyController {
     fn preflight_drain_outcome(
         &self,
         outcome: &ShDrainOutcome,
-        dependent_ready: &[u32],
     ) -> Result<(), ShResidencyControllerError> {
         let mut accounting = self.accounting;
         let mut permits = self.permits_in_use;
@@ -525,25 +414,6 @@ impl ShResidencyController {
                     "deferred chunk changed its accounted byte length".into(),
                 ));
             }
-        }
-        for &cluster_id in dependent_ready {
-            let byte_charge = self
-                .ready
-                .get(&cluster_id)
-                .map(|ready| ready.byte_charge)
-                .or_else(|| self.in_drain.get(&cluster_id).copied())
-                .ok_or_else(|| {
-                    ShResidencyControllerError::InvalidDrainOutcome(
-                        "refused owner's dependent has no retained or deferred payload".into(),
-                    )
-                })?;
-            accounting.cpu.ready.remove(byte_charge, "ready bytes")?;
-            permits =
-                permits
-                    .checked_sub(1)
-                    .ok_or(ShResidencyControllerError::AccountingUnderflow(
-                        "stream permits",
-                    ))?;
         }
         Ok(())
     }

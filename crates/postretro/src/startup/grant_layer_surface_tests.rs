@@ -455,7 +455,7 @@ local badPolicy = Postretro.defineImpactEvent("e16.badPolicy", { tag = "enemy" }
   return { impact.target:setState("bad", impact.target:defense(shock).current) }
 end)
 "#,
-        "{ reactions = { good, grantType, damageLayer, grantArmor }, events = { goodPolicy, badPolicy }, playerEvents = { Postretro.players():on(tripped, { good }), Postretro.players():on(Postretro.becomes(armor.current:le(0)), { good }) } }",
+        "{ reactions = { good, grantType, damageLayer, grantArmor }, events = { goodPolicy, badPolicy }, playerEvents = { Postretro.players():on(tripped, { good }), Postretro.players():on(Postretro.becomes(read(armor.current):le(0)), { good }) } }",
     );
     let (mut app, ctx, pawns, records) = install_script(script);
     for name in ["e16.grantType", "e16.damageLayer", "e16.grantArmor"] {

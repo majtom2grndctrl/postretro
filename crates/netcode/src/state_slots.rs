@@ -1513,10 +1513,10 @@ fn slot_value_to_wire(value: &SlotValue) -> Option<WireSlotValue> {
 }
 
 /// Lift a wire [`WireSlotValue`] back to an engine [`SlotValue`] for the client apply
-/// path. `Unset` has no engine value (the slot is cleared, which Phase 3.5 never does
-/// for the player slots) so it yields `None`; the apply path skips an `Unset` record's
-/// slot write. All other variants convert directly; type/range/enum/finite validation
-/// runs again at the store-write boundary.
+/// path. `Unset` has no engine value, so it yields `None`; `write_for` decides what
+/// an `Unset` record does before this runs: it clears a defense-layer slot and skips
+/// every other slot's write. All other variants convert directly; type/range/enum/finite
+/// validation runs again at the store-write boundary.
 fn wire_value_to_slot(value: &WireSlotValue) -> Option<SlotValue> {
     match value {
         WireSlotValue::Unset => None,

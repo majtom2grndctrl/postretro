@@ -97,7 +97,8 @@ impl Session {
 
     /// One host frame: the HUD publishes the host's own player, replication
     /// sends each client its own pawn's values, and each client applies them.
-    fn frame(&mut self) {
+    /// Returns how many state records each client received, in client order.
+    fn frame(&mut self) -> Vec<usize> {
         let identity = ReplicatedSlotIdentity::default();
         let _ = self
             .hud
@@ -114,6 +115,7 @@ impl Session {
         );
         let sequence = self.sequence;
         self.sequence += 1;
+        let mut received = Vec::new();
         for (client_id, ctx, apply) in &mut self.clients {
             let records = self
                 .replication
@@ -128,7 +130,9 @@ impl Session {
             );
             self.replication
                 .apply_ack(*client_id, sequence, &outcome.slot_baselines, None);
+            received.push(records.len());
         }
+        received
     }
 }
 
@@ -314,8 +318,10 @@ fn a_lost_layer_clears_the_owners_slot() {
         None,
         "the host's own pawn clears too"
     );
-    // Acknowledged, the clear holds; client B never had the layer.
-    session.frame();
+    // Acknowledged, the clear holds and is not resent; client B never had
+    // the layer.
+    let received = session.frame();
+    assert_eq!(received[0], 0, "an acknowledged clear is not resent");
     assert_eq!(client_a(&session, "player.defense.shield"), None);
     assert_eq!(slot(&session.clients[1].1, "player.defense.shield"), None);
 

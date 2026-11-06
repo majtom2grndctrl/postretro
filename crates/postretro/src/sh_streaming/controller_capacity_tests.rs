@@ -391,3 +391,95 @@ fn reload_mid_flight_leaves_no_pending_read_from_the_old_level() {
     );
     assert!(reloaded.take_async_drain_batch().unwrap().ready.is_empty());
 }
+
+/// The renderer's report that its pool holds the whole map, on an empty drain.
+fn report_whole_map_pool(c: &mut ShResidencyController) {
+    c.take_async_drain_batch().unwrap();
+    c.apply_drain_outcome(ShDrainOutcome {
+        pool_holds_whole_map: true,
+        ..ShDrainOutcome::default()
+    })
+    .unwrap();
+}
+
+/// Cluster 5 drawn, then gone past its hysteresis: a resident in no target.
+fn depart_cluster_five(c: &mut ShResidencyController, set: &CellResidencySetSection) {
+    frame(c, set, 0, PORTAL, &[0, 5], 0.0);
+    for id in [0, 1, 2, 3, 5] {
+        mark_sampleable(c, id);
+    }
+    frame(c, set, 0, PORTAL, &[0], 0.1);
+    frame(c, set, 0, PORTAL, &[0], 0.1 + HYSTERESIS_SECONDS);
+    assert!(!c.targets.contains(&5));
+}
+
+// The contract this replaces, kept as the control: below the map, a departed
+// resident is evicted even with room to spare.
+#[test]
+fn a_pool_short_of_the_whole_map_still_evicts_departures() {
+    let mut c = level();
+    let set = corridor();
+    depart_cluster_five(&mut c, &set);
+    assert_eq!(c.take_async_drain_batch().unwrap().evictions, [5]);
+}
+
+#[test]
+fn a_pool_holding_the_whole_map_keeps_departed_residents() {
+    let mut c = level();
+    let set = corridor();
+    report_whole_map_pool(&mut c);
+    depart_cluster_five(&mut c, &set);
+
+    let batch = c.take_async_drain_batch().unwrap();
+    assert!(batch.evictions.is_empty());
+    c.apply_drain_outcome(ShDrainOutcome::default()).unwrap();
+    assert_eq!(c.states[5].state, ClusterResidencyState::Sampleable);
+
+    // Coming back costs no read: this is what the map saves in re-reads.
+    let before = c.counters().rereads;
+    frame(&mut c, &set, 0, PORTAL, &[0, 5], 3.0);
+    assert!(c.take_next_request().unwrap().is_none());
+    assert_eq!(c.counters().rereads, before);
+}
+
+#[test]
+fn a_pool_holding_the_whole_map_names_no_capacity_victim() {
+    let mut c = level();
+    let set = corridor();
+    report_whole_map_pool(&mut c);
+    frame(&mut c, &set, 0, PORTAL, &[0], 0.0);
+    for id in 1..4 {
+        mark_sampleable(&mut c, id);
+    }
+    assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
+    admit(&mut c, 0);
+
+    let batch = c.take_async_drain_batch().unwrap();
+    assert_eq!(batch.mandatory, [0, 1]);
+    assert!(batch.victims.is_empty() && batch.evictions.is_empty());
+}
+
+// Growth reaches the map in one drain and the next one stops evicting. An
+// empty outcome after it, as a frame with no drain sends, cannot undo the fact.
+#[test]
+fn growth_reaching_the_whole_map_stops_eviction_from_the_next_drain() {
+    let mut c = level();
+    let set = corridor();
+    depart_cluster_five(&mut c, &set);
+    let batch = c.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, [5]);
+    c.apply_drain_outcome(ShDrainOutcome {
+        evicted: vec![5],
+        pool_holds_whole_map: true,
+        ..ShDrainOutcome::default()
+    })
+    .unwrap();
+
+    frame(&mut c, &set, 0, PORTAL, &[0, 6], 3.0);
+    mark_sampleable(&mut c, 6);
+    frame(&mut c, &set, 0, PORTAL, &[0], 3.1);
+    frame(&mut c, &set, 0, PORTAL, &[0], 3.1 + HYSTERESIS_SECONDS);
+    assert!(c.take_async_drain_batch().unwrap().evictions.is_empty());
+    c.apply_drain_outcome(ShDrainOutcome::default()).unwrap();
+    assert!(c.take_async_drain_batch().unwrap().evictions.is_empty());
+}

@@ -225,6 +225,7 @@ impl ShResidencyController {
             .iter()
             .chain(&outcome.dropped)
             .chain(&outcome.refused)
+            .chain(&outcome.whole_map_refused)
             .chain(&outcome.pool_refused)
             .copied()
             .chain(
@@ -264,6 +265,7 @@ impl ShResidencyController {
             }
         }
         self.preflight_drain_outcome(&outcome)?;
+        self.pool_holds_whole_map |= outcome.pool_holds_whole_map;
 
         // The renderer reports only actual releases; a cluster it kept stays
         // resident and is retried later.
@@ -304,19 +306,12 @@ impl ShResidencyController {
             self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
         }
         for cluster_id in outcome.refused {
-            let byte_charge = self
-                .in_drain
-                .remove(&cluster_id)
-                .expect("outcome ids were checked");
-            self.release_ready_charge(byte_charge)
-                .expect("preflight validated refused ready bytes");
-            self.mark_failure(
-                cluster_id,
-                FailureCause::DeviceLimit {
-                    refused_at: self.last_time.expect("drained target has an update time"),
-                },
-            )
-            .expect("preflight validated refused permit");
+            let refused_at = self.last_time.expect("drained target has an update time");
+            self.fail_refused(cluster_id, FailureCause::DeviceLimit { refused_at });
+        }
+        for cluster_id in outcome.whole_map_refused {
+            let refused_at = self.last_time.expect("drained target has an update time");
+            self.fail_refused(cluster_id, FailureCause::WholeMapCap { refused_at });
         }
         for cluster_id in outcome.pool_refused {
             let byte_charge = self
@@ -352,6 +347,18 @@ impl ShResidencyController {
             self.states[cluster_id as usize].state = ClusterResidencyState::Ready;
         }
         Ok(())
+    }
+
+    /// A refused install releases its payload and fails only this cluster.
+    fn fail_refused(&mut self, cluster_id: u32, cause: FailureCause) {
+        let byte_charge = self
+            .in_drain
+            .remove(&cluster_id)
+            .expect("outcome ids were checked");
+        self.release_ready_charge(byte_charge)
+            .expect("preflight validated refused ready bytes");
+        self.mark_failure(cluster_id, cause)
+            .expect("preflight validated refused permit");
     }
 
     /// Validate every arithmetic transition before mutating controller state.
@@ -398,6 +405,7 @@ impl ShResidencyController {
             .dropped
             .iter()
             .chain(&outcome.refused)
+            .chain(&outcome.whole_map_refused)
             .chain(&outcome.pool_refused)
         {
             self.preflight_drained_ready_state(cluster_id)?;

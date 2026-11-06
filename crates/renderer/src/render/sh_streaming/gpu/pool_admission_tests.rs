@@ -506,13 +506,46 @@ fn pool_never_exceeds_the_whole_map() {
     // A stored bound above the map changes nothing: load caps it too.
     let f = bound_sized_fixture(&device, &raw, bricks(CLUSTERS), u32::MAX);
     let shape = f.state.gpu.as_ref().unwrap().shape;
-    assert_eq!(shape.layers, 1);
-    assert!(shape.slots >= whole && shape.slots - whole < shape.tiles_per_row);
+    assert!(shape.slots >= whole && shape.slots - whole < shape.tiles_per_layer);
     eprintln!("[ShPoolProof] growth and load both stopped at the whole map; ran on GPU");
 }
 
-// First-fit needs contiguous slots and nothing compacts live storage, so at
-// the cap a mandatory cluster can be refused with enough free slots in total.
+// The fact the controller stops evicting on, read from real capacity: false
+// below the map, true from the drain growth reaches it, true at load when the
+// bound does. Mixed node sizes, so placement order could strand slots if
+// anything had been freed.
+#[test]
+fn drains_report_when_the_pool_holds_the_whole_map() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH whole-map report") else {
+        return;
+    };
+    let levels = [1, 2, 0, 2, 1];
+    let map = || bricks(5).with_density_levels(&levels);
+    let mut f = bound_sized_fixture(&device, &raw, map(), 16);
+    let queue = UploadQueue::new(&device, raw.clone(), true);
+
+    let outcome = admit(&mut f, &device, &queue, &[1], &[], &[1]);
+    assert!(!outcome.pool_holds_whole_map);
+
+    let tier = [0, 1, 2, 3, 4];
+    let outcome = admit(&mut f, &device, &queue, &tier, &[], &[4, 2, 0, 3]);
+    assert_eq!(outcome.accepted, [4, 2, 0, 3]);
+    assert!(outcome.pool_holds_whole_map, "growth reached the map");
+    finish_retirement(&mut f, &device);
+
+    let mut f = bound_sized_fixture(&device, &raw, map(), u32::MAX);
+    let outcome = admit(&mut f, &device, &queue, &tier, &[], &[4, 2, 0, 3, 1]);
+    assert_eq!(outcome.accepted, [4, 2, 0, 3, 1]);
+    assert!(outcome.refused.is_empty() && outcome.whole_map_refused.is_empty());
+    assert_eq!(f.growth_events(), 0);
+    assert!(outcome.pool_holds_whole_map, "the bound reached the map");
+    eprintln!("[ShPoolProof] drains reported whole-map capacity from real pools; ran on GPU");
+}
+
+// The case that remains once a pool holding the map stops evicting: one that
+// reached the cap by growth, after earlier evictions. First-fit needs
+// contiguous slots and nothing compacts live storage, so a mandatory cluster
+// can be refused with enough free slots in total.
 #[test]
 fn fragmentation_at_the_cap_evicts_then_refuses_by_name() {
     let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH cap fragmentation") else {
@@ -566,7 +599,8 @@ fn fragmentation_at_the_cap_evicts_then_refuses_by_name() {
             &[0],
         )
         .unwrap();
-    assert_eq!(outcome.refused, [0]);
+    assert_eq!(outcome.whole_map_refused, [0]);
+    assert!(outcome.refused.is_empty(), "no device limit was reached");
     assert!(outcome.accepted.is_empty());
     assert_eq!(f.growth_events(), 0);
     assert_eq!(f.state.gpu.as_ref().unwrap().shape.slots, whole);

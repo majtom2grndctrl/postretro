@@ -121,6 +121,7 @@ fn assert_buckets_sum_to_misses(controller: &ShResidencyController) {
             + b.awaiting_compose
             + b.failed
             + b.device_limited
+            + b.at_whole_map_cap
     );
 }
 

@@ -1209,10 +1209,9 @@ fn pool_geometry_and_charges_match_gpu_for_every_load_shape() {
         );
         assert!(pools.shape.layers <= limits.max_texture_array_layers);
         match (grid, level, bound) {
-            ([36, 4, 4], 0, u32::MAX) => assert_eq!(
-                (pools.shape.tiles_per_row, pools.shape.tiles_per_layer),
-                (24, 576)
-            ),
+            ([36, 4, 4], 0, u32::MAX) => {
+                assert_eq!((pools.shape.tiles_per_layer, pools.shape.layers), (72, 8))
+            }
             ([36, 4, 4], 0, _) => assert!(pools.shape.tiles_per_layer > pool.dense_slots),
             ([4, 4, 4], 2, _) => assert_eq!(pools.shape.tiles_per_layer, 1),
             ([12, 4, 4], 0, _) => {

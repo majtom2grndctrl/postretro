@@ -232,7 +232,13 @@ struct FailureIdentity {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FailureCause {
     Read,
-    DeviceLimit { refused_at: f64 },
+    DeviceLimit {
+        refused_at: f64,
+    },
+    /// Fragmentation left no room at the whole-map cap.
+    WholeMapCap {
+        refused_at: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -344,6 +350,9 @@ pub(crate) struct ShResidencyController {
     /// Capacity victims this drain named. Evicted ones yield until the
     /// horizon changes; departures in `in_drain_evictions` have no such wait.
     in_drain_victims: BTreeSet<u32>,
+    /// The renderer's report that its pool holds the whole map: no drain
+    /// evicts from here on. Capacity never shrinks, so this only ever sets.
+    pool_holds_whole_map: bool,
     permits_in_use: usize,
     cpu: CpuPhaseLedger,
     prior_visible_misses: BTreeSet<u32>,
@@ -429,6 +438,7 @@ impl ShResidencyController {
             in_drain: BTreeMap::new(),
             in_drain_evictions: BTreeSet::new(),
             in_drain_victims: BTreeSet::new(),
+            pool_holds_whole_map: false,
             permits_in_use: 0,
             cpu: CpuPhaseLedger::default(),
             prior_visible_misses: BTreeSet::new(),
@@ -677,6 +687,7 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
         .iter()
         .chain(&outcome.dropped)
         .chain(&outcome.refused)
+        .chain(&outcome.whole_map_refused)
         .chain(&outcome.pool_refused)
         .chain(&outcome.evicted)
     {

@@ -98,6 +98,7 @@ fn assert_bucket_total(controller: &ShResidencyController) {
             + b.awaiting_compose
             + b.failed
             + b.device_limited
+            + b.at_whole_map_cap
     );
 }
 
@@ -223,6 +224,46 @@ fn refusal_counts_only_new_visible_episodes_without_rebucketing() {
     assert_eq!(c.counters().miss_buckets.device_limited, 1);
     assert_eq!(c.counters().misses, before.misses + 1);
     assert_bucket_total(&c);
+}
+
+fn whole_map_refusal(controller: &mut ShResidencyController, cluster_id: u32) {
+    let request = controller.take_next_request().unwrap().unwrap();
+    assert_eq!(request.cluster_id, cluster_id);
+    ready_requested(controller, cluster_id);
+    assert_eq!(controller.take_async_drain_batch().unwrap().ready.len(), 1);
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            whole_map_refused: vec![cluster_id],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+}
+
+// The cap is no device limit, so its misses must not read as one.
+#[test]
+fn whole_map_refusal_counts_its_own_bucket() {
+    let mut c = independent(1);
+    view(&mut c, &[0], 0.0);
+    whole_map_refusal(&mut c, 0);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+    assert_ledger(&c);
+    view(&mut c, &[], 0.2);
+    view(&mut c, &[0], 0.3);
+    assert_eq!(c.counters().miss_buckets.at_whole_map_cap, 1);
+    assert_eq!(c.counters().miss_buckets.device_limited, 0);
+    assert_bucket_total(&c);
+}
+
+// Holes open as residents leave, so it retries as a device refusal does.
+#[test]
+fn whole_map_refusal_retries_after_leaving_and_reentering_targets() {
+    let mut c = independent(1);
+    view(&mut c, &[0], 0.0);
+    whole_map_refusal(&mut c, 0);
+    view(&mut c, &[0], 5.0);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+    leave_and_return(&mut c, 0, 6.0);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
 }
 
 #[test]

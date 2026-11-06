@@ -160,6 +160,10 @@ pub struct ShDrainOutcome {
     /// Device-limit refusals release their payload and fail only this cluster.
     /// Disjoint from the other lists; no permit is retained.
     pub refused: Vec<u32>,
+    /// Mandatory installs fragmentation left no room for, at the whole-map
+    /// cap. Handled as `refused` is, and named apart so neither the miss
+    /// bucket nor the warning calls it a device limit.
+    pub whole_map_refused: Vec<u32>,
     /// Optional installs the pool had no room for. Nothing was evicted or
     /// grown for them; the payload and permit are released, and the cluster
     /// yields until the horizon changes. Unlike `refused`, this is no failure.
@@ -168,6 +172,10 @@ pub struct ShDrainOutcome {
     /// Clusters actually released by the renderer, not merely requested for
     /// eviction. Capacity victims are listed here too.
     pub evicted: Vec<u32>,
+    /// The dense pool now holds every stored node at once, so nothing need
+    /// leave it. The renderer reports this each drain, and capacity never
+    /// shrinks within a level, so it holds from the first drain that says so.
+    pub pool_holds_whole_map: bool,
 }
 
 pub(super) fn validate_sorted_cluster_ids(

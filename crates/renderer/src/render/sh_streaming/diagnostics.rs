@@ -86,6 +86,8 @@ pub struct ShMissBuckets {
     pub failed: u64,
     /// Its install was refused at a device limit.
     pub device_limited: u64,
+    /// Fragmentation refused its install at the whole-map cap.
+    pub at_whole_map_cap: u64,
 }
 
 /// One frame's view of SH streaming for the dev-tools Streaming tab and the

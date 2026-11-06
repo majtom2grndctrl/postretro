@@ -19,7 +19,8 @@ impl ShResidencyController {
 
     /// Async-only drain policy. Departed residents leave first, capacity
     /// victims only if mandatory work needs the room, and every eviction
-    /// remains only a request until the renderer reports the release.
+    /// remains only a request until the renderer reports the release. A pool
+    /// holding the whole map evicts nothing: see [`Self::begin_drain`].
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn take_async_drain_batch(
         &mut self,
@@ -107,6 +108,9 @@ impl ShResidencyController {
         }
         self.drop_departed_ready(&self.targets.clone())?;
 
+        // Eviction is what fragments first-fit, and a pool holding the whole
+        // map has no need of it: residents stay, and every cluster places.
+        let eviction_enabled = eviction_enabled && !self.pool_holds_whole_map;
         if eviction_enabled {
             batch.evictions = self.departed_eviction_order();
         }

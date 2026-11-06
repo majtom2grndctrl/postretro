@@ -10,6 +10,9 @@ pub(super) const PHYSICAL_TILE_DIMENSION: u32 = 8;
 // are pinned by geometry_tests::fixture_churn_fits_fragmentation_headroom.
 pub(super) const DENSE_FRAGMENTATION_HEADROOM_NUMERATOR: u64 = 9;
 pub(super) const DENSE_FRAGMENTATION_HEADROOM_DENOMINATOR: u64 = 4;
+/// How many layers a pool spans at its initial size. Growth adds whole layers
+/// and copies the rest, so this sets the smallest step it can take.
+const POOL_LAYERS: u64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::render::sh_streaming) struct AtlasShape {
@@ -54,10 +57,13 @@ impl AtlasShape {
         let whole_minimum =
             whole_with_headroom.div_ceil(u64::from(limits.max_texture_array_layers));
         let full_layer = u64::from(maximum) * u64::from(maximum);
-        // Past one full layer, equal layers spare the pool a nearly empty last
-        // one. Below it, the layer is the whole target and pads by under a row.
+        // Equal layers, so a target past `POOL_LAYERS` full layers takes as many
+        // as it needs and no nearly empty last one.
+        let pool_layers = POOL_LAYERS
+            .min(u64::from(limits.max_texture_array_layers))
+            .max(u64::from(slots).div_ceil(full_layer));
         let layer_target = u64::from(slots)
-            .div_ceil(u64::from(slots).div_ceil(full_layer))
+            .div_ceil(pool_layers)
             .max(whole_minimum)
             .min(full_layer)
             .max(1);

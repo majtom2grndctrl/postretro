@@ -19,6 +19,7 @@ enum MissCause {
     AwaitingCompose,
     Failed,
     DeviceLimited,
+    AtWholeMapCap,
 }
 
 impl ShResidencyController {
@@ -224,6 +225,7 @@ impl ShResidencyController {
             MissCause::AwaitingCompose => &mut buckets.awaiting_compose,
             MissCause::Failed => &mut buckets.failed,
             MissCause::DeviceLimited => &mut buckets.device_limited,
+            MissCause::AtWholeMapCap => &mut buckets.at_whole_map_cap,
         }
     }
 
@@ -251,13 +253,13 @@ impl ShResidencyController {
     }
 
     fn failure_miss_cause(&self, cluster_id: u32) -> MissCause {
-        if self.states[cluster_id as usize]
+        match self.states[cluster_id as usize]
             .failure
-            .is_some_and(|failure| matches!(failure.cause, FailureCause::DeviceLimit { .. }))
+            .map(|failure| failure.cause)
         {
-            MissCause::DeviceLimited
-        } else {
-            MissCause::Failed
+            Some(FailureCause::DeviceLimit { .. }) => MissCause::DeviceLimited,
+            Some(FailureCause::WholeMapCap { .. }) => MissCause::AtWholeMapCap,
+            _ => MissCause::Failed,
         }
     }
 
@@ -357,7 +359,8 @@ impl ShResidencyController {
             };
             let retry_allowed = match failure.cause {
                 FailureCause::Read => !failure.retry_spent,
-                FailureCause::DeviceLimit { refused_at } => {
+                FailureCause::DeviceLimit { refused_at }
+                | FailureCause::WholeMapCap { refused_at } => {
                     horizon_changed
                         && !self.targets.contains(&(cluster_id as u32))
                         && monotonic_seconds - refused_at >= HYSTERESIS_SECONDS

@@ -18,7 +18,7 @@ use super::{AtlasShape, ShResidencyDrainError, SparseCapacityFloors};
 
 mod validation;
 
-use validation::{validate_fixed_storage_bindings, validate_sparse_caps};
+use validation::{validate_fixed_storage_bindings, validate_sparse_caps, validate_sparse_plan};
 
 /// Over the bound, dense and sparse alike: first-fit's address high-water runs
 /// above what is live.
@@ -71,6 +71,11 @@ struct SparsePlan {
 /// objects: `bound` plus headroom, capped at the whole map. A family the bound
 /// omits starts at its sentinel alone. Dense takes at least one slot, so an
 /// all-invalid map keeps the sampler contract's bound texture.
+///
+/// A dense pool that holds the map stops eviction, so nothing frees sparse
+/// rows either: every family then starts whole, or it would grow mid-level.
+/// A family past the device stays at its bound, for growth to refuse by name
+/// if it must, rather than failing a load its bound would pass.
 pub(crate) fn plan_initial_pool(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
@@ -88,11 +93,22 @@ pub(crate) fn plan_initial_pool(
 
     validate_fixed_storage_bindings(base, sources, limits)?;
     let dense_slot_bytes = dense_slot_bytes(base, sources)?;
-    let sparse = sparse_plans(sources, &bound.sparse)?;
-    validate_sparse_caps(&sparse, limits)?;
+    let mut sparse = sparse_plans(sources, &bound.sparse)?;
 
     let dense_slots = with_headroom_capped(bound.dense_slots, whole_dense_slots).max(1);
     let shape = AtlasShape::for_slots(dense_slots, whole_dense_slots, limits)?;
+    if shape.slots >= whole_dense_slots {
+        for plan in sparse.values_mut() {
+            let whole = SparsePlan {
+                capacity: plan.whole,
+                ..*plan
+            };
+            if validate_sparse_plan(&whole, limits).is_ok() {
+                *plan = whole;
+            }
+        }
+    }
+    validate_sparse_caps(&sparse, limits)?;
     let pool_bytes = sparse.values().try_fold(
         u64::from(shape.slots)
             .checked_mul(dense_slot_bytes)

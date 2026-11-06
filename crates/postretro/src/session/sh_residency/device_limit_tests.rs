@@ -20,6 +20,31 @@ fn refuse_ready(session: &mut ShStreamingSession) {
         .unwrap();
 }
 
+// The renderer warns of the cap by name. This warning is the device's alone,
+// and a cap refusal must not spend it either.
+#[test]
+fn whole_map_refusal_does_not_warn_as_a_device_limit() {
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let mut session = session(Arc::clone(world.sh_stream_manifest().unwrap()));
+    let capture = LogCapture::start();
+    let visible = VisibleCells::Culled(vec![0]);
+    session.update_targets(&visible, None, 0.0).unwrap();
+    assert!(matches!(
+        session.read_one_sync().unwrap(),
+        SyncReadResult::Prepared(0)
+    ));
+    let batch = session.controller.take_drain_batch().unwrap();
+    session
+        .apply_controller_outcome(ShDrainOutcome {
+            whole_map_refused: vec![batch.ready[0].chunk.cluster_id],
+            ..Default::default()
+        })
+        .unwrap();
+    capture.assert_not_logged(log::Level::Warn, "device limit");
+    assert!(!session.device_limit_warned.load(Ordering::Relaxed));
+}
+
 // Regression: a refusal must not spend the read-failure warning or retry.
 #[test]
 fn device_limit_refusal_then_corrupt_reread_warns_for_both_causes_once() {

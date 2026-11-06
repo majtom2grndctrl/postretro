@@ -14,6 +14,11 @@ pub(in crate::render::sh_streaming) struct SparseGrowth {
 }
 
 impl StreamingGpuPools {
+    /// Every stored node fits at once, so nothing need ever leave this pool.
+    pub(in crate::render::sh_streaming) fn holds_whole_map(&self) -> bool {
+        self.shape.slots >= self.whole_map.dense_slots
+    }
+
     /// The dense shape after a growth, or the refusal of the device or the
     /// whole-map cap.
     pub(super) fn grown_shape(

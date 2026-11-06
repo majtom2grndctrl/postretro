@@ -99,8 +99,58 @@ fn sparse_takes_the_same_headroom_plus_its_sentinel() {
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
         &sparse_bound(27, (10, 20)),
-        1,
+        100,
         &wgpu::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(plan.sparse_capacities[&27], (13 + 1, 26 + 2));
+}
+
+// Eviction stops once dense holds the map, so sparse rows stop freeing too. A
+// family sized from the bound would then grow mid-level, which row 27 forbids.
+#[test]
+fn a_dense_pool_holding_the_map_starts_every_family_whole() {
+    let source = sparse_source(27, 100);
+    let sources = ShStreamSourceMetadata {
+        indirect_delta: Some(source.clone()),
+        ..Default::default()
+    };
+    let plan = plan_initial_pool(
+        &base(IRRADIANCE_FORMAT_RGBA16F),
+        &sources,
+        &ShPoolBound {
+            dense_slots: 90,
+            sparse: BTreeMap::from([(27, (10, 20))]),
+        },
+        100,
+        &wgpu::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(plan.dense_slots, 100);
+    let whole = with_sentinel(whole_sparse_payload(&source).unwrap()).unwrap();
+    assert_eq!(plan.sparse_capacities[&27], whole);
+}
+
+#[test]
+fn a_family_past_the_device_stays_at_its_bound_when_dense_holds_the_map() {
+    let sources = ShStreamSourceMetadata {
+        indirect_delta: Some(sparse_source(27, 100)),
+        ..Default::default()
+    };
+    let limits = wgpu::Limits {
+        max_buffer_size: 256,
+        max_storage_buffer_binding_size: 256,
+        ..Default::default()
+    };
+    let plan = plan_initial_pool(
+        &base(IRRADIANCE_FORMAT_RGBA16F),
+        &sources,
+        &ShPoolBound {
+            dense_slots: 1,
+            sparse: BTreeMap::from([(27, (10, 20))]),
+        },
+        1,
+        &limits,
     )
     .unwrap();
     assert_eq!(plan.sparse_capacities[&27], (13 + 1, 26 + 2));
@@ -120,7 +170,7 @@ fn sparse_is_word_aligned_and_capped_at_its_whole_source() {
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &sources,
             &sparse_bound(27, worst),
-            1,
+            100,
             &wgpu::Limits::default(),
         )
         .unwrap()
@@ -160,7 +210,7 @@ fn a_family_the_bound_omits_starts_at_its_sentinel() {
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
         &dense_bound(1),
-        1,
+        100,
         &wgpu::Limits::default(),
     )
     .unwrap();
@@ -188,16 +238,16 @@ fn pool_bytes_charge_final_layer_padding_not_only_requested_dense_slots() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_BC6H),
         &ShStreamSourceMetadata::default(),
-        &dense_bound(3),
-        3,
+        &dense_bound(9),
+        9,
         &wgpu::Limits::default(),
     )
     .unwrap();
 
-    assert_eq!(plan.dense_slots, 3);
-    // A 3-slot request uses a 2 by 2 physical atlas: BC6H base plus
-    // RGBA16F composed storage costs 64 + 512 bytes per physical slot.
-    assert_eq!(plan.pool_bytes, 4 * (64 + 512));
+    assert_eq!(plan.dense_slots, 9);
+    // A 9-slot request takes five 2-tile layers: BC6H base plus RGBA16F
+    // composed storage costs 64 + 512 bytes per physical slot.
+    assert_eq!(plan.pool_bytes, 10 * (64 + 512));
 }
 
 #[test]
@@ -220,9 +270,10 @@ fn pool_bytes_charge_every_coupled_direct_dense_texture() {
     // id34 BC6H base + indirect total + id35 BC6H base + direct total
     // + animated direct intermediate: 64 + 512 + 64 + 512 + 512 bytes.
     assert_eq!(plan.dense_slots, 100);
+    // Seven 16-tile layers.
     assert_eq!(
         plan.pool_bytes,
-        100 * 1_664 + 2 * sh_sparse_capacity_bytes(1, 2)
+        112 * 1_664 + 2 * sh_sparse_capacity_bytes(1, 2)
     );
 }
 
@@ -290,7 +341,7 @@ fn pool_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &sources,
             &sparse_bound(27, (0, 0)),
-            1,
+            10,
             &limits,
         ),
         Err(ShResidencyDrainError::GpuCapacity {

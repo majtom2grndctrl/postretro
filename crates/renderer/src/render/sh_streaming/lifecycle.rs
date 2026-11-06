@@ -35,6 +35,10 @@ impl ShResidencyState {
         #[cfg(feature = "dev-tools")]
         self.probe_readback
             .reconcile(self.grid_dimensions, &self.sampled_words);
+        outcome.pool_holds_whole_map = self
+            .gpu
+            .as_ref()
+            .is_some_and(StreamingGpuPools::holds_whole_map);
         Ok(outcome)
     }
 
@@ -102,7 +106,7 @@ impl ShResidencyState {
                     }
                     Err(ShResidencyDrainError::PoolAtWholeMap { family }) => {
                         self.warn_whole_map_refusal(family, cluster_id);
-                        outcome.refused.push(cluster_id);
+                        outcome.whole_map_refused.push(cluster_id);
                     }
                     Err(ShResidencyDrainError::PoolShortfall) => {
                         outcome.pool_refused.push(cluster_id);

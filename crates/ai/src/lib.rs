@@ -45,24 +45,20 @@ pub(crate) use postretro_sim::{
     alloc_probe, health, impact_effects, impact_policy, sprite_collection,
 };
 
-// Test-only counting global allocator. Without it `alloc_probe`'s per-thread
-// counter never moves in this crate's test binary and every zero-allocation
-// assertion passes vacuously. `#[global_allocator]` must sit on a crate-root
-// static; the approved `unsafe impl` stays in `postretro_sim::alloc_probe`.
-// See: context/lib/development_guide.md §3.5
+// Test-only: makes `alloc_probe` count allocations in this test binary.
+// See: context/lib/testing_guide.md §Resource bounds
 #[cfg(test)]
 #[global_allocator]
 static ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
 #[cfg(test)]
 mod alloc_probe_tests {
-    use crate::alloc_probe::{AllocSnapshot, counting_allocator_is_installed};
+    use crate::alloc_probe::AllocSnapshot;
 
     /// Positive control: the probe must see a real allocation, or every
     /// zero-allocation assertion in this crate is dead.
     #[test]
-    fn alloc_probe_counts_a_real_allocation() {
-        assert!(counting_allocator_is_installed());
+    fn probe_counts_a_real_allocation() {
         let snapshot = AllocSnapshot::arm();
         let v: Vec<u64> = std::hint::black_box(Vec::with_capacity(16));
         let allocs = snapshot.allocs_since();

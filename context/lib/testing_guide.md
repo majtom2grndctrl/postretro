@@ -149,7 +149,7 @@ Game logic tests must control time. Inject a fixed delta time rather than readin
 
 Resource proof covers the full lifetime in [Development Guide](./development_guide.md) §1.4. Observe production, buffering, serialization, persistence, return, and cleanup. A custom allocation seam proves only allocations routed through that seam.
 
-Zero-allocation assertions use `postretro_sim::alloc_probe` (`AllocSnapshot::arm` / `allocs_since`). The probe counts only when `alloc_probe::CountingAllocator` is the test binary's `#[global_allocator]`, and that attribute must sit on a crate-root static. Every crate whose tests arm the probe installs it under `#[cfg(test)]` at its own root and carries a positive-control test that asserts a real `Vec` allocation is counted. `arm` panics when the allocator is missing, so a probe cannot silently go dead.
+Zero-allocation assertions use `postretro_sim::alloc_probe` (`AllocSnapshot::arm` / `allocs_since`). The probe counts only when `alloc_probe::CountingAllocator` is the test binary's `#[global_allocator]`, and that attribute must sit on a crate-root static. Every crate whose tests arm the probe installs it under `#[cfg(test)]` at its own root. `arm` panics when the allocator is missing; each such crate also carries a positive-control test asserting a real heap allocation is counted.
 
 Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload.
 

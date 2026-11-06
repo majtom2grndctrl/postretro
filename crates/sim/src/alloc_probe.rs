@@ -4,7 +4,7 @@
 #![allow(unsafe_code)]
 
 // The IR eval pass must perform ZERO heap allocation per tick (scripting.md
-// §11). To prove it, this module installs a global allocator that delegates
+// §11). To prove it, this module provides a global allocator that delegates
 // verbatim to `std::alloc::System` and bumps a *per-thread* counter on every
 // allocation. A test arms the probe *after* bind, snapshots its own thread's
 // counter, runs `eval_value`, and asserts the alloc delta is zero. Bind and the
@@ -12,9 +12,10 @@
 // process-global atomic) keeps the assertion stable under `cargo test`'s
 // parallel pool — concurrent test threads cannot inflate the measured window.
 //
-// The `#[global_allocator]` static itself lives in the crate test root because
-// the attribute must sit on a crate-root static; it points at
-// [`CountingAllocator`].
+// Each crate whose tests arm the probe installs [`CountingAllocator`] as a
+// `#[cfg(test)]` `#[global_allocator]` at its own root, because the attribute
+// must sit on a crate-root static. See: context/lib/testing_guide.md
+// §Resource bounds.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -105,10 +106,10 @@ impl AllocSnapshot {
             assert!(
                 counting_allocator_is_installed(),
                 "alloc_probe: CountingAllocator is not the global allocator in this \
-             test binary, so allocs_since() would always read 0. Add \
-             `#[cfg(test)] #[global_allocator] static ALLOCATOR: \
-             postretro_sim::alloc_probe::CountingAllocator = \
-             postretro_sim::alloc_probe::CountingAllocator;` at the crate root."
+                 test binary, so allocs_since() would always read 0. Add \
+                 `#[cfg(test)] #[global_allocator] static ALLOCATOR: \
+                 postretro_sim::alloc_probe::CountingAllocator = \
+                 postretro_sim::alloc_probe::CountingAllocator;` at the crate root."
             );
             ALLOCATOR_VERIFIED.with(|verified| verified.set(true));
         }
@@ -125,13 +126,13 @@ impl AllocSnapshot {
 
 /// Canary: performs one heap allocation and reports whether this thread's
 /// counter observed it. `false` means [`CountingAllocator`] is not installed as
-/// the global allocator, so the probe is dead. [`AllocSnapshot::arm`] checks
-/// this on each thread's first window, before its snapshot is taken, so the
-/// canary allocation never counts against any window.
+/// the global allocator, so the probe is dead. Allocates once, so call it
+/// outside any open window. [`AllocSnapshot::arm`] calls it on each thread's
+/// first window, before taking its snapshot.
 pub fn counting_allocator_is_installed() -> bool {
     let before = THREAD_ALLOC_COUNT.with(Cell::get);
     // `black_box` keeps the optimizer from eliding the allocation pair.
-    drop(std::hint::black_box(Box::new(std::hint::black_box(0u8))));
+    drop(std::hint::black_box(Box::new(0u8)));
     THREAD_ALLOC_COUNT.with(Cell::get) != before
 }
 
@@ -195,7 +196,6 @@ mod tests {
 
     #[test]
     fn probe_counts_a_real_allocation() {
-        assert!(counting_allocator_is_installed());
         let snapshot = AllocSnapshot::arm();
         let v: Vec<u64> = std::hint::black_box(Vec::with_capacity(16));
         let allocs = snapshot.allocs_since();

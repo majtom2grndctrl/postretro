@@ -97,11 +97,11 @@ On the owner's machine, in `Downloads`: `Pro Rifle Pack (fbx-bin)` (50 FBXs incl
 
 ## New character rigs
 
-Rigged by Mixamo's auto-rigger, exported as FBX Binary in T-pose. Both files sit in the owner's `Downloads`, outside the repo. Read in Blender and bent by hand; neither has been converted or played.
+Rigged by Mixamo's auto-rigger, exported as FBX Binary in T-pose. The FBXs sit in `sources/`, outside the mod tree so bundles leave them out. Each is converted to `model.gltf` in its model folder. Neither has played a clip in the engine.
 
 | Property | `rodin_sci-fi_trooper_m` | `cyberpunk_warrior_f` |
 |---|---|---|
-| Rigged FBX | `trooper_tpose.fbx` | `warrior_tpose.fbx` |
+| Rigged FBX | `sources/trooper_tpose.fbx` | `sources/warrior_tpose.fbx` |
 | Joints | 25, no fingers | 25, no fingers |
 | Tris | 3,431 | 3,961 |
 | Height | 2.00 m | 1.90 m |
@@ -113,9 +113,9 @@ Rigged by Mixamo's auto-rigger, exported as FBX Binary in T-pose. Both files sit
 
 Both carry only `mixamorig:` joints that `exo_red` also has, so finger tracks drop as library joints with no mesh joint. Both models are CC-BY; their `license.txt` credits travel with them.
 
-Facing is unmeasured. AI turns a model's +Z to its target; `exo_red` bakes −Z and `limitator` needed `--yaw 90`. Confirm each bake faces +Z before solving its mount, and pass `--yaw` if not.
+AI turns a model's +Z to its target. Both rigs convert facing −Z at the default yaw, as `exo_red` does, so the staged bakes use `--yaw 180`. Toe joints confirm +Z in the glTF. A re-conversion keeps that flag.
 
-The committed glTFs have no skin, so a static model ignores a library. The first slice converts `trooper_tpose.fbx` before it binds.
+Each `scene.gltf` has no skin, so a static model ignores a library. The first slice binds the staged `model.gltf`.
 
 ## Rejected shapes
 

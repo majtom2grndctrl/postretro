@@ -1,7 +1,7 @@
 # character-clip-library — plan of record
 
 mode: compact
-status: active
+status: landed
 read at: deb9ec20f
 pre-migration commit: deb9ec20f
 
@@ -70,11 +70,11 @@ pre-migration commit: deb9ec20f
 | N4 more enemies and factions | map count check | achievable as stated | pass |
 | N5 rifle `--check` per enemy (P10) | `solve-weapon-mount --check` | achievable as stated | pass; both VERIFIED with their own bakes |
 | N6 docs page | `docs/` page + bundle-path check | achievable as stated | pass |
-| Man1 player and `limitator` | owner, in-engine | manual | outstanding; owner, in-engine |
-| Man2 new enemies on `movement-feel` | owner, in-engine | manual | outstanding; owner, in-engine |
-| Man3 faction separation | owner, in-engine | manual | outstanding; owner, in-engine |
-| Man4 `campaign-test` props | owner, in-engine | manual | outstanding; owner, in-engine |
-| Man5 real Blender `--library` | owner; executor runs it too | manual | outstanding; executor ran `--library` in real Blender 5.2, owner's in-game check and rerun remain |
+| Man1 player and `limitator` | owner, in-engine | manual | owner signed off 2026-11-06 |
+| Man2 new enemies on `movement-feel` | owner, in-engine | manual | owner signed off 2026-11-06 |
+| Man3 faction separation | owner, in-engine | manual | owner signed off 2026-11-06 |
+| Man4 `campaign-test` props | owner, in-engine | manual | owner signed off 2026-11-06 |
+| Man5 real Blender `--library` | owner; executor runs it too | manual | owner signed off 2026-11-06; executor also ran `--library` in real Blender 5.2 |
 
 ## Tasks
 

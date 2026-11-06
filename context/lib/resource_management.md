@@ -348,14 +348,14 @@ Placed mesh entities carry `Transform.scale = 1`; no FGD or descriptor scale ove
 
 Solver uses a rigid, proper socket frame at its reference pose. Invalid, sheared, or reflected frames are rejected. Geometric barrel/up detection is an unverified assist, never authoring truth. `socket_dump` is a diagnostic/parity tool, not a required author workflow.
 
-**Shared clip libraries (not built).** A clip library is a mesh-less glTF of named joints, their rest TRS, and clips. A skinned model names one through document-level `extras.clipLibrary`, a path relative to the model. Characters then ship as mesh and skeleton: adding a clip is one library edit, not a per-character rebuild.
+**Shared clip libraries.** A clip library is a mesh-less glTF of named joints, their rest TRS, and clips. A skinned model names one through document-level `extras.clipLibrary`, a path relative to the model. Characters then ship as mesh and skeleton: adding a clip is one library edit, not a per-character rebuild. Authoring: `docs/character-animation.md`.
 
 - **Binding.** The model loader binds at load, into ordinary per-model clips in the mesh's joint order. Runtime consumers never see a library.
 - **Contract.** Joints match by exact name. Library tracks are deltas from the library's rest, composed with the mesh's rest; a rig whose clips are not rest-relative cannot use a library. Root translation scales by the ratio of root rest heights. Non-root translation and all scale drop, so proportions stay the mesh's.
 - **Precedence.** Embedded clips stay valid and list first. A same-named embedded clip overrides the library's, silently.
 - **Raw data.** A model's joints and rest stay raw on load. Only two rewrites touch tracks: binding composes library tracks, and root-motion neutralization rewrites a model's own root tracks.
 - **Mechanism vs policy.** The engine names no rig. Joint names are a content contract between a library and its meshes; Mixamo policy lives in the conversion tool.
-- **Failure.** A character stuck in rest pose is the worse outcome, so an unreadable library, a mesh root absent from it, or no usable root fails the load. A malformed reference warns and reads as absent; a static model ignores its reference. `dist` refuses a skinned model whose library is missing or outside the mod root.
+- **Failure.** A character stuck in rest pose is the worse outcome, so these fail the load: an unreadable library, a mesh root absent from it, no selected locomotion root, root rest heights with no finite positive ratio, and a library with no clips on a model with none of its own. A malformed reference (backslashes and non-UTF-8 escapes included) warns and reads as absent; a static model ignores its reference. Binding warns once per model on parent mismatches, unbound non-leaf joints and repeated library node names. `dist` stage 4 refuses a skinned model under `models/` whose library is missing or outside the mod root.
 
 **Mixamo licence.** Mixamo assets may live in a project's repo and ship in its game. They may not be offered as downloads for other creators. An SDK bundle copies the mod tree whole (`build_pipeline.md` §SDK bundle), so a published bundle carries any Mixamo assets in that tree.
 

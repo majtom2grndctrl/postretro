@@ -240,8 +240,8 @@ enum FailureCause {
         refused_at: f64,
     },
     /// Fragmentation left no room at the whole-map cap. The cluster is black
-    /// until victims open a range, so it retries one hysteresis window after
-    /// each refusal, target or not.
+    /// until victims open a range, so while it stays a target it retries one
+    /// hysteresis window after each refusal, with no need to leave first.
     WholeMapCap {
         refused_at: f64,
     },

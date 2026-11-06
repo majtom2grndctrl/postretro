@@ -16,7 +16,7 @@ Provenance tags: **[source]** read in code this session · **[re-derived]** reco
 
 ## Final results
 
-**`ready/spatial-residency--sh-bounded-pool/research.md` supersedes the figures below where they differ.** Its Metal trace is the run of record; raw spike data was discarded. The walk below ran without textures, through a wrong `--baked-root`, so its VRAM reads low: the run of record reads p50 3,037 MiB, peak 3,264 MiB, with about 250 MiB unattributed. The spike also measured the SH growth: live slots equalled the high-water mark at every dense growth, with no free ranges, so fragmentation is ruled out on that walk. The spike and its data are now on local branch `spike/memory-measure-tour`.
+**`done/spatial-residency--sh-bounded-pool/research.md` supersedes the figures below where they differ.** Its Metal trace is the run of record; raw spike data was discarded. The walk below ran without textures, through a wrong `--baked-root`, so its VRAM reads low: the run of record reads p50 3,037 MiB, peak 3,264 MiB, with about 250 MiB unattributed. The spike also measured the SH growth: live slots equalled the high-water mark at every dense growth, with no free ranges, so fragmentation is ruled out on that walk. The spike and its data are now on local branch `spike/memory-measure-tour`.
 
 ## Measured evidence
 

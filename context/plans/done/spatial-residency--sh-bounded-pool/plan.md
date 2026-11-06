@@ -1,7 +1,7 @@
 # spatial-residency--sh-bounded-pool — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: b5c39cab8
 
 ## Owner rulings
@@ -80,6 +80,8 @@ Hallway live peaked at 210,505 of 211,248; 2–3 mandatory shortfalls per walk, 
 **Row 39.** The columns cannot show a mirror in view. The pool holds the whole map, so a mirror cannot raise demand past it either way.
 
 **Row 37, automated half.** On-disk v2 PRLs are not baselines: `campaign-test` differed from a fresh bake in 19 of 37 sections, which sizes hid, and `occlusion-test` was stale. Both were redone from a compiler at b5c39cab8 (`*-today2-*`), and now differ only in id 49. The hallway v2 differs only in ids 49 and 50, as designed. Equal clock, over noise: `campaign-test` 0 of 31 pairs, `occlusion-test` 0 of 87, `stress-street` 0 of 30, hallway 0 of 16. Matched pose: `campaign-test` 38 and 41 shots over noise, signed mean +0.065, split evenly by sign; worst −20.7 at `h01417492`, which has no absent cluster in `final`, so pool loss cannot explain it. `today` has 30 misses there against `final`'s 2, and the 1,416 m case is gone: `final` has no absent frames past 151 m. Frames at `today`'s miss sites sit within noise except `h01415741`, where `final` is brighter.
+
+Landing corrections: "in-flight work keeps its prior class" above means a reach, pin or seam class; with none of those, in-flight drawn work on a held frame takes `Held`. `controller.rs`'s cap-refusal comment said "target or not"; the retry skips non-targets, so a cluster retries on re-entering them. Comment fixed at landing, behaviour unchanged. §Build Cache needs no epoch bump: every compiler change is in uncached stages, and no cached stage's output moved.
 
 Accepted, not fixed: a victim that frees nothing is still evicted; path flips act as horizon changes; seam suppression can lift on the portal frame after a hold; a direct Pass B failure can promote one frame early.
 

@@ -6,6 +6,10 @@
 // groups from these plain Pod types. Keep it that way.
 
 pub mod anim;
+pub mod clip_library;
+#[cfg(test)]
+mod clip_library_test_fixtures;
+pub(crate) mod gltf_clips;
 pub(crate) mod gltf_extras;
 pub mod gltf_loader;
 pub mod mesh;

@@ -344,3 +344,5 @@ Launch a timing run there with
 `POSTRETRO_CPU_TIMING=1 RUST_LOG=info cargo run -p xtask -- run --release -- content/dev/maps/stress-warren-mini.prl --start-pose=0.00,2.43,-76.40,180,0`
 (the `=` form keeps the leading minus sign from reading as a flag). Re-run the
 search after regenerating the map.
+
+`stress-warren-mini` also carries three faction squads, hand-placed on the lower floor after generation: `crossfire_raider` in the central hall, `rifle_trooper` in the northeast room, and `rifle_warrior` in the south room. They add no geometry, so the probe row above stands (portals and cells are unchanged); rerun the search if placements start to matter. Regenerating this map drops them.

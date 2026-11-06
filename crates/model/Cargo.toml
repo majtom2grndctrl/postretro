@@ -18,3 +18,7 @@ blake3.workspace = true
 thiserror.workspace = true
 bytemuck.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+postretro-test-log-capture.workspace = true
+tempfile.workspace = true

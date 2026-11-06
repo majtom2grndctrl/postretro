@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips · context/lib/entity_model.md §7
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use glam::{Mat4, Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
@@ -11,30 +11,21 @@ use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
 use postretro_level_format::octahedral;
 use thiserror::Error;
 
+use super::clip_library::{ClipLibrarySources, MeshRig, append_library_clips, read_clip_library};
+use super::gltf_clips::parse_clip;
 pub use super::gltf_extras::JointZone;
 #[cfg(test)]
 use super::gltf_extras::LegRef;
 use super::gltf_extras::{
-    JointPoseMetadata, LegNameFamily, read_joint_zone, read_model_tags, read_mount_axes,
-    read_pose_masks, read_socket_name,
+    JointPoseMetadata, LegNameFamily, read_clip_library_path, read_joint_zone, read_model_tags,
+    read_mount_axes, read_pose_masks, read_socket_name,
 };
 use super::mesh::{SkinnedMesh, SkinnedVertex};
 pub use super::mount::MountAxes;
 use super::pose_modifier::{JointMask, LegChain, ModifierEntry, PoseModifier, PoseModifierStack};
-use super::skeleton::{
-    AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, SkeletonBuildError, Track,
-};
+use super::skeleton::{AnimationClip, Joint, RestLocal, Skeleton, SkeletonBuildError};
 
 const MIN_PACKED_DIRECTION_LENGTH_SQUARED: f32 = 1.0e-12;
-
-/// Minimum net horizontal (XZ) root-motion displacement, in ground units, for a
-/// clip to report an authored travel speed. Below this a clip counts as
-/// in-place (an idle, turn, or strafe with no forward travel): deriving a speed
-/// from sub-millimeter drift would make a later locomotion-calibration step
-/// divide the stride rate by ≈0, so such clips yield `None` instead and fall
-/// back to a degenerate reference. One millimeter is far below any authored
-/// stride yet safely above float round-off in a static root track.
-const MIN_TRAVEL_XZ_DISPLACEMENT: f32 = 1.0e-3;
 
 /// One drawable run of the merged mesh: the triangles of a single primitive,
 /// paired with the material that draws them.
@@ -89,7 +80,8 @@ pub struct LoadedModel {
     /// sweep. Static/no-skin models use one identity joint so rigid vertices
     /// bound to joint 0 always have a palette entry.
     pub skeleton: Skeleton,
-    /// Animation clips parsed from the glTF document, in authored order. All clips
+    /// Animation clips in the mesh's joint order: the glTF document's, in authored
+    /// order, then those bound from its clip library, in library order. All clips
     /// load; addressed by name or index.
     pub clips: Vec<AnimationClip>,
     /// One submesh per mesh primitive, in primitive order: the material cache
@@ -231,6 +223,39 @@ pub enum ModelLoadError {
     /// The skin's joint hierarchy cannot satisfy the sampler's parent-before-child contract.
     #[error("glTF skin has invalid skeleton hierarchy: {reason}: {path}")]
     InvalidSkeleton { path: String, reason: String },
+    /// A skinned model's clip library, or a buffer it references, could not be
+    /// read or parsed.
+    #[error("clip library {library} of {path} could not be read: {source}")]
+    ClipLibraryUnreadable {
+        path: String,
+        library: String,
+        #[source]
+        source: gltf::Error,
+    },
+    /// The loader selected no locomotion root, which defines the root for binding.
+    #[error("glTF skin has no selected root to bind clip library {library}: {path}")]
+    ClipLibraryNoRoot { path: String, library: String },
+    /// The clip library has no node named as the mesh's root joint.
+    #[error("clip library {library} has no joint named '{joint}', the root of {path}")]
+    ClipLibraryRootMissing {
+        path: String,
+        library: String,
+        joint: String,
+    },
+    /// A root's local rest Y is not a finite positive height, or the two heights
+    /// give no finite ratio above zero.
+    #[error(
+        "root rest heights must be finite and positive, with a usable ratio, to bind clip library {library}: mesh {mesh_height}, library {library_height}: {path}"
+    )]
+    ClipLibraryRootHeight {
+        path: String,
+        library: String,
+        mesh_height: f32,
+        library_height: f32,
+    },
+    /// Neither the model nor its clip library carries a clip.
+    #[error("clip library {library} has no clips and {path} embeds none")]
+    ClipLibraryEmpty { path: String, library: String },
 }
 
 /// Quantize a normalized UV component-pair (clamped to `[0, 1]`) to `u16 x 2`.
@@ -298,7 +323,7 @@ fn format_accessor_shapes(shapes: &[(DataType, Dimensions)]) -> String {
         .join(" or ")
 }
 
-fn format_accessor_shape(shape: (DataType, Dimensions)) -> String {
+pub(super) fn format_accessor_shape(shape: (DataType, Dimensions)) -> String {
     format!("{:?} {:?}", shape.0, shape.1)
 }
 
@@ -873,13 +898,15 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
 /// (its bytes' blake3 kept), every buffer it references (external `.bin`
 /// files and `data:` URIs alike), and each primitive's material key of the
 /// mesh the load selects, which content-hashes that material's base-color
-/// PNG. A content-keyed model cache hashes exactly this, and a cache miss
-/// parses from it without reading any file a second time.
+/// PNG, and the clip library a skinned model names. A content-keyed model cache
+/// hashes exactly this, and a cache miss parses from it without reading any file
+/// a second time.
 pub struct ModelSources {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     document_digest: [u8; 32],
     material_keys: Vec<String>,
+    library: Option<ClipLibrarySources>,
 }
 
 impl ModelSources {
@@ -898,6 +925,12 @@ impl ModelSources {
     pub fn material_keys(&self) -> &[String] {
         &self.material_keys
     }
+
+    /// The clip library this load binds: `None` for a model that names none, a
+    /// malformed reference, and a static model, which ignores its reference.
+    pub fn library(&self) -> Option<&ClipLibrarySources> {
+        self.library.as_ref()
+    }
 }
 
 impl std::fmt::Debug for ModelSources {
@@ -905,6 +938,7 @@ impl std::fmt::Debug for ModelSources {
         f.debug_struct("ModelSources")
             .field("buffers", &self.buffers.len())
             .field("material_keys", &self.material_keys)
+            .field("library", &self.library.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -917,11 +951,12 @@ const _: fn() = || {
 };
 
 /// Read the files [`load_model`] reads, and fail as it fails before its
-/// parse proper: an unreadable or malformed document or buffer, or a document
-/// with no mesh. Opens the document and resolves only geometry/skin/animation
-/// buffers, no image data: `gltf::import` would decode every referenced PNG;
-/// `import_buffers` skips that decode. The `.glb` binary-blob arg is `None`
-/// (external-`.gltf` only; embedded-image / `.glb` support is out of scope).
+/// parse proper: an unreadable or malformed document or buffer, a document with
+/// no mesh, or an unreadable clip library. Opens the document and resolves only
+/// geometry/skin/animation buffers, no image data: `gltf::import` would decode
+/// every referenced PNG; `import_buffers` skips that decode. The `.glb`
+/// binary-blob arg is `None` (external-`.gltf` only; embedded-image / `.glb`
+/// support is out of scope).
 pub fn read_model_sources(path: &Path) -> Result<ModelSources, ModelLoadError> {
     let path_str = path.display().to_string();
     let import_error = |source| ModelLoadError::Import {
@@ -936,18 +971,62 @@ pub fn read_model_sources(path: &Path) -> Result<ModelSources, ModelLoadError> {
         .map_err(import_error)?
         .document;
     let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(import_error)?;
-    let material_keys = {
-        let SelectedModel { mesh, .. } = select_model(&document, &path_str)?;
-        mesh.primitives()
+    let (material_keys, skinned) = {
+        let SelectedModel { mesh, skin, .. } = select_model(&document, &path_str)?;
+        let keys = mesh
+            .primitives()
             .map(|primitive| content_hash_material_key(&primitive.material(), parent_dir))
-            .collect()
+            .collect();
+        (keys, skin.is_some())
+    };
+    // The skin check comes first: a static model's library is neither read nor
+    // keyed, so a broken one cannot fail it.
+    let library = match clip_library_path(&document, path) {
+        Some(library_path) if skinned => Some(read_clip_library(&library_path, &path_str)?),
+        Some(library_path) => {
+            log::warn!(
+                "[Model] static model {path_str} names clip library {}; ignoring it",
+                library_path.display()
+            );
+            None
+        }
+        None => None,
     };
     Ok(ModelSources {
         document,
         buffers,
         document_digest: *blake3::hash(&bytes).as_bytes(),
         material_keys,
+        library,
     })
+}
+
+/// The file a glTF document at `path` names through `extras.clipLibrary`, or
+/// `None` when it names none or the value is malformed, which warns.
+pub fn clip_library_path(document: &gltf::Document, path: &Path) -> Option<PathBuf> {
+    read_clip_library_path(
+        &document.as_json().extras,
+        path.parent().unwrap_or_else(|| Path::new("")),
+        &path.display().to_string(),
+    )
+}
+
+/// The library the skinned model at `path` binds, read from its document alone:
+/// no buffer and no library is opened, so a tool can check the reference without
+/// loading the model. `None` for a static or mesh-less document, one naming no
+/// library, and a malformed value, none of which a load binds.
+pub fn skinned_clip_library_path(path: &Path) -> Result<Option<PathBuf>, ModelLoadError> {
+    let path_str = path.display().to_string();
+    let document = gltf::Gltf::open(path)
+        .map_err(|source| ModelLoadError::Import {
+            path: path_str.clone(),
+            source,
+        })?
+        .document;
+    let skinned = select_model(&document, &path_str).is_ok_and(|model| model.skin.is_some());
+    Ok(skinned
+        .then(|| clip_library_path(&document, path))
+        .flatten())
 }
 
 /// [`load_model`] over sources [`read_model_sources`] already read from
@@ -961,6 +1040,7 @@ pub fn load_model_from_sources(
         document,
         buffers,
         material_keys,
+        library,
         ..
     } = sources;
 
@@ -990,7 +1070,8 @@ pub fn load_model_from_sources(
     //
     // `skin_joint_to_topo` reindexes mesh `JOINTS_0` (skin-joint indices) into
     // topo order; `node_to_topo` reindexes animation channel targets (node
-    // indices) into the same topo order.
+    // indices) into the same topo order. `joint_names` is that order's names,
+    // the only link from a joint to its clip library counterpart.
     let (
         skeleton,
         joint_zones,
@@ -1001,6 +1082,7 @@ pub fn load_model_from_sources(
         skin_joint_to_topo,
         node_to_topo,
         locomotion_root,
+        joint_names,
     ) = match skin.as_ref() {
         Some(skin) => build_skeleton(skin, &document, &buffers, &path_str)?,
         None => (
@@ -1013,6 +1095,7 @@ pub fn load_model_from_sources(
             HashMap::new(),
             HashMap::new(),
             None,
+            Vec::new(),
         ),
     };
     let pose_stack =
@@ -1028,19 +1111,33 @@ pub fn load_model_from_sources(
     )?;
 
     // --- Animation clips --------------------------------------------------
-    let clips: Vec<AnimationClip> = document
+    // Bind, then derivation, then bounds: a bound clip's root motion and reach
+    // are its bound values, and embedded clips never pass through the bind.
+    let mut clips: Vec<AnimationClip> = document
         .animations()
         .map(|anim| {
-            load_clip(
+            parse_clip(
                 &anim,
                 &buffers,
                 &node_to_topo,
                 skeleton.joints.len(),
-                locomotion_root,
                 &path_str,
             )
+            .derive_root_motion(locomotion_root, &path_str)
         })
         .collect();
+    if let Some(library) = &library {
+        append_library_clips(
+            &mut clips,
+            library,
+            MeshRig {
+                skeleton: &skeleton,
+                joint_names: &joint_names,
+                locomotion_root,
+            },
+            &path_str,
+        )?;
+    }
     skinned_mesh.compute_conservative_animation_bounds(&skeleton, &clips, &pose_stack);
 
     // --- Entity tags (top-level extras) -----------------------------------
@@ -1078,6 +1175,7 @@ type SkeletonMaps = (
     HashMap<usize, usize>,
     HashMap<usize, usize>,
     Option<usize>,
+    Vec<Option<String>>,
 );
 
 fn build_skeleton(
@@ -1260,6 +1358,13 @@ fn build_skeleton(
     let (pose_masks, aim_bend_weights, legs) =
         pose_masks_from_topo_metadata(&topo_order, &rest_pose_metadata, path_str);
 
+    // `Joint` stays nameless: names serve only a bind, here at load.
+    let skin_joint_names: Vec<Option<&str>> = skin.joints().map(|node| node.name()).collect();
+    let joint_names: Vec<Option<String>> = topo_order
+        .iter()
+        .map(|&skin_idx| skin_joint_names[skin_idx].map(str::to_string))
+        .collect();
+
     let skeleton = Skeleton::new(joints).map_err(|error| skeleton_build_error(path_str, error))?;
     let legs = validate_leg_set(&skeleton, legs, path_str);
     let declared_locomotion_root = skin
@@ -1277,6 +1382,7 @@ fn build_skeleton(
         skin_joint_to_topo,
         node_to_topo,
         locomotion_root,
+        joint_names,
     ))
 }
 
@@ -1773,511 +1879,11 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
     out
 }
 
-/// Resolve a channel's raw output elements + sampler interpolation into the
-/// keyframe `values` and engine [`Interp`] mode the track stores. Returns `None`
-/// when the channel must be skipped (its joint then holds its rest pose, the
-/// same as an absent channel).
-///
-/// - LINEAR / STEP map directly to [`Interp::Linear`] / [`Interp::Step`]; the raw
-///   outputs are the per-keyframe values (one element per input time). If that
-///   one-to-one shape does not hold, the channel is malformed, so we warn and
-///   skip it to preserve the parallel-length invariant `Track` requires.
-/// - CUBICSPLINE stores three elements per keyframe — `[in-tangent, value,
-///   out-tangent]` — so the value of keyframe `k` is `raw[3k + 1]`. We extract
-///   those, discard the tangents, store the track as `Linear` (degrading cubic to
-///   linear; tangent storage and hermite blending are not implemented), and warn.
-///   If the triple shape does not hold (`raw.len() != 3 * key_count`) the channel
-///   is malformed for cubic, so we warn and skip it — this also guards the
-///   parallel-length invariant `Track` requires (otherwise 3N values would be
-///   paired with N times).
-fn resolve_keyframes<T: Copy>(
-    raw: Vec<T>,
-    key_count: usize,
-    interpolation: gltf::animation::Interpolation,
-    clip_name: &str,
-    channel_kind: &str,
-) -> Option<(Vec<T>, Interp)> {
-    use gltf::animation::Interpolation;
-    match interpolation {
-        Interpolation::Linear => {
-            if raw.len() != key_count {
-                log::warn!(
-                    "clip '{clip_name}' {channel_kind} channel: LINEAR output count {} \
-                     does not match its {key_count} keyframes; skipping channel (joint holds rest pose)",
-                    raw.len()
-                );
-                return None;
-            }
-            Some((raw, Interp::Linear))
-        }
-        Interpolation::Step => {
-            if raw.len() != key_count {
-                log::warn!(
-                    "clip '{clip_name}' {channel_kind} channel: STEP output count {} \
-                     does not match its {key_count} keyframes; skipping channel (joint holds rest pose)",
-                    raw.len()
-                );
-                return None;
-            }
-            Some((raw, Interp::Step))
-        }
-        Interpolation::CubicSpline => {
-            if raw.len() != key_count * 3 {
-                log::warn!(
-                    "clip '{clip_name}' {channel_kind} channel: CUBICSPLINE output count {} \
-                     is not 3x its {key_count} keyframes; skipping channel (joint holds rest pose)",
-                    raw.len()
-                );
-                return None;
-            }
-            log::warn!(
-                "clip '{clip_name}' {channel_kind} channel: CUBICSPLINE not supported; \
-                 extracting keyframe values and degrading to LINEAR (tangents discarded)"
-            );
-            // Each triple is [in-tangent, value, out-tangent]; keep the value.
-            let values: Vec<T> = (0..key_count).map(|k| raw[3 * k + 1]).collect();
-            Some((values, Interp::Linear))
-        }
-    }
-}
-
-fn validate_key_times(times: &[f32], clip_name: &str) -> bool {
-    for (i, &time) in times.iter().enumerate() {
-        if !time.is_finite() {
-            log::warn!(
-                "clip '{clip_name}' animation channel: input time at key {i} is not finite; \
-                 skipping channel (joint holds rest pose)"
-            );
-            return false;
-        }
-    }
-    for (i, pair) in times.windows(2).enumerate() {
-        if pair[0] >= pair[1] {
-            log::warn!(
-                "clip '{clip_name}' animation channel: input times are not strictly \
-                 ascending at keys {i} and {}; skipping channel (joint holds rest pose)",
-                i + 1
-            );
-            return false;
-        }
-    }
-    true
-}
-
-fn vec3_is_finite(v: Vec3) -> bool {
-    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
-}
-
-fn validate_vec3_keyframes(values: &[Vec3], clip_name: &str, channel_kind: &str) -> bool {
-    for (i, &value) in values.iter().enumerate() {
-        if !vec3_is_finite(value) {
-            log::warn!(
-                "clip '{clip_name}' {channel_kind} channel: output value at key {i} \
-                 is not finite; skipping channel (joint holds rest pose)"
-            );
-            return false;
-        }
-    }
-    true
-}
-
-fn quat_length_squared(q: Quat) -> f32 {
-    q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
-}
-
-fn validate_rotation_keyframes(values: &[Quat], clip_name: &str) -> bool {
-    for (i, &value) in values.iter().enumerate() {
-        let len_sq = quat_length_squared(value);
-        if !len_sq.is_finite() {
-            log::warn!(
-                "clip '{clip_name}' rotation channel: output quaternion at key {i} \
-                 is not finite; skipping channel (joint holds rest pose)"
-            );
-            return false;
-        }
-        if len_sq <= 0.0 {
-            log::warn!(
-                "clip '{clip_name}' rotation channel: output quaternion at key {i} \
-                 has zero length; skipping channel (joint holds rest pose)"
-            );
-            return false;
-        }
-    }
-    true
-}
-
-fn build_track<T>(
-    times: Vec<f32>,
-    values: Vec<T>,
-    mode: Interp,
-    clip_name: &str,
-    channel_kind: &str,
-) -> Option<Track<T>> {
-    match Track::new(times, values, mode) {
-        Ok(track) => Some(track),
-        Err(error) => {
-            log::warn!(
-                "clip '{clip_name}' {channel_kind} channel: invalid keyframe track \
-                 ({error:?}); skipping channel (joint holds rest pose)"
-            );
-            None
-        }
-    }
-}
-
-/// Human label for an animation channel's target property, for warn messages.
-fn animation_channel_kind(property: gltf::animation::Property) -> &'static str {
-    use gltf::animation::Property;
-    match property {
-        Property::Translation => "translation",
-        Property::Rotation => "rotation",
-        Property::Scale => "scale",
-        Property::MorphTargetWeights => "morph weights",
-    }
-}
-
-/// True when the sampler OUTPUT accessor's `(component type, dimension)` is one
-/// the target property (and gltf's `read_outputs`) can decode. glTF permits
-/// normalized integer component types for rotation and morph-weight outputs
-/// (the same widening the mesh path already allows for `WEIGHTS_0`); translation
-/// and scale are `F32 VEC3` only. An accessor outside this set would panic inside
-/// gltf's `read_outputs` (an `unreachable!` for an unsupported component type —
-/// in release too — or an internal size `debug_assert!`), so the caller
-/// validates first and degrades-and-skips the channel.
-fn animation_output_shape_ok(
-    accessor: &gltf::Accessor,
-    property: gltf::animation::Property,
-) -> bool {
-    use gltf::animation::Property;
-    let shape = (accessor.data_type(), accessor.dimensions());
-    match property {
-        Property::Translation | Property::Scale => shape == (DataType::F32, Dimensions::Vec3),
-        Property::Rotation => matches!(
-            shape,
-            (DataType::F32, Dimensions::Vec4)
-                | (DataType::U8, Dimensions::Vec4)
-                | (DataType::U16, Dimensions::Vec4)
-                | (DataType::I8, Dimensions::Vec4)
-                | (DataType::I16, Dimensions::Vec4)
-        ),
-        Property::MorphTargetWeights => matches!(
-            shape,
-            (DataType::F32, Dimensions::Scalar)
-                | (DataType::U8, Dimensions::Scalar)
-                | (DataType::U16, Dimensions::Scalar)
-                | (DataType::I8, Dimensions::Scalar)
-                | (DataType::I16, Dimensions::Scalar)
-        ),
-    }
-}
-
-/// Load one animation clip into per-joint TRS tracks (in topo joint order).
-/// Channels targeting non-joint nodes (or joints outside the skin) are skipped.
-fn load_clip(
-    anim: &gltf::Animation,
-    buffers: &[gltf::buffer::Data],
-    node_to_topo: &HashMap<usize, usize>,
-    joint_count: usize,
-    locomotion_root: Option<usize>,
-    path_str: &str,
-) -> AnimationClip {
-    let buffer_data = |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| &d.0[..]);
-    let name = anim.name().unwrap_or("").to_string();
-    let mut joints = vec![JointTracks::default(); joint_count];
-    let mut duration = 0.0f32;
-
-    for channel in anim.channels() {
-        let target_node = channel.target().node().index();
-        // Animation channels target joints by node index; remap to topo order.
-        let Some(&topo_idx) = node_to_topo.get(&target_node) else {
-            continue;
-        };
-        if topo_idx >= joints.len() {
-            continue;
-        }
-
-        // The sampler's interpolation algorithm drives how the runtime blends
-        // keyframes: LINEAR/STEP map straight to [`Interp`], while CUBICSPLINE is
-        // degraded to LINEAR by extracting each key's value element (tangents
-        // discarded). True cubic evaluation is out of scope: tangent storage and
-        // hermite blending are not implemented.
-        let property = channel.target().property();
-        let kind = animation_channel_kind(property);
-        let sampler = channel.sampler();
-        let interpolation = sampler.interpolation();
-
-        // Validate the sampler accessors' shapes BEFORE reading. Unlike the
-        // mesh/skeleton accessors, `read_inputs`/`read_outputs` are otherwise
-        // read unchecked, and gltf panics on shapes it cannot decode (an
-        // `unreachable!` for an unsupported output component type — in release
-        // too — or an internal size `debug_assert!`), violating the never-panics
-        // contract. On mismatch we degrade-and-skip the channel — the same
-        // policy malformed channels follow below (the joint holds its rest pose).
-        let input_accessor = sampler.input();
-        if (input_accessor.data_type(), input_accessor.dimensions())
-            != (DataType::F32, Dimensions::Scalar)
-        {
-            log::warn!(
-                "clip '{name}' {kind} channel: input accessor shape {} is not F32 Scalar; \
-                 skipping channel (joint holds rest pose)",
-                format_accessor_shape((input_accessor.data_type(), input_accessor.dimensions())),
-            );
-            continue;
-        }
-        let output_accessor = sampler.output();
-        if !animation_output_shape_ok(&output_accessor, property) {
-            log::warn!(
-                "clip '{name}' {kind} channel: output accessor shape {} is unsupported for this \
-                 property; skipping channel (joint holds rest pose)",
-                format_accessor_shape((output_accessor.data_type(), output_accessor.dimensions())),
-            );
-            continue;
-        }
-
-        let reader = channel.reader(buffer_data);
-        let Some(inputs) = reader.read_inputs() else {
-            log::warn!(
-                "{path_str}: animation {} ('{name}') channel {} {kind}: input accessor could \
-                 not be read; skipping channel (joint holds rest pose)",
-                anim.index(),
-                channel.index(),
-            );
-            continue;
-        };
-        let times: Vec<f32> = inputs.collect();
-        if !validate_key_times(&times, &name) {
-            continue;
-        }
-        let channel_duration = times.last().copied().unwrap_or(0.0);
-        let Some(outputs) = reader.read_outputs() else {
-            log::warn!(
-                "{path_str}: animation {} ('{name}') channel {} {kind}: output accessor could \
-                 not be read; skipping channel (joint holds rest pose)",
-                anim.index(),
-                channel.index(),
-            );
-            continue;
-        };
-        match outputs {
-            gltf::animation::util::ReadOutputs::Translations(it) => {
-                let raw: Vec<Vec3> = it.map(Vec3::from).collect();
-                if let Some((values, mode)) =
-                    resolve_keyframes(raw, times.len(), interpolation, &name, "translation")
-                        .filter(|(values, _)| validate_vec3_keyframes(values, &name, "translation"))
-                    && let Some(track) = build_track(times, values, mode, &name, "translation")
-                {
-                    joints[topo_idx].translation = track;
-                    duration = duration.max(channel_duration);
-                }
-            }
-            gltf::animation::util::ReadOutputs::Rotations(it) => {
-                let raw: Vec<Quat> = it
-                    .into_f32()
-                    .map(|q| Quat::from_xyzw(q[0], q[1], q[2], q[3]))
-                    .collect();
-                if let Some((values, mode)) =
-                    resolve_keyframes(raw, times.len(), interpolation, &name, "rotation")
-                        .filter(|(values, _)| validate_rotation_keyframes(values, &name))
-                    && let Some(track) = build_track(times, values, mode, &name, "rotation")
-                {
-                    joints[topo_idx].rotation = track;
-                    duration = duration.max(channel_duration);
-                }
-            }
-            gltf::animation::util::ReadOutputs::Scales(it) => {
-                let raw: Vec<Vec3> = it.map(Vec3::from).collect();
-                if let Some((values, mode)) =
-                    resolve_keyframes(raw, times.len(), interpolation, &name, "scale")
-                        .filter(|(values, _)| validate_vec3_keyframes(values, &name, "scale"))
-                    && let Some(track) = build_track(times, values, mode, &name, "scale")
-                {
-                    joints[topo_idx].scale = track;
-                    duration = duration.max(channel_duration);
-                }
-            }
-            gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => {
-                // Morph targets are out of scope for the skinned slice.
-            }
-        }
-    }
-
-    let travel_speed =
-        derive_and_neutralize_root_motion(&mut joints, locomotion_root, duration, &name, path_str);
-
-    AnimationClip {
-        name,
-        duration,
-        joints,
-        travel_speed,
-    }
-}
-
-/// Derive a clip's authored ground travel speed, then make its pose loop in-place.
-///
-/// The selected locomotion root carries the clip's whole-body translation. We
-/// measure the horizontal (XZ) displacement between its first and last
-/// translation keyframes and divide by the clip `duration` → ground units per
-/// animated second. A clip with no root translation track, a non-positive
-/// duration, or a net XZ displacement below [`MIN_TRAVEL_XZ_DISPLACEMENT`] (a
-/// near-in-place turn/strafe/idle) yields `None` so downstream calibration
-/// substitutes a degenerate reference rather than dividing by a speed of ≈0.
-/// Vertical (Y) motion is intentionally excluded — only ground travel counts.
-///
-/// Entity transforms own simulation displacement. After measuring, subtract the
-/// root track's linear net XZ drift from every key. This keeps vertical motion
-/// and intra-cycle horizontal sway, while making the first and last horizontal
-/// samples equal so looping the pose cannot add a second displacement source.
-/// Calculations stage in `f64`; if speed or any rewritten key cannot fit finite
-/// `f32`, the original track stays untouched and calibration is disabled.
-fn derive_and_neutralize_root_motion(
-    joints: &mut [JointTracks],
-    locomotion_root: Option<usize>,
-    duration: f32,
-    clip_name: &str,
-    path_str: &str,
-) -> Option<f32> {
-    let root = locomotion_root?;
-    let track = &mut joints.get_mut(root)?.translation;
-    let values = track.values();
-    let first = *values.first()?;
-    let last = *values.last()?;
-    let dx = f64::from(last.x) - f64::from(first.x);
-    let dz = f64::from(last.z) - f64::from(first.z);
-    let displacement = dx.hypot(dz);
-
-    let speed = if duration.is_finite()
-        && duration > 0.0
-        && displacement >= f64::from(MIN_TRAVEL_XZ_DISPLACEMENT)
-    {
-        finite_f32(displacement / f64::from(duration)).or_else(|| {
-            warn_root_motion_overflow(clip_name, path_str);
-            None
-        })?
-    } else {
-        0.0
-    };
-
-    if let (Some(&first_time), Some(&last_time)) = (track.times.first(), track.times.last()) {
-        let first_time = f64::from(first_time);
-        let time_span = f64::from(last_time) - first_time;
-        if time_span > 0.0 {
-            let mut neutralized_xz = Vec::with_capacity(track.values.len());
-            for (&time, value) in track.times.iter().zip(&track.values) {
-                let alpha = (f64::from(time) - first_time) / time_span;
-                let Some(x) = finite_f32(f64::from(value.x) - dx * alpha) else {
-                    warn_root_motion_overflow(clip_name, path_str);
-                    return None;
-                };
-                let Some(z) = finite_f32(f64::from(value.z) - dz * alpha) else {
-                    warn_root_motion_overflow(clip_name, path_str);
-                    return None;
-                };
-                neutralized_xz.push((x, z));
-            }
-            for (value, (x, z)) in track.values.iter_mut().zip(neutralized_xz) {
-                value.x = x;
-                value.z = z;
-            }
-        }
-    }
-
-    if speed == 0.0 {
-        return None;
-    }
-    Some(speed)
-}
-
-fn finite_f32(value: f64) -> Option<f32> {
-    (value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX))
-        .then_some(value as f32)
-}
-
-fn warn_root_motion_overflow(clip_name: &str, path_str: &str) {
-    log::warn!(
-        "[Model] root-motion calibration for clip '{clip_name}' in {path_str} exceeds finite f32 range; keeping the original translation track and disabling travel-speed derivation"
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skeleton::Interp;
     use std::path::PathBuf;
-
-    // --- Root-motion travel-speed derivation --------------------------------
-
-    #[test]
-    fn derive_travel_speed_measures_xz_root_motion_over_duration() {
-        // Root travels 3 units on X and 4 on Z (5-unit XZ displacement) across a
-        // 2s clip → 2.5 ground units per animated second. The Y component is
-        // deliberately non-zero to prove vertical motion is excluded.
-        let translation = Track::new(
-            vec![0.0, 2.0],
-            vec![Vec3::ZERO, Vec3::new(3.0, 1.0, 4.0)],
-            Interp::Linear,
-        )
-        .expect("valid translation track");
-        let mut joints = vec![JointTracks {
-            translation,
-            ..JointTracks::default()
-        }];
-        let speed = derive_and_neutralize_root_motion(&mut joints, Some(0), 2.0, "walk", "fixture")
-            .expect("root motion yields a speed");
-        assert!((speed - 2.5).abs() < 1.0e-6, "expected 2.5, got {speed}");
-        let root_values = joints[0].translation.values();
-        assert_eq!(
-            (
-                root_values.first().unwrap().x,
-                root_values.first().unwrap().z
-            ),
-            (root_values.last().unwrap().x, root_values.last().unwrap().z)
-        );
-        assert_eq!(
-            root_values.last().unwrap().y,
-            1.0,
-            "vertical motion is preserved"
-        );
-    }
-
-    #[test]
-    fn derive_travel_speed_is_none_without_root_translation_track() {
-        // An in-place clip's root joint has an empty translation track.
-        let mut joints = vec![JointTracks::default()];
-        assert_eq!(
-            derive_and_neutralize_root_motion(&mut joints, Some(0), 1.0, "idle", "fixture",),
-            None
-        );
-    }
-
-    #[test]
-    fn derive_travel_speed_is_none_for_near_in_place_root_motion() {
-        // Sub-millimeter XZ drift (a near-in-place turn) sits below the epsilon,
-        // so it yields None rather than a divide-by-≈0 stride rate downstream.
-        let translation = Track::new(
-            vec![0.0, 1.0],
-            vec![Vec3::ZERO, Vec3::new(0.0001, 5.0, 0.0001)],
-            Interp::Linear,
-        )
-        .expect("valid translation track");
-        let mut joints = vec![JointTracks {
-            translation,
-            ..JointTracks::default()
-        }];
-        assert_eq!(
-            derive_and_neutralize_root_motion(&mut joints, Some(0), 1.0, "turn", "fixture",),
-            None
-        );
-        assert_eq!(
-            (
-                joints[0].translation.values().first().unwrap().x,
-                joints[0].translation.values().first().unwrap().z,
-            ),
-            (
-                joints[0].translation.values().last().unwrap().x,
-                joints[0].translation.values().last().unwrap().z,
-            ),
-            "sub-epsilon drift is still removed from the looping pose"
-        );
-    }
 
     #[test]
     fn locomotion_root_selection_uses_declared_root_in_a_forest() {
@@ -2308,108 +1914,6 @@ mod tests {
             select_locomotion_root(&skeleton, None, "fixture"),
             None,
             "an undeclared forest is ambiguous rather than defaulting to topo joint 0"
-        );
-    }
-
-    #[test]
-    fn root_motion_derivation_uses_selected_nonzero_root() {
-        let translation = Track::new(
-            vec![0.0, 2.0],
-            vec![Vec3::new(1.0, 0.0, 2.0), Vec3::new(7.0, 0.5, 10.0)],
-            Interp::Linear,
-        )
-        .unwrap();
-        let mut joints = vec![
-            JointTracks::default(),
-            JointTracks::default(),
-            JointTracks {
-                translation,
-                ..JointTracks::default()
-            },
-        ];
-
-        let speed = derive_and_neutralize_root_motion(&mut joints, Some(2), 2.0, "walk", "fixture")
-            .unwrap();
-        assert!((speed - 5.0).abs() < 1.0e-6);
-        assert!(joints[0].translation.values().is_empty());
-        let selected = joints[2].translation.values();
-        assert_eq!(
-            (selected.first().unwrap().x, selected.first().unwrap().z),
-            (selected.last().unwrap().x, selected.last().unwrap().z)
-        );
-    }
-
-    #[test]
-    fn root_motion_speed_overflow_keeps_finite_track_unchanged() {
-        // Regression: subtracting opposite finite f32 extremes and squaring in
-        // f32 produced infinities, then neutralization wrote non-finite keys.
-        let translation = Track::new(
-            vec![0.0, 1.0],
-            vec![
-                Vec3::new(-f32::MAX, 1.0, -f32::MAX),
-                Vec3::new(f32::MAX, 2.0, f32::MAX),
-            ],
-            Interp::Linear,
-        )
-        .unwrap();
-        let original = translation.clone();
-        let mut joints = vec![JointTracks {
-            translation,
-            ..JointTracks::default()
-        }];
-
-        assert_eq!(
-            derive_and_neutralize_root_motion(&mut joints, Some(0), 1.0, "extreme", "fixture",),
-            None,
-        );
-        assert_eq!(joints[0].translation, original);
-        assert!(
-            joints[0]
-                .translation
-                .values()
-                .iter()
-                .all(|value| value.is_finite())
-        );
-    }
-
-    #[test]
-    fn root_motion_neutralization_overflow_keeps_finite_track_unchanged() {
-        // Net speed is representable, but removing its linear drift would push
-        // the opposing middle residual below finite f32 range. Reject the whole
-        // calibration before mutating any key.
-        let translation = Track::new(
-            vec![0.0, 0.5, 1.0],
-            vec![
-                Vec3::ZERO,
-                Vec3::new(-f32::MAX, 1.0, 0.0),
-                Vec3::new(f32::MAX, 2.0, 0.0),
-            ],
-            Interp::Linear,
-        )
-        .unwrap();
-        let original = translation.clone();
-        let mut joints = vec![JointTracks {
-            translation,
-            ..JointTracks::default()
-        }];
-
-        assert_eq!(
-            derive_and_neutralize_root_motion(
-                &mut joints,
-                Some(0),
-                2.0,
-                "extreme-residual",
-                "fixture",
-            ),
-            None,
-        );
-        assert_eq!(joints[0].translation, original);
-        assert!(
-            joints[0]
-                .translation
-                .values()
-                .iter()
-                .all(|value| value.is_finite())
         );
     }
 
@@ -2688,144 +2192,6 @@ mod tests {
                 } if path == "model.gltf"
             ),
             "got {err:?}"
-        );
-    }
-
-    // --- Interpolation mode mapping + CUBICSPLINE value extraction ----------
-
-    use gltf::animation::Interpolation;
-
-    #[test]
-    fn resolve_keyframes_maps_linear_and_step_directly() {
-        let raw = vec![Vec3::X, Vec3::Y, Vec3::Z];
-        let (vals, mode) =
-            resolve_keyframes(raw.clone(), 3, Interpolation::Linear, "clip", "translation")
-                .expect("linear keeps all values");
-        assert_eq!(vals, raw, "LINEAR passes raw values through");
-        assert_eq!(mode, Interp::Linear);
-
-        let (vals, mode) =
-            resolve_keyframes(raw.clone(), 3, Interpolation::Step, "clip", "translation")
-                .expect("step keeps all values");
-        assert_eq!(vals, raw, "STEP passes raw values through");
-        assert_eq!(mode, Interp::Step);
-    }
-
-    #[test]
-    fn resolve_keyframes_linear_and_step_wrong_shape_skips_channel() {
-        // Regression: malformed LINEAR/STEP output counts could create tracks
-        // where values were shorter/longer than times, then panic during sampling.
-        let short_linear = vec![Vec3::ZERO; 2];
-        let result = resolve_keyframes(
-            short_linear,
-            3,
-            Interpolation::Linear,
-            "clip",
-            "translation",
-        );
-        assert!(
-            result.is_none(),
-            "malformed linear (outputs != keys) skips the channel"
-        );
-
-        let long_step = vec![Vec3::ZERO; 4];
-        let result = resolve_keyframes(long_step, 3, Interpolation::Step, "clip", "scale");
-        assert!(
-            result.is_none(),
-            "malformed step (outputs != keys) skips the channel"
-        );
-    }
-
-    #[test]
-    fn resolve_keyframes_cubicspline_extracts_value_element_as_linear() {
-        // Two keyframes, each a [in-tangent, value, out-tangent] triple. The
-        // extracted track must be the VALUE element of each triple (index 3k+1),
-        // which here differs from the surrounding tangent elements — pinning that
-        // we keep the value, not a tangent.
-        let in_t0 = Vec3::new(-1.0, -1.0, -1.0);
-        let val0 = Vec3::new(5.0, 5.0, 5.0);
-        let out_t0 = Vec3::new(9.0, 9.0, 9.0);
-        let in_t1 = Vec3::new(-2.0, -2.0, -2.0);
-        let val1 = Vec3::new(7.0, 7.0, 7.0);
-        let out_t1 = Vec3::new(8.0, 8.0, 8.0);
-        let raw = vec![in_t0, val0, out_t0, in_t1, val1, out_t1];
-
-        let (vals, mode) =
-            resolve_keyframes(raw, 2, Interpolation::CubicSpline, "clip", "rotation")
-                .expect("well-formed cubic triple extracts values");
-        assert_eq!(
-            vals,
-            vec![val0, val1],
-            "extracts the value element of each triple"
-        );
-        assert_ne!(vals[0], in_t0, "extracted value is not the in-tangent");
-        assert_ne!(vals[0], out_t0, "extracted value is not the out-tangent");
-        assert_eq!(mode, Interp::Linear, "cubic degrades to LINEAR");
-    }
-
-    #[test]
-    fn resolve_keyframes_cubicspline_wrong_shape_skips_channel() {
-        // 5 outputs against 2 keyframes is not a valid 3x cubic triple shape:
-        // skip the channel (None) rather than storing a length-mismatched track.
-        let raw = vec![Vec3::ZERO; 5];
-        let result = resolve_keyframes(raw, 2, Interpolation::CubicSpline, "clip", "scale");
-        assert!(
-            result.is_none(),
-            "malformed cubic (outputs != 3x keys) skips the channel"
-        );
-    }
-
-    #[test]
-    fn validate_key_times_rejects_nan_and_duplicate_keys() {
-        // Regression: NaN input times reached locate_span and could underflow
-        // during sampling. Loader validation must skip the channel instead.
-        assert!(
-            !validate_key_times(&[f32::NAN, 1.0], "clip"),
-            "NaN input time skips the channel"
-        );
-        assert!(
-            !validate_key_times(&[0.0, 0.0], "clip"),
-            "duplicate input times skip the channel"
-        );
-        assert!(
-            !validate_key_times(&[1.0, 0.5], "clip"),
-            "descending input times skip the channel"
-        );
-        assert!(
-            validate_key_times(&[0.0, 0.5, 1.0], "clip"),
-            "finite strictly ascending times are accepted"
-        );
-    }
-
-    #[test]
-    fn validate_vec3_keyframes_rejects_non_finite_outputs() {
-        assert!(
-            !validate_vec3_keyframes(&[Vec3::new(0.0, f32::INFINITY, 0.0)], "clip", "translation",),
-            "non-finite translation skips the channel"
-        );
-        assert!(
-            !validate_vec3_keyframes(&[Vec3::new(1.0, 2.0, f32::NAN)], "clip", "scale"),
-            "non-finite scale skips the channel"
-        );
-        assert!(
-            validate_vec3_keyframes(&[Vec3::ZERO, Vec3::ONE], "clip", "translation"),
-            "finite vec3 outputs are accepted"
-        );
-    }
-
-    #[test]
-    fn validate_rotation_keyframes_rejects_non_finite_and_zero_quats() {
-        assert!(
-            !validate_rotation_keyframes(&[Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)], "clip"),
-            "zero quaternion skips the channel"
-        );
-        assert!(
-            !validate_rotation_keyframes(&[Quat::from_xyzw(0.0, f32::NAN, 0.0, 1.0)], "clip"),
-            "non-finite quaternion skips the channel"
-        );
-        assert!(
-            validate_rotation_keyframes(&[Quat::IDENTITY], "clip"),
-            "finite non-zero quaternion outputs are accepted"
         );
     }
 

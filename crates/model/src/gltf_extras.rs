@@ -6,7 +6,10 @@
 //! This module owns the raw JSON shapes and their non-fatal degradation rules.
 //! The loader owns topology-dependent interpretation and skeleton assembly.
 
+use std::path::{Path, PathBuf};
+
 use glam::Vec3;
+use postretro_level_format::gltf_resolve::resolve_relative_uri;
 use serde::Deserialize;
 
 use crate::mount::MountAxes;
@@ -105,6 +108,28 @@ pub(crate) fn read_model_tags(extras: &gltf::json::Extras) -> Vec<String> {
         Ok(parsed) => parsed.tags,
         Err(_) => Vec::new(),
     }
+}
+
+/// Read the document's `extras.clipLibrary`, resolved against `parent_dir`.
+///
+/// A reference must be a non-empty relative path. Any other value warns and reads
+/// as absent, so the model loads with its embedded clips only. Read apart from
+/// [`read_model_tags`] so a bad reference never costs the document its tags.
+pub(crate) fn read_clip_library_path(
+    extras: &gltf::json::Extras,
+    parent_dir: &Path,
+    path_str: &str,
+) -> Option<PathBuf> {
+    let raw = extras.as_ref()?;
+    let parsed = serde_json::from_str::<serde_json::Value>(raw.get()).ok()?;
+    let value = parsed.get("clipLibrary")?;
+    let resolved = value
+        .as_str()
+        .and_then(|reference| resolve_relative_uri(reference, parent_dir));
+    if resolved.is_none() {
+        log::warn!("[Model] malformed clipLibrary {value} in {path_str}; ignoring it");
+    }
+    resolved
 }
 
 /// The shape of a joint node's per-node `extras` this loader cares about.

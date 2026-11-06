@@ -18,6 +18,8 @@ MAPS = Path(__file__).parents[2] / "content" / "dev" / "maps"
 ENEMY_CLASSNAMES = {
     "reference_enemy",
     "limitator",
+    "rifle_trooper",
+    "rifle_warrior",
     "crossfire_raider",
     "crossfire_sentinel",
     "faction_sentiment_cabal",

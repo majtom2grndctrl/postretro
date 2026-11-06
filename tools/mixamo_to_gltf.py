@@ -1,5 +1,6 @@
 """
-Headless Blender script: merge multiple Mixamo FBX files into one glTF.
+Headless Blender script: merge Mixamo FBX files into one glTF character or a
+shared clip library.
 
 Usage:
     blender --background --python tools/mixamo_to_gltf.py -- \
@@ -10,7 +11,10 @@ Usage:
         [--yaw 90] \
         [--no-tag] \
         [--strip-face] \
-        [--fix-eyes]
+        [--fix-eyes] \
+        [--eye-inset 0.01] \
+        [--exclude-meshes EXO_Body] \
+        [--library | --clip-library ../clip_libraries/rifle/library.gltf]
 
 The --base file is treated as the base mesh + armature.  If omitted, the
 first FBX alphabetically is used (which may be an animation-only file —
@@ -24,16 +28,31 @@ rotates about the vertical axis on top of the standard facing flip).
 
 After export the script tags the Mixamo skeleton with engine extras
 (poseMask, aimBendWeight, socket, hitZone) and sets the skin skeleton root.
-Pass --no-tag to skip.
+Pass --no-tag to skip. Numbered `mixamorig<N>:` joint prefixes normalize to
+`mixamorig:` either way, because joint names are the contract between a clip
+library and its meshes.
+
+--library writes a shared clip library instead of a character: a mesh-less
+glTF of named joints, rest TRS and clips, requiring --base, whose own action
+is dropped. Rerun it after adding a clip FBX to --input-dir.
+
+--clip-library binds a character to a library: after export every clip is
+stripped and the document names the library by a path relative to --output.
+
+The post-export pass is pure glTF work: with `bpy` and `mathutils` stubbed,
+bind_gltf_to_clip_library() can run it on an already-exported model.
 
 Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
+See: docs/character-animation.md
 """
 
 import bpy
 import sys
 import json
 import argparse
+import re
 from pathlib import Path
+from urllib.parse import unquote
 import math
 from mathutils import Matrix, Vector
 
@@ -43,6 +62,7 @@ from mathutils import Matrix, Vector
 # ---------------------------------------------------------------------------
 
 MIXAMO_PREFIX = "mixamorig:"
+NUMBERED_PREFIX = re.compile(r"^mixamorig\d+:")
 
 UPPER_BODY = {
     "Spine", "Spine1", "Spine2",
@@ -95,6 +115,15 @@ HIT_ZONES = {
     "RightUpLeg": "leg",
     "RightLeg": "leg",
 }
+
+# Extras keys tag_skeleton writes on a joint.
+ENGINE_TAGS = ("poseMask", "aimBendWeight", "socket", "hitZone")
+
+STALE_SUFFIXES = (".gltf", ".glb", ".bin", ".png", ".jpg", ".jpeg")
+
+# These reference accessors or buffer views from inside `extensions`, where
+# accessor_slots() and accessor_view_slots() do not look.
+UNTRACKED_EXTENSIONS = ("EXT_mesh_gpu_instancing", "KHR_draco_mesh_compression")
 
 
 def parse_args():
@@ -166,7 +195,31 @@ def parse_args():
              "Names are matched case-insensitively against Blender object names. "
              "Use to remove hidden geometry that causes z-fighting."
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--library", action="store_true",
+        help="Write a mesh-less clip library: named joints, rest TRS and the "
+             "clips from --input-dir. Requires --base; the base FBX supplies "
+             "the skeleton and none of its own animation."
+    )
+    parser.add_argument(
+        "--clip-library", metavar="RELATIVE_PATH",
+        help="Bind the character to a clip library: strip every clip after "
+             "export and name the library by this path, relative to --output "
+             "and written with forward slashes."
+    )
+    args = parser.parse_args(argv)
+    if args.library and args.clip_library is not None:
+        parser.error("--library and --clip-library cannot be combined")
+    if args.library and not args.base:
+        parser.error("--library requires --base, or the first clip would "
+                     "silently become the rig")
+    if args.clip_library is not None:
+        try:
+            check_clip_library_path(args.clip_library)
+            check_clip_library_target(args.output, args.clip_library)
+        except ValueError as exc:
+            parser.error(str(exc))
+    return args
 
 
 def clean_scene():
@@ -232,6 +285,36 @@ def fcurve_bone_name(data_path):
     return data_path[len(prefix):data_path.index('"]')]
 
 
+def canonical_bone_name(name):
+    return NUMBERED_PREFIX.sub(MIXAMO_PREFIX, name)
+
+
+def retarget_fcurve_bones(fcurves, base_bones):
+    """Match F-curves to base bones by canonical name, rewriting bone paths.
+
+    Mixamo numbers its prefix per download, so a clip's `mixamorig1:Hips` and a
+    rig's `mixamorig:Hips` are the same joint. Blender evaluates paths by exact
+    name, so a path left unrewritten would bake the clip as a rest pose.
+
+    Returns (matched_any, orphaned_data_paths).
+    """
+    by_canonical = {canonical_bone_name(bone): bone for bone in base_bones}
+    matched_any = False
+    orphaned = []
+    for fcurve in fcurves:
+        bone = fcurve_bone_name(fcurve.data_path)
+        if bone is None:
+            continue
+        target = bone if bone in base_bones else by_canonical.get(canonical_bone_name(bone))
+        if target is None:
+            orphaned.append(fcurve.data_path)
+            continue
+        matched_any = True
+        if target != bone:
+            fcurve.data_path = fcurve.data_path.replace(f'"{bone}"', f'"{target}"', 1)
+    return matched_any, orphaned
+
+
 def strip_non_bone_fcurves(action):
     """Remove object-level (non-`pose.bones`) F-curves from an action.
 
@@ -265,8 +348,23 @@ def strip_non_bone_fcurves(action):
     return removed
 
 
-def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=0.0):
-    """Import all FBX files, keeping one armature+mesh and collecting actions."""
+def reset_pose_to_rest(armature):
+    """Clear every pose bone's own transform.
+
+    An action writes only the properties it animates, so a bone it does not key
+    otherwise keeps the pose the previous action left on it.
+    """
+    for pbone in armature.pose.bones:
+        pbone.matrix_basis = Matrix.Identity(4)
+
+
+def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=0.0,
+                     library=False):
+    """Import all FBX files, keeping one armature+mesh and collecting actions.
+
+    With `library`, the base contributes only its skeleton: its action and every
+    mesh are dropped, so the result holds joints and clip-file actions alone.
+    """
     if not Path(input_dir).is_dir():
         print(f"ERROR: Input directory not found: {input_dir}")
         sys.exit(1)
@@ -307,7 +405,9 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
 
     seen_names = set()
     base_action = None
-    if base_armature.animation_data and base_armature.animation_data.action:
+    if library and base_armature.animation_data:
+        base_armature.animation_data.action = None
+    elif base_armature.animation_data and base_armature.animation_data.action:
         base_action = base_armature.animation_data.action
         base_action.name = action_name_from_filename(base_file)
         base_action.use_fake_user = True
@@ -360,17 +460,8 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
             action.name = clip_name
             action.use_fake_user = True
 
-            orphaned_channels = []
-            matched_any = False
             fcurves = get_action_fcurves(action)
-            for fcurve in fcurves:
-                bone_name = fcurve_bone_name(fcurve.data_path)
-                if bone_name is None:
-                    continue
-                if bone_name in base_bones:
-                    matched_any = True
-                else:
-                    orphaned_channels.append(fcurve.data_path)
+            matched_any, orphaned_channels = retarget_fcurve_bones(fcurves, base_bones)
             if not matched_any and fcurves:
                 print(f"  ERROR: No F-curves in '{clip_name}' target a base armature bone; clip is useless")
             elif orphaned_channels:
@@ -392,11 +483,11 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
     #
     # 1. Non-deforming control objects left beside the character (helper
     #    empties, mechanism armatures). The mesh and the chosen base armature
-    #    are the only objects the engine consumes.
+    #    are the only objects the engine consumes; a library keeps no mesh.
     for obj in list(bpy.data.objects):
-        if obj is base_armature or obj.type == "MESH":
+        if obj is base_armature or (obj.type == "MESH" and not library):
             continue
-        print(f"  Removing non-deforming object: {obj.type} '{obj.name}'")
+        print(f"  Removing object: {obj.type} '{obj.name}'")
         bpy.data.objects.remove(obj, do_unlink=True)
 
     # 2. Object-level F-curves that would clobber the armature's import scale,
@@ -411,6 +502,10 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
         if not any(fcurve_bone_name(fc.data_path) in base_bones for fc in fcurves):
             print(f"  Dropping action with no base-skeleton channels: '{action.name}'")
             bpy.data.actions.remove(action)
+
+    if library and not bpy.data.actions:
+        print(f"ERROR: No clips found in {input_dir}; a library needs at least one")
+        sys.exit(1)
 
     # --- Phase 2: Sample armature-space bone poses for every action --------
     # Before we transform the armature, evaluate each action on the base
@@ -435,6 +530,7 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
             old_rest_local[pbone.name] = pbone.bone.matrix_local.copy()
 
     for action in all_actions:
+        reset_pose_to_rest(base_armature)
         base_armature.animation_data.action = action
         frame_start = int(action.frame_range[0])
         frame_end = int(action.frame_range[1])
@@ -519,7 +615,7 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
         if all_verts_z:
             print(f"  All meshes AFTER bake: Z[{min(all_verts_z):.4f}, {max(all_verts_z):.4f}]")
             print(f"  (expected: Z ~ [0.0, 1.8])")
-    else:
+    elif not library:
         print("  WARNING: No mesh in base file — output will have no geometry.")
         print("  If the character mesh is in a different FBX, use --base to select it.")
 
@@ -760,7 +856,11 @@ def strip_facial_bones():
         print("\nWARNING: No armature found, skipping facial bone strip")
         return
 
-    head_bone = armature.data.bones.get(MIXAMO_PREFIX + "Head")
+    head_bone = next(
+        (bone for bone in armature.data.bones
+         if canonical_bone_name(bone.name) == MIXAMO_PREFIX + "Head"),
+        None,
+    )
     if not head_bone:
         print("\nWARNING: No 'mixamorig:Head' bone found, skipping facial bone strip")
         return
@@ -768,7 +868,7 @@ def strip_facial_bones():
     keep = {MIXAMO_PREFIX + "HeadTop_End"}
     face_bone_names = set()
     for child in head_bone.children_recursive:
-        if child.name not in keep:
+        if canonical_bone_name(child.name) not in keep:
             face_bone_names.add(child.name)
 
     if not face_bone_names:
@@ -779,9 +879,9 @@ def strip_facial_bones():
 
     mesh = get_mesh()
     if mesh:
-        head_group = mesh.vertex_groups.get(MIXAMO_PREFIX + "Head")
+        head_group = mesh.vertex_groups.get(head_bone.name)
         if not head_group:
-            head_group = mesh.vertex_groups.new(name=MIXAMO_PREFIX + "Head")
+            head_group = mesh.vertex_groups.new(name=head_bone.name)
 
         face_group_indices = set()
         for bone_name in face_bone_names:
@@ -862,14 +962,42 @@ def validate_model():
         sys.exit(1)
 
 
-def export_gltf(output_path):
+def stale_outputs(output, keep_siblings):
+    """List the files in the output's folder that an export replaces.
+
+    With `keep_siblings`, only the output's own document, its buffer and the
+    images the old document names: a library and a character may share a folder.
+    """
+    output_dir = output.parent
+    if not output_dir.exists():
+        return []
+    if not keep_siblings:
+        return [f for f in output_dir.iterdir() if f.suffix.lower() in STALE_SUFFIXES]
+
+    own = [output, output.with_suffix(".bin")]
+    if output.exists():
+        try:
+            images = read_gltf(output).get("images", [])
+        except (ValueError, OSError) as exc:
+            print(f"  WARNING: could not read old {output.name}; "
+                  f"leaving its images in place ({exc})")
+            images = []
+        for image in images:
+            uri = image.get("uri", "")
+            if not uri or uri.startswith("data:"):
+                continue
+            named = output_dir / unquote(uri)
+            if named.parent.resolve() == output_dir.resolve():
+                own.append(named)
+    return [f for f in dict.fromkeys(own) if f.is_file()]
+
+
+def export_gltf(output_path, keep_siblings=False):
     output = Path(output_path)
     output_dir = output.parent
-    if output_dir.exists():
-        for f in output_dir.iterdir():
-            if f.suffix.lower() in (".gltf", ".glb", ".bin", ".png", ".jpg", ".jpeg"):
-                f.unlink()
-                print(f"  Removed stale: {f.name}")
+    for f in stale_outputs(output, keep_siblings):
+        f.unlink()
+        print(f"  Removed stale: {f.name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     export_kwargs = {
@@ -922,17 +1050,43 @@ def export_gltf(output_path):
             print(f"  {f.name} ({size_kb:.1f} KB)")
 
 
-def tag_gltf_skeleton(gltf_path):
-    """Post-process the exported glTF to add engine extras to Mixamo bones."""
-    gltf_path = Path(gltf_path)
-    with open(gltf_path, 'r') as f:
-        gltf = json.load(f)
+def read_gltf(gltf_path):
+    with open(gltf_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
+
+def write_gltf(gltf_path, gltf):
+    # newline: text mode would otherwise write CRLF on Windows.
+    with open(gltf_path, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(gltf, f, indent='\t', ensure_ascii=False)
+
+
+def normalize_bone_prefixes(gltf):
+    """Rewrite numbered `mixamorig<N>:` node names to `mixamorig:`.
+
+    Tagging and clip binding both match joints by canonical name, so this runs
+    first and regardless of --no-tag. Returns the number of nodes renamed.
+    """
+    renamed = 0
+    for node in gltf.get("nodes", []):
+        name = node.get("name", "")
+        canonical = canonical_bone_name(name)
+        if canonical != name:
+            node["name"] = canonical
+            renamed += 1
+    return renamed
+
+
+def tag_skeleton(gltf):
+    """Add engine extras to canonical Mixamo bones and set the skin root.
+
+    Returns the number of bones tagged.
+    """
     nodes = gltf.get("nodes", [])
     skins = gltf.get("skins", [])
     tagged = 0
 
-    for i, node in enumerate(nodes):
+    for node in nodes:
         name = node.get("name", "")
         if not name.startswith(MIXAMO_PREFIX):
             continue
@@ -970,22 +1124,29 @@ def tag_gltf_skeleton(gltf_path):
             node["extras"] = extras
             tagged += 1
 
-    hips_idx = None
     for i, node in enumerate(nodes):
         if node.get("name") == MIXAMO_PREFIX + "Hips":
-            hips_idx = i
+            if skins:
+                skins[0]["skeleton"] = i
             break
-    if hips_idx is not None and skins:
-        skins[0]["skeleton"] = hips_idx
 
-    with open(gltf_path, 'w') as f:
-        json.dump(gltf, f, indent='\t')
+    return tagged
 
+
+def has_engine_tags(gltf):
+    return any(
+        tag in (node.get("extras") or {})
+        for node in gltf.get("nodes", [])
+        for tag in ENGINE_TAGS
+    )
+
+
+def print_tag_summary(gltf, tagged):
     print(f"\nTagged {tagged} bones with engine extras")
     mask_counts = {}
     socket_count = 0
     hit_zone_counts = {}
-    for node in nodes:
+    for node in gltf.get("nodes", []):
         extras = node.get("extras")
         if not extras:
             continue
@@ -1006,8 +1167,225 @@ def tag_gltf_skeleton(gltf_path):
         print(f"  hitZone '{zone}': {count} bone(s)")
     weights_str = ", ".join(f"{n}={w}" for n, w in sorted(AIM_SPINE_WEIGHTS.items()))
     print(f"  aimBendWeight: {weights_str}")
-    if hips_idx is not None:
-        print(f"  skin skeleton root: node {hips_idx} (Hips)")
+    skins = gltf.get("skins", [])
+    if skins and "skeleton" in skins[0]:
+        print(f"  skin skeleton root: node {skins[0]['skeleton']} (Hips)")
+
+
+def accessor_slots(gltf):
+    """Yield (container, key) for each accessor reference in the document."""
+    for mesh in gltf.get("meshes", []):
+        for primitive in mesh.get("primitives", []):
+            for attributes in [primitive.get("attributes", {}), *primitive.get("targets", [])]:
+                for semantic in attributes:
+                    yield attributes, semantic
+            if "indices" in primitive:
+                yield primitive, "indices"
+    for skin in gltf.get("skins", []):
+        if "inverseBindMatrices" in skin:
+            yield skin, "inverseBindMatrices"
+    for animation in gltf.get("animations", []):
+        for sampler in animation.get("samplers", []):
+            yield sampler, "input"
+            yield sampler, "output"
+
+
+def accessor_view_slots(accessor):
+    """Yield (container, key) for each buffer view reference in one accessor."""
+    if "bufferView" in accessor:
+        yield accessor, "bufferView"
+    sparse = accessor.get("sparse")
+    if sparse:
+        yield sparse["indices"], "bufferView"
+        yield sparse["values"], "bufferView"
+
+
+def remove_accessors(gltf, bin_bytes, candidates):
+    """Remove each candidate accessor nothing references any more.
+
+    Mutates `gltf`, rewriting accessor and buffer view indices, and returns the
+    compacted buffer. Sharing is resolved per buffer view: a view any surviving
+    accessor or image reads is kept whole. Packing keeps file order and each
+    view's offset modulo 4, so an accessor offset inside a view stays as aligned
+    as it was; glTF requires that alignment of vertex attribute data.
+    """
+    untracked = set(UNTRACKED_EXTENSIONS) & set(gltf.get("extensionsUsed", []))
+    if untracked:
+        raise ValueError(f"cannot compact a document using {sorted(untracked)}: "
+                         f"its accessor references are not tracked")
+    buffers = gltf.get("buffers", [])
+    if len(buffers) != 1:
+        raise ValueError(f"expected one buffer, found {len(buffers)}")
+    if len(bin_bytes) != buffers[0].get("byteLength"):
+        raise ValueError(f"buffer is {len(bin_bytes)} bytes, but the document "
+                         f"declares {buffers[0].get('byteLength')}")
+
+    doomed_accessors = candidates - {c[k] for c, k in accessor_slots(gltf)}
+    if not doomed_accessors:
+        return bin_bytes
+
+    accessor_remap = {}
+    survivors = []
+    freed_views = set()
+    for index, accessor in enumerate(gltf["accessors"]):
+        if index in doomed_accessors:
+            freed_views.update(c[k] for c, k in accessor_view_slots(accessor))
+        else:
+            accessor_remap[index] = len(survivors)
+            survivors.append(accessor)
+    gltf["accessors"] = survivors
+    for container, key in accessor_slots(gltf):
+        container[key] = accessor_remap[container[key]]
+
+    view_slots = [slot for accessor in survivors for slot in accessor_view_slots(accessor)]
+    view_slots += [(image, "bufferView") for image in gltf.get("images", [])
+                   if "bufferView" in image]
+    doomed_views = freed_views - {c[k] for c, k in view_slots}
+
+    view_remap = {}
+    kept_views = []
+    for index, view in enumerate(gltf.get("bufferViews", [])):
+        if index not in doomed_views:
+            view_remap[index] = len(kept_views)
+            kept_views.append(view)
+    gltf["bufferViews"] = kept_views
+    for container, key in view_slots:
+        container[key] = view_remap[container[key]]
+
+    packed = bytearray()
+    for view in sorted(kept_views, key=lambda v: v.get("byteOffset", 0)):
+        start = view.get("byteOffset", 0)
+        packed.extend(bytes((start - len(packed)) % 4))
+        view["byteOffset"] = len(packed)
+        packed.extend(bin_bytes[start:start + view["byteLength"]])
+    buffers[0]["byteLength"] = len(packed)
+    return bytes(packed)
+
+
+def strip_clips(gltf, bin_bytes):
+    """Remove every animation and all data only animations used.
+
+    Mutates `gltf` and returns the compacted buffer.
+    """
+    clip_accessors = {
+        accessor
+        for animation in gltf.pop("animations", [])
+        for sampler in animation.get("samplers", [])
+        for accessor in (sampler["input"], sampler["output"])
+    }
+    return remove_accessors(gltf, bin_bytes, clip_accessors)
+
+
+def strip_skins(gltf, bin_bytes):
+    """Remove every skin and its inverse binds, keeping the joint nodes.
+
+    The exporter writes a skin for an armature even with no mesh to deform. A
+    library has no mesh to bind, so its inverse binds are dead weight.
+
+    Mutates `gltf` and returns the compacted buffer.
+    """
+    bind_accessors = {
+        skin["inverseBindMatrices"]
+        for skin in gltf.pop("skins", [])
+        if "inverseBindMatrices" in skin
+    }
+    for node in gltf.get("nodes", []):
+        node.pop("skin", None)
+    return remove_accessors(gltf, bin_bytes, bind_accessors)
+
+
+def check_clip_library_path(clip_library):
+    """Raise ValueError unless the engine would accept this reference.
+
+    Mirrors the engine's relative-URI rule, so a bad value fails here rather
+    than loading as a character with no clips. Backslashes fail too: they are
+    separators on one platform and filename characters on another.
+    """
+    if not isinstance(clip_library, str) or not clip_library:
+        raise ValueError("--clip-library must be a non-empty relative path")
+    try:
+        decoded = unquote(clip_library, errors="strict")
+    except UnicodeDecodeError:
+        raise ValueError(f"--clip-library must decode to UTF-8: '{clip_library}'") from None
+    if ":" in decoded or "\\" in decoded or decoded.startswith("/"):
+        raise ValueError(f"--clip-library must be a relative path with forward "
+                         f"slashes and no scheme: '{clip_library}'")
+
+
+def check_clip_library_target(output, clip_library):
+    """Raise ValueError if the reference resolves to the output file itself.
+
+    Export would replace the library with the character bound to it.
+    """
+    output = Path(output)
+    if (output.parent / unquote(clip_library)).resolve() == output.resolve():
+        raise ValueError(f"--clip-library '{clip_library}' resolves to --output itself")
+
+
+def stamp_clip_library(gltf, clip_library):
+    check_clip_library_path(clip_library)
+    extras = gltf.setdefault("extras", {})
+    if not isinstance(extras, dict):
+        raise ValueError("document extras is not an object; cannot stamp clipLibrary")
+    extras["clipLibrary"] = clip_library
+
+
+def check_library(gltf):
+    """Raise ValueError if an export is not the mesh-less, clip-bearing library."""
+    if gltf.get("meshes"):
+        raise ValueError("library export contains a mesh")
+    if not gltf.get("animations"):
+        raise ValueError("library export contains no clips")
+
+
+def gltf_bin_path(gltf_path, gltf):
+    buffers = gltf.get("buffers", [])
+    uri = buffers[0].get("uri", "") if len(buffers) == 1 else ""
+    if not uri or uri.startswith("data:"):
+        raise ValueError(f"{gltf_path}: expected one external buffer")
+    return Path(gltf_path).parent / unquote(uri)
+
+
+def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False,
+                     tag_if_missing=False):
+    """Run the post-export pass on a `.gltf` and its `.bin`, in place.
+
+    Normalization comes first so tagging sees canonical names; `tag` gates only
+    tagging, so a binding survives --no-tag. `tag_if_missing` tags despite
+    `tag=False` when names changed or the document has no engine tags.
+    """
+    gltf_path = Path(gltf_path)
+    gltf = read_gltf(gltf_path)
+
+    renamed = normalize_bone_prefixes(gltf)
+    if renamed:
+        print(f"\nNormalized {renamed} numbered bone prefix(es) to '{MIXAMO_PREFIX}'")
+    if tag or (tag_if_missing and (renamed or not has_engine_tags(gltf))):
+        print_tag_summary(gltf, tag_skeleton(gltf))
+
+    if library or clip_library is not None:
+        bin_path = gltf_bin_path(gltf_path, gltf)
+        bin_bytes = bin_path.read_bytes()
+        if library:
+            check_library(gltf)
+            bin_bytes = strip_skins(gltf, bin_bytes)
+            print(f"\nWrote clip library: {len(gltf['animations'])} clip(s)")
+        else:
+            bin_bytes = strip_clips(gltf, bin_bytes)
+            stamp_clip_library(gltf, clip_library)
+            print(f"\nStripped clips; bound to clip library '{clip_library}'")
+        bin_path.write_bytes(bin_bytes)
+
+    write_gltf(gltf_path, gltf)
+
+
+def bind_gltf_to_clip_library(gltf_path, clip_library):
+    """Bind an already-exported character to a library, with no Blender run.
+
+    A committed canonical model keeps the extras it has. A numbered or untagged
+    rig is tagged, or it would lose its masks, sockets and zones without a word.
+    """
+    postprocess_gltf(gltf_path, tag=False, clip_library=clip_library, tag_if_missing=True)
 
 
 def main():
@@ -1017,15 +1395,23 @@ def main():
     print("=" * 60)
 
     clean_scene()
-    merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes, args.yaw)
+    merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes, args.yaw,
+                     library=args.library)
     if args.fix_eyes:
         flip_eye_geometry(inset=args.eye_inset)
     if args.strip_face:
         strip_facial_bones()
-    validate_model()
-    export_gltf(args.output)
-    if not args.no_tag:
-        tag_gltf_skeleton(args.output)
+    if not args.library:
+        validate_model()
+    export_gltf(args.output, keep_siblings=args.library or args.clip_library is not None)
+    try:
+        # Library joints carry no extras: only a mesh's own skeleton is tagged.
+        postprocess_gltf(args.output, tag=not (args.no_tag or args.library),
+                         clip_library=args.clip_library, library=args.library)
+    except (ValueError, OSError) as exc:
+        # Blender exits 0 on an uncaught script exception.
+        print(f"ERROR: {exc}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -86,7 +86,7 @@
 - **Game content in an author's own repository, outside an engine install (human-facing walkthrough)** → `docs/external-projects.md`; the contract behind it is `build_pipeline.md` §Baked texture mips and §Distribution packaging
 - **Collision (world/entity)** → `entity_model.md` §7
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)
-- **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake
+- **Navigation / navmesh / pathfinding representation / mover gates and lift links / enemies on movers** → `build_pipeline.md` §Navigation bake · agent mover contact and pins: `movement.md` §6
 - **Multi-threaded AI pathfinding readiness / scheduling blocker** → `ai_pathfinding_mt_readiness.md`
 - **Player life states / capability profiles / zero-HP policy / `setLifeState` / `respawn` / impact `source.inLifeState` / `source.setLifeState` / rejoin and reload remap** → `scripting.md` §12; elapsed/HUD clock: §5 · movement/posture: `movement.md` §2, §6 · host profile tables/replay: `networking.md` §What gates, and what replicates instead
 - **Revive / teammate assist / `assistable` / `assist` command, its engine default and relevance / assist accumulator and completion order / assist progress slots and HUD bars / helper-bar prediction / interaction-pair scope (`assist.helper`, `assist.target`) / per-pair authored values** → `scripting.md` §12 (Assist), §11, §5 · `input.md` §2 · `entity_model.md` §5 · co-op: `networking.md` §What gates, and what replicates instead, §Host input command queue, §Version gates · `ui.md` §3

@@ -355,7 +355,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | SdfAtlas | 33 | When the map has SDF static occluder data |
 | OctahedralShVolume | 34 | When compiled with lighting; base indirect irradiance as layer-aware octahedral atlas tiles |
 | DirectShVolume | 35 | When the map has static baked lights; metadata-derived stored static-direct layer-aware octahedral irradiance for movers/skinned meshes and legacy billboard fallback; BC6H at rest; no depth moments (read from id 34); same id 34 node set, slot order, geometry, format, and payload contract as OctahedralShVolume; section-internal `DIRECT_SH_VOLUME_VERSION` |
-| NavMesh | 36 | When the map has walkable navigation; baked regions/portals for runtime pathfinding |
+| NavMesh | 36 | When the map has walkable navigation; baked regions/portals for runtime pathfinding. Version 3 (decided, not yet built) appends mover gate and link tables (§Navigation bake) |
 | CellDrawIndex | 37 | When the BVH has non-empty leaves (omitted for zero-leaf maps); independent of portal presence. Per-cell CSR of owned BVH-leaf spans driving the runtime candidate cull (`rendering_pipeline.md` §7.1) |
 | Cells | 38 | Always; runtime visibility units, each grouping one or more compiler BSP leaves; one cell id space for portal endpoints, fog masks, BVH leaf `cell_id`, and diagnostics |
 | CellLocator | 39 | Always; point-to-cell decision tree used by runtime visibility and object placement diagnostics |
@@ -566,7 +566,9 @@ Portal traversal normally computes visibility: a per-frame bounded-region walk f
 
 Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36). Baked after the BVH stage and before the lightmap bake; the runtime loader decodes it. Runtime pathfinding traverses regions with A* and follows the resulting portal sequence with funnel string-pulling.
 
-**Query contract.** Runtime consumes convex walkable **regions joined by portals** — the pathfinding query surface (A* over regions, funnel over portal segments). The shape is the durable contract; the bake *algorithm* swaps behind it (rectangular decomposition first, a contour tracer later). Off-mesh links and hints (jump links, cover) extend it as future portal kinds / region attachments — additive, no format break. Seed of a broader baked spatial-AI layer.
+**Query contract.** Runtime consumes convex walkable **regions joined by portals** — the pathfinding query surface (A* over regions, funnel over portal segments). The shape is the durable contract; the bake *algorithm* swaps behind it (rectangular decomposition first, a contour tracer later). Off-mesh links and hints (jump links, cover) extend it as further record kinds / region attachments; a new record kind appends a table and bumps the section version. Seed of a broader baked spatial-AI layer.
+
+**Movers (decided, not yet built — `plans/ready/E17--enemy-mover-interaction`).** The bake poses each non-spinning mover at every waypoint, splits regions so its posed solid geometry falls across whole portals, and emits *mover gates* (a portal closed while the mover is docked at that waypoint) and *mover links* (its walkable top docked there to a landing region), version 3. The runtime switches them from dock state; records carry identity only. Spinner-capable movers (any non-zero spin axis) get none. A version 2 section loads with no mover records and a rebake warning.
 
 **Navmesh ↔ collision.** The bake reads the same surface the collision trimesh uses, so it never marks walkable what collision rejects. The navmesh bakes from pre-cut triangles; collision reads the oversize-face cut's coplanar sub-faces. The navmesh **routes** (which regions connect); `CollisionWorld` owns ground height and final movement (agents sweep real collision along a region path).
 

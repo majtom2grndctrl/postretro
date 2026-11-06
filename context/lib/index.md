@@ -16,7 +16,7 @@
 - **Testing** → `testing_guide.md`
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
-- **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51: `build_pipeline.md` §PRL section IDs
+- **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets / bounded SH pool / SH mandatory bound** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51: `build_pipeline.md` §PRL section IDs
 - **Lightmap/shadowmask residency / cell blocks / lightmap pool / vertex block table / lightmap miss policy / `POSTRETRO_LIGHTMAP_STREAMING` / shared SH+lightmap read issuer and drain budget** → `rendering_pipeline.md` §4 (Lightmap cell-block residency) · ids 22/42/51: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
 - **Render resolution / HiDPI / scene extent vs surface extent / integer upscale / native UI layer / covers-HUD effect switches** → `rendering_pipeline.md` §7.8 · `player_options.md` §4 · `ui.md` §5
@@ -62,7 +62,7 @@
 - **Resource management / textures / materials** → `resource_management.md`
 - **Surface Depth / height maps / `_h.png` / texel-space parallax / per-texel surface carve / two-channel surface map** → `resource_management.md` §4.6 · `rendering_pipeline.md` §7.3 · bake and `.prm` format: `build_pipeline.md` §Baked texture mips
 - **Texture memory accounting / per-slot or per-mip byte cost / what a level's textures cost** → `build_pipeline.md` §Baked texture mips (Byte accounting)
-- **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
+- **3D model / glTF import (scale, pivot, material format, shared clip libraries, Mixamo licence)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
 - **System reactions / system steps in a sequence** → `scripting.md` §10.4

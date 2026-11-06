@@ -182,7 +182,7 @@ Walk, shot and frame-diff tools stay on `spike/memory-measure-tour`. They are po
 | 6 | Compiler: stop producing owner data, per-node and per-row hash verification, bound over camera cells, Build Summary, no-id-51 entry | worker, compiler | 5 | done: `prl-build` bin 2315 pass, `sh_mandatory_bound_compile` 2, format 664, loader 333, app `sh_` 271; fixture rebaked, four fixture tests green; rows 12, 15–18. Full app bin deferred to task 9 |
 | 7 | Pool sized once from the bound; whole-map cap; retire the 256 MiB floor for SH | worker, renderer | 5, 6 | done: app bin 2472, renderer with GPU 1288, render-cpu 643, loader 333, gate passes; rows 27, 30, 31 |
 | 8 | Author text: FGD, `docs/level_design.md`; grep gate | integrating executor | 6 | done: gate passes; row 14 |
-| 9 | Cold rebake, manual rows, preflight, review panel | integrating executor | 7, 8 | done: preflight at ae99bc0b7; 16 recorded walks and a Metal capture; every row has a result |
+| 9 | Cold rebake, manual rows, preflight, review panel | integrating executor | 7, 8 | done: preflight at ae99bc0b7; 17 recorded walks and a Metal capture; every row has a result |
 
 Workers run sequentially on the feature branch's warm target: tasks 1–3 share `targeting.rs` and compile through each other. The integrating executor reviews each diff, owns `plan.md`, and commits.
 

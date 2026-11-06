@@ -1,10 +1,25 @@
 # spatial-residency--lightmap-bounded-pool — plan of record
 
 mode: resumable
-status: approved
+status: blocked
 read at: 3d66934ce
 
 No crate source changed between the brief's `read at` (6a813bdcd) and this commit. Every symbol cited by Decisions and Path was re-read at this commit. No Decision premise is false, and no Acceptance row needs restatement.
+
+## Block: row 28 and the compaction Decision
+
+Task 1's planner clears the hallway at 27 layers end to end, but the guarantee as written does not hold. Owner decision needed before task 2. Tasks 3 and 4 do not depend on the answer.
+
+- **Written:** "any set that packs from scratch into the pool also fits at runtime" makes the bound "provable" (Decision); row 28 says the same for any history.
+- **Found:** with no layer spare in the from-scratch pack, the planner misses a small share of compactions at 90–95% fill: 25 of 31,382 at real scale, and 4 of 209,190 on the small hunt. A hand-checked miss has an order, so these are search misses, not proven walls. Each one falls through to logged growth, per R22.
+- **Row 28's test** passes on a fixed seed with 0 missed, while other cases miss. That pass does not prove the row as written.
+- **With at least one layer spare:** 0 misses in 1,893 real-scale compactions. Measured, not proved, and too few cases to separate from the no-spare rate.
+- **Proved:** every returned plan is valid, a failed plan changes nothing, building into an empty layer cannot fail, a park fails only by fragmentation, and a single-layer pool always succeeds.
+- **Where no-spare arises:** a demand that fills the pool. On the hallway, demand within the bound leaves about 7 layers spare at 34. A level capped at all-resident with every block mandatory has none, so a whole-map fixture could rarely grow past its cap and warn.
+
+Proposed row 28: "After any history of arrivals and departures, any resident and pending mandatory set that packs from scratch, tallest first, into the pool with at least one layer spare is placed by repack with no growth, and its copies complete through that pool's one spare on the copy mirror with every texel intact (property test at real scale on a hallway-shaped block mix, reporting how many cases reached compaction, on a generator biased to near-full pools). A set that packs only with no layer spare is placed or takes row 35's logged growth, and the miss rate is reported."
+
+Proposed Decision wording: replace "makes the bound provable: any set that packs from scratch into the pool also fits at runtime" with "makes the bound hold in practice: a set that packs from scratch with a layer to spare fits at runtime, by measurement rather than proof, and a miss takes logged growth".
 
 ## Corrections
 
@@ -113,7 +128,7 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Riskiest slice.** Compaction alone on today's single pool: dependency-graph copy order through the spare, planned before any copy records, rollback when no order exists. Property test on near-full mixed-size pools, with a deliberate hunt for stuck layouts. Walk harness at 28 and 30 layers. Metal timing of a whole-pool compaction. Rows 28, 35, 36 on one pool. Stops per Risks | integrating executor | — | in progress: planner, rollback and tests committed. Open: one real rollback at 27 layers, see Risks |
+| 1 | **Riskiest slice.** Compaction alone on today's single pool: dependency-graph copy order through the spare, planned before any copy records, rollback when no order exists. Property test on near-full mixed-size pools, with a deliberate hunt for stuck layouts. Walk harness at 28 and 30 layers. Metal timing of a whole-pool compaction. Rows 28, 35, 36 on one pool. Stops per Risks | integrating executor | — | built; 27, 28, 30 and 34 layers walk with 0 growths and 0 rollbacks; closes on the block above |
 | 2 | Whole-demand repack and reservations: room held for every target, downward pass judged on the whole demand, one compaction before growth. Rows 29–34 on one pool | integrating executor | 1 | |
 | 3 | Format: split `shadowmask_atlas.rs` tests first. `SMB8`, plane absence, id 58 section, tallest-first shared placement, shared margin and pool pricing in level-format, loader refusals, memo version bump, tracked fixture rebake. Rows 1–3 | worker, level-format + level-loader + compiler bake | — | |
 | 4 | Compiler: bound through one cell input, Build Summary, post-bake mask gate. Rows 4–11, 55 compiler side | worker, compiler | 3 | |
@@ -131,7 +146,9 @@ The owner directed the session to orchestrate: tasks marked integrating executor
 
 - **One spare may not always be enough.** A fully tangled move graph across three layers can need two blockers staged at once, and two large blockers may not share the spare. I have no real layout showing this, and no proof it cannot happen. Task 1 hunts for it directly.
   - If the generator reaches a stuck layout, the Decision that any packable set fits at runtime is false as written. The plan goes `blocked` with the layout, because row 28 and "the bound is provable" both rest on it. R22's fallback would keep the engine correct, but only by growing.
-- **Open finding, task 1.** Hallway walks at 28 and 30 layers: 0 growths and 0 rollbacks, against 1 to 6 growths today. At 27 layers, the hallway's bound with no margin, the tour rolled back once and grew to 36 layers: 247 blocks, 212 moving, 89.8% full, and the target packs. No order was found, and none is proved absent. Exhaustive small pools showed no failure, but the proptest does not reach real scale. The search stages through a fixed spare at the last index, so a follow-up tests a rolling empty layer, a real-scale generator, and cost at the shipped 34 layers before this goes to the owner. The captured graph is `compaction_fixtures/hallway_no_order_found.txt`.
+- **Task 1 walks** used a throwaway read shim with SH streaming off, because the hallway PRL fails `ClusterDirectory VersionMismatch` at this commit. With compaction off, that setup reproduced `research.md`. Task 10 rebakes.
+- **The downward repack is not cheap.** At 34 layers it moves about 250 copies, p95 360 MiB, about 15–16 ms of GPU on the Mac, and makes up 92% of tour repacks (3.55% of tour steps). Order is unchanged, per the Decision. Task 2's whole-demand planning should cut the count; row 62 measures what remains.
+- **Compaction has no per-demand gate yet.** It reruns each drain, with its warning, while growth is deferred or device-limited, and a jam costs up to about 240 ms. Task 2 must gate it.
 - **Compaction cost.** Up to about 200 MiB of copies in one submission on the hallway. If the task 1 timing is a visible hitch, the plan goes `blocked` before any format work, with budgeted incremental moves as the proposed next shape.
 - **Row 43's fixture must grow today at that size.** Task 1's walk may show the first such fixture is the hallway itself, which cannot run in routine tests, so a synthetic one is needed.
 - **Row 64's map.** The owner confirms the hallway has closet reveals, location unknown. Task 10 pulls `trigger_volume`, `entity_spawner` and mover entities from `stress-warren-hallway-inspection.map`. If none is a door, the row goes back to the owner with another map or a narrower check.

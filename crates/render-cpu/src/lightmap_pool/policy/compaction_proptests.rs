@@ -125,9 +125,11 @@ struct Tally {
     drains: Cell<u64>,
     compactions: Cell<u64>,
     histories_compacted: Cell<u64>,
-    histories_cycled: Cell<u64>,
+    histories_parked: Cell<u64>,
     parked: Cell<u64>,
-    most_attempts: Cell<u32>,
+    built_over: Cell<u64>,
+    /// Compactions that found no order, each ending its history.
+    missed: Cell<u64>,
 }
 
 fn add(cell: &Cell<u64>, by: u64) {
@@ -135,7 +137,8 @@ fn add(cell: &Cell<u64>, by: u64) {
 }
 
 /// Run one history. Every drain whose mandatory set packs from scratch must
-/// place with no growth, and its copies must keep every texel.
+/// place with no growth, unless its compaction found no order, which ends the
+/// history; and its copies must keep every texel.
 fn run(history: &History, tally: &Tally) {
     let extents = extents_of(history);
     let count = extents.len();
@@ -153,7 +156,7 @@ fn run(history: &History, tally: &Tally) {
     };
     let mut mandatory_set = 0u64;
     let mut band_set = 0u64;
-    let (mut compacted, mut cycled) = (false, false);
+    let (mut compacted, mut parked) = (false, false);
 
     for step in &history.steps {
         let leaving = step.leave & all & (mandatory_set | band_set);
@@ -195,8 +198,11 @@ fn run(history: &History, tally: &Tally) {
         });
         let plan = model.plan();
         add(&tally.drains, 1);
+        if plan.compaction_rolled_back {
+            add(&tally.missed, 1);
+            return;
+        }
         assert_eq!(plan.growth, None, "{next:b} packs, so it needs no growth");
-        assert!(!plan.compaction_rolled_back, "no copy order for {next:b}");
         assert!(plan.deferred.is_empty(), "nothing waits on a retirement");
         for b in 0..count as u32 {
             if next >> b & 1 != 0 {
@@ -209,11 +215,9 @@ fn run(history: &History, tally: &Tally) {
         if let Some(RepackKind::Compaction(stats)) = plan.repack {
             add(&tally.compactions, 1);
             add(&tally.parked, u64::from(stats.parked));
-            tally
-                .most_attempts
-                .set(tally.most_attempts.get().max(stats.attempts));
+            add(&tally.built_over, u64::from(stats.built_over));
             compacted = true;
-            cycled |= stats.cycles_staged > 0;
+            parked |= stats.parked > 0;
         }
         gpu.execute(model.plan());
         gpu.assert_matches(&model);
@@ -227,7 +231,7 @@ fn run(history: &History, tally: &Tally) {
     }
     add(&tally.histories, 1);
     add(&tally.histories_compacted, u64::from(compacted));
-    add(&tally.histories_cycled, u64::from(cycled));
+    add(&tally.histories_parked, u64::from(parked));
 }
 
 fn run_cases(cases: u32) -> Tally {
@@ -245,15 +249,16 @@ fn run_cases(cases: u32) -> Tally {
         })
         .unwrap();
     println!(
-        "compaction: {} histories, {} drains, {} compactions in {} histories, a cycle staged in \
-         {}, {} parks, at most {} attempts",
+        "compaction: {} histories, {} drains, {} compactions in {} histories, parking in {}, {} \
+         parks, {} target layers built over a layer, {} missed",
         tally.histories.get(),
         tally.drains.get(),
         tally.compactions.get(),
         tally.histories_compacted.get(),
-        tally.histories_cycled.get(),
+        tally.histories_parked.get(),
         tally.parked.get(),
-        tally.most_attempts.get(),
+        tally.built_over.get(),
+        tally.missed.get(),
     );
     tally
 }
@@ -261,6 +266,7 @@ fn run_cases(cases: u32) -> Tally {
 #[test]
 fn compaction_places_any_set_that_packs_from_scratch() {
     let tally = run_cases(2048);
+    assert_eq!(tally.missed.get(), 0);
     // A generator that stops reaching compaction proves nothing.
     assert!(
         tally.histories_compacted.get() >= 256,
@@ -268,17 +274,17 @@ fn compaction_places_any_set_that_packs_from_scratch() {
         tally.histories_compacted.get()
     );
     assert!(
-        tally.histories_cycled.get() >= 64,
-        "only {} histories staged a cycle",
-        tally.histories_cycled.get()
+        tally.histories_parked.get() >= 64,
+        "only {} histories parked a block",
+        tally.histories_parked.get()
     );
 }
 
-/// The long hunt for a layout the planner cannot order. On demand: it is
-/// evidence for the fit claim, too slow for a routine gate.
+/// The long hunt for layouts the planner cannot order. On demand: it counts
+/// them as evidence for the fit claim, and a routine gate could not afford it.
 #[test]
 #[ignore = "stuck-layout hunt; set POSTRETRO_COMPACTION_HUNT_CASES"]
-fn compaction_hunt_finds_no_stuck_layout() {
+fn compaction_hunt_counts_layouts_with_no_order_found() {
     let cases = std::env::var("POSTRETRO_COMPACTION_HUNT_CASES")
         .ok()
         .and_then(|cases| cases.parse().ok())

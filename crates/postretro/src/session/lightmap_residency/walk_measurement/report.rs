@@ -339,17 +339,14 @@ pub(super) fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
     let (plan_max, plan_p95) = max_and_p95(pool.compaction_plan_nanos.clone());
     let (downward_max, downward_p95) = max_and_p95(pool.downward_copy_bytes.clone());
     println!(
-        "   compaction: {} of {} repacks, {} rolled back; {} staged a cycle ({} staged, {} parked, \
-         at most {} attempts); {} copies, largest moved {} blocks; copy MiB max / p95 {:.1} / \
-         {:.1}; planning ms max / p95 {:.2} / {:.2}; downward repack copy MiB max / p95 {:.1} / \
-         {:.1}",
+        "   compaction: {} of {} repacks, {} rolled back; {} parked, {} target layers built over a \
+         layer; {} copies, largest moved {} blocks; copy MiB max / p95 {:.1} / {:.1}; planning \
+         ms max / p95 {:.2} / {:.2}; downward repack copy MiB max / p95 {:.1} / {:.1}",
         pool.compactions,
         pool.repacks,
         pool.compaction_rollbacks,
-        pool.compactions_cycled,
-        pool.cycles_staged,
         pool.parks,
-        pool.most_compaction_attempts,
+        pool.built_over,
         pool.compaction_copies,
         pool.largest_compaction_moves,
         mib(copy_max),

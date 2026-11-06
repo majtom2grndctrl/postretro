@@ -1,33 +1,52 @@
-// Copy order for a compaction: moves as a dependency graph, staged through the pool's one spare.
+// Copy order for a compaction: target layers built one at a time, through one layer kept empty.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 //
 // Works on one pool's blocks, wholly on the CPU, before any copy records: it
 // simulates the layout hop by hop, so its copy list is valid by construction.
-// A move runs once its destination is clear. WebGPU copies only between
-// distinct subresources, so a block with a new place in its own layer takes
-// two hops. When every move waits on another, a blocker stages in the spare to
-// break the cycle; blockers bound for one layer share the spare at their
-// destination coordinates, and a block the spare cannot hold parks in free
-// pool space. Nothing here allocates texture memory: the spare layer is the
-// whole staging budget.
+// The target's layers are not tied to pool layers. The spare starts empty, so
+// the first target layer builds there: every block lands in one pass, with no
+// cycle to break, wherever it came from. Then the least-full open layer parks
+// its blocks in free space elsewhere, and that layer, now empty, takes the next
+// target layer. A target layer that finds no empty layer builds over the open
+// layer with the fewest texels in its way, parking only those. Each hop crosses
+// layers, as WebGPU requires. A target layer left on the spare's index moves to
+// the one pool layer left open, so the spare ends empty, where the texture
+// keeps it. Nothing here allocates texture memory: the spare layer is the whole
+// staging budget.
 //
-// This is a search, not a proof. Nothing shows an order always exists through
-// one spare, and the search can miss one that does: `Err` means none was
-// found. `compaction_proptests` pins how far that holds on small generated
-// pools; a real pool of a few hundred large blocks near 90% full is where it
-// has been seen to fail, and `compaction_fixtures` keeps that graph.
+// Area never stops this. The array has a layer more than the target fills, so
+// free space always adds up to a whole layer, and a layer's blocks always fit
+// it by area. Fragmentation can: a block can find no hole. `Err` means that
+// happened, not that no order exists.
+
+use std::cmp::Reverse;
 
 use super::super::BlockPlacement;
 use super::plan::PoolCopy;
 
-/// One surviving block of the pool: where its texels are, and where the
-/// target layout wants them. `src == dst` holds a block in place.
+/// One block a compaction plans around.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BlockMove {
-    pub src: BlockPlacement,
+    /// Where its texels are. `None` for a block still to upload: it needs its
+    /// target rect clear, and no copy.
+    pub src: Option<BlockPlacement>,
+    /// Its rect in the target, whose `layer` numbers the target's layers, not
+    /// the pool's.
     pub dst: BlockPlacement,
     pub width: u32,
     pub height: u32,
+}
+
+/// What a compaction plans over.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CopyOrderInput<'a> {
+    /// Every surviving block. Blocks being dropped are not in it, so their
+    /// rects count as free.
+    pub moves: &'a [BlockMove],
+    /// The pool's usable layers, and the target's. The spare is the array
+    /// index past them, and must be empty.
+    pub layers: u32,
+    pub edge: u32,
 }
 
 /// No order through the one spare was found.
@@ -39,449 +58,507 @@ pub(super) struct NoCopyOrder;
 pub struct CopyOrderStats {
     /// Blocks with a new place, whatever it took to get them there.
     pub moved_blocks: u32,
-    /// Blockers staged to break a dependency cycle.
-    pub cycles_staged: u32,
-    /// Hops into free pool space because the spare could not hold the block.
+    /// Hops into free space, out of a layer that had to clear.
     pub parked: u32,
-    /// Most blocks the spare held at once.
-    pub peak_spare_blocks: u32,
-    /// Orders tried before one reached the target.
-    pub attempts: u32,
+    /// Target layers built over a layer that could not be emptied first.
+    pub built_over: u32,
+}
+
+/// One simulated hop, kept so a failed step can be undone.
+#[derive(Debug, Clone, Copy)]
+struct Hop {
+    block: u32,
+    from: Option<BlockPlacement>,
+    parked: bool,
 }
 
 /// Reused buffers, so repeated compactions keep their capacity.
 #[derive(Debug, Default)]
 pub(super) struct CopyOrderScratch {
-    at: Vec<BlockPlacement>,
+    at: Vec<Option<BlockPlacement>>,
     /// Block indices per array layer, the spare last.
     occupants: Vec<Vec<u32>>,
-    waiting: Vec<u32>,
-    /// Blocks still bound for each layer, however far along.
-    arrivals: Vec<Vec<u32>>,
-    /// Per block: how much staging it frees. [`RANKED_OUT`] for one with
-    /// nowhere to go this round.
-    rank: Vec<u32>,
-    /// Per layer: texels in the way of its arrivals, and whether any wait.
-    layer_cost: Vec<(u64, bool)>,
+    /// Texels held per array layer.
+    used: Vec<u64>,
+    /// Layers no target layer has claimed yet.
+    open: Vec<bool>,
+    /// Block indices per target layer.
+    by_target: Vec<Vec<u32>>,
+    /// Target layers not built yet, tallest first.
+    todo: Vec<u32>,
+    /// Blocks of the target layer being built, not yet landed.
+    landing: Vec<u32>,
+    /// `(sort key, tie break, layer)` of the layers a step can use.
+    ranked: Vec<(u64, Reverse<u64>, u32)>,
+    /// Blocks a step must clear, largest last.
+    clearing: Vec<u32>,
+    /// `(texels held, layer)`, the fullest first, for one park.
+    fullest: Vec<(Reverse<u64>, u32)>,
+    /// Candidate `y`s of one free-space search, and the `(start, end)` of what
+    /// crosses one of them.
+    rows: Vec<u32>,
+    spans: Vec<(u32, u32)>,
+    hops: Vec<Hop>,
+    /// The pool layer each target layer landed on.
+    pub homes: Vec<u32>,
 }
 
 impl CopyOrderScratch {
     #[cfg(test)]
-    pub(super) fn capacities(&self) -> [usize; 6] {
+    pub(super) fn capacities(&self) -> [usize; 14] {
         [
             self.at.capacity(),
             self.occupants.capacity(),
-            self.waiting.capacity(),
-            self.arrivals.capacity(),
-            self.rank.capacity(),
-            self.layer_cost.capacity(),
+            self.used.capacity(),
+            self.open.capacity(),
+            self.by_target.capacity(),
+            self.todo.capacity(),
+            self.landing.capacity(),
+            self.ranked.capacity(),
+            self.clearing.capacity(),
+            self.fullest.capacity(),
+            self.rows.capacity(),
+            self.spans.capacity(),
+            self.hops.capacity(),
+            self.homes.capacity(),
         ]
     }
 }
 
-/// Hops an attempt may take without landing a block before it gives up: the
-/// stop for a search that only circles.
-const STALL_HOPS: usize = 128;
+/// The order target layers build in. Tallest first clears the blocks hardest
+/// to park; a pool that still jams, usually on a wide short block near the end,
+/// nearly always clears the other way round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildOrder {
+    TallestFirst,
+    ShortestFirst,
+}
 
-/// Orders tried for a move graph of a few large blocks, where each costs
-/// next to nothing and the first is likeliest to fail.
-const MAX_ATTEMPTS: usize = 256;
+/// Least-full layers tried for clearing after each target layer: past the
+/// first few, a layer that cannot clear only costs the frame.
+const LAYERS_TRIED_FOR_CLEARING: usize = 4;
 
-/// Bounds a whole search, against the square of the moving blocks since an
-/// attempt costs about that: a graph with no order costs the frame about what
-/// a few orders do, however many blocks it has.
-const ATTEMPT_BUDGET: usize = 1 << 16;
+/// Free-space search an order may spend per block, in candidate rows squared,
+/// before it gives up: planning runs on the frame thread, and a pool that jams
+/// retries every target layer on every open layer. Measured on the hallway's
+/// block mix, a tighter budget starts losing orders that exist.
+const WORK_PER_BLOCK: usize = 8192;
 
-const FEWEST_ATTEMPTS: usize = 4;
-
-/// Blockers tried before an attempt gives up on breaking a cycle: when the
-/// best few have nowhere to go, the rest rarely do, and each costs a search of
-/// every layer.
-const BLOCKERS_PER_BREAK: usize = 32;
-
-const RANKED_OUT: u32 = u32::MAX;
-
-/// A blocker in the focus layer outranks any count of moves it frees.
-const FOCUS_RANK: u32 = 1 << 16;
-
-/// Append to `copies` an order that takes every block of `moves` from `src`
-/// to `dst`, or leave it as it was and report that none was found.
-///
-/// `moves` lists every surviving block, held ones included: each is a rect a
-/// hop must not land on. Blocks being dropped or uploaded later are not in it,
-/// so their rects count as free. `spare` is the staging layer's array index,
-/// one past the pool's usable layers, and must be empty. `spare_edge` is how
-/// much of it, from the top left, a block may stage in: the pool passes
-/// `edge`, and a test narrows it to reach the failure path. `first_order_only`
-/// stops after one attempt, for a caller with a cheaper target to try next.
+/// Append to `copies` an order that takes every block to its target rect and
+/// leaves `scratch.homes` naming each target layer's pool layer, or leave
+/// `copies` as it was and report that none was found.
 pub(super) fn plan_copy_order(
-    moves: &[BlockMove],
-    spare: u32,
-    edge: u32,
-    spare_edge: u32,
-    first_order_only: bool,
+    input: CopyOrderInput<'_>,
     scratch: &mut CopyOrderScratch,
     copies: &mut Vec<PoolCopy>,
 ) -> Result<CopyOrderStats, NoCopyOrder> {
     let start = copies.len();
-    let moving = moves.iter().filter(|m| m.src != m.dst).count();
-    let attempts = if first_order_only {
-        1
-    } else {
-        (ATTEMPT_BUDGET / moving.max(1).pow(2)).clamp(FEWEST_ATTEMPTS, MAX_ATTEMPTS)
-    };
-    for attempt in 0..attempts as u32 {
-        let mut search = Search {
-            moves,
-            spare,
-            edge,
-            spare_edge,
-            attempt,
-            scratch: &mut *scratch,
+    for build_order in [BuildOrder::TallestFirst, BuildOrder::ShortestFirst] {
+        let mut order = Order {
+            input,
+            s: &mut *scratch,
             copies: &mut *copies,
-            stats: CopyOrderStats::default(),
+            built_over: 0,
+            work_left: WORK_PER_BLOCK * input.moves.len(),
         };
-        search.begin();
-        if search.run() {
-            return Ok(CopyOrderStats {
-                attempts: attempt + 1,
-                ..search.stats
-            });
+        order.begin(build_order);
+        if order.run() {
+            return Ok(order.stats());
         }
         copies.truncate(start);
     }
     Err(NoCopyOrder)
 }
 
-struct Search<'a> {
-    moves: &'a [BlockMove],
-    spare: u32,
-    edge: u32,
-    spare_edge: u32,
-    attempt: u32,
-    scratch: &'a mut CopyOrderScratch,
+struct Order<'a> {
+    input: CopyOrderInput<'a>,
+    s: &'a mut CopyOrderScratch,
     copies: &'a mut Vec<PoolCopy>,
-    stats: CopyOrderStats,
+    built_over: u32,
+    work_left: usize,
 }
 
-impl Search<'_> {
-    fn begin(&mut self) {
-        let layers = self.spare as usize + 1;
-        let s = &mut *self.scratch;
+impl Order<'_> {
+    fn begin(&mut self, build_order: BuildOrder) {
+        let CopyOrderInput { moves, layers, .. } = self.input;
+        let targets = layers as usize;
+        let array_layers = targets + 1;
+        let s = &mut *self.s;
         s.at.clear();
-        s.at.extend(self.moves.iter().map(|m| m.src));
+        s.at.extend(moves.iter().map(|m| m.src));
         s.occupants.iter_mut().for_each(Vec::clear);
-        s.arrivals.iter_mut().for_each(Vec::clear);
-        if s.occupants.len() < layers {
-            s.occupants.resize_with(layers, Vec::new);
-            s.arrivals.resize_with(layers, Vec::new);
-        }
-        s.waiting.clear();
-        s.rank.clear();
-        s.rank.resize(self.moves.len(), 0);
-        for (i, m) in self.moves.iter().enumerate() {
-            s.occupants[m.src.layer as usize].push(i as u32);
-            if m.src != m.dst {
-                s.waiting.push(i as u32);
-                s.arrivals[m.dst.layer as usize].push(i as u32);
+        s.occupants
+            .resize_with(array_layers.max(s.occupants.len()), Vec::new);
+        s.used.clear();
+        s.used.resize(array_layers, 0);
+        s.open.clear();
+        s.open.resize(array_layers, true);
+        s.by_target.iter_mut().for_each(Vec::clear);
+        s.by_target
+            .resize_with(targets.max(s.by_target.len()), Vec::new);
+        s.homes.clear();
+        s.homes.resize(targets, u32::MAX);
+        s.hops.clear();
+        for (block, m) in moves.iter().enumerate() {
+            if let Some(src) = m.src {
+                s.occupants[src.layer as usize].push(block as u32);
+                s.used[src.layer as usize] += texels(m);
             }
+            s.by_target[m.dst.layer as usize].push(block as u32);
         }
-        self.stats.moved_blocks = s.waiting.len() as u32;
+        s.todo.clear();
+        s.todo
+            .extend((0..targets as u32).filter(|&target| !s.by_target[target as usize].is_empty()));
+        if build_order == BuildOrder::ShortestFirst {
+            s.todo.reverse();
+        }
     }
 
     fn run(&mut self) -> bool {
-        let mut fewest_waiting = self.scratch.waiting.len();
-        let mut landed_at = self.copies.len();
-        loop {
-            self.run_clear_moves();
-            let waiting = self.scratch.waiting.len();
-            if waiting == 0 {
-                return true;
-            }
-            if waiting < fewest_waiting {
-                fewest_waiting = waiting;
-                landed_at = self.copies.len();
-            }
-            if self.copies.len() - landed_at > STALL_HOPS {
-                return false;
-            }
-            if !self.hop_a_same_layer_block() && !self.break_a_cycle() {
-                return false;
-            }
-        }
-    }
-
-    /// Run every move whose destination is clear, until none is.
-    fn run_clear_moves(&mut self) {
-        loop {
-            let mut progressed = false;
-            let mut at = 0;
-            while at < self.scratch.waiting.len() {
-                let block = self.scratch.waiting[at];
-                let dst = self.moves[block as usize].dst;
-                if self.scratch.at[block as usize].layer != dst.layer && self.clear(block, dst) {
-                    self.hop(block, dst);
-                    self.scratch.waiting.swap_remove(at);
-                    progressed = true;
-                } else {
-                    at += 1;
-                }
-            }
-            if !progressed {
-                return;
-            }
-        }
-    }
-
-    /// A block whose destination in its own layer is clear needs only the
-    /// hop out: the next clear-move pass lands it.
-    fn hop_a_same_layer_block(&mut self) -> bool {
-        for at in 0..self.scratch.waiting.len() {
-            let block = self.scratch.waiting[at];
-            let dst = self.moves[block as usize].dst;
-            if self.scratch.at[block as usize].layer == dst.layer && self.clear(block, dst) {
-                return self.stage_or_park(block);
-            }
-        }
-        false
-    }
-
-    /// Every remaining move waits on another: stage a blocker. Even attempts
-    /// clear one layer at a time, so the spare is not left holding part of
-    /// several layers; odd ones rank every blocker by the moves it frees.
-    fn break_a_cycle(&mut self) -> bool {
-        self.rank_sole_blockers();
-        if self.attempt.is_multiple_of(2) {
-            self.rank_focus_layer();
-        }
-        for _ in 0..BLOCKERS_PER_BREAK {
-            let Some(block) = self.best_blocker() else {
+        while !self.s.todo.is_empty() {
+            let Some(next) = (0..self.s.todo.len()).find(|&at| self.build(self.s.todo[at])) else {
                 return false;
             };
-            if self.stage_or_park(block) {
-                self.stats.cycles_staged += 1;
+            self.s.todo.remove(next);
+            self.clear_a_layer();
+        }
+        self.vacate_the_spare();
+        true
+    }
+
+    /// Build `target` on the open layer with the fewest texels in its way,
+    /// the one holding most of it in place among equals. An empty layer
+    /// costs nothing.
+    fn build(&mut self, target: u32) -> bool {
+        self.rank_homes(target);
+        for at in 0..self.s.ranked.len() {
+            if self.work_left == 0 {
+                return false;
+            }
+            let (in_the_way, _, layer) = self.s.ranked[at];
+            let mark = self.s.hops.len();
+            if self.land_on(target, layer) {
+                self.s.open[layer as usize] = false;
+                self.s.homes[target as usize] = layer;
+                self.built_over += u32::from(in_the_way > 0);
                 return true;
             }
-            self.scratch.rank[block as usize] = RANKED_OUT;
+            self.undo_to(mark);
         }
         false
     }
 
-    /// Rank each blocker by the moves it alone holds up.
-    fn rank_sole_blockers(&mut self) {
-        self.scratch.rank.fill(0);
-        for at in 0..self.scratch.waiting.len() {
-            let block = self.scratch.waiting[at];
-            let dst = self.moves[block as usize].dst;
-            if let Some(sole) = self.sole_blocker(block, dst) {
-                self.scratch.rank[sole as usize] += 1;
-            }
-        }
-    }
-
-    fn sole_blocker(&self, block: u32, dst: BlockPlacement) -> Option<u32> {
-        let mut blockers = self.blockers(block, dst);
-        blockers.next().filter(|_| blockers.next().is_none())
-    }
-
-    /// Raise every blocker of the layer with the fewest texels in the way of
-    /// its arrivals: the cheapest layer to finish.
-    fn rank_focus_layer(&mut self) {
-        let layers = self.spare as usize;
-        self.scratch.layer_cost.clear();
-        self.scratch.layer_cost.resize(layers, (0, false));
-        for at in 0..self.scratch.waiting.len() {
-            let block = self.scratch.waiting[at];
-            let dst = self.moves[block as usize].dst;
-            let cost: u64 = self
-                .blockers(block, dst)
-                .map(|other| self.area(other))
-                .sum();
-            let entry = &mut self.scratch.layer_cost[dst.layer as usize];
-            *entry = (entry.0 + cost, true);
-        }
-        let costs = &self.scratch.layer_cost;
-        let focus = (0..layers as u32)
-            .filter(|&layer| costs[layer as usize].1)
-            .min_by_key(|&layer| (costs[layer as usize].0, self.noise(layer)));
-        let Some(focus) = focus else {
-            return;
-        };
-        for at in 0..self.scratch.waiting.len() {
-            let block = self.scratch.waiting[at];
-            let dst = self.moves[block as usize].dst;
-            if dst.layer != focus {
+    fn rank_homes(&mut self, target: u32) {
+        let mut ranked = std::mem::take(&mut self.s.ranked);
+        ranked.clear();
+        for layer in 0..=self.input.layers {
+            if !self.s.open[layer as usize] {
                 continue;
             }
-            for k in 0..self.scratch.occupants[focus as usize].len() {
-                let other = self.scratch.occupants[focus as usize][k];
-                if self.covers(other, block, dst) {
-                    let rank = &mut self.scratch.rank[other as usize];
-                    *rank = rank.saturating_add(FOCUS_RANK);
+            let (mut in_the_way, mut kept) = (0, 0);
+            for &other in &self.s.occupants[layer as usize] {
+                let texels = texels(&self.input.moves[other as usize]);
+                if self.is_landed(other, target, layer) {
+                    kept += texels;
+                } else if self.lies_on_target(other, target) {
+                    in_the_way += texels;
                 }
             }
+            ranked.push((in_the_way, Reverse(kept), layer));
         }
+        ranked.sort_unstable();
+        self.s.ranked = ranked;
     }
 
-    /// The waiting block outside the spare to stage next: the first attempt
-    /// takes the highest rank, smallest first among equals, so the spare
-    /// keeps room for the next one; later attempts draw among equals.
-    fn best_blocker(&self) -> Option<u32> {
-        let s = &*self.scratch;
-        s.waiting
+    fn is_landed(&self, block: u32, target: u32, layer: u32) -> bool {
+        let dst = self.input.moves[block as usize].dst;
+        dst.layer == target && self.s.at[block as usize] == Some(BlockPlacement { layer, ..dst })
+    }
+
+    fn lies_on_target(&self, block: u32, target: u32) -> bool {
+        self.s.by_target[target as usize]
             .iter()
-            .copied()
-            .filter(|&block| {
-                s.rank[block as usize] != RANKED_OUT && s.at[block as usize].layer != self.spare
-            })
-            .max_by_key(|&block| {
-                let rank = s.rank[block as usize];
-                if self.attempt < 2 {
-                    (rank, u64::MAX - self.area(block), u64::from(block))
-                } else {
-                    (rank / FOCUS_RANK, u64::from(rank > 0), self.noise(block))
-                }
-            })
+            .any(|&other| other == block || self.covers_dst(block, other))
     }
 
-    /// A rank that differs per block and per attempt, the same on every run.
-    fn noise(&self, key: u32) -> u64 {
-        let seed = (u64::from(self.attempt) << 32 | u64::from(key)).wrapping_add(1);
-        let mixed = (seed ^ (seed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        let mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        mixed ^ (mixed >> 31)
+    /// `block`, where it sits now, lies on `other`'s target rect.
+    fn covers_dst(&self, block: u32, other: u32) -> bool {
+        let moves = self.input.moves;
+        let (b, o) = (&moves[block as usize], &moves[other as usize]);
+        let place = self.s.at[block as usize].expect("a block on a layer has a place");
+        other != block && overlap(place, b, o.dst, o)
     }
 
-    /// Take `block` out of the way: into the spare packed toward the top left,
-    /// which leaves its room in one piece, or, every other pair of attempts,
-    /// at its destination's coordinates, where blocks bound for one layer can
-    /// never collide; failing that, into free space of another pool layer.
-    fn stage_or_park(&mut self, block: u32) -> bool {
-        let m = self.moves[block as usize];
-        let wanted = BlockPlacement {
-            layer: self.spare,
-            ..m.dst
-        };
-        let fits = m.dst.x + m.width <= self.spare_edge && m.dst.y + m.height <= self.spare_edge;
-        if fits && (self.attempt / 2) % 2 == 1 && self.clear(block, wanted) {
-            self.hop(block, wanted);
-            return true;
-        }
-        if let Some(spot) = self.free_spot(block, self.spare, self.spare_edge, false) {
-            self.hop(block, spot);
-            return true;
-        }
-        // A block parked on a waiting destination only moves the blockage:
-        // the search then circles. Land on one only with no other room.
-        let here = self.scratch.at[block as usize].layer;
-        for clear_of_arrivals in [true, false] {
-            for layer in (0..self.spare).filter(|&layer| layer != here) {
-                if let Some(spot) = self.free_spot(block, layer, self.edge, clear_of_arrivals) {
-                    self.hop(block, spot);
-                    self.stats.parked += 1;
-                    return true;
-                }
+    /// Land every block of `target` on `layer`: at each turn the one with the
+    /// fewest texels in its way, the largest among equals, parking what is.
+    fn land_on(&mut self, target: u32, layer: u32) -> bool {
+        let mut landing = std::mem::take(&mut self.s.landing);
+        landing.clear();
+        landing.extend(
+            self.s.by_target[target as usize]
+                .iter()
+                .copied()
+                .filter(|&block| !self.is_landed(block, target, layer)),
+        );
+        let mut landed = true;
+        while !landing.is_empty() {
+            let next = (0..landing.len())
+                .min_by_key(|&at| {
+                    let block = landing[at];
+                    (
+                        self.texels_in_the_way(block, layer),
+                        Reverse(texels(&self.input.moves[block as usize])),
+                        block,
+                    )
+                })
+                .expect("not empty");
+            let block = landing.swap_remove(next);
+            if !self.clear_for(block, layer) {
+                landed = false;
+                break;
             }
+            let dst = self.input.moves[block as usize].dst;
+            self.hop(block, BlockPlacement { layer, ..dst }, false);
         }
-        false
+        self.s.landing = landing;
+        landed
     }
 
-    /// First free place for `block` in `layer`, within `edge`, and off every
-    /// waiting destination if `clear_of_arrivals`. A free rect slides up and
-    /// left until it touches something, so the origin and the far edges of
-    /// what it must avoid hold every candidate worth testing, and they stay
-    /// aligned because every edge in the pool is.
-    fn free_spot(
-        &self,
-        block: u32,
-        layer: u32,
-        edge: u32,
-        clear_of_arrivals: bool,
-    ) -> Option<BlockPlacement> {
-        let m = &self.moves[block as usize];
-        let s = &*self.scratch;
-        let occupants = &s.occupants[layer as usize];
-        let taken: u64 = occupants.iter().map(|&other| self.area(other)).sum();
-        if taken + self.area(block) > u64::from(edge) * u64::from(edge) {
+    fn texels_in_the_way(&self, block: u32, layer: u32) -> u64 {
+        let own = self.s.at[block as usize].filter(|at| at.layer == layer);
+        let block_texels = own.map_or(0, |_| texels(&self.input.moves[block as usize]));
+        self.s.occupants[layer as usize]
+            .iter()
+            .filter(|&&other| self.covers_dst(other, block))
+            .map(|&other| texels(&self.input.moves[other as usize]))
+            .sum::<u64>()
+            + block_texels
+    }
+
+    /// Park whatever lies on `block`'s rect in `layer`, and `block` itself if
+    /// it sits in `layer` already: a copy cannot stay within one layer.
+    fn clear_for(&mut self, block: u32, layer: u32) -> bool {
+        let mut clearing = std::mem::take(&mut self.s.clearing);
+        clearing.clear();
+        clearing.extend(
+            self.s.occupants[layer as usize]
+                .iter()
+                .copied()
+                .filter(|&other| other == block || self.covers_dst(other, block)),
+        );
+        let parked = self.park_all(&mut clearing, layer);
+        self.s.clearing = clearing;
+        parked
+    }
+
+    /// Keep a layer empty for the next target layer, if one can clear.
+    fn clear_a_layer(&mut self) {
+        if self.s.todo.is_empty() {
+            return;
+        }
+        let mut ranked = std::mem::take(&mut self.s.ranked);
+        ranked.clear();
+        ranked.extend(
+            (0..=self.input.layers)
+                .filter(|&layer| self.s.open[layer as usize])
+                .map(|layer| (self.s.used[layer as usize], Reverse(0), layer)),
+        );
+        if ranked.iter().any(|&(used, _, _)| used == 0) {
+            self.s.ranked = ranked;
+            return;
+        }
+        ranked.sort_unstable();
+        ranked.truncate(LAYERS_TRIED_FOR_CLEARING);
+        for &(_, _, layer) in &ranked {
+            let mark = self.s.hops.len();
+            let mut clearing = std::mem::take(&mut self.s.clearing);
+            clearing.clear();
+            clearing.extend_from_slice(&self.s.occupants[layer as usize]);
+            let cleared = self.park_all(&mut clearing, layer);
+            self.s.clearing = clearing;
+            if cleared {
+                break;
+            }
+            self.undo_to(mark);
+        }
+        self.s.ranked = ranked;
+    }
+
+    /// Park `blocks`, all in `layer`, largest first: a small block fits the
+    /// holes a large one leaves behind, and not the other way round.
+    fn park_all(&mut self, blocks: &mut [u32], layer: u32) -> bool {
+        let moves = self.input.moves;
+        blocks.sort_unstable_by_key(|&block| (Reverse(texels(&moves[block as usize])), block));
+        blocks.iter().all(|&block| self.park(block, layer))
+    }
+
+    /// Hop `block` out of `from` into the fullest layer with a hole for it:
+    /// the emptier layers keep their room in one piece.
+    fn park(&mut self, block: u32, from: u32) -> bool {
+        let mut fullest = std::mem::take(&mut self.s.fullest);
+        fullest.clear();
+        fullest.extend(
+            (0..=self.input.layers)
+                .filter(|&layer| layer != from)
+                .map(|layer| (Reverse(self.s.used[layer as usize]), layer)),
+        );
+        fullest.sort_unstable();
+        let spot = fullest
+            .iter()
+            .find_map(|&(_, layer)| self.free_spot(block, layer));
+        self.s.fullest = fullest;
+        match spot {
+            Some(spot) => {
+                self.hop(block, spot, true);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Topmost, then leftmost, free place for `block` in `layer`. A free rect
+    /// slides up until it touches something, so the top and the far edges of
+    /// what is in the layer hold every row worth testing, and they stay aligned
+    /// because every edge in the pool is.
+    fn free_spot(&mut self, block: u32, layer: u32) -> Option<BlockPlacement> {
+        let m = self.input.moves[block as usize];
+        let edge = self.input.edge;
+        if self.s.used[layer as usize] + texels(&m) > u64::from(edge) * u64::from(edge) {
             return None;
         }
-        let arrivals: &[u32] = if clear_of_arrivals {
-            &s.arrivals[layer as usize]
-        } else {
-            &[]
-        };
-        let edges = |size: u32, far_at: fn(&BlockPlacement, &BlockMove) -> u32| {
-            let held = occupants
-                .iter()
-                .map(move |&other| far_at(&s.at[other as usize], &self.moves[other as usize]));
-            let bound = arrivals.iter().map(move |&other| {
-                let o = &self.moves[other as usize];
-                far_at(&o.dst, o)
+        let mut rows = std::mem::take(&mut self.s.rows);
+        rows.clear();
+        rows.push(0);
+        rows.extend(self.placed(layer).map(|(at, o)| at.y + o.height));
+        rows.sort_unstable();
+        rows.dedup();
+        self.work_left = self.work_left.saturating_sub(rows.len().pow(2));
+        let spot = rows
+            .iter()
+            .take_while(|&&y| y + m.height <= edge)
+            .find_map(|&y| {
+                self.free_x_in_row(&m, layer, y)
+                    .map(|x| BlockPlacement { layer, x, y })
             });
-            std::iter::once(0)
-                .chain(held)
-                .chain(bound)
-                .filter(move |at| at + size <= edge)
-        };
-        let is_free = |spot: BlockPlacement| {
-            self.clear(block, spot)
-                && !arrivals.iter().any(|&other| {
-                    let o = &self.moves[other as usize];
-                    other != block && s.at[other as usize] != o.dst && overlap(spot, m, o.dst, o)
-                })
-        };
-        edges(m.height, |at, o| at.y + o.height).find_map(|y| {
-            edges(m.width, |at, o| at.x + o.width)
-                .map(|x| BlockPlacement { layer, x, y })
-                .find(|&spot| is_free(spot))
+        self.s.rows = rows;
+        spot
+    }
+
+    /// Leftmost `x` where `m` fits between what crosses the row at `y`.
+    fn free_x_in_row(&mut self, m: &BlockMove, layer: u32, y: u32) -> Option<u32> {
+        let mut spans = std::mem::take(&mut self.s.spans);
+        spans.clear();
+        spans.extend(
+            self.placed(layer)
+                .filter(|(at, o)| at.y < y + m.height && y < at.y + o.height)
+                .map(|(at, o)| (at.x, at.x + o.width)),
+        );
+        spans.sort_unstable();
+        let mut x = 0;
+        for &(start, end) in &spans {
+            if x + m.width <= start {
+                break;
+            }
+            x = x.max(end);
+        }
+        self.s.spans = spans;
+        (x + m.width <= self.input.edge).then_some(x)
+    }
+
+    fn placed(&self, layer: u32) -> impl Iterator<Item = (BlockPlacement, &BlockMove)> + '_ {
+        self.s.occupants[layer as usize].iter().map(|&other| {
+            let at = self.s.at[other as usize].expect("an occupant has a place");
+            (at, &self.input.moves[other as usize])
         })
     }
 
-    /// No block but `block` itself covers `block`'s rect at `place`.
-    fn clear(&self, block: u32, place: BlockPlacement) -> bool {
-        self.blockers(block, place).next().is_none()
+    /// A target layer left on the spare's index moves to the pool layer no
+    /// target layer claimed, at the same coordinates.
+    fn vacate_the_spare(&mut self) {
+        let spare = self.input.layers;
+        let Some(target) = self.s.homes.iter().position(|&home| home == spare) else {
+            return;
+        };
+        let free = (0..spare)
+            .find(|&layer| self.s.open[layer as usize])
+            .expect("a target layer on the spare leaves a pool layer unclaimed");
+        for at in 0..self.s.by_target[target].len() {
+            let block = self.s.by_target[target][at];
+            let dst = self.input.moves[block as usize].dst;
+            self.hop(block, BlockPlacement { layer: free, ..dst }, false);
+        }
+        self.s.homes[target] = free;
     }
 
-    fn blockers(&self, block: u32, place: BlockPlacement) -> impl Iterator<Item = u32> + '_ {
-        self.scratch.occupants[place.layer as usize]
-            .iter()
-            .copied()
-            .filter(move |&other| self.covers(other, block, place))
-    }
-
-    /// `other` sits on `block`'s rect at `place`.
-    fn covers(&self, other: u32, block: u32, place: BlockPlacement) -> bool {
-        let m = &self.moves[block as usize];
-        let o = &self.moves[other as usize];
-        other != block && overlap(place, m, self.scratch.at[other as usize], o)
-    }
-
-    fn area(&self, block: u32) -> u64 {
-        let m = &self.moves[block as usize];
-        u64::from(m.width) * u64::from(m.height)
-    }
-
-    fn hop(&mut self, block: u32, to: BlockPlacement) {
-        let m = self.moves[block as usize];
-        let from = self.scratch.at[block as usize];
-        debug_assert_ne!(from.layer, to.layer, "a copy within one subresource");
-        self.copies.push(PoolCopy {
-            src: from,
-            dst: to,
-            width: m.width,
-            height: m.height,
+    fn hop(&mut self, block: u32, to: BlockPlacement, parked: bool) {
+        let m = self.input.moves[block as usize];
+        let from = self.s.at[block as usize];
+        if let Some(from) = from {
+            debug_assert_ne!(from.layer, to.layer, "a copy within one subresource");
+            self.leave(block, from.layer);
+        }
+        // A block with no texels yet takes its place without a copy.
+        if let (Some(from), true) = (from, m.src.is_some()) {
+            self.copies.push(PoolCopy {
+                src: from,
+                dst: to,
+                width: m.width,
+                height: m.height,
+            });
+        }
+        self.enter(block, to);
+        self.s.hops.push(Hop {
+            block,
+            from,
+            parked,
         });
-        let occupants = &mut self.scratch.occupants;
-        let was = occupants[from.layer as usize]
+    }
+
+    fn undo_to(&mut self, mark: usize) {
+        while self.s.hops.len() > mark {
+            let hop = self.s.hops.pop().expect("above the mark");
+            let now = self.s.at[hop.block as usize].expect("a hop left a place");
+            self.leave(hop.block, now.layer);
+            if self.input.moves[hop.block as usize].src.is_some() {
+                self.copies.pop();
+            }
+            match hop.from {
+                Some(from) => self.enter(hop.block, from),
+                None => self.s.at[hop.block as usize] = None,
+            }
+        }
+    }
+
+    fn leave(&mut self, block: u32, layer: u32) {
+        let occupants = &mut self.s.occupants[layer as usize];
+        let was = occupants
             .iter()
             .position(|&other| other == block)
             .expect("a block sits in its layer's occupants");
-        occupants[from.layer as usize].swap_remove(was);
-        occupants[to.layer as usize].push(block);
-        self.scratch.at[block as usize] = to;
-        let in_spare = occupants[self.spare as usize].len() as u32;
-        self.stats.peak_spare_blocks = self.stats.peak_spare_blocks.max(in_spare);
+        occupants.swap_remove(was);
+        self.s.used[layer as usize] -= texels(&self.input.moves[block as usize]);
     }
+
+    fn enter(&mut self, block: u32, at: BlockPlacement) {
+        self.s.occupants[at.layer as usize].push(block);
+        self.s.used[at.layer as usize] += texels(&self.input.moves[block as usize]);
+        self.s.at[block as usize] = Some(at);
+    }
+
+    fn stats(&self) -> CopyOrderStats {
+        let moves = self.input.moves;
+        let moved = (0..moves.len())
+            .filter(|&block| moves[block].src.is_some() && moves[block].src != self.s.at[block]);
+        CopyOrderStats {
+            moved_blocks: moved.count() as u32,
+            parked: self.s.hops.iter().filter(|hop| hop.parked).count() as u32,
+            built_over: self.built_over,
+        }
+    }
+}
+
+fn texels(m: &BlockMove) -> u64 {
+    u64::from(m.width) * u64::from(m.height)
 }
 
 /// Whether rects of `a`'s and `b`'s extents overlap at these places, in one

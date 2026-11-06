@@ -8,7 +8,6 @@ mod journal;
 mod placement;
 mod plan;
 mod repack;
-mod target_layout;
 
 use postretro_level_loader::{LightmapBlockClass, LightmapPoolReport, LightmapTarget};
 
@@ -107,10 +106,6 @@ pub struct LightmapPoolModel {
     texture_allocations: u32,
     #[cfg(test)]
     growth_sizing: growth::GrowthSizing,
-    /// How much of the spare a compaction may stage in, for tests that need
-    /// a move graph with no order. `None` is the whole layer.
-    #[cfg(test)]
-    staging_edge: Option<u32>,
     journal: Vec<JournalOp>,
     drain: u64,
     touch_stamp: Vec<u64>,
@@ -171,8 +166,6 @@ impl LightmapPoolModel {
             texture_allocations: 1,
             #[cfg(test)]
             growth_sizing: growth::GrowthSizing::default(),
-            #[cfg(test)]
-            staging_edge: None,
             journal: Vec::new(),
             drain: 0,
             touch_stamp: vec![0; count],
@@ -346,6 +339,8 @@ fn placement_of(slot: Slot) -> BlockPlacement {
 
 #[cfg(test)]
 mod compaction_proptests;
+#[cfg(test)]
+mod compaction_scale_tests;
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]

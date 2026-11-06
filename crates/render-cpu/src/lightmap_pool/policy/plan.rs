@@ -53,7 +53,7 @@ pub struct PoolCopy {
 pub enum RepackKind {
     /// Blocks moved only to the same or a lower layer.
     Downward,
-    /// Blocks moved to any layer, in the order the copy planner found.
+    /// Every block moved to any layer, in the order the copy planner found.
     Compaction(CopyOrderStats),
 }
 

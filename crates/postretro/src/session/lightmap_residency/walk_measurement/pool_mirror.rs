@@ -41,10 +41,10 @@ pub(super) struct PoolStats {
     /// Repacks that escalated to compaction, and those that found no order.
     pub(super) compactions: u64,
     pub(super) compaction_rollbacks: u64,
-    /// Compactions that staged a blocker, and how many they staged.
-    pub(super) compactions_cycled: u64,
-    pub(super) cycles_staged: u64,
+    /// Hops into free space, and target layers built over a layer that would
+    /// not empty.
     pub(super) parks: u64,
+    pub(super) built_over: u64,
     pub(super) compaction_copies: u64,
     /// Copy bytes of each compaction, spare hops included.
     pub(super) compaction_copy_bytes: Vec<u64>,
@@ -52,7 +52,6 @@ pub(super) struct PoolStats {
     pub(super) downward_copy_bytes: Vec<u64>,
     /// CPU time of the model's planning on each drain that compacted, nanoseconds.
     pub(super) compaction_plan_nanos: Vec<u64>,
-    pub(super) most_compaction_attempts: u32,
     pub(super) largest_compaction_moves: u32,
     pub(super) growths: u64,
     pub(super) deferred: u64,
@@ -347,11 +346,9 @@ impl PoolMirror {
         match plan.repack {
             Some(RepackKind::Compaction(order)) => {
                 s.compactions += 1;
-                s.compactions_cycled += u64::from(order.cycles_staged > 0);
-                s.cycles_staged += u64::from(order.cycles_staged);
                 s.parks += u64::from(order.parked);
+                s.built_over += u64::from(order.built_over);
                 s.compaction_copies += plan.copies.len() as u64;
-                s.most_compaction_attempts = s.most_compaction_attempts.max(order.attempts);
                 s.largest_compaction_moves = s.largest_compaction_moves.max(order.moved_blocks);
                 s.compaction_plan_nanos.push(plan_nanos);
                 s.compaction_copy_bytes.push(copied_bytes);

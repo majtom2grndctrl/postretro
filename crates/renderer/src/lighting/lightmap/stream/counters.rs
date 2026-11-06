@@ -27,7 +27,7 @@ pub struct LightmapStreamCounters {
     pub compaction_rollbacks: u64,
     /// Same-texture copy commands those repacks recorded. A move within one
     /// layer stages through the spare layer and takes two; a move to another
-    /// layer takes one, or more when the block stages to break a cycle.
+    /// layer takes one, or more when the block parks on the way.
     pub repack_copy_commands: u64,
     /// Drains that grew a new pool generation.
     pub growths: u64,

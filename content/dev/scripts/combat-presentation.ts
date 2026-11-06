@@ -3,7 +3,7 @@
 // The templates stay mod-global so any dev map using the dummy/enemy impact
 // policies can exercise the presentation substrate without map-local setup.
 
-import type { DamageType, Impact } from "postretro";
+import { runtime, type DamageType, type Impact } from "postretro";
 import {
   Bar,
   Text,
@@ -68,7 +68,8 @@ const damageNumberByType: [DamageType, (typeof damageNumberTemplates)[number]][]
 ];
 
 // Impact-policy rows that float the hit's points dealt in its type's color.
-// Every dev hit is typed: an untyped hit takes the mod's default, ballistic.
+// Every dev hit is typed: an untyped hit takes the mod's default, ballistic
+// (`defaultDamageType` in start-script.ts).
 export const damageNumberRows = (impact: Impact) =>
   damageNumberByType.map(([type, template]) => ({
     when: impact.type(type),
@@ -128,16 +129,10 @@ export const damagedEnemyOverlay = defineOverlay({
     lingerMs: 2_500,
     hideAtFull: true,
     shield: {
-      value: (entity) => ({
-        op: "add",
-        a: entity.defense(shield).current,
-        b: entity.defense(armor).current,
-      }),
-      max: (entity) => ({
-        op: "add",
-        a: entity.defense(shield).capacity,
-        b: entity.defense(armor).capacity,
-      }),
+      value: (entity) =>
+        runtime.add(entity.defense(shield).current, entity.defense(armor).current),
+      max: (entity) =>
+        runtime.add(entity.defense(shield).capacity, entity.defense(armor).capacity),
     },
   }),
   template: damagedEnemyBar,

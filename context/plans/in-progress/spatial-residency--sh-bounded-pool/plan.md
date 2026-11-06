@@ -32,6 +32,19 @@ Eight recorded runs, hallway and `campaign-test`, HEAD at 9d37ea6c9 against `tod
 
 **Equal clock against equal pose, `campaign-test` 1,370–1,430 m.** Mean difference falls from 2.4–2.6 of 255 at equal pose to 0.10–0.17 at equal clock. Only 3 and 7 shot pairs line up, at differing poses, so this is strong but thin. Held frames with an absent cluster fell outside that comparison, so that case is untested there; HEAD shows one absent cluster at 1,416 m where `today` shows none. A pinned-clock rerun would settle both, but needs a cold rebuild the disk budget does not allow now.
 
+## Review loop (2026-11-05)
+
+Preflight passed at 2c67be9a0: fmt, clippy `--all-targets` with dev-tools, `cargo test` plain, dev-tools and `capture`, release check, crate graph. It reruns after the fixes below. Review panel: 10 reviewers (8 depth, 2 hygiene), no 🔴. Reference counts, journal rollback, wire format, bound and hashing, the paused clock and controller permits all traced clean.
+
+Fixes, edit-only and uncompiled until the gate:
+- **Whole-map fact replaces the latch.** The renderer reports `pool_holds_whole_map` per drain only when every family is whole and nothing was ever released this level. A level reaching the cap any other way keeps evicting, so fragmentation stays recoverable.
+- **`TargetClass::Held`.** A drawn resident on a held frame with no reach or pin class: a target, so departure leaves it alone, but not mandatory, not settled, and the last capacity victim after Hysteresis. In-flight work keeps its prior class. Clarifies row 19: "residents stay" holds except as the last resort under real pool pressure.
+- **Cap refusals retry** once per hysteresis window without leaving targets, so a refused pin is not black until reload.
+- Smaller: any retiring wait wins in `waits_on` (R5); bound plus 25% clamps to the device limit; `release_unbacked_compose_waits` loses its `was_pending` gate; `pool_bound` enforces the lead-0 entry; `bound.rs` accepts exactly the streamed families; `is_usable` agrees with the compiler; floor naming goes.
+- Author text: Build Summary and `docs/level_design.md` wording, `sh_pool_cost.rs` and `shared_bytes.rs` comments. **To do at the gate:** restore the cell id beside the position in Build Summary (`WorstCellPlace.cell` was removed, and row 17 reports the worst cell), for example `dense demand peaks in cell N, near (x, y, z) engine metres`, and update the asserted strings in `sh_mandatory_bound/tests.rs` around lines 406–461. Engine metres stay: the compiler has no clean inverse to map space.
+
+Accepted, not fixed: a victim that frees nothing is still evicted; path flips act as horizon changes; seam suppression can lift on the portal frame after a hold; a direct Pass B failure can promote one frame early.
+
 ## Corrections
 
 - "Id 49 is emitted at pack, after id 51 exists, so the bound needs no new stage" → the directory is built in the uncached `StageId::ClusterDirectory` stage (`pipeline.rs:2092`) and serialized at `pack/section_plan.rs:497`. Per-cluster node sets exist only in `ChunkPlan` (`pack/cluster_sh_payloads/dense.rs:47-98`), which is built at `pack.rs:630` from a shared borrow of the directory. No new stage is needed, but plumbing is: lift `ChunkPlan`'s sets out, compute the bound in pack, pass it to id-49 serialization as an argument, and return it through `PrlFootprint` for the Build Summary (printed at `pipeline.rs:2175-2181`).

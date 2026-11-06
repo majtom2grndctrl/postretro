@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use glam::{Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
 
-use super::gltf_loader::format_accessor_shape;
+use super::gltf_loader::{accessor_read_refusal, format_accessor_shape};
 use super::skeleton::{AnimationClip, Interp, JointTracks, Track};
 
 /// Minimum net horizontal (XZ) root-motion displacement, in ground units, for a
@@ -213,87 +213,6 @@ fn animation_output_shape_ok(
                 | (DataType::I8, Dimensions::Scalar)
                 | (DataType::I16, Dimensions::Scalar)
         ),
-    }
-}
-
-/// Why gltf cannot safely read `accessor`, or `None` when it can. Call once the
-/// accessor's shape is known good, so `size()` is the element size gltf reads.
-///
-/// `gltf::accessor::Iter` trusts what document validation leaves unchecked. A
-/// stride below the element size panics on the first read, in release too. Its
-/// range arithmetic overflows on a zero count or a huge one. A sparse accessor
-/// with no buffer view allocates `count` elements whatever the file's size, so
-/// it is refused; one with a buffer view reads, its own ranges checked.
-fn accessor_read_refusal(
-    accessor: &gltf::Accessor,
-    buffers: &[gltf::buffer::Data],
-) -> Option<&'static str> {
-    if accessor.count() == 0 {
-        return Some("has no elements");
-    }
-    let Some(view) = accessor.view() else {
-        return Some("has no buffer view");
-    };
-    let element_size = accessor.size();
-    let base = view_read_refusal(
-        &view,
-        accessor.offset(),
-        accessor.count(),
-        element_size,
-        buffers,
-    );
-    if base.is_some() {
-        return base;
-    }
-    let sparse = accessor.sparse()?;
-    if sparse.count() == 0 || sparse.count() > accessor.count() {
-        return Some("has a sparse count outside its elements");
-    }
-    let indices = sparse.indices();
-    let values = sparse.values();
-    view_read_refusal(
-        &indices.view(),
-        indices.offset(),
-        sparse.count(),
-        indices.index_type().size(),
-        buffers,
-    )
-    .or_else(|| {
-        view_read_refusal(
-            &values.view(),
-            values.offset(),
-            sparse.count(),
-            element_size,
-            buffers,
-        )
-    })
-}
-
-/// Why `count` elements at `offset` in `view` cannot be read, if they cannot.
-fn view_read_refusal(
-    view: &gltf::buffer::View,
-    offset: usize,
-    count: usize,
-    element_size: usize,
-    buffers: &[gltf::buffer::Data],
-) -> Option<&'static str> {
-    let stride = view.stride().unwrap_or(element_size);
-    if stride < element_size {
-        return Some("has a byte stride below its element size");
-    }
-    let read_end = (count - 1)
-        .checked_mul(stride)
-        .and_then(|span| span.checked_add(element_size))
-        .and_then(|span| span.checked_add(offset));
-    let view_end = view.offset().checked_add(view.length());
-    let buffer_length = buffers.get(view.buffer().index()).map(|data| data.0.len());
-    match (read_end, view_end, buffer_length) {
-        (Some(read_end), Some(view_end), Some(buffer_length))
-            if read_end <= view.length() && view_end <= buffer_length =>
-        {
-            None
-        }
-        _ => Some("overruns its buffer"),
     }
 }
 

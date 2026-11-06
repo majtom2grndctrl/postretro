@@ -119,7 +119,7 @@ import { a11yStrobeStore } from "./scripts/a11y-strobe-store";
 import {
   damagedEnemyBar,
   damagedEnemyOverlay,
-  damageNumber,
+  damageNumberTemplates,
 } from "./scripts/combat-presentation";
 import { reviveMarker, reviveMarkerOverlay } from "./scripts/revive-marker";
 import { markSwimming, splashSound, swimStats } from "./scripts/swim-events";
@@ -194,7 +194,7 @@ export default defineMod({
   loading: { tree: loadingPool },
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
-  presentationTemplates: [damageNumber, damagedEnemyBar, reviveMarker],
+  presentationTemplates: [...damageNumberTemplates, damagedEnemyBar, reviveMarker],
   presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay],
   theme: hudTheme,
   reactions: [

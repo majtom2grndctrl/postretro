@@ -19,8 +19,7 @@ import {
 } from "postretro";
 import { armor, shield } from "./defenses";
 import { shock } from "./damage-types";
-import { present } from "postretro/ui";
-import { damageNumber } from "./combat-presentation";
+import { damageNumberRows } from "./combat-presentation";
 
 // REFERENCE CONTENT — XP belongs to its earning player, while teamKills is one
 // session-wide counter. The two slots share a policy below so the cardinality
@@ -84,7 +83,7 @@ export const combatDummyLifecycle = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
-      { do: [present(damageNumber, impact.amount)] },
+      ...damageNumberRows(impact),
       // A gib is a level: a downed target may be gibbed by a later hit.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so repeated body hits cannot restart recovery.
@@ -122,7 +121,7 @@ export const enemyDeath = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
-      { do: [present(damageNumber, impact.amount)] },
+      ...damageNumberRows(impact),
       // A gib skips the clip entirely — there is no body left to animate.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so further hits on a corpse cannot restart the timer.
@@ -174,7 +173,7 @@ export const combatZombieLifecycle = enemyDeath.override(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
-      { do: [present(damageNumber, impact.amount)] },
+      ...damageNumberRows(impact),
       { when: gibbed, do: [target.despawn()] },
       {
         when: killed.and(gibbed.not()),

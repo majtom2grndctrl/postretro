@@ -16,7 +16,6 @@ use postretro_visibility::VisibleCells;
 
 use super::sh_async_workers::{ShAsyncWorkers, ShWorkerRetirement, ShWorkerStats};
 use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagnostics};
-use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
 use crate::sh_streaming::controller::{ShLevelTopology, ShResidencyController, SyncReadResult};
 use crate::streaming::cell_demand::DemandFrame;
 use crate::streaming::cluster_hints::ClusterHints;
@@ -61,7 +60,7 @@ pub(crate) struct ShStreamingSession {
 }
 
 impl ShStreamingSession {
-    /// Builds a controller from the renderer's actual allocation snapshot.
+    /// Builds a controller for a level the renderer has streamed pools for.
     /// `hints` is the level's id 49, decoded once for every streamed resource.
     #[cfg(feature = "capture")]
     pub(crate) fn from_renderer(
@@ -78,10 +77,10 @@ impl ShStreamingSession {
         mode: ShStreamingMode,
         hints: Arc<ClusterHints>,
     ) -> Result<Self> {
-        let snapshot = renderer.sh_residency_snapshot().with_context(
+        renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
-        let mut session = Self::from_snapshot(manifest.clone(), snapshot, hints)?;
+        let mut session = Self::from_manifest(manifest.clone(), hints)?;
         session.mode = mode;
         Ok(session)
     }
@@ -104,33 +103,27 @@ impl ShStreamingSession {
     /// (`level_streaming::decode_streaming_level_data`) and the residency
     /// snapshot of the renderer set that holds the level, which need not be
     /// published yet. What can still fail is not level data: the snapshot's
-    /// absence, the budget it yields, and the generation clock.
+    /// absence, and the generation clock.
     pub(in crate::session) fn from_snapshot_with_topology(
         manifest: Arc<ShStreamManifest>,
         snapshot: Option<ShResidencySnapshot>,
         mode: ShStreamingMode,
         topology: ShLevelTopology,
     ) -> Result<Self> {
-        let snapshot = snapshot.with_context(
+        snapshot.with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
-        let controller = ShResidencyController::with_topology(
-            manifest.clone(),
-            budget_inputs(snapshot),
-            topology,
-        )?;
+        let controller = ShResidencyController::with_topology(manifest.clone(), topology)?;
         let mut session = Self::over_controller(manifest, controller);
         session.mode = mode;
         Ok(session)
     }
 
-    pub(crate) fn from_snapshot(
+    pub(crate) fn from_manifest(
         manifest: Arc<ShStreamManifest>,
-        snapshot: ShResidencySnapshot,
         hints: Arc<ClusterHints>,
     ) -> Result<Self> {
-        let controller =
-            ShResidencyController::new(manifest.clone(), budget_inputs(snapshot), hints)?;
+        let controller = ShResidencyController::new(manifest.clone(), hints)?;
         Ok(Self::over_controller(manifest, controller))
     }
 
@@ -257,8 +250,8 @@ impl ShStreamingSession {
     }
 
     /// Applies the renderer's ownership result before the caller inspects or
-    /// propagates a later scene/surface failure. The current snapshot updates
-    /// physical charges only after the renderer has accepted/deferred/dropped
+    /// propagates a later scene/surface failure. The current snapshot feeds
+    /// the diagnostics only after the renderer has accepted/deferred/dropped
     /// this batch.
     pub(crate) fn apply_outcome(
         &mut self,
@@ -269,8 +262,6 @@ impl ShStreamingSession {
         let snapshot = renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer lost its residency snapshot before outcome accounting",
         )?;
-        self.controller
-            .update_gpu_charges(fixed_gpu_charges(snapshot))?;
         self.refresh_diagnostics(Some(&snapshot))
     }
 
@@ -328,15 +319,15 @@ impl ShStreamingSession {
         self.controller.all_targets_sampleable()
     }
 
-    /// While true, target updates count no visible miss. Settling sets it
-    /// per drain; capture's preload sets it around its settle.
-    pub(crate) fn suspend_visible_misses(&mut self, suspended: bool) {
-        self.controller.suspend_visible_misses(suspended);
+    /// While true, no frame holds and target updates count no visible miss.
+    /// Settling sets it per drain; capture's preload sets it around its settle.
+    pub(crate) fn set_full_demand(&mut self, full_demand: bool) {
+        self.controller.set_full_demand(full_demand);
     }
 
-    /// Settle-set targets (the mandatory tier: Visible, Pinned, Lead, with
-    /// owners) not yet sampleable; `None` before the first target update.
-    /// See the controller's `unsettled_targets`.
+    /// Settle-set targets (the mandatory tier: Visible, Pinned, Lead) not yet
+    /// sampleable; `None` before the first target update. See the
+    /// controller's `unsettled_targets`.
     pub(crate) fn unsettled_targets(&self) -> Option<usize> {
         self.controller.unsettled_targets()
     }
@@ -423,25 +414,4 @@ pub(in crate::session) fn require_loaded_streaming_mode(mode: ShStreamingMode) -
 /// promote a later unrelated install more than once.
 fn consume_prior_compose_submission(prior_compose_submitted: &mut bool) -> bool {
     std::mem::take(prior_compose_submitted)
-}
-
-fn budget_inputs(snapshot: ShResidencySnapshot) -> ShGpuBudgetInputs {
-    ShGpuBudgetInputs {
-        fixed: fixed_gpu_charges(snapshot),
-        pool_minima: StreamedPoolMinima {
-            dense_group_bytes: snapshot.dense_group_minimum_bytes,
-            indirect_delta_bytes: snapshot.indirect_delta_minimum_bytes,
-            direct_delta_bytes: snapshot.direct_delta_minimum_bytes,
-            animated_direct_delta_bytes: snapshot.animated_direct_delta_minimum_bytes,
-        },
-        renderer_effective_floor_bytes: Some(snapshot.effective_floor_bytes),
-    }
-}
-
-fn fixed_gpu_charges(snapshot: ShResidencySnapshot) -> FixedGpuCharges {
-    FixedGpuCharges {
-        fixed_metadata_bytes: snapshot.fixed_metadata_bytes,
-        whole_resident_scatter_bytes: snapshot.whole_resident_scatter_bytes,
-        active_pool_capacity_bytes: snapshot.active_capacity_bytes,
-    }
 }

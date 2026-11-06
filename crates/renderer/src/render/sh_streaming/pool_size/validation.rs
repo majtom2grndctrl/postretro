@@ -4,36 +4,43 @@ pub(super) fn validate_sparse_caps(
     sparse: &BTreeMap<u32, SparsePlan>,
     limits: &wgpu::Limits,
 ) -> Result<(), ShResidencyDrainError> {
-    for plan in sparse.values() {
-        let entry_bytes = u64::from(plan.capacity.0)
+    sparse
+        .values()
+        .try_for_each(|plan| validate_sparse_plan(plan, limits))
+}
+
+pub(super) fn validate_sparse_plan(
+    plan: &SparsePlan,
+    limits: &wgpu::Limits,
+) -> Result<(), ShResidencyDrainError> {
+    let entry_bytes = u64::from(plan.capacity.0)
+        .checked_mul(4)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let tile_bytes = u64::from(plan.capacity.1.div_ceil(2))
+        .checked_mul(SH_SPARSE_F16_WORD_BYTES)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let row_pair_bytes = u64::from(plan.cell_count.max(1))
+        .checked_mul(8)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let compaction_bytes = u64::from(plan.cell_count)
+        .checked_mul(3)
+        .and_then(|words| words.checked_add(u64::from(plan.capacity.0)))
+        .and_then(|words| words.checked_mul(4))
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    validate_storage_buffer_size(entry_bytes, limits, "streamed sparse entry pool")?;
+    validate_storage_buffer_size(tile_bytes, limits, "streamed sparse delta tile pool")?;
+    validate_storage_buffer_size(row_pair_bytes, limits, "streamed sparse CSR row-pair table")?;
+    validate_storage_buffer_size(compaction_bytes, limits, "streamed sparse compaction table")?;
+    if plan.has_descriptor_indices {
+        let descriptor_bytes = u64::try_from(plan.descriptor_index_count.max(1))
+            .map_err(|_| ShResidencyDrainError::SlotOverflow)?
             .checked_mul(4)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let tile_bytes = u64::from(plan.capacity.1.div_ceil(2))
-            .checked_mul(SPARSE_F16_WORD_BYTES)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let row_pair_bytes = u64::from(plan.cell_count.max(1))
-            .checked_mul(8)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let compaction_bytes = u64::from(plan.cell_count)
-            .checked_mul(3)
-            .and_then(|words| words.checked_add(u64::from(plan.capacity.0)))
-            .and_then(|words| words.checked_mul(4))
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        validate_storage_buffer_size(entry_bytes, limits, "streamed sparse entry pool")?;
-        validate_storage_buffer_size(tile_bytes, limits, "streamed sparse delta tile pool")?;
-        validate_storage_buffer_size(row_pair_bytes, limits, "streamed sparse CSR row-pair table")?;
-        validate_storage_buffer_size(compaction_bytes, limits, "streamed sparse compaction table")?;
-        if plan.has_descriptor_indices {
-            let descriptor_bytes = u64::try_from(plan.descriptor_index_count.max(1))
-                .map_err(|_| ShResidencyDrainError::SlotOverflow)?
-                .checked_mul(4)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            validate_storage_buffer_size(
-                descriptor_bytes,
-                limits,
-                "streamed sparse descriptor index table",
-            )?;
-        }
+        validate_storage_buffer_size(
+            descriptor_bytes,
+            limits,
+            "streamed sparse descriptor index table",
+        )?;
     }
     Ok(())
 }

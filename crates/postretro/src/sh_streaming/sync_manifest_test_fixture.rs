@@ -5,7 +5,8 @@ use postretro_level_format::cell_locator::{CellLocatorChild, CellLocatorSection}
 use postretro_level_format::cells::{CellRecord, CellsSection};
 use postretro_level_format::cluster_directory::{
     CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectorySection, ClusterDirectoryShInventory,
-    ClusterDirectoryValidationInputs, canonical_cell_partition, populate_canonical_resource_ranges,
+    ClusterDirectoryValidationInputs, ShMandatoryBoundEntry, WHOLE_MAP_WORST_CELL,
+    canonical_cell_partition, populate_canonical_resource_ranges,
 };
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_VERSION, ClusterShPayloadsHeader,
@@ -95,6 +96,12 @@ pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf)
         ranges: Vec::new(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: vec![ShMandatoryBoundEntry {
+            lead: 0,
+            worst_dense_slots: 1,
+            worst_cell: WHOLE_MAP_WORST_CELL,
+            families: Vec::new(),
+        }],
     };
     let directory_inputs = ClusterDirectoryValidationInputs {
         cells: &cells,

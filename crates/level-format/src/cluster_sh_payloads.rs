@@ -1,7 +1,7 @@
 //! Cluster-major id-50 SH streaming codec and shared metadata validator.
 //! See: context/lib/build_pipeline.md §PRL section IDs.
 //!
-//! Wire ownership, semantic validation, worker chunk decoding, and address
+//! Wire layout, semantic validation, worker chunk decoding, and address
 //! formulas live in focused children so startup parsing stays visibly separate
 //! from any payload access.
 
@@ -14,7 +14,7 @@ use crate::{
     animated_direct_sh_delta_volumes::{
         ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION, AnimatedDirectShDeltaVolumesSection,
     },
-    cluster_directory::{ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain},
+    cluster_directory::{ClusterDirectorySection, ClusterResourceDomain},
     delta_sh_volumes::{DELTA_SH_VOLUMES_VERSION, DeltaShVolumesSection, delta_probe_f16_stride},
     direct_sh_delta_volumes::{DIRECT_SH_DELTA_VOLUMES_VERSION, DirectShDeltaVolumesSection},
     direct_sh_volume::{DIRECT_SH_VOLUME_VERSION, DirectShVolumeSection},
@@ -46,9 +46,10 @@ pub use types::{
     CLUSTER_SH_LOGICAL_TILE_DIMENSION, CLUSTER_SH_PAYLOADS_CONTAINER_VERSION,
     CLUSTER_SH_PAYLOADS_HEADER_SIZE, CLUSTER_SH_PAYLOADS_INDEX_RECORD_SIZE,
     CLUSTER_SH_PAYLOADS_SOURCE_RECORD_SIZE, CLUSTER_SH_PAYLOADS_VERSION,
-    CLUSTER_SH_PHYSICAL_TILE_STRIDE, ClusterShPayloadsBaseMetadata, ClusterShPayloadsError,
-    ClusterShPayloadsHeader, ClusterShPayloadsIndexRecord, ClusterShPayloadsSection,
-    ClusterShPayloadsSourceKind, ClusterShPayloadsSourceMetadata, ClusterShPayloadsSourceRecord,
+    CLUSTER_SH_PHYSICAL_TILE_STRIDE, CLUSTER_SH_SPARSE_ROW_RECORD_SIZE,
+    ClusterShPayloadsBaseMetadata, ClusterShPayloadsError, ClusterShPayloadsHeader,
+    ClusterShPayloadsIndexRecord, ClusterShPayloadsSection, ClusterShPayloadsSourceKind,
+    ClusterShPayloadsSourceMetadata, ClusterShPayloadsSourceRecord,
     ClusterShPayloadsValidationInputs, cluster_sh_isolated_atlas_array_layout,
     source_metadata_from_sections,
 };

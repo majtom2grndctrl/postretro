@@ -210,13 +210,14 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
                     ),
                 ),
                 (
-                    "Misses: budget / compose / failed / device limit",
+                    "Misses: budget / compose / failed / device limit / map cap",
                     format!(
-                        "{} / {} / {} / {}",
+                        "{} / {} / {} / {} / {}",
                         d.miss_buckets.held_by_drain_budget,
                         d.miss_buckets.awaiting_compose,
                         d.miss_buckets.failed,
                         d.miss_buckets.device_limited,
+                        d.miss_buckets.at_whole_map_cap,
                     ),
                 ),
                 ("Re-reads", d.rereads.to_string()),
@@ -571,9 +572,9 @@ mod tests {
         assert_eq!(
             value(
                 "Installs",
-                "Misses: budget / compose / failed / device limit"
+                "Misses: budget / compose / failed / device limit / map cap"
             ),
-            "0 / 0 / 0 / 5"
+            "0 / 0 / 0 / 5 / 0"
         );
         assert_eq!(value("I/O", "Coalesced reads"), "2 (25% of reads)");
         assert_eq!(

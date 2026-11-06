@@ -25,11 +25,12 @@ fn empty_directory() -> ClusterDirectorySection {
         ranges: Vec::new(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     }
 }
 
 #[test]
-fn drain_accepts_dependent_first_evictions_but_rejects_duplicate_ids() {
+fn drain_accepts_evictions_in_any_order_but_rejects_duplicate_ids() {
     let batch = ShDrainBatch {
         generation: 1,
         content_tag: [7; 32],
@@ -38,7 +39,7 @@ fn drain_accepts_dependent_first_evictions_but_rejects_duplicate_ids() {
     };
     batch
         .validate_contract(2, [7; 32])
-        .expect("dependent-before-owner eviction order is valid");
+        .expect("any eviction order is valid");
     let duplicate = ShDrainBatch {
         evictions: vec![1, 1],
         ..batch
@@ -114,7 +115,9 @@ fn base_metadata_for_sparse_header_checks() -> ShStreamBaseMetadata {
 
 fn id50_header(source_count: u32) -> Vec<u8> {
     let mut bytes = vec![0; 72];
-    bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+    bytes[0..4].copy_from_slice(
+        &postretro_level_format::cluster_sh_payloads::CLUSTER_SH_PAYLOADS_VERSION.to_le_bytes(),
+    );
     bytes[8..12].copy_from_slice(&source_count.to_le_bytes());
     bytes[40..44].copy_from_slice(&6u32.to_le_bytes());
     bytes[44..48].copy_from_slice(&1u32.to_le_bytes());
@@ -168,6 +171,31 @@ fn retained_file_reads_original_bytes_after_path_replacement() {
 
     assert_eq!(read_vec_at(&file, 0, 8, "test").unwrap(), b"original");
     assert_eq!(std::fs::read(path).unwrap(), b"replaced");
+}
+
+#[test]
+fn drain_batch_keeps_mandatory_work_out_of_the_victim_list() {
+    let batch = |mandatory: Vec<u32>, victims: Vec<u32>| ShDrainBatch {
+        generation: 1,
+        content_tag: [7; 32],
+        mandatory,
+        victims,
+        ..ShDrainBatch::default()
+    };
+    // Victims run in policy order, so they need not be sorted.
+    batch(vec![1, 2], vec![5, 3])
+        .validate_contract(8, [7; 32])
+        .unwrap();
+    for rejected in [
+        batch(vec![2, 1], vec![]),
+        batch(vec![1, 8], vec![]),
+        batch(vec![1], vec![3, 3]),
+        batch(vec![1], vec![8]),
+        batch(vec![1, 2], vec![3, 2]),
+        batch(vec![], vec![3]),
+    ] {
+        assert!(rejected.validate_contract(8, [7; 32]).is_err());
+    }
 }
 
 #[test]

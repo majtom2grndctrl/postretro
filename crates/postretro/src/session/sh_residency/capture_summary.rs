@@ -54,7 +54,6 @@ impl ShStreamingSession {
             u64::try_from(value).map_err(|_| anyhow::anyhow!("[SH streaming] {label} exceeds u64"))
         };
         Ok(ShStreamingLifecycleSummary {
-            non_evictable_overshoot_bytes: controller.non_evictable_overshoot_bytes,
             encoded_current_bytes,
             encoded_high_water_upper_bound_bytes,
             decoding_current_bytes,

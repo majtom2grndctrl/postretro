@@ -219,11 +219,11 @@ fn streamed_reduction_preserves_unaffected_colors_and_rejects_reused_slots() {
     state.encode_probe_readback(&ctx.device, &queue, &mut encoder);
     queue.submit([encoder.finish()]);
     state.post_submit_probe_readback(&ctx.device);
-    let old_layers = state.gpu.as_ref().unwrap().shape.layers;
+    let old_shape = state.gpu.as_ref().unwrap().shape;
     // A real install grows the physical pool while the old map is in flight.
     fixture.drain(&ctx.device, &queue, 1);
     let state = &mut fixture.state;
-    assert!(state.gpu.as_ref().unwrap().shape.layers > old_layers);
+    assert!(state.gpu.as_ref().unwrap().shape.layers > old_shape.layers);
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
@@ -239,7 +239,7 @@ fn streamed_reduction_preserves_unaffected_colors_and_rejects_reused_slots() {
         );
     }
     let pool = state.gpu.as_ref().unwrap();
-    state.sampled_words[0] = word(0, 0, pool.shape.tiles_per_layer);
+    state.sampled_words[0] = word(0, 0, old_shape.slots);
     let bindings = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Diagnostic storage gradient after pool growth"),
         layout: &pipeline.get_bind_group_layout(0),
@@ -269,7 +269,7 @@ fn streamed_reduction_preserves_unaffected_colors_and_rejects_reused_slots() {
         .unwrap();
     state.post_submit_probe_readback(&ctx.device);
     let rgb = state.probe_irradiance(0).unwrap();
-    for (actual, expected) in rgb.into_iter().zip([2.5, 2.5, 1.0]) {
+    for (actual, expected) in rgb.into_iter().zip([2.5, 2.5, old_shape.layers as f32]) {
         assert!(
             (actual - expected).abs() < 1.0e-6,
             "new array layer after pool growth: {rgb:?}"

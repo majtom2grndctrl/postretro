@@ -12,6 +12,8 @@ use fs4::FileExt;
 use postretro_level_format::cluster_directory::ClusterDirectoryValidationInputs;
 use postretro_level_format::{SectionDescriptor, SectionId, write_prl_header_and_table};
 use same_file::Handle as FileIdentity;
+
+use super::sh_mandatory_bound::ShMandatoryReport;
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
 // Windows denies an atomic replacement while an indexer, sync client, or reader
@@ -41,10 +43,12 @@ pub(super) struct SectionFootprint {
     pub(super) payload_bytes: u64,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct PrlFootprint {
     pub(super) sections: Vec<SectionFootprint>,
     pub(super) payload_bytes: u64,
+    /// The Build Summary's view of id 49's bound.
+    pub(crate) sh_mandatory: ShMandatoryReport,
 }
 
 impl PrlFootprint {
@@ -59,7 +63,10 @@ impl PrlFootprint {
 }
 
 /// Summarize the planned payloads without invoking their one-shot encoders.
-pub(super) fn report_section_footprint(descriptors: &[SectionDescriptor]) -> PrlFootprint {
+pub(super) fn report_section_footprint(
+    descriptors: &[SectionDescriptor],
+    sh_mandatory: ShMandatoryReport,
+) -> PrlFootprint {
     let sections: Vec<_> = descriptors
         .iter()
         .map(|descriptor| SectionFootprint {
@@ -73,6 +80,7 @@ pub(super) fn report_section_footprint(descriptors: &[SectionDescriptor]) -> Prl
     PrlFootprint {
         sections,
         payload_bytes,
+        sh_mandatory,
     }
 }
 
@@ -701,18 +709,21 @@ mod tests {
 
     #[test]
     fn section_footprint_names_known_ids_and_retains_unknown_ids() {
-        let footprint = report_section_footprint(&[
-            SectionDescriptor {
-                section_id: SectionId::Geometry as u32,
-                version: 1,
-                byte_len: 3,
-            },
-            SectionDescriptor {
-                section_id: 9_001,
-                version: 1,
-                byte_len: 5,
-            },
-        ]);
+        let footprint = report_section_footprint(
+            &[
+                SectionDescriptor {
+                    section_id: SectionId::Geometry as u32,
+                    version: 1,
+                    byte_len: 3,
+                },
+                SectionDescriptor {
+                    section_id: 9_001,
+                    version: 1,
+                    byte_len: 5,
+                },
+            ],
+            Default::default(),
+        );
 
         assert_eq!(footprint.payload_bytes, 8);
         assert_eq!(
@@ -745,8 +756,9 @@ mod tests {
             byte_len: 5,
         };
 
-        let without_optional = report_section_footprint(std::slice::from_ref(&required));
-        let with_optional = report_section_footprint(&[required, optional]);
+        let without_optional =
+            report_section_footprint(std::slice::from_ref(&required), Default::default());
+        let with_optional = report_section_footprint(&[required, optional], Default::default());
 
         assert_eq!(without_optional.payload_bytes, 3);
         assert_eq!(
@@ -955,7 +967,7 @@ mod tests {
             .iter()
             .map(|section| section.descriptor.clone())
             .collect();
-        let footprint = report_section_footprint(&descriptors);
+        let footprint = report_section_footprint(&descriptors, Default::default());
 
         write_and_validate_sections(&output, sections)
             .expect("streamed PRL should write and read back");

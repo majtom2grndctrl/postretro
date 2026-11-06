@@ -1288,8 +1288,7 @@ mod tests {
                 accepted: vec![4],
                 dropped: vec![9],
                 refused: vec![12],
-                deferred: Vec::new(),
-                evicted: Vec::new(),
+                ..ShDrainOutcome::default()
             },
             compose_submitted: false,
             frame: Err(anyhow::anyhow!("surface acquisition failed")),

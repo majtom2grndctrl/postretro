@@ -60,6 +60,14 @@ pub struct ShDrainBatch {
     pub target_remove: Vec<u32>,
     pub evictions: Vec<u32>,
     pub ready: Vec<PreparedShCluster>,
+    /// Every mandatory target, sorted, on a drain with mandatory work ready;
+    /// empty otherwise. A ready item named here may evict and grow, and an
+    /// unnamed one may do neither. Growth sizes to the whole list.
+    pub mandatory: Vec<u32>,
+    /// Optional residents the renderer may evict to admit mandatory work, in
+    /// the order they should go. Only the renderer knows what each one frees,
+    /// so it walks as far as its real shortfall takes it.
+    pub victims: Vec<u32>,
 }
 
 impl ShDrainBatch {
@@ -106,10 +114,21 @@ impl ShDrainBatch {
                 "target-add and target-remove must not name the same cluster",
             ));
         }
-        // The planner may list a dependent before a lower-ID owner. The
-        // renderer computes its own dependency-safe release sequence, so
-        // eviction IDs must be unique and in range, but not numerically sorted.
+        // The planner lists evictions in policy order, so eviction IDs must
+        // be unique and in range, but not numerically sorted.
         validate_unique_cluster_ids(&self.evictions, cluster_count, "evictions")?;
+        validate_sorted_cluster_ids(&self.mandatory, cluster_count, "mandatory")?;
+        validate_unique_cluster_ids(&self.victims, cluster_count, "victims")?;
+        if !self.victims.is_empty() && self.mandatory.is_empty() {
+            return Err(stream_error("victims name no mandatory work to admit"));
+        }
+        if self
+            .victims
+            .iter()
+            .any(|id| self.mandatory.binary_search(id).is_ok())
+        {
+            return Err(stream_error("a mandatory target cannot be a victim"));
+        }
         let mut ready_ids = std::collections::BTreeSet::new();
         for prepared in &self.ready {
             if prepared.generation != self.generation || prepared.content_tag != self.content_tag {
@@ -139,12 +158,26 @@ pub struct ShDrainOutcome {
     pub accepted: Vec<u32>,
     pub dropped: Vec<u32>,
     /// Device-limit refusals release their payload and fail only this cluster.
-    /// Disjoint from accepted, dropped and deferred; no permit is retained.
+    /// Disjoint from the other lists; no permit is retained.
     pub refused: Vec<u32>,
+    /// Mandatory installs fragmentation left no room for, at the whole-map
+    /// cap. Their payload is released as `refused` is, and they are named
+    /// apart so neither the miss bucket nor the warning calls it a device
+    /// limit. Unlike a device limit, they retry on a timer.
+    pub whole_map_refused: Vec<u32>,
+    /// Optional installs the pool had no room for. Nothing was evicted or
+    /// grown for them; the payload and permit are released, and the cluster
+    /// yields until the horizon changes. Unlike `refused`, this is no failure.
+    pub pool_refused: Vec<u32>,
     pub deferred: Vec<PreparedShCluster>,
     /// Clusters actually released by the renderer, not merely requested for
-    /// eviction. An installed owner may remain pinned by a dependent.
+    /// eviction. Capacity victims are listed here too.
     pub evicted: Vec<u32>,
+    /// Every family's capacity is the whole map and nothing has ever left any
+    /// pool, so first-fit has left no hole and nothing need leave now. A fact
+    /// of this drain, not a latch: a level reaching the cap any other way
+    /// reports false and keeps evicting, so fragmentation stays recoverable.
+    pub pool_holds_whole_map: bool,
 }
 
 pub(super) fn validate_sorted_cluster_ids(

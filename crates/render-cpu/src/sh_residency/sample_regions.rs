@@ -5,7 +5,7 @@
 use glam::Vec3;
 
 use super::ShResidencyDrainError;
-use super::ownership::StoredNode;
+use super::stored_nodes::StoredNode;
 
 /// How far a sample region dilates, in probe spacings, so the trilinear
 /// footprint of any point inside it is covered.

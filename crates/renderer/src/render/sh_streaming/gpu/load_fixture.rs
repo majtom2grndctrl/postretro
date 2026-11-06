@@ -6,7 +6,8 @@ use postretro_level_format::cell_locator::{
 use postretro_level_format::cells::{CellRecord, CellsSection};
 use postretro_level_format::cluster_directory::{
     CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectorySection, ClusterDirectoryShInventory,
-    ClusterDirectoryValidationInputs, canonical_cell_partition, populate_canonical_resource_ranges,
+    ClusterDirectoryValidationInputs, ShMandatoryBoundEntry, WHOLE_MAP_WORST_CELL,
+    canonical_cell_partition, populate_canonical_resource_ranges,
 };
 use postretro_level_format::cluster_sh_payloads::*;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
@@ -108,6 +109,14 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
         ranges: vec![],
         seam_portal_ids: vec![],
         cluster_hints: vec![],
+        // Far below the level, so growth has to carry it. No id 51 here, so
+        // the entry takes the whole-map shape.
+        mandatory_bound: vec![ShMandatoryBoundEntry {
+            lead: 0,
+            worst_dense_slots: 4,
+            worst_cell: WHOLE_MAP_WORST_CELL,
+            families: Vec::new(),
+        }],
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells: &cells,
@@ -170,13 +179,6 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
             closure.insert(node, tiles);
             tiles += residency.node_layouts[&node].tile_count;
         }
-        let owned_tiles: u32 = residency
-            .nodes_by_owner
-            .get(&(cluster_id as u32))
-            .into_iter()
-            .flatten()
-            .map(|node| residency.node_layouts[node].tile_count)
-            .sum();
         let isolated = cluster_sh_isolated_atlas_array_layout(tiles).unwrap();
         let atlas_bytes = isolated.layer_count as usize
             * isolated.atlas_width as usize
@@ -218,7 +220,7 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
             payload_offset: payload.len() as u64,
             payload_len: chunk.len() as u64,
             decoded_bytes: (patches as usize * 16 + 20 + atlas_bytes) as u64,
-            requested_resident_bytes: u64::from(owned_tiles) * 512,
+            requested_resident_bytes: u64::from(tiles) * 512,
             stored_tile_count: tiles,
             dense_patch_count: patches,
             affinity_patch_count: 0,

@@ -92,6 +92,7 @@ pub(super) fn plan_streamed_sh(
         metadata.base(),
         metadata.sources(),
         &spatial.cells,
+        spatial.cell_residency_set.as_ref().map(|set| set.max_lead),
     )
     .map_err(|error| LevelInstallError::StreamedSh(error).to_string())
 }

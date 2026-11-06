@@ -1,7 +1,5 @@
 use super::*;
-use crate::cluster_directory::{
-    ClusterRangeRecord, ClusterRecord, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
-};
+use crate::cluster_directory::{ClusterRangeRecord, ClusterRecord, ClusterResourceRecord};
 
 const BASE_PROBE: OctahedralShProbe = OctahedralShProbe {
     validity: 1,
@@ -38,8 +36,6 @@ fn directory(with_sparse: bool) -> ClusterDirectorySection {
         resource_index: 0,
         start: 0,
         count: 64,
-        owner_cluster_id: DENSE_OWNER_SENTINEL,
-        role: ClusterRangeRole::Dense,
     }];
     if with_sparse {
         resources.insert(
@@ -57,8 +53,6 @@ fn directory(with_sparse: bool) -> ClusterDirectorySection {
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
         );
     }
@@ -81,6 +75,7 @@ fn directory(with_sparse: bool) -> ClusterDirectorySection {
         ranges,
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     }
 }
 
@@ -167,7 +162,6 @@ fn encode_expected_chunk(cluster_id: u32, expected: &ExpectedChunk) -> Vec<u8> {
                     push_u32(&mut chunk, row.global_affinity_index);
                     push_u32(&mut chunk, row.first_entry);
                     push_u32(&mut chunk, row.entry_count);
-                    push_u32(&mut chunk, row.role);
                 }
                 for entry in &sparse.entries {
                     push_u32(&mut chunk, entry.light);
@@ -295,19 +289,16 @@ fn validated_multi_cluster_decode_uses_only_the_requested_plan() {
                 resource_index: 0,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
             ClusterRangeRecord {
                 resource_index: 0,
                 start: 64,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
         ],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let sources = vec![ClusterShPayloadsSourceMetadata::Dense {
         section_id: SectionId::OctahedralShVolume as u32,
@@ -389,9 +380,37 @@ fn validated_multi_cluster_decode_uses_only_the_requested_plan() {
 }
 
 #[test]
-fn hostile_header_fails_before_source_or_index_allocation() {
+fn decoder_names_a_previous_format_payload_section_and_the_fix() {
+    assert_eq!(CLUSTER_SH_PAYLOADS_VERSION, 2);
     let mut bytes = vec![0; CLUSTER_SH_PAYLOADS_HEADER_SIZE];
     bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+    let error = ClusterShPayloadsSection::parse_header(&bytes).unwrap_err();
+    assert_eq!(
+        error,
+        ClusterShPayloadsError::VersionMismatch {
+            version: 1,
+            expected: CLUSTER_SH_PAYLOADS_VERSION
+        }
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("ClusterShPayloadsVersionMismatch"),
+        "{message}"
+    );
+    assert!(message.contains("re-bake the level"), "{message}");
+}
+
+#[test]
+fn sparse_row_records_are_three_words() {
+    let one_row = sparse_block_len(1, 0, 0).unwrap();
+    assert_eq!(one_row, 16 + 12);
+    assert_eq!(sparse_block_len(2, 0, 0).unwrap(), one_row + 12);
+}
+
+#[test]
+fn hostile_header_fails_before_source_or_index_allocation() {
+    let mut bytes = vec![0; CLUSTER_SH_PAYLOADS_HEADER_SIZE];
+    bytes[0..4].copy_from_slice(&CLUSTER_SH_PAYLOADS_VERSION.to_le_bytes());
     bytes[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
     bytes[40..44].copy_from_slice(&6u32.to_le_bytes());
     bytes[44..48].copy_from_slice(&1u32.to_le_bytes());
@@ -712,11 +731,10 @@ fn scaled_l1_node_closure_uses_one_base_rank_and_eight_tiles() {
             resource_index: 0,
             start: 0,
             count: 512,
-            owner_cluster_id: DENSE_OWNER_SENTINEL,
-            role: ClusterRangeRole::Dense,
         }],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let sources = vec![ClusterShPayloadsSourceMetadata::Dense {
         section_id: SectionId::OctahedralShVolume as u32,
@@ -828,19 +846,16 @@ fn sparse_sources_reject_scaled_or_too_coarse_base_storage() {
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
             ClusterRangeRecord {
                 resource_index: 1,
                 start: 0,
                 count: 512,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
         ],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let masks = [u64::MAX; 8];
     let scaled_levels = [Level::L1.to_u8(); 8];
@@ -923,8 +938,6 @@ fn direct_id_35_uses_the_shared_slot_layout_and_bc6h_formula() {
         resource_index: 1,
         start: 0,
         count: 64,
-        owner_cluster_id: DENSE_OWNER_SENTINEL,
-        role: ClusterRangeRole::Dense,
     });
     directory.clusters[0].range_count = 2;
     let sources = vec![
@@ -1027,7 +1040,7 @@ fn direct_id_35_uses_the_shared_slot_layout_and_bc6h_formula() {
 }
 
 #[test]
-fn canonical_dense_and_sparse_owners_are_the_only_resident_charge() {
+fn every_chunk_reports_the_bytes_of_all_it_touches_even_when_shared() {
     let base = base_metadata();
     let sources = sources(base);
     let directory = ClusterDirectorySection {
@@ -1074,47 +1087,42 @@ fn canonical_dense_and_sparse_owners_are_the_only_resident_charge() {
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
             ClusterRangeRecord {
                 resource_index: 1,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
             ClusterRangeRecord {
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Halo,
             },
             ClusterRangeRecord {
                 resource_index: 1,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
         ],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let plan = ValidationPlan::new(inputs(&directory, base, &sources)).unwrap();
-    let owner = plan.expected_chunk(0).unwrap();
-    let halo = plan.expected_chunk(1).unwrap();
-    let dense_bytes = u64::from(owner.stored_tile_count)
+    let first = plan.expected_chunk(0).unwrap();
+    let second = plan.expected_chunk(1).unwrap();
+    let dense_bytes = u64::from(first.stored_tile_count)
         * isolated_tile_bytes(IRRADIANCE_FORMAT_RGBA16F).unwrap();
     let sparse_bytes = 16
         + (stored_delta_tiles(Level::L0, u64::MAX)
             * delta_probe_f16_stride(CLUSTER_SH_LOGICAL_TILE_DIMENSION)
             * 2) as u64;
-    assert_eq!(owner.requested_resident_bytes, dense_bytes + sparse_bytes);
-    assert_eq!(halo.requested_resident_bytes, 0);
-    assert_eq!(halo.decoded_bytes, owner.decoded_bytes);
-    assert_eq!(owner.stored_tile_count, halo.stored_tile_count);
+    // Both clusters touch the same node and row, so both report them: neither
+    // depends on the other, and these figures do not sum to a map total.
+    assert_eq!(first.requested_resident_bytes, dense_bytes + sparse_bytes);
+    assert_eq!(second.requested_resident_bytes, dense_bytes + sparse_bytes);
+    assert_eq!(second.decoded_bytes, first.decoded_bytes);
+    assert_eq!(first.stored_tile_count, second.stored_tile_count);
 }
 
 #[test]
@@ -1217,33 +1225,26 @@ fn every_sparse_source_family_contributes_its_own_rows() {
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
             ClusterRangeRecord {
                 resource_index: 1,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
             ClusterRangeRecord {
                 resource_index: 2,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
             ClusterRangeRecord {
                 resource_index: 3,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
         ],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let expected = ValidationPlan::new(inputs(&directory, base, &sources))
         .unwrap()
@@ -1304,7 +1305,13 @@ fn every_sparse_source_family_contributes_its_own_rows() {
         .blocks
         .iter()
         .filter(|block| block.kind == BLOCK_KIND_SPARSE_ROWS)
-        .map(|block| (block.section_id, read_u32(decoded.block_bytes(block), 32)))
+        .map(|block| {
+            let first_entry = 16 + CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
+            (
+                block.section_id,
+                read_u32(decoded.block_bytes(block), first_entry),
+            )
+        })
         .collect();
     assert_eq!(
         sparse_lights,

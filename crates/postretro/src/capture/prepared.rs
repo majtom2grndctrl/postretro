@@ -324,8 +324,9 @@ impl PreparedCapture {
                 self.planar.drawn_cells(&self.visible_render.visible_cells),
             )
         });
-        // Like Settling, the preload presents nothing: it counts no miss.
-        streaming.suspend_visible_misses(true);
+        // Like Settling, the preload waits on its whole view and presents nothing:
+        // full demand on any path, and no miss counted.
+        streaming.set_full_demand(true);
         streaming.update_targets(
             self.planar
                 .sh_visible_cells(&self.visible_render.visible_cells),
@@ -340,7 +341,7 @@ impl PreparedCapture {
             {
                 self.renderer.reset_capture_measurement_timing();
                 if let Some(streaming) = self.sh_streaming.as_mut() {
-                    streaming.suspend_visible_misses(false);
+                    streaming.set_full_demand(false);
                 }
                 return Ok(());
             }

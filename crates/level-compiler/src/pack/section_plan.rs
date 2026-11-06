@@ -1,6 +1,8 @@
 //! Final legacy section descriptors after pack-time presence policy.
 //! See: context/lib/build_pipeline.md §PRL Compilation
 
+use postretro_level_format::cluster_directory::{ClusterDirectorySection, ShMandatoryBoundEntry};
+
 use super::*;
 
 /// Id 51's PRL table entry version. The loader does not check it: the
@@ -65,7 +67,10 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
-    pub(super) cluster_bake: &'a crate::cluster_directory_bake::ClusterDirectoryBake,
+    pub(super) cluster_directory: &'a ClusterDirectorySection,
+    /// Id 49's bound tail. Pack computes it after the directory is baked, from
+    /// the node sets the chunks are encoded from.
+    pub(super) sh_mandatory_bound: Vec<ShMandatoryBoundEntry>,
     pub(super) cluster_payload: Option<super::cluster_sh_payloads::ClusterPayloadSpool>,
 }
 
@@ -112,7 +117,8 @@ pub(super) fn build_finalized_section_plan<'a>(
         cell_draw_index,
         cell_visibility,
         cell_residency_set,
-        cluster_bake,
+        cluster_directory,
+        sh_mandatory_bound,
         cluster_payload,
     } = inputs;
 
@@ -494,13 +500,17 @@ pub(super) fn build_finalized_section_plan<'a>(
             },
         ));
     }
-    let cluster_directory_len = cluster_bake.directory.byte_len()?;
+    let cluster_directory = ClusterDirectorySection {
+        mandatory_bound: sh_mandatory_bound,
+        ..cluster_directory.clone()
+    };
+    let cluster_directory_len = cluster_directory.byte_len()?;
     sections.push(PlannedSection::new(
         SectionId::ClusterDirectory as u32,
         CLUSTER_DIRECTORY_CONTAINER_VERSION,
         cluster_directory_len,
-        || {
-            cluster_bake.directory.try_to_bytes().map_err(|error| {
+        move || {
+            cluster_directory.try_to_bytes().map_err(|error| {
                 anyhow::anyhow!("ClusterDirectory violates its wire contract: {error}")
             })
         },

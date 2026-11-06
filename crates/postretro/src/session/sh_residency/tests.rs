@@ -19,15 +19,7 @@ fn async_worker_failure_warns_once_across_same_identity_retry() {
     let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
-    let mut session = ShStreamingSession::from_snapshot(
-        manifest,
-        ShResidencySnapshot {
-            effective_floor_bytes: 1024 * 1024,
-            ..ShResidencySnapshot::default()
-        },
-        level_hints(&world),
-    )
-    .unwrap();
+    let mut session = ShStreamingSession::from_manifest(manifest, level_hints(&world)).unwrap();
     session.mode = ShStreamingMode::Async;
     session.start_async_workers().unwrap();
 
@@ -72,12 +64,8 @@ fn periodic_log_line_appears_once_per_active_interval_and_never_when_idle() {
     let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
-    let renderer = ShResidencySnapshot {
-        effective_floor_bytes: 1024 * 1024,
-        ..ShResidencySnapshot::default()
-    };
-    let mut session =
-        ShStreamingSession::from_snapshot(manifest, renderer, level_hints(&world)).unwrap();
+    let renderer = ShResidencySnapshot::default();
+    let mut session = ShStreamingSession::from_manifest(manifest, level_hints(&world)).unwrap();
     session.mode = ShStreamingMode::Async;
     session.start_async_workers().unwrap();
     let capture = LogCapture::start();
@@ -137,15 +125,7 @@ fn sync_proof_reads_fill_the_read_counters() {
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
     let encoded_bytes = manifest.payloads().index[0].payload_len;
-    let mut session = ShStreamingSession::from_snapshot(
-        manifest,
-        ShResidencySnapshot {
-            effective_floor_bytes: 1024 * 1024,
-            ..ShResidencySnapshot::default()
-        },
-        level_hints(&world),
-    )
-    .unwrap();
+    let mut session = ShStreamingSession::from_manifest(manifest, level_hints(&world)).unwrap();
     assert_eq!(session.mode, ShStreamingMode::SyncProof);
 
     session
@@ -165,35 +145,6 @@ fn sync_proof_reads_fill_the_read_counters() {
     assert_eq!(stats.coalesced_reads, 0);
     assert_eq!(stats.read_bytes, encoded_bytes);
     assert_eq!(stats.gap_bytes, 0);
-}
-
-#[test]
-fn snapshot_budget_uses_real_renderer_pool_figures() {
-    let snapshot = ShResidencySnapshot {
-        fixed_metadata_bytes: 11,
-        whole_resident_scatter_bytes: 13,
-        active_capacity_bytes: 17,
-        effective_floor_bytes: 41,
-        dense_group_minimum_bytes: Some(5),
-        indirect_delta_minimum_bytes: Some(2),
-        direct_delta_minimum_bytes: None,
-        animated_direct_delta_minimum_bytes: Some(3),
-        ..ShResidencySnapshot::default()
-    };
-
-    let inputs = budget_inputs(snapshot);
-    assert_eq!(inputs.fixed.fixed_metadata_bytes, 11);
-    assert_eq!(inputs.fixed.whole_resident_scatter_bytes, 13);
-    assert_eq!(inputs.fixed.active_pool_capacity_bytes, 17);
-    assert_eq!(inputs.pool_minima.dense_group_bytes, Some(5));
-    assert_eq!(inputs.pool_minima.indirect_delta_bytes, Some(2));
-    assert_eq!(inputs.pool_minima.direct_delta_bytes, None);
-    assert_eq!(inputs.pool_minima.animated_direct_delta_bytes, Some(3));
-    assert_eq!(inputs.renderer_effective_floor_bytes, Some(41));
-    // Regression: a level whose entire SH allocation is below the 256 MiB
-    // requested floor must still accept the renderer's exact physical floor.
-    let accounting = crate::sh_streaming::budget::ShResidencyAccounting::new(inputs).unwrap();
-    assert_eq!(accounting.effective_floor_bytes().unwrap(), 41);
 }
 
 #[test]

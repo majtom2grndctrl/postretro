@@ -15,11 +15,9 @@ use super::super::{
 };
 
 /// One row after the residency allocator has assigned its entry and f16 ranges.
-/// `role == 2` is a halo and never becomes a reachable compose row.
 #[derive(Debug)]
 pub(in super::super) struct DirectSparseRowUpload<'a> {
     pub(in super::super) row: u32,
-    pub(in super::super) role: u32,
     pub(in super::super) entry_start: u32,
     pub(in super::super) entry_end: u32,
     /// Row starts are word-aligned; entries may still have odd f16 offsets.
@@ -92,7 +90,7 @@ impl StreamingSparseBuffers {
         let mut offsets = Vec::new();
         let mut pairs = Vec::new();
         for row in rows {
-            if row.role == 2 || row.lights.is_empty() {
+            if row.lights.is_empty() {
                 continue;
             }
             // Tile payloads stage straight into the batch, ahead of every
@@ -237,23 +235,13 @@ impl StreamingSparseBuffers {
         row: &DirectSparseRowUpload<'_>,
         capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
-        match row.role {
-            2 => return Ok(()),
-            1 => {}
-            _ => {
-                return Err(ShResidencyDrainError::MalformedChunk {
-                    cluster_id: 0,
-                    reason: "streamed direct sparse row has an invalid role",
-                });
-            }
-        }
         if row.row >= self.row_count {
             return Err(ShResidencyDrainError::MalformedChunk {
                 cluster_id: 0,
                 reason: "streamed direct sparse row exceeds metadata",
             });
         }
-        // A owned zero-entry row has no delta; its missing pair stays zero but
+        // A zero-entry row has no delta; its missing pair stays zero but
         // the caller still includes its row in base copy-through dispatches.
         if row.lights.is_empty() {
             if !is_zero_entry_row(row) {
@@ -322,7 +310,7 @@ fn is_word_aligned_tile_row(row: &DirectSparseRowUpload<'_>) -> bool {
 }
 
 /// The grid records and sparse buffers of one direct compose family, sized
-/// from the residency plan's `layout` raised to `sparse_floor`.
+/// from the residency plan's `layout` raised to `sparse_capacity`.
 pub(super) fn build_grid_and_sparse(
     device: &wgpu::Device,
     limits: &wgpu::Limits,
@@ -330,11 +318,11 @@ pub(super) fn build_grid_and_sparse(
     layout: &SparseComposeLayout,
     shape: AtlasShape,
     label: &'static str,
-    sparse_floor: Option<(u32, u32)>,
+    sparse_capacity: Option<(u32, u32)>,
 ) -> Result<(ComposeGridParams, StreamingSparseBuffers, wgpu::Buffer, u64), ShResidencyDrainError> {
     let affinity_dims = layout.affinity_dims;
-    let entry_capacity = layout.entry_capacity(sparse_floor);
-    let tile_f16_capacity = layout.tile_f16_capacity(sparse_floor);
+    let entry_capacity = layout.entry_capacity(sparse_capacity);
+    let tile_f16_capacity = layout.tile_f16_capacity(sparse_capacity);
     let cells = checked_cell_count(affinity_dims)?;
     let cells_usize = usize::try_from(cells).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
     let entry_len =
@@ -565,7 +553,6 @@ mod tests {
         let tile_f16 = [1, 2, 3, 4];
         let row = DirectSparseRowUpload {
             row: 4,
-            role: 1,
             entry_start: 1,
             entry_end: 2,
             tile_f16_start: 8,
@@ -581,12 +568,11 @@ mod tests {
     }
 
     #[test]
-    fn owned_zero_entry_row_has_no_reachable_payload() {
+    fn zero_entry_row_has_no_reachable_payload() {
         let lights = [];
         let tile_f16 = [];
         let row = DirectSparseRowUpload {
             row: 4,
-            role: 1,
             entry_start: 0,
             entry_end: 0,
             tile_f16_start: 0,

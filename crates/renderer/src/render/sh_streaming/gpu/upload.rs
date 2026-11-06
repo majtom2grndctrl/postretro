@@ -160,8 +160,8 @@ impl StreamingGpuPools {
         }
     }
 
-    /// Upload only canonical nodes from an id-50 isolated atlas block. No
-    /// decoded cluster body survives this call.
+    /// Upload only the runs a chunk writes first from an id-50 isolated atlas
+    /// block. No decoded cluster body survives this call.
     pub(in crate::render::sh_streaming) fn validate_isolated_tiles(
         &self,
         expected_format: wgpu::TextureFormat,

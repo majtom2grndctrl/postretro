@@ -123,6 +123,11 @@ impl LevelWorld {
         self.sh_storage.manifest()
     }
 
+    /// Id 51's baked maximum lead, `None` without a usable id 51.
+    pub fn baked_max_lead(&self) -> Option<u32> {
+        self.cell_residency_set.as_ref().map(|set| set.max_lead)
+    }
+
     /// Id-22/42 block ownership: all-resident payloads, or a streaming
     /// manifest.
     pub fn lightmap_storage(&self) -> &crate::lightmap_stream::LightmapStorage {

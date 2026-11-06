@@ -1,4 +1,5 @@
-//! Atomic canonical-cluster installation and dense payload validation.
+//! Atomic cluster installation and dense payload validation.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use super::*;
 
@@ -15,10 +16,15 @@ pub(super) struct InstallGpu<'a> {
 /// Everything a staged install derived before its commit point. The CPU
 /// mirrors already hold the new addresses; only queue uploads and the
 /// installed record remain.
-struct StagedInstall {
-    local_slots: Vec<SlotRun>,
-    patches: Vec<InstalledProbe>,
-    sparse_plan: Vec<SparseInstallPlan>,
+pub(super) struct StagedInstall {
+    /// Tiles of the nodes this install wrote first.
+    pub(super) local_slots: Vec<SlotRun>,
+    patches: ChunkPatches,
+    referenced_nodes: Vec<StoredNode>,
+    /// Every sparse row the chunk names; each one holds a reference.
+    sparse_rows: Vec<(u32, u32)>,
+    /// The sparse rows this install wrote first.
+    pub(super) sparse_plan: Vec<SparseInstallPlan>,
     required_indirect_epoch: u64,
     required_direct_epoch: u64,
 }
@@ -26,7 +32,7 @@ struct StagedInstall {
 impl ShResidencyState {
     pub(super) fn install(
         &mut self,
-        mut gpu: Option<&mut InstallGpu<'_>>,
+        gpu: Option<&mut InstallGpu<'_>>,
         prepared: &PreparedShCluster,
     ) -> Result<(), ShResidencyDrainError> {
         let cluster_id = prepared.chunk.cluster_id;
@@ -39,14 +45,14 @@ impl ShResidencyState {
         }
         // Canonical empty clusters legitimately have no id-50 bytes or block
         // table. They carry no addresses and need no compose work, but remain
-        // generation/target checked lifecycle members so ownership accounting
+        // generation/target checked lifecycle members so residency accounting
         // stays exact.
         if prepared.chunk.blocks.is_empty() {
             self.installed.insert(
                 cluster_id,
                 InstalledCluster {
                     patches: Vec::new(),
-                    owned_nodes: Vec::new(),
+                    referenced_nodes: Vec::new(),
                     sparse_rows: Vec::new(),
                     required_indirect_epoch: self.indirect_compose_epoch,
                     required_direct_epoch: self.direct_compose_epoch,
@@ -56,58 +62,35 @@ impl ShResidencyState {
             return Ok(());
         }
         let has_dense_payload = self.validate_isolated_atlases(cluster_id, &prepared.chunk)?;
-        // Every fallible wire/allocator operation happens before the single
-        // visibility commit below. Each staged mutation is journaled, so a
-        // malformed sparse family cannot strand an address or make a half
-        // cluster reachable on a later drain, and rollback touches only what
-        // this cluster changed.
+        // Every fallible step runs under this journal, up to and including
+        // staging the uploads, so a failure anywhere restores every mirror and
+        // reference count. A malformed sparse family cannot strand an address
+        // or make a half cluster reachable on a later drain, and rollback
+        // touches only what this cluster changed.
         let mut journal = InstallJournal::default();
-        let staged = match self.stage_install(
-            &mut journal,
-            gpu.as_deref_mut(),
-            prepared,
-            has_dense_payload,
-        ) {
+        let staged = match self.stage_install(&mut journal, prepared, has_dense_payload) {
             Ok(staged) => staged,
             Err(error) => {
                 self.roll_back(journal);
                 return Err(error);
             }
         };
-        // Commit point: the provisional mirrors are now the live ones. GPU
-        // growth performed while staging is not undone on failure; a larger
-        // pool with the same live contents is still a valid pool.
-        drop(journal);
         if let Some(gpu) = gpu {
             // Nearly every decoded byte is uploaded; reserve for it once.
             let mut uploads =
                 self.begin_uploads(prepared.chunk.bytes.len() + prepared.chunk.bytes.len() / 8);
-            let staged_result =
-                self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged);
+            if let Err(error) =
+                self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged)
+            {
+                // Discarding the batch keeps each GPU word equal to its
+                // mirror: a rolled-back install uploads nothing.
+                self.roll_back(journal);
+                return Err(error);
+            }
             upload_copy_regions = uploads.copy_count();
             self.submit_uploads(uploads, gpu.device, gpu.queue);
-            staged_result?;
         }
-        let owned_nodes = self
-            .nodes_by_owner
-            .get(&cluster_id)
-            .cloned()
-            .unwrap_or_default();
-        self.installed.insert(
-            cluster_id,
-            InstalledCluster {
-                patches: staged.patches,
-                owned_nodes,
-                sparse_rows: staged
-                    .sparse_plan
-                    .iter()
-                    .map(|row| (row.section_id, row.payload.row))
-                    .collect(),
-                required_indirect_epoch: staged.required_indirect_epoch,
-                required_direct_epoch: staged.required_direct_epoch,
-            },
-        );
-        self.pending_promotion.insert(cluster_id);
+        self.commit_install(cluster_id, staged);
         if let Some(started) = trace_started {
             log::trace!(
                 "[Renderer] streamed SH install: cluster={cluster_id} upload_copy_regions={upload_copy_regions} install_cpu_micros={}",
@@ -117,44 +100,52 @@ impl ShResidencyState {
         Ok(())
     }
 
-    /// The fallible half of an install: allocate addresses, rewrite compose
-    /// words, mark rows, grow GPU capacity, and validate every upload without
-    /// queueing it. Every CPU mirror mutation goes through `journal`; the
-    /// caller rolls it back on error.
-    fn stage_install(
+    /// The visibility commit: the provisional mirrors are now the live ones.
+    pub(super) fn commit_install(&mut self, cluster_id: u32, staged: StagedInstall) {
+        self.installed.insert(
+            cluster_id,
+            InstalledCluster {
+                patches: staged.patches.probes,
+                referenced_nodes: staged.referenced_nodes,
+                sparse_rows: staged.sparse_rows,
+                required_indirect_epoch: staged.required_indirect_epoch,
+                required_direct_epoch: staged.required_direct_epoch,
+            },
+        );
+        self.pending_promotion.insert(cluster_id);
+    }
+
+    /// The fallible half of an install: reference and allocate storage,
+    /// rewrite compose words, mark rows, check the pools hold it, and validate
+    /// every upload without queueing it. Every CPU mirror mutation goes
+    /// through `journal`; the caller rolls it back on error.
+    pub(super) fn stage_install(
         &mut self,
         journal: &mut InstallJournal,
-        mut gpu: Option<&mut InstallGpu<'_>>,
         prepared: &PreparedShCluster,
         has_dense_payload: bool,
     ) -> Result<StagedInstall, ShResidencyDrainError> {
         let cluster_id = prepared.chunk.cluster_id;
         let sparse_rows = self.collect_sparse_rows(cluster_id, &prepared.chunk)?;
-        if has_dense_payload {
-            self.allocate_owned_nodes(journal, cluster_id)?;
-        } else if self
-            .nodes_by_owner
-            .get(&cluster_id)
-            .is_some_and(|nodes| !nodes.is_empty())
-        {
-            return Err(malformed(
-                cluster_id,
-                "canonical dense node owner omitted its id-34 payload",
-            ));
-        }
-        let local_slots = if has_dense_payload {
-            self.local_to_live_slots(cluster_id, &prepared.chunk)?
-        } else {
-            Vec::new()
-        };
-        let patches = if has_dense_payload {
-            self.install_patches(journal, cluster_id, &prepared.chunk)?
-        } else {
-            Vec::new()
-        };
-        let dense_rows = patches
+        let referenced_sparse_rows: Vec<(u32, u32)> = sparse_rows
             .iter()
-            .map(|patch| self.affinity_row_for_dense(patch.dense))
+            .map(|(section_id, row)| (*section_id, row.row))
+            .collect();
+        let (nodes, local_slots, patches) = if has_dense_payload {
+            let nodes = self.reference_chunk_nodes(journal, cluster_id, &prepared.chunk)?;
+            let local_slots =
+                self.local_to_live_slots(cluster_id, &prepared.chunk, &nodes.first_written)?;
+            let patches = self.install_patches(journal, cluster_id, &prepared.chunk)?;
+            (nodes, local_slots, patches)
+        } else {
+            Default::default()
+        };
+        // Row refs and dirty rows follow stored words, not references: a
+        // shared word changes nothing compose reads.
+        let dense_rows = patches
+            .first_written
+            .iter()
+            .map(|&dense| self.affinity_row_for_dense(dense))
             .collect::<Result<Vec<_>, _>>()?;
         for (row, count) in row_counts(dense_rows) {
             self.journal_insert_row(journal, RowSet::IndirectDirty, row);
@@ -178,21 +169,23 @@ impl ShResidencyState {
             self.dense_slots.capacity,
             Some(&self.sparse_pools),
         )?;
-        // Halo closures can carry the same wire blocks as their canonical
-        // owner while contributing no new address. Only actual writer
-        // work waits for the following compose epoch.
-        let (required_indirect_epoch, required_direct_epoch) = required_compose_epochs(
+        // A write waits for the following compose epoch. A cluster that wrote
+        // nothing can still be sharing storage an earlier install wrote, so
+        // it also waits for every install not yet promoted.
+        let (written_indirect_epoch, written_direct_epoch) = required_compose_epochs(
             self.indirect_compose_epoch,
             self.direct_compose_epoch,
             self.direct_compose_required,
-            !patches.is_empty(),
+            !patches.first_written.is_empty(),
             sparse_plan.iter().map(|row| row.section_id),
         )?;
+        let (pending_indirect_epoch, pending_direct_epoch) = self.highest_pending_epochs();
+        let required_indirect_epoch = written_indirect_epoch.max(pending_indirect_epoch);
+        let required_direct_epoch = written_direct_epoch.max(pending_direct_epoch);
         // Fatal metadata, wire and address contracts must win over a
-        // recoverable growth verdict. All CPU reservations above roll back
-        // together; dense growth still commits before a sparse refusal.
-        self.ensure_dense_capacity(gpu.as_deref_mut())?;
-        self.ensure_sparse_capacity(gpu)?;
+        // recoverable capacity verdict. All CPU reservations above roll back
+        // together, and what happens next belongs to `pool_admission`.
+        self.check_pool_room()?;
         self.validate_staged_on_gpu(
             prepared,
             has_dense_payload,
@@ -204,6 +197,8 @@ impl ShResidencyState {
         Ok(StagedInstall {
             local_slots,
             patches,
+            referenced_nodes: nodes.referenced,
+            sparse_rows: referenced_sparse_rows,
             sparse_plan,
             required_indirect_epoch,
             required_direct_epoch,
@@ -346,7 +341,7 @@ impl ShResidencyState {
         gpu.upload_changed_compose_words(
             uploads,
             &self.compose_words,
-            staged.patches.iter().map(|patch| patch.dense),
+            staged.patches.first_written.iter().copied(),
         )
     }
 
@@ -368,8 +363,8 @@ impl ShResidencyState {
                     "dense chunk omits its required id-34 isolated atlas",
                 ));
             }
-            // A canonical cluster may own only sparse rows. It has no dense
-            // slots or probe patches to upload, but its sparse family remains
+            // A cluster may name only sparse rows. It has no dense slots or
+            // probe patches to upload, but its sparse family remains
             // independently installable under the same transaction.
             return Ok(false);
         };
@@ -409,65 +404,6 @@ impl ShResidencyState {
         Ok(true)
     }
 
-    fn allocate_owned_nodes(
-        &mut self,
-        journal: &mut InstallJournal,
-        cluster_id: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        // Per-cluster list; cloning it keeps the node loop free to mutate the
-        // allocator without borrowing the ownership index.
-        let Some(nodes) = self.nodes_by_owner.get(&cluster_id).cloned() else {
-            return Ok(());
-        };
-        for node in nodes {
-            if self.node_slots.contains_key(&node) {
-                continue;
-            }
-            let tile_count = self
-                .node_layouts
-                .get(&node)
-                .ok_or(malformed(
-                    cluster_id,
-                    "canonical node lacks id-34 prefix metadata",
-                ))?
-                .tile_count;
-            self.journal_allocate_node(journal, node, tile_count)?;
-        }
-        Ok(())
-    }
-
-    fn ensure_dense_capacity(
-        &mut self,
-        gpu: Option<&mut InstallGpu<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
-        // Grow the fixed active atlas before any upload can address the new
-        // ranges. `FirstFitRanges::capacity` is only an address high-water
-        // and may exceed the GPU shape after fragmentation; never let that
-        // turn into an out-of-bounds texture upload. The ranges above are
-        // provisional: a refused growth rolls them back with the install.
-        let probe_occlusion_enabled = self.probe_occlusion_enabled();
-        if let Some(pools) = self.gpu.as_mut()
-            && self.dense_slots.capacity > pools.shape.slots
-        {
-            let gpu = gpu.ok_or(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed dense growth requires device handles",
-            })?;
-            pools.grow_dense(
-                self.dense_slots.capacity,
-                gpu::DenseGrowthInputs {
-                    device: gpu.device,
-                    queue: gpu.queue,
-                    base: &self.base_metadata,
-                    sources: &self.source_metadata,
-                    probe_occlusion_enabled,
-                    sh: gpu.sh,
-                    selection_weights: gpu.selection_weights,
-                },
-            )?;
-        }
-        Ok(())
-    }
-
     /// Start an upload batch with room for about `reserve` bytes.
     pub(super) fn begin_uploads(&mut self, reserve: usize) -> StagedUploads {
         self.gpu.as_mut().map_or_else(
@@ -488,7 +424,7 @@ impl ShResidencyState {
         }
     }
 
-    fn probe_occlusion_enabled(&self) -> bool {
+    pub(super) fn probe_occlusion_enabled(&self) -> bool {
         self.gpu
             .as_ref()
             .is_some_and(StreamingGpuPools::probe_occlusion_enabled)

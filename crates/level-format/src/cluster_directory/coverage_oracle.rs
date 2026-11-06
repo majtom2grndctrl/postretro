@@ -1,8 +1,8 @@
-// The original id-49 range-table derivation, kept verbatim as the oracle for
-// the coverage module. O(active bricks × member cells); tests only.
+// The original id-49 range-table scan, kept as the oracle for the coverage
+// module. O(active bricks × member cells); tests only.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 use super::*;
 
@@ -223,15 +223,9 @@ pub(super) fn oracle_derive_ranges_with_counts(
             maximum_visited_nodes_per_cluster.max(visited_nodes.len());
     }
 
-    let mut owners = BTreeMap::<u32, u32>::new();
-    for (cluster, bricks) in coverage.iter().enumerate() {
-        for &brick in bricks {
-            owners.entry(brick).or_insert(cluster as u32);
-        }
-    }
     let mut result = Vec::new();
     let mut counts = Vec::with_capacity(directory.clusters.len());
-    for (cluster_id, bricks) in coverage.iter().enumerate() {
+    for bricks in &coverage {
         let mut cluster_ranges = Vec::new();
         for (resource_index, resource) in directory.resources.iter().enumerate() {
             let indices: Vec<u32> = match resource.domain {
@@ -252,34 +246,14 @@ pub(super) fn oracle_derive_ranges_with_counts(
             let mut start = 0;
             while start < indices.len() {
                 let first = indices[start];
-                let (role, owner) = if resource.domain == ClusterResourceDomain::DenseProbe {
-                    (ClusterRangeRole::Dense, DENSE_OWNER_SENTINEL)
-                } else {
-                    let owner = owners[&first];
-                    (
-                        if owner == cluster_id as u32 {
-                            ClusterRangeRole::Owned
-                        } else {
-                            ClusterRangeRole::Halo
-                        },
-                        owner,
-                    )
-                };
                 let mut end = start + 1;
                 while end < indices.len() && indices[end] == indices[end - 1] + 1 {
-                    if resource.domain == ClusterResourceDomain::AffinityCell
-                        && owners[&indices[end]] != owner
-                    {
-                        break;
-                    }
                     end += 1;
                 }
                 cluster_ranges.push(ClusterRangeRecord {
                     resource_index: resource_index as u32,
                     start: first,
                     count: (end - start) as u32,
-                    owner_cluster_id: owner,
-                    role,
                 });
                 start = end;
             }

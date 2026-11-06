@@ -30,42 +30,33 @@ impl ShResidencyState {
             sh,
             selection_weights,
         };
-        self.install_ready(Some(&mut gpu), batch.ready, &mut outcome)?;
+        let admission = PoolAdmission::new(batch.mandatory, batch.victims);
+        self.install_ready(Some(&mut gpu), batch.ready, admission, &mut outcome)?;
         #[cfg(feature = "dev-tools")]
         self.probe_readback
             .reconcile(self.grid_dimensions, &self.sampled_words);
+        outcome.pool_holds_whole_map = self.pool_holds_whole_map();
         Ok(outcome)
     }
 
-    fn promote_and_evict(
+    pub(super) fn promote_and_evict(
         &mut self,
         uploads: &mut StagedUploads,
         evictions: Vec<u32>,
         outcome: &mut ShDrainOutcome,
     ) -> Result<(), ShResidencyDrainError> {
         self.promote_completed(uploads)?;
-        // A dependent and its canonical owner may depart in the same batch.
-        // Compute the release sequence against the installed graph first, so
-        // numeric cluster order cannot evict an owner before its halo. A
-        // target-dependent owner is absent from this sequence and remains
-        // pinned without making the app-side logical ledger guess.
-        let requested_evictions: BTreeSet<u32> = evictions.into_iter().collect();
-        let installed: BTreeSet<u32> = self.installed.keys().copied().collect();
-        for cluster_id in dependent_first_release_order(
-            &requested_evictions,
-            &self.targets,
-            &installed,
-            &self.owner_dependencies,
-        ) {
-            self.evict(uploads, cluster_id)?;
-            // `evict` rechecks live ownership while mutating rows. Report a
-            // confirmed release only after its installed record is actually
-            // gone; the app uses this outcome to retire its logical ledger.
-            if !self.installed.contains_key(&cluster_id) {
-                outcome.evicted.push(cluster_id);
+        // Clusters are independent, so requests release in any order. Sorting
+        // keeps the confirmed list ascending. A cluster re-targeted since the
+        // request stays; the app learns that from its absence here.
+        let requested: BTreeSet<u32> = evictions.into_iter().collect();
+        for cluster_id in requested {
+            if self.targets.contains(&cluster_id) || !self.installed.contains_key(&cluster_id) {
+                continue;
             }
+            self.evict(uploads, cluster_id)?;
+            outcome.evicted.push(cluster_id);
         }
-        outcome.evicted.sort_unstable();
         Ok(())
     }
 
@@ -77,6 +68,7 @@ impl ShResidencyState {
         &mut self,
         mut gpu: Option<&mut InstallGpu<'_>>,
         ready: Vec<PreparedShCluster>,
+        mut admission: PoolAdmission,
         outcome: &mut ShDrainOutcome,
     ) -> Result<(), ShResidencyDrainError> {
         if ready.is_empty() {
@@ -95,11 +87,8 @@ impl ShResidencyState {
                     outcome.dropped.push(cluster_id);
                     continue;
                 }
-                if self.missing_owner(cluster_id) {
-                    outcome.deferred.push(prepared);
-                    continue;
-                }
-                match self.install(gpu.as_deref_mut(), &prepared) {
+                match self.install_admitted(gpu.as_deref_mut(), &prepared, &mut admission, outcome)
+                {
                     Ok(()) => outcome.accepted.push(cluster_id),
                     // A growth transaction may be blocked behind its one
                     // retiring generation. Keep the ready payload/permit in
@@ -111,6 +100,13 @@ impl ShResidencyState {
                     }
                     Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => {
                         outcome.refused.push(cluster_id);
+                    }
+                    Err(ShResidencyDrainError::PoolAtWholeMap { family }) => {
+                        self.warn_whole_map_refusal(family, cluster_id);
+                        outcome.whole_map_refused.push(cluster_id);
+                    }
+                    Err(ShResidencyDrainError::PoolShortfall) => {
+                        outcome.pool_refused.push(cluster_id);
                     }
                     Err(error) => return Err(error),
                 }
@@ -255,6 +251,7 @@ impl ShResidencyState {
         self.probe_readback.invalidate();
         self.targets.clear();
         self.node_slots.clear();
+        self.storage_refs.clear();
         self.dense_slots = FirstFitRanges::default();
         self.compose_words.fill(0);
         self.sampled_words.fill(0);
@@ -292,73 +289,5 @@ impl ShResidencyState {
         for pool in self.sparse_pools.values_mut() {
             *pool = SparsePool::new(pool.row_pairs.len());
         }
-    }
-}
-
-/// Return the subset that can actually leave this drain, in dependency order.
-/// A renderer does not manufacture ownership transfers: an owner stays alive
-/// whenever any installed dependent still names it, including a dependent that
-/// remains targeted and was never itself requested for eviction.
-fn dependent_first_release_order(
-    requested: &BTreeSet<u32>,
-    targets: &BTreeSet<u32>,
-    installed: &BTreeSet<u32>,
-    owner_dependencies: &[BTreeSet<u32>],
-) -> Vec<u32> {
-    let mut remaining: BTreeSet<_> = requested
-        .iter()
-        .copied()
-        .filter(|cluster_id| !targets.contains(cluster_id) && installed.contains(cluster_id))
-        .collect();
-    let mut live = installed.clone();
-    let mut ordered = Vec::with_capacity(remaining.len());
-    loop {
-        let releasable: Vec<_> = remaining
-            .iter()
-            .copied()
-            .filter(|&candidate| {
-                !live.iter().any(|&dependent| {
-                    dependent != candidate
-                        && owner_dependencies
-                            .get(dependent as usize)
-                            .is_some_and(|owners| owners.contains(&candidate))
-                })
-            })
-            .collect();
-        if releasable.is_empty() {
-            return ordered;
-        }
-        for cluster_id in releasable {
-            remaining.remove(&cluster_id);
-            live.remove(&cluster_id);
-            ordered.push(cluster_id);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn release_order_keeps_an_owner_pinned_until_its_departed_halo_leaves() {
-        let order = dependent_first_release_order(
-            &BTreeSet::from([0, 1]),
-            &BTreeSet::new(),
-            &BTreeSet::from([0, 1]),
-            &[BTreeSet::new(), BTreeSet::from([0])],
-        );
-        assert_eq!(order, vec![1, 0]);
-    }
-
-    #[test]
-    fn release_order_refuses_an_owner_needed_by_a_targeted_halo() {
-        let order = dependent_first_release_order(
-            &BTreeSet::from([0]),
-            &BTreeSet::from([1]),
-            &BTreeSet::from([0, 1]),
-            &[BTreeSet::new(), BTreeSet::from([0])],
-        );
-        assert!(order.is_empty());
     }
 }

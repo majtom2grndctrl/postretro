@@ -7,7 +7,7 @@ use super::install_tests::SyntheticMap;
 use super::*;
 use crate::render::{ShSampleRegion, ShSampleRegionSets};
 
-/// Four bricks, two per cluster: cluster 0 owns rows 0–1, cluster 1 rows 2–3.
+/// Four bricks, two per cluster: cluster 0 names rows 0–1, cluster 1 rows 2–3.
 ///
 /// | row | id 27 | id 41 | id 45 |
 /// |-----|-------|-------|-------|
@@ -486,16 +486,16 @@ fn residency_changes_plan_zero_entry_rows_once() {
 
 #[test]
 fn partial_eviction_plans_its_rows_regardless_of_gate() {
-    // Cross-owned rows make one eviction partial for two rows. Row 1 is
-    // zero-entry: its base belongs to cluster 0, its sparse rows to cluster
-    // 1. Row 2 carries an id-27 entry: its sparse rows belong to cluster 0,
-    // its base to cluster 1.
+    // Rows split across clusters make one eviction partial for two rows.
+    // Row 1 is zero-entry: cluster 0 names its base, cluster 1 its sparse
+    // rows. Row 2 carries an id-27 entry: cluster 0 names its sparse rows,
+    // cluster 1 its base.
     let map = SyntheticMap::new([16, 4, 4], [2, 1, 1])
         .with_empty_rows(INDIRECT_DELTA_ID, &[1])
         .with_empty_rows(DIRECT_DELTA_ID, &[1, 2, 3])
         .with_empty_rows(ANIMATED_DIRECT_DELTA_ID, &[0, 1, 2])
-        .with_sparse_row_owner(1, 1)
-        .with_sparse_row_owner(2, 0);
+        .with_sparse_row_home(1, 1)
+        .with_sparse_row_home(2, 0);
     let mut harness = Harness::settled(map);
 
     // Row 2 leaves the gate and goes stale.
@@ -503,8 +503,8 @@ fn partial_eviction_plans_its_rows_regardless_of_gate() {
     assert_eq!(hidden[0], [0, 3]);
     assert!(harness.stale(ComposePass::Indirect, 2));
 
-    // Evicting cluster 0 leaves rows 1 and 2 resident through their other
-    // owner. Both are planned while still outside the gate.
+    // Evicting cluster 0 leaves rows 1 and 2 resident through cluster 1.
+    // Both are planned while still outside the gate.
     harness.evict(0);
     assert_eq!(harness.state.resident_rows()[0], BTreeSet::from([1, 2, 3]));
     let eviction = harness.frame(Frame::per_source().gate(&[]));

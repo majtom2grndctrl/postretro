@@ -552,6 +552,7 @@ pub(crate) fn write_late_cluster_directory_level()
             ranges: Vec::new(),
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         };
         sections.retain(|section| section.section_id != SectionId::ClusterDirectory as u32);
         sections.push(SectionBlob {

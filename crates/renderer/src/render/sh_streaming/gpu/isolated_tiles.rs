@@ -1,7 +1,7 @@
 //! Copy planning for id-50 isolated-atlas tile uploads.
 //!
 //! A cluster's node closure arrives in its own compact atlas, and each
-//! canonical node lands on a contiguous live slot range. One copy region is a
+//! stored node lands on a contiguous live slot range. One copy region is a
 //! run of consecutive live slots inside one live atlas row. Source tiles are
 //! gathered per tile, so the closure-local layout never splits a region; only
 //! the live allocation does.

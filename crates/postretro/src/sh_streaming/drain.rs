@@ -9,17 +9,18 @@ use crate::streaming::shared_drain::SharedDrain;
 impl ShResidencyController {
     /// Emits a decoded-byte-bounded set of renderer-ready chunks plus an
     /// initial reset or sorted target deltas for the sync-proof path. This path
-    /// deliberately never emits evictions or changes targets for budget
-    /// pressure: the sync-proof capture path stays a stable no-eviction
-    /// baseline.
+    /// deliberately names no evictions or capacity victims: the sync-proof
+    /// capture path stays a stable no-eviction baseline, so past capacity its
+    /// mandatory work grows the pool.
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn take_drain_batch(&mut self) -> Result<ShDrainBatch, ShResidencyControllerError> {
         self.take_drain_batch_alone(false)
     }
 
-    /// Async-only drain policy. Departed residents leave before pressure can
-    /// suppress cold band work, and every eviction remains only a request until
-    /// the renderer confirms that no installed dependent pins its owner.
+    /// Async-only drain policy. Departed residents leave first, capacity
+    /// victims only if mandatory work needs the room, and every eviction
+    /// remains only a request until the renderer reports the release. A pool
+    /// holding the whole map evicts nothing: see [`Self::begin_drain`].
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn take_async_drain_batch(
         &mut self,
@@ -28,9 +29,7 @@ impl ShResidencyController {
     }
 
     /// One async frame's controller work after completions are admitted: the
-    /// drain batch first, then new read requests. The drain's budget policy
-    /// may suppress optional targets, so requests taken before it could name
-    /// a cluster this same frame has already dropped.
+    /// drain batch first, then new read requests.
     #[cfg(test)]
     pub(crate) fn take_async_drain_batch_and_requests(
         &mut self,
@@ -40,8 +39,8 @@ impl ShResidencyController {
         Ok((batch, requests))
     }
 
-    /// Every request the controller's permits allow now. Call after the
-    /// drain, whose budget policy may have suppressed optional targets.
+    /// Every request the controller's permits allow now, after the drain has
+    /// taken what it will install.
     pub(crate) fn take_requests(
         &mut self,
     ) -> Result<Vec<ShClusterRequest>, ShResidencyControllerError> {
@@ -68,8 +67,8 @@ impl ShResidencyController {
         Ok(batch)
     }
 
-    /// First half of one drain: budget policy (async), target deltas,
-    /// departed-ready cleanup and evictions into the returned batch, and every
+    /// First half of one drain: target deltas, departed-ready cleanup,
+    /// evictions and capacity policy into the returned batch, and every
     /// installable ready cluster offered to `drain`. The level-scope owner
     /// admits the merged list once, then calls [`Self::finish_drain`].
     pub(crate) fn begin_drain(
@@ -77,13 +76,13 @@ impl ShResidencyController {
         eviction_enabled: bool,
         drain: &mut SharedDrain,
     ) -> Result<ShDrainBatch, ShResidencyControllerError> {
-        if !self.in_drain.is_empty() || !self.in_drain_evictions.is_empty() {
+        if !self.in_drain.is_empty()
+            || !self.in_drain_evictions.is_empty()
+            || !self.in_drain_victims.is_empty()
+        {
             return Err(ShResidencyControllerError::InvalidDrainOutcome(
                 "previous drain outcome was not applied before preparing another batch".into(),
             ));
-        }
-        if eviction_enabled {
-            self.apply_budget_policy()?;
         }
         let mut batch = ShDrainBatch {
             generation: self.generation,
@@ -109,14 +108,26 @@ impl ShResidencyController {
         }
         self.drop_departed_ready(&self.targets.clone())?;
 
-        if eviction_enabled {
+        // Eviction is what fragments first-fit. A pool that holds the whole map
+        // and has never released a range has no need of it: residents stay, and
+        // first-fit from empty leaves no hole.
+        let evicts = eviction_enabled && !self.pool_holds_whole_map;
+        if evicts {
             batch.evictions = self.departed_eviction_order();
         }
         self.in_drain_evictions = batch.evictions.iter().copied().collect();
-        for (&cluster_id, ready) in &self.ready {
-            if !self.ready_for_install(cluster_id) {
-                continue;
+        // Everything here allocates, so it runs only when mandatory work is
+        // waiting: an idle drain names no capacity policy at all.
+        if self.mandatory_work_ready() {
+            batch.mandatory = self.mandatory_targets();
+            if evicts {
+                batch.victims = self.capacity_victims();
+                self.in_drain_victims = batch.victims.iter().copied().collect();
             }
+        }
+        // `drop_departed_ready` above left only targeted payloads, and no
+        // cluster waits on another, so every one of them is installable.
+        for (&cluster_id, ready) in &self.ready {
             let state = &self.states[cluster_id as usize];
             drain.offer(DrainItem {
                 rank: DrainRank::sh(

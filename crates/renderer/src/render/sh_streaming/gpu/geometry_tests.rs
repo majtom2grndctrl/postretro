@@ -3,23 +3,125 @@ use super::*;
 use crate::render::sh_streaming::allocator::FirstFitRanges;
 
 #[test]
-fn whole_level_geometry_preserves_floor_share_and_covers_tiny_zero_and_full_layers() {
+fn whole_level_geometry_covers_tiny_zero_and_many_layers() {
     let limits = wgpu::Limits::default();
-    let old_share = AtlasShape::for_slots(40_000, 40_000, &limits).unwrap();
-    assert_eq!(
-        (old_share.tiles_per_row, old_share.tiles_per_layer),
-        (200, 40_000)
-    );
+    let target = AtlasShape::for_slots(40_000, 40_000, &limits).unwrap();
+    assert_eq!((target.tiles_per_row, target.layers), (71, 8));
     let minimum = AtlasShape::for_slots(1, 100_000, &limits).unwrap();
     assert!(
         u64::from(minimum.tiles_per_layer) * u64::from(limits.max_texture_array_layers) >= 225_000
     );
     assert_eq!(minimum.layers, 1);
     assert_eq!(AtlasShape::for_slots(1, 0, &limits).unwrap().slots, 1);
+}
+
+// The figures `research.md` measured, at the headroom the pool applies.
+#[test]
+fn the_hallway_grows_by_an_eighth_and_caps_within_a_layer_of_the_map() {
+    let limits = wgpu::Limits::default();
+    let whole = 731_008;
+    let shape = AtlasShape::for_slots(210_022, whole, &limits).unwrap();
+    assert_eq!((shape.tiles_per_layer, shape.layers), (26_406, 8));
+    assert_eq!(shape.slots, 211_248);
+
+    let first_growth = shape
+        .grown_for_slots(shape.slots + 1, shape.slots + 1, whole, &limits)
+        .unwrap();
+    assert_eq!(first_growth.layers, 9);
+
+    let cap = shape
+        .grown_for_slots(whole, u32::MAX, whole, &limits)
+        .unwrap();
+    assert_eq!((cap.layers, cap.slots), (28, 739_368));
+    assert!(cap.slots - whole < shape.tiles_per_layer);
+}
+
+// `wanted` is what growth aims at, so its landing is one layer's rounding.
+#[test]
+fn growth_lands_within_a_layer_of_what_the_tier_wants() {
+    let limits = wgpu::Limits::default();
+    let shape = AtlasShape::for_slots(210_022, 731_008, &limits).unwrap();
+    for wanted in [211_249, 250_000, 400_000] {
+        let grown = shape
+            .grown_for_slots(wanted, wanted, 731_008, &limits)
+            .unwrap();
+        assert!(grown.slots >= wanted);
+        assert!(grown.slots - wanted < shape.tiles_per_layer);
+    }
+}
+
+// Past the full layers `POOL_LAYERS` would take, layers stay equal, so the
+// last is not a nearly empty full layer.
+#[test]
+fn a_target_past_every_full_layer_pads_by_rows_not_by_a_layer() {
+    let limits = wgpu::Limits::default();
     let full = (limits.max_texture_dimension_2d / 8).pow(2);
-    let shape = AtlasShape::for_slots(full + 1, full + 1, &limits).unwrap();
-    assert_eq!(shape.tiles_per_layer, full);
-    assert_eq!(shape.slots, full * 2);
+    let target = full * 8 + 1;
+    let shape = AtlasShape::for_slots(target, target, &limits).unwrap();
+    assert_eq!(shape.layers, 9);
+    assert!(shape.tiles_per_layer < full);
+    assert!(shape.slots - target < shape.layers * shape.tiles_per_row);
+}
+
+// A device with fewer layers than the pool wants still takes every slot.
+#[test]
+fn a_small_array_limit_takes_fewer_larger_layers() {
+    let limits = wgpu::Limits {
+        max_texture_array_layers: 4,
+        ..wgpu::Limits::default()
+    };
+    let shape = AtlasShape::for_slots(1_000, 1_000, &limits).unwrap();
+    assert!(shape.layers <= 4);
+    assert!(shape.slots >= 1_000);
+}
+
+// Growth can reach the whole map within the layer limit, however small the
+// target that fixed the layer.
+#[test]
+fn the_layer_rule_lets_growth_reach_the_whole_map_within_the_array_limit() {
+    let limits = wgpu::Limits {
+        max_texture_array_layers: 4,
+        ..wgpu::Limits::default()
+    };
+    let whole = 100_000;
+    let shape = AtlasShape::for_slots(10, whole, &limits).unwrap();
+    let grown = shape
+        .grown_for_slots(whole, whole, whole, &limits)
+        .expect("the whole map fits the device");
+    assert!(grown.slots >= whole);
+    assert!(grown.layers <= limits.max_texture_array_layers);
+}
+
+// AC 30: the cap is the whole map in whole layers, and `wanted` cannot pass it.
+#[test]
+fn growth_stops_at_the_whole_map_in_whole_layers() {
+    let limits = wgpu::Limits::default();
+    let shape = AtlasShape {
+        tiles_per_row: 8,
+        tiles_per_layer: 64,
+        layers: 1,
+        slots: 64,
+    };
+    let whole = 150;
+
+    let grown = shape.grown_for_slots(65, 10_000, whole, &limits).unwrap();
+    assert_eq!((grown.layers, grown.slots), (3, 192));
+
+    assert_eq!(
+        shape.grown_for_slots(193, 193, whole, &limits),
+        Err(ShResidencyDrainError::PoolAtWholeMap {
+            family: "dense atlas",
+        })
+    );
+    // The device's refusal stands first: no wait or cap could serve it.
+    let two_layers = wgpu::Limits {
+        max_texture_array_layers: 2,
+        ..limits
+    };
+    assert!(matches!(
+        shape.grown_for_slots(193, 193, whole, &two_layers),
+        Err(ShResidencyDrainError::GpuDeviceLimit { .. })
+    ));
 }
 
 struct ChurnRng(u64);
@@ -60,7 +162,9 @@ const WARREN_HALLWAY: &[u32] = &[
     3122,
 ];
 
-fn churn_peak(sizes: &[u32], seed: u64) -> u32 {
+/// First-fit's address high-water over seeded churn. With `residents_stay` a
+/// departure keeps its range, as a pool holding the whole map does.
+fn churn_peak(sizes: &[u32], seed: u64, residents_stay: bool) -> u32 {
     let mut rng = ChurnRng(seed);
     let mut pool = FirstFitRanges::default();
     let mut live = vec![None; sizes.len()];
@@ -80,10 +184,10 @@ fn churn_peak(sizes: &[u32], seed: u64) -> u32 {
         }
         if step != 20_000 {
             let i = rng.index(sizes.len());
-            if let Some(range) = live[i].take() {
-                pool.release(range).unwrap();
-            } else {
+            if live[i].is_none() {
                 live[i] = Some(pool.allocate(sizes[i]).unwrap());
+            } else if !residents_stay {
+                pool.release(live[i].take().unwrap()).unwrap();
             }
         }
     }
@@ -105,7 +209,7 @@ fn fixture_churn_fits_fragmentation_headroom() {
         let chosen = AtlasShape::for_slots(1, whole, &limits).unwrap();
         let chosen_max = chosen.tiles_per_layer * limits.max_texture_array_layers;
         for seed in seeds {
-            let peak = churn_peak(sizes, seed);
+            let peak = churn_peak(sizes, seed, false);
             assert!(
                 peak <= chosen_max,
                 "{name}, seed {seed}, peak {peak}, cap {chosen_max}"
@@ -118,7 +222,7 @@ fn fixture_churn_fits_fragmentation_headroom() {
             }
         }
     }
-    assert_eq!(refused, [true, true, false, false, false]);
+    assert_eq!(refused, [true, false, false, false, false]);
     assert_eq!(
         (
             DENSE_FRAGMENTATION_HEADROOM_NUMERATOR,
@@ -127,6 +231,23 @@ fn fixture_churn_fits_fragmentation_headroom() {
         (9, 4)
     );
     eprintln!(
-        "[ShGrowthProof] Churn: 2 fixtures × 8 seeds × 20,000 steps; largest refused 1.25; smallest passing 1.5; chosen 2.25 (1.5 margin)"
+        "[ShGrowthProof] Churn: 2 fixtures × 8 seeds × 20,000 steps; largest refused 1.0; smallest passing 1.25; chosen 2.25 (1.8 margin)"
     );
+}
+
+// The churn above fragments past 1.0x, which is what a pool at the cap would
+// refuse. Without its releases, the same seeds place every cluster inside the
+// whole map, so a pool holding the map has nothing left to refuse.
+#[test]
+fn churn_refused_at_the_cap_places_everything_when_residents_stay() {
+    let seeds = [1, 7, 19, 43, 101, 313, 911, 2027];
+    let mut evicting_passed_the_map = false;
+    for sizes in [CAMPAIGN, WARREN_HALLWAY] {
+        let whole: u32 = sizes.iter().sum();
+        for seed in seeds {
+            evicting_passed_the_map |= churn_peak(sizes, seed, false) > whole;
+            assert_eq!(churn_peak(sizes, seed, true), whole, "seed {seed}");
+        }
+    }
+    assert!(evicting_passed_the_map, "the control must fragment");
 }

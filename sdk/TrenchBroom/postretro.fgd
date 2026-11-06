@@ -806,7 +806,7 @@
 ]
 
 // Pin every SH cluster with a runtime-cell AABB that overlaps this brush by
-// positive volume. The pin and its baked owner closure stay targeted under
+// positive volume. A pin covers that cluster alone and stays targeted under
 // pressure; an empty overlap is a compiler error.
 @SolidClass = stream_resident_volume : "Keep overlapping SH streaming clusters resident (brush)"
 [

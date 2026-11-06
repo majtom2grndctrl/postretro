@@ -597,8 +597,9 @@ ambient-floor miss fallback.
 
 Use this around lighting that should remain warm, such as a focal room or
 transition. Every cluster containing a runtime cell whose AABB overlaps the
-brush by positive volume is pinned, along with its baked owner closure. Pins
-are never pressure-suppressed or selected as eviction victims.
+brush by positive volume is pinned. Pins are never pressure-suppressed or
+selected as eviction victims, and they count toward the level's SH mandatory
+bound, which Build Summary reports.
 
 ### `stream_priority_region`
 

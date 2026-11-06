@@ -4,6 +4,8 @@
 pub(crate) mod budget;
 pub(crate) mod controller;
 pub(crate) mod generation;
+#[cfg(test)]
+mod owner_gate_tests;
 mod reach;
 #[cfg(test)]
 mod reach_measurement;

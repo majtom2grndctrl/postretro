@@ -45,6 +45,28 @@ pub(crate) use postretro_sim::{
     alloc_probe, health, impact_effects, impact_policy, sprite_collection,
 };
 
+// Test-only: makes `alloc_probe` count allocations in this test binary.
+// See: context/lib/testing_guide.md §Resource bounds
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
+
+#[cfg(test)]
+mod alloc_probe_tests {
+    use crate::alloc_probe::AllocSnapshot;
+
+    /// Positive control: the probe must see a real allocation, or every
+    /// zero-allocation assertion in this crate is dead.
+    #[test]
+    fn probe_counts_a_real_allocation() {
+        let snapshot = AllocSnapshot::arm();
+        let v: Vec<u64> = std::hint::black_box(Vec::with_capacity(16));
+        let allocs = snapshot.allocs_since();
+        drop(v);
+        assert!(allocs > 0, "probe must observe a Vec allocation");
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 use crate::ai_host::SimAiHost;
 use crate::ai_host::{AiHost, AiTickInputs, AiTickResult};

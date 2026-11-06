@@ -130,9 +130,10 @@ mod scripting_systems;
 
 // Test-only counting global allocator. `#[global_allocator]` must annotate a
 // crate-root static, so the static lives here; the allocator type and its
-// counters live in `alloc_probe`. Gated on `#[cfg(test)]` so it never touches
-// the production binary — the IR eval pass's zero-allocation guarantee is
-// asserted by a test that arms the counters around `eval_value`.
+// counter live in `alloc_probe`. Gated on `#[cfg(test)]` so it never touches
+// the production binary. This binary's zero-allocation tests (CPU timing,
+// lightmap streaming, emitter bridge) arm the probe against it.
+// See: context/lib/testing_guide.md §Resource bounds
 #[cfg(test)]
 #[global_allocator]
 static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;

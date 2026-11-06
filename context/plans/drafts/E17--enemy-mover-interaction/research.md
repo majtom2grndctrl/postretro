@@ -23,7 +23,7 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 
 **Player substrate** (`physics/src/movement/`). `substrate.rs::integrate_collision` runs carry (`mover_carry.rs::apply_mover_carry`, keyed on the previous tick's `GroundRef`) → displace (`displace_from_movers`, refused by `mover_push_is_blocked_by_static`) → combined sweep with step-up and ground-stick → `ground_ref_from_hit` → `apply_mover_release_velocity`. `GroundRef` lives in `foundation/src/movement/player_movement.rs`.
 
-**Docked state.** `kinematic_mover.rs::mover_is_docked_closed` is public; `mover_is_at_open_terminus` / `mover_is_at_closed_terminus` are private. `goToPathNode` sets `target_segment`; `handle_arrival_at_waypoint` holds the mover there and clears it.
+**Docked state.** `kinematic_mover.rs::mover_is_docked_closed` is public and conservative: it requires `!was_active_this_tick` and `!blocked`, and `was_active_this_tick` stays true through a started ping-pong mover's end-wait (test: an end-wait is not docked). `mover_is_at_open_terminus` / `mover_is_at_closed_terminus` are private and read index and elapsed time only. `terminus_events` fire Opened/Closed only at the two ends. `goToPathNode` sets `target_segment`; arrival there sets `completed` and clears it. A pretest Hold sets `blocked` with the mover still at its waypoint.
 
 **Nav** (`sim/src/nav/`).
 - `find_path(graph, start, goal)` is a pure function of an immutable `NavGraph`. Non-test callers: `agent_steering` replan, `ai/src/compute.rs` `target_reachable` (cached on the acquisition stride), `combat_positioning/scoring.rs` (`score_candidate`, `has_tactically_direct_target_path`). `ai` depends on `sim`, so a `sim` gate type reaches all callers.
@@ -40,7 +40,7 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 - `stress-env-volumes.map`: 64 `reference_enemy`, 12 movers (11 `reverse`, 1 `displace`).
 - `docs/level_design.md` §Movers documents block policies for players and says "Enemies are never carried or pushed, so none of this applies to them."
 
-**Perf.** `sim_steer_agents` is a `cpu.scope(SimStage::SteerAgents)` wall-clock scope, reported under `POSTRETRO_CPU_TIMING`. No budget test exists. Baseline from `drafts/perf-ai-tick-cost/research.md`: 2.5 ms per tick at 64 agents with ~10k particles. `alloc_probe` (`sim/src/alloc_probe.rs`) counts per-thread allocations: `AllocSnapshot::arm()` … `allocs_since()`.
+**Perf.** Stage scopes are wall-clock, reported only under windowed `POSTRETRO_CPU_TIMING`; headless output is byte-identical with timing on or off, so no automated budget test exists. The work lands in three stages: `sim_movers` (pin pretest), `sim_steer_agents` (agent motion, gate, links), `sim_steer_movers` (blocking pass). Baselines from `drafts/perf-ai-tick-cost/research.md` at 64 agents: `sim_steer_agents` 2.5 ms, `sim_steer_movers` 0.33 ms; particle load alone moves `sim_steer_movers` 0.07 → 0.32 ms. A 0.1 ms bound sits inside that noise, so the brief carries a tripwire (combined growth above 0.8 ms stops for the owner) rather than an ideal. Expected new cost per agent per tick is a mover broadphase scan per cast plus mesh casts only near a mover, and per-mover pin previews only for bodies in reach. `alloc_probe` (`sim/src/alloc_probe.rs`) counts allocations only where the sim test build installs its counting allocator.
 
 ## Commitments touched
 
@@ -79,7 +79,7 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 | O9b | `reverse` door closes on a living agent against the frame | Reversed course previewed | Backs off if the reverse course pins nothing; else holds |
 | O9c | Agent and player pinned by one mover on one tick | — | One hold or back-off covering both |
 | O10 | Several victims crushed on one tick | — | Damage, events, impact callbacks in a fixed order across runs |
-| O11 | Corpse in a `reverse` or `stop` doorway | — | Door closes through or pushes it; never holds or reverses for it. `crush` still damages it |
+| O11 | Corpse (quiescent: zero HP or queued despawn) in a `reverse` or `stop` doorway | — | Door closes through or pushes it; never holds or reverses for it. `crush` still damages it |
 | O11a | Corpse on a lift that starts, or under a closing `displace` door | Carry / displace as a living agent | Rides or is pushed clear; pinned corpse is left embedded, no hold |
 | O12 | Door docks closed across a chaser's route | Gate flips on dock | Replan within budget, then detour or latch `blocked` and hold, no stuck cycling |
 | O13 | Door leaves its closed dock | Gate clears at once | Held agent replans and passes once collision allows |
@@ -93,3 +93,20 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 | O21 | Level with zero movers | — | Agent motion, steering and paths identical to today |
 | O22 | `goToPathNode` holds a door closed at a mid-path node across a route | Gate flips on dock at that node | Same as O12 |
 | O23 | Multi-stop lift held at a middle node; mover passes a node without stopping | — | Link open only while docked there; passing through opens nothing |
+| O24 | Ping-pong mover waiting at a waypoint (`wait_ms` > 0, still started) | Dock read from phase: at the waypoint, zero velocity, wait running | Docked for the whole wait: a door gates, a lift links. The occluder's settle-tick and active-tick tests do not apply |
+| O25 | Mover docked at level load (never arrived), or docked at a middle node by `goToPathNode` | Gate and links derive from dock state every tick, not from Opened/Closed arrival events, which fire only at the two ends | A door closed at load gates from the first tick; a middle-node hold gates and links |
+| O26 | Docked mover commanded away (start, reverse, `goToPathNode`, auto-close) but still at its waypoint: not yet ticked, or held there by a pin | Command → pretest hold → mover never leaves | Gate and link stay as docked until the mover leaves the waypoint; a hold or a pending command alone undocks nothing |
+| O27 | Mover touches a waypoint without stopping: `ping_pong` with `wait_ms` 0, a wait shorter than one tick, a tick ending exactly on a node it passes | A waypoint reached and left within one tick's motion is no dock | No gate flip, no link, no replan |
+| O28 | Gate closes on an agent's current path; its replan finds no route | Gate flip → admitted replan → no path | A kept path that crosses a gated portal is dropped and `blocked` latches; a failed replan whose path crosses no gate keeps it, as today |
+| O29 | N agents, more than the replan budget, route through one door when it docks closed | Gate flip → drift-priority marks → budgeted admissions per tick | Every agent detours or latches `blocked` within ⌈N / budget⌉ ticks of the flip; none fires stuck recovery more than once after it |
+| O30 | Agent or goal in a gated region, clear of the door body | Gate flips with start or goal inside it | Start plans out; goal reached from its own side; only crossings through the door are refused |
+| O31 | Mover docks or undocks on tick N | Gate update runs once, after the mover tick and before Ai | Ai reachability, combat-position scoring and the SteerAgents replan read one gate generation on tick N |
+| O32 | Gate flips between acquisition strides | `targetReachable` cached on the stride | Reflects the flip by the brain's next acquisition-due tick, never later; steering may latch `blocked` first |
+| O33 | Idle agent (no destination) on a lift or riser | Idle settle path runs the same carry → displace → sweep → ground ref → release | Rides as a steering agent does |
+| O34 | Lift leaves while a rider is mid-exit | — | Still grounded on the lift: carried, stays in Ride, exits at the next dock with a link toward its goal. Grounded on the landing: replans from there |
+| O35 | `stop` halts a lift between waypoints with a rider | — | Rider stays in Ride and holds; exits at the next dock after `start` |
+| O36 | Rider knocked or displaced off mid-ride | Ground leaves the mover | Ride ends; steering and stuck detection resume; replans from where it lands |
+| O37 | Agent already on a mover when it starts, not boarded through a link | Ground becomes a moving mover | Enters Ride as a boarded agent does |
+| O38 | Rider mid-ride with a moving goal | — | No replan admitted mid-ride; the first replan after exit starts from the landing region |
+| O39 | Living agent killed on tick N (crush in the blocking pass, or Weapons) while another mover pins it | Liveness read once at pass start | The pinning mover holds on tick N; the corpse rule applies from the tick N+1 pretest |
+| O40 | Agent walks into a closed mover; the mover opens; an unpinned agent sits in a `displace` sweep | Combined sweep, then displace | Stops at the skin; passes once open; pushed clear |

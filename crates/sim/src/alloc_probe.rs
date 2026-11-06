@@ -90,7 +90,19 @@ impl AllocSnapshot {
     /// Capture the current thread's allocation count. Call this AFTER bind,
     /// immediately before the work whose allocations must be zero, and read it
     /// back via [`AllocSnapshot::allocs_since`] on the *same* thread.
+    ///
+    /// Panics if [`CountingAllocator`] is not this binary's global allocator:
+    /// without it the counter never moves and every zero-allocation assertion
+    /// passes vacuously. See [`counting_allocator_is_installed`].
     pub fn arm() -> Self {
+        assert!(
+            counting_allocator_is_installed(),
+            "alloc_probe: CountingAllocator is not the global allocator in this \
+             test binary, so allocs_since() would always read 0. Add \
+             `#[cfg(test)] #[global_allocator] static ALLOCATOR: \
+             postretro_sim::alloc_probe::CountingAllocator = \
+             postretro_sim::alloc_probe::CountingAllocator;` at the crate root."
+        );
         Self {
             allocs: THREAD_ALLOC_COUNT.with(Cell::get),
         }
@@ -100,6 +112,18 @@ impl AllocSnapshot {
     pub fn allocs_since(self) -> usize {
         THREAD_ALLOC_COUNT.with(Cell::get).wrapping_sub(self.allocs)
     }
+}
+
+/// Canary: performs one heap allocation and reports whether this thread's
+/// counter observed it. `false` means [`CountingAllocator`] is not installed as
+/// the global allocator, so the probe is dead. [`AllocSnapshot::arm`] checks
+/// this before every measurement window; the allocation lands before the
+/// snapshot is taken and never counts against the window.
+pub fn counting_allocator_is_installed() -> bool {
+    let before = THREAD_ALLOC_COUNT.with(Cell::get);
+    // `black_box` keeps the optimizer from eliding the allocation pair.
+    drop(std::hint::black_box(Box::new(std::hint::black_box(0u8))));
+    THREAD_ALLOC_COUNT.with(Cell::get) != before
 }
 
 #[cfg(test)]
@@ -158,6 +182,16 @@ mod tests {
             name: name.to_string(),
             owner: None,
         })
+    }
+
+    #[test]
+    fn probe_counts_a_real_allocation() {
+        assert!(counting_allocator_is_installed());
+        let snapshot = AllocSnapshot::arm();
+        let v: Vec<u64> = std::hint::black_box(Vec::with_capacity(16));
+        let allocs = snapshot.allocs_since();
+        drop(v);
+        assert!(allocs > 0, "probe must observe a Vec allocation");
     }
 
     /// Build a tree containing at least one of every opcode, nested at least two

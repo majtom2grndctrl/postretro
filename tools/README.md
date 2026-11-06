@@ -62,6 +62,38 @@ Then bake the atlas into the runtime `.prm` cache:
 postretro-tool bake-model-textures <out.gltf>
 ```
 
+### `mixamo_to_gltf.py`
+
+Converts Mixamo FBXs to engine glTF: a rig plus clips into one character, or
+clips into a shared library. Runs in headless Blender, which rejects ASCII FBX.
+The script's docstring and `--help` cover every flag. Library and binding
+contract: `context/lib/resource_management.md` §7.
+
+```sh
+# Build a library. The rig FBX sits inside the clip folder; none of its own
+# animation enters the library. To add a clip, place its FBX there and rerun.
+blender --background --python tools/mixamo_to_gltf.py -- \
+    --input-dir clips/ --base rig.fbx --library \
+    --output content/mymod/models/clip_libraries/mixamo_rifle/library.gltf
+
+# Convert a character: mesh and skeleton only, bound to that library.
+# The path is relative to --output, with forward slashes.
+blender --background --python tools/mixamo_to_gltf.py -- \
+    --input-dir trooper/ --base trooper.fbx \
+    --clip-library ../clip_libraries/mixamo_rifle/library.gltf \
+    --output content/mymod/models/trooper/model.gltf
+```
+
+A library keeps every bone the rig has; pass `--strip-face` to drop facial bones
+its meshes lack. `--library` and `--clip-library` cannot be combined. Numbered
+`mixamorig<N>:` prefixes normalize to `mixamorig:` in every mode, including
+`--no-tag`.
+
+To bind an already-exported character with no Blender run, stub `bpy` and
+`mathutils`, import the script, and call `bind_gltf_to_clip_library(gltf_path,
+clip_library)`. It strips clips, compacts the `.bin` and stamps the reference in
+place. `tools/tests/test_mixamo_to_gltf.py` shows the stubbing.
+
 ### `texture-tool/`
 
 Rust PNG processor that writes a whole world-material bundle — diffuse, `_s`

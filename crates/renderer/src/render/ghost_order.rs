@@ -279,8 +279,9 @@ impl GhostDrawOrder {
     /// outer ones, and a nearer ghost blends over a farther one, whose colour
     /// is already down. Where two ghosts interpenetrate, the later one draws
     /// only where it is nearer. Group 0 (camera) must be set by the caller.
-    /// Cost, in both modes: two pipeline switches per ghost, and one draw per
-    /// submesh per ghost span (per material span for a mover ghost).
+    /// Cost, in both modes: two pipeline switches per ghost, and in each step
+    /// one draw and one material bind per submesh per ghost span (per material
+    /// span for a mover ghost).
     pub(super) fn record(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

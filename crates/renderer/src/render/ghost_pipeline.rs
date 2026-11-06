@@ -134,11 +134,13 @@ pub(super) fn ghost_depth_pipeline_state(
 /// supplies its own constructor over [`GhostPipelines::build`].
 ///
 /// A kind's four pipelines share one pipeline layout, material group included,
-/// though the depth draw reads no material. A depth layout with a `None` hole
-/// at the material's group crashes Vulkan and DX12: a ghost's draws alternate
-/// the two pipelines, wgpu does not rebind higher groups when a group goes
-/// from bound to `None`, and it drops the next ghost's repeat `set_bind_group`
-/// as redundant, so the second depth draw reads a stale instance group.
+/// though the depth draw reads no material. A `None` hole at the material's
+/// group in the depth layout breaks from a kind's second ghost: it loses the
+/// device on Vulkan and draws nothing on DX12. A ghost's draws alternate the
+/// two pipelines. wgpu-core 30 rebinds no higher group when a layout entry
+/// goes from a bind group layout to `None`, and drops the next ghost's repeat
+/// `set_bind_group` as redundant, so that depth draw has no valid instance
+/// group.
 pub(super) struct GhostPipelines {
     blend: wgpu::RenderPipeline,
     dither: wgpu::RenderPipeline,

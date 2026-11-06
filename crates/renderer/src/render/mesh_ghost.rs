@@ -56,9 +56,11 @@ fn skinned_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 /// The skinned ghost pipeline set. One layout for both draw steps
 /// ([`super::ghost_pipeline`]): group 0 camera, group 1 material, group 3 the
 /// skinned pass's palette + instance data (the same bind group, at the same
-/// index); group 2 stays empty. No light, shadow or SH group, so ghosts add nothing to
-/// any fragment binding budget. Every pipeline targets the scene colour, so
-/// both draws of a ghost share one pass; the depth-only one writes no colour.
+/// index); group 2 stays empty. That hole is safe beside the mover ghosts'
+/// layout only because it has no group 3, so switching here rebinds group 3.
+/// No light, shadow or SH group, so ghosts add nothing to any fragment binding
+/// budget. Every pipeline targets the scene colour, so both draws of a ghost
+/// share one pass; the depth-only one writes no colour.
 pub(super) fn skinned_ghost_pipelines(
     device: &wgpu::Device,
     depth_format: wgpu::TextureFormat,
@@ -118,11 +120,11 @@ impl MeshPass {
     /// Record one skinned ghost's `spans` of the ghost plan as `step` of its
     /// draw pair, through `mode`'s pipelines, from the buffers
     /// [`MeshPass::plan_and_upload`] already filled this frame. Group 0
-    /// (camera) must be set by the caller; this sets the instance data and,
-    /// for the colour step, the material per submesh. Every ghost is
-    /// forward-visible by construction (the collector culls at the mapped
-    /// position). Projectile billboard ghosts are not here: they draw through
-    /// the billboard ghost variant and always blend.
+    /// (camera) must be set by the caller; this sets the instance data and
+    /// the material per submesh, which the shared layout needs bound for both
+    /// steps. Every ghost is forward-visible by construction (the collector
+    /// culls at the mapped position). Projectile billboard ghosts are not
+    /// here: they draw through the billboard ghost variant and always blend.
     pub(super) fn record_ghost_spans(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

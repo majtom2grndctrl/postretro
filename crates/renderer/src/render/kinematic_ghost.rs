@@ -73,11 +73,11 @@ pub(crate) struct KinematicGhostPass {
 
 impl KinematicGhostPass {
     /// One layout for both draw steps ([`super::ghost_pipeline`]): group 0
-    /// camera, group 1 the world material, group 2 the ghost instances. No light,
-    /// shadow or SH group, so mover ghosts add nothing to any fragment binding
-    /// budget. Every pipeline targets the scene colour, so both draws of a
-    /// ghost share one pass with the skinned ghosts; the depth-only one writes
-    /// no colour.
+    /// camera, group 1 the world material, group 2 the ghost instances. No
+    /// light, shadow or SH group, so mover ghosts add nothing to any fragment
+    /// binding budget. Every pipeline targets the scene colour, so both draws
+    /// of a ghost share one pass with the skinned ghosts; the depth-only one
+    /// writes no colour.
     pub(crate) fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,

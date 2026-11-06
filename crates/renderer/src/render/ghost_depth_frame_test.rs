@@ -629,13 +629,30 @@ fn two_ghosts_expected(mode: GhostTransparency, column: u32, row: u32) -> Vec3 {
     }
 }
 
+/// Every pixel of [`ROWS`] in `frame` matches `expected` within one 8-bit step.
+fn assert_rows(frame: &[u8], context: &str, expected: impl Fn(u32, u32) -> Vec3) {
+    for row in ROWS {
+        for column in 0..SIDE {
+            let want = capture_encode(expected(column, row));
+            let got = pixel(frame, column, row);
+            assert!(
+                (0..3).all(|channel| got[channel].abs_diff(want[channel]) <= 1),
+                "{context} ({column}, {row}): got {got:?}, want {want:?}"
+            );
+        }
+    }
+}
+
 // Two distinct ghosts overlapping on screen, the nearer listed first: the
 // farther draws first and shows through the nearer at the expected blend
 // (or, dithered, where the nearer drops a pixel), and each still hides its
-// own inner surface. Run as two movers and with either ghost skinned, so
-// mover and skinned ghosts sort together and each kind's pipelines follow
-// the other's in one pass. A real mesh ahead of the ghost plan puts every
-// skinned ghost at a nonzero instance offset.
+// own inner surface. Run as two movers, as two skinned ghosts and with either
+// ghost skinned, so mover and skinned ghosts sort together and each kind's
+// pipelines follow the other's in one pass. A real mesh ahead of the ghost
+// plan puts every skinned ghost at a nonzero instance offset.
+//
+// Regression: a second ghost of one kind lost the device on Vulkan and drew
+// nothing on DX12, its depth draw left without an instance group.
 #[test]
 fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface() {
     let Some(mut renderer) = renderer() else {
@@ -671,6 +688,17 @@ fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface
                 ),
             ),
             (
+                "skinned over skinned",
+                frame_with(
+                    &mut renderer,
+                    &[
+                        skinned_ghost(SKINNED_NEAR_GHOST, 1, NEAR_LOOK),
+                        skinned_ghost(SKINNED_FAR_GHOST, 2, FAR_LOOK),
+                    ],
+                    &[],
+                ),
+            ),
+            (
                 "skinned over mover",
                 frame_with(
                     &mut renderer,
@@ -687,19 +715,57 @@ fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface
                 ),
             ),
         ] {
-            for row in ROWS {
-                for column in 0..SIDE {
-                    let want = capture_encode(two_ghosts_expected(mode, column, row));
-                    let got = pixel(&frame, column, row);
-                    assert!(
-                        (0..3).all(|channel| got[channel].abs_diff(want[channel]) <= 1),
-                        "{path} {mode:?} ({column}, {row}): got {got:?}, want {want:?}"
-                    );
-                }
-            }
+            assert_rows(&frame, &format!("{path} {mode:?}"), |column, row| {
+                two_ghosts_expected(mode, column, row)
+            });
         }
     }
     eprintln!("[GhostDepthProof] two-ghost GPU case ran in both modes, mover and skinned");
+}
+
+/// The linear colour left at pixel (`column`, `row`) over the white clear by
+/// the far skinned ghost, then the mover at [`NEAR_DEPTH`], then the near
+/// skinned ghost. The mover's look is the thinner of the two magenta layers,
+/// so in dither the near ghost keeps pixels the mover does not.
+fn skinned_mover_skinned_expected(mode: GhostTransparency, column: u32, row: u32) -> Vec3 {
+    let far = if FAR_COLUMNS.contains(&column) {
+        over(mode, FAR_LOOK, BLACK, WHITE, column, row)
+    } else {
+        WHITE
+    };
+    if !NEAR_COLUMNS.contains(&column) {
+        return far;
+    }
+    let mover = over(mode, NEAR_LOOK, MAGENTA, far, column, row);
+    over(mode, LOOK, MAGENTA, mover, column, row)
+}
+
+// A mover ghost sorted between two skinned ghosts, so the second skinned
+// ghost's repeat group-3 bind is dropped straight after the mover layout. The
+// skinned layout's group-2 hole faces the mover's instance group there: only
+// the mover layout having no group 3 keeps that group bound.
+#[test]
+fn a_mover_ghost_between_two_skinned_ghosts_leaves_the_second_its_instances() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    install_movers(&mut renderer);
+    install_skinned_models(&mut renderer);
+    for mode in GhostTransparency::ALL {
+        renderer.set_ghost_transparency(mode);
+        let frame = frame_with(
+            &mut renderer,
+            &[
+                skinned_ghost(SKINNED_NEAR_GHOST, 1, LOOK),
+                skinned_ghost(SKINNED_FAR_GHOST, 2, FAR_LOOK),
+            ],
+            &[mover_ghost(NEAR_ONLY, NEAR_LOOK)],
+        );
+        assert_rows(&frame, &format!("{mode:?}"), |column, row| {
+            skinned_mover_skinned_expected(mode, column, row)
+        });
+    }
+    eprintln!("[GhostDepthProof] interleaved-kinds GPU case ran in both modes");
 }
 
 /// The linear colour the platform and the pawn on it leave at pixel

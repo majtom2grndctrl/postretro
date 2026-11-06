@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
+use gltf::json::validation::Checked;
 
 use super::gltf_loader::{accessor_read_refusal, format_accessor_shape};
 use super::skeleton::{AnimationClip, Interp, JointTracks, Track};
@@ -250,8 +251,9 @@ impl ParsedClip {
 
 /// Parse one animation clip into per-joint TRS tracks, one entry per slot of
 /// `joint_count`. `node_to_topo` maps channel target nodes to those slots;
-/// channels targeting any other node are skipped.
+/// channels targeting any other node are skipped. `document` owns `anim`.
 pub(crate) fn parse_clip(
+    document: &gltf::Document,
     anim: &gltf::Animation,
     buffers: &[gltf::buffer::Data],
     node_to_topo: &HashMap<usize, usize>,
@@ -263,7 +265,20 @@ pub(crate) fn parse_clip(
     let mut joints = vec![JointTracks::default(); joint_count];
     let mut duration = 0.0f32;
 
+    let root = document.as_json();
+    let raw_channels = &root.animations[anim.index()].channels;
     for channel in anim.channels() {
+        // Validation never reaches a channel's target, and `Target::node` and
+        // `Target::property` unwrap it, so read the raw target first.
+        let target = &raw_channels[channel.index()].target;
+        if target.node.value() >= root.nodes.len() || target.path == Checked::Invalid {
+            log::warn!(
+                "clip '{name}' channel {}: malformed target; skipping channel \
+                 (joint holds rest pose)",
+                channel.index(),
+            );
+            continue;
+        }
         let target_node = channel.target().node().index();
         // Animation channels target joints by node index; remap to topo order.
         let Some(&topo_idx) = node_to_topo.get(&target_node) else {
@@ -554,7 +569,12 @@ mod tests {
         let none = json!({});
         let cases = [
             (BOTH, "has no elements", json!({ "count": 0 }), none.clone()),
-            (BOTH, "has no buffer view", sparse_only, none.clone()),
+            (
+                BOTH,
+                "is sparse with no buffer view",
+                sparse_only,
+                none.clone(),
+            ),
             (
                 BOTH,
                 "has a sparse count outside its elements",
@@ -569,25 +589,25 @@ mod tests {
             ),
             (
                 BOTH,
-                "overruns its buffer",
+                "overruns its view or buffer",
                 json!({ "count": u64::MAX }),
                 none.clone(),
             ),
             (
                 BOTH,
-                "overruns its buffer",
+                "overruns its view or buffer",
                 json!({ "byteOffset": 4 }),
                 none.clone(),
             ),
             (
                 BOTH,
-                "overruns its buffer",
+                "overruns its view or buffer",
                 none.clone(),
                 json!({ "byteLength": 1u64 << 40 }),
             ),
             (
                 BOTH,
-                "overruns its buffer",
+                "overruns its view or buffer",
                 none.clone(),
                 json!({ "byteOffset": u64::MAX }),
             ),
@@ -609,6 +629,36 @@ mod tests {
                 assert_eq!(joints[1].rotation.values().len(), 2, "{label}");
             }
         }
+    }
+
+    fn assert_broken_target_skips_only_its_channel(field: &str, value: Value) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = two_channel_model(&[0.0, 1.0], &[Vec3::Y, Vec3::Y * 1.1])
+            .write(&dir.path().join("model.gltf"));
+        patch_document(&path, |root| {
+            root["animations"][0]["channels"][1]["target"][field] = value;
+        });
+        let capture = LogCapture::start();
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let model = result.expect("load must not panic").expect("model loads");
+
+        capture.assert_logged_once(Level::Warn, "malformed target");
+        let joints = &model.clips[0].joints;
+        assert!(joints[0].translation.values().is_empty());
+        assert_eq!(joints[1].rotation.values().len(), 2);
+    }
+
+    // Regression: `Target::node` unwraps an index validation never checks.
+    #[test]
+    fn channel_targeting_a_node_past_the_document_skips_only_that_channel() {
+        assert_broken_target_skips_only_its_channel("node", json!(99));
+    }
+
+    // Regression: `Target::property` unwraps a path validation never checks.
+    #[test]
+    fn channel_targeting_an_unknown_path_skips_only_that_channel() {
+        assert_broken_target_skips_only_its_channel("path", json!("bogus"));
     }
 
     #[test]

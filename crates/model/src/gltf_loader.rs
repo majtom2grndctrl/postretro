@@ -125,9 +125,10 @@ pub struct LoadedModel {
     pub legs: Vec<LegChain>,
 }
 
-/// Errors surfaced while loading required glTF model structure. Optional authored
-/// data, such as malformed animation channels or metadata extras, may warn and
-/// degrade instead; the loader never panics.
+/// Errors surfaced while loading glTF model structure, present optional vertex
+/// streams included. Other optional authored data, such as malformed animation
+/// channels or metadata extras, may warn and degrade instead; the loader never
+/// panics.
 #[derive(Debug, Error)]
 pub enum ModelLoadError {
     /// The glTF document or a referenced external buffer could not be read or parsed.
@@ -140,8 +141,7 @@ pub enum ModelLoadError {
     /// The document has no mesh to load (this path loads exactly one mesh).
     #[error("glTF has no mesh: {0}")]
     NoMesh(String),
-    /// A required glTF attribute or accessor is absent (e.g. a primitive's
-    /// POSITION, or a skin's inverseBindMatrices).
+    /// A required glTF attribute or accessor is absent (e.g. a primitive's POSITION).
     #[error("glTF missing required attribute '{attribute}': {path}")]
     MissingAttribute { path: String, attribute: String },
     /// A primitive uses an unsupported topology (only triangle lists load).
@@ -155,7 +155,9 @@ pub enum ModelLoadError {
         expected: String,
         actual: String,
     },
-    /// A present accessor's stride, count or ranges cannot be read safely.
+    /// A present accessor's stride, count or ranges cannot be read safely, or it
+    /// is sparse with no buffer view: valid glTF, refused because its count sizes
+    /// an allocation whatever the file's size.
     #[error("glTF accessor '{attribute}' {reason}: {path}")]
     UnreadableAccessor {
         path: String,
@@ -351,7 +353,7 @@ pub(super) fn accessor_read_refusal(
         return Some("has no elements");
     }
     let Some(view) = accessor.view() else {
-        return Some("has no buffer view");
+        return Some("is sparse with no buffer view");
     };
     let element_size = accessor.size();
     let base = view_read_refusal(
@@ -412,7 +414,7 @@ fn view_read_refusal(
         {
             None
         }
-        _ => Some("overruns its buffer"),
+        _ => Some("overruns its view or buffer"),
     }
 }
 
@@ -1213,6 +1215,7 @@ pub fn load_model_from_sources(
         .animations()
         .map(|anim| {
             parse_clip(
+                &document,
                 &anim,
                 &buffers,
                 &node_to_topo,
@@ -2421,7 +2424,8 @@ mod tests {
                 let accessor_type = match optional {
                     "TEXCOORD_0" => "VEC2",
                     "NORMAL" => "VEC3",
-                    _ => "VEC4",
+                    "TANGENT" => "VEC4",
+                    unknown => panic!("no fixture stream for {unknown}"),
                 };
                 let accessors = json["accessors"].as_array_mut().unwrap();
                 accessors.push(serde_json::json!({
@@ -2469,7 +2473,7 @@ mod tests {
             "inverseBindMatrices",
         ];
         const SHORT_STRIDE: &str = "has a byte stride below its element size";
-        const OVERRUN: &str = "overruns its buffer";
+        const OVERRUN: &str = "overruns its view or buffer";
         const SPARSE_COUNT: &str = "has a sparse count outside its elements";
         // A view cases may name for sparse values, placed before any isolated one.
         let mut fixture = fixture_json(&multi_clip_fixture_path());
@@ -2500,7 +2504,7 @@ mod tests {
                     none.clone(),
                 ),
                 (
-                    count_reason("has no buffer view"),
+                    count_reason("is sparse with no buffer view"),
                     serde_json::json!({
                         "bufferView": null,
                         "count": 1_000_000_000_000u64,
@@ -2514,7 +2518,7 @@ mod tests {
                     none.clone(),
                 ),
                 (
-                    Some("has no buffer view"),
+                    Some("is sparse with no buffer view"),
                     serde_json::json!({ "bufferView": null, "sparse": sparse(1) }),
                     none.clone(),
                 ),
@@ -2632,14 +2636,28 @@ mod tests {
 
     // Regression: both inputs panicked inside gltf, before any loader check ran.
     #[test]
-    fn documents_gltf_panics_on_return_err_not_panic() {
-        let patches: [(&str, fn(&mut serde_json::Value)); 2] = [
+    fn malformed_document_returns_import_err_not_panic() {
+        fn use_image(json: &mut serde_json::Value, image: serde_json::Value) {
+            json["images"] = serde_json::json!([image]);
+            json["textures"] = serde_json::json!([{ "source": 0 }]);
+            json["materials"] = serde_json::json!([
+                { "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } } }
+            ]);
+            json["meshes"][0]["primitives"][0]["material"] = serde_json::json!(0);
+        }
+        let patches: [(&str, fn(&mut serde_json::Value)); 4] = [
             ("POSITION index past the accessors", |json| {
                 json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] =
                     serde_json::json!(99);
             }),
             ("buffer URI escaping invalid UTF-8", |json| {
                 json["buffers"][0]["uri"] = serde_json::json!("%FF.bin");
+            }),
+            ("image with no source", |json| {
+                use_image(json, serde_json::json!({}));
+            }),
+            ("buffer view image with no MIME type", |json| {
+                use_image(json, serde_json::json!({ "bufferView": 0 }));
             }),
         ];
         for (label, patch) in patches {
@@ -2652,14 +2670,21 @@ mod tests {
             let load_result = result.unwrap_or_else(|_| panic!("{label}: load panicked"));
 
             assert!(
-                matches!(load_result, Err(ModelLoadError::Import { .. })),
+                matches!(
+                    load_result,
+                    Err(ModelLoadError::Import {
+                        source: gltf::Error::Validation(_),
+                        ..
+                    })
+                ),
                 "{label}: got {load_result:?}"
             );
         }
     }
 
+    // Regression: the document panicked gltf's validator during this check.
     #[test]
-    fn clip_library_reference_check_returns_err_on_a_document_gltf_panics_on() {
+    fn clip_library_reference_check_returns_err_on_a_malformed_document() {
         let mut json = fixture_json(&multi_clip_fixture_path());
         json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = serde_json::json!(99);
         let path = write_temp_fixture("gltf_panic_reference", &json);

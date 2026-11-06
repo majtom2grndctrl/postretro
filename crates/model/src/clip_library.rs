@@ -92,6 +92,7 @@ pub(crate) fn append_library_clips(
             continue;
         }
         let parsed = parse_clip(
+            &library.document,
             &animation,
             &library.buffers,
             &node_slots,
@@ -1143,7 +1144,7 @@ mod tests {
 
     // Regression: both inputs panicked inside gltf, before any library check ran.
     #[test]
-    fn library_gltf_panics_on_fails_the_load() {
+    fn malformed_library_document_fails_the_load_not_panic() {
         let patches: [(&str, fn(&mut serde_json::Value)); 2] = [
             ("POSITION index past the accessors", |root| {
                 root["meshes"] = serde_json::json!([
@@ -1168,7 +1169,10 @@ mod tests {
             assert!(
                 matches!(
                     load_result,
-                    Err(ModelLoadError::ClipLibraryUnreadable { .. })
+                    Err(ModelLoadError::ClipLibraryUnreadable {
+                        source: gltf::Error::Validation(_),
+                        ..
+                    })
                 ),
                 "{label}: got {load_result:?}"
             );

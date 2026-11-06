@@ -1,5 +1,4 @@
-// Shared glTF document parsing and relative-URI resolution for runtime, level
-// compilation and packaging.
+// Shared glTF document parsing and relative-URI resolution.
 // See: context/lib/build_pipeline.md §Baked texture mips · context/lib/resource_management.md §7
 
 use std::borrow::Cow;
@@ -10,14 +9,21 @@ use gltf::json::mesh::Semantic;
 use gltf::json::validation::{self, Checked};
 use gltf::json::{Path as JsonPath, Root};
 
-/// Parses and validates a glTF document, returning an error for the inputs gltf
-/// panics on rather than rejects. Every document read goes through here.
+/// Parses and validates a glTF document. Every document read goes through here,
+/// because gltf panics on input it should reject.
 ///
-/// gltf's validator indexes the accessors with a primitive's POSITION unchecked,
-/// and its buffer import unwraps a relative URI's percent decoding. Both are
-/// screened on the parsed JSON, before either runs, and report as gltf's own
-/// validation errors do.
+/// Screened on the parsed JSON, and reported as gltf's own validation errors: a
+/// primitive's POSITION index, which gltf's validator uses unchecked; a relative
+/// buffer URI that does not percent-decode, which its import unwraps; and an
+/// image missing the source fields `Image::source` unwraps. A GLB length inside
+/// its own header is refused before the parse, which subtracts unchecked.
+///
+/// Malformed animation channel targets pass: validation never reaches them, and
+/// a skipped channel is the caller's policy.
 pub fn parse_document(bytes: &[u8]) -> Result<gltf::Document, gltf::Error> {
+    if let Some(error) = short_glb_header(bytes) {
+        return Err(error);
+    }
     let root = gltf::Gltf::from_slice_without_validation(bytes)?
         .document
         .into_json();
@@ -26,6 +32,18 @@ pub fn parse_document(bytes: &[u8]) -> Result<gltf::Document, gltf::Error> {
         return Err(gltf::Error::Validation(errors));
     }
     gltf::Document::from_json(root)
+}
+
+fn short_glb_header(bytes: &[u8]) -> Option<gltf::Error> {
+    const HEADER_SIZE: u32 = 12;
+    let [b'g', b'l', b'T', b'F', _, _, _, _, l0, l1, l2, l3, ..] = *bytes else {
+        return None;
+    };
+    let length = u32::from_le_bytes([l0, l1, l2, l3]);
+    (length < HEADER_SIZE).then_some(gltf::Error::Binary(gltf::binary::Error::Length {
+        length,
+        length_read: bytes.len(),
+    }))
 }
 
 /// [`parse_document`] over the file at `path`.
@@ -55,7 +73,8 @@ fn panicking_inputs(root: &Root) -> Vec<(JsonPath, validation::Error)> {
         }
     }
     for (buffer_index, buffer) in root.buffers.iter().enumerate() {
-        // gltf decodes only a URI with no colon; the rest fail on their scheme.
+        // gltf percent-decodes only a URI with no colon, through `urlencoding`,
+        // which fails on exactly the bytes `percent_encoding` fails on.
         let undecodable = buffer.uri.as_deref().is_some_and(|uri| {
             !uri.contains(':')
                 && percent_encoding::percent_decode_str(uri)
@@ -68,6 +87,20 @@ fn panicking_inputs(root: &Root) -> Vec<(JsonPath, validation::Error)> {
                 .index(buffer_index)
                 .field("uri");
             errors.push((path, validation::Error::Invalid));
+        }
+    }
+    for (image_index, image) in root.images.iter().enumerate() {
+        let missing = match image.buffer_view {
+            Some(_) if image.mime_type.is_none() => Some("mimeType"),
+            None if image.uri.is_none() => Some("uri"),
+            _ => None,
+        };
+        if let Some(field) = missing {
+            let path = JsonPath::new()
+                .field("images")
+                .index(image_index)
+                .field(field);
+            errors.push((path, validation::Error::Missing));
         }
     }
     errors
@@ -194,6 +227,96 @@ mod tests {
             result.expect("must not panic"),
             Err(gltf::Error::Validation(_))
         ));
+    }
+
+    fn resolve_document(test_name: &str, json: &str) -> Result<Vec<PathBuf>, gltf::Error> {
+        let dir = temp_dir(test_name);
+        fs::create_dir_all(&dir).expect("temp directory must be created");
+        let path = dir.join("model.gltf");
+        fs::write(&path, json).expect("glTF fixture must be written");
+        let result = std::panic::catch_unwind(|| resolve_document_base_color_paths(&path));
+        let _ = fs::remove_dir_all(&dir);
+        result.expect("must not panic")
+    }
+
+    fn document_with_image(image: &str) -> String {
+        format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "buffers":[{{"byteLength":4}}],
+                "bufferViews":[{{"buffer":0,"byteLength":4}}],
+                "images":[{image}],
+                "textures":[{{"source":0}}],
+                "materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}}}]}}"#
+        )
+    }
+
+    // Regression: `Image::source` unwraps the URI an image with no buffer view
+    // must carry, and validation does not require one.
+    #[test]
+    fn image_with_no_source_returns_err() {
+        let result = resolve_document("no_source", &document_with_image("{}"));
+        assert!(
+            matches!(result, Err(gltf::Error::Validation(_))),
+            "{result:?}"
+        );
+    }
+
+    // Regression: `Image::source` unwraps the MIME type a buffer view image must
+    // carry, and validation does not require one.
+    #[test]
+    fn buffer_view_image_with_no_mime_type_returns_err() {
+        let result = resolve_document("no_mime", &document_with_image(r#"{"bufferView":0}"#));
+        assert!(
+            matches!(result, Err(gltf::Error::Validation(_))),
+            "{result:?}"
+        );
+    }
+
+    // Regression: gltf subtracts the header size from a GLB's declared length
+    // unchecked, which overflows in dev builds.
+    #[test]
+    fn glb_declaring_a_length_inside_its_header_returns_err() {
+        let mut bytes = b"glTF".to_vec();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        let result = std::panic::catch_unwind(|| parse_document(&bytes));
+
+        assert!(matches!(
+            result.expect("must not panic"),
+            Err(gltf::Error::Binary(gltf::binary::Error::Length { .. }))
+        ));
+    }
+
+    #[test]
+    fn glb_with_a_json_chunk_parses() {
+        let json = br#"{"asset":{"version":"2.0"}} "#;
+        assert_eq!(json.len() % 4, 0);
+        let mut bytes = b"glTF".to_vec();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&(20 + json.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"JSON");
+        bytes.extend_from_slice(json);
+
+        parse_document(&bytes).expect("GLB parses");
+    }
+
+    #[test]
+    fn only_a_uri_gltf_percent_decodes_is_screened() {
+        let document = |uri: &str| {
+            format!(
+                r#"{{"asset":{{"version":"2.0"}},"buffers":[{{"byteLength":4,"uri":"{uri}"}}]}}"#
+            )
+        };
+        let result = parse_document(document("%FF.bin").as_bytes());
+        assert!(
+            matches!(result, Err(gltf::Error::Validation(_))),
+            "{result:?}"
+        );
+
+        // A URI with a colon fails on its scheme at import, or reads as it is.
+        parse_document(document("x:%FF.bin").as_bytes()).expect("scheme URI parses");
     }
 
     #[test]

@@ -1009,6 +1009,24 @@ pub fn clip_library_path(document: &gltf::Document, path: &Path) -> Option<PathB
     )
 }
 
+/// The library the skinned model at `path` binds, read from its document alone:
+/// no buffer and no library is opened, so a tool can check the reference without
+/// loading the model. `None` for a static or mesh-less document, one naming no
+/// library, and a malformed value, none of which a load binds.
+pub fn skinned_clip_library_path(path: &Path) -> Result<Option<PathBuf>, ModelLoadError> {
+    let path_str = path.display().to_string();
+    let document = gltf::Gltf::open(path)
+        .map_err(|source| ModelLoadError::Import {
+            path: path_str.clone(),
+            source,
+        })?
+        .document;
+    let skinned = select_model(&document, &path_str).is_ok_and(|model| model.skin.is_some());
+    Ok(skinned
+        .then(|| clip_library_path(&document, path))
+        .flatten())
+}
+
 /// [`load_model`] over sources [`read_model_sources`] already read from
 /// `path`: reads no file. `path` names the model in errors and warnings.
 pub fn load_model_from_sources(

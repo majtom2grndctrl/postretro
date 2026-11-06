@@ -567,9 +567,11 @@ that layer warns and is skipped.
   clamped to the capacity the seat's values give. A seat that carries 0 health
   arrives with full health and full layers.
 - **A join seed** that raises a fresh joiner's capacity refills each layer
-  still full at its old capacity, at the next tick start.
+  still full at its old capacity, as the seed lands.
 - **Hot reload** keeps each entity's values, last good parameters and last-hit
-  time by layer name. A layer the edit adds fills at the next tick start.
+  time by layer name. A kept layer clamps to a lowered capacity. A layer the
+  edit adds arrives full; one with an expression capacity fills at the next
+  tick start, once that capacity is evaluated.
 - `setHealth` and `grantHealth` never touch layers.
 
 ### Reading layers

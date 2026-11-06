@@ -26,8 +26,8 @@ pub fn recharge_defense_layers(registry: &mut EntityRegistry) {
     registry.for_each_defense_layers_lent(|registry, id, component| {
         #[cfg(test)]
         VISITED.with(|count| count.set(count.get() + 1));
-        // A join seed's or hot reload's pending refill reads the capacity in
-        // force before this evaluation, and lands before this tick's hits.
+        // A hot reload's pending refill reads the capacity in force before
+        // this evaluation, and lands before this tick's hits.
         component.resolve_refills();
         if let Some(source) = &source {
             source.evaluate_at_tick_start(registry, id, component);

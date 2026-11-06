@@ -47,6 +47,12 @@ Gate, first compile, no failures: workspace `cargo check --all-targets` with dev
 
 Preflight passed again at ae99bc0b7, GPU required: fmt, clippy `--all-targets` with dev-tools, `cargo test` plain 14,480, dev-tools 14,588, `capture` 2,528, release check, crate graph.
 
+**Final measurement setup (2026-11-05), waiting on an unlocked screen.** Cold v3 bakes at ae99bc0b7, `--release`, sit apart from the v2 PRLs, so `today` still runs. Every bound reproduces `research.md`: hallway 168,017 and 216,952 at the maximum lead (317.7 and 414.1 MiB), `campaign-test` 39,634 and 41,726, `occlusion-test` 18,327, `stress-street` 117,707 (212.8 MiB). Hallway cold bake took 1,413 s. `reflection-lake-test` bounds at 297,973 slots (329.0 MiB).
+
+`stress-street` means default 1 m spacing with `--lightmap-density 0.25`, not the README's 4.0 m, which gives 2,158 slots and exercises nothing. No v2 PRL existed, so the same flags went through a compiler built at b5c39cab8; the pair differs only in id 49. The on-disk v2 `reflection-lake-test` used other bake settings (lightmap and SH sections differ), so it is no baseline for this map; row 39 reads the pool alone.
+
+Tooling: `measure/sh-bounded-pool-final` at 6608e220a, on ae99bc0b7, no sizing levers, `postretro-final` built with `--profile profiling --features dev-tools`. It must never merge. Run `tools/measure-harness/pilot.sh`, then `batch.sh plan-final.txt`, with `T` and `PRL_DIR` set; `today` needs its own plan and `PRL_DIR` for `stress-street`. The `XCTRACE` mode is untested against the real engine. Row 39's tier comes from `settings.toml`, already `very_high`. Row 42's reload is a keypress: `Alt+Shift+L` loads `content/dev/maps/combat-demo.prl`, so that path needs the v3 bake with its v2 set aside. Scratchpad, which a reboot may clear: `/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/54ee9970-513a-458c-8a48-d075ca2707a3/scratchpad/sh-final/` (`bin`, `bin-today`, `prl-v3`, `prl-v2`, `logs`).
+
 Accepted, not fixed: a victim that frees nothing is still evicted; path flips act as horizon changes; seam suppression can lift on the portal frame after a hold; a direct Pass B failure can promote one frame early.
 
 ## Corrections

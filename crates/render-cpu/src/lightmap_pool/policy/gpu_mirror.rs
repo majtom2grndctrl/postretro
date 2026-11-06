@@ -1,7 +1,7 @@
 // Test-only CPU mirror of the pool texture and block table, executing plans as the GPU layer does.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
-use super::super::{BLOCK_TABLE_ENTRY_BYTES, BlockTableEntry};
+use super::super::{BLOCK_TABLE_ENTRY_BYTES, BlockPlacement, BlockTableEntry};
 use super::{DrainPlan, LightmapPoolModel};
 
 /// Each texel records which block's data it holds.
@@ -35,6 +35,41 @@ impl GpuMirror {
             texels: vec![None; Self::texel_count(edge, model.layers())],
             table,
             texture_allocations: 1,
+        }
+    }
+
+    /// A pool with no model behind it, for a hand-built copy list.
+    pub(super) fn blank(edge: u32, layers: u32) -> Self {
+        Self {
+            edge,
+            layers,
+            texels: vec![None; Self::texel_count(edge, layers)],
+            table: Vec::new(),
+            texture_allocations: 1,
+        }
+    }
+
+    /// Write `block`'s texels at `place`, as an upload would.
+    pub(super) fn fill(&mut self, block: u32, place: BlockPlacement, width: u32, height: u32) {
+        for y in 0..height {
+            for x in 0..width {
+                let at = self.at(place.layer, place.x + x, place.y + y);
+                self.texels[at] = Some(block);
+            }
+        }
+    }
+
+    /// Every texel of `width × height` at `place` is `block`'s.
+    pub(super) fn assert_holds(&self, block: u32, place: BlockPlacement, width: u32, height: u32) {
+        for y in 0..height {
+            for x in 0..width {
+                let at = self.at(place.layer, place.x + x, place.y + y);
+                assert_eq!(
+                    self.texels[at],
+                    Some(block),
+                    "block {block} texel ({x}, {y}) at {place:?}"
+                );
+            }
         }
     }
 
@@ -118,16 +153,7 @@ impl GpuMirror {
             } = entry
             {
                 assert!(placement.layer < self.layers, "block {block} in the spare");
-                for y in 0..height {
-                    for x in 0..width {
-                        let at = self.at(placement.layer, placement.x + x, placement.y + y);
-                        assert_eq!(
-                            self.texels[at],
-                            Some(block),
-                            "block {block} texel ({x}, {y}) at {placement:?}"
-                        );
-                    }
-                }
+                self.assert_holds(block, placement, width, height);
             }
         }
     }

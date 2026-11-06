@@ -2,6 +2,8 @@
 // retiring texture generations, the vertex block table, and each drain.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+#[cfg(test)]
+mod compaction_timing_measurement;
 mod counters;
 mod execute;
 #[cfg(test)]

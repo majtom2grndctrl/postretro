@@ -1,13 +1,14 @@
-// In-place repack: a downward-compacting layout and its copy schedule through the spare layer.
+// Downward repack: the first pass, its layout and its copy schedule through the spare layer.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 //
 // WebGPU copies within one texture only between distinct subresources, so a
-// block cannot move within its own layer directly. The layout never moves a
-// block to a higher layer than it sits in; then each destination layer d, in
-// ascending order, is rebuilt in three passes: stage every move out of layer
-// d into the spare, copy in every move from a higher layer, then copy the
-// staged moves back from the spare. Layers above d are untouched until their
-// own turn, so every source is intact when it is read.
+// block cannot move within its own layer directly. This pass never moves a
+// block to a higher layer than it sits in, which is what makes its schedule
+// this simple; `compaction` is the escalation that may. Each destination
+// layer d, in ascending order, is rebuilt in three passes: stage every move
+// out of layer d into the spare, copy in every move from a higher layer, then
+// copy the staged moves back from the spare. Layers above d are untouched
+// until their own turn, so every source is intact when it is read.
 
 use std::cmp::Reverse;
 
@@ -105,7 +106,7 @@ impl LightmapPoolModel {
             };
             let (src, dst) = (placement_of(start), placement_of(now));
             if src != dst {
-                debug_assert!(dst.layer <= src.layer, "a repack never moves a block up");
+                debug_assert!(dst.layer <= src.layer, "a downward repack moved a block up");
                 moves.push(PoolCopy {
                     src,
                     dst,

@@ -38,7 +38,9 @@
 //
 // Optional: `POSTRETRO_LIGHTMAP_WALK_STEPS` (default 2000),
 // `POSTRETRO_LIGHTMAP_WALK_RUNS` = `default` | `all` (default `all`: the
-// default levers plus the cap and lead sweeps). Leave
+// default levers plus the cap and lead sweeps),
+// `POSTRETRO_LIGHTMAP_WALK_CAPS` = comma-separated caps, which replaces every
+// run with one at each cap and the default lead. Leave
 // `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
 // `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
@@ -114,6 +116,7 @@ use walk::{MAX_DWELL_FRAMES, RUN_SPEED, Walk, eye_point};
 const PRL_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PRL";
 const STEPS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_STEPS";
 const RUNS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_RUNS";
+const CAPS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_CAPS";
 const DEFAULT_STEPS: usize = 2_000;
 const FRAME_SECONDS: f64 = 1.0 / 60.0;
 
@@ -527,6 +530,15 @@ fn lightmap_residency_walks_from_prl() {
                 ..default
             });
         }
+    }
+    if let Ok(caps) = std::env::var(CAPS_ENV) {
+        configs = caps
+            .split(',')
+            .map(|cap| Levers {
+                cap_layers: cap.trim().parse().expect(CAPS_ENV),
+                ..default
+            })
+            .collect();
     }
     let mut records = Vec::new();
     for kind in WalkKind::ALL {

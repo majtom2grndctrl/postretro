@@ -13,7 +13,7 @@ use postretro_level_format::lightmap::{
 };
 use postretro_level_format::shadowmask_atlas::group_plane_len;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest};
-use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
+use postretro_render_cpu::lightmap_pool::{LightmapPoolModel, RepackKind};
 
 /// Ticks a grown-out generation stays alive before its submitted work is
 /// reported done. The renderer polls an `on_submitted_work_done` flag at
@@ -38,6 +38,22 @@ pub(super) struct PoolStats {
     pub(super) install_bytes: u64,
     pub(super) repacks: u64,
     pub(super) repack_copies: u64,
+    /// Repacks that escalated to compaction, and those that found no order.
+    pub(super) compactions: u64,
+    pub(super) compaction_rollbacks: u64,
+    /// Compactions that staged a blocker, and how many they staged.
+    pub(super) compactions_cycled: u64,
+    pub(super) cycles_staged: u64,
+    pub(super) parks: u64,
+    pub(super) compaction_copies: u64,
+    /// Copy bytes of each compaction, spare hops included.
+    pub(super) compaction_copy_bytes: Vec<u64>,
+    /// Copy bytes of each downward repack.
+    pub(super) downward_copy_bytes: Vec<u64>,
+    /// CPU time of the model's planning on each drain that compacted, nanoseconds.
+    pub(super) compaction_plan_nanos: Vec<u64>,
+    pub(super) most_compaction_attempts: u32,
+    pub(super) largest_compaction_moves: u32,
     pub(super) growths: u64,
     pub(super) deferred: u64,
     pub(super) evictions: u64,
@@ -319,6 +335,29 @@ impl PoolMirror {
         if plan.report.repacked {
             s.repacks += 1;
             s.repack_copies += plan.copies.len() as u64;
+        }
+        s.compaction_rollbacks += u64::from(plan.compaction_rolled_back);
+        let copied_texels: u64 = plan
+            .copies
+            .iter()
+            .map(|copy| u64::from(copy.width) * u64::from(copy.height))
+            .sum();
+        let copied_bytes =
+            copied_texels * self.layer_bytes / u64::from(LIGHTMAP_POOL_LAYER_EDGE).pow(2);
+        match plan.repack {
+            Some(RepackKind::Compaction(order)) => {
+                s.compactions += 1;
+                s.compactions_cycled += u64::from(order.cycles_staged > 0);
+                s.cycles_staged += u64::from(order.cycles_staged);
+                s.parks += u64::from(order.parked);
+                s.compaction_copies += plan.copies.len() as u64;
+                s.most_compaction_attempts = s.most_compaction_attempts.max(order.attempts);
+                s.largest_compaction_moves = s.largest_compaction_moves.max(order.moved_blocks);
+                s.compaction_plan_nanos.push(plan_nanos);
+                s.compaction_copy_bytes.push(copied_bytes);
+            }
+            Some(RepackKind::Downward) => s.downward_copy_bytes.push(copied_bytes),
+            None => {}
         }
         let growth = plan.growth;
         s.peak_occupied_layers = s.peak_occupied_layers.max(self.model.occupied_layers());

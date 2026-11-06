@@ -411,6 +411,31 @@ impl BlockPool {
         )
     }
 
+    /// Claim exactly `width × height` at `(x, y)` of `layer` under a fresh
+    /// owner. Replaying a layout in the order the allocator packed it, onto
+    /// layers it left empty, rebuilds the same shelves, so a planned layout
+    /// can land on other layers than the ones it was packed in.
+    pub fn allocate_at(
+        &mut self,
+        layer: u32,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Slot, RestoreConflict> {
+        let slot = Slot {
+            layer,
+            x,
+            y,
+            width,
+            height,
+            owner: self.next_owner,
+        };
+        self.restore(slot)?;
+        self.next_owner += 1;
+        Ok(slot)
+    }
+
     /// Layers a pool must hold right now: one past the highest non-empty one.
     pub fn extent(&self) -> usize {
         self.layers

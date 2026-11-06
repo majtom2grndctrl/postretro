@@ -4,6 +4,7 @@
 use postretro_level_loader::LightmapPoolReport;
 
 use super::super::{BlockPlacement, BlockTableEntry};
+use super::copy_order::CopyOrderStats;
 
 /// Why a resident block was released this drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +47,16 @@ pub struct PoolCopy {
     pub height: u32,
 }
 
+/// Which repack a drain ran. Downward runs first; compaction is its
+/// escalation, so a drain reports at most one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepackKind {
+    /// Blocks moved only to the same or a lower layer.
+    Downward,
+    /// Blocks moved to any layer, in the order the copy planner found.
+    Compaction(CopyOrderStats),
+}
+
 /// A ready pair to upload at `placement`, at its true extent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockUpload {
@@ -70,7 +81,9 @@ pub struct NotAPlannedUpload;
 /// field order, all in one submission:
 ///
 /// 1. `growth`: allocate the new generation and copy the live layers.
-/// 2. `copies`: the repack's moves, in order (never within one layer).
+/// 2. `copies`: the repack's moves, in order (never within one layer). A
+///    compaction's order depends on running exactly as listed: a later copy
+///    may overwrite an earlier one's source.
 /// 3. `uploads`: each pair's texels, recorded in the same encoder after the
 ///    copies, since a new block may land where a moved one used to be.
 /// 4. `table_writes`: only changed entries. A freed block's entry turns
@@ -81,6 +94,11 @@ pub struct NotAPlannedUpload;
 #[derive(Debug, Default)]
 pub struct DrainPlan {
     pub growth: Option<PoolGrowth>,
+    /// The repack that produced `copies`, if any.
+    pub repack: Option<RepackKind>,
+    /// A compaction packed the demand but found no copy order through the
+    /// spare: the layout stands, and the demand fell through to growth.
+    pub compaction_rolled_back: bool,
     pub copies: Vec<PoolCopy>,
     pub uploads: Vec<BlockUpload>,
     pub table_writes: Vec<TableWrite>,
@@ -115,6 +133,8 @@ impl DrainPlan {
 
     pub(super) fn clear(&mut self) {
         self.growth = None;
+        self.repack = None;
+        self.compaction_rolled_back = false;
         self.copies.clear();
         self.uploads.clear();
         self.table_writes.clear();

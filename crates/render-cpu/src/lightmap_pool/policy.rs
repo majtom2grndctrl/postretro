@@ -1,20 +1,25 @@
 // Streamed lightmap pool placement policy: per-level pool model and per-drain plans.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+mod compaction;
+mod copy_order;
 mod growth;
 mod journal;
 mod placement;
 mod plan;
 mod repack;
+mod target_layout;
 
 use postretro_level_loader::{LightmapBlockClass, LightmapPoolReport, LightmapTarget};
 
 use super::{BlockPlacement, BlockPool, BlockTableEntry, Slot, block_table_bytes};
+use compaction::CompactionScratch;
+pub use copy_order::CopyOrderStats;
 pub use growth::POOL_POLICY_IDENTITY;
 use journal::{JournalOp, Touched};
 pub use plan::{
     BlockUpload, DrainPlan, EvictionReason, NotAPlannedUpload, PlannedEviction, PoolCopy,
-    PoolGrowth, TableWrite,
+    PoolGrowth, RepackKind, TableWrite,
 };
 
 /// One drain's inputs, as the controller's `LightmapDrainBatch` carries them,
@@ -63,13 +68,14 @@ struct Scratch {
     moves: Vec<PoolCopy>,
     /// Aligned extents of the targeted demand, for growth sizing.
     demand: Vec<(u32, u32)>,
+    compaction: CompactionScratch,
 }
 
 /// The renderer's model of one level's streamed lightmap pool: which block
 /// sits where, the pool's layer count, and the one retiring generation.
 ///
 /// The pool texture always carries `layers() + 1` array layers: the last is
-/// the spare a repack stages same-layer moves through, never a second pool.
+/// the spare a repack stages moves through, never a second pool.
 /// `layers()` never passes the device limit the model was built with.
 /// Each drain produces a [`DrainPlan`] the GPU layer executes in order; the
 /// model has already applied it, and journals every mutation so the GPU
@@ -101,6 +107,10 @@ pub struct LightmapPoolModel {
     texture_allocations: u32,
     #[cfg(test)]
     growth_sizing: growth::GrowthSizing,
+    /// How much of the spare a compaction may stage in, for tests that need
+    /// a move graph with no order. `None` is the whole layer.
+    #[cfg(test)]
+    staging_edge: Option<u32>,
     journal: Vec<JournalOp>,
     drain: u64,
     touch_stamp: Vec<u64>,
@@ -161,6 +171,8 @@ impl LightmapPoolModel {
             texture_allocations: 1,
             #[cfg(test)]
             growth_sizing: growth::GrowthSizing::default(),
+            #[cfg(test)]
+            staging_edge: None,
             journal: Vec::new(),
             drain: 0,
             touch_stamp: vec![0; count],
@@ -294,7 +306,8 @@ impl LightmapPoolModel {
     fn scratch_capacities(&self) -> Vec<usize> {
         let s = &self.scratch;
         let p = &self.plan;
-        vec![
+        let mut capacities = s.compaction.capacities();
+        capacities.extend([
             self.resident.capacity(),
             self.used_texels.capacity(),
             self.journal.capacity(),
@@ -318,7 +331,8 @@ impl LightmapPoolModel {
             p.deferred.capacity(),
             p.failed.capacity(),
             p.evicted.capacity(),
-        ]
+        ]);
+        capacities
     }
 }
 
@@ -331,7 +345,13 @@ fn placement_of(slot: Slot) -> BlockPlacement {
 }
 
 #[cfg(test)]
+mod compaction_proptests;
+#[cfg(test)]
+mod compaction_tests;
+#[cfg(test)]
 mod gpu_mirror;
+#[cfg(test)]
+mod pool_test_fixtures;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]

@@ -11,8 +11,9 @@ pub use block_table::{
     block_table_bytes, placeholder_block_table,
 };
 pub use policy::{
-    BlockUpload, DrainPlan, DrainRequest, EvictionReason, LightmapPoolModel, NotAPlannedUpload,
-    POOL_POLICY_IDENTITY, PlannedEviction, PoolCopy, PoolGrowth, TableWrite,
+    BlockUpload, CopyOrderStats, DrainPlan, DrainRequest, EvictionReason, LightmapPoolModel,
+    NotAPlannedUpload, POOL_POLICY_IDENTITY, PlannedEviction, PoolCopy, PoolGrowth, RepackKind,
+    TableWrite,
 };
 pub use postretro_level_format::lightmap_pool::{
     AllResidentPool, BlockPlacement, BlockPool, RestoreConflict, ShelfLayer, Slot, StaleFree,

@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 
 use postretro_level_loader::{LightmapDrainBatch, LightmapTarget};
 
-use super::plan::{BlockUpload, EvictionReason, PlannedEviction, PoolGrowth};
+use super::plan::{BlockUpload, EvictionReason, PlannedEviction, PoolGrowth, RepackKind};
 use super::{DrainPlan, DrainRequest, JournalOp, LightmapPoolModel, Slot, Target, placement_of};
 
 impl LightmapPoolModel {
@@ -50,10 +50,11 @@ impl LightmapPoolModel {
     /// past the cap. Mandatory and visible pairs are never refused. With no
     /// room under the current layers, a pair evicts band blocks farthest
     /// lead first, then puts back each victim whose rect is still free. Failing
-    /// that, the drain repacks in place: under the cap, then, in a pool
-    /// already grown past the cap, within its layers. Failing that, it grows
-    /// a new generation sized to the whole targeted mandatory and visible
-    /// demand with headroom. A pair that needs growth while a generation
+    /// that, the drain repacks in place: downward under the cap, then, in a
+    /// pool already grown past the cap, downward within its layers, then by
+    /// compaction into any layer. Failing that, it grows a new generation
+    /// sized to the whole targeted mandatory and visible demand with
+    /// headroom. A pair that needs growth while a generation
     /// still retires, or a layer past the device limit, is deferred. Band
     /// pairs fit under the cap or are refused; they never repack or grow the
     /// pool.
@@ -77,9 +78,9 @@ impl LightmapPoolModel {
         self.apply_targets(request);
         self.evict_band_over_cap(full_scan, request.target_set);
         self.classify_ready(request.ready);
-        let repacked = self.place_never_refused();
+        let repack = self.place_never_refused();
         self.place_band();
-        self.finish(repacked);
+        self.finish(repack);
         &self.plan
     }
 
@@ -158,25 +159,30 @@ impl LightmapPoolModel {
         self.scratch.band_ready = band;
     }
 
-    /// Returns whether the drain repacked.
-    fn place_never_refused(&mut self) -> bool {
+    /// Returns the repack the drain ran, if any.
+    fn place_never_refused(&mut self) -> Option<RepackKind> {
         let list = std::mem::take(&mut self.scratch.never_refused);
         let checkpoint = self.journal.len();
-        let mut repacked = false;
+        let mut repack = None;
         if !list.iter().all(|&block| self.place_without_growth(block)) {
             // Start over from the post-free state: a repack moves band blocks
             // evicted above as victims too, since their texels are still in
             // the pool until this plan executes.
             self.rollback_to(checkpoint);
             let cap = self.cap_eff();
-            repacked =
-                self.repack(&list, cap) || (self.layers > cap && self.repack(&list, self.layers));
-            if !repacked {
+            repack = if self.repack(&list, cap)
+                || (self.layers > cap && self.repack(&list, self.layers))
+            {
+                Some(RepackKind::Downward)
+            } else {
+                self.compact(&list).map(RepackKind::Compaction)
+            };
+            if repack.is_none() {
                 self.place_with_growth(&list);
             }
         }
         self.scratch.never_refused = list;
-        repacked
+        repack
     }
 
     /// Place under the cap, then anywhere in the current layers, evicting
@@ -341,7 +347,7 @@ impl LightmapPoolModel {
         self.scratch.band_ready = list;
     }
 
-    fn finish(&mut self, repacked: bool) {
+    fn finish(&mut self, repack: Option<RepackKind>) {
         for list in [&self.scratch.never_refused, &self.scratch.band_ready] {
             for &block in list {
                 let Some(slot) = self.slots[block as usize] else {
@@ -369,9 +375,11 @@ impl LightmapPoolModel {
                 });
             }
         }
-        if repacked {
+        // A compaction already planned its copies, before it could commit.
+        if repack == Some(RepackKind::Downward) {
             self.schedule_repack_copies();
         }
+        self.plan.repack = repack;
         self.rebuild_table_writes();
         self.plan.installed.sort_unstable();
         self.plan.refused.sort_unstable();
@@ -379,6 +387,6 @@ impl LightmapPoolModel {
         self.plan
             .evicted
             .sort_unstable_by_key(|eviction| eviction.block);
-        self.plan.report = self.report(repacked, self.plan.growth.is_some());
+        self.plan.report = self.report(repack.is_some(), self.plan.growth.is_some());
     }
 }

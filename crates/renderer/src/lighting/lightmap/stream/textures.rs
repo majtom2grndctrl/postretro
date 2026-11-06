@@ -14,7 +14,7 @@ use crate::render::residency::texture_bytes;
 
 /// One pool generation: irradiance, direction and (when the level keeps id
 /// 42) shadowmask, each `array_layers` deep. The last layer is the spare a
-/// repack stages same-layer moves through; the shader never samples it.
+/// repack stages moves through; the shader never samples it.
 pub(crate) struct PoolTextures {
     pub(crate) irradiance: wgpu::Texture,
     pub(crate) direction: wgpu::Texture,

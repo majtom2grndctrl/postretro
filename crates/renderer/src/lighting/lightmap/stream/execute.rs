@@ -3,7 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::PreparedLightmapBlock;
-use postretro_render_cpu::lightmap_pool::BLOCK_TABLE_ENTRY_BYTES;
+use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, RepackKind};
 
 use super::super::pool::block_region_writes;
 use super::textures::{PoolTextures, RetiringPool};
@@ -170,6 +170,8 @@ impl LightmapStreamState {
             c.repacks += 1;
             c.repack_copy_commands += executed.copies;
         }
+        c.compactions += u64::from(matches!(plan.repack, Some(RepackKind::Compaction(_))));
+        c.compaction_rollbacks += u64::from(plan.compaction_rolled_back);
         if executed.submitted {
             c.submissions += 1;
             let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);

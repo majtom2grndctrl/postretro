@@ -18,11 +18,16 @@ pub struct LightmapStreamCounters {
     pub deferred_pairs: u64,
     /// Blocks released: untargeted, over the cap, or evicted for room.
     pub evictions: u64,
-    /// Drains that compacted the pool in place through the spare layer.
+    /// Drains that repacked the pool in place through the spare layer, by
+    /// either pass.
     pub repacks: u64,
+    /// Of those, drains that escalated to compaction.
+    pub compactions: u64,
+    /// Compactions that found no copy order and fell through to growth.
+    pub compaction_rollbacks: u64,
     /// Same-texture copy commands those repacks recorded. A move within one
-    /// layer stages through the spare layer and takes two; a move down from
-    /// a higher layer takes one.
+    /// layer stages through the spare layer and takes two; a move to another
+    /// layer takes one, or more when the block stages to break a cycle.
     pub repack_copy_commands: u64,
     /// Drains that grew a new pool generation.
     pub growths: u64,

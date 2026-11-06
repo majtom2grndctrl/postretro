@@ -135,3 +135,28 @@ fn a_refused_restore_leaves_the_layer_untouched() {
         "the 24 free rows still take a block"
     );
 }
+
+#[test]
+fn allocate_at_rebuilds_a_packed_layer_on_another_layer_and_refuses_taken_rects() {
+    let mut packed = BlockPool::new(64, None);
+    let order = [(32, 32), (32, 16), (16, 16)];
+    let slots: Vec<Slot> = order
+        .iter()
+        .map(|&(w, h)| packed.allocate(w, h).unwrap())
+        .collect();
+
+    let mut pool = BlockPool::new(64, None);
+    for slot in &slots {
+        let placed = pool
+            .allocate_at(2, slot.x, slot.y, slot.width, slot.height)
+            .unwrap();
+        assert_eq!((placed.layer, placed.x, placed.y), (2, slot.x, slot.y));
+    }
+    assert_eq!(pool.extent(), 3);
+    let same_rect = pool.allocate_at(2, slots[0].x, slots[0].y, 4, 4);
+    assert_eq!(
+        same_rect,
+        Err(RestoreConflict),
+        "an occupied rect is refused"
+    );
+}

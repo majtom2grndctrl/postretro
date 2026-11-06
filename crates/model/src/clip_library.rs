@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use glam::{Quat, Vec3, Vec4};
+use postretro_level_format::gltf_resolve::parse_document;
 
 use super::gltf_clips::{ParsedClip, parse_clip};
 use super::gltf_loader::ModelLoadError;
@@ -45,9 +46,7 @@ pub(crate) fn read_clip_library(
     };
     let parent_dir = library_path.parent().unwrap_or_else(|| Path::new(""));
     let bytes = std::fs::read(library_path).map_err(|error| unreadable(gltf::Error::Io(error)))?;
-    let document = gltf::Gltf::from_reader(std::io::Cursor::new(bytes.as_slice()))
-        .map_err(unreadable)?
-        .document;
+    let document = parse_document(&bytes).map_err(unreadable)?;
     let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(unreadable)?;
     Ok(ClipLibrarySources {
         document,
@@ -93,6 +92,7 @@ pub(crate) fn append_library_clips(
             continue;
         }
         let parsed = parse_clip(
+            &library.document,
             &animation,
             &library.buffers,
             &node_slots,
@@ -1140,6 +1140,43 @@ mod tests {
             matches!(error, ModelLoadError::ClipLibraryUnreadable { .. }),
             "missing buffer: {error:?}"
         );
+    }
+
+    // Regression: both inputs panicked inside gltf, before any library check ran.
+    #[test]
+    fn malformed_library_document_fails_the_load_not_panic() {
+        let patches: [(&str, fn(&mut serde_json::Value)); 2] = [
+            ("POSITION index past the accessors", |root| {
+                root["meshes"] = serde_json::json!([
+                    { "primitives": [{ "attributes": { "POSITION": 99 } }] }
+                ]);
+            }),
+            ("buffer URI escaping invalid UTF-8", |root| {
+                root["buffers"][0]["uri"] = serde_json::json!("%FF.bin");
+            }),
+        ];
+        for (label, patch) in patches {
+            let dir = tempfile::tempdir().unwrap();
+            let path = bound_mesh()
+                .clip_library(LIBRARY)
+                .write(&dir.path().join("model.gltf"));
+            turning_library().write(&dir.path().join(LIBRARY));
+            patch_document(&dir.path().join(LIBRARY), patch);
+
+            let result = std::panic::catch_unwind(|| load_model(&path));
+            let load_result = result.unwrap_or_else(|_| panic!("{label}: load panicked"));
+
+            assert!(
+                matches!(
+                    load_result,
+                    Err(ModelLoadError::ClipLibraryUnreadable {
+                        source: gltf::Error::Validation(_),
+                        ..
+                    })
+                ),
+                "{label}: got {load_result:?}"
+            );
+        }
     }
 
     #[test]

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use glam::{Mat4, Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
 use postretro_foundation::pose::MAX_FEET;
-use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
+use postretro_level_format::gltf_resolve::{
+    open_document, parse_document, resolve_material_base_color_path,
+};
 use postretro_level_format::octahedral;
 use thiserror::Error;
 
@@ -123,9 +125,10 @@ pub struct LoadedModel {
     pub legs: Vec<LegChain>,
 }
 
-/// Errors surfaced while loading required glTF model structure. Optional authored
-/// data, such as malformed animation channels or metadata extras, may warn and
-/// degrade instead; the loader never panics.
+/// Errors surfaced while loading glTF model structure, present optional vertex
+/// streams included. Other optional authored data, such as malformed animation
+/// channels or metadata extras, may warn and degrade instead; the loader never
+/// panics.
 #[derive(Debug, Error)]
 pub enum ModelLoadError {
     /// The glTF document or a referenced external buffer could not be read or parsed.
@@ -138,8 +141,7 @@ pub enum ModelLoadError {
     /// The document has no mesh to load (this path loads exactly one mesh).
     #[error("glTF has no mesh: {0}")]
     NoMesh(String),
-    /// A required glTF attribute or accessor is absent (e.g. a primitive's
-    /// POSITION, or a skin's inverseBindMatrices).
+    /// A required glTF attribute or accessor is absent (e.g. a primitive's POSITION).
     #[error("glTF missing required attribute '{attribute}': {path}")]
     MissingAttribute { path: String, attribute: String },
     /// A primitive uses an unsupported topology (only triangle lists load).
@@ -152,6 +154,15 @@ pub enum ModelLoadError {
         attribute: String,
         expected: String,
         actual: String,
+    },
+    /// A present accessor's stride, count or ranges cannot be read safely, or it
+    /// is sparse with no buffer view: valid glTF, refused because its count sizes
+    /// an allocation whatever the file's size.
+    #[error("glTF accessor '{attribute}' {reason}: {path}")]
+    UnreadableAccessor {
+        path: String,
+        attribute: String,
+        reason: &'static str,
     },
     /// A present primitive vertex stream does not match the POSITION vertex count.
     #[error(
@@ -297,22 +308,114 @@ fn validate_attribute_count(
     })
 }
 
-fn validate_accessor_shape(
+/// Refuse an accessor gltf cannot safely read: shape first, since readability
+/// depends on the element size the shape fixes. Call before the matching
+/// `read_*`, which checks neither.
+fn validate_readable_accessor(
     accessor: &gltf::Accessor,
+    buffers: &[gltf::buffer::Data],
     path_str: &str,
     attribute: &str,
     expected: &[(DataType, Dimensions)],
 ) -> Result<(), ModelLoadError> {
     let actual = (accessor.data_type(), accessor.dimensions());
-    if expected.contains(&actual) {
-        return Ok(());
+    if !expected.contains(&actual) {
+        return Err(ModelLoadError::InvalidAccessorShape {
+            path: path_str.to_string(),
+            attribute: attribute.to_string(),
+            expected: format_accessor_shapes(expected),
+            actual: format_accessor_shape(actual),
+        });
     }
-    Err(ModelLoadError::InvalidAccessorShape {
-        path: path_str.to_string(),
-        attribute: attribute.to_string(),
-        expected: format_accessor_shapes(expected),
-        actual: format_accessor_shape(actual),
+    match accessor_read_refusal(accessor, buffers) {
+        Some(reason) => Err(ModelLoadError::UnreadableAccessor {
+            path: path_str.to_string(),
+            attribute: attribute.to_string(),
+            reason,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Why gltf cannot safely read `accessor`, or `None` when it can. Call once the
+/// accessor's shape is known good, so `size()` is the element size gltf reads.
+///
+/// `gltf::accessor::Iter` trusts what document validation leaves unchecked. A
+/// stride below the element size panics on the first read, in release too. Its
+/// range arithmetic overflows on a zero count or a huge one. A sparse accessor
+/// with no buffer view allocates `count` elements whatever the file's size, so
+/// it is refused; one with a buffer view reads, its own ranges checked.
+pub(super) fn accessor_read_refusal(
+    accessor: &gltf::Accessor,
+    buffers: &[gltf::buffer::Data],
+) -> Option<&'static str> {
+    if accessor.count() == 0 {
+        return Some("has no elements");
+    }
+    let Some(view) = accessor.view() else {
+        return Some("is sparse with no buffer view");
+    };
+    let element_size = accessor.size();
+    let base = view_read_refusal(
+        &view,
+        accessor.offset(),
+        accessor.count(),
+        element_size,
+        buffers,
+    );
+    if base.is_some() {
+        return base;
+    }
+    let sparse = accessor.sparse()?;
+    if sparse.count() == 0 || sparse.count() > accessor.count() {
+        return Some("has a sparse count outside its elements");
+    }
+    let indices = sparse.indices();
+    let values = sparse.values();
+    view_read_refusal(
+        &indices.view(),
+        indices.offset(),
+        sparse.count(),
+        indices.index_type().size(),
+        buffers,
+    )
+    .or_else(|| {
+        view_read_refusal(
+            &values.view(),
+            values.offset(),
+            sparse.count(),
+            element_size,
+            buffers,
+        )
     })
+}
+
+/// Why `count` elements at `offset` in `view` cannot be read, if they cannot.
+fn view_read_refusal(
+    view: &gltf::buffer::View,
+    offset: usize,
+    count: usize,
+    element_size: usize,
+    buffers: &[gltf::buffer::Data],
+) -> Option<&'static str> {
+    let stride = view.stride().unwrap_or(element_size);
+    if stride < element_size {
+        return Some("has a byte stride below its element size");
+    }
+    let read_end = (count - 1)
+        .checked_mul(stride)
+        .and_then(|span| span.checked_add(element_size))
+        .and_then(|span| span.checked_add(offset));
+    let view_end = view.offset().checked_add(view.length());
+    let buffer_length = buffers.get(view.buffer().index()).map(|data| data.0.len());
+    match (read_end, view_end, buffer_length) {
+        (Some(read_end), Some(view_end), Some(buffer_length))
+            if read_end <= view.length() && view_end <= buffer_length =>
+        {
+            None
+        }
+        _ => Some("overruns its view or buffer"),
+    }
 }
 
 fn format_accessor_shapes(shapes: &[(DataType, Dimensions)]) -> String {
@@ -964,12 +1067,9 @@ pub fn read_model_sources(path: &Path) -> Result<ModelSources, ModelLoadError> {
         source,
     };
     let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
-    // `Gltf::open` is `from_reader` over the opened file; reading the bytes
-    // first keeps them for the digest and parses through the same reader.
+    // Reading the bytes first keeps them for the digest.
     let bytes = std::fs::read(path).map_err(|error| import_error(gltf::Error::Io(error)))?;
-    let document = gltf::Gltf::from_reader(std::io::Cursor::new(bytes.as_slice()))
-        .map_err(import_error)?
-        .document;
+    let document = parse_document(&bytes).map_err(import_error)?;
     let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(import_error)?;
     let (material_keys, skinned) = {
         let SelectedModel { mesh, skin, .. } = select_model(&document, &path_str)?;
@@ -1017,12 +1117,10 @@ pub fn clip_library_path(document: &gltf::Document, path: &Path) -> Option<PathB
 /// library, and a malformed value, none of which a load binds.
 pub fn skinned_clip_library_path(path: &Path) -> Result<Option<PathBuf>, ModelLoadError> {
     let path_str = path.display().to_string();
-    let document = gltf::Gltf::open(path)
-        .map_err(|source| ModelLoadError::Import {
-            path: path_str.clone(),
-            source,
-        })?
-        .document;
+    let document = open_document(path).map_err(|source| ModelLoadError::Import {
+        path: path_str.clone(),
+        source,
+    })?;
     let skinned = select_model(&document, &path_str).is_ok_and(|model| model.skin.is_some());
     Ok(skinned
         .then(|| clip_library_path(&document, path))
@@ -1117,6 +1215,7 @@ pub fn load_model_from_sources(
         .animations()
         .map(|anim| {
             parse_clip(
+                &document,
                 &anim,
                 &buffers,
                 &node_to_topo,
@@ -1250,12 +1349,6 @@ fn build_skeleton(
     // glTF default (absent accessor) is identity per joint.
     let inverse_binds: Vec<[[f32; 4]; 4]> = match skin.inverse_bind_matrices() {
         Some(accessor) => {
-            validate_accessor_shape(
-                &accessor,
-                path_str,
-                "inverseBindMatrices",
-                &[(DataType::F32, Dimensions::Mat4)],
-            )?;
             if accessor.count() != joint_nodes.len() {
                 return Err(ModelLoadError::InverseBindCountMismatch {
                     path: path_str.to_string(),
@@ -1263,6 +1356,13 @@ fn build_skeleton(
                     actual: accessor.count(),
                 });
             }
+            validate_readable_accessor(
+                &accessor,
+                buffers,
+                path_str,
+                "inverseBindMatrices",
+                &[(DataType::F32, Dimensions::Mat4)],
+            )?;
             skin.reader(buffer_data)
                 .read_inverse_bind_matrices()
                 .ok_or_else(|| ModelLoadError::MissingAttribute {
@@ -1589,8 +1689,9 @@ fn load_mesh(
                     path: path_str.to_string(),
                     attribute: "POSITION".to_string(),
                 })?;
-        validate_accessor_shape(
+        validate_readable_accessor(
             &position_accessor,
+            buffers,
             path_str,
             "POSITION",
             &[(DataType::F32, Dimensions::Vec3)],
@@ -1609,8 +1710,9 @@ fn load_mesh(
         // them (a rigid mesh without skinning, or an untextured primitive).
         let uvs: Vec<[u16; 2]> = match primitive.get(&gltf::mesh::Semantic::TexCoords(0)) {
             Some(accessor) => {
-                validate_accessor_shape(
+                validate_readable_accessor(
                     &accessor,
+                    buffers,
                     path_str,
                     "TEXCOORD_0",
                     &[
@@ -1635,8 +1737,9 @@ fn load_mesh(
         };
         let normals: Vec<[u16; 2]> = match primitive.get(&gltf::mesh::Semantic::Normals) {
             Some(accessor) => {
-                validate_accessor_shape(
+                validate_readable_accessor(
                     &accessor,
+                    buffers,
                     path_str,
                     "NORMAL",
                     &[(DataType::F32, Dimensions::Vec3)],
@@ -1661,8 +1764,9 @@ fn load_mesh(
         };
         let tangents: Vec<[u16; 2]> = match primitive.get(&gltf::mesh::Semantic::Tangents) {
             Some(accessor) => {
-                validate_accessor_shape(
+                validate_readable_accessor(
                     &accessor,
+                    buffers,
                     path_str,
                     "TANGENT",
                     &[(DataType::F32, Dimensions::Vec4)],
@@ -1692,8 +1796,9 @@ fn load_mesh(
                     path: path_str.to_string(),
                     attribute: "JOINTS_0".to_string(),
                 })?;
-            validate_accessor_shape(
+            validate_readable_accessor(
                 &accessor,
+                buffers,
                 path_str,
                 "JOINTS_0",
                 &[
@@ -1723,8 +1828,9 @@ fn load_mesh(
                     path: path_str.to_string(),
                     attribute: "WEIGHTS_0".to_string(),
                 })?;
-            validate_accessor_shape(
+            validate_readable_accessor(
                 &accessor,
+                buffers,
                 path_str,
                 "WEIGHTS_0",
                 &[
@@ -1770,8 +1876,9 @@ fn load_mesh(
         // `draw_indexed` consumes for this submesh.
         let start = out.indices.len() as u32;
         if let Some(accessor) = primitive.indices() {
-            validate_accessor_shape(
+            validate_readable_accessor(
                 &accessor,
+                buffers,
                 path_str,
                 "indices",
                 &[
@@ -1882,6 +1989,7 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clip_library_test_fixtures::{node, patch_document, skinned};
     use crate::skeleton::Interp;
     use std::path::PathBuf;
 
@@ -2292,6 +2400,316 @@ mod tests {
             ),
             "malformed JOINTS_0 shape should be typed loader error, got {load_result:?}",
         );
+    }
+
+    // `multi_clip` accessors, each read at a different site.
+    const POSITION: usize = 0;
+    const JOINTS: usize = 1;
+    const WEIGHTS: usize = 2;
+    const INDICES: usize = 3;
+    const INVERSE_BINDS: usize = 4;
+
+    /// Give `attribute` an accessor and a buffer view of its own in the fixture,
+    /// so a stride patch reaches no other read. Returns the accessor's index.
+    /// The optional streams borrow the WEIGHTS_0 bytes; a malformed one fails
+    /// before they are read.
+    fn isolate_accessor(json: &mut serde_json::Value, attribute: &str) -> usize {
+        let accessor_index = match attribute {
+            "POSITION" => POSITION,
+            "JOINTS_0" => JOINTS,
+            "WEIGHTS_0" => WEIGHTS,
+            "indices" => INDICES,
+            "inverseBindMatrices" => INVERSE_BINDS,
+            optional => {
+                let accessor_type = match optional {
+                    "TEXCOORD_0" => "VEC2",
+                    "NORMAL" => "VEC3",
+                    "TANGENT" => "VEC4",
+                    unknown => panic!("no fixture stream for {unknown}"),
+                };
+                let accessors = json["accessors"].as_array_mut().unwrap();
+                accessors.push(serde_json::json!({
+                    "bufferView": 2,
+                    "componentType": 5126,
+                    "count": 3,
+                    "type": accessor_type,
+                }));
+                let index = accessors.len() - 1;
+                json["meshes"][0]["primitives"][0]["attributes"][optional] =
+                    serde_json::json!(index);
+                index
+            }
+        };
+        let view_index = json["accessors"][accessor_index]["bufferView"]
+            .as_u64()
+            .unwrap() as usize;
+        let view = json["bufferViews"][view_index].clone();
+        let views = json["bufferViews"].as_array_mut().unwrap();
+        views.push(view);
+        let private_view = views.len() - 1;
+        json["accessors"][accessor_index]["bufferView"] = serde_json::json!(private_view);
+        accessor_index
+    }
+
+    fn patch_fields(target: &mut serde_json::Value, fields: &serde_json::Value) {
+        for (key, value) in fields.as_object().unwrap() {
+            target[key.as_str()] = value.clone();
+        }
+    }
+
+    // Regression: gltf trusts stride, count and sparse shape. A short stride
+    // panicked in release, a zero count overflowed in dev, and a sparse-only
+    // accessor with a huge count aborted on allocation.
+    #[test]
+    fn unreadable_mesh_and_skin_accessors_return_err_not_panic() {
+        const ATTRIBUTES: &[&str] = &[
+            "POSITION",
+            "TEXCOORD_0",
+            "NORMAL",
+            "TANGENT",
+            "JOINTS_0",
+            "WEIGHTS_0",
+            "indices",
+            "inverseBindMatrices",
+        ];
+        const SHORT_STRIDE: &str = "has a byte stride below its element size";
+        const OVERRUN: &str = "overruns its view or buffer";
+        const SPARSE_COUNT: &str = "has a sparse count outside its elements";
+        // A view cases may name for sparse values, placed before any isolated one.
+        let mut fixture = fixture_json(&multi_clip_fixture_path());
+        let views = fixture["bufferViews"].as_array_mut().unwrap();
+        views.push(serde_json::json!({ "buffer": 0, "byteLength": 64, "byteStride": 4 }));
+        let short_view = views.len() - 1;
+
+        let indices = serde_json::json!({ "bufferView": 3, "componentType": 5123 });
+        let values = serde_json::json!({ "bufferView": 0 });
+        let sparse_of = |count: u64, indices: &serde_json::Value, values: &serde_json::Value| serde_json::json!({ "count": count, "indices": indices, "values": values });
+        let sparse = |count: u64| sparse_of(count, &indices, &values);
+        let far_indices = serde_json::json!({
+            "bufferView": 3,
+            "byteOffset": 1u64 << 20,
+            "componentType": 5123,
+        });
+        let far_values = serde_json::json!({ "bufferView": 0, "byteOffset": 1u64 << 20 });
+        let none = serde_json::json!({});
+
+        for attribute in ATTRIBUTES {
+            // A count the skin's joints disagree with is refused earlier, as a
+            // count mismatch.
+            let count_reason = |reason| (*attribute != "inverseBindMatrices").then_some(reason);
+            let mut cases = vec![
+                (
+                    count_reason("has no elements"),
+                    serde_json::json!({ "count": 0 }),
+                    none.clone(),
+                ),
+                (
+                    count_reason("is sparse with no buffer view"),
+                    serde_json::json!({
+                        "bufferView": null,
+                        "count": 1_000_000_000_000u64,
+                        "sparse": sparse(1),
+                    }),
+                    none.clone(),
+                ),
+                (
+                    count_reason(OVERRUN),
+                    serde_json::json!({ "count": u64::MAX }),
+                    none.clone(),
+                ),
+                (
+                    Some("is sparse with no buffer view"),
+                    serde_json::json!({ "bufferView": null, "sparse": sparse(1) }),
+                    none.clone(),
+                ),
+                (
+                    Some(SPARSE_COUNT),
+                    serde_json::json!({ "sparse": sparse(4) }),
+                    none.clone(),
+                ),
+                (
+                    Some(SPARSE_COUNT),
+                    serde_json::json!({ "sparse": sparse(0) }),
+                    none.clone(),
+                ),
+                (
+                    Some(OVERRUN),
+                    serde_json::json!({ "sparse": sparse_of(1, &far_indices, &values) }),
+                    none.clone(),
+                ),
+                (
+                    Some(OVERRUN),
+                    serde_json::json!({ "sparse": sparse_of(1, &indices, &far_values) }),
+                    none.clone(),
+                ),
+                (
+                    Some(OVERRUN),
+                    serde_json::json!({ "byteOffset": 1u64 << 20 }),
+                    none.clone(),
+                ),
+                // Past its view, still inside its buffer.
+                (
+                    Some(OVERRUN),
+                    none.clone(),
+                    serde_json::json!({ "byteLength": 4 }),
+                ),
+                (
+                    Some(OVERRUN),
+                    none.clone(),
+                    serde_json::json!({ "byteLength": 1u64 << 40 }),
+                ),
+                (
+                    Some(OVERRUN),
+                    none.clone(),
+                    serde_json::json!({ "byteOffset": u64::MAX }),
+                ),
+            ];
+            // A document may declare no stride under 4 and no index is wider, so
+            // indices cannot be short-strided. JOINTS_0 needs its wider storage,
+            // and a view that fits it for the base read to pass.
+            if *attribute != "indices" {
+                let (mut wide, wide_view) = if *attribute == "JOINTS_0" {
+                    (
+                        serde_json::json!({ "componentType": 5123 }),
+                        serde_json::json!({ "byteLength": 24 }),
+                    )
+                } else {
+                    (none.clone(), none.clone())
+                };
+                cases.push((
+                    Some(SHORT_STRIDE),
+                    wide.clone(),
+                    serde_json::json!({ "byteStride": 4 }),
+                ));
+                let short_values = serde_json::json!({ "bufferView": short_view });
+                wide["sparse"] = sparse_of(1, &indices, &short_values);
+                cases.push((Some(SHORT_STRIDE), wide, wide_view));
+            }
+
+            for (reason, accessor_patch, view_patch) in cases {
+                let label = format!("{attribute} {accessor_patch} {view_patch}");
+                let mut json = fixture.clone();
+                let accessor_index = isolate_accessor(&mut json, attribute);
+                let view_index = json["accessors"][accessor_index]["bufferView"]
+                    .as_u64()
+                    .unwrap() as usize;
+                patch_fields(&mut json["accessors"][accessor_index], &accessor_patch);
+                patch_fields(&mut json["bufferViews"][view_index], &view_patch);
+                let path = write_temp_fixture("unreadable_accessor", &json);
+
+                let result = std::panic::catch_unwind(|| load_model(&path));
+                let _ = std::fs::remove_file(&path);
+                let load_result = result.unwrap_or_else(|_| panic!("{label}: load panicked"));
+
+                match (reason, &load_result) {
+                    (
+                        Some(expected),
+                        Err(ModelLoadError::UnreadableAccessor {
+                            attribute: actual_attribute,
+                            reason: actual,
+                            ..
+                        }),
+                    ) if actual_attribute == attribute && *actual == expected => {}
+                    (None, Err(ModelLoadError::InverseBindCountMismatch { .. })) => {}
+                    _ => panic!("{label}: expected {reason:?}, got {load_result:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_mesh_accessor_with_a_buffer_view_still_loads() {
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["accessors"][POSITION]["sparse"] = serde_json::json!({
+            "count": 1,
+            "indices": { "bufferView": 3, "componentType": 5123 },
+            "values": { "bufferView": 0 },
+        });
+        let path = write_temp_fixture("sparse_position", &json);
+
+        let result = load_model(&path);
+        let _ = std::fs::remove_file(&path);
+
+        let model = result.expect("sparse POSITION loads");
+        assert_eq!(model.mesh.vertices.len(), 3);
+    }
+
+    // Regression: both inputs panicked inside gltf, before any loader check ran.
+    #[test]
+    fn malformed_document_returns_import_err_not_panic() {
+        fn use_image(json: &mut serde_json::Value, image: serde_json::Value) {
+            json["images"] = serde_json::json!([image]);
+            json["textures"] = serde_json::json!([{ "source": 0 }]);
+            json["materials"] = serde_json::json!([
+                { "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } } }
+            ]);
+            json["meshes"][0]["primitives"][0]["material"] = serde_json::json!(0);
+        }
+        let patches: [(&str, fn(&mut serde_json::Value)); 4] = [
+            ("POSITION index past the accessors", |json| {
+                json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] =
+                    serde_json::json!(99);
+            }),
+            ("buffer URI escaping invalid UTF-8", |json| {
+                json["buffers"][0]["uri"] = serde_json::json!("%FF.bin");
+            }),
+            ("image with no source", |json| {
+                use_image(json, serde_json::json!({}));
+            }),
+            ("buffer view image with no MIME type", |json| {
+                use_image(json, serde_json::json!({ "bufferView": 0 }));
+            }),
+        ];
+        for (label, patch) in patches {
+            let mut json = fixture_json(&multi_clip_fixture_path());
+            patch(&mut json);
+            let path = write_temp_fixture("gltf_panic_input", &json);
+
+            let result = std::panic::catch_unwind(|| load_model(&path));
+            let _ = std::fs::remove_file(&path);
+            let load_result = result.unwrap_or_else(|_| panic!("{label}: load panicked"));
+
+            assert!(
+                matches!(
+                    load_result,
+                    Err(ModelLoadError::Import {
+                        source: gltf::Error::Validation(_),
+                        ..
+                    })
+                ),
+                "{label}: got {load_result:?}"
+            );
+        }
+    }
+
+    // Regression: the document panicked gltf's validator during this check.
+    #[test]
+    fn clip_library_reference_check_returns_err_on_a_malformed_document() {
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = serde_json::json!(99);
+        let path = write_temp_fixture("gltf_panic_reference", &json);
+
+        let result = std::panic::catch_unwind(|| skinned_clip_library_path(&path));
+        let _ = std::fs::remove_file(&path);
+        let check = result.expect("reference check must not panic");
+
+        assert!(
+            matches!(check, Err(ModelLoadError::Import { .. })),
+            "got {check:?}"
+        );
+    }
+
+    #[test]
+    fn percent_escaped_buffer_uri_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = skinned(vec![node("root")]).write(&dir.path().join("mesh data.gltf"));
+        patch_document(&path, |root| {
+            root["buffers"][0]["uri"] = serde_json::json!("mesh%20data.bin");
+        });
+
+        let model = load_model(&path).expect("escaped URI loads");
+
+        assert_eq!(model.mesh.vertices.len(), 3);
     }
 
     fn add_first_primitive_optional_stream(

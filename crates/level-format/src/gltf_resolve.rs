@@ -1,8 +1,42 @@
-// Shared glTF base-color URI resolution for runtime and level compilation.
+// Shared glTF relative-URI resolution for runtime, level compilation and packaging.
 // See: context/lib/build_pipeline.md §Baked texture mips
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// Resolves a reference relative to a glTF document, for references the
+/// document's own schema does not type as a URI, such as `extras.clipLibrary`.
+///
+/// Returns `None` for anything but a non-empty relative path: URI schemes,
+/// including `data:` and `file:`, any other colon, and absolute or rooted paths.
+/// Every rule applies after percent decoding.
+///
+/// Invalid UTF-8 falls back to the literal URI so the later filesystem read owns
+/// failure handling. Parent segments are joined unchanged: glTF content is
+/// trusted and may deliberately reference a sibling directory.
+pub fn resolve_relative_uri(uri: &str, parent_dir: &Path) -> Option<PathBuf> {
+    let decoded = decode_relative_uri(uri)?;
+    (!decoded.is_empty()).then(|| parent_dir.join(decoded))
+}
+
+fn decode_relative_uri(uri: &str) -> Option<String> {
+    let decoded = percent_encoding::percent_decode_str(uri)
+        .decode_utf8()
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| uri.to_string());
+
+    // `has_root`, not `is_absolute`. On Windows a leading-slash path carries a
+    // root but no drive prefix, so `is_absolute` is false for it — and a join
+    // then *replaces* the parent directory rather than extending it, which is
+    // the one outcome this guard exists to prevent. A glTF URI is a relative
+    // reference by specification, so a rooted one is unsupported on both
+    // platforms.
+    let decoded_path = Path::new(&decoded);
+    if decoded.contains(':') || decoded_path.is_absolute() || decoded_path.has_root() {
+        return None;
+    }
+    Some(decoded)
+}
 
 /// Resolves a material's relative filesystem base-color URI beside its glTF.
 ///
@@ -10,10 +44,8 @@ use std::path::{Path, PathBuf};
 /// base-color textures, and buffer-view images return `None`. Callers treat
 /// `None` as unavailable and degrade to a placeholder or skip its offline bake.
 ///
-/// Percent decoding follows glTF URI encoding. Invalid UTF-8 falls back to the
-/// literal URI so the later filesystem read owns failure handling. Parent
-/// segments are joined unchanged: glTF content is trusted and may deliberately
-/// reference a sibling directory outside the model's directory.
+/// Decoding and rejection are [`resolve_relative_uri`]'s, except that an empty
+/// URI joins as the parent directory, which the later read then fails on.
 pub fn resolve_material_base_color_path(
     material: &gltf::Material,
     parent_dir: &Path,
@@ -26,23 +58,7 @@ pub fn resolve_material_base_color_path(
             gltf::image::Source::View { .. } => None,
         })?;
 
-    let decoded = percent_encoding::percent_decode_str(uri)
-        .decode_utf8()
-        .map(|value| value.into_owned())
-        .unwrap_or_else(|_| uri.to_string());
-
-    // `has_root`, not `is_absolute`. On Windows a leading-slash path carries a
-    // root but no drive prefix, so `is_absolute` is false for it — and the join
-    // below then *replaces* the parent directory rather than extending it,
-    // which is the one outcome this guard exists to prevent. A glTF URI is a
-    // relative reference by specification, so a rooted one is unsupported on
-    // both platforms.
-    let decoded_path = Path::new(&decoded);
-    if decoded.contains(':') || decoded_path.is_absolute() || decoded_path.has_root() {
-        return None;
-    }
-
-    Some(parent_dir.join(decoded))
+    decode_relative_uri(uri).map(|decoded| parent_dir.join(decoded))
 }
 
 /// Opens a glTF document and returns its distinct relative base-color paths.
@@ -87,6 +103,49 @@ mod tests {
             std::process::id(),
             id
         ))
+    }
+
+    #[test]
+    fn relative_uri_resolver_decodes_and_joins_relative_paths() {
+        let parent = Path::new("/content/models/trooper");
+        for (uri, expected) in [
+            ("library.gltf", "/content/models/trooper/library.gltf"),
+            (
+                "../clip%20libraries/rifle.gltf",
+                "/content/models/trooper/../clip libraries/rifle.gltf",
+            ),
+            (
+                "%2E%2E%2Frifle.gltf",
+                "/content/models/trooper/../rifle.gltf",
+            ),
+        ] {
+            assert_eq!(
+                resolve_relative_uri(uri, parent),
+                Some(PathBuf::from(expected)),
+                "relative reference must resolve: {uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_uri_resolver_rejects_everything_but_a_relative_path() {
+        for uri in [
+            "",
+            "data:model/gltf+json;base64,AAAA",
+            "file:///library.gltf",
+            "file%3A%2F%2F%2Flibrary.gltf",
+            "http://x",
+            "C:lib.gltf",
+            "C%3Alib.gltf",
+            "/library.gltf",
+            "%2Flibrary.gltf",
+        ] {
+            assert_eq!(
+                resolve_relative_uri(uri, Path::new("/content/models")),
+                None,
+                "reference must be rejected: {uri:?}"
+            );
+        }
     }
 
     #[test]

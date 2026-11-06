@@ -45,6 +45,8 @@ Fixes, landed through the gate below:
 
 Gate, first compile, no failures: workspace `cargo check --all-targets` with dev-tools; format 666, `prl-build` `sh_mandatory` 15, `sh_mandatory_bound_compile` 2, loader 333, render-cpu 643, renderer `sh_streaming` 226 and app `sh_` 285 and `level_streaming` 20, GPU required. Each of the twelve fixes was read in source; the trace baseline needed no change. No new findings, so no re-review. `settling_flag_lifts_the_sh_hold...` now uses a Band entry, because a one-cell fixture with any id 51 entry always reads. Scope addition: the device clamp also covers dense (`device_slot_limit`). For §4 at landing: add `Held`; stopping eviction needs every family whole and nothing released; "a refused pin stays unavailable" now covers device limits only. Known and bounded: evicting a Held resident reads as a horizon change next frame, lifting suppression once, and after the hold it may read back as Hysteresis.
 
+Preflight passed again at ae99bc0b7, GPU required: fmt, clippy `--all-targets` with dev-tools, `cargo test` plain 14,480, dev-tools 14,588, `capture` 2,528, release check, crate graph.
+
 Accepted, not fixed: a victim that frees nothing is still evicted; path flips act as horizon changes; seam suppression can lift on the portal frame after a hold; a direct Pass B failure can promote one frame early.
 
 ## Corrections

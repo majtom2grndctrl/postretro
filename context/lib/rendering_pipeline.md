@@ -301,6 +301,13 @@ array-layer limit, is deferred and counts as a miss. The first generation holds 
 what the level needs all-resident, whichever is smaller. One drain's copies, uploads and
 table writes reach the GPU in one submission.
 
+**Bounded lightmap pool** *(not built yet)*. Replaces the shared layer index, the side-by-side mask layer, the fixed cap and its slider, and the downward-only repack above.
+
+- *Planes.* Id 42 stores no all-zero plane, and an absent plane reads zero, exactly what it would decode to. Mask planes live in their own pool, one placement each, and the block table carries each address. A block stays one pair across both pools: its halves install and leave together.
+- *Pool size.* Both pools are sized once at load from the compiled bound (`build_pipeline.md` §PRL section IDs, Lightmap pool bound) times 5/4, capped at what the level needs all-resident. The pool is the cap, grown layers included: no drain carries a cap, and no slider sets one. Band blocks fill what mandatory demand leaves.
+- *Repack.* The downward repack runs first. If it cannot fit the whole targeted demand, blocks may move to any layer through that pool's spare, never a second copy of a pool. Any set that packs from scratch therefore fits at runtime. Repack holds room for every mandatory and visible target, and compacts at most once before growth.
+- *Growth.* Demand the bound does not model evicts band blocks, repacks, then grows that pool once by the same margin and warns, naming the pool and camera cell. That demand is drawn cells outside the camera cell's set for the bound, a planar mirror's included, a raised dev lead, Settling on a fallback path, and a seam pre-commit.
+
 Level install reads no block. Settling's drains make the presented pose's set resident
 before the first world frame (`boot_sequence.md` §1, Settling), and play never waits on a
 block. While settling, demand covers the mandatory set plus every block the pose draws, on

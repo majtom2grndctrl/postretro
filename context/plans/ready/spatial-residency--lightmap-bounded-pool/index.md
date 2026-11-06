@@ -124,7 +124,6 @@ Non-binding.
 - **Harnesses.** `walk_measurement/pool_mirror.rs` and the compiler dry run mirror the pool and need the split.
 - **Rival shapes.** Downward-only repack with a large margin: less code, and layers are cheap once masks leave them. Rejected because 36 layers grew where 38 did not, so any margin is one route's luck. One allocator with mask backing on a prefix of layers: no second pool, but the journal is already single, and it blocks per-mover masks.
 - **Doors.** `real_map_mirror` is the template if mirror cells ever join a bound. `E25--map-transitions` leaves shared versus per-level pools open; per-level bounds serve either. Its seam pre-commit settles a union, so its growth would land at the two-level peak: E25 must price that against both levels' bounds.
-- **Seed.** `drafts/lightmap-pool-growth-peak.md` is absorbed here; delete it at promotion. The done SH brief still names it and a sweep here; those are history.
 - `crates/renderer/src/lighting/lightmap/stream/tests.rs` and `crates/level-format/src/shadowmask_atlas.rs` are past 800 lines: split first.
 
 ## Wire format

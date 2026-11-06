@@ -340,7 +340,7 @@ Weapon `thirdPersonModel` and `viewmodel` assets resolve through the same conten
 
 **Materials must be metallic-roughness glTF.** Model loading consumes the diffuse slot only (§1.2, §8.1). The loader rejects any glTF that lists an unsupported extension in `extensionsRequired` — notably `KHR_materials_pbrSpecularGlossiness` (common in Sketchfab exports). Convert spec-gloss materials to metallic-roughness (base color = diffuse) before import.
 
-**Malformed accessors fail the load.** A mesh or skin accessor must be readable before it is read: a short stride, a zero count, or a range past its buffer is a load error, for optional vertex streams too. A sparse accessor with no buffer view is refused despite being valid glTF, because its `count` sizes an allocation whatever the file's size. Animation samplers take the same check but skip the channel, leaving the joint at rest.
+**Malformed accessors fail the load.** A mesh or skin accessor must be readable before it is read: a short stride, a zero count, or a range past its buffer is a load error, for optional vertex streams too. A sparse accessor with no buffer view is refused despite being valid glTF, because its `count` sizes an allocation whatever the file's size. Animation samplers take the same check but skip the channel, leaving the joint at rest. Every document read parses through one shared entry point, which turns the inputs the glTF crate panics on into ordinary validation errors, so a new read path must use it rather than open a document directly.
 
 Placed mesh entities carry `Transform.scale = 1`; no FGD or descriptor scale override exists (`entity_model.md` §4). On-screen size is entirely the authored geometry.
 

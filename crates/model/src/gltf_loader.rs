@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use glam::{Mat4, Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
 use postretro_foundation::pose::MAX_FEET;
-use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
+use postretro_level_format::gltf_resolve::{
+    open_document, parse_document, resolve_material_base_color_path,
+};
 use postretro_level_format::octahedral;
 use thiserror::Error;
 
@@ -1063,12 +1065,9 @@ pub fn read_model_sources(path: &Path) -> Result<ModelSources, ModelLoadError> {
         source,
     };
     let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
-    // `Gltf::open` is `from_reader` over the opened file; reading the bytes
-    // first keeps them for the digest and parses through the same reader.
+    // Reading the bytes first keeps them for the digest.
     let bytes = std::fs::read(path).map_err(|error| import_error(gltf::Error::Io(error)))?;
-    let document = gltf::Gltf::from_reader(std::io::Cursor::new(bytes.as_slice()))
-        .map_err(import_error)?
-        .document;
+    let document = parse_document(&bytes).map_err(import_error)?;
     let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(import_error)?;
     let (material_keys, skinned) = {
         let SelectedModel { mesh, skin, .. } = select_model(&document, &path_str)?;
@@ -1116,12 +1115,10 @@ pub fn clip_library_path(document: &gltf::Document, path: &Path) -> Option<PathB
 /// library, and a malformed value, none of which a load binds.
 pub fn skinned_clip_library_path(path: &Path) -> Result<Option<PathBuf>, ModelLoadError> {
     let path_str = path.display().to_string();
-    let document = gltf::Gltf::open(path)
-        .map_err(|source| ModelLoadError::Import {
-            path: path_str.clone(),
-            source,
-        })?
-        .document;
+    let document = open_document(path).map_err(|source| ModelLoadError::Import {
+        path: path_str.clone(),
+        source,
+    })?;
     let skinned = select_model(&document, &path_str).is_ok_and(|model| model.skin.is_some());
     Ok(skinned
         .then(|| clip_library_path(&document, path))
@@ -1989,6 +1986,7 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clip_library_test_fixtures::{node, patch_document, skinned};
     use crate::skeleton::Interp;
     use std::path::PathBuf;
 
@@ -2629,6 +2627,63 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let model = result.expect("sparse POSITION loads");
+        assert_eq!(model.mesh.vertices.len(), 3);
+    }
+
+    // Regression: both inputs panicked inside gltf, before any loader check ran.
+    #[test]
+    fn documents_gltf_panics_on_return_err_not_panic() {
+        let patches: [(&str, fn(&mut serde_json::Value)); 2] = [
+            ("POSITION index past the accessors", |json| {
+                json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] =
+                    serde_json::json!(99);
+            }),
+            ("buffer URI escaping invalid UTF-8", |json| {
+                json["buffers"][0]["uri"] = serde_json::json!("%FF.bin");
+            }),
+        ];
+        for (label, patch) in patches {
+            let mut json = fixture_json(&multi_clip_fixture_path());
+            patch(&mut json);
+            let path = write_temp_fixture("gltf_panic_input", &json);
+
+            let result = std::panic::catch_unwind(|| load_model(&path));
+            let _ = std::fs::remove_file(&path);
+            let load_result = result.unwrap_or_else(|_| panic!("{label}: load panicked"));
+
+            assert!(
+                matches!(load_result, Err(ModelLoadError::Import { .. })),
+                "{label}: got {load_result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clip_library_reference_check_returns_err_on_a_document_gltf_panics_on() {
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = serde_json::json!(99);
+        let path = write_temp_fixture("gltf_panic_reference", &json);
+
+        let result = std::panic::catch_unwind(|| skinned_clip_library_path(&path));
+        let _ = std::fs::remove_file(&path);
+        let check = result.expect("reference check must not panic");
+
+        assert!(
+            matches!(check, Err(ModelLoadError::Import { .. })),
+            "got {check:?}"
+        );
+    }
+
+    #[test]
+    fn percent_escaped_buffer_uri_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = skinned(vec![node("root")]).write(&dir.path().join("mesh data.gltf"));
+        patch_document(&path, |root| {
+            root["buffers"][0]["uri"] = serde_json::json!("mesh%20data.bin");
+        });
+
+        let model = load_model(&path).expect("escaped URI loads");
+
         assert_eq!(model.mesh.vertices.len(), 3);
     }
 

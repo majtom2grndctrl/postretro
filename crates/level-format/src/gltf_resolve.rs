@@ -1,9 +1,77 @@
-// Shared glTF relative-URI resolution for runtime, level compilation and packaging.
+// Shared glTF document parsing and relative-URI resolution for runtime, level
+// compilation and packaging.
 // See: context/lib/build_pipeline.md §Baked texture mips · context/lib/resource_management.md §7
 
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+use gltf::json::mesh::Semantic;
+use gltf::json::validation::{self, Checked};
+use gltf::json::{Path as JsonPath, Root};
+
+/// Parses and validates a glTF document, returning an error for the inputs gltf
+/// panics on rather than rejects. Every document read goes through here.
+///
+/// gltf's validator indexes the accessors with a primitive's POSITION unchecked,
+/// and its buffer import unwraps a relative URI's percent decoding. Both are
+/// screened on the parsed JSON, before either runs, and report as gltf's own
+/// validation errors do.
+pub fn parse_document(bytes: &[u8]) -> Result<gltf::Document, gltf::Error> {
+    let root = gltf::Gltf::from_slice_without_validation(bytes)?
+        .document
+        .into_json();
+    let errors = panicking_inputs(&root);
+    if !errors.is_empty() {
+        return Err(gltf::Error::Validation(errors));
+    }
+    gltf::Document::from_json(root)
+}
+
+/// [`parse_document`] over the file at `path`.
+pub fn open_document(path: &Path) -> Result<gltf::Document, gltf::Error> {
+    parse_document(&std::fs::read(path).map_err(gltf::Error::Io)?)
+}
+
+fn panicking_inputs(root: &Root) -> Vec<(JsonPath, validation::Error)> {
+    let mut errors = Vec::new();
+    let position = Checked::Valid(Semantic::Positions);
+    for (mesh_index, mesh) in root.meshes.iter().enumerate() {
+        for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
+            let in_range = primitive
+                .attributes
+                .get(&position)
+                .is_none_or(|accessor| accessor.value() < root.accessors.len());
+            if !in_range {
+                let path = JsonPath::new()
+                    .field("meshes")
+                    .index(mesh_index)
+                    .field("primitives")
+                    .index(primitive_index)
+                    .field("attributes")
+                    .key("POSITION");
+                errors.push((path, validation::Error::IndexOutOfBounds));
+            }
+        }
+    }
+    for (buffer_index, buffer) in root.buffers.iter().enumerate() {
+        // gltf decodes only a URI with no colon; the rest fail on their scheme.
+        let undecodable = buffer.uri.as_deref().is_some_and(|uri| {
+            !uri.contains(':')
+                && percent_encoding::percent_decode_str(uri)
+                    .decode_utf8()
+                    .is_err()
+        });
+        if undecodable {
+            let path = JsonPath::new()
+                .field("buffers")
+                .index(buffer_index)
+                .field("uri");
+            errors.push((path, validation::Error::Invalid));
+        }
+    }
+    errors
+}
 
 /// Resolves a reference relative to a glTF document, for references the
 /// document's own schema does not type as a URI, such as `extras.clipLibrary`.
@@ -68,7 +136,7 @@ pub fn resolve_material_base_color_path(
 /// This parses only the glTF document; it does not import buffers or images.
 /// Unsupported image sources are omitted. Paths retain first-material order.
 pub fn resolve_document_base_color_paths(gltf_path: &Path) -> Result<Vec<PathBuf>, gltf::Error> {
-    let document = gltf::Gltf::open(gltf_path)?;
+    let document = open_document(gltf_path)?;
     let parent_dir = gltf_path.parent().unwrap_or_else(|| Path::new(""));
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
@@ -105,6 +173,27 @@ mod tests {
             std::process::id(),
             id
         ))
+    }
+
+    // Regression: gltf validation indexed the accessors with this value unchecked.
+    #[test]
+    fn base_color_paths_return_err_on_a_position_index_past_the_accessors() {
+        let dir = temp_dir("bad_position");
+        fs::create_dir_all(&dir).expect("temp directory must be created");
+        let path = dir.join("model.gltf");
+        fs::write(
+            &path,
+            r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":99}}]}]}"#,
+        )
+        .expect("glTF fixture must be written");
+
+        let result = std::panic::catch_unwind(|| resolve_document_base_color_paths(&path));
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(matches!(
+            result.expect("must not panic"),
+            Err(gltf::Error::Validation(_))
+        ));
     }
 
     #[test]

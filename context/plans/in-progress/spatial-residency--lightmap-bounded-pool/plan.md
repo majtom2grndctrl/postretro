@@ -1,25 +1,10 @@
 # spatial-residency--lightmap-bounded-pool — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 3d66934ce
 
 No crate source changed between the brief's `read at` (6a813bdcd) and this commit. Every symbol cited by Decisions and Path was re-read at this commit. No Decision premise is false, and no Acceptance row needs restatement.
-
-## Block: row 28 and the compaction Decision
-
-Task 1's planner clears the hallway at 27 layers end to end, but the guarantee as written does not hold. Owner decision needed before task 2. Tasks 3 and 4 do not depend on the answer.
-
-- **Written:** "any set that packs from scratch into the pool also fits at runtime" makes the bound "provable" (Decision); row 28 says the same for any history.
-- **Found:** with no layer spare in the from-scratch pack, the planner misses a small share of compactions at 90–95% fill: 25 of 31,382 at real scale, and 4 of 209,190 on the small hunt. A hand-checked miss has an order, so these are search misses, not proven walls. Each one falls through to logged growth, per R22.
-- **Row 28's test** passes on a fixed seed with 0 missed, while other cases miss. That pass does not prove the row as written.
-- **With at least one layer spare:** 0 misses in 1,893 real-scale compactions. Measured, not proved, and too few cases to separate from the no-spare rate.
-- **Proved:** every returned plan is valid, a failed plan changes nothing, building into an empty layer cannot fail, a park fails only by fragmentation, and a single-layer pool always succeeds.
-- **Where no-spare arises:** a demand that fills the pool. On the hallway, demand within the bound leaves about 7 layers spare at 34. A level capped at all-resident with every block mandatory has none, so a whole-map fixture could rarely grow past its cap and warn.
-
-Proposed row 28: "After any history of arrivals and departures, any resident and pending mandatory set that packs from scratch, tallest first, into the pool with at least one layer spare is placed by repack with no growth, and its copies complete through that pool's one spare on the copy mirror with every texel intact (property test at real scale on a hallway-shaped block mix, reporting how many cases reached compaction, on a generator biased to near-full pools). A set that packs only with no layer spare is placed or takes row 35's logged growth, and the miss rate is reported."
-
-Proposed Decision wording: replace "makes the bound provable: any set that packs from scratch into the pool also fits at runtime" with "makes the bound hold in practice: a set that packs from scratch with a layer to spare fits at runtime, by measurement rather than proof, and a miss takes logged growth".
 
 ## Corrections
 
@@ -36,6 +21,10 @@ Each keeps the meaning of its Decision or Acceptance row. Any the owner reads di
 - **Naming the camera cell in the growth warning** — `LightmapPoolModel` has no cell. The outcome reports which pool grew, and the controller, which holds the camera cell, logs the warning.
 - **Tracked PRL** — `content/dev/maps/test-fixtures/sh-streaming-hinted-door.prl` is committed. It rebakes in task 3 if it carries id 42 or needs id 58.
 - **Grep rows on context docs** — row 47 must pass before the results report, so its doc edits land in task 9, ahead of the land step.
+
+- **Row 28 and the compaction Decision, owner ruling 2026-11-06** — the brief claimed any set that packs from scratch fits at runtime. With no layer spare, the planner misses about 0.08% of real-scale stress compactions at 90–95% fill (25 of 31,382), and a hand-checked miss has an order, so these are search misses. The owner restated both: the guarantee covers sets with a layer to spare, by measurement rather than proof, and a no-spare miss takes logged growth. A much larger real-scale sample backs the line before task 2.
+- **Compaction shape** — the Path's dependency graph with blockers staged in the spare became target layers built one at a time into a rolling empty layer, because the graph search missed the hallway at 27 layers. The spare's index stays fixed. What is proved: every returned plan is valid, a failed plan changes nothing, building into an empty layer cannot fail, a park fails only by fragmentation, and a single-layer pool always succeeds.
+- **Whole-map levels at no spare** — a level capped at all-resident with every block mandatory has no layer spare, so it can rarely grow past its cap and warn. The owner kept the cap; such levels are fixtures.
 
 ## Delegated answers
 
@@ -83,14 +72,14 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 | 25 | A-absent reads exactly B's bytes, and the reverse | `streamed_block_reads_exactly_its_present_plane` | achievable as stated |
 | 26 | Abort restores both pools and table; failed install frees both halves (R4) | `abort_restores_both_pools`, `failed_install_frees_both_halves` | achievable as stated |
 | 27 | Level change and first drain leave nothing resident in either pool (R5) | `new_generation_empties_both_pools` | achievable as stated |
-| 28 | Any history: set that packs from scratch places with no growth, copies complete through one spare | proptest `compaction_places_any_set_that_packs_from_scratch`, reports compaction and cycle counts | achievable if task 1 finds no stuck case, see Risks |
+| 28 | Any history: set that packs with a layer spare places with no growth, copies complete through one spare; no-spare misses reported | real-scale test in `compaction_scale_tests`, plus small proptest `compaction_places_any_set_that_packs_from_scratch` | restated by the owner, see Corrections |
 | 29 | Downward pass enough: nothing moves up; drain-only fit gives way (R10, R18) | `downward_repack_must_cover_the_whole_demand` | achievable as stated |
 | 30 | Demand over one drain's budget, shortest first: one repack, no growth (R11, R20) | `demand_arriving_over_drains_repacks_once` | achievable as stated |
 | 31 | Demand past the pool compacts at most once before growing (R32) | `demand_past_the_pool_compacts_once_then_grows` | achievable as stated |
 | 32 | Reserved room: stays a miss, no band lands there (R28) | `reserved_room_stays_a_miss_and_holds_off_band` | achievable as stated |
 | 33 | Reservation returns on leaving demand, by removal or to band (R21) | `reservation_returns_when_its_target_leaves` | achievable as stated |
 | 34 | Headroom leaves out reservations, counts a pair in hand once (R29) | `band_headroom_tracks_reservations` | achievable as stated |
-| 35 | No copy order: layout stands, growth, warned by name (R22) | `no_copy_order_rolls_back_to_growth`, on a hand-built stuck layout | achievable as stated |
+| 35 | No copy order: layout stands, growth, warned by name (R22) | `no_copy_order_rolls_back_to_growth`, on a real search miss with a whole spare | achievable as stated |
 | 36 | Up, down, same-layer, swap land intact; planes told apart (R6) | `every_move_shape_lands_intact` on `gpu_mirror` | achievable as stated |
 | 37 | One pool's repack leaves the other, band drop leaves both; one submission (R7, R15) | `one_pool_repack_leaves_the_other`, queue-counted, req GPU | achievable as stated |
 | 38 | Mask-only repack rewrites only moved entries (R14) | `mask_repack_rewrites_moved_entries_only` | achievable as stated |
@@ -128,7 +117,7 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Riskiest slice.** Compaction alone on today's single pool: dependency-graph copy order through the spare, planned before any copy records, rollback when no order exists. Property test on near-full mixed-size pools, with a deliberate hunt for stuck layouts. Walk harness at 28 and 30 layers. Metal timing of a whole-pool compaction. Rows 28, 35, 36 on one pool. Stops per Risks | integrating executor | — | built; 27, 28, 30 and 34 layers walk with 0 growths and 0 rollbacks; closes on the block above |
+| 1 | **Riskiest slice.** Compaction alone on today's single pool: dependency-graph copy order through the spare, planned before any copy records, rollback when no order exists. Property test on near-full mixed-size pools, with a deliberate hunt for stuck layouts. Walk harness at 28 and 30 layers. Metal timing of a whole-pool compaction. Rows 28, 35, 36 on one pool. Stops per Risks | integrating executor | — | built; 27, 28, 30 and 34 layers walk with 0 growths and 0 rollbacks; sample at a layer spare outstanding |
 | 2 | Whole-demand repack and reservations: room held for every target, downward pass judged on the whole demand, one compaction before growth. Rows 29–34 on one pool | integrating executor | 1 | |
 | 3 | Format: split `shadowmask_atlas.rs` tests first. `SMB8`, plane absence, id 58 section, tallest-first shared placement, shared margin and pool pricing in level-format, loader refusals, memo version bump, tracked fixture rebake. Rows 1–3 | worker, level-format + level-loader + compiler bake | — | |
 | 4 | Compiler: bound through one cell input, Build Summary, post-bake mask gate. Rows 4–11, 55 compiler side | worker, compiler | 3 | |
@@ -144,8 +133,6 @@ The owner directed the session to orchestrate: tasks marked integrating executor
 
 ## Risks
 
-- **One spare may not always be enough.** A fully tangled move graph across three layers can need two blockers staged at once, and two large blockers may not share the spare. I have no real layout showing this, and no proof it cannot happen. Task 1 hunts for it directly.
-  - If the generator reaches a stuck layout, the Decision that any packable set fits at runtime is false as written. The plan goes `blocked` with the layout, because row 28 and "the bound is provable" both rest on it. R22's fallback would keep the engine correct, but only by growing.
 - **Task 1 walks** used a throwaway read shim with SH streaming off, because the hallway PRL fails `ClusterDirectory VersionMismatch` at this commit. With compaction off, that setup reproduced `research.md`. Task 10 rebakes.
 - **The downward repack is not cheap.** At 34 layers it moves about 250 copies, p95 360 MiB, about 15–16 ms of GPU on the Mac, and makes up 92% of tour repacks (3.55% of tour steps). Order is unchanged, per the Decision. Task 2's whole-demand planning should cut the count; row 62 measures what remains.
 - **Compaction has no per-demand gate yet.** It reruns each drain, with its warning, while growth is deferred or device-limited, and a jam costs up to about 240 ms. Task 2 must gate it.

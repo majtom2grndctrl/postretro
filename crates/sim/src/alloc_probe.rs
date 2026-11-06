@@ -29,6 +29,12 @@ thread_local! {
     /// init — a plain TLS read that cannot re-enter the allocator. `Cell<usize>`
     /// has no destructor, so writes during thread teardown stay valid too.
     static THREAD_ALLOC_COUNT: Cell<usize> = const { Cell::new(0) };
+
+    /// Set once [`AllocSnapshot::arm`] has verified the allocator on this
+    /// thread. The canary runs only on a thread's first `arm`, which cannot sit
+    /// inside another open window on the same thread, so nested windows (an
+    /// outer measure around inner exclusions) never see the canary allocation.
+    static ALLOCATOR_VERIFIED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Increment the current thread's allocation counter. Allocation-free: `with`
@@ -95,14 +101,17 @@ impl AllocSnapshot {
     /// without it the counter never moves and every zero-allocation assertion
     /// passes vacuously. See [`counting_allocator_is_installed`].
     pub fn arm() -> Self {
-        assert!(
-            counting_allocator_is_installed(),
-            "alloc_probe: CountingAllocator is not the global allocator in this \
+        if !ALLOCATOR_VERIFIED.with(Cell::get) {
+            assert!(
+                counting_allocator_is_installed(),
+                "alloc_probe: CountingAllocator is not the global allocator in this \
              test binary, so allocs_since() would always read 0. Add \
              `#[cfg(test)] #[global_allocator] static ALLOCATOR: \
              postretro_sim::alloc_probe::CountingAllocator = \
              postretro_sim::alloc_probe::CountingAllocator;` at the crate root."
-        );
+            );
+            ALLOCATOR_VERIFIED.with(|verified| verified.set(true));
+        }
         Self {
             allocs: THREAD_ALLOC_COUNT.with(Cell::get),
         }
@@ -117,8 +126,8 @@ impl AllocSnapshot {
 /// Canary: performs one heap allocation and reports whether this thread's
 /// counter observed it. `false` means [`CountingAllocator`] is not installed as
 /// the global allocator, so the probe is dead. [`AllocSnapshot::arm`] checks
-/// this before every measurement window; the allocation lands before the
-/// snapshot is taken and never counts against the window.
+/// this on each thread's first window, before its snapshot is taken, so the
+/// canary allocation never counts against any window.
 pub fn counting_allocator_is_installed() -> bool {
     let before = THREAD_ALLOC_COUNT.with(Cell::get);
     // `black_box` keeps the optimizer from eliding the allocation pair.

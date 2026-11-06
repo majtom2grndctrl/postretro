@@ -99,7 +99,7 @@ pub(crate) use pack_output::PrlFootprint;
 #[cfg(test)]
 use pack_output::write_and_validate_sections;
 use pack_output::{
-    PlannedSection, report_section_footprint,
+    BoundReports, PlannedSection, report_section_footprint,
     write_and_validate_sections_with_cluster_directory_validation,
 };
 
@@ -108,7 +108,11 @@ mod section_plan;
 
 use section_plan::{FinalizedSectionPlanInputs, build_finalized_section_plan};
 
+mod bound_report;
+mod lightmap_pool_bound;
 mod sh_mandatory_bound;
+pub(crate) use lightmap_pool_bound::PoolDemand;
+use lightmap_pool_bound::{LightmapPoolBoundInputs, resolve_lightmap_pool_bound};
 use sh_mandatory_bound::{ShMandatoryBoundInputs, resolve_sh_mandatory_bound};
 
 /// Convert translated map lights into an `AlphaLightsSection` for the format
@@ -651,6 +655,13 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
             .as_ref()
             .map(cluster_sh_payloads::ClusterPayloadSpool::storage_demand),
     })?;
+    let lightmap_pool = resolve_lightmap_pool_bound(LightmapPoolBoundInputs {
+        lightmap,
+        shadowmask: shadowmask_atlas,
+        cells: &cells_section,
+        directory: &cluster_bake.directory,
+        residency: cell_residency_set_section,
+    })?;
     log::info!(
         "[Compiler] SH cluster directory: {} clusters, {} ranges, {} active affinity cells, {} covering references, max {} adaptive nodes visited/cluster, {} bytes, <= {} bytes construction metadata, {:.3} ms",
         cluster_bake.stats.cluster_count,
@@ -703,13 +714,20 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         cell_residency_set: cell_residency_set_section,
         cluster_directory: &cluster_bake.directory,
         sh_mandatory_bound: sh_bound.entries,
+        lightmap_pool_bound: lightmap_pool.section,
         cluster_payload,
     })?;
     let descriptors: Vec<_> = sections
         .iter()
         .map(|section| section.descriptor.clone())
         .collect();
-    let footprint = report_section_footprint(&descriptors, sh_bound.report);
+    let footprint = report_section_footprint(
+        &descriptors,
+        BoundReports {
+            sh_mandatory: sh_bound.report,
+            lightmap_pool: lightmap_pool.report,
+        },
+    );
     let largest_payload_bytes = footprint
         .sections
         .iter()

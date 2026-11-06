@@ -1,8 +1,6 @@
 // Proofs for id 42 plane absence and id 58 across both load modes.
 // See: context/lib/testing_guide.md · context/lib/rendering_pipeline.md §4
 
-use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
-
 use super::*;
 
 const EXTENTS: [(u16, u16); 4] = [(8, 4), (8, 4), (8, 4), (8, 4)];
@@ -132,10 +130,7 @@ fn a_level_with_the_retired_tag_is_refused_by_name_in_both_load_modes() {
         .unwrap();
     id_42.data[0..4].copy_from_slice(b"SMB7");
     let fixture = Fixture::with_portals("postretro_test_lm_planes_smb7.prl", blobs);
-    for mode in [
-        LightmapStreamingMode::AllResident,
-        LightmapStreamingMode::Stream,
-    ] {
+    for mode in BOTH_MODES {
         let message = load_error(&fixture.0, mode);
         assert!(
             message.contains("SMB7") && message.contains("re-bake"),
@@ -144,28 +139,39 @@ fn a_level_with_the_retired_tag_is_refused_by_name_in_both_load_modes() {
     }
 }
 
-fn bound_blob(section: LightmapPoolBoundSection) -> SectionBlob {
-    blob(SectionId::LightmapPoolBound, section.to_bytes())
-}
+const BOTH_MODES: [LightmapStreamingMode; 2] = [
+    LightmapStreamingMode::AllResident,
+    LightmapStreamingMode::Stream,
+];
 
-const BOUND: LightmapPoolBoundSection = LightmapPoolBoundSection {
-    worst_lightmap_layers: 27,
-    worst_mask_layers: 12,
-};
-
-#[test]
-fn rejects_unknown_id_58_version_by_name_in_both_load_modes() {
+/// A portal level with a block, id 51, and whatever `edit` leaves of its id 58.
+fn level_with_bound(name: &str, edit: impl FnOnce(&mut Vec<SectionBlob>)) -> Fixture {
     let lightmap = lightmap_section(&[(8, 4)]);
     let mut blobs = lighting_blobs(&lightmap, None, true);
-    let mut unknown = bound_blob(BOUND);
-    unknown.data[0..4].copy_from_slice(&2u32.to_le_bytes());
-    blobs.push(unknown);
-    let fixture = Fixture::with_portals("postretro_test_lm_bound_version.prl", blobs);
-    for mode in [
-        LightmapStreamingMode::AllResident,
-        LightmapStreamingMode::Stream,
-    ] {
-        let message = load_error(&fixture.0, mode);
+    edit(&mut blobs);
+    Fixture::with_portals(name, blobs)
+}
+
+fn is_bound(blob: &SectionBlob) -> bool {
+    blob.section_id == SectionId::LightmapPoolBound as u32
+}
+
+#[test]
+fn level_needing_the_bound_refuses_absent_or_unknown_id_58() {
+    let absent = level_with_bound("postretro_test_lm_bound_absent.prl", |blobs| {
+        blobs.retain(|blob| !is_bound(blob));
+    });
+    let unknown = level_with_bound("postretro_test_lm_bound_version.prl", |blobs| {
+        let bound = blobs.iter_mut().find(|blob| is_bound(blob)).unwrap();
+        bound.data[0..4].copy_from_slice(&2u32.to_le_bytes());
+    });
+    for mode in BOTH_MODES {
+        let message = load_error(&absent.0, mode);
+        assert!(
+            message.contains("LightmapPoolBound") && message.contains("re-bake"),
+            "{mode:?}: {message}"
+        );
+        let message = load_error(&unknown.0, mode);
         assert!(
             message.contains("LightmapPoolBound version 2 is unknown"),
             "{mode:?}: {message}"
@@ -173,13 +179,28 @@ fn rejects_unknown_id_58_version_by_name_in_both_load_modes() {
     }
 }
 
+// The requirement is the compiler's emission rule, read from the table: id 22
+// blocks and id 51, not whether this load streams.
+#[test]
+fn a_level_the_compiler_stores_no_bound_for_loads_without_id_58() {
+    let no_id_51 = Fixture::with_portals(
+        "postretro_test_lm_bound_no_id_51.prl",
+        lighting_blobs(&lightmap_section(&[(8, 4)]), None, false),
+    );
+    let no_blocks = Fixture::with_portals(
+        "postretro_test_lm_bound_no_blocks.prl",
+        lighting_blobs(&lightmap_section(&[]), None, true),
+    );
+    for mode in BOTH_MODES {
+        no_id_51.load(mode);
+        no_blocks.load(mode);
+    }
+}
+
 #[test]
 fn a_streamed_level_keeps_its_id_58_on_the_manifest() {
-    let lightmap = lightmap_section(&[(8, 4)]);
-    let mut blobs = lighting_blobs(&lightmap, None, true);
-    blobs.push(bound_blob(BOUND));
-    let fixture = Fixture::with_portals("postretro_test_lm_bound_kept.prl", blobs);
+    let fixture = level_with_bound("postretro_test_lm_bound_kept.prl", |_| {});
     let world = fixture.load(LightmapStreamingMode::Stream);
     let manifest = world.lightmap_stream_manifest().expect("the level streams");
-    assert_eq!(manifest.pool_bound(), Some(BOUND));
+    assert_eq!(manifest.pool_bound(), Some(FIXTURE_POOL_BOUND));
 }

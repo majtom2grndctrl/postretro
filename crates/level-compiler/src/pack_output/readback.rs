@@ -12,6 +12,7 @@ use postretro_level_format::cluster_sh_payloads::{
     ClusterShPayloadsSection,
 };
 use postretro_level_format::lightmap::{LIGHTMAP_HEADER_BYTES, LightmapBlockIndex, LightmapHeader};
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, ShadowmaskOwnerBounds,
     shadowmask_prefix_len_through_block_count,
@@ -88,6 +89,10 @@ pub(super) fn validate_readback(
             if expected.section_id == SectionId::ClusterDirectory as u32 {
                 ClusterDirectorySection::from_bytes(&actual).map_err(|error| {
                     anyhow::anyhow!("section 49 failed same-handle structural read-back: {error}")
+                })?;
+            } else if expected.section_id == SectionId::LightmapPoolBound as u32 {
+                LightmapPoolBoundSection::from_bytes(&actual).map_err(|error| {
+                    anyhow::anyhow!("section 58 failed same-handle structural read-back: {error}")
                 })?;
             }
         }

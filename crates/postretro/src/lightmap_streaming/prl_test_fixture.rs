@@ -16,6 +16,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES,
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlock, LightmapMode, LightmapSection,
 };
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
@@ -149,6 +150,15 @@ fn sections() -> Vec<SectionBlob> {
         ),
         blob(SectionId::CellResidencySet, 1, residency_set().to_bytes()),
         blob(SectionId::Lightmap, 1, lightmap().to_bytes()),
+        blob(
+            SectionId::LightmapPoolBound,
+            1,
+            LightmapPoolBoundSection {
+                worst_lightmap_layers: 1,
+                worst_mask_layers: 0,
+            }
+            .to_bytes(),
+        ),
     ]
 }
 

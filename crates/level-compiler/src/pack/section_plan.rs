@@ -2,12 +2,17 @@
 //! See: context/lib/build_pipeline.md §PRL Compilation
 
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ShMandatoryBoundEntry};
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 
 use super::*;
 
 /// Id 51's PRL table entry version. The loader does not check it: the
 /// payload's own version (`CELL_RESIDENCY_SET_VERSION`) rejects a stale section.
 const CELL_RESIDENCY_SET_CONTAINER_VERSION: u16 = 1;
+
+/// Id 58's PRL table entry version. The payload's own leading version
+/// (`LIGHTMAP_POOL_BOUND_VERSION`) is the epoch a loader checks.
+const LIGHTMAP_POOL_BOUND_CONTAINER_VERSION: u16 = 1;
 
 /// Id 52's PRL table entry version. The payload's own leading version
 /// (`ENVIRONMENT_VOLUMES_VERSION`) is the epoch a loader checks.
@@ -71,6 +76,8 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     /// Id 49's bound tail. Pack computes it after the directory is baked, from
     /// the node sets the chunks are encoded from.
     pub(super) sh_mandatory_bound: Vec<ShMandatoryBoundEntry>,
+    /// Id 58, present when id 22 has blocks and id 51 is emitted.
+    pub(super) lightmap_pool_bound: Option<LightmapPoolBoundSection>,
     pub(super) cluster_payload: Option<super::cluster_sh_payloads::ClusterPayloadSpool>,
 }
 
@@ -119,6 +126,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         cell_residency_set,
         cluster_directory,
         sh_mandatory_bound,
+        lightmap_pool_bound,
         cluster_payload,
     } = inputs;
 
@@ -521,6 +529,15 @@ pub(super) fn build_finalized_section_plan<'a>(
             CELL_RESIDENCY_SET_CONTAINER_VERSION,
             section.byte_len(),
             || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = lightmap_pool_bound {
+        let bytes = section.to_bytes();
+        sections.push(PlannedSection::new(
+            SectionId::LightmapPoolBound as u32,
+            LIGHTMAP_POOL_BOUND_CONTAINER_VERSION,
+            bytes.len(),
+            move || Ok(bytes),
         ));
     }
     if let Some(cluster_payload) = cluster_payload {

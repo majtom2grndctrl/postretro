@@ -123,8 +123,21 @@ impl LightmapResidencyRead {
     }
 
     /// Read id 58 in either mode, for the manifest a streamed level builds.
-    pub(crate) fn read_pool_bound(&mut self, container: &PrlContainer) -> Result<(), PrlLoadError> {
+    /// `required` is the compiler's own emission rule, so its absence means a
+    /// stale bake whatever mode this load runs in.
+    pub(crate) fn read_pool_bound(
+        &mut self,
+        container: &PrlContainer,
+        required: bool,
+    ) -> Result<(), PrlLoadError> {
         self.pool_bound = crate::prl_lightmap::read_lightmap_pool_bound(container)?;
+        if required && self.pool_bound.is_none() {
+            return Err(section_validation(
+                "LightmapPoolBound",
+                "section is missing from a level with lightmap blocks and a CellResidencySet \
+                 (id 51); re-bake the level",
+            ));
+        }
         Ok(())
     }
 

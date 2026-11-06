@@ -4,12 +4,13 @@
 
 use std::time::Duration;
 
-use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{ShMandatoryBoundEntry, WHOLE_MAP_WORST_CELL};
 use postretro_level_format::sh_pool_cost::{
     ShDenseSlotTextures, sh_dense_slot_bytes, sh_sparse_capacity_bytes,
 };
+
+use crate::pack::bound_report::{CellPlace, MIB, metres, mib};
 
 /// What the other pools leave of the 2 GB target: 2048 MiB minus the lightmap
 /// pool (about 490 MiB), the shadow pools (about 427 MiB) and everything else
@@ -17,7 +18,6 @@ use postretro_level_format::sh_pool_cost::{
 /// figures when any of them moves. Fixed, not an author key, like occluder
 /// classification.
 const SH_MANDATORY_WARN_BYTES: u64 = 512 * MIB;
-const MIB: u64 = 1024 * 1024;
 
 /// One stored lead, in the units an author reads.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,16 +26,7 @@ pub(super) struct PricedLead {
     pub(super) bytes: u64,
     dense_slots: u32,
     /// `None` when the figure is the whole map.
-    worst: Option<WorstCellPlace>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct WorstCellPlace {
-    cell: u32,
-    /// Engine space, metres: the shared stages hold no editor coordinates, and
-    /// the inverse of the source adapter's axis swizzle and scale lives with
-    /// the adapter, so this does not claim to be a map coordinate.
-    center: [f32; 3],
+    worst: Option<CellPlace>,
 }
 
 /// What the Build Summary says about the bound. No stored leads means the
@@ -75,7 +66,7 @@ impl ShMandatoryReport {
                     bytes: dense_bytes + sparse_bytes,
                     dense_slots: entry.worst_dense_slots,
                     worst: (entry.worst_cell != WHOLE_MAP_WORST_CELL)
-                        .then(|| place_of(entry.worst_cell, cells)),
+                        .then(|| CellPlace::of(entry.worst_cell, cells)),
                 }
             })
             .collect();
@@ -157,36 +148,4 @@ impl ShMandatoryReport {
             ),
         })
     }
-}
-
-fn place_of(cell: u32, cells: &CellsSection) -> WorstCellPlace {
-    let record = &cells.cells[cell as usize];
-    WorstCellPlace {
-        cell,
-        center: std::array::from_fn(|axis| {
-            (record.bounds_min[axis] + record.bounds_max[axis]) * 0.5
-        }),
-    }
-}
-
-impl WorstCellPlace {
-    fn describe(&self) -> String {
-        format!("in cell {}, near {}", self.cell, self.position())
-    }
-
-    fn position(&self) -> String {
-        let [x, y, z] = self.center;
-        format!("({x:.1}, {y:.1}, {z:.1}) engine metres")
-    }
-}
-
-fn mib(bytes: u64) -> String {
-    format!("{:.1} MiB", bytes as f64 / MIB as f64)
-}
-
-fn metres(lead: u32) -> String {
-    format!(
-        "{} m lead",
-        lead as f32 / CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE as f32
-    )
 }

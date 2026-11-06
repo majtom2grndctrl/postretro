@@ -262,7 +262,8 @@ pub(super) fn decode_lighting(
         lightmap_index,
         crate::prl_lightmap::shadowmask_owner_bounds(face_meta.len(), &lights),
     )?;
-    lightmap_residency.read_pool_bound(container)?;
+    let has_blocks = lightmap_index.is_some_and(|index| index.header.block_count > 0);
+    lightmap_residency.read_pool_bound(container, has_blocks && cell_residency_set.is_some())?;
 
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"

@@ -53,6 +53,28 @@ Preflight passed again at ae99bc0b7, GPU required: fmt, clippy `--all-targets` w
 
 Tooling: `measure/sh-bounded-pool-final` at 6608e220a, on ae99bc0b7, no sizing levers, `postretro-final` built with `--profile profiling --features dev-tools`. It must never merge. Run `tools/measure-harness/pilot.sh`, then `batch.sh plan-final.txt`, with `T` and `PRL_DIR` set; `today` needs its own plan and `PRL_DIR` for `stress-street`. The `XCTRACE` mode is untested against the real engine. Row 39's tier comes from `settings.toml`, already `very_high`. Row 42's reload is a keypress: `Alt+Shift+L` loads `content/dev/maps/combat-demo.prl`, so that path needs the v3 bake with its v2 set aside. Scratchpad, which a reboot may clear: `/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/54ee9970-513a-458c-8a48-d075ca2707a3/scratchpad/sh-final/` (`bin`, `bin-today`, `prl-v3`, `prl-v2`, `logs`).
 
+**Final walks (2026-11-05), shipped sizing, cold v3 PRLs.** Thirteen recorded walks plus a shot-free Metal capture, all valid. No SH growth on any map, capacity constant, `at_whole_map_cap` 0 everywhere. Only the hallway evicts: `campaign-test`, `occlusion-test`, `stress-street` and `reflection-lake-test` hold the whole map on every walk frame, so that zero proves least there.
+
+| Map | Capacity (slots) | SH pool | Misses | p50 / p99 ms |
+|---|---|---|---|---|
+| Hallway | 211,248 | 399 MiB | 579, all held; 0 on 22,399 portal frames | 17 / 44–45 |
+| `campaign-test` | 42,048 | 79 MiB | 2 | 17 / 52–53 |
+| `occlusion-test` | 18,432 | 31 MiB | 0 | 17 / 47–48 |
+| `stress-street` | 118,096 | 213 MiB | 0 | 17 / 41–42 |
+| `reflection-lake-test` | 297,992 | 329 MiB | 0 | 17 / 39 |
+
+Hallway live peaked at 210,505 of 211,248; 2–3 mandatory shortfalls per walk, all placed by eviction; 77–78 optional refusals.
+
+**Row 35, Metal Resource Events, `resource-size`, hallway.** Steady 2,170 MiB against 3,011; peak 2,574 MiB against 3,577, at 27 s. Video-memory-only figures are 2,009 and 2,415. Which column the spike read is unconfirmed. Steady is flat from 60 s to the end. The peak is lightmap pool growth (116/58/232 → 140/70/280 MiB, old and new alive together), not SH, so it belongs to `drafts/lightmap-pool-growth-peak.md`. It runs about 370 MiB above the brief's near-2.2 GB projection. A full route records about 19 GB of raw `xctrace` data in the user temp directory, left there on exit, so budget about 25 GB and delete it after.
+
+**Shots inflate frame times.** Every frame over 100 ms in the shot runs is a held frame taking a shot. With no shots: 0 over 100 ms, max 86 ms, p99 23 ms.
+
+**Row 41.** Pool size is constant across the hallway's 44 solid-cell frames. Frame time is not: median 32.5 ms against 17 ms beside them, shot-free. No shot-free `today` run exists to show whether that predates this brief, and the row reads "unchanged", so it goes to the owner.
+
+**Row 39.** The columns cannot show a mirror in view. The pool holds the whole map, so a mirror cannot raise demand past it either way.
+
+**Row 37, automated half.** On-disk v2 PRLs are not baselines: `campaign-test` differed from a fresh bake in 19 of 37 sections, which sizes hid, and `occlusion-test` was stale. Both were redone from a compiler at b5c39cab8 (`*-today2-*`), and now differ only in id 49. The hallway v2 differs only in ids 49 and 50, as designed. Equal clock, over noise: `campaign-test` 0 of 31 pairs, `occlusion-test` 0 of 87, `stress-street` 0 of 30, hallway 0 of 16. Matched pose: `campaign-test` 38 and 41 shots over noise, signed mean +0.065, split evenly by sign; worst −20.7 at `h01417492`, which has no absent cluster in `final`, so pool loss cannot explain it. `today` has 30 misses there against `final`'s 2, and the 1,416 m case is gone: `final` has no absent frames past 151 m. Frames at `today`'s miss sites sit within noise except `h01415741`, where `final` is brighter.
+
 Accepted, not fixed: a victim that frees nothing is still evicted; path flips act as horizon changes; seam suppression can lift on the portal frame after a hold; a direct Pass B failure can promote one frame early.
 
 ## Corrections

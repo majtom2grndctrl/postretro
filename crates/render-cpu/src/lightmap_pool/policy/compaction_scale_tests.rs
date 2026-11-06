@@ -110,16 +110,25 @@ fn scratch_layers(extents: &[(u32, u32)], set: &[u32]) -> u32 {
         .map_or(u32::MAX, |pool| pool.layer_count)
 }
 
+/// `(compactions, rollbacks)` for one cell of a tally.
+type Counts = Cell<(u64, u64)>;
+
+/// Fill bands, as the last four: under 85%, 85 to 90, 90 to 95, and above.
+fn fill_band(percent: u64) -> usize {
+    (percent.saturating_sub(80) as usize / 5).min(3)
+}
+
 #[derive(Debug, Default)]
 struct Tally {
     histories: Cell<u64>,
     drains: Cell<u64>,
     compactions: Cell<u64>,
-    /// `(compactions, rollbacks)` by layers the demand left spare, the last
-    /// bucket and past it together.
-    by_spare_layers: [Cell<(u64, u64)>; 4],
-    /// `(compactions, rollbacks)` by demand fill: under 85%, then 5% bands.
-    by_fill: [Cell<(u64, u64)>; 4],
+    /// By layers the demand left spare (0, 1, 2, 3 and more), then by the
+    /// demand's fill of the whole pool.
+    by_pool_fill: [[Counts; 4]; 4],
+    /// The same, by the demand's fill of the layers a from-scratch pack uses:
+    /// how hard the packing itself was, whatever the spare layers add.
+    by_packed_fill: [[Counts; 4]; 4],
     most_copies: Cell<u64>,
     /// Longest drain that compacted, and longest that rolled back.
     most_planning_micros: Cell<u64>,
@@ -127,40 +136,71 @@ struct Tally {
 }
 
 impl Tally {
-    fn rollbacks(&self) -> u64 {
-        self.by_fill.iter().map(|cell| cell.get().1).sum()
+    /// Rollbacks whose demand left at least `spare` layers spare.
+    fn rollbacks_with_spare(&self, spare: usize) -> u64 {
+        self.by_pool_fill[spare..]
+            .iter()
+            .flatten()
+            .map(|cell| cell.get().1)
+            .sum()
     }
 
-    fn print(&self, layers: u32) {
+    fn compactions_with_spare(&self, spare: usize) -> u64 {
+        self.by_pool_fill[spare..]
+            .iter()
+            .flatten()
+            .map(|cell| cell.get().0)
+            .sum()
+    }
+
+    fn print(&self, layers: u32, label: &str) {
+        let flat = |matrix: &[[Counts; 4]; 4]| {
+            matrix
+                .iter()
+                .flatten()
+                .map(|cell| format!("{}/{}", cell.get().0, cell.get().1))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         println!(
-            "real-scale compaction, {layers} layers: {} histories, {} drains, {} compactions, {} \
-             rollbacks, at most {} copies, {} µs planning a drain, {} µs on a rollback; by spare \
-             layers {:?}; by fill <85/85/90/95% {:?}",
+            "real-scale compaction, {layers} layers, {label}: {} histories, {} drains, {} \
+             compactions, {} rollbacks ({} with a layer spare), at most {} copies, {} µs planning \
+             a drain, {} µs on a rollback\n  TALLY layers={layers} label={label} \
+             pool_fill[spare 0..3+ x fill <85/85/90/95] = {} | packed_fill = {}",
             self.histories.get(),
             self.drains.get(),
             self.compactions.get(),
-            self.rollbacks(),
+            self.rollbacks_with_spare(0),
+            self.rollbacks_with_spare(1),
             self.most_copies.get(),
             self.most_planning_micros.get(),
             self.most_rollback_micros.get(),
-            self.by_spare_layers
-                .iter()
-                .map(Cell::get)
-                .collect::<Vec<_>>(),
-            self.by_fill.iter().map(Cell::get).collect::<Vec<_>>(),
+            flat(&self.by_pool_fill),
+            flat(&self.by_packed_fill),
         );
     }
 }
 
-fn add_to(cell: &Cell<(u64, u64)>, rolled_back: bool) {
+fn add_to(cell: &Counts, rolled_back: bool) {
     let (compactions, rollbacks) = cell.get();
     cell.set((compactions + 1, rollbacks + u64::from(rolled_back)));
+}
+
+/// How a history chooses its demand.
+#[derive(Clone, Copy)]
+struct Mode {
+    /// Layers the demand must leave spare. At 0 the demand may fill the pool,
+    /// which rarely reaches a layer spare. Above it, arrivals are kept only
+    /// while the whole demand still packs into `layers - spare` layers, so a
+    /// compaction at that spare is a hard one: dense, not a half-empty pool.
+    spare: u32,
 }
 
 /// One history: departures a few at a time, arrivals up to what still packs,
 /// and band blocks in whatever gaps they find. A rollback ends it, the pool
 /// having grown.
-fn run_history(seed: u64, layers: u32, steps: usize, tally: &Tally) {
+fn run_history(seed: u64, layers: u32, steps: usize, mode: Mode, tally: &Tally) {
+    let pack_limit = layers - mode.spare;
     let mix = hallway_mix();
     let mut rng = Rng::new(seed);
     let extents: Vec<(u32, u32)> = (0..BLOCKS_PER_LAYER * layers as usize)
@@ -175,19 +215,25 @@ fn run_history(seed: u64, layers: u32, steps: usize, tally: &Tally) {
 
     for _ in 0..steps {
         let mut remove = Vec::new();
-        for _ in 0..rng.below(8) {
+        // A dense mode departs less and tries more arrivals, to sit at the limit.
+        let (leaving, trying) = if mode.spare == 0 {
+            (rng.below(8), 1 + rng.below(12))
+        } else {
+            (rng.below(5), 4 + rng.below(30))
+        };
+        for _ in 0..leaving {
             if !demand.is_empty() {
                 remove.push(demand.swap_remove(rng.below(demand.len())));
             }
         }
         let mut set = Vec::new();
         let mut ready = Vec::new();
-        for _ in 0..1 + rng.below(12) {
+        for _ in 0..trying {
             let block = rng.below(extents.len()) as u32;
             let free = !demand.contains(&block) && !remove.contains(&block);
             if free && !set.iter().any(|t: &LightmapTarget| t.block == block) {
                 demand.push(block);
-                if scratch_layers(&extents, &demand) <= layers {
+                if scratch_layers(&extents, &demand) <= pack_limit {
                     set.push(mandatory(block));
                     if !model.is_resident(block) {
                         ready.push(block);
@@ -221,15 +267,18 @@ fn run_history(seed: u64, layers: u32, steps: usize, tally: &Tally) {
         let rolled_back = plan.compaction_rolled_back;
         if compacted || rolled_back {
             tally.compactions.set(tally.compactions.get() + 1);
-            let spare = layers - scratch_layers(&extents, &demand);
-            add_to(&tally.by_spare_layers[(spare as usize).min(3)], rolled_back);
+            let packed = scratch_layers(&extents, &demand);
+            let spare = (layers - packed) as usize;
             let texels: u64 = demand
                 .iter()
                 .map(|&b| u64::from(extents[b as usize].0) * u64::from(extents[b as usize].1))
                 .sum();
-            let fill = texels * 100 / (u64::from(layers) * layer_texels);
+            let pool_fill = texels * 100 / (u64::from(layers) * layer_texels);
+            let packed_fill = texels * 100 / (u64::from(packed.max(1)) * layer_texels);
+            let row = spare.min(3);
+            add_to(&tally.by_pool_fill[row][fill_band(pool_fill)], rolled_back);
             add_to(
-                &tally.by_fill[(fill.saturating_sub(80) as usize / 5).min(3)],
+                &tally.by_packed_fill[row][fill_band(packed_fill)],
                 rolled_back,
             );
             tally
@@ -257,34 +306,65 @@ fn run_history(seed: u64, layers: u32, steps: usize, tally: &Tally) {
 fn compaction_places_the_hallway_mix_at_its_real_scale() {
     let tally = Tally::default();
     for seed in 1..=6 {
-        run_history(seed, 27, 200, &tally);
+        run_history(seed, 27, 200, Mode { spare: 0 }, &tally);
     }
-    tally.print(27);
+    tally.print(27, "routine, any spare");
     // A generator that stops reaching compaction proves nothing.
     assert!(
         tally.compactions.get() >= 100,
         "only {} compactions",
         tally.compactions.get()
     );
-    assert_eq!(tally.rollbacks(), 0);
+    // A pool with no layer spare may miss and take logged growth: reported
+    // above, not asserted. A layer spare must not.
+    assert_eq!(tally.rollbacks_with_spare(1), 0);
+
+    // Dense demand with exactly one layer spare, in a small pool.
+    let dense = Tally::default();
+    for seed in 1..=3 {
+        run_history(seed, 12, 100, Mode { spare: 1 }, &dense);
+    }
+    dense.print(12, "routine, one spare");
+    assert!(
+        dense.compactions_with_spare(1) >= 20,
+        "only {} compactions with a layer spare",
+        dense.compactions_with_spare(1)
+    );
+    assert_eq!(dense.rollbacks_with_spare(1), 0);
 }
 
 /// The evidence for the fit claim at scale: what fraction of compactions roll
-/// back, by how tight the demand is. It reports rather than asserts, since a
-/// pool at the edge of what packs does miss now and then.
+/// back, by spare layers and by how tight the demand is. It reports, and fails
+/// only on a miss with a layer spare, which is the claim. A pool with none
+/// does miss now and then, and that is reported.
 #[test]
 #[ignore = "real-scale hunt; set POSTRETRO_COMPACTION_SCALE_HISTORIES"]
 fn compaction_hunt_at_real_scale() {
-    let histories = std::env::var("POSTRETRO_COMPACTION_SCALE_HISTORIES")
-        .ok()
-        .and_then(|histories| histories.parse().ok())
-        .unwrap_or(100);
+    let env = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let histories = env("POSTRETRO_COMPACTION_SCALE_HISTORIES", 100);
+    let first = env("POSTRETRO_COMPACTION_SCALE_SEED", 1000);
+    let spare = env("POSTRETRO_COMPACTION_SCALE_SPARE", 0) as u32;
+    let only_layers = env("POSTRETRO_COMPACTION_SCALE_LAYERS", 0) as u32;
+    let steps = env("POSTRETRO_COMPACTION_SCALE_STEPS", 400) as usize;
     for layers in [12, 27, 34] {
+        if only_layers != 0 && only_layers != layers {
+            continue;
+        }
         let tally = Tally::default();
         for seed in 0..histories {
-            run_history(seed + 1000, layers, 400, &tally);
+            run_history(first + seed, layers, steps, Mode { spare }, &tally);
         }
-        tally.print(layers);
+        tally.print(layers, &format!("hunt seed {first} spare {spare}"));
+        assert_eq!(
+            tally.rollbacks_with_spare(1),
+            0,
+            "a compaction missed with a layer spare: seed range {first}.., {layers} layers"
+        );
     }
 }
 

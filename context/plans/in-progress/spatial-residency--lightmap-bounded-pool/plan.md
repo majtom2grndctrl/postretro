@@ -1,7 +1,7 @@
 # spatial-residency--lightmap-bounded-pool — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 3d66934ce
 
 No crate source changed between the brief's `read at` (6a813bdcd) and this commit. Every symbol cited by Decisions and Path was re-read at this commit. No Decision premise is false, and no Acceptance row needs restatement.
@@ -104,7 +104,7 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 | 61 | Frames on five maps | executor captures and diffs at equal clock; owner reviews | manual |
 | 62 | Repack cost | executor records, task 10; a visible hitch goes to the owner | manual |
 | 63 | Mask-heavy map | executor records; owner reviews frames | manual |
-| 64 | Theatrical moments | owner, in-engine | manual |
+| 64 | Theatrical moments | owner, in-engine, on the hallway; task 10 finds a closet reveal and a door from the `.map` and gives the owner positions | manual |
 | 65 | Planar mirrors | executor, no-GPU harness, task 10; any growth goes to the owner | manual |
 | 66 | Bound cost | executor, warm and cold, task 10 | manual |
 | 67 | Cleanup | executor records driver memory; owner confirms | manual |
@@ -125,7 +125,7 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 | 10 | Cold rebake at this commit, old-compiler baselines baked fresh, harness ported to a throwaway branch, rows 59–67 | integrating executor; owner for 61, 63 review, 64, 67 | 8, 9 | |
 | 11 | `/preflight`, `/review-panel`, `/fix-review-findings` loop, results table | integrating executor | 10 | |
 
-Workers run sequentially on the feature branch's warm target, with no worktrees. Task 3 and task 1 touch disjoint files, but concurrent Cargo on one target is not worth the disk or the owner's machine. Each worker gets the full brief, `research.md`, routed docs, the full Acceptance list, named files, upstream contracts and downstream consumers. Workers self-review once, do not edit `plan.md`, and do not commit. Cargo stays capped at 6 jobs under `nice` while the owner is working.
+The owner directed the session to orchestrate: tasks marked integrating executor may go to a dispatched worker, and the executor still owns shared contracts, integration review, `plan.md` and commits. Workers run sequentially on the feature branch's warm target, with no worktrees. Task 3 and task 1 touch disjoint files, but concurrent Cargo on one target is not worth the disk or the owner's machine. Each worker gets the full brief, `research.md`, routed docs, the full Acceptance list, named files, upstream contracts and downstream consumers. Workers self-review once, do not edit `plan.md`, and do not commit. Cargo stays capped at 6 jobs under `nice` while the owner is working.
 
 ## Risks
 
@@ -133,6 +133,7 @@ Workers run sequentially on the feature branch's warm target, with no worktrees.
   - If the generator reaches a stuck layout, the Decision that any packable set fits at runtime is false as written. The plan goes `blocked` with the layout, because row 28 and "the bound is provable" both rest on it. R22's fallback would keep the engine correct, but only by growing.
 - **Compaction cost.** Up to about 200 MiB of copies in one submission on the hallway. If the task 1 timing is a visible hitch, the plan goes `blocked` before any format work, with budgeted incremental moves as the proposed next shape.
 - **Row 43's fixture must grow today at that size.** Task 1's walk may show the first such fixture is the hallway itself, which cannot run in routine tests, so a synthetic one is needed.
+- **Row 64's map.** The owner confirms the hallway has closet reveals, location unknown. Task 10 pulls `trigger_volume`, `entity_spawner` and mover entities from `stress-warren-hallway-inspection.map`. If none is a door, the row goes back to the owner with another map or a narrower check.
 - **Disk.** 71 GB free. Task 10 needs about 25 GB for `xctrace`, plus baseline PRLs and a comparison binary. Delete raw traces after each run.
 - **Mac confounders in task 10.** Temperature-gate runs, keep the display awake across gaps, pilot one run per config, and compare frames at equal clock.
 

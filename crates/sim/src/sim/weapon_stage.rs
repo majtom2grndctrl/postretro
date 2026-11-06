@@ -366,6 +366,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -438,6 +439,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         }
     }
 
@@ -5085,6 +5087,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: 5.0,
                 impulse: Vec3::ZERO,
+                damage_type: None,
             }),
         };
 
@@ -5282,6 +5285,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: 10.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         };
 
@@ -5333,6 +5337,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: f32::MAX,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         };
 
@@ -5500,6 +5505,7 @@ mod tests {
                         splash: None,
                         source_weapon: None,
                         activation: None,
+                        damage_type: None,
                     },
                 )
                 .unwrap();

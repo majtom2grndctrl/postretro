@@ -9,9 +9,10 @@ impl ShResidencyState {
     pub(in crate::render) fn from_manifest(
         manifest: &ShStreamManifest,
         cells: &[postretro_level_loader::CellData],
+        baked_max_lead: Option<u32>,
     ) -> Result<Self, ShResidencyDrainError> {
         Ok(Self::from_plan(
-            plan_sh_residency(manifest, cells)?,
+            plan_sh_residency(manifest, cells, baked_max_lead)?,
             manifest.base(),
             manifest.sources(),
         ))
@@ -26,7 +27,7 @@ impl ShResidencyState {
         cells: &[postretro_level_loader::CellData],
     ) -> Result<Self, ShResidencyDrainError> {
         Ok(Self::from_plan(
-            plan_sh_residency_parts(content_tag, directory, base, sources, cells)?,
+            plan_sh_residency_parts(content_tag, directory, base, sources, cells, None)?,
             base,
             sources,
         ))
@@ -43,20 +44,17 @@ impl ShResidencyState {
         let ShResidencyPlan {
             content_tag,
             cluster_count,
-            dense_owner,
             dense_node,
             dense_node_local_slot,
             node_layouts,
-            node_owner,
-            nodes_by_owner,
-            owner_dependencies,
-            sparse_row_owner,
-            sparse_capacity_floors,
+            dense_spans,
+            cluster_storage,
+            pool_bound,
             sparse_pool_rows,
             row_capacity,
             sample_regions,
             sparse_compose,
-            initial_dense_slots,
+            whole_dense_slots,
         } = plan;
         let sparse_pools = sparse_pool_rows
             .into_iter()
@@ -74,16 +72,13 @@ impl ShResidencyState {
             targets: BTreeSet::new(),
             compose_words: vec![0; base.probes.len()],
             sampled_words: vec![0; base.probes.len()],
-            dense_owner,
             dense_node,
             dense_node_local_slot,
             node_layouts,
-            node_owner,
-            nodes_by_owner,
+            dense_spans,
+            cluster_storage,
             node_slots: BTreeMap::new(),
-            owner_dependencies,
-            sparse_row_owner,
-            sparse_capacity_floors,
+            storage_refs: StorageRefs::with_probe_count(base.probes.len()),
             dense_slots: FirstFitRanges::default(),
             sparse_pools,
             installed: BTreeMap::new(),
@@ -128,7 +123,9 @@ impl ShResidencyState {
             indirect_compose_epoch: 0,
             direct_compose_epoch: 0,
             install_cpu: InstallCpuCounters::default(),
-            initial_dense_slots,
+            pool_bound,
+            whole_dense_slots,
+            whole_map_refusal_warned: false,
             sparse_compose: std::sync::Arc::new(sparse_compose),
             gpu: None,
         }
@@ -150,23 +147,20 @@ impl ShResidencyState {
                 (
                     self.content_tag,
                     self.cluster_count,
-                    &self.dense_owner,
                     &self.dense_node,
                     &self.dense_node_local_slot,
                     &self.node_layouts,
-                    &self.node_owner,
-                    &self.nodes_by_owner,
+                    &self.dense_spans,
+                    &self.cluster_storage,
                 ),
                 (
-                    &self.owner_dependencies,
-                    &self.sparse_row_owner,
-                    &self.sparse_capacity_floors,
+                    &self.pool_bound,
                     sparse_pool_rows,
                     // The planner's row space, as the row sets it sized.
                     self.indirect_resident_rows.word_count(),
                     self.sample_region_index.tables(),
                     &*self.sparse_compose,
-                    self.initial_dense_slots,
+                    self.whole_dense_slots,
                 ),
             )
         )
@@ -197,7 +191,6 @@ impl ShResidencyState {
             pipelines,
             selection_weights,
             &limits,
-            0,
         )
     }
 
@@ -213,27 +206,18 @@ impl ShResidencyState {
         pipelines: &StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
         limits: &wgpu::Limits,
-        extra_floor_charge: u64,
     ) -> Result<(), ShResidencyDrainError> {
-        // The plan computed the dense slot minima; only the floor below reads
-        // live buffer sizes.
-        let InitialDenseSlots {
-            minimum: minimum_slots,
-            whole: whole_dense_slots,
-        } = self.initial_dense_slots;
-        let fixed_metadata_bytes = gpu::initial_fixed_metadata_bytes(base, sources, limits, sh)?;
-        let initial_floor = plan_initial_pool_floor(
+        let initial_pool = plan_initial_pool(
             base,
             sources,
-            minimum_slots,
-            whole_dense_slots,
-            &self.sparse_capacity_floors,
-            fixed_metadata_bytes
-                .checked_add(extra_floor_charge)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?,
-            sh.billboard_direct_scatter.capacity_bytes(),
+            &self.pool_bound,
+            self.whole_dense_slots,
             limits,
         )?;
+        log::info!(
+            "[Renderer] streamed SH pool from the mandatory bound: {} bytes",
+            initial_pool.pool_bytes
+        );
         self.gpu = Some(StreamingGpuPools::new(
             device,
             limits,
@@ -241,7 +225,7 @@ impl ShResidencyState {
             base,
             sources,
             std::sync::Arc::clone(&self.sparse_compose),
-            initial_floor,
+            initial_pool,
             probe_occlusion_enabled,
             sh,
             pipelines,
@@ -279,6 +263,21 @@ impl ShResidencyState {
     }
 }
 
+/// A stored bound past any fixture's whole map, so the pools size to the map:
+/// the shape a level with no usable id 51 stores.
+#[cfg(test)]
+pub(in crate::render) fn whole_map_bound_for_test()
+-> Vec<postretro_level_format::cluster_directory::ShMandatoryBoundEntry> {
+    vec![
+        postretro_level_format::cluster_directory::ShMandatoryBoundEntry {
+            lead: 0,
+            worst_dense_slots: u32::MAX,
+            worst_cell: postretro_level_format::cluster_directory::WHOLE_MAP_WORST_CELL,
+            families: Vec::new(),
+        },
+    ]
+}
+
 /// [`ShResidencyState::plan_summary`]'s fields, read from a plan.
 #[cfg(test)]
 pub(in crate::render) fn residency_plan_summary(plan: &ShResidencyPlan) -> String {
@@ -288,22 +287,19 @@ pub(in crate::render) fn residency_plan_summary(plan: &ShResidencyPlan) -> Strin
             (
                 plan.content_tag,
                 plan.cluster_count,
-                &plan.dense_owner,
                 &plan.dense_node,
                 &plan.dense_node_local_slot,
                 &plan.node_layouts,
-                &plan.node_owner,
-                &plan.nodes_by_owner,
+                &plan.dense_spans,
+                &plan.cluster_storage,
             ),
             (
-                &plan.owner_dependencies,
-                &plan.sparse_row_owner,
-                &plan.sparse_capacity_floors,
+                &plan.pool_bound,
                 &plan.sparse_pool_rows,
                 plan.row_capacity.div_ceil(64),
                 &plan.sample_regions,
                 &plan.sparse_compose,
-                plan.initial_dense_slots,
+                plan.whole_dense_slots,
             ),
         )
     )

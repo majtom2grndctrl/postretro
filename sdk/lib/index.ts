@@ -20,7 +20,7 @@ export type { Activation, ActivationShotOptions, ActivationShotScale } from "./a
 export { activation } from "./activation";
 
 export type { BrainInputs, CandidateInputs } from "./brain";
-export { brain, candidate, state } from "./brain";
+export { brain, candidate, defense, state } from "./brain";
 
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 
@@ -150,6 +150,8 @@ export {
   defineWeaponPlacement,
   defineTriggerPool,
   defineStore,
+  defineDefenseLayer,
+  defineDamageType,
   read,
   fromRuntime,
   set,

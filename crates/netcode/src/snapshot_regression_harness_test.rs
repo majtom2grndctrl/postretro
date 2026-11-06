@@ -80,6 +80,7 @@ fn authoritative_snapshot_after_removal_omits_terminal_entity() {
                 max: 100.0,
                 hitbox: None,
                 zone_multipliers: Default::default(),
+                ..Default::default()
             }),
         )
         .expect("target is live");

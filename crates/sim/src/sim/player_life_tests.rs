@@ -32,6 +32,7 @@ fn health(current: f32) -> HealthComponent {
         max: 100.0,
         hitbox: None,
         zone_multipliers: Default::default(),
+        ..Default::default()
     });
     health.current = current;
     health

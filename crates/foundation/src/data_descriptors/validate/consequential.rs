@@ -16,7 +16,7 @@ pub const INVALID_RESPAWN_HEALTH: i32 = 0;
 pub fn is_consequential_primitive(primitive: &str) -> bool {
     matches!(
         primitive,
-        "grantHealth" | "grantAmmo" | "addSlot" | "setLifeState" | "respawn"
+        "grantHealth" | "grantAmmo" | "grantLayer" | "addSlot" | "setLifeState" | "respawn"
     )
 }
 
@@ -91,6 +91,19 @@ pub fn validate_consequential_args(
             .map_err(|detail| fail(format!("`addSlot` `args.delta` {detail}")));
     }
 
+    if primitive == "grantLayer" {
+        // The layer reference itself is checked at install, where a bad one
+        // (a bare string, a type handle, an unregistered name) drops only
+        // this reaction. Here only the amount: none fills to capacity.
+        if !object.contains_key("layer") {
+            return Err(fail("`grantLayer` `args.layer` is missing".to_string()));
+        }
+        if let Some(amount) = object.get("amount") {
+            finite_f32(Some(amount))
+                .map_err(|detail| fail(format!("`grantLayer` `args.amount` {detail}")))?;
+        }
+        return Ok(());
+    }
     finite_f32(object.get("amount"))
         .map_err(|detail| fail(format!("`{primitive}` `args.amount` {detail}")))?;
     if primitive == "grantAmmo" {

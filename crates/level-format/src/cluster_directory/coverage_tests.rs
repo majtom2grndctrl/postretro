@@ -267,6 +267,7 @@ fn directory(
         ranges: Vec::new(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     }
 }
 
@@ -650,17 +651,9 @@ fn coverage_matches_oracle_when_baked_table_differs_in_one_range() {
         let mut rng = Rng::new(seed);
         let index = rng.below(case.directory.ranges.len() as u32) as usize;
         let range = &mut case.directory.ranges[index];
-        match rng.below(5) {
+        match rng.below(3) {
             0 => range.start ^= 1,
             1 => range.count += 1,
-            2 => range.owner_cluster_id = range.owner_cluster_id.wrapping_add(1),
-            3 => {
-                range.role = match range.role {
-                    ClusterRangeRole::Owned => ClusterRangeRole::Halo,
-                    ClusterRangeRole::Halo => ClusterRangeRole::Dense,
-                    ClusterRangeRole::Dense => ClusterRangeRole::Owned,
-                }
-            }
             _ => range.resource_index += 1,
         }
         case.with_inputs(|inputs| {
@@ -1101,4 +1094,19 @@ fn coverage_survives_a_deep_axis_plane_chain() {
         sparse: None,
     };
     assert_eq!(case.assert_equivalent(), Verdict::Ranges);
+}
+
+// Version 2 split a run wherever the first cluster covering a brick changed.
+// Nothing tells those bricks apart now, so the same rows take fewer records,
+// and only a gap in coverage ends a run.
+#[test]
+fn affinity_runs_merge_consecutive_bricks_and_break_only_at_gaps() {
+    let mut ranges = Vec::new();
+    super::coverage::push_affinity_runs(&[2, 3, 4, 7, 9, 10], 5, &mut ranges);
+    let record = |start, count| ClusterRangeRecord {
+        resource_index: 5,
+        start,
+        count,
+    };
+    assert_eq!(ranges, [record(2, 3), record(7, 1), record(9, 2)]);
 }

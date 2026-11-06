@@ -2,16 +2,12 @@
 //! See: context/lib/rendering_pipeline.md §4 (lightmap and SH residency)
 
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
+pub(crate) use postretro_level_format::cell_residency_set::DEFAULT_LEAD;
 use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
-/// Default lead L in metres.
-pub(crate) const DEFAULT_LEAD_METRES: u32 = 16;
 /// Id-51 leads are in id-46 fixed-point distance units.
 pub(crate) const LEAD_UNITS_PER_METRE: u32 = CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
-/// The default lead L in fixed point, for fixtures whose sets reach past it.
-#[cfg(test)]
-pub(crate) const DEFAULT_LEAD: u32 = DEFAULT_LEAD_METRES * LEAD_UNITS_PER_METRE;
 
 /// Owns lead L for the level. One stage per level, held at level scope, so
 /// SH and lightmap read one L by construction, whether the lightmap streams,
@@ -28,7 +24,7 @@ pub(crate) struct CellDemand {
 impl CellDemand {
     pub(crate) fn new(max_lead: u32) -> Self {
         Self {
-            lead: (DEFAULT_LEAD_METRES * LEAD_UNITS_PER_METRE).min(max_lead),
+            lead: DEFAULT_LEAD.min(max_lead),
             max_lead,
         }
     }

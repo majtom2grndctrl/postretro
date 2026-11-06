@@ -20,7 +20,9 @@ pub use types::{
     ModMoverDefaults, ModReflectionProfile, ModReflectionStyle, ModRenderProfile, ReloadSummary,
     ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
 };
-pub(crate) use types::{validate_mod_manifest_id, validate_mod_manifest_version};
+pub(crate) use types::{
+    check_entity_defense_references, validate_mod_manifest_id, validate_mod_manifest_version,
+};
 
 #[cfg(all(test, debug_assertions))]
 #[path = "assist_validation_tests.rs"]

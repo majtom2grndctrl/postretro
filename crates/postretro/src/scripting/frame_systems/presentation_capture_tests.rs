@@ -742,6 +742,7 @@ fn actual_cpu_install_starts_level_load_and_already_met_progress_at_zero_clock()
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 }),
             )
             .unwrap();

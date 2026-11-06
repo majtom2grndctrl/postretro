@@ -5,7 +5,7 @@
 // consume their commands without threading engine services into scripting.
 // See: context/lib/scripting.md §10.4
 
-use postretro_entities::ScriptCtx;
+use postretro_entities::{ScriptCtx, TextEditCommand};
 use postretro_scripting_core::reaction_registry::ReactionError;
 #[cfg(test)]
 pub(crate) use postretro_scripting_core::reaction_registry::SystemCommandQueue;
@@ -329,22 +329,17 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
         queue.push(SystemReactionCommand::ReturnToFrontend);
         Ok(())
     });
-    // `setState` writes a value to a writable store slot at the game-logic stage
-    // (M13 Goal F, Task 4). It carries no `tag` (system-targeted); the drain
-    // applies it through the readonly-gated JSON write. The slider widget emits
-    // this on a captured nav step; scripts may fire it as a named reaction.
+    // `setState` writes a value to a writable store slot at the game-logic stage.
+    // It carries no `tag` (system-targeted). With the session's state sink
+    // installed it writes at dispatch through the readonly-gated JSON write;
+    // without one it queues for the frame-end drain. Scripts fire it as a named
+    // reaction.
     registry.register("setState", |args, queue| {
         let parsed: SetStateArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("setState: failed to deserialize args: {e}"),
             })?;
-        let fire_context = queue.fire_context();
-        queue.push(SystemReactionCommand::SetState {
-            slot: parsed.slot,
-            value: parsed.value,
-            dispatch_source: fire_context.source,
-            dispatch_values: fire_context.values,
-        });
+        queue.set_state(parsed.slot, parsed.value);
         Ok(())
     });
     // Sentiment writes are consequential system reactions like `setState`, but
@@ -414,20 +409,18 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
         });
         Ok(())
     });
-    // Text-edit reactions (M13 Text Entry, Task 1): `appendText` / `backspaceText`
-    // / `clearText` mutate a writable String slot at the game-logic stage through
-    // the same readonly-gated path as `setState`. No `tag` — system-targeted. The
-    // hardware-keyboard and on-screen-keyboard paths both fire these against
-    // `ui.textEntry`.
+    // Text-edit reactions: `appendText` / `backspaceText` / `clearText` mutate a
+    // writable String slot through the same readonly-gated path as `setState`,
+    // and like it write at dispatch when the state sink is installed. No `tag` —
+    // system-targeted. On-screen keyboard keys fire these as reactions; the
+    // text-entry surface's own keystrokes push the queued commands directly and
+    // land at the drain.
     registry.register("appendText", |args, queue| {
         let parsed: AppendTextArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("appendText: failed to deserialize args: {e}"),
             })?;
-        queue.push(SystemReactionCommand::AppendText {
-            slot: parsed.slot,
-            text: parsed.text,
-        });
+        queue.edit_text(parsed.slot, TextEditCommand::Append(parsed.text));
         Ok(())
     });
     registry.register("backspaceText", |args, queue| {
@@ -435,7 +428,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("backspaceText: failed to deserialize args: {e}"),
             })?;
-        queue.push(SystemReactionCommand::BackspaceText { slot: parsed.slot });
+        queue.edit_text(parsed.slot, TextEditCommand::Backspace);
         Ok(())
     });
     registry.register("clearText", |args, queue| {
@@ -443,7 +436,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("clearText: failed to deserialize args: {e}"),
             })?;
-        queue.push(SystemReactionCommand::ClearText { slot: parsed.slot });
+        queue.edit_text(parsed.slot, TextEditCommand::Clear);
         Ok(())
     });
 }
@@ -574,7 +567,10 @@ struct SlotOnlyArgs {
 }
 
 mod ir_bindings;
-pub use ir_bindings::{SystemReactionIrBindings, SystemReactionIrDispatch, is_ir_node};
+pub use ir_bindings::{
+    SystemReactionIrBindings, SystemReactionIrDispatch, SystemStateSink, apply_text_edit_command,
+    is_ir_node,
+};
 
 #[cfg(test)]
 mod tests;

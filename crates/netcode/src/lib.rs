@@ -747,6 +747,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Teleporter => postretro_net::wire::COMPONENT_KIND_TELEPORTER,
         ComponentKind::ProjectileTrap => postretro_net::wire::COMPONENT_KIND_PROJECTILE_TRAP,
         ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
+        ComponentKind::DefenseLayers => postretro_net::wire::COMPONENT_KIND_DEFENSE_LAYERS,
     }
 }
 
@@ -2200,6 +2201,7 @@ fn ingest_hit_declaration(
                     knockback.upward_bias,
                     open.shot.projectile_direction.unwrap_or(Vec3::ZERO),
                 ),
+                damage_type: None,
             });
             crate::sim::apply_authorized_weapon_impact_damage(
                 context.registry,
@@ -2228,6 +2230,7 @@ fn ingest_hit_declaration(
             open.shot.pawn,
             true,
             open.shot.credit_source.clone(),
+            open.shot.damage_type,
             &mut on_impact,
         );
         return HitDeclarationResult {
@@ -2494,6 +2497,7 @@ fn apply_valid_hit_record(
                     direction,
                 )
             }),
+            damage_type: shot.damage_type,
         }),
     };
     crate::sim::apply_authorized_weapon_impact_damage(
@@ -3112,6 +3116,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -3199,6 +3204,7 @@ mod tests {
             lower_ms: 45,
             raise_ms: 70,
             block_during_reload: None,
+            damage_type: None,
         };
         let mut live = registry
             .get_component::<WeaponComponent>(weapon_id)
@@ -3631,6 +3637,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         })
     }
 
@@ -3985,6 +3992,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -4058,6 +4066,7 @@ mod tests {
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
+            damage_type: None,
         }
     }
 
@@ -4905,6 +4914,7 @@ mod tests {
                     is_projectile: false,
                     fire_origin: Vec3::ZERO,
                     timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
+                    damage_type: None,
                 },
                 7,
             );
@@ -6930,6 +6940,245 @@ mod tests {
         assert_eq!(entry.last_attacker, Some(fixture.pawn));
     }
 
+    #[test]
+    fn host_validated_client_hit_takes_type_from_host_weapon() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.registry.set_defense_vocabulary(std::sync::Arc::new(
+            postretro_foundation::defense::DefenseVocabulary {
+                layers: Vec::new(),
+                damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                    name: "heavy".to_string(),
+                    matrix: std::collections::BTreeMap::from([(
+                        "health".to_string(),
+                        postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                    )]),
+                }],
+                default_damage_type: None,
+            },
+        ));
+        // The type was frozen from the host's weapon at FIRE; the client's
+        // declaration carries no type of its own.
+        fixture.shot_mut().damage_type = Some(0);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
+
+        assert!(fixture.ingest(7, &declaration));
+        let health = fixture.target_health();
+        assert_eq!(health.current, 80.0, "a heavy 10-point hit is ×2 on health");
+    }
+
+    // A flushed client hit dispatches with the client's pawn as the impact
+    // source, so `impact.source.grantLayer` credits the damager.
+    #[test]
+    fn flushed_client_hit_policy_grants_the_damager() {
+        use postretro_entities::components::defense_layers::{
+            DefenseLayer, DefenseLayersComponent,
+        };
+        let vocabulary = std::sync::Arc::new(postretro_foundation::defense::DefenseVocabulary {
+            layers: vec!["shield".to_string()],
+            ..Default::default()
+        });
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture
+            .registry
+            .set_defense_vocabulary(std::sync::Arc::clone(&vocabulary));
+        fixture
+            .registry
+            .set_component(
+                fixture.pawn,
+                DefenseLayersComponent {
+                    descriptor: None,
+                    layers: vec![DefenseLayer {
+                        name: "shield".to_string(),
+                        value: 50.0,
+                        capacity: 100.0,
+                        recharge_delay_ms: 0.0,
+                        recharge_rate: 0.0,
+                        resist: Vec::new(),
+                        refill: Default::default(),
+                    }],
+                    health_resist: Vec::new(),
+                    last_hit_tick: None,
+                },
+            )
+            .unwrap();
+        fixture
+            .registry
+            .set_tags(fixture.target, vec!["enemy".to_string()])
+            .unwrap();
+        // The policy binds against the session's vocabulary; the flushed hit
+        // lands in the host registry the ingester holds.
+        let ctx = postretro_entities::ScriptCtx::new();
+        ctx.registry.borrow_mut().set_defense_vocabulary(vocabulary);
+        let mut policy = postretro_sim::impact_policy::ImpactPolicyRuntime::new(ctx);
+        policy.replace_global_events(vec![postretro_foundation::ImpactEventDescriptor {
+            id: "siphon".to_string(),
+            is_override: false,
+            levels: Vec::new(),
+            filter_tag: Some("enemy".to_string()),
+            policy: vec![serde_json::json!({
+                "primitive": "grantLayer",
+                "target": "@impact.source",
+                "args": {
+                    "layer": { "kind": "defenseLayer", "name": "shield" },
+                    "amount": { "op": "const", "value": 10.0 },
+                },
+            })],
+        }]);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
+
+        assert!(fixture.ingest(7, &declaration));
+        policy.evaluate_pending_in_registry(&mut fixture.registry);
+
+        let layers = fixture
+            .registry
+            .get_component::<DefenseLayersComponent>(fixture.pawn)
+            .unwrap();
+        assert_eq!(
+            layers.layers[0].value, 60.0,
+            "the client's pawn is the damager"
+        );
+    }
+
+    // One host tick's producers drain a shield in the tick's stage order: the
+    // crusher in the Steering stage, then the host's hitscan in the Weapons
+    // stage. A client hit waiting on that tick's FIRE is flushed after the
+    // tick's death sweep and drains after both, before the next tick start.
+    // Each hit sees the last one's layer state, and only the hit that empties
+    // the shield reports broke.
+    #[test]
+    fn producers_drain_in_stage_order_then_flushed_client_hit() {
+        use postretro_entities::components::defense_layers::{
+            DefenseLayer, DefenseLayersComponent,
+        };
+        use postretro_entities::components::health::{
+            DamageContext, DamageProducer, apply_damage_with_context,
+        };
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.registry.set_defense_vocabulary(std::sync::Arc::new(
+            postretro_foundation::defense::DefenseVocabulary {
+                layers: vec!["shield".to_string()],
+                ..Default::default()
+            },
+        ));
+        fixture
+            .registry
+            .set_component(
+                fixture.target,
+                DefenseLayersComponent {
+                    descriptor: None,
+                    layers: vec![DefenseLayer {
+                        name: "shield".to_string(),
+                        value: 30.0,
+                        capacity: 30.0,
+                        recharge_delay_ms: 3_000.0,
+                        recharge_rate: 0.0,
+                        resist: Vec::new(),
+                        refill: Default::default(),
+                    }],
+                    health_resist: Vec::new(),
+                    last_hit_tick: None,
+                },
+            )
+            .unwrap();
+        fixture.shot_mut().damage = 20.0;
+        let host_pawn = fixture.registry.spawn(Transform::default());
+        let host_weapon = fixture.registry.spawn(Transform::default());
+        fixture
+            .registry
+            .set_component(host_weapon, test_weapon(20.0, 10.0))
+            .unwrap();
+        let target = fixture.target;
+        let shield = |registry: &EntityRegistry| {
+            registry
+                .get_component::<DefenseLayersComponent>(target)
+                .unwrap()
+                .layers[0]
+                .value
+        };
+        let health = |registry: &EntityRegistry| {
+            registry
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current
+        };
+
+        // Tick start: the host tick advances and recharge runs before any hit.
+        let tick = fixture.registry.advance_host_tick();
+        postretro_sim::sim::defense_layers::recharge_defense_layers(&mut fixture.registry);
+
+        // Steering stage: the crusher's hit, as the blocking pass deals it.
+        assert!(apply_damage_with_context(
+            &mut fixture.registry,
+            target,
+            &weapon::DamagePayload {
+                amount: 20.0,
+                impulse: Vec3::ZERO,
+                damage_type: None,
+            },
+            DamageContext::new("mover.crush", DamageProducer::InTick),
+        ));
+        let crush = fixture.registry.take_impact_dispatches();
+        assert_eq!(shield(&fixture.registry), 10.0);
+        assert_eq!(health(&fixture.registry), 100.0);
+        assert_eq!((crush[0].absorbed, crush[0].broke), (20.0, false));
+
+        // Weapons stage: the host's hitscan takes the last 10 of the shield
+        // and spills 10 raw to health.
+        crate::sim::apply_authorized_weapon_impact_damage(
+            &mut fixture.registry,
+            host_weapon,
+            Some(host_pawn),
+            &WeaponImpact {
+                point: Vec3::new(4.0, 1.5, 0.0),
+                normal: Vec3::Y,
+                target: Some(target),
+                zone: None,
+                outcome: ActivationOutcome::Hit(weapon::DamagePayload {
+                    amount: 20.0,
+                    impulse: Vec3::ZERO,
+                    damage_type: None,
+                }),
+            },
+            "weapon.test.host".to_string(),
+            20.0,
+        );
+        let hitscan = fixture.registry.take_impact_dispatches();
+        assert_eq!(shield(&fixture.registry), 0.0);
+        assert_eq!(health(&fixture.registry), 90.0);
+        assert_eq!((hitscan[0].absorbed, hitscan[0].broke), (10.0, true));
+
+        // The tick's death sweep, then the post-tick flush of the client's hit.
+        let registry = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
+            &mut fixture.registry,
+            EntityRegistry::new(),
+        )));
+        assert!(crate::sim::run_death_sweep(&registry).is_empty());
+        fixture.registry = std::rc::Rc::try_unwrap(registry)
+            .ok()
+            .expect("the sweep keeps no handle on the registry")
+            .into_inner();
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
+        assert!(fixture.ingest(7, &declaration));
+        let flushed = fixture.registry.take_impact_dispatches();
+        assert_eq!(shield(&fixture.registry), 0.0);
+        assert_eq!(health(&fixture.registry), 70.0);
+        assert_eq!(
+            (flushed[0].absorbed, flushed[0].broke),
+            (0.0, false),
+            "the empty shield is skipped"
+        );
+        assert_eq!(flushed[0].source, Some(fixture.pawn));
+        assert_eq!(
+            fixture
+                .registry
+                .get_component::<DefenseLayersComponent>(target)
+                .unwrap()
+                .last_hit_tick,
+            Some(tick),
+            "the flushed hit restarts the delay from the tick it followed"
+        );
+    }
+
     // Regression: connected-client level unload can leave the transport connected
     // while descriptors are empty. Descriptor-backed snapshots must not apply into
     // that empty level state, but classless Transform traffic remains safe.
@@ -7037,7 +7286,8 @@ mod tests {
                 ComponentKind::Immersion => Some(ComponentKind::Teleporter),
                 ComponentKind::Teleporter => Some(ComponentKind::ProjectileTrap),
                 ComponentKind::ProjectileTrap => Some(ComponentKind::GhostLink),
-                ComponentKind::GhostLink => None,
+                ComponentKind::GhostLink => Some(ComponentKind::DefenseLayers),
+                ComponentKind::DefenseLayers => None,
             }
         }
 

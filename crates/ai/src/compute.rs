@@ -549,7 +549,19 @@ pub(super) fn evaluate(
                         if distance > max_range {
                             return None;
                         }
-                        Some((name.clone(), cooldown_ms, AttackOutcome::Contact { damage }))
+                        let damage_type = attack
+                            .damage_type
+                            .as_ref()
+                            .and_then(|handle| handle.handle("damageType").ok())
+                            .map(|handle| handle.name().to_string());
+                        Some((
+                            name.clone(),
+                            cooldown_ms,
+                            AttackOutcome::Contact {
+                                damage,
+                                damage_type,
+                            },
+                        ))
                     }
                 })
                 .flatten()

@@ -25,6 +25,7 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "applyDamage",
     "grantHealth",
     "grantAmmo",
+    "grantLayer",
     "armTrigger",
     "disarmTrigger",
     "armTeleporter",

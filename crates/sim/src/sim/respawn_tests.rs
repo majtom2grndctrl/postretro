@@ -77,6 +77,7 @@ fn player_descriptor() -> EntityTypeDescriptor {
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         }),
         behavior: None,
         movement: Some(movement),

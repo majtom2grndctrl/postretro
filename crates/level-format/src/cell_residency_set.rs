@@ -2,10 +2,18 @@
 // cells, keyed by the smallest movement lead that makes each one mandatory.
 // See: context/lib/build_pipeline.md §PRL section IDs, rendering_pipeline.md §4
 
+use crate::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 use crate::lightmap::{eof, invalid, read_u32};
 
 /// Section version. Load rejects any other.
 pub const CELL_RESIDENCY_SET_VERSION: u32 = 1;
+
+/// Default movement lead L in metres. Lives here so the compiler's bound and
+/// the runtime's demand cannot differ.
+pub const DEFAULT_LEAD_METRES: u32 = 16;
+/// [`DEFAULT_LEAD_METRES`] in id-46 fixed-point units, the units of every
+/// stored lead.
+pub const DEFAULT_LEAD: u32 = DEFAULT_LEAD_METRES * CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 
 /// version, camera_cell_count, max_lead, entry_count.
 const HEADER_BYTES: usize = 16;
@@ -50,6 +58,13 @@ pub struct CellResidencySetSection {
 impl CellResidencySetSection {
     pub fn camera_cell_count(&self) -> usize {
         self.offsets.len().saturating_sub(1)
+    }
+
+    /// Whether any camera cell has a baked set. A camera cell's set always
+    /// holds at least that cell, so this is the compiler's "has camera cells":
+    /// a level whose cells are all solid or exterior has an empty section.
+    pub fn has_camera_sets(&self) -> bool {
+        !self.entries.is_empty()
     }
 
     /// The camera cell's entries, sorted by (lead, cell id). Entries with

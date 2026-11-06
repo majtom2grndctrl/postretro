@@ -198,6 +198,8 @@ export type PostretroModule = {
   defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning a flattened, frozen schema-keyed handle.
   defineStore: typeof(defineStore),
+  defineDefenseLayer: typeof(defineDefenseLayer),
+  defineDamageType: typeof(defineDamageType),
   --- Read a state ref into an expression value.
   read: typeof(read),
   --- Read whether the evaluated player (or local crossing's own pawn) is in an authored life state.
@@ -218,6 +220,8 @@ export type PostretroModule = {
   candidate: CandidateInputs,
   --- Build a `@state.<name>` guard input leaf for a per-entity state field.
   state: typeof(state),
+  --- Build `@defense.<name>` guard input leaves for the brain's own layer.
+  defense: typeof(defense),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

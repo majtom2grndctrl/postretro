@@ -15,8 +15,8 @@ fn measure_baked_map_probe_overlay_cpu() {
     let path = std::env::var("POSTRETRO_PROBE_PERF_MAP").expect("existing baked PRL path");
     let world = postretro_level_loader::load_prl(&path).expect("load existing bake");
     let manifest = world.sh_stream_manifest().expect("streamed SH map");
-    let residency =
-        ShResidencyState::from_manifest(manifest, &world.cells).expect("residency metadata");
+    let residency = ShResidencyState::from_manifest(manifest, &world.cells, world.baked_max_lead())
+        .expect("residency metadata");
     let Some(ctx) = gpu_or_skip("probe overlay CPU measurement") else {
         return;
     };

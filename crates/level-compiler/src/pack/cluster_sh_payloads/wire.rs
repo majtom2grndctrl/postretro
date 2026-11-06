@@ -19,6 +19,8 @@ pub(super) struct EncodedBlock {
 pub(super) struct EncodedSparse {
     pub(super) section_id: u32,
     pub(super) rows: Vec<u32>,
+    /// Each row's stored bytes, parallel to `rows`.
+    pub(super) row_hashes: Vec<blake3::Hash>,
     pub(super) body: Vec<u8>,
 }
 

@@ -78,6 +78,10 @@ pub struct AttackParams {
     /// A weapon attack plays it as well as the weapon's own sounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<String>,
+    /// A contact attack's damage type. A weapon attack takes its weapon's,
+    /// so naming one beside `weapon` rejects load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_type: Option<crate::AuthoredHandle>,
 }
 
 /// How an authored patrol route moves when it reaches an endpoint.

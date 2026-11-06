@@ -9,10 +9,10 @@
 // panic. `RefCell` has no poisoning.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::data_registry::{DataRegistry, FactionSentimentState};
-use crate::reactions::system_commands::SystemCommandQueue;
+use crate::reactions::system_commands::{SystemCommandQueue, WeakSystemCommandQueue};
 use crate::registry::EntityRegistry;
 use crate::slot_table::SlotTable;
 
@@ -123,6 +123,81 @@ impl ScriptCtx {
 impl Default for ScriptCtx {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A [`ScriptCtx`] that does not keep the context alive, for a holder the
+/// context itself owns (the system queue's state sink). Holding a strong
+/// clone there would be a reference cycle that leaks the whole context.
+#[derive(Clone)]
+pub struct WeakScriptCtx {
+    registry: Weak<RefCell<EntityRegistry>>,
+    data_registry: Weak<RefCell<DataRegistry>>,
+    faction_sentiment: Weak<RefCell<FactionSentimentState>>,
+    slot_table: Weak<RefCell<SlotTable>>,
+    frame: Weak<Cell<u64>>,
+    gravity: Weak<Cell<f32>>,
+    owner_slot_writes_enabled: Weak<Cell<bool>>,
+    system_commands: WeakSystemCommandQueue,
+    pending_teleporter_mutations: Weak<RefCell<Vec<(crate::EntityId, bool)>>>,
+    pending_respawns:
+        Weak<RefCell<std::collections::BTreeMap<crate::EntityId, crate::RespawnRequest>>>,
+    respawn_placements: Weak<RefCell<crate::RespawnPlacements>>,
+    pending_ghost_link_commands:
+        Weak<RefCell<Vec<(crate::EntityId, postretro_foundation::GhostLinkCommand)>>>,
+    presentation_overrides: Weak<RefCell<crate::presentation_overrides::PresentationOverrides>>,
+    presentation_script_time: Weak<Cell<f64>>,
+    presentation_networked_predicate: Weak<Cell<Option<PresentationNetworkedPredicate>>>,
+    presentation_override_validator: Weak<Cell<Option<PresentationOverrideValidator>>>,
+    landing: Weak<crate::reactions::machine_local::LandingScope>,
+}
+
+impl ScriptCtx {
+    pub fn downgrade(&self) -> WeakScriptCtx {
+        WeakScriptCtx {
+            registry: Rc::downgrade(&self.registry),
+            data_registry: Rc::downgrade(&self.data_registry),
+            faction_sentiment: Rc::downgrade(&self.faction_sentiment),
+            slot_table: Rc::downgrade(&self.slot_table),
+            frame: Rc::downgrade(&self.frame),
+            gravity: Rc::downgrade(&self.gravity),
+            owner_slot_writes_enabled: Rc::downgrade(&self.owner_slot_writes_enabled),
+            system_commands: self.system_commands.downgrade(),
+            pending_teleporter_mutations: Rc::downgrade(&self.pending_teleporter_mutations),
+            pending_respawns: Rc::downgrade(&self.pending_respawns),
+            respawn_placements: Rc::downgrade(&self.respawn_placements),
+            pending_ghost_link_commands: Rc::downgrade(&self.pending_ghost_link_commands),
+            presentation_overrides: Rc::downgrade(&self.presentation_overrides),
+            presentation_script_time: Rc::downgrade(&self.presentation_script_time),
+            presentation_networked_predicate: Rc::downgrade(&self.presentation_networked_predicate),
+            presentation_override_validator: Rc::downgrade(&self.presentation_override_validator),
+            landing: Rc::downgrade(&self.landing),
+        }
+    }
+}
+
+impl WeakScriptCtx {
+    /// The context, or `None` once every owning handle has dropped.
+    pub fn upgrade(&self) -> Option<ScriptCtx> {
+        Some(ScriptCtx {
+            registry: self.registry.upgrade()?,
+            data_registry: self.data_registry.upgrade()?,
+            faction_sentiment: self.faction_sentiment.upgrade()?,
+            slot_table: self.slot_table.upgrade()?,
+            frame: self.frame.upgrade()?,
+            gravity: self.gravity.upgrade()?,
+            owner_slot_writes_enabled: self.owner_slot_writes_enabled.upgrade()?,
+            system_commands: self.system_commands.upgrade()?,
+            pending_teleporter_mutations: self.pending_teleporter_mutations.upgrade()?,
+            pending_respawns: self.pending_respawns.upgrade()?,
+            respawn_placements: self.respawn_placements.upgrade()?,
+            pending_ghost_link_commands: self.pending_ghost_link_commands.upgrade()?,
+            presentation_overrides: self.presentation_overrides.upgrade()?,
+            presentation_script_time: self.presentation_script_time.upgrade()?,
+            presentation_networked_predicate: self.presentation_networked_predicate.upgrade()?,
+            presentation_override_validator: self.presentation_override_validator.upgrade()?,
+            landing: self.landing.upgrade()?,
+        })
     }
 }
 

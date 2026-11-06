@@ -11,6 +11,21 @@ import {
   sentiment,
 } from "postretro";
 import { onStateCrossing } from "postretro/ui";
+import { armor, shield } from "./scripts/defenses";
+import {
+  ballistic,
+  corrosive,
+  explosive,
+  flechette,
+  plasma,
+  shock,
+} from "./scripts/damage-types";
+import {
+  acidRifleEntity,
+  arcRifleEntity,
+  overload,
+  shieldedEnemyEntity,
+} from "./scripts/damage-triangle";
 import { playerEntity } from "./scripts/player";
 import { setupPlayerDeath } from "./scripts/player-death";
 import { coopPresentationEntities, coopDummyLifecycle, coopWeaponLifecycle } from "./scripts/coop-presentation-entities";
@@ -96,10 +111,13 @@ import {
 } from "./scripts/frontend-menu";
 import {
   ammoOnKill,
+  booster,
+  boosterPads,
   combatDummyLifecycle,
   combatZombieLifecycle,
   enemyDeath,
   progression,
+  shieldBreak,
 } from "./scripts/combat-lifecycle";
 import { runCounter } from "./scripts/run-counter";
 import { closetStore } from "./scripts/closet-store";
@@ -108,7 +126,7 @@ import { a11yStrobeStore } from "./scripts/a11y-strobe-store";
 import {
   damagedEnemyBar,
   damagedEnemyOverlay,
-  damageNumber,
+  damageNumberTemplates,
 } from "./scripts/combat-presentation";
 import { reviveMarker, reviveMarkerOverlay } from "./scripts/revive-marker";
 import { markSwimming, splashSound, swimStats } from "./scripts/swim-events";
@@ -183,7 +201,7 @@ export default defineMod({
   loading: { tree: loadingPool },
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
-  presentationTemplates: [damageNumber, damagedEnemyBar, reviveMarker],
+  presentationTemplates: [...damageNumberTemplates, damagedEnemyBar, reviveMarker],
   presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay],
   theme: hudTheme,
   reactions: [
@@ -193,6 +211,8 @@ export default defineMod({
     ...positionalSoundReactions,
     markSwimming,
     splashSound,
+    booster,
+    overload,
   ],
   // Host decisions per player, with own-state feedback local to each machine.
   playerEvents: [
@@ -217,9 +237,15 @@ export default defineMod({
     combatZombieLifecycle,
     factionSentimentBackstab,
     ...playerDeath.events,
+    shieldBreak,
   ],
-  triggerEvents: factionSentimentTriggerEvents,
+  triggerEvents: [...factionSentimentTriggerEvents, boosterPads],
   stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],
+  // Registration lists each handle, as `stores` does; the default is one of
+  // them, dealt by anything that names no type.
+  defenseLayers: [shield, armor],
+  damageTypes: [ballistic, plasma, explosive, shock, corrosive, flechette],
+  defaultDamageType: ballistic,
   // Ghost styles a map's `ghost_link` names through its `ghost_style` key. The
   // ghost-link fixture (maps/ghost-links.map) names `echo`, which carries the
   // partner's sounds through the Ghost bus above.
@@ -344,6 +370,10 @@ export default defineMod({
     cyberpunkWarriorEntity,
     sciFiTrooperEntity,
     referenceEnemyEntity,
+    // DEV FIXTURE: the damage-triangle playtest (scripts/damage-triangle.ts).
+    shieldedEnemyEntity,
+    arcRifleEntity,
+    acidRifleEntity,
     enemyRifleEntity,
     limitatorEntity,
     // Rifle squads: `"classname" "rifle_trooper"` / `"rifle_warrior"`.

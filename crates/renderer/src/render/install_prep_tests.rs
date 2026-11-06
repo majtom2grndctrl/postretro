@@ -213,13 +213,14 @@ fn assert_prep_matches_install(
     renderer.normalize_world_uvs(&mut world);
 
     let sh_plan = world.sh_stream_manifest().map(|manifest| {
-        plan_sh_residency(manifest, &world.cells).expect("the plan accepts the level")
+        plan_sh_residency(manifest, &world.cells, world.baked_max_lead())
+            .expect("the plan accepts the level")
     });
     let payloads = world.take_gpu_lighting_payloads();
     let geometry = level_world_to_geometry(&world, &materials);
     let (stream_base, stream_descriptors) = match &geometry.sh_storage {
         LevelGeometryShStorage::Legacy => (None, None),
-        LevelGeometryShStorage::Streaming(manifest) => (
+        LevelGeometryShStorage::Streaming { manifest, .. } => (
             Some((manifest.base().grid_origin, manifest.base().cell_size)),
             Some(manifest.base().animation_descriptors.as_slice()),
         ),

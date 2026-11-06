@@ -121,6 +121,7 @@ fn staged_manifest_result(
             ui_images: Default::default(),
             loading: Default::default(),
             store_declarations: Default::default(),
+            defense: Default::default(),
             dependency_paths: Vec::new(),
             player_events: Vec::new(),
         })),

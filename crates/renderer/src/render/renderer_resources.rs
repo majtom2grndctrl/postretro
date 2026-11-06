@@ -249,7 +249,7 @@ pub(in crate::render) fn build_level_set_core(
 
     let streaming_manifest = match &geometry.sh_storage {
         LevelGeometryShStorage::Legacy => None,
-        LevelGeometryShStorage::Streaming(manifest) => Some(*manifest),
+        LevelGeometryShStorage::Streaming { manifest, .. } => Some(*manifest),
     };
 
     let world = world_geometry::install_world_buffers(device, geometry);
@@ -536,11 +536,16 @@ fn plan_level_sh_residency(
 ) -> Result<Option<ShResidencyPlan>, LevelInstallError> {
     match &geometry.sh_storage {
         LevelGeometryShStorage::Legacy => Ok(None),
-        LevelGeometryShStorage::Streaming(manifest) => {
-            postretro_render_cpu::sh_residency::plan_sh_residency(manifest, geometry.cells)
-                .map(Some)
-                .map_err(LevelInstallError::StreamedSh)
-        }
+        LevelGeometryShStorage::Streaming {
+            manifest,
+            baked_max_lead,
+        } => postretro_render_cpu::sh_residency::plan_sh_residency(
+            manifest,
+            geometry.cells,
+            *baked_max_lead,
+        )
+        .map(Some)
+        .map_err(LevelInstallError::StreamedSh),
     }
 }
 

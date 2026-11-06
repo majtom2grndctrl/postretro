@@ -239,20 +239,18 @@ fn validate_sparse_rows(
     }
     let mut tile_cursor = 0u32;
     for (row_index, expected_row) in sparse.rows.iter().enumerate() {
-        let offset = 16 + row_index * 16;
+        let offset = 16 + row_index * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
         let source_row = read_u32(bytes, offset);
         let first_entry = read_u32(bytes, offset + 4);
         let count = read_u32(bytes, offset + 8);
-        let role = read_u32(bytes, offset + 12);
         if source_row != expected_row.global_affinity_index
             || first_entry != expected_row.first_entry
             || count != expected_row.entry_count
-            || role != expected_row.role
         {
             return invalid("sparse row record disagrees with id 49/source metadata".into());
         }
     }
-    let entries_base = 16 + row_count * 16;
+    let entries_base = 16 + row_count * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
     for entry in 0..entry_count {
         let offset = entries_base + entry * 16;
         let light = read_u32(bytes, offset);

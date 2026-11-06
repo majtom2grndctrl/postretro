@@ -66,6 +66,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::Teleporter,
     ComponentKind::ProjectileTrap,
     ComponentKind::GhostLink,
+    ComponentKind::DefenseLayers,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -104,6 +105,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::Teleporter => "teleporter",
         ComponentKind::ProjectileTrap => "projectile_trap",
         ComponentKind::GhostLink => "ghost_link",
+        ComponentKind::DefenseLayers => "defense_layers",
     }
 }
 
@@ -318,6 +320,7 @@ mod tests {
                     lower_ms: 0,
                     raise_ms: 0,
                     block_during_reload: None,
+                    damage_type: None,
                 }))
             }
             ComponentKind::DescriptorProvenance => {
@@ -372,6 +375,7 @@ mod tests {
                             cooldown_ms: Some(500.0),
                             engagement_radius: None,
                             standoff_distance: None,
+                            damage_type: None,
                         },
                     )]),
                     engagement_radius: None,
@@ -460,6 +464,9 @@ mod tests {
                     filter: Default::default(),
                 })
             }
+            ComponentKind::DefenseLayers => ComponentValue::DefenseLayers(
+                postretro_entities::components::defense_layers::DefenseLayersComponent::default(),
+            ),
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
             ),
@@ -495,6 +502,7 @@ mod tests {
                 flipbook_active: false,
                 impact_light: None,
                 splash: None,
+                damage_type: None,
             }),
         }
     }

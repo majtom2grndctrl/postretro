@@ -191,6 +191,7 @@ fn windowed_carrier_binding_reresolves_before_first_bridge_update_after_reload()
                     alpha_light_index: 0,
                     local_offset: Vec3::new(2.0, 0.0, 0.0),
                 }],
+                crush_damage_type: None,
             }],
             waypoints: Vec::new(),
         }
@@ -425,6 +426,7 @@ fn suppressed_descriptor_models_install_hit_zones_once() {
         max: 100.0,
         hitbox: None,
         zone_multipliers: Default::default(),
+        ..Default::default()
     });
     for connected in [false, true] {
         let mut world = level_world("descriptor_install", 1);
@@ -949,6 +951,7 @@ fn windowed_install_assigns_light_entity_ids_before_fog_entity_ids() {
             progress_tracker: &mut session.progress_tracker,
             crossing_detector: &mut session.crossing_detector,
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            system_reaction_ir_bindings: &session.scripting.system_reaction_ir_bindings,
             impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,

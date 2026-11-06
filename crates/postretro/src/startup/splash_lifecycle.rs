@@ -501,6 +501,10 @@ impl App {
                     // (headless has no modal stack), so they stay here rather than in
                     // the shared drain above. Register mod-scope UI trees into the
                     // tiered registry at `Mod` tier, before the mod-init VM drops.
+                    postretro_scripting_core::ui::bind_diagnostics::warn_unknown_slot_binds(
+                        manifest.ui_trees.iter().map(|registered| &registered.tree),
+                        &session.scripting.script_ctx.slot_table.borrow(),
+                    );
                     session.modal_stack.register_script_trees(
                         std::mem::take(&mut manifest.ui_trees),
                         postretro_ui::modal_stack::ScopeTier::Mod,

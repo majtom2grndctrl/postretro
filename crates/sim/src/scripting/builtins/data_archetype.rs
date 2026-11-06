@@ -527,6 +527,21 @@ pub(crate) fn attach_descriptor_components(
             hitbox.offset -= origin_shift;
         }
         let _ = registry.set_component(id, component);
+        // Layers spawn full beside the health they drain before, at the
+        // capacity their parameters evaluate to now: a hit on the spawn tick
+        // drains the layer, not health.
+        if let Some(mut layers) =
+            postretro_entities::components::defense_layers::DefenseLayersComponent::from_descriptor(
+                health_desc,
+            )
+        {
+            layers.descriptor = descriptor.canonical_name.clone();
+            if let Some(source) = registry.defense_parameters().cloned() {
+                source.evaluate(registry, id, &mut layers);
+            }
+            layers.fill();
+            let _ = registry.set_component(id, layers);
+        }
         owned_components.insert(DescriptorComponentKind::Health);
     }
 
@@ -982,6 +997,7 @@ pub fn spawn_from_player_starts_with_carried_loadout(
         if is_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
             restore_carried_health(carried_loadout, registry, id);
+            postretro_combat_model::restore_carried_layers(carried_loadout, registry, id);
             crate::sim::player_life::restore_carried_life_state(
                 carried_loadout,
                 registry,
@@ -1295,6 +1311,7 @@ mod tests {
                     offset: None,
                 }),
                 zone_multipliers: std::collections::HashMap::new(),
+                ..Default::default()
             }),
             behavior: None,
         }];
@@ -2217,6 +2234,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -2417,6 +2435,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
         let starts = [
@@ -3405,6 +3424,7 @@ mod tests {
                 offset: Some([0.0, 0.9, 0.0]),
             }),
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         });
         let placement = placement("grunt", &[]);
         let authored_hitbox_center = placement.origin + Vec3::new(0.0, 0.9, 0.0);

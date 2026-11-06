@@ -346,6 +346,7 @@ mod tests {
             ranges: Vec::new(),
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         };
         let directory_bytes = directory
             .try_to_bytes()

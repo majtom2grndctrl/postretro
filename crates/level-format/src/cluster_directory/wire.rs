@@ -4,20 +4,22 @@
 use super::{
     CLUSTER_DIRECTORY_VERSION, CLUSTER_HINT_RECORD_SIZE, CLUSTER_RECORD_SIZE,
     ClusterDirectoryError, ClusterDirectorySection, ClusterHintRecord, ClusterRangeRecord,
-    ClusterRangeRole, ClusterResourceDomain, ClusterResourceRecord, HEADER_SIZE,
-    MEMBER_RECORD_SIZE, RANGE_RECORD_SIZE, RESOURCE_RECORD_SIZE, try_vec, u32_len, usize_count,
+    ClusterResourceDomain, ClusterResourceRecord, HEADER_SIZE, MEMBER_RECORD_SIZE,
+    RANGE_RECORD_SIZE, RESOURCE_RECORD_SIZE, bound, try_vec, u32_len, usize_count,
 };
 
 impl ClusterDirectorySection {
     pub fn byte_len(&self) -> Result<usize, ClusterDirectoryError> {
-        checked_wire_len(
+        checked_prefix_len(
             self.clusters.len(),
             self.resources.len(),
             self.members.len(),
             self.ranges.len(),
             self.seam_portal_ids.len(),
             self.cluster_hints.len(),
-        )
+        )?
+        .checked_add(bound::tail_byte_len(&self.mandatory_bound)?)
+        .ok_or(ClusterDirectoryError::SizeOverflow("section byte length"))
     }
 
     pub fn try_to_bytes(&self) -> Result<Vec<u8>, ClusterDirectoryError> {
@@ -69,8 +71,6 @@ impl ClusterDirectorySection {
             push_u32(&mut bytes, range.resource_index);
             push_u32(&mut bytes, range.start);
             push_u32(&mut bytes, range.count);
-            push_u32(&mut bytes, range.owner_cluster_id);
-            push_u32(&mut bytes, range.role as u32);
             push_u32(&mut bytes, 0);
         }
         for &portal_id in &self.seam_portal_ids {
@@ -82,6 +82,7 @@ impl ClusterDirectorySection {
             push_u32(&mut bytes, hint.priority);
             push_u32(&mut bytes, 0);
         }
+        bound::push_tail(&mut bytes, &self.mandatory_bound)?;
         debug_assert_eq!(bytes.len(), len);
         Ok(bytes)
     }
@@ -109,7 +110,9 @@ impl ClusterDirectorySection {
         let cell_limit = read_u32(data, 28);
         let seam_portal_count = read_u32(data, 32);
         let cluster_hint_count = read_u32(data, 36);
-        let expected = checked_wire_len(
+        // Two phases: the header sizes the fixed tables exactly, and the bound
+        // tail, whose length varies, then accounts for every byte past them.
+        let prefix_len = checked_prefix_len(
             usize_count(cluster_count)?,
             usize_count(resource_count)?,
             usize_count(member_count)?,
@@ -117,9 +120,9 @@ impl ClusterDirectorySection {
             usize_count(seam_portal_count)?,
             usize_count(cluster_hint_count)?,
         )?;
-        if data.len() != expected {
+        if data.len() < prefix_len {
             return Err(ClusterDirectoryError::InvalidData(format!(
-                "length mismatch: expected {expected}, got {}",
+                "length mismatch: header tables need {prefix_len}, got {}",
                 data.len()
             )));
         }
@@ -173,7 +176,7 @@ impl ClusterDirectorySection {
         }
         let mut ranges = try_vec(range_count, "ranges")?;
         for _ in 0..range_count {
-            let reserved = read_u32(data, cursor + 20);
+            let reserved = read_u32(data, cursor + 12);
             if reserved != 0 {
                 return Err(ClusterDirectoryError::InvalidData(format!(
                     "range reserved field must be zero, got {reserved}"
@@ -183,8 +186,6 @@ impl ClusterDirectorySection {
                 resource_index: read_u32(data, cursor),
                 start: read_u32(data, cursor + 4),
                 count: read_u32(data, cursor + 8),
-                owner_cluster_id: read_u32(data, cursor + 12),
-                role: ClusterRangeRole::parse(read_u32(data, cursor + 16))?,
             });
             cursor += RANGE_RECORD_SIZE;
         }
@@ -209,7 +210,8 @@ impl ClusterDirectorySection {
             });
             cursor += CLUSTER_HINT_RECORD_SIZE;
         }
-        debug_assert_eq!(cursor, expected);
+        debug_assert_eq!(cursor, prefix_len);
+        let mandatory_bound = bound::parse_tail(&data[prefix_len..])?;
         let section = Self {
             runtime_cell_count,
             primitive_limit,
@@ -220,13 +222,15 @@ impl ClusterDirectorySection {
             ranges,
             seam_portal_ids,
             cluster_hints,
+            mandatory_bound,
         };
         section.validate_structure()?;
         Ok(section)
     }
 }
 
-fn checked_wire_len(
+/// Bytes before the bound tail: header plus every header-counted table.
+fn checked_prefix_len(
     clusters: usize,
     resources: usize,
     members: usize,
@@ -248,11 +252,11 @@ fn checked_wire_len(
         .ok_or(ClusterDirectoryError::SizeOverflow("section byte length"))
 }
 
-fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+pub(super) fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-fn read_u32(data: &[u8], offset: usize) -> u32 {
+pub(super) fn read_u32(data: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(
         data[offset..offset + 4]
             .try_into()

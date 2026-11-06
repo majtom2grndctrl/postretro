@@ -378,7 +378,7 @@
   export interface ActivatorsTarget {
     readonly [activatorsTargetBrand]: true;
     /** Damage this fire's activators by a finite, non-negative amount. */
-    damage(amount: number): SubjectTokenCommand;
+    damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
     /** Add health to this fire's activators. */
     grantHealth(amount: number): SubjectTokenCommand;
     /** Enter an authored life state. */
@@ -387,6 +387,8 @@
     respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this fire's activators' named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Refill `layer` on this fire's activators: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -412,7 +414,7 @@
   export interface PlayerTarget {
     readonly [playerTargetBrand]: true;
     /** Damage this event's player by a finite, non-negative amount. */
-    damage(amount: number): SubjectTokenCommand;
+    damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
     /** Add health to this event's player. */
     grantHealth(amount: number): SubjectTokenCommand;
     /** Enter an authored life state. */
@@ -421,6 +423,8 @@
     respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this event's player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Refill `layer` on this event's player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -520,6 +524,8 @@
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
     state(name: string): NumberRef;
+    /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0; a bad reference drops the policy at install. */
+    defense(layer: DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
     setState(name: string, value: NumberValue): Effect;
   }
   export interface SourceHandle {
@@ -528,6 +534,8 @@
     grantHealth(amount: NumberValue): Effect;
     /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
     grantAmmo(type: string, amount: NumberValue): Effect;
+    /** Refill `layer` on the impact damager: omit `amount` to fill to capacity, or add `amount`, clamped to capacity. The capacity is evaluated when the grant applies. A damager without that layer warns and skips; a fire with no damager skips this effect. */
+    grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;
     /** Whether the damager is a player pawn in life state `name` at this fire. False for a damager that is not a player. An unknown name skips the policy. */
     inLifeState(name: string): BoolRef;
     /** Put the damager player pawn into life state `name` in-tick, as `setLifeState`: a change restarts its elapsed time, the current state is a no-op. A fire with no damager skips it; a damager lacking the state warns and skips. */
@@ -535,7 +543,8 @@
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
-  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
+  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included. */
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly isOverride: boolean;
@@ -658,14 +667,14 @@
     /** Apply a typed partial to each NPC's state. */
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
-    damage(amount: number): GroupCommand;
+    damage(amount: number, options?: DamageOptions): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
   /** Every player pawn bound to a seat; a seat in a disconnect hold is skipped, and single player reaches the local pawn. Opaque: no members, no length. Commands run on the host and in single player only. */
   export interface PlayerGroup {
     /** Damage each player by a finite, non-negative amount. */
-    damage(amount: number): GroupCommand;
+    damage(amount: number, options?: DamageOptions): GroupCommand;
     /** Add health to each player. */
     grantHealth(amount: number): GroupCommand;
     /** Enter an authored life state. */
@@ -674,6 +683,8 @@
     respawn(options?: RespawnOptions): GroupCommand;
     /** Add `amount` to each player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): GroupCommand;
+    /** Refill `layer` on each player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A player without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
     /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
@@ -793,6 +804,31 @@
     namespace: string,
     schema: S,
   ): StoreDefinition<S>;
+
+  /** Reserved options for `defineDefenseLayer`; empty today, and any key rejects load. */
+  export type DefenseLayerOptions = { readonly [key: string]: never };
+  /** A registered defense layer kind. It crosses the manifest as `{ kind, name }`. `current` and `capacity` read the local player's layer (`player.defense.<name>` and `player.defense.<name>.capacity`); a pawn without the layer reads absent. */
+  export type DefenseLayer = {
+    readonly kind: "defenseLayer";
+    readonly name: string;
+    readonly current: PlayerComputedRef<number>;
+    readonly capacity: PlayerComputedRef<number>;
+  };
+  /** Reserved options for `defineDamageType`; empty today, and any key rejects load. */
+  export type DamageTypeOptions = { readonly [key: string]: never };
+  /** How much one raw point of a damage type takes from each pool kind, keyed by layer name or `health`. Each value is a multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is ×1. */
+  export type DamageTypeMatrix = { readonly [pool: string]: number | "bypass" };
+  /** A registered damage type. It crosses the manifest as `{ kind, name }`. */
+  export type DamageType = { readonly kind: "damageType"; readonly name: string };
+  /** `.damage` options: `type` is a registered damage-type handle; a hit that names none deals the mod's `defaultDamageType`. Any other key drops the reaction at install. */
+  export type DamageOptions = { readonly type?: DamageType };
+
+  /** Declare a defense layer kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ defenseLayers: [layer] })` and attach it in `components.health.layers`. */
+  export function defineDefenseLayer(options?: DefenseLayerOptions): DefenseLayer;
+  export function defineDefenseLayer(name: string, options?: DefenseLayerOptions): DefenseLayer;
+  /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
+  export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+  export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
 
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
@@ -1316,6 +1352,9 @@
 
   /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
   export function state(name: string): RuntimeGuardNode;
+
+  /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
+  export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

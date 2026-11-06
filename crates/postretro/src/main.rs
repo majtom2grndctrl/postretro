@@ -10,6 +10,8 @@ mod camera;
 mod client_assist;
 #[cfg(test)]
 mod coop_fixture_tests;
+#[cfg(test)]
+mod defense_layer_write_gate_tests;
 mod fluid_presentation;
 mod frame_eye;
 mod frame_loop;
@@ -168,7 +170,6 @@ use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 // See: context/lib/networking.md
 use crate::netcode::frame_order;
 use crate::render::Renderer;
-use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
     apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
     collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
@@ -1873,19 +1874,34 @@ fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> boo
 /// warned and skipped before owner-private replication observes the values.
 fn apply_host_join_seed(
     script_ctx: &postretro_entities::ScriptCtx,
+    registry: &mut postretro_entities::EntityRegistry,
     identity: Option<&postretro_scripting_core::store_identity::StoreIdentityLedger>,
     committed_store_slots: &BTreeSet<String>,
     seat: Seat,
     slots: BTreeMap<String, postretro_net::wire::JoinSeedValue>,
 ) {
-    for warning in apply_join_seed(
+    // Bound so the slot-table borrow ends before the layers evaluate.
+    let outcome = apply_join_seed(
         &mut script_ctx.slot_table.borrow_mut(),
         identity,
         committed_store_slots,
         seat,
         slots,
-    ) {
+    );
+    for warning in &outcome.warnings {
         log::warn!("[Net] {warning}");
+    }
+    if outcome.applied == 0 {
+        return;
+    }
+    // Settle now, as seat bind does: fullness is judged against the pre-seed
+    // capacity and refills to the seeded one before a grant, hit or level
+    // change can land.
+    if let Some(pawn) = registry.pawn_for_seat(seat) {
+        use postretro_entities::components::defense_layers::{LayerRefill, settle_layers_now};
+        settle_layers_now(registry, pawn, |component| {
+            component.mark_unmarked(LayerRefill::IfFull);
+        });
     }
 }
 
@@ -2828,6 +2844,7 @@ impl App {
                         };
                         apply_host_join_seed(
                             &script_ctx,
+                            &mut registry,
                             join_seed_identity.as_ref(),
                             &join_seed_membership,
                             seat,
@@ -2886,6 +2903,7 @@ impl App {
                             netcode::ParticipationSeed::None => {}
                             netcode::ParticipationSeed::Apply(slots) => apply_host_join_seed(
                                 &script_ctx,
+                                &mut registry,
                                 join_seed_identity.as_ref(),
                                 &join_seed_membership,
                                 seat,
@@ -3553,18 +3571,18 @@ impl App {
     ///   `PushTree`'s name through the stack's registry (unknown name warns +
     ///   no-op, never a panic). The top tree's capture mode is reconciled with the
     ///   input seam + focus afterward by `reconcile_ui_focus`.
-    /// - `SetState` → a literal takes the existing readonly-gated JSON write;
-    ///   an install-bound runtime value evaluates against live slots at this
-    ///   game-logic write point (invalid/readonly/non-projectable IR warns and
-    ///   no-ops).
+    /// - `SetState` → only a queue with no state sink queues one; a session's
+    ///   reactions write at dispatch. A literal takes the readonly-gated JSON
+    ///   write; an install-bound runtime value evaluates against live slots
+    ///   (invalid/readonly/non-projectable IR warns and no-ops).
     /// - `SetSentiment` / `AdjustSentiment` → resolve authored faction names
     ///   against immutable content and mutate the live overlay after the tick;
     ///   unknown names and malformed values warn and no-op.
-    /// - `AppendText` / `BackspaceText` / `ClearText` → readonly-gated text edits
-    ///   to a writable String slot at the game-logic stage, through the same
+    /// - `AppendText` / `BackspaceText` / `ClearText` → the text-entry
+    ///   surface's keystrokes (a reaction's text edit writes at dispatch).
+    ///   Readonly-gated edits to a writable String slot, through the same
     ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
-    ///   backspace is a silent no-op; unknown/non-String slot logs). M13 Text
-    ///   Entry, Task 1.
+    ///   backspace is a silent no-op; unknown/non-String slot logs).
     fn dispatch_system_commands(&mut self) {
         // `dispatch_system_commands` stays on `App` (it calls App-bound lifecycle
         // methods). The script tranche, audio, and the decay/presentation systems
@@ -3762,57 +3780,21 @@ impl App {
                     dispatch_source,
                     dispatch_values,
                 } => {
-                    if crate::scripting::reactions::system_commands::is_ir_node(&value) {
-                        let outcome = self.session.as_ref().map_or(
-                            SystemReactionIrDispatch::Unknown,
-                            |session| {
-                                session.scripting.system_reaction_ir_bindings.dispatch(
-                                    &slot,
-                                    &value,
-                                    &dispatch_source,
-                                    &dispatch_values,
-                                    &script_ctx,
-                                )
-                            },
-                        );
-                        match outcome {
-                            SystemReactionIrDispatch::Evaluated
-                            | SystemReactionIrDispatch::Rejected => {
-                                // Rejected IR was already diagnosed: during install, or by
-                                // `dispatch` itself, which warns once per binding for a
-                                // `byPlayer(on.player)` value reached outside a player
-                                // event. It must never fall through to the literal write
-                                // path, and repeated fires are a safe no-op rather than a
-                                // per-dispatch warning.
-                            }
-                            SystemReactionIrDispatch::Unknown => {
-                                // This command is not from the current install table (for
-                                // example, a stale queue entry after a rebuild), so retain a
-                                // diagnostic instead of silently accepting an unbound write.
-                                log::warn!(
-                                    "[Scripting] setState runtime value for `{slot}` was not bound at level install; skipping"
-                                );
-                            }
-                        }
-                    } else if self.session.as_ref().is_some_and(|session| {
+                    // The no-sink path: a session's reactions write at dispatch
+                    // through the installed sink, so a queued write only comes
+                    // from a queue without one. It applies under the same rule.
+                    if let Some(session) = self.session.as_ref() {
                         session
                             .scripting
                             .system_reaction_ir_bindings
-                            .rejects_literal(&slot, &value)
-                    }) {
-                        // Install-time binding already named the reaction and slot.
-                        // Never route the rejected per-owner write through the
-                        // scalar JSON fallback.
-                    } else if let Err(err) =
-                        crate::scripting::primitives::store::write_state_slot_json(
-                            &script_ctx,
-                            &slot,
-                            &value,
-                        )
-                    {
-                        // Literal behavior stays on the existing readonly-gated
-                        // JSON path, including target range validation/clamping.
-                        log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                            .borrow()
+                            .apply_set_state(
+                                &script_ctx,
+                                &slot,
+                                &value,
+                                &dispatch_source,
+                                &dispatch_values,
+                            );
                     }
                 }
                 SystemReactionCommand::SetSentiment { from, to, value } => {
@@ -3852,61 +3834,6 @@ impl App {
                         );
                     }
                 }
-                SystemReactionCommand::AddOwnerSlot { slot, seats, delta } => {
-                    // The reaction dispatcher resolves concrete seats at fire
-                    // time, but a disconnect/release can happen before this
-                    // app-frame drain. Never recreate a released owner's value.
-                    for seat in seats {
-                        let seat_is_live = self.session.as_ref().is_some_and(|session| {
-                            session
-                                .seat_table
-                                .as_ref()
-                                .is_some_and(|seat_table| seat_table.contains_seat(seat))
-                        });
-                        if !seat_is_live {
-                            continue;
-                        }
-
-                        let mut slot_table = script_ctx.slot_table.borrow_mut();
-                        let Some(record) = slot_table.get_mut(&slot) else {
-                            log::warn!(
-                                "[Scripting] addSlot references missing slot `{slot}` at drain; skipping"
-                            );
-                            continue;
-                        };
-                        if !record.schema.per_owner {
-                            log::warn!(
-                                "[Scripting] addSlot requires per-owner slot `{slot}`; skipping"
-                            );
-                            continue;
-                        }
-                        if record.schema.readonly {
-                            log::warn!(
-                                "[Scripting] addSlot rejects readonly slot `{slot}`; skipping"
-                            );
-                            continue;
-                        }
-                        let Some(postretro_entities::SlotValue::Number(current)) =
-                            record.per_seat_value(seat)
-                        else {
-                            log::warn!(
-                                "[Scripting] addSlot requires numeric slot `{slot}`; skipping"
-                            );
-                            continue;
-                        };
-                        let next = postretro_scripting_core::store_bridge::validate_slot_value(
-                            &slot,
-                            &record.schema,
-                            postretro_entities::SlotValue::Number(*current + delta),
-                        );
-                        match next {
-                            Ok(next) => record.set_per_seat_value(seat, next),
-                            Err(error) => log::warn!(
-                                "[Scripting] addSlot for `{slot}` failed validation; skipping: {error}"
-                            ),
-                        }
-                    }
-                }
                 SystemReactionCommand::CellWrite { scope, cell, value } => {
                     // Presentation-cell write at the game-logic stage (M13 G1b,
                     // Task 5): routes into the app-side `PresentationCellStore`,
@@ -3923,27 +3850,28 @@ impl App {
                         ),
                     }
                 }
+                // Text-entry keystrokes, and a reaction's text edit on a queue
+                // with no state sink. Same write and warnings as the sink.
                 SystemReactionCommand::AppendText { slot, text } => {
-                    // Readonly-gated text edit at the game-logic stage (same
-                    // writable-slot gate as setState): readonly warns + no-ops;
-                    // unknown/non-String slot logs — never a panic.
-                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Append(&text)) {
-                        log::warn!("[Scripting] appendText to `{slot}` failed: {err}");
-                    }
+                    scripting_systems::system_reactions::apply_text_edit_command(
+                        &script_ctx,
+                        &slot,
+                        &postretro_entities::TextEditCommand::Append(text),
+                    );
                 }
                 SystemReactionCommand::BackspaceText { slot } => {
-                    // Empty backspace is a silent no-op inside `apply_text_edit`.
-                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Backspace) {
-                        log::warn!("[Scripting] backspaceText to `{slot}` failed: {err}");
-                    }
+                    scripting_systems::system_reactions::apply_text_edit_command(
+                        &script_ctx,
+                        &slot,
+                        &postretro_entities::TextEditCommand::Backspace,
+                    );
                 }
                 SystemReactionCommand::ClearText { slot } => {
-                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Clear) {
-                        log::warn!("[Scripting] clearText to `{slot}` failed: {err}");
-                    }
+                    scripting_systems::system_reactions::apply_text_edit_command(
+                        &script_ctx,
+                        &slot,
+                        &postretro_entities::TextEditCommand::Clear,
+                    );
                 }
             }
         }
@@ -4207,6 +4135,7 @@ impl App {
                                         };
                                         apply_host_join_seed(
                                             &script_ctx,
+                                            &mut registry,
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,
@@ -4288,6 +4217,7 @@ impl App {
                                     netcode::ParticipationSeed::Apply(slots) => {
                                         apply_host_join_seed(
                                             &script_ctx,
+                                            &mut registry,
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,
@@ -6845,6 +6775,7 @@ mod tests {
                 crush_sound: None,
                 sealed_portal_ids: vec![0],
                 carried_lights: Vec::new(),
+                crush_damage_type: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -7472,6 +7403,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -11479,6 +11411,7 @@ mod tests {
                     ui_images: Default::default(),
                     loading: Default::default(),
                     store_declarations: Default::default(),
+                    defense: Default::default(),
                     dependency_paths: Vec::new(),
                 },
             )),

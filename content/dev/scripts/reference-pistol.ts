@@ -1,4 +1,5 @@
 import { activation, defineEntity, defineWeaponPlacement } from "postretro";
+import { ballistic } from "./damage-types";
 
 const pistolPlacement =  defineWeaponPlacement({
   positionFromCenter: { right: 0.25, up: -0.3, forward: 0.5 },
@@ -9,6 +10,7 @@ export const referencePistolEntity = defineEntity({
   components: {
     weapon: {
       damage: 12.0,
+      damageType: ballistic,
       range: 64.0,
       primary: { trigger: "press", recoveryMs: 180.0, steps: [activation.shot()] },
       resolution: "hitscan",

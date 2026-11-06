@@ -868,7 +868,6 @@ fn crossing_fired_reaction_containing_a_wait_enrolls_and_lands_later() {
         .value = Some(postretro_entities::SlotValue::Number(1.0));
     let fired = crate::scripting::reactions::dispatch_state_crossings_with_sequences(
         &mut detector,
-        &fx.ctx.slot_table.borrow(),
         &fx.data,
         &fx.sequence_registry,
         &fx.reaction_registry,
@@ -1185,7 +1184,6 @@ fn crossing_fired_on_complete_chain_now_runs() {
         .value = Some(postretro_entities::SlotValue::Number(1.0));
     let fired = crate::scripting::reactions::dispatch_state_crossings_with_sequences(
         &mut detector,
-        &fx.ctx.slot_table.borrow(),
         &fx.data,
         &fx.sequence_registry,
         &fx.reaction_registry,

@@ -173,7 +173,7 @@ impl App {
             let script_ctx = session.scripting.script_ctx.clone();
             crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
                 &script_ctx,
-                &session.scripting.system_reaction_ir_bindings,
+                &session.scripting.system_reaction_ir_bindings.borrow(),
             );
         }
         self.rebuild_active_reaction_subscribers();
@@ -281,6 +281,12 @@ impl App {
                         &mut session.presentation_pool,
                         &mut session.client_overlay_facts,
                         &mut session.host_overlay_fact_tracker,
+                    );
+                    // The committed vocabulary and descriptors are live now.
+                    // Spawns before the next level install evaluate layer
+                    // parameters against them, not the previous commit's.
+                    postretro_sim::sim::defense_parameters::DefenseParameters::install(
+                        &session.scripting.script_ctx,
                     );
                 }
                 self.install_presentation_templates(presentation_templates);
@@ -414,6 +420,7 @@ mod tests {
                 ui_images: Default::default(),
                 loading: Default::default(),
                 store_declarations: Default::default(),
+                defense: Default::default(),
                 dependency_paths: Vec::new(),
                 player_events: Vec::new(),
             })),

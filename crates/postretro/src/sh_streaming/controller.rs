@@ -9,7 +9,7 @@ use postretro_level_loader::{
 };
 use thiserror::Error;
 
-use super::budget::{FixedGpuCharges, ShGpuBudgetInputs, ShResidencyAccounting};
+use super::budget::CpuPhaseLedger;
 use super::generation::{GenerationClock, ProcessGenerationClock};
 use super::reach::ShReach;
 use super::topology::PlannerTopology;
@@ -18,6 +18,8 @@ use crate::streaming::drain_budget::DrainClass;
 
 #[path = "drain.rs"]
 mod drain;
+#[path = "hold.rs"]
+mod hold;
 #[path = "lifecycle.rs"]
 mod lifecycle;
 #[path = "pressure.rs"]
@@ -57,8 +59,7 @@ pub(crate) struct ShClusterRequest {
     pub(crate) cluster_id: u32,
     pub(crate) chunk_hash: [u8; 32],
     /// The cluster's class was in the mandatory tier (`Visible`, `Pinned` or
-    /// `Lead`, owner closure included) when requested. Mandatory reads are
-    /// served before optional ones.
+    /// `Lead`) when requested. Mandatory reads are served before optional ones.
     pub(crate) mandatory: bool,
 }
 
@@ -78,8 +79,6 @@ pub(crate) enum ShResidencyControllerError {
     InvalidMonotonicTime,
     #[error("SH streaming planner topology is invalid: {0}")]
     InvalidTopology(String),
-    #[error("SH streaming owner dependency graph contains a cycle at cluster {0}")]
-    OwnerCycle(u32),
     #[error("SH streaming accounting overflow while charging {0}")]
     AccountingOverflow(&'static str),
     #[error("SH streaming accounting underflow while releasing {0}")]
@@ -100,11 +99,21 @@ enum TargetClass {
     /// In the reach past L, up to the baked maximum: optional.
     Band,
     Hysteresis,
+    /// Drawn on a held frame with no other class: resident or on its way. A
+    /// target, so no departure takes it, but optional, and the last capacity
+    /// victim. Declared last, so every other class outranks it.
+    Held,
 }
 
 impl TargetClass {
     const fn is_pressure_eligible(self) -> bool {
         matches!(self, Self::SeamWarm | Self::Band)
+    }
+
+    /// The optional tier: what yields to mandatory work at real capacity.
+    /// Hysteresis goes last, because it is what stops doorway thrash.
+    const fn is_optional(self) -> bool {
+        !self.is_mandatory()
     }
 
     /// The mandatory tier: protected from eviction, read before optional work.
@@ -113,8 +122,7 @@ impl TargetClass {
     }
 
     /// In the set a level entry waits on before its first frame: the
-    /// mandatory tier. Owners take their dependent's class, so the closure of
-    /// a settle target is one too.
+    /// mandatory tier.
     const fn is_settle_target(self) -> bool {
         self.is_mandatory()
     }
@@ -128,13 +136,13 @@ impl TargetClass {
             Self::Lead => DrainClass::Lead,
             Self::SeamWarm => DrainClass::SeamWarm,
             Self::Band => DrainClass::Prefetch,
-            Self::Hysteresis => DrainClass::Hysteresis,
+            Self::Hysteresis | Self::Held => DrainClass::Hysteresis,
         }
     }
 }
 
-/// The class/priority pair propagated through owner closure. Priority only
-/// belongs to cold optional work; protected classes intentionally carry zero
+/// A target's class and priority. Priority only belongs to cold optional
+/// work; protected classes intentionally carry zero
 /// so authored policy cannot reorder visible, pinned, or retained work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TargetDirective {
@@ -214,7 +222,6 @@ pub(crate) struct ShResidencyControllerSnapshot {
     pub(crate) installed_uncomposed_clusters: usize,
     pub(crate) sampleable_clusters: usize,
     pub(crate) failed_clusters: usize,
-    pub(crate) non_evictable_overshoot_bytes: u64,
     pub(crate) counters: ShResidencyCounters,
 }
 
@@ -229,7 +236,15 @@ struct FailureIdentity {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FailureCause {
     Read,
-    DeviceLimit { refused_at: f64 },
+    DeviceLimit {
+        refused_at: f64,
+    },
+    /// Fragmentation left no room at the whole-map cap. The cluster is black
+    /// until victims open a range, so while it stays a target it retries one
+    /// hysteresis window after each refusal, with no need to leave first.
+    WholeMapCap {
+        refused_at: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -307,12 +322,12 @@ impl ShLevelTopology {
         format!("{:?}", self.topology)
     }
 
-    /// Drop the last cluster's owner list, so the controller refuses the
+    /// Drop the last cluster's chunk hash, so the controller refuses the
     /// topology (its tables' lengths disagree): a stand-in for a rejection
     /// no checked level provokes.
     #[cfg(test)]
     pub(crate) fn break_for_tests(&mut self) {
-        self.topology.owners.pop();
+        self.topology.chunk_hashes.pop();
     }
 }
 
@@ -338,19 +353,27 @@ pub(crate) struct ShResidencyController {
     ready: BTreeMap<u32, ReadyCluster>,
     in_drain: BTreeMap<u32, u64>,
     in_drain_evictions: BTreeSet<u32>,
+    /// Capacity victims this drain named. Evicted ones yield until the
+    /// horizon changes; departures in `in_drain_evictions` have no such wait.
+    in_drain_victims: BTreeSet<u32>,
+    /// The latest outcome's report that every pool holds the whole map and
+    /// has never released a range: the next drain evicts nothing.
+    pool_holds_whole_map: bool,
     permits_in_use: usize,
-    /// One transitive closure per held permit, at most MAX_STREAM_PERMITS.
-    /// Cached at request time so waiting on an old read never rewalks topology.
-    request_owners: BTreeMap<u32, BTreeSet<u32>>,
-    accounting: ShResidencyAccounting,
-    non_evictable_overshoot_bytes: u64,
-    overshoot_reported: bool,
+    cpu: CpuPhaseLedger,
     prior_visible_misses: BTreeSet<u32>,
+    /// Clusters this frame draws that its targets do not name: a mirror's, on
+    /// a path whose `visible` leaves them out. No capacity victim comes from
+    /// here, for the frame still draws them.
+    drawn_outside_targets: BTreeSet<u32>,
     /// Targets have been derived from a view at least once. Until then an
     /// empty target set means "not yet asked", not "nothing to hold".
     demand_updated: bool,
-    /// Settling: no frame is presented, so no visible miss is counted.
-    misses_suspended: bool,
+    /// Settling and capture's preload: the frame waits on its whole view, so
+    /// every path demands what it draws, and no frame is presented, so no
+    /// visible miss is counted.
+    full_demand: bool,
+    hold: hold::HoldState,
     counters: ShResidencyCounters,
 }
 
@@ -359,52 +382,41 @@ impl ShResidencyController {
     /// resource. The reach arrives each frame from the cell-demand stage.
     pub(crate) fn new(
         manifest: Arc<ShStreamManifest>,
-        gpu_budget: ShGpuBudgetInputs,
         hints: Arc<ClusterHints>,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::with_clock(manifest, gpu_budget, hints, &ProcessGenerationClock)
+        Self::with_clock(manifest, hints, &ProcessGenerationClock)
     }
 
     pub(crate) fn with_clock(
         manifest: Arc<ShStreamManifest>,
-        gpu_budget: ShGpuBudgetInputs,
         hints: Arc<ClusterHints>,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
         let topology = ShLevelTopology::decode(&manifest, hints)?;
-        Self::from_parts(Some(manifest), topology.topology, clock, gpu_budget)
+        Self::from_parts(Some(manifest), topology.topology, clock)
     }
 
     /// A controller over a topology the level's load already derived (see
     /// [`ShLevelTopology::decode`]), for the same `manifest`. Fails only on
-    /// what is not level data: the generation clock and `gpu_budget`.
+    /// what is not level data: the generation clock.
     pub(crate) fn with_topology(
         manifest: Arc<ShStreamManifest>,
-        gpu_budget: ShGpuBudgetInputs,
         topology: ShLevelTopology,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::from_parts(
-            Some(manifest),
-            topology.topology,
-            &ProcessGenerationClock,
-            gpu_budget,
-        )
+        Self::from_parts(Some(manifest), topology.topology, &ProcessGenerationClock)
     }
 
     fn from_parts(
         manifest: Option<Arc<ShStreamManifest>>,
         topology: PlannerTopology,
         clock: &impl GenerationClock,
-        gpu_budget: ShGpuBudgetInputs,
     ) -> Result<Self, ShResidencyControllerError> {
         let generation = clock
             .take_generation()
             .filter(|&generation| generation != 0)
             .ok_or(ShResidencyControllerError::GenerationExhausted)?;
         let cluster_count = topology.cluster_count();
-        if topology.owners.len() != cluster_count
-            || topology.requested_resident_bytes.len() != cluster_count
-            || topology.encoded_chunk_bytes.len() != cluster_count
+        if topology.encoded_chunk_bytes.len() != cluster_count
             || topology.chunk_hashes.len() != cluster_count
         {
             return Err(ShResidencyControllerError::InvalidTopology(
@@ -431,14 +443,15 @@ impl ShResidencyController {
             ready: BTreeMap::new(),
             in_drain: BTreeMap::new(),
             in_drain_evictions: BTreeSet::new(),
+            in_drain_victims: BTreeSet::new(),
+            pool_holds_whole_map: false,
             permits_in_use: 0,
-            request_owners: BTreeMap::new(),
-            accounting: ShResidencyAccounting::new(gpu_budget)?,
-            non_evictable_overshoot_bytes: 0,
-            overshoot_reported: false,
+            cpu: CpuPhaseLedger::default(),
             prior_visible_misses: BTreeSet::new(),
+            drawn_outside_targets: BTreeSet::new(),
             demand_updated: false,
-            misses_suspended: false,
+            full_demand: false,
+            hold: hold::HoldState::default(),
             counters: ShResidencyCounters::default(),
         })
     }
@@ -454,17 +467,8 @@ impl ShResidencyController {
     }
 
     #[cfg(test)]
-    pub(crate) fn accounting(&self) -> ShResidencyAccounting {
-        self.accounting
-    }
-
-    /// Updates actual fixed metadata, whole-resident scatter, and pool
-    /// capacity after the renderer allocates or grows its physical resources.
-    pub(crate) fn update_gpu_charges(
-        &mut self,
-        fixed_gpu: FixedGpuCharges,
-    ) -> Result<(), ShResidencyControllerError> {
-        self.accounting.update_fixed_gpu(fixed_gpu)
+    pub(crate) fn cpu(&self) -> CpuPhaseLedger {
+        self.cpu
     }
 
     #[cfg(test)]
@@ -485,17 +489,18 @@ impl ShResidencyController {
         &self.targets
     }
 
-    /// While true (Settling), target updates count no visible miss and leave
-    /// the per-episode record alone, so the reveal frame counts fresh.
-    pub(crate) fn suspend_visible_misses(&mut self, suspended: bool) {
-        self.misses_suspended = suspended;
+    /// While true (Settling, capture's preload), every path demands what it
+    /// draws as Visible, so no frame holds and a level never starts dark.
+    /// Target updates count no visible miss and leave the per-episode record
+    /// alone, so the reveal frame counts fresh.
+    pub(crate) fn set_full_demand(&mut self, full_demand: bool) {
+        self.full_demand = full_demand;
     }
 
-    /// Settle-set targets (the mandatory tier: Visible, Pinned and Lead,
-    /// owner closure included) not yet Sampleable, as of the latest target
-    /// update. `None` before the first update: the controller has not been
-    /// asked for a view yet. A failed target stays unsettled; the settle
-    /// timeout bounds it.
+    /// Settle-set targets (the mandatory tier: Visible, Pinned and Lead) not
+    /// yet Sampleable, as of the latest target update. `None` before the
+    /// first update: the controller has not been asked for a view yet. A
+    /// failed target stays unsettled; the settle timeout bounds it.
     pub(crate) fn unsettled_targets(&self) -> Option<usize> {
         self.demand_updated.then(|| {
             self.targets
@@ -546,18 +551,12 @@ impl ShResidencyController {
         self.counters
     }
 
-    #[cfg(test)]
-    pub(crate) fn non_evictable_overshoot_bytes(&self) -> u64 {
-        self.non_evictable_overshoot_bytes
-    }
-
     pub(crate) fn report_snapshot(&self) -> ShResidencyControllerSnapshot {
         let mut snapshot = ShResidencyControllerSnapshot {
-            cpu: self.accounting.cpu,
+            cpu: self.cpu,
             permits_in_use: self.permits_in_use,
             target_clusters: self.targets.len(),
             lead_clusters: self.reach.lead_count(),
-            non_evictable_overshoot_bytes: self.non_evictable_overshoot_bytes,
             counters: self.counters,
             ..ShResidencyControllerSnapshot::default()
         };
@@ -599,15 +598,6 @@ impl ShResidencyController {
         self.reach.lead_of(cluster_id)
     }
 
-    fn ready_for_install(&self, cluster_id: u32) -> bool {
-        self.targets.contains(&cluster_id)
-            && self.topology.owners[cluster_id as usize]
-                .iter()
-                .all(|&owner| {
-                    self.states[owner as usize].state == ClusterResidencyState::Sampleable
-                })
-    }
-
     fn request_permit_limit(&self, cluster_id: u32) -> usize {
         if self.states[cluster_id as usize]
             .class
@@ -617,29 +607,6 @@ impl ShResidencyController {
         } else {
             MAX_OPTIONAL_STREAM_PERMITS
         }
-    }
-
-    fn ready_dependents(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
-        self.ready.keys().copied().filter(move |cluster_id| {
-            self.request_owners
-                .get(cluster_id)
-                .is_some_and(|owners| owners.contains(&owner))
-        })
-    }
-
-    fn ready_reclaim_candidates(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
-        // Several stalled cohorts may jointly exceed the optional reservation.
-        // Reclaim this owner's dependents first, then other payloads which need
-        // an absent owner. Installable work and pending reads stay intact.
-        self.ready_dependents(owner)
-            .chain(self.ready.keys().copied().filter(move |cluster_id| {
-                self.request_owners.get(cluster_id).is_some_and(|owners| {
-                    !owners.contains(&owner)
-                        && owners.iter().any(|&missing| {
-                            self.states[missing as usize].state == ClusterResidencyState::Absent
-                        })
-                })
-            }))
     }
 
     fn mark_failed(&mut self, cluster_id: u32) -> Result<bool, ShResidencyControllerError> {
@@ -657,7 +624,7 @@ impl ShResidencyController {
             cluster_id,
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
         };
-        self.release_permit(cluster_id)?;
+        self.release_permit()?;
         let state = &mut self.states[cluster_id as usize];
         let same_identity = state
             .failure
@@ -680,14 +647,13 @@ impl ShResidencyController {
     }
 
     fn release_ready_charge(&mut self, bytes: u64) -> Result<(), ShResidencyControllerError> {
-        self.accounting.cpu.ready.remove(bytes, "ready bytes")
+        self.cpu.ready.remove(bytes, "ready bytes")
     }
 
-    fn release_permit(&mut self, cluster_id: u32) -> Result<(), ShResidencyControllerError> {
+    fn release_permit(&mut self) -> Result<(), ShResidencyControllerError> {
         self.permits_in_use = self.permits_in_use.checked_sub(1).ok_or(
             ShResidencyControllerError::AccountingUnderflow("stream permits"),
         )?;
-        self.request_owners.remove(&cluster_id);
         Ok(())
     }
 
@@ -698,16 +664,7 @@ impl ShResidencyController {
         topology: PlannerTopology,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::for_test_with_budget(topology, clock, ShGpuBudgetInputs::default())
-    }
-
-    #[cfg(test)]
-    fn for_test_with_budget(
-        topology: PlannerTopology,
-        clock: &impl GenerationClock,
-        gpu_budget: ShGpuBudgetInputs,
-    ) -> Result<Self, ShResidencyControllerError> {
-        Self::from_parts(None, topology, clock, gpu_budget)
+        Self::from_parts(None, topology, clock)
     }
 }
 
@@ -736,6 +693,8 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
         .iter()
         .chain(&outcome.dropped)
         .chain(&outcome.refused)
+        .chain(&outcome.whole_map_refused)
+        .chain(&outcome.pool_refused)
         .chain(&outcome.evicted)
     {
         if !ids.insert(cluster_id) {
@@ -755,6 +714,9 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
 }
 
 #[cfg(test)]
+#[path = "controller_capacity_tests.rs"]
+mod capacity_tests;
+#[cfg(test)]
 #[path = "controller_reach_and_budget_tests.rs"]
 mod reach_and_budget_tests;
 #[cfg(test)]
@@ -771,3 +733,7 @@ mod refusal_tests;
 #[cfg(test)]
 #[path = "controller_planar_tests.rs"]
 mod planar_tests;
+
+#[cfg(test)]
+#[path = "controller_hold_tests.rs"]
+mod hold_tests;

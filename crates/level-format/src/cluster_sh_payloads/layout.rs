@@ -139,7 +139,7 @@ pub(super) fn sparse_block_len(
         .map_err(|_| ClusterShPayloadsError::SizeOverflow("sparse f16 count exceeds u64"))?;
     16u64
         .checked_add(
-            rows.checked_mul(16)
+            rows.checked_mul(CLUSTER_SH_SPARSE_ROW_RECORD_SIZE as u64)
                 .ok_or(ClusterShPayloadsError::SizeOverflow("sparse row bytes"))?,
         )
         .and_then(|value| value.checked_add(entries.checked_mul(16)?))
@@ -292,11 +292,6 @@ pub(super) fn dense_indices(
         if range.resource_index as usize != resource_index {
             continue;
         }
-        if range.role != ClusterRangeRole::Dense {
-            return source_mismatch(format!(
-                "id 49 dense range for {section_id} has affinity role"
-            ));
-        }
         let range_end =
             range
                 .start
@@ -346,39 +341,6 @@ pub(super) fn affinity_indices(
         rows.extend(range.start..range_end);
     }
     Ok(rows)
-}
-
-pub(super) fn sparse_row_role(
-    directory: &ClusterDirectorySection,
-    cluster_id: u32,
-    section_id: u32,
-    row: u32,
-) -> Result<ClusterRangeRole, ClusterShPayloadsError> {
-    let cluster = directory.clusters.get(cluster_id as usize).ok_or_else(|| {
-        ClusterShPayloadsError::SourceMismatch(format!("id 49 lacks cluster {cluster_id}"))
-    })?;
-    let resource_index = directory
-        .resources
-        .iter()
-        .position(|resource| resource.section_id == section_id)
-        .ok_or_else(|| {
-            ClusterShPayloadsError::SourceMismatch(format!("id 49 lacks resource {section_id}"))
-        })?;
-    let begin = cluster.range_start as usize;
-    let end = begin + cluster.range_count as usize;
-    directory.ranges[begin..end]
-        .iter()
-        .find(|range| {
-            range.resource_index as usize == resource_index
-                && range.start <= row
-                && row < range.start.saturating_add(range.count)
-        })
-        .map(|range| range.role)
-        .ok_or_else(|| {
-            ClusterShPayloadsError::SourceMismatch(format!(
-                "id 49 cluster {cluster_id} does not cover source {section_id} row {row}"
-            ))
-        })
 }
 
 pub(super) fn affinity_dimensions(grid: [u32; 3]) -> Result<[u32; 3], ClusterShPayloadsError> {

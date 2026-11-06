@@ -102,7 +102,16 @@ pub(crate) fn test_app() -> App {
                 reaction_registry: scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
                 system_registry: scripting::reactions::system_commands::SystemReactionRegistry::new(
                 ),
-                system_reaction_ir_bindings: Default::default(),
+                system_reaction_ir_bindings: {
+                    let bindings = std::rc::Rc::new(std::cell::RefCell::new(
+                        postretro_sim::scripting_systems::system_reactions::SystemReactionIrBindings::default(),
+                    ));
+                    postretro_sim::scripting_systems::system_reactions::SystemStateSink::install(
+                        &script_ctx,
+                        bindings.clone(),
+                    );
+                    bindings
+                },
                 slot_accumulator_bindings: Default::default(),
                 scheduler: Default::default(),
                 player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
@@ -528,6 +537,7 @@ pub(crate) fn install_descriptor_world(
             progress_tracker: &mut session.progress_tracker,
             crossing_detector: &mut session.crossing_detector,
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            system_reaction_ir_bindings: &session.scripting.system_reaction_ir_bindings,
             impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
@@ -587,6 +597,7 @@ pub(crate) fn install_capture_world(app: &mut App, world: &postretro_level_loade
         progress_tracker: &mut session.progress_tracker,
         crossing_detector: &mut session.crossing_detector,
         slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+        system_reaction_ir_bindings: &session.scripting.system_reaction_ir_bindings,
         impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
         mesh_clip_tables: &mut session.mesh_clip_tables,
         hit_zone_store: &mut session.hit_zone_store,

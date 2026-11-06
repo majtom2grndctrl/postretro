@@ -143,9 +143,9 @@ fn assert_prep_matches_oracle(
     );
 
     // SH residency plan: what `install_level_geometry` plans first.
-    let oracle_sh = world
-        .sh_stream_manifest()
-        .map(|manifest| plan_sh_residency(manifest, &world.cells).expect("the oracle plan"));
+    let oracle_sh = world.sh_stream_manifest().map(|manifest| {
+        plan_sh_residency(manifest, &world.cells, world.baked_max_lead()).expect("the oracle plan")
+    });
     assert_eq!(
         format!("{:?}", gpu.sh_residency),
         format!("{oracle_sh:?}"),

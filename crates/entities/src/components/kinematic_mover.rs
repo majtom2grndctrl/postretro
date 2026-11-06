@@ -65,6 +65,10 @@ pub struct KinematicMoverComponent {
     pub block_policy: BlockPolicy,
     /// Static host-only damage amount dealt on each crusher hit.
     pub crush_damage: f32,
+    /// Static host-only damage-type name a crush deals, resolved against the
+    /// live vocabulary on each hit so a hot reload that reorders the types
+    /// keeps it. `None` or an unregistered name deals the mod's default type.
+    pub crush_damage_type: Option<String>,
     /// Static host-only cadence between crusher hits; zero hits every tick.
     pub crush_interval_ms: f32,
     /// Static host-only automatic-close delay.
@@ -133,6 +137,7 @@ impl Clone for KinematicMoverComponent {
             carry_yaw,
             block_policy,
             crush_damage,
+            crush_damage_type,
             crush_interval_ms,
             auto_close_ms,
             open_event,
@@ -171,6 +176,7 @@ impl Clone for KinematicMoverComponent {
             carry_yaw: *carry_yaw,
             block_policy: *block_policy,
             crush_damage: *crush_damage,
+            crush_damage_type: crush_damage_type.clone(),
             crush_interval_ms: *crush_interval_ms,
             auto_close_ms: *auto_close_ms,
             open_event: open_event.clone(),
@@ -212,6 +218,7 @@ impl Clone for KinematicMoverComponent {
             carry_yaw,
             block_policy,
             crush_damage,
+            crush_damage_type,
             crush_interval_ms,
             auto_close_ms,
             open_event,
@@ -249,6 +256,7 @@ impl Clone for KinematicMoverComponent {
         *carry_yaw = source.carry_yaw;
         *block_policy = source.block_policy;
         *crush_damage = source.crush_damage;
+        crush_damage_type.clone_from(&source.crush_damage_type);
         *crush_interval_ms = source.crush_interval_ms;
         *auto_close_ms = source.auto_close_ms;
         open_event.clone_from(&source.open_event);
@@ -308,6 +316,7 @@ impl KinematicMoverComponent {
             carry_yaw: config.carry_yaw,
             block_policy: BlockPolicy::Displace,
             crush_damage: 0.0,
+            crush_damage_type: None,
             crush_interval_ms: 0.0,
             auto_close_ms: 0.0,
             open_event: None,

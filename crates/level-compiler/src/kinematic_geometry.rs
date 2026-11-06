@@ -90,6 +90,7 @@ pub fn encode_kinematic_geometry_section(
                 close_sound: mover.close_sound.clone(),
                 blocked_sound: mover.blocked_sound.clone(),
                 crush_sound: mover.crush_sound.clone(),
+                crush_damage_type: mover.crush_damage_type.clone(),
                 sealed_portal_ids,
                 carried_lights: carried_lights_by_mover
                     .get(mover_index)
@@ -446,6 +447,7 @@ mod tests {
             move_mode: KinematicMoveMode::Once,
             start_on_spawn: false,
             brush_volumes,
+            crush_damage_type: None,
         }
     }
 

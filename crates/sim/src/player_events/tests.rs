@@ -68,6 +68,7 @@ impl World {
             max: MAX_HEALTH,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         component.current = health;
         registry.set_component(pawn, component).unwrap();

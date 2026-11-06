@@ -101,6 +101,7 @@ impl Rig {
             .unwrap()
             .scripting
             .system_reaction_ir_bindings
+            .borrow_mut()
             .rebuild(&data, &self.ctx);
         table
     }
@@ -263,11 +264,16 @@ fn s1_mixed_body_runs_member_steps_in_the_walk_and_system_steps_in_authored_orde
     });
     let _ = rig.install();
     rig.fire("mixed");
-    assert_eq!(*rig.notes.borrow(), [0.0], "the member step ran in the walk");
-    assert_eq!(rig.number("pin.a"), 0.0, "system steps wait for the drain");
-    rig.drain();
-    assert_eq!(rig.number("pin.a"), 1.0);
+    assert_eq!(
+        *rig.notes.borrow(),
+        [0.0],
+        "the member step ran in the walk, before `a` was written"
+    );
+    // Body order: store writes land at dispatch (scripting.md §12).
+    assert_eq!(rig.number("pin.a"), 1.0, "`a` is written at dispatch");
     assert_eq!(rig.number("pin.b"), 1.0, "`b` reads `a` after `a` landed");
+    assert_eq!(rig.plays("x"), 0, "presentation still waits for the drain");
+    rig.drain();
     assert_eq!(rig.plays("x"), 1, "the sound drains the same frame");
 }
 

@@ -78,6 +78,7 @@ impl LifeFixture {
             max: TARGET_HP,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         player.life_states = Some(LifeStatesDescriptor {
             initial: "alive".into(),

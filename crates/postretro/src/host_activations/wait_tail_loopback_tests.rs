@@ -336,13 +336,13 @@ fn s36_client_reads_across_its_own_dropped_write() {
             ],
         )],
     );
-    h.apply_slot_writes = true;
     for app in std::iter::once(&mut h.host).chain(h.peers.iter_mut().map(|peer| &mut peer.app)) {
         let ctx = script_ctx(app);
         let session = app.session.as_mut().unwrap();
         session
             .scripting
             .system_reaction_ir_bindings
+            .borrow_mut()
             .rebuild(&ctx.data_registry.borrow(), &ctx);
     }
     let capture = LogCapture::start();
@@ -544,21 +544,41 @@ fn client_landing_drops_host_consequences_and_lands_machine_local_steps() {
             })
             .collect()
     };
+    // Body order: landed `setState` steps write the store at landing on
+    // every machine instead of queuing (scripting.md §12).
     assert_eq!(
         kinds(&h.host_commands),
         [
-            "setState tail.shared",
             "setGhostAudio",
             "loadLevel",
-            "setState tail.shared",
             "playSound y",
             "showDialog objective",
-            "setState tail.entry",
         ]
     );
     assert_eq!(
+        number(&h.host, "tail.shared"),
+        2.0,
+        "the landed body and its fired reaction wrote in order"
+    );
+    let entry = |app: &App| {
+        script_ctx(app)
+            .slot_table
+            .borrow()
+            .get("tail.entry")
+            .and_then(|record| record.value.clone())
+    };
+    assert_eq!(
+        entry(&h.host),
+        Some(postretro_entities::SlotValue::String(String::new()))
+    );
+    assert_eq!(
+        entry(&h.peers[0].app),
+        Some(postretro_entities::SlotValue::String(String::new())),
+        "the client lands the machine-local write"
+    );
+    assert_eq!(
         kinds(&h.peers[0].commands),
-        ["playSound y", "showDialog objective", "setState tail.entry"]
+        ["playSound y", "showDialog objective"]
     );
 }
 
@@ -1098,4 +1118,223 @@ fn host_stall_holds_the_client_reading_and_it_lands_with_the_host() {
     assert_eq!(plays(&h.peers[0].commands, "x"), 1);
     assert_eq!(pending(&h.peers[0].app), 0);
     assert_tail_quiet(&capture);
+}
+
+// Body order: a `levelLoad` body's store writes land at dispatch on every
+// machine, so a later step in the same body reads them, and an IR value meets
+// the bindings this install rebuilt before firing.
+#[test]
+fn level_load_ir_set_state_evaluates_at_dispatch_on_every_machine() {
+    let (_hook, _notes) = counted_notes(&fixture_world());
+    let capture = LogCapture::start();
+    let h = Harness::with_shared_reactions(
+        fixture_world(),
+        vec![body(
+            "levelLoad",
+            vec![
+                system_step("setState", json!({ "slot": "tail.shared", "value": 3 })),
+                system_step(
+                    "setState",
+                    json!({ "slot": "tail.local", "value": { "op": "input", "name": "tail.shared" } }),
+                ),
+            ],
+        )],
+    );
+    for app in std::iter::once(&h.host).chain(h.peers.iter().map(|peer| &peer.app)) {
+        assert_eq!(
+            number(app, "tail.local"),
+            3.0,
+            "the second step read the first step's write when the install's dispatch returned"
+        );
+    }
+    capture.assert_not_logged(log::Level::Warn, "was not bound at level install");
+}
+
+// Body order: a body's text edits land at dispatch like its `setState`, so a
+// clear before a write cannot erase it at the drain, and an append after a
+// write extends it, on every machine. Nothing is left queued for the drain.
+#[test]
+fn level_load_text_edits_land_at_dispatch_in_body_order_on_every_machine() {
+    let (_hook, _notes) = counted_notes(&fixture_world());
+    let capture = LogCapture::start();
+    let h = Harness::with_shared_reactions(
+        fixture_world(),
+        vec![body(
+            "levelLoad",
+            vec![
+                system_step("clearText", json!({ "slot": "tail.entry" })),
+                system_step("setState", json!({ "slot": "tail.entry", "value": "P" })),
+                system_step("appendText", json!({ "slot": "tail.entry", "text": "Q" })),
+            ],
+        )],
+    );
+    for app in std::iter::once(&h.host).chain(h.peers.iter().map(|peer| &peer.app)) {
+        let ctx = script_ctx(app);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("tail.entry")
+                .and_then(|record| record.value.clone()),
+            Some(postretro_entities::SlotValue::String("PQ".into())),
+            "clear, write and append applied in body order when the install's dispatch returned"
+        );
+        assert!(
+            !ctx.system_commands.take().iter().any(|command| matches!(
+                command,
+                SystemReactionCommand::AppendText { .. }
+                    | SystemReactionCommand::BackspaceText { .. }
+                    | SystemReactionCommand::ClearText { .. }
+                    | SystemReactionCommand::SetState { .. }
+            )),
+            "no store write waits for the drain"
+        );
+    }
+    capture.assert_not_logged(log::Level::Warn, "`tail.entry` failed");
+}
+
+/// Declare a machine-local Number slot on one machine, defaulting to 0.
+fn declare_local_number(app: &App, slot: &str, per_owner: bool) {
+    script_ctx(app)
+        .slot_table
+        .borrow_mut()
+        .insert(
+            slot.into(),
+            postretro_entities::SlotRecord::new(postretro_entities::SlotSchema {
+                slot_type: postretro_entities::SlotType::Number,
+                default: Some(postretro_entities::SlotValue::Number(0.0)),
+                range: None,
+                persist: false,
+                readonly: false,
+                ownership: postretro_entities::SlotOwnership::Mod,
+                network: postretro_entities::ReplicationScope::None,
+                per_owner,
+                accumulate: None,
+            }),
+        )
+        .unwrap();
+}
+/// Fire `reaction` on one machine from a crossing over its machine-local
+/// `tail.charge` slot, as that machine's crossing detector does when its own
+/// write crosses: an own-state source.
+fn cross_own_state(app: &App, reaction: NamedReaction) {
+    let ctx = script_ctx(app);
+    let name = reaction.name.clone();
+    let crossing = postretro_entities::CrossingDescriptor {
+        slot: Some("tail.charge".into()),
+        condition: postretro_entities::CrossingCondition::Above { threshold: 0.5 },
+        max: 1.0,
+        edge: None,
+        fire: vec![name.clone()],
+    };
+    assert!(
+        matches!(
+            postretro_scripting_core::state_crossings::crossing_machine_source(
+                &crossing,
+                &ctx.slot_table.borrow(),
+            ),
+            postretro_entities::MachineSource::OwnState
+        ),
+        "a crossing over a machine-local slot is an own-state source"
+    );
+    ctx.data_registry
+        .borrow_mut()
+        .populate_level(vec![reaction], vec![crossing], &[]);
+    let source_id = ctx
+        .data_registry
+        .borrow()
+        .crossings
+        .iter()
+        .position(|crossing| crossing.fire.contains(&name))
+        .expect("the crossing composed");
+    let scripting = &app.session.as_ref().unwrap().scripting;
+    let _ = postretro_sim::scripting::reactions::dispatch_crossing_fires_with_sequences(
+        vec![postretro_scripting_core::state_crossings::CrossingFire {
+            reaction: name,
+            rising: true,
+            source_id,
+        }],
+        &ctx.data_registry.borrow(),
+        &scripting.sequence_registry,
+        &scripting.reaction_registry,
+        &scripting.system_registry,
+        &ctx,
+    );
+}
+fn per_seat(app: &App, slot: &str, seat: Seat) -> Option<postretro_entities::SlotValue> {
+    script_ctx(app)
+        .slot_table
+        .borrow()
+        .get(slot)
+        .and_then(|record| record.per_seat_value(seat).cloned())
+}
+
+// Body order on a connected client: an own-state crossing's body writes its
+// local slot at dispatch, so the value is in the client's store when the
+// dispatch returns, before the next command drain. The same body's `addSlot`
+// is still refused there; the host, running the same body, applies it.
+#[test]
+fn own_state_crossing_local_set_state_lands_at_dispatch_on_a_client() {
+    let (_hook, _notes) = counted_notes(&fixture_world());
+    let capture = LogCapture::start();
+    let h = Harness::new();
+    let reaction = || {
+        body(
+            "charged",
+            vec![
+                system_step("setState", json!({ "slot": "tail.local", "value": 4 })),
+                SequenceStep {
+                    id: SequenceTarget::Group(postretro_entities::GroupTarget {
+                        kind: postretro_entities::GroupKind::Player,
+                        tag: None,
+                    }),
+                    primitive: "addSlot".into(),
+                    args: json!({ "slot": "tail.xp", "delta": 2 }),
+                },
+            ],
+        )
+    };
+    let client = &h.peers[0].app;
+    // On each machine, a pawn seated at `seat` is a recipient the `player`
+    // group resolves.
+    let seat = Seat(5);
+    for app in [&h.host, client] {
+        declare_local_number(app, "tail.charge", false);
+        declare_local_number(app, "tail.xp", true);
+        let ctx = script_ctx(app);
+        let mut registry = ctx.registry.borrow_mut();
+        let pawn = registry.spawn(Transform::default());
+        registry.bind_pawn_seat(pawn, seat);
+    }
+    // A session whose endpoint is a connected client turns owner-slot writes
+    // off; the loopback peer takes that role here.
+    script_ctx(client).owner_slot_writes_enabled.set(false);
+
+    cross_own_state(client, reaction());
+    assert_eq!(
+        number(client, "tail.local"),
+        4.0,
+        "the local write is in the client's store when its dispatch returns"
+    );
+    assert!(
+        !script_ctx(client)
+            .system_commands
+            .take()
+            .iter()
+            .any(|command| matches!(command, SystemReactionCommand::SetState { .. })),
+        "nothing waits for the client's next command drain"
+    );
+    assert_eq!(
+        per_seat(client, "tail.xp", seat),
+        Some(postretro_entities::SlotValue::Number(0.0)),
+        "the client refuses the body's addSlot"
+    );
+
+    cross_own_state(&h.host, reaction());
+    assert_eq!(number(&h.host, "tail.local"), 4.0);
+    assert_eq!(
+        per_seat(&h.host, "tail.xp", seat),
+        Some(postretro_entities::SlotValue::Number(2.0)),
+        "the host applies the same body's addSlot at dispatch"
+    );
+    capture.assert_not_logged(log::Level::Warn, "`tail.local` failed");
 }

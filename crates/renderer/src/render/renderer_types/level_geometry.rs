@@ -10,7 +10,11 @@ use super::*;
 /// installation arrives later through bounded drain batches.
 pub enum LevelGeometryShStorage<'a> {
     Legacy,
-    Streaming(&'a postretro_level_loader::ShStreamManifest),
+    Streaming {
+        manifest: &'a postretro_level_loader::ShStreamManifest,
+        /// Id 51's maximum, which picks the stored bound the pools size from.
+        baked_max_lead: Option<u32>,
+    },
 }
 
 /// A level whose lightmap cell blocks (ids 22/42) stream. Install builds an
@@ -129,10 +133,12 @@ impl LevelGeometry<'_> {
             LevelGeometryShStorage::Legacy => {
                 animated_baked_roster_from_sources(self.animated_direct_sh_delta_volumes, None)
             }
-            LevelGeometryShStorage::Streaming(manifest) => animated_baked_roster_from_sources(
-                None,
-                manifest.sources().animated_direct_delta.as_ref(),
-            ),
+            LevelGeometryShStorage::Streaming { manifest, .. } => {
+                animated_baked_roster_from_sources(
+                    None,
+                    manifest.sources().animated_direct_delta.as_ref(),
+                )
+            }
         }
     }
 }

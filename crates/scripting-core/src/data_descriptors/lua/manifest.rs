@@ -84,7 +84,7 @@ fn is_resource_grant_reaction_lua(value: &LuaValue) -> bool {
     };
     matches!(
         primitive.to_str().ok().as_deref(),
-        Some("grantHealth" | "grantAmmo" | "addSlot")
+        Some("grantHealth" | "grantAmmo" | "grantLayer" | "addSlot")
     )
 }
 
@@ -887,6 +887,29 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
     }
     log_lua_array_extras(&arr, len, "maps", scope)?;
     Ok(out)
+}
+
+/// Luau twin of [`drain_defense_vocabulary_js`].
+pub fn drain_defense_vocabulary_lua(
+    table: &Table,
+) -> Result<postretro_foundation::defense::DefenseVocabulary, DescriptorError> {
+    let mut values: [Option<serde_json::Value>; 3] = [None, None, None];
+    for (slot, key) in values
+        .iter_mut()
+        .zip(["defenseLayers", "damageTypes", "defaultDamageType"])
+    {
+        let raw: LuaValue = table.get(key).map_err(lua_err)?;
+        if matches!(raw, LuaValue::Nil) {
+            continue;
+        }
+        *slot = Some(crate::conv::lua_to_json(raw).map_err(lua_err)?);
+    }
+    postretro_foundation::defense::DefenseVocabulary::from_manifest(
+        values[0].as_ref(),
+        values[1].as_ref(),
+        values[2].as_ref(),
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })
 }
 
 /// Luau twin of [`drain_factions_js`]. Faction declarations are strict manifest

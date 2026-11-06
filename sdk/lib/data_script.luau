@@ -128,7 +128,7 @@ export type NpcStateUpdateArgs = { aggro: boolean? }
 --- length; indexing anything but a verb raises.
 export type NpcGroup = {
   update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
-  damage: (self: NpcGroup, amount: number) -> GroupCommand,
+  damage: (self: NpcGroup, amount: number, options: DamageOptions?) -> GroupCommand,
 }
 
 --- Options for relocating a player to its seat placement on the next tick.
@@ -141,11 +141,12 @@ export type RespawnOptions = { health: number?, lifeState: string? }
 --- Every seat-bound player pawn. Opaque: no members, no length; indexing
 --- anything but a verb raises.
 export type PlayerGroup = {
-  damage: (self: PlayerGroup, amount: number) -> GroupCommand,
+  damage: (self: PlayerGroup, amount: number, options: DamageOptions?) -> GroupCommand,
   grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
   setLifeState: (self: PlayerGroup, name: string) -> GroupCommand,
   respawn: (self: PlayerGroup, options: RespawnOptions?) -> GroupCommand,
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
+  grantLayer: (self: PlayerGroup, layer: DefenseLayer, amount: number?) -> GroupCommand,
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
 }
@@ -362,22 +363,24 @@ export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
 --- The pawns that caused the current trigger edge. Legal only before any `wait`.
 export type ActivatorsTarget = {
-  damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  damage: (self: ActivatorsTarget, amount: number, options: DamageOptions?) -> SubjectTokenCommand,
   grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   setLifeState: (self: ActivatorsTarget, name: string) -> SubjectTokenCommand,
   respawn: (self: ActivatorsTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
+  grantLayer: (self: ActivatorsTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
 --- The player a player event fired for (`on.player`): a command target, and
 --- the owner `byPlayer(on.player)` reads. Legal only before any `wait`.
 export type PlayerTarget = {
   __playerTarget: true,
-  damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  damage: (self: PlayerTarget, amount: number, options: DamageOptions?) -> SubjectTokenCommand,
   grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   setLifeState: (self: PlayerTarget, name: string) -> SubjectTokenCommand,
   respawn: (self: PlayerTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
+  grantLayer: (self: PlayerTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
 --- Dispatch values published by a player event: the player it fired for.
@@ -449,6 +452,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "grantLayer", target: "@impact.source", args: { layer: DefenseLayer, amount: any? } }
   | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
@@ -476,6 +480,7 @@ export type TargetHandle = {
   --- values degrade the relationship; positive values strengthen its bond.
   adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
   state: (self: TargetHandle, name: string) -> NumberRef,
+  defense: (self: TargetHandle, layer: DefenseLayer) -> { current: NumberRef, capacity: NumberRef },
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
 
@@ -487,6 +492,7 @@ export type SourceHandle = {
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
   --- skips this effect; app-drain impacts run no policy in v1.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  grantLayer: (self: SourceHandle, layer: DefenseLayer, amount: NumberValue?) -> Effect,
   --- Whether the damager is a player pawn in life state `name` at this fire.
   --- False for a damager that is not a player. An unknown name skips the policy.
   inLifeState: (self: SourceHandle, name: string) -> BoolRef,
@@ -598,6 +604,8 @@ export type StoreDefinition = {
 }
 
 local DataScriptSdk = {}
+local defenseLayerDeclarations = setmetatable({}, { __mode = "k" })
+local damageTypeDeclarations = setmetatable({}, { __mode = "k" })
 local storeDeclarations = setmetatable({}, { __mode = "k" })
 
 -- Part chunks (`data_script/*.luau`) evaluate before this module and publish
@@ -688,6 +696,16 @@ local function sentimentImpactEffect(
   end
 end
 
+-- The `@defense.` input a layer handle reads; a bad reference (a bare string,
+-- a damage-type handle) names no layer, so its bind fails at install.
+local function defenseInput(layer: any, capacity: boolean): string
+  local name = "@invalid"
+  if type(layer) == "table" and rawget(layer, "kind") == "defenseLayer" and type(rawget(layer, "name")) == "string" then
+    name = rawget(layer, "name")
+  end
+  return "@defense." .. name .. (if capacity then ".capacity" else "")
+end
+
 IMPACT_TARGET = table.freeze({
   healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
   healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
@@ -711,6 +729,12 @@ IMPACT_TARGET = table.freeze({
   state = function(_self: TargetHandle, name: string): NumberRef
     return numberRef({ op = "input", name = "@state." .. name })
   end,
+  defense = function(_self: TargetHandle, layer: DefenseLayer)
+    return table.freeze({
+      current = numberRef({ op = "input", name = defenseInput(layer, false) }),
+      capacity = numberRef({ op = "input", name = defenseInput(layer, true) }),
+    })
+  end,
   setState = function(_self: TargetHandle, name: string, value: NumberValue): Effect
     return impactEffect("setState", { name = name, value = numberNode(value) })
   end,
@@ -725,6 +749,13 @@ IMPACT_SOURCE = table.freeze({
   end,
   grantAmmo = function(_self: SourceHandle, ammoType: string, amount: NumberValue): Effect
     return sourceImpactEffect("grantAmmo", { type = ammoType, amount = numberNode(amount) })
+  end,
+  grantLayer = function(_self: SourceHandle, layer: DefenseLayer, amount: NumberValue?): Effect
+    local args: { [string]: any } = { layer = layer }
+    if amount ~= nil then
+      args.amount = numberNode(amount)
+    end
+    return sourceImpactEffect("grantLayer", args)
   end,
   inLifeState = function(_self: SourceHandle, name: string): BoolRef
     return boolRef({ op = "input", owner = "@impact.source", name = "player.inLifeState:" .. name })
@@ -755,10 +786,25 @@ DataScriptSdk.assist = table.freeze({
   target = assistSide("@assist.target"),
 }) :: Assist
 
+-- A bad reference (a bare string, a layer handle) names no registered type,
+-- so its input fails the bind and the policy holding it drops at install.
+local function impactTypeName(handle: any): string
+  if type(handle) == "table" and rawget(handle, "kind") == "damageType" and type(rawget(handle, "name")) == "string" then
+    return rawget(handle, "name")
+  end
+  return "@invalid"
+end
+
 local IMPACT: Impact = table.freeze({
   target = IMPACT_TARGET,
   source = IMPACT_SOURCE,
   amount = numberRef({ op = "input", name = "@impact.amount" }),
+  raw = numberRef({ op = "input", name = "@impact.raw" }),
+  absorbed = numberRef({ op = "input", name = "@impact.absorbed" }),
+  broke = boolRef({ op = "input", name = "@impact.broke" }),
+  type = function(damageType: DamageType): BoolRef
+    return boolRef({ op = "input", name = "@impact.type." .. impactTypeName(damageType) })
+  end,
 })
 
 --- Spawn a passive presentation at the current impact target, shared with every
@@ -861,7 +907,7 @@ function DataScriptSdk.when(cond: BoolRef, effects: {Effect}): GatedEffect
 end
 
 local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
-local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
+local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
 
 local function validateImpactEventId(id: string)
   local valid = #id > 0 and #id <= 64
@@ -952,9 +998,41 @@ local function lowerAssistableReferences(descriptor: EntityTypeDescriptor)
   end
 end
 
+-- Replace each fluent ref in a health layer's parameters and in each `resist`
+-- (a layer's and health's own) with its IR, as `assistable` does.
+local function lowerDefenseLayerReferences(descriptor: EntityTypeDescriptor)
+  local components = (descriptor :: any).components
+  local health = if type(components) == "table" then components.health else nil
+  if type(health) ~= "table" then
+    return
+  end
+  local function lowerResist(resist: any)
+    if type(resist) ~= "table" then
+      return
+    end
+    for key, value in pairs(resist) do
+      resist[key] = loweredValue(value)
+    end
+  end
+  if type(health.layers) == "table" then
+    for _, entry in ipairs(health.layers) do
+      if type(entry) == "table" then
+        for _, field in { "capacity", "rechargeDelayMs", "rechargeRate" } do
+          if entry[field] ~= nil then
+            entry[field] = loweredValue(entry[field])
+          end
+        end
+        lowerResist(entry.resist)
+      end
+    end
+  end
+  lowerResist(health.resist)
+end
+
 function DataScriptSdk.defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
   lowerLoadoutReferences(descriptor)
   lowerAssistableReferences(descriptor)
+  lowerDefenseLayerReferences(descriptor)
   return descriptor
 end
 
@@ -968,18 +1046,29 @@ end
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
-function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
-  if config.stores == nil then
+function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any? }): T
+  if config.stores == nil and config.defenseLayers == nil and config.damageTypes == nil then
     return config
   end
 
   local manifest = table.clone(config)
-  local stores = {}
-  for key, entry in pairs(config.stores) do
-    local declaration = if type(entry) == "table" then storeDeclarations[entry] else nil
-    stores[key] = if declaration ~= nil then declaration else entry
+  -- A handle crosses as `{ kind, name }`; each list carries its whole
+  -- declaration. A bare string or a handle of the other kind passes through,
+  -- and the engine rejects it naming the list entry.
+  local function resolve(list: any, declarations: any): any
+    if list == nil then
+      return nil
+    end
+    local resolved = {}
+    for key, entry in pairs(list) do
+      local declaration = if type(entry) == "table" then declarations[entry] else nil
+      resolved[key] = if declaration ~= nil then declaration else entry
+    end
+    return resolved
   end
-  manifest.stores = stores
+  manifest.stores = resolve(config.stores, storeDeclarations)
+  manifest.defenseLayers = resolve(config.defenseLayers, defenseLayerDeclarations)
+  manifest.damageTypes = resolve(config.damageTypes, damageTypeDeclarations)
   return manifest
 end
 
@@ -1177,6 +1266,42 @@ function DataScriptSdk.defineStore(...: any): StoreDefinition
     schema = frozenSchema,
   })
   return handle
+end
+
+--- Declare a defense layer kind: a shield, armor or any pool that drains
+--- before health. Luau passes the name explicitly. Register it with
+--- `defineMod({ defenseLayers = { layer } })`, then attach it to descriptors in
+--- `components.health.layers`. `current` and `capacity` read the local
+--- player's layer. `options` is reserved and must be empty.
+function DataScriptSdk.defineDefenseLayer(...: any): DefenseLayer
+  local name, options = ...
+  if type(name) ~= "string" then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local accessors = {
+    current = storeRef("player.defense." .. name, "number", true),
+    capacity = storeRef("player.defense." .. name .. ".capacity", "number", true),
+  }
+  local handle = table.freeze(setmetatable({ kind = "defenseLayer", name = name }, { __index = accessors }))
+  defenseLayerDeclarations[handle] = table.freeze({ kind = "defenseLayer", name = name, options = options or {} })
+  return handle :: any
+end
+
+--- Declare a damage type by its matrix: how much one raw point takes from
+--- each pool kind, keyed by layer name or `health`. Each value is a
+--- multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is
+--- ×1. Luau passes the name explicitly. Register it with
+--- `defineMod({ damageTypes = { type } })`. `options` is reserved and must be
+--- empty.
+function DataScriptSdk.defineDamageType(...: any): DamageType
+  local name, matrix, options = ...
+  if type(name) ~= "string" then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local handle = table.freeze({ kind = "damageType", name = name })
+  damageTypeDeclarations[handle] =
+    table.freeze({ kind = "damageType", name = name, matrix = table.clone(matrix or {}), options = options or {} })
+  return handle :: any
 end
 
 -- Merge the part chunks' public builders. Field names are disjoint from the

@@ -1,4 +1,5 @@
-//! Sparse-row ownership planning and bounded pool growth.
+//! Sparse-row reference planning.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use super::*;
 
@@ -34,31 +35,17 @@ impl ShResidencyState {
                 if !seen.insert((block.section_id, row.row)) {
                     return Err(malformed(cluster_id, "chunk repeats a sparse row"));
                 }
-                let expected_owner = self
-                    .sparse_row_owner
-                    .get(&(block.section_id, row.row))
-                    .copied()
-                    .ok_or(malformed(cluster_id, "sparse row has no id-49 owner"))?;
-                match row.role {
-                    1 if expected_owner == cluster_id => {
-                        collected.push((block.section_id, row));
-                    }
-                    2 if expected_owner != cluster_id => {}
-                    _ => {
-                        return Err(malformed(
-                            cluster_id,
-                            "sparse row role disagrees with id-49 owner",
-                        ));
-                    }
-                }
+                collected.push((block.section_id, row));
             }
         }
         Ok(collected)
     }
 
-    /// Allocate a complete already-validated batch. The install journal
-    /// restores every CPU mirror if any later row cannot reserve its
-    /// entry/tile ranges; queue writes have not started yet.
+    /// Reference every row of an already-validated chunk and allocate the
+    /// ones it writes first. Returns the rows to upload; a row already live
+    /// keeps its one copy. The install journal restores every CPU mirror if
+    /// any later row cannot reserve its entry/tile ranges; queue writes have
+    /// not started yet.
     pub(super) fn allocate_sparse_rows(
         &mut self,
         journal: &mut InstallJournal,
@@ -72,6 +59,9 @@ impl ShResidencyState {
                     cluster_id,
                     "sparse source disappeared during install",
                 ));
+            }
+            if !self.journal_reference_sparse_row(journal, (section_id, payload.row))? {
+                continue;
             }
             let (entries, tiles) = self
                 .journal_install_sparse_row(
@@ -110,35 +100,5 @@ impl ShResidencyState {
             });
         }
         Ok(plans)
-    }
-
-    /// Grow all sparse families needed by the current provisional allocator
-    /// state in one replacement.  This runs before any GPU upload is queued;
-    /// if the sole retirement slot is still occupied, the caller rolls the
-    /// CPU mirrors back and retains the prepared payload for the next drain.
-    pub(super) fn ensure_sparse_capacity(
-        &mut self,
-        gpu: Option<&mut InstallGpu<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
-        let Some(pools) = self.gpu.as_mut() else {
-            return Ok(());
-        };
-        let gpu = gpu.ok_or(ShResidencyDrainError::GpuCapacity {
-            reason: "streamed sparse growth requires device handles",
-        })?;
-        let required = self
-            .sparse_pools
-            .iter()
-            .map(|(&section_id, pool)| (section_id, (pool.entries.capacity, pool.tiles.capacity)))
-            .collect::<SparseCapacityFloors>();
-        pools.grow_sparse(
-            gpu.device,
-            gpu.queue,
-            &self.base_metadata,
-            &self.source_metadata,
-            &required,
-            gpu.sh,
-            gpu.selection_weights,
-        )
     }
 }

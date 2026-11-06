@@ -29,6 +29,7 @@ export type PresentationTemplate = {
 
 export type OverlayEntity = {
   state: (self: OverlayEntity, name: string) -> RuntimeValue,
+  defense: (self: OverlayEntity, layer: any) -> { current: RuntimeValue, capacity: RuntimeValue },
 }
 export type DamagedEnemiesProps = {
   lingerMs: number,
@@ -280,12 +281,28 @@ function PresentationSdk.definePresentationTemplate(id: string, props: Presentat
   return table.freeze(output)
 end
 
+-- The `@defense.` input a layer handle reads; a bad reference (a bare string,
+-- a damage-type handle) names no layer, so the shield pair is skipped.
+local function defenseInput(layer: any, capacity: boolean): string
+  local name = "@invalid"
+  if type(layer) == "table" and rawget(layer, "kind") == "defenseLayer" and type(rawget(layer, "name")) == "string" then
+    name = rawget(layer, "name")
+  end
+  return "@defense." .. name .. (if capacity then ".capacity" else "")
+end
+
 local OverlayEntityImpl: OverlayEntity = table.freeze({
   state = function(_self: OverlayEntity, name: string): RuntimeValue
     if type(name) ~= "string" or #name == 0 then
       error("damagedEnemies: state name must be nonempty", 2)
     end
     return { op = "input", name = "@state." .. name }
+  end,
+  defense = function(_self: OverlayEntity, layer: any)
+    return table.freeze({
+      current = { op = "input", name = defenseInput(layer, false) },
+      capacity = { op = "input", name = defenseInput(layer, true) },
+    })
   end,
 })
 

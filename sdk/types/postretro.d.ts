@@ -646,6 +646,8 @@ declare module "postretro" {
     knockback?: KnockbackDescriptor;
     /** Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0. */
     damage: number;
+    /** Optional damage type this weapon deals, a handle `defineMod({ damageTypes })` registers. Omit to deal the mod's `defaultDamageType`. Applies to every direct hit and splash. */
+    damageType?: DamageType;
     /** Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1. */
     pelletCount?: number;
     /** Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis). */
@@ -738,6 +740,24 @@ declare module "postretro" {
     hitbox?: HitboxDescriptor;
     /** Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty. */
     zoneMultipliers?: { readonly [tag: string]: number };
+    /** Defense layers in drain order. Every hit drains them before health, scaled per damage type; an empty layer is skipped. Each kind may appear once. Optional; defaults to none. */
+    layers?: ReadonlyArray<DefenseLayerEntry>;
+    /** Health's own resistance per damage type, keyed by the type's name: scales that type on health only (the body; entity-wide on an unlayered entity). Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1. Optional. */
+    resist?: { readonly [damageType: string]: NumberValue };
+  };
+
+  /** One defense layer on a descriptor: the registered layer kind it instances, its capacity and recharge, and its own resistances. Each parameter is a literal or a Number expression over global store values, the entity's own per-entity state and, on the player entity only, its seat's per-owner store values; results clamp into the literal ranges. A layer recharges at `rechargeRate` once `rechargeDelayMs` has passed since the entity's last hit. */
+  export type DefenseLayerEntry = {
+    /** The layer kind, a handle `defineMod({ defenseLayers })` registers. */
+    layer: DefenseLayer;
+    /** Maximum value, in points. A literal must be in [0, 1e6]. Lowering it clamps the current value; raising it never fills the layer. */
+    capacity: NumberValue;
+    /** Milliseconds after the entity's last hit before recharge starts. A literal must be in [0, 60000]. Defaults to 3000. */
+    rechargeDelayMs?: NumberValue;
+    /** Recharge rate in points per second. A literal must be in [0, 1e6]. Defaults to 0, which never recharges: armor. */
+    rechargeRate?: NumberValue;
+    /** This layer's resistance per damage type, keyed by the type's name: scales that type on this layer only. Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1. */
+    resist?: { readonly [damageType: string]: NumberValue };
   };
 
   /** What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`. */
@@ -761,8 +781,8 @@ declare module "postretro" {
     attack: string;
   };
 
-  /** One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. */
-  export type AttackParams = { weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };
+  /** One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. */
+  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };
 
   /** How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`. */
   export type PatrolMode =
@@ -1663,6 +1683,12 @@ declare module "postretro" {
     playerEvents?: ReadonlyArray<PlayerEventDescriptor>;
     /** Trigger-volume arming pools. Optional; compose by level tags. */
     triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
+    /** Defense layer kinds from `defineDefenseLayer(...)`, in registration order. Optional. A descriptor's `components.health.layers` references only a listed kind; two entries with one name, a layer named `health`, or an entry that is not a layer handle fails load. */
+    defenseLayers?: ReadonlyArray<DefenseLayer>;
+    /** Damage types from `defineDamageType(...)`. Optional. Weapons, attacks, crushers and `.damage` name only a listed type; two entries with one name, a matrix key naming no registered layer and not `health`, or an entry that is not a type handle fails load. */
+    damageTypes?: ReadonlyArray<DamageType>;
+    /** The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies. */
+    defaultDamageType?: DamageType;
     /** Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
@@ -2246,7 +2272,7 @@ declare module "postretro" {
   export interface ActivatorsTarget {
     readonly [activatorsTargetBrand]: true;
     /** Damage this fire's activators by a finite, non-negative amount. */
-    damage(amount: number): SubjectTokenCommand;
+    damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
     /** Add health to this fire's activators. */
     grantHealth(amount: number): SubjectTokenCommand;
     /** Enter an authored life state. */
@@ -2255,6 +2281,8 @@ declare module "postretro" {
     respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this fire's activators' named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Refill `layer` on this fire's activators: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2280,7 +2308,7 @@ declare module "postretro" {
   export interface PlayerTarget {
     readonly [playerTargetBrand]: true;
     /** Damage this event's player by a finite, non-negative amount. */
-    damage(amount: number): SubjectTokenCommand;
+    damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
     /** Add health to this event's player. */
     grantHealth(amount: number): SubjectTokenCommand;
     /** Enter an authored life state. */
@@ -2289,6 +2317,8 @@ declare module "postretro" {
     respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this event's player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Refill `layer` on this event's player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2388,6 +2418,8 @@ declare module "postretro" {
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
     state(name: string): NumberRef;
+    /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0; a bad reference drops the policy at install. */
+    defense(layer: DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
     setState(name: string, value: NumberValue): Effect;
   }
   export interface SourceHandle {
@@ -2396,6 +2428,8 @@ declare module "postretro" {
     grantHealth(amount: NumberValue): Effect;
     /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
     grantAmmo(type: string, amount: NumberValue): Effect;
+    /** Refill `layer` on the impact damager: omit `amount` to fill to capacity, or add `amount`, clamped to capacity. The capacity is evaluated when the grant applies. A damager without that layer warns and skips; a fire with no damager skips this effect. */
+    grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;
     /** Whether the damager is a player pawn in life state `name` at this fire. False for a damager that is not a player. An unknown name skips the policy. */
     inLifeState(name: string): BoolRef;
     /** Put the damager player pawn into life state `name` in-tick, as `setLifeState`: a change restarts its elapsed time, the current state is a no-op. A fire with no damager skips it; a damager lacking the state warns and skips. */
@@ -2403,7 +2437,8 @@ declare module "postretro" {
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
-  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
+  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included. */
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly isOverride: boolean;
@@ -2526,14 +2561,14 @@ declare module "postretro" {
     /** Apply a typed partial to each NPC's state. */
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
-    damage(amount: number): GroupCommand;
+    damage(amount: number, options?: DamageOptions): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
   /** Every player pawn bound to a seat; a seat in a disconnect hold is skipped, and single player reaches the local pawn. Opaque: no members, no length. Commands run on the host and in single player only. */
   export interface PlayerGroup {
     /** Damage each player by a finite, non-negative amount. */
-    damage(amount: number): GroupCommand;
+    damage(amount: number, options?: DamageOptions): GroupCommand;
     /** Add health to each player. */
     grantHealth(amount: number): GroupCommand;
     /** Enter an authored life state. */
@@ -2542,6 +2577,8 @@ declare module "postretro" {
     respawn(options?: RespawnOptions): GroupCommand;
     /** Add `amount` to each player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): GroupCommand;
+    /** Refill `layer` on each player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A player without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
     /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
@@ -2661,6 +2698,31 @@ declare module "postretro" {
     namespace: string,
     schema: S,
   ): StoreDefinition<S>;
+
+  /** Reserved options for `defineDefenseLayer`; empty today, and any key rejects load. */
+  export type DefenseLayerOptions = { readonly [key: string]: never };
+  /** A registered defense layer kind. It crosses the manifest as `{ kind, name }`. `current` and `capacity` read the local player's layer (`player.defense.<name>` and `player.defense.<name>.capacity`); a pawn without the layer reads absent. */
+  export type DefenseLayer = {
+    readonly kind: "defenseLayer";
+    readonly name: string;
+    readonly current: PlayerComputedRef<number>;
+    readonly capacity: PlayerComputedRef<number>;
+  };
+  /** Reserved options for `defineDamageType`; empty today, and any key rejects load. */
+  export type DamageTypeOptions = { readonly [key: string]: never };
+  /** How much one raw point of a damage type takes from each pool kind, keyed by layer name or `health`. Each value is a multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is ×1. */
+  export type DamageTypeMatrix = { readonly [pool: string]: number | "bypass" };
+  /** A registered damage type. It crosses the manifest as `{ kind, name }`. */
+  export type DamageType = { readonly kind: "damageType"; readonly name: string };
+  /** `.damage` options: `type` is a registered damage-type handle; a hit that names none deals the mod's `defaultDamageType`. Any other key drops the reaction at install. */
+  export type DamageOptions = { readonly type?: DamageType };
+
+  /** Declare a defense layer kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ defenseLayers: [layer] })` and attach it in `components.health.layers`. */
+  export function defineDefenseLayer(options?: DefenseLayerOptions): DefenseLayer;
+  export function defineDefenseLayer(name: string, options?: DefenseLayerOptions): DefenseLayer;
+  /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
+  export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+  export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
 
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
@@ -2996,6 +3058,9 @@ declare module "postretro" {
   /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
   export function state(name: string): RuntimeGuardNode;
 
+  /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
+  export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input
   // stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that
@@ -3150,7 +3215,11 @@ declare module "postretro/ui" {
     spawnScatter: { radius: number };
     worldAnchor?: { socket?: string; offsetY: number };
   }>;
-  export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
+  /** The sampled entity: its own state, and its own layer as `current` / `capacity`. An entity without the layer reads 0 / 0; a bad reference skips the shield pair. */
+  export type OverlayEntity = Readonly<{
+    state(name: string): RuntimeValue;
+    defense(layer: import("postretro").DefenseLayer): Readonly<{ current: RuntimeValue; capacity: RuntimeValue }>;
+  }>;
   export type DamagedEnemiesProps = {
     lingerMs: number;
     hideAtFull: boolean;

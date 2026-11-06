@@ -152,53 +152,52 @@ clusters, and the level-scope cell-demand stage shared with lightmap blocks (bel
 owns lead L. SH maps that stage's id-51 cells to clusters through the id-49 cell→cluster
 map; a cluster takes the smallest lead of its cells. Targets fall into two tiers:
 
-| Tier | Classes | Under budget pressure |
+| Tier | Classes | At pool capacity |
 |---|---|---|
-| Mandatory | Visible (every drawn cluster, on every visibility path), Pinned, Lead (id-51 cells within L), and their owner closure | Never evicted; the pool grows past its budget, and is refused only at a device limit (below) |
-| Optional | SeamWarm, Band (id-51 cells past L, up to the baked maximum) | Trimmed farthest lead first |
+| Mandatory | Visible (every drawn cluster, except on a held frame), Pinned, Lead (id-51 cells within L) | Never evicted; evicts optional residents, then grows the pool, and is refused only past that (below) |
+| Optional | SeamWarm, Band (id-51 cells past L, up to the baked maximum), Hysteresis, Held | Evicted for mandatory work, in the capacity order below |
 
-**Bounded SH pool** *(not built yet)*. Replaces owner closure and the mandatory tier's every-path rule above.
+**Bounded SH pool.** The compiler bounds worst mandatory demand, one pool sized from that bound serves the level, and shared storage lives as long as a resident cluster uses it.
 
-- *Shared storage.* Clusters are independent. Each id-50 chunk carries full local payloads, so no cluster waits on another. A shared node or row has one live copy: the first resident cluster writes it, and it is freed with its last reference. A physical light still accumulates once.
-- *Non-portal paths.* SH holds, as the lightmap does: drawn clusters add no reads, residents are not aged out, and an absent drawn cluster counts a miss. Settling keeps full demand, so a level never starts dark. A level with no usable id 51 keeps drawn-cluster demand, because reach cannot replace it.
-- *Pool size.* Set once at load from the compiled bound (`build_pipeline.md` §PRL section IDs). Texture arrays cannot grow in place, so every growth holds two pools alive.
-- *Full pool.* Mandatory work evicts optional residents, SeamWarm and Band before Hysteresis. Then the pool grows once and warns, and only then refuses. Growth is a safety net for demand the bound does not model; a walk within the bound never grows.
+- *Shared storage.* Clusters are independent: each id-50 chunk carries full local payloads, so no cluster waits on another to become resident. No cluster owns shared storage: reference counts on dense nodes, probe words and sparse rows hold it. The first resident cluster to need one writes it, and its last reference frees it, zeroing its words and clearing its row in a batch submitted before any install can reuse the slots. A physical light still accumulates once, because a shared row or node has one live copy however many clusters reference it. A second referencer waits for the first writer's compose: a cluster that wrote nothing takes the highest compose epoch still pending, so it cannot publish uncomposed words.
+- *Hold.* A frame off the portal path holds, as the lightmap does, so one clip into a wall cannot make the map mandatory. Drawn clusters add no reads; reach and pins still read, because they follow the camera cell. Hysteresis pauses for the run, and its timers resume where they stopped. An absent drawn cluster counts a miss. Seam warm-up starts nothing new and keeps residents already warm. Settling keeps full demand on every path, so a level never starts dark, and capture's preload does too. A level with no usable id 51 opts out: only Visible and pins remain there, so a hold would stop SH loading new areas. Its drawn clusters stay Visible, and its bound is the whole map.
+- *`Held`.* On a held frame, a drawn cluster that is resident or on its way, with no reach, pin or seam class, takes class `Held`. It is a target, so departure leaves it alone. It is not mandatory or settled, so drawing cannot grow the pool, and it is the last capacity victim. It never reads.
+- *Pool size.* Sized once at load from id 49's stored bound (`build_pipeline.md` §PRL section IDs, SH mandatory bound) at the default lead, or the baked maximum where that is lower, plus 25% headroom, capped at the whole map in whole layers and clamped to the device limit. Headroom, dense and sparse alike, covers first-fit's address high-water, which runs above what is live. It never fails a load; only a bound itself past the device does. A dense pool that holds the map starts every sparse family whole, unless that family is past a device limit. A streamed level with no matching bound entry is refused by name. Texture arrays cannot grow in place, so every growth holds two pools alive.
+- *Capacity order.* The renderer owns capacity truth; the controller owns order. A drain with mandatory work ready carries the mandatory set and a victim list of Sampleable optional residents: SeamWarm and Band by the pressure comparator (below), then Hysteresis, then Held. A mandatory install that cannot place evicts down the list in the same drain, counting real frees through references, and retries. With the list exhausted the pool grows once to the mandatory union, clamped to the device limit and the whole map, and warns by name. Only then does it refuse. Mandatory work behind a retiring generation waits instead, evicting nothing and starting no growth. An optional install that cannot place is refused without eviction. A refused optional cluster and an evicted victim leave the targets until the horizon changes, so neither thrashes.
+- *Whole map.* The renderer reports per drain whether the pool holds the whole map: true only when every family is whole and nothing was ever released this level. While true, the controller names no evictions and no victims, because first-fit from empty leaves no hole. The fact is not a latch. A level reaching the cap any other way keeps evicting, because victims are what recover fragmentation.
+- *Growth net.* Refusal renders black: an all-miss sample reaches the ambient floor, which is 0.0. Growth therefore stays as the logged net for demand the bound does not model, such as a raised dev lead, Settling on a fallback path or a mirror's cells. A walk within the bound never grows.
 
-**Pool growth at device limits.** SH captures device limits once at load and uses that snapshot for geometry, floor planning, growth and replacement validation. One shared geometry rule fixes the dense atlas layer size for the session: the larger of the floor-share layer and the whole-level minimum (whole dense set × 2.25 fragmentation headroom ÷ the array-layer limit), capped at one full layer. Maps whose floor-share layer already suffices keep their geometry. Initial capacity stays the planner’s slot count rounded to whole layers. Growth clamps to each family’s limit (dense: array layers; sparse: its tightest buffer), checking every required limit before any retirement wait.
+**Pool growth at device limits.** SH captures device limits once at load and uses that snapshot for geometry, pool sizing, growth and replacement validation. One shared geometry rule fixes the dense atlas layer size for the session: the larger of one eighth of the initial pool and the whole-level minimum (whole dense set × 2.25 ÷ the array-layer limit), capped at one full layer. The eighth sets growth's smallest step, because growth adds whole layers and copies the rest. The 2.25 factor only sets layer size: growth stops at the whole map, so it buys no room past it. Growth clamps to each family's device limit (dense: array layers; sparse: its tightest buffer) and to the whole map. Each family checks its own limit before its own retirement wait, and any family's wait defers the cluster.
 
-A cluster that still cannot fit fails through the per-cluster failure state without ending the session. Refusal releases payload, ready-byte charge and permit once; it counts a distinct device-limit miss and warns once per loaded level, across controller replacements. Owner refusal blocks dependent work without retaining payloads or permits. The latest failure cause controls retry: device-limit failure preserves the single read-failure retry and retries only after leaving and re-entering targets, at most once per 2 s hysteresis window measured from the last refusal. Pressure trim skips currently refused clusters, and refusal evicts nothing or wakes nothing on eviction. A refused pin that never leaves demand remains unavailable until level reload. Other drain errors, including metadata, identity, generation, slot-address and post-growth capacity contract violations, stay fatal.
+A cluster that still cannot fit fails through the per-cluster failure state without ending the session. Refusal releases payload, ready-byte charge and permit once, and names its cause: a device limit, or the whole-map cap, where fragmentation stranded free slots. A device-limit refusal counts a distinct miss and warns once per loaded level, across controller replacements. A cap refusal counts the `at_whole_map_cap` bucket and warns once. The latest failure cause controls retry. Device-limit failure preserves the single read-failure retry and retries only after leaving and re-entering targets, at most once per 2 s hysteresis window measured from the last refusal, so a pin refused at a device limit stays unavailable until level reload. A cap refusal retries once per hysteresis window without leaving targets, because eviction may have opened a range. Other drain errors, including metadata, identity, generation, slot-address and post-growth capacity contract violations, stay fatal.
 
 The reach depends only on the camera cell and L, never the view direction, so turning in
 place causes no reach churn; it is recomputed only when either changes. On a non-portal
-path, drawn clusters are still Visible, and lead and band come from the stage's classes for
-that path. A level without a usable id 51 has no lead or band tier, at entry or in play. SH
-reads nothing from id 46: the id-46 warm walk and its fixed cluster count are retired.
+path, lead and band come from the stage's classes for that path. A level without a usable
+id 51 has no lead or band tier, at entry or in play. SH reads nothing from id 46: the id-46
+warm walk and its fixed cluster count are retired.
 Level entry waits in Settling until the mandatory tier is Sampleable from the presented
 pose, or a timeout releases it (`boot_sequence.md` §1, Settling); optional targets never
 hold the reveal, and in play no frame waits on a cluster.
 
-Authored id-49 v2 hints add persistent pinned clusters and their owner closure, plus
-preferred `SeamWarm` targets across marked portals when the near side is visible—even if
-an opaque door blocks traversal. Seam warm-up is best effort: it does not change door
-motion, gameplay, or the visible-cell set, and a cold opening still uses the ambient-floor
-miss fallback. Priority 0–3 ranks only pressure-eligible seam warm-up and band work;
-mandatory demand wins regardless of priority. Only owner-safe band and seam-warm targets
-may yield under budget pressure; mandatory targets and their owners are never evicted for
-pressure. Hysteresis retains its timer contract: a Sampleable cluster that leaves every
-target class is evicted once its window passes, even on a map within budget. Pressure
-priority selects which optional targets yield. The planner's drain request may list a
-dependent before its lower-ID owner; the renderer computes a dependency-safe release
-sequence and returns confirmed IDs in ascending order. Target ordering is Visible, Pinned,
-Lead, SeamWarm, Band, then Hysteresis; within a class, requests order by descending
-effective priority, then nearest lead, then cluster ID. Under pressure the band yields
-before seam-warm work and, among equal class and priority, the farthest lead yields first.
-Optional requests stop once half the stream permits are held, so the band never delays
-fresh mandatory work. Owner closure propagates class and optional priority to a fixed
-point, taking the maximum of an owner's authored value and same-class dependents. This
-policy stops at the CPU planner: it adds no renderer binding, shader branch, portal
-traversal, or visibility behavior. One issuer thread, shared with lightmap blocks (below),
+Authored id-49 hints add persistent pinned clusters, plus preferred `SeamWarm` targets
+across marked portals when the near side is visible—even if an opaque door blocks
+traversal. A hint or pin applies to the named cluster alone. Seam warm-up is best effort:
+it does not change door motion, gameplay, or the visible-cell set, and a cold opening still
+uses the ambient-floor miss fallback. Priority 0–3 ranks only seam warm-up and band work;
+mandatory demand wins regardless of priority. Hysteresis retains its timer contract: a
+Sampleable cluster that leaves every target class is evicted once its window passes, unless
+the pool holds the whole map. Clusters are independent, so evictions release in any order,
+and the renderer returns confirmed IDs in ascending order. Target ordering is Visible,
+Pinned, Lead, SeamWarm, Band, Hysteresis, then Held; within a class, requests order by
+descending effective priority, then nearest lead, then cluster ID. The pressure comparator
+yields the band before seam-warm work, then lower priority, then the farthest lead, then the
+least recently visible. Optional requests stop once half the stream permits are held, so
+the band never delays fresh mandatory work. This policy stops at the CPU planner: it adds
+no renderer binding, shader branch, portal traversal, or visibility behavior. One issuer
+thread, shared with lightmap blocks (below),
 performs every id-50 read from the validated open file, off the frame path: mandatory
-work (owner closure included) before optional work, each tier in ascending file offset, with nearby chunks coalesced
+work before optional work, each tier in ascending file offset, with nearby chunks coalesced
 into one read. It takes new requests after every read, so fresh visible demand preempts
 queued optional work, and it skips any request whose cluster has left the target set. A small
 pool decodes and verifies chunks. A completion installs only when generation, content tag,
@@ -211,9 +210,7 @@ ahead to smaller lower-priority work, so frame cost tracks bytes rather than clu
 count. A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
-reaches the ambient floor. Baked owners remain installed for dependent halo clusters, so a
-physical light accumulates once and an owner cannot be evicted out from under a resident
-boundary.
+reaches the ambient floor.
 
 **Lightmap cell-block residency.** The static lightmap and shadowmask (ids 22/42) are
 stored as per-cell blocks: each cell's charts pack into one or more contiguous BC-aligned
@@ -267,7 +264,7 @@ view or mirror, it adds no new reads: the lightmap holds and counts its blocks, 
 visible targeting takes its cells only on a completed mirror walk with the main view on a
 walk path.
 During Settling its cells join the settle set on any path, as the main view's drawn cells
-do (`boot_sequence.md` §1). It never requests probes. Its cells outside the baked set are
+do (`boot_sequence.md` §1). Its cells outside the baked set are
 over-inclusion (§2), whose demand is never refused, so they count against the bake-gap
 gate: under one pool policy, the pool may defer no more lightmap texel area with the
 mirror than without it. In the dev-tools Streaming tab, a level-scope slider sets L (default 16 m,
@@ -303,6 +300,13 @@ retires, which happens only once demand, or fragmentation of the pool, outgrows 
 array-layer limit, is deferred and counts as a miss. The first generation holds the cap or
 what the level needs all-resident, whichever is smaller. One drain's copies, uploads and
 table writes reach the GPU in one submission.
+
+**Bounded lightmap pool** *(not built yet)*. Replaces the shared layer index, the side-by-side mask layer, the fixed cap and its slider, and the downward-only repack above.
+
+- *Planes.* Id 42 stores no all-zero plane, and an absent plane reads zero, exactly what it would decode to. Mask planes live in their own pool, one placement each, and the block table carries each address. A block stays one pair across both pools: its halves install and leave together.
+- *Pool size.* Both pools are sized once at load from the compiled bound (`build_pipeline.md` §PRL section IDs, Lightmap pool bound) times 5/4, capped at what the level needs all-resident. The pool is the cap, grown layers included: no drain carries a cap, and no slider sets one. Band blocks fill what mandatory demand leaves.
+- *Repack.* The downward repack runs first. If it cannot fit the whole targeted demand, blocks may move to any layer through that pool's spare, never a second copy of a pool. Any set that packs from scratch therefore fits at runtime. Repack holds room for every mandatory and visible target, and compacts at most once before growth.
+- *Growth.* Demand the bound does not model evicts band blocks, repacks, then grows that pool once by the same margin and warns, naming the pool and camera cell. That demand is drawn cells outside the camera cell's set for the bound, a planar mirror's included, a raised dev lead, Settling on a fallback path, and a seam pre-commit.
 
 Level install reads no block. Settling's drains make the presented pose's set resident
 before the first world frame (`boot_sequence.md` §1, Settling), and play never waits on a
@@ -390,10 +394,10 @@ the slowest drain that grew no pool reported apart), pool growth, misses, evicti
 re-reads: requests for a cluster evicted earlier in the level, whatever class asks,
 including a hysteresis read of a departing cluster. Each visible miss lands in exactly one
 bucket naming the lever a later change would pull: outside the reach, trimmed by pressure,
-read in flight, held by the drain budget, awaiting compose, failed reads, or device-limit refusal. A cluster waiting on
-its owner closure takes the bucket of the owner wait it is behind, and any failed owner
-makes it failed. Settling frames count no misses; a cluster still cold on a timed-out
-reveal frame counts one there. The counters appear as a throttled `[SH streaming]` info log line (only when something changed),
+read in flight, held by the drain budget, awaiting compose, failed reads, device-limit
+refusal, or refusal at the whole-map cap (`at_whole_map_cap`). An absent drawn cluster a held
+frame will not read counts as outside the reach. Settling frames count no misses; a cluster
+still cold on a timed-out reveal frame counts one there. The counters appear as a throttled `[SH streaming]` info log line (only when something changed),
 the dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. They guide
 tuning and gate nothing. The dev-tools SH Volumes probe markers draw on streamed maps from
 the streaming base metadata. A Residency marker mode colors each probe from the renderer's
@@ -422,12 +426,11 @@ and in-flight sample; releasing a slot rejects its old colors even after identic
 ABA reuse. Overlay toggles and session resets invalidate every sample. Level unload
 drops the readback, and callbacks retain no GPU handles.
 
-The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
+The SH allocation report counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.
 Encoded, decoding, and ready host payloads are separate checked phase ledgers. Growth
 preserves live offsets by GPU-to-GPU copy and may hold one active and one retiring pool
-generation; retirement capacity and replacement peak are reported separately from
-non-evictable logical overshoot.
+generation; retirement capacity and replacement peak are reported separately.
 
 **Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. Script sample slots preserve runtime-present authored map-light order (`_bake_only` and buried lights omitted). Runtime-spawned dynamic lights draw from renderer-owned reserved capacity; a despawned runtime light's slot is reclaimed, so the reserve bounds peak-concurrent live lights, not cumulative spawns — a high-churn light source must despawn to free capacity.
 

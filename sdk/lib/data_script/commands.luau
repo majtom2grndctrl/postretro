@@ -87,10 +87,24 @@ end
 
 -- The player-facing verbs, shared by `players()`, `on.activators` and
 -- `on.player`; only the addressing each stamps differs.
+-- `.damage` options cross as authored, so the engine rejects an unknown key
+-- at install; `type` is a registered damage-type handle.
+local function damageArgs(amount: number, options)
+  local args = { amount = amount }
+  if options ~= nil then
+    for key, value in pairs(options) do
+      if key ~= "amount" then
+        args[key] = value
+      end
+    end
+  end
+  return args
+end
+
 local function playerVerbs(make)
   return {
-    damage = function(_self, amount: number)
-      return make("applyDamage", { amount = amount })
+    damage = function(_self, amount: number, options)
+      return make("applyDamage", damageArgs(amount, options))
     end,
     grantHealth = function(_self, amount: number)
       return make("grantHealth", { amount = amount })
@@ -108,6 +122,9 @@ local function playerVerbs(make)
     end,
     grantAmmo = function(_self, ammoType: string, amount: number)
       return make("grantAmmo", { type = ammoType, amount = amount })
+    end,
+    grantLayer = function(_self, layer, amount: number?)
+      return make("grantLayer", { layer = layer, amount = amount })
     end,
     addSlot = function(_self, slot, delta: number)
       return make("addSlot", { slot = slot.slot, delta = delta })
@@ -135,8 +152,8 @@ function CommandsSdk.npcs(filter: NpcGroupFilter?): NpcGroup
     update = function(_self, fields: NpcStateUpdateArgs)
       return make("updateNpcState", fields)
     end,
-    damage = function(_self, amount: number)
-      return make("applyDamage", { amount = amount })
+    damage = function(_self, amount: number, options)
+      return make("applyDamage", damageArgs(amount, options))
     end,
   })
 end

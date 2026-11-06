@@ -812,6 +812,13 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
             ("cooldownMs", attack.cooldown_ms),
         ];
         if attack.weapon.is_some() {
+            if attack.damage_type.is_some() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.attacks.{name}.damageType` must be omitted when `components.behavior.attacks.{name}.weapon` is present; a weapon attack deals its weapon's type"
+                    ),
+                });
+            }
             if let Some((field, _)) = inline_stats.iter().find(|(_, value)| value.is_some()) {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
@@ -955,6 +962,7 @@ mod tests {
                     cooldown_ms: Some(1.0),
                     engagement_radius: Some(3.0),
                     standoff_distance: None,
+                    damage_type: None,
                 },
             )]),
             engagement_radius: Some(2.0),
@@ -1033,6 +1041,7 @@ mod tests {
                 cooldown_ms: Some(1.0),
                 engagement_radius: None,
                 standoff_distance: Some(0.0),
+                damage_type: None,
             },
         )]);
 
@@ -1097,6 +1106,7 @@ mod tests {
                     cooldown_ms: None,
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -1109,6 +1119,7 @@ mod tests {
                     cooldown_ms: None,
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -1121,6 +1132,7 @@ mod tests {
                     cooldown_ms: Some(250.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
         ] {

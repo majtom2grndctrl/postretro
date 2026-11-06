@@ -11,8 +11,8 @@ use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{
     LightmapDrainOutcome, PrlLoadError, ShStreamManifest, ShStreamingMode,
 };
-use postretro_renderer::{LightmapResidencyDrainError, ShResidencySnapshot};
-use postretro_visibility::VisibleCells;
+use postretro_renderer::LightmapResidencyDrainError;
+use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::*;
 use crate::lightmap_streaming::controller::BlockPhase;
@@ -31,18 +31,10 @@ fn sh_hints(manifest: &ShStreamManifest) -> Arc<ClusterHints> {
     Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap())
 }
 
-/// An SH session over `manifest` in `mode`, budgeted as the tests' renderer.
+/// An SH session over `manifest` in `mode`.
 fn sh_session(manifest: Arc<ShStreamManifest>, mode: ShStreamingMode) -> ShStreamingSession {
     let hints = sh_hints(&manifest);
-    let mut session = ShStreamingSession::from_snapshot(
-        manifest,
-        ShResidencySnapshot {
-            effective_floor_bytes: 1024 * 1024,
-            ..ShResidencySnapshot::default()
-        },
-        hints,
-    )
-    .unwrap();
+    let mut session = ShStreamingSession::from_manifest(manifest, hints).unwrap();
     session.set_mode_for_test(mode);
     session
 }
@@ -333,15 +325,8 @@ fn sh_and_lightmap_stream_through_one_issuer_and_unload_releases_everything() {
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
     let sh_baseline = Arc::strong_count(&manifest);
-    let mut sh = ShStreamingSession::from_snapshot(
-        Arc::clone(&manifest),
-        ShResidencySnapshot {
-            effective_floor_bytes: 1024 * 1024,
-            ..ShResidencySnapshot::default()
-        },
-        sh_hints(&manifest),
-    )
-    .unwrap();
+    let mut sh =
+        ShStreamingSession::from_manifest(Arc::clone(&manifest), sh_hints(&manifest)).unwrap();
     sh.set_mode_for_test(ShStreamingMode::Async);
     let mut sh = Some(sh);
 
@@ -437,6 +422,74 @@ fn sh_only_level_streams_through_the_level_drain_step_and_retires_cleanly() {
         baseline,
         "workers, issuer and session released"
     );
+}
+
+// The frame's Settling flag reaches SH through the production drain step: on
+// one fallback frame a Running frame leaves its drawn cluster at the band class
+// the reach gave it, and a Settling frame demands it in full.
+#[test]
+fn settling_flag_lifts_the_sh_hold_through_the_level_drain_step() {
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+    let mut sh = Some(sh_session(manifest, ShStreamingMode::SyncProof));
+    let mut level = LevelStreaming::default();
+    // Past the default lead, so its one cell is in the reach yet not mandatory.
+    let set = residency_set(1, &[(0, 0, 24)], 32);
+    level.install_cell_demand(CellDemand::new(set.max_lead));
+    let visible = VisibleCells::Culled(vec![0]);
+    let cpu = StageFrame::default();
+    let solid = StreamingFrame {
+        path: VisibilityPath::SolidCellFallback,
+        ..frame(&visible, 0, &cpu)
+    };
+
+    let held = level.prepare_drains(&mut sh, Some(&set), solid).unwrap();
+    assert_eq!(sh.as_ref().unwrap().settle_set_targets(), Some(0));
+    sh.as_mut().unwrap().accept_drain_for_test(&held).unwrap();
+
+    let settling = StreamingFrame {
+        settling: true,
+        ..solid
+    };
+    level.prepare_drains(&mut sh, Some(&set), settling).unwrap();
+    assert_eq!(sh.as_ref().unwrap().settle_set_targets(), Some(1));
+}
+
+// No id 51, one with no camera cell, or a frame with no camera cell: nothing
+// holds, so a fallback frame still reads what it draws.
+#[test]
+fn a_frame_without_id51_demand_reads_its_drawn_cluster_on_a_fallback() {
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+    let set = residency_set(1, &[], 32);
+    let visible = VisibleCells::Culled(vec![0]);
+    let cpu = StageFrame::default();
+    let solid = StreamingFrame {
+        path: VisibilityPath::SolidCellFallback,
+        ..frame(&visible, 0, &cpu)
+    };
+    for (residency_set, frame) in [
+        (None, solid),
+        (Some(&set), solid),
+        (
+            Some(&set),
+            StreamingFrame {
+                camera_cell: None,
+                ..solid
+            },
+        ),
+    ] {
+        let mut sh = Some(sh_session(
+            Arc::clone(&manifest),
+            ShStreamingMode::SyncProof,
+        ));
+        let mut level = LevelStreaming::default();
+        level.install_cell_demand(CellDemand::new(set.max_lead));
+        let batch = level.prepare_drains(&mut sh, residency_set, frame).unwrap();
+        assert_eq!(batch.ready.len(), 1);
+    }
 }
 
 // Settling's drains make the presented pose's lightmap set resident through

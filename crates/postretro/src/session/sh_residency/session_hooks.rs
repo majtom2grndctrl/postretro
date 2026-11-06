@@ -17,6 +17,8 @@ impl super::super::Session {
             if outcome.accepted.is_empty()
                 && outcome.dropped.is_empty()
                 && outcome.refused.is_empty()
+                && outcome.whole_map_refused.is_empty()
+                && outcome.pool_refused.is_empty()
                 && outcome.deferred.is_empty()
                 && outcome.evicted.is_empty()
             {

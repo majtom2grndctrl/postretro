@@ -10,7 +10,7 @@ use super::request::StreamResource;
 /// ready items, [`Self::admit`] orders and admits them once against the one
 /// per-drain budget, and each resource then takes its own admitted prefix.
 ///
-/// Owned at level scope and reused across drains, so a steady drain with
+/// Held at level scope and reused across drains, so a steady drain with
 /// nothing ready allocates nothing.
 #[derive(Debug, Default)]
 pub(crate) struct SharedDrain {

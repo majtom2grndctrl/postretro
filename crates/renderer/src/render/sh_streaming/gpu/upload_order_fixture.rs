@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use postretro_level_format::cluster_sh_payloads::CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
+
 use super::*;
 use crate::render::sh_streaming::install_tests::SyntheticMap;
 use crate::render::sh_streaming::{ShDrainBatch, ShResidencyState};
@@ -87,13 +89,14 @@ impl UploadOrderSh {
                 &fixture.map.base(),
                 &fixture.map.sources(),
                 std::sync::Arc::clone(&fixture.state.sparse_compose),
-                crate::render::sh_streaming::floor::InitialPoolFloor {
+                InitialPool {
                     dense_slots,
-                    whole_dense_slots: 128,
                     sparse_capacities: BTreeMap::new(),
-                    dense_group_minimum_bytes: 0,
-                    sparse_group_minimum_bytes: BTreeMap::new(),
-                    effective_floor_bytes: 0,
+                    whole_map: WholeMapCap {
+                        dense_slots: 128,
+                        ..WholeMapCap::uncapped()
+                    },
+                    pool_bytes: 0,
                 },
                 false,
                 &mut fixture.sh,
@@ -102,6 +105,9 @@ impl UploadOrderSh {
             )
             .expect("minimal SH pools"),
         );
+        // The 128 above fixes geometry. These pools undersize their map on
+        // purpose, so growth here answers to the device alone.
+        fixture.state.gpu.as_mut().unwrap().whole_map = WholeMapCap::uncapped();
         fixture
     }
 
@@ -115,7 +121,10 @@ impl UploadOrderSh {
             .clone()
     }
 
-    fn prepared(&self, cluster: u32) -> postretro_level_loader::PreparedShCluster {
+    pub(in crate::render::sh_streaming) fn prepared(
+        &self,
+        cluster: u32,
+    ) -> postretro_level_loader::PreparedShCluster {
         let mut ready = self.map.prepared(&self.state, cluster);
         // CPU transaction fixtures omit atlas texels; supply real 8x8 slot
         // payloads here so the exact GPU validators and uploads also execute.
@@ -141,9 +150,9 @@ impl UploadOrderSh {
                 let mut words = vec![rows, entries, entries * stride, 0];
                 let mut entry = 0;
                 for row in 0..rows {
-                    let offset = 16 + row as usize * 16;
+                    let offset = 16 + row as usize * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
                     let count = word(offset + 8);
-                    words.extend_from_slice(&[word(offset), entry, count, 1]);
+                    words.extend_from_slice(&[word(offset), entry, count]);
                     entry += count;
                 }
                 for entry in 0..entries {
@@ -169,10 +178,32 @@ impl UploadOrderSh {
         assert_eq!(outcome.accepted, [cluster]);
     }
 
+    /// Every ready cluster is mandatory here: the old contract's "may grow".
     pub(in crate::render::sh_streaming) fn drain_many(
         &mut self,
         device: &wgpu::Device,
         queue: &UploadQueue,
+        clusters: &[u32],
+    ) -> Result<postretro_level_loader::ShDrainOutcome, ShResidencyDrainError> {
+        let mut mandatory = clusters.to_vec();
+        mandatory.sort_unstable();
+        self.drain_batch(
+            device,
+            queue,
+            ShDrainBatch {
+                mandatory,
+                ..ShDrainBatch::default()
+            },
+            clusters,
+        )
+    }
+
+    /// `batch`'s target deltas and capacity policy, with `clusters` ready.
+    pub(in crate::render::sh_streaming) fn drain_batch(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &UploadQueue,
+        batch: ShDrainBatch,
         clusters: &[u32],
     ) -> Result<postretro_level_loader::ShDrainOutcome, ShResidencyDrainError> {
         let ready = clusters
@@ -188,7 +219,7 @@ impl UploadOrderSh {
                 generation: self.state.generation,
                 content_tag: self.state.content_tag,
                 ready,
-                ..Default::default()
+                ..batch
             },
         )
     }
@@ -319,3 +350,7 @@ impl UploadOrderSh {
 
 #[path = "limit_tests.rs"]
 mod limit_tests;
+#[path = "pool_admission_tests.rs"]
+mod pool_admission_tests;
+#[path = "shared_storage_tests.rs"]
+mod shared_storage_tests;

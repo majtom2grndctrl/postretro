@@ -3,9 +3,7 @@
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
-use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain,
-};
+use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::CLUSTER_SH_LOGICAL_TILE_DIMENSION;
 use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, delta_probe_f16_stride};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -184,6 +182,20 @@ impl<'a> SparseSource<'a> {
         .map_err(Into::into)
     }
 
+    /// `(entries, tile_f16)` of every row, in the pools' units: a row holds
+    /// `tile_count` f16 values for each of its entries.
+    pub(super) fn row_units(&self) -> anyhow::Result<Vec<(u32, u32)>> {
+        (0..u32::try_from(self.valid_probe_masks.len())?)
+            .map(|row| {
+                let entries = self.entry_count(row)?;
+                let tile_f16 = entries
+                    .checked_mul(self.tile_count(row)?)
+                    .ok_or_else(|| anyhow::anyhow!("id-50 sparse row tile count overflow"))?;
+                Ok((entries, tile_f16))
+            })
+            .collect()
+    }
+
     fn tile_range(&self, row: u32) -> anyhow::Result<Vec<&'a [u16]>> {
         self.entry_range(row)?
             .map(|entry| {
@@ -215,8 +227,6 @@ impl<'a> SparseSource<'a> {
 }
 
 pub(super) fn encode_sparse_block(
-    directory: &ClusterDirectorySection,
-    cluster_id: u32,
     source: &SparseSource<'_>,
     rows: &[u32],
 ) -> anyhow::Result<EncodedSparse> {
@@ -232,10 +242,6 @@ pub(super) fn encode_sparse_block(
         push_u32(&mut body, *row);
         push_u32(&mut body, entry_cursor);
         push_u32(&mut body, count);
-        push_u32(
-            &mut body,
-            sparse_row_role(directory, cluster_id, source.section_id, *row)? as u32,
-        );
         entry_cursor = entry_cursor
             .checked_add(count)
             .ok_or_else(|| anyhow::anyhow!("id-50 sparse entry cursor overflow"))?;
@@ -253,16 +259,27 @@ pub(super) fn encode_sparse_block(
                 .ok_or_else(|| anyhow::anyhow!("id-50 sparse tile cursor overflow"))?;
         }
     }
+    // A row's hash covers its lights and tile bytes and none of the cursors
+    // above, which depend on what else this chunk carries.
+    let mut row_hashes = Vec::with_capacity(rows.len());
     for row in rows {
-        for entry_tiles in source.tile_range(*row)? {
+        let mut hasher = blake3::Hasher::new();
+        let entries = source.entry_range(*row)?;
+        for (entry, entry_tiles) in entries.zip(source.tile_range(*row)?) {
+            hasher.update(&source.affinity_lights[entry].to_le_bytes());
+            hasher.update(&u64::try_from(entry_tiles.len())?.to_le_bytes());
+            let tiles_start = body.len();
             for value in entry_tiles {
                 body.extend_from_slice(&value.to_le_bytes());
             }
+            hasher.update(&body[tiles_start..]);
         }
+        row_hashes.push(hasher.finalize());
     }
     Ok(EncodedSparse {
         section_id: source.section_id,
         rows: rows.to_vec(),
+        row_hashes,
         body,
     })
 }
@@ -305,41 +322,4 @@ pub(super) fn affinity_indices(
         result.extend(range.start..range_end);
     }
     Ok(result)
-}
-
-pub(super) fn sparse_row_role(
-    directory: &ClusterDirectorySection,
-    cluster_id: u32,
-    section_id: u32,
-    row: u32,
-) -> anyhow::Result<ClusterRangeRole> {
-    let cluster = directory
-        .clusters
-        .get(cluster_id as usize)
-        .ok_or_else(|| anyhow::anyhow!("id-50 cluster {cluster_id} is outside id 49"))?;
-    let resource_index = directory
-        .resources
-        .iter()
-        .position(|resource| resource.section_id == section_id)
-        .ok_or_else(|| anyhow::anyhow!("id 49 lacks sparse source {section_id}"))?;
-    let start = usize::try_from(cluster.range_start)?;
-    let end = start
-        .checked_add(usize::try_from(cluster.range_count)?)
-        .ok_or_else(|| anyhow::anyhow!("id-50 sparse role range overflow"))?;
-    directory
-        .ranges
-        .get(start..end)
-        .ok_or_else(|| anyhow::anyhow!("id-50 sparse role range exceeds id 49"))?
-        .iter()
-        .find(|range| {
-            range.resource_index as usize == resource_index
-                && range.start <= row
-                && row < range.start.saturating_add(range.count)
-        })
-        .map(|range| range.role)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "id-50 cluster {cluster_id} does not cover row {row} of source {section_id}"
-            )
-        })
 }

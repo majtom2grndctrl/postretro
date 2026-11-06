@@ -834,6 +834,7 @@ fn teleport_liveness_and_body_kinds_bar_dead_and_non_players_but_not_later_kills
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .unwrap();
@@ -1082,7 +1083,6 @@ fn teleport_frame_end_mutation_progress_arm_and_crossing_disarm_govern_the_first
         .value = Some(SlotValue::Number(1.0));
     let crossed = crate::scripting::reactions::dispatch_state_crossings_with_sequences(
         &mut crossings,
-        &rig.ctx.slot_table.borrow(),
         &rig.ctx.data_registry.borrow(),
         &rig.steps,
         &ReactionPrimitiveRegistry::new(),
@@ -1175,7 +1175,7 @@ fn teleport_record_survives_a_movement_descriptor_hot_reload() {
 }
 
 /// The movement descriptor `trigger_movement` builds its component from.
-fn trigger_movement_descriptor() -> postretro_foundation::PlayerMovementDescriptor {
+pub(crate) fn trigger_movement_descriptor() -> postretro_foundation::PlayerMovementDescriptor {
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
     };

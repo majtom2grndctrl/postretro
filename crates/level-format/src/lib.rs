@@ -45,6 +45,7 @@ pub mod prm_accounting;
 pub mod push_forces;
 pub mod reflection_probes;
 pub mod sdf_atlas;
+pub mod sh_pool_cost;
 pub mod sh_reconstruct;
 pub mod sh_volume;
 pub mod shadowmask_atlas;

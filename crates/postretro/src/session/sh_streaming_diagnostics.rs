@@ -140,7 +140,7 @@ fn format_line(
          {read_bytes} incl. {gap_bytes} gap, {installs} installs {installed_bytes}, \
          {misses} misses (reach {miss_reach}, pressure {miss_pressure}, in flight \
          {miss_in_flight}, budget {miss_budget}, compose {miss_compose}, failed {miss_failed}, \
-         device limit {miss_device_limit}), \
+         device limit {miss_device_limit}, map cap {miss_map_cap}), \
          {rereads} re-reads, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
          {discarded} discarded ({discarded_bytes}), {budget_limited} budget-limited drains, \
          {growths} pool growths (+{growth_bytes}), install CPU {install_ms:.2} ms \
@@ -169,6 +169,7 @@ fn format_line(
         miss_compose = delta(|d| d.miss_buckets.awaiting_compose),
         miss_failed = delta(|d| d.miss_buckets.failed),
         miss_device_limit = delta(|d| d.miss_buckets.device_limited),
+        miss_map_cap = delta(|d| d.miss_buckets.at_whole_map_cap),
         rereads = delta(|d| d.rereads),
         evictions = delta(|d| d.evictions),
         retries = delta(|d| d.retries),

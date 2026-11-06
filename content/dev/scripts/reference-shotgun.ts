@@ -1,4 +1,5 @@
 import { activation, defineEntity, defineWeaponPlacement } from "postretro";
+import { ballistic } from "./damage-types";
 
 const shotgunPlacement =  defineWeaponPlacement({
   positionFromCenter: { right: 0.3, up: -0.45, forward: 0.5 },
@@ -11,6 +12,7 @@ export const referenceShotgunEntity = defineEntity({
     weapon: {
       // Damage is per pellet; an eight-pellet full connect deals 8 × 3 = 24.
       damage: 3.0,
+      damageType: ballistic,
       pelletCount: 8,
       spreadDegrees: 5,
       range: 64.0,

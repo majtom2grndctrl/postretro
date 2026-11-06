@@ -28,8 +28,18 @@ use crate::impact_effects::{ImpactEffect, apply_effect};
 use postretro_foundation::FACTION_STATE_FIELD;
 
 pub use assistable_overlay::AssistableTeammatesOverlayConfig;
+use damaged_enemy_overlay::{BoundPresentationOverlay, bind_damaged_enemies_overlay};
+pub use damaged_enemy_overlay::{
+    ClientOverlayConfig, DamagedEnemyOverlayDamage, DamagedEnemyOverlayFact,
+    DamagedEnemyOverlayFrame,
+};
 
 mod assistable_overlay;
+mod damaged_enemy_overlay;
+#[cfg(test)]
+mod defense_read_tests;
+#[cfg(test)]
+mod grant_layer_tests;
 mod source_life_state;
 #[cfg(test)]
 mod source_life_state_ordering_tests;
@@ -64,33 +74,6 @@ pub struct ImpactPolicyRuntime {
     presentation: Vec<PlannedEffect>,
 }
 
-/// One dispatch-driven damaged-enemy refresh, with the original host script
-/// clock captured before deferred post-tick roster selection.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DamagedEnemyOverlayDamage {
-    pub entity: EntityId,
-    pub source: Option<EntityId>,
-    pub damaged_at: f64,
-}
-
-/// One authoritative fact sample from Task 6's post-tick overlay stamp.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DamagedEnemyOverlayFact {
-    pub entity: EntityId,
-    pub health_fraction: f32,
-    pub shield_fraction: f32,
-    pub has_shield: bool,
-    pub alive: bool,
-}
-
-/// Damage edges and sampled facts from the local single-player overlay update.
-/// Hosted selection consumes damage synchronously and samples its roster separately.
-#[derive(Debug, Default)]
-pub struct DamagedEnemyOverlayFrame {
-    pub damage: Vec<DamagedEnemyOverlayDamage>,
-    pub facts: Vec<DamagedEnemyOverlayFact>,
-}
-
 struct BoundImpactPolicy {
     id: String,
     base_filter_tag: Option<String>,
@@ -101,91 +84,6 @@ struct BoundImpactPolicy {
 struct BoundGroup {
     when: Option<BoundProgram<EntityScope>>,
     effects: Vec<BoundEffect>,
-}
-
-struct BoundPresentationOverlay {
-    template: PresentationTemplateHandle,
-    world_anchor: PresentationWorldAnchor,
-    max_visible: usize,
-    linger_seconds: f64,
-    hide_at_full: bool,
-    scope: OverlayStateScope,
-    shield: Option<BoundOverlayShield>,
-}
-
-/// The authored portion of the damaged-enemy overlay lifecycle that a
-/// connected client needs to render host-pushed facts. Values themselves stay
-/// on the presentation channel; this carries no registry-derived combat state.
-#[derive(Clone)]
-pub struct ClientOverlayConfig {
-    pub template: PresentationTemplateHandle,
-    pub world_anchor: PresentationWorldAnchor,
-    pub max_visible: usize,
-    pub linger_seconds: f64,
-    pub hide_at_full: bool,
-}
-
-struct BoundOverlayShield {
-    value: BoundProgram<OverlayStateScope>,
-    max: BoundProgram<OverlayStateScope>,
-}
-
-/// Read-only per-entity state scope used by `damagedEnemies.shield`. Keeping
-/// it local to the presentation adopter prevents overlay expressions from
-/// accidentally acquiring impact facts, store reads, or write handles.
-#[derive(Default)]
-struct OverlayStateScope {
-    names: RefCell<Vec<String>>,
-    values: RefCell<Vec<f32>>,
-}
-
-impl OverlayStateScope {
-    fn seed(&self, registry: &EntityRegistry, entity: EntityId) {
-        let state = registry
-            .get_component::<postretro_entities::EntityStateComponent>(entity)
-            .ok();
-        let names = self.names.borrow();
-        let mut values = self.values.borrow_mut();
-        for (index, name) in names.iter().enumerate() {
-            values[index] = state.map_or(0.0, |state| state.get(name));
-        }
-    }
-}
-
-impl BindingScope for OverlayStateScope {
-    type InputHandle = usize;
-    type OutputHandle = ();
-
-    fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
-        let state_name = name.strip_prefix("@state.")?;
-        if state_name.is_empty() {
-            return None;
-        }
-        let mut names = self.names.borrow_mut();
-        let index = names
-            .iter()
-            .position(|bound| bound == state_name)
-            .unwrap_or_else(|| {
-                let index = names.len();
-                names.push(state_name.to_owned());
-                self.values.borrow_mut().push(0.0);
-                index
-            });
-        Some(ResolvedInput {
-            handle: index,
-            ir_type: IrType::Number,
-        })
-    }
-
-    fn resolve_output(&self, _name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
-        None
-    }
-
-    fn read(&self, handle: &Self::InputHandle) -> IrValue {
-        IrValue::Number(self.values.borrow().get(*handle).copied().unwrap_or(0.0))
-    }
-
-    fn write(&mut self, _handle: &Self::OutputHandle, _value: IrValue) {}
 }
 
 enum BoundEffect {
@@ -214,6 +112,10 @@ enum BoundEffect {
     GrantAmmo {
         pool: String,
         amount: BoundProgram<EntityScope>,
+    },
+    GrantLayer {
+        layer: String,
+        amount: Option<BoundProgram<EntityScope>>,
     },
     AdjustSentiment {
         from_recipient: CommandRecipient,
@@ -398,8 +300,20 @@ impl ImpactPolicyRuntime {
                     continue;
                 }
             };
-            match bind_damaged_enemies_overlay(template, world_anchor, overlay.max_visible, source)
-            {
+            let layers = self
+                .ctx
+                .registry
+                .borrow()
+                .defense_vocabulary()
+                .layers
+                .clone();
+            match bind_damaged_enemies_overlay(
+                template,
+                world_anchor,
+                overlay.max_visible,
+                source,
+                layers,
+            ) {
                 Ok(binding) => self.presentation_overlays.push(binding),
                 Err(error) => {
                     log::warn!("[Impact] presentation overlay was skipped during bind: {error}")
@@ -441,57 +355,6 @@ impl ImpactPolicyRuntime {
             if let Some(damage) = self.evaluate_dispatch(registry, dispatch) {
                 self.retain_local_overlay_damage(registry, damage);
             }
-        }
-    }
-
-    fn retain_local_overlay_damage(
-        &mut self,
-        registry: &EntityRegistry,
-        damage: DamagedEnemyOverlayDamage,
-    ) {
-        let Some(binding) = self.presentation_overlays.first() else {
-            return;
-        };
-        let is_alive = |entity| {
-            registry
-                .get_component::<postretro_entities::components::health::HealthComponent>(entity)
-                .is_ok_and(|health| health.current > 0.0)
-        };
-        self.pending_overlay_damage
-            .retain(|pending| is_alive(pending.entity));
-        if !is_alive(damage.entity) || !damage.damaged_at.is_finite() {
-            return;
-        }
-        if let Some(pending) = self
-            .pending_overlay_damage
-            .iter_mut()
-            .find(|pending| pending.entity == damage.entity)
-        {
-            if damage.damaged_at >= pending.damaged_at {
-                *pending = damage;
-            }
-            return;
-        }
-        if self.pending_overlay_damage.len() < binding.max_visible {
-            self.pending_overlay_damage.push(damage);
-            return;
-        }
-        let Some((least_recent_index, least_recent)) = self
-            .pending_overlay_damage
-            .iter()
-            .enumerate()
-            .min_by(|(_, left), (_, right)| {
-                (left.damaged_at, left.entity.to_raw())
-                    .partial_cmp(&(right.damaged_at, right.entity.to_raw()))
-                    .expect("retained overlay damage times are finite")
-            })
-        else {
-            return;
-        };
-        if (damage.damaged_at, damage.entity.to_raw())
-            > (least_recent.damaged_at, least_recent.entity.to_raw())
-        {
-            self.pending_overlay_damage[least_recent_index] = damage;
         }
     }
 
@@ -637,6 +500,7 @@ impl ImpactPolicyRuntime {
                         | BoundEffect::Despawn { .. }
                         | BoundEffect::GrantHealth { .. }
                         | BoundEffect::GrantAmmo { .. }
+                        | BoundEffect::GrantLayer { .. }
                         | BoundEffect::AdjustSentiment { .. }
                         | BoundEffect::SetLifeState { .. } => self.consequential.push(planned),
                     }
@@ -890,261 +754,6 @@ impl ImpactPolicyRuntime {
             scatter_radius: template.spawn_scatter.radius,
         });
     }
-
-    /// Transfer damage edges without selecting targets or reading presentation
-    /// state. The authoritative roster owns their subsequent lifetime.
-    pub fn take_damaged_enemy_overlay_damage(&mut self) -> Vec<DamagedEnemyOverlayDamage> {
-        std::mem::take(&mut self.pending_overlay_damage)
-    }
-
-    /// Sample only the caller's chosen targets, once per distinct ID. This
-    /// performs no source selection and never reads or mutates a draw pool.
-    pub fn sample_damaged_enemy_overlay_facts(
-        &mut self,
-        registry: &EntityRegistry,
-        entities: impl IntoIterator<Item = EntityId>,
-    ) -> Vec<DamagedEnemyOverlayFact> {
-        let Some(binding) = self.presentation_overlays.first() else {
-            return Vec::new();
-        };
-        self.overlay_entity_scratch.clear();
-        self.overlay_entity_scratch.extend(entities);
-        self.overlay_entity_scratch
-            .sort_by_key(|entity| entity.to_raw());
-        self.overlay_entity_scratch.dedup();
-        self.overlay_entity_scratch
-            .iter()
-            .map(|&entity| sample_overlay_fact(binding, registry, entity))
-            .collect()
-    }
-
-    /// Consume dispatch-driven refreshes, then stamp only already-tracked
-    /// overlays once after all fixed ticks. This keeps the damage event edge
-    /// separate from the bounded per-frame health/shield read.
-    pub fn update_damaged_enemy_overlays(
-        &mut self,
-        pool: &mut crate::presentation_pool::PresentationPool,
-        registry: &EntityRegistry,
-        hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
-        anim_time: f64,
-        remote_tracked_entities: impl IntoIterator<Item = EntityId>,
-        is_remote_source: impl Fn(Option<EntityId>) -> bool,
-    ) -> DamagedEnemyOverlayFrame {
-        let mut frame = DamagedEnemyOverlayFrame {
-            damage: self.take_damaged_enemy_overlay_damage(),
-            facts: Vec::new(),
-        };
-        let Some(binding) = self.presentation_overlays.first() else {
-            return frame;
-        };
-
-        for damage in &frame.damage {
-            if !is_remote_source(damage.source) {
-                pool.refresh_overlay(
-                    crate::presentation_pool::OverlayKind::DamagedEnemies,
-                    damage.entity,
-                    binding.template.clone(),
-                    binding.linger_seconds,
-                    binding.max_visible,
-                    u64::from(damage.entity.to_raw()),
-                );
-            }
-        }
-
-        frame.facts = self.sample_damaged_enemy_overlay_facts(
-            registry,
-            pool.tracked_overlay_ids_iter(crate::presentation_pool::OverlayKind::DamagedEnemies)
-                .chain(remote_tracked_entities)
-                .chain(frame.damage.iter().map(|damage| damage.entity)),
-        );
-        let binding = &self.presentation_overlays[0];
-        for fact in &frame.facts {
-            let entity = fact.entity;
-            if !fact.alive {
-                pool.evict_overlay(
-                    crate::presentation_pool::OverlayKind::DamagedEnemies,
-                    entity,
-                );
-                continue;
-            }
-            if pool.has_overlay(
-                crate::presentation_pool::OverlayKind::DamagedEnemies,
-                entity,
-            ) {
-                if let Some(anchor) = overlay_anchor(
-                    registry,
-                    hit_zones,
-                    entity,
-                    &binding.world_anchor,
-                    anim_time,
-                ) {
-                    pool.stamp_damaged_enemy_overlay(
-                        entity,
-                        fact.health_fraction,
-                        fact.shield_fraction,
-                        fact.has_shield,
-                        anchor,
-                        binding.hide_at_full
-                            && registry
-                                .get_component::<postretro_entities::components::health::HealthComponent>(entity)
-                                .is_ok_and(|health| health.current == health.max),
-                    );
-                } else {
-                    pool.evict_overlay(
-                        crate::presentation_pool::OverlayKind::DamagedEnemies,
-                        entity,
-                    );
-                }
-            }
-        }
-        frame
-    }
-}
-
-fn sample_overlay_fact(
-    binding: &BoundPresentationOverlay,
-    registry: &EntityRegistry,
-    entity: EntityId,
-) -> DamagedEnemyOverlayFact {
-    let mut fact = DamagedEnemyOverlayFact {
-        entity,
-        health_fraction: 0.0,
-        shield_fraction: 0.0,
-        has_shield: false,
-        alive: false,
-    };
-    let Ok(health) =
-        registry.get_component::<postretro_entities::components::health::HealthComponent>(entity)
-    else {
-        return fact;
-    };
-    if health.current <= 0.0 {
-        return fact;
-    }
-    fact.health_fraction = fraction_or_zero(health.current, health.max);
-    if let Some(shield) = &binding.shield {
-        binding.scope.seed(registry, entity);
-        let value = number_from_ir(eval_value(&shield.value, &binding.scope));
-        let max = number_from_ir(eval_value(&shield.max, &binding.scope));
-        fact.has_shield = max.is_finite() && max > 0.0;
-        if fact.has_shield {
-            fact.shield_fraction = fraction_or_zero(value, max).max(0.0);
-        }
-    }
-    fact.alive = true;
-    fact
-}
-
-fn bind_damaged_enemies_overlay(
-    template: PresentationTemplateHandle,
-    world_anchor: PresentationWorldAnchor,
-    max_visible: usize,
-    source: DamagedEnemiesOverlay,
-) -> Result<BoundPresentationOverlay, String> {
-    let scope = OverlayStateScope::default();
-    let linger_seconds = f64::from(source.linger_ms) / 1_000.0;
-    let hide_at_full = source.hide_at_full;
-    let shield = source
-        .shield
-        .map(|shield| {
-            let value = bind_overlay_number(&shield.value, &scope, "shield.value")?;
-            let max = bind_overlay_number(&shield.max, &scope, "shield.max")?;
-            Ok::<BoundOverlayShield, String>(BoundOverlayShield { value, max })
-        })
-        .transpose()?;
-    Ok(BoundPresentationOverlay {
-        template,
-        world_anchor,
-        max_visible,
-        linger_seconds,
-        hide_at_full,
-        scope,
-        shield,
-    })
-}
-
-fn bind_overlay_number(
-    root: &IrNode,
-    scope: &OverlayStateScope,
-    field: &str,
-) -> Result<BoundProgram<OverlayStateScope>, String> {
-    let program = bind(
-        &BakedIr {
-            version: CURRENT_IR_VERSION,
-            output: None,
-            root: root.clone(),
-        },
-        scope,
-    )
-    .map_err(|error| format!("{field} is invalid: {error}"))?;
-    if program.root_type != IrType::Number {
-        return Err(format!("{field} must evaluate to a number"));
-    }
-    Ok(program)
-}
-
-fn number_from_ir(value: IrValue) -> f32 {
-    match value {
-        IrValue::Number(value) if value.is_finite() => value,
-        _ => 0.0,
-    }
-}
-
-fn fraction_or_zero(value: f32, max: f32) -> f32 {
-    if value.is_finite() && max.is_finite() && max > 0.0 {
-        let fraction = value / max;
-        if fraction.is_finite() { fraction } else { 0.0 }
-    } else {
-        0.0
-    }
-}
-
-fn overlay_anchor(
-    registry: &EntityRegistry,
-    hit_zones: &crate::scripting_systems::hit_zones::HitZoneStore,
-    entity: EntityId,
-    anchor: &PresentationWorldAnchor,
-    anim_time: f64,
-) -> Option<glam::Vec3> {
-    let offset = glam::Vec3::Y * anchor.offset_y;
-    if let Some(socket) = anchor
-        .socket
-        .as_deref()
-        .and_then(|socket| hit_zones.posed_socket_world(registry, entity, socket, anim_time))
-    {
-        return Some(socket + offset);
-    }
-
-    let transform = registry.get_component::<Transform>(entity).ok()?;
-    if !transform.position.is_finite() {
-        return None;
-    }
-    if let Ok(health) =
-        registry.get_component::<postretro_entities::components::health::HealthComponent>(entity)
-        && let Some(hitbox) = &health.hitbox
-        && hitbox.offset.is_finite()
-        && hitbox.half_extents.is_finite()
-    {
-        let top =
-            transform.position + hitbox.offset + glam::Vec3::Y * hitbox.half_extents.y + offset;
-        if top.is_finite() {
-            return Some(top);
-        }
-    }
-
-    let mesh = registry
-        .get_component::<postretro_entities::components::mesh::MeshComponent>(entity)
-        .ok()?;
-    let bound = hit_zones.get_by_name(&mesh.model)?.derived_bound?;
-    let model_to_world =
-        crate::scripting_systems::hit_zones::model_matrix(transform, mesh.origin_offset)?;
-    let local_top = glam::Vec3::new(
-        (bound.min.x + bound.max.x) * 0.5,
-        bound.max.y,
-        (bound.min.z + bound.max.z) * 0.5,
-    );
-    let top = model_to_world.transform_point3(local_top) + offset;
-    top.is_finite().then_some(top)
 }
 
 fn policy_matches(policy: &BoundImpactPolicy, tags: &[String]) -> bool {
@@ -1311,6 +920,36 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
             }
             Ok(BoundEffect::GrantAmmo {
                 pool: pool.to_string(),
+                amount,
+            })
+        }
+        "grantLayer" => {
+            require_impact_token(target, primitive, IMPACT_SOURCE_TOKEN)?;
+            let handle = postretro_foundation::defense::HandleRef::from_json(
+                args.get("layer")
+                    .ok_or_else(|| "grantLayer args is missing `layer`".to_string())?,
+            )
+            .map_err(|error| format!("grantLayer `layer`: {error}"))?;
+            let layer = handle
+                .expect_layer()
+                .map_err(|error| format!("grantLayer `layer`: {error}"))?;
+            if !scope.declares_defense_layer(layer) {
+                return Err(format!(
+                    "grantLayer `layer`: `{layer}` is not a declared defense layer"
+                ));
+            }
+            let amount = match args.get("amount") {
+                None => None,
+                Some(value) => {
+                    let amount = bind_read(value, scope)?;
+                    if amount.root_type != IrType::Number {
+                        return Err("grantLayer `amount` must evaluate to a number".to_string());
+                    }
+                    Some(amount)
+                }
+            };
+            Ok(BoundEffect::GrantLayer {
+                layer: layer.to_string(),
                 amount,
             })
         }
@@ -1481,6 +1120,15 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
             effect: ImpactEffect::GrantAmmo {
                 pool: pool.clone(),
                 amount: number(eval_value(amount, scope)),
+            },
+        },
+        BoundEffect::GrantLayer { layer, amount } => PlannedEffect::Command {
+            recipients: CommandRecipients::One(CommandRecipient::Source),
+            effect: ImpactEffect::GrantLayer {
+                layer: layer.clone(),
+                amount: amount
+                    .as_ref()
+                    .map(|amount| number(eval_value(amount, scope))),
             },
         },
         BoundEffect::AdjustSentiment {
@@ -1764,6 +1412,7 @@ mod tests {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 }),
             )
             .expect("target is live");
@@ -1836,6 +1485,7 @@ mod tests {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: Default::default(),
+                        ..Default::default()
                     }),
                 )
                 .expect("source is live");
@@ -1866,6 +1516,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -2481,6 +2132,7 @@ mod tests {
                     &DamagePayload {
                         amount: 1.0,
                         impulse: glam::Vec3::ZERO,
+                        damage_type: None,
                     },
                     context,
                 );
@@ -2756,6 +2408,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -2814,6 +2467,7 @@ mod tests {
             &DamagePayload {
                 amount: 100.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             damage,
         );
@@ -2917,6 +2571,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -2965,7 +2620,7 @@ mod tests {
 
     #[test]
     fn impact_dispatch_point_never_becomes_an_ir_input() {
-        assert_eq!(IMPACT_DISPATCH_INPUTS.len(), 4);
+        assert_eq!(IMPACT_DISPATCH_INPUTS.len(), 7);
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
         let mut context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
@@ -2976,6 +2631,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -3023,6 +2679,7 @@ mod tests {
                 &DamagePayload {
                     amount: 1.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 context,
             );
@@ -3136,6 +2793,7 @@ mod tests {
                 &DamagePayload {
                     amount: 1.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 context,
             );
@@ -3205,6 +2863,7 @@ mod tests {
             &DamagePayload {
                 amount: 50.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.gib", DamageProducer::InTick),
         );
@@ -3265,6 +2924,7 @@ mod tests {
                 &DamagePayload {
                     amount: 3.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 DamageContext::new("weapon.shotgun", DamageProducer::InTick),
             );
@@ -3298,6 +2958,7 @@ mod tests {
             &DamagePayload {
                 amount: 3.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.shotgun", DamageProducer::InTick),
         );
@@ -3431,6 +3092,7 @@ mod tests {
                 &DamagePayload {
                     amount: 1.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 context,
             );

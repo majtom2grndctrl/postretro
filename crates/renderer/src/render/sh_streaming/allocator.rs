@@ -17,6 +17,10 @@ pub(super) struct PoolRange {
 pub(super) struct FirstFitRanges {
     pub(super) capacity: u32,
     free: BTreeMap<u32, u32>,
+    /// A range has come back since this pool was empty. Until then every
+    /// allocation extended the high-water, so no hole exists. An undo is no
+    /// release: it restores the pool exactly.
+    released: bool,
 }
 
 /// The exact inverse of one [`FirstFitRanges::allocate_undoable`]. Unlike
@@ -61,11 +65,21 @@ impl FirstFitRanges {
             return Ok((PoolRange { start, len }, undo));
         }
 
-        let start = self.capacity;
-        self.capacity = self
-            .capacity
+        // A free range touching the high-water extends past it, so a release
+        // at the tail still counts toward an allocation larger than itself.
+        let tail = self
+            .free
+            .last_key_value()
+            .map(|(&start, &available)| (start, available))
+            .filter(|&(start, available)| start.checked_add(available) == Some(self.capacity));
+        let start = tail.map_or(self.capacity, |(start, _)| start);
+        self.capacity = start
             .checked_add(len)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        if let Some((tail_start, _)) = tail {
+            self.free.remove(&tail_start);
+            undo.consumed_free = tail;
+        }
         Ok((PoolRange { start, len }, undo))
     }
 
@@ -80,10 +94,15 @@ impl FirstFitRanges {
         self.capacity = undo.previous_capacity;
     }
 
+    pub(super) fn has_released(&self) -> bool {
+        self.released
+    }
+
     pub(super) fn release(&mut self, range: PoolRange) -> Result<(), ShResidencyDrainError> {
         if range.len == 0 {
             return Ok(());
         }
+        self.released = true;
         let mut start = range.start;
         let mut len = range.len;
         if let Some((&previous_start, &previous_len)) = self.free.range(..start).next_back()
@@ -139,6 +158,10 @@ pub(super) struct SparseInstallUndo {
 }
 
 impl SparsePool {
+    pub(super) fn has_released(&self) -> bool {
+        self.entries.has_released() || self.tiles.has_released()
+    }
+
     pub(super) fn logical_occupancy(&self) -> (u32, u32) {
         self.live
             .values()
@@ -156,6 +179,7 @@ impl SparsePool {
             entries: FirstFitRanges {
                 capacity: 1,
                 free: BTreeMap::new(),
+                released: false,
             },
             tiles: FirstFitRanges {
                 // Two f16 halves form one storage word. Reserve the dummy
@@ -163,6 +187,7 @@ impl SparsePool {
                 // entries may still have odd internal offsets.
                 capacity: 2,
                 free: BTreeMap::new(),
+                released: false,
             },
             row_pairs: vec![[0, 0]; row_count],
             live: BTreeMap::new(),
@@ -202,15 +227,10 @@ impl SparsePool {
         if self.live.contains_key(&row) {
             return Err(ShResidencyDrainError::MalformedChunk {
                 cluster_id: 0,
-                reason: "sparse row already has a live owner",
+                reason: "sparse row is already live",
             });
         }
-        // The GPU carrier packs two f16 halves per u32.  Rows may contain an
-        // odd number of halves, but their allocation must leave one padding
-        // half so the following row can start on an even word boundary.
-        let reserved_tile_f16 = tile_f16
-            .checked_add(tile_f16 & 1)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        let reserved_tile_f16 = reserved_tile_f16(tile_f16)?;
         let (entry_range, entries_undo) = self.entries.allocate_undoable(entries)?;
         let (tile_range, tiles_undo) = match self.tiles.allocate_undoable(reserved_tile_f16) {
             Ok(allocated) => allocated,
@@ -266,9 +286,33 @@ impl SparsePool {
     }
 }
 
+/// The GPU carrier packs two f16 halves per u32. Rows may contain an odd
+/// number of halves, but their allocation must leave one padding half so the
+/// following row can start on an even word boundary.
+pub(super) fn reserved_tile_f16(tile_f16: u32) -> Result<u32, ShResidencyDrainError> {
+    tile_f16
+        .checked_add(tile_f16 & 1)
+        .ok_or(ShResidencyDrainError::SlotOverflow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_allocation_outgrowing_a_free_tail_extends_it_instead_of_stranding_it() {
+        let mut pool = FirstFitRanges::default();
+        pool.allocate(3).unwrap();
+        let tail = pool.allocate(2).unwrap();
+        pool.release(tail).unwrap();
+        let before = pool.clone();
+
+        let (range, undo) = pool.allocate_undoable(4).unwrap();
+        assert_eq!(range, PoolRange { start: 3, len: 4 });
+        assert_eq!(pool.capacity, 7);
+        pool.undo_allocation(undo);
+        assert_eq!(pool, before);
+    }
 
     #[test]
     fn dense_growth_and_eviction_reuse_a_stale_slot_without_relocating_live_slots() {
@@ -300,6 +344,27 @@ mod tests {
         pool.undo_allocation(exact);
         pool.undo_allocation(split);
         assert_eq!(pool, before);
+    }
+
+    // The whole-map report rests on this: only a real free can open a hole.
+    #[test]
+    fn only_a_real_release_counts_as_one() {
+        let mut pool = FirstFitRanges::default();
+        let (_, undo) = pool.allocate_undoable(3).unwrap();
+        pool.undo_allocation(undo);
+        let live = pool.allocate(3).unwrap();
+        pool.release(PoolRange { start: 0, len: 0 }).unwrap();
+        assert!(!pool.has_released(), "nothing has come back yet");
+        pool.release(live).unwrap();
+        assert!(pool.has_released());
+
+        let mut sparse = SparsePool::new(1);
+        let (_, _, undo) = sparse.install_undoable(0, 1, 2).unwrap();
+        sparse.undo_install(undo);
+        sparse.install(0, 1, 2).unwrap();
+        assert!(!sparse.has_released());
+        sparse.evict(0).unwrap();
+        assert!(sparse.has_released());
     }
 
     #[test]

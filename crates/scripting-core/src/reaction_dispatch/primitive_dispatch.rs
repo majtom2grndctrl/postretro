@@ -6,9 +6,7 @@ use serde::Deserialize;
 
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::PrimitiveDescriptor;
-use crate::reaction_registry::{
-    ReactionPrimitiveRegistry, SystemReactionCommand, SystemReactionRegistry,
-};
+use crate::reaction_registry::{ReactionPrimitiveRegistry, SystemReactionRegistry};
 use crate::registry::{ComponentKind, EntityId};
 use crate::slot_table::SlotType;
 
@@ -122,9 +120,9 @@ struct AddSlotArgs {
 }
 
 /// Resolve the tagged or grouped pawn recipients while a named/crossing/level-load
-/// reaction fires, then defer the actual addition to the host app drain. This
-/// keeps reaction dispatch independent from the session seat ledger while the
-/// drain remains responsible for skipping seats released in the meantime.
+/// reaction fires, and add to each seat's value at once, so the body's later
+/// steps see it (body order). A pawn whose seat was released reads no seat
+/// here: it warns and is skipped, and the store holds no value for it.
 pub(super) fn dispatch_add_owner_slot(
     args: &serde_json::Value,
     targets: &[EntityId],
@@ -200,18 +198,20 @@ pub(super) fn dispatch_add_owner_slot(
         return;
     }
 
-    script_ctx
-        .system_commands
-        .push(SystemReactionCommand::AddOwnerSlot {
-            slot: args.slot,
-            seats,
-            delta: args.delta,
-        });
+    let mut slot_table = script_ctx.slot_table.borrow_mut();
+    for seat in seats {
+        if let Err(error) =
+            crate::store_bridge::add_owner_slot_value(&mut slot_table, &args.slot, seat, args.delta)
+        {
+            log::warn!("[Scripting] addSlot for `{}` skipped: {error}", args.slot);
+        }
+    }
 }
 
 /// System-reaction arm: no entity targets. The handler parses `args` and
-/// enqueues a typed command; the app drains the queue once per frame. A system
-/// body and a system sequence step share it.
+/// enqueues a typed command the app drains once per frame; a store write
+/// (`setState`, a text edit) lands at once through the queue's state sink
+/// when one is installed. A system body and a system sequence step share it.
 pub(super) fn dispatch_system_reaction(
     primitive: &str,
     args: &serde_json::Value,

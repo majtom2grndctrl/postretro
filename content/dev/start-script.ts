@@ -33,6 +33,7 @@ import { referenceEnemyEntity } from "./scripts/reference-enemy";
 import { enemyRifleEntity } from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
 import {
+  RIFLE_TOLERANCE,
   RIFLE_TROOPERS_FACTION,
   RIFLE_WARRIORS_FACTION,
   rifleTrooperEntity,
@@ -304,10 +305,10 @@ export default defineMod({
     }),
     // Rifle squads treat each other and the raiders as hostile, so groups that
     // start apart on a dev map fight when they meet.
-    sentiment(RIFLE_TROOPERS_FACTION, RIFLE_WARRIORS_FACTION, { sentiment: -1 }),
-    sentiment(RIFLE_WARRIORS_FACTION, RIFLE_TROOPERS_FACTION, { sentiment: -1 }),
-    sentiment(RIFLE_TROOPERS_FACTION, CROSSFIRE_RAIDERS_FACTION, { sentiment: -1 }),
-    sentiment(RIFLE_WARRIORS_FACTION, CROSSFIRE_RAIDERS_FACTION, { sentiment: -1 }),
+    sentiment(RIFLE_TROOPERS_FACTION, RIFLE_WARRIORS_FACTION, { sentiment: -1, tolerance: RIFLE_TOLERANCE }),
+    sentiment(RIFLE_WARRIORS_FACTION, RIFLE_TROOPERS_FACTION, { sentiment: -1, tolerance: RIFLE_TOLERANCE }),
+    sentiment(RIFLE_TROOPERS_FACTION, CROSSFIRE_RAIDERS_FACTION, { sentiment: -1, tolerance: RIFLE_TOLERANCE }),
+    sentiment(RIFLE_WARRIORS_FACTION, CROSSFIRE_RAIDERS_FACTION, { sentiment: -1, tolerance: RIFLE_TOLERANCE }),
     sentiment(CROSSFIRE_RAIDERS_FACTION, RIFLE_TROOPERS_FACTION, {
       sentiment: -1,
       tolerance: RAIDER_TOLERANCE,

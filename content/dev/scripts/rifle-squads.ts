@@ -16,6 +16,8 @@ import { limitatorEntity } from "./limitator";
 
 export const RIFLE_TROOPERS_FACTION = "rifle.troopers";
 export const RIFLE_WARRIORS_FACTION = "rifle.warriors";
+// Matches the limitator's own tolerance, which both squads inherit.
+export const RIFLE_TOLERANCE = 4;
 
 const limitator = limitatorEntity.components;
 const limitatorHealth = limitator.health;

@@ -145,11 +145,36 @@ impl Binder {
 
         // Duplicate names keep the first document node, as sockets do.
         let mut nodes_by_name: HashMap<&str, gltf::Node> = HashMap::new();
+        let mut repeated_names: HashSet<&str> = HashSet::new();
         for node in library.document.nodes() {
-            if let Some(name) = node.name() {
-                nodes_by_name.entry(name).or_insert(node);
+            let Some(name) = node.name() else {
+                continue;
+            };
+            if nodes_by_name.contains_key(name) {
+                repeated_names.insert(name);
+            } else {
+                nodes_by_name.insert(name, node);
             }
         }
+        // The first node may carry no tracks while a later one does, which
+        // leaves the joint in rest with nothing else to say why.
+        let mut repeated: Vec<&str> = rig
+            .joint_names
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|name| repeated_names.contains(name))
+            .collect();
+        repeated.sort_unstable();
+        repeated.dedup();
+        if !repeated.is_empty() {
+            log::warn!(
+                "[Model] joints in {path_str} match several nodes in clip library {} and bind the first of each: {}",
+                library.path,
+                repeated.join(", ")
+            );
+        }
+
         let library_node = |joint: usize| {
             rig.joint_names[joint]
                 .as_deref()
@@ -165,7 +190,8 @@ impl Binder {
         let mesh_rest = rig.skeleton.joints[root].rest_local.translation;
         let library_rest = Vec3::from(library_root.transform().decomposed().0);
         let height_ratio = mesh_rest.y / library_rest.y;
-        if mesh_rest.y <= 0.0 || library_rest.y <= 0.0 || !height_ratio.is_finite() {
+        let usable = |height: f32| height.is_finite() && height > 0.0;
+        if !usable(mesh_rest.y) || !usable(library_rest.y) || !usable(height_ratio) {
             return Err(ModelLoadError::ClipLibraryRootHeight {
                 path: path_str.to_string(),
                 library: library.path.clone(),
@@ -240,14 +266,22 @@ impl Binder {
     /// Non-root translation and all scale drop, so proportions stay the mesh's.
     fn bind(&self, clip: ParsedClip, path_str: &str) -> ParsedClip {
         let mut joints = vec![JointTracks::default(); self.joints.len()];
+        let mut dropped_rotations = 0;
         for (index, bind) in self.joints.iter().enumerate() {
             let Some(bind) = bind else {
                 continue;
             };
             let source = &clip.joints[bind.library_node];
-            joints[index].rotation = map_track(&source.rotation, |rotation| {
+            let rotation = map_track(&source.rotation, |rotation| {
                 (bind.rest_correction * rotation).normalize()
             });
+            // A key of near-zero length passes parse validation, but its squared
+            // length underflows here, normalizing to NaN or to a non-unit value.
+            if rotation.values.iter().all(|value| value.is_normalized()) {
+                joints[index].rotation = rotation;
+            } else {
+                dropped_rotations += 1;
+            }
             if index != self.root.joint {
                 continue;
             }
@@ -259,10 +293,16 @@ impl Binder {
                 joints[index].translation = translation;
             } else {
                 log::warn!(
-                    "[Model] library clip '{}' exceeds finite root translation in {path_str}; the root holds its rest translation",
+                    "[Model] library clip '{}' has non-finite root translation in {path_str}; the root holds its rest translation",
                     clip.name
                 );
             }
+        }
+        if dropped_rotations > 0 {
+            log::warn!(
+                "[Model] library clip '{}' has {dropped_rotations} rotation tracks with a near-zero key in {path_str}; those joints hold rest",
+                clip.name
+            );
         }
         ParsedClip {
             name: clip.name,
@@ -353,7 +393,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::anim::{Loop, sample_clip_looped_world};
-    use crate::clip_library_test_fixtures::{Document, clip, library, node, rigid, skinned};
+    use crate::clip_library_test_fixtures::{
+        Document, clip, library, node, patch_document, rigid, skinned,
+    };
     use crate::gltf_loader::{
         LoadedModel, ModelLoadError, load_model, load_model_from_sources, read_model_sources,
     };
@@ -506,6 +548,85 @@ mod tests {
             Quat::IDENTITY,
             "a non-unit key composes to a unit rotation",
         );
+    }
+
+    // Regression: this key passed validation, then normalized to NaN through a
+    // rest correction, or to a non-unit rotation through none.
+    #[test]
+    fn near_zero_rotation_key_holds_rest_and_warns_once() {
+        let tiny = Quat::from_xyzw(0.0, 0.0, 0.0, 3.0e-23);
+        let hostile = [Quat::IDENTITY, tiny];
+        let sound = [Quat::IDENTITY, Quat::from_rotation_y(0.2)];
+        let lib = library(vec![
+            root_at(1.0),
+            node("arm").under("pelvis"),
+            node("leg").under("pelvis"),
+            node("head").under("pelvis"),
+        ])
+        .clip(
+            clip("seize")
+                .rotation("arm", &[0.0, 1.0], &hostile)
+                .rotation("leg", &[0.0, 4.0], &hostile)
+                .rotation("head", &[0.0, 1.0], &sound),
+        );
+        let capture = LogCapture::start();
+        let model = load_pair(
+            skinned(vec![
+                root_at(1.0),
+                node("arm")
+                    .under("pelvis")
+                    .turned(Quat::from_rotation_y(FRAC_PI_2)),
+                node("leg").under("pelvis"),
+                node("head").under("pelvis"),
+            ]),
+            lib,
+        );
+
+        let clip = named(&model, "seize");
+        assert!(clip.joints[1].rotation.values().is_empty(), "NaN key");
+        assert!(clip.joints[2].rotation.values().is_empty(), "non-unit key");
+        assert_rotation(
+            clip.joints[3].rotation.values()[1],
+            sound[1],
+            "a sound track on the same clip binds",
+        );
+        assert_eq!(clip.duration, 4.0, "a dropped track keeps the duration");
+        capture.assert_logged_once(Level::Warn, "near-zero key");
+    }
+
+    // Regression: the root bound a first node with no tracks, and the model
+    // stood in rest with no warning.
+    #[test]
+    fn repeated_library_node_for_a_mesh_joint_warns_once_naming_it() {
+        let lib = library(vec![
+            root_at(1.0),
+            node("pelvis_twin").at(Vec3::Y),
+            node("arm").under("pelvis"),
+            node("arm_twin").under("pelvis"),
+            node("crate_lid"),
+            node("crate_lid_twin"),
+        ])
+        .clip(clip("sway").rotation(
+            "pelvis_twin",
+            &[0.0, 1.0],
+            &[Quat::IDENTITY, Quat::from_rotation_y(0.3)],
+        ));
+        let (dir, path) = write_pair(bound_mesh(), lib);
+        patch_document(&dir.path().join(LIBRARY), |root| {
+            root["nodes"][1]["name"] = json!("pelvis");
+            root["nodes"][3]["name"] = json!("arm");
+            root["nodes"][5]["name"] = json!("crate_lid");
+        });
+        let capture = LogCapture::start();
+        let model = load_model(&path).unwrap();
+
+        assert!(
+            named(&model, "sway").joints[0].rotation.values().is_empty(),
+            "the first node wins"
+        );
+        capture.assert_logged_once(Level::Warn, "match several nodes");
+        capture.assert_logged(Level::Warn, "bind the first of each: arm, pelvis");
+        capture.assert_not_logged(Level::Warn, "crate_lid");
     }
 
     #[test]
@@ -722,7 +843,7 @@ mod tests {
                 .values()
                 .is_empty()
         );
-        capture.assert_logged_once(Level::Warn, "exceeds finite root translation");
+        capture.assert_logged_once(Level::Warn, "has non-finite root translation");
     }
 
     #[test]
@@ -1079,6 +1200,67 @@ mod tests {
         }
     }
 
+    // Regression: a ratio of zero passed the height check and flattened root
+    // translation, whether from underflow or a library height parsed to infinity.
+    #[test]
+    fn root_heights_with_no_usable_ratio_fail_the_load() {
+        for (mesh_height, library_height) in [(1.0e-30, 1.0e30), (1.0e30, 1.0e-30)] {
+            let error = load_err(
+                skinned(vec![root_at(mesh_height)]),
+                library(vec![root_at(library_height)]).clip(clip("idle")),
+            );
+
+            assert!(
+                matches!(error, ModelLoadError::ClipLibraryRootHeight { .. }),
+                "mesh {mesh_height}, library {library_height}: {error:?}"
+            );
+        }
+
+        let (dir, path) = write_pair(
+            skinned(vec![root_at(1.0)]),
+            library(vec![root_at(1.0)]).clip(clip("idle")),
+        );
+        patch_document(&dir.path().join(LIBRARY), |root| {
+            root["nodes"][0]["translation"][1] = json!(1.0e39);
+        });
+        let error = load_model(&path).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ModelLoadError::ClipLibraryRootHeight { library_height, .. }
+                    if library_height == f32::INFINITY
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn unreadable_library_accessor_skips_its_channel_and_keeps_the_clip() {
+        let lib = library(vec![root_at(1.0), node("arm").under("pelvis")]).clip(
+            clip("sway")
+                .rotation(
+                    "arm",
+                    &[0.0, 1.0],
+                    &[Quat::IDENTITY, Quat::from_rotation_y(0.3)],
+                )
+                .translation("pelvis", &[0.0, 1.0], &[Vec3::Y, Vec3::Y * 1.1]),
+        );
+        let (dir, path) = write_pair(bound_mesh(), lib);
+        patch_document(&dir.path().join(LIBRARY), |root| {
+            let output = root["animations"][0]["samplers"][1]["output"]
+                .as_u64()
+                .unwrap() as usize;
+            root["accessors"][output]["count"] = json!(0);
+        });
+        let capture = LogCapture::start();
+        let model = load_model(&path).unwrap();
+
+        let clip = named(&model, "sway");
+        assert!(clip.joints[0].translation.values().is_empty());
+        assert_eq!(clip.joints[1].rotation.values().len(), 2);
+        capture.assert_logged_once(Level::Warn, "output accessor has no elements");
+    }
+
     #[test]
     fn library_with_no_clips_fails_only_a_model_with_none() {
         let empty = || library(vec![root_at(1.0), node("arm").under("pelvis")]);
@@ -1106,6 +1288,9 @@ mod tests {
             json!("http://x"),
             json!("C:lib.gltf"),
             json!("file%3Alibrary.gltf"),
+            json!("clips\\library.gltf"),
+            json!("clips%5Clibrary.gltf"),
+            json!("library%FF.gltf"),
         ] {
             let path = embedding_model()
                 .extras(json!({ "tags": ["armored"], "clipLibrary": value }))

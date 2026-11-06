@@ -1,5 +1,6 @@
 """
-Headless Blender script: merge multiple Mixamo FBX files into one glTF.
+Headless Blender script: merge Mixamo FBX files into one glTF character or a
+shared clip library.
 
 Usage:
     blender --background --python tools/mixamo_to_gltf.py -- \
@@ -11,6 +12,8 @@ Usage:
         [--no-tag] \
         [--strip-face] \
         [--fix-eyes] \
+        [--eye-inset 0.01] \
+        [--exclude-meshes EXO_Body] \
         [--library | --clip-library ../clip_libraries/rifle/library.gltf]
 
 The --base file is treated as the base mesh + armature.  If omitted, the
@@ -40,7 +43,7 @@ The post-export pass is pure glTF work: with `bpy` and `mathutils` stubbed,
 bind_gltf_to_clip_library() can run it on an already-exported model.
 
 Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
-See: context/lib/resource_management.md §7
+See: docs/character-animation.md
 """
 
 import bpy
@@ -112,6 +115,15 @@ HIT_ZONES = {
     "RightUpLeg": "leg",
     "RightLeg": "leg",
 }
+
+# Extras keys tag_skeleton writes on a joint.
+ENGINE_TAGS = ("poseMask", "aimBendWeight", "socket", "hitZone")
+
+STALE_SUFFIXES = (".gltf", ".glb", ".bin", ".png", ".jpg", ".jpeg")
+
+# These reference accessors or buffer views from inside `extensions`, where
+# accessor_slots() and accessor_view_slots() do not look.
+UNTRACKED_EXTENSIONS = ("EXT_mesh_gpu_instancing", "KHR_draco_mesh_compression")
 
 
 def parse_args():
@@ -204,6 +216,7 @@ def parse_args():
     if args.clip_library is not None:
         try:
             check_clip_library_path(args.clip_library)
+            check_clip_library_target(args.output, args.clip_library)
         except ValueError as exc:
             parser.error(str(exc))
     return args
@@ -333,6 +346,16 @@ def strip_non_bone_fcurves(action):
                   f"'{data_path}' from '{action.name}' ({exc}); "
                   f"baked output size may be corrupted")
     return removed
+
+
+def reset_pose_to_rest(armature):
+    """Clear every pose bone's own transform.
+
+    An action writes only the properties it animates, so a bone it does not key
+    otherwise keeps the pose the previous action left on it.
+    """
+    for pbone in armature.pose.bones:
+        pbone.matrix_basis = Matrix.Identity(4)
 
 
 def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=0.0,
@@ -507,6 +530,7 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=
             old_rest_local[pbone.name] = pbone.bone.matrix_local.copy()
 
     for action in all_actions:
+        reset_pose_to_rest(base_armature)
         base_armature.animation_data.action = action
         frame_start = int(action.frame_range[0])
         frame_end = int(action.frame_range[1])
@@ -938,14 +962,42 @@ def validate_model():
         sys.exit(1)
 
 
-def export_gltf(output_path):
+def stale_outputs(output, keep_siblings):
+    """List the files in the output's folder that an export replaces.
+
+    With `keep_siblings`, only the output's own document, its buffer and the
+    images the old document names: a library and a character may share a folder.
+    """
+    output_dir = output.parent
+    if not output_dir.exists():
+        return []
+    if not keep_siblings:
+        return [f for f in output_dir.iterdir() if f.suffix.lower() in STALE_SUFFIXES]
+
+    own = [output, output.with_suffix(".bin")]
+    if output.exists():
+        try:
+            images = read_gltf(output).get("images", [])
+        except (ValueError, OSError) as exc:
+            print(f"  WARNING: could not read old {output.name}; "
+                  f"leaving its images in place ({exc})")
+            images = []
+        for image in images:
+            uri = image.get("uri", "")
+            if not uri or uri.startswith("data:"):
+                continue
+            named = output_dir / unquote(uri)
+            if named.parent.resolve() == output_dir.resolve():
+                own.append(named)
+    return [f for f in dict.fromkeys(own) if f.is_file()]
+
+
+def export_gltf(output_path, keep_siblings=False):
     output = Path(output_path)
     output_dir = output.parent
-    if output_dir.exists():
-        for f in output_dir.iterdir():
-            if f.suffix.lower() in (".gltf", ".glb", ".bin", ".png", ".jpg", ".jpeg"):
-                f.unlink()
-                print(f"  Removed stale: {f.name}")
+    for f in stale_outputs(output, keep_siblings):
+        f.unlink()
+        print(f"  Removed stale: {f.name}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     export_kwargs = {
@@ -1081,6 +1133,14 @@ def tag_skeleton(gltf):
     return tagged
 
 
+def has_engine_tags(gltf):
+    return any(
+        tag in (node.get("extras") or {})
+        for node in gltf.get("nodes", [])
+        for tag in ENGINE_TAGS
+    )
+
+
 def print_tag_summary(gltf, tagged):
     print(f"\nTagged {tagged} bones with engine extras")
     mask_counts = {}
@@ -1145,9 +1205,14 @@ def remove_accessors(gltf, bin_bytes, candidates):
 
     Mutates `gltf`, rewriting accessor and buffer view indices, and returns the
     compacted buffer. Sharing is resolved per buffer view: a view any surviving
-    accessor or image reads is kept whole. Packing keeps file order and 4-byte
-    alignment, which glTF requires of vertex attribute data.
+    accessor or image reads is kept whole. Packing keeps file order and each
+    view's offset modulo 4, so an accessor offset inside a view stays as aligned
+    as it was; glTF requires that alignment of vertex attribute data.
     """
+    untracked = set(UNTRACKED_EXTENSIONS) & set(gltf.get("extensionsUsed", []))
+    if untracked:
+        raise ValueError(f"cannot compact a document using {sorted(untracked)}: "
+                         f"its accessor references are not tracked")
     buffers = gltf.get("buffers", [])
     if len(buffers) != 1:
         raise ValueError(f"expected one buffer, found {len(buffers)}")
@@ -1189,8 +1254,8 @@ def remove_accessors(gltf, bin_bytes, candidates):
 
     packed = bytearray()
     for view in sorted(kept_views, key=lambda v: v.get("byteOffset", 0)):
-        packed.extend(bytes(-len(packed) % 4))
         start = view.get("byteOffset", 0)
+        packed.extend(bytes((start - len(packed)) % 4))
         view["byteOffset"] = len(packed)
         packed.extend(bin_bytes[start:start + view["byteLength"]])
     buffers[0]["byteLength"] = len(packed)
@@ -1244,6 +1309,16 @@ def check_clip_library_path(clip_library):
                          f"slashes and no scheme: '{clip_library}'")
 
 
+def check_clip_library_target(output, clip_library):
+    """Raise ValueError if the reference resolves to the output file itself.
+
+    Export would replace the library with the character bound to it.
+    """
+    output = Path(output)
+    if (output.parent / unquote(clip_library)).resolve() == output.resolve():
+        raise ValueError(f"--clip-library '{clip_library}' resolves to --output itself")
+
+
 def stamp_clip_library(gltf, clip_library):
     check_clip_library_path(clip_library)
     extras = gltf.setdefault("extras", {})
@@ -1268,11 +1343,13 @@ def gltf_bin_path(gltf_path, gltf):
     return Path(gltf_path).parent / unquote(uri)
 
 
-def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False):
+def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False,
+                     tag_if_missing=False):
     """Run the post-export pass on a `.gltf` and its `.bin`, in place.
 
     Normalization comes first so tagging sees canonical names; `tag` gates only
-    tagging, so a binding survives --no-tag.
+    tagging, so a binding survives --no-tag. `tag_if_missing` tags despite
+    `tag=False` when names changed or the document has no engine tags.
     """
     gltf_path = Path(gltf_path)
     gltf = read_gltf(gltf_path)
@@ -1280,7 +1357,7 @@ def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False):
     renamed = normalize_bone_prefixes(gltf)
     if renamed:
         print(f"\nNormalized {renamed} numbered bone prefix(es) to '{MIXAMO_PREFIX}'")
-    if tag:
+    if tag or (tag_if_missing and (renamed or not has_engine_tags(gltf))):
         print_tag_summary(gltf, tag_skeleton(gltf))
 
     if library or clip_library is not None:
@@ -1302,9 +1379,10 @@ def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False):
 def bind_gltf_to_clip_library(gltf_path, clip_library):
     """Bind an already-exported character to a library, with no Blender run.
 
-    Leaves existing tags alone: a committed model keeps the extras it has.
+    A committed canonical model keeps the extras it has. A numbered or untagged
+    rig is tagged, or it would lose its masks, sockets and zones without a word.
     """
-    postprocess_gltf(gltf_path, tag=False, clip_library=clip_library)
+    postprocess_gltf(gltf_path, tag=False, clip_library=clip_library, tag_if_missing=True)
 
 
 def main():
@@ -1322,12 +1400,12 @@ def main():
         strip_facial_bones()
     if not args.library:
         validate_model()
-    export_gltf(args.output)
+    export_gltf(args.output, keep_siblings=args.library or args.clip_library is not None)
     try:
         # Library joints carry no extras: only a mesh's own skeleton is tagged.
         postprocess_gltf(args.output, tag=not (args.no_tag or args.library),
                          clip_library=args.clip_library, library=args.library)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         # Blender exits 0 on an uncaught script exception.
         print(f"ERROR: {exc}")
         sys.exit(1)

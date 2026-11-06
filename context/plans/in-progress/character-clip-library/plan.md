@@ -104,7 +104,7 @@ Run from the workspace root, Blender 5.2. `library-src` stages the sources liste
 blender --background --python tools/mixamo_to_gltf.py -- --input-dir library-src --base exo_red.fbx --library --strip-face --output content/dev/models/clip_libraries/mixamo_rifle/library.gltf
 ```
 
-The committed file came from a scratch output path, then copied in. Mesh-only models were produced by `bind_gltf_to_clip_library` on the committed bakes, so no mount needed re-solving for `limitator`.
+The committed file came from a scratch output path, then copied in, built by the script at `159f1adf0`. A later review fix resets pose bones between clips, so a rebuild with today's script differs on `mixamorig:Throat` alone: no clip keys it, and it moves from a stale 0.91° to rest. That joint is a leaf with no vertices weighted to it, so nothing visible changes, and keeping the committed bake keeps the parity report below exact. Mesh-only models were produced by `bind_gltf_to_clip_library` on the committed bakes, so no mount needed re-solving for `limitator`.
 
 Source folder:
 

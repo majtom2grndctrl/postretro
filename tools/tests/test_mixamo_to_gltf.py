@@ -9,6 +9,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def load_converter_module():
@@ -183,6 +184,62 @@ class StripClipsTests(unittest.TestCase):
             start = view["byteOffset"]
             self.assertEqual(stripped[start:start + view["byteLength"]], expected)
 
+    def test_doomed_sparse_accessor_frees_only_views_nothing_else_reads(self):
+        gltf, data = fake_document()
+        rotations = gltf["accessors"][4]
+        del rotations["bufferView"]
+        rotations["sparse"] = {
+            "count": 1,
+            "indices": {"bufferView": 3, "componentType": 5123},
+            "values": {"bufferView": 4},
+        }
+
+        stripped = CONVERTER.strip_clips(gltf, data)
+
+        self.assertNotIn(CLIP_ROTATIONS, stripped)
+        self.assertEqual(
+            accessor_bytes(gltf, stripped, gltf["skins"][0]["inverseBindMatrices"]),
+            BIND_MATRICES,
+        )
+
+    def test_refuses_extensions_that_hide_accessor_references(self):
+        for extension in ("EXT_mesh_gpu_instancing", "KHR_draco_mesh_compression"):
+            with self.subTest(extension=extension):
+                gltf, data = fake_document()
+                gltf["extensionsUsed"] = ["KHR_materials_unlit", extension]
+
+                with self.assertRaisesRegex(ValueError, extension):
+                    CONVERTER.strip_clips(gltf, data)
+
+    def test_other_extensions_are_allowed(self):
+        gltf, data = fake_document()
+        gltf["extensionsUsed"] = ["KHR_materials_unlit"]
+
+        self.assertNotIn(CLIP_ROTATIONS, CONVERTER.strip_clips(gltf, data))
+
+    def test_accessor_offset_in_a_misaligned_view_stays_aligned(self):
+        kept = b"xxKEPT--"
+        gltf = {
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 1, "type": "SCALAR"},
+                {"bufferView": 1, "byteOffset": 2, "componentType": 5126, "count": 1,
+                 "type": "SCALAR"},
+            ],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 6},
+                {"buffer": 0, "byteOffset": 6, "byteLength": len(kept)},
+            ],
+            "buffers": [{"byteLength": 6 + len(kept), "uri": "model.bin"}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 1}}]}],
+            "animations": [{"samplers": [{"input": 0, "output": 0}]}],
+        }
+
+        stripped = CONVERTER.strip_clips(gltf, b"DOOMED" + kept)
+
+        view = gltf["bufferViews"][0]
+        self.assertEqual((view["byteOffset"] + gltf["accessors"][0]["byteOffset"]) % 4, 0)
+        self.assertEqual(stripped[view["byteOffset"]:], kept)
+
     def test_views_stay_four_byte_aligned(self):
         gltf, _ = self.strip()
 
@@ -301,11 +358,32 @@ class BindExistingModelTests(unittest.TestCase):
 
     def test_leaves_a_committed_models_tags_alone(self):
         gltf, data = fake_document()
+        gltf["nodes"][3]["extras"]["hitZone"] = "custom"
         path = self.bind(gltf, data)
 
         result = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(result["nodes"][3]["extras"], {"keep": "value"})
+        self.assertEqual(result["nodes"][3]["extras"], {"keep": "value", "hitZone": "custom"})
+        self.assertNotIn("extras", result["nodes"][2])
         self.assertNotIn("skeleton", result["skins"][0])
+
+    def test_tags_a_numbered_rig_the_old_tool_left_untagged(self):
+        gltf, data = fake_document("mixamorig1:")
+        path = self.bind(gltf, data)
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(result["nodes"][1]["name"], "mixamorig:Hips")
+        self.assertEqual(result["nodes"][2]["extras"]["socket"], "hand_r")
+        self.assertEqual(result["nodes"][3]["extras"]["hitZone"], "head")
+        self.assertEqual(result["nodes"][3]["extras"]["keep"], "value")
+        self.assertEqual(result["skins"][0]["skeleton"], 1)
+
+    def test_tags_a_canonical_rig_with_no_engine_tags(self):
+        gltf, data = fake_document()
+        path = self.bind(gltf, data)
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(result["nodes"][2]["extras"]["socket"], "hand_r")
+        self.assertEqual(result["skins"][0]["skeleton"], 1)
 
     def test_writes_utf8_without_bom_with_tabs_and_lf(self):
         gltf, data = fake_document()
@@ -424,6 +502,197 @@ class NumberedPrefixTests(unittest.TestCase):
                 self.assertEqual(CONVERTER.canonical_bone_name(name), expected)
 
 
+class StripFacialBonesTests(unittest.TestCase):
+    def test_finds_head_on_a_numbered_rig(self):
+        def bone(name, children=()):
+            return types.SimpleNamespace(name=name, children_recursive=list(children))
+
+        jaw = bone("mixamorig7:Jaw")
+        head_top = bone("mixamorig7:HeadTop_End")
+        head = bone("mixamorig7:Head", [jaw, head_top])
+        edit_bones = {b.name: types.SimpleNamespace() for b in (jaw, head_top, head)}
+        armature = types.SimpleNamespace(
+            type="ARMATURE",
+            data=types.SimpleNamespace(bones=[head, jaw, head_top], edit_bones=edit_bones),
+        )
+        bpy = mock.MagicMock()
+        bpy.data.objects = [armature]
+
+        with mock.patch.object(CONVERTER, "bpy", bpy):
+            CONVERTER.strip_facial_bones()
+
+        self.assertTrue(edit_bones["mixamorig7:Jaw"].select)
+        self.assertFalse(hasattr(edit_bones["mixamorig7:HeadTop_End"], "select"))
+        self.assertFalse(hasattr(edit_bones["mixamorig7:Head"], "select"))
+        bpy.ops.armature.delete.assert_called_once()
+
+
+class ResetPoseTests(unittest.TestCase):
+    def test_clears_every_pose_bone(self):
+        bones = [types.SimpleNamespace(matrix_basis="old pose") for _ in range(2)]
+        armature = types.SimpleNamespace(pose=types.SimpleNamespace(bones=bones))
+        matrix = types.SimpleNamespace(Identity=lambda size: ("identity", size))
+
+        with mock.patch.object(CONVERTER, "Matrix", matrix):
+            CONVERTER.reset_pose_to_rest(armature)
+
+        self.assertEqual([b.matrix_basis for b in bones], [("identity", 4)] * 2)
+
+
+class StaleOutputTests(unittest.TestCase):
+    def setUp(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        self.directory = Path(temp_dir.name) / "models"
+        self.directory.mkdir()
+
+    def touch(self, *names):
+        for name in names:
+            (self.directory / name).write_bytes(b"old")
+
+    def names(self):
+        return sorted(path.name for path in self.directory.iterdir())
+
+    def export(self, output, **kwargs):
+        with mock.patch.object(CONVERTER, "bpy", mock.MagicMock()):
+            CONVERTER.export_gltf(self.directory / output, **kwargs)
+
+    def write_old_document(self, output, images):
+        document = {"images": images}
+        (self.directory / output).write_text(json.dumps(document), encoding="utf-8")
+
+    def test_binding_keeps_the_library_beside_the_character(self):
+        self.touch("library.gltf", "library.bin", "model.bin", "model_base.png", "other.png")
+        self.write_old_document("model.gltf", [{"uri": "model_base.png"}])
+
+        self.export("model.gltf", keep_siblings=True)
+
+        self.assertEqual(self.names(), ["library.bin", "library.gltf", "other.png"])
+
+    def test_library_keeps_a_character_beside_it(self):
+        self.touch("library.bin", "model.gltf", "model.bin", "model_base.png")
+        self.write_old_document("library.gltf", [])
+
+        self.export("library.gltf", keep_siblings=True)
+
+        self.assertEqual(self.names(), ["model.bin", "model.gltf", "model_base.png"])
+
+    def test_old_image_outside_the_folder_or_embedded_stays(self):
+        outside = self.directory.parent / "shared.png"
+        outside.write_bytes(b"old")
+        self.touch("a b.png")
+        self.write_old_document("model.gltf", [
+            {"uri": "../shared.png"},
+            {"uri": "data:image/png;base64,AAAA"},
+            {"bufferView": 0},
+            {"uri": "a%20b.png"},
+            {"uri": "a%20b.png"},
+        ])
+
+        self.export("model.gltf", keep_siblings=True)
+
+        self.assertTrue(outside.exists())
+        self.assertEqual(self.names(), [])
+
+    def test_unreadable_old_document_keeps_images(self):
+        self.touch("model.gltf", "model.bin", "model_base.png")
+
+        self.export("model.gltf", keep_siblings=True)
+
+        self.assertEqual(self.names(), ["model_base.png"])
+
+    def test_plain_conversion_still_clears_the_folder(self):
+        self.touch("old.gltf", "old.glb", "old.bin", "old.png", "old.jpg", "old.jpeg",
+                   "license.txt")
+
+        self.export("model.gltf")
+
+        self.assertEqual(self.names(), ["license.txt"])
+
+    def test_missing_folder_is_created(self):
+        with mock.patch.object(CONVERTER, "bpy", mock.MagicMock()):
+            CONVERTER.export_gltf(self.directory / "new" / "model.gltf", keep_siblings=True)
+
+        self.assertTrue((self.directory / "new").is_dir())
+
+
+class MainTests(unittest.TestCase):
+    def run_main(self, gltf, data, *flags, delete_bin=False):
+        """Run main() with Blender's stages stubbed and the export already on disk."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, data)
+            if delete_bin:
+                path.with_suffix(".bin").unlink()
+            argv = ["blender", "--", "--input-dir", "clips", "--base", "rig.fbx",
+                    "--output", str(path), *flags]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(CONVERTER, "clean_scene"), \
+                    mock.patch.object(CONVERTER, "merge_animations"), \
+                    mock.patch.object(CONVERTER, "validate_model"), \
+                    mock.patch.object(CONVERTER, "export_gltf") as self.export:
+                CONVERTER.main()
+            return json.loads(path.read_text(encoding="utf-8"))
+
+    def library_document(self):
+        gltf, data = fake_document()
+        del gltf["meshes"]
+        del gltf["images"]
+        gltf["nodes"].pop()
+        gltf["nodes"][0]["children"] = [1]
+        return gltf, data
+
+    def test_library_is_never_tagged(self):
+        for flags in (("--library",), ("--library", "--no-tag")):
+            with self.subTest(flags=flags):
+                gltf, data = self.library_document()
+
+                result = self.run_main(gltf, data, *flags)
+
+                self.assertFalse(CONVERTER.has_engine_tags(result))
+                self.assertEqual(result["nodes"][3]["extras"], {"keep": "value"})
+
+    def test_character_is_tagged(self):
+        gltf, data = fake_document()
+
+        result = self.run_main(gltf, data, "--clip-library", LIBRARY)
+
+        self.assertEqual(result["nodes"][2]["extras"]["socket"], "hand_r")
+
+    def test_no_tag_binding_stays_untagged(self):
+        gltf, data = fake_document("mixamorig1:")
+
+        result = self.run_main(gltf, data, "--no-tag", "--clip-library", LIBRARY)
+
+        self.assertFalse(CONVERTER.has_engine_tags(result))
+        self.assertEqual(result["extras"]["clipLibrary"], LIBRARY)
+
+    def test_only_library_modes_keep_siblings(self):
+        for flags, expected in (((), False), (("--library",), True),
+                                (("--clip-library", LIBRARY), True)):
+            with self.subTest(flags=flags):
+                gltf, data = fake_document()
+                del gltf["meshes"]
+                self.run_main(gltf, data, *flags)
+
+                self.assertEqual(self.export.call_args.kwargs["keep_siblings"], expected)
+
+    def test_missing_buffer_exits_nonzero(self):
+        gltf, data = fake_document()
+
+        with self.assertRaises(SystemExit) as caught:
+            self.run_main(gltf, data, "--clip-library", LIBRARY, delete_bin=True)
+
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_refused_document_exits_nonzero(self):
+        gltf, data = fake_document()
+
+        with self.assertRaises(SystemExit) as caught:
+            self.run_main(gltf, data, "--library")
+
+        self.assertEqual(caught.exception.code, 1)
+
+
 def fcurve(bone, channel="rotation_quaternion"):
     return types.SimpleNamespace(data_path=f'pose.bones["{bone}"].{channel}')
 
@@ -525,6 +794,15 @@ class ConverterArgumentTests(unittest.TestCase):
     def test_rejects_a_malformed_clip_library_path(self):
         with self.assertRaises(SystemExit):
             self.parse("--clip-library", "file:library.gltf")
+
+    def test_rejects_a_clip_library_that_is_the_output(self):
+        for value in ("out.gltf", "./out.gltf", "x/../out.gltf", "%6Fut.gltf"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                self.parse("--clip-library", value)
+
+    def test_accepts_a_library_beside_the_output(self):
+        self.assertEqual(self.parse("--clip-library", "library.gltf").clip_library,
+                         "library.gltf")
 
 
 if __name__ == "__main__":

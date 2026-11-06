@@ -1,6 +1,7 @@
 // Shared glTF relative-URI resolution for runtime, level compilation and packaging.
-// See: context/lib/build_pipeline.md §Baked texture mips
+// See: context/lib/build_pipeline.md §Baked texture mips · context/lib/resource_management.md §7
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -8,34 +9,31 @@ use std::path::{Path, PathBuf};
 /// document's own schema does not type as a URI, such as `extras.clipLibrary`.
 ///
 /// Returns `None` for anything but a non-empty relative path: URI schemes,
-/// including `data:` and `file:`, any other colon, and absolute or rooted paths.
-/// Every rule applies after percent decoding.
+/// including `data:` and `file:`, any other colon, a backslash, absolute or
+/// rooted paths, and percent escapes that do not decode to UTF-8. Every rule
+/// applies after percent decoding.
 ///
-/// Invalid UTF-8 falls back to the literal URI so the later filesystem read owns
-/// failure handling. Parent segments are joined unchanged: glTF content is
-/// trusted and may deliberately reference a sibling directory.
+/// Parent segments are joined unchanged: glTF content is trusted and may
+/// deliberately reference a sibling directory.
 pub fn resolve_relative_uri(uri: &str, parent_dir: &Path) -> Option<PathBuf> {
-    let decoded = decode_relative_uri(uri)?;
-    (!decoded.is_empty()).then(|| parent_dir.join(decoded))
-}
-
-fn decode_relative_uri(uri: &str) -> Option<String> {
     let decoded = percent_encoding::percent_decode_str(uri)
         .decode_utf8()
-        .map(|value| value.into_owned())
-        .unwrap_or_else(|_| uri.to_string());
+        .ok()?;
+    // A backslash separates on Windows and names a file elsewhere, so accepting
+    // one would give a document a different path and failure mode per platform.
+    (!decoded.is_empty() && !decoded.contains('\\') && is_relative_reference(&decoded))
+        .then(|| parent_dir.join(&*decoded))
+}
 
+fn is_relative_reference(decoded: &str) -> bool {
     // `has_root`, not `is_absolute`. On Windows a leading-slash path carries a
     // root but no drive prefix, so `is_absolute` is false for it — and a join
     // then *replaces* the parent directory rather than extending it, which is
     // the one outcome this guard exists to prevent. A glTF URI is a relative
     // reference by specification, so a rooted one is unsupported on both
     // platforms.
-    let decoded_path = Path::new(&decoded);
-    if decoded.contains(':') || decoded_path.is_absolute() || decoded_path.has_root() {
-        return None;
-    }
-    Some(decoded)
+    let decoded_path = Path::new(decoded);
+    !(decoded.contains(':') || decoded_path.is_absolute() || decoded_path.has_root())
 }
 
 /// Resolves a material's relative filesystem base-color URI beside its glTF.
@@ -44,8 +42,9 @@ fn decode_relative_uri(uri: &str) -> Option<String> {
 /// base-color textures, and buffer-view images return `None`. Callers treat
 /// `None` as unavailable and degrade to a placeholder or skip its offline bake.
 ///
-/// Decoding and rejection are [`resolve_relative_uri`]'s, except that an empty
-/// URI joins as the parent directory, which the later read then fails on.
+/// Decoding and rejection are [`resolve_relative_uri`]'s, with three exceptions
+/// that leave failure to the later read. Invalid UTF-8 falls back to the literal
+/// URI, an empty URI joins as the parent directory, and a backslash passes through.
 pub fn resolve_material_base_color_path(
     material: &gltf::Material,
     parent_dir: &Path,
@@ -58,7 +57,10 @@ pub fn resolve_material_base_color_path(
             gltf::image::Source::View { .. } => None,
         })?;
 
-    decode_relative_uri(uri).map(|decoded| parent_dir.join(decoded))
+    let decoded = percent_encoding::percent_decode_str(uri)
+        .decode_utf8()
+        .unwrap_or(Cow::Borrowed(uri));
+    is_relative_reference(&decoded).then(|| parent_dir.join(&*decoded))
 }
 
 /// Opens a glTF document and returns its distinct relative base-color paths.
@@ -139,6 +141,11 @@ mod tests {
             "C%3Alib.gltf",
             "/library.gltf",
             "%2Flibrary.gltf",
+            "clips\\library.gltf",
+            "..\\library.gltf",
+            "\\library.gltf",
+            "clips%5Clibrary.gltf",
+            "library%FF.gltf",
         ] {
             assert_eq!(
                 resolve_relative_uri(uri, Path::new("/content/models")),
@@ -260,6 +267,38 @@ mod tests {
                 "URI must be unsupported after decoding: {uri}"
             );
         }
+    }
+
+    #[test]
+    fn material_resolver_keeps_backslashes_and_invalid_utf8_literal() {
+        let resolve = |uri: &str| {
+            let json = format!(
+                r#"{{
+                    "asset": {{"version": "2.0"}},
+                    "images": [{{"uri": "{uri}"}}],
+                    "textures": [{{"source": 0}}],
+                    "materials": [{{
+                        "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0}}}}
+                    }}]
+                }}"#
+            );
+            let document = parse_gltf(&json);
+            let material = document
+                .materials()
+                .next()
+                .expect("fixture must contain a material");
+            resolve_material_base_color_path(&material, Path::new("/content/models"))
+        };
+
+        assert_eq!(
+            resolve("textures%5Cbase.png"),
+            Some(Path::new("/content/models").join("textures\\base.png")),
+        );
+        assert_eq!(
+            resolve("base%FF.png"),
+            Some(PathBuf::from("/content/models/base%FF.png")),
+            "the later read owns an undecodable URI"
+        );
     }
 
     #[test]

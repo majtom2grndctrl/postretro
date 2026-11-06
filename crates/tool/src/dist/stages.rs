@@ -105,8 +105,9 @@ pub(crate) fn resolve_levels(
 /// placements, so rigs declared in script would otherwise reach a payload with
 /// no sidecar and render placeholders.
 ///
-/// The same walk refuses a skinned model whose clip library would not reach the
-/// payload: the reference loads in dev and fails to load from the shipped tree.
+/// The same walk refuses a skinned model under `models/` whose clip library would
+/// not reach the payload: the reference loads in dev and fails to load from the
+/// shipped tree.
 pub(crate) fn bake_model_textures(project: &Project) -> Result<(), String> {
     println!("Stage 4: bake model textures");
     let models = project.mod_root().join("models");

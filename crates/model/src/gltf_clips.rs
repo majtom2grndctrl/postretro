@@ -216,6 +216,48 @@ fn animation_output_shape_ok(
     }
 }
 
+/// Why gltf cannot safely read `accessor`, or `None` when it can. Call once the
+/// accessor's shape is known good, so `size()` is the element size gltf reads.
+///
+/// `gltf::accessor::Iter` trusts what document validation leaves unchecked. A
+/// stride below the element size panics on the first read, in release too. Its
+/// range arithmetic overflows on a zero count or a huge one. A sparse accessor
+/// with no buffer view allocates `count` elements whatever the file's size.
+/// Animation data has no need of sparse storage, so it is refused outright.
+fn accessor_read_refusal(
+    accessor: &gltf::Accessor,
+    buffers: &[gltf::buffer::Data],
+) -> Option<&'static str> {
+    if accessor.count() == 0 {
+        return Some("has no elements");
+    }
+    if accessor.sparse().is_some() {
+        return Some("is sparse");
+    }
+    let Some(view) = accessor.view() else {
+        return Some("has no buffer view");
+    };
+    let element_size = accessor.size();
+    let stride = view.stride().unwrap_or(element_size);
+    if stride < element_size {
+        return Some("has a byte stride below its element size");
+    }
+    let accessor_end = (accessor.count() - 1)
+        .checked_mul(stride)
+        .and_then(|span| span.checked_add(element_size))
+        .and_then(|span| span.checked_add(accessor.offset()));
+    let view_end = view.offset().checked_add(view.length());
+    let buffer_length = buffers.get(view.buffer().index()).map(|data| data.0.len());
+    match (accessor_end, view_end, buffer_length) {
+        (Some(accessor_end), Some(view_end), Some(buffer_length))
+            if accessor_end <= view.length() && view_end <= buffer_length =>
+        {
+            None
+        }
+        _ => Some("overruns its buffer"),
+    }
+}
+
 /// A clip's tracks as authored, before root-motion derivation. A distinct type
 /// so each clip derives exactly once, after anything that rewrites its tracks.
 #[derive(Debug, Clone, PartialEq)]
@@ -283,13 +325,13 @@ pub(crate) fn parse_clip(
         let sampler = channel.sampler();
         let interpolation = sampler.interpolation();
 
-        // Validate the sampler accessors' shapes BEFORE reading. Unlike the
-        // mesh/skeleton accessors, `read_inputs`/`read_outputs` are otherwise
-        // read unchecked, and gltf panics on shapes it cannot decode (an
-        // `unreachable!` for an unsupported output component type — in release
-        // too — or an internal size `debug_assert!`), violating the never-panics
-        // contract. On mismatch we degrade-and-skip the channel — the same
-        // policy malformed channels follow below (the joint holds its rest pose).
+        // Validate the sampler accessors BEFORE reading, shape first, then
+        // readability. `read_inputs`/`read_outputs` check neither: gltf panics on
+        // shapes it cannot decode (an `unreachable!` for an unsupported output
+        // component type — in release too — or an internal size `debug_assert!`)
+        // and on the accessors `accessor_read_refusal` names. A failure
+        // degrades-and-skips the channel — the same policy malformed channels
+        // follow below (the joint holds its rest pose).
         let input_accessor = sampler.input();
         if (input_accessor.data_type(), input_accessor.dimensions())
             != (DataType::F32, Dimensions::Scalar)
@@ -307,6 +349,18 @@ pub(crate) fn parse_clip(
                 "clip '{name}' {kind} channel: output accessor shape {} is unsupported for this \
                  property; skipping channel (joint holds rest pose)",
                 format_accessor_shape((output_accessor.data_type(), output_accessor.dimensions())),
+            );
+            continue;
+        }
+        let refusal = [("input", &input_accessor), ("output", &output_accessor)]
+            .into_iter()
+            .find_map(|(role, accessor)| {
+                accessor_read_refusal(accessor, buffers).map(|reason| (role, reason))
+            });
+        if let Some((role, reason)) = refusal {
+            log::warn!(
+                "clip '{name}' {kind} channel: {role} accessor {reason}; \
+                 skipping channel (joint holds rest pose)",
             );
             continue;
         }
@@ -473,8 +527,149 @@ fn warn_root_motion_overflow(clip_name: &str, path_str: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::clip_library_test_fixtures::{Document, clip, node, patch_document, skinned};
+    use crate::gltf_loader::load_model;
     use gltf::animation::Interpolation;
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+    use serde_json::{Value, json};
+
+    /// A clip with a sound `arm` rotation channel, then a `pelvis` translation
+    /// channel for [`break_translation`] to damage.
+    fn two_channel_model(times: &[f32], translations: &[Vec3]) -> Document {
+        skinned(vec![
+            node("pelvis").at(Vec3::Y),
+            node("arm").under("pelvis"),
+        ])
+        .clip(
+            clip("sway")
+                .rotation(
+                    "arm",
+                    &[0.0, 1.0],
+                    &[Quat::IDENTITY, Quat::from_rotation_y(0.3)],
+                )
+                .translation("pelvis", times, translations),
+        )
+    }
+
+    fn merge_fields(target: &mut Value, fields: &Value) {
+        for (key, value) in fields.as_object().unwrap() {
+            target[key.as_str()] = value.clone();
+        }
+    }
+
+    /// Overwrite fields of the accessor on `side` of the translation channel, and
+    /// of that accessor's own buffer view.
+    fn break_translation(path: &Path, side: &str, accessor: &Value, view: &Value) {
+        patch_document(path, |root| {
+            let accessor_index =
+                root["animations"][0]["samplers"][1][side].as_u64().unwrap() as usize;
+            let view_index = root["accessors"][accessor_index]["bufferView"]
+                .as_u64()
+                .unwrap() as usize;
+            merge_fields(&mut root["accessors"][accessor_index], accessor);
+            merge_fields(&mut root["bufferViews"][view_index], view);
+        });
+    }
+
+    // Regression: gltf trusted stride, count and sparse shape. A short stride
+    // panicked in release, a zero count overflowed in dev, and a sparse-only
+    // accessor with a huge count aborted on allocation.
+    #[test]
+    fn unreadable_sampler_accessor_warns_and_skips_only_its_channel() {
+        const BOTH: &[&str] = &["input", "output"];
+        // An input element is 4 bytes, the least stride a document may declare.
+        const OUTPUT: &[&str] = &["output"];
+        let sparse = json!({
+            "count": 1,
+            "indices": { "bufferView": 0, "componentType": 5123 },
+            "values": { "bufferView": 0 },
+        });
+        let sparse_only = json!({
+            "bufferView": null,
+            "count": 1_000_000_000_000u64,
+            "sparse": sparse,
+        });
+        let none = json!({});
+        let cases = [
+            (BOTH, "has no elements", json!({ "count": 0 }), none.clone()),
+            (BOTH, "is sparse", json!({ "sparse": sparse }), none.clone()),
+            (BOTH, "is sparse", sparse_only, none.clone()),
+            (
+                OUTPUT,
+                "has a byte stride below its element size",
+                none.clone(),
+                json!({ "byteStride": 4 }),
+            ),
+            (
+                BOTH,
+                "overruns its buffer",
+                json!({ "count": u64::MAX }),
+                none.clone(),
+            ),
+            (
+                BOTH,
+                "overruns its buffer",
+                json!({ "byteOffset": 4 }),
+                none.clone(),
+            ),
+            (
+                BOTH,
+                "overruns its buffer",
+                none.clone(),
+                json!({ "byteLength": 1u64 << 40 }),
+            ),
+            (
+                BOTH,
+                "overruns its buffer",
+                none.clone(),
+                json!({ "byteOffset": u64::MAX }),
+            ),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.gltf");
+        for (sides, reason, accessor, view) in &cases {
+            for side in *sides {
+                let label = format!("{side} {accessor} {view}");
+                two_channel_model(&[0.0, 1.0], &[Vec3::Y, Vec3::Y * 1.1]).write(&path);
+                break_translation(&path, side, accessor, view);
+                let capture = LogCapture::start();
+                let model = load_model(&path).unwrap_or_else(|error| panic!("{label}: {error}"));
+
+                capture.assert_logged_once(Level::Warn, &format!("{side} accessor {reason}"));
+                let joints = &model.clips[0].joints;
+                assert!(joints[0].translation.values().is_empty(), "{label}");
+                assert_eq!(joints[1].rotation.values().len(), 2, "{label}");
+            }
+        }
+    }
+
+    #[test]
+    fn stride_wider_than_its_element_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = two_channel_model(&[0.0, 1.0, 2.0], &[Vec3::Y, Vec3::Y * 5.0, Vec3::Y * 3.0])
+            .write(&dir.path().join("model.gltf"));
+        break_translation(&path, "input", &json!({ "count": 2 }), &json!({}));
+        break_translation(
+            &path,
+            "output",
+            &json!({ "count": 2 }),
+            &json!({ "byteStride": 24 }),
+        );
+        let capture = LogCapture::start();
+        let model = load_model(&path).unwrap();
+
+        assert_eq!(
+            model.clips[0].joints[0].translation.values(),
+            [Vec3::Y, Vec3::Y * 3.0],
+            "the stride steps over the middle key"
+        );
+        capture.assert_nothing_above(Level::Info);
+    }
 
     #[test]
     fn derive_travel_speed_measures_xz_root_motion_over_duration() {

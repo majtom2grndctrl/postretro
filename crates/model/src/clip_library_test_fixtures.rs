@@ -306,6 +306,13 @@ impl Document {
     }
 }
 
+/// Rewrite a written document's JSON, for shapes the builders never produce.
+pub(crate) fn patch_document(path: &Path, patch: impl FnOnce(&mut Value)) {
+    let mut root: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    patch(&mut root);
+    std::fs::write(path, serde_json::to_vec_pretty(&root).unwrap()).unwrap();
+}
+
 fn node_json(node: &Node) -> Value {
     json!({
         "name": node.name,

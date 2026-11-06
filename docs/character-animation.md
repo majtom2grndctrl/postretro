@@ -69,6 +69,11 @@ a skinned weapon part, must stay inside the character.
 A character may keep clips of its own. They list first, and a clip with the same
 name as a library clip wins. This is how one character gets its own `idle`.
 
+`--clip-library` strips every clip, so it cannot produce such a character. Convert
+without `--clip-library`, with only the clips you want to keep in `--input-dir`.
+The base FBX's own action stays in the file too. Then add the `clipLibrary` extras
+shown above to the model by hand. Rerunning the conversion discards that edit.
+
 ## When a load fails
 
 A character stuck in its rest pose is worse than a loud error, so these fail the
@@ -76,16 +81,21 @@ model load:
 
 - The library cannot be read.
 - The library lacks the character's root joint.
-- The character has no single root joint, and its skin declares none.
+- The character's root joint is unclear: its joints have several roots and the
+  skin declares none, or the skin declares a joint that has a parent.
 - The root's rest height is zero or below, on the character or the library.
 - Neither the character nor the library has clips.
 
 A malformed `clipLibrary` value warns, and the character loads with its own clips
 only. A static model ignores a library, with a warning.
 
-`dist` refuses a skinned model whose library is missing or sits outside the mod
-root, because that model would work in development and break in the payload.
-Keep libraries under the mod's `models/` folder.
+`dist` checks the models under the mod's `models/` folder. It refuses a skinned
+model whose library is missing or sits outside the mod root, because that model
+would work in development and break in the payload.
+
+Keep libraries under the mod's `models/` folder, each in a folder of its own. A
+rerun replaces that output's files, and a conversion with neither `--library` nor
+`--clip-library` clears every model file from its output folder.
 
 ## After editing a shared clip
 

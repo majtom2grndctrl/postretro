@@ -67,7 +67,7 @@ postretro-tool bake-model-textures <out.gltf>
 Converts Mixamo FBXs to engine glTF: a rig plus clips into one character, or
 clips into a shared library. Runs in headless Blender, which rejects ASCII FBX.
 The script's docstring and `--help` cover every flag. Library and binding
-contract: `context/lib/resource_management.md` §7.
+contract: `docs/character-animation.md`.
 
 ```sh
 # Build a library. The rig FBX sits inside the clip folder; none of its own
@@ -92,7 +92,8 @@ its meshes lack. `--library` and `--clip-library` cannot be combined. Numbered
 To bind an already-exported character with no Blender run, stub `bpy` and
 `mathutils`, import the script, and call `bind_gltf_to_clip_library(gltf_path,
 clip_library)`. It strips clips, compacts the `.bin` and stamps the reference in
-place. `tools/tests/test_mixamo_to_gltf.py` shows the stubbing.
+place. It also tags a numbered or untagged rig; a tagged canonical model keeps its
+tags. `tools/tests/test_mixamo_to_gltf.py` shows the stubbing.
 
 ### `texture-tool/`
 

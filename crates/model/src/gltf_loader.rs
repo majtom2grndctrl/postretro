@@ -242,9 +242,10 @@ pub enum ModelLoadError {
         library: String,
         joint: String,
     },
-    /// A root's local rest Y is not a positive height, so no height ratio exists.
+    /// A root's local rest Y is not a finite positive height, or the two heights
+    /// give no finite ratio above zero.
     #[error(
-        "root rest heights must be positive to bind clip library {library}: mesh {mesh_height}, library {library_height}: {path}"
+        "root rest heights must be finite and positive, with a usable ratio, to bind clip library {library}: mesh {mesh_height}, library {library_height}: {path}"
     )]
     ClipLibraryRootHeight {
         path: String,
@@ -951,10 +952,11 @@ const _: fn() = || {
 
 /// Read the files [`load_model`] reads, and fail as it fails before its
 /// parse proper: an unreadable or malformed document or buffer, a document with
-/// no mesh, or an unreadable clip library. Opens the document and resolves only geometry/skin/animation
-/// buffers, no image data: `gltf::import` would decode every referenced PNG;
-/// `import_buffers` skips that decode. The `.glb` binary-blob arg is `None`
-/// (external-`.gltf` only; embedded-image / `.glb` support is out of scope).
+/// no mesh, or an unreadable clip library. Opens the document and resolves only
+/// geometry/skin/animation buffers, no image data: `gltf::import` would decode
+/// every referenced PNG; `import_buffers` skips that decode. The `.glb`
+/// binary-blob arg is `None` (external-`.gltf` only; embedded-image / `.glb`
+/// support is out of scope).
 pub fn read_model_sources(path: &Path) -> Result<ModelSources, ModelLoadError> {
     let path_str = path.display().to_string();
     let import_error = |source| ModelLoadError::Import {

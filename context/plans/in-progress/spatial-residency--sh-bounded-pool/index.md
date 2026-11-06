@@ -99,7 +99,7 @@ All integers little-endian and unsigned. Old PRLs are refused by version; pre-re
 |---|---|
 | Id 49 version | 2 → 3 |
 | Range record | Drops `owner_cluster_id` and `role`, and `DENSE_OWNER_SENTINEL` goes with them. Role equals `resource.domain`, so nothing replaces it |
-| Id 49 tail | After cluster hints: `u32 bound_count`, then `bound_count` entries ascending by lead: `u32 lead` (id 51 fixed-point units), `u32 worst_dense_slots`, `u32 worst_cell`, `u32 family_count`, then `family_count` × (`u32 resource_index`, `u32 worst_entries`, `u32 worst_tile_f16`), ascending by `resource_index`, for affinity-domain resources. Zero families encodes as `family_count` 0. Two entries: default lead and baked maximum, or one when the maximum does not exceed the default. With no usable id 51, one entry at lead 0 holding the whole map, `worst_cell` `u32::MAX` |
+| Id 49 tail | After cluster hints: `u32 bound_count`, then `bound_count` entries ascending by lead: `u32 lead` (id 51 fixed-point units), `u32 worst_dense_slots`, `u32 worst_cell`, `u32 family_count`, then `family_count` × (`u32 resource_index`, `u32 worst_entries`, `u32 worst_tile_f16`), ascending by `resource_index`, for the streamed sparse families (ids 27, 41, 45). Zero families encodes as `family_count` 0. Two entries: default lead and baked maximum, or one when the maximum does not exceed the default. With no usable id 51, one entry at lead 0 holding the whole map, `worst_cell` `u32::MAX` |
 | Id 50 version | 1 → 2. Sparse row records drop their role word |
 | Id 50 `requested_resident_bytes` | Bytes for every node and row the chunk touches, not only those it owned; the `semantic` validator follows |
 

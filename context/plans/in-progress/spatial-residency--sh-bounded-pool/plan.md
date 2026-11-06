@@ -69,7 +69,7 @@ Hallway live peaked at 210,505 of 211,248; 2–3 mandatory shortfalls per walk, 
 
 **Shots inflate frame times.** Every frame over 100 ms in the shot runs is a held frame taking a shot. With no shots: 0 over 100 ms, max 86 ms, p99 23 ms.
 
-**Row 41.** Pool size is constant across the hallway's 44 solid-cell frames. Frame time is not: median 32.5 ms against 17 ms beside them, shot-free. No shot-free `today` run exists to show whether that predates this brief, and the row reads "unchanged", so it goes to the owner.
+**Row 41, owner ruling (2026-11-05): a memory row.** Pool size is constant across the hallway's 44 solid-cell frames. Frame time stays a finding, not part of the row: median 32.5 ms against 17 ms beside them, shot-free, not attributed to the pool. No reboot came between these runs, and only solid-cell frames slow, so it reads as drawing work rather than the Mac slowdown. Whether it predates this brief is unmeasured.
 
 **Row 39.** The columns cannot show a mirror in view. The pool holds the whole map, so a mirror cannot raise demand past it either way.
 

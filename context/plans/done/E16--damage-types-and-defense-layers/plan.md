@@ -1,7 +1,7 @@
 # E16--damage-types-and-defense-layers — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 2851e10f
 
 Source is unchanged since the brief's `read at` 44881f79: only `context/` and `README.md` moved. Resumable mode still re-read every symbol the Decisions and Path cite. No Decision premise is false. The rows below are Path corrections and clarifications that keep each Decision and Acceptance row's meaning.

@@ -72,12 +72,12 @@ pub(crate) struct KinematicGhostPass {
 }
 
 impl KinematicGhostPass {
-    /// Colour layout: group 0 camera, group 1 the world material, group 2 the
-    /// ghost instances; the depth-only layout drops the material. No light,
-    /// shadow or SH group, so mover ghosts add nothing to any fragment binding
-    /// budget. Every pipeline targets the scene colour, so both draws of a
-    /// ghost share one pass with the skinned ghosts; the depth-only one writes
-    /// no colour.
+    /// One layout for both draw steps ([`super::ghost_pipeline`]): group 0
+    /// camera, group 1 the world material, group 2 the ghost instances. No
+    /// light, shadow or SH group, so mover ghosts add nothing to any fragment
+    /// binding budget. Every pipeline targets the scene colour, so both draws
+    /// of a ghost share one pass with the skinned ghosts; the depth-only one
+    /// writes no colour.
     pub(crate) fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -111,19 +111,10 @@ impl KinematicGhostPass {
             ],
             immediate_size: 0,
         });
-        let depth_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Kinematic Ghost Depth Pipeline Layout"),
-            bind_group_layouts: &[Some(camera_bgl), None, Some(&instance_bind_group_layout)],
-            immediate_size: 0,
-        });
-        let pipelines = GhostPipelines::build("Kinematic", depth_format, |step, state, label| {
-            let pipeline_layout = match step {
-                GhostDrawStep::Depth => &depth_layout,
-                GhostDrawStep::Colour => &layout,
-            };
+        let pipelines = GhostPipelines::build("Kinematic", depth_format, |state, label| {
             device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(pipeline_layout),
+                layout: Some(&layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
@@ -232,8 +223,8 @@ impl KinematicGhostPass {
     /// Record the mover ghost in slot `draw` as `step` of its draw pair,
     /// through `mode`'s pipelines: one draw per material span, from the mover
     /// pass's shared geometry. Group 0 (camera) must be set by the caller;
-    /// this sets the instances and, for the colour step, each span's world
-    /// material.
+    /// this sets the instances and each span's world material, which the
+    /// shared layout needs bound for both steps.
     pub(super) fn record_ghost(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -258,13 +249,11 @@ impl KinematicGhostPass {
         );
         let instances = draw.instance_index..draw.instance_index + 1;
         for (material_index, indices) in spans {
-            if step == GhostDrawStep::Colour {
-                let material = materials
-                    .get(material_index)
-                    .or_else(|| materials.first())
-                    .expect("renderer always keeps a placeholder material bind group");
-                pass.set_bind_group(1, &material.bind_group, &[]);
-            }
+            let material = materials
+                .get(material_index)
+                .or_else(|| materials.first())
+                .expect("renderer always keeps a placeholder material bind group");
+            pass.set_bind_group(1, &material.bind_group, &[]);
             pass.draw_indexed(indices, 0, instances.clone());
         }
     }

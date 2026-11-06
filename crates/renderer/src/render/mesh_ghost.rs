@@ -53,12 +53,14 @@ fn skinned_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// The skinned ghost pipeline set. Colour layout: group 0 camera, group 1
-/// material, group 3 the skinned pass's palette + instance data (the same
-/// bind group, at the same index); group 2 stays empty. The depth-only layout
-/// drops the material. No light, shadow or SH group, so ghosts add nothing to
-/// any fragment binding budget. Every pipeline targets the scene colour, so
-/// both draws of a ghost share one pass; the depth-only one writes no colour.
+/// The skinned ghost pipeline set. One layout for both draw steps
+/// ([`super::ghost_pipeline`]): group 0 camera, group 1 material, group 3 the
+/// skinned pass's palette + instance data (the same bind group, at the same
+/// index); group 2 stays empty. That hole is safe beside the mover ghosts'
+/// layout only because it has no group 3, so switching here rebinds group 3.
+/// No light, shadow or SH group, so ghosts add nothing to any fragment binding
+/// budget. Every pipeline targets the scene colour, so both draws of a ghost
+/// share one pass; the depth-only one writes no colour.
 pub(super) fn skinned_ghost_pipelines(
     device: &wgpu::Device,
     depth_format: wgpu::TextureFormat,
@@ -80,19 +82,10 @@ pub(super) fn skinned_ghost_pipelines(
         ],
         immediate_size: 0,
     });
-    let depth_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Skinned Ghost Depth Pipeline Layout"),
-        bind_group_layouts: &[Some(camera_bgl), None, None, Some(instance_bgl)],
-        immediate_size: 0,
-    });
-    GhostPipelines::build("Skinned", depth_format, |step, state, label| {
-        let pipeline_layout = match step {
-            GhostDrawStep::Depth => &depth_layout,
-            GhostDrawStep::Colour => &layout,
-        };
+    GhostPipelines::build("Skinned", depth_format, |state, label| {
         device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
-            layout: Some(pipeline_layout),
+            layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
@@ -127,11 +120,11 @@ impl MeshPass {
     /// Record one skinned ghost's `spans` of the ghost plan as `step` of its
     /// draw pair, through `mode`'s pipelines, from the buffers
     /// [`MeshPass::plan_and_upload`] already filled this frame. Group 0
-    /// (camera) must be set by the caller; this sets the instance data and,
-    /// for the colour step, the material per submesh. Every ghost is
-    /// forward-visible by construction (the collector culls at the mapped
-    /// position). Projectile billboard ghosts are not here: they draw through
-    /// the billboard ghost variant and always blend.
+    /// (camera) must be set by the caller; this sets the instance data and
+    /// the material per submesh, which the shared layout needs bound for both
+    /// steps. Every ghost is forward-visible by construction (the collector
+    /// culls at the mapped position). Projectile billboard ghosts are not
+    /// here: they draw through the billboard ghost variant and always blend.
     pub(super) fn record_ghost_spans(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -159,9 +152,7 @@ impl MeshPass {
                 if indices.is_empty() {
                     continue;
                 }
-                if step == GhostDrawStep::Colour {
-                    pass.set_bind_group(1, material_bind_group, &[]);
-                }
+                pass.set_bind_group(1, material_bind_group, &[]);
                 pass.draw_indexed(indices.clone(), 0, span.instances());
             }
         }

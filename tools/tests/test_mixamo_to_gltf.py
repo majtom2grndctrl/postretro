@@ -325,6 +325,10 @@ class ClipLibraryStampTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "extras"):
             CONVERTER.stamp_clip_library(gltf, LIBRARY)
 
+    def test_rejects_a_reference_that_does_not_decode_to_utf8(self):
+        with self.assertRaises(ValueError):
+            CONVERTER.check_clip_library_path("library%FF.gltf")
+
     def test_accepts_relative_paths_including_parent_segments(self):
         for value in ("library.gltf", "../lib/library.gltf", "a%20b/library.gltf"):
             with self.subTest(value=value):

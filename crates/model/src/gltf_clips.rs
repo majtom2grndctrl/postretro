@@ -222,8 +222,8 @@ fn animation_output_shape_ok(
 /// `gltf::accessor::Iter` trusts what document validation leaves unchecked. A
 /// stride below the element size panics on the first read, in release too. Its
 /// range arithmetic overflows on a zero count or a huge one. A sparse accessor
-/// with no buffer view allocates `count` elements whatever the file's size.
-/// Animation data has no need of sparse storage, so it is refused outright.
+/// with no buffer view allocates `count` elements whatever the file's size, so
+/// it is refused; one with a buffer view reads, its own ranges checked.
 fn accessor_read_refusal(
     accessor: &gltf::Accessor,
     buffers: &[gltf::buffer::Data],
@@ -231,26 +231,65 @@ fn accessor_read_refusal(
     if accessor.count() == 0 {
         return Some("has no elements");
     }
-    if accessor.sparse().is_some() {
-        return Some("is sparse");
-    }
     let Some(view) = accessor.view() else {
         return Some("has no buffer view");
     };
     let element_size = accessor.size();
+    let base = view_read_refusal(
+        &view,
+        accessor.offset(),
+        accessor.count(),
+        element_size,
+        buffers,
+    );
+    if base.is_some() {
+        return base;
+    }
+    let sparse = accessor.sparse()?;
+    if sparse.count() == 0 || sparse.count() > accessor.count() {
+        return Some("has a sparse count outside its elements");
+    }
+    let indices = sparse.indices();
+    let values = sparse.values();
+    view_read_refusal(
+        &indices.view(),
+        indices.offset(),
+        sparse.count(),
+        indices.index_type().size(),
+        buffers,
+    )
+    .or_else(|| {
+        view_read_refusal(
+            &values.view(),
+            values.offset(),
+            sparse.count(),
+            element_size,
+            buffers,
+        )
+    })
+}
+
+/// Why `count` elements at `offset` in `view` cannot be read, if they cannot.
+fn view_read_refusal(
+    view: &gltf::buffer::View,
+    offset: usize,
+    count: usize,
+    element_size: usize,
+    buffers: &[gltf::buffer::Data],
+) -> Option<&'static str> {
     let stride = view.stride().unwrap_or(element_size);
     if stride < element_size {
         return Some("has a byte stride below its element size");
     }
-    let accessor_end = (accessor.count() - 1)
+    let read_end = (count - 1)
         .checked_mul(stride)
         .and_then(|span| span.checked_add(element_size))
-        .and_then(|span| span.checked_add(accessor.offset()));
+        .and_then(|span| span.checked_add(offset));
     let view_end = view.offset().checked_add(view.length());
     let buffer_length = buffers.get(view.buffer().index()).map(|data| data.0.len());
-    match (accessor_end, view_end, buffer_length) {
-        (Some(accessor_end), Some(view_end), Some(buffer_length))
-            if accessor_end <= view.length() && view_end <= buffer_length =>
+    match (read_end, view_end, buffer_length) {
+        (Some(read_end), Some(view_end), Some(buffer_length))
+            if read_end <= view.length() && view_end <= buffer_length =>
         {
             None
         }
@@ -596,8 +635,13 @@ mod tests {
         let none = json!({});
         let cases = [
             (BOTH, "has no elements", json!({ "count": 0 }), none.clone()),
-            (BOTH, "is sparse", json!({ "sparse": sparse }), none.clone()),
-            (BOTH, "is sparse", sparse_only, none.clone()),
+            (BOTH, "has no buffer view", sparse_only, none.clone()),
+            (
+                BOTH,
+                "has a sparse count outside its elements",
+                json!({ "sparse": { "count": 3, "indices": sparse["indices"], "values": sparse["values"] } }),
+                none.clone(),
+            ),
             (
                 OUTPUT,
                 "has a byte stride below its element size",
@@ -646,6 +690,24 @@ mod tests {
                 assert_eq!(joints[1].rotation.values().len(), 2, "{label}");
             }
         }
+    }
+
+    #[test]
+    fn sparse_accessor_with_a_buffer_view_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = two_channel_model(&[0.0, 1.0], &[Vec3::Y, Vec3::Y * 1.1])
+            .write(&dir.path().join("model.gltf"));
+        let sparse = json!({
+            "count": 1,
+            "indices": { "bufferView": 0, "componentType": 5123 },
+            "values": { "bufferView": 0 },
+        });
+        break_translation(&path, "output", &json!({ "sparse": sparse }), &json!({}));
+        let capture = LogCapture::start();
+        let model = load_model(&path).unwrap();
+
+        assert_eq!(model.clips[0].joints[0].translation.values().len(), 2);
+        capture.assert_nothing_above(Level::Info);
     }
 
     #[test]

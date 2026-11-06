@@ -1303,7 +1303,10 @@ def check_clip_library_path(clip_library):
     """
     if not isinstance(clip_library, str) or not clip_library:
         raise ValueError("--clip-library must be a non-empty relative path")
-    decoded = unquote(clip_library)
+    try:
+        decoded = unquote(clip_library, errors="strict")
+    except UnicodeDecodeError:
+        raise ValueError(f"--clip-library must decode to UTF-8: '{clip_library}'") from None
     if ":" in decoded or "\\" in decoded or decoded.startswith("/"):
         raise ValueError(f"--clip-library must be a relative path with forward "
                          f"slashes and no scheme: '{clip_library}'")

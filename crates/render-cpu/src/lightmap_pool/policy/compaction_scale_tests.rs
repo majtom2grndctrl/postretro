@@ -104,8 +104,7 @@ impl RectMirror {
 
 /// Layers a from-scratch pack of `set` fills, if it fits at all.
 fn scratch_layers(extents: &[(u32, u32)], set: &[u32]) -> u32 {
-    let mut demand: Vec<(u32, u32)> = set.iter().map(|&b| extents[b as usize]).collect();
-    demand.sort_unstable_by_key(|&(w, h)| (std::cmp::Reverse(h), std::cmp::Reverse(w)));
+    let demand: Vec<(u32, u32)> = set.iter().map(|&b| extents[b as usize]).collect();
     crate::lightmap_pool::place_all_resident(&demand, SCALE_ALIGN, SCALE_EDGE)
         .map_or(u32::MAX, |pool| pool.layer_count)
 }

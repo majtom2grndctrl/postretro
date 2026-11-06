@@ -10,9 +10,7 @@
 // copy the staged moves back from the spare. Layers above d are untouched
 // until their own turn, so every source is intact when it is read.
 
-use std::cmp::Reverse;
-
-use super::super::BlockPlacement;
+use super::super::{BlockPlacement, packing_order_key};
 use super::plan::{EvictionReason, PoolCopy};
 use super::reservation::RepackScope;
 use super::{LightmapPoolModel, placement_of};
@@ -86,8 +84,8 @@ impl LightmapPoolModel {
             waiting.clear();
         }
         keep.sort_unstable_by_key(|entry| {
-            let (width, height) = self.alloc_extent(entry.block);
-            (entry.bound, Reverse(height), Reverse(width), entry.block)
+            let order = packing_order_key(entry.block, self.alloc_extent(entry.block));
+            (entry.bound, order)
         });
         self.sort_tallest_first(&mut waiting);
         band.sort_unstable_by_key(|&(block, _)| (self.target(block).map_or(0, |t| t.lead), block));

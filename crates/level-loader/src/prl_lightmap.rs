@@ -6,9 +6,12 @@ use postretro_level_format::SectionId;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::lightmap::{
-    LightmapBlockIndex, LightmapBlockPayload, SectionByteRange,
+    LightmapBlockIndex, LightmapBlockPayload, LightmapBlockRecord, SectionByteRange,
 };
-use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskOwnerBounds};
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
+use postretro_level_format::shadowmask_atlas::{
+    ShadowmaskBlockIndex, ShadowmaskOwnerBounds, group_plane_len,
+};
 use postretro_render_data::geometry::WorldVertex;
 
 use crate::prl::{LightmapMode, MapLight, PrlLoadError};
@@ -23,7 +26,8 @@ pub(crate) struct LoadedLightmap {
 }
 
 /// Id 42 as loaded: the per-face owner table and block records the level
-/// keeps, and each block's group A then group B planes in id-22 block order.
+/// keeps, and each block's group A then group B planes in id-22 block order,
+/// through [`planes_with_absent_as_zero`].
 pub(crate) struct LoadedShadowmask {
     pub(crate) index: ShadowmaskBlockIndex,
     pub(crate) groups: Vec<[Vec<u8>; 2]>,
@@ -153,15 +157,56 @@ pub(crate) fn read_shadowmask_atlas(
     let groups: Vec<[Vec<u8>; 2]> = index
         .records
         .iter()
-        .map(|record| [blob(&data, record.group_a), blob(&data, record.group_b)])
+        .zip(&lightmap.records)
+        .map(|(record, block)| {
+            let stored = [blob(&data, record.group_a), blob(&data, record.group_b)];
+            planes_with_absent_as_zero(*block, stored)
+        })
         .collect();
     log::info!(
         "[PRL] ShadowmaskAtlas: {} cell block(s), {} face owner entr(y/ies), {} payload byte(s)",
         groups.len(),
         index.owners.len(),
-        groups.iter().map(|[a, b]| a.len() + b.len()).sum::<usize>(),
+        index
+            .records
+            .iter()
+            .map(|record| u64::from(record.group_a.len) + u64::from(record.group_b.len))
+            .sum::<u64>(),
     );
     Ok(Some(LoadedShadowmask { index, groups }))
+}
+
+/// Id 58, when the level stores it. Both load modes read it, so an unknown
+/// version fails either.
+pub(crate) fn read_lightmap_pool_bound(
+    container: &PrlContainer,
+) -> Result<Option<LightmapPoolBoundSection>, PrlLoadError> {
+    container
+        .read_section(SectionId::LightmapPoolBound as u32)?
+        .map(|data| {
+            LightmapPoolBoundSection::from_bytes(&data)
+                .map_err(|err| section_validation_from_error("LightmapPoolBound", err))
+        })
+        .transpose()
+}
+
+/// The two full planes the single pool installs: an empty plane becomes the
+/// zeros a stored all-zero plane held, so absence reads exactly as it did. The
+/// two-pool split replaces this: there an absent plane takes no placement, no
+/// upload and no bytes, and the payload carries presence.
+pub(crate) fn planes_with_absent_as_zero(
+    block: LightmapBlockRecord,
+    planes: [Vec<u8>; 2],
+) -> [Vec<u8>; 2] {
+    let plane_len = group_plane_len(u32::from(block.width), u32::from(block.height))
+        .expect("id 22 validated its extents") as usize;
+    planes.map(|plane| {
+        if plane.is_empty() {
+            vec![0; plane_len]
+        } else {
+            plane
+        }
+    })
 }
 
 /// A range the index validated against this section's length.

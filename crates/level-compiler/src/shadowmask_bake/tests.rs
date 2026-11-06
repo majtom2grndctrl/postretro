@@ -1143,7 +1143,11 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
     assert_eq!(raw_fill_live_bytes(), 0, "and before it is returned");
     let peak = encode::take_peak_encode_residency().expect("the miss encodes");
     assert_eq!(peak.raw_fill, raw_layer);
-    assert_eq!(peak.output_capacity, raw_layer / 2, "one compressed output");
+    assert_eq!(
+        peak.output_capacity,
+        raw_layer / 4,
+        "one compressed plane: the light fills group A, group B has no blob"
+    );
     assert!(peak.scratch <= 3 * raw_layer, "scratch {}", peak.scratch);
 
     reset_shadowmask_output_allocation_count();

@@ -6,9 +6,7 @@
 // table entry until its pair uploads. Work here runs when targets change, or
 // inside a repack, never on a drain that only lands pairs.
 
-use std::cmp::Reverse;
-
-use super::super::Slot;
+use super::super::{Slot, packing_order_key};
 use super::{JournalOp, LightmapPoolModel};
 
 /// Which demand a repack must seat before it counts as done.
@@ -157,10 +155,7 @@ impl LightmapPoolModel {
     }
 
     pub(super) fn sort_tallest_first(&self, blocks: &mut [u32]) {
-        blocks.sort_unstable_by_key(|&block| {
-            let (width, height) = self.alloc_extent(block);
-            (Reverse(height), Reverse(width), block)
-        });
+        blocks.sort_unstable_by_key(|&block| packing_order_key(block, self.alloc_extent(block)));
     }
 
     pub(super) fn spend_compaction(&mut self) {

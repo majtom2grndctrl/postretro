@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use postretro_level_format::lightmap::{LIGHTMAP_HEADER_BYTES, LightmapBlockIndex, LightmapHeader};
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, ShadowmaskOwnerBounds,
     shadowmask_block_count_offset, shadowmask_prefix_len_through_block_count,
@@ -31,6 +32,8 @@ pub(crate) struct LightmapResidencyRead {
     /// tag when SH has none to share.
     lightmap_prefix: Vec<u8>,
     shadowmask_prefix: Option<Vec<u8>>,
+    /// Id 58, which only a streamed pool sizes from.
+    pool_bound: Option<LightmapPoolBoundSection>,
 }
 
 /// Read id 22 for the residency `inputs` allow. When nothing but the block
@@ -82,6 +85,7 @@ fn residency_read(mode: LightmapStreamingMode, lightmap_prefix: Vec<u8>) -> Ligh
         mode,
         lightmap_prefix,
         shadowmask_prefix: None,
+        pool_bound: None,
     }
 }
 
@@ -116,6 +120,12 @@ impl LightmapResidencyRead {
             index,
             groups: Vec::new(),
         }))
+    }
+
+    /// Read id 58 in either mode, for the manifest a streamed level builds.
+    pub(crate) fn read_pool_bound(&mut self, container: &PrlContainer) -> Result<(), PrlLoadError> {
+        self.pool_bound = crate::prl_lightmap::read_lightmap_pool_bound(container)?;
+        Ok(())
     }
 
     /// The level's storage over the indexes the load kept. The manifest
@@ -158,6 +168,7 @@ impl LightmapResidencyRead {
             shadowmask.cloned(),
             lightmap_entry,
             shadowmask_entry,
+            self.pool_bound,
             content_tag,
         )?;
         Ok(LightmapStorage::Streaming(Arc::new(manifest)))
@@ -244,9 +255,8 @@ fn read_shadowmask_index_prefix(
             .checked_mul(SHADOWMASK_BLOCK_RECORD_BYTES as u64)
             .and_then(|records| records.checked_add(through_count as u64))
             .ok_or_else(|| section_validation("ShadowmaskAtlas", "index length overflows"))?;
-        // A count above id 22's passes the bound above and fails in
-        // `from_prefix` below; never read records for it. A count below
-        // usually fails the bound, which names it.
+        // A count that differs from id 22's can pass the bound above; it
+        // fails in `from_prefix` below, so never read records for it.
         if block_count as usize == lightmap.records.len() {
             extend_prefix(file, entry, &mut prefix, index_len)?;
         }

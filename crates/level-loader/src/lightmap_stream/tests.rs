@@ -34,6 +34,9 @@ const FACE_FREE_BOUNDS: ShadowmaskOwnerBounds = ShadowmaskOwnerBounds {
     static_spec_light_count: 0,
 };
 
+#[path = "plane_presence_tests.rs"]
+mod plane_presence_tests;
+
 // ---- Fixtures ----
 
 /// Blocks at these extents, one per cell, with distinct bytes per block.

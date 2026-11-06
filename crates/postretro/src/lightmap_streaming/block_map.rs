@@ -16,7 +16,7 @@ pub(crate) struct BlockFacts {
     pub(crate) texels: u64,
     /// Upload bytes of the id-22 half (irradiance plus direction).
     pub(crate) lightmap_bytes: u64,
-    /// Upload bytes of the id-42 half (both groups); 0 without id 42.
+    /// Bytes of the id-42 half as stored, its present planes; 0 with none.
     pub(crate) shadowmask_bytes: u64,
     /// The pair's absolute file ranges, as the issuer reads them.
     pub(crate) ranges: ReadRanges,
@@ -140,3 +140,7 @@ impl LevelBlockMap {
         &self.pinned_blocks
     }
 }
+
+#[cfg(test)]
+#[path = "block_map_tests.rs"]
+mod tests;

@@ -64,7 +64,9 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// report.
 ///
 /// v8: each owned channel's chart padding repeats its owner's dilated edge.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 8;
+///
+/// v9: `SMB8`, an all-zero plane has no blob.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 9;
 
 /// A pool layer holds the two mask groups side by side, so it is
 /// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device

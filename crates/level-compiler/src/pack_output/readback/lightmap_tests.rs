@@ -118,6 +118,40 @@ fn lightmap_family_readback_scans_bodies_with_fixed_scratch_and_validates_ranges
     assert!(validate_shadowmask_readback(&mut reader, &frame, frame.size, &index).is_err());
 }
 
+// A block missing plane A, one missing plane B, one missing both; then a
+// section with no blob at all, whose body is empty past its index.
+#[test]
+fn staged_read_back_accepts_absent_planes() {
+    use super::super::{PlannedSection, write_and_validate_sections};
+    let (lightmap, mut mixed) = sections();
+    mixed.blocks[0][0].clear();
+    mixed.blocks[1][1].clear();
+    mixed.blocks[2] = [Vec::new(), Vec::new()];
+    let mut none = mixed.clone();
+    none.blocks = vec![[Vec::new(), Vec::new()]; 3];
+    for shadowmask in [mixed, none] {
+        let directory = tempfile::tempdir().unwrap();
+        write_and_validate_sections(
+            &directory.path().join("absent.prl"),
+            vec![
+                PlannedSection::with_writer(
+                    SectionId::Lightmap as u32,
+                    1,
+                    lightmap.byte_len() as u64,
+                    |writer| Ok(lightmap.write_to(writer)?),
+                ),
+                PlannedSection::with_writer(
+                    SectionId::ShadowmaskAtlas as u32,
+                    2,
+                    shadowmask.byte_len() as u64,
+                    |writer| Ok(shadowmask.write_to(writer)?),
+                ),
+            ],
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn streamed_lightmap_family_prl_matches_contiguous_container_bytes() {
     use super::super::{PlannedSection, write_and_validate_sections};

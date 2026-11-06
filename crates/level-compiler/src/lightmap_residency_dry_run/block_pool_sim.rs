@@ -19,7 +19,7 @@ use rayon::prelude::*;
 use super::camera_walks::{WalkKind, camera_adjacency, component_count, walk_path};
 use super::cell_blocks::{BlockDims, CellBlocks, POOL_LAYER_EDGE};
 use crate::cell_residency_bake::portal_distance::PortalGraphInput;
-use postretro_render_cpu::lightmap_pool::{BlockPool, Slot};
+use postretro_render_cpu::lightmap_pool::{BlockPool, Slot, packing_order_key};
 
 /// Steps per walk.
 pub(crate) const SIM_STEPS: usize = 20_000;
@@ -155,12 +155,7 @@ pub(crate) fn run_walks(inputs: &SimInputs<'_>) -> PoolWalks {
 /// tallest first, as shelf packing prefers. Every block fits a pool layer.
 pub(crate) fn allocation_order(blocks: &CellBlocks, set: &[u32]) -> Vec<(u32, BlockDims)> {
     let mut order: Vec<(u32, BlockDims)> = blocks.set_dims(set).collect();
-    order.sort_by(|(block_a, a), (block_b, b)| {
-        b.height
-            .cmp(&a.height)
-            .then(b.width.cmp(&a.width))
-            .then(block_a.cmp(block_b))
-    });
+    order.sort_by_key(|&(block, dims)| packing_order_key(block, (dims.width, dims.height)));
     order
 }
 

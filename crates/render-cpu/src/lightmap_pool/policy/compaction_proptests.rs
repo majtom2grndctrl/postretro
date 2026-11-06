@@ -8,7 +8,6 @@
 // any gap, which fragments the pool further.
 
 use std::cell::Cell;
-use std::cmp::Reverse;
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
@@ -110,11 +109,10 @@ fn extents_of(history: &History) -> Vec<(u32, u32)> {
 
 /// Layers a from-scratch pack of `set` fills, tallest first, if it fits.
 fn scratch_layers(extents: &[(u32, u32)], set: u64) -> Option<u32> {
-    let mut demand: Vec<(u32, u32)> = (0..extents.len())
+    let demand: Vec<(u32, u32)> = (0..extents.len())
         .filter(|&b| set >> b & 1 != 0)
         .map(|b| extents[b])
         .collect();
-    demand.sort_unstable_by_key(|&(w, h)| (Reverse(h), Reverse(w)));
     crate::lightmap_pool::place_all_resident(&demand, ALIGN, EDGE).map(|pool| pool.layer_count)
 }
 

@@ -11,6 +11,7 @@ const BC5_BLOCK_BYTES: usize = 16;
 
 /// Encode a layer-major raw `Rgba8Unorm` mask fill as BC5 and slice each
 /// block's group A and group B planes out of its bake layer, in block order.
+/// A plane whose encoded bytes are all zero comes back empty: it has no blob.
 ///
 /// Per layer, R/G become group 0 in the left half of a `2W × H` image and
 /// B/A become group 1 in the right half; that image is encoded once with the
@@ -78,10 +79,14 @@ pub(super) fn encode_blocks_bc5(
                     block.height / BC_EDGE,
                 ]
             };
-            *slot = [
-                copy_unit_rect(&encoded, texture_width / BC_EDGE, BC5_BLOCK_BYTES, rect(0)),
-                copy_unit_rect(&encoded, texture_width / BC_EDGE, BC5_BLOCK_BYTES, rect(1)),
-            ];
+            *slot = [rect(0), rect(1)].map(|rect| {
+                stored_plane(copy_unit_rect(
+                    &encoded,
+                    texture_width / BC_EDGE,
+                    BC5_BLOCK_BYTES,
+                    rect,
+                ))
+            });
         }
         // Measured after this layer's slices land, while the encoded layer is
         // still alive: the per-layer peak.
@@ -93,6 +98,17 @@ pub(super) fn encode_blocks_bc5(
         });
     }
     out
+}
+
+/// All-zero BC5 decodes to zero, so absence is exact even on an owned face: the
+/// sampler reads an absent plane as this one would have read. Any other bytes
+/// stay as encoded, whatever they decode to.
+fn stored_plane(plane: Vec<u8>) -> Vec<u8> {
+    if plane.iter().all(|&byte| byte == 0) {
+        Vec::new()
+    } else {
+        plane
+    }
 }
 
 /// Bytes the encoder holds at its per-layer peak: the caller's raw fill, the
@@ -146,9 +162,13 @@ pub(super) fn decode_blocks_to_layers(
 ) -> Vec<u8> {
     let plane = width as usize * height as usize;
     let mut masks = vec![0u8; plane * layer_count as usize * 4];
+    let decode = |plane: &[u8], block: &CellBlock| match plane {
+        [] => vec![0; block.width as usize * block.height as usize * 2],
+        plane => crate::bc5::decode_bc5_rg(plane, block.width, block.height),
+    };
     for (block, [a, b]) in blocks.iter().zip(&section.blocks) {
-        let group_a = crate::bc5::decode_bc5_rg(a, block.width, block.height);
-        let group_b = crate::bc5::decode_bc5_rg(b, block.width, block.height);
+        let group_a = decode(a, block);
+        let group_b = decode(b, block);
         for y in 0..block.height as usize {
             for x in 0..block.width as usize {
                 let local = (y * block.width as usize + x) * 2;
@@ -182,6 +202,93 @@ mod tests {
             x,
             y,
         }
+    }
+
+    /// The block's two planes as the encoder alone writes them, kept whole:
+    /// a `2w × h` image, group A left and group B right.
+    fn planes_unfiltered(raw: &[u8], width: u32, height: u32) -> [Vec<u8>; 2] {
+        let mut image = vec![0u8; raw.len() * 2];
+        let row = width as usize * 4;
+        for (y, texels) in raw.chunks_exact(row).enumerate() {
+            for (x, texel) in texels.as_chunks::<4>().0.iter().enumerate() {
+                let left = y * row * 2 + x * 4;
+                image[left..left + 2].copy_from_slice(&texel[..2]);
+                let right = left + row;
+                image[right..right + 2].copy_from_slice(&texel[2..]);
+            }
+        }
+        let encoded = encode_bc5_rg_masks(&image, width * 2, height);
+        let units = width / BC_EDGE;
+        let plane = |group| {
+            let rect = [group * units, 0, units, height / BC_EDGE];
+            copy_unit_rect(&encoded, units * 2, BC5_BLOCK_BYTES, rect)
+        };
+        [plane(0), plane(1)]
+    }
+
+    #[test]
+    fn zero_planes_have_no_blob_in_every_presence_combination() {
+        // Four 8×4 blocks side by side, one texel lit in the right half of a
+        // plane that keeps its bytes: an all-zero BC block beside a lit one
+        // must not read as an all-zero plane.
+        let (width, height, block_width) = (32u32, 4u32, 8u32);
+        let mut raw = vec![0u8; (width * height * 4) as usize];
+        let mut light = |block: u32, channel: usize| {
+            let x = block * block_width + 5;
+            raw[((width + x) * 4) as usize + channel] = 200;
+        };
+        light(0, 0);
+        light(0, 3);
+        light(1, 2);
+        light(2, 1);
+        let blocks: Vec<CellBlock> = (0..4)
+            .map(|i| block(0, i * block_width, 0, block_width, height))
+            .collect();
+        let groups = encode_blocks_bc5(&raw, width, height, 1, &blocks);
+
+        let plane_len = (block_width / 4 * height / 4) as usize * BC5_BLOCK_BYTES;
+        let presence: Vec<[bool; 2]> = groups
+            .iter()
+            .map(|[a, b]| [!a.is_empty(), !b.is_empty()])
+            .collect();
+        assert_eq!(
+            presence,
+            [[true, true], [false, true], [true, false], [false, false]],
+            "neither missing, A missing, B missing, both missing"
+        );
+
+        for (i, stored) in groups.iter().enumerate() {
+            let x = i * block_width as usize * 4;
+            let block_raw: Vec<u8> = raw
+                .chunks_exact(width as usize * 4)
+                .flat_map(|row| &row[x..x + block_width as usize * 4])
+                .copied()
+                .collect();
+            let whole = planes_unfiltered(&block_raw, block_width, height);
+            for (plane, whole) in stored.iter().zip(&whole) {
+                assert_eq!(whole.len(), plane_len);
+                if plane.is_empty() {
+                    assert!(whole.iter().all(|&byte| byte == 0), "block {i}");
+                } else {
+                    assert_eq!(plane, whole, "block {i}: a stored plane is unchanged");
+                }
+            }
+        }
+
+        let section = ShadowmaskAtlasSection {
+            owners: vec![],
+            blocks: groups,
+        };
+        assert_eq!(
+            section.byte_len(),
+            section.index().index_byte_len() + 4 * plane_len,
+            "four present planes, no blob for the other four"
+        );
+        assert_eq!(
+            decode_blocks_to_layers(&section, &blocks, width, height, 1),
+            raw,
+            "absence decodes as the zero it replaced"
+        );
     }
 
     #[test]

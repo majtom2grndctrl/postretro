@@ -17,7 +17,7 @@ pub use policy::{
 };
 pub use postretro_level_format::lightmap_pool::{
     AllResidentPool, BlockPlacement, BlockPool, RestoreConflict, ShelfLayer, Slot, StaleFree,
-    place_all_resident,
+    packing_order_key, place_all_resident,
 };
 pub use static_plan::{
     StaticPool, StaticPoolPlan, StreamingPoolPlan, plan_static_pool, plan_streaming_pool,

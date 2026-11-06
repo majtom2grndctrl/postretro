@@ -1,27 +1,28 @@
 //! Synthetic ownership baselines for layer-close and cut-carry lifetime pins.
 use super::*;
 
-// Frozen before production edits at 7e7614d36.
+// Frozen before production edits at 7e7614d36. The id 42 digests were recaptured
+// for `SMB8`, after these same rows passed with the old tag and every plane stored.
 fn expected_pin(label: &str) -> (&'static str, &'static str) {
     match label {
         "one-layer" => (
-            "5d4b0a3657c6dbbd327ff4b0d83d5b1a7daf73e496167ecbc3192ace7389f856",
+            "8b48369075929a996ba34b5e0f1e533c4832b93338d097e43678a21038197fc8",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "three-layers" => (
-            "2f425ea1e66b10a17e5daddedccec005ed06098c9a80655b9fcc3deefdb7f007",
+            "182a8eff47af770061df6bda93be75a02a65a86dbb152c8bc7967fc8a560bef2",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "dark-middle-layer" => (
-            "c706c93112c32431d6b806171a5a202398999a4753e02d2cb04cfe6dac1479ee",
+            "578ffdb55b973979735fa30d7064cb4ee3d8c2c3b32102b3a517f3f7cd1dc31a",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "cut-same-layer" => (
-            "702f29d09be12b267380de12199b4384bc4a18eec31c69244f63c5342b0af0ec",
+            "56b715df9134d63649a862424b4d66e7896ec84c10055d1cfe1244cbe79dcae6",
             "0f272f137ea21210d2692c8680b9eb0db62508e8e9573a3e41a339c730ded9cb",
         ),
         "cut-first-to-last" => (
-            "aaa684851e03d6d07fff775393bd73366a3876ec07884b75bde196ae2e66b59b",
+            "f37aadd2d059eefd33e38077874874cb5bc533635eab1a9121636e996130f0ed",
             "0f272f137ea21210d2692c8680b9eb0db62508e8e9573a3e41a339c730ded9cb",
         ),
         "cut-owners-baked-nothing" => (

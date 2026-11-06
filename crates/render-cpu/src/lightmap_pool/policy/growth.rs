@@ -1,8 +1,6 @@
 // Growth sizing: the layers a drain's first growth reserves for the targeted demand.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
-use std::cmp::Reverse;
-
 use super::LightmapPoolModel;
 
 /// Headroom a growth reserves over the targeted demand's from-scratch pack.
@@ -74,7 +72,7 @@ impl LightmapPoolModel {
     }
 
     /// Layers a from-scratch shelf pack of every mandatory and visible
-    /// target fills, tallest first as the drain places them.
+    /// target fills, in the shared packing order.
     pub(super) fn targeted_demand_layers(&mut self) -> u32 {
         let mut demand = std::mem::take(&mut self.scratch.demand);
         demand.clear();
@@ -83,7 +81,6 @@ impl LightmapPoolModel {
                 .filter(|&block| self.target(block).is_some_and(|t| !t.is_band()))
                 .map(|block| self.alloc_extent(block)),
         );
-        demand.sort_unstable_by_key(|&(width, height)| (Reverse(height), Reverse(width)));
         let layers = super::super::place_all_resident(&demand, self.alignment, self.edge)
             .map_or(0, |pool| pool.layer_count);
         self.scratch.demand = demand;

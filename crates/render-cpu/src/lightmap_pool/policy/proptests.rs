@@ -90,13 +90,12 @@ fn assert_state(model: &LightmapPoolModel, classes: &[Option<LightmapBlockClass>
 /// tallest first, and every block's all-resident layers.
 fn packed_layers(extents: &[(u32, u32)], classes: &[Option<LightmapBlockClass>]) -> (u32, u32) {
     let aligned = |&(w, h): &(u32, u32)| (w.next_multiple_of(ALIGN), h.next_multiple_of(ALIGN));
-    let mut demand: Vec<(u32, u32)> = extents
+    let demand: Vec<(u32, u32)> = extents
         .iter()
         .zip(classes)
         .filter(|(_, class)| never_refused(**class))
         .map(|(extent, _)| aligned(extent))
         .collect();
-    demand.sort_unstable_by_key(|&(w, h)| (std::cmp::Reverse(h), std::cmp::Reverse(w)));
     let layers = |set: &[(u32, u32)]| {
         crate::lightmap_pool::place_all_resident(set, ALIGN, EDGE)
             .unwrap()

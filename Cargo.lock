@@ -4610,8 +4610,10 @@ dependencies = [
  "postretro-foundation",
  "postretro-level-format",
  "postretro-render-data",
+ "postretro-test-log-capture",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

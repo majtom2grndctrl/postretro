@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips · context/lib/entity_model.md §7
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use glam::{Mat4, Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
@@ -11,13 +11,14 @@ use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
 use postretro_level_format::octahedral;
 use thiserror::Error;
 
+use super::clip_library::{ClipLibrarySources, MeshRig, append_library_clips, read_clip_library};
 use super::gltf_clips::parse_clip;
 pub use super::gltf_extras::JointZone;
 #[cfg(test)]
 use super::gltf_extras::LegRef;
 use super::gltf_extras::{
-    JointPoseMetadata, LegNameFamily, read_joint_zone, read_model_tags, read_mount_axes,
-    read_pose_masks, read_socket_name,
+    JointPoseMetadata, LegNameFamily, read_clip_library_path, read_joint_zone, read_model_tags,
+    read_mount_axes, read_pose_masks, read_socket_name,
 };
 use super::mesh::{SkinnedMesh, SkinnedVertex};
 pub use super::mount::MountAxes;
@@ -79,7 +80,8 @@ pub struct LoadedModel {
     /// sweep. Static/no-skin models use one identity joint so rigid vertices
     /// bound to joint 0 always have a palette entry.
     pub skeleton: Skeleton,
-    /// Animation clips parsed from the glTF document, in authored order. All clips
+    /// Animation clips in the mesh's joint order: the glTF document's, in authored
+    /// order, then those bound from its clip library, in library order. All clips
     /// load; addressed by name or index.
     pub clips: Vec<AnimationClip>,
     /// One submesh per mesh primitive, in primitive order: the material cache
@@ -221,6 +223,38 @@ pub enum ModelLoadError {
     /// The skin's joint hierarchy cannot satisfy the sampler's parent-before-child contract.
     #[error("glTF skin has invalid skeleton hierarchy: {reason}: {path}")]
     InvalidSkeleton { path: String, reason: String },
+    /// A skinned model's clip library, or a buffer it references, could not be
+    /// read or parsed.
+    #[error("clip library {library} of {path} could not be read: {source}")]
+    ClipLibraryUnreadable {
+        path: String,
+        library: String,
+        #[source]
+        source: gltf::Error,
+    },
+    /// The loader selected no locomotion root, which defines the root for binding.
+    #[error("glTF skin has no selected root to bind clip library {library}: {path}")]
+    ClipLibraryNoRoot { path: String, library: String },
+    /// The clip library has no node named as the mesh's root joint.
+    #[error("clip library {library} has no joint named '{joint}', the root of {path}")]
+    ClipLibraryRootMissing {
+        path: String,
+        library: String,
+        joint: String,
+    },
+    /// A root's local rest Y is not a positive height, so no height ratio exists.
+    #[error(
+        "root rest heights must be positive to bind clip library {library}: mesh {mesh_height}, library {library_height}: {path}"
+    )]
+    ClipLibraryRootHeight {
+        path: String,
+        library: String,
+        mesh_height: f32,
+        library_height: f32,
+    },
+    /// Neither the model nor its clip library carries a clip.
+    #[error("clip library {library} has no clips and {path} embeds none")]
+    ClipLibraryEmpty { path: String, library: String },
 }
 
 /// Quantize a normalized UV component-pair (clamped to `[0, 1]`) to `u16 x 2`.
@@ -863,13 +897,15 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
 /// (its bytes' blake3 kept), every buffer it references (external `.bin`
 /// files and `data:` URIs alike), and each primitive's material key of the
 /// mesh the load selects, which content-hashes that material's base-color
-/// PNG. A content-keyed model cache hashes exactly this, and a cache miss
-/// parses from it without reading any file a second time.
+/// PNG, and the clip library a skinned model names. A content-keyed model cache
+/// hashes exactly this, and a cache miss parses from it without reading any file
+/// a second time.
 pub struct ModelSources {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     document_digest: [u8; 32],
     material_keys: Vec<String>,
+    library: Option<ClipLibrarySources>,
 }
 
 impl ModelSources {
@@ -888,6 +924,12 @@ impl ModelSources {
     pub fn material_keys(&self) -> &[String] {
         &self.material_keys
     }
+
+    /// The clip library this load binds: `None` for a model that names none, a
+    /// malformed reference, and a static model, which ignores its reference.
+    pub fn library(&self) -> Option<&ClipLibrarySources> {
+        self.library.as_ref()
+    }
 }
 
 impl std::fmt::Debug for ModelSources {
@@ -895,6 +937,7 @@ impl std::fmt::Debug for ModelSources {
         f.debug_struct("ModelSources")
             .field("buffers", &self.buffers.len())
             .field("material_keys", &self.material_keys)
+            .field("library", &self.library.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -907,8 +950,8 @@ const _: fn() = || {
 };
 
 /// Read the files [`load_model`] reads, and fail as it fails before its
-/// parse proper: an unreadable or malformed document or buffer, or a document
-/// with no mesh. Opens the document and resolves only geometry/skin/animation
+/// parse proper: an unreadable or malformed document or buffer, a document with
+/// no mesh, or an unreadable clip library. Opens the document and resolves only geometry/skin/animation
 /// buffers, no image data: `gltf::import` would decode every referenced PNG;
 /// `import_buffers` skips that decode. The `.glb` binary-blob arg is `None`
 /// (external-`.gltf` only; embedded-image / `.glb` support is out of scope).
@@ -926,18 +969,44 @@ pub fn read_model_sources(path: &Path) -> Result<ModelSources, ModelLoadError> {
         .map_err(import_error)?
         .document;
     let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(import_error)?;
-    let material_keys = {
-        let SelectedModel { mesh, .. } = select_model(&document, &path_str)?;
-        mesh.primitives()
+    let (material_keys, skinned) = {
+        let SelectedModel { mesh, skin, .. } = select_model(&document, &path_str)?;
+        let keys = mesh
+            .primitives()
             .map(|primitive| content_hash_material_key(&primitive.material(), parent_dir))
-            .collect()
+            .collect();
+        (keys, skin.is_some())
+    };
+    // The skin check comes first: a static model's library is neither read nor
+    // keyed, so a broken one cannot fail it.
+    let library = match clip_library_path(&document, path) {
+        Some(library_path) if skinned => Some(read_clip_library(&library_path, &path_str)?),
+        Some(library_path) => {
+            log::warn!(
+                "[Model] static model {path_str} names clip library {}; ignoring it",
+                library_path.display()
+            );
+            None
+        }
+        None => None,
     };
     Ok(ModelSources {
         document,
         buffers,
         document_digest: *blake3::hash(&bytes).as_bytes(),
         material_keys,
+        library,
     })
+}
+
+/// The file a glTF document at `path` names through `extras.clipLibrary`, or
+/// `None` when it names none or the value is malformed, which warns.
+pub fn clip_library_path(document: &gltf::Document, path: &Path) -> Option<PathBuf> {
+    read_clip_library_path(
+        &document.as_json().extras,
+        path.parent().unwrap_or_else(|| Path::new("")),
+        &path.display().to_string(),
+    )
 }
 
 /// [`load_model`] over sources [`read_model_sources`] already read from
@@ -951,6 +1020,7 @@ pub fn load_model_from_sources(
         document,
         buffers,
         material_keys,
+        library,
         ..
     } = sources;
 
@@ -980,7 +1050,8 @@ pub fn load_model_from_sources(
     //
     // `skin_joint_to_topo` reindexes mesh `JOINTS_0` (skin-joint indices) into
     // topo order; `node_to_topo` reindexes animation channel targets (node
-    // indices) into the same topo order.
+    // indices) into the same topo order. `joint_names` is that order's names,
+    // the only link from a joint to its clip library counterpart.
     let (
         skeleton,
         joint_zones,
@@ -991,6 +1062,7 @@ pub fn load_model_from_sources(
         skin_joint_to_topo,
         node_to_topo,
         locomotion_root,
+        joint_names,
     ) = match skin.as_ref() {
         Some(skin) => build_skeleton(skin, &document, &buffers, &path_str)?,
         None => (
@@ -1003,6 +1075,7 @@ pub fn load_model_from_sources(
             HashMap::new(),
             HashMap::new(),
             None,
+            Vec::new(),
         ),
     };
     let pose_stack =
@@ -1018,7 +1091,9 @@ pub fn load_model_from_sources(
     )?;
 
     // --- Animation clips --------------------------------------------------
-    let clips: Vec<AnimationClip> = document
+    // Bind, then derivation, then bounds: a bound clip's root motion and reach
+    // are its bound values, and embedded clips never pass through the bind.
+    let mut clips: Vec<AnimationClip> = document
         .animations()
         .map(|anim| {
             parse_clip(
@@ -1031,6 +1106,18 @@ pub fn load_model_from_sources(
             .derive_root_motion(locomotion_root, &path_str)
         })
         .collect();
+    if let Some(library) = &library {
+        append_library_clips(
+            &mut clips,
+            library,
+            MeshRig {
+                skeleton: &skeleton,
+                joint_names: &joint_names,
+                locomotion_root,
+            },
+            &path_str,
+        )?;
+    }
     skinned_mesh.compute_conservative_animation_bounds(&skeleton, &clips, &pose_stack);
 
     // --- Entity tags (top-level extras) -----------------------------------
@@ -1068,6 +1155,7 @@ type SkeletonMaps = (
     HashMap<usize, usize>,
     HashMap<usize, usize>,
     Option<usize>,
+    Vec<Option<String>>,
 );
 
 fn build_skeleton(
@@ -1250,6 +1338,13 @@ fn build_skeleton(
     let (pose_masks, aim_bend_weights, legs) =
         pose_masks_from_topo_metadata(&topo_order, &rest_pose_metadata, path_str);
 
+    // `Joint` stays nameless: names serve only a bind, here at load.
+    let skin_joint_names: Vec<Option<&str>> = skin.joints().map(|node| node.name()).collect();
+    let joint_names: Vec<Option<String>> = topo_order
+        .iter()
+        .map(|&skin_idx| skin_joint_names[skin_idx].map(str::to_string))
+        .collect();
+
     let skeleton = Skeleton::new(joints).map_err(|error| skeleton_build_error(path_str, error))?;
     let legs = validate_leg_set(&skeleton, legs, path_str);
     let declared_locomotion_root = skin
@@ -1267,6 +1362,7 @@ fn build_skeleton(
         skin_joint_to_topo,
         node_to_topo,
         locomotion_root,
+        joint_names,
     ))
 }
 

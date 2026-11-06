@@ -14,7 +14,7 @@ use crate::render::ModelContentKey;
 /// it whenever what the key covers, or how the parse and upload turn those
 /// inputs into a model (the glTF loader, the material plan, the uniform
 /// packing, `Material::Default`), changes: every older entry then misses.
-pub(crate) const MODEL_CONTENT_KEY_VERSION: u32 = 1;
+pub(crate) const MODEL_CONTENT_KEY_VERSION: u32 = 2;
 
 /// Every install-time parameter that shapes a model upload beyond its files.
 ///
@@ -91,6 +91,9 @@ impl ModelInstallParams {
 /// - the glTF document's bytes;
 /// - every buffer it references, external `.bin` files and `data:` URIs
 ///   alike, in buffer-index order, each length-prefixed;
+/// - whether the load binds a clip library, then that library's document and
+///   every buffer it references, likewise. A static model's named library is
+///   neither read nor keyed;
 /// - each primitive's material key of the mesh the loader selects, in
 ///   primitive order: blake3 of that material's base-color PNG, which names
 ///   the sidecar the material reads (the PNG shapes nothing else);
@@ -120,6 +123,22 @@ pub(crate) fn model_content_key(
     for buffer in buffers {
         hasher.update(&(buffer.len() as u64).to_le_bytes());
         hasher.update(buffer);
+    }
+    hasher.update(b"library");
+    match sources.library() {
+        Some(library) => {
+            hasher.update(&[1]);
+            hasher.update(&library.document_digest());
+            let buffers: Vec<&[u8]> = library.buffers().collect();
+            hasher.update(&(buffers.len() as u64).to_le_bytes());
+            for buffer in buffers {
+                hasher.update(&(buffer.len() as u64).to_le_bytes());
+                hasher.update(buffer);
+            }
+        }
+        None => {
+            hasher.update(&[0]);
+        }
     }
     let material_keys = sources.material_keys();
     hasher.update(b"materials");

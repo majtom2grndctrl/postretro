@@ -44,6 +44,19 @@ const KNIGHT: &str = "models/reference_enemy_kaykit_knight/scene.gltf";
 /// A prop no dev descriptor names.
 const PROP: &str = "models/decraniated_low_poly_retro_pixel/scene.gltf";
 
+/// `mesh/`, `static/` and `library/`: a bound model, a static model naming the
+/// same library, and that library with an external buffer.
+fn clip_library_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../model/tests/fixtures/clip_library")
+}
+
+/// Copy the clip library fixture to `root`, keeping its relative layout.
+fn copy_clip_library_fixture(root: &Path) {
+    for folder in ["mesh", "static", "library"] {
+        copy_dir(&clip_library_fixture().join(folder), &root.join(folder));
+    }
+}
+
 fn dev_prm_root() -> PathBuf {
     crate::startup::worker::derive_prm_root_dev_layout(&dev_content_root())
 }
@@ -309,6 +322,88 @@ fn model_cache_key_tracks_file_content() {
             base
         );
     }
+}
+
+// One byte of a library's document or buffer misses; the same model and
+// library moved together, keeping their relative path, hits. No path is keyed.
+#[test]
+fn model_cache_key_tracks_clip_library_content() {
+    let scratch = tempfile::tempdir().unwrap();
+    let a = scratch.path().join("mod_a/models");
+    let b = scratch.path().join("elsewhere/deep/props");
+    copy_clip_library_fixture(&a);
+    copy_clip_library_fixture(&b);
+    let prm_root = scratch.path().join("prm");
+    let params = ModelInstallParams::default();
+
+    let base = key_of(&a.join("mesh/model.gltf"), &prm_root, params);
+    assert_eq!(base.version(), 2);
+    let gltf = b.join("mesh/model.gltf");
+    let key = || key_of(&gltf, &prm_root, params);
+    assert_eq!(
+        key(),
+        base,
+        "a model moved with its library is the same model"
+    );
+
+    let library = b.join("library");
+    // The document's last byte is a newline, so this one still parses.
+    assert_edit_misses(
+        "library document",
+        &library.join("library.gltf"),
+        |bytes| *bytes.last_mut().unwrap() = b' ',
+        key,
+        base,
+    );
+    assert_edit_misses(
+        "library buffer",
+        &library.join("library.bin"),
+        |bytes| *bytes.last_mut().unwrap() ^= 0xFF,
+        key,
+        base,
+    );
+}
+
+// A static model's named library enters neither the read nor the key.
+#[test]
+fn static_model_key_ignores_its_clip_library() {
+    let scratch = tempfile::tempdir().unwrap();
+    copy_clip_library_fixture(scratch.path());
+    let prm_root = scratch.path().join("prm");
+    let params = ModelInstallParams::default();
+    let gltf = scratch.path().join("static/model.gltf");
+    let base = key_of(&gltf, &prm_root, params);
+
+    let library = scratch.path().join("library/library.gltf");
+    std::fs::write(&library, b"edited").unwrap();
+    assert_eq!(key_of(&gltf, &prm_root, params), base, "an edit");
+    std::fs::remove_file(&library).unwrap();
+    assert_eq!(key_of(&gltf, &prm_root, params), base, "a delete");
+}
+
+// The library's `leap` raises its 1 m root by 3 m. On a mesh resting at 2 m it
+// binds as 6 m, and the zone on the root must stay inside the derived bound.
+#[test]
+fn hit_zone_bound_covers_a_library_clip_at_the_scaled_height() {
+    let scratch = tempfile::tempdir().unwrap();
+    copy_clip_library_fixture(scratch.path());
+    let gltf = scratch.path().join("mesh/model.gltf");
+    let top = |path: &Path| {
+        ModelHitZones::from_loaded(load_model(path).expect("the model loads"))
+            .derived_bound
+            .expect("the model has zones")
+            .max
+            .y
+    };
+    let bound_top = top(&gltf);
+
+    let text = std::fs::read_to_string(&gltf).unwrap();
+    let unbound = scratch.path().join("mesh/unbound.gltf");
+    std::fs::write(&unbound, text.replace("clipLibrary", "unusedKey")).unwrap();
+    let unbound_top = top(&unbound);
+
+    assert!(bound_top >= 8.0, "the raised root reaches 8 m: {bound_top}");
+    assert!(unbound_top < 8.0, "only the clip reaches it: {unbound_top}");
 }
 
 // Models 3: a second load of the same map hits every model: no parse, no

@@ -23,7 +23,7 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 
 **Player substrate** (`physics/src/movement/`). `substrate.rs::integrate_collision` runs carry (`mover_carry.rs::apply_mover_carry`, keyed on the previous tick's `GroundRef`) → displace (`displace_from_movers`, refused by `mover_push_is_blocked_by_static`) → combined sweep with step-up and ground-stick → `ground_ref_from_hit` → `apply_mover_release_velocity`. `GroundRef` lives in `foundation/src/movement/player_movement.rs`.
 
-**Docked state.** `kinematic_mover.rs::mover_is_docked_closed` is public; `mover_is_at_open_terminus` / `mover_is_at_closed_terminus` are private.
+**Docked state.** `kinematic_mover.rs::mover_is_docked_closed` is public; `mover_is_at_open_terminus` / `mover_is_at_closed_terminus` are private. `goToPathNode` sets `target_segment`; `handle_arrival_at_waypoint` holds the mover there and clears it.
 
 **Nav** (`sim/src/nav/`).
 - `find_path(graph, start, goal)` is a pure function of an immutable `NavGraph`. Non-test callers: `agent_steering` replan, `ai/src/compute.rs` `target_reachable` (cached on the acquisition stride), `combat_positioning/scoring.rs` (`score_candidate`, `has_tactically_direct_target_path`). `ai` depends on `sim`, so a `sim` gate type reaches all callers.
@@ -48,13 +48,17 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 - `done/E17--rider-not-a-blocking-contact` AC8 ("agents are unaffected") — reversed for riding agents.
 - `done/E17--doors-blocking-movers`: crush continues past death through the damage chokepoint; no engine death concept (E16). Kept.
 - `development_guide.md` §Workspace: movement and mover collision live in `postretro-physics`.
+- `done/movement--static-overlap-invariant`: players and enemies share geometry primitives, not controllers.
+- `done/E17--doors-as-occluders`: door→portal sealing is a baked per-mover association for BSP portals. Nav regions are a different decomposition, so the gate derives its own footprint.
+- `done/gameplay-stack--ai-and-physics-crates`: physics stays a leaf crate while movement and movers are near-stable; agent motion adds churn there.
 - `networking.md`: enemies host-simulated; no wire change here. Remote presentation of riding enemies is roadmap item **Co-op presentation of NPCs on moving geometry**.
 
 ## Rivals considered
 
 - *Moving navmesh or rebake on motion.* No surveyed engine does it; lifts are off-mesh links everywhere.
-- *Mover-side push (Quake 2).* Contradicts body-side player carry, which must stay predicted.
-- *Agent motion stays in `sim`, physics widens visibility.* Splits mover-contact rules across crates and duplicates carry, displace and pin.
+- *Mover-side push (Quake 2).* Two carry semantics and two pin predicates: players must keep body-side carry because it is predicted, so a mover-side push for agents would be a second rule for the same mover.
+- *Agent motion stays in `sim`, physics widens visibility.* Sharing primitives would duplicate nothing, but mover collision would then span two crates against `development_guide.md` §Workspace, and `pub(crate)` mover internals (`CombinedCastHit.source`, `deepest_mover_push_penetration`) would widen for one consumer.
+- *Bake mover footprints into the nav decomposition.* Split regions at each mover's rest-pose footprint and store gates and links as baked portal kinds in a new NavMesh version; runtime toggles baked ids. Matches "baked over computed" and the `doors-as-occluders` bake pattern, and removes the fidelity measurement. Costs a `NAVMESH_VERSION` bump and rebake. Held as the fallback: the runtime cut is reversible, and the measurement decides whether it is needed.
 - *Gate on live posed bounds each tick.* Re-flips for sweepers, crushers and mid-travel doors; churns replans; gates planning through a half-open door shots pass. Dock state changes only on dock and undock.
 - *Local avoidance alone at closed doors.* Reproduces Source's `OnDoorBlocked` loop: jitter and stuck cycling.
 
@@ -85,5 +89,7 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 | O17 | Riding agent | — | Steering suspended, footing kept, stuck detection paused |
 | O18 | Mover docks at the far terminus | — | Rider exits along the link, replans from the landing region |
 | O19 | Rising room starts with enemies inside | — | They ride up and exit through the doorway onto the arena |
-| O20 | Mover with no terminus (spinner, endless path) | — | No gate, no link; collision and blocking pass handle it |
+| O20 | Mover with no waypoints (pure spinner) | — | No gate, no link; collision and blocking pass handle it |
 | O21 | Level with zero movers | — | Agent motion, steering and paths identical to today |
+| O22 | `goToPathNode` holds a door closed at a mid-path node across a route | Gate flips on dock at that node | Same as O12 |
+| O23 | Multi-stop lift held at a middle node; mover passes a node without stopping | — | Link open only while docked there; passing through opens nothing |

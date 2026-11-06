@@ -33,6 +33,12 @@ import { referenceEnemyEntity } from "./scripts/reference-enemy";
 import { enemyRifleEntity } from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
 import {
+  RIFLE_TROOPERS_FACTION,
+  RIFLE_WARRIORS_FACTION,
+  rifleTrooperEntity,
+  rifleWarriorEntity,
+} from "./scripts/rifle-squads";
+import {
   CROSSFIRE_RAIDERS_FACTION,
   CROSSFIRE_SENTINELS_FACTION,
   MAX_RETALIATION_TOLERANCE,
@@ -264,6 +270,8 @@ export default defineMod({
     defineFaction(CROSSFIRE_SENTINELS_FACTION),
     defineFaction(SENTIMENT_CABAL_FACTION),
     defineFaction(SENTIMENT_RESISTANCE_FACTION),
+    defineFaction(RIFLE_TROOPERS_FACTION),
+    defineFaction(RIFLE_WARRIORS_FACTION),
   ],
   sentiment: [
     sentiment(CROSSFIRE_RAIDERS_FACTION, CROSSFIRE_RAIDERS_FACTION, {
@@ -294,6 +302,20 @@ export default defineMod({
       tolerance: SENTIMENT_TOLERANCE,
       decay: SENTIMENT_DECAY,
     }),
+    // Rifle squads treat each other and the raiders as hostile, so groups that
+    // start apart on a dev map fight when they meet.
+    sentiment(RIFLE_TROOPERS_FACTION, RIFLE_WARRIORS_FACTION, { sentiment: -1 }),
+    sentiment(RIFLE_WARRIORS_FACTION, RIFLE_TROOPERS_FACTION, { sentiment: -1 }),
+    sentiment(RIFLE_TROOPERS_FACTION, CROSSFIRE_RAIDERS_FACTION, { sentiment: -1 }),
+    sentiment(RIFLE_WARRIORS_FACTION, CROSSFIRE_RAIDERS_FACTION, { sentiment: -1 }),
+    sentiment(CROSSFIRE_RAIDERS_FACTION, RIFLE_TROOPERS_FACTION, {
+      sentiment: -1,
+      tolerance: RAIDER_TOLERANCE,
+    }),
+    sentiment(CROSSFIRE_RAIDERS_FACTION, RIFLE_WARRIORS_FACTION, {
+      sentiment: -1,
+      tolerance: RAIDER_TOLERANCE,
+    }),
   ],
   entities: [
     playerEntity,
@@ -323,6 +345,9 @@ export default defineMod({
     referenceEnemyEntity,
     enemyRifleEntity,
     limitatorEntity,
+    // Rifle squads: `"classname" "rifle_trooper"` / `"rifle_warrior"`.
+    rifleTrooperEntity,
+    rifleWarriorEntity,
     // Crossfire reference controls. Place `crossfire_raider` with either a
     // raider or sentinel peer to observe retaliation; `crossfire_sentinel`
     // remains on its player target under the same incoming damage.

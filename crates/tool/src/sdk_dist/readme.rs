@@ -179,6 +179,7 @@ live, so renaming it after release strands them.\n\
 - `docs/level_design.md` — level authoring and the compiler pipeline.\n\
 - `docs/scripting-reference.md` — the scripting API surface.\n\
 - `docs/weapon-mounts.md` — weapon mount and viewmodel authoring.\n\
+- `docs/character-animation.md` — shared clip libraries for characters.\n\
 - `docs/teleporters.md` — classic and seamless teleporters.\n\
 - `docs/ghost-links.md` — seeing another room copy through a ghost link.\n\
 - `docs/diagnostics.md` — diagnosing and profiling a running session.\n\
@@ -320,6 +321,7 @@ mod tests {
             "docs/level_design.md",
             "docs/scripting-reference.md",
             "docs/weapon-mounts.md",
+            "docs/character-animation.md",
             "docs/teleporters.md",
             "docs/ghost-links.md",
             "docs/diagnostics.md",

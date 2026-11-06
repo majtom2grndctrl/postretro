@@ -806,7 +806,7 @@
 // entity 33
 {
 "classname" "crossfire_raider"
-"origin" "-144 756 192"
+"origin" "-1200 1200 192"
 "angles" "0 0 0"
 "_tags" "enemy crossfire_raider"
 "_tb_group" "12"
@@ -814,7 +814,7 @@
 // entity 34
 {
 "classname" "crossfire_raider"
-"origin" "-144 900 192"
+"origin" "-1200 1344 192"
 "angles" "0 0 0"
 "_tags" "enemy crossfire_raider"
 "_tb_group" "12"
@@ -822,7 +822,7 @@
 // entity 35
 {
 "classname" "crossfire_raider"
-"origin" "-144 1044 192"
+"origin" "-1056 1344 192"
 "angles" "0 0 0"
 "_tags" "enemy crossfire_raider"
 "_tb_group" "12"
@@ -954,4 +954,40 @@
 "style" "0"
 "_color" "126 241 255"
 "_tb_group" "11"
+}
+{
+"classname" "rifle_trooper"
+"origin" "1300 -700 192"
+"angles" "0 135 0"
+"_tags" "enemy rifle_trooper"
+}
+{
+"classname" "rifle_trooper"
+"origin" "1300 -850 192"
+"angles" "0 135 0"
+"_tags" "enemy rifle_trooper"
+}
+{
+"classname" "rifle_trooper"
+"origin" "1450 -700 192"
+"angles" "0 135 0"
+"_tags" "enemy rifle_trooper"
+}
+{
+"classname" "rifle_warrior"
+"origin" "-1200 -700 192"
+"angles" "0 45 0"
+"_tags" "enemy rifle_warrior"
+}
+{
+"classname" "rifle_warrior"
+"origin" "-1200 -850 192"
+"angles" "0 45 0"
+"_tags" "enemy rifle_warrior"
+}
+{
+"classname" "rifle_warrior"
+"origin" "-1050 -850 192"
+"angles" "0 45 0"
+"_tags" "enemy rifle_warrior"
 }

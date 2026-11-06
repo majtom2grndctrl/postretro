@@ -219,6 +219,8 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
 - `docs/ghost-links.md` — ghost links: seeing one room copy from another,
   ghost styles, ghost audio and scripting them.
 - `docs/weapon-mounts.md` — rigid weapon mount authoring workflow.
+- `docs/character-animation.md` — shared clip libraries: characters that ship
+  as mesh and skeleton and take their clips from one file.
 - `docs/diagnostics.md` — runtime diagnostic keyboard chords and simulated
   network lag for co-op testing.
 - `docs/distribution.md` — producing a lean, shippable player build.

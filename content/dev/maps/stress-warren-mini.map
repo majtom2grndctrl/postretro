@@ -3625,3 +3625,57 @@
 "name" "warren_lift_0_high"
 "origin" "3840 640 460"
 }
+{
+"classname" "crossfire_raider"
+"origin" "800 200 96"
+"angles" "0 180 0"
+"_tags" "enemy crossfire_raider"
+}
+{
+"classname" "crossfire_raider"
+"origin" "1000 200 96"
+"angles" "0 180 0"
+"_tags" "enemy crossfire_raider"
+}
+{
+"classname" "crossfire_raider"
+"origin" "800 400 96"
+"angles" "0 180 0"
+"_tags" "enemy crossfire_raider"
+}
+{
+"classname" "rifle_trooper"
+"origin" "1400 2000 96"
+"angles" "0 270 0"
+"_tags" "enemy rifle_trooper"
+}
+{
+"classname" "rifle_trooper"
+"origin" "1600 2000 96"
+"angles" "0 270 0"
+"_tags" "enemy rifle_trooper"
+}
+{
+"classname" "rifle_trooper"
+"origin" "1800 2000 96"
+"angles" "0 270 0"
+"_tags" "enemy rifle_trooper"
+}
+{
+"classname" "rifle_warrior"
+"origin" "300 -2000 96"
+"angles" "0 90 0"
+"_tags" "enemy rifle_warrior"
+}
+{
+"classname" "rifle_warrior"
+"origin" "500 -2000 96"
+"angles" "0 90 0"
+"_tags" "enemy rifle_warrior"
+}
+{
+"classname" "rifle_warrior"
+"origin" "700 -2000 96"
+"angles" "0 90 0"
+"_tags" "enemy rifle_warrior"
+}

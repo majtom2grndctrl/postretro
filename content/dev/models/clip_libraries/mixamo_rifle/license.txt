@@ -1,0 +1,16 @@
+Animation Information:
+* title:	Mixamo rifle clip library
+* source:	https://www.mixamo.com/
+* author:	Adobe Mixamo (https://www.mixamo.com)
+
+License:
+* license type:	Mixamo Service Terms (https://www.adobe.com/legal/terms.html)
+* requirements:	Free to use in projects for Mixamo account holders.
+                	Mixamo characters and animations may be used in commercial and
+                	non-commercial projects. Redistribution of the raw assets
+                	outside of a project is not permitted.
+
+Packaging notes (PostRetro):
+* Clips from the Mixamo "Pro Rifle Pack", plus firing_rifle, hit_reaction and
+  reloading from the "Basic Shooter Pack", on the exo_red rig. Built with
+  mixamo_to_gltf.py --library --strip-face. See docs/character-animation.md.

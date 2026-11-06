@@ -2472,13 +2472,23 @@ mod tests {
         ];
         const SHORT_STRIDE: &str = "has a byte stride below its element size";
         const OVERRUN: &str = "overruns its buffer";
-        let sparse = |count: u64| {
-            serde_json::json!({
-                "count": count,
-                "indices": { "bufferView": 3, "componentType": 5123 },
-                "values": { "bufferView": 0 },
-            })
-        };
+        const SPARSE_COUNT: &str = "has a sparse count outside its elements";
+        // A view cases may name for sparse values, placed before any isolated one.
+        let mut fixture = fixture_json(&multi_clip_fixture_path());
+        let views = fixture["bufferViews"].as_array_mut().unwrap();
+        views.push(serde_json::json!({ "buffer": 0, "byteLength": 64, "byteStride": 4 }));
+        let short_view = views.len() - 1;
+
+        let indices = serde_json::json!({ "bufferView": 3, "componentType": 5123 });
+        let values = serde_json::json!({ "bufferView": 0 });
+        let sparse_of = |count: u64, indices: &serde_json::Value, values: &serde_json::Value| serde_json::json!({ "count": count, "indices": indices, "values": values });
+        let sparse = |count: u64| sparse_of(count, &indices, &values);
+        let far_indices = serde_json::json!({
+            "bufferView": 3,
+            "byteOffset": 1u64 << 20,
+            "componentType": 5123,
+        });
+        let far_values = serde_json::json!({ "bufferView": 0, "byteOffset": 1u64 << 20 });
         let none = serde_json::json!({});
 
         for attribute in ATTRIBUTES {
@@ -2506,14 +2516,40 @@ mod tests {
                     none.clone(),
                 ),
                 (
-                    Some("has a sparse count outside its elements"),
+                    Some("has no buffer view"),
+                    serde_json::json!({ "bufferView": null, "sparse": sparse(1) }),
+                    none.clone(),
+                ),
+                (
+                    Some(SPARSE_COUNT),
                     serde_json::json!({ "sparse": sparse(4) }),
+                    none.clone(),
+                ),
+                (
+                    Some(SPARSE_COUNT),
+                    serde_json::json!({ "sparse": sparse(0) }),
+                    none.clone(),
+                ),
+                (
+                    Some(OVERRUN),
+                    serde_json::json!({ "sparse": sparse_of(1, &far_indices, &values) }),
+                    none.clone(),
+                ),
+                (
+                    Some(OVERRUN),
+                    serde_json::json!({ "sparse": sparse_of(1, &indices, &far_values) }),
                     none.clone(),
                 ),
                 (
                     Some(OVERRUN),
                     serde_json::json!({ "byteOffset": 1u64 << 20 }),
                     none.clone(),
+                ),
+                // Past its view, still inside its buffer.
+                (
+                    Some(OVERRUN),
+                    none.clone(),
+                    serde_json::json!({ "byteLength": 4 }),
                 ),
                 (
                     Some(OVERRUN),
@@ -2526,25 +2562,31 @@ mod tests {
                     serde_json::json!({ "byteOffset": u64::MAX }),
                 ),
             ];
-            // A document may declare no stride under 4, so a 2-byte index cannot
-            // be short-strided, and JOINTS_0 needs its wider storage.
-            match *attribute {
-                "indices" => {}
-                "JOINTS_0" => cases.push((
+            // A document may declare no stride under 4 and no index is wider, so
+            // indices cannot be short-strided. JOINTS_0 needs its wider storage,
+            // and a view that fits it for the base read to pass.
+            if *attribute != "indices" {
+                let (mut wide, wide_view) = if *attribute == "JOINTS_0" {
+                    (
+                        serde_json::json!({ "componentType": 5123 }),
+                        serde_json::json!({ "byteLength": 24 }),
+                    )
+                } else {
+                    (none.clone(), none.clone())
+                };
+                cases.push((
                     Some(SHORT_STRIDE),
-                    serde_json::json!({ "componentType": 5123 }),
+                    wide.clone(),
                     serde_json::json!({ "byteStride": 4 }),
-                )),
-                _ => cases.push((
-                    Some(SHORT_STRIDE),
-                    none.clone(),
-                    serde_json::json!({ "byteStride": 4 }),
-                )),
+                ));
+                let short_values = serde_json::json!({ "bufferView": short_view });
+                wide["sparse"] = sparse_of(1, &indices, &short_values);
+                cases.push((Some(SHORT_STRIDE), wide, wide_view));
             }
 
             for (reason, accessor_patch, view_patch) in cases {
                 let label = format!("{attribute} {accessor_patch} {view_patch}");
-                let mut json = fixture_json(&multi_clip_fixture_path());
+                let mut json = fixture.clone();
                 let accessor_index = isolate_accessor(&mut json, attribute);
                 let view_index = json["accessors"][accessor_index]["bufferView"]
                     .as_u64()

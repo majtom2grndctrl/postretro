@@ -96,6 +96,17 @@ pub struct MeshFramePlan {
     pub dropped: u32,
 }
 
+impl MeshFramePlan {
+    /// Whether the main view draws any instance of this plan. A plan can hold
+    /// only shadow-only or mirror-only instances, which feed other passes.
+    pub fn has_forward_draws(&self) -> bool {
+        self.groups
+            .iter()
+            .flat_map(|group| group.instances.iter())
+            .any(|instance| instance.forward_visible)
+    }
+}
+
 /// The plans sharing this frame's palette and instance SSBOs.
 ///
 /// Budget admission is global across the plans, in this order:

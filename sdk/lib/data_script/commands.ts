@@ -52,7 +52,7 @@ export interface NpcGroup {
   /** Apply a typed partial to each NPC's state. */
   update(fields: NpcStateUpdateArgs): GroupCommand;
   /** Damage each NPC by a finite, non-negative amount. */
-  damage(amount: number): GroupCommand;
+  damage(amount: number, options?: DamageOptions): GroupCommand;
 }
 
 /**
@@ -62,7 +62,7 @@ export interface NpcGroup {
  */
 export interface PlayerGroup {
   /** Damage each player by a finite, non-negative amount. */
-  damage(amount: number): GroupCommand;
+  damage(amount: number, options?: DamageOptions): GroupCommand;
   /** Add health to each player. */
   grantHealth(amount: number): GroupCommand;
   /** Enter an authored life state. */
@@ -71,6 +71,12 @@ export interface PlayerGroup {
   respawn(options?: RespawnOptions): GroupCommand;
   /** Add `amount` to each player's named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): GroupCommand;
+  /**
+   * Refill each player's `layer`: omit `amount` to fill to capacity, or add
+   * a finite, non-negative `amount`, clamped to capacity. A player without
+   * that layer warns and is skipped.
+   */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: number): GroupCommand;
   /** Add `delta` to each player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
   /**
@@ -107,7 +113,7 @@ declare const playerTargetBrand: unique symbol;
 export interface ActivatorsTarget {
   readonly [activatorsTargetBrand]: true;
   /** Damage this fire's activators. */
-  damage(amount: number): SubjectTokenCommand;
+  damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
   /** Add health to this fire's activators. */
   grantHealth(amount: number): SubjectTokenCommand;
   /** Enter an authored life state. */
@@ -116,6 +122,8 @@ export interface ActivatorsTarget {
   respawn(options?: RespawnOptions): SubjectTokenCommand;
   /** Add to this fire's activators' named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
+  /** Refill this fire's activators' `layer`: omit `amount` to fill, or add it, clamped to capacity. */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
   /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -128,7 +136,7 @@ export interface ActivatorsTarget {
 export interface PlayerTarget {
   readonly [playerTargetBrand]: true;
   /** Damage this event's player. */
-  damage(amount: number): SubjectTokenCommand;
+  damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
   /** Add health to this event's player. */
   grantHealth(amount: number): SubjectTokenCommand;
   /** Enter an authored life state. */
@@ -137,6 +145,8 @@ export interface PlayerTarget {
   respawn(options?: RespawnOptions): SubjectTokenCommand;
   /** Add to this event's player's named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
+  /** Refill this event's player's `layer`: omit `amount` to fill, or add it, clamped to capacity. */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
   /** Add `delta` to this event's player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -158,11 +168,20 @@ export interface TriggerTarget {
 
 type CommandBuilder<R> = (primitive: string, args: Record<string, unknown>) => R;
 
+/** `.damage` options: `type` is a registered damage-type handle. Every key
+ * crosses as authored, so the engine rejects an unknown one at install. */
+type DamageOptions = { readonly type?: import("postretro").DamageType } & Record<string, unknown>;
+
+function damageArgs(amount: number, options?: DamageOptions): Record<string, unknown> {
+  return options === undefined ? { amount } : { ...options, amount };
+}
+
 // The player-facing verbs, shared by `players()`, `on.activators` and
 // `on.player`; only the addressing each stamps differs.
 function playerVerbs<R>(make: CommandBuilder<R>) {
   return {
-    damage: (amount: number): R => make("applyDamage", { amount }),
+    damage: (amount: number, options?: DamageOptions): R =>
+      make("applyDamage", damageArgs(amount, options)),
     grantHealth: (amount: number): R => make("grantHealth", { amount }),
     setLifeState: (state: string): R => make("setLifeState", { state }),
     respawn: (options: RespawnOptions = {}): R => {
@@ -172,6 +191,8 @@ function playerVerbs<R>(make: CommandBuilder<R>) {
       return make("respawn", args);
     },
     grantAmmo: (type: string, amount: number): R => make("grantAmmo", { type, amount }),
+    grantLayer: (layer: import("postretro").DefenseLayer, amount?: number): R =>
+      make("grantLayer", amount === undefined ? { layer } : { layer, amount }),
     addSlot: (slot: StateRef<number>, delta: number): R =>
       make("addSlot", { slot: slot.slot, delta }),
   };
@@ -187,7 +208,8 @@ export function npcs(filter?: NpcGroupFilter): NpcGroup {
   const make = groupCommand("npc", filter?.tag);
   return Object.freeze({
     update: (fields: NpcStateUpdateArgs) => make("updateNpcState", fields),
-    damage: (amount: number) => make("applyDamage", { amount }),
+    damage: (amount: number, options?: DamageOptions) =>
+      make("applyDamage", damageArgs(amount, options)),
   });
 }
 

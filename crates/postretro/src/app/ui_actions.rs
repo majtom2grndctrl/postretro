@@ -385,16 +385,16 @@ impl App {
     ///
     /// No-op (returns `false`) when text entry is closed — the top tree declares no
     /// `text_entry_target`. While open:
-    /// - `Text(s)` → an `AppendText { slot, text: s }` edit against the target slot,
-    /// - `Backspace` → a `BackspaceText { slot }` edit against the target slot,
+    /// - `Text(s)` → an append edit against the target slot,
+    /// - `Backspace` → a backspace edit against the target slot,
     /// - `nav.confirm` → commit: fire the opener's `on_commit`, then `PopTree`,
     /// - `nav.cancel` → cancel: `PopTree` only (edits stay in the slot; the opener
     ///   simply does not act on them — no rollback).
     ///
-    /// Edits ride Task 1's text-edit command path (pushed onto the system-command
-    /// queue, drained at `dispatch_system_commands`), so they land on the bound slot
-    /// on the N+1 frame — the system's defining N→N+1 ordering. Commit and cancel act
-    /// on the stack immediately at this game-logic phase; the seam reconciles next.
+    /// Edits write the bound slot here, through the text-edit sink, at frame N+1's
+    /// game-logic phase (the intents were captured on frame N) — the system's
+    /// defining N→N+1 ordering. Commit and cancel act on the stack immediately at
+    /// this game-logic phase; the seam reconciles next.
     pub(crate) fn resolve_text_entry_intents(&mut self, ui_intents: &[input::UiIntent]) -> bool {
         let Some(target) = self.session.as_ref().and_then(|session| {
             session
@@ -419,21 +419,29 @@ impl App {
         // Pure resolution: drained intents → ordered edits + a terminal disposition.
         let resolution = input::resolve_text_entry(ui_intents, confirm_on_button);
 
-        // Apply the edits through Task 1's text-edit command path (the bound slot
-        // changes on the N+1 frame). Edits are queued before commit/cancel acts so a
-        // committing reaction observes the slot as last edited.
+        // Apply the edits through the text-edit sink, the same path a reaction
+        // body's text edit takes, so keystrokes and same-frame reaction edits
+        // (an on-screen key, a shortcut, the commit's own `clearText`) land in
+        // intent order. They land before commit/cancel acts, so a committing
+        // reaction observes the slot as last edited. With no sink installed they
+        // queue for the frame-end drain.
         for edit in &resolution.edits {
-            let command = match edit {
-                input::TextEntryEdit::Append(text) => SystemReactionCommand::AppendText {
-                    slot: target.clone(),
-                    text: text.clone(),
-                },
-                input::TextEntryEdit::Backspace => SystemReactionCommand::BackspaceText {
-                    slot: target.clone(),
-                },
+            let edit = match edit {
+                input::TextEntryEdit::Append(text) => {
+                    postretro_entities::reactions::system_commands::TextEditCommand::Append(
+                        text.clone(),
+                    )
+                }
+                input::TextEntryEdit::Backspace => {
+                    postretro_entities::reactions::system_commands::TextEditCommand::Backspace
+                }
             };
             if let Some(session) = self.session.as_ref() {
-                session.scripting.script_ctx.system_commands.push(command);
+                session
+                    .scripting
+                    .script_ctx
+                    .system_commands
+                    .edit_text(target.clone(), edit);
             }
         }
 

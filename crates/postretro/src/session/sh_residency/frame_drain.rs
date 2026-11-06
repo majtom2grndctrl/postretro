@@ -47,7 +47,8 @@ impl ShStreamingSession {
     ///
     /// Promotion runs before the target update, so a cluster composed last
     /// frame is Sampleable when this frame's visible misses are counted: the
-    /// frame draws it lit. A settling frame counts no visible miss.
+    /// frame draws it lit. A settling frame demands in full on every path
+    /// and counts no visible miss.
     pub(in crate::session) fn begin_drain(
         &mut self,
         visible_cells: &VisibleCells,
@@ -56,7 +57,7 @@ impl ShStreamingSession {
         monotonic_seconds: f64,
         drain: &mut SharedDrain,
     ) -> Result<PendingShDrain> {
-        self.suspend_visible_misses(settling);
+        self.set_full_demand(settling);
         match self.mode {
             ShStreamingMode::SyncProof => {
                 self.promote_composed_clusters();
@@ -129,8 +130,7 @@ impl ShStreamingSession {
                 chunk,
             })?;
         }
-        // Budget policy runs inside the drain and may suppress targets.
-        // Requests are taken only after it, in `finish_drain`.
+        // Requests are taken only after the drain, in `finish_drain`.
         Ok(PendingShDrain {
             batch: self.controller.begin_drain(true, drain)?,
             submit_requests: true,
@@ -138,10 +138,7 @@ impl ShStreamingSession {
     }
 
     /// Second half: SH's admitted clusters join the batch; then, with workers
-    /// running, new requests are taken and submitted. The drain's final target
-    /// set is published before submitting: an idle issuer wakes on a
-    /// submission and would otherwise read a suppressed cluster against the
-    /// earlier publish.
+    /// running, new requests are taken and submitted.
     pub(in crate::session) fn finish_drain(
         &mut self,
         pending: PendingShDrain,
@@ -158,7 +155,6 @@ impl ShStreamingSession {
                 .workers
                 .as_ref()
                 .expect("async workers were present when the drain began");
-            workers.publish_targets(self.controller.targets());
             for request in requests {
                 workers.submit(request).map_err(anyhow::Error::msg)?;
             }

@@ -2,7 +2,7 @@
 // See: context/lib/scripting.md §10
 #![allow(unused_imports)]
 
-use postretro_entities::{DataRegistry, ScriptCtx, SlotTable};
+use postretro_entities::{DataRegistry, ScriptCtx};
 use postretro_foundation::IrValue;
 use postretro_scripting_core::reaction_dispatch::{
     NamedEventDispatchContext, dispatch_deferred_named_events_with_sequences,
@@ -34,17 +34,19 @@ pub(crate) use postretro_scripting_core::reaction_registry::ReactionError;
 
 /// Detect settled state crossings and synchronously dispatch their named reactions.
 /// App owns the surrounding frame and system-command drains; this owns their shared dispatch seam.
+/// The slot table is borrowed only while detecting: a fired body writes the
+/// store at dispatch.
 pub fn dispatch_state_crossings_with_sequences(
     crossing_detector: &mut CrossingDetector,
-    slot_table: &SlotTable,
     data_registry: &DataRegistry,
     sequence_registry: &SequencedPrimitiveRegistry,
     reaction_registry: &ReactionPrimitiveRegistry,
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) -> Vec<String> {
+    let crossing_events = crossing_detector.detect(&script_ctx.slot_table.borrow());
     dispatch_crossing_fires_with_sequences(
-        crossing_detector.detect(slot_table),
+        crossing_events,
         data_registry,
         sequence_registry,
         reaction_registry,
@@ -280,7 +282,6 @@ mod tests {
             assert_eq!(
                 dispatch_state_crossings_with_sequences(
                     &mut detector,
-                    &ctx.slot_table.borrow(),
                     &data,
                     &sequence_registry,
                     &reaction_registry,

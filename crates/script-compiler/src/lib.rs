@@ -528,13 +528,24 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
             continue;
         };
 
-        let expected_arity = match callee.sym.as_ref() {
-            "defineStore" => 1,
-            "defineImpactEvent" => 2,
-            "definePresentationTemplate" => 1,
+        // The arity-keyed definers take one argument fewer than their named
+        // form. The defense definers end in an optional options object, so
+        // arity cannot tell `(matrix, options)` from `(name, matrix)`; they
+        // key on an object-literal first argument instead, and any other
+        // first argument is the explicit form.
+        let qualifies = match callee.sym.as_ref() {
+            "defineStore" | "definePresentationTemplate" => call.args.len() == 1,
+            "defineImpactEvent" => call.args.len() == 2,
+            "defineDamageType" => {
+                (1..=2).contains(&call.args.len()) && first_arg_is_object_literal(&call.args)
+            }
+            "defineDefenseLayer" => {
+                call.args.is_empty()
+                    || (call.args.len() == 1 && first_arg_is_object_literal(&call.args))
+            }
             _ => continue,
         };
-        if call.args.len() != expected_arity {
+        if !qualifies {
             continue;
         }
 
@@ -550,6 +561,11 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
             },
         );
     }
+}
+
+fn first_arg_is_object_literal(args: &[swc_ecma_ast::ExprOrSpread]) -> bool {
+    args.first()
+        .is_some_and(|arg| arg.spread.is_none() && matches!(*arg.expr, Expr::Object(_)))
 }
 
 /// Rewrites every surviving named-export form into a bare statement (or
@@ -1414,6 +1430,74 @@ mod tests {
         assert!(
             js.contains("\"explicit\""),
             "explicit descriptor name should remain unchanged: {js}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn binding_name_sugar_names_defense_layers_and_damage_types() {
+        let dir = unique_tempdir("binding-name-sugar-defense");
+        let entry = dir.join("entry.ts");
+        fs::write(
+            &entry,
+            r#"
+            export const shield = defineDefenseLayer();
+            let armor = defineDefenseLayer({});
+            var shock = defineDamageType({ shield: 2, health: 0.75 });
+            export const plasma = defineDamageType({ shield: 1.5 }, {});
+            "#,
+        )
+        .unwrap();
+
+        let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
+        for (call, name) in [
+            ("defineDefenseLayer", "shield"),
+            ("defineDefenseLayer", "armor"),
+            ("defineDamageType", "shock"),
+            ("defineDamageType", "plasma"),
+        ] {
+            assert!(
+                js.contains(&format!("{call}(\"{name}\"")),
+                "bundle should name `{name}` by its binding: {js}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn binding_name_sugar_leaves_non_object_first_args_explicit() {
+        let dir = unique_tempdir("binding-name-sugar-defense-negative");
+        let entry = dir.join("entry.ts");
+        fs::write(
+            &entry,
+            r#"
+            const SHOCK = "shockName";
+            const matrix = { shield: 2 };
+            const held = defineDamageType(matrix);
+            const computed = defineDamageType(SHOCK, matrix, {});
+            const named = defineDefenseLayer("explicitLayer");
+            const nested = { layer: defineDefenseLayer() };
+            function helper() {
+                const inner = defineDefenseLayer();
+                return inner;
+            }
+            const aliased = Postretro.defineDefenseLayer();
+            "#,
+        )
+        .unwrap();
+
+        let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
+        for name in ["held", "computed", "named", "nested", "inner", "aliased"] {
+            assert!(
+                !js.contains(&format!("\"{name}\"")),
+                "non-qualifying call must not receive `{name}`: {js}"
+            );
+        }
+        assert!(
+            js.contains("\"explicitLayer\""),
+            "explicit name stays: {js}"
         );
 
         let _ = fs::remove_dir_all(&dir);

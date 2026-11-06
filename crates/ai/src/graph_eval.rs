@@ -484,6 +484,7 @@ mod statechart_tests {
                     cooldown_ms: Some(100.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             )]),
             engagement_radius: None,

@@ -161,6 +161,7 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
             };
             set_health_absolute(registry, pawn, health);
         }
+        postretro_entities::components::defense_layers::refill_layers_on_respawn(registry, pawn);
         crate::scripting_systems::health::cancel_owned_weapon_activations(registry, pawn);
         arrivals.push(Arrival {
             pawn,

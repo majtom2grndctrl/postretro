@@ -677,8 +677,16 @@ impl Renderer {
         // re-upload here — `record_draws` only records draws against the buffers
         // the hoist populated, the SAME buffers the skinned-depth shadow pass
         // read, so an entity and its shadow share one pose (no one-frame lag).
-        if render_world && let Some(plan) = world_mesh_frame_plan {
+        if render_world
+            && let Some(plan) = world_mesh_frame_plan
+            && plan.has_forward_draws()
+        {
             let _skinned_scope = cpu.scope(RenderStage::SkinnedMesh);
+            let skinned_ts = self
+                .full()
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_SKINNED_MESH));
             let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Mesh Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -698,7 +706,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: skinned_ts,
                 ..Default::default()
             });
             mesh_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
@@ -1119,6 +1127,11 @@ impl Renderer {
         // interpretation; UI remains above this pass as usual.
         if render_world && let Some(plan) = viewmodel_mesh_frame_plan {
             let _viewmodel_scope = cpu.scope(RenderStage::Viewmodel);
+            let viewmodel_ts = self
+                .full()
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_VIEWMODEL));
             let mut viewmodel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Viewmodel Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1138,7 +1151,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: viewmodel_ts,
                 ..Default::default()
             });
             viewmodel_pass.set_bind_group(
@@ -1275,8 +1288,7 @@ mod tests {
                 accepted: vec![4],
                 dropped: vec![9],
                 refused: vec![12],
-                deferred: Vec::new(),
-                evicted: Vec::new(),
+                ..ShDrainOutcome::default()
             },
             compose_submitted: false,
             frame: Err(anyhow::anyhow!("surface acquisition failed")),

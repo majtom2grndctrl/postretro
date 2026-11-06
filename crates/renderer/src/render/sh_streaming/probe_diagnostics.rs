@@ -18,8 +18,8 @@ pub(in crate::render) enum ProbeResidencyClass {
     /// `compose_words` entry is nonzero but `sampled_words` is still zero:
     /// installed on GPU, not yet promoted to the sampled indirection.
     InstalledAwaitingCompose,
-    /// Valid probe whose owning cluster (`dense_owner`) is a current target,
-    /// with nothing installed for it yet.
+    /// Valid probe that some current target cluster names, with nothing
+    /// installed for it yet.
     Requested,
     /// Valid probe with no residency activity at all.
     Miss,
@@ -45,16 +45,14 @@ impl ShResidencyState {
             .map_or(0, |probe| probe.validity);
         let sampled = self.sampled_words.get(i).copied().unwrap_or(0);
         let composed = self.compose_words.get(i).copied().unwrap_or(0);
-        let owner_is_target = validity != 0
+        let targeted = validity != 0
             && sampled == 0
             && composed == 0
-            && self
-                .dense_owner
-                .get(i)
-                .copied()
-                .flatten()
-                .is_some_and(|owner| self.targets.contains(&owner));
-        classify_probe(validity, sampled, composed, owner_is_target)
+            && u32::try_from(i).is_ok_and(|dense| {
+                self.dense_spans
+                    .any_cluster_naming(dense, |cluster| self.targets.contains(&cluster))
+            });
+        classify_probe(validity, sampled, composed, targeted)
     }
 
     #[cfg(test)]
@@ -69,15 +67,15 @@ impl ShResidencyState {
 mod tests {
     use super::*;
     use postretro_level_format::cluster_directory::{
-        ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-        ClusterResourceDomain, ClusterResourceRecord,
+        ClusterDirectorySection, ClusterRangeRecord, ClusterRecord, ClusterResourceDomain,
+        ClusterResourceRecord,
     };
     use postretro_level_format::sh_volume::OctahedralShProbe;
     use postretro_level_loader::ShStreamSourceMetadata;
 
     use crate::render::sh_streaming::INDIRECT_BASE_ID;
 
-    /// One 4×4×4 brick (64 probes) owned by a single cluster — the same
+    /// One 4×4×4 brick (64 probes) named by a single cluster — the same
     /// minimal shape `sh_streaming::tests::state_with_clusters` uses, so this
     /// exercises the real `from_parts` construction path, not a hand-rolled
     /// stand-in.
@@ -134,11 +132,10 @@ mod tests {
                 resource_index: 0,
                 start: 0,
                 count: 64,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             }],
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
         };
         ShResidencyState::from_parts(
             [1; 32],
@@ -166,8 +163,8 @@ mod tests {
         state.sampled_words[0] = 0xABCD;
         // Probe 1: installed, awaiting compose.
         state.compose_words[1] = 0x1234;
-        // Probe 2: requested — its owner cluster (0, the sole cluster in this
-        // fixture) is a current target, with nothing installed for it.
+        // Probe 2: requested — cluster 0, the sole cluster in this fixture,
+        // names it and is a current target, with nothing installed for it.
         state.targets.insert(0);
         // Probe 3 is bake-time invalid regardless of any mirror state.
 

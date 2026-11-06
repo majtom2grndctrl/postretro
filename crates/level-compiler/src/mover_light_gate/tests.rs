@@ -81,6 +81,7 @@ fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> Ma
         move_mode: KinematicMoveMode::Once,
         start_on_spawn: false,
         brush_volumes: brushes,
+        crush_damage_type: None,
     }
 }
 

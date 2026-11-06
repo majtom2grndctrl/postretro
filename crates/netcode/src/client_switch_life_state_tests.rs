@@ -36,6 +36,7 @@ fn life_state_remote_switch_refuses_then_permits_at_zero_hp_without_blocking_act
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         },
     );
     health.current = 0.0;

@@ -65,15 +65,14 @@ fn duration_micros(elapsed: Duration) -> u64 {
 }
 
 /// Visible SH misses by cause, each pointing at the lever a later change
-/// would pull. Every miss lands in exactly one bucket. A cluster that waits
-/// on its owner closure, unrequested or read but not installable, takes the
-/// bucket of the wait it is behind, followed down the owner chain, and any
-/// device-limited owner takes precedence over a read-failed owner.
+/// would pull. Every miss lands in exactly one bucket, read from the cluster's
+/// own state: no cluster waits on another.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ShMissBuckets {
     /// Not targeted before it became visible: outside the reach.
     pub outside_reach: u64,
-    /// Trimmed from the targets by budget pressure.
+    /// Yielded its place to mandatory work at real pool capacity: evicted as
+    /// a victim, or its optional install refused.
     pub trimmed_by_pressure: u64,
     /// Targeted, its read waiting for a permit, queued or in flight.
     pub read_in_flight: u64,
@@ -83,10 +82,12 @@ pub struct ShMissBuckets {
     pub held_by_drain_budget: u64,
     /// Installed, waiting for its compose to be submitted.
     pub awaiting_compose: u64,
-    /// Its read failed, or an owner's did.
+    /// Its read failed.
     pub failed: u64,
-    /// Its install was refused at a device limit, or an owner's was.
+    /// Its install was refused at a device limit.
     pub device_limited: u64,
+    /// Fragmentation refused its install at the whole-map cap.
+    pub at_whole_map_cap: u64,
 }
 
 /// One frame's view of SH streaming for the dev-tools Streaming tab and the

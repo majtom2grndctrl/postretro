@@ -438,6 +438,7 @@ A mover never presses a player into the world or into another mover, unless its 
 - **A `once` mover that backs off to its start** ends unstarted: its trigger's `start` runs it again, and a `reverse` command on it at its start sends it out along its path (opens it). An `auto_close_ms` countdown that expires on such a parked mover does nothing.
 - **Dead players' bodies count.** A body left under a default `once` lift holds it until the body is gone.
 - **`crush` never yields**, even at `crush_damage` `0`: then it moves through the player and leaves them inside it, unharmed. It also crushes a rider carried sideways into a wall and a player squeezed between it and another mover.
+- **`crush_damage_type`** names the damage type a crusher deals, by the name the mod registers in `defineMod({ damageTypes })`. Empty deals the mod's `defaultDamageType`. A name the mod does not register warns once per load and crushes as the default.
 
 Enemies are never carried or pushed, so none of this applies to them: a `displace` mover ignores them, and a `stop` or `reverse` mover reacts to an enemy on its heading (and fires the blocked event) as it does to a player.
 
@@ -597,8 +598,11 @@ ambient-floor miss fallback.
 
 Use this around lighting that should remain warm, such as a focal room or
 transition. Every cluster containing a runtime cell whose AABB overlaps the
-brush by positive volume is pinned, along with its baked owner closure. Pins
-are never pressure-suppressed or selected as eviction victims.
+brush by positive volume is pinned. Pins are never pressure-suppressed or
+selected as eviction victims, so they raise the level's mandatory SH memory
+(the probe memory the level must always keep loaded). Build Summary reports it
+as "SH mandatory memory" and warns when it is too high; many or large pins raise
+it, so pin only what must stay warm.
 
 ### `stream_priority_region`
 

@@ -13,6 +13,9 @@ use super::*;
 enum Undo {
     DenseAllocation(AllocationUndo),
     NodeSlot(StoredNode),
+    NodeRef(StoredNode),
+    WordRef(u32),
+    SparseRowRef((u32, u32)),
     ComposeWord {
         dense: u32,
         previous: u32,
@@ -39,34 +42,60 @@ pub(super) struct InstallJournal {
 }
 
 impl ShResidencyState {
-    /// Allocate a canonical node's dense range and publish it in the node map.
-    pub(super) fn journal_allocate_node(
+    /// Reference `node`, allocating its dense range if nothing holds it yet.
+    /// Returns whether this install is the node's first writer.
+    pub(super) fn journal_reference_node(
         &mut self,
         journal: &mut InstallJournal,
         node: StoredNode,
         tile_count: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let (range, undo) = self.dense_slots.allocate_undoable(tile_count)?;
-        journal.undo.push(Undo::DenseAllocation(undo));
-        let previous = self.node_slots.insert(node, range);
-        debug_assert!(previous.is_none(), "install allocates only absent nodes");
-        journal.undo.push(Undo::NodeSlot(node));
-        Ok(())
+    ) -> Result<bool, ShResidencyDrainError> {
+        let first_writer = !self.node_slots.contains_key(&node);
+        if first_writer {
+            let (range, undo) = self.dense_slots.allocate_undoable(tile_count)?;
+            journal.undo.push(Undo::DenseAllocation(undo));
+            self.node_slots.insert(node, range);
+            journal.undo.push(Undo::NodeSlot(node));
+        }
+        self.storage_refs.add_node(node)?;
+        journal.undo.push(Undo::NodeRef(node));
+        Ok(first_writer)
+    }
+
+    /// Reference `dense`'s probe word. Returns whether this install is its
+    /// first writer.
+    pub(super) fn journal_reference_word(
+        &mut self,
+        journal: &mut InstallJournal,
+        dense: u32,
+    ) -> Result<bool, ShResidencyDrainError> {
+        let first_writer = self.storage_refs.add_word(dense)?;
+        journal.undo.push(Undo::WordRef(dense));
+        Ok(first_writer)
+    }
+
+    /// Reference a sparse row. Returns whether this install is its first
+    /// writer.
+    pub(super) fn journal_reference_sparse_row(
+        &mut self,
+        journal: &mut InstallJournal,
+        key: (u32, u32),
+    ) -> Result<bool, ShResidencyDrainError> {
+        let first_writer = self.storage_refs.add_sparse_row(key)?;
+        journal.undo.push(Undo::SparseRowRef(key));
+        Ok(first_writer)
     }
 
     pub(super) fn journal_compose_word(
         &mut self,
         journal: &mut InstallJournal,
-        cluster_id: u32,
         dense: u32,
         word: u32,
     ) -> Result<(), ShResidencyDrainError> {
-        let destination = self.compose_words.get_mut(dense as usize).ok_or(
-            ShResidencyDrainError::MissingDenseOwner {
-                cluster_id,
-                dense_index: dense,
-            },
-        )?;
+        let destination = self
+            .compose_words
+            .get_mut(dense as usize)
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
         let previous = std::mem::replace(destination, word);
         journal.undo.push(Undo::ComposeWord { dense, previous });
         Ok(())
@@ -142,6 +171,21 @@ impl ShResidencyState {
                 Undo::DenseAllocation(undo) => self.dense_slots.undo_allocation(undo),
                 Undo::NodeSlot(node) => {
                     self.node_slots.remove(&node);
+                }
+                Undo::NodeRef(node) => {
+                    self.storage_refs
+                        .release_node(&node)
+                        .expect("an install journal only releases node refs it added");
+                }
+                Undo::WordRef(dense) => {
+                    self.storage_refs
+                        .release_word(dense)
+                        .expect("an install journal only releases word refs it added");
+                }
+                Undo::SparseRowRef(key) => {
+                    self.storage_refs
+                        .release_sparse_row(&key)
+                        .expect("an install journal only releases row refs it added");
                 }
                 Undo::ComposeWord { dense, previous } => {
                     self.compose_words[dense as usize] = previous;

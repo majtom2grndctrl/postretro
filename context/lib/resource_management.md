@@ -348,6 +348,17 @@ Placed mesh entities carry `Transform.scale = 1`; no FGD or descriptor scale ove
 
 Solver uses a rigid, proper socket frame at its reference pose. Invalid, sheared, or reflected frames are rejected. Geometric barrel/up detection is an unverified assist, never authoring truth. `socket_dump` is a diagnostic/parity tool, not a required author workflow.
 
+**Shared clip libraries (not built).** A clip library is a mesh-less glTF of named joints, their rest TRS, and clips. A skinned model names one through document-level `extras.clipLibrary`, a path relative to the model. Characters then ship as mesh and skeleton: adding a clip is one library edit, not a per-character rebuild.
+
+- **Binding.** The model loader binds at load, into ordinary per-model clips in the mesh's joint order. Runtime consumers never see a library.
+- **Contract.** Joints match by exact name. Library tracks are deltas from the library's rest, composed with the mesh's rest; a rig whose clips are not rest-relative cannot use a library. Root translation scales by the ratio of root rest heights. Non-root translation and all scale drop, so proportions stay the mesh's.
+- **Precedence.** Embedded clips stay valid and list first. A same-named embedded clip overrides the library's, silently.
+- **Raw data.** A model's joints and rest stay raw on load. Only two rewrites touch tracks: binding composes library tracks, and root-motion neutralization rewrites a model's own root tracks.
+- **Mechanism vs policy.** The engine names no rig. Joint names are a content contract between a library and its meshes; Mixamo policy lives in the conversion tool.
+- **Failure.** A character stuck in rest pose is the worse outcome, so an unreadable library, a mesh root absent from it, or no usable root fails the load. A malformed reference warns and reads as absent; a static model ignores its reference. `dist` refuses a skinned model whose library is missing or outside the mod root.
+
+**Mixamo licence.** Mixamo assets may live in a project's repo and ship in its game. They may not be offered as downloads for other creators. An SDK bundle copies the mod tree whole (`build_pipeline.md` §SDK bundle), so a published bundle carries any Mixamo assets in that tree.
+
 ---
 
 ## 8. Resource Ownership
@@ -374,7 +385,7 @@ Material textures and models load once at level load, with no incremental loadin
 
 **Shared model cache.** Uploaded models, with the hit-zone and clip source built from the same parse, outlive the load that made them: a level change that keeps a model pays no re-parse or re-upload.
 
-- **Key.** A versioned digest over the content of every file that shapes the result — the `.gltf`, every buffer it references (external or data URI), the base-color texture each material keys, and each referenced `.prm` sidecar — plus every install-time parameter, never a path. A hit is indistinguishable from a fresh load, and an edited file always misses. The level load derives keys on its pool; the renderer only compares them. A parameter that stops shaping models, as Surface Depth does while model materials resolve flat at every tier, stays out of the key, so changing it still hits. A change to the derivation bumps the key version, so every older entry misses.
+- **Key.** A versioned digest over the content of every file that shapes the result — the `.gltf`, every buffer it references (external or data URI), the clip library a skinned model names with every buffer it references, the base-color texture each material keys, and each referenced `.prm` sidecar — plus every install-time parameter, never a path. A hit is indistinguishable from a fresh load, and an edited file always misses. The level load derives keys on its pool; the renderer only compares them. A parameter that stops shaping models, as Surface Depth does while model materials resolve flat at every tier, stays out of the key, so changing it still hits. A change to the derivation bumps the key version, so every older entry misses.
 - **References.** Every resident set and uncommitted build that draws a model holds its entry, so at most one copy of a shared model is resident across two levels.
 - **Entry.** Only a commit adds entries: it enters its set's new models at publish, and its synchronous miss fallback adds the model it loads. A build only offers its uploads; a failed or cancelled load leaves the cache as it found it, even when its upload finishes after the cancel.
 - **Free.** A release frees none. Each commit sweeps once, after its model install, freeing every entry no resident set or uncommitted build references, so its miss fallback can still hit an entry only the released level held. Over-predicted models leave the published set at commit and free in that sweep.

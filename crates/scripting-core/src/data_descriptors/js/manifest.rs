@@ -83,7 +83,7 @@ fn is_resource_grant_reaction_js<'js>(value: &JsValue<'js>) -> bool {
     };
     matches!(
         primitive.to_string().ok().as_deref(),
-        Some("grantHealth" | "grantAmmo" | "addSlot")
+        Some("grantHealth" | "grantAmmo" | "grantLayer" | "addSlot")
     )
 }
 
@@ -1065,6 +1065,36 @@ pub fn drain_maps_js<'js>(
         }
     }
     Ok(out)
+}
+
+/// Drain the manifest's damage vocabulary: `defenseLayers`, `damageTypes` and
+/// `defaultDamageType`. Strict, like factions: descriptors resolve their
+/// layer and type references against this one set, so a malformed entry
+/// rejects the manifest naming its key path.
+pub fn drain_defense_vocabulary_js<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<postretro_foundation::defense::DefenseVocabulary, DescriptorError> {
+    let mut values: [Option<serde_json::Value>; 3] = [None, None, None];
+    for (slot, key) in values
+        .iter_mut()
+        .zip(["defenseLayers", "damageTypes", "defaultDamageType"])
+    {
+        if !obj.contains_key(key).map_err(js_err)? {
+            continue;
+        }
+        let raw: JsValue = obj.get(key).map_err(js_err)?;
+        if raw.is_undefined() {
+            continue;
+        }
+        *slot = Some(crate::conv::js_to_json(ctx, raw).map_err(js_err)?);
+    }
+    postretro_foundation::defense::DefenseVocabulary::from_manifest(
+        values[0].as_ref(),
+        values[1].as_ref(),
+        values[2].as_ref(),
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })
 }
 
 /// Drain the strict manifest faction collection. Unlike optional presentation

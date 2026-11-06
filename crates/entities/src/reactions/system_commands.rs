@@ -5,7 +5,7 @@ use crate::EntityId;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use postretro_foundation::{Seat, ir::IrValue};
 
@@ -64,6 +64,9 @@ pub enum SystemReactionCommand {
     },
     ReturnToFrontend,
     PopTree,
+    /// A `setState` queued for the frame-end drain. Only a queue with no
+    /// [`StateWriteSink`] installed produces one; with a sink, the write lands
+    /// at dispatch.
     SetState {
         slot: String,
         value: serde_json::Value,
@@ -93,19 +96,13 @@ pub enum SystemReactionCommand {
     /// field targets. The host applies it at its next fixed tick, in call
     /// order; a connected client drops it (the bus state is the host's).
     SetGhostAudio(postretro_foundation::GhostAudioTargets),
-    /// Add a delta to the authoritative value of one per-owner numeric slot
-    /// for every seat resolved while the reaction fired. The app drain checks
-    /// that each queued seat is still live before mutating the slot table.
-    AddOwnerSlot {
-        slot: String,
-        seats: Vec<Seat>,
-        delta: f32,
-    },
     CellWrite {
         scope: String,
         cell: String,
         value: serde_json::Value,
     },
+    /// A text edit queued for the frame-end drain: the text-entry surface's
+    /// keystrokes, or a reaction's edit on a queue with no [`StateWriteSink`].
     AppendText {
         slot: String,
         text: String,
@@ -203,12 +200,66 @@ pub enum Recipients {
     Skip,
 }
 
+/// A reaction's edit to a String store slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextEditCommand {
+    Append(String),
+    Backspace,
+    Clear,
+}
+
+impl TextEditCommand {
+    /// The queued form, for the frame-end drain.
+    pub fn into_command(self, slot: String) -> SystemReactionCommand {
+        match self {
+            Self::Append(text) => SystemReactionCommand::AppendText { slot, text },
+            Self::Backspace => SystemReactionCommand::BackspaceText { slot },
+            Self::Clear => SystemReactionCommand::ClearText { slot },
+        }
+    }
+}
+
+/// Applies a reaction's store writes (`setState`, text edits) at dispatch, so
+/// a body's later steps see them (body order). The binary installs one holding
+/// the session's bound `setState` IR; each machine's existing write gates apply
+/// inside it. An implementor must not hold the queue it is installed on
+/// strongly: the queue owns the sink.
+pub trait StateWriteSink {
+    fn set_state(&self, slot: &str, value: &serde_json::Value, context: &SystemCommandFireContext);
+    fn edit_text(&self, slot: &str, edit: &TextEditCommand);
+}
+
 /// One ordered queue includes both local work and routed presentation.
 #[derive(Clone, Default)]
 pub struct SystemCommandQueue {
     commands: Rc<RefCell<Vec<(Recipients, SystemReactionCommand)>>>,
     fire_context: Rc<RefCell<SystemCommandFireContext>>,
     warned_audiences: Rc<RefCell<HashSet<(String, &'static str)>>>,
+    /// Where `setState` and text edits write at dispatch. Absent, they queue
+    /// for the frame-end drain.
+    state_sink: Rc<RefCell<Option<Rc<dyn StateWriteSink>>>>,
+}
+
+/// A non-owning [`SystemCommandQueue`] handle, for a holder the queue itself
+/// keeps alive (its state sink).
+#[derive(Clone)]
+pub struct WeakSystemCommandQueue {
+    commands: Weak<RefCell<Vec<(Recipients, SystemReactionCommand)>>>,
+    fire_context: Weak<RefCell<SystemCommandFireContext>>,
+    warned_audiences: Weak<RefCell<HashSet<(String, &'static str)>>>,
+    state_sink: Weak<RefCell<Option<Rc<dyn StateWriteSink>>>>,
+}
+
+impl WeakSystemCommandQueue {
+    /// The queue, or `None` once every owning handle has dropped.
+    pub fn upgrade(&self) -> Option<SystemCommandQueue> {
+        Some(SystemCommandQueue {
+            commands: self.commands.upgrade()?,
+            fire_context: self.fire_context.upgrade()?,
+            warned_audiences: self.warned_audiences.upgrade()?,
+            state_sink: self.state_sink.upgrade()?,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -273,6 +324,49 @@ impl SystemCommandQueue {
     ) -> SystemCommandFireContext {
         std::mem::replace(&mut *self.fire_context.borrow_mut(), context)
     }
+    /// Install (or clear) the dispatch-time store-write sink.
+    pub fn set_state_sink(&self, sink: Option<Rc<dyn StateWriteSink>>) {
+        *self.state_sink.borrow_mut() = sink;
+    }
+
+    /// A reaction's `setState`: written at once through the installed sink,
+    /// or queued for the frame-end drain when none is installed.
+    pub fn set_state(&self, slot: String, value: serde_json::Value) {
+        // Cloned, not borrowed: the sink evaluates IR and writes the store,
+        // which may reach this queue again.
+        let context = self.fire_context.borrow().clone();
+        let sink = self.state_sink.borrow().clone();
+        match sink {
+            Some(sink) => sink.set_state(&slot, &value, &context),
+            None => self.push(SystemReactionCommand::SetState {
+                slot,
+                value,
+                dispatch_source: context.source,
+                dispatch_values: context.values,
+            }),
+        }
+    }
+
+    /// A reaction's text edit: written at once through the installed sink, or
+    /// queued for the frame-end drain when none is installed.
+    pub fn edit_text(&self, slot: String, edit: TextEditCommand) {
+        let sink = self.state_sink.borrow().clone();
+        match sink {
+            Some(sink) => sink.edit_text(&slot, &edit),
+            None => self.push(edit.into_command(slot)),
+        }
+    }
+
+    /// A handle that does not keep this queue alive.
+    pub fn downgrade(&self) -> WeakSystemCommandQueue {
+        WeakSystemCommandQueue {
+            commands: Rc::downgrade(&self.commands),
+            fire_context: Rc::downgrade(&self.fire_context),
+            warned_audiences: Rc::downgrade(&self.warned_audiences),
+            state_sink: Rc::downgrade(&self.state_sink),
+        }
+    }
+
     pub fn fire_context(&self) -> SystemCommandFireContext {
         self.fire_context.borrow().clone()
     }
@@ -521,8 +615,7 @@ impl SystemReactionCommand {
             | Self::ReturnToFrontend
             | Self::SetSentiment { .. }
             | Self::AdjustSentiment { .. }
-            | Self::SetGhostAudio(_)
-            | Self::AddOwnerSlot { .. } => SystemReactionClass::HostConsequence,
+            | Self::SetGhostAudio(_) => SystemReactionClass::HostConsequence,
             Self::SetState { .. } => SystemReactionClass::SlotWrite,
         }
     }

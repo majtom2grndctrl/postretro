@@ -3,13 +3,15 @@
 
 use super::*;
 
-pub const CLUSTER_SH_PAYLOADS_VERSION: u32 = 1;
+pub const CLUSTER_SH_PAYLOADS_VERSION: u32 = 2;
 pub const CLUSTER_SH_PAYLOADS_CONTAINER_VERSION: u16 = 1;
 pub const CLUSTER_SH_PAYLOADS_HEADER_SIZE: usize = 72;
 pub const CLUSTER_SH_PAYLOADS_SOURCE_RECORD_SIZE: usize = 16;
 pub const CLUSTER_SH_PAYLOADS_INDEX_RECORD_SIZE: usize = 80;
 pub const CLUSTER_SH_CHUNK_HEADER_SIZE: usize = 16;
 pub const CLUSTER_SH_BLOCK_RECORD_SIZE: usize = 32;
+/// global_affinity_index, first_entry, entry_count.
+pub const CLUSTER_SH_SPARSE_ROW_RECORD_SIZE: usize = 12;
 
 pub const CLUSTER_SH_LOGICAL_TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 pub const CLUSTER_SH_LOGICAL_TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -42,7 +44,9 @@ pub(super) const PROBE_INDIRECTION_MAX_SLOT: u32 = u32::MAX >> PROBE_INDIRECTION
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ClusterShPayloadsError {
-    #[error("ClusterShPayloadsVersionMismatch: version {version}, expected {expected}")]
+    #[error(
+        "ClusterShPayloadsVersionMismatch: version {version}, expected {expected}; re-bake the level"
+    )]
     VersionMismatch { version: u32, expected: u32 },
     #[error("ClusterShPayloadsInvalidData: {0}")]
     InvalidData(String),

@@ -81,6 +81,8 @@ struct MoverPolicySnapshot {
     policy: BlockPolicy,
     blocked: bool,
     crush_damage: f32,
+    /// Resolved against the live vocabulary on the tick the hit is dealt.
+    crush_damage_type: Option<u16>,
     crush_interval_ms: f32,
     heading: Option<glam::Vec3>,
     prospective_pose: Option<MoverPose>,
@@ -228,6 +230,7 @@ pub fn run_mover_blocking_pass(
                 policy,
                 blocked: mover.blocked,
                 crush_damage: mover.crush_damage,
+                crush_damage_type: registry.damage_type_index(mover.crush_damage_type.as_deref()),
                 crush_interval_ms: mover.crush_interval_ms,
                 heading: mover_heading_at_tick_end(mover),
                 prospective_pose,
@@ -550,6 +553,7 @@ pub fn run_mover_blocking_pass(
                     &DamagePayload {
                         amount: snapshot.crush_damage,
                         impulse: glam::Vec3::ZERO,
+                        damage_type: snapshot.crush_damage_type,
                     },
                     DamageContext::new("mover.crush", DamageProducer::InTick),
                 ) {

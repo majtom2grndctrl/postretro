@@ -2168,16 +2168,20 @@ fn run_after_parsing(
         stage_start,
         true,
     );
+    // Part of Packing, listed alone because it runs on every build.
+    timings.push(("SH bound", footprint.sh_mandatory.elapsed));
 
     if let Some(cache) = stage_cache.as_ref() {
         cache.finish_successful_build(args.cache_max_bytes);
     }
     let lightmap_family_bytes =
         footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
+    let mut details = mover_light_summary.lines(lightmap_family_bytes);
+    details.extend(footprint.sh_mandatory.lines());
     reporter.finalize(BuildSummary {
         timings,
         total: started.elapsed(),
-        details: mover_light_summary.lines(lightmap_family_bytes),
+        details,
     });
 
     Ok(())

@@ -214,6 +214,20 @@ fn planned_forward_sample_bounds_omit_viewmodel_for_offscreen_scene() {
     assert_eq!(planned_forward_sample_bounds(&plans, false).count(), 1);
 }
 
+#[test]
+fn has_forward_draws_ignores_instances_the_main_view_never_draws() {
+    let fixed = joints(&[("body", 1), ("enemy", 1)]);
+    let mut body = instance("body", 1.0, 1);
+    body.forward_visible = false;
+
+    let shadow_only = plan_mesh_frame_plans(std::slice::from_ref(&body), &[], &fixed);
+    assert!(!shadow_only.world.groups.is_empty());
+    assert!(!shadow_only.world.has_forward_draws());
+
+    let mixed = plan_mesh_frame_plans(&[body, instance("enemy", 2.0, 2)], &[], &fixed);
+    assert!(mixed.world.has_forward_draws());
+}
+
 // Regression: bind-pose-only bounds omitted rows reached by animated vertices.
 #[test]
 fn planned_forward_sample_bounds_use_model_pose_envelope() {

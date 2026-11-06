@@ -230,6 +230,7 @@ fn spawn(registry: &mut EntityRegistry, state: PawnState) -> EntityId {
         max: state.health.1,
         hitbox: None,
         zone_multipliers: HashMap::new(),
+        ..Default::default()
     });
     health.current = state.health.0;
     registry.set_component(pawn, health).unwrap();

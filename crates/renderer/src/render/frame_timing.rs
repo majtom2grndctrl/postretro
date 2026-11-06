@@ -544,10 +544,11 @@ impl FrameTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::pipeline_layout::TIMING_PAIR_COUNT;
     use std::collections::BTreeSet;
 
-    /// The renderer's live query count: 14 pairs, above the 16-slot floor.
-    const LIVE_QUERIES: u32 = 28;
+    /// The renderer's live query count: two slots per pair.
+    const LIVE_QUERIES: u32 = TIMING_PAIR_COUNT as u32 * 2;
 
     /// `max_pass_ticks` at a 1 ns timestamp period.
     const ONE_SECOND_TICKS: u64 = 1_000_000_000;
@@ -616,7 +617,7 @@ mod tests {
 
     #[test]
     fn resolve_range_is_one_full_resolve_when_every_pass_runs() {
-        let all = mask(&(0..14).collect::<Vec<_>>());
+        let all = mask(&(0..TIMING_PAIR_COUNT).collect::<Vec<_>>());
         assert_eq!(resolve_range(all, LIVE_QUERIES), Some(0..LIVE_QUERIES));
     }
 
@@ -682,7 +683,7 @@ mod tests {
         let mut ticks = simulate_frame(LIVE_QUERIES, &[(2, 100), (3, 100)]);
         ticks[2 * 2] = 0;
         ticks[3 * 2 + 1] = 0;
-        let written = mask(&[2, 3, 20]);
+        let written = mask(&[2, 3, TIMING_PAIR_COUNT]);
         assert_eq!(
             decode_pair(written, 2, &ticks, ONE_SECOND_TICKS),
             PairSample::Malformed
@@ -692,7 +693,7 @@ mod tests {
             PairSample::Malformed
         );
         assert_eq!(
-            decode_pair(written, 20, &ticks, ONE_SECOND_TICKS),
+            decode_pair(written, TIMING_PAIR_COUNT, &ticks, ONE_SECOND_TICKS),
             PairSample::Malformed
         );
     }

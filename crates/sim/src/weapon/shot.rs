@@ -27,6 +27,8 @@ pub struct ResolvedWeaponShot {
     pub projectile: Option<ProjectileDescriptor>,
     pub muzzle_offset: Option<Vec3>,
     pub credit_source: String,
+    /// The weapon's damage type by name, frozen with the shot.
+    pub damage_type: Option<Arc<str>>,
     /// Uniform model scale; sprites bake their size into the descriptor snapshot.
     pub projectile_model_scale: f32,
 }
@@ -88,6 +90,7 @@ pub fn freeze_weapon_shot(
         projectile,
         muzzle_offset: weapon.muzzle_offset,
         credit_source: weapon.credit_source.clone(),
+        damage_type: weapon.damage_type.clone(),
         projectile_model_scale: model_scale,
     }
 }
@@ -129,6 +132,7 @@ impl ResolvedWeaponShot {
     }
     pub(super) fn apply_to(&self, component: &mut WeaponComponent) {
         component.damage = self.activation.values.damage;
+        component.damage_type = self.damage_type.clone();
         component.range = self.activation.values.range;
         component.pellet_count = self.pellet_count;
         component.spread_degrees = self.spread_degrees;

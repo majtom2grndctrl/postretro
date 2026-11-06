@@ -8,9 +8,18 @@
 // policies build on. Reward behavior is reference content only: the engine has
 // no concept of a reward, so a mod replaces these policies wholesale.
 
-import { defineImpactEvent, defineStore, update } from "postretro";
-import { present } from "postretro/ui";
-import { damageNumber } from "./combat-presentation";
+import {
+  defineImpactEvent,
+  defineReaction,
+  defineStore,
+  defineTriggerEvent,
+  update,
+  when,
+  type TriggerEventParams,
+} from "postretro";
+import { armor, shield } from "./defenses";
+import { shock } from "./damage-types";
+import { damageNumberRows } from "./combat-presentation";
 
 // REFERENCE CONTENT — XP belongs to its earning player, while teamKills is one
 // session-wide counter. The two slots share a policy below so the cardinality
@@ -27,6 +36,29 @@ export const progression = defineStore("progression", {
     type: "number",
     default: 0,
     network: "shared",
+  },
+  // The player's shield progression, each shaped like `xp`: the shield's
+  // capacity bonus, its recharge tech, and the gear level of its shock ward.
+  shieldCapacity: {
+    type: "number",
+    default: 0,
+    perOwner: true,
+    persist: true,
+    network: "ownerPrivate",
+  },
+  shieldTech: {
+    type: "number",
+    default: 0,
+    perOwner: true,
+    persist: true,
+    network: "ownerPrivate",
+  },
+  shockWard: {
+    type: "number",
+    default: 0,
+    perOwner: true,
+    persist: true,
+    network: "ownerPrivate",
   },
 });
 
@@ -51,7 +83,7 @@ export const combatDummyLifecycle = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
-      { do: [present(damageNumber, impact.amount)] },
+      ...damageNumberRows(impact),
       // A gib is a level: a downed target may be gibbed by a later hit.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so repeated body hits cannot restart recovery.
@@ -89,7 +121,7 @@ export const enemyDeath = defineImpactEvent(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
-      { do: [present(damageNumber, impact.amount)] },
+      ...damageNumberRows(impact),
       // A gib skips the clip entirely — there is no body left to animate.
       { when: gibbed, do: [target.despawn()] },
       // Down is an edge, so further hits on a corpse cannot restart the timer.
@@ -141,7 +173,7 @@ export const combatZombieLifecycle = enemyDeath.override(
     const gibbed = target.healthAfter.le(FINISHER_OVERSHOOT);
 
     return [
-      { do: [present(damageNumber, impact.amount)] },
+      ...damageNumberRows(impact),
       { when: gibbed, do: [target.despawn()] },
       {
         when: killed.and(gibbed.not()),
@@ -153,3 +185,23 @@ export const combatZombieLifecycle = enemyDeath.override(
     ];
   },
 );
+
+// A booster pad adds 25 shield: a mod-global rule over every volume tagged
+// `shield_booster`.
+export const booster = defineReaction("combat.shieldBooster", (on: TriggerEventParams) =>
+  on.activators.grantLayer(shield, 25),
+);
+export const boosterPads = defineTriggerEvent({ tag: "shield_booster", event: "enter", fire: [booster] });
+
+// Refund the attacker a quarter of a shock hit that breaks a layer and leaves
+// a live target's shield empty; mark a target whose armor is gone.
+export const shieldBreak = defineImpactEvent("shield-break", { tag: "enemy" }, (impact) => [
+  when(
+    impact.broke
+      .and(impact.type(shock))
+      .and(impact.target.defense(shield).current.le(0))
+      .and(impact.target.healthBefore.gt(0)),
+    [impact.source.grantLayer(shield, impact.absorbed.times(0.25))],
+  ),
+  when(impact.target.defense(armor).current.le(0), [impact.target.setState("exposed", 1)]),
+]);

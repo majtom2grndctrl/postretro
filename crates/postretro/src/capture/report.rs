@@ -499,7 +499,6 @@ struct ShStreamingAllocationSummaryJson {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShStreamingLifecycleSummaryJson {
-    non_evictable_overshoot_bytes: u64,
     encoded_current_bytes: u64,
     encoded_high_water_upper_bound_bytes: u64,
     decoding_current_bytes: u64,
@@ -523,6 +522,7 @@ struct ShStreamingLifecycleSummaryJson {
     miss_held_by_drain_budget: u64,
     miss_awaiting_compose: u64,
     miss_device_limited: u64,
+    miss_at_whole_map_cap: u64,
     miss_failed: u64,
     rereads: u64,
     installs: u64,
@@ -581,7 +581,6 @@ impl From<postretro_renderer::ShComposePassDiagnostics> for ShComposePassDiagnos
 impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
     fn from(summary: ShStreamingLifecycleSummary) -> Self {
         Self {
-            non_evictable_overshoot_bytes: summary.non_evictable_overshoot_bytes,
             encoded_current_bytes: summary.encoded_current_bytes,
             encoded_high_water_upper_bound_bytes: summary.encoded_high_water_upper_bound_bytes,
             decoding_current_bytes: summary.decoding_current_bytes,
@@ -603,6 +602,7 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             miss_held_by_drain_budget: summary.miss_buckets.held_by_drain_budget,
             miss_awaiting_compose: summary.miss_buckets.awaiting_compose,
             miss_device_limited: summary.miss_buckets.device_limited,
+            miss_at_whole_map_cap: summary.miss_buckets.at_whole_map_cap,
             miss_failed: summary.miss_buckets.failed,
             rereads: summary.rereads,
             installs: summary.installs,
@@ -1105,7 +1105,6 @@ mod tests {
             streaming_lifecycle: None,
         }
         .with_streaming_lifecycle_summary(ShStreamingLifecycleSummary {
-            non_evictable_overshoot_bytes: 5,
             encoded_current_bytes: 1,
             encoded_high_water_upper_bound_bytes: 2,
             decoding_current_bytes: 3,
@@ -1179,7 +1178,6 @@ mod tests {
             ),
         ));
         let lifecycle = &json["renderer_accounted_sh"]["streaming_lifecycle"];
-        assert_eq!(lifecycle["non_evictable_overshoot_bytes"], 5);
         assert_eq!(lifecycle["encoded_current_bytes"], 1);
         assert_eq!(lifecycle["ready_high_water_upper_bound_bytes"], 6);
         assert_eq!(lifecycle["permits_in_use"], 2);

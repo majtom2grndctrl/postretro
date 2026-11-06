@@ -577,7 +577,6 @@ fn a_reaction_losing_its_player_event_subscription_still_fires_under_a_crossing_
     register_system_reaction_primitives(&mut system);
     dispatch_state_crossings_with_sequences(
         &mut detector,
-        &world.script_ctx.slot_table.borrow(),
         &world.script_ctx.data_registry.borrow(),
         &SequencedPrimitiveRegistry::new(),
         &ReactionPrimitiveRegistry::new(),

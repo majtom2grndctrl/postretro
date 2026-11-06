@@ -10,8 +10,9 @@
 //! outcome. A simulated issuer completes every outstanding request next
 //! frame. It cancels one whose cluster left the target set, unless the
 //! schedule marked that read as already in flight; in-flight reads complete
-//! as prepared. The simulated renderer accepts every ready chunk and
-//! confirms every eviction.
+//! as prepared. The simulated renderer owns a pool of whole clusters: it
+//! confirms every eviction, walks the victims to seat mandatory work, grows
+//! once they run out, and refuses optional work that does not fit.
 //!
 //! Regenerate only when a behaviour change is intended:
 //! `POSTRETRO_REGEN_SH_TRACE=1 cargo test -p postretro --bin postretro sh_trace`.
@@ -39,9 +40,9 @@ const CLUSTERS: usize = 12;
 /// Decoded chunk size per cluster. Mixed so drains both fill and stop on the
 /// 8 MiB budget; cluster 6 alone exceeds it.
 const DECODED_MIB: [usize; CLUSTERS] = [2, 1, 3, 5, 1, 1, 9, 2, 1, 3, 1, 2];
-/// Logical pool budget: seven clusters of 8 bytes, below the reach plus the
-/// pin, so optional work yields to pressure.
-const NOMINAL_CLUSTER_BYTES: u64 = 56;
+/// The simulated pool: seven clusters, below the reach plus the pin, so
+/// optional work yields to mandatory work.
+const POOL_CLUSTERS: usize = 7;
 
 /// One render frame of the schedule.
 struct Frame {
@@ -68,8 +69,7 @@ const fn frame(
 }
 
 /// Cells 0..11 in a chain, four metres a hop, one cluster per cell. Cluster
-/// 11 is pinned; cluster 5's halo is owned by cluster 4; an authored seam
-/// joins 6 and 9; cluster 7 (priority 3) and 9 (priority 2) carry authored
+/// 11 is pinned; an authored seam joins 6 and 9; cluster 7 (priority 3) and 9 (priority 2) carry authored
 /// priority.
 const SCHEDULE: &[Frame] = &[
     // Spawn: visible 0-1, lead 0..4, band 5..6, pinned 11. Permits cap the
@@ -79,24 +79,23 @@ const SCHEDULE: &[Frame] = &[
     frame(0.2, 0, &[0, 1], &[]),
     // Seam near side 6 visible from cell 3: 9, also in the band, is seam-warm.
     frame(0.3, 3, &[3, 6], &[]),
-    // The seam closes as 9's read lands. 9 falls back to the band, pressure
-    // trims band clusters 8 and 9, and the drain drops 9's ready read.
+    // The seam closes as 9's read lands. Mandatory 5 and 7 outgrow the pool
+    // with no victim to take, and the full pool refuses 9, now band work.
     frame(0.4, 3, &[3], &[]),
-    // The seam reopens: 9 is seam-warm again, and pressure trims it again
-    // within the same drain, so the published targets do not change.
+    // The seam reopens: 9 is newly seam-warm, which lifts its suppression, and
+    // the pool refuses band 8.
     frame(0.5, 3, &[3, 6], &[]),
-    // Closes again. No read of 9 is outstanding, so its in-flight mark holds
-    // nothing.
+    // Closes again with 9's read in flight. It lands as band work next frame,
+    // and the pool refuses it.
     frame(0.6, 3, &[3], &[9]),
     frame(0.7, 3, &[3], &[]),
-    // The reach covers the whole chain from the middle; pressure trims and
-    // evicts band clusters 0 and 1.
+    // The reach covers the whole chain from the middle. Mandatory 8, 9 and 10
+    // take the room band clusters 0 and 1 held, then grow the pool by one.
     frame(1.0, 6, &[6, 7], &[]),
     frame(1.1, 6, &[6, 7], &[]),
     frame(1.2, 6, &[6, 7], &[]),
-    // Far end: reach 4..11, and pressure trims band clusters 4 and 5. 0..3
-    // leave the horizon and enter hysteresis; 0 and 1, evicted earlier, are
-    // read again as hysteresis targets.
+    // Far end: reach 4..11. 0..3 leave the horizon and enter hysteresis; 0 and
+    // 1, evicted earlier, are read again as hysteresis targets and refused.
     frame(3.5, 10, &[10, 11], &[]),
     frame(3.6, 10, &[10, 11], &[]),
     frame(3.7, 10, &[10, 11], &[]),
@@ -128,17 +127,13 @@ fn trace_controller() -> ShResidencyController {
                 .collect()
         })
         .collect();
-    let mut owners = vec![Vec::new(); CLUSTERS];
-    owners[5] = vec![4];
     let mut priorities = vec![0; CLUSTERS];
     priorities[7] = 3;
     priorities[9] = 2;
-    ShResidencyController::for_test_with_budget(
+    ShResidencyController::for_test(
         hinted_topology(
             (0..CLUSTERS as u32).collect(),
             chain,
-            owners,
-            vec![8; CLUSTERS],
             vec![SeamPortalEndpoint {
                 portal_id: 0,
                 front_cluster_id: 6,
@@ -148,12 +143,49 @@ fn trace_controller() -> ShResidencyController {
             priorities,
         ),
         &FixedGenerationClock::new(1),
-        ShGpuBudgetInputs {
-            renderer_effective_floor_bytes: Some(NOMINAL_CLUSTER_BYTES),
-            ..ShGpuBudgetInputs::default()
-        },
     )
     .unwrap()
+}
+
+/// The renderer's half of a drain over a pool of whole clusters: `install`
+/// order, the victims walked only as far as mandatory work needs.
+#[derive(Default)]
+struct SimulatedPool {
+    residents: BTreeSet<u32>,
+    capacity: usize,
+}
+
+impl SimulatedPool {
+    fn drain(&mut self, batch: &ShDrainBatch) -> ShDrainOutcome {
+        let mut outcome = ShDrainOutcome {
+            evicted: batch.evictions.clone(),
+            ..ShDrainOutcome::default()
+        };
+        for cluster_id in &batch.evictions {
+            self.residents.remove(cluster_id);
+        }
+        let mut victims = batch.victims.iter().copied();
+        for prepared in &batch.ready {
+            let cluster_id = prepared.chunk.cluster_id;
+            while self.residents.len() >= self.capacity
+                && batch.mandatory.binary_search(&cluster_id).is_ok()
+            {
+                let Some(victim) = victims.next() else {
+                    self.capacity = batch.mandatory.len().max(self.residents.len() + 1);
+                    break;
+                };
+                self.residents.remove(&victim);
+                outcome.evicted.push(victim);
+            }
+            if self.residents.len() < self.capacity {
+                self.residents.insert(cluster_id);
+                outcome.accepted.push(cluster_id);
+            } else {
+                outcome.pool_refused.push(cluster_id);
+            }
+        }
+        outcome
+    }
 }
 
 fn class_name(class: TargetClass) -> &'static str {
@@ -164,6 +196,7 @@ fn class_name(class: TargetClass) -> &'static str {
         TargetClass::SeamWarm => "seam-warm",
         TargetClass::Band => "band",
         TargetClass::Hysteresis => "hysteresis",
+        TargetClass::Held => "held",
     }
 }
 
@@ -243,6 +276,9 @@ fn record_drain(controller: &ShResidencyController, batch: &ShDrainBatch, out: &
     if !batch.evictions.is_empty() {
         writeln!(out, "  evict: {}", ids(batch.evictions.iter().copied())).unwrap();
     }
+    if !batch.victims.is_empty() {
+        writeln!(out, "  victims: {}", ids(batch.victims.iter().copied())).unwrap();
+    }
     let admitted: Vec<String> = batch
         .ready
         .iter()
@@ -265,19 +301,11 @@ fn record_drain(controller: &ShResidencyController, batch: &ShDrainBatch, out: &
         admitted.join(", ")
     )
     .unwrap();
-    // Ready work the drain left behind, in cluster-id order: either stopped
-    // by the byte budget or waiting on an owner that is not yet sampleable.
+    // Ready work the byte budget left behind, in cluster-id order.
     let left: Vec<String> = controller
         .ready
         .iter()
-        .map(|(&cluster_id, ready)| {
-            let why = if controller.ready_for_install(cluster_id) {
-                "budget"
-            } else {
-                "owner-wait"
-            };
-            format!("{cluster_id} {}B {why}", ready.byte_charge)
-        })
+        .map(|(&cluster_id, ready)| format!("{cluster_id} {}B budget", ready.byte_charge))
         .collect();
     if !left.is_empty() {
         writeln!(out, "  ready left: [{}]", left.join(", ")).unwrap();
@@ -334,14 +362,19 @@ fn run_schedule() -> String {
         "# SH controller trace baseline. Produced by\n\
          # sh_streaming::controller::trace_tests::sh_trace_controller_schedule_matches_baseline\n\
          # from the pre-extraction SH streaming controller (brief AC 18).\n\
-         # Per frame: completions admitted, drain target deltas, evictions, installs in\n\
-         # admission order with decoded bytes against the per-drain budget, ready work\n\
-         # left behind, requests in issue order (m = mandatory, o = optional) with class,\n\
-         # then the published targets. Do not regenerate to make a refactor pass."
+         # Per frame: completions admitted, drain target deltas, evictions, capacity\n\
+         # victims, installs in admission order with decoded bytes against the per-drain\n\
+         # budget, ready work left behind, requests in issue order (m = mandatory, o =\n\
+         # optional) with class, what the simulated pool did, then the published targets.\n\
+         # Do not regenerate to make a refactor pass."
     )
     .unwrap();
     let mut outstanding: Vec<ShClusterRequest> = Vec::new();
     let mut reading = BTreeSet::new();
+    let mut pool = SimulatedPool {
+        capacity: POOL_CLUSTERS,
+        ..SimulatedPool::default()
+    };
     for (index, frame) in SCHEDULE.iter().enumerate() {
         writeln!(
             out,
@@ -382,17 +415,18 @@ fn run_schedule() -> String {
             .collect();
         writeln!(out, "  requests: [{}]", issued.join(", ")).unwrap();
         outstanding.extend(requests);
-        controller
-            .apply_drain_outcome(ShDrainOutcome {
-                accepted: batch
-                    .ready
-                    .iter()
-                    .map(|prepared| prepared.chunk.cluster_id)
-                    .collect(),
-                evicted: batch.evictions.clone(),
-                ..ShDrainOutcome::default()
-            })
-            .unwrap();
+        let outcome = pool.drain(&batch);
+        let evicted = outcome.evicted.iter().copied();
+        let refused = outcome.pool_refused.iter().copied();
+        writeln!(
+            out,
+            "  pool: evicted={} pool_refused={} capacity={}",
+            ids(evicted),
+            ids(refused),
+            pool.capacity
+        )
+        .unwrap();
+        controller.apply_drain_outcome(outcome).unwrap();
         record_state(&controller, &mut out);
     }
     out

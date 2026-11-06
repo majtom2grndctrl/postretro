@@ -619,7 +619,14 @@ impl ScriptRuntime {
                 &next_descriptors,
                 &next_store_declarations,
                 &ctx.slot_table.borrow(),
-            ) {
+            )
+            .and_then(|()| {
+                crate::ir_layer_validation::validate_layer_expressions(
+                    &next_descriptors,
+                    &next_store_declarations,
+                    &ctx.slot_table.borrow(),
+                )
+            }) {
                 log::error!(
                     "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
                     result.generation,
@@ -764,10 +771,18 @@ impl ScriptRuntime {
                 &mut ctx.slot_table.borrow_mut(),
             );
 
+            // Commit the defense vocabulary first: it replaces the layer slot
+            // family and the registry copy whole, so a removed layer's slots go
+            // with it before the descriptor snapshot below is applied.
+            let next_defense = match &result.status {
+                StagedManifestBuildStatus::Built(manifest) => manifest.defense.clone(),
+                _ => Default::default(),
+            };
+            crate::defense_vocabulary::commit_defense_vocabulary(ctx, next_defense);
+            let previous_life_state_names = ctx.data_registry.borrow().life_state_names.clone();
             // One mutable registry borrow commits the staged whole snapshot, so
             // a render frame cannot observe new descriptors without their
             // matching mod-global weapon-placement default.
-            let previous_life_state_names = ctx.data_registry.borrow().life_state_names.clone();
             {
                 let mut data_registry = ctx.data_registry.borrow_mut();
                 let mut faction_sentiment = ctx.faction_sentiment.borrow_mut();
@@ -1312,6 +1327,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         };
         let mut active_descriptor = descriptor("identity_guard", None, None);
         active_descriptor.health = Some(old_health.clone());
@@ -1706,6 +1722,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         }
     }
 

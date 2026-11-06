@@ -331,13 +331,15 @@ impl App {
     }
 
     /// Drop system commands the outgoing level queued and never dispatched.
-    /// Install's `levelLoad` commands wait in the queue through Settling for
-    /// the reveal frame; an unload or suspend before reveal abandons them, so
-    /// none plays a sound or changes state in the next level or the frontend.
-    /// A Running level's queue is normally empty here, since the frame loop
-    /// dispatches it every frame. That ordering is not checked: a command
-    /// queued after the last dispatch is dropped with the rest, never replayed
-    /// into the next level.
+    /// Install's `levelLoad` store writes (`setState`, `addSlot`, text edits)
+    /// already landed at install; its queued commands (presentation, UI trees,
+    /// level verbs, sentiment, the ghost bus) wait through Settling for the
+    /// reveal frame. An unload or suspend before reveal abandons those, so none
+    /// plays a sound or acts in the next level or the frontend. A Running
+    /// level's queue is normally empty here, since the frame loop dispatches
+    /// it every frame. That ordering is not checked: a command queued after
+    /// the last dispatch is dropped with the rest, never replayed into the
+    /// next level.
     pub(crate) fn discard_pending_system_commands(&mut self) {
         if let Some(session) = self.session.as_ref() {
             session.scripting.script_ctx.system_commands.discard_all();

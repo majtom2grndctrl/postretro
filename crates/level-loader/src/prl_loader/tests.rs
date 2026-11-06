@@ -176,6 +176,7 @@ pub(super) fn zero_grid_cluster_directory(resource_ids: &[SectionId]) -> Cluster
         ranges: Vec::new(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     }
 }
 
@@ -205,6 +206,48 @@ fn cluster_directory_missing_is_silent_and_valid_zero_grid_directory_loads_inert
     std::fs::remove_file(path).unwrap();
 }
 
+// Row 13, on the whole-load path: a v2 section is refused at either check, by
+// name, with what to do about it. The streaming path's checks are in
+// `sh_stream_tests`.
+#[test]
+fn old_directory_version_is_refused_by_name() {
+    let directory = zero_grid_cluster_directory(&[SectionId::OctahedralShVolume]);
+    let mut old_internal = cluster_directory_blob(&directory);
+    old_internal.data[0..4].copy_from_slice(&2u32.to_le_bytes());
+    let mut old_container = cluster_directory_blob(&directory);
+    old_container.version = 2;
+    for (blob, file_name) in [
+        (
+            old_internal,
+            "postretro_test_cluster_directory_old_internal.prl",
+        ),
+        (
+            old_container,
+            "postretro_test_cluster_directory_old_container.prl",
+        ),
+    ] {
+        let path = write_prl_load_fixture([blob], file_name);
+        let error = load_prl(path.to_str().unwrap()).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            matches!(
+                error,
+                PrlLoadError::ClusterDirectory(ClusterDirectoryError::VersionMismatch {
+                    version: 2,
+                    expected: 3
+                })
+            ),
+            "{file_name}: {error}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("ClusterDirectoryVersionMismatch"),
+            "{message}"
+        );
+        assert!(message.contains("re-bake the level"), "{message}");
+    }
+}
+
 #[test]
 fn cluster_directory_rejects_duplicate_versions_corruption_and_absent_targets() {
     let directory = zero_grid_cluster_directory(&[SectionId::OctahedralShVolume]);
@@ -223,10 +266,10 @@ fn cluster_directory_rejects_duplicate_versions_corruption_and_absent_targets() 
     ));
     std::fs::remove_file(duplicate_path).unwrap();
 
-    let mut v1_internal = cluster_directory_blob(&directory);
-    v1_internal.data[0..4].copy_from_slice(&1u32.to_le_bytes());
+    let mut old_internal = cluster_directory_blob(&directory);
+    old_internal.data[0..4].copy_from_slice(&1u32.to_le_bytes());
     let internal_version_path = write_prl_load_fixture(
-        [v1_internal],
+        [old_internal],
         "postretro_test_cluster_directory_internal_version.prl",
     );
     assert!(matches!(
@@ -903,6 +946,7 @@ pub(super) fn sample_kinematic_section() -> KinematicGeometrySection {
             close_sound: None,
             blocked_sound: None,
             crush_sound: None,
+            crush_damage_type: None,
         }],
         waypoints: vec![
             KinematicWaypointRecord {

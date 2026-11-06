@@ -165,3 +165,26 @@ export const candidate: CandidateInputs = Object.freeze({
 export function state(name: string): RuntimeGuardNode {
   return runtime.read("@state." + name) as RuntimeGuardNode;
 }
+
+/** The `@defense.` input a layer handle reads; a bad reference (a bare string,
+ * a damage-type handle) names no layer, so the read fails load. */
+function defenseInput(layer: unknown, capacity: boolean): string {
+  const handle = layer as { kind?: unknown; name?: unknown } | null;
+  const name =
+    handle !== null && typeof handle === "object" && handle.kind === "defenseLayer" && typeof handle.name === "string"
+      ? handle.name
+      : "@invalid";
+  return `@defense.${name}${capacity ? ".capacity" : ""}`;
+}
+
+/** Read the brain entity's own defense layer as guard inputs, as `state(name)`
+ * reads its own state: `defense(armor).current.le(0)`. An entity without the
+ * layer reads `0`. */
+export function defense(
+  layer: import("postretro").DefenseLayer,
+): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }> {
+  return Object.freeze({
+    current: runtime.read(defenseInput(layer, false)) as RuntimeGuardNode,
+    capacity: runtime.read(defenseInput(layer, true)) as RuntimeGuardNode,
+  });
+}

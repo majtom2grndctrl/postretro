@@ -45,6 +45,8 @@ export type PresentationTemplate<Name extends string = string> = Readonly<{
 
 export type OverlayEntity = Readonly<{
   state(name: string): RuntimeValue;
+  /** The sampled entity's own layer: `current` and `capacity`. An entity without it reads 0 / 0, so no shield pair shows. */
+  defense(layer: import("postretro").DefenseLayer): Readonly<{ current: RuntimeValue; capacity: RuntimeValue }>;
 }>;
 
 export type DamagedEnemiesProps = {
@@ -379,12 +381,29 @@ export function definePresentationTemplate(
   });
 }
 
+/** The `@defense.` input a layer handle reads; a bad reference (a bare string,
+ * a damage-type handle) names no layer, so the shield pair is skipped. */
+function defenseInput(layer: unknown, capacity: boolean): string {
+  const handle = layer as { kind?: unknown; name?: unknown } | null;
+  const name =
+    handle !== null && typeof handle === "object" && handle.kind === "defenseLayer" && typeof handle.name === "string"
+      ? handle.name
+      : "@invalid";
+  return `@defense.${name}${capacity ? ".capacity" : ""}`;
+}
+
 const OVERLAY_ENTITY: OverlayEntity = Object.freeze({
   state(name: string): RuntimeValue {
     if (typeof name !== "string" || name.length === 0) {
       throw new TypeError("damagedEnemies: state name must be nonempty");
     }
     return runtime.read(`@state.${name}`);
+  },
+  defense(layer) {
+    return Object.freeze({
+      current: runtime.read(defenseInput(layer, false)),
+      capacity: runtime.read(defenseInput(layer, true)),
+    });
   },
 });
 

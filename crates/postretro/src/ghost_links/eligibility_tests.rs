@@ -205,6 +205,7 @@ impl Scene {
                     splash: None,
                     source_weapon: Some(weapon.to_string()),
                     activation: None,
+                    damage_type: None,
                 },
             )
             .unwrap();

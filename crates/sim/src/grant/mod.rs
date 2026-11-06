@@ -1,10 +1,12 @@
 //! Reaction primitives for additive engine-owned resources.
-//! See: context/lib/scripting.md §10.8.
+//! See: context/lib/scripting.md §10.8 (Additive Resource Grants).
 
 use serde::{Deserialize, Serialize};
 
-use postretro_entities::components::grant::{GrantOutcome, grant_ammo, grant_health};
+use postretro_entities::components::grant::{GrantOutcome, grant_ammo, grant_health, grant_layer};
 use postretro_entities::{EntityId, EntityRegistry};
+use postretro_foundation::AuthoredHandle;
+use postretro_foundation::defense::{DefenseVocabulary, HandleRef};
 use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
 
 /// Register additive resource reaction primitives.
@@ -29,6 +31,14 @@ pub(crate) fn register_grant_reactions(registry: &mut ReactionPrimitiveRegistry)
         })?;
         dispatch_ammo(registry, targets, &parsed)
     });
+    registry.register("grantLayer", |registry, targets, args| {
+        let parsed: GrantLayerArgs = serde_json::from_value(args.clone()).map_err(|error| {
+            ReactionError::InvalidArgument {
+                reason: format!("grantLayer: failed to deserialize args: {error}"),
+            }
+        })?;
+        dispatch_layer(registry, targets, &parsed)
+    });
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +51,64 @@ pub(crate) struct GrantAmmoArgs {
     #[serde(rename = "type")]
     pub(crate) ammo_type: String,
     pub(crate) amount: f32,
+}
+
+/// `grantLayer` args: a defense-layer handle and an optional amount. No
+/// amount fills to capacity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantLayerArgs {
+    pub layer: AuthoredHandle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f32>,
+}
+
+/// Check `grantLayer` args against the committed vocabulary: the handle
+/// must name a declared layer. A bad reference drops the reaction at install.
+pub fn validate_grant_layer_args(
+    args: &serde_json::Value,
+    vocabulary: &DefenseVocabulary,
+) -> Result<(), String> {
+    let parsed: GrantLayerArgs = serde_json::from_value(args.clone())
+        .map_err(|error| format!("grantLayer args: {error}"))?;
+    if let Some(amount) = parsed.amount
+        && !amount.is_finite()
+    {
+        return Err("grantLayer `amount` must be a finite number".to_string());
+    }
+    let handle = parsed.layer.handle("grantLayer.layer")?;
+    let name = handle.expect_layer()?;
+    if !vocabulary.layers.iter().any(|layer| layer == name) {
+        return Err(format!(
+            "grantLayer `{name}` is not a declared defense layer"
+        ));
+    }
+    Ok(())
+}
+
+/// Apply a layer grant to every resolved reaction target.
+pub(crate) fn dispatch_layer(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    args: &GrantLayerArgs,
+) -> Result<(), ReactionError> {
+    let handle: HandleRef = args
+        .layer
+        .handle("grantLayer.layer")
+        .map_err(|reason| ReactionError::InvalidArgument { reason })?;
+    let layer = handle
+        .expect_layer()
+        .map_err(|reason| ReactionError::InvalidArgument { reason })?
+        .to_string();
+    if targets.is_empty() {
+        log::debug!("[Scripting] grantLayer: empty target set, no-op");
+        return Ok(());
+    }
+    for &target in targets {
+        // The chokepoint warns on a skipped target; fan-out continues.
+        grant_layer(registry, target, &layer, args.amount);
+    }
+    Ok(())
 }
 
 /// Apply a health grant to every resolved reaction target.
@@ -106,6 +174,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         component.current = current;
         registry.set_component(id, component).unwrap();
@@ -118,6 +187,43 @@ mod tests {
         register_grant_reactions(&mut registry);
         assert!(registry.contains("grantHealth"));
         assert!(registry.contains("grantAmmo"));
+        assert!(registry.contains("grantLayer"));
+    }
+
+    #[test]
+    fn grant_layer_args_check_the_handle_against_the_vocabulary() {
+        let vocabulary = DefenseVocabulary {
+            layers: vec!["shield".to_string()],
+            ..Default::default()
+        };
+        let shield = serde_json::json!({ "kind": "defenseLayer", "name": "shield" });
+        for ok in [
+            serde_json::json!({ "layer": shield }),
+            serde_json::json!({ "layer": shield, "amount": 25.0 }),
+        ] {
+            assert_eq!(validate_grant_layer_args(&ok, &vocabulary), Ok(()), "{ok}");
+        }
+        for (bad, expected) in [
+            (
+                serde_json::json!({ "layer": { "kind": "defenseLayer", "name": "armor" } }),
+                "grantLayer `armor` is not a declared defense layer",
+            ),
+            (
+                serde_json::json!({ "layer": { "kind": "damageType", "name": "shock" } }),
+                "expected a defense layer handle, got damage type `shock`",
+            ),
+            (
+                serde_json::json!({ "layer": "shield" }),
+                "`grantLayer.layer`",
+            ),
+            (
+                serde_json::json!({ "layer": shield, "bonus": 1 }),
+                "grantLayer args: unknown field `bonus`",
+            ),
+        ] {
+            let error = validate_grant_layer_args(&bad, &vocabulary).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

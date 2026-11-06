@@ -14,6 +14,7 @@ import {
   stateEquals,
 } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
+import { shield } from "./defenses";
 import { BLEED_OUT_MS } from "./player-death";
 
 export const hudTheme = defineTheme({
@@ -47,14 +48,6 @@ export const hudTheme = defineTheme({
 
 const { player, session } = getGameState();
 const { color, font, spacing } = getDesignTokens(hudTheme);
-
-const status = Text({
-  content: "HP --",
-  color: color.hud.text,
-  font: font.hud.status,
-  fontSize: 24.0,
-  bind: bindState(player.health, { format: "HP {}", decimalPlaces: 0 }),
-});
 
 const ammo = Text({
   content: "AMMO -- / --",
@@ -96,6 +89,18 @@ const openSeats = Text({
   bind: bindState(session.openSeats, { format: "OPEN SEATS {}" }),
 });
 
+// Each meter sits under a small caption naming it; the bars carry no number.
+const METER_WIDTH = 200.0;
+const METER_HEIGHT = 12.0;
+
+const meterLabel = (content: string) =>
+  Text({
+    content,
+    color: color.hud.text,
+    font: font.hud.status,
+    fontSize: 13.0,
+  });
+
 const bar = Bar({
   bind: bindState(player.health, {
     tween: {
@@ -104,6 +109,8 @@ const bar = Bar({
     },
   }),
   max: player.maxHealth,
+  width: METER_WIDTH,
+  height: METER_HEIGHT,
   fill: color.ok,
   background: color.hud.health.background,
   styleRanges: {
@@ -116,8 +123,19 @@ const bar = Bar({
   },
 });
 
-// Health stands alone in the lower-left corner: just the numeric readout and the
-// health bar, so the panel shrink-wraps to its content.
+// The local player's shield sits above health; a pawn without the layer reads
+// absent and the bar shows empty.
+const shieldBar = Bar({
+  bind: shield.current,
+  max: shield.capacity,
+  width: METER_WIDTH,
+  height: METER_HEIGHT,
+  fill: [0.3, 0.6, 1, 1],
+  background: [0.05, 0.07, 0.1, 0.9],
+});
+
+// Health stands alone in the lower-left corner: the shield meter above the
+// health meter, each under its caption, so the panel shrink-wraps to them.
 export const hud = defineUiTree({
   name: "hud",
   alwaysOn: true,
@@ -130,7 +148,10 @@ export const hud = defineUiTree({
         align: "stretch",
         fill: color.hud.panel,
       },
-      [status, bar],
+      [
+        VStack({ gap: 2.0, align: "start" }, [meterLabel("SHIELD"), shieldBar]),
+        VStack({ gap: 2.0, align: "start" }, [meterLabel("HEALTH"), bar]),
+      ],
     ),
   ),
 });

@@ -1,18 +1,14 @@
 //! Manifest-derived topology used by the app-side residency planner.
 //! See: context/lib/rendering_pipeline.md §4
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use postretro_level_format::SectionId;
-use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain, DENSE_OWNER_SENTINEL,
-};
+use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::cluster_sh_payloads::ClusterShPayloadsSection;
 use postretro_level_loader::{ShStreamBaseMetadata, ShStreamManifest, ShStreamSeamPortal};
 
 use super::controller::ShResidencyControllerError;
-use super::topology_nodes::{CoordWalk, DenseNode, DenseNodeOwners, NodeGrid, NodeOwners};
 use crate::streaming::cluster_hints::ClusterHints;
 
 #[derive(Debug)]
@@ -25,11 +21,6 @@ pub(super) struct PlannerTopology {
     /// supplements normal adjacency for warm-up only; it is never fed back to
     /// the visibility traversal.
     pub(super) seam_portals: Vec<SeamPortalEndpoint>,
-    /// Every dependency which must be sampleable before this cluster's halo
-    /// can become sampleable. Dense node/probe writers and sparse row owners
-    /// are both represented here.
-    pub(super) owners: Vec<Vec<u32>>,
-    pub(super) requested_resident_bytes: Vec<u64>,
     /// Encoded id-50 chunk length per cluster: the bytes a read of it moves.
     pub(super) encoded_chunk_bytes: Vec<u64>,
     pub(super) chunk_hashes: Vec<[u8; 32]>,
@@ -69,18 +60,6 @@ impl PlannerTopology {
         manifest: ManifestTopologyView<'_>,
         hints: Arc<ClusterHints>,
     ) -> Result<Self, ShResidencyControllerError> {
-        let node_owner =
-            DenseNodeOwners::for_grid(manifest.base.grid_dimensions, manifest.base.probes.len());
-        Self::from_manifest_view_with(manifest, hints, node_owner)
-    }
-
-    /// `from_manifest_view` over a caller-chosen node-owner table, so a test
-    /// can hold the array table to the `BTreeMap` it replaced.
-    pub(super) fn from_manifest_view_with<N: NodeOwners>(
-        manifest: ManifestTopologyView<'_>,
-        hints: Arc<ClusterHints>,
-        mut node_owner: N,
-    ) -> Result<Self, ShResidencyControllerError> {
         let directory = manifest.directory;
         let cluster_count =
             usize::try_from(manifest.payloads.header.cluster_count).map_err(|_| {
@@ -118,19 +97,6 @@ impl PlannerTopology {
             ));
         }
 
-        let mut owners = vec![BTreeSet::new(); cluster_count];
-        let streamed_sparse: BTreeSet<u32> = manifest
-            .payloads
-            .sources
-            .iter()
-            .filter(|source| {
-                matches!(
-                    source.kind,
-                    postretro_level_format::cluster_sh_payloads::ClusterShPayloadsSourceKind::SparseAffinity
-                )
-            })
-            .map(|source| source.section_id)
-            .collect();
         let base_resource_index = directory
             .resources
             .iter()
@@ -140,141 +106,23 @@ impl PlannerTopology {
                     "id-49 does not contain the required id-34 resource".into(),
                 )
             })?;
-
-        let mut patch_owner = vec![u32::MAX; manifest.base.probes.len()];
-        let grid = NodeGrid::new(manifest.base.grid_dimensions);
-        for (cluster_id, _) in directory.clusters.iter().enumerate() {
-            // Consecutive probes mostly share a node, and a repeat lowers
-            // nothing: this cluster already did.
-            let mut last_lowered: Option<DenseNode> = None;
+        for cluster_id in 0..cluster_count {
             for range in cluster_ranges(directory, cluster_id)? {
-                let resource = directory
-                    .resources
-                    .get(range.resource_index as usize)
-                    .ok_or_else(|| {
-                        ShResidencyControllerError::InvalidTopology(
-                            "range names an absent resource".into(),
-                        )
-                    })?;
-                if range.resource_index as usize != base_resource_index
-                    || resource.domain != ClusterResourceDomain::DenseProbe
-                {
-                    continue;
-                }
-                if range.role != ClusterRangeRole::Dense
-                    || range.owner_cluster_id != DENSE_OWNER_SENTINEL
-                {
+                if range.resource_index as usize >= directory.resources.len() {
                     return Err(ShResidencyControllerError::InvalidTopology(
-                        "id-34 range has non-dense ownership fields".into(),
+                        "range names an absent resource".into(),
                     ));
                 }
-                let dense_range = checked_range(range.start, range.count, "dense range")?;
-                let mut walk = CoordWalk::start(&grid, dense_range.start);
-                for dense_index in dense_range {
-                    let coords = walk.coords();
-                    walk.advance(&grid);
-                    let dense_index = usize::try_from(dense_index).map_err(|_| {
-                        ShResidencyControllerError::InvalidTopology(
-                            "dense index exceeds usize".into(),
-                        )
-                    })?;
-                    let probe = manifest.base.probes.get(dense_index).ok_or_else(|| {
-                        ShResidencyControllerError::InvalidTopology(
-                            "dense index exceeds id-34 metadata".into(),
-                        )
-                    })?;
-                    if probe.validity == 0 {
-                        continue;
-                    }
-                    let patch = patch_owner.get_mut(dense_index).ok_or_else(|| {
-                        ShResidencyControllerError::InvalidTopology(
-                            "dense index exceeds id-34 metadata".into(),
-                        )
-                    })?;
-                    *patch = (*patch).min(cluster_id as u32);
-                    let node = grid.node(dense_index, coords, probe.node_scale)?;
-                    if last_lowered != Some(node) {
-                        node_owner.lower_owner(node, cluster_id as u32);
-                        last_lowered = Some(node);
-                    }
-                }
-            }
-        }
-
-        for (cluster_id, _) in directory.clusters.iter().enumerate() {
-            // Repeats of the previous probe's writer and node owner are
-            // already in this cluster's set.
-            let mut last_patch: Option<u32> = None;
-            let mut last_node: Option<(DenseNode, u32)> = None;
-            for range in cluster_ranges(directory, cluster_id)? {
-                let resource = directory
-                    .resources
-                    .get(range.resource_index as usize)
-                    .ok_or_else(|| {
-                        ShResidencyControllerError::InvalidTopology(
-                            "range names an absent resource".into(),
-                        )
-                    })?;
                 if range.resource_index as usize == base_resource_index {
                     let dense_range = checked_range(range.start, range.count, "dense range")?;
-                    let mut walk = CoordWalk::start(&grid, dense_range.start);
-                    for dense_index in dense_range {
-                        let coords = walk.coords();
-                        walk.advance(&grid);
-                        let dense_index = usize::try_from(dense_index).map_err(|_| {
-                            ShResidencyControllerError::InvalidTopology(
-                                "dense index exceeds usize".into(),
-                            )
-                        })?;
-                        let probe = manifest.base.probes.get(dense_index).ok_or_else(|| {
-                            ShResidencyControllerError::InvalidTopology(
-                                "dense index exceeds id-34 metadata".into(),
-                            )
-                        })?;
-                        if probe.validity == 0 {
-                            continue;
-                        }
-                        let patch = *patch_owner.get(dense_index).ok_or_else(|| {
-                            ShResidencyControllerError::InvalidTopology(
-                                "dense index exceeds id-34 metadata".into(),
-                            )
-                        })?;
-                        if patch == u32::MAX {
-                            return Err(ShResidencyControllerError::InvalidTopology(
-                                "dense patch has no canonical writer".into(),
-                            ));
-                        }
-                        if last_patch != Some(patch) {
-                            owners[cluster_id].insert(patch);
-                            last_patch = Some(patch);
-                        }
-                        let node = grid.node(dense_index, coords, probe.node_scale)?;
-                        let node_owner = match last_node {
-                            Some((cached, owner)) if cached == node => owner,
-                            _ => {
-                                let owner = node_owner.owner(&node).ok_or_else(|| {
-                                    ShResidencyControllerError::InvalidTopology(
-                                        "dense node has no canonical writer".into(),
-                                    )
-                                })?;
-                                last_node = Some((node, owner));
-                                owner
-                            }
-                        };
-                        owners[cluster_id].insert(node_owner);
+                    if dense_range.end as usize > manifest.base.probes.len() {
+                        return Err(ShResidencyControllerError::InvalidTopology(
+                            "dense index exceeds id-34 metadata".into(),
+                        ));
                     }
-                    continue;
-                }
-                if resource.domain == ClusterResourceDomain::AffinityCell
-                    && streamed_sparse.contains(&resource.section_id)
-                    && range.role == ClusterRangeRole::Halo
-                {
-                    owners[cluster_id].insert(range.owner_cluster_id);
                 }
             }
-            owners[cluster_id].remove(&(cluster_id as u32));
         }
-        validate_owner_graph(&owners)?;
 
         let adjacency = manifest.adjacency.to_vec();
         for (cluster_id, neighbors) in adjacency.iter().enumerate() {
@@ -287,12 +135,6 @@ impl PlannerTopology {
                 )));
             }
         }
-        let requested_resident_bytes = manifest
-            .payloads
-            .index
-            .iter()
-            .map(|entry| entry.requested_resident_bytes)
-            .collect();
         let encoded_chunk_bytes = manifest
             .payloads
             .index
@@ -309,11 +151,6 @@ impl PlannerTopology {
             hints,
             adjacency,
             seam_portals,
-            owners: owners
-                .into_iter()
-                .map(|owners| owners.into_iter().collect())
-                .collect(),
-            requested_resident_bytes,
             encoded_chunk_bytes,
             chunk_hashes,
         })
@@ -351,52 +188,6 @@ fn seam_portal_endpoint(
     })
 }
 
-fn validate_owner_graph(owners: &[BTreeSet<u32>]) -> Result<(), ShResidencyControllerError> {
-    let mut marks = vec![0u8; owners.len()];
-    for cluster_id in 0..owners.len() {
-        visit_owner_graph(cluster_id, owners, &mut marks)?;
-    }
-    Ok(())
-}
-
-fn visit_owner_graph(
-    cluster_id: usize,
-    owners: &[BTreeSet<u32>],
-    marks: &mut [u8],
-) -> Result<(), ShResidencyControllerError> {
-    match marks.get(cluster_id).copied() {
-        Some(2) => return Ok(()),
-        Some(1) => {
-            return Err(ShResidencyControllerError::OwnerCycle(
-                u32::try_from(cluster_id).map_err(|_| {
-                    ShResidencyControllerError::InvalidTopology("cluster id exceeds u32".into())
-                })?,
-            ));
-        }
-        Some(0) => {}
-        None => {
-            return Err(ShResidencyControllerError::InvalidTopology(
-                "owner graph index exceeds cluster count".into(),
-            ));
-        }
-        Some(_) => unreachable!("owner graph marks only use 0, 1, and 2"),
-    }
-    marks[cluster_id] = 1;
-    for &owner in &owners[cluster_id] {
-        let owner = usize::try_from(owner).map_err(|_| {
-            ShResidencyControllerError::InvalidTopology("owner id exceeds usize".into())
-        })?;
-        if owner >= owners.len() {
-            return Err(ShResidencyControllerError::InvalidTopology(
-                "owner map names an out-of-range cluster".into(),
-            ));
-        }
-        visit_owner_graph(owner, owners, marks)?;
-    }
-    marks[cluster_id] = 2;
-    Ok(())
-}
-
 fn cluster_ranges(
     directory: &postretro_level_format::cluster_directory::ClusterDirectorySection,
     cluster_id: usize,
@@ -432,11 +223,10 @@ fn checked_range(
 }
 
 #[cfg(test)]
-mod equivalence_tests;
+mod independence_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::sh_streaming::topology_test_fixtures::{ManifestFixture, assert_invalid_topology};
 
     #[test]
@@ -459,17 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn manifest_malformed_dense_ownership_is_rejected_before_planner_construction() {
-        let mut fixture = ManifestFixture::two_clusters();
-        fixture.malformed_dense_ownership();
-
-        assert_invalid_topology(
-            fixture.build_topology(),
-            "id-34 range has non-dense ownership fields",
-        );
-    }
-
-    #[test]
     fn manifest_out_of_range_dense_index_is_rejected_before_planner_construction() {
         let mut fixture = ManifestFixture::two_clusters();
         fixture.out_of_range_dense_index();
@@ -477,17 +256,6 @@ mod tests {
         assert_invalid_topology(
             fixture.build_topology(),
             "dense index exceeds id-34 metadata",
-        );
-    }
-
-    #[test]
-    fn manifest_sparse_halo_owner_is_rejected_before_planner_construction() {
-        let mut fixture = ManifestFixture::two_clusters();
-        fixture.add_sparse_halo_with_owner(2);
-
-        assert_invalid_topology(
-            fixture.build_topology(),
-            "owner map names an out-of-range cluster",
         );
     }
 
@@ -500,14 +268,5 @@ mod tests {
             fixture.build_topology(),
             "cluster 0 adjacency names an out-of-range neighbor",
         );
-    }
-
-    #[test]
-    fn disconnected_owner_cycle_is_rejected_during_topology_validation() {
-        let owners = vec![BTreeSet::new(), BTreeSet::from([2]), BTreeSet::from([1])];
-        assert!(matches!(
-            validate_owner_graph(&owners),
-            Err(ShResidencyControllerError::OwnerCycle(1 | 2))
-        ));
     }
 }

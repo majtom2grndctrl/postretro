@@ -800,6 +800,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         })
     }
 
@@ -937,6 +938,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: Some(TouchableDescriptor { mode, radius }),
             mesh: Some(MeshDescriptor {
@@ -2195,6 +2197,7 @@ mod tests {
                 offset: None,
             }),
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         let descriptors = [descriptor];
         crate::scripting::builtins::apply_data_archetype_dispatch(

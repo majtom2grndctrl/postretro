@@ -24,6 +24,9 @@ pub struct CarriedState {
     pub wieldables: [Option<String>; WIELDABLE_SLOT_CAPACITY],
     pub magazines: [Option<u32>; WIELDABLE_SLOT_CAPACITY],
     pub active_slot: usize,
+    /// Each defense layer's value by layer name. The last-hit stamp is not
+    /// carried, so a carried layer recharges from its first tick.
+    pub layers: Vec<(String, f32)>,
 }
 
 impl Default for CarriedState {
@@ -35,6 +38,7 @@ impl Default for CarriedState {
             wieldables: std::array::from_fn(|_| None),
             magazines: [None; WIELDABLE_SLOT_CAPACITY],
             active_slot: 0,
+            layers: Vec::new(),
         }
     }
 }
@@ -55,6 +59,42 @@ pub fn restore_carried_health(
         return;
     };
     postretro_entities::components::health::set_health_absolute(registry, pawn, health_current);
+}
+
+/// Restore carried layer values by name, only when carried health restores:
+/// a seat carrying health 0 arrives with full layers. Each value clamps to
+/// the capacity evaluated with the seat's per-owner values, so it waits on
+/// the seat bind (or the next tick start) as a pending restore.
+pub fn restore_carried_layers(
+    carried: Option<&CarriedState>,
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+) {
+    use postretro_entities::components::defense_layers::{DefenseLayersComponent, LayerRefill};
+    let Some(state) =
+        carried.filter(|state| state.health_current.is_some_and(|health| health > 0.0))
+    else {
+        return;
+    };
+    let Ok(component) = registry.get_component::<DefenseLayersComponent>(pawn) else {
+        return;
+    };
+    let mut component = component.clone();
+    for (name, value) in &state.layers {
+        if let Some(layer) = component
+            .layers
+            .iter_mut()
+            .find(|layer| layer.name == *name)
+        {
+            layer.refill = LayerRefill::Restore(*value);
+            // `max(0.0)` maps a NaN carried value to 0, so keep max-then-min
+            // rather than `clamp`, which would pass NaN through.
+            layer.value = value.max(0.0).min(layer.capacity);
+        }
+    }
+    // The pawn was just read, so a failed write only means it despawned; the
+    // restore is then moot.
+    let _ = registry.set_component(pawn, component);
 }
 
 /// Bump whenever the payload's semantic contract changes. This is independent
@@ -159,6 +199,7 @@ impl WieldableTuningPayload {
             placement: None,
             muzzle_offset: self.muzzle_offset,
             block_during_reload: self.block_during_reload,
+            damage_type: None,
         }
     }
 

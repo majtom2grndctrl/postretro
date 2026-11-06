@@ -357,6 +357,7 @@ fn full_health() -> HealthComponent {
         max: NPC_HEALTH,
         hitbox: None,
         zone_multipliers: HashMap::new(),
+        ..Default::default()
     })
 }
 
@@ -439,6 +440,7 @@ impl Scripting {
             max: NPC_HEALTH,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let spawn_context = SpawnContext::default();
         spawn_context.replace_level_data([(ARCHETYPE.to_string(), descriptor)].into(), None);

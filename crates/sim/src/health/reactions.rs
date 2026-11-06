@@ -1,7 +1,7 @@
 // `applyDamage` reaction primitive: route a fixed damage amount through the
 // contextual health chokepoint for every entity matching the reaction's
-// tag. The player-side damage stand-in and the only non-weapon damage producer
-// in M10; death is resolved by the next death-sweep pass, never here.
+// tag. The reaction-driven damage producer outside weapons; death is resolved
+// by the next death-sweep pass, never here.
 // See: context/lib/scripting.md §10 (Reaction Primitives)
 
 use serde::{Deserialize, Serialize};
@@ -27,8 +27,28 @@ pub(crate) fn register_health_reaction_primitives(registry: &mut ReactionPrimiti
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplyDamageArgs {
     pub amount: f32,
+    /// `.damage(amount, { type })`: a damage-type handle. Absent, the hit
+    /// deals the mod's default type.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub damage_type: Option<postretro_foundation::AuthoredHandle>,
+}
+
+/// Install-time check of an `applyDamage` step's args against the registered
+/// vocabulary: known keys only, and a `type` that is a registered damage-type
+/// handle. A failure drops that one reaction.
+pub fn validate_apply_damage_args(
+    args: &serde_json::Value,
+    vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+) -> Result<(), String> {
+    let parsed: ApplyDamageArgs = serde_json::from_value(args.clone())
+        .map_err(|error| format!("`.damage` args are invalid: {error}"))?;
+    if let Some(handle) = &parsed.damage_type {
+        vocabulary.check_damage_type("type", handle)?;
+    }
+    Ok(())
 }
 
 /// Apply `args.amount` of damage to every target via the contextual damage
@@ -38,6 +58,9 @@ pub struct ApplyDamageArgs {
 /// - Empty target set → no-op, debug log.
 /// - `amount` negative or non-finite → `log::warn!` and no-op for the whole
 ///   dispatch (healing is out of scope; the chokepoint only ever reduces HP).
+/// - A `type` that is not a registered damage type → `log::warn!` and no-op
+///   for the whole dispatch (it is not treated as absent, so the default type
+///   is not substituted). An absent `type` deals the mod's default type.
 /// - Target missing a `Health` component → `log::warn!`, skip (tag matched a
 ///   non-damageable entity — most likely a tag typo). Other targets still take
 ///   damage.
@@ -62,9 +85,28 @@ pub fn dispatch(
         return Ok(());
     }
 
+    let damage_type = match &args.damage_type {
+        None => None,
+        Some(handle) => {
+            let name = handle
+                .handle("type")
+                .ok()
+                .and_then(|handle| handle.expect_damage_type().ok().map(str::to_string));
+            match registry.damage_type_index(name.as_deref()) {
+                Some(index) => Some(index),
+                None => {
+                    log::warn!(
+                        "[Scripting] applyDamage: `type` is not a registered damage type; no-op"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    };
     let payload = DamagePayload {
         amount: args.amount,
         impulse: glam::Vec3::ZERO,
+        damage_type,
     };
 
     for &id in targets {
@@ -110,6 +152,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         });
         reg.set_component(id, health).unwrap();
         id
@@ -124,7 +167,15 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let a = spawn_health(&mut reg, 100.0);
         let b = spawn_health(&mut reg, 50.0);
-        dispatch(&mut reg, &[a, b], &ApplyDamageArgs { amount: 25.0 }).unwrap();
+        dispatch(
+            &mut reg,
+            &[a, b],
+            &ApplyDamageArgs {
+                amount: 25.0,
+                damage_type: None,
+            },
+        )
+        .unwrap();
         assert_eq!(hp(&reg, a), 75.0);
         assert_eq!(hp(&reg, b), 25.0);
     }
@@ -134,7 +185,15 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let target = spawn_health(&mut reg, 100.0);
 
-        dispatch(&mut reg, &[target], &ApplyDamageArgs { amount: 25.0 }).unwrap();
+        dispatch(
+            &mut reg,
+            &[target],
+            &ApplyDamageArgs {
+                amount: 25.0,
+                damage_type: None,
+            },
+        )
+        .unwrap();
 
         let impact_dispatches = reg.take_impact_dispatches();
         assert_eq!(impact_dispatches.len(), 1);
@@ -152,8 +211,24 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let target = spawn_health(&mut reg, 100.0);
 
-        dispatch(&mut reg, &[target], &ApplyDamageArgs { amount: 10.0 }).unwrap();
-        dispatch(&mut reg, &[target], &ApplyDamageArgs { amount: 15.0 }).unwrap();
+        dispatch(
+            &mut reg,
+            &[target],
+            &ApplyDamageArgs {
+                amount: 10.0,
+                damage_type: None,
+            },
+        )
+        .unwrap();
+        dispatch(
+            &mut reg,
+            &[target],
+            &ApplyDamageArgs {
+                amount: 15.0,
+                damage_type: None,
+            },
+        )
+        .unwrap();
 
         let health = reg.get_component::<HealthComponent>(target).unwrap();
         let entries = health.contributor_ledger.entries();
@@ -178,7 +253,10 @@ mod tests {
             dispatch(
                 &mut reg,
                 &[bare, healthy],
-                &ApplyDamageArgs { amount: 30.0 },
+                &ApplyDamageArgs {
+                    amount: 30.0,
+                    damage_type: None,
+                },
             )
             .unwrap();
         });
@@ -205,7 +283,15 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_health(&mut reg, 100.0);
         let captured = crate::scripting::reactions::log_capture::capture(|| {
-            dispatch(&mut reg, &[id], &ApplyDamageArgs { amount: -10.0 }).unwrap();
+            dispatch(
+                &mut reg,
+                &[id],
+                &ApplyDamageArgs {
+                    amount: -10.0,
+                    damage_type: None,
+                },
+            )
+            .unwrap();
         });
         assert_eq!(hp(&reg, id), 100.0, "no healing, no change");
         assert!(
@@ -220,7 +306,15 @@ mod tests {
     fn nan_amount_is_a_noop() {
         let mut reg = EntityRegistry::new();
         let id = spawn_health(&mut reg, 100.0);
-        dispatch(&mut reg, &[id], &ApplyDamageArgs { amount: f32::NAN }).unwrap();
+        dispatch(
+            &mut reg,
+            &[id],
+            &ApplyDamageArgs {
+                amount: f32::NAN,
+                damage_type: None,
+            },
+        )
+        .unwrap();
         assert_eq!(hp(&reg, id), 100.0);
     }
 
@@ -233,6 +327,7 @@ mod tests {
             &[id],
             &ApplyDamageArgs {
                 amount: f32::INFINITY,
+                damage_type: None,
             },
         )
         .unwrap();
@@ -243,7 +338,15 @@ mod tests {
     fn empty_target_set_is_a_noop() {
         let mut reg = EntityRegistry::new();
         let id = spawn_health(&mut reg, 100.0);
-        dispatch(&mut reg, &[], &ApplyDamageArgs { amount: 99.0 }).unwrap();
+        dispatch(
+            &mut reg,
+            &[],
+            &ApplyDamageArgs {
+                amount: 99.0,
+                damage_type: None,
+            },
+        )
+        .unwrap();
         assert_eq!(hp(&reg, id), 100.0);
     }
 
@@ -251,10 +354,95 @@ mod tests {
     fn lethal_amount_floors_at_zero_without_despawn() {
         let mut reg = EntityRegistry::new();
         let id = spawn_health(&mut reg, 40.0);
-        dispatch(&mut reg, &[id], &ApplyDamageArgs { amount: 999.0 }).unwrap();
+        dispatch(
+            &mut reg,
+            &[id],
+            &ApplyDamageArgs {
+                amount: 999.0,
+                damage_type: None,
+            },
+        )
+        .unwrap();
         // Floored at zero by the chokepoint; the entity still exists — death is
         // the next death-sweep pass's job, not the handler's.
         assert_eq!(hp(&reg, id), 0.0);
         assert!(reg.get_component::<HealthComponent>(id).is_ok());
+    }
+
+    fn heavy_type(name: &str) -> Option<postretro_foundation::AuthoredHandle> {
+        Some(postretro_foundation::AuthoredHandle(
+            serde_json::json!({ "kind": "damageType", "name": name }),
+        ))
+    }
+
+    #[test]
+    fn typed_script_damage_scales_by_its_type() {
+        let mut reg = EntityRegistry::new();
+        reg.set_defense_vocabulary(std::sync::Arc::new(
+            postretro_foundation::defense::DefenseVocabulary {
+                layers: Vec::new(),
+                damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                    name: "heavy".to_string(),
+                    matrix: std::collections::BTreeMap::from([(
+                        "health".to_string(),
+                        postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                    )]),
+                }],
+                default_damage_type: None,
+            },
+        ));
+        let a = spawn_health(&mut reg, 100.0);
+        dispatch(
+            &mut reg,
+            &[a],
+            &ApplyDamageArgs {
+                amount: 10.0,
+                damage_type: heavy_type("heavy"),
+            },
+        )
+        .unwrap();
+        assert_eq!(hp(&reg, a), 80.0, "heavy is ×2 on health");
+        dispatch(
+            &mut reg,
+            &[a],
+            &ApplyDamageArgs {
+                amount: 10.0,
+                damage_type: heavy_type("missing"),
+            },
+        )
+        .unwrap();
+        assert_eq!(hp(&reg, a), 80.0, "an unregistered type deals nothing");
+    }
+
+    #[test]
+    fn damage_options_with_a_bad_type_or_key_fail_install_validation() {
+        let vocabulary = std::sync::Arc::new(postretro_foundation::defense::DefenseVocabulary {
+            layers: Vec::new(),
+            damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                name: "heavy".to_string(),
+                matrix: std::collections::BTreeMap::from([(
+                    "health".to_string(),
+                    postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                )]),
+            }],
+            default_damage_type: None,
+        });
+        let ok =
+            serde_json::json!({ "amount": 5, "type": { "kind": "damageType", "name": "heavy" } });
+        assert!(validate_apply_damage_args(&ok, &vocabulary).is_ok());
+        assert!(
+            validate_apply_damage_args(&serde_json::json!({ "amount": 5 }), &vocabulary).is_ok()
+        );
+        for bad in [
+            serde_json::json!({ "amount": 5, "type": "heavy" }),
+            serde_json::json!({ "amount": 5, "type": { "kind": "defenseLayer", "name": "heavy" } }),
+            serde_json::json!({ "amount": 5, "type": { "kind": "damageType", "name": "missing" } }),
+            serde_json::json!({ "amount": 5, "source": 1 }),
+        ] {
+            assert!(
+                validate_apply_damage_args(&bad, &vocabulary).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

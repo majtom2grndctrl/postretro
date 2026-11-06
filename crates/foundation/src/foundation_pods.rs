@@ -7,6 +7,9 @@
 pub struct DamagePayload {
     pub amount: f32,
     pub impulse: glam::Vec3,
+    /// Registered damage-type index the producer names. `None` deals the
+    /// mod's default type, or stays untyped without one.
+    pub damage_type: Option<u16>,
 }
 
 /// Resolve authored knockback along a shot or blast direction. At coincident

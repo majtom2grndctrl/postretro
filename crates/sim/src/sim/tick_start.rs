@@ -17,13 +17,20 @@ pub struct RespawnTurn {
     pub yaw_delta: f32,
 }
 
-/// Snapshot before relocation, then apply queued teleporter changes and respawns.
-/// The App resolves this tick's switch/activation lanes after this returns.
+/// Snapshot before relocation, start the next host tick, then apply queued
+/// teleporter changes and respawns. Defense-layer recharge
+/// ([`super::defense_layers::recharge_defense_layers`]) follows, before any of
+/// the tick's hits. The App resolves this tick's switch/activation lanes after
+/// this returns.
 pub fn begin_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
     ctx: Option<&ScriptCtx>,
 ) -> PendingTickStart {
-    registry.borrow_mut().snapshot_transforms();
+    {
+        let mut registry = registry.borrow_mut();
+        registry.snapshot_transforms();
+        registry.advance_host_tick();
+    }
     let arrivals = if let Some(ctx) = ctx {
         crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);
         super::respawn::drain(ctx, &mut registry.borrow_mut())
@@ -114,6 +121,7 @@ where
         .as_ref()
         .and_then(|context| context.script_ctx.as_ref());
     let pending = begin_tick(&registry, ctx);
+    super::defense_layers::recharge_defense_layers(&mut registry.borrow_mut());
     let local = if pending.arrivals.is_empty() {
         None
     } else {

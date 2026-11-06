@@ -1,4 +1,5 @@
 import { activation, defineEntity } from "postretro";
+import { ballistic } from "./damage-types";
 
 // DEMO CONTENT — projectile weapon resolved by the limitator's `shoot` attack.
 // Its body and trail reuse the established dev projectile fixtures so the slow,
@@ -8,6 +9,7 @@ export const enemyRifleEntity = defineEntity({
   components: {
     weapon: {
       damage: 10,
+      damageType: ballistic,
       range: 12,
       primary: { trigger: "hold", recoveryMs: 750, steps: [activation.shot()] },
       resolution: "projectile",

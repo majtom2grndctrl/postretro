@@ -922,6 +922,7 @@ mod tests {
                     cooldown_ms: Some(900.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             )]),
             engagement_radius: None,
@@ -1463,6 +1464,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
         let brain_entity = registry.spawn(Transform::default());
@@ -1485,7 +1487,8 @@ mod tests {
             brain_entity,
             &DamagePayload {
                 amount: 1.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             damage_context,
         ));
@@ -1503,7 +1506,8 @@ mod tests {
             health_only_entity,
             &DamagePayload {
                 amount: 1.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("test.health-only", DamageProducer::InTick),
         ));
@@ -1544,6 +1548,7 @@ mod tests {
                     max: 10.0,
                     hitbox: None,
                     zone_multipliers: HashMap::new(),
+                    ..Default::default()
                 }),
             )
             .unwrap();
@@ -1555,7 +1560,8 @@ mod tests {
             target,
             &DamagePayload {
                 amount: 10.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             lethal_context,
         ));
@@ -1577,7 +1583,8 @@ mod tests {
             target,
             &DamagePayload {
                 amount: 5.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             corpse_context,
         ));
@@ -1629,6 +1636,7 @@ mod tests {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: HashMap::new(),
+                        ..Default::default()
                     }),
                 )
                 .expect("enemy is live");
@@ -1640,7 +1648,8 @@ mod tests {
                 enemy,
                 &DamagePayload {
                     amount: 1.0,
-                    impulse: glam::Vec3::ZERO
+                    impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 context,
             ));
@@ -1691,6 +1700,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
         let brain_entity = registry.spawn(Transform::default());
@@ -1710,7 +1720,8 @@ mod tests {
             brain_entity,
             &DamagePayload {
                 amount: 1.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("test.missing-attacker", DamageProducer::InTick),
         ));
@@ -1733,7 +1744,8 @@ mod tests {
             brain_entity,
             &DamagePayload {
                 amount: 1.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             damage_context,
         ));
@@ -1794,6 +1806,7 @@ mod tests {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: HashMap::new(),
+                    ..Default::default()
                 }),
             )
             .unwrap();
@@ -1806,7 +1819,8 @@ mod tests {
             brain_entity,
             &DamagePayload {
                 amount: 1.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             directional_context,
         ));
@@ -1823,7 +1837,8 @@ mod tests {
             brain_entity,
             &DamagePayload {
                 amount: 1.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("test.contextless-hit", DamageProducer::InTick),
         ));

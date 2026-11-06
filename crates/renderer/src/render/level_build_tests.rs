@@ -368,14 +368,15 @@ fn off_main_build_matches_the_oracle_set() {
         let dims = diffuse_dims(&prepared);
         normalize_world_uvs_with_dims(&mut world, &dims);
         let limits = renderer.install_device_limits();
-        let sh_residency = world
-            .sh_stream_manifest()
-            .map(|manifest| plan_sh_residency(manifest, &world.cells).expect("the plan accepts"));
+        let sh_residency = world.sh_stream_manifest().map(|manifest| {
+            plan_sh_residency(manifest, &world.cells, world.baked_max_lead())
+                .expect("the plan accepts")
+        });
         let payloads = world.take_gpu_lighting_payloads();
         let lightmap_family = {
             let geometry = level_world_to_geometry(&world, &materials);
             let descriptors = match &geometry.sh_storage {
-                LevelGeometryShStorage::Streaming(manifest) => {
+                LevelGeometryShStorage::Streaming { manifest, .. } => {
                     Some(manifest.base().animation_descriptors.as_slice())
                 }
                 LevelGeometryShStorage::Legacy => None,
@@ -518,9 +519,10 @@ fn off_main_build_matches_the_oracle_set_on_dev_maps() {
             prepare_world_textures(&world.texture_names, &world.texture_cache_keys, &cache);
         let dims = diffuse_dims(&prepared);
         normalize_world_uvs_with_dims(&mut world, &dims);
-        let sh_plan = world
-            .sh_stream_manifest()
-            .map(|manifest| plan_sh_residency(manifest, &world.cells).expect("the plan accepts"));
+        let sh_plan = world.sh_stream_manifest().map(|manifest| {
+            plan_sh_residency(manifest, &world.cells, world.baked_max_lead())
+                .expect("the plan accepts")
+        });
         let payloads = world.take_gpu_lighting_payloads();
         let fluid = prepare_fluid_surfaces(
             &world.environment_volumes.volumes,

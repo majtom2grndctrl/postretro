@@ -1,4 +1,5 @@
 //! Dirty-row unions, deferred promotion, and eviction invalidation.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use super::*;
 
@@ -45,25 +46,26 @@ impl ShResidencyState {
             if let Some(installed) = self.installed.get(&cluster_id)
                 && installed_cluster_is_sampleable(
                     installed,
-                    &self.owner_dependencies[cluster_id as usize],
-                    &self.sampleable,
                     self.indirect_compose_epoch,
                     self.direct_compose_epoch,
                 )
             {
-                #[cfg(feature = "dev-tools")]
-                if !installed.patches.is_empty() {
-                    self.probe_readback.sample_words_changed();
-                }
+                // A shared word another cluster promoted is already published.
                 let updates: Vec<_> = installed
                     .patches
                     .iter()
-                    .map(|patch| {
-                        self.sampled_words[patch.dense as usize] =
-                            self.compose_words[patch.dense as usize];
-                        (patch.dense, patch.mean_distance, patch.mean_sq_distance)
+                    .filter_map(|patch| {
+                        let dense = patch.dense as usize;
+                        (self.sampled_words[dense] != self.compose_words[dense]).then(|| {
+                            self.sampled_words[dense] = self.compose_words[dense];
+                            (patch.dense, patch.mean_distance, patch.mean_sq_distance)
+                        })
                     })
                     .collect();
+                #[cfg(feature = "dev-tools")]
+                if !updates.is_empty() {
+                    self.probe_readback.sample_words_changed();
+                }
                 if let Some(gpu) = self.gpu.as_ref() {
                     gpu.upload_sample_words_and_moments(
                         uploads,
@@ -79,30 +81,42 @@ impl ShResidencyState {
         Ok(())
     }
 
+    /// The highest compose epochs any install still awaiting promotion needs.
+    pub(super) fn highest_pending_epochs(&self) -> (u64, u64) {
+        self.pending_promotion
+            .iter()
+            .filter_map(|cluster_id| self.installed.get(cluster_id))
+            .fold(
+                (self.indirect_compose_epoch, self.direct_compose_epoch),
+                |(indirect, direct), installed| {
+                    (
+                        indirect.max(installed.required_indirect_epoch),
+                        direct.max(installed.required_direct_epoch),
+                    )
+                },
+            )
+    }
+
+    /// Release this cluster's references and free what it alone held. Storage
+    /// another reference keeps is left exactly as it is: nothing is zeroed,
+    /// cleared or marked dirty for it. Returns whether any pool range came
+    /// free: a cluster sharing everything it names frees nothing.
     pub(super) fn evict(
         &mut self,
         uploads: &mut StagedUploads,
         cluster_id: u32,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<bool, ShResidencyDrainError> {
         self.validate_cluster_id(cluster_id)?;
-        // A baked owner stays pinned while any dependent is installed. The
-        // renderer never transfers sparse ownership to a halo copy.
-        if self.installed.iter().any(|(&dependent, _)| {
-            dependent != cluster_id
-                && self.owner_dependencies[dependent as usize].contains(&cluster_id)
-        }) {
-            return Ok(());
-        }
         let Some(installed) = self.installed.remove(&cluster_id) else {
-            return Ok(());
+            return Ok(false);
         };
-        #[cfg(feature = "dev-tools")]
-        if !installed.patches.is_empty() {
-            self.probe_readback.sample_words_changed();
-        }
+        let mut freed = false;
         let mut sample_updates = Vec::with_capacity(installed.patches.len());
         let mut dense_rows = Vec::with_capacity(installed.patches.len());
         for patch in installed.patches {
+            if !self.storage_refs.release_word(patch.dense)? {
+                continue;
+            }
             invalidate_dense_words(
                 &mut self.compose_words,
                 &mut self.sampled_words,
@@ -110,6 +124,10 @@ impl ShResidencyState {
             )?;
             dense_rows.push(self.affinity_row_for_dense(patch.dense)?);
             sample_updates.push((patch.dense, patch.mean_distance, patch.mean_sq_distance));
+        }
+        #[cfg(feature = "dev-tools")]
+        if !sample_updates.is_empty() {
+            self.probe_readback.sample_words_changed();
         }
         // Release per affinity row, not per probe; each release keeps the
         // resident unions in step without rebuilding them.
@@ -125,15 +143,22 @@ impl ShResidencyState {
                 self.release_row_refs(RowRefTable::DirectBase, row, count)?;
             }
         }
-        for node in installed.owned_nodes {
+        for node in installed.referenced_nodes {
+            if !self.storage_refs.release_node(&node)? {
+                continue;
+            }
             if let Some(range) = self.node_slots.remove(&node) {
                 #[cfg(feature = "dev-tools")]
                 self.probe_readback
                     .retire_slots(range.start..range.start + range.len);
                 self.dense_slots.release(range)?;
+                freed = true;
             }
         }
         for (section_id, row) in installed.sparse_rows {
+            if !self.storage_refs.release_sparse_row(&(section_id, row))? {
+                continue;
+            }
             // A CPU-only state installed its rows without GPU pools, so it
             // has no CSR pair to clear.
             if let Some(gpu) = self.gpu.as_ref() {
@@ -144,7 +169,7 @@ impl ShResidencyState {
                 }
             }
             if let Some(pool) = self.sparse_pools.get_mut(&section_id) {
-                pool.evict(row)?;
+                freed |= pool.evict(row)?.is_some();
             }
             self.dirty_rows.insert((section_id, row));
             match section_id {
@@ -166,6 +191,7 @@ impl ShResidencyState {
         }
         self.pending_promotion.remove(&cluster_id);
         self.sampleable.remove(&cluster_id);
+        self.release_unbacked_compose_waits();
         if let Some(gpu) = self.gpu.as_ref() {
             // Publish zeros before freed ranges can be reused by a later ready
             // item in the same drain. The texture moments retain their baked
@@ -183,25 +209,48 @@ impl ShResidencyState {
                 self.grid_dimensions(),
             )?;
         }
-        Ok(())
+        Ok(freed)
+    }
+
+    /// A cluster that wrote nothing waits on a compose epoch another install
+    /// asked for. If that install left with the last dirty row, no pass will
+    /// run to reach the epoch, and whatever was shared is composed or freed,
+    /// so the wait is over. Any eviction can take that row, promoted or not,
+    /// so this runs after each one.
+    fn release_unbacked_compose_waits(&mut self) {
+        let indirect_idle = !self
+            .indirect_dirty_rows
+            .iter()
+            .any(|row| self.indirect_resident_rows.contains(row));
+        let direct_idle = !self
+            .direct_promotion_dirty_rows
+            .iter()
+            .chain(&self.direct_animated_dirty_rows)
+            .any(|&row| self.direct_compose_resident(row));
+        for cluster_id in &self.pending_promotion {
+            let Some(installed) = self.installed.get_mut(cluster_id) else {
+                continue;
+            };
+            if indirect_idle {
+                installed.required_indirect_epoch = self.indirect_compose_epoch;
+            }
+            if direct_idle {
+                installed.required_direct_epoch = self.direct_compose_epoch;
+            }
+        }
     }
 }
 
 /// Promotion deliberately observes compose completion from a later drain.
-/// Keeping this predicate pure makes the epoch/dependency contract testable
-/// without a renderer device and prevents a new canonical writer from being
-/// published before both its tile owner and required compose passes are ready.
+/// Keeping this predicate pure makes the epoch contract testable without a
+/// renderer device and prevents a cluster from being published before its
+/// required compose passes are ready.
 pub(super) fn installed_cluster_is_sampleable(
     installed: &InstalledCluster,
-    owner_dependencies: &BTreeSet<u32>,
-    sampleable: &BTreeSet<u32>,
     indirect_compose_epoch: u64,
     direct_compose_epoch: u64,
 ) -> bool {
-    owner_dependencies
-        .iter()
-        .all(|owner| sampleable.contains(owner))
-        && installed.required_indirect_epoch <= indirect_compose_epoch
+    installed.required_indirect_epoch <= indirect_compose_epoch
         && installed.required_direct_epoch <= direct_compose_epoch
 }
 

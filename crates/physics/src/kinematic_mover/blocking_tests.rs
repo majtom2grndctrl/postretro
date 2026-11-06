@@ -2248,3 +2248,71 @@ fn held_world_participation_rechecks_queued_crush_victims_after_callback() {
         .collect();
     assert_eq!(healths.iter().sum::<f32>(), 84.0);
 }
+
+// A crush resolves its type name against the live vocabulary on each hit: a
+// reload that reorders the types keeps it, and an unregistered name deals the
+// default type.
+#[test]
+fn crush_deals_its_crush_damage_type() {
+    use postretro_foundation::defense::{DamageTypeDeclaration, DefenseVocabulary, PoolMultiplier};
+    let declare = |name: &str, scale: f32| DamageTypeDeclaration {
+        name: name.to_string(),
+        matrix: std::collections::BTreeMap::from([(
+            "health".to_string(),
+            PoolMultiplier::Scale(scale),
+        )]),
+    };
+    let vocabulary = |damage_types| {
+        std::sync::Arc::new(DefenseVocabulary {
+            layers: Vec::new(),
+            damage_types,
+            default_damage_type: None,
+        })
+    };
+    let mover_id = 43;
+    let mut registry = EntityRegistry::new();
+    registry.set_defense_vocabulary(vocabulary(vec![declare("heavy", 2.0)]));
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Crush;
+    mover.completed = true;
+    mover.crush_damage = 10.0;
+    mover.crush_damage_type = Some("heavy".to_string());
+    registry.set_component(mover_entity, mover).unwrap();
+    let player = add_player(&mut registry, Some(100.0));
+    set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+    let crush = |registry: &mut EntityRegistry| {
+        run_mover_blocking_pass(
+            registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&swept_wall(mover_id)),
+            &moving_contact_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+        registry
+            .get_component::<HealthComponent>(player)
+            .unwrap()
+            .current
+    };
+
+    assert_eq!(crush(&mut registry), 80.0, "a heavy crush is ×2 on health");
+    registry.set_defense_vocabulary(vocabulary(vec![
+        declare("light", 1.0),
+        declare("heavy", 2.0),
+    ]));
+    assert_eq!(crush(&mut registry), 60.0, "the name survives a reorder");
+    let mut renamed = registry
+        .get_component::<KinematicMoverComponent>(mover_entity)
+        .unwrap()
+        .clone();
+    renamed.crush_damage_type = Some("missing".to_string());
+    registry.set_component(mover_entity, renamed).unwrap();
+    assert_eq!(
+        crush(&mut registry),
+        50.0,
+        "an unregistered name deals the default type"
+    );
+}

@@ -201,6 +201,8 @@ pub(crate) struct PendingAttack {
 pub(crate) enum AttackOutcome {
     Contact {
         damage: f32,
+        /// The attack's damage type by name; `None` deals the mod default.
+        damage_type: Option<String>,
     },
     Projectile {
         request: weapon_controller::WeaponAttackRequest,

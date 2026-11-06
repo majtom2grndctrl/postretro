@@ -25,10 +25,10 @@ use crate::slot_table::{SlotTable, StoreDeclarationSet};
 /// The incoming schema: the attempt's declarations over the live table. The
 /// live table only gains namespaces, so the union is what the host binds
 /// against after commit.
-struct IncomingSchema<'a> {
-    declarations: &'a StoreDeclarationSet,
-    live: &'a SlotTable,
-    life_state_names: &'a BTreeSet<&'a str>,
+pub(crate) struct IncomingSchema<'a> {
+    pub(crate) declarations: &'a StoreDeclarationSet,
+    pub(crate) live: &'a SlotTable,
+    pub(crate) life_state_names: &'a BTreeSet<&'a str>,
 }
 
 impl PairSchema for IncomingSchema<'_> {

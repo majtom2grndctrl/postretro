@@ -285,6 +285,12 @@ fn fixture_ts_json(export_name: &str) -> serde_json::Value {
         std::process::id(),
     ));
     std::fs::create_dir_all(&directory).expect("create fixture directory");
+    // The fixture's weapon imports its damage type from beside it.
+    std::fs::write(
+        directory.join("damage-types.ts"),
+        include_str!("../../../../../content/dev/scripts/damage-types.ts"),
+    )
+    .expect("write the dev damage types");
     let entry = directory.join("fixture.ts");
     std::fs::write(
         &entry,
@@ -309,12 +315,10 @@ fn fixture_ts_json(export_name: &str) -> serde_json::Value {
 
 /// One export of the Luau fixture, evaluated with the engine prelude and lowered to JSON.
 fn fixture_luau_json(export_name: &str) -> serde_json::Value {
-    let lua = crate::luau::build_lua_state(
-        &[],
-        None,
-        Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
-    )
-    .expect("mod-rooted luau state");
+    // Rooted at the dev mod, where the fixture's mod-root `require` of its
+    // damage types resolves.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+    let lua = crate::luau::build_lua_state(&[], None, Some(&root)).expect("mod-rooted luau state");
     let source =
         format!("local M = (function()\n{FIXTURE_LUAU_SRC}\nend)()\nreturn M.{export_name}");
     let value: LuaValue = lua

@@ -141,6 +141,7 @@ fn spawn_owned_health(
         max,
         hitbox: None,
         zone_multipliers: std::collections::HashMap::new(),
+        ..Default::default()
     };
     let pawn = registry.spawn(Transform::default());
     let mut health = HealthComponent::from_descriptor(&descriptor);
@@ -191,6 +192,7 @@ fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (E
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: Some(true),
+            damage_type: None,
         })
     };
     let shells = registry.spawn(Transform::default());

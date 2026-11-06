@@ -9,8 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::SectionId;
 #[cfg(test)]
-use postretro_level_format::cluster_directory::ClusterRangeRole;
-#[cfg(test)]
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest};
@@ -25,6 +23,8 @@ use super::renderer_types::{
 };
 
 mod allocator;
+#[cfg(test)]
+mod cluster_demand_tests;
 mod compose_plan;
 #[cfg(test)]
 mod compose_plan_oracle;
@@ -34,7 +34,6 @@ mod contributing_rows_tests;
 mod dense;
 mod diagnostics;
 mod direct_compose;
-mod floor;
 mod frame;
 mod gpu;
 mod install;
@@ -42,12 +41,12 @@ mod install_journal;
 #[cfg(test)]
 mod install_tests;
 mod lifecycle;
-#[cfg(test)]
-mod node_ownership_tests;
-mod ownership;
 mod patches;
 mod payload;
 mod pipelines;
+mod pool_admission;
+mod pool_demand;
+mod pool_size;
 #[cfg(feature = "dev-tools")]
 mod probe_diagnostics;
 #[cfg(feature = "dev-tools")]
@@ -59,8 +58,12 @@ mod sample_region_index;
 mod sample_regions;
 mod setup;
 #[cfg(test)]
-pub(in crate::render) use setup::residency_plan_summary;
+pub(in crate::render) use setup::{residency_plan_summary, whole_map_bound_for_test};
 mod sparse_install;
+mod storage_refs;
+#[cfg(test)]
+mod storage_refs_tests;
+mod stored_nodes;
 #[cfg(test)]
 mod tests;
 
@@ -69,7 +72,6 @@ use compose_plan::{ComposeFramePlan, RowMembership, StreamedComposePlanner};
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 pub use diagnostics::{ShMissBuckets, ShStreamingLiveDiagnostics};
 use direct_compose::DirectSparseRowUpload;
-use floor::plan_initial_pool_floor;
 pub(crate) use gpu::StagedUploads;
 use gpu::StreamingGpuPools;
 #[cfg(test)]
@@ -77,15 +79,18 @@ pub(in crate::render) use gpu::write_nine_cluster_prl;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, u32_bytes};
 use install::InstallGpu;
 use install_journal::InstallJournal;
-use ownership::{StoredNode, StoredNodeLayout, rewrite_slot};
-use patches::SlotRun;
+use patches::{ChunkPatches, SlotRun};
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 pub(crate) use pipelines::StreamingShPipelines;
+use pool_admission::PoolAdmission;
+use pool_size::plan_initial_pool;
 #[cfg(feature = "dev-tools")]
 pub(in crate::render) use probe_diagnostics::ProbeResidencyClass;
 use row_bitset::{RowBitSet, RowQueue};
 use row_refs::{RowRefTable, RowSet, decrement_row_ref, increment_row_ref, row_counts};
 use sample_region_index::SampleRegionIndex;
+use storage_refs::StorageRefs;
+use stored_nodes::{StoredNode, StoredNodeLayout, rewrite_slot};
 
 const PROBE_PATCH_BLOCK: u32 = 0;
 const ISOLATED_ATLAS_BLOCK: u32 = 1;
@@ -104,13 +109,11 @@ const ANIMATED_DIRECT_DELTA_ID: u32 = SectionId::AnimatedDirectShDeltaVolumes as
 
 pub use postretro_render_cpu::sh_residency::ShResidencyDrainError;
 use postretro_render_cpu::sh_residency::{
-    InitialDenseSlots, NodeMap, ShResidencyPlan, SparseCapacityFloors, SparseComposeLayout,
-    SparseComposeLayouts,
+    ClusterStorage, DenseSpans, NodeMap, ShPoolBound, ShResidencyPlan, SparseCapacities,
+    SparseComposeLayout, SparseComposeLayouts,
 };
 #[cfg(test)]
-use postretro_render_cpu::sh_residency::{
-    plan_sh_residency, plan_sh_residency_parts, sparse_capacity_floors,
-};
+use postretro_render_cpu::sh_residency::{plan_sh_residency, plan_sh_residency_parts};
 
 /// One streamed SH compose pass's current-frame work and remaining lag.
 ///
@@ -130,7 +133,7 @@ pub struct ShComposePassDiagnostics {
     pub resident_rows_still_lagging: u64,
 }
 
-/// A plain-data read of renderer ownership.  This intentionally reports pool
+/// A plain-data read of renderer residency.  This intentionally reports pool
 /// capacity and logical occupancy separately: one is physical GPU backing,
 /// while the other is only the live subset within it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,16 +153,6 @@ pub struct ShResidencySnapshot {
     pub fixed_metadata_bytes: u64,
     /// Bytes physically allocated by the active streamed generation.
     pub active_capacity_bytes: u64,
-    /// Initial non-evictable streamed pool floor, distinct from later growth.
-    pub effective_floor_bytes: u64,
-    /// Minimum physical capacity for the coupled id-34/id-35 dense pool.
-    pub dense_group_minimum_bytes: Option<u64>,
-    /// Minimum physical capacity for the id-27 sparse pool, when present.
-    pub indirect_delta_minimum_bytes: Option<u64>,
-    /// Minimum physical capacity for the id-41 sparse pool, when present.
-    pub direct_delta_minimum_bytes: Option<u64>,
-    /// Minimum physical capacity for the id-45 sparse pool, when present.
-    pub animated_direct_delta_minimum_bytes: Option<u64>,
     /// Bytes addressed by currently live pool allocations only.
     pub logical_occupancy_bytes: u64,
     /// Bytes kept alive by the single retiring generation, if any.
@@ -215,7 +208,9 @@ impl From<crate::render::uploads::UploadError> for ShResidencyDrainError {
 #[derive(Debug)]
 struct InstalledCluster {
     patches: Vec<InstalledProbe>,
-    owned_nodes: Vec<StoredNode>,
+    /// Each of these holds one `StorageRefs` reference, as does every patch's
+    /// word and every sparse row below.
+    referenced_nodes: Vec<StoredNode>,
     sparse_rows: Vec<(u32, u32)>,
     required_indirect_epoch: u64,
     required_direct_epoch: u64,
@@ -239,16 +234,19 @@ pub(super) struct ShResidencyState {
     grid_dimensions: [u32; 3],
     generation: u64,
     targets: BTreeSet<u32>,
-    dense_owner: Vec<Option<u32>>,
     dense_node: Vec<Option<StoredNode>>,
     dense_node_local_slot: Vec<Option<u32>>,
     node_layouts: NodeMap<StoredNodeLayout>,
-    node_owner: NodeMap<u32>,
-    nodes_by_owner: BTreeMap<u32, Vec<StoredNode>>,
+    /// Read only by dev-tools probe classification and the plan summary.
+    #[cfg_attr(
+        not(any(test, feature = "dev-tools", feature = "test-seams")),
+        allow(dead_code)
+    )]
+    dense_spans: DenseSpans,
+    /// What each cluster names, so growth can price targets not yet read.
+    cluster_storage: Vec<ClusterStorage>,
     node_slots: BTreeMap<StoredNode, PoolRange>,
-    owner_dependencies: Vec<BTreeSet<u32>>,
-    sparse_row_owner: BTreeMap<(u32, u32), u32>,
-    sparse_capacity_floors: SparseCapacityFloors,
+    storage_refs: StorageRefs,
     dense_slots: FirstFitRanges,
     sparse_pools: BTreeMap<u32, SparsePool>,
     compose_words: Vec<u32>,
@@ -296,8 +294,11 @@ pub(super) struct ShResidencyState {
     indirect_compose_epoch: u64,
     direct_compose_epoch: u64,
     install_cpu: InstallCpuCounters,
-    /// The plan's dense slot minima, which size the first pool generation.
-    initial_dense_slots: InitialDenseSlots,
+    /// The stored bound and whole-map figure that size the pool generation.
+    pool_bound: ShPoolBound,
+    whole_dense_slots: u32,
+    /// A refusal at the whole-map cap warns once per loaded level.
+    whole_map_refusal_warned: bool,
     /// The plan's sparse compose layouts, shared with the GPU pools so pool
     /// growth rebuilds carriers without re-deriving them.
     sparse_compose: std::sync::Arc<SparseComposeLayouts>,
@@ -362,12 +363,6 @@ impl ShResidencyState {
                     .and_then(|entries| bytes.checked_add(entries))
             })
             .expect("validated streamed logical occupancy must fit u64")
-    }
-
-    fn missing_owner(&self, cluster_id: u32) -> bool {
-        self.owner_dependencies
-            .get(cluster_id as usize)
-            .is_some_and(|owners| owners.iter().any(|owner| !self.sampleable.contains(owner)))
     }
 }
 

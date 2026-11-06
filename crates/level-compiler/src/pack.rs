@@ -108,6 +108,9 @@ mod section_plan;
 
 use section_plan::{FinalizedSectionPlanInputs, build_finalized_section_plan};
 
+mod sh_mandatory_bound;
+use sh_mandatory_bound::{ShMandatoryBoundInputs, resolve_sh_mandatory_bound};
+
 /// Convert translated map lights into an `AlphaLightsSection` for the format
 /// crate. Strips animation curves; the direct lighting path uses the static
 /// base properties only.
@@ -639,6 +642,15 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         // always supplies the finalized pack and therefore emits id 50.
         None => None,
     };
+    let sh_bound = resolve_sh_mandatory_bound(ShMandatoryBoundInputs {
+        directory: &cluster_bake.directory,
+        cells: &cells_section,
+        residency: cell_residency_set_section,
+        emission: finalized_sh,
+        demand: cluster_payload
+            .as_ref()
+            .map(cluster_sh_payloads::ClusterPayloadSpool::storage_demand),
+    })?;
     log::info!(
         "[Compiler] SH cluster directory: {} clusters, {} ranges, {} active affinity cells, {} covering references, max {} adaptive nodes visited/cluster, {} bytes, <= {} bytes construction metadata, {:.3} ms",
         cluster_bake.stats.cluster_count,
@@ -689,14 +701,15 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         cell_draw_index: cell_draw_index_section,
         cell_visibility: cell_visibility_section,
         cell_residency_set: cell_residency_set_section,
-        cluster_bake,
+        cluster_directory: &cluster_bake.directory,
+        sh_mandatory_bound: sh_bound.entries,
         cluster_payload,
     })?;
     let descriptors: Vec<_> = sections
         .iter()
         .map(|section| section.descriptor.clone())
         .collect();
-    let footprint = report_section_footprint(&descriptors);
+    let footprint = report_section_footprint(&descriptors, sh_bound.report);
     let largest_payload_bytes = footprint
         .sections
         .iter()
@@ -951,6 +964,7 @@ mod tests {
                 close_sound: None,
                 blocked_sound: None,
                 crush_sound: None,
+                crush_damage_type: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

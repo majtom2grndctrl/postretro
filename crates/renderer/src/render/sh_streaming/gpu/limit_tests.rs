@@ -2,17 +2,29 @@
 use super::*;
 
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
-use crate::render::sh_streaming::floor::{
-    DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES, plan_initial_pool_floor,
-};
+use crate::render::sh_streaming::PoolAdmission;
 use crate::render::sh_streaming::gpu::load_fixture;
+use crate::render::sh_streaming::pool_size::plan_initial_pool;
 
-fn replace_shape(
+pub(super) fn replace_shape(
     fixture: &mut UploadOrderSh,
     device: &wgpu::Device,
     raw: &wgpu::Queue,
     limits: &wgpu::Limits,
     shape: AtlasShape,
+) {
+    replace_pools(fixture, device, raw, limits, shape, &BTreeMap::new());
+}
+
+/// Pools of exactly `shape` and `sparse_capacities`: the fixture's stand-in for a
+/// pool sized from the bound.
+pub(super) fn replace_pools(
+    fixture: &mut UploadOrderSh,
+    device: &wgpu::Device,
+    raw: &wgpu::Queue,
+    limits: &wgpu::Limits,
+    shape: AtlasShape,
+    sparse_capacities: &SparseCapacities,
 ) {
     // Every override is at or below the grant; alignments remain the grant's.
     let grant = device.limits();
@@ -29,14 +41,12 @@ fn replace_shape(
             &fixture.map.sources(),
             std::sync::Arc::clone(&fixture.state.sparse_compose),
             shape,
-            &BTreeMap::new(),
+            sparse_capacities,
+            WholeMapCap::uncapped(),
             false,
             &mut fixture.sh,
             &fixture.pipelines,
             &fixture.weights,
-            0,
-            0,
-            BTreeMap::new(),
         )
         .unwrap(),
     );
@@ -48,8 +58,19 @@ fn grow_dense(
     queue: &UploadQueue,
     slots: u32,
 ) -> Result<(), ShResidencyDrainError> {
+    grow_dense_toward(f, device, queue, slots, slots)
+}
+
+fn grow_dense_toward(
+    f: &mut UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+    needed: u32,
+    wanted: u32,
+) -> Result<(), ShResidencyDrainError> {
     f.state.gpu.as_mut().unwrap().grow_dense(
-        slots,
+        needed,
+        wanted,
         DenseGrowthInputs {
             device,
             queue,
@@ -66,28 +87,65 @@ fn grow_sparse(
     f: &mut UploadOrderSh,
     device: &wgpu::Device,
     queue: &UploadQueue,
-    required: &SparseCapacityFloors,
+    required: &SparseCapacities,
+) -> Result<(), ShResidencyDrainError> {
+    let growth = required
+        .iter()
+        .map(|(&section_id, &needed)| {
+            (
+                section_id,
+                SparseGrowth {
+                    needed,
+                    wanted: needed,
+                },
+            )
+        })
+        .collect();
+    grow_sparse_toward(f, device, queue, &growth)
+}
+
+fn grow_sparse_toward(
+    f: &mut UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+    growth: &BTreeMap<u32, SparseGrowth>,
 ) -> Result<(), ShResidencyDrainError> {
     f.state.gpu.as_mut().unwrap().grow_sparse(
         device,
         queue,
         &f.map.base(),
         &f.map.sources(),
-        required,
+        growth,
         &mut f.sh,
         &f.weights,
     )
 }
 
-fn finish_retirement(f: &mut UploadOrderSh, device: &wgpu::Device) {
+/// Replaces the dense generation's completion flag with one only the test
+/// sets. The real callback fires whenever wgpu polls, so a test spanning
+/// drains would otherwise race it. Returns the flag to set when done.
+pub(super) fn hold_dense_retirement(f: &mut UploadOrderSh) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    f.state
+        .gpu
+        .as_mut()
+        .unwrap()
+        .retiring_dense
+        .as_mut()
+        .expect("a dense generation is retiring")
+        .complete = Arc::clone(&flag);
+    flag
+}
+
+pub(super) fn finish_retirement(f: &mut UploadOrderSh, device: &wgpu::Device) {
     // Waiting is test-only: production growth returns retirement pressure.
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     f.state.release_retired_generations();
 }
 
 #[test]
-fn sh_growth_production_zero_share_load_holds_every_cluster() {
-    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH production zero-share growth")
+fn sh_growth_production_small_bound_load_holds_every_cluster() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH production small-bound growth")
     else {
         return;
     };
@@ -99,22 +157,12 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
     assert_eq!(manifest.cluster_count(), 9);
     let map = SyntheticMap::new([36, 4, 4], [1, 1, 1]).direct_base_only();
     let mut f = UploadOrderSh::with_map(&device, &raw, 128, map);
-    f.state = ShResidencyState::from_manifest(manifest, &world.cells).unwrap();
+    f.state =
+        ShResidencyState::from_manifest(manifest, &world.cells, world.baked_max_lead()).unwrap();
     let mut limits = device.limits();
-    limits.max_texture_array_layers = 4;
+    limits.max_texture_array_layers = 2;
     assert!(limits.max_texture_array_layers <= device.limits().max_texture_array_layers);
-    let largest = f
-        .state
-        .nodes_by_owner
-        .values()
-        .map(|nodes| {
-            nodes
-                .iter()
-                .map(|node| f.state.node_layouts[node].tile_count)
-                .sum::<u32>()
-        })
-        .max()
-        .unwrap();
+    let bound = f.state.pool_bound.dense_slots;
     let whole = f
         .state
         .node_layouts
@@ -122,9 +170,9 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
         .map(|layout| layout.global_base_slot + layout.tile_count)
         .max()
         .unwrap();
-    // This precondition fails if the fixture ever ceases to distinguish the
-    // old floor-share geometry from the whole-level load rule.
-    assert!(whole > limits.max_texture_array_layers * largest);
+    // This precondition fails if the fixture ever ceases to distinguish a
+    // layer sized from the bound from the whole-level load rule.
+    assert!(whole > limits.max_texture_array_layers * bound);
     f.state
         .initialize_gpu_with_limits(
             &device,
@@ -136,41 +184,21 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
             &f.pipelines,
             &f.weights,
             &limits,
-            DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES,
         )
         .unwrap();
     let initial = f.state.gpu.as_ref().unwrap().shape;
     assert!(initial.tiles_per_layer >= (whole * 9).div_ceil(4 * limits.max_texture_array_layers));
     assert_eq!(initial.layers, 1);
-    let fixed =
-        initial_fixed_metadata_bytes(manifest.base(), manifest.sources(), &limits, &f.sh).unwrap();
-    let floor = plan_initial_pool_floor(
+    let pool = plan_initial_pool(
         manifest.base(),
         manifest.sources(),
-        largest,
+        &f.state.pool_bound,
         whole,
-        &f.state.sparse_capacity_floors,
-        fixed + DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES,
-        f.sh.billboard_direct_scatter.capacity_bytes(),
         &limits,
     )
     .unwrap();
-    assert_eq!(floor.dense_slots, largest);
-    assert_eq!(
-        floor.dense_group_minimum_bytes,
-        u64::from(initial.slots) * 1024
-    );
-    assert_eq!(
-        floor.effective_floor_bytes,
-        f.state.gpu.as_ref().unwrap().effective_floor_bytes
-    );
-    assert_eq!(
-        floor.effective_floor_bytes,
-        fixed
-            + DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES
-            + f.sh.billboard_direct_scatter.capacity_bytes()
-            + f.state.gpu.as_ref().unwrap().active_capacity_bytes
-    );
+    assert_eq!(pool.dense_slots, bound.div_ceil(4) * 5);
+    assert_eq!(pool.pool_bytes, u64::from(initial.slots) * 1024);
     let queue = UploadQueue::new(&device, raw, true);
     for cluster in 0..manifest.cluster_count() {
         let ready = postretro_level_loader::PreparedShCluster {
@@ -190,6 +218,7 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
                     content_tag: manifest.content_tag(),
                     target_reset: (cluster == 0).then(|| vec![(1 << 9) - 1]),
                     ready: vec![ready],
+                    mandatory: vec![cluster],
                     ..Default::default()
                 },
             )
@@ -201,9 +230,8 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
             (shape.tiles_per_row, shape.tiles_per_layer),
             (initial.tiles_per_row, initial.tiles_per_layer)
         );
-        // Canonical stencil halos make a later cluster depend on previous
-        // owners. Match the production issuer: compose and promote an owner
-        // before requesting its dependent, retaining every earlier resident.
+        // Compose and promote each cluster before the next, retaining every
+        // earlier resident, so each drain proves one cluster sampleable.
         f.compose(&device, &queue);
         f.state
             .drain(
@@ -239,7 +267,7 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
     assert_eq!(f.state.sampleable.len(), 9);
     assert_eq!(f.state.dense_slots.capacity, whole);
     eprintln!(
-        "[ShGrowthProof] actual PRL→loader→manifest→zero-share GPU load: all 9 clusters resident together, ran"
+        "[ShGrowthProof] actual PRL→loader→manifest→small-bound GPU load: all 9 clusters resident together, ran"
     );
 }
 
@@ -251,7 +279,8 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
     let mut limits = device.limits();
     limits.max_texture_array_layers = 256;
     let queue = UploadQueue::new(&device, raw.clone(), true);
-    for (layers, expected) in [(200, 256), (100, 200)] {
+    // Growth takes the whole-layer size of what the tier needs, not a doubling.
+    for (layers, expected) in [(200, 201), (100, 101)] {
         let map = SyntheticMap::new([4, 4, 4], [1, 1, 1])
             .direct_base_only()
             .with_empty_rows(27, &[0])
@@ -286,12 +315,10 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
             Err(ShResidencyDrainError::GpuDeviceLimit { .. })
         ));
         assert_eq!(f.state.gpu.as_ref().unwrap().shape.layers, expected);
-        if expected == 200 {
-            assert!(matches!(
-                grow_dense(&mut f, &device, &queue, 201),
-                Err(ShResidencyDrainError::GpuRetirementPressure { .. })
-            ));
-        }
+        assert!(matches!(
+            grow_dense(&mut f, &device, &queue, expected + 1),
+            Err(ShResidencyDrainError::GpuRetirementPressure { .. })
+        ));
         f.compose(&device, &queue);
         f.drain_many(&device, &queue, &[]).unwrap();
         assert!(f.state.sampleable.contains(&0));
@@ -303,6 +330,11 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
             ),
             2 | 4 | (layers << 5)
         );
+        finish_retirement(&mut f, &device);
+        // Demand past the device clamps to it, and only what the install
+        // itself needs can refuse.
+        grow_dense_toward(&mut f, &device, &queue, expected + 1, 300).unwrap();
+        assert_eq!(f.state.gpu.as_ref().unwrap().shape.layers, 256);
         finish_retirement(&mut f, &device);
     }
     let map = SyntheticMap::new([4, 4, 4], [1, 1, 1])
@@ -329,7 +361,7 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
     assert_eq!(f.state.dense_slots.capacity, 256);
     assert!(f.state.installed.is_empty());
     eprintln!(
-        "[ShGrowthProof] dense drains installed 200→256 and 100→200; 257 refused; GPU sampled-indirection readback ran"
+        "[ShGrowthProof] dense drains installed 200→201 and 100→101, demand clamped at 256; 257 refused; GPU sampled-indirection readback ran"
     );
 }
 
@@ -401,8 +433,8 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
                 ));
             }
             finish_retirement(&mut f, &device);
-            // One real row fits each bound, while doubling either seed passes
-            // its bound; both families must install after clamping.
+            // One real row fits each bound, and growth holds exactly what the
+            // row needs: no doubling can pass a bound the demand does not.
             let pool = f.state.sparse_pools.get_mut(&section).unwrap();
             pool.entries.capacity = entry_seed;
             pool.tiles.capacity = tile_seed;
@@ -411,7 +443,7 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
             assert!(outcome.refused.is_empty());
             assert_eq!(
                 f.state.gpu.as_ref().unwrap().sparse_entry_capacity(section),
-                entry_limit
+                f.state.sparse_pools[&section].entries.capacity
             );
             assert_eq!(
                 f.state
@@ -419,10 +451,10 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
                     .as_ref()
                     .unwrap()
                     .sparse_tile_f16_capacity(section),
-                tile_limit
+                f.state.sparse_pools[&section].tiles.capacity
             );
-            // A later row exceeds each clamped high-water by one entry or 48
-            // f16 values while the clamped generation still retires.
+            // A later row exceeds each limit by one entry or 48 f16 values
+            // while the generation still retires: a wait could not serve it.
             let before = f.state.sparse_pools[&section].clone();
             f.state
                 .sparse_pools
@@ -454,6 +486,30 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
                 ),
                 0
             );
+            finish_retirement(&mut f, &device);
+            // Demand past the bound clamps to it; only the need can refuse.
+            let needed = (
+                f.state.gpu.as_ref().unwrap().sparse_entry_capacity(section) + 1,
+                f.state
+                    .gpu
+                    .as_ref()
+                    .unwrap()
+                    .sparse_tile_f16_capacity(section),
+            );
+            let growth = SparseGrowth {
+                needed,
+                wanted: (entry_limit + 1, tile_limit + 1),
+            };
+            grow_sparse_toward(
+                &mut f,
+                &device,
+                &queue,
+                &BTreeMap::from([(section, growth)]),
+            )
+            .unwrap();
+            let pools = f.state.gpu.as_ref().unwrap();
+            assert_eq!(pools.sparse_entry_capacity(section), entry_limit);
+            assert_eq!(pools.sparse_tile_f16_capacity(section), tile_limit);
             finish_retirement(&mut f, &device);
         }
         // id-27 waits on retirement; id-45 exceeds its compaction limit. The
@@ -626,8 +682,15 @@ fn sh_growth_keeps_dense_commit_when_sparse_refuses_and_classifies_later_cluster
     // a large payload. Required need, not live payload bytes, drives growth.
     f.state.sparse_pools.get_mut(&27).unwrap().tiles.capacity = 512;
     let before_sparse = f.state.sparse_pools[&27].clone();
-    let outcome = f.drain_many(&device, &queue, &[1, 2, 3]).unwrap();
-    assert_eq!(outcome.refused, [1, 3]);
+    let outcome = f.drain_many(&device, &queue, &[1]).unwrap();
+    assert_eq!(outcome.refused, [1]);
+    assert!(outcome.accepted.is_empty() && outcome.evicted.is_empty());
+    assert_eq!(f.state.gpu.as_ref().unwrap().shape.layers, 2);
+    let retirement = hold_dense_retirement(&mut f);
+    // Behind that generation, a later cluster within the limit waits and one
+    // past it refuses at once: a wait could never serve it.
+    let outcome = f.drain_many(&device, &queue, &[2, 3]).unwrap();
+    assert_eq!(outcome.refused, [3]);
     assert_eq!(
         outcome
             .deferred
@@ -656,6 +719,7 @@ fn sh_growth_keeps_dense_commit_when_sparse_refuses_and_classifies_later_cluster
     );
     assert!(f.state.sampleable.contains(&0));
     assert_eq!(f.state.installed.len(), 1);
+    retirement.store(true, Ordering::Release);
     finish_retirement(&mut f, &device);
     eprintln!(
         "[ShGrowthProof] dense commit+sparse refusal; later retirement and limit outcomes; resident sampling preserved, ran on GPU"
@@ -730,7 +794,8 @@ fn sh_growth_contract_and_metadata_errors_remain_fatal() {
     let prepared = f.prepared(0);
     let mut outcome = postretro_level_loader::ShDrainOutcome::default();
     assert!(matches!(
-        f.state.install_ready(None, vec![prepared], &mut outcome),
+        f.state
+            .install_ready(None, vec![prepared], PoolAdmission::default(), &mut outcome),
         Err(ShResidencyDrainError::GpuCapacity {
             reason: "streamed install requires device handles while GPU pools exist",
         })
@@ -787,7 +852,7 @@ fn sh_growth_retained_metadata_error_precedes_dense_device_limit() {
     // The loader-valid body needs 64 slots; the same install would refuse
     // growth, but its corrupted retained metadata must remain fatal.
     assert!(matches!(
-        shape.grown_for_slots(64, &limits),
+        shape.grown_for_slots(64, 64, 64, &limits),
         Err(ShResidencyDrainError::GpuDeviceLimit { .. })
     ));
     f.state.dense_node[0].as_mut().unwrap().level ^= 1;
@@ -814,7 +879,7 @@ fn sh_growth_retained_metadata_error_precedes_dense_device_limit() {
         error,
         ShResidencyDrainError::MalformedChunk {
             cluster_id: 0,
-            reason: "canonical node lacks id-34 prefix metadata",
+            reason: "node lacks id-34 prefix metadata",
         }
     ));
     assert_eq!(f.state.dense_slots, before_dense);
@@ -839,8 +904,8 @@ fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
         .with_empty_rows(27, &[0]);
     let mut f = UploadOrderSh::with_map(&device, &raw, 64, map);
     let ready = loader_validated_chunk(&f);
-    let node = f.state.nodes_by_owner[&0][0];
-    // An existing canonical CPU range outside the 27-bit wire address space
+    let node = f.state.dense_node[0].unwrap();
+    // An existing CPU range outside the 27-bit wire address space
     // reaches the real patch rewrite, without allocating a huge GPU atlas.
     let range = crate::render::sh_streaming::PoolRange {
         start: 1 << 27,
@@ -871,7 +936,7 @@ fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
     assert!(f.state.installed.is_empty());
     assert_eq!(f.growth_events(), 0);
     eprintln!(
-        "[ShGrowthProof] loader-valid canonical cluster slot overflow escapes drain classifier; ran on GPU"
+        "[ShGrowthProof] loader-valid cluster slot overflow escapes drain classifier; ran on GPU"
     );
 }
 
@@ -881,8 +946,8 @@ fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
 /// independently of corrupt-on-disk handling.
 fn loader_validated_chunk(f: &UploadOrderSh) -> postretro_level_loader::PreparedShCluster {
     use postretro_level_format::cluster_directory::{
-        ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-        ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+        ClusterDirectorySection, ClusterRangeRecord, ClusterRecord, ClusterResourceDomain,
+        ClusterResourceRecord,
     };
     use postretro_level_format::cluster_sh_payloads::*;
     use postretro_level_format::delta_sh_volumes::DELTA_SH_VOLUMES_VERSION;
@@ -989,26 +1054,21 @@ fn loader_validated_chunk(f: &UploadOrderSh) -> postretro_level_loader::Prepared
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
             ClusterRangeRecord {
                 resource_index: 1,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
             ClusterRangeRecord {
                 resource_index: 2,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
         ],
         seam_portal_ids: vec![],
         cluster_hints: vec![],
+        mandatory_bound: Vec::new(),
     };
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
@@ -1088,15 +1148,15 @@ fn first_buffer_word(device: &wgpu::Device, queue: &UploadQueue, source: &wgpu::
 }
 
 #[test]
-fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
-    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH shared floor geometry") else {
+fn pool_geometry_and_charges_match_gpu_for_every_load_shape() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH pool geometry") else {
         return;
     };
-    for (grid, level, max_dimension, max_layers, extra) in [
-        ([36, 4, 4], 0, 8192, 256, 0),
-        ([36, 4, 4], 0, 8192, 4, DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES),
-        ([4, 4, 4], 2, 8192, 256, 0),
-        ([12, 4, 4], 0, 64, 4, 0),
+    for (grid, level, max_dimension, max_layers, bound) in [
+        ([36, 4, 4], 0, 8192, 256, u32::MAX),
+        ([36, 4, 4], 0, 8192, 4, 64),
+        ([4, 4, 4], 2, 8192, 256, u32::MAX),
+        ([12, 4, 4], 0, 64, 4, u32::MAX),
     ] {
         let map = SyntheticMap::new(grid, [1, 1, 1]).direct_base_only();
         let levels = vec![level; map.cluster_count() as usize];
@@ -1105,6 +1165,10 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
         let mut limits = grant.clone();
         limits.max_texture_dimension_2d = max_dimension.min(grant.max_texture_dimension_2d);
         limits.max_texture_array_layers = max_layers.min(grant.max_texture_array_layers);
+        // Past the source, so sparse capacity reads whole and the charge below
+        // has no carrier minimum to differ from.
+        f.state.pool_bound.dense_slots = bound;
+        f.state.pool_bound.sparse = BTreeMap::from([(27, (u32::MAX, u32::MAX))]);
         f.state
             .initialize_gpu_with_limits(
                 &device,
@@ -1116,20 +1180,7 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
                 &f.pipelines,
                 &f.weights,
                 &limits,
-                extra,
             )
-            .unwrap();
-        let minimum = f
-            .state
-            .nodes_by_owner
-            .values()
-            .map(|nodes| {
-                nodes
-                    .iter()
-                    .map(|node| f.state.node_layouts[node].tile_count)
-                    .sum::<u32>()
-            })
-            .max()
             .unwrap();
         let whole = f
             .state
@@ -1138,50 +1189,30 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
             .map(|layout| layout.global_base_slot + layout.tile_count)
             .max()
             .unwrap();
-        let fixed =
-            initial_fixed_metadata_bytes(&f.map.base(), &f.map.sources(), &limits, &f.sh).unwrap();
-        let floor = plan_initial_pool_floor(
+        let pool = plan_initial_pool(
             &f.map.base(),
             &f.map.sources(),
-            minimum,
+            &f.state.pool_bound,
             whole,
-            &f.state.sparse_capacity_floors,
-            fixed + extra,
-            f.sh.billboard_direct_scatter.capacity_bytes(),
             &limits,
         )
         .unwrap();
         let pools = f.state.gpu.as_ref().unwrap();
         assert_eq!(
             pools.shape,
-            AtlasShape::for_slots(floor.dense_slots, whole, &limits).unwrap()
+            AtlasShape::for_slots(pool.dense_slots, whole, &limits).unwrap()
         );
-        assert_eq!(
-            floor.effective_floor_bytes,
-            fixed
-                + extra
-                + f.sh.billboard_direct_scatter.capacity_bytes()
-                + pools.active_capacity_bytes
-        );
-        assert_eq!(
-            floor.dense_group_minimum_bytes,
-            u64::from(pools.shape.capacity_for_slots(minimum).unwrap()) * 1536
-        );
-        assert_eq!(
-            pools.dense_group_minimum_bytes,
-            floor.dense_group_minimum_bytes
-        );
+        assert_eq!(pool.pool_bytes, pools.active_capacity_bytes);
         assert_eq!(
             pools.shape.layers,
-            floor.dense_slots.div_ceil(pools.shape.tiles_per_layer)
+            pool.dense_slots.div_ceil(pools.shape.tiles_per_layer)
         );
         assert!(pools.shape.layers <= limits.max_texture_array_layers);
-        match (grid, level, extra) {
-            ([36, 4, 4], 0, 0) => assert_eq!(
-                (pools.shape.tiles_per_row, pools.shape.tiles_per_layer),
-                (24, 576)
-            ),
-            ([36, 4, 4], 0, _) => assert!(pools.shape.tiles_per_layer > minimum),
+        match (grid, level, bound) {
+            ([36, 4, 4], 0, u32::MAX) => {
+                assert_eq!((pools.shape.tiles_per_layer, pools.shape.layers), (72, 8))
+            }
+            ([36, 4, 4], 0, _) => assert!(pools.shape.tiles_per_layer > pool.dense_slots),
             ([4, 4, 4], 2, _) => assert_eq!(pools.shape.tiles_per_layer, 1),
             ([12, 4, 4], 0, _) => {
                 assert_eq!((pools.shape.tiles_per_layer, pools.shape.layers), (64, 3))
@@ -1190,11 +1221,11 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
         }
     }
     eprintln!(
-        "[ShGrowthProof] shared floor/GPU geometry: floor-share, whole minimum, tiny, full layer; exact charges and writer minimum ran"
+        "[ShGrowthProof] shared pool/GPU geometry: bound, whole minimum, tiny, full layer; exact charges ran"
     );
 }
 
-fn first_texture_pixel(
+pub(super) fn first_texture_pixel(
     device: &wgpu::Device,
     queue: &UploadQueue,
     texture: &wgpu::Texture,

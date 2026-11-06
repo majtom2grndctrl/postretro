@@ -204,6 +204,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -1906,7 +1907,8 @@ fn damage_crossfire_enemy(
         victim,
         &DamagePayload {
             amount,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         context,
     ));
@@ -2191,6 +2193,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
                 source_action: None,
                 source_shot: None,
                 activation: None,
+                damage_type: None,
             },
         )
         .expect("active crossfire projectile attaches");
@@ -2527,6 +2530,7 @@ impl FactionSentimentHarness {
                     source_action: None,
                     source_shot: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .expect("fixture projectile attaches");
@@ -2897,6 +2901,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
                 &DamagePayload {
                     amount: 50.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 DamageContext {
                     source_id: "test.remote.lethal".to_string(),
@@ -4255,6 +4260,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -6866,6 +6872,7 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
             outcome: crate::weapon::ActivationOutcome::Hit(DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         },
         "test.player-hitscan".to_string(),
@@ -6897,7 +6904,8 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
         enemy,
         &DamagePayload {
             amount: 1.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         DamageContext::new("test.entity-melee", DamageProducer::InTick),
     ));
@@ -6913,7 +6921,10 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
     crate::health::reactions::dispatch(
         &mut registry,
         &[enemy],
-        &crate::health::reactions::ApplyDamageArgs { amount: 1.0 },
+        &crate::health::reactions::ApplyDamageArgs {
+            amount: 1.0,
+            damage_type: None,
+        },
     )
     .expect("applyDamage reaction succeeds for a health-bearing enemy");
     run_ai_tick(&mut registry, &mut runtime, DT);
@@ -6993,7 +7004,8 @@ fn candidate_damage_recency_matches_the_brain_fact_on_the_same_ai_tick() {
         enemy,
         &DamagePayload {
             amount: 7.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         context,
     ));
@@ -7118,7 +7130,8 @@ fn visible_target_memory_overrides_damage_seed_tracks_live_position_then_ages_an
         enemy,
         &DamagePayload {
             amount: 1.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         damage_context,
     ));
@@ -7273,6 +7286,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -7722,6 +7736,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
             cooldown_ms: Some(1000.0),
             engagement_radius: None,
             standoff_distance: None,
+            damage_type: None,
         },
     );
 
@@ -7982,6 +7997,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -8683,6 +8699,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -8695,6 +8712,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
         ]),
@@ -8969,6 +8987,19 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "engage".to_string(),
                     vec![
                         edge("retreat", anchor_beyond(LEASH_RANGE)),
+                        // Its own armor broken: `defense(armor).current.le(0)`.
+                        edge(
+                            "retreat",
+                            IrNode::Le {
+                                a: Box::new(IrNode::Input {
+                                    name: "@defense.armor".to_string(),
+                                    owner: None,
+                                }),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(0.0),
+                                }),
+                            },
+                        ),
                         edge(
                             "investigate",
                             IrNode::Ge {
@@ -9030,6 +9061,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -9042,6 +9074,23 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
+                    damage_type: None,
+                },
+            ),
+            (
+                "claw".to_string(),
+                AttackParams {
+                    sound: None,
+                    weapon: None,
+                    damage: Some(15.0),
+                    max_range: Some(2.0),
+                    cooldown_ms: Some(800.0),
+                    engagement_radius: None,
+                    standoff_distance: None,
+                    damage_type: Some(postretro_foundation::AuthoredHandle(serde_json::json!({
+                        "kind": "damageType",
+                        "name": "corrosive",
+                    }))),
                 },
             ),
         ]),
@@ -9087,9 +9136,47 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     let define_entity = lua
         .create_function(|_, descriptor: mlua::Table| Ok(descriptor))
         .expect("stub defineEntity");
+    let defense: mlua::Function = brain_sdk
+        .get("defense")
+        .expect("brain.luau exports `defense`");
     globals.set("brain", brain).unwrap();
     globals.set("candidate", candidate).unwrap();
+    globals.set("defense", defense).unwrap();
     globals.set("defineEntity", define_entity).unwrap();
+    // No prelude, so no `require`: the enemy's two vocabulary modules resolve
+    // to tables of name-carrying handles, as the real modules return.
+    let require = lua
+        .create_function(|lua, path: String| {
+            let handles = lua.create_table()?;
+            let (kind, names): (&str, &[&str]) = match path.as_str() {
+                "./scripts/defenses.luau" => ("defenseLayer", &["shield", "armor"]),
+                "./scripts/damage-types.luau" => (
+                    "damageType",
+                    &[
+                        "ballistic",
+                        "plasma",
+                        "explosive",
+                        "shock",
+                        "corrosive",
+                        "flechette",
+                    ],
+                ),
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "unexpected require `{other}`"
+                    )));
+                }
+            };
+            for name in names {
+                let handle = lua.create_table()?;
+                handle.set("kind", kind)?;
+                handle.set("name", *name)?;
+                handles.set(*name, handle)?;
+            }
+            Ok(handles)
+        })
+        .expect("stub require");
+    globals.set("require", require).unwrap();
 
     let module: mlua::Table = lua
         .load(ENTITIES_LUAU_SRC)
@@ -9176,6 +9263,7 @@ fn step_reference_enemy_graph_with_hostility(
     registry
         .set_component(enemy, BrainComponent::from_graph(&graph))
         .expect("fresh enemy is live");
+    give_reference_armor(&mut registry, enemy);
 
     let mut programs = BrainPrograms::new();
     let mut warned = HashSet::new();
@@ -9314,7 +9402,10 @@ fn contextless_apply_damage_does_not_send_reference_enemy_to_stale_memory() {
     crate::health::reactions::dispatch(
         &mut registry,
         &[enemy],
-        &crate::health::reactions::ApplyDamageArgs { amount: 1.0 },
+        &crate::health::reactions::ApplyDamageArgs {
+            amount: 1.0,
+            damage_type: None,
+        },
     )
     .expect("applyDamage reaction succeeds for a health-bearing enemy");
 
@@ -9350,7 +9441,8 @@ fn contextless_apply_damage_does_not_send_reference_enemy_to_stale_memory() {
         sourced_enemy,
         &DamagePayload {
             amount: 1.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         context,
     ));
@@ -9530,12 +9622,38 @@ fn reference_player_x(tick: u32) -> f32 {
 }
 
 /// Run the scripted approach against one brain and record its per-tick output.
+/// The shipped reference enemy spawns with 120 armor: without it, its own
+/// armor reads 0 and its `defense(armor)` guard sends it straight to retreat.
+fn give_reference_armor(registry: &mut EntityRegistry, enemy: EntityId) {
+    use postretro_entities::components::defense_layers::{DefenseLayer, DefenseLayersComponent};
+    registry
+        .set_component(
+            enemy,
+            DefenseLayersComponent {
+                descriptor: None,
+                layers: vec![DefenseLayer {
+                    name: "armor".to_string(),
+                    value: 120.0,
+                    capacity: 120.0,
+                    recharge_delay_ms: 3_000.0,
+                    recharge_rate: 0.0,
+                    resist: Vec::new(),
+                    refill: Default::default(),
+                }],
+                health_resist: Vec::new(),
+                last_hit_tick: None,
+            },
+        )
+        .expect("the enemy is live");
+}
+
 fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
     const TICKS: u32 = 200;
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    give_reference_armor(&mut reg, enemy);
 
     (0..TICKS)
         .map(|tick| {
@@ -9889,6 +10007,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -9901,6 +10020,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(3.5),
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
         ]),
@@ -10141,6 +10261,7 @@ fn an_impact_policy_write_fires_an_authored_state_interrupt_on_the_next_tick() {
         &DamagePayload {
             amount: 5.0,
             impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         DamageContext::new("test.weapon", DamageProducer::InTick),
     );
@@ -10354,6 +10475,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -10373,6 +10495,7 @@ fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescripto
             cooldown_ms: None,
             engagement_radius: None,
             standoff_distance: None,
+            damage_type: None,
         },
     );
     graph
@@ -10443,6 +10566,7 @@ fn projectile_weapon_descriptor(
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         }),
         touchable: None,
         mesh: None,
@@ -10549,6 +10673,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(0.0),
                 engagement_radius: Some(5.0),
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(5.0),
@@ -11756,6 +11881,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -12223,6 +12349,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(ATTACK_RANGE),
@@ -12332,6 +12459,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         );
         assert!(matches!(
@@ -12405,6 +12533,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -12909,3 +13038,43 @@ fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static
 
 #[path = "held_world_participation_tests.rs"]
 mod held_world_participation;
+
+#[test]
+fn contact_attack_deals_its_damage_type() {
+    let mut reg = EntityRegistry::new();
+    reg.set_defense_vocabulary(std::sync::Arc::new(
+        postretro_foundation::defense::DefenseVocabulary {
+            layers: Vec::new(),
+            damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                name: "heavy".to_string(),
+                matrix: std::collections::BTreeMap::from([(
+                    "health".to_string(),
+                    postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                )]),
+            }],
+            default_damage_type: None,
+        },
+    ));
+    let mut warned = AiRuntime::new();
+    let mut graph = tuning();
+    for attack in graph.attacks.values_mut() {
+        attack.damage_type = Some(postretro_foundation::AuthoredHandle(
+            serde_json::json!({ "kind": "damageType", "name": "heavy" }),
+        ));
+    }
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(graph, TEST_IDLE_STATE),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.1);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(
+        player_hp(&reg, pawn),
+        100.0 - 2.0 * TEST_ATTACK_DAMAGE,
+        "a heavy contact attack is ×2 on health"
+    );
+}

@@ -367,6 +367,7 @@ impl PersistentAtmosphereHarness {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: HashMap::new(),
+                        ..Default::default()
                     }),
                 )
                 .expect("fixture remote pawn accepts health");
@@ -385,6 +386,7 @@ impl PersistentAtmosphereHarness {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: HashMap::new(),
+                        ..Default::default()
                     }),
                 )
                 .expect("fixture local pawn accepts health");
@@ -840,7 +842,6 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
     fn dispatch_state_crossings(&mut self) -> Vec<String> {
         dispatch_state_crossings_with_sequences(
             &mut self.client_crossing_detector,
-            &self.client_ctx.slot_table.borrow(),
             &self.client_ctx.data_registry.borrow(),
             &self.client_sequence_registry,
             &self.client_reaction_registry,

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-    ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+    ClusterDirectorySection, ClusterRangeRecord, ClusterRecord, ClusterResourceDomain,
+    ClusterResourceRecord,
 };
 use postretro_level_format::cluster_sh_payloads::{
     ClusterShPayloadsHeader, ClusterShPayloadsIndexRecord, ClusterShPayloadsSection,
@@ -47,6 +47,7 @@ impl ManifestFixture {
                 ranges: vec![dense_range(0), dense_range(1)],
                 seam_portal_ids: Vec::new(),
                 cluster_hints: Vec::new(),
+                mandatory_bound: Vec::new(),
             },
             payloads: ClusterShPayloadsSection {
                 header: ClusterShPayloadsHeader {
@@ -98,52 +99,8 @@ impl ManifestFixture {
         self.directory.runtime_cell_count = 3;
     }
 
-    pub(super) fn malformed_dense_ownership(&mut self) {
-        self.directory.ranges[0].role = ClusterRangeRole::Halo;
-        self.directory.ranges[0].owner_cluster_id = 1;
-    }
-
     pub(super) fn out_of_range_dense_index(&mut self) {
         self.directory.ranges[1].start = 2;
-    }
-
-    pub(super) fn add_sparse_halo_with_owner(&mut self, halo_owner: u32) {
-        self.directory.resources.push(ClusterResourceRecord {
-            section_id: SectionId::DeltaShVolumes as u32,
-            domain: ClusterResourceDomain::AffinityCell,
-            dimensions: [1, 1, 1],
-        });
-        self.directory.ranges = vec![
-            dense_range(0),
-            ClusterRangeRecord {
-                resource_index: 1,
-                start: 0,
-                count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
-            },
-            dense_range(1),
-            ClusterRangeRecord {
-                resource_index: 1,
-                start: 0,
-                count: 1,
-                owner_cluster_id: halo_owner,
-                role: ClusterRangeRole::Halo,
-            },
-        ];
-        self.directory.clusters[0].range_start = 0;
-        self.directory.clusters[0].range_count = 2;
-        self.directory.clusters[1].range_start = 2;
-        self.directory.clusters[1].range_count = 2;
-        self.payloads.sources.insert(
-            0,
-            ClusterShPayloadsSourceRecord {
-                section_id: SectionId::DeltaShVolumes as u32,
-                internal_version: 6,
-                kind: ClusterShPayloadsSourceKind::SparseAffinity,
-            },
-        );
-        self.payloads.header.source_count = 2;
     }
 
     pub(super) fn out_of_range_adjacency(&mut self) {
@@ -202,8 +159,6 @@ fn dense_range(start: u32) -> ClusterRangeRecord {
         resource_index: 0,
         start,
         count: 1,
-        owner_cluster_id: DENSE_OWNER_SENTINEL,
-        role: ClusterRangeRole::Dense,
     }
 }
 

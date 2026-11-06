@@ -151,6 +151,7 @@ fn fixture_world() -> postretro_level_loader::LevelWorld {
                 close_sound: None,
                 blocked_sound: None,
                 crush_sound: None,
+                crush_damage_type: None,
             }),
             "kinematic_waypoint" => {
                 world
@@ -267,6 +268,12 @@ pub(crate) fn initialize_dev_mod(
         .expect("production dev registry initializes");
     let mut manifest = runtime.mod_manifest().unwrap().clone();
     manifest.resolve_entity_faction_indices().unwrap();
+    // As the session drain does: the vocabulary commits before anything that
+    // references it installs.
+    postretro_scripting_core::defense_vocabulary::commit_defense_vocabulary(
+        &ctx,
+        manifest.defense.clone(),
+    );
     {
         let mut data = ctx.data_registry.borrow_mut();
         data.replace_entity_types(manifest.entities.clone());
@@ -280,6 +287,7 @@ pub(crate) fn initialize_dev_mod(
         .scripting
         .impact_policy_runtime
         .replace_global_events(manifest.events.clone());
+    postretro_sim::sim::defense_parameters::DefenseParameters::install(&ctx);
     app.session.as_mut().unwrap().scripting.script_runtime = runtime;
     registries(app, &ctx);
     manifest
@@ -372,6 +380,11 @@ pub(crate) fn assert_merged_player_event_bodies(reactions: &[NamedReaction], lab
                 (System, "playSound"),
                 (System, "flashScreen"),
                 (System, "screenShake"),
+                // The level-up raises shield capacity, then refills health and
+                // the shield to it, in body order.
+                (EventPlayer, "addSlot"),
+                (EventPlayer, "grantHealth"),
+                (EventPlayer, "grantLayer"),
             ],
         ),
         (

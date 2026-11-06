@@ -7,6 +7,20 @@ mod assist_pass;
 mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
+#[cfg(test)]
+mod damage_type_tests;
+pub mod defense_layers;
+#[cfg(test)]
+mod defense_layers_tests;
+#[cfg(test)]
+pub(crate) mod defense_parameter_tests;
+pub mod defense_parameters;
+#[cfg(test)]
+mod grant_layer_tests;
+#[cfg(test)]
+mod layer_lifecycle_tests;
+#[cfg(test)]
+mod layer_stress_tests;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
@@ -827,6 +841,11 @@ where
                     },
                 );
         } else {
+            // Literal fixtures only. This borrow spans command application, so
+            // a bound `grantLayer` panics here when the registry's layer
+            // parameters read this same slot table (an expression capacity).
+            // Narrowing it means threading the `RefCell` into bound-command
+            // execution; the script-context path borrows per write.
             let mut slot_table = trigger_context.slot_table.borrow_mut();
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
                 alive_players,
@@ -2035,7 +2054,7 @@ mod mover_pin_tick_tests;
 #[cfg(test)]
 pub(crate) mod predict_reconcile;
 #[cfg(test)]
-mod teleport_tick_tests;
+pub(crate) mod teleport_tick_tests;
 #[cfg(test)]
 mod trap_tick_tests;
 
@@ -2352,6 +2371,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         })
     }
 
@@ -2398,6 +2418,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         };
         let descriptor = descriptor.validate().unwrap();
         let mut ammo_reserve = AmmoReserve::new();
@@ -4551,6 +4572,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: 10.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         };
         {

@@ -154,6 +154,10 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             || weapon_component.credit_source.clone(),
             |shot| shot.credit_source.clone(),
         );
+        let damage_type = registry.damage_type_index(frozen.as_ref().map_or_else(
+            || weapon_component.damage_type.as_deref(),
+            |shot| shot.damage_type.as_deref(),
+        ));
         let resolution = frozen
             .as_ref()
             .map_or(weapon_component.resolution, |shot| shot.resolution);
@@ -353,6 +357,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 range,
                 pellet_count,
                 credit_source,
+                damage_type,
                 splash,
                 projectile_radius,
                 projectile_direction,

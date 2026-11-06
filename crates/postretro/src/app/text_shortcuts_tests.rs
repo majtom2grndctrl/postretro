@@ -169,3 +169,41 @@ fn a_held_backspace_shortcut_repeats_as_the_key_does() {
     app.apply_text_shortcuts(&[], 1.0);
     assert_eq!(activations(&app), 4);
 }
+
+#[test]
+fn a_keystroke_lands_before_a_same_frame_commit_fires() {
+    // The keystroke writes the slot at resolution, ahead of the commit, so a
+    // committing reaction reads it and a later `clearText` in that reaction
+    // lands after it instead of being undone by a queued append.
+    let mut app = app_with_keyboard(true);
+    app.ui_focused_id = None;
+    let intents = [
+        UiIntent {
+            seq: 0,
+            payload: UiIntentPayload::Text("d".to_string()),
+        },
+        UiIntent {
+            seq: 1,
+            payload: UiIntentPayload::Nav(NavIntent::Confirm),
+        },
+    ];
+    assert!(app.resolve_text_entry_intents(&intents));
+    let session = app.session.as_ref().unwrap();
+    let ctx = &session.scripting.script_ctx;
+    assert!(
+        matches!(
+            ctx.slot_table.borrow().get("ui.textEntry").unwrap().value.as_ref(),
+            Some(postretro_entities::SlotValue::String(text)) if text == "d"
+        ),
+        "the keystroke is in the slot when the commit fires"
+    );
+    assert!(
+        ctx.system_commands.take().is_empty(),
+        "nothing is left for the frame-end drain"
+    );
+    assert_eq!(
+        session.modal_stack.active_name(),
+        None,
+        "the commit closed it"
+    );
+}

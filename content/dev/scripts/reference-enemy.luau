@@ -3,6 +3,9 @@
 
 local M = {}
 
+local DamageTypes = require("./scripts/damage-types.luau")
+local Defenses = require("./scripts/defenses.luau")
+
 M.REFERENCE_ENEMY_CLASSNAME = "reference_enemy"
 
 local DETECTION_RANGE = 16
@@ -33,6 +36,9 @@ M.referenceEnemyEntity = defineEntity({
         head = 2.5,
         leg = 0.5,
       },
+      -- Armored, and its flesh shock-resistant (health only).
+      layers = { { layer = Defenses.armor, capacity = 120 } },
+      resist = { shock = 0.5 },
     },
     -- A single normal hit is enough to redirect this playtest fixture.
     tolerance = 4,
@@ -87,6 +93,7 @@ M.referenceEnemyEntity = defineEntity({
           cooldownMs = 1800,
           engagementRadius = SLAM_RANGE,
         },
+        claw = { damage = 15, damageType = DamageTypes.corrosive, maxRange = 2, cooldownMs = 800 },
       },
       engagementRadius = JAB_RANGE,
       patrol = {
@@ -209,6 +216,8 @@ M.referenceEnemyEntity = defineEntity({
         },
         engage = {
           { to = "retreat", when = brain.distanceFromAnchor:gt(LEASH_RANGE) },
+          -- Its own layer, as `state(name)` reads its own state.
+          { to = "retreat", when = defense(Defenses.armor).current:le(0) },
           {
             to = "investigate",
             when = brain.timeSinceTargetVisible:ge(SEARCH_AFTER_MS),

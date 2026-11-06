@@ -39,7 +39,16 @@ pub enum PlayerConditionHandle {
 enum PlayerInput {
     Engine(PlayerSlot),
     LifeState(u8),
-    Owned { name: String, ir_type: IrType },
+    Owned {
+        name: String,
+        ir_type: IrType,
+    },
+    /// A layer read, `player.defense.<name>[.capacity]`: the evaluated
+    /// player's own layer.
+    Defense {
+        layer: String,
+        capacity: bool,
+    },
 }
 
 impl PlayerInput {
@@ -48,6 +57,7 @@ impl PlayerInput {
             PlayerInput::Engine(slot) => slot.ir_type(),
             PlayerInput::LifeState(_) => IrType::Bool,
             PlayerInput::Owned { ir_type, .. } => *ir_type,
+            PlayerInput::Defense { .. } => IrType::Number,
         }
     }
 }
@@ -114,6 +124,19 @@ impl PlayerConditionScope {
                     let record = slot_table.get(name)?;
                     project(*ir_type, record.per_seat_value(seat))
                 }
+                PlayerInput::Defense { layer, capacity } => registry
+                    .get_component::<crate::components::defense_layers::DefenseLayersComponent>(
+                        pawn,
+                    )
+                    .ok()
+                    .and_then(|component| component.layer(layer))
+                    .map(|layer| {
+                        IrValue::Number(if *capacity {
+                            layer.capacity
+                        } else {
+                            layer.value
+                        })
+                    }),
             }
         }));
     }
@@ -166,6 +189,21 @@ impl BindingScope for PlayerConditionScope {
             return Some(ResolvedInput {
                 handle: PlayerConditionHandle::Player(index),
                 ir_type: slot.ir_type(),
+            });
+        }
+        // A plain layer read means the player being evaluated. A layer no
+        // `defineMod` registers fails the bind, dropping the event.
+        if let Some((layer, capacity)) = crate::player_slots::defense_slot(name) {
+            if !self.store.declares_defense_layer(layer) {
+                return None;
+            }
+            let index = self.bind_player_input(PlayerInput::Defense {
+                layer: layer.to_string(),
+                capacity,
+            });
+            return Some(ResolvedInput {
+                handle: PlayerConditionHandle::Player(index),
+                ir_type: IrType::Number,
             });
         }
         if let Some(resolved) = self.store.resolve_owner_input(name) {

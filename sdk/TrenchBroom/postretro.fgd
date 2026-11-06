@@ -410,6 +410,7 @@
         "crush" : "Crush"
     ]
     crush_damage(float) : "Damage per crusher hit" : "0"
+    crush_damage_type(string) : "Damage type a crush deals, by its registered name; blank or unknown deals the mod default type" : ""
     crush_interval_ms(float) : "Milliseconds between crusher hits (0 hits every tick)" : "0"
     auto_close_ms(float) : "Milliseconds before automatic close; blank inherits the mod default, 0 disables" : ""
     open_event(string) : "Named event when the mover reaches its open terminus" : ""
@@ -806,7 +807,7 @@
 ]
 
 // Pin every SH cluster with a runtime-cell AABB that overlaps this brush by
-// positive volume. The pin and its baked owner closure stay targeted under
+// positive volume. A pin covers that cluster alone and stays targeted under
 // pressure; an empty overlap is a compiler error.
 @SolidClass = stream_resident_volume : "Keep overlapping SH streaming clusters resident (brush)"
 [

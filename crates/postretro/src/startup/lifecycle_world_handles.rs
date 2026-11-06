@@ -113,6 +113,11 @@ pub(crate) struct WorldInstallHandles<'a> {
         &'a mut postretro_scripting_core::state_crossings::CrossingDetector,
     pub(crate) slot_accumulator_bindings:
         &'a mut crate::scripting_systems::slot_accumulators::SlotAccumulatorBindings,
+    /// The session's bound `setState` IR, rebuilt before `levelLoad` fires so
+    /// its store writes evaluate at dispatch.
+    pub(crate) system_reaction_ir_bindings: &'a std::rc::Rc<
+        std::cell::RefCell<crate::scripting_systems::system_reactions::SystemReactionIrBindings>,
+    >,
     /// Runtime-owned impact policy registry. Level descriptors are installed
     /// after the data script returns its manifest.
     pub(crate) impact_policy_runtime: &'a mut crate::impact_policy::ImpactPolicyRuntime,

@@ -319,24 +319,14 @@ impl ShResidencyState {
                 |gpu| gpu.sparse_entry_capacity(section_id),
             )
         };
-        let (
-            fixed_metadata_bytes,
-            active_capacity_bytes,
-            retiring_capacity_bytes,
-            dense_group_minimum_bytes,
-            sparse_group_minimum_bytes,
-        ) = self.gpu.as_ref().map_or_else(
-            || (0, 0, 0, None, BTreeMap::new()),
-            |gpu| {
+        let (fixed_metadata_bytes, active_capacity_bytes, retiring_capacity_bytes) =
+            self.gpu.as_ref().map_or((0, 0, 0), |gpu| {
                 (
                     gpu.fixed_metadata_bytes,
                     gpu.active_capacity_bytes,
                     gpu.retiring_capacity_bytes(),
-                    Some(gpu.dense_group_minimum_bytes),
-                    gpu.sparse_group_minimum_bytes.clone(),
                 )
-            },
-        );
+            });
         let whole_resident_scatter_bytes = self
             .gpu
             .as_ref()
@@ -373,18 +363,6 @@ impl ShResidencyState {
                 .len(),
             fixed_metadata_bytes,
             active_capacity_bytes,
-            effective_floor_bytes: self
-                .gpu
-                .as_ref()
-                .map_or(0, StreamingGpuPools::effective_floor_bytes),
-            dense_group_minimum_bytes,
-            indirect_delta_minimum_bytes: sparse_group_minimum_bytes
-                .get(&INDIRECT_DELTA_ID)
-                .copied(),
-            direct_delta_minimum_bytes: sparse_group_minimum_bytes.get(&DIRECT_DELTA_ID).copied(),
-            animated_direct_delta_minimum_bytes: sparse_group_minimum_bytes
-                .get(&ANIMATED_DIRECT_DELTA_ID)
-                .copied(),
             logical_occupancy_bytes,
             retiring_capacity_bytes,
             replacement_peak_bytes: active_capacity_bytes

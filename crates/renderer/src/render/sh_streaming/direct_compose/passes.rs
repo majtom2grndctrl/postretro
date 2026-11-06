@@ -75,7 +75,7 @@ impl StreamingPromotionPass {
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
         pipelines: &StreamingShPipelines,
-        sparse_floor: Option<(u32, u32)>,
+        sparse_capacity: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
             device,
@@ -84,7 +84,7 @@ impl StreamingPromotionPass {
             layout,
             shape,
             "Streamed Direct SH Promotion Grid Records",
-            sparse_floor,
+            sparse_capacity,
         )?;
         let sampler = nearest_sampler(device, "Streamed Direct SH Base Sampler");
         let initial_debug_override = debug_override_bytes(DirectShDebugOverride::default());
@@ -345,7 +345,7 @@ impl StreamingAnimatedPass {
         sh: &ShVolumeResources,
         pipelines: &StreamingShPipelines,
         layout: &SparseComposeLayout,
-        sparse_floor: Option<(u32, u32)>,
+        sparse_capacity: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
             device,
@@ -354,7 +354,7 @@ impl StreamingAnimatedPass {
             layout,
             shape,
             "Streamed Animated Direct SH Grid Records",
-            sparse_floor,
+            sparse_capacity,
         )?;
         let descriptor_indices = if source.animation_descriptor_indices.is_empty() {
             vec![u32::MAX]

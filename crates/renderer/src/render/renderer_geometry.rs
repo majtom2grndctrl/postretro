@@ -117,7 +117,10 @@ pub fn level_world_to_geometry<'a>(
     texture_materials: &'a [Material],
 ) -> LevelGeometry<'a> {
     let sh_storage = match world.sh_stream_manifest() {
-        Some(manifest) => LevelGeometryShStorage::Streaming(manifest),
+        Some(manifest) => LevelGeometryShStorage::Streaming {
+            manifest,
+            baked_max_lead: world.baked_max_lead(),
+        },
         None => LevelGeometryShStorage::Legacy,
     };
     LevelGeometry {

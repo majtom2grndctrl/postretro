@@ -17,6 +17,7 @@ use crate::components::agent::AgentComponent;
 use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
+use crate::components::defense_layers::DefenseLayersComponent;
 use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
@@ -172,6 +173,9 @@ pub enum ComponentKind {
     /// member categories; scripts address it through member handles, never
     /// raw component attachment.
     GhostLink = 26,
+    /// Host-owned defense-layer stack. Never replicated as a component; a
+    /// player's layer values reach its owner through owner-private slots.
+    DefenseLayers = 27,
 }
 
 impl ComponentKind {
@@ -208,6 +212,7 @@ impl ComponentKind {
             ComponentKind::Teleporter,
             ComponentKind::ProjectileTrap,
             ComponentKind::GhostLink,
+            ComponentKind::DefenseLayers,
         ];
         VARIANTS.len()
     };
@@ -284,6 +289,7 @@ pub enum ComponentValue {
     Teleporter(TeleporterComponent),
     ProjectileTrap(ProjectileTrapComponent),
     GhostLink(GhostLinkComponent),
+    DefenseLayers(DefenseLayersComponent),
 }
 
 impl ComponentValue {
@@ -316,6 +322,7 @@ impl ComponentValue {
             ComponentValue::Teleporter(_) => ComponentKind::Teleporter,
             ComponentValue::ProjectileTrap(_) => ComponentKind::ProjectileTrap,
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
+            ComponentValue::DefenseLayers(_) => ComponentKind::DefenseLayers,
         }
     }
 }
@@ -770,6 +777,19 @@ impl Component for GhostLinkComponent {
     }
 }
 
+impl Component for DefenseLayersComponent {
+    const KIND: ComponentKind = ComponentKind::DefenseLayers;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::DefenseLayers(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::DefenseLayers(self)
+    }
+}
+
 impl Component for HitVolumeComponent {
     const KIND: ComponentKind = ComponentKind::HitVolume;
 
@@ -867,6 +887,18 @@ pub struct EntityRegistry {
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
     impact_dispatches: Vec<ImpactDispatch>,
+    /// Index of the most recently started fixed tick. The damage chokepoint
+    /// stamps a layered entity's last hit with it, so a hit that lands after
+    /// the tick (a flushed client hit, frame-end script damage) stamps the
+    /// tick it follows. Advanced only by the tick start.
+    host_tick: u64,
+    /// The committed damage vocabulary the chokepoint scales hits by. Empty
+    /// until a mod registers one, which leaves every hit untyped.
+    defense_vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    /// The host's expression-parameter evaluator; `None` on a connected client
+    /// and until the simulation binds one.
+    defense_parameters:
+        Option<std::rc::Rc<dyn crate::components::defense_layers::DefenseParameterSource>>,
     /// App-side presentation producers enqueue transient spawn facts here. The
     /// registry is the sole bridge between fixed-tick producers and the
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
@@ -906,6 +938,9 @@ impl EntityRegistry {
             pawn_seats: HashMap::new(),
             inventory_owners: HashMap::new(),
             impact_dispatches: Vec::new(),
+            host_tick: 0,
+            defense_vocabulary: Default::default(),
+            defense_parameters: None,
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             impact_particle_requests: Vec::with_capacity(MAX_PENDING_IMPACT_PARTICLE_REQUESTS),
             dropped_impact_particle_requests: 0,
@@ -942,6 +977,16 @@ impl EntityRegistry {
     pub fn bind_pawn_seat(&mut self, pawn: EntityId, seat: Seat) {
         self.pawn_seats.retain(|_, owner| *owner != seat);
         self.pawn_seats.insert(pawn, seat);
+        // Layer capacities that read the seat's per-owner values evaluate now.
+        crate::components::defense_layers::settle_layers_on_seat_bind(self, pawn);
+    }
+
+    /// The pawn `seat` owns, if any.
+    #[must_use]
+    pub fn pawn_for_seat(&self, seat: Seat) -> Option<EntityId> {
+        self.pawn_seats
+            .iter()
+            .find_map(|(pawn, owner)| (*owner == seat).then_some(*pawn))
     }
 
     /// Drop `pawn`'s seat ownership. A pawn with no entry is not an error: the
@@ -1101,6 +1146,40 @@ impl EntityRegistry {
             };
             // idx as u16 is valid: slots.len() is bounded to u16::MAX by spawn.
             visit(EntityId::new(idx as u16, slot.generation), cell);
+        }
+    }
+
+    /// Visits every live entity carrying `kind` mutably, beside its `read`
+    /// component when it has one. Like [`Self::for_each_with_kind_mut`] it
+    /// allocates nothing, so a fixed-tick pass that needs a sibling column
+    /// (layer recharge reading health) stays allocation-free.
+    pub fn for_each_with_kind_mut_reading(
+        &mut self,
+        kind: ComponentKind,
+        read: ComponentKind,
+        mut visit: impl FnMut(EntityId, &mut ComponentValue, Option<&ComponentValue>),
+    ) {
+        assert_ne!(
+            kind,
+            ComponentKind::Inventory,
+            "Inventory requires checked replacement"
+        );
+        let Ok([column, read_column]) = self
+            .components
+            .get_disjoint_mut([kind as usize, read as usize])
+        else {
+            panic!("for_each_with_kind_mut_reading needs two different kinds");
+        };
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if !slot.live || slot.retired {
+                continue;
+            }
+            let Some(cell) = column.get_mut(idx).and_then(Option::as_mut) else {
+                continue;
+            };
+            let sibling = read_column.get(idx).and_then(Option::as_ref);
+            // idx as u16 is valid: slots.len() is bounded to u16::MAX by spawn.
+            visit(EntityId::new(idx as u16, slot.generation), cell, sibling);
         }
     }
 
@@ -1279,6 +1358,79 @@ impl EntityRegistry {
         self.projectile_presentation_ages[index]
             .as_ref()
             .ok_or(RegistryError::ProjectilePresentationAgeNotFound { id })
+    }
+
+    /// The committed damage vocabulary.
+    pub fn defense_vocabulary(
+        &self,
+    ) -> &std::sync::Arc<postretro_foundation::defense::DefenseVocabulary> {
+        &self.defense_vocabulary
+    }
+
+    /// The registered index of the damage type named `name`. An unregistered
+    /// name resolves to `None`, which deals the default type.
+    pub fn damage_type_index(&self, name: Option<&str>) -> Option<u16> {
+        name.and_then(|name| self.defense_vocabulary.type_index(name))
+            .and_then(|index| u16::try_from(index).ok())
+    }
+
+    /// Install the committed damage vocabulary; the chokepoint reads it.
+    pub fn set_defense_vocabulary(
+        &mut self,
+        vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    ) {
+        self.defense_vocabulary = vocabulary;
+    }
+
+    /// The host's expression-parameter evaluator, when one is installed.
+    pub fn defense_parameters(
+        &self,
+    ) -> Option<&std::rc::Rc<dyn crate::components::defense_layers::DefenseParameterSource>> {
+        self.defense_parameters.as_ref()
+    }
+
+    /// Install (or clear) the host's expression-parameter evaluator.
+    pub fn set_defense_parameters(
+        &mut self,
+        source: Option<std::rc::Rc<dyn crate::components::defense_layers::DefenseParameterSource>>,
+    ) {
+        self.defense_parameters = source;
+    }
+
+    /// Visit every live entity's defense layers with the rest of the registry
+    /// readable: each component is lent out of its column for its visit and
+    /// put back after, so a visitor can read health, entity state and seats.
+    /// Moves values only, so the pass allocates nothing.
+    pub fn for_each_defense_layers_lent(
+        &mut self,
+        mut visit: impl FnMut(&EntityRegistry, EntityId, &mut DefenseLayersComponent),
+    ) {
+        let kind = ComponentKind::DefenseLayers as usize;
+        for index in 0..self.slots.len() {
+            let slot = &self.slots[index];
+            if !slot.live || slot.retired {
+                continue;
+            }
+            let id = EntityId::new(index as u16, slot.generation);
+            let Some(ComponentValue::DefenseLayers(mut component)) =
+                self.components[kind].get_mut(index).and_then(Option::take)
+            else {
+                continue;
+            };
+            visit(self, id, &mut component);
+            self.components[kind][index] = Some(ComponentValue::DefenseLayers(component));
+        }
+    }
+
+    /// Index of the most recently started fixed tick.
+    pub fn host_tick(&self) -> u64 {
+        self.host_tick
+    }
+
+    /// Start the next fixed tick: called once per tick, before its recharge.
+    pub fn advance_host_tick(&mut self) -> u64 {
+        self.host_tick = self.host_tick.wrapping_add(1);
+        self.host_tick
     }
 
     /// Publish one damage-chokepoint dispatch for the engine's impact-policy

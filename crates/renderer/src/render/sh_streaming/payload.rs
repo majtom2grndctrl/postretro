@@ -1,7 +1,9 @@
 //! Parsed sparse cluster payloads and renderer-local upload plans.
 //!
 //! These types are intentionally CPU-only. They borrow no wgpu state and
-//! exist only until the owning drain has written its validated row data.
+//! exist only until their drain has written its validated row data.
+
+use postretro_level_format::cluster_sh_payloads::CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
 
 use super::*;
 
@@ -10,14 +12,13 @@ pub(super) struct ParsedSparseRow {
     pub(super) row: u32,
     pub(super) entry_count: u32,
     pub(super) tile_f16_count: u32,
-    pub(super) role: u32,
     pub(super) lights: Vec<u32>,
     pub(super) entry_tile_f16_offsets: Vec<u32>,
     pub(super) tile_f16: Vec<u16>,
 }
 
-/// A fully parsed, ownership-checked sparse row with its renderer-local
-/// first-fit ranges. It owns only the transient decoded values needed for the
+/// A fully parsed sparse row this install writes first, with its
+/// renderer-local first-fit ranges. It owns only the transient decoded values needed for the
 /// immediate queue upload; no cluster payload is retained after installation.
 #[derive(Debug)]
 pub(super) struct SparseInstallPlan {
@@ -47,7 +48,6 @@ impl SparseInstallPlan {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(DirectSparseRowUpload {
             row: self.payload.row,
-            role: self.payload.role,
             entry_start: self.entries.start,
             entry_end,
             tile_f16_start: self.tiles.start,
@@ -94,7 +94,7 @@ pub(super) fn parse_sparse_rows(
         ));
     }
     let rows_bytes = (row_count as usize)
-        .checked_mul(16)
+        .checked_mul(CLUSTER_SH_SPARSE_ROW_RECORD_SIZE)
         .and_then(|count| count.checked_add(16))
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
     let entries_bytes = (entry_count as usize)
@@ -111,15 +111,13 @@ pub(super) fn parse_sparse_rows(
     let mut rows = Vec::with_capacity(row_count as usize);
     let mut expected_entry = 0u32;
     for row_index in 0..row_count as usize {
-        let offset = 16 + row_index * 16;
+        let offset = 16 + row_index * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
         let row = u32_at(bytes, offset).ok_or(malformed(cluster_id, "truncated sparse row"))?;
         let first_entry =
             u32_at(bytes, offset + 4).ok_or(malformed(cluster_id, "truncated sparse row"))?;
         let count =
             u32_at(bytes, offset + 8).ok_or(malformed(cluster_id, "truncated sparse row"))?;
-        let role =
-            u32_at(bytes, offset + 12).ok_or(malformed(cluster_id, "truncated sparse row"))?;
-        if first_entry != expected_entry || role > 2 {
+        if first_entry != expected_entry {
             return Err(malformed(
                 cluster_id,
                 "sparse row records are not canonical",
@@ -132,7 +130,6 @@ pub(super) fn parse_sparse_rows(
             row,
             entry_count: count,
             tile_f16_count: 0,
-            role,
             lights: Vec::with_capacity(count as usize),
             entry_tile_f16_offsets: Vec::with_capacity(count as usize),
             tile_f16: Vec::new(),
@@ -246,7 +243,7 @@ mod tests {
     fn sparse_zero_tile_entry_at_allocation_end_is_valid_but_positive_overrun_is_not() {
         // Regression: compiler-emitted id-50 rows can retain a light with no kept tiles.
         let mut block = Vec::new();
-        for word in [1u32, 2, 108, 0, 8, 0, 2, 1, 7, 0, 108, 0, 9, 108, 0, 0] {
+        for word in [1u32, 2, 108, 0, 8, 0, 2, 7, 0, 108, 0, 9, 108, 0, 0] {
             block.extend_from_slice(&word.to_le_bytes());
         }
         block.resize(block.len() + 108 * 2, 0);
@@ -267,7 +264,7 @@ mod tests {
         ));
 
         let mut empty_block = Vec::new();
-        for word in [1u32, 1, 0, 0, 9, 0, 1, 1, 7, 0, 0, 0] {
+        for word in [1u32, 1, 0, 0, 9, 0, 1, 7, 0, 0, 0] {
             empty_block.extend_from_slice(&word.to_le_bytes());
         }
         let empty_row = parse_sparse_rows(0, &empty_block).unwrap();

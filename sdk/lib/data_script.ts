@@ -357,6 +357,7 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
+  | { primitive: "grantLayer"; target: "@impact.source"; args: { layer: import("postretro").DefenseLayer; amount?: RuntimeValue } }
   | { primitive: "setLifeState"; target: "@impact.source"; args: { state: string } }
   | { primitive: "adjustSentiment"; target: "@impact.target" | "@impact.source"; args: { toward: "@impact.target" | "@impact.source"; delta: RuntimeValue } }
   | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
@@ -382,6 +383,8 @@ export interface TargetHandle {
   /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
   adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   state(name: string): NumberRef;
+  /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0. */
+  defense(layer: import("postretro").DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
   setState(name: string, value: NumberValue): Effect;
 }
 
@@ -397,6 +400,13 @@ export interface SourceHandle {
    * skips this effect; app-drain impacts run no policy in v1.
    */
   grantAmmo(type: string, amount: NumberValue): Effect;
+  /**
+   * Refill the damager's `layer`: omit `amount` to fill to capacity, or add
+   * `amount`, clamped to capacity. The capacity is evaluated when the grant
+   * applies. A damager without that layer warns and skips; a fire with no
+   * damager skips this effect.
+   */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: NumberValue): Effect;
   /**
    * Whether the damager is a player pawn in life state `name` at this fire.
    * False for a damager that is not a player. An unknown name skips the policy.
@@ -425,7 +435,16 @@ export type Assist = Readonly<{ helper: AssistSide; target: AssistSide }>;
 export type Impact = Readonly<{
   target: TargetHandle;
   source: SourceHandle;
+  /** Points dealt: the total drained from layers and health after type multipliers and resistances. */
   amount: NumberRef;
+  /** The incoming amount after hit zones, before type and layers. */
+  raw: NumberRef;
+  /** The layers' share of `amount`. */
+  absorbed: NumberRef;
+  /** This hit took some layer from above zero to zero. */
+  broke: BoolRef;
+  /** True when the hit dealt `damageType`, the mod's default type included. */
+  type(damageType: import("postretro").DamageType): BoolRef;
 }>;
 
 export interface ImpactEvent {
@@ -493,6 +512,17 @@ function sentimentImpactEffect(
   } as ImpactEffectWire as unknown as Effect;
 }
 
+/** The `@defense.` input a layer handle reads; a bad reference (a bare string,
+ * a damage-type handle) names no layer, so its bind fails at install. */
+function defenseInput(layer: unknown, capacity: boolean): string {
+  const handle = layer as { kind?: unknown; name?: unknown } | null;
+  const name =
+    handle !== null && typeof handle === "object" && handle.kind === "defenseLayer" && typeof handle.name === "string"
+      ? handle.name
+      : "@invalid";
+  return `@defense.${name}${capacity ? ".capacity" : ""}`;
+}
+
 const IMPACT_TARGET: TargetHandle = Object.freeze({
   healthBefore: numberRef({ op: "input", name: "@impact.healthBefore" }),
   healthAfter: numberRef({ op: "input", name: "@impact.healthAfter" }),
@@ -514,6 +544,12 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
   state(name) {
     return numberRef({ op: "input", name: `@state.${name}` });
   },
+  defense(layer) {
+    return Object.freeze({
+      current: numberRef({ op: "input", name: defenseInput(layer, false) }),
+      capacity: numberRef({ op: "input", name: defenseInput(layer, true) }),
+    });
+  },
   setState(name, value) {
     return impactEffect("setState", { name, value: numberNode(value) });
   },
@@ -522,6 +558,8 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
 const impactSource = {
   grantHealth: (amount: NumberValue) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
   grantAmmo: (type: string, amount: NumberValue) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
+  grantLayer: (layer: import("postretro").DefenseLayer, amount?: NumberValue) =>
+    sourceImpactEffect("grantLayer", amount === undefined ? { layer } : { layer, amount: numberNode(amount) }),
   inLifeState: (name: string) =>
     boolRef({ op: "input", owner: "@impact.source", name: `player.inLifeState:${name}` }),
   setLifeState: (name: string) => sourceImpactEffect("setLifeState", { state: name }),
@@ -547,10 +585,24 @@ export const assist: Assist = Object.freeze({
   target: assistSide("@assist.target"),
 });
 
+// A bad reference (a bare string, a layer handle) names no registered type, so
+// its input fails the bind and the policy holding it drops at install.
+function impactTypeName(handle: unknown): string {
+  const record = handle as { readonly kind?: unknown; readonly name?: unknown } | null;
+  return record !== null && typeof record === "object" && record.kind === "damageType" && typeof record.name === "string"
+    ? record.name
+    : "@invalid";
+}
+
 const IMPACT: Impact = Object.freeze({
   target: IMPACT_TARGET,
   source: IMPACT_SOURCE,
   amount: numberRef({ op: "input", name: "@impact.amount" }),
+  raw: numberRef({ op: "input", name: "@impact.raw" }),
+  absorbed: numberRef({ op: "input", name: "@impact.absorbed" }),
+  broke: boolRef({ op: "input", name: "@impact.broke" }),
+  type: (damageType: import("postretro").DamageType) =>
+    boolRef({ op: "input", name: `@impact.type.${impactTypeName(damageType)}` }),
 });
 
 /**
@@ -654,7 +706,7 @@ function assertDenseImpactArray(values: readonly unknown[], context: string): vo
 }
 
 const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id";
-const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
+const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
 
 function validateImpactEventId(id: string): void {
   const valid = id.length > 0
@@ -732,11 +784,40 @@ function lowerAssistableReferences(descriptor: import("postretro").EntityTypeDes
   }
 }
 
+/**
+ * Replaces each fluent ref in a health layer's parameters and in each
+ * `resist` (a layer's and health's own) with its IR, as `assistable` does.
+ */
+function lowerDefenseLayerReferences(descriptor: import("postretro").EntityTypeDescriptor): void {
+  const health = descriptor.components?.health as
+    | { layers?: unknown; resist?: unknown }
+    | null
+    | undefined;
+  if (health === null || typeof health !== "object") return;
+  const lowerResist = (resist: unknown) => {
+    if (resist === null || typeof resist !== "object") return;
+    const map = resist as Record<string, unknown>;
+    for (const key of Object.keys(map)) map[key] = loweredValue(map[key]);
+  };
+  if (Array.isArray(health.layers)) {
+    for (const entry of health.layers) {
+      if (entry === null || typeof entry !== "object") continue;
+      const fields = entry as Record<string, unknown>;
+      for (const field of ["capacity", "rechargeDelayMs", "rechargeRate"]) {
+        if (fields[field] !== undefined) fields[field] = loweredValue(fields[field]);
+      }
+      lowerResist(fields.resist);
+    }
+  }
+  lowerResist(health.resist);
+}
+
 export function defineEntity<T>(
   descriptor: T & import("postretro").EntityTypeDescriptor,
 ): T {
   lowerLoadoutReferences(descriptor);
   lowerAssistableReferences(descriptor);
+  lowerDefenseLayerReferences(descriptor);
   return descriptor;
 }
 
@@ -755,11 +836,20 @@ export function defineEntity<T>(
 export function defineMod(
   config: ModManifestInput,
 ): import("postretro").ModManifest {
-  if (config.stores === undefined) return config as import("postretro").ModManifest;
-  return {
-    ...config,
-    stores: config.stores.map((entry) => storeDeclarations.get(entry as object) ?? entry),
-  } as import("postretro").ModManifest;
+  const manifest: Record<string, unknown> = { ...config };
+  if (config.stores !== undefined) {
+    manifest.stores = config.stores.map((entry) => storeDeclarations.get(entry as object) ?? entry);
+  }
+  // A handle crosses as `{ kind, name }`; the manifest list carries its whole
+  // declaration. A bare string or a handle of the other kind passes through,
+  // and the engine rejects it naming the list entry.
+  if (config.defenseLayers !== undefined) {
+    manifest.defenseLayers = config.defenseLayers.map((entry) => declarationOf(defenseLayerDeclarations, entry));
+  }
+  if (config.damageTypes !== undefined) {
+    manifest.damageTypes = config.damageTypes.map((entry) => declarationOf(damageTypeDeclarations, entry));
+  }
+  return manifest as import("postretro").ModManifest;
 }
 
 /** Pure builder for a stable named faction declaration. Include the result in `defineMod({ factions: [...] })`; archetypes refer to it by `components.faction`. Names beginning with `@postretro.` are reserved by the engine. */
@@ -948,4 +1038,52 @@ function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): Stat
     writable: false,
   });
   return Object.freeze(ref) as StateRef;
+}
+
+// Declarations a `defineMod` list resolves its handles through, as stores do.
+const defenseLayerDeclarations = new WeakMap<object, object>();
+const damageTypeDeclarations = new WeakMap<object, object>();
+
+function declarationOf(declarations: WeakMap<object, object>, entry: unknown): unknown {
+  if (entry === null || typeof entry !== "object") return entry;
+  return declarations.get(entry) ?? entry;
+}
+
+function hideProperty(target: object, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: false, configurable: false, writable: false });
+}
+
+/** Declare a defense layer kind: a shield, armor or any pool that drains before health. Omit `name` only in a TypeScript direct top-level binding declaration compiled by scripts-build, which names it by its binding. Register it with `defineMod({ defenseLayers: [layer] })`, then attach it to descriptors in `components.health.layers`. `current` and `capacity` read the local player's layer. `options` is reserved and must be empty. */
+export function defineDefenseLayer(options?: import("postretro").DefenseLayerOptions): import("postretro").DefenseLayer;
+export function defineDefenseLayer(name: string, options?: import("postretro").DefenseLayerOptions): import("postretro").DefenseLayer;
+export function defineDefenseLayer(
+  nameOrOptions?: string | import("postretro").DefenseLayerOptions,
+  options?: import("postretro").DefenseLayerOptions,
+): import("postretro").DefenseLayer {
+  if (typeof nameOrOptions !== "string") throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const name = nameOrOptions;
+  const handle = { kind: "defenseLayer", name };
+  hideProperty(handle, "current", storeRef(`player.defense.${name}`, "number", true));
+  hideProperty(handle, "capacity", storeRef(`player.defense.${name}.capacity`, "number", true));
+  Object.freeze(handle);
+  defenseLayerDeclarations.set(handle, Object.freeze({ kind: "defenseLayer", name, options: options ?? {} }));
+  return handle as unknown as import("postretro").DefenseLayer;
+}
+
+/** Declare a damage type by its matrix: how much one raw point takes from each pool kind, keyed by layer name or `health`. Each value is a multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is ×1. Omit `name` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Register it with `defineMod({ damageTypes: [type] })`. `options` is reserved and must be empty. */
+export function defineDamageType(matrix: import("postretro").DamageTypeMatrix, options?: import("postretro").DamageTypeOptions): import("postretro").DamageType;
+export function defineDamageType(name: string, matrix: import("postretro").DamageTypeMatrix, options?: import("postretro").DamageTypeOptions): import("postretro").DamageType;
+export function defineDamageType(
+  nameOrMatrix: string | import("postretro").DamageTypeMatrix,
+  matrix?: import("postretro").DamageTypeMatrix | import("postretro").DamageTypeOptions,
+  options?: import("postretro").DamageTypeOptions,
+): import("postretro").DamageType {
+  if (typeof nameOrMatrix !== "string") throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const name = nameOrMatrix;
+  const handle = Object.freeze({ kind: "damageType", name });
+  damageTypeDeclarations.set(
+    handle,
+    Object.freeze({ kind: "damageType", name, matrix: { ...(matrix ?? {}) }, options: options ?? {} }),
+  );
+  return handle as unknown as import("postretro").DamageType;
 }

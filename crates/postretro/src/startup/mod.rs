@@ -13,12 +13,18 @@ pub(crate) mod audio_profile;
 #[cfg(test)]
 mod closet_reveal_surface_tests;
 pub(crate) mod data_script_staleness;
+#[cfg(test)]
+mod e16_content_tests;
 pub(crate) mod environment_install;
 pub(crate) mod first_launch_hold;
 #[cfg(test)]
 mod fluids_swim_surface_tests;
 #[cfg(test)]
 mod ghost_links_surface_tests;
+#[cfg(test)]
+mod grant_layer_surface_tests;
+#[cfg(test)]
+mod layer_lifecycle_surface_tests;
 pub(crate) mod level_loads;
 mod life_state_validation;
 pub(crate) mod lifecycle;

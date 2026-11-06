@@ -9,6 +9,7 @@ import { players, becomes, ceases, read, defineReaction, getGameState } from "po
 import type { PlayerEventParams } from "postretro";
 import { playSound, flashScreen, screenShake, vignette, updateState, onStateCrossing } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
+import { shield } from "./defenses";
 import { leveling } from "./leveling";
 
 const player = getGameState().player;
@@ -21,6 +22,11 @@ const levelUp = defineReaction("leveling.levelUp", (on: PlayerEventParams) => [
   playSound("sfx/test_tone"),
   flashScreen([1, 0.9, 0.3, 0.4], 300),
   screenShake(6, 350, 18),
+  // The level-up also raises shield capacity, then fills health and the
+  // shield to the new capacity, in body order.
+  on.player.addSlot(progression.shieldCapacity, 25),
+  on.player.grantHealth(100),
+  on.player.grantLayer(shield),
 ]);
 const scald = defineReaction("heat.scald", (on: PlayerEventParams) => [
   on.player.damage(5),

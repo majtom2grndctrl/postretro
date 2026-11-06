@@ -1,8 +1,9 @@
 //! CPU-only install-transaction tests over synthetic streamed maps.
 //!
-//! Every probe is a valid L0 probe and every cluster owns a box of whole
-//! bricks, so each chunk is canonical: one owner per probe, node, and sparse
-//! row. Failures are injected into otherwise valid chunks.
+//! Every probe is a valid L0 probe, so a brick is one stored node. A cluster
+//! names a box of whole bricks, plus any halo bricks or moved probes a map
+//! adds, and its chunk carries the full payload of everything it names, as the
+//! compiler's do. Failures are injected into otherwise valid chunks.
 
 use super::*;
 use postretro_level_format::cluster_directory::{
@@ -27,10 +28,16 @@ pub(super) struct SyntheticMap {
     /// carries one entry.
     empty_rows: BTreeSet<(u32, u32)>,
     density_levels: Vec<u8>,
-    /// Sparse rows (every family) owned by a cluster other than the one
-    /// owning the brick's base probes, so evicting that owner leaves the row
+    /// Sparse rows (every family) homed on a cluster other than the one
+    /// naming the brick's base probes, so evicting that cluster leaves the row
     /// resident through its base: a partial eviction.
-    sparse_owner_overrides: BTreeMap<u32, u32>,
+    sparse_row_homes: BTreeMap<u32, u32>,
+    /// Extra bricks a cluster names beyond its box: their node, probe words
+    /// and sparse rows are shared with the brick's home cluster.
+    halo_bricks: BTreeMap<u32, Vec<u32>>,
+    /// Probes named by another cluster instead of their brick's home, so one
+    /// stored node serves two clusters with distinct probe words.
+    moved_probes: BTreeMap<u32, u32>,
 }
 
 impl SyntheticMap {
@@ -52,13 +59,32 @@ impl SyntheticMap {
             sparse_sections: &SPARSE_SECTIONS,
             empty_rows: BTreeSet::new(),
             density_levels: Vec::new(),
-            sparse_owner_overrides: BTreeMap::new(),
+            sparse_row_homes: BTreeMap::new(),
+            halo_bricks: BTreeMap::new(),
+            moved_probes: BTreeMap::new(),
         }
     }
 
-    /// The same map with `row`'s sparse rows owned by `cluster_id`.
-    pub(super) fn with_sparse_row_owner(mut self, row: u32, cluster_id: u32) -> Self {
-        self.sparse_owner_overrides.insert(row, cluster_id);
+    /// The same map with `row`'s sparse rows homed on `cluster_id`.
+    pub(super) fn with_sparse_row_home(mut self, row: u32, cluster_id: u32) -> Self {
+        self.sparse_row_homes.insert(row, cluster_id);
+        self
+    }
+
+    /// The same map with `cluster_id` also naming brick `row`.
+    pub(super) fn with_halo_brick(mut self, cluster_id: u32, row: u32) -> Self {
+        self.halo_bricks.entry(cluster_id).or_default().push(row);
+        self
+    }
+
+    /// The same map with `probes` named by `cluster_id` alone.
+    pub(super) fn with_moved_probes(
+        mut self,
+        probes: impl IntoIterator<Item = u32>,
+        cluster_id: u32,
+    ) -> Self {
+        self.moved_probes
+            .extend(probes.into_iter().map(|dense| (dense, cluster_id)));
         self
     }
 
@@ -111,7 +137,7 @@ impl SyntheticMap {
         self.bricks.iter().product()
     }
 
-    /// Sparse rows owned by a cluster, one per brick, in chunk order.
+    /// The rows of a cluster's own box, one per brick, in chunk order.
     pub(super) fn cluster_rows(&self, cluster_id: u32) -> Vec<u32> {
         let origin = self.cluster_origin_brick(cluster_id);
         let mut rows = Vec::new();
@@ -125,38 +151,66 @@ impl SyntheticMap {
         rows
     }
 
-    fn sparse_owner(&self, row: u32) -> u32 {
-        if let Some(&owner) = self.sparse_owner_overrides.get(&row) {
-            return owner;
-        }
+    fn brick_of_row(&self, row: u32) -> [u32; 3] {
         let [bx, by, _] = self.bricks;
-        let brick = [row % bx, row / bx % by, row / (bx * by)];
+        [row % bx, row / bx % by, row / (bx * by)]
+    }
+
+    fn home_cluster(&self, brick: [u32; 3]) -> u32 {
         let [cx, cy, _] = self.clusters;
         let cluster = [0, 1, 2].map(|axis| brick[axis] / self.cluster_bricks[axis]);
         cluster[0] + cluster[1] * cx + cluster[2] * cx * cy
     }
 
-    /// Sparse rows a cluster owns in every family, ascending: its bricks'
-    /// rows unless overridden.
-    fn cluster_sparse_rows(&self, cluster_id: u32) -> Vec<u32> {
-        (0..self.row_count())
-            .filter(|&row| self.sparse_owner(row) == cluster_id)
-            .collect()
+    fn sparse_home(&self, row: u32) -> u32 {
+        self.sparse_row_homes
+            .get(&row)
+            .copied()
+            .unwrap_or_else(|| self.home_cluster(self.brick_of_row(row)))
     }
 
-    /// Dense probes owned by a cluster, in chunk order.
-    fn cluster_probes(&self, cluster_id: u32) -> Vec<u32> {
-        let origin = self.cluster_origin_brick(cluster_id).map(|axis| axis * 4);
-        let extent = self.cluster_bricks.map(|axis| axis * 4);
-        let mut probes = Vec::new();
-        for z in 0..extent[2] {
-            for y in 0..extent[1] {
-                for x in 0..extent[0] {
-                    probes.push(self.dense([origin[0] + x, origin[1] + y, origin[2] + z]));
-                }
+    /// Sparse rows a cluster names in every family, ascending.
+    pub(super) fn cluster_sparse_rows(&self, cluster_id: u32) -> Vec<u32> {
+        let mut rows: BTreeSet<u32> = (0..self.row_count())
+            .filter(|&row| self.sparse_home(row) == cluster_id)
+            .collect();
+        rows.extend(self.halo_bricks.get(&cluster_id).into_iter().flatten());
+        rows.into_iter().collect()
+    }
+
+    fn brick_probes(&self, brick: [u32; 3]) -> impl Iterator<Item = u32> + '_ {
+        (0..64).map(move |local| {
+            self.dense([
+                brick[0] * 4 + local % 4,
+                brick[1] * 4 + local / 4 % 4,
+                brick[2] * 4 + local / 16,
+            ])
+        })
+    }
+
+    /// Dense probes a cluster names, ascending: its box less anything moved
+    /// away, plus its halo bricks and anything moved to it.
+    pub(super) fn cluster_probes(&self, cluster_id: u32) -> Vec<u32> {
+        let mut probes = BTreeSet::new();
+        for row in 0..self.row_count() {
+            let brick = self.brick_of_row(row);
+            if self.home_cluster(brick) == cluster_id {
+                probes.extend(
+                    self.brick_probes(brick)
+                        .filter(|dense| !self.moved_probes.contains_key(dense)),
+                );
             }
         }
-        probes
+        for &row in self.halo_bricks.get(&cluster_id).into_iter().flatten() {
+            probes.extend(self.brick_probes(self.brick_of_row(row)));
+        }
+        probes.extend(
+            self.moved_probes
+                .iter()
+                .filter(|&(_, &to)| to == cluster_id)
+                .map(|(&dense, _)| dense),
+        );
+        probes.into_iter().collect()
     }
 
     fn directory(&self) -> ClusterDirectorySection {
@@ -176,40 +230,20 @@ impl SyntheticMap {
         let mut ranges = Vec::new();
         for cluster_id in 0..self.cluster_count() {
             let range_start = ranges.len() as u32;
-            let origin = self.cluster_origin_brick(cluster_id);
-            let probe_origin = origin.map(|axis| axis * 4);
-            let probe_extent = self.cluster_bricks.map(|axis| axis * 4);
-            for z in 0..probe_extent[2] {
-                for y in 0..probe_extent[1] {
-                    ranges.push(ClusterRangeRecord {
-                        resource_index: 0,
-                        start: self.dense([
-                            probe_origin[0],
-                            probe_origin[1] + y,
-                            probe_origin[2] + z,
-                        ]),
-                        count: probe_extent[0],
-                        owner_cluster_id: cluster_id,
-                        role: ClusterRangeRole::Owned,
-                    });
-                }
+            for (start, count) in runs(self.cluster_probes(cluster_id)) {
+                ranges.push(ClusterRangeRecord {
+                    resource_index: 0,
+                    start,
+                    count,
+                });
             }
-            // One range per run of consecutive owned rows.
-            let mut runs: Vec<(u32, u32)> = Vec::new();
-            for row in self.cluster_sparse_rows(cluster_id) {
-                match runs.last_mut() {
-                    Some((start, count)) if *start + *count == row => *count += 1,
-                    _ => runs.push((row, 1)),
-                }
-            }
+            let sparse_runs = runs(self.cluster_sparse_rows(cluster_id));
             for resource_index in 1..=self.sparse_sections.len() as u32 {
-                for &(start, count) in &runs {
+                for &(start, count) in &sparse_runs {
                     ranges.push(ClusterRangeRecord {
                         resource_index,
                         start,
                         count,
-                        owner_cluster_id: cluster_id,
-                        role: ClusterRangeRole::Owned,
                     });
                 }
             }
@@ -234,6 +268,7 @@ impl SyntheticMap {
             ranges,
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
         }
     }
 
@@ -336,11 +371,17 @@ impl SyntheticMap {
         state
     }
 
-    /// A canonical ready chunk: id-34/id-35 atlases, one probe patch per
-    /// owned probe, and one owned row per brick for each sparse family, in
-    /// id-27, id-41, id-45 order.
+    /// A ready chunk: id-34/id-35 atlases covering every node its probes
+    /// touch, one probe patch per named probe, and one row per named brick
+    /// for each sparse family, in id-27, id-41, id-45 order.
     pub(super) fn prepared(&self, state: &ShResidencyState, cluster_id: u32) -> PreparedShCluster {
-        let mut nodes = state.nodes_by_owner[&cluster_id].clone();
+        let probes = self.cluster_probes(cluster_id);
+        let mut nodes: Vec<StoredNode> = probes
+            .iter()
+            .map(|&dense| state.dense_node[dense as usize].expect("synthetic probes are valid"))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         nodes.sort_by_key(|node| state.node_layouts[node].global_base_slot);
         let mut closure_base = BTreeMap::new();
         let mut closure_tiles = 0u32;
@@ -377,7 +418,6 @@ impl SyntheticMap {
             &atlas_header,
         );
 
-        let probes = self.cluster_probes(cluster_id);
         let mut patch_words = Vec::with_capacity(probes.len() * 4);
         for &dense in &probes {
             let node = state.dense_node[dense as usize].expect("synthetic probes are valid");
@@ -408,7 +448,7 @@ impl SyntheticMap {
             let mut first_entry = 0;
             for &row in &rows {
                 let count = self.entry_count(section_id, row);
-                words.extend_from_slice(&[row, first_entry, count, 1]);
+                words.extend_from_slice(&[row, first_entry, count]);
                 first_entry += count;
             }
             for index in 0..entry_total {
@@ -435,9 +475,21 @@ impl SyntheticMap {
     }
 }
 
+/// `(start, count)` runs of consecutive values in an ascending list.
+fn runs(values: Vec<u32>) -> Vec<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for value in values {
+        match runs.last_mut() {
+            Some((start, count)) if *start + *count == value => *count += 1,
+            _ => runs.push((value, 1)),
+        }
+    }
+    runs
+}
+
 /// Rewrite the level bits of a chunk's last probe patch so that patch fails
 /// validation after every earlier patch has rewritten its compose word.
-fn corrupt_last_probe_patch(prepared: &mut PreparedShCluster) {
+pub(super) fn corrupt_last_probe_patch(prepared: &mut PreparedShCluster) {
     let block = prepared
         .chunk
         .blocks
@@ -451,8 +503,9 @@ fn corrupt_last_probe_patch(prepared: &mut PreparedShCluster) {
 
 /// Every residency mirror an install may touch, compared field by field.
 #[derive(Debug, PartialEq)]
-struct ResidencyMirror {
+pub(super) struct ResidencyMirror {
     node_slots: BTreeMap<StoredNode, PoolRange>,
+    storage_refs: StorageRefs,
     dense_slots: FirstFitRanges,
     compose_words: Vec<u32>,
     sampled_words: Vec<u32>,
@@ -478,15 +531,16 @@ struct ResidencyMirror {
 struct InstalledMirror {
     cluster_id: u32,
     patched_dense: Vec<u32>,
-    owned_nodes: Vec<StoredNode>,
+    referenced_nodes: Vec<StoredNode>,
     sparse_rows: Vec<(u32, u32)>,
     required_indirect_epoch: u64,
     required_direct_epoch: u64,
 }
 
-fn mirror(state: &ShResidencyState) -> ResidencyMirror {
+pub(super) fn mirror(state: &ShResidencyState) -> ResidencyMirror {
     ResidencyMirror {
         node_slots: state.node_slots.clone(),
+        storage_refs: state.storage_refs.clone(),
         dense_slots: state.dense_slots.clone(),
         compose_words: state.compose_words.clone(),
         sampled_words: state.sampled_words.clone(),
@@ -509,7 +563,7 @@ fn mirror(state: &ShResidencyState) -> ResidencyMirror {
             .map(|(&cluster_id, installed)| InstalledMirror {
                 cluster_id,
                 patched_dense: installed.patches.iter().map(|patch| patch.dense).collect(),
-                owned_nodes: installed.owned_nodes.clone(),
+                referenced_nodes: installed.referenced_nodes.clone(),
                 sparse_rows: installed.sparse_rows.clone(),
                 required_indirect_epoch: installed.required_indirect_epoch,
                 required_direct_epoch: installed.required_direct_epoch,
@@ -522,7 +576,7 @@ fn mirror(state: &ShResidencyState) -> ResidencyMirror {
 
 /// Two clusters of two bricks each: small enough to read, large enough that a
 /// second install reuses nothing by accident.
-fn two_cluster_map() -> SyntheticMap {
+pub(super) fn two_cluster_map() -> SyntheticMap {
     SyntheticMap::new([16, 4, 4], [2, 1, 1])
 }
 
@@ -793,8 +847,12 @@ fn touched_rows_cover_membership_changes_on(map: SyntheticMap) {
             pool.evict(blocked).unwrap();
         },
         &|state| state.install(None, &map.prepared(state, 1)).unwrap(),
-        &|state| state.evict(&mut StagedUploads::default(), 1).unwrap(),
-        &|state| state.evict(&mut StagedUploads::default(), 0).unwrap(),
+        &|state| {
+            state.evict(&mut StagedUploads::default(), 1).unwrap();
+        },
+        &|state| {
+            state.evict(&mut StagedUploads::default(), 0).unwrap();
+        },
         &|state| state.install(None, &map.prepared(state, 0)).unwrap(),
         // A new generation clears the session and installs in one drain.
         &|state| {

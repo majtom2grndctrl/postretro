@@ -8,7 +8,7 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = KINEMATIC_GEOMETRY_VERSION_V7;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = KINEMATIC_GEOMETRY_VERSION_V8;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V3: u16 = 3;
@@ -19,6 +19,8 @@ pub const KINEMATIC_GEOMETRY_VERSION_V5: u16 = 5;
 pub const KINEMATIC_GEOMETRY_VERSION_V6: u16 = 6;
 /// Version 7 appended presentation-only mover transition sound keys.
 pub const KINEMATIC_GEOMETRY_VERSION_V7: u16 = 7;
+/// Version 8 appended the crusher's damage-type name.
+pub const KINEMATIC_GEOMETRY_VERSION_V8: u16 = 8;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -61,6 +63,9 @@ pub struct KinematicMoverRecord {
     pub carry_yaw: bool,
     pub block_policy: String,
     pub crush_damage: f32,
+    /// FGD `crush_damage_type`: the damage type a crush deals, by name.
+    /// Absent (and before V8) the mod's default type, if any.
+    pub crush_damage_type: Option<String>,
     pub crush_interval_ms: f32,
     /// `None` inherits the mod default; `Some(0.0)` explicitly disables it.
     pub auto_close_ms: Option<f32>,
@@ -142,9 +147,10 @@ impl KinematicGeometrySection {
                 | KINEMATIC_GEOMETRY_VERSION_V5
                 | KINEMATIC_GEOMETRY_VERSION_V6
                 | KINEMATIC_GEOMETRY_VERSION_V7
+                | KINEMATIC_GEOMETRY_VERSION_V8
         ) {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, 5, 6, or {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, 5, 6, 7, or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
@@ -249,6 +255,9 @@ fn mover_byte_len(mover: &KinematicMoverRecord, version: u16) -> usize {
         len += optional_string_len(mover.blocked_sound.as_ref());
         len += optional_string_len(mover.crush_sound.as_ref());
     }
+    if version >= KINEMATIC_GEOMETRY_VERSION_V8 {
+        len += optional_string_len(mover.crush_damage_type.as_ref());
+    }
     len
 }
 
@@ -333,6 +342,9 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
         write_optional_string(buf, mover.close_sound.as_deref());
         write_optional_string(buf, mover.blocked_sound.as_deref());
         write_optional_string(buf, mover.crush_sound.as_deref());
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION_V8 {
+        write_optional_string(buf, mover.crush_damage_type.as_deref());
     }
 }
 
@@ -589,6 +601,15 @@ fn read_mover(
         } else {
             (None, None, None, None)
         };
+    let crush_damage_type = if version >= KINEMATIC_GEOMETRY_VERSION_V8 {
+        read_optional_string(
+            data,
+            offset,
+            &format!("mover {mover_idx} crush_damage_type"),
+        )?
+    } else {
+        None
+    };
 
     let mover = KinematicMoverRecord {
         mover_id,
@@ -621,6 +642,7 @@ fn read_mover(
         close_sound,
         blocked_sound,
         crush_sound,
+        crush_damage_type,
     };
     validate_mover_geometry(mover_idx, &mover)?;
     Ok(mover)
@@ -1050,6 +1072,7 @@ mod tests {
                 close_sound: Some("sfx/lift_close".to_string()),
                 blocked_sound: Some("sfx/lift_blocked".to_string()),
                 crush_sound: Some("sfx/lift_crush".to_string()),
+                crush_damage_type: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -1091,6 +1114,28 @@ mod tests {
         assert_eq!(mover.blocked_sound, None);
         assert_eq!(mover.crush_sound.as_deref(), Some("sfx/lift_crush"));
         assert_eq!(restored, section);
+    }
+
+    #[test]
+    fn v8_appends_the_crush_damage_type_after_the_v7_sound_tail() {
+        let mut v8 = v1_fixture_section();
+        v8.version = KINEMATIC_GEOMETRY_VERSION_V8;
+        v8.movers[0].crush_damage_type = Some("ballistic".to_string());
+        let mut v7 = v8.clone();
+        v7.version = KINEMATIC_GEOMETRY_VERSION_V7;
+        v7.movers[0].crush_damage_type = None;
+
+        let v8_bytes = v8.to_bytes();
+        let v7_bytes = v7.to_bytes();
+        let mut expected_tail = vec![1];
+        expected_tail.extend_from_slice(&9u32.to_le_bytes());
+        expected_tail.extend_from_slice(b"ballistic");
+        assert_eq!(v8_bytes.len(), v7_bytes.len() + expected_tail.len());
+        assert_eq!(&v8_bytes[..2], &[8, 0]);
+        assert_eq!(KinematicGeometrySection::from_bytes(&v8_bytes).unwrap(), v8);
+        // A V7 section reads with no crush type.
+        let restored_v7 = KinematicGeometrySection::from_bytes(&v7_bytes).unwrap();
+        assert_eq!(restored_v7.movers[0].crush_damage_type, None);
     }
 
     #[test]
@@ -1217,7 +1262,7 @@ mod tests {
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![7, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![8, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
@@ -1226,13 +1271,13 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_section_version() {
-        let bytes = vec![8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = vec![9, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let error = KinematicGeometrySection::from_bytes(&bytes)
             .expect_err("unsupported kinematic geometry section versions must reject");
         assert!(
             error
                 .to_string()
-                .contains("expected 1, 2, 3, 4, 5, 6, or 7")
+                .contains("expected 1, 2, 3, 4, 5, 6, 7, or 8")
         );
     }
 
@@ -1630,6 +1675,7 @@ mod tests {
                 close_sound: None,
                 blocked_sound: None,
                 crush_sound: None,
+                crush_damage_type: None,
             }],
             waypoints: Vec::new(),
         }

@@ -177,6 +177,44 @@ pub fn active_weapon(registry: &EntityRegistry, pawn: EntityId) -> Option<Active
     })
 }
 
+/// A per-player defense-layer slot, `player.defense.<layer>` or
+/// `player.defense.<layer>.capacity`: the layer name and whether the slot
+/// reads capacity. Layer names hold no `.`, so the split is unambiguous.
+pub fn defense_slot(name: &str) -> Option<(&str, bool)> {
+    use postretro_foundation::defense::{DEFENSE_CAPACITY_SUFFIX, PLAYER_DEFENSE_SLOT_PREFIX};
+    let rest = name.strip_prefix(PLAYER_DEFENSE_SLOT_PREFIX)?;
+    let (layer, capacity) = match rest.strip_suffix(DEFENSE_CAPACITY_SUFFIX) {
+        Some(layer) => (layer, true),
+        None => (rest, false),
+    };
+    (!layer.is_empty() && !layer.contains('.')).then_some((layer, capacity))
+}
+
+/// The value a defense-layer slot holds for `pawn`: the outer option says
+/// whether `name` is one, the inner is `None` for a pawn without that layer.
+/// Absent never falls back to another player's value.
+pub fn defense_slot_value(
+    registry: &EntityRegistry,
+    name: &str,
+    pawn: EntityId,
+) -> Option<Option<SlotValue>> {
+    let (layer, capacity) = defense_slot(name)?;
+    let component = registry
+        .get_component::<crate::components::defense_layers::DefenseLayersComponent>(pawn)
+        .ok();
+    Some(
+        component
+            .and_then(|component| component.layer(layer))
+            .map(|layer| {
+                SlotValue::Number(if capacity {
+                    layer.capacity
+                } else {
+                    layer.value
+                })
+            }),
+    )
+}
+
 /// The value `slot` holds for `pawn` right now, or `None` when the pawn has no
 /// source for it. See [`player_slot_value_with`].
 pub fn player_slot_value(

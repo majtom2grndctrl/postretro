@@ -86,6 +86,7 @@ fn dummy_descriptor() -> EntityTypeDescriptor {
         max: 48.0,
         hitbox: None,
         zone_multipliers: HashMap::new(),
+        ..Default::default()
     });
     descriptor
 }
@@ -199,6 +200,7 @@ fn pistol() -> (WeaponComponent, WeaponPlacementDescriptor) {
         lower_ms: 0,
         raise_ms: 0,
         block_during_reload: None,
+        damage_type: None,
     });
     assert_eq!(weapon.bloom_accumulator_degrees, 0.0);
     (weapon, placement)

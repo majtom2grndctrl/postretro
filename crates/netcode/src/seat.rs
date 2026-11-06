@@ -54,9 +54,10 @@ enum CarriedField<'a> {
     Magazines(&'a mut [Option<u32>; WIELDABLE_SLOT_CAPACITY]),
     ActiveSlot(&'a mut usize),
     LifeState(&'a mut Option<String>),
+    Layers(&'a mut Vec<(String, f32)>),
 }
 
-fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
+fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 7] {
     let CarriedState {
         health_current,
         life_state,
@@ -64,6 +65,7 @@ fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
         wieldables,
         magazines,
         active_slot,
+        layers,
     } = state;
     [
         CarriedField::HealthCurrent(health_current),
@@ -72,6 +74,7 @@ fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
         CarriedField::Magazines(magazines),
         CarriedField::ActiveSlot(active_slot),
         CarriedField::LifeState(life_state),
+        CarriedField::Layers(layers),
     ]
 }
 
@@ -544,6 +547,16 @@ impl SeatTable {
             .ok()
             .map(|_| crate::sim::player_life::life_state_name(registry, pawn, life_state_names));
         let reserve = registry.get_component::<AmmoReserve>(pawn).ok().cloned();
+        let layers = registry
+            .get_component::<postretro_entities::components::defense_layers::DefenseLayersComponent>(pawn)
+            .ok()
+            .map(|component| {
+                component
+                    .layers
+                    .iter()
+                    .map(|layer| (layer.name.clone(), layer.value))
+                    .collect::<Vec<_>>()
+            });
         let inventory = registry.get_component::<Inventory>(pawn).ok().cloned();
         let harvested_weapons: Option<[Option<(String, u32)>; WIELDABLE_SLOT_CAPACITY]> =
             inventory.as_ref().map(|inventory| {
@@ -565,6 +578,7 @@ impl SeatTable {
             && reserve.is_none()
             && inventory.is_none()
             && life_state.is_none()
+            && layers.is_none()
         {
             return;
         }
@@ -615,6 +629,11 @@ impl SeatTable {
                 CarriedField::ActiveSlot(carried_active_slot) => {
                     if let Some(inventory) = inventory.as_ref() {
                         *carried_active_slot = inventory.active_slot;
+                    }
+                }
+                CarriedField::Layers(carried_layers) => {
+                    if let Some(layers) = layers.as_ref() {
+                        carried_layers.clone_from(layers);
                     }
                 }
             }
@@ -809,6 +828,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         health.current = current;
         health
@@ -866,6 +886,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         });
         weapon.magazine = magazine;
         weapon

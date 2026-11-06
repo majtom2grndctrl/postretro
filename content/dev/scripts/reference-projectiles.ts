@@ -1,4 +1,5 @@
 import { activation, defineEntity, defineWeaponPlacement } from "postretro";
+import { explosive, plasma } from "./damage-types";
 
 const PLASMA_RIFLE_MODEL = "models/cyberpunk_weapons/rpg/model.gltf";
 const ROCKET_LAUNCHER_MODEL = "models/cyberpunk_weapons/sci_fi_weapon/model.gltf";
@@ -23,6 +24,7 @@ export const referencePlasmaBoltEntity = defineEntity({
   components: {
     weapon: {
       damage: 10.0,
+      damageType: plasma,
       knockback: { speed: 3.0, upwardBias: 0.1 },
       range: 96.0,
       primary: { trigger: "hold", recoveryMs: 130.0, steps: [activation.shot()] },
@@ -93,6 +95,7 @@ export const referenceRocketEntity = defineEntity({
   components: {
     weapon: {
       damage: 36.0,
+      damageType: explosive,
       range: 128.0,
       primary: { trigger: "press", recoveryMs: 750.0, steps: [activation.shot()] },
       resolution: "projectile",

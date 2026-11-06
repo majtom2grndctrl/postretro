@@ -132,6 +132,13 @@ pub(super) fn ghost_depth_pipeline_state(
 /// built once; a frame draws every ghost through the mode the mod's render
 /// profile picks. Skinned and mover ghosts each hold one; each kind's module
 /// supplies its own constructor over [`GhostPipelines::build`].
+///
+/// A kind's four pipelines share one pipeline layout, material group included,
+/// though the depth draw reads no material. A depth layout with a `None` hole
+/// at the material's group crashes Vulkan and DX12: a ghost's draws alternate
+/// the two pipelines, wgpu does not rebind higher groups when a group goes
+/// from bound to `None`, and it drops the next ghost's repeat `set_bind_group`
+/// as redundant, so the second depth draw reads a stale instance group.
 pub(super) struct GhostPipelines {
     blend: wgpu::RenderPipeline,
     dither: wgpu::RenderPipeline,
@@ -141,11 +148,11 @@ pub(super) struct GhostPipelines {
 
 impl GhostPipelines {
     /// All four pipelines of one ghost `kind` (its label prefix): `create`
-    /// builds one from its draw step, fixed-function state and label.
+    /// builds one from its fixed-function state and label.
     pub(super) fn build(
         kind: &str,
         depth_format: wgpu::TextureFormat,
-        mut create: impl FnMut(GhostDrawStep, GhostPipelineState, &str) -> wgpu::RenderPipeline,
+        mut create: impl FnMut(GhostPipelineState, &str) -> wgpu::RenderPipeline,
     ) -> Self {
         let mut pipeline = |step: GhostDrawStep, mode: GhostTransparency| {
             let (state, step_label) = match step {
@@ -157,7 +164,6 @@ impl GhostPipelines {
                 GhostTransparency::Dither => "Dither",
             };
             create(
-                step,
                 state,
                 &format!("{kind} Ghost {mode_label}{step_label} Pipeline"),
             )

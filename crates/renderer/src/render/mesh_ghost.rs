@@ -53,10 +53,10 @@ fn skinned_ghost_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// The skinned ghost pipeline set. Colour layout: group 0 camera, group 1
-/// material, group 3 the skinned pass's palette + instance data (the same
-/// bind group, at the same index); group 2 stays empty. The depth-only layout
-/// drops the material. No light, shadow or SH group, so ghosts add nothing to
+/// The skinned ghost pipeline set. One layout for both draw steps
+/// ([`super::ghost_pipeline`]): group 0 camera, group 1 material, group 3 the
+/// skinned pass's palette + instance data (the same bind group, at the same
+/// index); group 2 stays empty. No light, shadow or SH group, so ghosts add nothing to
 /// any fragment binding budget. Every pipeline targets the scene colour, so
 /// both draws of a ghost share one pass; the depth-only one writes no colour.
 pub(super) fn skinned_ghost_pipelines(
@@ -80,19 +80,10 @@ pub(super) fn skinned_ghost_pipelines(
         ],
         immediate_size: 0,
     });
-    let depth_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Skinned Ghost Depth Pipeline Layout"),
-        bind_group_layouts: &[Some(camera_bgl), None, None, Some(instance_bgl)],
-        immediate_size: 0,
-    });
-    GhostPipelines::build("Skinned", depth_format, |step, state, label| {
-        let pipeline_layout = match step {
-            GhostDrawStep::Depth => &depth_layout,
-            GhostDrawStep::Colour => &layout,
-        };
+    GhostPipelines::build("Skinned", depth_format, |state, label| {
         device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
-            layout: Some(pipeline_layout),
+            layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
@@ -159,9 +150,7 @@ impl MeshPass {
                 if indices.is_empty() {
                     continue;
                 }
-                if step == GhostDrawStep::Colour {
-                    pass.set_bind_group(1, material_bind_group, &[]);
-                }
+                pass.set_bind_group(1, material_bind_group, &[]);
                 pass.draw_indexed(indices.clone(), 0, span.instances());
             }
         }

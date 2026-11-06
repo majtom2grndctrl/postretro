@@ -73,7 +73,9 @@ Hallway live peaked at 210,505 of 211,248; 2–3 mandatory shortfalls per walk, 
 
 **Row 38, owner, `closet-reveal`.** Door opened; the owner watched the closet and saw steady lighting, no snap or pop, over two sessions. Logs: 0 SH misses, evictions, refusals or growth. Limit: the map's demand is 200 slots, so it cannot be under pool pressure, and no map here both evicts and opens a door. Unexplained, likely unrelated: `[candidate-cull] counter map failed: BufferAsyncError` at manual exit; tour exits never log it.
 
-**Row 42, owner keypress.** Hallway loaded, then six `Alt+Shift+L` cycles to `combat-demo`, sampled every 2 s. In-use fell from 2,463 MiB to 1,441 MiB at the first unload, then held at 1,436–1,463 MiB through five reloads. Exit returned to 862 MB against 819 MB before launch, inside the 750–860 MB spread seen before launches tonight. The v2 `combat-demo.prl` is restored.
+**Row 42, owner keypress.** Hallway loaded, then six `Alt+Shift+L` cycles to `combat-demo`, sampled every 2 s. In-use fell from 2,463 MiB to 1,441 MiB at the first unload, then held at 1,436–1,463 MiB through five reloads. Exit returned to 862 MB against 819 MB before launch, inside the 750–864 MB spread seen before launches tonight. The v2 `combat-demo.prl` is restored.
+
+**Row 37, owner.** Reviewed the four worst `campaign-test` pairs: most sit in a room with a pulsing animated light, so brightness there is not a pool signal. Row closed.
 
 **Row 39.** The columns cannot show a mirror in view. The pool holds the whole map, so a mirror cannot raise demand past it either way.
 
@@ -119,50 +121,50 @@ Accepted, not fixed: a victim that frees nothing is still evicted; path flips ac
 
 ## AC-to-proof
 
-| AC | Row (short) | Proof | Status |
-|---|---|---|---|
-| 1 | Shared node survives either eviction, freed with both, slots reusable | `shared_node_survives_either_eviction_and_frees_with_the_last` | achievable as stated |
-| 2 | Same node on one drain written once | `two_clusters_one_drain_write_a_shared_node_once` | achievable as stated |
-| 3 | Last reference clears before reuse; live reference clears nothing | `last_reference_clears_before_reuse_and_live_reference_clears_nothing` | achievable as stated |
-| 4 | Sampleable with no other cluster resident | `halo_cluster_samples_alone` | achievable as stated |
-| 5 | Partial install failure restores counts (R4) | `failed_install_restores_every_reference_count` | achievable as stated |
-| 6 | Light over two clusters accumulates once, either order | `shared_light_accumulates_once_in_either_order` | achievable as stated |
-| 7 | Reload leaves nothing (R10) | `reload_mid_flight_leaves_nothing_from_the_old_level` | achievable as stated |
-| 8 | Evict and install on one drain, both orders (R1) | `evict_and_install_one_drain_keep_one_live_copy` | achievable as stated |
-| 9 | Evict and re-request in a frame (R2) | `evict_and_rerequest_counts_references_once` | achievable as stated |
-| 10 | Read finishing for an evicted cluster dropped (R3) | `read_finishing_after_eviction_is_dropped` | achievable as stated |
-| 11 | Hint or pin makes only that cluster resident | `pin_makes_only_its_cluster_resident` | achievable as stated |
-| 12 | Disagreeing chunks fail the build, naming both | `disagreeing_chunks_fail_the_build_naming_both` | achievable as stated |
-| 13 | Old version refused by name | `old_directory_version_is_refused_by_name` | achievable as stated |
-| 14 | No owner field, sentinel or role (grep gate) | grep gate, pattern scoped to SH: bare `owner` also hits shadowmask `FaceOwners` | achievable as stated |
-| 15 | Bound equals hand-computed worst cell | `bound_matches_hand_computed_worst_cell_at_each_lead` | achievable as stated |
-| 16 | Small map's bound equals whole map | `wholly_mandatory_map_reports_the_whole_map` | achievable as stated |
-| 17 | Build Summary reports; warns only above threshold | `build_summary_reports_bound_and_warns_above_threshold` | achievable as stated |
-| 18 | No usable id 51 reports whole map | `no_id51_reports_the_whole_map` | achievable as stated |
-| 19 | Non-portal: no reads, residents stay, misses count | `each_fallback_path_holds_and_counts_misses` | achievable as stated |
-| 20 | No id 51: Visible every frame, new cells load | `no_id51_keeps_visible_demand_on_every_path` | achievable as stated |
-| 21 | Portal path: drawn stay Visible | `portal_path_keeps_drawn_clusters_visible` | achievable as stated |
-| 22 | Leaving fallback restores demand that frame | `leaving_fallback_restores_demand_on_that_frame` | achievable as stated |
-| 23 | Settling on fallback keeps full demand | `settling_on_fallback_keeps_full_demand` | achievable as stated |
-| 24 | Settling ending on fallback keeps what it loaded (R9) | `settling_end_on_fallback_keeps_residents` | achievable as stated |
-| 25 | Residents survive a long fallback run (R7) | `long_fallback_run_ages_out_nothing` | achievable as stated |
-| 26 | Teleport during hold (R8) | `teleport_during_hold_follows_the_new_cell` | achievable as stated |
-| 27 | No growth within the bound | `walk_within_bound_never_grows` | achievable as stated |
-| 28 | Full pool evicts optional, lowest first | `full_pool_evicts_optional_lowest_priority_first` | achievable as stated |
-| 29 | Past capacity grows once, warns; device limit refuses | `past_capacity_grows_once_and_warns_by_name`, log capture | achievable as stated |
-| 30 | Pool never exceeds whole map | `pool_never_exceeds_the_whole_map` | achievable, cap read in whole layers (Corrections) |
-| 31 | Initial size equals bound plus headroom | `initial_pool_is_bound_plus_headroom_capped` | achievable, as row 30 |
-| 32 | Evict before growing, grow before refusing | `capacity_order_is_evict_grow_refuse` | achievable as stated |
-| 33 | Deferred behind a retiring generation (R5) | `deferred_behind_retiring_generation_evicts_and_grows_nothing` | achievable as stated |
-| 34 | Growth with a generation retiring (R6) | `growth_with_generation_retiring_keeps_contents_until_done` | achievable as stated |
-| 35 | Hallway ceiling | owner, in-engine; task 9 runs the walk | manual |
-| 36 | Cluster size rule | task 4 evidence; task 9 confirms | manual |
-| 37 | Frames on four maps | owner, in-engine | manual |
-| 38 | Theatrical moments | owner, in-engine | manual |
-| 39 | Planar mirrors | `reflection-lake-test` at a planar tier; growth is reported, not extended here | manual |
-| 40 | Held frames stay lit | task 4 evidence; owner reviews before the hold stands | manual |
-| 41 | Clipped camera | owner, in-engine | manual |
-| 42 | Cleanup | owner, in-engine | manual |
+| AC | Row (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Shared node survives either eviction, freed with both, slots reusable | `shared_node_survives_either_eviction_and_frees_with_the_last` | achievable as stated | pass |
+| 2 | Same node on one drain written once | `two_clusters_one_drain_write_a_shared_node_once` | achievable as stated | pass |
+| 3 | Last reference clears before reuse; live reference clears nothing | `last_reference_clears_before_reuse_and_live_reference_clears_nothing` | achievable as stated | pass |
+| 4 | Sampleable with no other cluster resident | `halo_cluster_samples_alone` | achievable as stated | pass |
+| 5 | Partial install failure restores counts (R4) | `failed_install_restores_every_reference_count` | achievable as stated | pass |
+| 6 | Light over two clusters accumulates once, either order | `shared_light_accumulates_once_in_either_order` | achievable as stated | pass |
+| 7 | Reload leaves nothing (R10) | `reload_mid_flight_leaves_nothing_from_the_old_level` | achievable as stated | pass |
+| 8 | Evict and install on one drain, both orders (R1) | `evict_and_install_one_drain_keep_one_live_copy` | achievable as stated | pass |
+| 9 | Evict and re-request in a frame (R2) | `evict_and_rerequest_counts_references_once` | achievable as stated | pass |
+| 10 | Read finishing for an evicted cluster dropped (R3) | `read_finishing_after_eviction_is_dropped` | achievable as stated | pass |
+| 11 | Hint or pin makes only that cluster resident | `pin_makes_only_its_cluster_resident` | achievable as stated | pass |
+| 12 | Disagreeing chunks fail the build, naming both | `disagreeing_chunks_fail_the_build_naming_both` | achievable as stated | pass |
+| 13 | Old version refused by name | `old_directory_version_is_refused_by_name` | achievable as stated | pass |
+| 14 | No owner field, sentinel or role (grep gate) | grep gate, pattern scoped to SH: bare `owner` also hits shadowmask `FaceOwners` | achievable as stated | pass |
+| 15 | Bound equals hand-computed worst cell | `bound_matches_hand_computed_worst_cell_at_each_lead` | achievable as stated | pass |
+| 16 | Small map's bound equals whole map | `wholly_mandatory_map_reports_the_whole_map` | achievable as stated | pass |
+| 17 | Build Summary reports; warns only above threshold | `build_summary_reports_bound_and_warns_above_threshold` | achievable as stated | pass |
+| 18 | No usable id 51 reports whole map | `no_id51_reports_the_whole_map` | achievable as stated | pass |
+| 19 | Non-portal: no reads, residents stay, misses count | `each_fallback_path_holds_and_counts_misses` | achievable as stated | pass, read with the clarification in Review loop: residents stay except as the last capacity victim (`Held`) |
+| 20 | No id 51: Visible every frame, new cells load | `no_id51_keeps_visible_demand_on_every_path` | achievable as stated | pass |
+| 21 | Portal path: drawn stay Visible | `portal_path_keeps_drawn_clusters_visible` | achievable as stated | pass |
+| 22 | Leaving fallback restores demand that frame | `leaving_fallback_restores_demand_on_that_frame` | achievable as stated | pass |
+| 23 | Settling on fallback keeps full demand | `settling_on_fallback_keeps_full_demand` | achievable as stated | pass |
+| 24 | Settling ending on fallback keeps what it loaded (R9) | `settling_end_on_fallback_keeps_residents` | achievable as stated | pass |
+| 25 | Residents survive a long fallback run (R7) | `long_fallback_run_ages_out_nothing` | achievable as stated | pass |
+| 26 | Teleport during hold (R8) | `teleport_during_hold_follows_the_new_cell` | achievable as stated | pass |
+| 27 | No growth within the bound | `walk_within_bound_never_grows` | achievable as stated | pass |
+| 28 | Full pool evicts optional, lowest first | `full_pool_evicts_optional_lowest_priority_first` | achievable as stated | pass |
+| 29 | Past capacity grows once, warns; device limit refuses | `past_capacity_grows_once_and_warns_by_name`, log capture | achievable as stated | pass |
+| 30 | Pool never exceeds whole map | `pool_never_exceeds_the_whole_map` | achievable, cap read in whole layers (Corrections) | pass |
+| 31 | Initial size equals bound plus headroom | `initial_pool_is_bound_plus_headroom_capped` | achievable, as row 30 | pass |
+| 32 | Evict before growing, grow before refusing | `capacity_order_is_evict_grow_refuse` | achievable as stated | pass |
+| 33 | Deferred behind a retiring generation (R5) | `deferred_behind_retiring_generation_evicts_and_grows_nothing` | achievable as stated | pass |
+| 34 | Growth with a generation retiring (R6) | `growth_with_generation_retiring_keeps_contents_until_done` | achievable as stated | pass |
+| 35 | Hallway ceiling | owner, in-engine; task 9 runs the walk | manual | measured, a finding not a gate: steady 2,170 against 3,011 MiB, peak 2,574 against 3,577 MiB, SH pool 399 against 1,440 MiB, no SH growth. Steady is 122 MiB and peak 526 MiB over 2 GB; the peak is lightmap growth |
+| 36 | Cluster size rule | task 4 evidence; task 9 confirms | manual | pass, owner ruling: today's limit stays |
+| 37 | Frames on four maps | owner, in-engine | manual | pass, owner reviewed: 0 pairs over noise at equal clock on all four maps; the frames that differ at matched pose sit in a room with a pulsing animated light |
+| 38 | Theatrical moments | owner, in-engine | manual | pass, owner saw steady lighting on `closet-reveal`, logs clean. Limit: 200 slots, so no pool pressure; no map here both evicts and opens a door |
+| 39 | Planar mirrors | `reflection-lake-test` at a planar tier; growth is reported, not extended here | manual | pass: no growth, and the pool holds the whole map on `reflection-lake-test`, so a mirror cannot exceed it. Whether a mirror was in view is unconfirmed |
+| 40 | Held frames stay lit | task 4 evidence; owner reviews before the hold stands | manual | pass, owner ruling: the hold stands |
+| 41 | Clipped camera | owner, in-engine | manual | pass, owner ruling, as a memory row: pool size unchanged. Frame time is a finding: median 32.5 against 17 ms on solid-cell frames |
+| 42 | Cleanup | owner, in-engine | manual | pass: six reloads held at 1,436–1,463 MiB; exit 862 against 819 MB |
 
 Walk, shot and frame-diff tools stay on `spike/memory-measure-tour`. They are ported to a throwaway measurement branch and never merge here.
 
@@ -178,7 +180,7 @@ Walk, shot and frame-diff tools stay on `spike/memory-measure-tour`. They are po
 | 6 | Compiler: stop producing owner data, per-node and per-row hash verification, bound over camera cells, Build Summary, no-id-51 entry | worker, compiler | 5 | done: `prl-build` bin 2315 pass, `sh_mandatory_bound_compile` 2, format 664, loader 333, app `sh_` 271; fixture rebaked, four fixture tests green; rows 12, 15–18. Full app bin deferred to task 9 |
 | 7 | Pool sized once from the bound; whole-map cap; retire the 256 MiB floor for SH | worker, renderer | 5, 6 | done: app bin 2472, renderer with GPU 1288, render-cpu 643, loader 333, gate passes; rows 27, 30, 31 |
 | 8 | Author text: FGD, `docs/level_design.md`; grep gate | integrating executor | 6 | done: gate passes; row 14 |
-| 9 | Cold rebake, manual rows, preflight, review panel | integrating executor | 7, 8 | |
+| 9 | Cold rebake, manual rows, preflight, review panel | integrating executor | 7, 8 | done: preflight at ae99bc0b7; 16 recorded walks and a Metal capture; every row has a result |
 
 Workers run sequentially on the feature branch's warm target: tasks 1–3 share `targeting.rs` and compile through each other. The integrating executor reviews each diff, owns `plan.md`, and commits.
 

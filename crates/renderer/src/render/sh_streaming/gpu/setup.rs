@@ -61,7 +61,7 @@ impl StreamingGpuPools {
         sources: &ShStreamSourceMetadata,
         sparse_compose: std::sync::Arc<SparseComposeLayouts>,
         shape: AtlasShape,
-        sparse_capacity_floors: &SparseCapacityFloors,
+        sparse_capacities: &SparseCapacities,
         whole_map: WholeMapCap,
         probe_occlusion_enabled: bool,
         sh: &mut ShVolumeResources,
@@ -277,7 +277,7 @@ impl StreamingGpuPools {
             sh,
             pipelines,
             &sparse_compose.indirect,
-            sparse_capacity_floors.get(&27).copied(),
+            sparse_capacities.get(&27).copied(),
         )?;
         let direct_compose = if direct_compose_required {
             Some(StreamingDirectCompose::new(
@@ -305,7 +305,7 @@ impl StreamingGpuPools {
                 sh,
                 pipelines,
                 &sparse_compose,
-                sparse_capacity_floors,
+                sparse_capacities,
             )?)
         } else {
             None
@@ -486,7 +486,7 @@ impl StreamingGpuPools {
             whole_resident_scatter_bytes: sh.billboard_direct_scatter.capacity_bytes(),
             whole_map,
             probe_occlusion_enabled,
-            sparse_capacity_floors: sparse_capacity_floors.clone(),
+            sparse_capacities: sparse_capacities.clone(),
             growth: PoolGrowthCounters::default(),
             staging: StagingPool::default(),
             upload_scratch: Vec::new(),

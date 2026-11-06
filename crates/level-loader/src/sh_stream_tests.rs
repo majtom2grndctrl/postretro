@@ -209,22 +209,28 @@ fn old_stream_section_versions_are_refused_by_name() {
 // bound must survive the streaming load unchanged.
 #[test]
 fn stream_load_hands_the_bound_tail_on_with_the_directory() {
+    // The fixture streams ids 27, 41 and 45, at these rows of its resource table.
+    let families = |worst_entries| {
+        [0, 3, 4]
+            .map(|resource_index| ShMandatoryBoundFamily {
+                resource_index,
+                worst_entries,
+                worst_tile_f16: 5,
+            })
+            .to_vec()
+    };
     let mandatory_bound = vec![
         ShMandatoryBoundEntry {
             lead: 160,
             worst_dense_slots: 11,
             worst_cell: 0,
-            families: vec![ShMandatoryBoundFamily {
-                resource_index: 0,
-                worst_entries: 3,
-                worst_tile_f16: 5,
-            }],
+            families: families(3),
         },
         ShMandatoryBoundEntry {
             lead: 320,
             worst_dense_slots: 13,
             worst_cell: 0,
-            families: Vec::new(),
+            families: families(4),
         },
     ];
     let fixture = write_stream_fixture_with(

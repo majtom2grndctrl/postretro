@@ -208,14 +208,14 @@ impl StreamingGpuPools {
         selection_weights: &wgpu::Buffer,
     ) -> Result<(), ShResidencyDrainError> {
         let pipelines = self.pipelines.clone();
-        let mut floors = self.sparse_capacity_floors.clone();
+        let mut capacities = self.sparse_capacities.clone();
         let mut sections_to_grow = Vec::new();
         for (&section_id, &growth) in required {
             if !self.sparse_is_short(section_id, growth.needed) {
                 continue;
             }
             let grown = self.sparse_growth_capacity(section_id, growth, sources)?;
-            floors.insert(section_id, grown);
+            capacities.insert(section_id, grown);
             sections_to_grow.push(section_id);
         }
         if sections_to_grow.is_empty() {
@@ -240,7 +240,9 @@ impl StreamingGpuPools {
         // active family. A later constructor failure must leave all active
         // buffers and their CPU allocation mirrors untouched.
         let indirect_replacement = if sections_to_grow.contains(&27) {
-            let floor = *floors.get(&27).ok_or(ShResidencyDrainError::SlotOverflow)?;
+            let capacity = *capacities
+                .get(&27)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
             Some(StreamingIndirectCompose::new(
                 device,
                 &self.limits,
@@ -253,7 +255,7 @@ impl StreamingGpuPools {
                 sh,
                 &pipelines,
                 &self.sparse_compose.indirect,
-                Some(floor),
+                Some(capacity),
             )?)
         } else {
             None
@@ -296,7 +298,7 @@ impl StreamingGpuPools {
                 ) {
                     continue;
                 }
-                let floor = *floors
+                let capacity = *capacities
                     .get(&section_id)
                     .ok_or(ShResidencyDrainError::SlotOverflow)?;
                 let replacement = direct.build_sparse_replacement(
@@ -317,7 +319,7 @@ impl StreamingGpuPools {
                     &pipelines,
                     &self.sparse_compose,
                     section_id,
-                    floor,
+                    capacity,
                 )?;
                 match section_id {
                     DIRECT_DELTA_SECTION => promotion_replacement = Some(replacement),
@@ -451,7 +453,7 @@ impl StreamingGpuPools {
                 complete,
             });
         }
-        self.sparse_capacity_floors = floors;
+        self.sparse_capacities = capacities;
         self.growth.record(
             sections_to_grow.len(),
             self.active_capacity_bytes,

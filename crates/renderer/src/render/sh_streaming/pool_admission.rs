@@ -129,9 +129,24 @@ impl ShResidencyState {
         Ok(true)
     }
 
+    /// Every family's capacity is the whole map and nothing has ever left any
+    /// pool, so first-fit from empty has left no hole. Eviction has no work
+    /// here, and without eviction this stays true. A level reaching the cap
+    /// any other way reports false and keeps evicting, because victims are
+    /// what recover fragmentation.
+    pub(super) fn pool_holds_whole_map(&self) -> bool {
+        self.gpu
+            .as_ref()
+            .is_some_and(StreamingGpuPools::holds_whole_map)
+            && !self.dense_slots.has_released()
+            && !self.sparse_pools.values().any(SparsePool::has_released)
+    }
+
     /// A pool at the whole map holds every node and row if first-fit lets it,
     /// so this refusal means fragmentation stranded free slots. Nothing moves
-    /// live storage, so the cluster stays dark until a retry finds room.
+    /// live storage, so the cluster stays dark until eviction opens a range
+    /// that fits. The controller retries one hysteresis window after each
+    /// refusal, for as long as the cluster stays a target.
     pub(super) fn warn_whole_map_refusal(&mut self, family: &str, cluster_id: u32) {
         if !std::mem::replace(&mut self.whole_map_refusal_warned, true) {
             log::warn!(

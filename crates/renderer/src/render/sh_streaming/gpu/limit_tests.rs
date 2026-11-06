@@ -16,7 +16,7 @@ pub(super) fn replace_shape(
     replace_pools(fixture, device, raw, limits, shape, &BTreeMap::new());
 }
 
-/// Pools of exactly `shape` and `sparse_floors`: the fixture's stand-in for a
+/// Pools of exactly `shape` and `sparse_capacities`: the fixture's stand-in for a
 /// pool sized from the bound.
 pub(super) fn replace_pools(
     fixture: &mut UploadOrderSh,
@@ -24,7 +24,7 @@ pub(super) fn replace_pools(
     raw: &wgpu::Queue,
     limits: &wgpu::Limits,
     shape: AtlasShape,
-    sparse_floors: &SparseCapacityFloors,
+    sparse_capacities: &SparseCapacities,
 ) {
     // Every override is at or below the grant; alignments remain the grant's.
     let grant = device.limits();
@@ -41,7 +41,7 @@ pub(super) fn replace_pools(
             &fixture.map.sources(),
             std::sync::Arc::clone(&fixture.state.sparse_compose),
             shape,
-            sparse_floors,
+            sparse_capacities,
             WholeMapCap::uncapped(),
             false,
             &mut fixture.sh,
@@ -87,7 +87,7 @@ fn grow_sparse(
     f: &mut UploadOrderSh,
     device: &wgpu::Device,
     queue: &UploadQueue,
-    required: &SparseCapacityFloors,
+    required: &SparseCapacities,
 ) -> Result<(), ShResidencyDrainError> {
     let growth = required
         .iter()

@@ -1,8 +1,9 @@
 //! Proof that chunks agree on the storage they share.
 //!
-//! The first resident cluster writes a shared node or row, and every later
-//! reference trusts that copy, so all chunks must carry the same bytes. BC6H
-//! is encoded per chunk, which is why agreement is checked rather than assumed.
+//! A shared node or row is stored once at runtime, so every chunk that carries
+//! it must carry the same bytes (see context/lib/rendering_pipeline.md §4
+//! Bounded SH pool). BC6H is encoded per chunk, which is why agreement is
+//! checked rather than assumed.
 //! Hashes only: chunks are spooled one at a time, and no payload stays here.
 //! See: context/lib/build_pipeline.md §PRL section IDs (SH mandatory bound)
 

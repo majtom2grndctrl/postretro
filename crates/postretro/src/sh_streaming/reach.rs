@@ -22,10 +22,13 @@ pub(super) struct ShReach {
 }
 
 impl ShReach {
-    /// Whether `frame`'s id 51 serves this cell map. The loader keeps ids 49
-    /// and 51 on one level, so only a mixed fixture fails this.
+    /// Whether `frame`'s id 51 serves this cell map and has a camera cell, the
+    /// test the compiler's bound takes: past it the bound is the whole map. The
+    /// loader keeps ids 49 and 51 on one level, so only a mixed fixture fails
+    /// the count.
     pub(super) fn is_usable(frame: &DemandFrame<'_>, cell_to_cluster: &[u32]) -> bool {
         frame.residency_set.camera_cell_count() == cell_to_cluster.len()
+            && frame.residency_set.has_camera_sets()
     }
 
     /// Applies one frame's cell demand; `None` (no usable id 51) empties the

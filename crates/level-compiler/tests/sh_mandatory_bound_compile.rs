@@ -115,11 +115,11 @@ fn a_level_with_portals_stores_both_leads_and_names_the_worst_cell() {
     assert!(bound.iter().all(|entry| entry.worst_dense_slots > 0));
     let line = summary_line(&stdout, "SH mandatory memory:");
     assert!(
-        line.contains(&format!("worst in cell {} near", bound[0].worst_cell)),
+        line.contains(&format!("peaks in cell {}, near", bound[0].worst_cell)),
         "{line}"
     );
     assert!(
-        line.contains(&format!("({} probe slots)", bound[0].worst_dense_slots)),
+        line.contains(&format!("{} probe slots", bound[0].worst_dense_slots)),
         "{line}"
     );
     summary_line(&stdout, "  at the maximum 32 m lead:");

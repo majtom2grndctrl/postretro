@@ -23,6 +23,13 @@ pub(in crate::render::sh_streaming) struct AtlasShape {
 }
 
 impl AtlasShape {
+    /// The most slots any shape can hold on this device: every layer full.
+    pub(in crate::render::sh_streaming) fn device_slot_limit(limits: &wgpu::Limits) -> u32 {
+        let maximum = u64::from(limits.max_texture_dimension_2d / PHYSICAL_TILE_DIMENSION);
+        let slots = maximum * maximum * u64::from(limits.max_texture_array_layers);
+        u32::try_from(slots).unwrap_or(u32::MAX)
+    }
+
     pub(in crate::render::sh_streaming) fn for_slots(
         slots: u32,
         whole_slots: u32,

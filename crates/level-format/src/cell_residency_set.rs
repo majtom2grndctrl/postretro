@@ -60,6 +60,13 @@ impl CellResidencySetSection {
         self.offsets.len().saturating_sub(1)
     }
 
+    /// Whether any camera cell has a baked set. A camera cell's set always
+    /// holds at least that cell, so this is the compiler's "has camera cells":
+    /// a level whose cells are all solid or exterior has an empty section.
+    pub fn has_camera_sets(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
     /// The camera cell's entries, sorted by (lead, cell id). Entries with
     /// lead <= L form its mandatory set at lead L. Empty past the table.
     pub fn entries_for(&self, camera_cell: usize) -> &[ResidencyEntry] {

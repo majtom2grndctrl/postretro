@@ -11,8 +11,11 @@ use postretro_level_format::sh_pool_cost::{
     ShDenseSlotTextures, sh_dense_slot_bytes, sh_sparse_capacity_bytes,
 };
 
-/// About what the other pools leave of the 2 GB target. Fixed, not an author
-/// key, like occluder classification.
+/// What the other pools leave of the 2 GB target: 2048 MiB minus the lightmap
+/// pool (about 490 MiB), the shadow pools (about 427 MiB) and everything else
+/// (about 650 MiB) is about 480 MiB, rounded to 512 MiB. Recompute from those
+/// figures when any of them moves. Fixed, not an author key, like occluder
+/// classification.
 const SH_MANDATORY_WARN_BYTES: u64 = 512 * MIB;
 const MIB: u64 = 1024 * 1024;
 
@@ -29,6 +32,9 @@ pub(super) struct PricedLead {
 #[derive(Debug, Clone, PartialEq)]
 struct WorstCellPlace {
     cell: u32,
+    /// Engine space, metres: the shared stages hold no editor coordinates, and
+    /// the inverse of the source adapter's axis swizzle and scale lives with
+    /// the adapter, so this does not claim to be a map coordinate.
     center: [f32; 3],
 }
 
@@ -84,14 +90,15 @@ impl ShMandatoryReport {
         };
         let mut lines = vec![match &sized.worst {
             Some(worst) => format!(
-                "SH mandatory memory: {} at {}, worst in {} ({} probe slots)",
+                "SH mandatory memory: {} pool demand at {} (how far ahead of the camera \
+                 probes load), {} probe slots; dense demand peaks {}",
                 mib(sized.bytes),
                 metres(sized.lead),
-                worst.describe(),
                 sized.dense_slots,
+                worst.describe(),
             ),
             None => format!(
-                "SH mandatory memory: {} ({} probe slots), the whole map: \
+                "SH mandatory memory: {} pool demand, {} probe slots, the whole map: \
                  without usable portals every probe stays loaded",
                 mib(sized.bytes),
                 sized.dense_slots,
@@ -100,11 +107,11 @@ impl ShMandatoryReport {
         lines.extend(wider.iter().filter_map(|lead| {
             lead.worst.as_ref().map(|worst| {
                 format!(
-                    "  at the maximum {}: {}, worst in {} ({} probe slots)",
+                    "  at the maximum {}: {} pool demand, {} probe slots; dense demand peaks {}",
                     metres(lead.lead),
                     mib(lead.bytes),
-                    worst.describe(),
                     lead.dense_slots,
+                    worst.describe(),
                 )
             })
         }));
@@ -142,8 +149,8 @@ impl ShMandatoryReport {
         );
         Some(match &sized.worst {
             Some(worst) => format!(
-                "{over} Add walls or doors near {} so less of the map can be seen and reached from there.",
-                worst.describe(),
+                "{over} Add walls or doors near {}, where probe demand peaks, so less of the map can be seen and reached from there.",
+                worst.position(),
             ),
             None => format!(
                 "{over} Seal the level so it has usable portals, which let probes load by area."
@@ -164,8 +171,12 @@ fn place_of(cell: u32, cells: &CellsSection) -> WorstCellPlace {
 
 impl WorstCellPlace {
     fn describe(&self) -> String {
+        format!("in cell {}, near {}", self.cell, self.position())
+    }
+
+    fn position(&self) -> String {
         let [x, y, z] = self.center;
-        format!("cell {} near ({x:.1}, {y:.1}, {z:.1})", self.cell)
+        format!("({x:.1}, {y:.1}, {z:.1}) engine metres")
     }
 }
 

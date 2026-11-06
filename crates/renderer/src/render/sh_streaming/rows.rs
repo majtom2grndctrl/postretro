@@ -189,11 +189,9 @@ impl ShResidencyState {
                 _ => {}
             }
         }
-        let was_pending = self.pending_promotion.remove(&cluster_id);
+        self.pending_promotion.remove(&cluster_id);
         self.sampleable.remove(&cluster_id);
-        if was_pending {
-            self.release_unbacked_compose_waits();
-        }
+        self.release_unbacked_compose_waits();
         if let Some(gpu) = self.gpu.as_ref() {
             // Publish zeros before freed ranges can be reused by a later ready
             // item in the same drain. The texture moments retain their baked
@@ -217,7 +215,8 @@ impl ShResidencyState {
     /// A cluster that wrote nothing waits on a compose epoch another install
     /// asked for. If that install left with the last dirty row, no pass will
     /// run to reach the epoch, and whatever was shared is composed or freed,
-    /// so the wait is over.
+    /// so the wait is over. Any eviction can take that row, promoted or not,
+    /// so this runs after each one.
     fn release_unbacked_compose_waits(&mut self) {
         let indirect_idle = !self
             .indirect_dirty_rows

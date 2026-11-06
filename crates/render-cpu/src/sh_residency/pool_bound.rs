@@ -18,20 +18,24 @@ pub struct ShPoolBound {
     pub sparse: BTreeMap<u32, (u32, u32)>,
 }
 
-/// The entry at `min(DEFAULT_LEAD, baked maximum)`, or at lead 0 with no id 51.
-/// Compiler and runtime share the constant, so a level without that entry
-/// breaks the contract and is refused rather than sized from a guess.
+/// The entry at `min(DEFAULT_LEAD, baked maximum)`. With no id 51, or an id 51
+/// with no camera cell, the one whole-map entry instead: lead 0, `worst_cell`
+/// [`WHOLE_MAP_WORST_CELL`]. Compiler and runtime share the constant, so a
+/// level without that entry breaks the contract and is refused rather than
+/// sized from a guess.
 pub fn stored_pool_bound(
     directory: &ClusterDirectorySection,
     baked_max_lead: Option<u32>,
 ) -> Result<ShPoolBound, ShResidencyDrainError> {
     let lead = DEFAULT_LEAD.min(baked_max_lead.unwrap_or(0));
     let entries = &directory.mandatory_bound;
-    let entry = match entries.as_slice() {
+    let entry = match (entries.as_slice(), baked_max_lead) {
         // A level with id 51 but no camera cell has no set to take a worst
         // cell from either, so the whole map stands at any lead.
-        [whole] if whole.worst_cell == WHOLE_MAP_WORST_CELL => Some(whole),
-        _ => entries.iter().find(|entry| entry.lead == lead),
+        ([whole], _) if whole.worst_cell == WHOLE_MAP_WORST_CELL => Some(whole),
+        // Reach is gone, so a camera-cell figure would undersize the pool.
+        (_, None) => None,
+        (_, Some(_)) => entries.iter().find(|entry| entry.lead == lead),
     }
     .ok_or_else(|| ShResidencyDrainError::MandatoryBoundMismatch {
         expected_lead: lead,
@@ -171,13 +175,19 @@ mod tests {
     }
 
     // Without id 51 only a whole-map entry can hold the level: reach is gone,
-    // so a camera-cell figure would undersize the pool.
+    // so a camera-cell figure would undersize the pool. Lead 0 is no exception:
+    // it matches the lead a level with no id 51 looks for.
     #[test]
     fn a_camera_cell_entry_is_refused_with_no_id51() {
-        let stored = directory(vec![entry(DEFAULT_LEAD, 10, 0)]);
-        assert!(matches!(
-            stored_pool_bound(&stored, None),
-            Err(ShResidencyDrainError::MandatoryBoundMismatch { .. })
-        ));
+        for lead in [DEFAULT_LEAD, 0] {
+            let stored = directory(vec![entry(lead, 10, 0)]);
+            assert_eq!(
+                stored_pool_bound(&stored, None),
+                Err(ShResidencyDrainError::MandatoryBoundMismatch {
+                    expected_lead: 0,
+                    stored_leads: vec![lead],
+                })
+            );
+        }
     }
 }

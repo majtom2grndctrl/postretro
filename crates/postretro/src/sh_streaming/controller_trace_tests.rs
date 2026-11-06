@@ -196,6 +196,7 @@ fn class_name(class: TargetClass) -> &'static str {
         TargetClass::SeamWarm => "seam-warm",
         TargetClass::Band => "band",
         TargetClass::Hysteresis => "hysteresis",
+        TargetClass::Held => "held",
     }
 }
 

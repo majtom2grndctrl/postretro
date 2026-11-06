@@ -310,7 +310,7 @@ fn is_word_aligned_tile_row(row: &DirectSparseRowUpload<'_>) -> bool {
 }
 
 /// The grid records and sparse buffers of one direct compose family, sized
-/// from the residency plan's `layout` raised to `sparse_floor`.
+/// from the residency plan's `layout` raised to `sparse_capacity`.
 pub(super) fn build_grid_and_sparse(
     device: &wgpu::Device,
     limits: &wgpu::Limits,
@@ -318,11 +318,11 @@ pub(super) fn build_grid_and_sparse(
     layout: &SparseComposeLayout,
     shape: AtlasShape,
     label: &'static str,
-    sparse_floor: Option<(u32, u32)>,
+    sparse_capacity: Option<(u32, u32)>,
 ) -> Result<(ComposeGridParams, StreamingSparseBuffers, wgpu::Buffer, u64), ShResidencyDrainError> {
     let affinity_dims = layout.affinity_dims;
-    let entry_capacity = layout.entry_capacity(sparse_floor);
-    let tile_f16_capacity = layout.tile_f16_capacity(sparse_floor);
+    let entry_capacity = layout.entry_capacity(sparse_capacity);
+    let tile_f16_capacity = layout.tile_f16_capacity(sparse_capacity);
     let cells = checked_cell_count(affinity_dims)?;
     let cells_usize = usize::try_from(cells).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
     let entry_len =

@@ -14,7 +14,8 @@ use postretro_level_loader::{
 use postretro_render_cpu::sh_residency::ShPoolBound;
 
 use super::allocator::reserved_tile_f16;
-use super::{AtlasShape, ShResidencyDrainError, SparseCapacityFloors};
+use super::gpu::sparse_device_limits;
+use super::{AtlasShape, ShResidencyDrainError, SparseCapacities};
 
 mod validation;
 
@@ -30,7 +31,7 @@ const POOL_HEADROOM_PERCENT: u64 = 25;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WholeMapCap {
     pub(crate) dense_slots: u32,
-    pub(crate) sparse: SparseCapacityFloors,
+    pub(crate) sparse: SparseCapacities,
 }
 
 #[cfg(test)]
@@ -53,7 +54,7 @@ impl WholeMapCap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InitialPool {
     pub(crate) dense_slots: u32,
-    pub(crate) sparse_capacities: SparseCapacityFloors,
+    pub(crate) sparse_capacities: SparseCapacities,
     pub(crate) whole_map: WholeMapCap,
     pub(crate) pool_bytes: u64,
 }
@@ -68,14 +69,15 @@ struct SparsePlan {
 }
 
 /// Plans the first and only intended pool generation, without creating GPU
-/// objects: `bound` plus headroom, capped at the whole map. A family the bound
-/// omits starts at its sentinel alone. Dense takes at least one slot, so an
-/// all-invalid map keeps the sampler contract's bound texture.
+/// objects: `bound` plus headroom, capped at the whole map and clamped to the
+/// device. Headroom never fails a load: only a bound itself past the device
+/// does. Dense takes at least one slot, so an all-invalid map keeps the sampler
+/// contract's bound texture.
 ///
-/// A dense pool that holds the map stops eviction, so nothing frees sparse
-/// rows either: every family then starts whole, or it would grow mid-level.
-/// A family past the device stays at its bound, for growth to refuse by name
-/// if it must, rather than failing a load its bound would pass.
+/// A dense pool that holds the map starts every family whole, because a level
+/// holding the map in every family stops evicting. A family past the device
+/// stays at its clamped size instead. The level then keeps evicting, and growth
+/// refuses by name if it must, rather than failing a load its bound would pass.
 pub(crate) fn plan_initial_pool(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
@@ -93,9 +95,12 @@ pub(crate) fn plan_initial_pool(
 
     validate_fixed_storage_bindings(base, sources, limits)?;
     let dense_slot_bytes = dense_slot_bytes(base, sources)?;
-    let mut sparse = sparse_plans(sources, &bound.sparse)?;
+    let mut sparse = sparse_plans(sources, &bound.sparse, limits)?;
 
-    let dense_slots = with_headroom_capped(bound.dense_slots, whole_dense_slots).max(1);
+    let dense_slots = with_headroom_capped(bound.dense_slots, whole_dense_slots)
+        .min(AtlasShape::device_slot_limit(limits))
+        .max(bound.dense_slots.min(whole_dense_slots))
+        .max(1);
     let shape = AtlasShape::for_slots(dense_slots, whole_dense_slots, limits)?;
     if shape.slots >= whole_dense_slots {
         for plan in sparse.values_mut() {
@@ -164,6 +169,7 @@ fn dense_slot_bytes(
 fn sparse_plans(
     sources: &ShStreamSourceMetadata,
     bound: &BTreeMap<u32, (u32, u32)>,
+    limits: &wgpu::Limits,
 ) -> Result<BTreeMap<u32, SparsePlan>, ShResidencyDrainError> {
     let mut plans = BTreeMap::new();
     for (source, has_descriptor_indices) in [
@@ -176,16 +182,28 @@ fn sparse_plans(
         };
         let section_id = source.section_id;
         let (whole_entries, whole_tiles) = whole_sparse_payload(source)?;
-        let (worst_entries, worst_tiles) = bound.get(&section_id).copied().unwrap_or((0, 0));
+        let &(worst_entries, worst_tiles) = bound
+            .get(&section_id)
+            .ok_or(ShResidencyDrainError::MandatoryBoundMissingFamily { section_id })?;
+        let cell_count = checked_cell_count(source.affinity_dims)?;
+        let padded = with_sentinel((
+            with_headroom_capped(worst_entries, whole_entries),
+            with_headroom_capped(worst_tiles, whole_tiles),
+        ))?;
+        let unpadded = with_sentinel((
+            worst_entries.min(whole_entries),
+            worst_tiles.min(whole_tiles),
+        ))?;
+        let (entry_limit, tile_limit) = sparse_device_limits(cell_count, limits);
         let prior = plans.insert(
             section_id,
             SparsePlan {
-                capacity: with_sentinel((
-                    with_headroom_capped(worst_entries, whole_entries),
-                    with_headroom_capped(worst_tiles, whole_tiles),
-                ))?,
+                capacity: (
+                    padded.0.min(entry_limit).max(unpadded.0),
+                    padded.1.min(tile_limit).max(unpadded.1),
+                ),
                 whole: with_sentinel((whole_entries, whole_tiles))?,
-                cell_count: checked_cell_count(source.affinity_dims)?,
+                cell_count,
                 has_descriptor_indices,
                 descriptor_index_count: source.animation_descriptor_indices.len(),
             },
@@ -197,13 +215,11 @@ fn sparse_plans(
             });
         }
     }
-    if bound
+    if let Some(&section_id) = bound
         .keys()
-        .any(|section_id| !plans.contains_key(section_id))
+        .find(|&section_id| !plans.contains_key(section_id))
     {
-        return Err(ShResidencyDrainError::GpuCapacity {
-            reason: "streamed SH bound names an absent sparse source",
-        });
+        return Err(ShResidencyDrainError::MandatoryBoundExtraFamily { section_id });
     }
     Ok(plans)
 }

@@ -26,7 +26,7 @@ pub(super) struct PoolDemand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PoolPlacement {
     pub(super) dense_slots: u32,
-    pub(super) sparse: SparseCapacityFloors,
+    pub(super) sparse: SparseCapacities,
 }
 
 impl ShResidencyState {

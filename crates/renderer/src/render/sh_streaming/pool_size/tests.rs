@@ -106,8 +106,8 @@ fn sparse_takes_the_same_headroom_plus_its_sentinel() {
     assert_eq!(plan.sparse_capacities[&27], (13 + 1, 26 + 2));
 }
 
-// Eviction stops once dense holds the map, so sparse rows stop freeing too. A
-// family sized from the bound would then grow mid-level, which row 27 forbids.
+// Eviction stops only once every family holds the map, so a family sized from
+// the bound would keep a dense-whole level evicting for no reason.
 #[test]
 fn a_dense_pool_holding_the_map_starts_every_family_whole() {
     let source = sparse_source(27, 100);
@@ -201,7 +201,7 @@ fn whole_sparse_cap_counts_each_rows_word_reservation() {
 }
 
 #[test]
-fn a_family_the_bound_omits_starts_at_its_sentinel() {
+fn a_zero_family_in_the_bound_starts_at_its_sentinel() {
     let sources = ShStreamSourceMetadata {
         indirect_delta: Some(sparse_source(27, 4)),
         ..Default::default()
@@ -209,7 +209,7 @@ fn a_family_the_bound_omits_starts_at_its_sentinel() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
-        &dense_bound(1),
+        &sparse_bound(27, (0, 0)),
         100,
         &wgpu::Limits::default(),
     )
@@ -217,18 +217,104 @@ fn a_family_the_bound_omits_starts_at_its_sentinel() {
     assert_eq!(plan.sparse_capacities[&27], (1, 2));
 }
 
+// Regression: an omitted family was read as a zero bound, so corrupt data sized
+// a pool from nothing.
 #[test]
-fn a_bound_naming_an_absent_source_is_refused() {
+fn a_bound_omitting_a_streamed_family_is_refused_by_name() {
+    let sources = ShStreamSourceMetadata {
+        indirect_delta: Some(sparse_source(27, 4)),
+        ..Default::default()
+    };
+    let error = plan_initial_pool(
+        &base(IRRADIANCE_FORMAT_RGBA16F),
+        &sources,
+        &dense_bound(1),
+        100,
+        &wgpu::Limits::default(),
+    )
+    .unwrap_err();
     assert_eq!(
+        error,
+        ShResidencyDrainError::MandatoryBoundMissingFamily { section_id: 27 }
+    );
+    assert!(error.to_string().contains("id-27"));
+}
+
+// Regression: an extra family failed as a capacity problem, as if the device
+// were short.
+#[test]
+fn a_bound_naming_an_absent_source_is_refused_by_name() {
+    let error = plan_initial_pool(
+        &base(IRRADIANCE_FORMAT_RGBA16F),
+        &ShStreamSourceMetadata::default(),
+        &sparse_bound(48, (1, 2)),
+        1,
+        &wgpu::Limits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ShResidencyDrainError::MandatoryBoundExtraFamily { section_id: 48 }
+    );
+    assert!(error.to_string().contains("id-48"));
+}
+
+// Regression: a bound the device could hold failed the load once headroom took
+// it past the limit. Sixteen words and one row leave 13 entries.
+#[test]
+fn headroom_clamps_to_a_sparse_device_limit_and_only_the_bound_can_fail_it() {
+    let sources = ShStreamSourceMetadata {
+        indirect_delta: Some(sparse_source(27, 100)),
+        ..Default::default()
+    };
+    let limits = wgpu::Limits {
+        max_buffer_size: 64,
+        max_storage_buffer_binding_size: 64,
+        ..Default::default()
+    };
+    let plan = |worst| {
+        plan_initial_pool(
+            &base(IRRADIANCE_FORMAT_RGBA16F),
+            &sources,
+            &sparse_bound(27, worst),
+            100,
+            &limits,
+        )
+    };
+
+    assert_eq!(plan((10, 20)).unwrap().sparse_capacities[&27], (13, 28));
+    assert_eq!(
+        plan((20, 20)),
+        Err(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed sparse entry pool",
+        })
+    );
+}
+
+// Dense takes the same rule: four layers of 64 tiles hold a bound of 240, whose
+// headroom asks for 300.
+#[test]
+fn headroom_clamps_to_the_dense_device_limit_and_only_the_bound_can_fail_it() {
+    let limits = wgpu::Limits {
+        max_texture_dimension_2d: 64,
+        max_texture_array_layers: 4,
+        ..Default::default()
+    };
+    let plan = |bound| {
         plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &ShStreamSourceMetadata::default(),
-            &sparse_bound(27, (1, 2)),
-            1,
-            &wgpu::Limits::default(),
-        ),
+            &dense_bound(bound),
+            1_000,
+            &limits,
+        )
+    };
+
+    assert_eq!(plan(240).unwrap().dense_slots, 256);
+    assert_eq!(
+        plan(257),
         Err(ShResidencyDrainError::GpuCapacity {
-            reason: "streamed SH bound names an absent sparse source",
+            reason: "streamed SH pool needs unsupported array layers",
         })
     );
 }
@@ -261,7 +347,10 @@ fn pool_bytes_charge_every_coupled_direct_dense_texture() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_BC6H),
         &sources,
-        &dense_bound(u32::MAX),
+        &ShPoolBound {
+            dense_slots: u32::MAX,
+            sparse: BTreeMap::from([(41, (0, 0)), (45, (0, 0))]),
+        },
         100,
         &wgpu::Limits::default(),
     )

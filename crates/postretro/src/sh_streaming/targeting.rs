@@ -98,7 +98,8 @@ impl ShResidencyController {
             if directive.class != TargetClass::Hysteresis {
                 state.last_target_time = Some(monotonic_seconds);
             }
-            if directive.class == TargetClass::Visible {
+            // Whatever its class: a held frame draws Band and Held residents.
+            if visible.contains(&cluster_id) {
                 state.last_visible_time = Some(monotonic_seconds);
             }
         }
@@ -127,7 +128,7 @@ impl ShResidencyController {
             Self::merge_directive(
                 &mut classes,
                 cluster_id,
-                TargetDirective::new(TargetClass::Visible, 0),
+                TargetDirective::new(self.drawn_class(), 0),
             );
         }
         for &cluster_id in &self.topology.hints.pinned {
@@ -357,22 +358,25 @@ impl ShResidencyController {
                 cluster_id: cluster_id as u32,
                 chunk_hash: self.topology.chunk_hashes[cluster_id],
             };
+            let returned = failure.left_target
+                && failure
+                    .left_target_horizon_revision
+                    .is_some_and(|left_revision| self.horizon_revision > left_revision);
             let retry_allowed = match failure.cause {
-                FailureCause::Read => !failure.retry_spent,
-                FailureCause::DeviceLimit { refused_at }
-                | FailureCause::WholeMapCap { refused_at } => {
-                    horizon_changed
+                FailureCause::Read => returned && !failure.retry_spent,
+                FailureCause::DeviceLimit { refused_at } => {
+                    returned
+                        && horizon_changed
                         && !self.targets.contains(&(cluster_id as u32))
                         && monotonic_seconds - refused_at >= HYSTERESIS_SECONDS
                 }
+                // A pin never leaves the targets, so this waits on the clock
+                // alone. Each refusal restarts it: one re-read per window.
+                FailureCause::WholeMapCap { refused_at } => {
+                    monotonic_seconds - refused_at >= HYSTERESIS_SECONDS
+                }
             };
-            if failure.identity == expected_identity
-                && failure.left_target
-                && retry_allowed
-                && failure
-                    .left_target_horizon_revision
-                    .is_some_and(|left_revision| self.horizon_revision > left_revision)
-            {
+            if failure.identity == expected_identity && retry_allowed {
                 if failure.cause == FailureCause::Read {
                     failure.retry_spent = true;
                 }

@@ -254,16 +254,50 @@ fn whole_map_refusal_counts_its_own_bucket() {
     assert_bucket_total(&c);
 }
 
-// Holes open as residents leave, so it retries as a device refusal does.
+// Holes open as residents leave, and leaving adds nothing to that: the window
+// from the refusal is the whole wait.
 #[test]
 fn whole_map_refusal_retries_after_leaving_and_reentering_targets() {
     let mut c = independent(1);
     view(&mut c, &[0], 0.0);
     whole_map_refusal(&mut c, 0);
-    view(&mut c, &[0], 5.0);
+    view(&mut c, &[0], 1.0);
     assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
-    leave_and_return(&mut c, 0, 6.0);
+    leave_and_return(&mut c, 0, 1.5);
     assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
+}
+
+// Regression: a pin never leaves the targets, so a retry that waited for that
+// left it black until reload. Each refusal restarts the window, so the map
+// costs one re-read per window however long the cluster stays black.
+#[test]
+fn whole_map_refusal_of_a_pin_retries_each_window_without_leaving_targets() {
+    let mut c = controller(hinted_topology(
+        vec![0],
+        vec![vec![]],
+        Vec::new(),
+        BTreeSet::from([0]),
+        Vec::new(),
+    ));
+    view(&mut c, &[], 0.0);
+    whole_map_refusal(&mut c, 0);
+
+    view(&mut c, &[], HYSTERESIS_SECONDS - 0.1);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+    assert!(c.take_next_request().unwrap().is_none());
+
+    view(&mut c, &[], HYSTERESIS_SECONDS);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
+    assert_eq!(c.counters().retries, 1);
+    whole_map_refusal(&mut c, 0);
+
+    view(&mut c, &[], 2.0 * HYSTERESIS_SECONDS - 0.1);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+    assert_eq!(c.counters().retries, 1, "one re-read per window");
+    view(&mut c, &[], 2.0 * HYSTERESIS_SECONDS);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
+    assert_eq!(c.counters().retries, 2);
+    assert_ledger(&c);
 }
 
 #[test]

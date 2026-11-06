@@ -7,7 +7,9 @@ use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::super::topology::SeamPortalEndpoint;
-use super::tests::{controller, hinted_topology, mark_sampleable, prepared, topology};
+use super::tests::{
+    accept_evicting, controller, hinted_topology, mark_sampleable, prepared, topology,
+};
 use super::*;
 use crate::lightmap_streaming::test_fixtures::{PORTAL, residency_set};
 use crate::streaming::cell_demand::CellDemand;
@@ -138,7 +140,7 @@ fn each_fallback_path_holds_and_counts_misses() {
 
         // Resident 3 and absent 4 are both drawn, outside the reach.
         frame(&mut c, &set, 0, path, &[0, 3, 4], 1.0);
-        assert_eq!(class(&c, 3), Some(TargetClass::Visible), "{path:?}");
+        assert_eq!(class(&c, 3), Some(TargetClass::Held), "{path:?}");
         assert!(!c.is_targeted(4), "{path:?}");
         assert_eq!(requested(&mut c), BTreeSet::new(), "{path:?}");
         assert!(drain_evictions(&mut c).is_empty(), "{path:?}");
@@ -188,13 +190,13 @@ fn held_frame_protects_a_drawn_cluster_on_its_way() {
         assert_eq!(c.state(3), Some(state));
 
         frame(&mut c, &set, 0, SOLID, &[3], 1.0);
-        assert_eq!(class(&c, 3), Some(TargetClass::Visible), "{state:?}");
+        assert_eq!(class(&c, 3), Some(TargetClass::Held), "{state:?}");
         assert_eq!(c.state(3), Some(state), "{state:?}");
     }
 }
 
 // A read cancelled after the frame's targets were set lands back at Absent
-// under a Visible target. It must not read again for that drawn cluster.
+// under a Held target. It must not read again for that drawn cluster.
 #[test]
 fn held_frame_does_not_reread_a_drawn_cluster_its_read_was_cancelled_for() {
     let (mut c, set) = level();
@@ -206,7 +208,7 @@ fn held_frame_does_not_reread_a_drawn_cluster_its_read_was_cancelled_for() {
         .find(|request| request.cluster_id == 3)
         .unwrap();
     frame(&mut c, &set, 0, SOLID, &[3], 1.0);
-    assert_eq!(class(&c, 3), Some(TargetClass::Visible));
+    assert_eq!(class(&c, 3), Some(TargetClass::Held));
     c.admit_cancelled_request(request).unwrap();
     assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
     assert!(!requested(&mut c).contains(&3));
@@ -233,7 +235,7 @@ fn mirror_cells_on_a_fallback_count_misses_and_add_no_reads() {
     );
     assert_eq!(
         class(&c, 3),
-        Some(TargetClass::Visible),
+        Some(TargetClass::Held),
         "resident 3 is drawn, so it is not freed under the frame"
     );
     assert!(!c.is_targeted(4));
@@ -282,6 +284,17 @@ fn an_unusable_id51_keeps_visible_demand_on_a_fallback() {
     let (mut c, _) = level();
     let foreign = residency_set(3, &[(0, 0, 0)], 32);
     frame(&mut c, &foreign, 0, SOLID, &[3], 0.0);
+    assert_eq!(class(&c, 3), Some(TargetClass::Visible));
+    assert_eq!(requested(&mut c), BTreeSet::from([3]));
+}
+
+// AC 20. Regression: the compiler stored the whole map for an id 51 with no
+// camera cell while the runtime held on it, so a hold would stop SH loading.
+#[test]
+fn an_id51_with_no_camera_cell_keeps_visible_demand_on_a_fallback() {
+    let (mut c, _) = level();
+    let empty = residency_set(8, &[], 32);
+    frame(&mut c, &empty, 0, SOLID, &[3], 0.0);
     assert_eq!(class(&c, 3), Some(TargetClass::Visible));
     assert_eq!(requested(&mut c), BTreeSet::from([3]));
 }
@@ -345,7 +358,7 @@ fn settling_end_on_fallback_keeps_residents() {
         c.set_full_demand(false);
         frame(&mut c, &set, 0, path, &[3], 5.0);
         assert_eq!(c.counters().misses, 0, "{path:?}");
-        assert_eq!(class(&c, 3), Some(TargetClass::Visible), "{path:?}");
+        assert_eq!(class(&c, 3), Some(TargetClass::Held), "{path:?}");
         assert_eq!(class(&c, 4), Some(TargetClass::Hysteresis), "{path:?}");
         assert!(drain_evictions(&mut c).is_empty(), "{path:?}");
         frame(&mut c, &set, 0, path, &[3], 50.0);
@@ -467,6 +480,54 @@ fn teleport_during_hold_follows_the_new_cell() {
                 "{path:?}"
             );
         }
+    }
+}
+
+// AC 26 (R8) in a pool with no room to spare. Regression: held residents were
+// Visible, so every one was mandatory, nothing could yield, and the arrival
+// grew the pool. The frame still draws the old room, so all it has is Held.
+#[test]
+fn teleport_during_hold_becomes_resident_within_a_full_pool() {
+    const POOL_CLUSTERS: usize = 3;
+    for path in FALLBACKS {
+        let (mut c, set) = level();
+        frame(&mut c, &set, 0, PORTAL, &[0], 0.0);
+        stream_until_idle(&mut c);
+        let resident = |c: &ShResidencyController| {
+            (0..8)
+                .filter(|&id| c.state(id) == Some(ClusterResidencyState::Sampleable))
+                .count()
+        };
+        assert_eq!(resident(&c), POOL_CLUSTERS, "{path:?}");
+
+        frame(&mut c, &set, 6, path, &[0, 1, 2], 1.0);
+        for cluster_id in [0, 1, 2] {
+            assert_eq!(class(&c, cluster_id), Some(TargetClass::Held), "{path:?}");
+        }
+        assert_eq!(requested(&mut c), BTreeSet::from([6, 7]), "{path:?}");
+        for cluster_id in [6, 7] {
+            assert_eq!(
+                c.admit_prepared(prepared(&c, cluster_id)).unwrap(),
+                ShDrainAdmission::Ready
+            );
+        }
+
+        // Growth sizes to `mandatory`, so the arrival alone is what must fit.
+        let batch = c.take_async_drain_batch().unwrap();
+        assert_eq!(batch.mandatory, [6, 7], "{path:?}");
+        assert_eq!(batch.victims, [0, 1, 2], "{path:?}");
+        accept_evicting(&mut c, &batch, vec![0, 1]);
+
+        frame(&mut c, &set, 6, PORTAL, &[6], 2.0);
+        c.promote_composed_clusters();
+        for cluster_id in [6, 7] {
+            assert_eq!(
+                c.state(cluster_id),
+                Some(ClusterResidencyState::Sampleable),
+                "{path:?}"
+            );
+        }
+        assert_eq!(resident(&c), POOL_CLUSTERS, "{path:?}");
     }
 }
 

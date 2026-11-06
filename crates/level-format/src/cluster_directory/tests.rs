@@ -1235,6 +1235,10 @@ fn one_range_directory() -> ClusterDirectorySection {
     section
 }
 
+/// Both of `one_range_directory`'s streamed families, as the compiler stores
+/// them: `(resource_index, worst_entries, worst_tile_f16)`.
+const FAMILIES: &[(u32, u32, u32)] = &[(0, 1, 2), (2, 3, 4)];
+
 fn bound_entry(lead: u32, families: &[(u32, u32, u32)]) -> ShMandatoryBoundEntry {
     ShMandatoryBoundEntry {
         lead,
@@ -1310,12 +1314,16 @@ fn bound_tail_round_trips_two_entries_at_their_exact_wire_offsets() {
     );
 }
 
+// A level with no streamed sparse family has none to name.
 #[test]
 fn bound_tail_encodes_zero_families_as_family_count_zero() {
     let mut section = one_range_directory();
+    section
+        .resources
+        .retain(|resource| resource.domain == ClusterResourceDomain::DenseProbe);
+    let tail = section.try_to_bytes().unwrap().len() - 4;
     section.mandatory_bound = vec![bound_entry(100, &[]), bound_entry(200, &[])];
     let bytes = section.try_to_bytes().unwrap();
-    let tail = tail_offset();
     assert_eq!(bytes.len(), tail + 4 + 2 * BOUND_ENTRY_HEADER_SIZE);
     assert_eq!(word_at(&bytes, tail + 4 + 12), 0);
     assert_eq!(
@@ -1327,7 +1335,7 @@ fn bound_tail_encodes_zero_families_as_family_count_zero() {
 #[test]
 fn bound_tail_holds_one_entry_when_the_maximum_does_not_exceed_the_default() {
     let mut section = one_range_directory();
-    section.mandatory_bound = vec![bound_entry(100, &[(2, 1, 2)])];
+    section.mandatory_bound = vec![bound_entry(100, FAMILIES)];
     let bytes = section.try_to_bytes().unwrap();
     assert_eq!(word_at(&bytes, tail_offset()), 1);
     assert_eq!(
@@ -1341,7 +1349,7 @@ fn bound_tail_holds_the_whole_map_at_lead_zero_with_the_marker_cell() {
     let mut section = one_range_directory();
     section.mandatory_bound = vec![ShMandatoryBoundEntry {
         worst_cell: WHOLE_MAP_WORST_CELL,
-        ..bound_entry(0, &[])
+        ..bound_entry(0, FAMILIES)
     }];
     let bytes = section.try_to_bytes().unwrap();
     assert_eq!(word_at(&bytes, tail_offset() + 4 + 8), u32::MAX);
@@ -1355,7 +1363,7 @@ fn bound_tail_holds_the_whole_map_at_lead_zero_with_the_marker_cell() {
 fn bound_tail_refuses_the_whole_map_marker_beside_another_entry_or_past_lead_zero() {
     let marker = |lead| ShMandatoryBoundEntry {
         worst_cell: WHOLE_MAP_WORST_CELL,
-        ..bound_entry(lead, &[])
+        ..bound_entry(lead, FAMILIES)
     };
     let mut section = one_range_directory();
     section.mandatory_bound = vec![marker(16)];
@@ -1363,7 +1371,7 @@ fn bound_tail_refuses_the_whole_map_marker_beside_another_entry_or_past_lead_zer
         section.validate_structure(),
         Err(ClusterDirectoryError::BoundWholeMapShape { lead: 16, .. })
     ));
-    section.mandatory_bound = vec![marker(0), bound_entry(16, &[])];
+    section.mandatory_bound = vec![marker(0), bound_entry(16, FAMILIES)];
     assert!(matches!(
         section.validate_structure(),
         Err(ClusterDirectoryError::BoundWholeMapShape { entries: 2, .. })
@@ -1408,8 +1416,8 @@ fn directory_without_id_34_stores_bound_count_zero_and_refuses_any_entry() {
 
 #[test]
 fn bound_tail_refuses_leads_out_of_order_by_name() {
-    let mut bytes = tail_bytes(vec![bound_entry(100, &[]), bound_entry(200, &[])]);
-    let second_lead = tail_offset() + 4 + BOUND_ENTRY_HEADER_SIZE;
+    let mut bytes = tail_bytes(vec![bound_entry(100, FAMILIES), bound_entry(200, FAMILIES)]);
+    let second_lead = tail_offset() + 4 + BOUND_ENTRY_HEADER_SIZE + 2 * BOUND_FAMILY_RECORD_SIZE;
     set_word(&mut bytes, second_lead, 100);
     assert_eq!(
         ClusterDirectorySection::from_bytes(&bytes),
@@ -1434,12 +1442,12 @@ fn bound_tail_refuses_families_out_of_order_by_name() {
 }
 
 #[test]
-fn bound_tail_refuses_a_family_outside_the_affinity_resources_by_name() {
-    let family = tail_offset() + 4 + BOUND_ENTRY_HEADER_SIZE;
-    let mut bytes = tail_bytes(vec![bound_entry(100, &[(0, 1, 2)])]);
+fn bound_tail_refuses_a_family_outside_the_streamed_resources_by_name() {
+    let second_family = tail_offset() + 4 + BOUND_ENTRY_HEADER_SIZE + BOUND_FAMILY_RECORD_SIZE;
+    let mut bytes = tail_bytes(vec![bound_entry(100, FAMILIES)]);
     // Resource 1 is dense; resource 3 is past the table.
     for resource in [1, 3] {
-        set_word(&mut bytes, family, resource);
+        set_word(&mut bytes, second_family, resource);
         assert_eq!(
             ClusterDirectorySection::from_bytes(&bytes),
             Err(ClusterDirectoryError::BoundFamilyResource {
@@ -1451,9 +1459,46 @@ fn bound_tail_refuses_a_family_outside_the_affinity_resources_by_name() {
     }
 }
 
+// Regression: id 48 passed as an affinity resource, and the runtime then failed
+// a whole-resident family as a capacity problem.
+#[test]
+fn bound_tail_refuses_the_whole_resident_id_48_family_by_name() {
+    let mut section = one_range_directory();
+    section.resources.push(ClusterResourceRecord {
+        section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
+        domain: ClusterResourceDomain::AffinityCell,
+        dimensions: [1, 1, 1],
+    });
+    section.mandatory_bound = vec![bound_entry(100, &[(0, 1, 2), (2, 3, 4), (3, 5, 6)])];
+    assert_eq!(
+        section.validate_structure(),
+        Err(ClusterDirectoryError::BoundFamilyResource {
+            entry: 0,
+            resource: 3,
+            count: 4
+        })
+    );
+    section.mandatory_bound = vec![bound_entry(100, FAMILIES)];
+    assert_eq!(section.validate_structure(), Ok(()));
+}
+
+// Regression: an omitted family read as a zero bound at load.
+#[test]
+fn bound_tail_refuses_an_omitted_streamed_family_by_name() {
+    let mut section = one_range_directory();
+    section.mandatory_bound = vec![bound_entry(100, &[(0, 1, 2)])];
+    assert_eq!(
+        section.validate_structure(),
+        Err(ClusterDirectoryError::BoundFamilyMissing {
+            entry: 0,
+            section_id: SectionId::DirectShDeltaVolumes as u32
+        })
+    );
+}
+
 #[test]
 fn bound_tail_refuses_a_worst_cell_past_the_cell_table_by_name() {
-    let mut bytes = tail_bytes(vec![bound_entry(100, &[])]);
+    let mut bytes = tail_bytes(vec![bound_entry(100, FAMILIES)]);
     set_word(&mut bytes, tail_offset() + 4 + 8, 1);
     assert_eq!(
         ClusterDirectorySection::from_bytes(&bytes),
@@ -1491,10 +1536,7 @@ fn bound_tail_refuses_a_count_past_the_two_stored_leads_before_reading_entries()
 // Every cut through the tail must be refused, never read past the section.
 #[test]
 fn bound_tail_refuses_every_truncation_by_name() {
-    let bytes = tail_bytes(vec![
-        bound_entry(100, &[(0, 1, 2)]),
-        bound_entry(200, &[(0, 3, 4)]),
-    ]);
+    let bytes = tail_bytes(vec![bound_entry(100, FAMILIES), bound_entry(200, FAMILIES)]);
     let tail = tail_offset();
     for length in tail..bytes.len() {
         assert!(
@@ -1514,7 +1556,7 @@ fn bound_tail_refuses_every_truncation_by_name() {
 
 #[test]
 fn bound_tail_refuses_a_forged_family_count_without_allocating_it() {
-    let mut bytes = tail_bytes(vec![bound_entry(100, &[])]);
+    let mut bytes = tail_bytes(vec![bound_entry(100, FAMILIES)]);
     set_word(&mut bytes, tail_offset() + 4 + 12, u32::MAX);
     assert!(matches!(
         ClusterDirectorySection::from_bytes(&bytes),
@@ -1524,7 +1566,7 @@ fn bound_tail_refuses_a_forged_family_count_without_allocating_it() {
 
 #[test]
 fn bound_tail_refuses_bytes_past_the_last_entry_by_name() {
-    let mut bytes = tail_bytes(vec![bound_entry(100, &[])]);
+    let mut bytes = tail_bytes(vec![bound_entry(100, FAMILIES)]);
     bytes.extend_from_slice(&[0; 4]);
     assert_eq!(
         ClusterDirectorySection::from_bytes(&bytes),

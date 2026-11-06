@@ -26,7 +26,7 @@ use super::direct_compose::{
     DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose, StreamingDirectViews,
 };
 use super::pool_size::{InitialPool, WholeMapCap};
-use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacityFloors};
+use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacities};
 use crate::render::sh_volume::ShVolumeResources;
 use postretro_render_cpu::sh_residency::{SparseComposeLayout, SparseComposeLayouts};
 
@@ -64,7 +64,7 @@ use atlas_shape::{
 use bindings::{create_grid_info, create_sample_bind_groups};
 use capacity::preflight_initial_resource_limits;
 pub(in crate::render::sh_streaming) use capacity::{
-    SparseGrowth, planned_animated_direct_layout, planned_direct_layout,
+    SparseGrowth, planned_animated_direct_layout, planned_direct_layout, sparse_device_limits,
 };
 
 pub(crate) use crate::render::uploads::StagedUploads;
@@ -168,7 +168,7 @@ pub(super) struct StreamingGpuPools {
     pub(super) whole_resident_scatter_bytes: u64,
     whole_map: WholeMapCap,
     probe_occlusion_enabled: bool,
-    sparse_capacity_floors: SparseCapacityFloors,
+    sparse_capacities: SparseCapacities,
     pub(super) growth: PoolGrowthCounters,
     /// Recycled mapped staging for every residency upload batch.
     staging: StagingPool,

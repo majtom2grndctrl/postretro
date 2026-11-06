@@ -637,3 +637,35 @@ fn shared_wait_ends_when_its_writer_leaves_with_the_last_dirty_row() {
     promote(&mut state);
     assert!(state.sampleable.contains(&1));
 }
+
+// Regression: the wait was released only when the evicted cluster was pending,
+// so a promoted cluster taking the last dirty row left the wait hanging, and
+// the outcome turned on eviction order. Cluster 2 writes nothing, cluster 3
+// holding its brick, and waits on cluster 0's writes. Clusters 0 and 1 swap
+// sparse rows, so each keeps a dirty row of the other resident.
+#[test]
+fn shared_wait_ends_whichever_cluster_takes_the_last_dirty_row() {
+    for (first, second) in [(0, 1), (1, 0)] {
+        let map = SyntheticMap::new([16, 4, 4], [1, 1, 1])
+            .with_sparse_row_home(0, 1)
+            .with_sparse_row_home(1, 0)
+            .with_halo_brick(3, 2);
+        let mut state = map.state();
+        for cluster_id in [3, 1] {
+            install(&mut state, &map, cluster_id);
+            compose(&mut state);
+            promote(&mut state);
+        }
+        install(&mut state, &map, 0);
+        install(&mut state, &map, 2);
+        assert!(state.installed[&2].required_indirect_epoch > state.indirect_compose_epoch);
+
+        evict(&mut state, first);
+        promote(&mut state);
+        assert!(!state.sampleable.contains(&2), "{first} first: rows dirty");
+
+        evict(&mut state, second);
+        promote(&mut state);
+        assert!(state.sampleable.contains(&2), "{first} first: nothing left");
+    }
+}

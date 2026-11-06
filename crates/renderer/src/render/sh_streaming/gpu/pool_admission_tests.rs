@@ -27,6 +27,12 @@ fn bricks(count: u32) -> SyntheticMap {
         .with_empty_rows(27, &rows)
 }
 
+/// A row of one-brick clusters, each with a sparse row of one entry, so sparse
+/// capacity counts too.
+fn bricks_with_rows(count: u32) -> SyntheticMap {
+    SyntheticMap::new([4 * count, 4, 4], [1, 1, 1]).direct_base_only()
+}
+
 fn pool_of(layers: u32) -> AtlasShape {
     AtlasShape {
         tiles_per_row: 8,
@@ -58,6 +64,7 @@ fn bound_sized_fixture(
 ) -> UploadOrderSh {
     let mut f = UploadOrderSh::with_map(device, raw, 128, map);
     f.state.pool_bound.dense_slots = dense_slots;
+    f.state.pool_bound.sparse = BTreeMap::from([(27, (0, 0))]);
     f.state
         .initialize_gpu_with_limits(
             device,
@@ -82,6 +89,30 @@ fn exact_pool(slots: u32) -> AtlasShape {
         layers: slots,
         slots,
     }
+}
+
+/// One 8-tile cluster, then three 1-tile clusters with no sparse rows, in a pool
+/// exactly the map's size. One-tile layers make the cap exact, so fragmentation
+/// shows.
+fn map_sized_pool(device: &wgpu::Device, raw: &wgpu::Queue) -> UploadOrderSh {
+    let map = SyntheticMap::new([16, 4, 4], [1, 1, 1])
+        .direct_base_only()
+        .with_empty_rows(27, &[0, 1, 2, 3])
+        .with_density_levels(&[1, 2, 2, 2]);
+    let mut f = UploadOrderSh::with_map(device, raw, 128, map);
+    let whole = f.state.whole_dense_slots;
+    assert_eq!(whole, 11);
+    replace_shape(&mut f, device, raw, &device.limits(), exact_pool(whole));
+    let pools = f.state.gpu.as_mut().unwrap();
+    let sparse = (
+        pools.sparse_entry_capacity(27),
+        pools.sparse_tile_f16_capacity(27),
+    );
+    pools.whole_map = WholeMapCap {
+        dense_slots: whole,
+        sparse: BTreeMap::from([(27, sparse)]),
+    };
+    f
 }
 
 /// Install `clusters` with room to spare, as an earlier frame's work.
@@ -281,8 +312,15 @@ fn a_sparse_shortfall_evicts_and_grows_like_a_dense_one() {
     let mut f = UploadOrderSh::with_map(&device, &raw, 128, map);
     let stride = delta_probe_f16_stride(4) as u32;
     // Room for two rows and everything dense: only the rows can run short.
-    let floors = BTreeMap::from([(27, (3, 2 + 2 * stride))]);
-    replace_pools(&mut f, &device, &raw, &device.limits(), pool_of(4), &floors);
+    let capacities = BTreeMap::from([(27, (3, 2 + 2 * stride))]);
+    replace_pools(
+        &mut f,
+        &device,
+        &raw,
+        &device.limits(),
+        pool_of(4),
+        &capacities,
+    );
     let queue = UploadQueue::new(&device, raw, true);
     settle_residents(&mut f, &device, &queue, &[0, 1]);
 
@@ -368,6 +406,56 @@ fn deferred_behind_retiring_generation_evicts_and_grows_nothing() {
     assert!(f.state.gpu.as_ref().unwrap().retiring_dense.is_none());
     finish_retirement(&mut f, &device);
     eprintln!("[ShPoolProof] deferred install waited out the generation, then landed; ran on GPU");
+}
+
+// Regression: a sparse refusal threw away the dense family's wait, so the drain
+// evicted every frame until the fence cleared.
+#[test]
+fn a_retiring_wait_outranks_another_familys_refusal() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH wait beside refusal") else {
+        return;
+    };
+    let mut f = UploadOrderSh::with_map(&device, &raw, 128, bricks_with_rows(4));
+    let stride = delta_probe_f16_stride(4) as u32;
+    // Room for two rows, and no more once the cap below stands.
+    let rows = (3, 2 + 2 * stride);
+    let capacities = BTreeMap::from([(27, rows)]);
+    replace_pools(
+        &mut f,
+        &device,
+        &raw,
+        &device.limits(),
+        pool_of(1),
+        &capacities,
+    );
+    let queue = UploadQueue::new(&device, raw, true);
+    settle_residents(&mut f, &device, &queue, &[0]);
+    let outcome = admit(&mut f, &device, &queue, &[0, 1], &[], &[1]);
+    assert_eq!(outcome.accepted, [1]);
+    assert_eq!(f.growth_events(), 1);
+    let retirement = hold_dense_retirement(&mut f);
+    f.state
+        .gpu
+        .as_mut()
+        .unwrap()
+        .whole_map
+        .sparse
+        .insert(27, rows);
+
+    // Dense is short behind the fence, and sparse is short past its cap.
+    for _ in 0..3 {
+        let outcome = admit(&mut f, &device, &queue, &[1, 2], &[0], &[2]);
+        assert_eq!(deferred_ids(&outcome), [2]);
+        assert!(outcome.evicted.is_empty() && outcome.whole_map_refused.is_empty());
+        assert_eq!(f.state.installed.len(), 2);
+    }
+
+    retirement.store(true, Ordering::Release);
+    let outcome = admit(&mut f, &device, &queue, &[1, 2], &[0], &[2]);
+    assert_eq!(outcome.evicted, [0]);
+    assert_eq!(outcome.accepted, [2]);
+    finish_retirement(&mut f, &device);
+    eprintln!("[ShPoolProof] a retiring wait held its victims past a sparse refusal; ran on GPU");
 }
 
 #[test]
@@ -510,30 +598,40 @@ fn pool_never_exceeds_the_whole_map() {
     eprintln!("[ShPoolProof] growth and load both stopped at the whole map; ran on GPU");
 }
 
-// The fact the controller stops evicting on, read from real capacity: false
-// below the map, true from the drain growth reaches it, true at load when the
-// bound does. Mixed node sizes, so placement order could strand slots if
-// anything had been freed.
+// The fact the controller stops evicting on, read from real capacity in every
+// family: false below the map, true from the drain growth takes them all there,
+// true at load when the bound does. Mixed node sizes, so placement order could
+// strand slots if anything had been freed.
 #[test]
 fn drains_report_when_the_pool_holds_the_whole_map() {
     let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH whole-map report") else {
         return;
     };
     let levels = [1, 2, 0, 2, 1];
-    let map = || bricks(5).with_density_levels(&levels);
+    let map = || bricks_with_rows(5).with_density_levels(&levels);
+    let at_whole_sparse = |f: &UploadOrderSh| {
+        let pools = f.state.gpu.as_ref().unwrap();
+        let (entries, tiles) = pools.whole_map.sparse[&27];
+        pools.sparse_entry_capacity(27) == entries && pools.sparse_tile_f16_capacity(27) == tiles
+    };
     let mut f = bound_sized_fixture(&device, &raw, map(), 16);
     let queue = UploadQueue::new(&device, raw.clone(), true);
 
     let outcome = admit(&mut f, &device, &queue, &[1], &[], &[1]);
+    assert_eq!(outcome.accepted, [1]);
     assert!(!outcome.pool_holds_whole_map);
+    assert!(!at_whole_sparse(&f));
+    finish_retirement(&mut f, &device);
 
     let tier = [0, 1, 2, 3, 4];
     let outcome = admit(&mut f, &device, &queue, &tier, &[], &[4, 2, 0, 3]);
     assert_eq!(outcome.accepted, [4, 2, 0, 3]);
+    assert!(at_whole_sparse(&f));
     assert!(outcome.pool_holds_whole_map, "growth reached the map");
     finish_retirement(&mut f, &device);
 
     let mut f = bound_sized_fixture(&device, &raw, map(), u32::MAX);
+    assert!(at_whole_sparse(&f));
     let outcome = admit(&mut f, &device, &queue, &tier, &[], &[4, 2, 0, 3, 1]);
     assert_eq!(outcome.accepted, [4, 2, 0, 3, 1]);
     assert!(outcome.refused.is_empty() && outcome.whole_map_refused.is_empty());
@@ -542,30 +640,109 @@ fn drains_report_when_the_pool_holds_the_whole_map() {
     eprintln!("[ShPoolProof] drains reported whole-map capacity from real pools; ran on GPU");
 }
 
-// The case that remains once a pool holding the map stops evicting: one that
-// reached the cap by growth, after earlier evictions. First-fit needs
-// contiguous slots and nothing compacts live storage, so a mandatory cluster
-// can be refused with enough free slots in total.
+// Regression: a family a device limit left short still read as whole, so the
+// controller stopped evicting and that family refused with evictable rows.
+#[test]
+fn a_sparse_family_below_the_map_reports_false_and_its_rows_still_evict() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH sparse below the map") else {
+        return;
+    };
+    let mut f = UploadOrderSh::with_map(&device, &raw, 128, bricks_with_rows(4));
+    let stride = delta_probe_f16_stride(4) as u32;
+    // Dense holds all four clusters; sparse has room for two of their rows.
+    let capacities = BTreeMap::from([(27, (3, 2 + 2 * stride))]);
+    replace_pools(
+        &mut f,
+        &device,
+        &raw,
+        &device.limits(),
+        pool_of(4),
+        &capacities,
+    );
+    f.state.gpu.as_mut().unwrap().whole_map = WholeMapCap {
+        dense_slots: 4 * BRICK,
+        sparse: BTreeMap::from([(27, (5, 2 + 4 * stride))]),
+    };
+    let queue = UploadQueue::new(&device, raw, true);
+    settle_residents(&mut f, &device, &queue, &[0, 1]);
+
+    let outcome = admit(&mut f, &device, &queue, &[], &[], &[]);
+    assert!(
+        !outcome.pool_holds_whole_map,
+        "nothing left, but sparse is short"
+    );
+
+    let outcome = admit(&mut f, &device, &queue, &[2], &[0], &[2]);
+    assert_eq!(outcome.evicted, [0]);
+    assert_eq!(outcome.accepted, [2]);
+    assert_eq!(f.growth_events(), 0);
+    eprintln!("[ShPoolProof] short sparse family reported false and evicted; ran on GPU");
+}
+
+// Regression: a pool at the cap stopped evicting for good, so a node larger than
+// any hole stayed black until reload. The first release ends the fact, and the
+// victims that close the gap keep flowing.
+#[test]
+fn an_eviction_at_the_cap_ends_the_whole_map_fact_and_victims_still_flow() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH release at the cap") else {
+        return;
+    };
+    let mut f = map_sized_pool(&device, &raw);
+    let queue = UploadQueue::new(&device, raw, true);
+    settle_residents(&mut f, &device, &queue, &[0, 1, 2]);
+    let outcome = admit(&mut f, &device, &queue, &[], &[], &[]);
+    assert!(outcome.pool_holds_whole_map, "nothing has left yet");
+
+    let outcome = f
+        .drain_batch(
+            &device,
+            &queue,
+            ShDrainBatch {
+                evictions: vec![0],
+                target_remove: vec![0],
+                ..ShDrainBatch::default()
+            },
+            &[3],
+        )
+        .unwrap();
+    assert_eq!(outcome.evicted, [0]);
+    assert_eq!(outcome.accepted, [3]);
+    assert!(
+        !outcome.pool_holds_whole_map,
+        "the cap stands, a hole opened"
+    );
+
+    let outcome = f
+        .drain_batch(
+            &device,
+            &queue,
+            ShDrainBatch {
+                target_add: vec![0],
+                mandatory: vec![0],
+                victims: vec![3],
+                ..ShDrainBatch::default()
+            },
+            &[0],
+        )
+        .unwrap();
+    assert_eq!(outcome.evicted, [3]);
+    assert_eq!(outcome.accepted, [0]);
+    assert!(!outcome.pool_holds_whole_map);
+    assert_eq!(f.growth_events(), 0);
+    eprintln!("[ShPoolProof] release at the cap ended the fact, victim closed the gap; ran on GPU");
+}
+
+// What a pool at the cap can still meet once a range has come back: first-fit
+// needs contiguous slots and nothing compacts live storage, so a mandatory
+// cluster can be refused with enough free slots in total.
 #[test]
 fn fragmentation_at_the_cap_evicts_then_refuses_by_name() {
     let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH cap fragmentation") else {
         return;
     };
     let capture = LogCapture::start();
-    // One 8-tile cluster, then three 1-tile clusters.
-    let map = SyntheticMap::new([16, 4, 4], [1, 1, 1])
-        .direct_base_only()
-        .with_empty_rows(27, &[0, 1, 2, 3])
-        .with_density_levels(&[1, 2, 2, 2]);
-    let mut f = UploadOrderSh::with_map(&device, &raw, 128, map);
+    let mut f = map_sized_pool(&device, &raw);
     let whole = f.state.whole_dense_slots;
-    assert_eq!(whole, 11);
-    let cap = WholeMapCap {
-        dense_slots: whole,
-        ..WholeMapCap::uncapped()
-    };
-    replace_shape(&mut f, &device, &raw, &device.limits(), exact_pool(whole));
-    f.state.gpu.as_mut().unwrap().whole_map = cap;
     let queue = UploadQueue::new(&device, raw, true);
 
     // The 8-tile cluster goes, and a 1-tile cluster takes its address.

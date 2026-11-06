@@ -16,11 +16,11 @@ use super::{ANIMATED_DIRECT_DELTA_ID, DIRECT_DELTA_ID, INDIRECT_DELTA_ID, ShResi
 /// Physical `(entries, tile_f16)` backing of each sparse family, keyed by
 /// section id. Values include the allocator's missing-row sentinel and f16
 /// word alignment.
-pub type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
+pub type SparseCapacities = BTreeMap<u32, (u32, u32)>;
 
 /// One sparse compose family's row tables and minimum backing, independent
-/// of the pool floor a generation applies: [`Self::entry_capacity`] and
-/// [`Self::tile_f16_capacity`] fold that floor in.
+/// of the capacity a pool generation asks for: [`Self::entry_capacity`] and
+/// [`Self::tile_f16_capacity`] fold that capacity in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SparseComposeLayout {
     /// The family's sparse source streams; `false` is the base-only layout
@@ -36,15 +36,17 @@ pub struct SparseComposeLayout {
 
 impl SparseComposeLayout {
     /// Entry backing: the largest row (plus the missing-row
-    /// sentinel), raised to `floor`'s entries.
-    pub fn entry_capacity(&self, floor: Option<(u32, u32)>) -> u32 {
-        self.entry_minimum.max(floor.map_or(1, |floor| floor.0))
+    /// sentinel), raised to `capacity`'s entries.
+    pub fn entry_capacity(&self, capacity: Option<(u32, u32)>) -> u32 {
+        self.entry_minimum
+            .max(capacity.map_or(1, |capacity| capacity.0))
     }
 
     /// Packed f16 tile backing: the largest row, word aligned with
-    /// the sentinel word, raised to `floor`'s tiles.
-    pub fn tile_f16_capacity(&self, floor: Option<(u32, u32)>) -> u32 {
-        self.tile_f16_minimum.max(floor.map_or(2, |floor| floor.1))
+    /// the sentinel word, raised to `capacity`'s tiles.
+    pub fn tile_f16_capacity(&self, capacity: Option<(u32, u32)>) -> u32 {
+        self.tile_f16_minimum
+            .max(capacity.map_or(2, |capacity| capacity.1))
     }
 }
 

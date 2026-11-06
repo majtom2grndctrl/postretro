@@ -26,7 +26,7 @@ pub use sample_regions::{
     clamp_probe, region_brick_bounds, scaled_writer_row,
 };
 pub use sparse_compose::{
-    SparseCapacityFloors, SparseComposeLayout, SparseComposeLayouts, compose_row_capacity,
+    SparseCapacities, SparseComposeLayout, SparseComposeLayouts, compose_row_capacity,
     sparse_compose_capacity, sparse_row_demand,
 };
 pub use stored_nodes::{
@@ -80,7 +80,7 @@ pub enum ShResidencyDrainError {
     },
     /// A growth past the whole map, which first-fit reaches only when
     /// fragmentation strands free slots. The drain consumes this internal
-    /// verdict into `refused`.
+    /// verdict into `whole_map_refused`.
     PoolAtWholeMap {
         family: &'static str,
     },
@@ -88,6 +88,16 @@ pub enum ShResidencyDrainError {
     MandatoryBoundMismatch {
         expected_lead: u32,
         stored_leads: Vec<u32>,
+    },
+    /// Id 49's bound leaves out a streamed sparse family: corrupt data, not a
+    /// capacity failure.
+    MandatoryBoundMissingFamily {
+        section_id: u32,
+    },
+    /// Id 49's bound names a family this level does not stream: corrupt data,
+    /// not a capacity failure.
+    MandatoryBoundExtraFamily {
+        section_id: u32,
     },
     /// A valid replacement is waiting only for this family’s previous GPU
     /// generation to drain. Unlike adapter limits, this is safe to retry
@@ -149,6 +159,16 @@ impl fmt::Display for ShResidencyDrainError {
                 f,
                 "id-49 stores no SH mandatory bound at lead {expected_lead} \
                  (stored leads {stored_leads:?}); re-bake the level"
+            ),
+            Self::MandatoryBoundMissingFamily { section_id } => write!(
+                f,
+                "id-49 SH mandatory bound omits streamed sparse family id-{section_id}; \
+                 re-bake the level"
+            ),
+            Self::MandatoryBoundExtraFamily { section_id } => write!(
+                f,
+                "id-49 SH mandatory bound names id-{section_id}, which this level does not \
+                 stream as a sparse family; re-bake the level"
             ),
             Self::GpuRetirementPressure { family } => write!(
                 f,

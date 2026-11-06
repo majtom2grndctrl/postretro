@@ -109,7 +109,7 @@ const ANIMATED_DIRECT_DELTA_ID: u32 = SectionId::AnimatedDirectShDeltaVolumes as
 
 pub use postretro_render_cpu::sh_residency::ShResidencyDrainError;
 use postretro_render_cpu::sh_residency::{
-    ClusterStorage, DenseSpans, NodeMap, ShPoolBound, ShResidencyPlan, SparseCapacityFloors,
+    ClusterStorage, DenseSpans, NodeMap, ShPoolBound, ShResidencyPlan, SparseCapacities,
     SparseComposeLayout, SparseComposeLayouts,
 };
 #[cfg(test)]

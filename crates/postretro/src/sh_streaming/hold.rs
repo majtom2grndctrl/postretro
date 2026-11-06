@@ -4,8 +4,10 @@
 //! A frustum-culled path can draw the whole map, so one clip into a wall must
 //! not make the map mandatory. A held frame reads only what the camera cell's
 //! reach and the pins demand: its drawn clusters add no reads, residents stay,
-//! and an absent drawn cluster counts a miss. The lightmap holds the same way
-//! (`lightmap_streaming/demand.rs`).
+//! and an absent drawn cluster counts a miss. What it draws is `Held`, never
+//! `Visible`: drawing lifts nothing to mandatory, so a hold cannot grow the
+//! pool, and a resident yields to mandatory work last. The lightmap holds the
+//! same way (`lightmap_streaming/demand.rs`).
 
 use std::collections::BTreeSet;
 
@@ -38,6 +40,7 @@ impl ClusterResidencyState {
 impl TargetClass {
     /// Pins and the reach keep reading through a hold: they follow the camera
     /// cell, not what the frame draws, so the mandatory bound still covers them.
+    /// `Held` stands for what is already here, so it never reads.
     const fn reads_on_hold(self) -> bool {
         matches!(self, Self::Pinned | Self::Lead | Self::Band)
     }
@@ -67,6 +70,16 @@ impl ShResidencyController {
         }
         self.hold.held = held;
         monotonic_seconds - self.hold.paused_seconds
+    }
+
+    /// The class a drawn cluster demands this frame. Any reach, pin or seam
+    /// class outranks `Held`, so in-flight work keeps the class it read for.
+    pub(super) fn drawn_class(&self) -> TargetClass {
+        if self.hold.held {
+            TargetClass::Held
+        } else {
+            TargetClass::Visible
+        }
     }
 
     /// This frame's visible clusters, its misses counted on the way.

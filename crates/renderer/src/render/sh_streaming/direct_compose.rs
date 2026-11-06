@@ -19,7 +19,7 @@ use sparse::{RetiredDirectSparseResources, checked_ledger_sum};
 
 use super::gpu::StagedUploads;
 use super::{
-    AtlasShape, ShResidencyDrainError, SparseCapacityFloors, SparseComposeLayouts,
+    AtlasShape, ShResidencyDrainError, SparseCapacities, SparseComposeLayouts,
     StreamingShPipelines, gpu,
 };
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
@@ -93,7 +93,7 @@ impl StreamingDirectCompose {
         sh: &ShVolumeResources,
         pipelines: &StreamingShPipelines,
         sparse_compose: &SparseComposeLayouts,
-        sparse_capacity_floors: &SparseCapacityFloors,
+        sparse_capacities: &SparseCapacities,
     ) -> Result<Self, ShResidencyDrainError> {
         let promotion_output = if sources.animated_direct_delta.is_some() {
             views
@@ -115,7 +115,7 @@ impl StreamingDirectCompose {
             views.selection_weights,
             compose_indirection,
             pipelines,
-            sparse_capacity_floors.get(&41).copied(),
+            sparse_capacities.get(&41).copied(),
         )?;
         let animated = match sources.animated_direct_delta.as_ref() {
             Some(source) => Some(StreamingAnimatedPass::new(
@@ -132,7 +132,7 @@ impl StreamingDirectCompose {
                 sh,
                 pipelines,
                 gpu::planned_animated_direct_layout(sparse_compose)?,
-                sparse_capacity_floors.get(&45).copied(),
+                sparse_capacities.get(&45).copied(),
             )?),
             None => None,
         };
@@ -213,7 +213,7 @@ impl StreamingDirectCompose {
         pipelines: &StreamingShPipelines,
         sparse_compose: &SparseComposeLayouts,
         section_id: u32,
-        sparse_floor: (u32, u32),
+        sparse_capacity: (u32, u32),
     ) -> Result<DirectSparseReplacement, ShResidencyDrainError> {
         match section_id {
             41 => {
@@ -237,7 +237,7 @@ impl StreamingDirectCompose {
                     views.selection_weights,
                     compose_indirection,
                     pipelines,
-                    Some(sparse_floor),
+                    Some(sparse_capacity),
                 )?;
                 Ok(DirectSparseReplacement {
                     carrier: DirectSparseReplacementCarrier::Promotion(Box::new(replacement)),
@@ -266,7 +266,7 @@ impl StreamingDirectCompose {
                     sh,
                     pipelines,
                     gpu::planned_animated_direct_layout(sparse_compose)?,
-                    Some(sparse_floor),
+                    Some(sparse_capacity),
                 )?;
                 self.animated
                     .as_ref()

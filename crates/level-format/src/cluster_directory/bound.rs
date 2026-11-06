@@ -3,9 +3,10 @@
 
 use super::wire::{push_u32, read_u32};
 use super::{
-    ClusterDirectoryError, ClusterDirectorySection, ClusterResourceDomain, try_vec, u32_len,
-    usize_count,
+    ClusterDirectoryError, ClusterDirectorySection, ClusterResourceDomain, ClusterResourceRecord,
+    try_vec, u32_len, usize_count,
 };
+use crate::SectionId;
 
 /// Default lead and baked maximum. A later memory tier varies lead between
 /// them without a rebake.
@@ -37,7 +38,9 @@ pub struct ShMandatoryBoundEntry {
     pub lead: u32,
     pub worst_dense_slots: u32,
     pub worst_cell: u32,
-    /// Ascending by `resource_index`, affinity-domain resources only.
+    /// Ascending by `resource_index`: exactly the directory's streamed sparse
+    /// families, ids 27, 41 and 45. Id 48 is affinity-domain too, but it stays
+    /// whole-resident, so it has no pool to size.
     pub families: Vec<ShMandatoryBoundFamily>,
 }
 
@@ -185,11 +188,11 @@ pub(super) fn validate_bound_entries(
             return Err(ClusterDirectoryError::BoundFamilyOrder { entry: index });
         }
         for family in &entry.families {
-            let is_affinity = directory
+            let is_streamed = directory
                 .resources
                 .get(family.resource_index as usize)
-                .is_some_and(|resource| resource.domain == ClusterResourceDomain::AffinityCell);
-            if !is_affinity {
+                .is_some_and(is_streamed_sparse);
+            if !is_streamed {
                 return Err(ClusterDirectoryError::BoundFamilyResource {
                     entry: index,
                     resource: family.resource_index,
@@ -197,6 +200,29 @@ pub(super) fn validate_bound_entries(
                 });
             }
         }
+        for (resource_index, resource) in directory.resources.iter().enumerate() {
+            let named = entry
+                .families
+                .iter()
+                .any(|family| family.resource_index as usize == resource_index);
+            if is_streamed_sparse(resource) && !named {
+                return Err(ClusterDirectoryError::BoundFamilyMissing {
+                    entry: index,
+                    section_id: resource.section_id,
+                });
+            }
+        }
     }
     Ok(())
+}
+
+/// A sparse family with a streamed pool to size.
+fn is_streamed_sparse(resource: &ClusterResourceRecord) -> bool {
+    resource.domain == ClusterResourceDomain::AffinityCell
+        && [
+            SectionId::DeltaShVolumes as u32,
+            SectionId::DirectShDeltaVolumes as u32,
+            SectionId::AnimatedDirectShDeltaVolumes as u32,
+        ]
+        .contains(&resource.section_id)
 }

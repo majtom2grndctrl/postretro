@@ -1,4 +1,5 @@
-//! Dense-patch rewrites over the shared slot pool.
+//! Dense-patch rewrites over the shared slot pool. "Closure" here means a
+//! chunk's own stored node set, with no dependency on any other cluster.
 //! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use super::*;

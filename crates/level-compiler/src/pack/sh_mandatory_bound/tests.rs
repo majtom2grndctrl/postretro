@@ -403,10 +403,11 @@ fn build_summary_reports_bound_and_warns_above_threshold() {
     assert_eq!(
         at_threshold.lines(),
         [
-            "SH mandatory memory: 512.0 MiB at 16 m lead, worst in cell 1 near (1.0, 2.0, 3.0) \
-             (524288 probe slots)",
-            "  at the maximum 32 m lead: 513.0 MiB, worst in cell 0 near (1.0, 2.0, 3.0) \
-             (525312 probe slots)",
+            "SH mandatory memory: 512.0 MiB pool demand at 16 m lead (how far ahead of the \
+             camera probes load), 524288 probe slots; dense demand peaks in cell 1, near \
+             (1.0, 2.0, 3.0) engine metres",
+            "  at the maximum 32 m lead: 513.0 MiB pool demand, 525312 probe slots; dense \
+             demand peaks in cell 0, near (1.0, 2.0, 3.0) engine metres",
         ]
     );
     assert!(
@@ -420,7 +421,10 @@ fn build_summary_reports_bound_and_warns_above_threshold() {
     assert_eq!(lines.len(), 3);
     let warning = lines[2].strip_prefix("  warning: ").expect("warning line");
     assert!(warning.contains("above the 512.0 MiB budget"), "{warning}");
-    assert!(warning.contains("cell 1 near (1.0, 2.0, 3.0)"), "{warning}");
+    assert!(
+        warning.contains("near (1.0, 2.0, 3.0) engine metres"),
+        "{warning}"
+    );
     assert_eq!(logged_warnings(&above), [format!("[Compiler] {warning}")]);
 }
 
@@ -458,7 +462,7 @@ fn a_whole_map_bound_says_why_and_names_no_cell() {
     let lines = report.lines();
     assert_eq!(
         lines[0],
-        "SH mandatory memory: 512.0 MiB (524289 probe slots), the whole map: \
+        "SH mandatory memory: 512.0 MiB pool demand, 524289 probe slots, the whole map: \
          without usable portals every probe stays loaded"
     );
     assert!(lines[1].contains("usable portals"), "{}", lines[1]);

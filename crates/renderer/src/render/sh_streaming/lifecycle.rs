@@ -35,10 +35,7 @@ impl ShResidencyState {
         #[cfg(feature = "dev-tools")]
         self.probe_readback
             .reconcile(self.grid_dimensions, &self.sampled_words);
-        outcome.pool_holds_whole_map = self
-            .gpu
-            .as_ref()
-            .is_some_and(StreamingGpuPools::holds_whole_map);
+        outcome.pool_holds_whole_map = self.pool_holds_whole_map();
         Ok(outcome)
     }
 

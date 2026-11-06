@@ -1,6 +1,6 @@
-// What the streamed SH pools charge per dense slot and sparse unit. One source
-// so the compiler prices the mandatory bound as the renderer sizes the pool.
-// See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
+//! What the streamed SH pools charge per dense slot and sparse unit. One source
+//! so the compiler prices the mandatory bound as the renderer sizes the pool.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 
@@ -21,9 +21,9 @@ pub struct ShDenseSlotTextures {
     pub indirect_format: u32,
     /// Id-35 atlas format, when the level has one.
     pub direct_format: Option<u32>,
-    /// Id 41 or id 45 present: direct compose keeps an intermediate atlas.
+    /// Id 41 or id 45 present: direct compose keeps a total atlas.
     pub direct_compose: bool,
-    /// Id 45 present: animated direct compose keeps its own atlas.
+    /// Id 45 present: animated direct compose also keeps an intermediate atlas.
     pub animated_direct_compose: bool,
 }
 
@@ -62,8 +62,9 @@ fn sh_atlas_cell_bytes(format: u32) -> Option<u64> {
 mod tests {
     use super::*;
 
-    // The per-slot figure research.md measured on the hallway, whose texture
-    // set is every one the pool can allocate.
+    // Every texture allocated, per slot: BC6H indirect atlas (64) + its
+    // composed atlas (512) + BC6H direct atlas (64) + direct total atlas (512)
+    // + direct intermediate atlas (512) = 1664.
     #[test]
     fn dense_slot_bytes_prices_every_texture_a_level_allocates() {
         let full = ShDenseSlotTextures {

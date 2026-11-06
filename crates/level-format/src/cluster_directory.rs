@@ -202,13 +202,17 @@ pub enum ClusterDirectoryError {
     )]
     BoundFamilyOrder { entry: usize },
     #[error(
-        "ClusterDirectoryBoundFamilyResource: entry {entry}, resource {resource} is not an affinity-domain resource of {count}"
+        "ClusterDirectoryBoundFamilyResource: entry {entry}, resource {resource} is not a streamed sparse family of {count} resources"
     )]
     BoundFamilyResource {
         entry: usize,
         resource: u32,
         count: usize,
     },
+    #[error(
+        "ClusterDirectoryBoundFamilyMissing: entry {entry} omits streamed sparse family id {section_id}"
+    )]
+    BoundFamilyMissing { entry: usize, section_id: u32 },
     #[error("ClusterDirectoryBoundWithoutProbes: a directory with no id 34 stores no bound")]
     BoundWithoutProbes,
     #[error("ClusterDirectoryCanonicalPartitionMismatch: {0}")]

@@ -30,10 +30,10 @@ impl ShResidencyController {
     }
 
     /// Optional residents in eviction order: SeamWarm and Band by the pressure
-    /// comparator, then Hysteresis, paused or not. A just-installed cluster is
-    /// protected until it composes, and a resident this frame draws stays
-    /// whatever its class says. Held drawn residents are Visible, so they
-    /// never reach this list.
+    /// comparator, then Hysteresis, paused or not, then Held. A just-installed
+    /// cluster is protected until it composes, and so is a resident only the
+    /// mirror draws. Held residents go last of all: they are what a held frame
+    /// draws, but a read the hold still owes matters more.
     pub(super) fn capacity_victims(&self) -> Vec<u32> {
         let mut victims: Vec<u32> = self
             .targets
@@ -122,7 +122,9 @@ impl ShResidencyController {
         match self.states[cluster_id as usize].class {
             Some(TargetClass::Band) => 0,
             Some(TargetClass::SeamWarm) => 1,
-            // Hysteresis goes last, because it stops doorway thrash. Callers
+            // What a held frame draws goes after everything else.
+            Some(TargetClass::Held) => 3,
+            // Hysteresis goes late, because it stops doorway thrash. Callers
             // rank only optional residents; the key stays total regardless.
             _ => 2,
         }

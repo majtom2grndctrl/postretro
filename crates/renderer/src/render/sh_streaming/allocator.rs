@@ -17,6 +17,10 @@ pub(super) struct PoolRange {
 pub(super) struct FirstFitRanges {
     pub(super) capacity: u32,
     free: BTreeMap<u32, u32>,
+    /// A range has come back since this pool was empty. Until then every
+    /// allocation extended the high-water, so no hole exists. An undo is no
+    /// release: it restores the pool exactly.
+    released: bool,
 }
 
 /// The exact inverse of one [`FirstFitRanges::allocate_undoable`]. Unlike
@@ -90,10 +94,15 @@ impl FirstFitRanges {
         self.capacity = undo.previous_capacity;
     }
 
+    pub(super) fn has_released(&self) -> bool {
+        self.released
+    }
+
     pub(super) fn release(&mut self, range: PoolRange) -> Result<(), ShResidencyDrainError> {
         if range.len == 0 {
             return Ok(());
         }
+        self.released = true;
         let mut start = range.start;
         let mut len = range.len;
         if let Some((&previous_start, &previous_len)) = self.free.range(..start).next_back()
@@ -149,6 +158,10 @@ pub(super) struct SparseInstallUndo {
 }
 
 impl SparsePool {
+    pub(super) fn has_released(&self) -> bool {
+        self.entries.has_released() || self.tiles.has_released()
+    }
+
     pub(super) fn logical_occupancy(&self) -> (u32, u32) {
         self.live
             .values()
@@ -166,6 +179,7 @@ impl SparsePool {
             entries: FirstFitRanges {
                 capacity: 1,
                 free: BTreeMap::new(),
+                released: false,
             },
             tiles: FirstFitRanges {
                 // Two f16 halves form one storage word. Reserve the dummy
@@ -173,6 +187,7 @@ impl SparsePool {
                 // entries may still have odd internal offsets.
                 capacity: 2,
                 free: BTreeMap::new(),
+                released: false,
             },
             row_pairs: vec![[0, 0]; row_count],
             live: BTreeMap::new(),
@@ -329,6 +344,27 @@ mod tests {
         pool.undo_allocation(exact);
         pool.undo_allocation(split);
         assert_eq!(pool, before);
+    }
+
+    // The whole-map report rests on this: only a real free can open a hole.
+    #[test]
+    fn only_a_real_release_counts_as_one() {
+        let mut pool = FirstFitRanges::default();
+        let (_, undo) = pool.allocate_undoable(3).unwrap();
+        pool.undo_allocation(undo);
+        let live = pool.allocate(3).unwrap();
+        pool.release(PoolRange { start: 0, len: 0 }).unwrap();
+        assert!(!pool.has_released(), "nothing has come back yet");
+        pool.release(live).unwrap();
+        assert!(pool.has_released());
+
+        let mut sparse = SparsePool::new(1);
+        let (_, _, undo) = sparse.install_undoable(0, 1, 2).unwrap();
+        sparse.undo_install(undo);
+        sparse.install(0, 1, 2).unwrap();
+        assert!(!sparse.has_released());
+        sparse.evict(0).unwrap();
+        assert!(sparse.has_released());
     }
 
     #[test]

@@ -265,7 +265,7 @@ impl ShResidencyController {
             }
         }
         self.preflight_drain_outcome(&outcome)?;
-        self.pool_holds_whole_map |= outcome.pool_holds_whole_map;
+        self.pool_holds_whole_map = outcome.pool_holds_whole_map;
 
         // The renderer reports only actual releases; a cluster it kept stays
         // resident and is retried later.

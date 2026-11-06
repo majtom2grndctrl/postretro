@@ -108,10 +108,11 @@ impl ShResidencyController {
         }
         self.drop_departed_ready(&self.targets.clone())?;
 
-        // Eviction is what fragments first-fit, and a pool holding the whole
-        // map has no need of it: residents stay, and every cluster places.
-        let eviction_enabled = eviction_enabled && !self.pool_holds_whole_map;
-        if eviction_enabled {
+        // Eviction is what fragments first-fit. A pool that holds the whole map
+        // and has never released a range has no need of it: residents stay, and
+        // first-fit from empty leaves no hole.
+        let evicts = eviction_enabled && !self.pool_holds_whole_map;
+        if evicts {
             batch.evictions = self.departed_eviction_order();
         }
         self.in_drain_evictions = batch.evictions.iter().copied().collect();
@@ -119,7 +120,7 @@ impl ShResidencyController {
         // waiting: an idle drain names no capacity policy at all.
         if self.mandatory_work_ready() {
             batch.mandatory = self.mandatory_targets();
-            if eviction_enabled {
+            if evicts {
                 batch.victims = self.capacity_victims();
                 self.in_drain_victims = batch.victims.iter().copied().collect();
             }

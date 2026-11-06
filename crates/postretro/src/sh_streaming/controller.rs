@@ -99,6 +99,10 @@ enum TargetClass {
     /// In the reach past L, up to the baked maximum: optional.
     Band,
     Hysteresis,
+    /// Drawn on a held frame with no other class: resident or on its way. A
+    /// target, so no departure takes it, but optional, and the last capacity
+    /// victim. Declared last, so every other class outranks it.
+    Held,
 }
 
 impl TargetClass {
@@ -132,7 +136,7 @@ impl TargetClass {
             Self::Lead => DrainClass::Lead,
             Self::SeamWarm => DrainClass::SeamWarm,
             Self::Band => DrainClass::Prefetch,
-            Self::Hysteresis => DrainClass::Hysteresis,
+            Self::Hysteresis | Self::Held => DrainClass::Hysteresis,
         }
     }
 }
@@ -235,7 +239,9 @@ enum FailureCause {
     DeviceLimit {
         refused_at: f64,
     },
-    /// Fragmentation left no room at the whole-map cap.
+    /// Fragmentation left no room at the whole-map cap. The cluster is black
+    /// until victims open a range, so it retries one hysteresis window after
+    /// each refusal, target or not.
     WholeMapCap {
         refused_at: f64,
     },
@@ -350,8 +356,8 @@ pub(crate) struct ShResidencyController {
     /// Capacity victims this drain named. Evicted ones yield until the
     /// horizon changes; departures in `in_drain_evictions` have no such wait.
     in_drain_victims: BTreeSet<u32>,
-    /// The renderer's report that its pool holds the whole map: no drain
-    /// evicts from here on. Capacity never shrinks, so this only ever sets.
+    /// The latest outcome's report that every pool holds the whole map and
+    /// has never released a range: the next drain evicts nothing.
     pool_holds_whole_map: bool,
     permits_in_use: usize,
     cpu: CpuPhaseLedger,

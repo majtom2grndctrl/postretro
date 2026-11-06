@@ -161,8 +161,9 @@ pub struct ShDrainOutcome {
     /// Disjoint from the other lists; no permit is retained.
     pub refused: Vec<u32>,
     /// Mandatory installs fragmentation left no room for, at the whole-map
-    /// cap. Handled as `refused` is, and named apart so neither the miss
-    /// bucket nor the warning calls it a device limit.
+    /// cap. Their payload is released as `refused` is, and they are named
+    /// apart so neither the miss bucket nor the warning calls it a device
+    /// limit. Unlike a device limit, they retry on a timer.
     pub whole_map_refused: Vec<u32>,
     /// Optional installs the pool had no room for. Nothing was evicted or
     /// grown for them; the payload and permit are released, and the cluster
@@ -172,9 +173,10 @@ pub struct ShDrainOutcome {
     /// Clusters actually released by the renderer, not merely requested for
     /// eviction. Capacity victims are listed here too.
     pub evicted: Vec<u32>,
-    /// The dense pool now holds every stored node at once, so nothing need
-    /// leave it. The renderer reports this each drain, and capacity never
-    /// shrinks within a level, so it holds from the first drain that says so.
+    /// Every family's capacity is the whole map and nothing has ever left any
+    /// pool, so first-fit has left no hole and nothing need leave now. A fact
+    /// of this drain, not a latch: a level reaching the cap any other way
+    /// reports false and keeps evicting, so fragmentation stays recoverable.
     pub pool_holds_whole_map: bool,
 }
 

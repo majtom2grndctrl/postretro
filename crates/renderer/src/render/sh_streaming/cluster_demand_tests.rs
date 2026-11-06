@@ -15,19 +15,18 @@ use super::stored_nodes::equivalence_tests::{
 };
 use super::*;
 
-/// The tiles of the largest single cluster's distinct stored nodes, at least
-/// one, or the failure the plan owes this directory.
-fn oracle_minimum_slots(
+/// The tiles of every cluster's distinct stored nodes, each node once, or the
+/// failure the plan owes this directory.
+fn oracle_whole_slots(
     directory: &ClusterDirectorySection,
     dense_node: &[Option<StoredNode>],
     tile_counts: &BTreeMap<StoredNode, u32>,
 ) -> Result<u32, ShResidencyDrainError> {
     let mut covered = vec![false; dense_node.len()];
-    let mut minimum = 1;
+    let mut nodes = BTreeSet::new();
     for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
         let span =
             cluster.range_start as usize..(cluster.range_start + cluster.range_count) as usize;
-        let mut nodes = BTreeSet::new();
         for range in &directory.ranges[span] {
             if range.resource_index != 0 {
                 continue;
@@ -43,13 +42,12 @@ fn oracle_minimum_slots(
                 nodes.extend(node.iter().copied());
             }
         }
-        minimum = minimum.max(nodes.iter().map(|node| tile_counts[node]).sum::<u32>());
     }
     match (0..dense_node.len()).find(|&dense| dense_node[dense].is_some() && !covered[dense]) {
         Some(dense) => Err(ShResidencyDrainError::UncoveredDenseProbe {
             dense_index: dense as u32,
         }),
-        None => Ok(minimum),
+        None => Ok(nodes.iter().map(|node| tile_counts[node]).sum()),
     }
 }
 
@@ -123,7 +121,7 @@ fn synthetic_directory(
         ranges,
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
-        mandatory_bound: Vec::new(),
+        mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
     }
 }
 
@@ -186,7 +184,7 @@ fn cluster_demand_matches_the_oracle_on_synthetic_manifests() {
                     let mut directory =
                         synthetic_directory(&mut rng, cluster_count, probe_count, dims, true);
                     cover_every_probe(&mut directory, probe_count);
-                    let expected = oracle_minimum_slots(&directory, &layout.nodes, &tiles)
+                    let expected = oracle_whole_slots(&directory, &layout.nodes, &tiles)
                         .expect("every probe is covered");
                     let plan = plan_sh_residency_parts(
                         [2; 32],
@@ -194,22 +192,12 @@ fn cluster_demand_matches_the_oracle_on_synthetic_manifests() {
                         &base,
                         &one_row_sources(),
                         &[],
+                        None,
                     )
                     .unwrap_or_else(|error| panic!("{label}: {error}"));
-                    assert_eq!(plan.initial_dense_slots.minimum, expected, "{label}");
                     // Overlap is common here, so a sum over clusters or a
-                    // repeat within one would both show up as a larger floor.
-                    let names_the_row = directory
-                        .ranges
-                        .iter()
-                        .any(|range| range.resource_index == 1);
-                    assert_eq!(
-                        plan.sparse_capacity_floors
-                            .get(&INDIRECT_DELTA_ID)
-                            .map(|floor| floor.0),
-                        names_the_row.then_some(2),
-                        "{label}"
-                    );
+                    // repeat within one would both show up as a larger figure.
+                    assert_eq!(plan.whole_dense_slots, expected, "{label}");
                     compared += 1;
                     overlapping += usize::from(cluster_count > 1);
                 }
@@ -235,7 +223,7 @@ fn a_valid_probe_no_cluster_names_fails_the_plan_by_index() {
     directory.clusters[0] = cluster_record(0, 1);
     directory.clusters[1] = cluster_record(1, 1);
 
-    let expected = oracle_minimum_slots(&directory, &layout.nodes, &tiles).unwrap_err();
+    let expected = oracle_whole_slots(&directory, &layout.nodes, &tiles).unwrap_err();
     assert_eq!(
         expected,
         ShResidencyDrainError::UncoveredDenseProbe { dense_index: 400 }
@@ -246,7 +234,8 @@ fn a_valid_probe_no_cluster_names_fails_the_plan_by_index() {
             &directory,
             &base,
             &ShStreamSourceMetadata::default(),
-            &[]
+            &[],
+            None,
         )
         .unwrap_err(),
         expected
@@ -268,12 +257,45 @@ fn a_dense_range_past_the_last_probe_fails_the_plan() {
             &directory,
             &base,
             &ShStreamSourceMetadata::default(),
-            &[]
+            &[],
+            None,
         )
         .unwrap_err(),
         ShResidencyDrainError::MalformedChunk {
             cluster_id: 0,
             reason: "dense range exceeds id-34 metadata",
+        }
+    );
+}
+
+// Named rows are priced at load, so a row no chunk could price cannot reach a
+// frame, where the failure would be fatal mid-level.
+#[test]
+fn a_sparse_row_with_no_source_fails_the_plan_by_name() {
+    let mut rng = Rng(11);
+    let dims = [4, 4, 4];
+    let base = base_with_probes(dims, synthetic_probes(&mut rng, dims, false, 0));
+    let mut directory = synthetic_directory(&mut rng, 1, 64, dims, false);
+    cover_every_probe(&mut directory, 64);
+    directory.ranges.push(ClusterRangeRecord {
+        resource_index: 1,
+        start: 0,
+        count: 1,
+    });
+    directory.clusters[0].range_count += 1;
+    assert_eq!(
+        plan_sh_residency_parts(
+            [2; 32],
+            &directory,
+            &base,
+            &ShStreamSourceMetadata::default(),
+            &[],
+            None,
+        )
+        .unwrap_err(),
+        ShResidencyDrainError::MalformedChunk {
+            cluster_id: 0,
+            reason: "id-49 names a sparse source omitted by stream metadata",
         }
     );
 }

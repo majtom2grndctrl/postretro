@@ -29,9 +29,7 @@ impl StreamingGpuPools {
             return Ok(());
         }
         let started = std::time::Instant::now();
-        let shape = self
-            .shape
-            .grown_for_slots(needed_slots, wanted_slots, &self.limits)?;
+        let shape = self.grown_shape(needed_slots, wanted_slots)?;
         if self.retiring_dense.is_some() {
             return Err(ShResidencyDrainError::GpuRetirementPressure {
                 family: "dense atlas",
@@ -550,10 +548,6 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) const fn probe_occlusion_enabled(&self) -> bool {
         self.probe_occlusion_enabled
-    }
-
-    pub(in crate::render::sh_streaming) const fn effective_floor_bytes(&self) -> u64 {
-        self.effective_floor_bytes
     }
 
     pub(in crate::render::sh_streaming) fn depth_moment_view(&self) -> wgpu::TextureView {

@@ -129,10 +129,22 @@ impl ShResidencyState {
         Ok(true)
     }
 
+    /// A pool at the whole map holds every node and row if first-fit lets it,
+    /// so this refusal means fragmentation stranded free slots. Nothing moves
+    /// live storage, so the cluster stays dark until a retry finds room.
+    pub(super) fn warn_whole_map_refusal(&mut self, family: &str, cluster_id: u32) {
+        if !std::mem::replace(&mut self.whole_map_refusal_warned, true) {
+            log::warn!(
+                "[SH streaming] fragmentation refused cluster {cluster_id} at the SH {family} \
+                 pool's whole-map cap; surfaces it lights stay black"
+            );
+        }
+    }
+
     /// Grow once, to the whole targeted mandatory demand: a second growth
     /// would wait behind this one's retirement, and doubling is what overshot
-    /// the live set. The device limit clamps the size and refuses only what
-    /// `demand` itself cannot do without.
+    /// the live set. The device limit and whole map clamp the size, and refuse
+    /// only what `demand` itself cannot do without.
     fn grow_to_mandatory_demand(
         &mut self,
         gpu: &mut InstallGpu<'_>,

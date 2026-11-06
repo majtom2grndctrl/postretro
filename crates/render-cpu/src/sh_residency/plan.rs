@@ -5,7 +5,7 @@
 // it.
 // See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
@@ -15,11 +15,10 @@ use postretro_level_loader::{
 
 use super::dense_spans::{DenseSpan, DenseSpans};
 use super::node_map::NodeMap;
+use super::pool_bound::{ShPoolBound, stored_pool_bound};
 use super::sample_region_tables::SampleRegionTables;
 use super::sample_regions::{SampleRegionGrid, ShSampleRegion};
-use super::sparse_compose::{
-    SparseCapacityFloors, SparseComposeLayouts, compose_row_capacity, sparse_capacity_floors,
-};
+use super::sparse_compose::{SparseComposeLayouts, compose_row_capacity, sparse_row_demand};
 use super::stored_nodes::{
     DenseNodeLayout, StoredNode, StoredNodeLayout, derive_dense_node_layout,
 };
@@ -27,15 +26,6 @@ use super::{
     ANIMATED_DIRECT_DELTA_ID, DIRECT_DELTA_ID, INDIRECT_BASE_ID, INDIRECT_DELTA_ID,
     ShResidencyDrainError,
 };
-
-/// The dense pool's slot needs before any device sizing: the stored-node
-/// tiles of the largest single cluster (at least one), and the whole level's
-/// id-34 stored-node prefix total.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct InitialDenseSlots {
-    pub minimum: u32,
-    pub whole: u32,
-}
 
 /// What one cluster names in id 49, as its own ranges: enough to price a
 /// target whose chunk is not in hand.
@@ -61,7 +51,8 @@ pub struct ShResidencyPlan {
     pub dense_spans: DenseSpans,
     /// Each cluster's named storage, indexed by cluster.
     pub cluster_storage: Vec<ClusterStorage>,
-    pub sparse_capacity_floors: SparseCapacityFloors,
+    /// The stored figure the pools size from.
+    pub pool_bound: ShPoolBound,
     /// Each present sparse source's affinity row count, keyed by section id:
     /// the CPU sparse pools' row spaces.
     pub sparse_pool_rows: BTreeMap<u32, usize>,
@@ -69,7 +60,9 @@ pub struct ShResidencyPlan {
     pub row_capacity: usize,
     pub sample_regions: SampleRegionTables,
     pub sparse_compose: SparseComposeLayouts,
-    pub initial_dense_slots: InitialDenseSlots,
+    /// The level's id-34 stored-node prefix total: the dense unique union,
+    /// which no sum of per-cluster figures can give.
+    pub whole_dense_slots: u32,
 }
 
 // Compile-time guard: the plan is built on a load-pool thread.
@@ -80,10 +73,12 @@ const _: fn() = || {
 
 /// Plan a streamed level's residency. `cells` are the level's runtime cells;
 /// the sampled-row gate indexes their bounds here once, and frames name
-/// cells by id.
+/// cells by id. `baked_max_lead` is id 51's maximum, `None` without a usable
+/// id 51.
 pub fn plan_sh_residency(
     manifest: &ShStreamManifest,
     cells: &[CellData],
+    baked_max_lead: Option<u32>,
 ) -> Result<ShResidencyPlan, ShResidencyDrainError> {
     plan_sh_residency_parts(
         manifest.content_tag(),
@@ -91,6 +86,7 @@ pub fn plan_sh_residency(
         manifest.base(),
         manifest.sources(),
         cells,
+        baked_max_lead,
     )
 }
 
@@ -100,6 +96,7 @@ pub fn plan_sh_residency_parts(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
     cells: &[CellData],
+    baked_max_lead: Option<u32>,
 ) -> Result<ShResidencyPlan, ShResidencyDrainError> {
     let cluster_count = u32::try_from(directory.clusters.len()).map_err(|_| {
         ShResidencyDrainError::MalformedChunk {
@@ -119,11 +116,11 @@ pub fn plan_sh_residency_parts(
             reason: "id-49 has no id-34 dense resource",
         })?;
     let dense_layout = derive_dense_node_layout(base)?;
-    let demand = walk_cluster_demand(directory, dense_resource, &dense_layout)?;
+    let demand = walk_cluster_demand(directory, dense_resource, &dense_layout, sources)?;
     if let Some(dense_index) = demand.first_uncovered_probe {
         return Err(ShResidencyDrainError::UncoveredDenseProbe { dense_index });
     }
-    let sparse_capacity_floors = sparse_capacity_floors(sources, &demand.cluster_sparse_rows)?;
+    let pool_bound = stored_pool_bound(directory, baked_max_lead)?;
     let dense_node = dense_layout.nodes;
 
     let mut sparse_pool_rows = BTreeMap::new();
@@ -155,10 +152,7 @@ pub fn plan_sh_residency_parts(
             .iter()
             .map(|cell| ShSampleRegion::new(cell.bounds_min, cell.bounds_max)),
     )?;
-    let initial_dense_slots = InitialDenseSlots {
-        minimum: demand.largest_cluster_slots,
-        whole: whole_dense_slots(&dense_layout.layouts)?,
-    };
+    let whole_dense_slots = whole_dense_slots(&dense_layout.layouts)?;
     let sparse_compose = SparseComposeLayouts::derive(base, sources)?;
 
     Ok(ShResidencyPlan {
@@ -169,22 +163,18 @@ pub fn plan_sh_residency_parts(
         node_layouts: dense_layout.layouts,
         dense_spans: demand.dense_spans,
         cluster_storage: demand.cluster_storage,
-        sparse_capacity_floors,
+        pool_bound,
         sparse_pool_rows,
         row_capacity,
         sample_regions,
         sparse_compose,
-        initial_dense_slots,
+        whole_dense_slots,
     })
 }
 
 /// What id 49 says each cluster's chunk carries. Clusters are independent, so
 /// every figure here is one cluster's full demand, shared storage included.
 struct ClusterDemand {
-    /// Stored-node tiles of the largest single cluster, at least one slot.
-    largest_cluster_slots: u32,
-    /// Each cluster's `(section_id, row)` pairs, indexed by cluster.
-    cluster_sparse_rows: Vec<BTreeSet<(u32, u32)>>,
     dense_spans: DenseSpans,
     cluster_storage: Vec<ClusterStorage>,
     /// The first node-bearing probe no cluster names, if any.
@@ -195,13 +185,11 @@ fn walk_cluster_demand(
     directory: &ClusterDirectorySection,
     dense_resource: usize,
     dense_layout: &DenseNodeLayout,
+    sources: &ShStreamSourceMetadata,
 ) -> Result<ClusterDemand, ShResidencyDrainError> {
     let mut covered = vec![false; dense_layout.nodes.len()];
     let mut spans = Vec::new();
-    let mut cluster_sparse_rows = vec![BTreeSet::new(); directory.clusters.len()];
     let mut cluster_storage = vec![ClusterStorage::default(); directory.clusters.len()];
-    let mut largest_cluster_slots = 1u32;
-    let mut cluster_nodes = BTreeSet::new();
     for (cluster_index, cluster) in directory.clusters.iter().enumerate() {
         let cluster_id =
             u32::try_from(cluster_index).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
@@ -214,7 +202,6 @@ fn walk_cluster_demand(
                     .map_err(|_| malformed("cluster range count exceeds usize"))?,
             )
             .ok_or(malformed("cluster range end overflows"))?;
-        cluster_nodes.clear();
         for range in directory
             .ranges
             .get(start..end)
@@ -234,7 +221,7 @@ fn walk_cluster_demand(
                 {
                     let probes = range.start as usize..range_end as usize;
                     covered
-                        .get_mut(probes.clone())
+                        .get_mut(probes)
                         .ok_or(malformed("dense range exceeds id-34 metadata"))?
                         .fill(true);
                     spans.push(DenseSpan {
@@ -245,14 +232,6 @@ fn walk_cluster_demand(
                     cluster_storage[cluster_index]
                         .dense
                         .push(range.start..range_end);
-                    // Consecutive probes mostly repeat the previous node.
-                    let mut last = None;
-                    for &node in dense_layout.nodes[probes].iter().flatten() {
-                        if last != Some(node) {
-                            cluster_nodes.insert(node);
-                            last = Some(node);
-                        }
-                    }
                 }
                 ClusterResourceDomain::AffinityCell
                     if matches!(
@@ -260,8 +239,10 @@ fn walk_cluster_demand(
                         INDIRECT_DELTA_ID | DIRECT_DELTA_ID | ANIMATED_DIRECT_DELTA_ID
                     ) =>
                 {
-                    cluster_sparse_rows[cluster_index]
-                        .extend((range.start..range_end).map(|row| (resource.section_id, row)));
+                    // A row no chunk could price fails the load, not a frame.
+                    for row in range.start..range_end {
+                        sparse_row_demand(sources, cluster_id, resource.section_id, row)?;
+                    }
                     cluster_storage[cluster_index]
                         .sparse
                         .push((resource.section_id, range.start..range_end));
@@ -269,18 +250,6 @@ fn walk_cluster_demand(
                 _ => {}
             }
         }
-        let slots = cluster_nodes.iter().try_fold(0u32, |total, node| {
-            total
-                .checked_add(
-                    dense_layout
-                        .layouts
-                        .get(node)
-                        .ok_or(ShResidencyDrainError::SlotOverflow)?
-                        .tile_count,
-                )
-                .ok_or(ShResidencyDrainError::SlotOverflow)
-        })?;
-        largest_cluster_slots = largest_cluster_slots.max(slots);
     }
     let first_uncovered_probe = dense_layout
         .nodes
@@ -291,8 +260,6 @@ fn walk_cluster_demand(
         .transpose()
         .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
     Ok(ClusterDemand {
-        largest_cluster_slots,
-        cluster_sparse_rows,
         dense_spans: DenseSpans::new(spans),
         cluster_storage,
         first_uncovered_probe,

@@ -16,15 +16,15 @@ impl StreamingGpuPools {
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         sparse_compose: std::sync::Arc<SparseComposeLayouts>,
-        initial_floor: super::super::floor::InitialPoolFloor,
+        initial_pool: InitialPool,
         probe_occlusion_enabled: bool,
         sh: &mut ShVolumeResources,
         pipelines: &super::super::StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
     ) -> Result<Self, ShResidencyDrainError> {
         let shape = AtlasShape::for_slots(
-            initial_floor.dense_slots.max(1),
-            initial_floor.whole_dense_slots,
+            initial_pool.dense_slots,
+            initial_pool.whole_map.dense_slots,
             limits,
         )?;
         preflight_initial_resource_limits(
@@ -32,7 +32,7 @@ impl StreamingGpuPools {
             sources,
             &sparse_compose,
             shape,
-            &initial_floor.sparse_capacities,
+            &initial_pool.sparse_capacities,
             limits,
         )?;
         Self::new_with_shape(
@@ -43,14 +43,12 @@ impl StreamingGpuPools {
             sources,
             sparse_compose,
             shape,
-            &initial_floor.sparse_capacities,
+            &initial_pool.sparse_capacities,
+            initial_pool.whole_map,
             probe_occlusion_enabled,
             sh,
             pipelines,
             selection_weights,
-            initial_floor.effective_floor_bytes,
-            initial_floor.dense_group_minimum_bytes,
-            initial_floor.sparse_group_minimum_bytes,
         )
     }
 
@@ -64,13 +62,11 @@ impl StreamingGpuPools {
         sparse_compose: std::sync::Arc<SparseComposeLayouts>,
         shape: AtlasShape,
         sparse_capacity_floors: &SparseCapacityFloors,
+        whole_map: WholeMapCap,
         probe_occlusion_enabled: bool,
         sh: &mut ShVolumeResources,
         pipelines: &super::super::StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
-        effective_floor_bytes: u64,
-        dense_group_minimum_bytes: u64,
-        sparse_group_minimum_bytes: std::collections::BTreeMap<u32, u64>,
     ) -> Result<Self, ShResidencyDrainError> {
         let base_format = texture_format(base.irradiance_format)?;
         let extent = shape.extent();
@@ -433,10 +429,8 @@ impl StreamingGpuPools {
             })
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
         // Animation/sample/scripted descriptor buffers are shared immutable
-        // ShVolumeResources allocations. They participate in the initial
-        // 256 MiB floor calculation, but are already represented by static
-        // ledger rows and must not be charged again in the live streaming
-        // summary.
+        // ShVolumeResources allocations, already represented by static ledger
+        // rows, so the live streaming summary must not charge them again.
 
         let dense_capacity_bytes = active_capacity_bytes
             .checked_sub(indirect_compose.active_pool_bytes())
@@ -490,9 +484,7 @@ impl StreamingGpuPools {
             active_capacity_bytes,
             fixed_metadata_bytes,
             whole_resident_scatter_bytes: sh.billboard_direct_scatter.capacity_bytes(),
-            effective_floor_bytes,
-            dense_group_minimum_bytes,
-            sparse_group_minimum_bytes,
+            whole_map,
             probe_occlusion_enabled,
             sparse_capacity_floors: sparse_capacity_floors.clone(),
             growth: PoolGrowthCounters::default(),

@@ -6,7 +6,8 @@ use postretro_level_format::cell_locator::{
 use postretro_level_format::cells::{CellRecord, CellsSection};
 use postretro_level_format::cluster_directory::{
     CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectorySection, ClusterDirectoryShInventory,
-    ClusterDirectoryValidationInputs, canonical_cell_partition, populate_canonical_resource_ranges,
+    ClusterDirectoryValidationInputs, ShMandatoryBoundEntry, WHOLE_MAP_WORST_CELL,
+    canonical_cell_partition, populate_canonical_resource_ranges,
 };
 use postretro_level_format::cluster_sh_payloads::*;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
@@ -108,7 +109,14 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
         ranges: vec![],
         seam_portal_ids: vec![],
         cluster_hints: vec![],
-        mandatory_bound: Vec::new(),
+        // Far below the level, so growth has to carry it. No id 51 here, so
+        // the entry takes the whole-map shape.
+        mandatory_bound: vec![ShMandatoryBoundEntry {
+            lead: 0,
+            worst_dense_slots: 4,
+            worst_cell: WHOLE_MAP_WORST_CELL,
+            families: Vec::new(),
+        }],
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells: &cells,

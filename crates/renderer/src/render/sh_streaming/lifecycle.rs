@@ -100,6 +100,10 @@ impl ShResidencyState {
                     Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => {
                         outcome.refused.push(cluster_id);
                     }
+                    Err(ShResidencyDrainError::PoolAtWholeMap { family }) => {
+                        self.warn_whole_map_refusal(family, cluster_id);
+                        outcome.refused.push(cluster_id);
+                    }
                     Err(ShResidencyDrainError::PoolShortfall) => {
                         outcome.pool_refused.push(cluster_id);
                     }

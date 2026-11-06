@@ -48,6 +48,42 @@ fn fixture(
     f
 }
 
+/// `map` over the pool production sizes from a stored bound of `dense_slots`,
+/// with production's whole-map cap.
+fn bound_sized_fixture(
+    device: &wgpu::Device,
+    raw: &wgpu::Queue,
+    map: SyntheticMap,
+    dense_slots: u32,
+) -> UploadOrderSh {
+    let mut f = UploadOrderSh::with_map(device, raw, 128, map);
+    f.state.pool_bound.dense_slots = dense_slots;
+    f.state
+        .initialize_gpu_with_limits(
+            device,
+            raw,
+            &f.map.base(),
+            &f.map.sources(),
+            false,
+            &mut f.sh,
+            &f.pipelines,
+            &f.weights,
+            &device.limits(),
+        )
+        .unwrap();
+    f
+}
+
+/// One-tile layers, so the whole-map cap is exact and fragmentation shows.
+fn exact_pool(slots: u32) -> AtlasShape {
+    AtlasShape {
+        tiles_per_row: 1,
+        tiles_per_layer: 1,
+        layers: slots,
+        slots,
+    }
+}
+
 /// Install `clusters` with room to spare, as an earlier frame's work.
 fn settle_residents(
     f: &mut UploadOrderSh,
@@ -399,9 +435,12 @@ fn walk_within_bound_never_grows() {
     };
     const CLUSTERS: u32 = 8;
     let capture = LogCapture::start();
-    // The pool holds the walk's mandatory window of two and nothing more,
-    // which is the bound; its band read ahead must never be what grows it.
-    let mut f = fixture(&device, &raw, bricks(CLUSTERS), 2);
+    // The stored bound is the walk's mandatory window of two. Its headroom
+    // holds no third brick, so the band read ahead is what must be refused.
+    let mut f = bound_sized_fixture(&device, &raw, bricks(CLUSTERS), 2 * BRICK);
+    let initial = f.state.gpu.as_ref().unwrap().shape;
+    assert_eq!(initial.slots.div_ceil(BRICK), 3);
+    assert!(initial.slots < 3 * BRICK);
     let queue = UploadQueue::new(&device, raw, true);
     f.state.targets = BTreeSet::from([0, 1, 2]);
     let outcome = admit(&mut f, &device, &queue, &[0, 1], &[], &[0, 1, 2]);
@@ -435,9 +474,114 @@ fn walk_within_bound_never_grows() {
         assert_eq!(f.state.installed.len(), 2);
     }
     assert_eq!(f.growth_events(), 0);
-    assert_eq!(f.state.gpu.as_ref().unwrap().shape.layers, 2);
+    assert_eq!(f.state.gpu.as_ref().unwrap().shape, initial);
     capture.assert_not_logged(log::Level::Warn, "outgrew");
     eprintln!("[ShPoolProof] walk within the bound never grew; ran on GPU");
+}
+
+// AC 30, on the real growth path. The fixture's bound sits under the whole
+// map, so a tier past the pool grows, and stops at the map however far the
+// tier reads: its figure is the union, and the union cannot pass the map.
+#[test]
+fn pool_never_exceeds_the_whole_map() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH whole-map cap") else {
+        return;
+    };
+    const CLUSTERS: u32 = 5;
+    let mut f = bound_sized_fixture(&device, &raw, bricks(CLUSTERS), BRICK);
+    let whole = f.state.whole_dense_slots;
+    assert_eq!(whole, CLUSTERS * BRICK);
+    let initial = f.state.gpu.as_ref().unwrap().shape;
+    assert!(initial.slots < whole);
+    let cap = whole.div_ceil(initial.tiles_per_layer) * initial.tiles_per_layer;
+    let queue = UploadQueue::new(&device, raw.clone(), true);
+
+    let tier: Vec<u32> = (0..CLUSTERS).collect();
+    let outcome = admit(&mut f, &device, &queue, &tier, &[], &tier);
+    assert_eq!(outcome.accepted, tier);
+    assert!(outcome.refused.is_empty() && outcome.deferred.is_empty());
+    assert_eq!(f.state.gpu.as_ref().unwrap().shape.slots, cap);
+    finish_retirement(&mut f, &device);
+
+    // A stored bound above the map changes nothing: load caps it too.
+    let f = bound_sized_fixture(&device, &raw, bricks(CLUSTERS), u32::MAX);
+    let shape = f.state.gpu.as_ref().unwrap().shape;
+    assert_eq!(shape.layers, 1);
+    assert!(shape.slots >= whole && shape.slots - whole < shape.tiles_per_row);
+    eprintln!("[ShPoolProof] growth and load both stopped at the whole map; ran on GPU");
+}
+
+// First-fit needs contiguous slots and nothing compacts live storage, so at
+// the cap a mandatory cluster can be refused with enough free slots in total.
+#[test]
+fn fragmentation_at_the_cap_evicts_then_refuses_by_name() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH cap fragmentation") else {
+        return;
+    };
+    let capture = LogCapture::start();
+    // One 8-tile cluster, then three 1-tile clusters.
+    let map = SyntheticMap::new([16, 4, 4], [1, 1, 1])
+        .direct_base_only()
+        .with_empty_rows(27, &[0, 1, 2, 3])
+        .with_density_levels(&[1, 2, 2, 2]);
+    let mut f = UploadOrderSh::with_map(&device, &raw, 128, map);
+    let whole = f.state.whole_dense_slots;
+    assert_eq!(whole, 11);
+    let cap = WholeMapCap {
+        dense_slots: whole,
+        ..WholeMapCap::uncapped()
+    };
+    replace_shape(&mut f, &device, &raw, &device.limits(), exact_pool(whole));
+    f.state.gpu.as_mut().unwrap().whole_map = cap;
+    let queue = UploadQueue::new(&device, raw, true);
+
+    // The 8-tile cluster goes, and a 1-tile cluster takes its address.
+    settle_residents(&mut f, &device, &queue, &[0, 1, 2]);
+    let outcome = f
+        .drain_batch(
+            &device,
+            &queue,
+            ShDrainBatch {
+                evictions: vec![0],
+                target_remove: vec![0],
+                ..ShDrainBatch::default()
+            },
+            &[3],
+        )
+        .unwrap();
+    assert_eq!((outcome.evicted, outcome.accepted), (vec![0], vec![3]));
+    let live: u32 = f.state.node_slots.values().map(|range| range.len).sum();
+    assert_eq!(whole - live, 8, "the request's size is free in total");
+
+    // Seven free at the old address and one at the tail: eight, not together.
+    let outcome = f
+        .drain_batch(
+            &device,
+            &queue,
+            ShDrainBatch {
+                target_add: vec![0],
+                mandatory: vec![0],
+                ..ShDrainBatch::default()
+            },
+            &[0],
+        )
+        .unwrap();
+    assert_eq!(outcome.refused, [0]);
+    assert!(outcome.accepted.is_empty());
+    assert_eq!(f.growth_events(), 0);
+    assert_eq!(f.state.gpu.as_ref().unwrap().shape.slots, whole);
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "at the SH dense atlas pool's whole-map cap",
+    );
+
+    // A victim is spent before any refusal, and here its slot closes the gap.
+    let outcome = admit(&mut f, &device, &queue, &[0], &[3], &[0]);
+    assert_eq!(outcome.evicted, [3]);
+    assert_eq!(outcome.accepted, [0]);
+    eprintln!(
+        "[ShPoolProof] stranded slots refused by name at the cap, victim admitted; ran on GPU"
+    );
 }
 
 // AC 10 (R3), renderer half under a capacity victim. The app half is

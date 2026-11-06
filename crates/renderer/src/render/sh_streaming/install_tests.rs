@@ -268,7 +268,7 @@ impl SyntheticMap {
             ranges,
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
-            mandatory_bound: Vec::new(),
+            mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
         }
     }
 

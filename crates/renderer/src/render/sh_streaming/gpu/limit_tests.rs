@@ -3,10 +3,8 @@ use super::*;
 
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use crate::render::sh_streaming::PoolAdmission;
-use crate::render::sh_streaming::floor::{
-    DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES, plan_initial_pool_floor,
-};
 use crate::render::sh_streaming::gpu::load_fixture;
+use crate::render::sh_streaming::pool_size::plan_initial_pool;
 
 pub(super) fn replace_shape(
     fixture: &mut UploadOrderSh,
@@ -44,13 +42,11 @@ pub(super) fn replace_pools(
             std::sync::Arc::clone(&fixture.state.sparse_compose),
             shape,
             sparse_floors,
+            WholeMapCap::uncapped(),
             false,
             &mut fixture.sh,
             &fixture.pipelines,
             &fixture.weights,
-            0,
-            0,
-            BTreeMap::new(),
         )
         .unwrap(),
     );
@@ -148,8 +144,8 @@ pub(super) fn finish_retirement(f: &mut UploadOrderSh, device: &wgpu::Device) {
 }
 
 #[test]
-fn sh_growth_production_zero_share_load_holds_every_cluster() {
-    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH production zero-share growth")
+fn sh_growth_production_small_bound_load_holds_every_cluster() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH production small-bound growth")
     else {
         return;
     };
@@ -161,11 +157,12 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
     assert_eq!(manifest.cluster_count(), 9);
     let map = SyntheticMap::new([36, 4, 4], [1, 1, 1]).direct_base_only();
     let mut f = UploadOrderSh::with_map(&device, &raw, 128, map);
-    f.state = ShResidencyState::from_manifest(manifest, &world.cells).unwrap();
+    f.state =
+        ShResidencyState::from_manifest(manifest, &world.cells, world.baked_max_lead()).unwrap();
     let mut limits = device.limits();
     limits.max_texture_array_layers = 2;
     assert!(limits.max_texture_array_layers <= device.limits().max_texture_array_layers);
-    let largest = f.state.initial_dense_slots.minimum;
+    let bound = f.state.pool_bound.dense_slots;
     let whole = f
         .state
         .node_layouts
@@ -173,9 +170,9 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
         .map(|layout| layout.global_base_slot + layout.tile_count)
         .max()
         .unwrap();
-    // This precondition fails if the fixture ever ceases to distinguish the
-    // old floor-share geometry from the whole-level load rule.
-    assert!(whole > limits.max_texture_array_layers * largest);
+    // This precondition fails if the fixture ever ceases to distinguish a
+    // layer sized from the bound from the whole-level load rule.
+    assert!(whole > limits.max_texture_array_layers * bound);
     f.state
         .initialize_gpu_with_limits(
             &device,
@@ -187,41 +184,21 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
             &f.pipelines,
             &f.weights,
             &limits,
-            DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES,
         )
         .unwrap();
     let initial = f.state.gpu.as_ref().unwrap().shape;
     assert!(initial.tiles_per_layer >= (whole * 9).div_ceil(4 * limits.max_texture_array_layers));
     assert_eq!(initial.layers, 1);
-    let fixed =
-        initial_fixed_metadata_bytes(manifest.base(), manifest.sources(), &limits, &f.sh).unwrap();
-    let floor = plan_initial_pool_floor(
+    let pool = plan_initial_pool(
         manifest.base(),
         manifest.sources(),
-        largest,
+        &f.state.pool_bound,
         whole,
-        &f.state.sparse_capacity_floors,
-        fixed + DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES,
-        f.sh.billboard_direct_scatter.capacity_bytes(),
         &limits,
     )
     .unwrap();
-    assert_eq!(floor.dense_slots, largest);
-    assert_eq!(
-        floor.dense_group_minimum_bytes,
-        u64::from(initial.slots) * 1024
-    );
-    assert_eq!(
-        floor.effective_floor_bytes,
-        f.state.gpu.as_ref().unwrap().effective_floor_bytes
-    );
-    assert_eq!(
-        floor.effective_floor_bytes,
-        fixed
-            + DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES
-            + f.sh.billboard_direct_scatter.capacity_bytes()
-            + f.state.gpu.as_ref().unwrap().active_capacity_bytes
-    );
+    assert_eq!(pool.dense_slots, bound.div_ceil(4) * 5);
+    assert_eq!(pool.pool_bytes, u64::from(initial.slots) * 1024);
     let queue = UploadQueue::new(&device, raw, true);
     for cluster in 0..manifest.cluster_count() {
         let ready = postretro_level_loader::PreparedShCluster {
@@ -290,7 +267,7 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
     assert_eq!(f.state.sampleable.len(), 9);
     assert_eq!(f.state.dense_slots.capacity, whole);
     eprintln!(
-        "[ShGrowthProof] actual PRL→loader→manifest→zero-share GPU load: all 9 clusters resident together, ran"
+        "[ShGrowthProof] actual PRL→loader→manifest→small-bound GPU load: all 9 clusters resident together, ran"
     );
 }
 
@@ -875,7 +852,7 @@ fn sh_growth_retained_metadata_error_precedes_dense_device_limit() {
     // The loader-valid body needs 64 slots; the same install would refuse
     // growth, but its corrupted retained metadata must remain fatal.
     assert!(matches!(
-        shape.grown_for_slots(64, 64, &limits),
+        shape.grown_for_slots(64, 64, 64, &limits),
         Err(ShResidencyDrainError::GpuDeviceLimit { .. })
     ));
     f.state.dense_node[0].as_mut().unwrap().level ^= 1;
@@ -1171,15 +1148,15 @@ fn first_buffer_word(device: &wgpu::Device, queue: &UploadQueue, source: &wgpu::
 }
 
 #[test]
-fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
-    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH shared floor geometry") else {
+fn pool_geometry_and_charges_match_gpu_for_every_load_shape() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH pool geometry") else {
         return;
     };
-    for (grid, level, max_dimension, max_layers, extra) in [
-        ([36, 4, 4], 0, 8192, 256, 0),
-        ([36, 4, 4], 0, 8192, 4, DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES),
-        ([4, 4, 4], 2, 8192, 256, 0),
-        ([12, 4, 4], 0, 64, 4, 0),
+    for (grid, level, max_dimension, max_layers, bound) in [
+        ([36, 4, 4], 0, 8192, 256, u32::MAX),
+        ([36, 4, 4], 0, 8192, 4, 64),
+        ([4, 4, 4], 2, 8192, 256, u32::MAX),
+        ([12, 4, 4], 0, 64, 4, u32::MAX),
     ] {
         let map = SyntheticMap::new(grid, [1, 1, 1]).direct_base_only();
         let levels = vec![level; map.cluster_count() as usize];
@@ -1188,6 +1165,10 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
         let mut limits = grant.clone();
         limits.max_texture_dimension_2d = max_dimension.min(grant.max_texture_dimension_2d);
         limits.max_texture_array_layers = max_layers.min(grant.max_texture_array_layers);
+        // Past the source, so sparse capacity reads whole and the charge below
+        // has no carrier minimum to differ from.
+        f.state.pool_bound.dense_slots = bound;
+        f.state.pool_bound.sparse = BTreeMap::from([(27, (u32::MAX, u32::MAX))]);
         f.state
             .initialize_gpu_with_limits(
                 &device,
@@ -1199,10 +1180,8 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
                 &f.pipelines,
                 &f.weights,
                 &limits,
-                extra,
             )
             .unwrap();
-        let minimum = f.state.initial_dense_slots.minimum;
         let whole = f
             .state
             .node_layouts
@@ -1210,50 +1189,31 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
             .map(|layout| layout.global_base_slot + layout.tile_count)
             .max()
             .unwrap();
-        let fixed =
-            initial_fixed_metadata_bytes(&f.map.base(), &f.map.sources(), &limits, &f.sh).unwrap();
-        let floor = plan_initial_pool_floor(
+        let pool = plan_initial_pool(
             &f.map.base(),
             &f.map.sources(),
-            minimum,
+            &f.state.pool_bound,
             whole,
-            &f.state.sparse_capacity_floors,
-            fixed + extra,
-            f.sh.billboard_direct_scatter.capacity_bytes(),
             &limits,
         )
         .unwrap();
         let pools = f.state.gpu.as_ref().unwrap();
         assert_eq!(
             pools.shape,
-            AtlasShape::for_slots(floor.dense_slots, whole, &limits).unwrap()
+            AtlasShape::for_slots(pool.dense_slots, whole, &limits).unwrap()
         );
-        assert_eq!(
-            floor.effective_floor_bytes,
-            fixed
-                + extra
-                + f.sh.billboard_direct_scatter.capacity_bytes()
-                + pools.active_capacity_bytes
-        );
-        assert_eq!(
-            floor.dense_group_minimum_bytes,
-            u64::from(pools.shape.capacity_for_slots(minimum).unwrap()) * 1536
-        );
-        assert_eq!(
-            pools.dense_group_minimum_bytes,
-            floor.dense_group_minimum_bytes
-        );
+        assert_eq!(pool.pool_bytes, pools.active_capacity_bytes);
         assert_eq!(
             pools.shape.layers,
-            floor.dense_slots.div_ceil(pools.shape.tiles_per_layer)
+            pool.dense_slots.div_ceil(pools.shape.tiles_per_layer)
         );
         assert!(pools.shape.layers <= limits.max_texture_array_layers);
-        match (grid, level, extra) {
-            ([36, 4, 4], 0, 0) => assert_eq!(
+        match (grid, level, bound) {
+            ([36, 4, 4], 0, u32::MAX) => assert_eq!(
                 (pools.shape.tiles_per_row, pools.shape.tiles_per_layer),
                 (24, 576)
             ),
-            ([36, 4, 4], 0, _) => assert!(pools.shape.tiles_per_layer > minimum),
+            ([36, 4, 4], 0, _) => assert!(pools.shape.tiles_per_layer > pool.dense_slots),
             ([4, 4, 4], 2, _) => assert_eq!(pools.shape.tiles_per_layer, 1),
             ([12, 4, 4], 0, _) => {
                 assert_eq!((pools.shape.tiles_per_layer, pools.shape.layers), (64, 3))
@@ -1262,7 +1222,7 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
         }
     }
     eprintln!(
-        "[ShGrowthProof] shared floor/GPU geometry: floor-share, whole minimum, tiny, full layer; exact charges and writer minimum ran"
+        "[ShGrowthProof] shared pool/GPU geometry: bound, whole minimum, tiny, full layer; exact charges ran"
     );
 }
 

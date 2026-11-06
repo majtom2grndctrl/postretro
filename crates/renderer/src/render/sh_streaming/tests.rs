@@ -122,7 +122,7 @@ fn state_with_clusters(cluster_count: u32) -> ShResidencyState {
             .collect(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
-        mandatory_bound: Vec::new(),
+        mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
     };
     ShResidencyState::from_parts(
         [9; 32],
@@ -164,7 +164,7 @@ fn overlapping_dense_ranges_are_both_named_and_counted_in_each_clusters_demand()
         ranges: vec![range(0, 0, 64), range(0, 0, 64)],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
-        mandatory_bound: Vec::new(),
+        mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
     };
     let state = ShResidencyState::from_parts(
         [7; 32],
@@ -183,12 +183,11 @@ fn overlapping_dense_ranges_are_both_named_and_counted_in_each_clusters_demand()
     naming.sort_unstable();
     assert_eq!(naming, [0, 1]);
     let tiles = state.node_layouts[&state.dense_node[0].unwrap()].tile_count;
-    assert_eq!(state.initial_dense_slots.minimum, tiles);
-    assert_eq!(state.initial_dense_slots.whole, tiles);
+    assert_eq!(state.whole_dense_slots, tiles);
 }
 
 #[test]
-fn sparse_halo_ranges_size_every_family_from_each_clusters_own_rows() {
+fn sparse_halo_ranges_price_every_family_from_each_clusters_own_rows() {
     let resources = vec![
         ClusterResourceRecord {
             section_id: INDIRECT_BASE_ID,
@@ -230,7 +229,7 @@ fn sparse_halo_ranges_size_every_family_from_each_clusters_own_rows() {
         ],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
-        mandatory_bound: Vec::new(),
+        mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
     };
 
     let state = ShResidencyState::from_parts(
@@ -242,10 +241,17 @@ fn sparse_halo_ranges_size_every_family_from_each_clusters_own_rows() {
     )
     .expect("overlapping sparse ranges are valid");
 
-    // A halo-only cluster needs the row's full backing to install alone: one
-    // entry plus the missing-row sentinel, in every family.
-    for section_id in [INDIRECT_DELTA_ID, DIRECT_DELTA_ID, ANIMATED_DIRECT_DELTA_ID] {
-        assert_eq!(state.sparse_capacity_floors[&section_id].0, 2);
+    // A halo-only cluster installs alone, so it names the row in every family
+    // and growth can price it with nothing else resident.
+    for storage in &state.cluster_storage {
+        for section_id in [INDIRECT_DELTA_ID, DIRECT_DELTA_ID, ANIMATED_DIRECT_DELTA_ID] {
+            assert!(
+                storage
+                    .sparse
+                    .iter()
+                    .any(|(id, rows)| *id == section_id && rows.contains(&0))
+            );
+        }
     }
 }
 
@@ -265,7 +271,7 @@ fn one_stored_node_can_serve_clusters_naming_distinct_probes() {
         ranges: vec![range(0, 0, 1), range(0, 1, 63)],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
-        mandatory_bound: Vec::new(),
+        mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
     };
     let state = ShResidencyState::from_parts(
         [12; 32],
@@ -276,11 +282,11 @@ fn one_stored_node_can_serve_clusters_naming_distinct_probes() {
     )
     .expect("one stored node can contain probes named by distinct clusters");
 
-    // Either cluster alone needs the whole node: its chunk carries every tile.
+    // Two clusters, one node: the whole map counts it once.
     let node = state.dense_node[1].expect("second valid probe has a stored node");
     assert_eq!(state.dense_node[0], Some(node));
     assert_eq!(
-        state.initial_dense_slots.minimum,
+        state.whole_dense_slots,
         state.node_layouts[&node].tile_count
     );
 }
@@ -312,7 +318,7 @@ fn paired_direct_manifest_refuses_a_chunk_missing_id35() {
             ranges: vec![range(0, 0, 64)],
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
-            mandatory_bound: Vec::new(),
+            mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
         },
         &one_l0_brick(),
         &all_sparse_sources(),
@@ -380,7 +386,6 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         cluster_storage: Vec::new(),
         node_slots: BTreeMap::new(),
         storage_refs: StorageRefs::with_probe_count(0),
-        sparse_capacity_floors: BTreeMap::new(),
         dense_slots: FirstFitRanges::default(),
         sparse_pools: BTreeMap::new(),
         compose_words: Vec::new(),
@@ -430,7 +435,9 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         indirect_compose_epoch: 0,
         direct_compose_epoch: 0,
         install_cpu: InstallCpuCounters::default(),
-        initial_dense_slots: Default::default(),
+        pool_bound: Default::default(),
+        whole_dense_slots: 0,
+        whole_map_refusal_warned: false,
         sparse_compose: Default::default(),
         gpu: None,
     };
@@ -463,35 +470,6 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
     state.dirty_rows.insert((INDIRECT_DELTA_ID, 2));
     state.prune_nonresident_dirty_rows();
     assert_eq!(state.snapshot().dirty_affinity_rows, 1);
-}
-
-#[test]
-fn sparse_floor_covers_the_sum_of_one_clusters_rows() {
-    let source = postretro_level_loader::ShStreamSparseMetadata {
-        section_id: INDIRECT_DELTA_ID,
-        internal_version: 1,
-        affinity_dims: [2, 1, 1],
-        tile_dimension: 4,
-        tile_border: 1,
-        valid_probe_masks: vec![1, 1],
-        cell_levels: vec![2, 2],
-        affinity_offsets: vec![0, 2, 5],
-        affinity_lights: vec![1; 5],
-        animation_descriptor_indices: Vec::new(),
-    };
-    let sources = postretro_level_loader::ShStreamSourceMetadata {
-        indirect_delta: Some(source),
-        ..Default::default()
-    };
-    let both_rows = BTreeSet::from([(INDIRECT_DELTA_ID, 0), (INDIRECT_DELTA_ID, 1)]);
-    let floors =
-        sparse_capacity_floors(&sources, &[BTreeSet::new(), both_rows.clone(), both_rows]).unwrap();
-
-    // The old largest-row rule would have produced four entries. One cluster
-    // names both rows, so its first install needs 2 + 3 plus the missing-row
-    // sentinel. A second cluster naming the same rows raises nothing.
-    assert_eq!(floors[&INDIRECT_DELTA_ID].0, 6);
-    assert_eq!(floors[&INDIRECT_DELTA_ID].1 % 2, 0);
 }
 
 #[test]

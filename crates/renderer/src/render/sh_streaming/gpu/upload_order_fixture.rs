@@ -89,13 +89,14 @@ impl UploadOrderSh {
                 &fixture.map.base(),
                 &fixture.map.sources(),
                 std::sync::Arc::clone(&fixture.state.sparse_compose),
-                crate::render::sh_streaming::floor::InitialPoolFloor {
+                InitialPool {
                     dense_slots,
-                    whole_dense_slots: 128,
                     sparse_capacities: BTreeMap::new(),
-                    dense_group_minimum_bytes: 0,
-                    sparse_group_minimum_bytes: BTreeMap::new(),
-                    effective_floor_bytes: 0,
+                    whole_map: WholeMapCap {
+                        dense_slots: 128,
+                        ..WholeMapCap::uncapped()
+                    },
+                    pool_bytes: 0,
                 },
                 false,
                 &mut fixture.sh,
@@ -104,6 +105,9 @@ impl UploadOrderSh {
             )
             .expect("minimal SH pools"),
         );
+        // The 128 above fixes geometry. These pools undersize their map on
+        // purpose, so growth here answers to the device alone.
+        fixture.state.gpu.as_mut().unwrap().whole_map = WholeMapCap::uncapped();
         fixture
     }
 

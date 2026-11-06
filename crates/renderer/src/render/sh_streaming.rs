@@ -34,7 +34,6 @@ mod contributing_rows_tests;
 mod dense;
 mod diagnostics;
 mod direct_compose;
-mod floor;
 mod frame;
 mod gpu;
 mod install;
@@ -47,6 +46,7 @@ mod payload;
 mod pipelines;
 mod pool_admission;
 mod pool_demand;
+mod pool_size;
 #[cfg(feature = "dev-tools")]
 mod probe_diagnostics;
 #[cfg(feature = "dev-tools")]
@@ -58,7 +58,7 @@ mod sample_region_index;
 mod sample_regions;
 mod setup;
 #[cfg(test)]
-pub(in crate::render) use setup::residency_plan_summary;
+pub(in crate::render) use setup::{residency_plan_summary, whole_map_bound_for_test};
 mod sparse_install;
 mod storage_refs;
 #[cfg(test)]
@@ -72,7 +72,6 @@ use compose_plan::{ComposeFramePlan, RowMembership, StreamedComposePlanner};
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 pub use diagnostics::{ShMissBuckets, ShStreamingLiveDiagnostics};
 use direct_compose::DirectSparseRowUpload;
-use floor::plan_initial_pool_floor;
 pub(crate) use gpu::StagedUploads;
 use gpu::StreamingGpuPools;
 #[cfg(test)]
@@ -84,6 +83,7 @@ use patches::{ChunkPatches, SlotRun};
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 pub(crate) use pipelines::StreamingShPipelines;
 use pool_admission::PoolAdmission;
+use pool_size::plan_initial_pool;
 #[cfg(feature = "dev-tools")]
 pub(in crate::render) use probe_diagnostics::ProbeResidencyClass;
 use row_bitset::{RowBitSet, RowQueue};
@@ -109,13 +109,11 @@ const ANIMATED_DIRECT_DELTA_ID: u32 = SectionId::AnimatedDirectShDeltaVolumes as
 
 pub use postretro_render_cpu::sh_residency::ShResidencyDrainError;
 use postretro_render_cpu::sh_residency::{
-    ClusterStorage, DenseSpans, InitialDenseSlots, NodeMap, ShResidencyPlan, SparseCapacityFloors,
+    ClusterStorage, DenseSpans, NodeMap, ShPoolBound, ShResidencyPlan, SparseCapacityFloors,
     SparseComposeLayout, SparseComposeLayouts,
 };
 #[cfg(test)]
-use postretro_render_cpu::sh_residency::{
-    plan_sh_residency, plan_sh_residency_parts, sparse_capacity_floors,
-};
+use postretro_render_cpu::sh_residency::{plan_sh_residency, plan_sh_residency_parts};
 
 /// One streamed SH compose pass's current-frame work and remaining lag.
 ///
@@ -155,16 +153,6 @@ pub struct ShResidencySnapshot {
     pub fixed_metadata_bytes: u64,
     /// Bytes physically allocated by the active streamed generation.
     pub active_capacity_bytes: u64,
-    /// The pools' initial physical size, distinct from later growth.
-    pub effective_floor_bytes: u64,
-    /// Minimum physical capacity for the coupled id-34/id-35 dense pool.
-    pub dense_group_minimum_bytes: Option<u64>,
-    /// Minimum physical capacity for the id-27 sparse pool, when present.
-    pub indirect_delta_minimum_bytes: Option<u64>,
-    /// Minimum physical capacity for the id-41 sparse pool, when present.
-    pub direct_delta_minimum_bytes: Option<u64>,
-    /// Minimum physical capacity for the id-45 sparse pool, when present.
-    pub animated_direct_delta_minimum_bytes: Option<u64>,
     /// Bytes addressed by currently live pool allocations only.
     pub logical_occupancy_bytes: u64,
     /// Bytes kept alive by the single retiring generation, if any.
@@ -259,7 +247,6 @@ pub(super) struct ShResidencyState {
     cluster_storage: Vec<ClusterStorage>,
     node_slots: BTreeMap<StoredNode, PoolRange>,
     storage_refs: StorageRefs,
-    sparse_capacity_floors: SparseCapacityFloors,
     dense_slots: FirstFitRanges,
     sparse_pools: BTreeMap<u32, SparsePool>,
     compose_words: Vec<u32>,
@@ -307,8 +294,11 @@ pub(super) struct ShResidencyState {
     indirect_compose_epoch: u64,
     direct_compose_epoch: u64,
     install_cpu: InstallCpuCounters,
-    /// The plan's dense slot minima, which size the first pool generation.
-    initial_dense_slots: InitialDenseSlots,
+    /// The stored bound and whole-map figure that size the pool generation.
+    pool_bound: ShPoolBound,
+    whole_dense_slots: u32,
+    /// A refusal at the whole-map cap warns once per loaded level.
+    whole_map_refusal_warned: bool,
     /// The plan's sparse compose layouts, shared with the GPU pools so pool
     /// growth rebuilds carriers without re-deriving them.
     sparse_compose: std::sync::Arc<SparseComposeLayouts>,

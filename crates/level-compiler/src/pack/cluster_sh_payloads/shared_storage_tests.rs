@@ -12,7 +12,7 @@ use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
     CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection, ClusterRangeRecord, ClusterRecord,
-    ClusterResourceDomain, ClusterResourceRecord,
+    ClusterResourceDomain, ClusterResourceRecord, ShMandatoryBoundEntry, WHOLE_MAP_WORST_CELL,
 };
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_LOGICAL_TILE_DIMENSION, ClusterShPayloadsBaseMetadata,
@@ -540,7 +540,19 @@ fn compiler_cluster_demand_equals_what_the_runtime_derives() {
         )),
         animated_direct_delta: None,
     };
-    let plan = plan_sh_residency_parts([0; 32], &directory, &runtime_base, &sources, &[]).unwrap();
+    // The plan refuses a level with no stored bound; this proof reads its node
+    // and row tables, never the figure.
+    let bounded = ClusterDirectorySection {
+        mandatory_bound: vec![ShMandatoryBoundEntry {
+            lead: 0,
+            worst_dense_slots: 0,
+            worst_cell: WHOLE_MAP_WORST_CELL,
+            families: Vec::new(),
+        }],
+        ..directory.clone()
+    };
+    let plan =
+        plan_sh_residency_parts([0; 32], &bounded, &runtime_base, &sources, &[], None).unwrap();
 
     for cluster in 0..3 {
         assert_eq!(
@@ -592,7 +604,7 @@ fn stored_bound_equals_the_runtime_union_on_the_compiled_fixture() {
     let path = committed_fixture();
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = world.sh_stream_manifest().expect("the fixture streams SH");
-    let plan = plan_sh_residency(manifest, &world.cells).unwrap();
+    let plan = plan_sh_residency(manifest, &world.cells, world.baked_max_lead()).unwrap();
     let residency = world
         .cell_residency_set
         .as_ref()

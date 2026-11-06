@@ -52,11 +52,11 @@ pub(super) fn install_sh_volume(
             sh: geometry.sh_volume,
             stream_base_present: matches!(
                 &geometry.sh_storage,
-                LevelGeometryShStorage::Streaming(_)
+                LevelGeometryShStorage::Streaming { .. }
             ),
             stream_animation_descriptors: match &geometry.sh_storage {
                 LevelGeometryShStorage::Legacy => None,
-                LevelGeometryShStorage::Streaming(manifest) => {
+                LevelGeometryShStorage::Streaming { manifest, .. } => {
                     Some(manifest.base().animation_descriptors.as_slice())
                 }
             },

@@ -1,9 +1,9 @@
 // Sparse residency capacities derived from the stream manifest alone: the
-// per-cluster backing floors, the compose-planner row space, and each sparse
-// compose family's row tables and minimum backing.
+// compose-planner row space, and each sparse compose family's row tables and
+// minimum backing.
 // See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
@@ -13,9 +13,9 @@ use postretro_level_loader::{
 
 use super::{ANIMATED_DIRECT_DELTA_ID, DIRECT_DELTA_ID, INDIRECT_DELTA_ID, ShResidencyDrainError};
 
-/// Physical entry/f16 backing needed to install every row of the largest
-/// single cluster. Values include the allocator's missing-row sentinel and
-/// f16 word alignment, but never reserve all legacy CSR payloads.
+/// Physical `(entries, tile_f16)` backing of each sparse family, keyed by
+/// section id. Values include the allocator's missing-row sentinel and f16
+/// word alignment.
 pub type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
 
 /// One sparse compose family's row tables and minimum backing, independent
@@ -87,52 +87,6 @@ fn checked_cell_count(dimensions: [u32; 3]) -> Result<u32, ShResidencyDrainError
             .checked_mul(dimension)
             .ok_or(ShResidencyDrainError::SlotOverflow)
     })
-}
-
-/// Derive an initial sparse backing floor from what each cluster names in
-/// id 49, not from the complete legacy CSR body. `cluster_rows` holds each
-/// cluster's `(section_id, row)` pairs, indexed by cluster. A cluster's total
-/// is the worst case for it alone (multiple rows included), so a cluster
-/// cannot stall after its first row merely because its second row needs a
-/// separate allocation. Later residency pressure grows the pool
-/// append-preservingly; this floor is deliberately bounded and never turns
-/// the streamed path into a whole-resident copy.
-pub fn sparse_capacity_floors(
-    sources: &ShStreamSourceMetadata,
-    cluster_rows: &[BTreeSet<(u32, u32)>],
-) -> Result<SparseCapacityFloors, ShResidencyDrainError> {
-    let mut floors = SparseCapacityFloors::new();
-    for (cluster_id, rows) in cluster_rows.iter().enumerate() {
-        let cluster_id =
-            u32::try_from(cluster_id).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let mut totals = BTreeMap::<u32, (u32, u32)>::new();
-        for &(section_id, row) in rows {
-            let (entries, tiles) = sparse_row_demand(sources, cluster_id, section_id, row)?;
-            let total = totals.entry(section_id).or_insert((0, 0));
-            total.0 = total
-                .0
-                .checked_add(entries)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            total.1 = total
-                .1
-                .checked_add(tiles)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        }
-        for (section_id, (entries, tiles)) in totals {
-            let floor = floors.entry(section_id).or_insert((1, 2));
-            floor.0 = floor.0.max(
-                entries
-                    .checked_add(1)
-                    .ok_or(ShResidencyDrainError::SlotOverflow)?,
-            );
-            let aligned_tiles = tiles
-                .checked_add(tiles & 1)
-                .and_then(|count| count.checked_add(2))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            floor.1 = floor.1.max(aligned_tiles);
-        }
-    }
-    Ok(floors)
 }
 
 /// One sparse row's entries and f16 tile halves, from its CSR metadata.
@@ -278,9 +232,8 @@ pub fn sparse_compose_capacity(
             valid_probe_masks: source.valid_probe_masks.clone(),
             cell_levels: source.cell_levels.clone(),
             animation_descriptor_indices: source.animation_descriptor_indices.clone(),
-            // One largest row is sufficient for the initial sparse
-            // floor. Pool growth adds backing rather than retaining every
-            // legacy CSR payload at level installation.
+            // A carrier holds at least its largest row, however small the
+            // stored bound; the pool's size comes from that bound.
             entry_minimum: max_row_entries
                 .checked_add(1)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?,

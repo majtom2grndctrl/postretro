@@ -52,72 +52,144 @@ fn direct(format: u32) -> ShStreamDirectMetadata {
     }
 }
 
+fn dense_bound(dense_slots: u32) -> ShPoolBound {
+    ShPoolBound {
+        dense_slots,
+        sparse: BTreeMap::new(),
+    }
+}
+
+fn sparse_bound(section_id: u32, worst: (u32, u32)) -> ShPoolBound {
+    ShPoolBound {
+        dense_slots: 1,
+        sparse: BTreeMap::from([(section_id, worst)]),
+    }
+}
+
+// Rows from `research.md` where the figures are real: the hallway, where the
+// headroom stands, and `campaign-test`, where the whole map caps it.
 #[test]
-fn floor_adds_proportional_capacity_to_dense_minimum() {
-    let plan = plan_initial_pool_floor(
+fn initial_pool_is_bound_plus_headroom_capped() {
+    for (bound, whole, expected) in [
+        (168_017, 731_008, 210_022),
+        (39_634, 41_726, 41_726),
+        (18_327, 18_327, 18_327),
+        (4, 1_000_000, 5),
+    ] {
+        let plan = plan_initial_pool(
+            &base(IRRADIANCE_FORMAT_RGBA16F),
+            &ShStreamSourceMetadata::default(),
+            &dense_bound(bound),
+            whole,
+            &wgpu::Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.dense_slots, expected, "bound {bound}, whole {whole}");
+        assert_eq!(plan.whole_map.dense_slots, whole);
+    }
+}
+
+#[test]
+fn sparse_takes_the_same_headroom_plus_its_sentinel() {
+    let sources = ShStreamSourceMetadata {
+        indirect_delta: Some(sparse_source(27, 100)),
+        ..Default::default()
+    };
+    let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
-        &ShStreamSourceMetadata::default(),
-        4,
-        1_000_000,
-        &BTreeMap::new(),
-        1024,
-        2048,
+        &sources,
+        &sparse_bound(27, (10, 20)),
+        1,
         &wgpu::Limits::default(),
     )
     .unwrap();
-
-    assert!(plan.dense_slots > 4);
-    assert!(plan.dense_slots <= 1_000_000);
-    assert!(plan.sparse_capacities.is_empty());
-    assert!(plan.effective_floor_bytes >= DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES);
+    assert_eq!(plan.sparse_capacities[&27], (13 + 1, 26 + 2));
 }
 
 #[test]
-fn proportional_share_uses_maximum_not_an_additive_minimum_remainder() {
-    let shares = capped_proportional_shares(100, &[(90, 90), (10, 10)]).unwrap();
-    let dense = dense_slots_for_share(80, 90, 1, shares[0]).unwrap();
-    let sparse = dense_slots_for_share(0, 10, 1, shares[1]).unwrap();
+fn sparse_is_word_aligned_and_capped_at_its_whole_source() {
+    let source = sparse_source(27, 2);
+    let sources = ShStreamSourceMetadata {
+        indirect_delta: Some(source.clone()),
+        ..Default::default()
+    };
+    let (whole_entries, whole_tiles) = whole_sparse_payload(&source).unwrap();
+    let whole = with_sentinel((whole_entries, whole_tiles)).unwrap();
+    let plan = |worst| {
+        plan_initial_pool(
+            &base(IRRADIANCE_FORMAT_RGBA16F),
+            &sources,
+            &sparse_bound(27, worst),
+            1,
+            &wgpu::Limits::default(),
+        )
+        .unwrap()
+    };
 
-    assert_eq!(shares, vec![90, 10]);
-    assert_eq!((dense, sparse), (90, 10));
+    assert_eq!(plan((2, 3)).sparse_capacities[&27].1 % 2, 0);
+    assert_eq!(plan((u32::MAX, u32::MAX)).sparse_capacities[&27], whole);
+    assert_eq!(plan((2, 3)).whole_map.sparse[&27], whole);
+}
+
+// An odd stride makes a row's reservation exceed its payload. A cap of the
+// plain sum would refuse the last rows of a wholly mandatory map.
+#[test]
+fn whole_sparse_cap_counts_each_rows_word_reservation() {
+    let source = ShStreamSparseMetadata {
+        affinity_dims: [2, 1, 1],
+        tile_dimension: 5,
+        valid_probe_masks: vec![1, 1],
+        cell_levels: vec![0, 0],
+        affinity_offsets: vec![0, 1, 2],
+        affinity_lights: vec![0, 0],
+        ..sparse_source(27, 0)
+    };
+    assert_eq!(delta_probe_f16_stride(5) % 2, 1);
+    let (entries, tiles) = whole_sparse_payload(&source).unwrap();
+    assert_eq!(entries, 2);
+    assert_eq!(tiles, 2 * (delta_probe_f16_stride(5) as u32 + 1));
 }
 
 #[test]
-fn capped_family_redistributes_its_unused_share() {
+fn a_family_the_bound_omits_starts_at_its_sentinel() {
+    let sources = ShStreamSourceMetadata {
+        indirect_delta: Some(sparse_source(27, 4)),
+        ..Default::default()
+    };
+    let plan = plan_initial_pool(
+        &base(IRRADIANCE_FORMAT_RGBA16F),
+        &sources,
+        &dense_bound(1),
+        1,
+        &wgpu::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(plan.sparse_capacities[&27], (1, 2));
+}
+
+#[test]
+fn a_bound_naming_an_absent_source_is_refused() {
     assert_eq!(
-        capped_proportional_shares(100, &[(90, 90), (10, 2), (50, 50)]).unwrap(),
-        vec![63, 2, 35]
+        plan_initial_pool(
+            &base(IRRADIANCE_FORMAT_RGBA16F),
+            &ShStreamSourceMetadata::default(),
+            &sparse_bound(27, (1, 2)),
+            1,
+            &wgpu::Limits::default(),
+        ),
+        Err(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed SH bound names an absent sparse source",
+        })
     );
 }
 
 #[test]
-fn mandatory_cluster_minimum_can_raise_the_effective_floor() {
-    let plan = plan_initial_pool_floor(
-        &base(IRRADIANCE_FORMAT_RGBA16F),
-        &ShStreamSourceMetadata::default(),
-        300_000,
-        300_000,
-        &BTreeMap::new(),
-        0,
-        0,
-        &wgpu::Limits::default(),
-    )
-    .unwrap();
-
-    assert_eq!(plan.dense_slots, 300_000);
-    assert!(plan.effective_floor_bytes > DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES);
-}
-
-#[test]
-fn floor_charges_final_layer_padding_not_only_requested_dense_slots() {
-    let plan = plan_initial_pool_floor(
+fn pool_bytes_charge_final_layer_padding_not_only_requested_dense_slots() {
+    let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_BC6H),
         &ShStreamSourceMetadata::default(),
+        &dense_bound(3),
         3,
-        3,
-        &BTreeMap::new(),
-        DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES,
-        0,
         &wgpu::Limits::default(),
     )
     .unwrap();
@@ -125,110 +197,75 @@ fn floor_charges_final_layer_padding_not_only_requested_dense_slots() {
     assert_eq!(plan.dense_slots, 3);
     // A 3-slot request uses a 2 by 2 physical atlas: BC6H base plus
     // RGBA16F composed storage costs 64 + 512 bytes per physical slot.
-    assert_eq!(
-        plan.effective_floor_bytes,
-        DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES + 4 * (64 + 512)
-    );
+    assert_eq!(plan.pool_bytes, 4 * (64 + 512));
 }
 
 #[test]
-fn floor_charges_every_coupled_direct_dense_texture() {
+fn pool_bytes_charge_every_coupled_direct_dense_texture() {
     let sources = ShStreamSourceMetadata {
         direct: Some(direct(IRRADIANCE_FORMAT_BC6H)),
         direct_delta: Some(sparse_source(41, 0)),
         animated_direct_delta: Some(sparse_source(45, 0)),
         ..Default::default()
     };
-    let plan = plan_initial_pool_floor(
+    let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_BC6H),
         &sources,
-        3,
+        &dense_bound(u32::MAX),
         100,
-        &BTreeMap::from([(41, (1, 2)), (45, (1, 2))]),
-        17,
-        19,
         &wgpu::Limits::default(),
     )
     .unwrap();
 
     // id34 BC6H base + indirect total + id35 BC6H base + direct total
     // + animated direct intermediate: 64 + 512 + 64 + 512 + 512 bytes.
-    let expected_dense_bytes = 100_u64 * 1_664;
-    let expected_sparse_bytes = 2 * sparse_capacity_bytes((1, 2));
     assert_eq!(plan.dense_slots, 100);
-    assert_eq!(plan.dense_group_minimum_bytes, 100 * 1_664);
     assert_eq!(
-        plan.sparse_group_minimum_bytes[&41],
-        sparse_capacity_bytes((1, 2))
+        plan.pool_bytes,
+        100 * 1_664 + 2 * sh_sparse_capacity_bytes(1, 2)
     );
-    assert_eq!(
-        plan.sparse_group_minimum_bytes[&45],
-        sparse_capacity_bytes((1, 2))
-    );
-    assert_eq!(
-        plan.effective_floor_bytes,
-        17 + 19 + expected_dense_bytes + expected_sparse_bytes
-    );
-}
-
-#[test]
-fn sparse_capacity_is_word_aligned_and_capped_at_whole_source() {
-    let source = sparse_source(27, 2);
-    let sources = ShStreamSourceMetadata {
-        indirect_delta: Some(source.clone()),
-        ..Default::default()
-    };
-    let (_, whole_tiles) = whole_sparse_payload(&source).unwrap();
-    let expected = whole_sparse_capacity(2, whole_tiles).unwrap();
-    let plan = plan_initial_pool_floor(
-        &base(IRRADIANCE_FORMAT_RGBA16F),
-        &sources,
-        1,
-        1,
-        &BTreeMap::from([(27, (2, 3))]),
-        0,
-        0,
-        &wgpu::Limits::default(),
-    )
-    .unwrap();
-
-    assert_eq!(plan.sparse_capacities[&27], expected);
-    assert_eq!(plan.sparse_capacities[&27].1 % 2, 0);
 }
 
 #[test]
 fn all_invalid_dense_source_keeps_one_dummy_binding_slot() {
-    let plan = plan_initial_pool_floor(
+    let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &ShStreamSourceMetadata::default(),
-        0,
-        0,
-        &BTreeMap::new(),
-        0,
+        &dense_bound(0),
         0,
         &wgpu::Limits::default(),
     )
     .unwrap();
 
     assert_eq!(plan.dense_slots, 1);
-    assert_eq!(plan.effective_floor_bytes, 1_024);
+    assert_eq!(plan.pool_bytes, 1_024);
 }
 
 #[test]
-fn floor_rejects_an_adapter_without_an_8x8_cell() {
+fn a_zero_bound_on_a_real_map_still_starts_with_capacity() {
+    let plan = plan_initial_pool(
+        &base(IRRADIANCE_FORMAT_RGBA16F),
+        &ShStreamSourceMetadata::default(),
+        &dense_bound(0),
+        64,
+        &wgpu::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(plan.dense_slots, 1);
+}
+
+#[test]
+fn pool_rejects_an_adapter_without_an_8x8_cell() {
     let limits = wgpu::Limits {
         max_texture_dimension_2d: 7,
         ..Default::default()
     };
     assert_eq!(
-        plan_initial_pool_floor(
+        plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &ShStreamSourceMetadata::default(),
+            &dense_bound(1),
             1,
-            1,
-            &BTreeMap::new(),
-            0,
-            0,
             &limits,
         ),
         Err(ShResidencyDrainError::GpuCapacity {
@@ -238,7 +275,7 @@ fn floor_rejects_an_adapter_without_an_8x8_cell() {
 }
 
 #[test]
-fn floor_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
+fn pool_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
     let sources = ShStreamSourceMetadata {
         indirect_delta: Some(sparse_source(27, 1)),
         ..Default::default()
@@ -249,14 +286,11 @@ fn floor_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
         ..Default::default()
     };
     assert_eq!(
-        plan_initial_pool_floor(
+        plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &sources,
+            &sparse_bound(27, (0, 0)),
             1,
-            1,
-            &BTreeMap::from([(27, (1, 2))]),
-            0,
-            0,
             &limits,
         ),
         Err(ShResidencyDrainError::GpuCapacity {
@@ -266,21 +300,18 @@ fn floor_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
 }
 
 #[test]
-fn floor_rejects_indirection_before_any_gpu_allocation() {
+fn pool_rejects_indirection_before_any_gpu_allocation() {
     let limits = wgpu::Limits {
         max_buffer_size: 3,
         max_storage_buffer_binding_size: 3,
         ..Default::default()
     };
     assert_eq!(
-        plan_initial_pool_floor(
+        plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &ShStreamSourceMetadata::default(),
+            &dense_bound(1),
             1,
-            1,
-            &BTreeMap::new(),
-            0,
-            0,
             &limits,
         ),
         Err(ShResidencyDrainError::GpuCapacity {
@@ -290,7 +321,7 @@ fn floor_rejects_indirection_before_any_gpu_allocation() {
 }
 
 #[test]
-fn floor_rejects_an_absent_indirect_carrier_above_adapter_limits() {
+fn pool_rejects_an_absent_indirect_carrier_above_adapter_limits() {
     let mut base = base(IRRADIANCE_FORMAT_RGBA16F);
     base.grid_dimensions = [8, 1, 1];
     let limits = wgpu::Limits {
@@ -299,14 +330,11 @@ fn floor_rejects_an_absent_indirect_carrier_above_adapter_limits() {
         ..Default::default()
     };
     assert_eq!(
-        plan_initial_pool_floor(
+        plan_initial_pool(
             &base,
             &ShStreamSourceMetadata::default(),
+            &dense_bound(1),
             1,
-            1,
-            &BTreeMap::new(),
-            0,
-            0,
             &limits,
         ),
         Err(ShResidencyDrainError::GpuCapacity {
@@ -316,7 +344,7 @@ fn floor_rejects_an_absent_indirect_carrier_above_adapter_limits() {
 }
 
 #[test]
-fn floor_rejects_an_absent_direct_promotion_carrier_above_adapter_limits() {
+fn pool_rejects_an_absent_direct_promotion_carrier_above_adapter_limits() {
     let mut base = base(IRRADIANCE_FORMAT_RGBA16F);
     base.grid_dimensions = [8, 1, 1];
     let sources = ShStreamSourceMetadata {
@@ -331,36 +359,10 @@ fn floor_rejects_an_absent_direct_promotion_carrier_above_adapter_limits() {
         ..Default::default()
     };
     assert_eq!(
-        plan_initial_pool_floor(
-            &base,
-            &sources,
-            1,
-            1,
-            &BTreeMap::from([(27, (1, 2)), (45, (1, 2))]),
-            0,
-            0,
-            &limits,
-        ),
+        plan_initial_pool(&base, &sources, &dense_bound(1), 1, &limits),
         Err(ShResidencyDrainError::GpuCapacity {
             reason: "streamed sparse absent compaction table",
         })
-    );
-}
-
-#[test]
-fn floor_rejects_overflowing_fixed_physical_bytes() {
-    assert_eq!(
-        plan_initial_pool_floor(
-            &base(IRRADIANCE_FORMAT_RGBA16F),
-            &ShStreamSourceMetadata::default(),
-            1,
-            1,
-            &BTreeMap::new(),
-            u64::MAX,
-            1,
-            &wgpu::Limits::default(),
-        ),
-        Err(ShResidencyDrainError::SlotOverflow)
     );
 }
 

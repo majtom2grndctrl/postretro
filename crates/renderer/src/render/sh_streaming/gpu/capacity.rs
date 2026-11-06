@@ -1,8 +1,7 @@
 //! Exact streamed-pool sizing and adapter-limit preflight.
 //!
-//! These pure helpers are shared by initial construction and the 256 MiB
-//! floor planner. They reject unsupported backing before renderer-owned wgpu
-//! allocation begins.
+//! These pure helpers reject unsupported backing before renderer-owned wgpu
+//! allocation begins, and clamp growth to the device and the whole map.
 
 use super::*;
 
@@ -15,12 +14,24 @@ pub(in crate::render::sh_streaming) struct SparseGrowth {
 }
 
 impl StreamingGpuPools {
+    /// The dense shape after a growth, or the refusal of the device or the
+    /// whole-map cap.
+    pub(super) fn grown_shape(
+        &self,
+        needed: u32,
+        wanted: u32,
+    ) -> Result<AtlasShape, ShResidencyDrainError> {
+        self.shape
+            .grown_for_slots(needed, wanted, self.whole_map.dense_slots, &self.limits)
+    }
+
     pub(super) fn sparse_is_short(&self, section_id: u32, (entries, tiles): (u32, u32)) -> bool {
         entries > self.sparse_entry_capacity(section_id)
             || tiles > self.sparse_tile_f16_capacity(section_id)
     }
 
-    /// `section_id`'s capacity after `growth`, or the device's refusal.
+    /// `section_id`'s capacity after `growth`, or the refusal of the device or
+    /// the whole-map cap.
     pub(super) fn sparse_growth_capacity(
         &self,
         section_id: u32,
@@ -36,6 +47,14 @@ impl StreamingGpuPools {
         .ok_or(ShResidencyDrainError::GpuCapacity {
             reason: "streamed sparse growth names an absent family",
         })?;
+        let whole =
+            *self
+                .whole_map
+                .sparse
+                .get(&section_id)
+                .ok_or(ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed sparse growth names a family with no whole-map cap",
+                })?;
         clamped_sparse_capacity(
             (
                 self.sparse_entry_capacity(section_id),
@@ -43,6 +62,7 @@ impl StreamingGpuPools {
             ),
             growth,
             checked_cell_count(source.affinity_dims)?,
+            whole,
             &self.limits,
         )
     }
@@ -58,8 +78,8 @@ impl StreamingGpuPools {
     ) -> Result<Option<&'static str>, ShResidencyDrainError> {
         let mut waits_on = None;
         if dense > self.shape.slots {
-            match self.shape.grown_for_slots(dense, dense, &self.limits) {
-                Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => return Ok(None),
+            match self.grown_shape(dense, dense) {
+                Err(error) if error.is_growth_refusal() => return Ok(None),
                 grown => {
                     grown?;
                 }
@@ -77,7 +97,7 @@ impl StreamingGpuPools {
                 wanted: needed,
             };
             match self.sparse_growth_capacity(section_id, growth, sources) {
-                Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => return Ok(None),
+                Err(error) if error.is_growth_refusal() => return Ok(None),
                 grown => {
                     grown?;
                 }
@@ -98,11 +118,13 @@ impl StreamingGpuPools {
 /// The compaction table includes three immutable words per affinity row plus
 /// one word per entry. It therefore bounds entries before the entry buffer;
 /// tile backing is packed into whole u32 words. Both obey buffer and binding
-/// limits, including a lowered test grant.
+/// limits, including a lowered test grant. `whole` caps it as the dense layers
+/// are capped.
 fn clamped_sparse_capacity(
     current: (u32, u32),
     growth: SparseGrowth,
     rows: u32,
+    whole: (u32, u32),
     limits: &wgpu::Limits,
 ) -> Result<(u32, u32), ShResidencyDrainError> {
     let words = limits
@@ -118,71 +140,21 @@ fn clamped_sparse_capacity(
             reason: "streamed sparse pool needs backing beyond its tightest buffer limit",
         });
     }
-    Ok((
-        current.0.max(needed.0).max(wanted.0).min(entry_limit),
-        current.1.max(needed.1).max(wanted.1).min(tile_limit),
-    ))
-}
-
-pub(in crate::render::sh_streaming) fn initial_fixed_metadata_bytes(
-    base: &ShStreamBaseMetadata,
-    sources: &ShStreamSourceMetadata,
-    limits: &wgpu::Limits,
-    sh: &ShVolumeResources,
-) -> Result<u64, ShResidencyDrainError> {
-    let indirection_len = u64::try_from(base.probes.len())
-        .map_err(|_| ShResidencyDrainError::SlotOverflow)?
-        .checked_mul(4)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?
-        .max(4);
-    let depth_extent = wgpu::Extent3d {
-        width: base.grid_dimensions[0].max(1),
-        height: base.grid_dimensions[1].max(1),
-        depth_or_array_layers: base.grid_dimensions[2].max(1),
-    };
-    let mut bytes = indirection_len
-        .checked_mul(2)
-        .and_then(|bytes| bytes.checked_add(96))
-        .and_then(|bytes| {
-            bytes.checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Uint, depth_extent))
-        })
-        .and_then(|bytes| bytes.checked_add(sh.animation.descriptors.size()))
-        .and_then(|bytes| bytes.checked_add(sh.animation.anim_samples.size()))
-        .and_then(|bytes| bytes.checked_add(sh.scripted_light_descriptors.size()))
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    bytes = bytes
-        .checked_add(indirect_fixed_metadata_bytes(
-            base,
-            sources.indirect_delta.as_ref(),
-            limits,
-        )?)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    if sources.direct_delta.is_some() || sources.animated_direct_delta.is_some() {
-        bytes = bytes
-            .checked_add(direct_pass_fixed_metadata_bytes(
-                base,
-                sources.direct_delta.as_ref(),
-                limits,
-                48,
-            )?)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        if let Some(source) = sources.animated_direct_delta.as_ref() {
-            let descriptor_bytes = u64::try_from(source.animation_descriptor_indices.len().max(1))
-                .map_err(|_| ShResidencyDrainError::SlotOverflow)?
-                .checked_mul(4)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            bytes = bytes
-                .checked_add(direct_pass_fixed_metadata_bytes(
-                    base,
-                    Some(source),
-                    limits,
-                    1_040,
-                )?)
-                .and_then(|bytes| bytes.checked_add(descriptor_bytes))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        }
+    if needed.0 > whole.0 || needed.1 > whole.1 {
+        return Err(ShResidencyDrainError::PoolAtWholeMap {
+            family: "sparse compose",
+        });
     }
-    Ok(bytes)
+    Ok((
+        current
+            .0
+            .max(needed.0)
+            .max(wanted.0.min(entry_limit).min(whole.0)),
+        current
+            .1
+            .max(needed.1)
+            .max(wanted.1.min(tile_limit).min(whole.1)),
+    ))
 }
 
 /// Validate every storage/uniform carrier that the streamed constructors will
@@ -369,74 +341,6 @@ fn validate_uniform_limits(
     Ok(())
 }
 
-fn indirect_fixed_metadata_bytes(
-    base: &ShStreamBaseMetadata,
-    source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
-    limits: &wgpu::Limits,
-) -> Result<u64, ShResidencyDrainError> {
-    let (rows, descriptor_count, source_present) = sparse_fixed_shape(base, source)?;
-    let grid = dynamic_grid_bytes(rows, limits)?;
-    let pairs = u64::from(rows.max(1))
-        .checked_mul(8)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let compaction_prefix = u64::from(rows)
-        .checked_mul(3)
-        .and_then(|words| words.checked_mul(4))
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let descriptors = u64::try_from(descriptor_count.max(1))
-        .map_err(|_| ShResidencyDrainError::SlotOverflow)?
-        .checked_mul(4)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let dummy_backing = if source_present { 0 } else { 12 };
-    grid.checked_add(pairs)
-        .and_then(|bytes| bytes.checked_add(compaction_prefix))
-        .and_then(|bytes| bytes.checked_add(32))
-        .and_then(|bytes| bytes.checked_add(descriptors))
-        .and_then(|bytes| bytes.checked_add(dummy_backing))
-        .ok_or(ShResidencyDrainError::SlotOverflow)
-}
-
-fn direct_pass_fixed_metadata_bytes(
-    base: &ShStreamBaseMetadata,
-    source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
-    limits: &wgpu::Limits,
-    pass_uniform_bytes: u64,
-) -> Result<u64, ShResidencyDrainError> {
-    let (rows, _, source_present) = sparse_fixed_shape(base, source)?;
-    let grid = dynamic_grid_bytes(rows, limits)?;
-    let pairs = u64::from(rows.max(1))
-        .checked_mul(8)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let compaction_prefix = u64::from(rows)
-        .checked_mul(3)
-        .and_then(|words| words.checked_mul(4))
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let dummy_backing = if source_present { 0 } else { 12 };
-    grid.checked_add(pairs)
-        .and_then(|bytes| bytes.checked_add(compaction_prefix))
-        .and_then(|bytes| bytes.checked_add(pass_uniform_bytes))
-        .and_then(|bytes| bytes.checked_add(dummy_backing))
-        .ok_or(ShResidencyDrainError::SlotOverflow)
-}
-
-fn sparse_fixed_shape(
-    base: &ShStreamBaseMetadata,
-    source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
-) -> Result<(u32, usize, bool), ShResidencyDrainError> {
-    match source {
-        Some(source) => Ok((
-            checked_cell_count(source.affinity_dims)?,
-            source.animation_descriptor_indices.len(),
-            true,
-        )),
-        None => Ok((
-            checked_cell_count(base.grid_dimensions.map(|axis| axis.div_ceil(4)))?,
-            0,
-            false,
-        )),
-    }
-}
-
 fn dynamic_grid_bytes(rows: u32, limits: &wgpu::Limits) -> Result<u64, ShResidencyDrainError> {
     let record = u64::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE)
         .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
@@ -467,4 +371,31 @@ fn dynamic_grid_bytes(rows: u32, limits: &wgpu::Limits) -> Result<u64, ShResiden
         });
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // AC 30: sparse capacity is two-dimensional, so each figure stops at its
+    // own whole-map total, and needing past either refuses.
+    #[test]
+    fn sparse_growth_stops_at_the_whole_map() {
+        let limits = wgpu::Limits::default();
+        let whole = (100, 200);
+        let grow = |needed, wanted| {
+            clamped_sparse_capacity((10, 20), SparseGrowth { needed, wanted }, 1, whole, &limits)
+        };
+
+        assert_eq!(grow((11, 21), (5_000, 150)), Ok((100, 150)));
+        assert_eq!(grow((11, 21), (50, 5_000)), Ok((50, 200)));
+        for needed in [(101, 21), (11, 201)] {
+            assert_eq!(
+                grow(needed, needed),
+                Err(ShResidencyDrainError::PoolAtWholeMap {
+                    family: "sparse compose",
+                })
+            );
+        }
+    }
 }

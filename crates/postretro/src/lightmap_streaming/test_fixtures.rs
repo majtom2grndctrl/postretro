@@ -473,6 +473,7 @@ pub(crate) fn model_drain(
         plan.evicted.iter().map(|eviction| eviction.block).collect(),
         plan.report,
     );
+    let (room_reserved, room_returned) = (plan.room_reserved.clone(), plan.room_returned.clone());
     LightmapDrainOutcome {
         installed,
         refused,
@@ -483,6 +484,8 @@ pub(crate) fn model_drain(
             .filter(|prepared| deferred_blocks.contains(&prepared.block))
             .collect(),
         evicted,
+        room_reserved,
+        room_returned,
         pool,
     }
 }

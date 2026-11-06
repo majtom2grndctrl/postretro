@@ -8,6 +8,7 @@ mod journal;
 mod placement;
 mod plan;
 mod repack;
+mod reservation;
 
 use postretro_level_loader::{LightmapBlockClass, LightmapPoolReport, LightmapTarget};
 
@@ -20,6 +21,8 @@ pub use plan::{
     BlockUpload, DrainPlan, EvictionReason, NotAPlannedUpload, PlannedEviction, PoolCopy,
     PoolGrowth, RepackKind, TableWrite,
 };
+use repack::RepackEntry;
+use reservation::DemandRoom;
 
 /// One drain's inputs, as the controller's `LightmapDrainBatch` carries them,
 /// minus payload bytes. The caller validates the batch
@@ -54,15 +57,21 @@ struct Scratch {
     ready: Vec<u32>,
     never_refused: Vec<u32>,
     band_ready: Vec<u32>,
+    /// A mandatory or visible target changed, or a block left the pool:
+    /// reservation work is due this drain. Nothing else asks for it.
+    demand_changed: bool,
+    /// Targets without room, while reservation runs.
+    unseated: Vec<u32>,
     /// Resident band blocks, nearest lead first; eviction pops the farthest.
     victims: Vec<u32>,
     victims_built: bool,
     over_cap: Vec<u32>,
     /// Extents deferred at the device layer limit this drain.
     device_limited: Vec<(u32, u32)>,
-    /// `(block, highest layer + 1 it may land in)`.
-    repack_keep: Vec<(u32, u32)>,
+    /// Resident and ready blocks a repack must seat.
+    repack_keep: Vec<RepackEntry>,
     repack_band: Vec<(u32, u32)>,
+    repack_waiting: Vec<u32>,
     repack_residents: Vec<u32>,
     moves: Vec<PoolCopy>,
     /// Aligned extents of the targeted demand, for growth sizing.
@@ -95,6 +104,7 @@ pub struct LightmapPoolModel {
     pool: BlockPool,
     /// Allocated texels per allocator layer, for band headroom.
     used_texels: Vec<u64>,
+    demand_room: DemandRoom,
     layers: u32,
     cap_layers: u32,
     /// Layers every block placed at once fills: no growth reserves past it.
@@ -111,8 +121,16 @@ pub struct LightmapPoolModel {
     touch_stamp: Vec<u64>,
     touch_index: Vec<u32>,
     touched: Vec<Touched>,
+    /// The drain a block's pair last came ready in.
+    pair_stamp: Vec<u64>,
+    /// The drain a block's pair was last deferred in.
+    deferred_stamp: Vec<u64>,
     scratch: Scratch,
     plan: DrainPlan,
+    /// Passes reserving room for the demand, for the proof that a drain with
+    /// unchanged targets runs none.
+    #[cfg(test)]
+    demand_passes: u32,
 }
 
 impl LightmapPoolModel {
@@ -158,6 +176,7 @@ impl LightmapPoolModel {
             resident_pos: vec![u32::MAX; count],
             pool: BlockPool::new(edge, None),
             used_texels: vec![0; layers as usize],
+            demand_room: DemandRoom::new(count),
             layers,
             cap_layers,
             all_resident_layers,
@@ -171,8 +190,12 @@ impl LightmapPoolModel {
             touch_stamp: vec![0; count],
             touch_index: vec![0; count],
             touched: Vec::new(),
+            pair_stamp: vec![0; count],
+            deferred_stamp: vec![u64::MAX; count],
             scratch: Scratch::default(),
             plan: DrainPlan::default(),
+            #[cfg(test)]
+            demand_passes: 0,
         })
     }
 
@@ -276,10 +299,26 @@ impl LightmapPoolModel {
         self.target(block).is_some_and(Target::is_band)
     }
 
+    /// Whether `block` is a mandatory or visible target.
+    fn is_never_refused(&self, block: u32) -> bool {
+        self.target(block).is_some_and(|t| !t.is_band())
+    }
+
+    /// Whether `block`'s pair is in this drain.
+    fn is_pair(&self, block: u32) -> bool {
+        self.pair_stamp[block as usize] == self.drain
+    }
+
+    /// Texels free under the cap, reserved room left out. A reserved pair the
+    /// controller holds in hand is charged here and not again there: the
+    /// plan's `room_reserved` tells it which.
     fn band_headroom_texels(&self) -> u64 {
         let layer_texels = u64::from(self.edge) * u64::from(self.edge);
         (0..self.cap_eff() as usize)
-            .map(|layer| layer_texels - self.used_texels.get(layer).copied().unwrap_or(0))
+            .map(|layer| {
+                let used = self.used_texels.get(layer).copied().unwrap_or(0);
+                layer_texels - used - self.demand_room.held_texels_in(layer)
+            })
             .sum()
     }
 
@@ -300,6 +339,7 @@ impl LightmapPoolModel {
         let s = &self.scratch;
         let p = &self.plan;
         let mut capacities = s.compaction.capacities();
+        capacities.extend(self.demand_room.capacities());
         capacities.extend([
             self.resident.capacity(),
             self.used_texels.capacity(),
@@ -308,11 +348,13 @@ impl LightmapPoolModel {
             s.ready.capacity(),
             s.never_refused.capacity(),
             s.band_ready.capacity(),
+            s.unseated.capacity(),
             s.victims.capacity(),
             s.over_cap.capacity(),
             s.device_limited.capacity(),
             s.repack_keep.capacity(),
             s.repack_band.capacity(),
+            s.repack_waiting.capacity(),
             s.repack_residents.capacity(),
             s.moves.capacity(),
             s.demand.capacity(),
@@ -324,6 +366,8 @@ impl LightmapPoolModel {
             p.deferred.capacity(),
             p.failed.capacity(),
             p.evicted.capacity(),
+            p.room_reserved.capacity(),
+            p.room_returned.capacity(),
         ]);
         capacities
     }
@@ -338,6 +382,8 @@ fn placement_of(slot: Slot) -> BlockPlacement {
 }
 
 #[cfg(test)]
+mod batch_tests;
+#[cfg(test)]
 mod compaction_proptests;
 #[cfg(test)]
 mod compaction_scale_tests;
@@ -350,4 +396,8 @@ mod pool_test_fixtures;
 #[cfg(test)]
 mod proptests;
 #[cfg(test)]
+mod reservation_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod whole_demand_tests;

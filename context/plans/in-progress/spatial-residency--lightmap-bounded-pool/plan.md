@@ -26,6 +26,9 @@ Each keeps the meaning of its Decision or Acceptance row. Any the owner reads di
 - **Compaction shape** — the Path's dependency graph with blockers staged in the spare became target layers built one at a time into a rolling empty layer, because the graph search missed the hallway at 27 layers. The spare's index stays fixed. What is proved: every returned plan is valid, a failed plan changes nothing, building into an empty layer cannot fail, a park fails only by fragmentation, and a single-layer pool always succeeds.
 - **Whole-map levels at no spare** — a level capped at all-resident with every block mandatory has no layer spare, so it can rarely grow past its cap and warn. The owner kept the cap; such levels are fixtures.
 
+- **Demand, for the compaction gate** — the targeted set as it stands. A compaction that does not seat all of it, or finds no layout, spends the demand until targets change into a set that packs from scratch or the pool grows. A compaction that seats everything spends nothing, which row 28 needs. Attempts and the warning are once per demand.
+- **Reservations** — made at target change, tallest first, from free space only, never by eviction. Past the pool, a later pair may take an unready target's room through the pairs-only repack, because row 49 wants growth last. Row 30 is "at most one repack": a demand that fits as the pool stands needs none.
+
 ## Delegated answers
 
 - **Block table layout** — one `vec4<u32>` per block, no fragment binding. `block_alignment()` is at least 4, so an offset stores as texels / 4.
@@ -118,7 +121,7 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | **Riskiest slice.** Compaction alone on today's single pool: dependency-graph copy order through the spare, planned before any copy records, rollback when no order exists. Property test on near-full mixed-size pools, with a deliberate hunt for stuck layouts. Walk harness at 28 and 30 layers. Metal timing of a whole-pool compaction. Rows 28, 35, 36 on one pool. Stops per Risks | integrating executor | — | done: 27, 28, 30 and 34 layers walk with 0 growths and 0 rollbacks; 0 misses in 262,818 real-scale compactions with a layer spare (131,650 at 90%+ pool fill, 95% upper bound about 0.0023%), against 0.10% and 0.18% at no spare on 27 and 34 layers. Rows 28, 35, 36 on one pool; Metal 5.85 ms median, 16 ms every block moved |
-| 2 | Whole-demand repack and reservations: room held for every target, downward pass judged on the whole demand, one compaction before growth. Rows 29–34 on one pool | integrating executor | 1 | |
+| 2 | Whole-demand repack and reservations: room held for every target, downward pass judged on the whole demand, one compaction before growth. Rows 29–34 on one pool | integrating executor | 1 | done: rows 29–34 pass on one pool, rows 28, 35, 36 still pass; 681 render-cpu tests. R32's warning by name waits on task 7 |
 | 3 | Format: split `shadowmask_atlas.rs` tests first. `SMB8`, plane absence, id 58 section, tallest-first shared placement, shared margin and pool pricing in level-format, loader refusals, memo version bump, tracked fixture rebake. Rows 1–3 | worker, level-format + level-loader + compiler bake | — | |
 | 4 | Compiler: bound through one cell input, Build Summary, post-bake mask gate. Rows 4–11, 55 compiler side | worker, compiler | 3 | |
 | 5 | Two-pool model: one placement type per pool under one journal, atomic pairs, per-pool repack, growth, headroom and retirement, block table layout, payload presence, block facts and split reads. Rows 18–27, 37–41 model side | integrating executor | 2, 3 | |
@@ -135,7 +138,8 @@ The owner directed the session to orchestrate: tasks marked integrating executor
 
 - **Task 1 walks** used a throwaway read shim with SH streaming off, because the hallway PRL fails `ClusterDirectory VersionMismatch` at this commit. With compaction off, that setup reproduced `research.md`. Task 10 rebakes.
 - **The downward repack is not cheap.** At 34 layers it moves about 250 copies, p95 360 MiB, about 15–16 ms of GPU on the Mac, and makes up 92% of tour repacks (3.55% of tour steps). Order is unchanged, per the Decision. Task 2's whole-demand planning should cut the count; row 62 measures what remains.
-- **Compaction has no per-demand gate yet.** It reruns each drain, with its warning, while growth is deferred or device-limited, and a jam costs up to about 240 ms. Task 2 must gate it.
+- **Repack count after task 2.** Down 30% on the tour at 27 layers, flat at 34 (65+6 to 62+10), where every repack is one late pair no hole fits, at least 60 frames apart, so reservations cannot remove them. Compactions rose slightly on two walks, because judging on whole demand fails the downward pass more often (R18). Row 62 records what remains.
+- **Device-limit starvation, existing and unchanged.** At the device limit, a pair that can never fit, sharing a drain with one that needs compaction, starves that pair too.
 - **Compaction cost.** Up to about 200 MiB of copies in one submission on the hallway. If the task 1 timing is a visible hitch, the plan goes `blocked` before any format work, with budgeted incremental moves as the proposed next shape.
 - **Row 43's fixture must grow today at that size.** Task 1's walk may show the first such fixture is the hallway itself, which cannot run in routine tests, so a synthetic one is needed.
 - **Row 64's map.** The owner confirms the hallway has closet reveals, location unknown. Task 10 pulls `trigger_volume`, `entity_spawner` and mover entities from `stress-warren-hallway-inspection.map`. If none is a door, the row goes back to the owner with another map or a narrower check.

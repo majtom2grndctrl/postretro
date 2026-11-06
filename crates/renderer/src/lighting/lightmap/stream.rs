@@ -367,6 +367,8 @@ impl LightmapStreamState {
             failed: plan.failed.clone(),
             deferred,
             evicted: plan.evicted.iter().map(|eviction| eviction.block).collect(),
+            room_reserved: plan.room_reserved.clone(),
+            room_returned: plan.room_returned.clone(),
             pool: plan.report,
         }
     }

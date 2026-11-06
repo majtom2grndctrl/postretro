@@ -90,7 +90,8 @@ pub struct NotAPlannedUpload;
 ///    non-resident in the same batch that writes texels into its old region.
 ///
 /// The outcome lists map onto `LightmapDrainOutcome`: `installed`, `refused`,
-/// `deferred` (payloads owned back) and `evicted`.
+/// `deferred` (payloads owned back), `evicted`, `room_reserved` and
+/// `room_returned`.
 #[derive(Debug, Default)]
 pub struct DrainPlan {
     pub growth: Option<PoolGrowth>,
@@ -105,7 +106,8 @@ pub struct DrainPlan {
     /// Pairs sampleable from this drain on: every upload, plus any ready pair
     /// whose block was already resident (no upload).
     pub installed: Vec<u32>,
-    /// Band pairs with no room under the cap, and pairs no longer targeted.
+    /// Band pairs with no room under the cap clear of reserved room, and pairs
+    /// no longer targeted.
     pub refused: Vec<u32>,
     /// Mandatory or visible pairs that needed growth while a generation was
     /// still retiring, or a layer past the device limit: a counted miss.
@@ -122,6 +124,14 @@ pub struct DrainPlan {
     /// Uploads the GPU layer failed and the model rolled back.
     pub failed: Vec<u32>,
     pub evicted: Vec<PlannedEviction>,
+    /// Blocks that hold reserved room as of this drain and did not before. A
+    /// reservation is pool state, not a table entry: nothing here reaches the
+    /// GPU. Sorted by block id.
+    pub room_reserved: Vec<u32>,
+    /// Blocks that held reserved room and hold none now: their pair landed,
+    /// they left targeted demand, or a repack could not seat them. Sorted by
+    /// block id.
+    pub room_returned: Vec<u32>,
     pub report: LightmapPoolReport,
 }
 
@@ -144,6 +154,8 @@ impl DrainPlan {
         self.device_limited = false;
         self.failed.clear();
         self.evicted.clear();
+        self.room_reserved.clear();
+        self.room_returned.clear();
         self.report = LightmapPoolReport::default();
     }
 }

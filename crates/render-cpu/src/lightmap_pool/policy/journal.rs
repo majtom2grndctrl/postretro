@@ -25,6 +25,21 @@ pub(super) enum JournalOp {
     Grow {
         previous_layers: u32,
     },
+    Reserve {
+        block: u32,
+        slot: Slot,
+    },
+    ReturnRoom {
+        block: u32,
+        slot: Slot,
+    },
+    Land {
+        block: u32,
+        slot: Slot,
+    },
+    CompactionGate {
+        previous: bool,
+    },
 }
 
 /// A block's state when the drain first touched it, so the plan's outputs
@@ -35,6 +50,8 @@ pub(super) struct Touched {
     pub start: Option<Slot>,
     /// The reason of its latest eviction this drain, if any.
     pub reason: Option<EvictionReason>,
+    /// Whether it held reserved room, as the controller last heard.
+    pub held_at_start: bool,
     /// Freed by a residency reset. Its `start` stays, so the table write
     /// that turns its entry non-resident still diffs; but the new controller
     /// never saw it resident, so it is never reported evicted, and any slot
@@ -66,10 +83,12 @@ impl LightmapPoolModel {
 
     /// Undo the whole drain, for a failure before anything was submitted
     /// (for example growth could not allocate). The model returns to its
-    /// state before `plan_drain`, targets and cap included, and the plan is
-    /// cleared.
+    /// state before `plan_drain`, targets, cap, reserved room and the
+    /// compaction gate included, and the plan is cleared.
     pub fn abort_drain(&mut self) {
         self.rollback_to(0);
+        // Nothing this drain deferred stands.
+        self.drain += 1;
         self.plan.clear();
         self.plan.report = self.report(false, false);
     }
@@ -85,6 +104,7 @@ impl LightmapPoolModel {
             block,
             start: self.slots[b],
             reason: None,
+            held_at_start: self.demand_room.slot(block).is_some(),
             forgotten: false,
         });
     }
@@ -96,7 +116,16 @@ impl LightmapPoolModel {
         }
         self.journal.push(JournalOp::Target { block, previous });
         self.targets[block as usize] = target;
+        let never_refused = |t: Option<Target>| t.is_some_and(|t| !t.is_band());
+        if never_refused(previous) != never_refused(target) {
+            self.scratch.demand_changed = true;
+        }
+        if !never_refused(target) {
+            self.return_room(block);
+        }
         if target.is_none() && self.is_resident(block) {
+            // Its room may seat a target that found none.
+            self.scratch.demand_changed = true;
             self.release(block, EvictionReason::Untargeted);
         }
     }
@@ -132,18 +161,26 @@ impl LightmapPoolModel {
     /// frees are journaled, so an aborted drain restores them, and their
     /// table writes land with the drain. Each is marked forgotten rather
     /// than having its `start` cleared: a cleared start would drop the table
-    /// write for a block that stays non-resident.
+    /// write for a block that stays non-resident. Reserved room goes too, and
+    /// counts as never held: the new controller has heard of none, so what
+    /// this drain seats again it reports as new.
     pub(super) fn forget_residency(&mut self) {
         while let Some(&block) = self.resident.last() {
             self.release(block, EvictionReason::Untargeted);
             self.touched[self.touch_index[block as usize] as usize].forgotten = true;
         }
+        self.return_all_room();
+        for touched in &mut self.touched {
+            touched.held_at_start = false;
+        }
+        self.scratch.demand_changed = true;
     }
 
     pub(super) fn record_growth(&mut self, previous_layers: u32) {
         self.journal.push(JournalOp::Grow { previous_layers });
         self.retiring = true;
         self.texture_allocations += 1;
+        self.set_compaction_spent(false);
     }
 
     pub(super) fn rollback_to(&mut self, len: usize) {
@@ -177,10 +214,30 @@ impl LightmapPoolModel {
                 self.texture_allocations -= 1;
                 self.plan.growth = None;
             }
+            JournalOp::Reserve { block, slot } => {
+                self.demand_room.take(block);
+                self.pool
+                    .free(slot)
+                    .expect("undo replays newest-first, so the reserved slot is live");
+            }
+            JournalOp::ReturnRoom { block, slot } => {
+                self.pool
+                    .restore(slot)
+                    .expect("undo replays newest-first, so the returned rect is free");
+                self.demand_room.hold(block, slot);
+            }
+            JournalOp::Land { block, slot } => {
+                let placed = self.detach(block);
+                debug_assert_eq!(placed, slot, "undo unlands the slot it landed");
+                self.demand_room.hold(block, slot);
+            }
+            JournalOp::CompactionGate { previous } => {
+                self.demand_room.compaction_spent = previous;
+            }
         }
     }
 
-    fn attach(&mut self, block: u32, slot: Slot) {
+    pub(super) fn attach(&mut self, block: u32, slot: Slot) {
         let b = block as usize;
         debug_assert!(self.slots[b].is_none(), "block {block} placed twice");
         self.slots[b] = Some(slot);

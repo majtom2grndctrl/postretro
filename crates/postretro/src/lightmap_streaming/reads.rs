@@ -145,6 +145,24 @@ impl LightmapResidencyController {
         Ok(())
     }
 
+    /// The renderer took or gave back `block`'s reserved room. Headroom moves
+    /// with it, so a pair in hand moves the other way and is charged once.
+    pub(super) fn set_room_reserved(&mut self, block: u32, reserved: bool) {
+        let texels = self.map.facts(block).texels;
+        let slot = &mut self.slots[block as usize];
+        if slot.room_reserved == reserved {
+            return;
+        }
+        slot.room_reserved = reserved;
+        if slot.charge == PairCharge::NeverRefused {
+            if reserved {
+                self.never_refused_texels -= texels;
+            } else {
+                self.never_refused_texels += texels;
+            }
+        }
+    }
+
     /// `block` became mandatory or visible. A band pair in hand moves to the
     /// never-refused charge; a band read in flight is queued for a tier
     /// raise.
@@ -156,7 +174,9 @@ impl LightmapResidencyController {
             self.band_permits -= 1;
             self.band_in_hand_bytes -= facts.pair_bytes();
             self.band_committed_texels -= facts.texels;
-            self.never_refused_texels += facts.texels;
+            if !slot.room_reserved {
+                self.never_refused_texels += facts.texels;
+            }
         }
         if slot.phase == BlockPhase::InFlight
             && slot.read_tier == ReadTier::Optional
@@ -329,7 +349,11 @@ impl LightmapResidencyController {
                 self.band_in_hand_bytes += facts.pair_bytes();
                 self.band_committed_texels += facts.texels;
             }
-            PairCharge::NeverRefused => self.never_refused_texels += facts.texels,
+            PairCharge::NeverRefused => {
+                if !self.slots[block as usize].room_reserved {
+                    self.never_refused_texels += facts.texels;
+                }
+            }
         }
         self.slots[block as usize].charge = charge;
         self.permits_in_use += 1;
@@ -347,7 +371,11 @@ impl LightmapResidencyController {
                 self.band_in_hand_bytes -= facts.pair_bytes();
                 self.band_committed_texels -= facts.texels;
             }
-            PairCharge::NeverRefused => self.never_refused_texels -= facts.texels,
+            PairCharge::NeverRefused => {
+                if !slot.room_reserved {
+                    self.never_refused_texels -= facts.texels;
+                }
+            }
         }
         self.permits_in_use -= 1;
         self.in_hand_bytes -= facts.pair_bytes();

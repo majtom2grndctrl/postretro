@@ -37,6 +37,9 @@ mod multi_block_tests;
 #[path = "preload_tests.rs"]
 mod preload_tests;
 #[cfg(test)]
+#[path = "reserved_room_tests.rs"]
+mod reserved_room_tests;
+#[cfg(test)]
 #[path = "controller_tests.rs"]
 mod tests;
 #[cfg(test)]
@@ -113,6 +116,9 @@ struct BlockSlot {
     pending_delta: bool,
     /// What the pair is charged against while it is in hand.
     charge: PairCharge,
+    /// The renderer holds pool room for this block: reported band headroom
+    /// already leaves it out, so its pair in hand is not charged again.
+    room_reserved: bool,
     /// The tier the in-flight read was last submitted at.
     read_tier: ReadTier,
     /// Queued in `promotions`.
@@ -246,8 +252,9 @@ pub(crate) struct LightmapResidencyController {
     band_in_hand_bytes: u64,
     /// Slot texels of the band pairs in hand.
     band_committed_texels: u64,
-    /// Slot texels of the mandatory and visible pairs in hand. The renderer
-    /// places them before any band pair, so they come off band headroom.
+    /// Slot texels of the mandatory and visible pairs in hand with no room
+    /// reserved. The renderer places them before any band pair, so they come
+    /// off band headroom; a reserved pair's room is off it already.
     never_refused_texels: u64,
     /// In-flight band reads whose block became mandatory or visible; their
     /// requests are resubmitted at the mandatory tier.
@@ -350,6 +357,7 @@ impl LightmapResidencyController {
                     sent: None,
                     pending_delta: false,
                     charge: PairCharge::None,
+                    room_reserved: false,
                     read_tier: ReadTier::Optional,
                     promotion_queued: false,
                     refused_headroom: 0,

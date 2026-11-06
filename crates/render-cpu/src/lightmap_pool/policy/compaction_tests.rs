@@ -292,7 +292,7 @@ fn a_failed_install_after_a_compaction_leaves_every_moved_block_on_its_own_texel
 /// finish. An order exists: the middle target layer first, on the spare. The
 /// planner's miss stands in for any layout with no order, so a planner that
 /// finds this one needs another layout here.
-fn a_pool_the_planner_cannot_order() -> Harness {
+pub(super) fn a_pool_the_planner_cannot_order(layer_limit: u32) -> Harness {
     let extents = [
         (32, 64),
         (4, 64),
@@ -305,7 +305,7 @@ fn a_pool_the_planner_cannot_order() -> Harness {
         (64, 24),
         (64, 40),
     ];
-    let mut h = Harness::new(&extents, 3);
+    let mut h = Harness::with_layer_limit(&extents, 3, layer_limit);
     let first = [0, 4, 6, 7, 8, 9];
     h.drain(&first.map(mandatory), &[], &first);
     h.drain(&[band(1, 1), band(2, 2), mandatory(5)], &[], &[1, 2, 5]);
@@ -317,7 +317,7 @@ fn a_pool_the_planner_cannot_order() -> Harness {
 #[test]
 fn no_copy_order_rolls_back_to_growth() {
     let capture = LogCapture::start();
-    let mut h = a_pool_the_planner_cannot_order();
+    let mut h = a_pool_the_planner_cannot_order(u32::MAX);
     let residents = [0, 1, 2, 4, 5, 6, 7, 9];
     let before = residents.map(|block| h.model.placement(block));
     h.plan(&[mandatory(8)], &[], &[8]);

@@ -139,6 +139,17 @@ struct Tally {
     /// claim says there are none.
     with_spare: Cell<u64>,
     missed_with_spare: Cell<u64>,
+    /// Demands whose pairs arrived over several drains and took a repack.
+    split_demands_repacked: Cell<u64>,
+}
+
+/// How a step's pairs reach the pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrival {
+    /// Every pair in the drain its target arrives.
+    AtOnce,
+    /// Shortest first, one pair a drain: the order that shelves a pool worst.
+    OverDrains,
 }
 
 fn add(cell: &Cell<u64>, by: u64) {
@@ -147,8 +158,9 @@ fn add(cell: &Cell<u64>, by: u64) {
 
 /// Run one history. Every drain whose mandatory set packs from scratch must
 /// place with no growth, unless its compaction found no order, which ends the
-/// history; and its copies must keep every texel.
-fn run(history: &History, tally: &Tally) {
+/// history; and its copies must keep every texel. Arriving over drains, such a
+/// demand repacks at most once: the first repack seats all of it.
+fn run(history: &History, tally: &Tally, arrival: Arrival) {
     let extents = extents_of(history);
     let count = extents.len();
     assert!(count <= 64);
@@ -197,30 +209,58 @@ fn run(history: &History, tally: &Tally) {
         let ready: Vec<u32> = (0..count as u32)
             .filter(|&b| (arriving | banded) >> b & 1 != 0 && !model.is_resident(b))
             .collect();
-
-        model.plan_drain(DrainRequest {
-            pool_cap_layers: layers,
-            target_reset: None,
-            target_set: &set,
-            target_remove: &remove,
-            ready: &ready,
-        });
-        let plan = model.plan();
-        add(&tally.drains, 1);
-        let spare = scratch_layers(&extents, next).map_or(0, |used| layers - used);
-        if plan.compaction_rolled_back || matches!(plan.repack, Some(RepackKind::Compaction(_))) {
-            add(&tally.with_spare, u64::from(spare >= 1));
-        }
-        if plan.compaction_rolled_back {
-            if spare >= 1 {
-                add(&tally.missed_with_spare, 1);
-            } else {
-                add(&tally.missed_no_spare, 1);
+        let mut batches: Vec<Vec<u32>> = match arrival {
+            Arrival::AtOnce => vec![ready],
+            Arrival::OverDrains => {
+                let mut order = ready;
+                order.sort_unstable_by_key(|&b| (extents[b as usize].1, b));
+                order.into_iter().map(|b| vec![b]).collect()
             }
-            return;
+        };
+        if batches.is_empty() {
+            batches.push(Vec::new());
         }
-        assert_eq!(plan.growth, None, "{next:b} packs, so it needs no growth");
-        assert!(plan.deferred.is_empty(), "nothing waits on a retirement");
+
+        let mut repacks = 0;
+        for (at, batch) in batches.iter().enumerate() {
+            let (set, remove): (&[_], &[_]) = if at == 0 { (&set, &remove) } else { (&[], &[]) };
+            model.plan_drain(DrainRequest {
+                pool_cap_layers: layers,
+                target_reset: None,
+                target_set: set,
+                target_remove: remove,
+                ready: batch,
+            });
+            let plan = model.plan();
+            add(&tally.drains, 1);
+            let spare = scratch_layers(&extents, next).map_or(0, |used| layers - used);
+            if plan.compaction_rolled_back || matches!(plan.repack, Some(RepackKind::Compaction(_)))
+            {
+                add(&tally.with_spare, u64::from(spare >= 1));
+            }
+            if plan.compaction_rolled_back {
+                if spare >= 1 {
+                    add(&tally.missed_with_spare, 1);
+                } else {
+                    add(&tally.missed_no_spare, 1);
+                }
+                return;
+            }
+            assert_eq!(plan.growth, None, "{next:b} packs, so it needs no growth");
+            assert!(plan.deferred.is_empty(), "nothing waits on a retirement");
+            repacks += u32::from(plan.repack.is_some());
+            if let Some(RepackKind::Compaction(stats)) = plan.repack {
+                add(&tally.compactions, 1);
+                add(&tally.parked, u64::from(stats.parked));
+                add(&tally.built_over, u64::from(stats.built_over));
+                compacted = true;
+                parked |= stats.parked > 0;
+            }
+            gpu.execute(model.plan());
+            gpu.assert_matches(&model);
+            assert_eq!(model.texture_allocations(), 1, "no second pool");
+            assert_disjoint_within_layers(&model);
+        }
         for b in 0..count as u32 {
             if next >> b & 1 != 0 {
                 assert!(
@@ -229,17 +269,10 @@ fn run(history: &History, tally: &Tally) {
                 );
             }
         }
-        if let Some(RepackKind::Compaction(stats)) = plan.repack {
-            add(&tally.compactions, 1);
-            add(&tally.parked, u64::from(stats.parked));
-            add(&tally.built_over, u64::from(stats.built_over));
-            compacted = true;
-            parked |= stats.parked > 0;
+        if arrival == Arrival::OverDrains {
+            assert!(repacks <= 1, "{repacks} repacks for one demand, {next:b}");
+            add(&tally.split_demands_repacked, u64::from(repacks));
         }
-        gpu.execute(model.plan());
-        gpu.assert_matches(&model);
-        assert_eq!(model.texture_allocations(), 1, "no second pool");
-        assert_disjoint_within_layers(&model);
 
         mandatory_set = next;
         let resident =
@@ -251,7 +284,7 @@ fn run(history: &History, tally: &Tally) {
     add(&tally.histories_parked, u64::from(parked));
 }
 
-fn run_cases(cases: u32) -> Tally {
+fn run_cases(cases: u32, arrival: Arrival) -> Tally {
     let config = Config {
         cases,
         failure_persistence: None,
@@ -261,7 +294,7 @@ fn run_cases(cases: u32) -> Tally {
     let tally = Tally::default();
     TestRunner::new_with_rng(config, rng)
         .run(&history(), |history| {
-            run(&history, &tally);
+            run(&history, &tally, arrival);
             Ok(())
         })
         .unwrap();
@@ -285,7 +318,7 @@ fn run_cases(cases: u32) -> Tally {
 
 #[test]
 fn compaction_places_any_set_that_packs_from_scratch() {
-    let tally = run_cases(2048);
+    let tally = run_cases(2048, Arrival::AtOnce);
     // A set with a layer spare must place. One with none may miss and take
     // logged growth, so those misses are reported above, not asserted.
     assert_eq!(tally.missed_with_spare.get(), 0);
@@ -311,5 +344,17 @@ fn compaction_hunt_counts_layouts_with_no_order_found() {
         .ok()
         .and_then(|cases| cases.parse().ok())
         .unwrap_or(1_000_000);
-    run_cases(cases);
+    run_cases(cases, Arrival::AtOnce);
+}
+
+#[test]
+fn a_demand_that_packs_repacks_at_most_once_however_its_pairs_arrive() {
+    let tally = run_cases(2048, Arrival::OverDrains);
+    assert_eq!(tally.missed_with_spare.get(), 0);
+    // A generator that stops reaching a repack proves nothing.
+    assert!(
+        tally.split_demands_repacked.get() >= 256,
+        "only {} demands repacked",
+        tally.split_demands_repacked.get()
+    );
 }

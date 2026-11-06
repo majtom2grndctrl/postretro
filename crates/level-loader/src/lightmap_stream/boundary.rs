@@ -131,9 +131,10 @@ impl LightmapDrainBatch {
 pub struct LightmapPoolReport {
     /// Layers of the active pool generation.
     pub layers: u32,
-    /// Texels free under the cap: the room band prefetch may still fill.
-    /// The controller requests band reads only against this headroom; the
-    /// renderer's refusal stays authoritative.
+    /// Texels free under the cap, leaving out room reserved for mandatory and
+    /// visible targets: the room band prefetch may still fill. The controller
+    /// requests band reads only against this headroom, less the pairs it
+    /// holds with no room reserved; the renderer's refusal stays authoritative.
     pub band_headroom_texels: u64,
     /// Whether this drain repacked in place, or grew a new generation.
     pub repacked: bool,
@@ -161,6 +162,12 @@ pub struct LightmapDrainOutcome {
     /// Blocks actually released: removed targets, and band blocks evicted for
     /// cap pressure or to make room for mandatory work.
     pub evicted: Vec<u32>,
+    /// Blocks that newly hold reserved room: `pool`'s headroom already leaves
+    /// it out, so a pair in hand for one of them is not charged against it
+    /// again. Reservation writes no table entry; these blocks stay misses.
+    pub room_reserved: Vec<u32>,
+    /// Blocks that held reserved room and no longer do.
+    pub room_returned: Vec<u32>,
     pub pool: LightmapPoolReport,
 }
 

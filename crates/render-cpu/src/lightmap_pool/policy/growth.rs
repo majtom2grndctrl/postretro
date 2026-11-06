@@ -75,7 +75,7 @@ impl LightmapPoolModel {
 
     /// Layers a from-scratch shelf pack of every mandatory and visible
     /// target fills, tallest first as the drain places them.
-    fn targeted_demand_layers(&mut self) -> u32 {
+    pub(super) fn targeted_demand_layers(&mut self) -> u32 {
         let mut demand = std::mem::take(&mut self.scratch.demand);
         demand.clear();
         demand.extend(

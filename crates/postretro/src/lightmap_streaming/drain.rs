@@ -118,6 +118,12 @@ impl LightmapResidencyController {
         outcome: LightmapDrainOutcome,
     ) -> Result<(), LightmapResidencyError> {
         self.validate_outcome(&outcome)?;
+        for &block in &outcome.room_reserved {
+            self.set_room_reserved(block, true);
+        }
+        for &block in &outcome.room_returned {
+            self.set_room_reserved(block, false);
+        }
         for &block in &outcome.evicted {
             self.residency.remove_resident(self.map.facts(block));
             self.slots[block as usize].phase = BlockPhase::Absent;
@@ -258,6 +264,15 @@ impl LightmapResidencyController {
                     prepared.block
                 ));
             }
+        }
+        let blocks = self.slots.len() as u32;
+        if let Some(block) = outcome
+            .room_reserved
+            .iter()
+            .chain(&outcome.room_returned)
+            .find(|&&block| block >= blocks)
+        {
+            return invalid(format!("reserved-room block {block} is out of range"));
         }
         scratch.clear();
         scratch.extend(&outcome.evicted);

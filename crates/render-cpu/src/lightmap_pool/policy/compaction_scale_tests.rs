@@ -420,6 +420,8 @@ fn the_hallway_tour_at_its_27_layer_bound_compacts_without_growth() {
         target_remove: &[],
         ready: &[],
     });
+    // The dumped layout is the pool's, so nothing holds room in it yet.
+    model.return_all_room();
     let mut gpu = RectMirror::default();
     for (block, &(layer, x, y, w, h, _)) in placed.iter().enumerate() {
         let slot = model.pool.allocate_at(layer, x, y, w, h).unwrap();

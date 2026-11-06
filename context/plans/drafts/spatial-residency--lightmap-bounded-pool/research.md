@@ -1,6 +1,6 @@
 # Research: spatial-residency--lightmap-bounded-pool
 
-Measured 2026-11-05 at `cb3934294` on the PRLs in `content/dev/maps` (hallway baked 2026-11-01: 1,840 blocks, 7,881 cells). Raw outputs were scratch and are not kept; rerun with the commands below.
+Re-anchored 2026-11-06 at `6a813bdcd`, after the SH brief landed; no lightmap, shadowmask or pool source changed between. Measured 2026-11-05 at `cb3934294` on the PRLs in `content/dev/maps` (hallway baked 2026-11-01: 1,840 blocks, 7,881 cells). Raw outputs were scratch and are not kept; rerun with the commands below.
 
 ## Pool anatomy
 
@@ -10,7 +10,7 @@ Measured 2026-11-05 at `cb3934294` on the PRLs in `content/dev/maps` (hallway ba
 | Direction | Rg8, 1024² | 2 |
 | Shadowmask | BC5, 4096 × 2048, groups side by side | 8 |
 
-Metal trace on the hallway: lightmap pool 490 MiB of 3,011 MiB steady. Other runs ended at 546 MiB.
+Metal trace on the hallway: lightmap pool 490 MiB, of 3,011 MiB steady before the SH brief and 2,170 after. Other runs ended at 546 MiB.
 
 ## Density
 
@@ -116,20 +116,46 @@ Crate edges, normal dependencies only: compiler → level-format, level-loader, 
 
 ## Threshold and figures
 
-- 448 MiB: 2,048 target − 512 SH − 427 shadows − about 650 other ≈ 459, rounded down to a multiple of 64 MiB.
+- 384 MiB: 2,048 target − 512 SH − 427 shadows − about 693 other (video memory, measured after the SH brief) ≈ 416, rounded down to a multiple of 64 MiB. Expect to revisit it as real content arrives.
 - 532 MiB: 37 layers plus the spare at 14 MiB, the far-point tour at today's defaults. Metal runs ended at 490 and 546 MiB.
+
+## After the SH brief
+
+`done/spatial-residency--sh-bounded-pool/plan.md`, hallway, Metal Resource Events. Which column the spike read is unconfirmed.
+
+| Figure | `resource-size` MiB | Video memory only MiB |
+|---|---|---|
+| Steady | 2,170 | 2,009 |
+| Peak, at 27 s | 2,574 | 2,415 |
+
+- SH pool 399, no SH growth. The peak is lightmap growth: planes 116/58/232 to 140/70/280 MiB, old and new alive together.
+- Lightmap pool in that walk: 490 MiB. Everything else, shadows aside: about 854 in `resource-size`, about 693 in video memory, against the 650 first estimated.
+- SH sizes at 25% headroom too, so 5/4 matches it.
+- A whole-map rule landed for SH: a pool holding the whole map names no victims. Uniform slots leave no holes there. Lightmap blocks are not uniform (R33).
+- A fixed all-resident layout for whole-map lightmap pools was considered and declined: levels that small are test fixtures, not realistic content, so R33's ordinary misses stand. Stress warrens are the tool for coping with scope, though they are generated without art direction, and no map yet represents real content.
 
 ## Projection
 
-Estimates, not measurements. Hallway steady total was 3,011 MiB; the SH brief projects about 1,970 MiB with lightmap at 490.
+Estimates, not measurements.
 
 | Item | MiB |
 |---|---|
 | Split pools, exact fit at L = 16 m | 220 |
 | Split pools at 5/4: 34 lightmap and 15 mask layers, plus spares | 274 |
-| Hallway total after both briefs, steady and peak | about 1,800 |
+| Hallway total, steady and peak: 2,170 − 490 + 274 | 1,954 in `resource-size` |
+| Same, video memory only: 2,009 − 490 + 274 | 1,793 |
 
-The total assumes no growth, and leaves shadows (427) and unitemised memory (about 650) as measured.
+Both assume no growth, and leave shadows (427) and everything else as measured.
+
+## Limits of this evidence
+
+No map represents real content yet. Warrens engineer for scope, but they do not model realistic spatial relationships: a mix of small, medium and large spaces, straight and L-shaped connectors, or empty void between rooms. So these findings hold for warrens and need rechecking on real content:
+
+- Block-size mix: real rooms would give a wider spread, so packing near 92%, MaxRects matching shelf, and 5/4 as the knee may all shift.
+- Lead: "lead barely moves the worst cell" may be a warren trait. Connectors and void could shorten sight lines, so lead may matter more.
+- Zero planes: the 83% depends on how lights and owners fall.
+
+The structure does not depend on any of this: the bound is computed per map, and compaction's guarantee holds for any block mix.
 
 ## Ordering pins
 

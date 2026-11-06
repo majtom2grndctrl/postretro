@@ -61,6 +61,7 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 - *Mover-side push (Quake 2).* Two carry semantics and two pin predicates: players must keep body-side carry because it is predicted, so a mover-side push for agents would be a second rule for the same mover.
 - *Agent motion stays in `sim`, physics widens visibility.* Sharing primitives would duplicate nothing, but mover collision would then span two crates against `development_guide.md` §Workspace, and `pub(crate)` mover internals (`CombinedCastHit.source`, `deepest_mover_push_penetration`) would widen for one consumer.
 - *Load-time gate over the static nav mesh* (the brief's first shape). Pose each mover's local AABB at its waypoints at load, inflate by agent radius, gate the regions and portals it overlaps. Rejected (owner, 2026-11-06) after review: a door mid-region gates a whole region, which cannot honor crossings-only without a side-of-door test (a same-region start and goal take a straight line with no portal test); one AABB per hollow mover gates every region around the rising room and traps its riders; the decomposition's fit was unknown and needed a measure-first stop. Baking splits regions at the real geometry and removes all three.
+- *Split the physical half from navigation.* Rejected: doors that stop enemies physically but are not gated in planning reproduce the push-against-the-door jitter loop rejected under local avoidance alone. Collision and gating land together.
 - *Split lift links into a follow-up brief.* This brief would ship solid, ground, crush and door gating only. Rejected (owner, 2026-11-06): the roadmap item names lifts and the rising room, links reuse the gate's dock predicate, and the rising-room setpiece is the motivating case.
 - *Gate on live posed bounds each tick.* Re-flips for sweepers, crushers and mid-travel doors; churns replans; gates planning through a half-open door shots pass. Dock state changes only on dock and undock.
 - *Local avoidance alone at closed doors.* Reproduces Source's `OnDoorBlocked` loop: jitter and stuck cycling.
@@ -92,7 +93,7 @@ Derivation behind the brief. Prior art, engine survey and the first source read:
 | O17 | Riding agent | — | Steering suspended, footing kept, stuck detection paused |
 | O18 | Mover docks at the far terminus | — | Rider exits along the link, replans from the landing region |
 | O19 | Rising room starts with enemies inside | — | They ride up and exit through the doorway onto the arena |
-| O20 | Mover with no waypoints (pure spinner) | — | No gate, no link; collision and blocking pass handle it |
+| O20 | Mover with no waypoints, or with authored spin | — | No gate, no link; collision and blocking pass handle it |
 | O21 | Level with zero movers | — | Agent motion, steering and paths identical to today |
 | O22 | `goToPathNode` holds a door closed at a mid-path node across a route | Gate flips on dock at that node | Same as O12 |
 | O23 | Multi-stop lift held at a middle node; mover passes a node without stopping | — | Link open only while docked there; passing through opens nothing |

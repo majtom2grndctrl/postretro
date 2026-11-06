@@ -5,7 +5,8 @@
 //! cancelled load leaves the cache as it found it; a cancelled load's late
 //! upload never reaches the next load's first lookup; a dropped renderer
 //! takes its cache with it; the commit's synchronous miss loads, counts and
-//! logs once; and an edited model misses while the old set keeps its entry.
+//! logs once; and an edited model or clip library misses while the old set
+//! keeps its entry.
 //! See: context/plans/done/level-load-pipeline/index.md (Model cache, Models rows) · research.md §9 (P7, P9, P11, P29, P30)
 
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use postretro_model::gltf_loader::{load_model, read_model_sources};
+use postretro_model::skeleton::AnimationClip;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
 use postretro_render_cpu::texture_prep::{ModelSidecars, model_material_sidecar_paths};
 use postretro_renderer::PreviousLevelSet;
@@ -43,6 +45,11 @@ const RIFLE: &str = "models/ar_4/model.gltf";
 const KNIGHT: &str = "models/reference_enemy_kaykit_knight/scene.gltf";
 /// A prop no dev descriptor names.
 const PROP: &str = "models/decraniated_low_poly_retro_pixel/scene.gltf";
+
+/// The clip library fixture's bound model and its static neighbor, under a
+/// `models/` copy of the fixture.
+const BOUND: &str = "models/mesh/model.gltf";
+const BOUND_NEIGHBOR: &str = "models/static/model.gltf";
 
 /// `mesh/`, `static/` and `library/`: a bound model, a static model naming the
 /// same library, and that library with an external buffer.
@@ -184,6 +191,46 @@ fn presentation_summary(model: &PreparedModel) -> String {
         format!("{skeleton:?}|{clips:?}|{joint_zones:?}|{derived_bound:?}|{pose_stack:?}")
     });
     format!("{:?}|{zones:?}", model.clip_entry)
+}
+
+/// The clips the commit installs for `handle`.
+fn prepared_clips(bundle: &LevelBundle, handle: &str) -> Arc<Vec<AnimationClip>> {
+    let model = bundle.presentation.models.get(handle).unwrap();
+    let parsed = model.parsed.as_ref().expect("the model parsed");
+    parsed.hit_zones.clips.clone()
+}
+
+/// `bundle`'s `handle` equals a load straight from disk. `AnimationClip`
+/// equality is the track-level match: each joint's times, values and mode on
+/// all three channels, with the name, duration and travel speed.
+fn assert_matches_fresh_load(label: &str, bundle: &LevelBundle, handle: &str, content: &Path) {
+    let fresh = load_model(&content.join(handle));
+    let model = bundle.presentation.models.get(handle).unwrap();
+    assert_eq!(
+        model.clip_entry,
+        crate::startup::lifecycle::model_clip_entry(&fresh),
+        "{label}: clip entry"
+    );
+    let fresh = fresh.expect("the model loads");
+    assert_eq!(
+        *prepared_clips(bundle, handle),
+        fresh.clips,
+        "{label}: clips"
+    );
+}
+
+/// The height the library clip `leap` lifts the bound root to. It reads a
+/// track, so a test can tell the two library edits apart.
+fn leap_peak(clips: &[AnimationClip]) -> f32 {
+    let leap = clips
+        .iter()
+        .find(|clip| clip.name == "leap")
+        .expect("the library's clip bound");
+    leap.joints
+        .iter()
+        .flat_map(|joint| joint.translation.values())
+        .map(|value| value.y)
+        .fold(f32::MIN, f32::max)
 }
 
 fn key_set(renderer: &Renderer) -> Vec<ModelContentKey> {
@@ -504,6 +551,176 @@ fn same_content_change_hits_every_model() {
     );
     assert_eq!(cache_uses(&third), all(&handles, ModelCacheUse::Hit));
     retire(third_stages.cancel(Some(&mut renderer)));
+}
+
+// A hit's clips are a fresh load's, track for track: on the load after the
+// parse, across a level change whose sweep freed the model's neighbor, and on
+// the way back to the first level.
+#[test]
+fn cache_hit_clips_match_a_fresh_load_across_a_level_change() {
+    let Some(mut renderer) =
+        offscreen_renderer_or_skip("cache_hit_clips_match_a_fresh_load_across_a_level_change")
+    else {
+        return;
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let content = scratch.path();
+    copy_clip_library_fixture(&content.join("models"));
+    let prm = dev_prm_root();
+    let pool = test_pool();
+    let map_a = level_with_props(&[BOUND, BOUND_NEIGHBOR]);
+    let map_b = level_with_props(&[BOUND]);
+
+    let (stages, first) = load(
+        &mut renderer,
+        &pool,
+        load_inputs(map_a.path(), content, &prm, None),
+    );
+    assert_eq!(
+        cache_uses(&first),
+        all(&[BOUND, BOUND_NEIGHBOR], ModelCacheUse::Miss)
+    );
+    assert_matches_fresh_load("the parse", &first, BOUND, content);
+    assert_eq!(
+        leap_peak(&prepared_clips(&first, BOUND)),
+        8.0,
+        "the comparison covers a bound track"
+    );
+    commit(&mut renderer, &first);
+    retire(stages.cancel(Some(&mut renderer)));
+
+    let (stages, kept) = load(
+        &mut renderer,
+        &pool,
+        load_inputs(map_b.path(), content, &prm, None),
+    );
+    assert_eq!(cache_uses(&kept), all(&[BOUND], ModelCacheUse::Hit));
+    assert_matches_fresh_load("the level change", &kept, BOUND, content);
+    let committed = commit(&mut renderer, &kept);
+    assert_eq!(
+        committed,
+        ModelCacheCommit {
+            inserted: 0,
+            freed: 1,
+            retained: 1
+        },
+        "the level change keeps the model and frees its neighbor"
+    );
+    retire(stages.cancel(Some(&mut renderer)));
+
+    let (stages, back) = load(
+        &mut renderer,
+        &pool,
+        load_inputs(map_a.path(), content, &prm, None),
+    );
+    assert_eq!(
+        cache_uses(&back),
+        vec![
+            (BOUND.to_string(), ModelCacheUse::Hit),
+            (BOUND_NEIGHBOR.to_string(), ModelCacheUse::Miss)
+        ]
+    );
+    assert_matches_fresh_load("the way back", &back, BOUND, content);
+    retire(stages.cancel(Some(&mut renderer)));
+}
+
+// P8: with the old level resident, a library edit makes the next load miss a
+// model both levels keep, though the model's own files never changed. The old
+// set keeps its entry and its clips past the new level's commit, and the sweep
+// after its release frees that entry.
+#[test]
+fn clip_library_edit_between_levels_misses_while_old_set_keeps_its_entry() {
+    let test = "clip_library_edit_between_levels_misses_while_old_set_keeps_its_entry";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test) else {
+        return;
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let content = scratch.path();
+    copy_clip_library_fixture(&content.join("models"));
+    let prm = dev_prm_root();
+    let params = ModelInstallParams::default();
+    let pool = test_pool();
+    let map = level_with_props(&[BOUND]);
+
+    let (stages, old) = load(
+        &mut renderer,
+        &pool,
+        load_inputs(map.path(), content, &prm, None),
+    );
+    let old_id = resident(&old);
+    commit(&mut renderer, &old);
+    retire(stages.cancel(Some(&mut renderer)));
+    let old_entry = renderer.level_set_model_identity(old_id, BOUND);
+    assert!(old_entry.is_some());
+    let old_key = key_of(&content.join(BOUND), &prm, params);
+
+    // The clip's last key rises from 4 m to 5 m: bytes 24..28 of the buffer
+    // are its Y, behind 8 bytes of times and one VEC3.
+    let buffer = content.join("models/library/library.bin");
+    let mut bytes = std::fs::read(&buffer).unwrap();
+    assert_eq!(bytes[24..28], 4.0f32.to_le_bytes());
+    bytes[24..28].copy_from_slice(&5.0f32.to_le_bytes());
+    std::fs::write(&buffer, bytes).unwrap();
+    let new_key = key_of(&content.join(BOUND), &prm, params);
+    assert_ne!(new_key, old_key);
+
+    let (stages, new) = load(
+        &mut renderer,
+        &pool,
+        load_inputs(map.path(), content, &prm, None),
+    );
+    assert_eq!(cache_uses(&new), all(&[BOUND], ModelCacheUse::Miss));
+    assert_eq!(count_parts(&stages, LevelBuildPart::Model), 1);
+    assert_matches_fresh_load("the edited library", &new, BOUND, content);
+    assert_eq!(leap_peak(&prepared_clips(&new, BOUND)), 10.0);
+    assert_eq!(
+        leap_peak(&prepared_clips(&old, BOUND)),
+        8.0,
+        "the old level's clips are the bytes it loaded"
+    );
+    let new_id = resident(&new);
+    assert_eq!(
+        renderer.level_set_model_identity(old_id, BOUND),
+        old_entry,
+        "the running level keeps its entry"
+    );
+    assert_ne!(renderer.level_set_model_identity(new_id, BOUND), old_entry);
+    assert_eq!(key_set(&renderer), vec![old_key], "only a commit enters");
+
+    renderer.publish_level_set(new_id, PreviousLevelSet::KeepResident);
+    let committed = renderer.commit_model_cache(new_id).unwrap();
+    assert_eq!(
+        committed,
+        ModelCacheCommit {
+            inserted: 1,
+            freed: 0,
+            retained: 2
+        },
+        "the resident old set still holds its entry"
+    );
+    retire(stages.cancel(Some(&mut renderer)));
+    assert_eq!(renderer.level_set_model_identity(old_id, BOUND), old_entry);
+
+    assert!(renderer.release_level_set(old_id));
+    assert_eq!(key_set(&renderer).len(), 2, "a release frees no entry");
+    let (stages, next) = load(
+        &mut renderer,
+        &pool,
+        load_inputs(map.path(), content, &prm, None),
+    );
+    assert_eq!(cache_uses(&next), all(&[BOUND], ModelCacheUse::Hit));
+    let committed = commit(&mut renderer, &next);
+    assert_eq!(
+        committed,
+        ModelCacheCommit {
+            inserted: 0,
+            freed: 1,
+            retained: 1
+        },
+        "the sweep after the release frees the old entry"
+    );
+    assert_eq!(key_set(&renderer), vec![new_key]);
+    retire(stages.cancel(Some(&mut renderer)));
 }
 
 // Models 4 and Beside 2's cache half (P11, P30): a release frees no entry; a

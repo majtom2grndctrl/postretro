@@ -189,6 +189,38 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
             continue;
         }
 
+        // `.damage(amount, { type })` and `grantLayer(layer)`: a bad defense
+        // reference or an unknown option drops that one reaction; its
+        // siblings install.
+        let defense_violation = {
+            let vocabulary = &data_registry.defense;
+            match &data_registry.reactions[index].descriptor {
+                ReactionDescriptor::Primitive(primitive) => {
+                    postretro_sim::validate_defense_reference_args(
+                        &primitive.primitive,
+                        &primitive.args,
+                        vocabulary,
+                    )
+                    .err()
+                }
+                ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| {
+                    postretro_sim::validate_defense_reference_args(
+                        &step.primitive,
+                        &step.args,
+                        vocabulary,
+                    )
+                    .err()
+                }),
+                ReactionDescriptor::Progress(_) => None,
+            }
+        };
+        if let Some(error) = defense_violation {
+            let name = &data_registry.reactions[index].name;
+            log::error!("[Scripting] reaction `{name}`: {error}. Dropping the reaction");
+            data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
+            continue;
+        }
+
         let ReactionDescriptor::Sequence(steps) = &data_registry.reactions[index].descriptor else {
             continue;
         };
@@ -2006,6 +2038,7 @@ mod tests {
                 max: 100.0,
                 hitbox: None,
                 zone_multipliers: HashMap::new(),
+                ..Default::default()
             });
             health.current = 50.0;
             registry.set_component(pawn, health).unwrap();

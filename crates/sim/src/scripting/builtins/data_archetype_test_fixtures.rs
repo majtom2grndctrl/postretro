@@ -158,6 +158,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1200.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,

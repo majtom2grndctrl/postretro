@@ -412,6 +412,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -483,6 +484,7 @@ fn world_item_descriptor(class: &str) -> EntityTypeDescriptor {
         max: 48.0,
         hitbox: None,
         zone_multipliers: Default::default(),
+        ..Default::default()
     });
     descriptor.touchable = Some(TouchableDescriptor {
         mode: TouchMode::Auto,

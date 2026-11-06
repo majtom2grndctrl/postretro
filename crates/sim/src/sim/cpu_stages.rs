@@ -54,6 +54,9 @@ pub enum SimStage {
     /// Player-event evaluation and in-tick fires, after the tick settles.
     /// Runs outside `Tick`, so it reports beside it.
     PlayerEvents,
+    /// Defense-layer clamp and recharge at tick start, after the respawn
+    /// drain. Runs outside `Tick`, so it reports beside it.
+    DefenseLayers,
 }
 
 impl StageSet for SimStage {
@@ -74,6 +77,7 @@ impl StageSet for SimStage {
         Self::WeaponFluidCrossings,
         Self::OverlapCheck,
         Self::PlayerEvents,
+        Self::DefenseLayers,
     ];
 
     fn index(self) -> usize {
@@ -98,12 +102,13 @@ impl StageSet for SimStage {
             Self::WeaponFluidCrossings => "sim_weapon_fluid_crossings",
             Self::OverlapCheck => "sim_overlap_check",
             Self::PlayerEvents => "sim_player_events",
+            Self::DefenseLayers => "sim_defense_layers",
         }
     }
 
     fn parent(self) -> Option<Self> {
         match self {
-            Self::Tick | Self::PlayerEvents => None,
+            Self::Tick | Self::PlayerEvents | Self::DefenseLayers => None,
             Self::SteerAgents | Self::SteerPose | Self::SteerMovers => Some(Self::Steering),
             Self::WeaponFluidCrossings => Some(Self::Weapons),
             _ => Some(Self::Tick),

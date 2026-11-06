@@ -45,6 +45,7 @@ fn fresh_target(registry: &mut EntityRegistry) -> EntityId {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 },
             ),
         )
@@ -70,6 +71,7 @@ fn hit(registry: &mut EntityRegistry, target: EntityId) {
         &DamagePayload {
             amount: 10.0,
             impulse: Vec3::ZERO,
+            damage_type: None,
         },
         DamageContext::new("app-host-overlay", DamageProducer::InTick),
     );

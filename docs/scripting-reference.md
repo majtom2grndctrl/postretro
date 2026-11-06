@@ -400,6 +400,253 @@ archetype, an entity carrying `components.health` is placed by `canonicalName` �
 
 ---
 
+## Defense layers and damage types
+
+A **defense layer** is a pool — a shield, armor, any kind you name — that
+drains before health. A **damage type** says how much one point of incoming
+damage takes from each pool. Both are mod vocabulary: you declare them, list
+them in `defineMod`, attach layers to health, and name a type on anything that
+deals damage.
+
+### Declaring and registering
+
+```typescript
+// scripts/defenses.ts — each is named by its binding when scripts build
+import { defineDefenseLayer } from "postretro";
+export const shield = defineDefenseLayer();
+export const armor = defineDefenseLayer();
+
+// scripts/damage-types.ts — the matrix keys are layer names or `health`
+import { defineDamageType } from "postretro";
+export const ballistic = defineDamageType({ armor: 0.8 });
+export const plasma = defineDamageType({ shield: 1.5, armor: 0.5 });
+export const flechette = defineDamageType({ shield: "bypass", armor: 0 });
+
+// start-script.ts
+export default defineMod({
+  /* … */
+  defenseLayers: [shield, armor],
+  damageTypes: [ballistic, plasma, flechette],
+  defaultDamageType: ballistic,
+});
+```
+
+Luau passes each name explicitly: `Postretro.defineDefenseLayer("shield")`,
+`Postretro.defineDamageType("plasma", { shield = 1.5, armor = 0.5 })`.
+
+- **Names.** In TypeScript, a definer with no name must be the whole
+  initializer of a top-level `const`, `let` or `var` (exported or not) —
+  scripts-build names it by its binding. A `defineDamageType` call also needs
+  its matrix as an object literal, not a variable. Anywhere else (inside an
+  array, a function, a destructuring pattern, a re-export), pass the name. A
+  name is 1–64 bytes of ASCII letters, digits, `_` and `-`, for layers and
+  damage types alike. Only a layer name reserves `health`; a damage type may
+  be named `health`.
+- **Registration.** The lists in `defineMod` are the declarations in force. A
+  level script or a second `require` that re-runs a declaration only gets a
+  handle: a hit typed by a level's re-declared `shock` drains by the matrix
+  `defineMod` registered, whatever matrix the level wrote.
+- **`defaultDamageType`** (optional) is one of `damageTypes`. Anything that
+  names no type deals it: bare melee, crushers, `.damage(n)`. Without one,
+  untyped damage is ×1 on every pool.
+- **Handles cross as `{ kind, name }`.** A handle's accessors never reach the
+  manifest. A bare string (`"shield"`) is not a handle.
+
+### The matrix
+
+Each matrix value is a multiplier in [0, 64], or `"bypass"` on a layer. A pool
+the matrix omits is ×1.
+
+| Value | On a layer | On `health` |
+|-------|-----------|-------------|
+| `0` | Stops the rest of the hit while the layer is above zero. | Health takes nothing. |
+| `0.5`, `2`, … | One raw point costs that many of the layer's points. | One raw point costs that many hit points. |
+| `"bypass"` | The hit skips the layer as if it were absent. | Rejected at load. |
+
+### Attaching layers to health
+
+```typescript
+health: {
+  max: 100,
+  layers: [
+    { layer: shield, capacity: 50, rechargeDelayMs: 2500, rechargeRate: 20, resist: { plasma: 0.5 } },
+    { layer: armor, capacity: 120 },
+  ],
+  resist: { shock: 0.5 }, // health's own resistance
+},
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `layer` | layer handle | The registered kind. A kind appears at most once per descriptor; list order is drain order. |
+| `capacity` | number or Number expression | [0, 1 000 000]. The layer spawns full. A capacity-0 layer is present, skipped by every hit, and counts as full. |
+| `rechargeDelayMs` | number or Number expression | [0, 60 000], default 3000. Time since the entity's last hit before recharge starts. |
+| `rechargeRate` | number or Number expression | [0, 1 000 000] points per second, default 0 (never recharges). |
+| `resist` | `{ [typeName]: number or expression }` | [0, 64]. Scales that type on this layer only. |
+| `health.resist` | `{ [typeName]: number or expression }` | [0, 64]. Scales that type on health only. |
+
+A pool's multiplier for a typed hit is its matrix entry × its own `resist`.
+Nothing else scales it: a layer's `resist` never touches health.
+
+**Expression parameters** read the global store, the entity's own `@state.*`,
+and — on the player's descriptor (one with `movement`) — that player's
+per-owner values: `capacity: read(progression.shieldCapacity).plus(50)`. A
+per-owner read on any other descriptor fails load, as does a read of an engine
+`player.*` slot or of any layer. The host evaluates expressions at spawn, at
+every tick start, at respawn and at every grant. A result outside the range
+clamps; a fault (a missing value, non-finite arithmetic) keeps the entity's
+last good value and warns once per descriptor and field.
+
+### How a hit drains
+
+1. The hit's raw amount (after hit zones) passes the damage gate. A hit any
+   layer fully absorbs still counts as a hit.
+2. Layers drain in list order. Each takes `raw × multiplier` from its value; a
+   layer it empties passes on the **raw** remainder, not the scaled one.
+3. Health takes what is left × its own multiplier.
+
+The impact policy sees the result as facts:
+
+| Fact | Meaning |
+|------|---------|
+| `impact.amount` | Points dealt: everything drained from layers and health. |
+| `impact.raw` | The incoming amount after hit zones, before type and layers. |
+| `impact.absorbed` | The layers' share of `amount`. |
+| `impact.broke` | This hit took some layer from above zero to zero. |
+| `impact.type(handle)` | Whether this hit dealt that type (the default type included). |
+
+Contributor credit and AI threat count points dealt, so shield-only damage
+credits its attacker.
+
+**Typed producers.** A weapon's `damageType`, an attack's `damageType` in
+`behavior.attacks` (not beside a `weapon`), a reaction's
+`.damage(n, { type })`, and a mover's `crush_damage_type` key each name a
+type; everything else deals the default. A client's shot takes its type from
+the host's copy of the weapon.
+
+### Recharge
+
+At the start of each tick, before any hit, the host evaluates each layer's
+parameters, clamps each layer to its capacity, and recharges a layer once
+`rechargeDelayMs` has passed since the entity's last hit, at `rechargeRate`,
+up to capacity.
+
+- **Any hit with positive raw restarts the delay** for every layer, absorbed,
+  bypassed or blocked included. Grants, spawn, respawn and carry never touch
+  it.
+- **Recharge needs a tick that begins above zero health.** Time spent at zero
+  health still counts toward the delay.
+- **Raising capacity never fills a layer;** lowering it clamps.
+- A connected client recharges and evaluates nothing: it reads its own layers
+  from the host.
+
+### Grants
+
+`grantLayer(layer, amount?)` refills a layer. With no amount it fills to
+capacity; with one it adds, clamped to capacity. It evaluates capacity when it
+applies — so a raise written earlier in the same body counts — and that
+evaluation holds from then on. It never restarts the recharge delay.
+
+| Where | Spelling |
+|-------|----------|
+| Every player | `players().grantLayer(shield, 25)` |
+| A trigger's activators | `on.activators.grantLayer(shield)` |
+| A player event's player | `on.player.grantLayer(shield)` |
+| The impact's damager | `impact.source.grantLayer(shield, impact.absorbed.times(0.25))` |
+
+A non-finite amount is rejected when the manifest loads, as it is for
+`grantHealth`. A negative amount warns and does nothing; a recipient without
+that layer warns and is skipped.
+
+### Lifecycle
+
+- **Spawn** evaluates parameters and fills every layer. A player pawn whose
+  capacity reads a per-owner value fills when its seat binds.
+- **Respawn** evaluates and refills every layer.
+- **Level change, restart and rejoin** carry each layer's value by name,
+  clamped to the capacity the seat's values give. A seat that carries 0 health
+  arrives with full health and full layers.
+- **A join seed** that raises a fresh joiner's capacity refills each layer
+  still full at its old capacity, as the seed lands.
+- **Hot reload** keeps each entity's values, last good parameters and last-hit
+  time by layer name. A kept layer clamps to a lowered capacity. A layer the
+  edit adds arrives full; one with an expression capacity fills at the next
+  tick start, once that capacity is evaluated.
+- `setHealth` and `grantHealth` never touch layers.
+
+### Reading layers
+
+**The player's own layers** are owner-private slots,
+`player.defense.<name>` and `player.defense.<name>.capacity`, read through the
+handle:
+
+```typescript
+Bar({ bind: shield.current, max: shield.capacity, fill: [0.3, 0.6, 1, 1] });
+```
+
+A plain read means the local player, as `player.health` does; in a
+player-event condition it means the player being evaluated. `byPlayer` takes
+`impact.source` and `on.player` only. A layer read in an interaction-pair
+expression fails load. A pawn without the layer reads absent.
+
+**A specific entity's layer** reads through the accessor its scope offers,
+each with `.current` and `.capacity`:
+
+| Scope | Spelling (TypeScript / Luau) |
+|-------|------------------------------|
+| Impact policy | `impact.target.defense(armor)` / `impact.target:defense(armor)` |
+| Brain guard (the brain's own entity) | `defense(armor)` / global `defense(armor)` |
+| Damaged-enemies overlay | `entity.defense(shield)` / `entity:defense(shield)` |
+
+An entity without the layer reads 0. A damaged-enemies overlay's
+`hideAtFull` hides an entry only when health and its shield pair are both
+full.
+
+**Bad references.** A name `defineMod` does not register, a bare string, or a
+handle of the other kind is caught where it is held: a descriptor (layers,
+types, parameters, brain guards) fails load naming the key path; a reaction,
+impact policy or player event drops at install with a log; a UI binding warns
+once when its tree registers; an overlay's shield pair is skipped with a
+warning.
+
+### Recipe: a recharging shield
+
+A shield that soaks damage, waits after each hit, then refills — tuned by
+per-player progression.
+
+```typescript
+// combat-lifecycle.ts — persisted per-player progression
+export const progression = defineStore("progression", {
+  shieldCapacity: { type: "number", default: 0, perOwner: true, persist: true, network: "ownerPrivate" },
+  shieldTech: { type: "number", default: 0, perOwner: true, persist: true, network: "ownerPrivate" },
+});
+
+// player.ts
+health: {
+  max: 100,
+  layers: [{
+    layer: shield,
+    capacity: read(progression.shieldCapacity).plus(50),
+    rechargeDelayMs: 2500,
+    rechargeRate: read(progression.shieldTech).times(4).plus(20),
+  }],
+},
+
+// player-events.ts — a level-up raises capacity, then refills in body order
+on.player.addSlot(progression.shieldCapacity, 25),
+on.player.grantLayer(shield),
+
+// hud.ts
+Bar({ bind: shield.current, max: shield.capacity, fill: [0.3, 0.6, 1, 1] }),
+```
+
+Each new persisted slot needs a durable identity: run
+`bin/postretro-tool mint-identity <mod>` and ship the updated `identity.json`.
+Pair shields with a `plasma` type that strips them (`{ shield: 1.5 }`) and
+armor with a `corrosive` one (`{ armor: 2 }`) to give each weapon a job.
+
+---
+
 ## `components.weapon`
 
 Attach a `weapon` block to an entity descriptor to define a weapon archetype.
@@ -434,6 +681,7 @@ defineEntity({
 | Field | Type | Description |
 |-------|------|-------------|
 | `damage` | `number` | Base damage payload per resolved shot. Must be finite and `>= 0.0`. |
+| `damageType` | damage-type handle (optional) | The type each hit deals. Omitted, the hit takes the mod's `defaultDamageType`. |
 | `range` | `number` | Maximum hitscan distance in meters, or the second travel cap for a projectile. Must be finite and `> 0.0`. |
 | `primary` | `WeaponActivationDescriptor` | Required primary action: trigger, recovery, and a bounded shot/wait program. |
 | `secondary` | `WeaponActivationDescriptor` (optional) | Alternate-fire action. Both actions share weapon tuning, resource storage, and recovery. |
@@ -1355,8 +1603,11 @@ An entry in `attacks` has one of two mutually exclusive forms. Use the contact
 form for an immediate direct-impact attack:
 
 ```typescript
-slam: { damage: 8, maxRange: 2, cooldownMs: 1200 }
+slam: { damage: 8, damageType: ballistic, maxRange: 2, cooldownMs: 1200 }
 ```
+
+`damageType` is an optional damage-type handle beside `damage`; omitted, the
+hit takes the mod's `defaultDamageType`.
 
 Use the weapon form when the attack should use a weapon descriptor, including a
 traveling projectile. `weapon` supplies the damage, range, and cooldown; keep
@@ -2037,9 +2288,9 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
-| player group | `players()` | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
 
@@ -2648,6 +2899,12 @@ player death or non-player kill credit. Authors must arrange an explicit
 lifecycle action, such as `despawn` in an applicable impact policy, or another
 reaction or game-flow action appropriate to the damage source.
 
+`damage(amount, { type })` names the damage type the hit deals — a registered
+handle, such as `npcs({ tag: "turret" }).damage(40, { type: shock })`. Without
+one it deals the mod's `defaultDamageType`. A bad type reference or an unknown
+option key drops that reaction at install. See
+[Defense layers and damage types](#defense-layers-and-damage-types).
+
 A `progress` reaction can fire a damage reaction by name, or a `trigger_volume`
 can name it through `on_fire` or `on_exit`. When a trigger fires, its top-level
 consequential steps — including `applyDamage` — run in that fixed tick.
@@ -2661,6 +2918,9 @@ fires an event of the same name — see
 [the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
 
 ### `grantHealth` and `grantAmmo`
+
+For defense layers, `grantLayer(layer, amount?)` takes the same targets: see
+[Grants](#grants).
 
 ```typescript
 import { defineReaction, players } from "postretro";
@@ -3011,8 +3271,8 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
-| A `grantHealth` / `grantAmmo` / `addSlot` reaction body names not exactly one recipient: a group `kind` (with or without a tag), a non-empty tag, or the `@activators` target | Rejected with its whole manifest while its descriptors load: the setup manifest in a level script, the mod manifest in a mod-global reaction. |
-| `grantHealth` / `grantAmmo` amount, or `addSlot` delta, is not a finite `f32`-representable JSON number | Rejected while its descriptor loads (see below). |
+| A `grantHealth` / `grantAmmo` / `grantLayer` / `addSlot` reaction body names not exactly one recipient: a group `kind` (with or without a tag), a non-empty tag, or the `@activators` target | Rejected with its whole manifest while its descriptors load: the setup manifest in a level script, the mod manifest in a mod-global reaction. |
+| `grantHealth` / `grantAmmo` amount, a given `grantLayer` amount, or `addSlot` delta, is not a finite `f32`-representable JSON number | Rejected while its descriptor loads (see below). |
 | `grantAmmo` pool key is malformed | Rejected while its descriptor loads, using the weapon-resource identifier grammar (see below). |
 | A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
 | A `setLifeState` / `respawn` state name is malformed, or `respawn` `health` is not a number | Rejects the manifest while the descriptor loads. |
@@ -3020,7 +3280,7 @@ export function setupLevel(): LevelManifest {
 
 The amount and pool-key rules apply to the command whether it is a reaction body or a sequence step, for group and subject-token commands alike. What a failure rejects depends on where the command sits:
 
-- A bad `grantHealth`, `grantAmmo` or `addSlot` **reaction body** rejects its whole manifest: the setup manifest in a level script, the mod manifest in a mod-global reaction.
+- A bad `grantHealth`, `grantAmmo`, `grantLayer` or `addSlot` **reaction body** rejects its whole manifest: the setup manifest in a level script, the mod manifest in a mod-global reaction.
 - A bad **sequence step** in a level script skips that one reaction, with a warning naming it; the level's other reactions install.
 - In a **mod-global** reaction, any failing step rejects the whole mod manifest.
 

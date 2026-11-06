@@ -6,6 +6,7 @@
 -- dev play; weapon keys name curated clips.
 
 local UI = require("postretro/ui")
+local DamageTypes = require("./scripts/damage-types.luau")
 
 local M = {}
 
@@ -18,6 +19,7 @@ M.positionalSoundShotgunEntity = defineEntity({
   components = {
     weapon = {
       damage = 3.0,
+      damageType = DamageTypes.ballistic,
       pelletCount = 8,
       spreadDegrees = 5,
       range = 64.0,

@@ -448,6 +448,7 @@ pub(crate) fn spawn_dead_bystander(registry: &mut EntityRegistry) -> EntityId {
         max: 100.0,
         hitbox: None,
         zone_multipliers: std::collections::HashMap::new(),
+        ..Default::default()
     });
     health.current = 0.0; // would be swept by run_death_sweep if it ran
     registry.set_component(id, health).unwrap();

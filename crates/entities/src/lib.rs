@@ -33,7 +33,7 @@ pub use components::teleporter::TeleporterComponent;
 pub use components::trigger_volume::{
     TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,
 };
-pub use ctx::ScriptCtx;
+pub use ctx::{ScriptCtx, WeakScriptCtx};
 pub use data_descriptors::*;
 pub use data_registry::{
     CROSS_FACTION_DEFAULT_SENTIMENT, DEFAULT_ENEMY_FACTION_INDEX, DataRegistry,
@@ -59,7 +59,7 @@ pub use reactions::machine_local::{
 };
 pub use reactions::system_commands::{
     Audience, FireOrigin, FireSubject, MachineSource, Recipients, SystemCommandFireContext,
-    SystemCommandQueue, SystemReactionCommand,
+    SystemCommandQueue, SystemReactionCommand, TextEditCommand,
 };
 pub use registry::{
     Component, ComponentKind, ComponentValue, EntityId, EntityRegistry, FogVolumeComponent,

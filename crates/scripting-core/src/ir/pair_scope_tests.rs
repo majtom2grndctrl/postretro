@@ -102,6 +102,7 @@ fn pawn(ctx: &ScriptCtx, health: Option<f32>, state: u8, seat: Option<(u16, f32)
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         component.current = current;
         registry.set_component(pawn, component).unwrap();
@@ -279,6 +280,19 @@ fn refused_rows() -> Vec<(IrNode, &'static str)> {
         (
             input("player.assistProgress", Some(HELPER)),
             "depends on this pair evaluation",
+        ),
+        // A pair expression cannot read a defense layer, by a side or plain.
+        (
+            input("player.defense.shield", Some(HELPER)),
+            "cannot read a defense layer",
+        ),
+        (
+            input("player.defense.shield.capacity", Some(TARGET)),
+            "cannot read a defense layer",
+        ),
+        (
+            input("player.defense.shield", None),
+            "cannot read a defense layer",
         ),
         (
             input("player.assistReceivedProgress", Some(TARGET)),

@@ -52,6 +52,7 @@ pub struct EffectiveStats<'a> {
     /// default.
     pub block_during_reload: Option<bool>,
     pub credit_source: &'a str,
+    pub damage_type: Option<&'a str>,
     pub ammo: Option<EffectiveAmmoStats<'a>>,
     pub heat: Option<EffectiveHeatStats>,
     pub cell: Option<EffectiveCellStats>,
@@ -337,6 +338,10 @@ pub struct WeaponComponent {
     pub release_held_over_gate: Option<postretro_foundation::ActivationToken>,
     #[serde(default = "default_credit_source")]
     pub credit_source: String,
+    /// The registered damage type this weapon's hits deal, by name. `None`
+    /// deals the mod's default type, or stays untyped without one.
+    #[serde(default)]
+    pub damage_type: Option<std::sync::Arc<str>>,
     #[serde(default)]
     pub ammo: Option<WeaponAmmoTuning>,
     #[serde(default)]
@@ -442,6 +447,11 @@ impl WeaponComponent {
             secondary_press_held_over_gate: false,
             release_held_over_gate: None,
             credit_source: resolve_credit_source(desc, canonical_name),
+            damage_type: desc
+                .damage_type
+                .as_ref()
+                .and_then(|handle| handle.handle("weapon.damageType").ok())
+                .map(|handle| std::sync::Arc::from(handle.name())),
             ammo,
             magazine,
             heat,
@@ -474,6 +484,7 @@ impl WeaponComponent {
             raise_ms: self.raise_ms,
             block_during_reload: self.block_during_reload,
             credit_source: &self.credit_source,
+            damage_type: self.damage_type.as_deref(),
             ammo: self.ammo.as_ref().map(|ammo| EffectiveAmmoStats {
                 ammo_type: &ammo.ammo_type,
                 capacity: ammo.capacity,
@@ -725,6 +736,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         }
     }
 

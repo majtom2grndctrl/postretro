@@ -184,6 +184,9 @@ pub enum BrainInputRef<'a> {
     /// A per-entity numeric state leaf; carries the field name after the
     /// [`ENTITY_STATE_INPUT_PREFIX`]. Always projects as a number.
     State(&'a str),
+    /// The brain entity's own layer, `@defense.<layer>[.capacity]`. The layer
+    /// name is checked against the registered vocabulary at load.
+    Defense { layer: &'a str, capacity: bool },
 }
 
 /// Resolve a guard input name, or `None` when it belongs to neither the fixed
@@ -191,6 +194,9 @@ pub enum BrainInputRef<'a> {
 pub fn resolve_brain_input(name: &str) -> Option<BrainInputRef<'_>> {
     if let Some(field) = name.strip_prefix(ENTITY_STATE_INPUT_PREFIX) {
         return Some(BrainInputRef::State(field));
+    }
+    if let Some((layer, capacity)) = crate::defense::defense_input(name) {
+        return Some(BrainInputRef::Defense { layer, capacity });
     }
     let index = BRAIN_INPUTS
         .iter()
@@ -224,7 +230,7 @@ impl BindingScope for BrainValidationScope {
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<IrType>> {
         let ir_type = match resolve_brain_input(name)? {
             BrainInputRef::Fixed { ir_type, .. } => ir_type,
-            BrainInputRef::State(_) => IrType::Number,
+            BrainInputRef::State(_) | BrainInputRef::Defense { .. } => IrType::Number,
         };
         Some(ResolvedInput {
             handle: ir_type,

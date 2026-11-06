@@ -215,6 +215,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineWeaponPlacement",
     "defineTriggerPool",
     "defineStore",
+    "defineDefenseLayer",
+    "defineDamageType",
     "read",
     "fromRuntime",
     "set",
@@ -314,7 +316,7 @@ const GAME_STATE_FIELDS: &[&str] = &["getGameState"];
 
 /// Behavior-graph guard-input SDK fields lifted to globals after evaluating
 /// `brain.luau`.
-const BRAIN_LUAU_FIELDS: &[&str] = &["brain", "candidate", "state"];
+const BRAIN_LUAU_FIELDS: &[&str] = &["brain", "candidate", "defense", "state"];
 
 /// Audio SDK fields exported through `require("postretro/audio")`.
 const AUDIO_FIELDS: &[&str] = &["setGhostAudio"];
@@ -416,6 +418,8 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineWeaponPlacement",
     "defineTriggerPool",
     "defineStore",
+    "defineDefenseLayer",
+    "defineDamageType",
     "read",
     "fromRuntime",
     "set",
@@ -424,6 +428,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "assist",
     "brain",
     "candidate",
+    "defense",
     "state",
     "emitter",
     "smokeEmitter",

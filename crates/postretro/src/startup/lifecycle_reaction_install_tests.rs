@@ -107,6 +107,7 @@ fn fresh_install_and_staged_reload_keep_callers_of_surviving_same_address_bodies
             progress_tracker: &mut session.progress_tracker,
             crossing_detector: &mut session.crossing_detector,
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            system_reaction_ir_bindings: &session.scripting.system_reaction_ir_bindings,
             impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,

@@ -2,7 +2,7 @@
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §5.
 
 use postretro_entities::components::brain::BrainComponent;
-use postretro_entities::components::grant::{grant_ammo, grant_health};
+use postretro_entities::components::grant::{grant_ammo, grant_health, grant_layer};
 use postretro_entities::components::health::{
     HealthComponent, PendingKillCredit, set_health_absolute,
 };
@@ -54,6 +54,11 @@ pub(crate) enum ImpactEffect {
         pool: String,
         amount: f32,
     },
+    /// `impact.source.grantLayer(layer, amount?)`: no amount fills.
+    GrantLayer {
+        layer: String,
+        amount: Option<f32>,
+    },
     PlayAnimation {
         state: String,
     },
@@ -99,6 +104,9 @@ pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effe
         }
         ImpactEffect::GrantAmmo { pool, amount } => {
             let _ = grant_ammo(registry, target, pool, *amount);
+        }
+        ImpactEffect::GrantLayer { layer, amount } => {
+            let _ = grant_layer(registry, target, layer, *amount);
         }
         ImpactEffect::PlayAnimation { state } => {
             let _ = play_animation(registry, target, state);
@@ -451,6 +459,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         registry
             .set_component(target, health)

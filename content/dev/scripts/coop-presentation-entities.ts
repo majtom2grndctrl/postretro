@@ -1,6 +1,7 @@
 // Co-op fixture descriptors. Registered by the dev mod; map data scripts
 // cannot declare entities. All models and sprites are already shipped in dev.
 import { activation, defineEntity, defineImpactEvent } from "postretro";
+import { ballistic } from "./damage-types";
 import { combatDummyLifecycle } from "./combat-lifecycle";
 
 const KNIGHT = "models/reference_enemy_kaykit_knight/scene.gltf";
@@ -39,6 +40,7 @@ export const coopPresentationEntities = [
     mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
     weapon: {
       damage: 8, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
+      damageType: ballistic,
       muzzleOffset: [0, 0.274, -0.567],
       primary: { trigger: "press", recoveryMs: 240, steps: [activation.shot()] },
       resource: { kind: "ammo", type: "bullets.coop_fixture", magazine: 9, reserve: 27, reloadMs: 450, reloadStyle: "magazine" },
@@ -49,6 +51,7 @@ export const coopPresentationEntities = [
     mesh: { model: SMG }, touchable: { mode: "press", radius: 1 },
     weapon: {
       damage: 1, range: 48, resolution: "hitscan", thirdPersonModel: SMG, viewmodel: SMG,
+      damageType: ballistic,
       muzzleOffset: [0, 0.274, -0.567],
       primary: { trigger: "hold", recoveryMs: 150, steps: [activation.shot()] },
       resource: { kind: "heat", heatPerShot: 25, overheatAt: 100, coolPerSecond: 20, coolDelayMs: 500 },

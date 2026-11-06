@@ -250,6 +250,7 @@ impl Host {
                     splash: None,
                     source_weapon: Some("launcher".to_string()),
                     activation: None,
+                    damage_type: None,
                 },
             )
             .unwrap();

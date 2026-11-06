@@ -156,6 +156,7 @@ pub fn spawn_projectile(
         damage: launch.damage,
         knockback_impulse: launch.knockback_impulse.to_array(),
         credit_source: launch.credit_source,
+        damage_type: launch.damage_type,
         owner_pawn,
         owner_weapon,
         attackerless: source.attackerless,
@@ -440,6 +441,7 @@ mod projectile_spawn_tests {
                 visual,
             },
             splash: None,
+            damage_type: None,
         }
     }
 

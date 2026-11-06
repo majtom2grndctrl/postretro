@@ -314,6 +314,7 @@ fn projectile_weapon(source: &str) -> WeaponComponent {
         lower_ms: 0,
         raise_ms: 0,
         block_during_reload: None,
+        damage_type: None,
     })
 }
 
@@ -370,6 +371,7 @@ fn projectile_descriptor() -> WeaponDescriptor {
         lower_ms: 0,
         raise_ms: 0,
         block_during_reload: None,
+        damage_type: None,
     }
 }
 

@@ -152,6 +152,7 @@ mod tests {
             max: 48.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         };
         let light = LightDescriptor {
             color: [1.0; 3],

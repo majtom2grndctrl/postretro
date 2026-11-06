@@ -340,6 +340,83 @@ pub struct ModManifestResult {
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub store_declarations: StoreDeclarationSet,
+    /// The registered damage vocabulary: `defenseLayers`, `damageTypes` and
+    /// `defaultDamageType`. Every descriptor's layer and resist names were
+    /// checked against it before this result was returned.
+    pub defense: postretro_foundation::defense::DefenseVocabulary,
+}
+
+/// Check every descriptor's layer and resist names against the registered
+/// vocabulary, naming the failing key path.
+pub(crate) fn check_entity_defense_references(
+    entities: &[EntityTypeDescriptor],
+    vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+) -> Result<(), String> {
+    for (index, descriptor) in entities.iter().enumerate() {
+        let components = format!("entities[{index}].components");
+        if let Some(health) = &descriptor.health {
+            vocabulary.check_health(&format!("{components}.health"), health)?;
+        }
+        if let Some(handle) = descriptor
+            .weapon
+            .as_ref()
+            .and_then(|weapon| weapon.damage_type.as_ref())
+        {
+            vocabulary.check_damage_type(&format!("{components}.weapon.damageType"), handle)?;
+        }
+        if let Some(behavior) = &descriptor.behavior {
+            // A brain guard's `defense(h)` reads the entity's own layer by name.
+            if let Ok(graph) = serde_json::to_value(behavior) {
+                check_guard_layer_reads(&graph, &format!("{components}.behavior"), vocabulary)?;
+            }
+            for (name, attack) in &behavior.attacks {
+                if let Some(handle) = &attack.damage_type {
+                    vocabulary.check_damage_type(
+                        &format!("{components}.behavior.attacks.{name}.damageType"),
+                        handle,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fail load, naming the key path, on a `@defense.<layer>` guard input whose
+/// layer no `defineMod` registers.
+fn check_guard_layer_reads(
+    value: &serde_json::Value,
+    path: &str,
+    vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.get("op").and_then(serde_json::Value::as_str) == Some("input")
+                && let Some(name) = object.get("name").and_then(serde_json::Value::as_str)
+                && name.starts_with(postretro_foundation::defense::DEFENSE_INPUT_PREFIX)
+            {
+                let layer = postretro_foundation::defense::defense_input(name)
+                    .map(|(layer, _)| layer)
+                    .filter(|layer| vocabulary.layer_index(layer).is_some());
+                if layer.is_none() {
+                    return Err(format!(
+                        "`{path}` reads `{name}`, which names no defense layer `defineMod` registers"
+                    ));
+                }
+            }
+            for (key, child) in object {
+                check_guard_layer_reads(child, &format!("{path}.{key}"), vocabulary)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                check_guard_layer_reads(child, &format!("{path}[{index}]"), vocabulary)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 impl ModManifestResult {
@@ -750,5 +827,37 @@ mod tests {
         .expect_err("undeclared faction names must not reach descriptor storage");
 
         assert!(error.contains("undeclared"));
+    }
+}
+
+#[cfg(test)]
+mod guard_layer_read_tests {
+    use super::check_guard_layer_reads;
+    use postretro_foundation::defense::DefenseVocabulary;
+
+    // A brain guard's `defense(h)` of an unregistered layer, or of a bad
+    // reference, fails load naming the key path.
+    #[test]
+    fn brain_guard_layer_read_of_an_unregistered_layer_fails_load() {
+        let vocabulary = DefenseVocabulary {
+            layers: vec!["armor".to_string()],
+            ..Default::default()
+        };
+        let guard = |name: &str| {
+            serde_json::json!({ "graph": { "transitions": [
+                { "when": { "op": "le", "a": { "op": "input", "name": name }, "b": { "op": "const", "value": 0 } } }
+            ] } })
+        };
+        assert_eq!(
+            check_guard_layer_reads(&guard("@defense.armor"), "behavior", &vocabulary),
+            Ok(())
+        );
+        for name in ["@defense.shield", "@defense.@invalid.capacity"] {
+            let error = check_guard_layer_reads(&guard(name), "behavior", &vocabulary).unwrap_err();
+            assert!(
+                error.starts_with("`behavior.graph.transitions[0].when.a` reads"),
+                "{error}"
+            );
+        }
     }
 }

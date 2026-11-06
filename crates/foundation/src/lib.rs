@@ -9,6 +9,7 @@ pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_micros(
 pub mod brain;
 pub mod candidate;
 pub mod data_descriptors;
+pub mod defense;
 pub mod foundation_pods;
 pub mod impact_particles;
 pub mod ir;

@@ -1,4 +1,6 @@
-import { defineEntity, runtime } from "postretro";
+import { defineEntity, read, runtime } from "postretro";
+import { progression } from "./combat-lifecycle";
+import { shield } from "./defenses";
 import { referencePistolEntity } from "./reference-pistol";
 import { referenceRifleEntity } from "./reference-rifle";
 import { referenceShotgunEntity } from "./reference-shotgun";
@@ -43,6 +45,17 @@ export const playerEntity = defineEntity({
         halfExtents: [0.2, 1.0, 0.2],
         offset: [0, 0, 0],
       },
+      // Capacity and recharge read per-owner progression; the shield's own
+      // shock ward is gear: ward 4 reaches 0, immune, and higher clamps there.
+      layers: [
+        {
+          layer: shield,
+          capacity: read(progression.shieldCapacity).plus(50),
+          rechargeDelayMs: 2500,
+          rechargeRate: read(progression.shieldTech).times(4).plus(20),
+          resist: { shock: read(progression.shockWard).times(-0.25).plus(1) },
+        },
+      ],
     },
     inventory: {
       // Projectile references live in the standard dev loadout, so any dev

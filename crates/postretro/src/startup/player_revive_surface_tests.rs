@@ -72,6 +72,7 @@ fn kill_an_enemy_as(h: &Consumer, pawn: EntityId) {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 }),
             )
             .unwrap();
@@ -86,6 +87,7 @@ fn kill_an_enemy_as(h: &Consumer, pawn: EntityId) {
         &DamagePayload {
             amount: 200.0,
             impulse: Vec3::ZERO,
+            damage_type: None,
         },
         context,
     );

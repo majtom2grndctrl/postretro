@@ -605,6 +605,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineWeaponPlacement",
     "defineTriggerPool",
     "defineStore",
+    "defineDefenseLayer",
+    "defineDamageType",
     "read",
     "fromRuntime",
     "set",
@@ -693,14 +695,18 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     globals.set("runtime", runtime.clone())?;
 
     let brain = eval_lua_table(lua, BRAIN_LUAU, "sdk/lib/brain.luau")?;
-    copy_lua_fields(&globals, &brain, &["brain", "candidate", "state"])?;
+    copy_lua_fields(
+        &globals,
+        &brain,
+        &["brain", "candidate", "defense", "state"],
+    )?;
 
     let root = lua.create_table()?;
     copy_lua_fields(&root, &map_entities, MAP_ENTITIES_FIELDS)?;
     copy_lua_fields(&root, &gravity, GRAVITY_FIELDS)?;
     root.set("runtime", runtime)?;
     copy_lua_fields(&root, &game_state, &["getGameState"])?;
-    copy_lua_fields(&root, &brain, &["brain", "candidate", "state"])?;
+    copy_lua_fields(&root, &brain, &["brain", "candidate", "defense", "state"])?;
     copy_lua_fields(&root, &keyframes, &["timeline", "sequence"])?;
     copy_lua_fields(
         &root,

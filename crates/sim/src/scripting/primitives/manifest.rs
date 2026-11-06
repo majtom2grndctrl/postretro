@@ -353,6 +353,21 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Trigger-volume arming pools. Optional; compose by level tags.",
         )
         .field(
+            "defenseLayers?",
+            "Vec<DefenseLayer>",
+            "Defense layer kinds from `defineDefenseLayer(...)`, in registration order. Optional. A descriptor's `components.health.layers` references only a listed kind; two entries with one name, a layer named `health`, or an entry that is not a layer handle fails load.",
+        )
+        .field(
+            "damageTypes?",
+            "Vec<DamageType>",
+            "Damage types from `defineDamageType(...)`. Optional. Weapons, attacks, crushers and `.damage` name only a listed type; two entries with one name, a matrix key naming no registered layer and not `health`, or an entry that is not a type handle fails load.",
+        )
+        .field(
+            "defaultDamageType?",
+            "DamageType",
+            "The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies.",
+        )
+        .field(
             "stores?",
             "Vec<StoreDeclaration>",
             "Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical.",
@@ -653,6 +668,7 @@ mod tests {
             trigger_events: Vec::new(),
             trigger_pools: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
+            defense: Default::default(),
             player_events: Vec::new(),
         };
         let expected_fields: &[&str] = &[
@@ -687,6 +703,9 @@ mod tests {
             "playerEvents",
             "triggerPools",
             "stores",
+            "defenseLayers",
+            "damageTypes",
+            "defaultDamageType",
         ];
 
         let mut registry = PrimitiveRegistry::new();

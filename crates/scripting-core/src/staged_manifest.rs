@@ -13,21 +13,22 @@ use rquickjs::{
 use super::data_descriptors::{
     PlayerEventSite, drain_audio_profile_js, drain_audio_profile_lua,
     drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
-    drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
-    drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
-    drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js, drain_fonts_lua,
-    drain_frontend_js, drain_frontend_lua, drain_ghost_styles_js, drain_ghost_styles_lua,
-    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
-    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
-    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
-    drain_mover_defaults_js, drain_mover_defaults_lua, drain_player_events_js,
-    drain_player_events_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
-    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_defense_vocabulary_js, drain_defense_vocabulary_lua, drain_faction_sentiment_decay_js,
+    drain_faction_sentiment_decay_lua, drain_faction_sentiments_js, drain_faction_sentiments_lua,
+    drain_factions_js, drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js,
+    drain_fonts_lua, drain_frontend_js, drain_frontend_lua, drain_ghost_styles_js,
+    drain_ghost_styles_lua, drain_global_crossings_js, drain_global_crossings_lua,
+    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
+    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
+    drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
+    drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_faction_name_from_js,
+    entity_faction_name_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
@@ -362,6 +363,7 @@ fn run_staged_manifest_build(
         ui_images: manifest.ui_images,
         loading: manifest.loading,
         store_declarations: manifest.store_declarations,
+        defense: manifest.defense,
         dependency_paths,
     }))
 }
@@ -757,6 +759,19 @@ fn manifest_from_js_value<'js>(
         reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
     })?;
 
+    let defense = drain_defense_vocabulary_js(ctx, &obj).map_err(|error| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` default mod manifest export damage vocabulary invalid: {error}"
+        ),
+    })?;
+    crate::runtime::check_entity_defense_references(&entities, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export invalid: {error}"
+            ),
+        }
+    })?;
+
     Ok(ModManifestResult {
         name,
         id,
@@ -790,6 +805,7 @@ fn manifest_from_js_value<'js>(
         trigger_pools,
         player_events,
         store_declarations,
+        defense,
     })
 }
 
@@ -1133,6 +1149,18 @@ fn run_staged_mod_init_luau(
             },
         )?;
 
+    let defense =
+        drain_defense_vocabulary_lua(&table).map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest damage vocabulary invalid: {error}"
+            ),
+        })?;
+    crate::runtime::check_entity_defense_references(&entities, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
+        }
+    })?;
+
     Ok(ModManifestResult {
         name,
         id,
@@ -1166,8 +1194,13 @@ fn run_staged_mod_init_luau(
         trigger_pools,
         player_events,
         store_declarations,
+        defense,
     })
 }
+
+#[cfg(test)]
+#[path = "staged_manifest/defense_manifest_tests.rs"]
+mod defense_manifest_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1177,7 +1210,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
-    struct TempModRoot(PathBuf);
+    pub(super) struct TempModRoot(PathBuf);
 
     impl std::ops::Deref for TempModRoot {
         type Target = Path;
@@ -1192,7 +1225,7 @@ mod tests {
         }
     }
 
-    fn temp_mod_root(name: &str) -> TempModRoot {
+    pub(super) fn temp_mod_root(name: &str) -> TempModRoot {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -542,6 +542,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
         .field("knockback?", "KnockbackDescriptor", "Optional direct-hit push. Applies per hitscan pellet or projectile entity contact, independently of damage. Composes with splash.knockback when both are authored.")
         .field("damage", "f32", "Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0.")
+        .field("damageType?", "DamageType", "Optional damage type this weapon deals, a handle `defineMod({ damageTypes })` registers. Omit to deal the mod's `defaultDamageType`. Applies to every direct hit and splash.")
         .field("pelletCount?", "u32", "Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.")
         .field("spreadDegrees?", "f32", "Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).")
         .field("bloomPerShotDegrees?", "f32", "Hitscan-only sustained-fire bloom added after each resolved hitscan shell, in degrees. Range: 0..=45; defaults to 0.")
@@ -596,6 +597,17 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("max", "f32", "Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.")
         .field("hitbox?", "HitboxDescriptor", "Optional direct-impact AABB. Present participates in the shared hitscan/projectile query; absent requires usable model hit zones for targetability.")
         .field("zoneMultipliers?", "ZoneMultipliers", "Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.")
+        .field("layers?", "Vec<DefenseLayerEntry>", "Defense layers in drain order. Every hit drains them before health, scaled per damage type; an empty layer is skipped. Each kind may appear once. Optional; defaults to none.")
+        .field("resist?", "DefenseResistMap", "Health's own resistance per damage type, keyed by the type's name: scales that type on health only (the body; entity-wide on an unlayered entity). Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1. Optional.")
+        .finish();
+    registry
+        .register_type("DefenseLayerEntry")
+        .doc("One defense layer on a descriptor: the registered layer kind it instances, its capacity and recharge, and its own resistances. Each parameter is a literal or a Number expression over global store values, the entity's own per-entity state and, on the player entity only, its seat's per-owner store values; results clamp into the literal ranges. A layer recharges at `rechargeRate` once `rechargeDelayMs` has passed since the entity's last hit.")
+        .field("layer", "DefenseLayer", "The layer kind, a handle `defineMod({ defenseLayers })` registers.")
+        .field("capacity", "NumberValue", "Maximum value, in points. A literal must be in [0, 1e6]. Lowering it clamps the current value; raising it never fills the layer.")
+        .field("rechargeDelayMs?", "NumberValue", "Milliseconds after the entity's last hit before recharge starts. A literal must be in [0, 60000]. Defaults to 3000.")
+        .field("rechargeRate?", "NumberValue", "Recharge rate in points per second. A literal must be in [0, 1e6]. Defaults to 0, which never recharges: armor.")
+        .field("resist?", "DefenseResistMap", "This layer's resistance per damage type, keyed by the type's name: scales that type on this layer only. Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1.")
         .finish();
     registry
         .register_enum("MotionVerb")
@@ -629,10 +641,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("AttackParams")
-        .doc("One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds.")
+        .doc("One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds.")
         .alias(
-            "{ weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string }",
-            "{ weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }",
+            "{ weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string }",
+            "{ weapon: never?, damage: number, damageType: DamageType?, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, damageType: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }",
         )
         .finish();
     registry

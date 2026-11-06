@@ -2,6 +2,7 @@
 // See: context/lib/entity_model.md §2 (Health and AmmoReserve components)
 
 use crate::components::ammo_reserve::AmmoReserve;
+use crate::components::defense_layers::DefenseLayersComponent;
 use crate::components::health::{HealthComponent, set_health_absolute};
 use crate::registry::{EntityId, EntityRegistry};
 
@@ -41,6 +42,46 @@ pub fn grant_health(
 
     let current = health.current;
     set_health_absolute(registry, recipient, current + amount);
+    GrantOutcome::Applied
+}
+
+/// Refill a recipient's defense layer of kind `layer`: `None` fills to
+/// capacity, `Some(n)` adds `n`, clamped to capacity. The grant evaluates
+/// the layer's capacity when it applies, so it sees writes made earlier in
+/// the same body, and that evaluation holds from then on: the value clamps
+/// to it, then the grant adds. It never touches the last-hit stamp, so a
+/// grant leaves recharge timing alone.
+pub fn grant_layer(
+    registry: &mut EntityRegistry,
+    recipient: EntityId,
+    layer: &str,
+    amount: Option<f32>,
+) -> GrantOutcome {
+    if let Some(amount) = amount
+        && (!amount.is_finite() || amount < 0.0)
+    {
+        log::warn!("[Grant] grantLayer: amount {amount} is negative or non-finite; no-op");
+        return GrantOutcome::SkippedInvalidAmount;
+    }
+    let Ok(component) = registry.get_component::<DefenseLayersComponent>(recipient) else {
+        log::warn!("[Grant] grantLayer: entity {recipient} has no `{layer}` layer; skipping");
+        return GrantOutcome::SkippedNoComponent;
+    };
+    let mut component = component.clone();
+    let Some(index) = component.layers.iter().position(|kind| kind.name == layer) else {
+        log::warn!("[Grant] grantLayer: entity {recipient} has no `{layer}` layer; skipping");
+        return GrantOutcome::SkippedNoComponent;
+    };
+    if let Some(source) = registry.defense_parameters().cloned() {
+        source.evaluate_capacity(registry, recipient, &mut component, index);
+    }
+    let target = &mut component.layers[index];
+    target.value = target.value.min(target.capacity);
+    target.value = match amount {
+        None => target.capacity,
+        Some(amount) => (target.value + amount).min(target.capacity),
+    };
+    let _ = registry.set_component(recipient, component);
     GrantOutcome::Applied
 }
 
@@ -93,6 +134,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         })
     }
 

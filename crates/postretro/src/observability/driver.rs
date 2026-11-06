@@ -187,6 +187,7 @@ fn run_headless_inner(
             progress_tracker: &mut progress_tracker,
             crossing_detector: &mut crossing_detector,
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            system_reaction_ir_bindings: &session.scripting.system_reaction_ir_bindings,
             impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
             mesh_clip_tables: &mut mesh_clip_tables,
             hit_zone_store: &mut hit_zone_store,
@@ -734,6 +735,7 @@ mod tests {
             max: 10.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         health.current = 0.0;
         registry.borrow_mut().set_component(target, health).unwrap();
@@ -789,6 +791,7 @@ mod tests {
                     max: 10.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 });
                 registry.set_component(id, health).unwrap();
                 id
@@ -844,6 +847,7 @@ mod tests {
                 max: 10.0,
                 hitbox: None,
                 zone_multipliers: Default::default(),
+                ..Default::default()
             });
             health.current = current;
             health

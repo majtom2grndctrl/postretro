@@ -189,6 +189,16 @@ impl ScriptRuntime {
         .map_err(|reason| ScriptError::InvalidArgument {
             reason: format!("mod-init: {reason}"),
         })?;
+        // Layer parameters read per-owner values on the player entity only;
+        // that check also needs the incoming store schemas.
+        crate::ir_layer_validation::validate_layer_expressions(
+            &manifest.entities,
+            &manifest.store_declarations,
+            &self.script_ctx.slot_table.borrow(),
+        )
+        .map_err(|reason| ScriptError::InvalidArgument {
+            reason: format!("mod-init: {reason}"),
+        })?;
 
         // Identity validation joins the same whole-attempt gate as schema
         // reconciliation. Nothing below this point mutates the live table.

@@ -1,4 +1,5 @@
 import { activation, defineEntity, defineWeaponPlacement } from "postretro";
+import { ballistic } from "./damage-types";
 
 const riflePlacement = defineWeaponPlacement({
   // Sit the rifle low in view, in line with the rocket launcher and plasma gun
@@ -11,6 +12,7 @@ export const referenceRifleEntity = defineEntity({
   components: {
     weapon: {
       damage: 9.0,
+      damageType: ballistic,
       range: 80.0,
       primary: { trigger: "hold", recoveryMs: 110.0, steps: [activation.shot()] },
       secondary: {

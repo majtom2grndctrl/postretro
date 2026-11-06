@@ -128,6 +128,7 @@ fn apply_weapon_impact_damage_with_source(
     let scaled = weapon::DamagePayload {
         amount: damage_amount * multiplier,
         impulse: glam::Vec3::ZERO,
+        damage_type: payload.damage_type,
     };
     if !scaled.amount.is_finite() {
         log::warn!(
@@ -210,6 +211,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: 0.0,
                 impulse: Vec3::new(8.0, 4.0, 0.0),
+                damage_type: None,
             }),
         };
         apply_authorized_weapon_impact_damage(
@@ -277,6 +279,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: 50.0,
                 impulse: Vec3::X * 8.0,
+                damage_type: None,
             }),
         };
         for _ in 0..2 {
@@ -322,6 +325,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: 10.0,
                 impulse: Vec3::X * 8.0,
+                damage_type: None,
             }),
         };
         let mut inventory = Inventory::default();

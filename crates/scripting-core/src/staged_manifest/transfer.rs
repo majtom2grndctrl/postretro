@@ -92,6 +92,8 @@ pub struct StagedManifest {
     /// `frontend`; a failed or stale build leaves the committed pool alone.
     pub loading: ModLoading,
     pub store_declarations: StoreDeclarationSet,
+    /// The registered damage vocabulary; see `ModManifestResult::defense`.
+    pub defense: postretro_foundation::defense::DefenseVocabulary,
     /// Canonical mod-init source dependencies carried across the worker→main
     /// thread boundary. The descriptor registry write and watcher classifier
     /// update both happen on the main thread in `commit_staged_manifest_result`,

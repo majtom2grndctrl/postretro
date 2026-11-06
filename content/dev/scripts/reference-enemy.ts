@@ -4,8 +4,10 @@
 // scripting-core twin parser test keeps their descriptors byte-for-byte equal
 // after canonical conversion.
 
-import { brain, defineEntity, runtime } from "postretro";
+import { brain, defense, defineEntity, runtime } from "postretro";
 import type { EntityTypeDescriptor } from "postretro";
+import { corrosive } from "./damage-types";
+import { armor } from "./defenses";
 
 /** Classname used by dev maps to place this health + mesh + behavior archetype. */
 export const REFERENCE_ENEMY_CLASSNAME = "reference_enemy";
@@ -50,6 +52,9 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         head: 2.5,
         leg: 0.5,
       },
+      // Armored, and its flesh shock-resistant (health only).
+      layers: [{ layer: armor, capacity: 120 }],
+      resist: { shock: 0.5 },
     },
     // A single normal hit is enough to redirect this playtest fixture.
     tolerance: 4,
@@ -104,6 +109,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           cooldownMs: 1800,
           engagementRadius: SLAM_RANGE,
         },
+        claw: { damage: 15, damageType: corrosive, maxRange: 2, cooldownMs: 800 },
       },
       engagementRadius: JAB_RANGE,
       patrol: {
@@ -212,6 +218,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         ],
         engage: [
           { to: "retreat", when: brain.distanceFromAnchor.gt(LEASH_RANGE) },
+          // Its own layer, as `state(name)` reads its own state.
+          { to: "retreat", when: defense(armor).current.le(0) },
           {
             to: "investigate",
             when: brain.timeSinceTargetVisible.ge(SEARCH_AFTER_MS),

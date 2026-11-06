@@ -220,6 +220,7 @@ impl Level {
             splash: None,
             source_weapon: Some("rocket".to_string()),
             activation: None,
+            damage_type: None,
         };
         self.registry.set_component(id, projectile).unwrap();
         id

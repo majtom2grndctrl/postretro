@@ -195,6 +195,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -227,6 +228,7 @@ mod tests {
             max: 90.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         };
         let mut item = weapon_descriptor("item");
         item.touchable = Some(TouchableDescriptor {

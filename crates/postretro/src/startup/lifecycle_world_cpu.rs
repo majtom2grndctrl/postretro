@@ -125,6 +125,7 @@ pub(crate) fn install_world_cpu_with_models(
         progress_tracker,
         crossing_detector,
         slot_accumulator_bindings,
+        system_reaction_ir_bindings,
         impact_policy_runtime,
         mesh_clip_tables,
         hit_zone_store,
@@ -246,6 +247,10 @@ pub(crate) fn install_world_cpu_with_models(
                 validate_sequence_primitives(manifest.reactions, sequence_registry);
             // Register level-scope UI trees before the data-script VM context drops
             // and before the manifest is consumed by the data registry.
+            postretro_scripting_core::ui::bind_diagnostics::warn_unknown_slot_binds(
+                manifest.ui_trees.iter().map(|registered| &registered.tree),
+                &script_ctx.slot_table.borrow(),
+            );
             modal_stack.register_script_trees(
                 std::mem::take(&mut manifest.ui_trees),
                 postretro_ui::modal_stack::ScopeTier::Level,
@@ -279,20 +284,18 @@ pub(crate) fn install_world_cpu_with_models(
         // order in `poll_staged_manifest_results`, so install and hot reload
         // agree on what the subscriber rebuild observes for a dropped body.
         // V4b reads sentinel-scoped targets directly from the composed
-        // descriptors and runtime-IR inputs from a freshly built
-        // `SystemReactionIrBindings`. The session's table is not rebuilt until
-        // after this installer returns; that later rebuild recomputes the IR
-        // input metadata identically.
+        // descriptors and runtime-IR inputs from the session's
+        // `SystemReactionIrBindings`, rebuilt here, before `levelLoad` fires:
+        // its store writes apply at dispatch and must meet this install's
+        // table, not the previous one.
         crate::startup::reaction_validation::validate_reaction_bodies_pass_a(script_ctx);
-        {
-            let mut system_reaction_bindings =
-                crate::scripting_systems::system_reactions::SystemReactionIrBindings::default();
-            system_reaction_bindings.rebuild(&script_ctx.data_registry.borrow(), script_ctx);
-            crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
-                script_ctx,
-                &system_reaction_bindings,
-            );
-        }
+        system_reaction_ir_bindings
+            .borrow_mut()
+            .rebuild(&script_ctx.data_registry.borrow(), script_ctx);
+        crate::startup::reaction_validation::validate_trigger_coupled_pass_b(
+            script_ctx,
+            &system_reaction_ir_bindings.borrow(),
+        );
         // CROSSING-CHANNEL INSTALL ORDER (E18): the detector must capture this
         // level's local slot defaults before any connected-client network baseline is
         // applied. A late join then observes the host's persistent state as one real
@@ -588,7 +591,9 @@ pub(crate) fn install_world_cpu_with_models(
     // previously discarded here, so a `fire` step in `levelLoad` dispatched
     // nothing. A `wait` step enrolls its tail and returns before this point.
     // Every machine fires `levelLoad` at its own install, for a level the host
-    // started: its `wait` tails count on the host timeline.
+    // started: its `wait` tails count on the host timeline. Its store writes
+    // land here, at dispatch. On a connected client they meet the level's
+    // local defaults: the network baseline applies after install returns.
     let level_load_chained = fire_named_event_with_sequences(
         "levelLoad",
         &script_ctx.data_registry.borrow(),

@@ -208,6 +208,8 @@ pub struct MapKinematicMover {
     pub close_sound: Option<String>,
     pub blocked_sound: Option<String>,
     pub crush_sound: Option<String>,
+    /// FGD `crush_damage_type`: the registered damage-type name a crush deals.
+    pub crush_damage_type: Option<String>,
     pub move_mode: KinematicMoveMode,
     pub start_on_spawn: bool,
     pub brush_volumes: Vec<BrushVolume>,

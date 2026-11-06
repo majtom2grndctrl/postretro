@@ -112,6 +112,7 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: Some(true),
+            damage_type: None,
         })
     };
     let mut slot_b_weapon = test_weapon();

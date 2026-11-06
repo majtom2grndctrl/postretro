@@ -702,6 +702,9 @@ fn faction_index(index: f32) -> Option<usize> {
 /// reaction/crossing/trigger-event/trigger-pool definitions survive level unload.
 #[derive(Debug, Default)]
 pub struct DataRegistry {
+    /// The mod's registered damage vocabulary: layer kinds, damage types and
+    /// the default type. Engine-global; a staged reload replaces it whole.
+    pub defense: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
     /// Active reactions for this level after composing matching mod-global
     /// definitions with level-local definitions. Existing dispatch reads here.
     pub reactions: Vec<NamedReaction>,

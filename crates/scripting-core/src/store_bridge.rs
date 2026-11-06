@@ -837,6 +837,34 @@ fn slot_value_kind(value: &SlotValue) -> &'static str {
     }
 }
 
+/// Add `delta` to one seat's value of a per-owner, writable, numeric slot,
+/// range-checked like any store write. A reaction's `addSlot` applies this at
+/// dispatch, for each seat it resolved.
+pub fn add_owner_slot_value(
+    slot_table: &mut crate::slot_table::SlotTable,
+    slot: &str,
+    seat: postretro_foundation::Seat,
+    delta: f32,
+) -> Result<(), String> {
+    use crate::slot_table::SlotValue;
+    let record = slot_table
+        .get_mut(slot)
+        .ok_or_else(|| format!("slot `{slot}` is missing"))?;
+    if !record.schema.per_owner {
+        return Err(format!("slot `{slot}` is not per-owner"));
+    }
+    if record.schema.readonly {
+        return Err(format!("slot `{slot}` is readonly"));
+    }
+    let Some(SlotValue::Number(current)) = record.per_seat_value(seat) else {
+        return Err(format!("slot `{slot}` is not numeric"));
+    };
+    let next = validate_slot_value(slot, &record.schema, SlotValue::Number(*current + delta))
+        .map_err(|error| format!("failed validation: {error}"))?;
+    record.set_per_seat_value(seat, next);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

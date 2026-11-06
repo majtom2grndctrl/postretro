@@ -445,6 +445,19 @@ pub(super) fn shipped_reference_descriptor_from_typescript(
         std::process::id(),
     ));
     std::fs::create_dir_all(&directory).expect("create reference-enemy fixture directory");
+    // The dev enemy imports the vocabulary modules beside it.
+    for module in ["defenses.ts", "damage-types.ts"] {
+        std::fs::write(
+            directory.join(module),
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../content/dev/scripts")
+                    .join(module),
+            )
+            .expect("read the dev vocabulary module"),
+        )
+        .expect("write the dev vocabulary module");
+    }
     let entry = directory.join("entities.ts");
     std::fs::write(
         &entry,
@@ -475,12 +488,10 @@ pub(super) fn shipped_reference_descriptor_from_luau(
     export_name: &str,
     module_name: &str,
 ) -> EntityTypeDescriptor {
-    let lua = crate::luau::build_lua_state(
-        &[],
-        None,
-        Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
-    )
-    .expect("mod-rooted luau state");
+    // Rooted at the dev mod: a relative `require` resolves against the mod
+    // root, so the dev enemy requires `./scripts/defenses.luau`.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+    let lua = crate::luau::build_lua_state(&[], None, Some(&root)).expect("mod-rooted luau state");
     let source = format!("local M = (function()\n{source}\nend)()\nreturn M.{export_name}");
     let value: LuaValue = lua
         .load(&source)

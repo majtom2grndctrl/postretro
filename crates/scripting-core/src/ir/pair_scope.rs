@@ -181,6 +181,13 @@ pub(crate) fn classify_pair_read(
             "reads `{name}`, whose value depends on this pair evaluation"
         ));
     }
+    // Pair-scope layer reads are a non-goal: by either side or plain, a
+    // layer read fails load rather than meaning a player the pair never names.
+    if crate::player_slots::defense_slot(name).is_some() {
+        return Err(format!(
+            "reads defense layer `{name}`; a pair expression cannot read a defense layer"
+        ));
+    }
     let Some(role) = role else {
         return classify_unowned(roles, schema, name);
     };

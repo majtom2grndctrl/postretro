@@ -1953,6 +1953,8 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
         };
         const computedStoreName = "computed-store";
         const computedImpactId = "computed-impact";
+        const computedLayerName = "computed-layer";
+        const computedTypeName = "computed-type";
         JSON.stringify({
           impactColon: message(() => defineImpactEvent("has:colon", {}, () => [])),
           impactTooLong: message(() => defineImpactEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {}, () => [])),
@@ -1962,6 +1964,11 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
           impactBindingSugar: message(() => defineImpactEvent({}, () => [])),
           computedStoreName: message(() => defineStore(computedStoreName, {})),
           computedImpactId: message(() => defineImpactEvent(computedImpactId, {}, () => [])),
+          layerBindingSugar: message(() => defineDefenseLayer()),
+          layerOptionsSugar: message(() => defineDefenseLayer({})),
+          typeBindingSugar: message(() => defineDamageType({ shield: 2 })),
+          computedLayerName: message(() => defineDefenseLayer(computedLayerName)),
+          computedTypeName: message(() => defineDamageType(computedTypeName, { shield: 2 }, {})),
         });
     "#;
     const LUAU_FIXTURE: &str = r#"
@@ -1972,6 +1979,8 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
         end
         local computedStoreName = "computed-store"
         local computedImpactId = "computed-impact"
+        local computedLayerName = "computed-layer"
+        local computedTypeName = "computed-type"
         return {
           impactColon = message(function() Postretro.defineImpactEvent("has:colon", {}, function() return {} end) end),
           impactTooLong = message(function() Postretro.defineImpactEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {}, function() return {} end) end),
@@ -1981,6 +1990,11 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
           impactBindingSugar = message(function() Postretro.defineImpactEvent({}, function() return {} end) end),
           computedStoreName = message(function() Postretro.defineStore(computedStoreName, {}) end),
           computedImpactId = message(function() Postretro.defineImpactEvent(computedImpactId, {}, function() return {} end) end),
+          layerBindingSugar = message(function() Postretro.defineDefenseLayer() end),
+          layerOptionsSugar = message(function() Postretro.defineDefenseLayer({}) end),
+          typeBindingSugar = message(function() Postretro.defineDamageType({ shield = 2 }) end),
+          computedLayerName = message(function() Postretro.defineDefenseLayer(computedLayerName) end),
+          computedTypeName = message(function() Postretro.defineDamageType(computedTypeName, { shield = 2 }, {}) end),
         }
     "#;
 
@@ -1997,7 +2011,7 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
     );
     assert_eq!(
         typescript["storeBindingSugar"],
-        "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
+        "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
     );
     assert_eq!(
         typescript["storeBindingSugar"], typescript["impactBindingSugar"],
@@ -2005,6 +2019,14 @@ fn authored_name_validation_diagnostics_match_across_runtimes() {
     );
     assert_eq!(typescript["computedStoreName"], "");
     assert_eq!(typescript["computedImpactId"], "");
+    for key in ["layerBindingSugar", "layerOptionsSugar", "typeBindingSugar"] {
+        assert_eq!(
+            typescript[key], typescript["storeBindingSugar"],
+            "a name-less `{key}` declaration raises the binding-name diagnostic"
+        );
+    }
+    assert_eq!(typescript["computedLayerName"], "");
+    assert_eq!(typescript["computedTypeName"], "");
 }
 
 #[path = "window_mode_sdk_tests.rs"]

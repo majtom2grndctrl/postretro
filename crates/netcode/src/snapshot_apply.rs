@@ -211,6 +211,7 @@ mod tests {
                     offset: None,
                 }),
                 zone_multipliers: Default::default(),
+                ..Default::default()
             });
             descriptor.light = Some(LightDescriptor {
                 color: [1.0, 0.5, 0.25],

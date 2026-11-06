@@ -840,6 +840,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -920,6 +921,7 @@ mod tests {
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .expect("gameplay projectile accepts the common component");
@@ -1042,6 +1044,7 @@ mod tests {
                 is_projectile: true,
                 fire_origin: origin,
                 timeout_budget_ticks: 180,
+                damage_type: None,
             },
             FIRING_CLIENT,
         );
@@ -1393,6 +1396,7 @@ mod tests {
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .expect("gameplay projectile accepts the common component");
@@ -2040,6 +2044,7 @@ mod tests {
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,
+                damage_type: None,
             },
             FIRING_CLIENT,
         );
@@ -2466,6 +2471,7 @@ mod tests {
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,
+                damage_type: None,
             },
             FIRING_CLIENT,
         );
@@ -2610,6 +2616,7 @@ mod tests {
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,
+                damage_type: None,
             },
             FIRING_CLIENT,
         );
@@ -2782,6 +2789,7 @@ mod tests {
                 splash: None,
                 source_weapon: None,
                 activation: None,
+                damage_type: None,
             },
         );
         let mut allocator = NetworkIdAllocator::new();
@@ -2927,6 +2935,7 @@ mod tests {
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .unwrap();
@@ -2997,6 +3006,7 @@ mod tests {
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: 180,
+                damage_type: None,
             },
             FIRING_CLIENT,
         );

@@ -95,6 +95,7 @@ pub fn spawn_net_slot_pawn_with_carried_loadout(
     };
 
     restore_carried_health(carried_loadout, registry, id);
+    postretro_combat_model::restore_carried_layers(carried_loadout, registry, id);
     crate::sim::player_life::restore_carried_life_state(carried_loadout, registry, id, descriptor);
 
     // Forward the per-placement KVP bag (sans `entity_class`, a routing hint) so
@@ -776,6 +777,7 @@ mod tests {
                     },
                 ),
                 zone_multipliers: Default::default(),
+                ..Default::default()
             },
         );
         descriptor
@@ -999,6 +1001,7 @@ mod tests {
                 let payload = DamagePayload {
                     amount: 10.0,
                     impulse: Vec3::ZERO,
+                    damage_type: None,
                 };
                 assert!(!apply_damage_with_context(
                     &mut registry,
@@ -1421,6 +1424,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -1492,6 +1496,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
 
@@ -2251,6 +2256,7 @@ mod tests {
                     offset: None,
                 }),
                 zone_multipliers: Default::default(),
+                ..Default::default()
             });
             descriptor
         }

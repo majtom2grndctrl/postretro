@@ -714,6 +714,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         health.current = 31.0;
         registry.set_component(pawn, health).unwrap();

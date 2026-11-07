@@ -339,50 +339,33 @@ fn band_walk(
 }
 
 #[test]
-fn mandatory_blocks_grow_past_a_cap_and_prefetch_stays_under_it() {
+fn mandatory_blocks_grow_the_pool_and_prefetch_takes_what_they_leave() {
     let map = band_lead_map();
     let fixed = meters_fixed(16);
     let blocks = sized_blocks(&[(64, 64); 5]);
     let mandatory = vec![Vec::new(), map.mandatory(1, fixed, &[])];
     let band = vec![Vec::new(), map.band(1, fixed, &[])];
-    // A zero-layer cap holds nothing: both mandatory blocks grow past it, and
-    // no band block is placed past the cap.
-    let run = band_walk(&blocks, &mandatory, &band, &[1], 0);
-    assert_eq!((run.growth_steps, run.over_cap_steps), (1, 1));
-    assert_eq!(
-        (run.demand_reads, run.prefetch_reads),
-        (2, 0),
-        "cells 1 and 4, not band cell 2"
-    );
-    // A one-layer cap fits all three.
+    // A one-layer pool fits all three.
     let run = band_walk(&blocks, &mandatory, &band, &[1], 1);
     assert_eq!(
         (run.growth_steps, run.demand_reads, run.prefetch_reads),
         (0, 2, 1)
     );
 
-    // Camera 0 needs three layers against a two-layer cap: 0 and 1 fill
-    // layers 0 and most of 1, and 2 opens layer 2. Band cell 3 still fits
-    // the rest of layer 1, under the cap, though the pool is over it.
+    // Camera 0 needs three layers against a two-layer pool: 0 and 1 fill
+    // layers 0 and most of 1, and 2 opens layer 2. Band cell 3 fits what is
+    // left.
     let blocks = sized_blocks(&[(2048, 2048), (2048, 1536), (2048, 1024), (64, 64)]);
     let mandatory = vec![vec![0, 1, 2], vec![0, 1]];
     let band = vec![vec![3], vec![3, 2]];
     let run = band_walk(&blocks, &mandatory, &band, &[0], 2);
     assert_eq!((run.peak_layers, run.growth_steps), (3, 1));
-    assert_eq!(
-        run.prefetch_reads, 1,
-        "band cell 3 prefetched under the cap"
-    );
-    // At camera 1, cell 2 drops into the band while sitting past the cap: it
-    // is freed, so the pool falls back under the cap and stays there.
+    assert_eq!(run.prefetch_reads, 1, "band cell 3 prefetched");
+    // At camera 1, cell 2 drops into the band and stays where it sits: grown
+    // layers count, so nothing is read again.
     let run = band_walk(&blocks, &mandatory, &band, &[0, 1, 1, 1], 2);
     assert_eq!(run.growth_steps, 1);
-    assert_eq!(run.over_cap_steps, 1, "only the step that grew ends over");
-    assert_eq!(
-        (run.demand_reads, run.prefetch_reads),
-        (3, 1),
-        "cell 2 finds no room under the cap to come back"
-    );
+    assert_eq!((run.demand_reads, run.prefetch_reads), (3, 1));
 }
 
 #[test]

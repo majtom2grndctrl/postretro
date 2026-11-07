@@ -79,12 +79,40 @@ pub struct StreamingPoolPlan {
     pub demand: PoolDemand,
     /// The level's content identity, which every drain batch must carry.
     pub content_tag: [u8; 32],
-    /// Each pool's first generation layer cap, already bounded so a pool plus
+    /// Each pool's first generation in layers, already bounded so a pool plus
     /// its spare layer fit the device's array-layer limit.
-    pub pool_cap_layers: PerPool<u32>,
+    pub first_generation_layers: PerPool<u32>,
     /// Device `maxTextureArrayLayers`, the spare layer included: the pool
     /// model defers a pair rather than grow past it.
     pub max_array_layers: u32,
+}
+
+/// How a streamed level's pools take their first generation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamedPoolSizing {
+    /// Id 58: the worst mandatory layers of any camera cell, per pool.
+    pub bound: PerPool<u32>,
+    /// A harness's first generation for a pool, in place of the bound's.
+    pub first_generation_override: PerPool<Option<u32>>,
+}
+
+impl StreamedPoolSizing {
+    /// A level's own sizing, from its stored bound.
+    pub fn from_bound(bound: PerPool<u32>) -> Self {
+        Self {
+            bound,
+            first_generation_override: PerPool::default(),
+        }
+    }
+
+    /// Each pool's first generation for `demand`, in `edge`² layers. `None`
+    /// when a block does not fit a layer.
+    fn first_generation(&self, demand: &PoolDemand, edge: u32) -> Option<PerPool<u32>> {
+        let sized = demand.first_generation(self.bound, edge)?;
+        Some(PerPool::from_fn(|kind| {
+            self.first_generation_override[kind].unwrap_or(sized[kind])
+        }))
+    }
 }
 
 impl StreamingPoolPlan {
@@ -174,16 +202,17 @@ pub fn plan_static_pool(
 }
 
 /// Plan a streamed pool for `index`: the level's blocks install later, per
-/// drain, so only the pool shape is checked here. Degrades to placeholder
-/// mode, logging once, when the device cannot hold a pool layer or one layer
-/// plus the spare. A level whose every block at once would not fit the device
-/// still streams, since streaming holds only a subset: the pool model defers
-/// a pair rather than grow past the device's layers, in either pool.
+/// drain, so only the pool shape and each pool's first generation are settled
+/// here. Degrades to placeholder mode, logging once, when the device cannot
+/// hold a pool layer or one layer plus the spare. A level whose every block at
+/// once would not fit the device still streams, since streaming holds only a
+/// subset: the pool model defers a pair rather than grow past the device's
+/// layers, in either pool.
 pub fn plan_streaming_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
     content_tag: [u8; 32],
-    pool_cap_layers: u32,
+    sizing: StreamedPoolSizing,
     max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
 ) -> StaticPool {
@@ -214,18 +243,30 @@ pub fn plan_streaming_pool(
             pool.layer_count + 1,
         );
     }
-    if let Err(reason) = shape {
-        log::error!(
-            "[Renderer] Streamed lightmap pool rejected: {reason}; degrading to the neutral \
-             placeholder for this level"
-        );
-        return StaticPool::Rejected;
-    }
+    let demand = PoolDemand::of_indices(index, shadowmask);
+    let first_generation = shape.and_then(|_| {
+        sizing
+            .first_generation(&demand, LIGHTMAP_POOL_LAYER_EDGE)
+            .ok_or_else(|| {
+                format!("mask planes do not fit {LIGHTMAP_POOL_LAYER_EDGE}² pool layers")
+            })
+    });
+    let first_generation = match first_generation {
+        Ok(layers) => layers,
+        Err(reason) => {
+            log::error!(
+                "[Renderer] Streamed lightmap pool rejected: {reason}; degrading to the neutral \
+                 placeholder for this level"
+            );
+            return StaticPool::Rejected;
+        }
+    };
     StaticPool::Streaming(StreamingPoolPlan {
         header,
-        demand: PoolDemand::of_indices(index, shadowmask),
+        demand,
         content_tag,
-        pool_cap_layers: PerPool::both(pool_cap_layers.min(max_texture_array_layers - 1)),
+        first_generation_layers: first_generation
+            .map(|layers| layers.min(max_texture_array_layers - 1)),
         max_array_layers: max_texture_array_layers,
     })
 }

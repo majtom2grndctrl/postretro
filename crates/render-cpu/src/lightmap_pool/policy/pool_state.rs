@@ -6,7 +6,6 @@ use postretro_level_format::lightmap_pool::{PerPool, PoolDemand, PoolKind};
 use postretro_level_loader::PoolReport;
 
 use super::super::{BlockPool, Slot, place_all_resident};
-use super::growth::first_generation;
 use super::reservation::DemandRoom;
 
 /// Marks an item absent from `resident`.
@@ -38,7 +37,6 @@ pub struct PoolState {
     used_texels: Vec<u64>,
     pub(super) room: DemandRoom,
     pub(super) layers: u32,
-    pub(super) cap_layers: u32,
     /// Layers every item placed at once fills: no growth reserves past it.
     pub(super) all_resident_layers: u32,
     /// Usable layers the device can hold beside the spare. Growth never
@@ -54,7 +52,7 @@ impl PoolState {
         kind: PoolKind,
         demand: &PoolDemand,
         edge: u32,
-        cap_layers: u32,
+        first_generation: u32,
         max_layers: u32,
     ) -> Option<Self> {
         let items = demand.items(kind);
@@ -69,7 +67,10 @@ impl PoolState {
         let alignment = demand.alignment();
         let present: Vec<(u32, u32)> = items.iter().map(|&i| extents[i as usize]).collect();
         let all_resident_layers = place_all_resident(&present, alignment, edge)?.layer_count;
-        let layers = first_generation(cap_layers, all_resident_layers, max_layers);
+        let layers = match all_resident_layers {
+            0 => 0,
+            _ => first_generation.max(1).min(max_layers),
+        };
         Some(Self {
             kind,
             edge,
@@ -80,10 +81,9 @@ impl PoolState {
             resident: Vec::new(),
             resident_pos: vec![NOT_RESIDENT; count],
             allocator: BlockPool::new(edge, None),
-            used_texels: vec![0; layers as usize],
+            used_texels: Vec::new(),
             room: DemandRoom::new(count),
             layers,
-            cap_layers,
             all_resident_layers,
             max_layers,
             retiring: false,
@@ -151,22 +151,10 @@ impl PoolState {
         )
     }
 
-    /// Layers band blocks may use: the cap, bounded by the texture.
-    pub(super) fn cap_eff(&self) -> u32 {
-        self.cap_layers.min(self.layers)
-    }
-
-    /// First fit under the cap, then within the current layers.
+    /// First fit in the pool's layers, grown ones included.
     pub(super) fn allocate_in_layers(&mut self, width: u32, height: u32) -> Option<Slot> {
-        let cap = self.cap_eff();
-        let under_cap = self
-            .allocator
-            .allocate_within(width, height, Some(cap as usize));
-        if under_cap.is_some() || self.layers <= cap {
-            return under_cap;
-        }
-        let layers = self.layers as usize;
-        self.allocator.allocate_within(width, height, Some(layers))
+        self.allocator
+            .allocate_within(width, height, Some(self.layers as usize))
     }
 
     pub(super) fn attach(&mut self, item: u32, slot: Slot) {
@@ -195,12 +183,12 @@ impl PoolState {
         slot
     }
 
-    /// Texels free under the cap, reserved room left out. A reserved pair the
+    /// Texels free in the pool, reserved room left out. A reserved pair the
     /// controller holds in hand is charged here and not again there: the
     /// plan's `room_reserved` tells it which.
     fn band_headroom_texels(&self) -> u64 {
         let layer_texels = u64::from(self.edge) * u64::from(self.edge);
-        (0..self.cap_eff() as usize)
+        (0..self.layers as usize)
             .map(|layer| {
                 let used = self.used_texels.get(layer).copied().unwrap_or(0);
                 layer_texels - used - self.room.held_texels_in(layer)
@@ -230,11 +218,12 @@ impl PoolState {
 pub(super) fn new_pools(
     demand: &PoolDemand,
     edge: u32,
-    caps: PerPool<u32>,
+    first_generation: PerPool<u32>,
     max_layers: u32,
 ) -> Option<PerPool<PoolState>> {
+    let pool = |kind| PoolState::new(kind, demand, edge, first_generation[kind], max_layers);
     Some(PerPool {
-        lightmap: PoolState::new(PoolKind::Lightmap, demand, edge, caps.lightmap, max_layers)?,
-        mask: PoolState::new(PoolKind::Mask, demand, edge, caps.mask, max_layers)?,
+        lightmap: pool(PoolKind::Lightmap)?,
+        mask: pool(PoolKind::Mask)?,
     })
 }

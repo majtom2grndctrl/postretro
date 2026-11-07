@@ -40,8 +40,6 @@ pub(super) struct CaptureLightmapResidency {
     pub(super) forced_missing_blocks: u32,
     /// Usable layers of each streamed pool; `None` unless streaming.
     pub(super) pool_layers: Option<PerPool<u32>>,
-    /// The cap every streamed drain carried; `None` unless streaming.
-    pub(super) pool_cap_layers: Option<u32>,
     /// The streaming counters after the preload, the captured view's visible
     /// misses counted; `None` unless streaming.
     pub(super) counters: Option<LightmapStreamingLiveDiagnostics>,
@@ -50,14 +48,16 @@ pub(super) struct CaptureLightmapResidency {
 /// Reject lightmap overrides the loaded level cannot honour, before any GPU
 /// work: both need a streamed lightmap, and a forced block must exist.
 pub(super) fn validate_lightmap_overrides(scene: &CaptureScene, world: &LevelWorld) -> Result<()> {
-    let wants_streaming =
-        !scene.force_missing_lightmap_blocks.is_empty() || scene.lightmap_pool_cap_layers.is_some();
+    let overrides = scene.lightmap_first_generation();
+    let wants_streaming = !scene.force_missing_lightmap_blocks.is_empty()
+        || overrides.lightmap.is_some()
+        || overrides.mask.is_some();
     let Some(manifest) = world.lightmap_stream_manifest() else {
         if wants_streaming {
             bail!(
-                "force_missing_lightmap_blocks and lightmap_pool_cap_layers need a streamed \
-                 lightmap: a level with an id-51 residency set and portals, loaded with \
-                 POSTRETRO_LIGHTMAP_STREAMING unset or `stream`"
+                "force_missing_lightmap_blocks, lightmap_pool_layers and mask_pool_layers need \
+                 a streamed lightmap: a level with an id-51 residency set and portals, loaded \
+                 with POSTRETRO_LIGHTMAP_STREAMING unset or `stream`"
             );
         }
         return Ok(());
@@ -111,15 +111,11 @@ pub(super) fn preload_capture_lightmap(
             resident_blocks: block_count,
             forced_missing_blocks: 0,
             pool_layers: None,
-            pool_cap_layers: None,
             counters: None,
         });
     };
 
     let mut session = LightmapStreamingSession::new(view, hints)?;
-    if let Some(cap) = scene.lightmap_pool_cap_layers {
-        session.levers_mut().set_pool_cap_layers(cap);
-    }
     // Capture never sets L: its view demands at the level's default lead.
     session.update_capture_demand(
         crate::streaming::cell_demand::CellDemand::new(view.residency_set.max_lead).frame(
@@ -162,7 +158,6 @@ pub(super) fn preload_capture_lightmap(
         resident_blocks: summary.installed,
         forced_missing_blocks: forced.len() as u32,
         pool_layers: counters.map(|counters| counters.pool_layers),
-        pool_cap_layers: Some(live.pool_cap_layers),
         counters: Some(live),
     })
 }

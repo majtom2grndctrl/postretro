@@ -37,9 +37,9 @@ impl LightmapResidencyController {
         Ok(())
     }
 
-    /// Builds this drain's batch after the shared admission: the pool cap,
-    /// a target reset on the generation's first drain or the sorted deltas
-    /// since the last batch, and the admitted pairs. `None` while the
+    /// Builds this drain's batch after the shared admission: a target reset
+    /// on the generation's first drain or the sorted deltas since the last
+    /// batch, and the admitted pairs. `None` while the
     /// previous batch's outcome is outstanding; its deltas wait.
     pub(crate) fn finish_drain(
         &mut self,
@@ -61,7 +61,6 @@ impl LightmapResidencyController {
         let mut batch = LightmapDrainBatch {
             generation: self.generation,
             content_tag: self.content_tag,
-            pool_cap_layers: self.levers.pool_cap_layers(),
             ..LightmapDrainBatch::default()
         };
         if self.needs_target_reset {
@@ -118,6 +117,7 @@ impl LightmapResidencyController {
         outcome: LightmapDrainOutcome,
     ) -> Result<(), LightmapResidencyError> {
         self.validate_outcome(&outcome)?;
+        self.warn_growth(&outcome.pool);
         for kind in PoolKind::ALL {
             for &item in &outcome.room_reserved[kind] {
                 self.set_room_reserved(kind, item, true);
@@ -181,6 +181,23 @@ impl LightmapResidencyController {
         self.in_drain.clear();
         self.drain_outstanding = false;
         Ok(())
+    }
+
+    /// A growth is demand the compiled bound does not model. The renderer's
+    /// pool knows no cell, so the warning is logged here, once per growth.
+    fn warn_growth(&self, pools: &LightmapPoolReport) {
+        for kind in PoolKind::ALL {
+            if pools[kind].grew {
+                log::warn!(
+                    "[Lightmap streaming] The {} pool grew to {} layers at camera cell {}: demand \
+                     past the compiled bound. It keeps that size for the level",
+                    kind.name(),
+                    pools[kind].layers,
+                    self.camera_cell
+                        .map_or_else(|| "none".to_owned(), |cell| cell.to_string()),
+                );
+            }
+        }
     }
 
     /// The renderer failed the outstanding batch and rolled it back whole:

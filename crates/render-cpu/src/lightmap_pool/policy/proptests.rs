@@ -1,4 +1,4 @@
-// Property tests over random target, cap and ready sequences, executed on the GPU mirror.
+// Property tests over random target and ready sequences, executed on the GPU mirror.
 
 use proptest::prelude::*;
 
@@ -7,12 +7,12 @@ use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
 use super::gpu_mirror::GpuMirror;
 use super::pool_test_fixtures::*;
 use super::*;
+use postretro_level_format::lightmap_pool::LIGHTMAP_POOL_MARGIN;
 
 const BLOCKS: usize = 14;
 
 #[derive(Debug, Clone)]
 struct Step {
-    cap: u32,
     /// `(block, class)`: class 0 untargets, 1 mandatory, 2 visible, 3 band.
     changes: Vec<(u32, u8, u32)>,
     /// Bit `b` makes targeted, non-resident block `b` ready.
@@ -24,15 +24,13 @@ struct Step {
 
 fn step() -> impl Strategy<Value = Step> {
     (
-        0u32..=4,
         prop::collection::vec((0..BLOCKS as u32, 0u8..4, 0u32..8), 0..6),
         any::<u32>(),
         prop::bool::weighted(0.3),
         prop::option::weighted(0.15, 0usize..8),
         prop::bool::weighted(0.1),
     )
-        .prop_map(|(cap, changes, ready, release, fail, abort)| Step {
-            cap,
+        .prop_map(|(changes, ready, release, fail, abort)| Step {
             changes,
             ready,
             release,
@@ -71,12 +69,6 @@ fn assert_state(model: &LightmapPoolModel, classes: &[Option<LightmapBlockClass>
         assert!(sa.layer < model.pool(POOL).layers());
         assert!(sa.x + sa.width <= EDGE && sa.y + sa.height <= EDGE);
         assert_eq!((sa.x % ALIGN, sa.y % ALIGN), (0, 0));
-        if classes[a as usize] == Some(LightmapBlockClass::Band) {
-            assert!(
-                sa.layer < model.pool(POOL).cap_eff(),
-                "band block {a} past the cap"
-            );
-        }
         for &(b, sb) in &rects[i + 1..] {
             let apart = sa.layer != sb.layer
                 || sa.x + sa.width <= sb.x
@@ -106,8 +98,8 @@ fn packed_layers(extents: &[(u32, u32)], classes: &[Option<LightmapBlockClass>])
     (layers(&demand), layers(extents))
 }
 
-fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
-    let mut model = test_model(extents.clone(), ALIGN, EDGE, cap, u32::MAX).unwrap();
+fn run(extents: Vec<(u32, u32)>, layers: u32, steps: Vec<Step>) {
+    let mut model = test_model(extents.clone(), ALIGN, EDGE, layers, u32::MAX).unwrap();
     let mut gpu = GpuMirror::new(&model);
     let mut classes: Vec<Option<LightmapBlockClass>> = vec![None; BLOCKS];
     for step in steps {
@@ -148,7 +140,6 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
         let allocations_before = model.pool(POOL).texture_allocations();
 
         model.plan_drain(DrainRequest {
-            pool_cap_layers: caps(step.cap),
             target_reset: None,
             target_set: &set,
             target_remove: &remove,
@@ -184,14 +175,14 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
         }
         if let Some(growth) = plan.pools[POOL].growth {
             assert!(!retiring_before, "growth while retiring");
-            // The reserve covers the targeted demand with headroom, bounded
-            // by the all-resident layers; only the drain's own placements
-            // may need more.
+            // The reserve covers the targeted demand with the shared margin,
+            // bounded by the all-resident layers; only the drain's own
+            // placements may need more.
             let (demand, all_resident) = packed_layers(&extents, &next);
             let occupied = model.pool(POOL).occupied_layers();
             assert!(
-                growth.to_layers >= growth::GROWTH_HEADROOM.of(demand).min(all_resident),
-                "{growth:?} below demand {demand} with headroom (all-resident {all_resident})"
+                growth.to_layers >= LIGHTMAP_POOL_MARGIN.of(demand).min(all_resident),
+                "{growth:?} below demand {demand} with margin (all-resident {all_resident})"
             );
             assert!(
                 growth.to_layers >= occupied,
@@ -245,18 +236,18 @@ proptest! {
     #[test]
     fn placement_never_refuses_or_evicts_mandatory_or_visible_and_every_entry_samples_its_block(
         extents in prop::collection::vec((1u32..=64, 1u32..=64), BLOCKS),
-        cap in 0u32..=4,
+        layers in 1u32..=4,
         steps in prop::collection::vec(step(), 1..24),
     ) {
-        run(extents, cap, steps);
+        run(extents, layers, steps);
     }
 
     #[test]
     fn placement_holds_its_invariants_with_small_blocks_under_heavy_churn(
         extents in prop::collection::vec((1u32..=24, 1u32..=24), BLOCKS),
-        cap in 0u32..=2,
+        layers in 1u32..=2,
         steps in prop::collection::vec(step(), 1..32),
     ) {
-        run(extents, cap, steps);
+        run(extents, layers, steps);
     }
 }

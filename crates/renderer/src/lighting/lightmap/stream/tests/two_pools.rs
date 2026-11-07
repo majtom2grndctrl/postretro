@@ -274,11 +274,8 @@ fn next_draw_samples_a_grown_layer() {
     let blocks = [(0, extents[0]), (1, extents[1])];
 
     // The lightmap pool grows alone: block 1 needs a second layer.
-    let cap = PerPool {
-        lightmap: 1,
-        mask: MASK_ROOM,
-    };
-    let mut resources = sized_resources(&ctx, &level, cap, 0);
+    let layers = mask_holds_every_plane(&level, 1);
+    let mut resources = sized_resources(&ctx, &level, layers, 0);
     let ready = vec![prepared(&level, 1, 0)];
     resources
         .drain_streaming(

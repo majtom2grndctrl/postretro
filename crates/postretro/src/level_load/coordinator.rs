@@ -620,7 +620,6 @@ impl PrepShared {
                 &level,
                 &payloads,
                 &shared.inputs.device_limits,
-                shared.inputs.lightmap_pool_cap_layers,
             )))
         });
         let level = Arc::clone(world);

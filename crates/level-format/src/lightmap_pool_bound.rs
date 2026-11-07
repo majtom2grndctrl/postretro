@@ -3,6 +3,7 @@
 // Governing context: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::lightmap::{eof, invalid, read_u32};
+use crate::lightmap_pool::PerPool;
 
 /// The one layout this build reads.
 pub const LIGHTMAP_POOL_BOUND_VERSION: u32 = 1;
@@ -20,6 +21,14 @@ pub struct LightmapPoolBoundSection {
 }
 
 impl LightmapPoolBoundSection {
+    /// The stored worst layers, by pool.
+    pub fn layers(&self) -> PerPool<u32> {
+        PerPool {
+            lightmap: self.worst_lightmap_layers,
+            mask: self.worst_mask_layers,
+        }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(SECTION_BYTES);
         out.extend_from_slice(&LIGHTMAP_POOL_BOUND_VERSION.to_le_bytes());

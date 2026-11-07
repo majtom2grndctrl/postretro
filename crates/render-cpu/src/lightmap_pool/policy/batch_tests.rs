@@ -13,7 +13,6 @@ fn a_batch_from_empty_frees_every_block_without_reporting_evictions() {
     let new_generation = || LightmapDrainBatch {
         generation: 2,
         content_tag: [3; 32],
-        pool_cap_layers: 1,
         target_reset: Some(vec![mandatory(1), mandatory(2)]),
         ready: vec![PreparedLightmapBlock {
             generation: 2,
@@ -68,7 +67,6 @@ fn plan_batch_plans_the_controller_batch_from_its_ready_block_ids() {
     let batch = LightmapDrainBatch {
         generation: 1,
         content_tag: [3; 32],
-        pool_cap_layers: 1,
         target_set: vec![mandatory(0), band(1, 2)],
         ready: vec![prepared(1), prepared(0)],
         ..Default::default()
@@ -76,6 +74,6 @@ fn plan_batch_plans_the_controller_batch_from_its_ready_block_ids() {
     batch.validate_contract(2, [3; 32]).unwrap();
     let plan = h.model.plan_batch(&batch);
     assert_eq!(plan.installed, vec![0]);
-    assert_eq!(refused(plan), vec![1], "the band pair finds the cap full");
+    assert_eq!(refused(plan), vec![1], "the band pair finds the pool full");
     h.execute();
 }

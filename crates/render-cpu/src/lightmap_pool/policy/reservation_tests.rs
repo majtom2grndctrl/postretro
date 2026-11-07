@@ -145,7 +145,7 @@ fn reservation_returns_when_its_target_leaves() {
     assert_eq!(held(&h, 0), None);
 
     // By dropping to band: the same, and its pair arriving later is a band
-    // pair, placed clear of the cap like any other.
+    // pair, placed like any other.
     let mut h = one_reservation();
     let before = headroom(&h);
     let plan = h.drain(&[band(0, 3)], &[], &[]);
@@ -245,7 +245,6 @@ fn a_new_controller_hears_of_the_room_held_for_it() {
     let batch = LightmapDrainBatch {
         generation: 2,
         content_tag: [3; 32],
-        pool_cap_layers: 1,
         target_reset: Some(vec![mandatory(0)]),
         ..Default::default()
     };

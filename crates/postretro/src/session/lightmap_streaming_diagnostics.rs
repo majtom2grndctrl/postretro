@@ -33,7 +33,6 @@ pub(crate) fn assemble_live_diagnostics(
     renderer: Option<&LightmapStreamCounters>,
     reads: Option<&dyn SectionReadBytes>,
 ) {
-    live.pool_cap_layers = controller.levers().pool_cap_layers();
     live.lead_metres = controller.lead_metres();
     live.max_lead_metres = controller.max_lead_metres();
 
@@ -139,7 +138,7 @@ fn format_line(
          | now: lead {lead:.1} of {max_lead:.1} m, resident {resident_blocks} of {blocks} \
          blocks {resident} (id 22 {resident_22}, id 42 {resident_42}), mandatory \
          {mandatory_blocks} blocks {mandatory} (id 22 {mandatory_22}, id 42 {mandatory_42}), \
-         pool {layers} layers (peak {peak}, cap {cap}) {pool} + {retiring} retiring, \
+         pool {layers} layers (peak {peak}) {pool} + {retiring} retiring, \
          headroom {headroom} texels, mask pool {mask_layers} layers (peak {mask_peak}) \
          {mask_pool} + {mask_retiring} retiring, headroom {mask_headroom} texels, growth peak {growth_peak}, install last {install_last_ms:.2} ms / max \
          {install_max_ms:.2} ms",
@@ -172,7 +171,6 @@ fn format_line(
         mandatory_42 = format_bytes(now.mandatory_shadowmask_bytes),
         layers = now.pool_layers.lightmap,
         peak = now.peak_pool_layers.lightmap,
-        cap = now.pool_cap_layers,
         pool = format_bytes(now.pool_bytes.lightmap),
         retiring = format_bytes(now.retiring_pool_bytes.lightmap),
         headroom = now.band_headroom_texels.lightmap,
@@ -452,7 +450,6 @@ mod tests {
                 lightmap: 9,
                 mask: 4,
             },
-            pool_cap_layers: 15,
             pool_bytes: PerPool {
                 lightmap: 98 * 1024 * 1024,
                 mask: 12 * 1024 * 1024,
@@ -482,10 +479,7 @@ mod tests {
             line.contains("resident 41 of 198 blocks 3.0 MiB (id 22 1.0 MiB, id 42 2.0 MiB)"),
             "{line}"
         );
-        assert!(
-            line.contains("pool 7 layers (peak 9, cap 15) 98.0 MiB"),
-            "{line}"
-        );
+        assert!(line.contains("pool 7 layers (peak 9) 98.0 MiB"), "{line}");
         assert!(line.contains("headroom 64 texels"), "{line}");
         assert!(
             line.contains(
@@ -529,7 +523,6 @@ mod tests {
         assert_eq!(live.band_headroom_texels.lightmap, 4096);
         assert_eq!(live.band_headroom_texels.mask, 1024);
         assert_eq!(live.block_count, 7);
-        assert_eq!(live.pool_cap_layers, 15);
         assert_eq!(live.lead_metres, 16.0);
     }
 }

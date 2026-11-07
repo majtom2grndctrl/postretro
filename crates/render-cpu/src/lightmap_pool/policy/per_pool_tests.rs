@@ -34,6 +34,9 @@ macro_rules! pool_suites {
             mod reservation_tests {
                 include!("reservation_tests.rs");
             }
+            mod sizing_tests {
+                include!("sizing_tests.rs");
+            }
             mod tests {
                 include!("tests.rs");
             }

@@ -24,7 +24,8 @@ pub use postretro_level_format::lightmap_pool::{
     packing_order_key, place_all_resident,
 };
 pub use static_plan::{
-    StaticPool, StaticPoolPlan, StreamingPoolPlan, plan_static_pool, plan_streaming_pool,
+    StaticPool, StaticPoolPlan, StreamedPoolSizing, StreamingPoolPlan, plan_static_pool,
+    plan_streaming_pool,
 };
 
 #[cfg(test)]

@@ -10,13 +10,13 @@ use postretro_render_data::geometry::BvhLeaf;
 
 use crate::animated_lightmap::plan::{AnimatedLightmapPlan, plan_animated_lightmap};
 use crate::device_limits::DeviceLimits;
-use crate::lightmap_pool::{StaticPool, plan_static_pool, plan_streaming_pool};
+use crate::lightmap_pool::{StaticPool, StreamedPoolSizing, plan_static_pool, plan_streaming_pool};
 
-/// A streamed lightmap pool's level identity and first-generation layer cap.
+/// A streamed lightmap pool's level identity and how its pools are sized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LightmapStreamingInputs {
     pub content_tag: [u8; 32],
-    pub pool_cap_layers: u32,
+    pub pool_sizing: StreamedPoolSizing,
 }
 
 /// The level data the lightmap family plans from.
@@ -63,7 +63,7 @@ pub fn plan_lightmap_family(
             inputs.lightmap,
             inputs.shadowmask,
             streaming.content_tag,
-            streaming.pool_cap_layers,
+            streaming.pool_sizing,
             limits.max_texture_dimension_2d,
             limits.max_texture_array_layers,
         ),

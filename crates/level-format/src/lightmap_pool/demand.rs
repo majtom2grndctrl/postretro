@@ -4,6 +4,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use super::per_pool::{PerPool, PoolKind, mask_item, mask_item_plane};
+use super::sizing::first_generation_layers;
 use super::{AllResidentPool, BlockPlacement, place_all_resident};
 use crate::lightmap::LightmapBlockIndex;
 use crate::shadowmask_atlas::ShadowmaskBlockIndex;
@@ -143,6 +144,15 @@ impl PoolDemand {
     pub fn all_resident(&self, edge: u32) -> Option<PerPool<u32>> {
         let blocks: Vec<u32> = (0..self.extents.len() as u32).collect();
         self.layers_of(&blocks, edge, &mut PackScratch::default())
+    }
+
+    /// Each pool's first generation from its stored `bound`, in `edge`² layers.
+    /// `None` when a block does not fit a layer.
+    pub fn first_generation(&self, bound: PerPool<u32>, edge: u32) -> Option<PerPool<u32>> {
+        let all_resident = self.all_resident(edge)?;
+        Some(PerPool::from_fn(|kind| {
+            first_generation_layers(bound[kind], all_resident[kind])
+        }))
     }
 
     /// The layers holding `blocks`, each once.

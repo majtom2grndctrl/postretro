@@ -415,10 +415,10 @@ fn camera_cell_and_lead_change_in_one_frame_recompute_demand_once() {
     );
 }
 
-// P8 (controller side): a lowered cap rides the next batch; the renderer
-// may evict band blocks for it, never mandatory or visible ones.
+// P8 (controller side): the renderer may evict band blocks, never mandatory or
+// visible ones.
 #[test]
-fn lowered_pool_cap_rides_the_next_batch_and_only_band_blocks_may_be_evicted() {
+fn only_band_blocks_may_be_evicted() {
     let mut rig = Rig::corridor(None);
     rig.settle(0, &[5], headroom(8));
     assert_eq!(
@@ -427,9 +427,7 @@ fn lowered_pool_cap_rides_the_next_batch_and_only_band_blocks_may_be_evicted() {
         "band resident"
     );
 
-    rig.controller.levers_mut().set_pool_cap_layers(1);
-    let batch = rig.portal(0, &[5]).unwrap();
-    assert_eq!(batch.pool_cap_layers, 1);
+    rig.portal(0, &[5]).unwrap();
     for protected in [0, 5] {
         let error = rig
             .controller
@@ -801,7 +799,7 @@ fn step_limit_frame_neither_reads_nor_holds_a_drawn_absent_block_and_counts_it()
 }
 
 // Regression: a held band block kept its band target, so the renderer could
-// evict it over the cap while a non-portal frame drew it.
+// evict it under pressure while a non-portal frame drew it.
 #[test]
 fn step_limit_frame_raises_a_drawn_resident_band_block_to_visible() {
     let mut rig = Rig::corridor(None);

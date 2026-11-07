@@ -1,18 +1,17 @@
-// Per-drain planner: target deltas, frees, cap eviction, reserved room, each pool's repack.
+// Per-drain planner: target deltas, frees, reserved room, each pool's repack.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_format::lightmap_pool::{PerPool, PoolKind};
 use postretro_level_loader::{LightmapDrainBatch, LightmapRefusal, LightmapTarget};
 
-use super::journal::{HALVES, half_at};
-use super::plan::{BlockUpload, EvictionReason, PlannedEviction, RepackKind};
+use super::journal::half_at;
+use super::plan::{BlockUpload, PlannedEviction, RepackKind};
 use super::reservation::RepackScope;
 use super::{DrainPlan, DrainRequest, LightmapPoolModel, Target};
 
 impl LightmapPoolModel {
     /// Plan one drain from the controller's batch. Only the ready pairs'
-    /// block ids are read, never their payloads. The batch's one cap bounds
-    /// both pools.
+    /// block ids are read, never their payloads.
     pub fn plan_batch(&mut self, batch: &LightmapDrainBatch) -> &DrainPlan {
         self.plan_batch_inner(batch, false)
     }
@@ -34,7 +33,6 @@ impl LightmapPoolModel {
         ready.extend(batch.ready.iter().map(|prepared| prepared.block));
         self.plan_drain_inner(
             DrainRequest {
-                pool_cap_layers: PerPool::both(batch.pool_cap_layers),
                 target_reset: batch.target_reset.as_deref(),
                 target_set: &batch.target_set,
                 target_remove: &batch.target_remove,
@@ -48,22 +46,20 @@ impl LightmapPoolModel {
 
     /// Plan one drain and apply it to the model.
     ///
-    /// Frees blocks that left every target, then evicts band blocks at or
-    /// past a cap. Mandatory and visible pairs are never refused. When targets
-    /// changed, every such target's items with no room reserve what is free in
-    /// each pool. A pair lands whole: each half in its reserved room, or under
-    /// its pool's cap, or anywhere in its current layers, evicting band blocks
-    /// farthest lead first, then putting back each victim all of whose rects
-    /// are still free. Failing that, each pool short of room repacks alone, in
-    /// place, for its whole targeted demand: downward under the cap, then, in a
-    /// pool already grown past the cap, downward within its layers, then by
-    /// compaction into any layer, once per demand. A demand past a pool repacks
-    /// for its pairs alone, and failing that grows a new generation of that
-    /// pool sized to the whole targeted mandatory and visible demand with
-    /// headroom. A pair that needs growth of a pool still retiring, or a layer
-    /// past the device limit, defers whole and grows nothing. Band pairs fit
-    /// under the caps, clear of reserved room, or are refused whole; they never
-    /// repack or grow a pool.
+    /// Frees blocks that left every target. Mandatory and visible pairs are
+    /// never refused. When targets changed, every such target's items with no
+    /// room reserve what is free in each pool. A pair lands whole: each half
+    /// in its reserved room or anywhere in its pool's layers, evicting band
+    /// blocks farthest lead first, then putting back each victim all of whose
+    /// rects are still free. Failing that, each pool short of room repacks
+    /// alone, in place, for its whole targeted demand: downward, then by
+    /// compaction into any layer, once per demand. A demand past a pool
+    /// repacks for its pairs alone, and failing that grows a new generation of
+    /// that pool sized to the whole targeted mandatory and visible demand with
+    /// the shared margin. A pair that needs growth of a pool still retiring,
+    /// or a layer past the device limit, defers whole and grows nothing. Band
+    /// pairs take what room is free, clear of reserved room, or are refused
+    /// whole; they never repack or grow a pool.
     pub fn plan_drain(&mut self, request: DrainRequest<'_>) -> &DrainPlan {
         self.plan_drain_inner(request, false)
     }
@@ -79,17 +75,7 @@ impl LightmapPoolModel {
         if from_empty {
             self.forget_residency();
         }
-        let caps_before = PerPool {
-            lightmap: self.pools.lightmap.cap_eff(),
-            mask: self.pools.mask.cap_eff(),
-        };
-        self.set_caps(request.pool_cap_layers);
-        let cap_lowered = PoolKind::ALL
-            .iter()
-            .any(|&kind| self.pools[kind].cap_eff() < caps_before[kind]);
-        let full_scan = request.target_reset.is_some() || cap_lowered;
         self.apply_targets(request);
-        self.evict_band_over_cap(full_scan, request.target_set);
         self.classify_ready(request.ready);
         if self.scratch.demand_changed {
             #[cfg(test)]
@@ -125,45 +111,6 @@ impl LightmapPoolModel {
         for &block in request.target_remove {
             self.set_target(block, None);
         }
-    }
-
-    /// Band blocks never sit at or past a cap's layers: a half past one takes
-    /// the whole block out. A lowered cap (or a reset) scans every resident
-    /// block; otherwise only blocks whose class changed this drain can have
-    /// become such a band block.
-    fn evict_band_over_cap(&mut self, full_scan: bool, target_set: &[LightmapTarget]) {
-        let mut over = std::mem::take(&mut self.scratch.over_cap);
-        over.clear();
-        if full_scan {
-            over.extend(
-                self.pools
-                    .lightmap
-                    .resident
-                    .iter()
-                    .copied()
-                    .filter(|&block| self.is_band_past_a_cap(block)),
-            );
-            over.sort_unstable();
-        } else {
-            over.extend(
-                target_set
-                    .iter()
-                    .map(|t| t.block)
-                    .filter(|&block| self.is_band_past_a_cap(block)),
-            );
-        }
-        for &block in &over {
-            self.release(block, EvictionReason::OverCap);
-        }
-        self.scratch.over_cap = over;
-    }
-
-    fn is_band_past_a_cap(&self, block: u32) -> bool {
-        self.is_band(block)
-            && self.halves(block).any(|(kind, item)| {
-                let pool = &self.pools[kind];
-                pool.slot(item).is_some_and(|s| s.layer >= pool.cap_eff())
-            })
     }
 
     fn classify_ready(&mut self, ready: &[u32]) {
@@ -316,11 +263,11 @@ impl LightmapPoolModel {
                 });
             }
             let held = self.held_halves(touched.block);
-            for half in 0..HALVES {
+            for (half, &holds) in held.iter().enumerate() {
                 let (kind, item) = half_at(touched.block, half);
-                if held[half] && !touched.held_at_start[half] {
+                if holds && !touched.held_at_start[half] {
                     self.plan.pools[kind].room_reserved.push(item);
-                } else if touched.held_at_start[half] && !held[half] {
+                } else if touched.held_at_start[half] && !holds {
                     self.plan.pools[kind].room_returned.push(item);
                 }
             }

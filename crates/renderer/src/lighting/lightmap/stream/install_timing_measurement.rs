@@ -55,7 +55,7 @@ fn lightmap_drain_install_timing() {
             Some(vec![[true; 2]; extents.len()]),
         ),
         content_tag: TAG,
-        pool_cap_layers: PerPool::both(1),
+        first_generation_layers: PerPool::both(1),
         max_array_layers: ctx.device.limits().max_texture_array_layers,
     };
     let mut state = LightmapStreamState::new(&ctx.device, &plan, 0);
@@ -88,7 +88,6 @@ fn lightmap_drain_install_timing() {
             LightmapDrainBatch {
                 generation: 1,
                 content_tag: TAG,
-                pool_cap_layers: 1,
                 target_reset: Some(targets),
                 ready,
                 ..LightmapDrainBatch::default()
@@ -99,7 +98,6 @@ fn lightmap_drain_install_timing() {
             LightmapDrainBatch {
                 generation: 1,
                 content_tag: TAG,
-                pool_cap_layers: 1,
                 target_set: targets,
                 target_remove: remove,
                 ready,

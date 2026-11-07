@@ -453,8 +453,9 @@ impl Rig {
     }
 }
 
-/// The renderer's placement policy over `source`'s blocks, standing in for
-/// the GPU pool: the same wgpu-free model the renderer drains through.
+/// The renderer's placement policy over `source`'s blocks, in a pool roomy
+/// enough to stay out of a test's way, standing in for the GPU pool: the same
+/// wgpu-free model the renderer drains through.
 pub(crate) fn pool_model(source: &TestBlockSource) -> LightmapPoolModel {
     LightmapPoolModel::new(
         source_demand(source),

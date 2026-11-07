@@ -222,10 +222,10 @@ fn compaction_keeps_the_band_blocks_it_can_and_drops_the_rest_from_both_table_an
     assert!(!h.model.is_resident(5));
 }
 
+// Grown or not, a pool is one size: a compaction keeps every band block its
+// target layout has room for.
 #[test]
-fn a_pool_past_its_cap_drops_its_band_when_it_compacts() {
-    // Three layers under a cap of two: a target layer can land anywhere, so a
-    // band block cannot be promised a layer under the cap.
+fn a_grown_pool_keeps_its_band_through_compaction() {
     let extents = [
         (64, 56),
         (32, 56),
@@ -235,16 +235,17 @@ fn a_pool_past_its_cap_drops_its_band_when_it_compacts() {
         (24, 56),
         (8, 8),
     ];
-    let mut h = Harness::new(&extents, 3);
+    let mut h = Harness::new(&extents, 2);
     h.drain(&[mandatory(1), mandatory(2)], &[], &[1, 2]);
     h.drain(&[mandatory(3), mandatory(4)], &[], &[3, 4]);
     h.drain(&[mandatory(0)], &[], &[0]);
+    assert_eq!(h.model.pool(POOL).layers(), 3, "the pool grew");
     assert_eq!(h.model.at(0).unwrap().layer, 2);
-    h.cap = 2;
+    h.model.release_retirement(POOL);
     h.drain(&[band(6, 1)], &[], &[6]);
     h.plan(&[mandatory(5)], &[], &[5]);
     compaction_stats(h.model.plan());
-    assert!(!h.model.is_resident(6));
+    assert!(h.model.is_resident(6), "the band block stays");
     h.execute();
     assert_disjoint_within_layers(&h.model);
 }

@@ -28,11 +28,10 @@ fn band(block: u32, lead: u32) -> LightmapTarget {
     target(block, LightmapBlockClass::Band, lead)
 }
 
-/// Both pools in earnest, each with its own cap, on a mirror of both textures.
+/// Both pools in earnest, each with its own size, on a mirror of both textures.
 struct Pair {
     model: LightmapPoolModel,
     gpu: GpuMirror,
-    caps: PerPool<u32>,
 }
 
 impl Pair {
@@ -42,15 +41,13 @@ impl Pair {
             blocks.iter().map(|&(extent, _)| extent).collect(),
             Some(blocks.iter().map(|&(_, planes)| planes).collect()),
         );
-        let caps = PerPool { lightmap, mask };
-        let model = LightmapPoolModel::new(demand, EDGE, caps).unwrap();
+        let model = LightmapPoolModel::new(demand, EDGE, PerPool { lightmap, mask }).unwrap();
         let gpu = GpuMirror::new(&model);
-        Self { model, gpu, caps }
+        Self { model, gpu }
     }
 
     fn plan(&mut self, set: &[LightmapTarget], remove: &[u32], ready: &[u32]) -> &DrainPlan {
         self.model.plan_drain(DrainRequest {
-            pool_cap_layers: self.caps,
             target_reset: None,
             target_set: set,
             target_remove: remove,
@@ -142,7 +139,7 @@ fn pair_short_in_either_pool_installs_nothing() {
 #[test]
 fn a_band_pair_short_of_the_lightmap_pool_leaves_no_plane_behind() {
     let blocks = [(FULL, NONE), (HALF, BOTH)];
-    let mut h = Pair::new(&blocks, 1, 2);
+    let mut h = Pair::new(&blocks, 1, 1);
     h.drain(&[mandatory(0)], &[], &[0]);
     let plan = h.drain(&[band(1, 1)], &[], &[1]);
     assert_eq!(refused_blocks(plan), vec![1]);
@@ -437,7 +434,6 @@ fn new_generation_empties_both_pools() {
     let batch = postretro_level_loader::LightmapDrainBatch {
         generation: 2,
         content_tag: [0; 32],
-        pool_cap_layers: 2,
         target_reset: Some(Vec::new()),
         ..Default::default()
     };
@@ -660,7 +656,6 @@ fn a_level_of_absent_planes_has_masks_with_no_placement() {
     let demand = PoolDemand::lightmap_only(ALIGN, vec![HALF]);
     let mut model = LightmapPoolModel::new(demand, EDGE, PerPool::both(1)).unwrap();
     model.plan_drain(DrainRequest {
-        pool_cap_layers: PerPool::both(1),
         target_set: &[mandatory(0)],
         ready: &[0],
         ..DrainRequest::default()

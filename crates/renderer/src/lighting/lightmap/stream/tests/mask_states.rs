@@ -5,6 +5,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+use postretro_render_cpu::lightmap_pool::StreamedPoolSizing;
 
 use super::super::super::{plan_static_pool, plan_streaming_pool};
 use super::*;
@@ -31,12 +32,15 @@ fn all_resident(
     (pool, resources)
 }
 
-fn streamed(ctx: &GpuCtx, fixture: &BlockFixture, cap: u32) -> LightmapResources {
+fn streamed(ctx: &GpuCtx, fixture: &BlockFixture, layers: u32) -> LightmapResources {
     let pool = plan_streaming_pool(
         Some(&fixture.index),
         fixture.shadowmask.as_ref(),
         TAG,
-        cap,
+        StreamedPoolSizing {
+            first_generation_override: PerPool::both(Some(layers)),
+            ..StreamedPoolSizing::default()
+        },
         8192,
         256,
     );

@@ -64,9 +64,7 @@ impl LightmapPoolModel {
     /// does not drops its block from both pools. Items may land in any layer,
     /// including a higher one. Items with no texels here take reserved room. A
     /// demand that does not pack still seats resident items and `pending`, then
-    /// reserves room for the rest as far as it lasts. A pool past its cap drops
-    /// its band outright: a target layer lands on whichever layer clears, which
-    /// may be past the cap.
+    /// reserves room for the rest as far as it lasts.
     ///
     /// Returns the copy order's figures, with the plan's copies written and
     /// the pool moved to the target. Returns `None`, with the pool and the
@@ -76,6 +74,10 @@ impl LightmapPoolModel {
     /// growth. Any end but a whole demand seated spends the demand's one
     /// compaction.
     pub(super) fn compact(&mut self, kind: PoolKind, pending: &[u32]) -> Option<CopyOrderStats> {
+        #[cfg(test)]
+        if self.downward_only {
+            return None;
+        }
         let mut c = std::mem::take(&mut self.scratch.compaction);
         let compacted = self.compact_with(kind, pending, &mut c);
         self.scratch.compaction = c;
@@ -131,8 +133,7 @@ impl LightmapPoolModel {
         scope: RepackScope,
         c: &mut CompactionScratch,
     ) -> Layout {
-        let pool = &self.pools[kind];
-        let band_may_stay = !c.band.is_empty() && pool.layers <= pool.cap_layers;
+        let band_may_stay = !c.band.is_empty();
         for keep_band in [band_may_stay, false] {
             let band: &[u32] = if keep_band { &c.band } else { &[] };
             let packed = match scope {

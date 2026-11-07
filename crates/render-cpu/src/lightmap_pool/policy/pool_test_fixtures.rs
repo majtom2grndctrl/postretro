@@ -72,20 +72,14 @@ impl PoolUnderTest for LightmapPoolModel {
     }
 }
 
-/// `cap` for the pool under test; the other pool is never capped.
-pub(super) fn caps(cap: u32) -> PerPool<u32> {
-    let mut caps = PerPool::both(u32::MAX);
-    caps[POOL] = cap;
-    caps
-}
-
-/// A model of one-plane blocks with `cap` and `max_layers` on the pool under
-/// test, and a layer per block in the other. `None` as the model's own `new`.
+/// A model of one-plane blocks with `layers` and `max_layers` on the pool
+/// under test, and a layer per block in the other. `None` as the model's own
+/// `new`.
 pub(super) fn test_model(
     extents: Vec<(u32, u32)>,
     alignment: u32,
     edge: u32,
-    cap: u32,
+    layers: u32,
     max_layers: u32,
 ) -> Option<LightmapPoolModel> {
     let planes = (0..extents.len() as u32)
@@ -93,10 +87,11 @@ pub(super) fn test_model(
         .collect();
     let blocks = extents.len() as u32;
     let demand = PoolDemand::new(alignment, extents, Some(planes));
-    let mut model = LightmapPoolModel::with_layer_limit(demand, edge, caps(cap), u32::MAX)?;
+    let mut first_generation = PerPool::both(blocks);
+    first_generation[POOL] = layers;
+    let mut model = LightmapPoolModel::with_layer_limit(demand, edge, first_generation, u32::MAX)?;
     model.pools[POOL].max_layers = max_layers;
     model.pools[POOL].layers = model.pools[POOL].layers.min(max_layers);
-    model.pools[OTHER].layers = blocks;
     Some(model)
 }
 
@@ -132,18 +127,17 @@ pub(super) fn band(block: u32, lead: u32) -> LightmapTarget {
 pub(super) struct Harness {
     pub model: LightmapPoolModel,
     pub gpu: GpuMirror,
-    pub cap: u32,
 }
 
 impl Harness {
-    pub(super) fn new(extents: &[(u32, u32)], cap: u32) -> Self {
-        Self::with_layer_limit(extents, cap, u32::MAX)
+    pub(super) fn new(extents: &[(u32, u32)], layers: u32) -> Self {
+        Self::with_layer_limit(extents, layers, u32::MAX)
     }
 
-    pub(super) fn with_layer_limit(extents: &[(u32, u32)], cap: u32, max_layers: u32) -> Self {
-        let model = test_model(extents.to_vec(), ALIGN, EDGE, cap, max_layers).unwrap();
+    pub(super) fn with_layer_limit(extents: &[(u32, u32)], layers: u32, max_layers: u32) -> Self {
+        let model = test_model(extents.to_vec(), ALIGN, EDGE, layers, max_layers).unwrap();
         let gpu = GpuMirror::new(&model);
-        Self { model, gpu, cap }
+        Self { model, gpu }
     }
 
     /// Plan without executing.
@@ -154,7 +148,6 @@ impl Harness {
         ready: &[u32],
     ) -> &DrainPlan {
         self.model.plan_drain(DrainRequest {
-            pool_cap_layers: caps(self.cap),
             target_reset: None,
             target_set: set,
             target_remove: remove,

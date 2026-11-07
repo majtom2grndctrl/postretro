@@ -406,7 +406,6 @@ struct LightmapStreamingReportJson {
     forced_missing_blocks: u32,
     pool_layers: Option<u32>,
     mask_pool_layers: Option<u32>,
-    pool_cap_layers: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     counters: Option<LightmapStreamingCountersJson>,
 }
@@ -420,7 +419,6 @@ impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
             forced_missing_blocks: residency.forced_missing_blocks,
             pool_layers: residency.pool_layers.map(|layers| layers.lightmap),
             mask_pool_layers: residency.pool_layers.map(|layers| layers.mask),
-            pool_cap_layers: residency.pool_cap_layers,
             counters: residency
                 .counters
                 .as_ref()
@@ -761,7 +759,8 @@ mod tests {
             force_full_resident_sh_compose: false,
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
-            lightmap_pool_cap_layers: None,
+            lightmap_pool_layers: None,
+            mask_pool_layers: None,
             reflection_quality: None,
             reflection_style: None,
             reflection_march: None,
@@ -907,7 +906,6 @@ mod tests {
                 lightmap: 3,
                 mask: 2,
             }),
-            pool_cap_layers: Some(15),
             counters: None,
         }));
         let lightmap = &json["lightmap_streaming"];
@@ -917,7 +915,10 @@ mod tests {
         assert_eq!(lightmap["forced_missing_blocks"], 1);
         assert_eq!(lightmap["pool_layers"], 3);
         assert_eq!(lightmap["mask_pool_layers"], 2);
-        assert_eq!(lightmap["pool_cap_layers"], 15);
+        assert!(
+            !lightmap.to_string().contains("cap"),
+            "the report names no cap: {lightmap}"
+        );
         assert!(lightmap.get("counters").is_none(), "no counters, no object");
     }
 
@@ -971,7 +972,6 @@ mod tests {
                     lightmap: 7,
                     mask: 22,
                 }),
-                pool_cap_layers: Some(15),
                 counters: Some(live),
             },
         ))

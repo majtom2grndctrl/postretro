@@ -68,7 +68,7 @@ fn lightmap_install_timing_from_prl() {
             LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
         let mut mirror = PoolMirror::new(
             view.manifest,
-            session.controller.levers().pool_cap_layers(),
+            super::DEFAULT_LEVERS.cap_layers,
             RetireClock::Drains,
         );
         let camera_cell = world.locate_cell(spawn_eye) as u32;

@@ -176,10 +176,6 @@ impl<'w> Rig<'w> {
         let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
         let mut session =
             LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
-        session
-            .controller
-            .levers_mut()
-            .set_pool_cap_layers(levers.cap_layers);
         // L is the level's: set on the stage, which every frame hands the
         // lightmap demand.
         let mut stage = CellDemand::new(view.residency_set.max_lead);

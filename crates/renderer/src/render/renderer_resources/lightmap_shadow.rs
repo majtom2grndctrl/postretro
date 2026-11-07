@@ -92,7 +92,7 @@ pub fn lightmap_family_inputs<'a>(
         streaming: geometry.lightmap_streaming.map(|streaming| {
             postretro_render_cpu::lightmap_family::LightmapStreamingInputs {
                 content_tag: streaming.content_tag,
-                pool_cap_layers: streaming.pool_cap_layers,
+                pool_sizing: streaming.pool_sizing,
             }
         }),
         payload_blocks: &gpu_lighting_payloads.blocks,

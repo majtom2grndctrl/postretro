@@ -37,8 +37,6 @@ pub(crate) struct LevelPrepInputs {
     /// The `POSTRETRO_SH_STREAMING` mode, or why it could not be read. Only a
     /// streamed-SH level reads it, as the streaming sessions always did.
     pub(crate) sh_streaming_mode: Result<ShStreamingMode, String>,
-    /// The lightmap streaming pool's layer cap.
-    pub(crate) lightmap_pool_cap_layers: u32,
     pub(crate) tiers: LevelTiers,
     /// Whether the session has audio, read where the install decides to load
     /// sounds: without it prep decodes none.
@@ -81,7 +79,6 @@ impl App {
             device_limits: renderer.install_device_limits(),
             sh_streaming_mode: postretro_level_loader::requested_streaming_mode()
                 .map_err(|error| error.to_string()),
-            lightmap_pool_cap_layers: crate::render::DEFAULT_LIGHTMAP_POOL_CAP_LAYERS,
             tiers: LevelTiers {
                 shadow_quality: options.shadow_quality,
                 surface_depth_quality: options.surface_depth_quality,

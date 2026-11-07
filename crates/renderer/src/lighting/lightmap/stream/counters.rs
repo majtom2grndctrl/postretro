@@ -18,7 +18,7 @@ pub struct LightmapStreamCounters {
     /// Never-refused pairs deferred because growth waited on a retiring pool
     /// or would pass the device's array-layer limit.
     pub deferred_pairs: u64,
-    /// Blocks released: untargeted, over the cap, or evicted for room.
+    /// Blocks released: untargeted, or evicted for room.
     pub evictions: u64,
     /// Drains that repacked each pool in place through its spare layer, by
     /// either pass.

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use log::Level;
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_level_loader::{
     GpuLightingPayloads, LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome,
     LightmapTarget, PreparedLightmapBlock,
@@ -46,10 +47,6 @@ const TAG: [u8; 32] = [7; 32];
 /// force the shelf layouts each test names without megabyte-wide payloads.
 const WIDE: u32 = 1028;
 
-/// The mask pool's size where a test proves the lightmap pool: room for every
-/// plane of its fixture, so the mask pool never grows or repacks beside it.
-const MASK_ROOM: u32 = 8;
-
 fn mandatory(block: u32) -> LightmapTarget {
     LightmapTarget {
         block,
@@ -78,17 +75,27 @@ fn fixture(extents: &[(u32, u32)]) -> BlockFixture {
     )
 }
 
+/// `lightmap` layers, and a mask pool with room for every plane of `fixture`,
+/// so it never grows or repacks beside the lightmap pool a test proves.
+fn mask_holds_every_plane(fixture: &BlockFixture, lightmap: u32) -> PerPool<u32> {
+    let mask = PoolDemand::of_indices(&fixture.index, fixture.shadowmask.as_ref())
+        .all_resident(LIGHTMAP_POOL_LAYER_EDGE)
+        .expect("fixture blocks fit a layer")
+        .mask;
+    PerPool { lightmap, mask }
+}
+
 fn plan(
     ctx: &GpuCtx,
     fixture: &BlockFixture,
-    cap: PerPool<u32>,
+    layers: PerPool<u32>,
     max_layers: u32,
 ) -> StreamingPoolPlan {
     StreamingPoolPlan {
         header: fixture.index.header,
         demand: PoolDemand::of_indices(&fixture.index, fixture.shadowmask.as_ref()),
         content_tag: TAG,
-        pool_cap_layers: cap,
+        first_generation_layers: layers,
         max_array_layers: max_layers.min(ctx.device.limits().max_texture_array_layers),
     }
 }
@@ -160,14 +167,14 @@ fn level_resources(
     )
 }
 
-/// A streamed `LightmapResources` over `fixture`, each pool sized by `cap`.
+/// A streamed `LightmapResources` over `fixture`, each pool at `layers`.
 fn sized_resources(
     ctx: &GpuCtx,
     fixture: &BlockFixture,
-    cap: PerPool<u32>,
+    layers: PerPool<u32>,
     floor: u64,
 ) -> LightmapResources {
-    let pool = StaticPool::Streaming(plan(ctx, fixture, cap, u32::MAX));
+    let pool = StaticPool::Streaming(plan(ctx, fixture, layers, u32::MAX));
     level_resources(ctx, fixture, &pool, GpuLightingPayloads::default(), floor)
 }
 
@@ -189,7 +196,6 @@ fn batch(
     LightmapDrainBatch {
         generation,
         content_tag: TAG,
-        pool_cap_layers: MASK_ROOM,
         target_reset: reset,
         target_set: set,
         ready,
@@ -205,39 +211,35 @@ struct Stream {
     fixture: BlockFixture,
     state: LightmapStreamState,
     generation: u64,
-    cap: PerPool<u32>,
 }
 
 impl Stream {
-    fn new(test: &str, extents: &[(u32, u32)], cap: u32) -> Option<Self> {
-        let cap = PerPool {
-            lightmap: cap,
-            mask: MASK_ROOM,
-        };
-        Self::sized(test, extents, cap, u32::MAX)
+    fn new(test: &str, extents: &[(u32, u32)], layers: u32) -> Option<Self> {
+        let fixture = fixture(extents);
+        let layers = mask_holds_every_plane(&fixture, layers);
+        Self::with_fixture(test, fixture, layers, u32::MAX)
     }
 
     /// Each pool's first generation sized apart, within `max_layers` array
-    /// layers. The batch's one cap is the larger size: a pool's own layers
-    /// still bound it.
+    /// layers.
     fn sized(
         test: &str,
         extents: &[(u32, u32)],
-        cap: PerPool<u32>,
+        layers: PerPool<u32>,
         max_layers: u32,
     ) -> Option<Self> {
-        Self::with_fixture(test, fixture(extents), cap, max_layers)
+        Self::with_fixture(test, fixture(extents), layers, max_layers)
     }
 
     fn with_fixture(
         test: &str,
         fixture: BlockFixture,
-        cap: PerPool<u32>,
+        layers: PerPool<u32>,
         max_layers: u32,
     ) -> Option<Self> {
         let ctx = bc_gpu_or_skip(test)?;
         let state =
-            LightmapStreamState::new(&ctx.device, &plan(&ctx, &fixture, cap, max_layers), 0);
+            LightmapStreamState::new(&ctx.device, &plan(&ctx, &fixture, layers, max_layers), 0);
         let queue = crate::render::uploads::UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
         Some(Self {
             ctx,
@@ -245,12 +247,7 @@ impl Stream {
             fixture,
             state,
             generation: 1,
-            cap,
         })
-    }
-
-    fn batch_cap(&self) -> u32 {
-        self.cap.lightmap.max(self.cap.mask)
     }
 
     fn prepared(&self, block: u32) -> PreparedLightmapBlock {
@@ -271,7 +268,6 @@ impl Stream {
         LightmapDrainBatch {
             generation: self.generation,
             content_tag: TAG,
-            pool_cap_layers: self.batch_cap(),
             target_reset: Some(targets),
             ready,
             ..LightmapDrainBatch::default()
@@ -287,7 +283,6 @@ impl Stream {
         LightmapDrainBatch {
             generation: self.generation,
             content_tag: TAG,
-            pool_cap_layers: self.batch_cap(),
             target_set: set,
             target_remove: remove,
             ready,
@@ -390,7 +385,7 @@ fn assert_samples_own_texels(ctx: &GpuCtx, state: &LightmapStreamState, fixture:
 
 /// Blocks 0 and 1 stacked on the one layer, band block 3 below them. Block
 /// 0 leaves and block 2 (1280 tall) fits no shelf even with 3 evicted, while
-/// 1, 2 and 3 fit the one-layer cap together: a repack.
+/// 1, 2 and 3 fit the one-layer pool together: a repack.
 const FRAGMENTED: [(u32, u32); 4] = [(WIDE, 768), (WIDE, 512), (WIDE, 1280), (128, 128)];
 
 fn fragmented_single_layer(stream: &mut Stream) {

@@ -24,6 +24,7 @@ use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_render_cpu::lightmap_pool::{
     BLOCK_FLAG_NO_MASK_POOL, BLOCK_FLAG_NONE, BLOCK_FLAG_PLANE_A, BLOCK_FLAG_PLANE_B,
     BLOCK_FLAG_RESIDENT, BlockAddresses, BlockPlacement, BlockTableEntry, MaskAddresses, PerPool,
+    StreamedPoolSizing,
 };
 
 fn capture_logs(f: impl FnOnce()) -> Vec<(Level, String)> {
@@ -128,19 +129,26 @@ fn streaming_plan_for(fixture: &BlockFixture, max_dimension: u32, max_layers: u3
         Some(&fixture.index),
         fixture.shadowmask.as_ref(),
         [3; 32],
-        15,
+        StreamedPoolSizing::default(),
         max_dimension,
         max_layers,
     )
 }
 
 // A streamed level needs no payloads at install: its plan keeps the extents
-// the animated atlas keys on, the level's identity, and a cap bounded so the
-// pool plus its spare layer fit the device.
+// the animated atlas keys on, the level's identity, and a first generation
+// bounded so the pool plus its spare layer fit the device.
 #[test]
 fn a_streamed_level_plans_its_pool_shape_without_payloads() {
     assert_eq!(
-        plan_streaming_pool(None, None, [0; 32], 15, 8192, 256),
+        plan_streaming_pool(
+            None,
+            None,
+            [0; 32],
+            StreamedPoolSizing::default(),
+            8192,
+            256
+        ),
         StaticPool::Absent
     );
     assert_eq!(
@@ -158,17 +166,29 @@ fn a_streamed_level_plans_its_pool_shape_without_payloads() {
     assert_eq!(plan.content_tag, [3; 32]);
     assert!(plan.with_shadowmask());
     assert_eq!(
-        (plan.pool_cap_layers, plan.max_array_layers),
-        (PerPool::both(15), 256)
+        (plan.first_generation_layers, plan.max_array_layers),
+        (PerPool::both(1), 256)
     );
 
-    let StaticPool::Streaming(tight) = streaming_plan_for(&fixture, 8192, 8) else {
+    let sizing = StreamedPoolSizing {
+        first_generation_override: PerPool::both(Some(15)),
+        ..StreamedPoolSizing::default()
+    };
+    let tight = plan_streaming_pool(
+        Some(&fixture.index),
+        fixture.shadowmask.as_ref(),
+        [3; 32],
+        sizing,
+        8192,
+        8,
+    );
+    let StaticPool::Streaming(tight) = tight else {
         panic!("eight array layers still hold a pool");
     };
     assert_eq!(
-        tight.pool_cap_layers,
+        tight.first_generation_layers,
         PerPool::both(7),
-        "the cap leaves room for the spare layer"
+        "the first generation leaves room for the spare layer"
     );
 }
 

@@ -141,7 +141,7 @@ impl LightmapStreamState {
         let model = LightmapPoolModel::with_layer_limit(
             plan.demand.clone(),
             LIGHTMAP_POOL_LAYER_EDGE,
-            plan.pool_cap_layers,
+            plan.first_generation_layers,
             plan.max_array_layers.saturating_sub(1),
         )
         .expect("plan_streaming_pool checked that every block fits a pool layer");

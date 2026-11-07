@@ -351,8 +351,8 @@ impl BlockPool {
         self.allocate_within(width, height, self.max_layers)
     }
 
-    /// `allocate` bounded to layers below `limit` instead of the pool cap:
-    /// a pool that grew past a soft cap keeps placing optional blocks under it.
+    /// `allocate` bounded to layers below `limit` instead of the allocator's
+    /// own: the layers a pool's generation holds.
     pub fn allocate_within(
         &mut self,
         width: u32,

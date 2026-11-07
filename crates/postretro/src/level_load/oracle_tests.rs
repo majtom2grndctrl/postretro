@@ -96,7 +96,6 @@ fn assert_prep_matches_oracle(
     }
     let limits = inputs.device_limits;
     let sh_mode = inputs.sh_streaming_mode.clone();
-    let pool_cap = inputs.lightmap_pool_cap_layers;
     let (prep, outcome, _progress) = run_prep(&pool, inputs);
     drop(prep.cancel());
     let prepared = outcome.unwrap_or_else(|failure| panic!("{label}: prep failed: {failure}"));
@@ -153,10 +152,7 @@ fn assert_prep_matches_oracle(
     );
 
     // Lightmap family and fluids, from the oracle's geometry adapter.
-    let mut geometry = crate::render::level_world_to_geometry(&world, &materials);
-    if let Some(streaming) = geometry.lightmap_streaming.as_mut() {
-        streaming.pool_cap_layers = pool_cap;
-    }
+    let geometry = crate::render::level_world_to_geometry(&world, &materials);
     let usable = usable_sh_volume(geometry.sh_volume, &limits);
     let stream_base = world.sh_stream_manifest().map(|manifest| manifest.base());
     let animated = animated_light_count(

@@ -390,7 +390,7 @@ fn off_main_build_matches_the_oracle_set() {
                     streaming: geometry.lightmap_streaming.map(|streaming| {
                         LightmapStreamingInputs {
                             content_tag: streaming.content_tag,
-                            pool_cap_layers: streaming.pool_cap_layers,
+                            pool_sizing: streaming.pool_sizing,
                         }
                     }),
                     payload_blocks: &payloads.blocks,

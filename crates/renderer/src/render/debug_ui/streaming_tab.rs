@@ -1,6 +1,5 @@
 //! Streaming tab: SH cluster residency and lightmap cell-block residency
-//! gauges, cumulative counters, the lightmap pool-cap lever and the level's
-//! lead L lever.
+//! gauges, cumulative counters, and the level's lead L lever.
 //!
 //! Rows are built as plain label/value strings first so the grouping and
 //! formatting are testable without an egui context.
@@ -9,18 +8,12 @@ use super::super::Renderer;
 #[cfg(test)]
 use super::super::ShComposePassDiagnostics;
 use super::super::ShStreamingLiveDiagnostics;
-use super::super::{
-    LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
-    StreamingReachLever,
-};
+use super::super::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
 
-/// The Streaming tab's lightmap input: the live counters, shown read-only,
-/// and the pool-cap lever, edited in place. The caller writes changed levers
-/// back to the residency controller after the frame's UI runs.
+/// The Streaming tab's lightmap input: the live counters, shown read-only.
 #[derive(Debug)]
 pub struct LightmapStreamingTab<'a> {
     pub diagnostics: &'a LightmapStreamingLiveDiagnostics,
-    pub levers: &'a mut LightmapStreamingLevers,
 }
 
 pub(super) fn draw_streaming_tab(
@@ -55,20 +48,7 @@ pub(super) fn draw_streaming_tab(
 }
 
 fn draw_lightmap_streaming(ui: &mut egui::Ui, tab: LightmapStreamingTab<'_>) {
-    let LightmapStreamingTab {
-        diagnostics,
-        levers,
-    } = tab;
-    ui.label("Pool cap (layers)");
-    ui.add(
-        egui::Slider::new(
-            &mut levers.pool_cap_layers,
-            1..=MAX_LIGHTMAP_POOL_CAP_LAYERS,
-        )
-        .logarithmic(true),
-    );
-    ui.label(egui::RichText::new("Dev-tools lever: the cap rides the next drain.").weak());
-    for section in lightmap_sections(diagnostics) {
+    for section in lightmap_sections(tab.diagnostics) {
         egui::CollapsingHeader::new(section.title)
             .id_salt(("lightmap_streaming", section.title))
             .default_open(true)
@@ -355,10 +335,10 @@ fn lightmap_sections(d: &LightmapStreamingLiveDiagnostics) -> [StreamingSection;
             title: "Pool",
             rows: vec![
                 (
-                    "Layers (peak / cap)",
+                    "Layers (peak)",
                     format!(
-                        "{} ({} / {})",
-                        d.pool_layers.lightmap, d.peak_pool_layers.lightmap, d.pool_cap_layers
+                        "{} ({})",
+                        d.pool_layers.lightmap, d.peak_pool_layers.lightmap
                     ),
                 ),
                 (
@@ -514,7 +494,6 @@ mod tests {
                 lightmap: 9,
                 mask: 4,
             },
-            pool_cap_layers: 15,
             ..LightmapStreamingLiveDiagnostics::default()
         };
         let sections = lightmap_sections(&diagnostics);

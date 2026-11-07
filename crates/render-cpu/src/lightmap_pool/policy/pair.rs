@@ -141,8 +141,8 @@ impl LightmapPoolModel {
     /// one is still retiring, and never past the device's layer limit; a pair
     /// that needs growth then is deferred whole, and neither pool grows for it.
     /// A pool's first half to grow reserves the targeted demand's layers with
-    /// headroom ([`growth_reserve_layers`](Self::growth_reserve_layers)), so
-    /// later pairs, this drain or while the generation retires, land in layers
+    /// the shared margin
+    /// ([`growth_reserve_layers`](Self::growth_reserve_layers)), so later pairs, this drain or while the generation retires, land in layers
     /// already allocated.
     ///
     /// Once a pair is deferred at the device limit in a pool, it failed with
@@ -267,8 +267,8 @@ impl LightmapPoolModel {
         };
     }
 
-    /// Band pairs fit under each cap, clear of reserved room, or are refused
-    /// whole, naming the pools short of room.
+    /// Band pairs take what room is free in any layer, clear of reserved room,
+    /// or are refused whole, naming the pools short of room.
     pub(super) fn place_band(&mut self) {
         let list = std::mem::take(&mut self.scratch.band_ready);
         for &block in &list {
@@ -287,8 +287,7 @@ impl LightmapPoolModel {
         for (kind, item) in self.halves(block) {
             let pool = &mut self.pools[kind];
             let (width, height) = pool.alloc_extent(item);
-            let cap = Some(pool.cap_eff() as usize);
-            match pool.allocator.allocate_within(width, height, cap) {
+            match pool.allocate_in_layers(width, height) {
                 Some(slot) => self.place(kind, item, slot),
                 None => short[kind] = true,
             }

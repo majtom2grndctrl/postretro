@@ -242,11 +242,14 @@ pub(crate) fn simulate_band(
     let blocks = inputs.blocks;
     let block_count = blocks.dims.len();
     let extents = blocks.dims.iter().map(|d| (d.width, d.height)).collect();
-    let cap_layers = cap.unwrap_or(u32::MAX);
     // The dry run's blocks carry no plane presence: the mask pool joins it with
     // the harness's split.
     let demand = PoolDemand::lightmap_only(blocks.alignment, extents);
-    let mut model = LightmapPoolModel::new(demand, POOL_LAYER_EDGE, PerPool::both(cap_layers))
+    let all_resident = demand
+        .all_resident(POOL_LAYER_EDGE)
+        .expect("aligned blocks that fit a pool layer");
+    let first_generation = cap.map_or(all_resident, PerPool::both);
+    let mut model = LightmapPoolModel::new(demand, POOL_LAYER_EDGE, first_generation)
         .expect("aligned blocks that fit a pool layer");
     let mut targets = SimTargets {
         blocks,
@@ -303,7 +306,6 @@ pub(crate) fn simulate_band(
                 .filter(|&block| !model.is_resident(block)),
         );
         let plan = model.plan_drain(DrainRequest {
-            pool_cap_layers: PerPool::both(cap_layers),
             target_reset: None,
             target_set: &targets.set,
             target_remove: &targets.remove,

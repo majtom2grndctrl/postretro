@@ -36,7 +36,6 @@ use repack::RepackEntry;
 /// in range, deltas sorted and disjoint, ready ids unique.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DrainRequest<'a> {
-    pub pool_cap_layers: PerPool<u32>,
     pub target_reset: Option<&'a [LightmapTarget]>,
     pub target_set: &'a [LightmapTarget],
     pub target_remove: &'a [u32],
@@ -71,7 +70,6 @@ struct Scratch {
     /// Resident band blocks, nearest lead first; eviction pops the farthest.
     victims: Vec<u32>,
     victims_built: bool,
-    over_cap: Vec<u32>,
     /// The pools the last failed placement found no room in, with every band
     /// block evicted.
     short: PerPool<bool>,
@@ -108,6 +106,10 @@ pub struct LightmapPoolModel {
     pools: PerPool<PoolState>,
     #[cfg(test)]
     growth_sizing: growth::GrowthSizing,
+    /// Repack as the pool did before compaction, so a test can show what
+    /// compaction holds that the downward pass does not.
+    #[cfg(test)]
+    downward_only: bool,
     journal: Vec<JournalOp>,
     drain: u64,
     touch_stamp: Vec<u64>,
@@ -127,12 +129,12 @@ pub struct LightmapPoolModel {
 
 impl LightmapPoolModel {
     /// A model for a level's blocks, nothing resident, with no device layer
-    /// limit. Each pool's first generation holds `min(cap, L)` layers, where
-    /// `L` is what the level needs all-resident: a pool never pre-allocates
-    /// past what its items together would fill. `None` for a zero-sized block
-    /// or one larger than an `edge`² layer; the loader rejects both.
-    pub fn new(demand: PoolDemand, edge: u32, caps: PerPool<u32>) -> Option<Self> {
-        Self::with_layer_limit(demand, edge, caps, u32::MAX)
+    /// limit. Each pool's first generation holds `first_generation` layers,
+    /// which the level's sizing or a harness chose; a pool with nothing to
+    /// hold has none. `None` for a zero-sized block or one larger than an
+    /// `edge`² layer; the loader rejects both.
+    pub fn new(demand: PoolDemand, edge: u32, first_generation: PerPool<u32>) -> Option<Self> {
+        Self::with_layer_limit(demand, edge, first_generation, u32::MAX)
     }
 
     /// [`new`](Self::new) bounded by the device: no active generation ever
@@ -144,10 +146,10 @@ impl LightmapPoolModel {
     pub fn with_layer_limit(
         demand: PoolDemand,
         edge: u32,
-        caps: PerPool<u32>,
+        first_generation: PerPool<u32>,
         max_layers: u32,
     ) -> Option<Self> {
-        let pools = pool_state::new_pools(&demand, edge, caps, max_layers)?;
+        let pools = pool_state::new_pools(&demand, edge, first_generation, max_layers)?;
         let count = demand.block_count();
         Some(Self {
             demand,
@@ -155,6 +157,8 @@ impl LightmapPoolModel {
             pools,
             #[cfg(test)]
             growth_sizing: growth::GrowthSizing::default(),
+            #[cfg(test)]
+            downward_only: false,
             journal: Vec::new(),
             drain: 0,
             touch_stamp: vec![0; count],
@@ -322,7 +326,6 @@ impl LightmapPoolModel {
             s.band_ready.capacity(),
             s.unseated.capacity(),
             s.victims.capacity(),
-            s.over_cap.capacity(),
             s.repack_pending.capacity(),
             s.repack_keep.capacity(),
             s.repack_band.capacity(),

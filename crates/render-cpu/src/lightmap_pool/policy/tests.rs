@@ -4,10 +4,10 @@ use super::pool_test_fixtures::*;
 use super::*;
 
 /// Three full-layer mandatory blocks and a visible one against a one-layer
-/// cap: the first generation holds one layer, and the drain grows to four.
-fn grown_past_the_cap() -> Harness {
+/// pool: the first generation holds one layer, and the drain grows to four.
+fn grown_past_the_pool() -> Harness {
     let mut h = Harness::new(&[(64, 64), (64, 64), (64, 64), (32, 32)], 1);
-    assert_eq!(h.model.pool(POOL).layers(), 1, "first generation holds the cap");
+    assert_eq!(h.model.pool(POOL).layers(), 1, "first generation as sized");
     let set = [mandatory(0), mandatory(1), mandatory(2), visible(3)];
     h.plan(&set, &[], &[0, 1, 2, 3]);
     h
@@ -15,8 +15,8 @@ fn grown_past_the_cap() -> Harness {
 
 // AC 9, first half.
 #[test]
-fn cap_below_the_mandatory_set_grows_and_installs_every_mandatory_and_visible_pair() {
-    let mut h = grown_past_the_cap();
+fn a_pool_below_the_mandatory_set_grows_and_installs_every_mandatory_and_visible_pair() {
+    let mut h = grown_past_the_pool();
     let plan = h.model.plan();
     assert_eq!(plan.installed, vec![0, 1, 2, 3]);
     assert!(plan.refused.is_empty() && plan.deferred.is_empty());
@@ -40,13 +40,14 @@ fn cap_below_the_mandatory_set_grows_and_installs_every_mandatory_and_visible_pa
 
 // AC 9, second half.
 #[test]
-fn cap_above_the_mandatory_set_refuses_band_past_the_cap_and_frees_untargeted_blocks_next_drain() {
-    // All-resident needs three layers; the cap of two bounds the pool.
+fn a_pool_above_the_mandatory_set_refuses_band_it_cannot_hold_and_frees_untargeted_blocks_next_drain(
+) {
+    // All-resident needs three layers; the pool holds two.
     let mut h = Harness::new(&[(64, 64), (64, 64), (32, 32)], 2);
     assert_eq!(h.model.pool(POOL).layers(), 2);
     let plan = h.drain(&[mandatory(0), band(1, 10), band(2, 5)], &[], &[0, 1, 2]);
     assert_eq!(plan.installed, vec![0, 2], "nearest band lead placed first");
-    assert_eq!(refused(plan), vec![1], "no room under the cap for block 1");
+    assert_eq!(refused(plan), vec![1], "no room for block 1");
     assert!(plan.pools[POOL].growth.is_none() && !plan.report[POOL].repacked);
     assert_eq!(
         plan.report[POOL].band_headroom_texels,
@@ -72,7 +73,7 @@ fn cap_above_the_mandatory_set_refuses_band_past_the_cap_and_frees_untargeted_bl
 
 /// Blocks 0 (24 high) and 1 (16 high) stacked, band block 3 below them. Then
 /// 0 leaves and 2 (40 high) fits no shelf even with 3 evicted, while 1 and 2
-/// together fit the one-layer cap: a repack.
+/// together fit the one-layer pool: a repack.
 fn fragmented_single_layer() -> Harness {
     let mut h = Harness::new(&[(64, 24), (64, 16), (64, 40), (4, 4)], 1);
     let plan = h.drain(&[mandatory(0), mandatory(1), band(3, 3)], &[], &[0, 1, 3]);
@@ -216,7 +217,7 @@ fn a_failed_install_after_a_repack_leaves_every_entry_addressing_its_own_block()
 // P7, model half: after growth.
 #[test]
 fn a_failed_install_after_growth_keeps_the_grown_pool_retiring_until_released() {
-    let mut h = grown_past_the_cap();
+    let mut h = grown_past_the_pool();
     h.model.fail_install(2).unwrap();
     let plan = h.model.plan();
     assert!(plan.pools[POOL].growth.is_some(), "the new generation stands");
@@ -240,7 +241,7 @@ fn a_failed_install_after_growth_keeps_the_grown_pool_retiring_until_released() 
 fn aborting_a_drain_restores_the_model_it_started_from() {
     // The mirror never executed the planned drain, so it holds the state
     // the drain started from.
-    for mut h in [fragmented_two_layers(), grown_past_the_cap()] {
+    for mut h in [fragmented_two_layers(), grown_past_the_pool()] {
         h.model.abort_drain();
         assert!(h.model.plan().uploads.is_empty());
         assert!(!h.model.pool(POOL).retiring());
@@ -258,41 +259,6 @@ fn aborting_a_drain_restores_the_model_it_started_from() {
     h.execute();
 }
 
-// P8.
-#[test]
-fn lowering_the_cap_evicts_only_band_blocks_at_or_past_it() {
-    let mut h = Harness::new(&[(64, 32); 6], 3);
-    assert_eq!(h.model.pool(POOL).layers(), 3);
-    let set = [
-        mandatory(0),
-        mandatory(1),
-        band(2, 1),
-        band(3, 2),
-        band(4, 3),
-        band(5, 4),
-    ];
-    h.drain(&set, &[], &[0, 1, 2, 3, 4, 5]);
-    let layer = |h: &Harness, b| h.model.at(b).unwrap().layer;
-    assert_eq!(
-        (0..6).map(|b| layer(&h, b)).collect::<Vec<_>>(),
-        vec![0, 0, 1, 1, 2, 2]
-    );
-    // Block 4 becomes mandatory where it sits, past the cap to come.
-    h.drain(&[mandatory(4)], &[], &[]);
-    h.cap = 1;
-    h.drain(&[], &[], &[]);
-    assert_eq!(
-        h.evicted(),
-        vec![
-            (2, EvictionReason::OverCap),
-            (3, EvictionReason::OverCap),
-            (5, EvictionReason::OverCap),
-        ]
-    );
-    assert!([0, 1, 4].iter().all(|&b| h.model.is_resident(b)));
-    assert_eq!(h.model.pool(POOL).layers(), 3, "the texture does not shrink");
-}
-
 #[test]
 fn band_pairs_never_grow_or_repack_the_pool() {
     let mut h = Harness::new(&[(64, 64), (64, 64), (64, 64)], 1);
@@ -303,7 +269,7 @@ fn band_pairs_never_grow_or_repack_the_pool() {
     assert_eq!(h.model.pool(POOL).texture_allocations(), 1);
 }
 
-// Mandatory 0 and 1 grow the pool to their two layers plus headroom: three.
+// Mandatory 0 and 1 grow the pool to their two layers plus the margin: three.
 // Visible 2 and 3 arrive while that generation retires: 2 takes the reserved
 // layer, and 3, past the reserve, waits for the release.
 #[test]
@@ -367,11 +333,11 @@ fn a_targeted_set_admitted_over_two_drains_grows_once_and_defers_nothing() {
     assert_eq!(allocations, 2, "one growth, one generation");
 }
 
-// Three full-layer mandatory blocks pack into three layers, four with
-// headroom, but the level needs only three all-resident. A device limit of
+// Three full-layer mandatory blocks pack into three layers, four with the
+// margin, but the level needs only three all-resident. A device limit of
 // two holds a four-block demand to the two layers its first drain needs.
 #[test]
-fn growth_headroom_stops_at_the_all_resident_layers_and_the_device_limit() {
+fn growth_margin_stops_at_the_all_resident_layers_and_the_device_limit() {
     let set: Vec<_> = (0..3).map(mandatory).collect();
     let mut h = Harness::new(&[(64, 64); 3], 1);
     let plan = h.drain(&set, &[], &[0, 1]);
@@ -397,11 +363,11 @@ fn growth_headroom_stops_at_the_all_resident_layers_and_the_device_limit() {
     assert_disjoint_within_layers(&h.model);
 }
 
-// Mandatory 0 fills the top of the one-layer cap. Mandatory 1 and 2 grow the
-// pool to four layers, the last left empty as headroom. Band block 3 would
-// fit that layer but is refused past the cap; band block 4 fits beside 0.
+// Mandatory 0 fills the top of the one first layer. Mandatory 1 and 2 grow the
+// pool to four layers, the last beyond what they fill. Grown layers are the
+// pool's like any other: band block 3 takes the fourth.
 #[test]
-fn growth_headroom_past_the_cap_adds_no_band_headroom() {
+fn a_grown_layer_takes_band_blocks() {
     let extents = [(64, 32), (64, 64), (64, 64), (64, 64), (32, 32)];
     let mut h = Harness::new(&extents, 1);
     h.drain(&[mandatory(0)], &[], &[0]);
@@ -415,21 +381,20 @@ fn growth_headroom_past_the_cap_adds_no_band_headroom() {
             to_layers: 4
         })
     );
-    assert_eq!(h.model.pool(POOL).occupied_layers(), 3, "the fourth layer is headroom");
-    assert_eq!(plan.installed, vec![1, 2, 4]);
-    assert_eq!(refused(plan), vec![3], "band never fills the headroom");
-    let layer_texels = u64::from(EDGE * EDGE);
+    assert_eq!(plan.installed, vec![1, 2, 3, 4]);
+    assert!(refused(plan).is_empty());
+    assert_eq!(h.model.at(3).map(|p| p.layer), Some(3));
+    assert_eq!(h.model.at(4).map(|p| p.layer), Some(0));
     assert_eq!(
         plan.report[POOL].band_headroom_texels,
-        layer_texels - 64 * 32 - 32 * 32
+        u64::from(EDGE * EDGE) - 64 * 32 - 32 * 32,
+        "what is left is what layer 0 has free"
     );
-    assert!(plan.report[POOL].band_headroom_texels <= u64::from(h.cap) * layer_texels);
-    assert_eq!(h.model.at(4).map(|p| p.layer), Some(0));
     assert_disjoint_within_layers(&h.model);
 }
 
-/// Mandatory 0 fills layer 0 and mandatory 1 the top of layer 1 under a
-/// two-layer cap; band block 2 sits below block 1. A full-layer mandatory
+/// Mandatory 0 fills layer 0 and mandatory 1 the top of layer 1 in a
+/// two-layer pool; band block 2 sits below block 1. A full-layer mandatory
 /// pair then fits nowhere even with block 2 evicted.
 fn band_beside_a_full_pool() -> Harness {
     let extents = [(64, 64), (64, 48), (16, 16), (64, 64), (64, 64), (64, 64)];
@@ -452,7 +417,7 @@ fn growth_keeps_the_band_blocks_its_pair_could_not_use() {
             from_layers: 2,
             to_layers: 4
         }),
-        "mandatory 0, 1 and 3 pack into three layers, four with headroom"
+        "mandatory 0, 1 and 3 pack into three layers, four with the margin"
     );
     assert_eq!(plan.installed, vec![3]);
     assert!(plan.evicted.is_empty(), "{:?}", plan.evicted);
@@ -466,7 +431,7 @@ fn a_deferral_while_retiring_keeps_the_band_blocks_its_pair_could_not_use() {
     let band_region = h.model.at(2);
     h.drain(&[mandatory(3)], &[], &[3]);
     assert!(h.model.pool(POOL).retiring());
-    // Visible 4 fills the growth's headroom layer; visible 5 then needs
+    // Visible 4 fills the growth's margin layer; visible 5 then needs
     // growth.
     let plan = h.drain(&[visible(4)], &[], &[4]);
     assert_eq!(plan.installed, vec![4]);
@@ -507,13 +472,12 @@ fn a_pair_keeps_only_the_evictions_its_slot_needs() {
     assert_disjoint_within_layers(&h.model);
 }
 
-// Mandatory 0 and 1 grow a one-layer cap to three layers, the third reserved.
+// Mandatory 0 and 1 grow a one-layer pool to three layers, the third reserved.
 // Blocks 2 (24 tall) and 3 (16 tall) then fill the top of layer 2. Block 2
-// leaves and block 4 (40 tall) fits no shelf, nor anything under the cap,
-// but layer 2 compacted holds 4 and 3: the drain repacks within its three
+// leaves and block 4 (40 tall) fits no shelf, but layer 2 compacted holds 4 and 3: the drain repacks within its three
 // layers rather than growing a fourth.
 #[test]
-fn a_pool_grown_past_the_cap_repacks_within_its_layers_before_growing() {
+fn a_grown_pool_repacks_within_its_layers_before_growing() {
     let extents = [(64, 64), (64, 64), (64, 24), (64, 16), (64, 40)];
     let mut h = Harness::new(&extents, 1);
     let plan = h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);

@@ -254,7 +254,6 @@ fn run_history(seed: u64, layers: u32, steps: usize, mode: Mode, tally: &Tally) 
         }
         let start = std::time::Instant::now();
         let plan = model.plan_drain(DrainRequest {
-            pool_cap_layers: caps(layers),
             target_reset: None,
             target_set: &set,
             target_remove: &remove,
@@ -374,7 +373,8 @@ fn the_hallway_tour_at_its_27_layer_bound_compacts_without_growth() {
     let text = include_str!("compaction_fixtures/hallway_tour_27_layers.txt");
     let mut numbers = text.split_whitespace().map(|n| n.parse::<u32>().unwrap());
     let mut next = || numbers.next().unwrap();
-    let (edge, layers, cap, residents, pending) = (next(), next(), next(), next(), next());
+    let (edge, layers, first_generation, residents, pending) =
+        (next(), next(), next(), next(), next());
     assert_eq!(edge, SCALE_EDGE);
     let mut placed: Vec<(u32, u32, u32, u32, u32, bool)> = (0..residents)
         .map(|_| {
@@ -401,7 +401,7 @@ fn the_hallway_tour_at_its_27_layer_bound_compacts_without_growth() {
             residents + at
         })
         .collect();
-    let mut model = test_model(extents, SCALE_ALIGN, edge, cap, u32::MAX).unwrap();
+    let mut model = test_model(extents, SCALE_ALIGN, edge, first_generation, u32::MAX).unwrap();
     assert_eq!(model.pool(POOL).layers(), layers);
     let targets: Vec<LightmapTarget> = (0..residents)
         .map(|block| {
@@ -413,7 +413,6 @@ fn the_hallway_tour_at_its_27_layer_bound_compacts_without_growth() {
         })
         .collect();
     model.plan_drain(DrainRequest {
-        pool_cap_layers: caps(cap),
         target_reset: None,
         target_set: &targets,
         target_remove: &[],
@@ -432,7 +431,6 @@ fn the_hallway_tour_at_its_27_layer_bound_compacts_without_growth() {
 
     let set: Vec<LightmapTarget> = arrivals.iter().map(|&block| mandatory(block)).collect();
     let plan = model.plan_drain(DrainRequest {
-        pool_cap_layers: caps(cap),
         target_reset: None,
         target_set: &set,
         target_remove: &[],

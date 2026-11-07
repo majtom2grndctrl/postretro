@@ -33,10 +33,6 @@ pub(super) enum JournalOp {
         block: u32,
         previous: Option<Target>,
     },
-    Cap {
-        kind: PoolKind,
-        previous: u32,
-    },
     Place {
         kind: PoolKind,
         item: u32,
@@ -114,8 +110,8 @@ impl LightmapPoolModel {
 
     /// Undo the whole drain, for a failure before anything was submitted
     /// (for example growth could not allocate). Both pools return to their
-    /// state before `plan_drain`, targets, caps, reserved room and the
-    /// compaction gates included, and the plan is cleared.
+    /// state before `plan_drain`, targets, reserved room and the compaction
+    /// gates included, and the plan is cleared.
     pub fn abort_drain(&mut self) {
         self.rollback_to(0);
         // Nothing this drain deferred stands.
@@ -173,16 +169,6 @@ impl LightmapPoolModel {
             // Its room may seat a target that found none.
             self.scratch.demand_changed = true;
             self.release(block, EvictionReason::Untargeted);
-        }
-    }
-
-    pub(super) fn set_caps(&mut self, caps: PerPool<u32>) {
-        for kind in PoolKind::ALL {
-            let previous = self.pools[kind].cap_layers;
-            if caps[kind] != previous {
-                self.journal.push(JournalOp::Cap { kind, previous });
-                self.pools[kind].cap_layers = caps[kind];
-            }
         }
     }
 
@@ -258,7 +244,6 @@ impl LightmapPoolModel {
     fn undo(&mut self, op: JournalOp) {
         match op {
             JournalOp::Target { block, previous } => self.targets[block as usize] = previous,
-            JournalOp::Cap { kind, previous } => self.pools[kind].cap_layers = previous,
             JournalOp::Place { kind, item, slot } => {
                 let pool = &mut self.pools[kind];
                 let placed = pool.detach(item);

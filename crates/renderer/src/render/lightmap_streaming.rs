@@ -8,15 +8,7 @@ use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 
 use super::Renderer;
 use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
-pub use diagnostics::{
-    LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
-    StreamingReachLever,
-};
-
-/// Default pool cap in layers (15 × 14 MiB = 210 MiB of BC pool at the
-/// default lead). The first generation holds this many layers, or fewer
-/// when every block fits in less.
-pub const DEFAULT_LIGHTMAP_POOL_CAP_LAYERS: u32 = 15;
+pub use diagnostics::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
 
 impl Renderer {
     /// Execute the controller's lightmap drain batch. Call once per frame,

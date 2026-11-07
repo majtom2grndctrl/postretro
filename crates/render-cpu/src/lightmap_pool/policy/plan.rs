@@ -12,9 +12,6 @@ use super::copy_order::CopyOrderStats;
 pub enum EvictionReason {
     /// It left every target.
     Untargeted,
-    /// A band block at or past the cap's layers: the cap was lowered, or a
-    /// block placed past it by growth dropped into the band.
-    OverCap,
     /// A band block evicted, farthest lead first, to make room for a
     /// mandatory or visible pair, or dropped by a repack.
     Pressure,
@@ -29,8 +26,8 @@ pub struct PlannedEviction {
 /// A new pool generation: `to_layers + 1` array layers (the last is the
 /// spare). Copy layers `0..from_layers` of the old generation at origin zero,
 /// then retire the old one until submitted-work-done. `to_layers` reserves
-/// the whole targeted mandatory and visible demand with headroom, so it can
-/// exceed what the drain's own pairs occupy.
+/// the whole targeted mandatory and visible demand with the shared margin, so
+/// it can exceed what the drain's own pairs occupy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolGrowth {
     pub from_layers: u32,
@@ -149,8 +146,8 @@ pub struct DrainPlan {
     /// Pairs sampleable from this drain on: every upload, plus any ready pair
     /// whose block was already resident (no upload).
     pub installed: Vec<u32>,
-    /// Band pairs with no room under a cap clear of reserved room, turned away
-    /// whole, and pairs no longer targeted.
+    /// Band pairs with no room clear of reserved room, turned away whole, and
+    /// pairs no longer targeted.
     pub refused: Vec<LightmapRefusal>,
     /// Mandatory or visible pairs that needed growth of a pool whose generation
     /// was still retiring, or a layer past the device limit: a counted miss,

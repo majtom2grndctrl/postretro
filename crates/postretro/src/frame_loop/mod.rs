@@ -2492,12 +2492,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         .sh_streaming
                         .as_ref()
                         .map(|streaming| streaming.live_diagnostics());
-                    // The tab edits a copy of the levers; changes
-                    // are written back after the UI runs.
-                    let lightmap_streaming = session.level_streaming.lightmap().map(|streaming| {
-                        (*streaming.live_diagnostics(), streaming.slider_levers())
-                    });
-                    let mut lightmap_levers = lightmap_streaming.map(|(_, levers)| levers);
+                    let lightmap_streaming = session
+                        .level_streaming
+                        .lightmap()
+                        .map(|streaming| *streaming.live_diagnostics());
+                    // The tab edits a copy of the lead; a change is written
+                    // back after the UI runs.
                     let reach_before = session.level_streaming.cell_demand().map(|stage| {
                         render::StreamingReachLever {
                             lead_metres: stage.lead_metres(),
@@ -2536,26 +2536,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                                 &door_occluder_diagnostics.mover_rows,
                                 &door_occluder_diagnostics.blocked_portal_ids,
                                 sh_streaming_live,
-                                lightmap_streaming
-                                    .as_ref()
-                                    .zip(lightmap_levers.as_mut())
-                                    .map(|((diagnostics, _), levers)| {
-                                        render::debug_ui::LightmapStreamingTab {
-                                            diagnostics,
-                                            levers,
-                                        }
-                                    }),
+                                lightmap_streaming.as_ref().map(|diagnostics| {
+                                    render::debug_ui::LightmapStreamingTab { diagnostics }
+                                }),
                                 reach.as_mut(),
                                 network_lag.as_mut(),
                             );
                         }
                     });
-                    if let (Some((_, before)), Some(after)) = (lightmap_streaming, lightmap_levers)
-                        && before != after
-                        && let Some(streaming) = session.level_streaming.lightmap_mut()
-                    {
-                        streaming.set_slider_levers(after);
-                    }
                     if let Some(after) = reach
                         && reach_before != Some(after)
                         && let Some(stage) = session.level_streaming.cell_demand_mut()

@@ -222,7 +222,6 @@ fn run(history: &History, tally: &Tally, arrival: Arrival) {
         for (at, batch) in batches.iter().enumerate() {
             let (set, remove): (&[_], &[_]) = if at == 0 { (&set, &remove) } else { (&[], &[]) };
             model.plan_drain(DrainRequest {
-                pool_cap_layers: caps(layers),
                 target_reset: None,
                 target_set: set,
                 target_remove: remove,

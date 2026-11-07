@@ -29,35 +29,25 @@ pub(super) struct RepackEntry {
 }
 
 impl LightmapPoolModel {
-    /// The downward pass, under the cap and then, in a pool already grown past
-    /// it, within its layers: compacting what is already allocated beats
-    /// growing again.
+    /// The downward pass: repack every resident item of `kind`'s pool plus the
+    /// ready never-refused `pending` items without reads, knowing nothing of
+    /// the other pool. Mandatory and visible items go first, each resident one
+    /// no higher than the layer it sits in (most constrained first, then
+    /// tallest); then resident band items, nearest lead first. A band item
+    /// that no longer fits drops its block from both pools. Returns false,
+    /// with the model untouched, when `scope`'s demand does not fit.
+    ///
+    /// `pending` items and targets not ready take reserved room: a pair lands
+    /// whole, once every pool has a place for it. A whole-demand repack must
+    /// seat targets with the rest; a drain-pairs repack seats them after, as
+    /// far as room lasts.
     pub(super) fn repack_downward(
         &mut self,
         kind: PoolKind,
         pending: &[u32],
         scope: RepackScope,
     ) -> bool {
-        let cap = self.pools[kind].cap_eff();
-        self.repack(kind, pending, cap, scope)
-            || (self.pools[kind].layers > cap
-                && self.repack(kind, pending, self.pools[kind].layers, scope))
-    }
-
-    /// Repack every resident item of `kind`'s pool plus the ready never-refused
-    /// `pending` items without reads, knowing nothing of the other pool.
-    /// Mandatory and visible items go below `limit` layers first, each resident
-    /// one no higher than the layer it sits in (most constrained first, then
-    /// tallest); then resident band items, nearest lead first, below the cap. A
-    /// band item that no longer fits drops its block from both pools. Returns
-    /// false, with the model untouched, when `scope`'s demand does not fit.
-    ///
-    /// `pending` items and targets not ready take reserved room below `limit`:
-    /// a pair lands whole, once every pool has a place for it. A whole-demand
-    /// repack must seat targets with the rest; a drain-pairs repack seats them
-    /// after, as far as room lasts.
-    fn repack(&mut self, kind: PoolKind, pending: &[u32], limit: u32, scope: RepackScope) -> bool {
-        let band_limit = self.pools[kind].cap_eff();
+        let limit = self.pools[kind].layers;
         let checkpoint = self.journal.len();
         let mut keep = std::mem::take(&mut self.scratch.repack_keep);
         let mut band = std::mem::take(&mut self.scratch.repack_band);
@@ -72,11 +62,11 @@ impl LightmapPoolModel {
         for &item in &residents {
             let layer = self.pools[kind].slot(item).expect("resident").layer;
             if self.is_band(kind.block_of(item)) {
-                band.push((item, (layer + 1).min(band_limit)));
+                band.push((item, layer + 1));
             } else {
                 keep.push(RepackEntry {
                     item,
-                    bound: (layer + 1).min(limit),
+                    bound: layer + 1,
                     room: false,
                 });
             }

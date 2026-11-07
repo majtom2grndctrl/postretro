@@ -210,7 +210,7 @@ fn a_jam_at_the_device_limit_compacts_once_and_repacks_no_more() {
 
 #[test]
 fn a_jam_behind_a_retiring_generation_repacks_once_and_then_grows() {
-    // Two layers plus headroom: three. Block 3 is past the reserve.
+    // Two layers plus the margin: three. Block 3 is past the reserve.
     let mut h = Harness::new(&[(64, 64); 4], 1);
     h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
     let plan = h.drain(&[mandatory(2), mandatory(3)], &[], &[2, 3]);
@@ -285,6 +285,6 @@ fn a_demand_with_no_copy_order_warns_once() {
     }
     capture.assert_logged_once(
         Level::Warn,
-        "found no copy order through the spare",
+        &format!("Compaction of the {} pool found no copy order through the spare", POOL.name()),
     );
 }

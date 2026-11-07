@@ -17,10 +17,10 @@ pub enum LightmapStreamingMode {
 }
 
 /// Why a block is targeted. Declaration order is refusal order: the renderer
-/// may refuse or evict only `Band` blocks under cap pressure. `Mandatory`
+/// may refuse or evict only `Band` blocks under pool pressure. `Mandatory`
 /// (within lead L of the camera cell, or a pinned cluster's cell) and
 /// `Visible` (drawn this frame but outside the baked set) are never refused;
-/// the pool grows past its cap to hold them.
+/// the pool grows to hold them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LightmapBlockClass {
     Mandatory,
@@ -54,7 +54,7 @@ pub struct PreparedLightmapBlock {
 ///
 /// The controller owns demand, reads and the shared drain budget (which
 /// admitted `ready`). The renderer owns placement: allocation, band eviction
-/// under the cap, in-place repack through the spare layer, growth, and
+/// under pressure, in-place repack through the spare layer, growth, and
 /// retirement. It reports what actually happened in [`LightmapDrainOutcome`].
 ///
 /// `target_set` and `target_remove` are deltas against the targets the
@@ -65,9 +65,6 @@ pub struct PreparedLightmapBlock {
 pub struct LightmapDrainBatch {
     pub generation: u64,
     pub content_tag: [u8; 32],
-    /// Pool cap in layers (the dev-tools slider), for each pool. Band blocks
-    /// must fit under it; mandatory and visible blocks may grow a pool past it.
-    pub pool_cap_layers: u32,
     pub target_reset: Option<Vec<LightmapTarget>>,
     /// New or reclassified targets, sorted by block id, unique.
     pub target_set: Vec<LightmapTarget>,
@@ -134,12 +131,14 @@ impl LightmapDrainBatch {
 pub struct PoolReport {
     /// Layers of the pool's active generation.
     pub layers: u32,
-    /// Texels free under the cap, leaving out room reserved for mandatory and
+    /// Texels free in the pool, leaving out room reserved for mandatory and
     /// visible targets: the room band prefetch may still fill. The controller
     /// requests band reads only against this headroom, less the pairs it
     /// holds with no room reserved; the renderer's refusal stays authoritative.
     pub band_headroom_texels: u64,
     /// Whether this drain repacked the pool in place, or grew a new generation.
+    /// A growth is demand the compiled bound does not model: the controller,
+    /// which holds the camera cell, warns on it by name.
     pub repacked: bool,
     pub grew: bool,
     /// Whether a retiring generation is still awaiting submitted-work-done.
@@ -162,7 +161,7 @@ pub struct LightmapRefusal {
 pub struct LightmapDrainOutcome {
     /// Pairs installed this drain; sampleable from this drain on.
     pub installed: Vec<u32>,
-    /// Band pairs that did not fit under the cap. Their payloads are dropped;
+    /// Band pairs that did not fit the pool. Their payloads are dropped;
     /// the controller must not re-request them until the pool that turned
     /// them away has room.
     pub refused: Vec<LightmapRefusal>,
@@ -174,8 +173,8 @@ pub struct LightmapDrainOutcome {
     /// non-resident; any class may land here. The controller treats them as
     /// failed reads.
     pub failed: Vec<u32>,
-    /// Blocks actually released: removed targets, and band blocks evicted for
-    /// cap pressure or to make room for mandatory work.
+    /// Blocks actually released: removed targets, and band blocks evicted to
+    /// make room for mandatory work.
     pub evicted: Vec<u32>,
     /// Pool items that newly hold reserved room: a block id in the lightmap
     /// pool, a [`mask_item`] in the mask pool, so one plane can hold room
@@ -257,7 +256,6 @@ mod tests {
         LightmapDrainBatch {
             generation: 3,
             content_tag: [7; 32],
-            pool_cap_layers: 4,
             target_set: vec![
                 target(1, LightmapBlockClass::Mandatory),
                 target(4, LightmapBlockClass::Band),

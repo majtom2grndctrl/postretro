@@ -4,11 +4,7 @@
 use super::*;
 
 fn streamed_resources(ctx: &GpuCtx, fixture: &BlockFixture, floor: u64) -> LightmapResources {
-    let cap = PerPool {
-        lightmap: 1,
-        mask: MASK_ROOM,
-    };
-    sized_resources(ctx, fixture, cap, floor)
+    sized_resources(ctx, fixture, mask_holds_every_plane(fixture, 1), floor)
 }
 
 // Growth through the resource set, then P9 / AC 13: group 4 rebinds the new

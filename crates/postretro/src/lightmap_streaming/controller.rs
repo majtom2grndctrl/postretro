@@ -13,7 +13,6 @@ use postretro_level_loader::{
 use super::LightmapResidencyError;
 use super::block_map::{BlockFacts, LevelBlockMap};
 use super::demand::{BlockDemand, BlockTarget, DemandFrame};
-use super::levers::LightmapLevers;
 use super::source::LightmapBlockSource;
 use crate::sh_streaming::generation::{GenerationClock, ProcessGenerationClock};
 use crate::streaming::cell_demand::{CellDemand, to_metres};
@@ -34,6 +33,9 @@ use reads::PairCharge;
 #[cfg(test)]
 #[path = "multi_block_tests.rs"]
 mod multi_block_tests;
+#[cfg(test)]
+#[path = "pool_growth_tests.rs"]
+mod pool_growth_tests;
 #[cfg(test)]
 #[path = "preload_tests.rs"]
 mod preload_tests;
@@ -86,7 +88,7 @@ pub(crate) enum BlockPhase {
     InDrain,
     /// The renderer installed it; sampleable until evicted.
     Installed,
-    /// A band pair the renderer refused over the cap. Not requested again
+    /// A band pair the renderer had no room for. Not requested again
     /// until each pool that refused it reports room for one more of its slots
     /// than it had at refusal.
     Refused,
@@ -252,7 +254,9 @@ pub(crate) struct LightmapResidencyController {
     source: Arc<dyn LightmapBlockSource>,
     map: LevelBlockMap,
     demand: BlockDemand,
-    levers: LightmapLevers,
+    /// The camera cell of the latest demand update, which a growth warning
+    /// names; `None` before the first.
+    camera_cell: Option<u32>,
     /// The lead L the latest demand update used, fixed point: the
     /// level-scope stage's, for diagnostics and the test-only camera set.
     lead: u32,
@@ -378,7 +382,7 @@ impl LightmapResidencyController {
             content_tag: source.content_tag(),
             source,
             demand,
-            levers: LightmapLevers::new(),
+            camera_cell: None,
             lead: CellDemand::new(residency_set.max_lead).lead(),
             max_lead: residency_set.max_lead,
             targets: Arc::new(TargetBitset::new(block_count)),
@@ -437,10 +441,6 @@ impl LightmapResidencyController {
         &self.targets
     }
 
-    pub(crate) fn levers(&self) -> LightmapLevers {
-        self.levers
-    }
-
     /// Sets the lead a test-only camera-set update reads, as a frame from the
     /// stage would.
     #[cfg(test)]
@@ -456,14 +456,6 @@ impl LightmapResidencyController {
     /// The level's baked maximum lead in metres.
     pub(crate) fn max_lead_metres(&self) -> f32 {
         to_metres(self.max_lead)
-    }
-
-    /// The dev-tools pool-cap slider and capture's cap override write here;
-    /// the cap rides the next drain batch. Lead L is the level's, on the
-    /// cell-demand stage.
-    #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
-    pub(crate) fn levers_mut(&mut self) -> &mut LightmapLevers {
-        &mut self.levers
     }
 
     pub(crate) fn counters(&self) -> LightmapResidencyCounters {
@@ -533,6 +525,7 @@ impl LightmapResidencyController {
     /// [`Self::count_visible_misses`], after the frame's drain.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {
         self.lead = frame.lead;
+        self.camera_cell = Some(frame.camera_cell);
         self.may_request = self.demand.update(&self.map, frame);
         self.camera_set_only = !frame.is_portal_walk();
         self.retarget_dirty();
@@ -547,6 +540,7 @@ impl LightmapResidencyController {
     /// camera cell's baked set.
     pub(crate) fn update_capture_view(&mut self, frame: DemandFrame<'_>) {
         self.lead = frame.lead;
+        self.camera_cell = Some(frame.camera_cell);
         self.demand.update_capture_view(&self.map, frame);
         self.may_request = true;
         self.camera_set_only = false;
@@ -564,6 +558,7 @@ impl LightmapResidencyController {
         residency_set: &CellResidencySetSection,
         camera_cell: u32,
     ) {
+        self.camera_cell = Some(camera_cell);
         self.demand
             .update_camera_set(&self.map, self.lead, residency_set, camera_cell);
         self.may_request = true;

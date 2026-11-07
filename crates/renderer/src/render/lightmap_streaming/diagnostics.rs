@@ -1,9 +1,9 @@
-// Plain-data live view of streamed lightmap residency, and the dev-tools levers.
+// Plain-data live view of streamed lightmap residency, and the dev-tools lead lever.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 //
 // Nothing here is feature-gated: the application's periodic log line and the
 // capture report read these values in every build; the dev-tools Streaming
-// tab only renders them and edits the levers.
+// tab only renders them and edits the lead.
 
 use postretro_render_cpu::lightmap_pool::PerPool;
 
@@ -18,8 +18,7 @@ use crate::lighting::lightmap::LightmapStreamCounters;
 /// every other count is cumulative since the level's streaming began.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LightmapStreamingLiveDiagnostics {
-    // Levers and lead in force.
-    pub pool_cap_layers: u32,
+    // Lead in force.
     pub lead_metres: f32,
     pub max_lead_metres: f32,
     // Residency gauges (controller).
@@ -31,8 +30,7 @@ pub struct LightmapStreamingLiveDiagnostics {
     pub mandatory_blocks: u64,
     pub mandatory_lightmap_bytes: u64,
     pub mandatory_shadowmask_bytes: u64,
-    /// Texels free under each pool's cap for band prefetch, from the latest
-    /// outcome.
+    /// Texels free in each pool for band prefetch, from the latest outcome.
     pub band_headroom_texels: PerPool<u64>,
     /// Read bytes delivered by the issuer and not yet taken by the controller.
     pub in_flight_read_bytes: u64,
@@ -98,18 +96,10 @@ impl LightmapStreamingLiveDiagnostics {
     }
 }
 
-/// The lightmap residency lever as the dev-tools Streaming tab edits it.
-/// A developer lever, never a player setting
-/// (`context/lib/experimental_spikes.md` §Tuning levers).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LightmapStreamingLevers {
-    /// Pool cap in layers, `1..=`[`MAX_LIGHTMAP_POOL_CAP_LAYERS`]. Rides the
-    /// next drain batch.
-    pub pool_cap_layers: u32,
-}
-
 /// The level's lead L as the dev-tools Streaming tab edits it: one reach for
-/// every streamed resource, shown whenever the level has one.
+/// every streamed resource, shown whenever the level has one. A developer
+/// lever, never a player setting
+/// (`context/lib/experimental_spikes.md` §Tuning levers).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamingReachLever {
     /// Lead L in metres, `0..=max_lead_metres`. Takes effect at the next
@@ -118,10 +108,6 @@ pub struct StreamingReachLever {
     /// The level's baked maximum lead; read-only.
     pub max_lead_metres: f32,
 }
-
-/// Largest pool cap the slider offers: a 256-layer texture array (WebGPU's
-/// default `max_texture_array_layers`) less the reserved spare layer.
-pub const MAX_LIGHTMAP_POOL_CAP_LAYERS: u32 = 255;
 
 #[cfg(test)]
 mod tests {

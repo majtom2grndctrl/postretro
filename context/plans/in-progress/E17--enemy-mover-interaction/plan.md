@@ -36,6 +36,7 @@ Source since the brief's `read at` (7dec6ed0) changed only model import and ghos
 - **`movement-feel` carries 15 agents**, not 4; six chase the scripted player in the baseline run, so the dump exercises steering.
 - **Row 36 "before"** needs no measurement yet. `stress-env-volumes.prl` is unbuilt and `stress-env-volumes-baseline.prl` predates the Nov 5 PRL bump, so a cold bake is due either way. The pre-change release `postretro.exe`, `prl-build.exe` and `scripts-build.exe` (built at `105bbec03`) are saved in the session scratchpad `before/`; rebuild from that commit if lost. Task 10 bakes with them for version 2 and with the current tools for version 3 (warm cache misses only nav and pack), then runs both engines back to back on one machine state.
 - **Row 37 nav time** — the nav stage runs ahead of every bake-heavy stage and takes under 1.2 s to reach cold on all four maps. Baselines are in `baseline/nav-report-before.json`, taken by timing a cold bake to the `NavMesh:` log line and stopping it. The `nav_seconds` field is below log-flush resolution; `reached_nav_at` is the comparable figure.
+- **Row 36 second window (owner, 2026-11-06)** — the measurement room holds no lift and its doors likely stay shut, so that window likely reads idle overhead rather than contact cost. Row 36 also runs before and after at lift 0, `--start-pose=30.07,2.44,156.87,45,0`, with the same builds and method. It counts as contact evidence only if enemies reach the lift, so the report says whether they did. The 0.8 ms stop applies to each window.
 
 ## Delegated answers
 
@@ -98,7 +99,7 @@ Source since the brief's `read at` (7dec6ed0) changed only model import and ghos
 | 33 | Crush-immune, corpse impact cadence, revived corpse (O51, O52) | `physics` + `sim` tests | achievable as stated |
 | 34 | Agent-on-lift determinism | `an_agent_on_a_lift_replays_identically` in `agent_steering/mover_contact_tests.rs` | achievable as stated |
 | 35 | New paths allocate nothing | `alloc_probe` test in `sim`, with the one-allocation control window | achievable as stated |
-| 36 | Cost tripwire, 0.8 ms combined | Windowed `POSTRETRO_CPU_TIMING` before and after; baseline captured in Task 1 | manual, executor runs and reports |
+| 36 | Cost tripwire, 0.8 ms combined | Windowed `POSTRETRO_CPU_TIMING` before and after at the measurement room, plus a second window at lift 0 (owner, 2026-11-06); baseline captured in Task 1 | manual, executor runs and reports |
 | 37 | Bake report on four maps | Region, portal, gate and link counts plus nav bake time; baseline in Task 1 | manual, executor runs; owner's terminal if a bake exceeds 2 h |
 | 38 | `mover-setpiece` in-engine | Owner, in-engine | manual |
 | 39 | Enemy-movers map; README checks | Owner, in-engine | manual |
@@ -119,7 +120,7 @@ Sequential on the feature branch: the machine is disk-bound, each task needs com
 | 6 | Bake: pose non-spinners per waypoint, split regions, sweep portals for gates, derive links, widen the stage key, bump `NAVMESH_STAGE_VERSION`. Rows 27 (spinner), 30, 31, 37 | worker (compiler) | 5 | done: `navmesh_bake::mover_tests`; prl-build 2325 and lib 694 passed; ai 247, level-loader 330, sim 1879 passed on the merged tree |
 | 7 | Runtime gate: dock predicate, `sim/nav/gate.rs`, gated `find_path`, kept-path drop, replan tier, reachability, `region_components` as superset, combat slot rejection, load validation and reset. Rows 8–10, 12, 13, 19, 21–26, 32 | integrating executor | 2, 5 | done: `kinematic_mover/dock.rs`, `nav/gate.rs`; `agent_steering/gate_tests.rs` covers rows 8, 9, 12, 19, 21–26, 32; `target_reachability_reads_the_door_that_cuts_the_only_route` covers row 13. Row 10's contention fixture lands in Task 10 |
 | 8 | Links and rides: A* edges, ride edge phase, `agent_steering/mover_link.rs`, link-based region resolution, `targetReachable` hold. Rows 14–18, 20 | integrating executor | 6, 7 | done: `agent_steering/mover_link_tests.rs` covers rows 14, 16–18, 20; `a_riders_target_reachability_holds_its_boarding_value_and_recomputes_after_exit` covers row 15 |
-| 9 | Docs and proof content: `docs/level_design.md`, `docs/scripting-reference.md`, `mover-setpiece` enemies, enemy-movers map and README. Rows 38–41 | worker (docs/content) | 8 | |
+| 9 | Docs and proof content: `docs/level_design.md`, `docs/scripting-reference.md`, `mover-setpiece` enemies, enemy-movers map and README. Rows 38–41 | worker (docs/content) | 8 | done: `enemy-movers` bakes 26 gates, 10 links; `mover-setpiece` 4 gates, 5 links. Rows 38–41 stay with the owner |
 | 10 | Close the proofs: `alloc_probe` window, row 27 dump comparison, `stress-env-volumes` harness, rows 36 and 37 "after". Rows 10, 27, 35–37 | integrating executor | 9 | |
 
 Stop conditions during the build: Task 1 failing its falsification tests goes to the owner, since it undercuts shared primitives. Row 36 growth above 0.8 ms stops with the profile. Any new false Decision premise blocks.

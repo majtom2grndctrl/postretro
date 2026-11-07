@@ -468,8 +468,32 @@
 "_color" "200 220 255"
 "_falloff_range" "900"
 }
-// Station 1: the sliding wall fills the view. Yaw 90 faces +y.
+// Enemies. A chaser on the enemy spot behind the sliding wall, facing south
+// toward the wall. Two riders inside the rising room, authored at its lowered
+// pose: the room floor top is z -176, so their origins sit 16 above it.
 // entity 14
+{
+"classname" "reference_enemy"
+"origin" "368 1232 16"
+"angles" "0 270 0"
+"_tags" "enemy setpiece_chaser"
+}
+// entity 15
+{
+"classname" "reference_enemy"
+"origin" "912 280 -160"
+"angles" "0 180 0"
+"_tags" "enemy setpiece_rider"
+}
+// entity 16
+{
+"classname" "reference_enemy"
+"origin" "1040 376 -160"
+"angles" "0 180 0"
+"_tags" "enemy setpiece_rider"
+}
+// Station 1: the sliding wall fills the view. Yaw 90 faces +y.
+// entity 17
 {
 "classname" "player_spawn"
 "origin" "368 720 48"

@@ -1723,7 +1723,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetDied` | `@brain.targetDied` | `boolean` | Whether the selected target's death sweep latch has fired; `false` with no target or no health component. Meaningful only when `hasTarget` is true. |
 | `brain.distanceFromAnchor` | `@brain.distanceFromAnchor` | `number` | XZ distance in metres from this brain's spawn-time home anchor. Always meaningful, including with no selected target. Use it for an authored leash or retreat; it is not an engine leash field. |
 | `brain.targetHostile` | `@brain.targetHostile` | `boolean` | Whether the selected target is hostile; `false` with no target. Use this durable authored fact to stand down a retained target that turns friendly. |
-| `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. |
+| `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. It reads door state: `false` while a door docked at a waypoint cuts the only route, `true` again once the door leaves. See [Doors and `targetReachable`](#doors-and-targetreachable). |
 | `brain.attacksFiredInActivity` | `@brain.attacksFiredInActivity` | `number` | Successful action fires since the activity whose rows are being evaluated was entered. Scope-relative. A fire becomes visible to guards on the next tick. |
 | `brain.timeSinceDamageMs` | `@brain.timeSinceDamageMs` | `number` | Milliseconds since this enemy last took damage. A never-hit brain reads the `1e9` no-memory sentinel; a landed hit resets it to `0`, then later AI ticks age it back to that sentinel. |
 | `brain.timeSinceTargetVisible` | `@brain.timeSinceTargetVisible` | `number` | Milliseconds since the selected target was last visible. A never-seen brain reads the `1e9` no-memory sentinel; a visible target resets it to `0`, then later AI ticks age it back to that sentinel. |
@@ -1880,6 +1880,29 @@ enemy intentionally does not show a `waiting`/barrier-hold state yet. Its result
 inherits the pathfinder's freestanding-wall wraparound false-negative until the
 pursuit repair lands; do not treat it as a ground-truth visibility or geometry
 oracle.
+
+### Doors and `targetReachable`
+
+`targetReachable` means reachable *now*, so it reads the state of the level's
+doors and lifts:
+
+- **A door cuts the route.** While a `kinematic_mover` door rests at a waypoint
+  that blocks the only way to the target, `targetReachable` reads `false`. The
+  enemy detours if another route exists. If none does, it holds where it
+  stands.
+- **The door leaves.** Once the door starts moving off that waypoint, the next
+  acquisition-due tick reads `true` and the enemy resumes the chase. The fact
+  updates on acquisition-due ticks, like every target-side fact, so conjunct
+  `brain.acquisitionDue` as shown above.
+- **A door stopped between waypoints** is not a gate. The fact does not change,
+  and the door blocks the enemy by collision alone.
+- **Riding a lift.** While the enemy rides a lift, `targetReachable` holds the
+  value it had when the enemy boarded, on every acquisition-due tick. It is
+  recomputed on the first one after the enemy steps off.
+
+Only maps compiled with a current `prl-build` carry the door and lift data the
+fact reads. A map compiled before that reads as if its doors never gate a route.
+See [Movers](level_design.md#movers) for how doors and lifts affect enemies.
 
 ### `maxRange`, `engagementRadius`, and `standoffDistance`
 

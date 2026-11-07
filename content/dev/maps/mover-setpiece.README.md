@@ -96,37 +96,42 @@ while the wall is open.
 
 **Enemy spot.** A red 64 × 64 × 8 plinth (`debug_floor_red`) at x
 336–400, y 1200–1264 in the back room; its centre is 4.1 m behind the closed wall. It
-lies on the line from station 1 through the closed wall's centre. Place an
-enemy on it, for example at (368, 1232, 32), to prove that the closed
-wall blocks shots, sight and enemy perception, and that the open wall does not.
-The map places no enemy.
+lies on the line from station 1 through the closed wall's centre. A
+`reference_enemy` (the chaser) stands on it at (368, 1232, 16), facing south.
+It also serves to prove that the closed wall blocks shots, sight and enemy
+perception, and that the open wall does not (those land with
+`E17--movers-block-shots-and-sight`).
 
-## Measuring the mover pass
+## Enemies
 
-```bash
-cargo run -p postretro-level-compiler -- content/dev/maps/mover-setpiece.map -o content/dev/maps/mover-setpiece.prl
-RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --profile profiling --features dev-tools -- content/dev/maps/mover-setpiece.prl
-```
+Three `reference_enemy` instances, all tagged `enemy`. This map ships no
+combat script of its own, so they use the dev mod's shipped behavior: idle until
+the player comes within about 16 m (about 630 units), then chase and melee.
 
-Command forms come from `context/lib/development_guide.md` §Build and run and
-`context/lib/rendering_pipeline.md` §12. Add `POSTRETRO_CPU_TIMING=1` for the
-`rec_kinematic_brush` CPU recording stage.
+| Enemy | Origin | Tag | Where |
+|---|---|---|---|
+| Chaser | (368, 1232, 16) | `setpiece_chaser` | On the enemy spot in the back room, 4.1 m behind the closed wall |
+| Rider A | (912, 280, -160) | `setpiece_rider` | Inside the rising room, authored at its lowered pose |
+| Rider B | (1040, 376, -160) | `setpiece_rider` | Inside the rising room, near the north-east corner |
 
-1. Spawn at station 1 and do not touch the input. The movers start on spawn.
-2. Record at least two full wall cycles (about 40 s). GPU timing logs one
-   window every 120 readbacks. Read the mover pass (`kinematic_brush` in the
-   GPU timing window) beside `forward` and `depth_prepass`.
-3. Per-window values swing with the wall's phase: the closed wall covers most
-   of the screen, and the open wall covers almost nothing. Compare means over
-   the same number of whole cycles, or compare only the windows logged while
-   the wall rests closed.
-4. A/B two builds under the same machine state, resolution and window mode.
-   Follow §12's confounder rules: no bake or build running alongside, pin the
-   GPU clock with a saturating resolution, and record the surface and scene
-   extents.
-5. If the adapter lacks timestamp queries, GPU timing reports unsupported. Use
-   an Instruments Metal System Trace instead (§12). The mover pass is labelled
-   `Kinematic Brush Pass`.
+The riders' origins sit 16 units above the room floor top (z -176 lowered).
 
-These are manual, in-engine checks. Compiling the map validates only the
-authored content.
+## Enemy checks
+
+The map is unbaked until you build it, and the enemy routing in these checks
+needs a rebuild with a current `prl-build` (a stale `.prl` loads with no door or
+lift routing and one warning). These are manual, in-engine checks.
+
+1. **Chaser behind the sliding wall.** Spawn at station 1. The chaser is 13 m
+   from the start, so it wakes at once and walks to the closed wall. Expect it to
+   stop at the wall and wait there without jitter or foot-shuffling for the rest
+   of the closed wait. It must not drift side to side or lurch in repeated
+   stuck-recovery nudges. When the wall opens it passes through the opening and
+   comes at you. Give it a full wall cycle (about 20 s).
+2. **Riders in the rising room.** Walk to station 2 (560, 320, 48), within 16 m
+   of both riders, and face east. The room is lowered, so the riders cannot
+   reach you: their doorway fronts the shaft wall. Expect them to stand inside
+   with the lamp on, not pace or shuffle. When the room reaches the top they
+   leave through the west doorway onto the arena and chase you. They must ride
+   up with their feet planted (idle pose, no walk cycle), not slide or sink into
+   the floor.

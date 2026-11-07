@@ -1,0 +1,93 @@
+# Enemy-Movers Fixture
+
+Manual QA map for how enemies and corpses meet movers: riding a lift, being
+pushed by a sweeper, being crushed against a wall, and a corpse on a lift. One
+straight hall with a bay per case, small enough to bake quickly (11 world
+brushes, 4 movers, 5 baked lights).
+
+Build a local artifact on demand:
+
+```bash
+cargo run -p postretro-level-compiler -- content/dev/maps/enemy-movers.map -o content/dev/maps/enemy-movers.prl
+```
+
+Do not commit the `.prl` or any `baked/materials/` sidecars. The `.prl` is not
+checked in, and this map has been baked but not yet played. Enemy routing over doors and lifts needs a map built with the current
+`prl-build`; a stale `.prl` loads with no door or lift routing and logs one
+warning.
+
+The `.map` was written by a one-off script that is not checked in. Edit it
+directly or in TrenchBroom.
+
+## Layout
+
+One sealed hall, x 0–2048, y 0–512, ceiling at z 320 (map units, 1 unit =
+0.0254 m). You spawn at the west end (64, 256, 48), facing east. Bays run west
+to east, 18–50 m from the start.
+
+Every enemy is a `reference_enemy` (tagged `enemy` plus a bay tag). It idles
+until the player comes within about 16 m (about 630 units), then chases and
+melees. **Watch each bay from beyond that range first** to see the enemies
+before they wake, using the straight hall's sightline or dev-tools noclip. Once
+you walk into range they chase you, which is also the point of the lift check.
+Reload the map to reset a bay.
+
+| Bay | x | Mover | Policy | Enemies |
+|---|---|---|---|---|
+| 1 lift | pit 704–896, ledge 896–1152 | `em_lift`, `ping_pong`, 1.5 m/s, 4 s wait, rises 96 u (2.4 m) | `displace` | Two on the lift (`em_lift_rider`), one on the floor beyond the ledge (`em_lift_chaser`) |
+| 2 sweeper | 1280→1536 | `em_sweeper`, 384 wide, `ping_pong`, 1.5 m/s, 1.5 s wait | `displace` | Two in its course (`em_sweeper_victim`) |
+| 3 open crusher | 1728→1920, y 48–208 | `em_crusher_open`, `ping_pong`, 1 m/s, 3 s wait | `crush`, 100 dmg / 400 ms | One ahead of it (`em_crusher_open_victim`) |
+| 3 wall crusher | 1728→2032, y 304–464 | `em_crusher_wall`, `ping_pong`, 1 m/s, 3 s wait | `crush`, 100 dmg / 400 ms | One between it and the east wall (`em_crusher_wall_victim`) |
+
+All movers start on spawn. The lift's slab fills its pit and sits flush with the
+floor at the bottom, and flush with the ledge top at the top. The ledge is 2.4 m
+high, too tall to jump, so the lift is the only way up. The crusher damage
+uses the dev mod's default damage type.
+
+## Checks
+
+These are manual, in-engine checks. Compiling the map validates only the
+authored content. Each one also says how to reach it.
+
+1. **Riders do not foot-slide (bay 1, host view).** From the start, look east
+   at the pit (18.7 m away, outside wake range). The two riders stand on the
+   lift and rise with it. Expect their feet planted in the idle pose, no walk
+   cycle and no sliding relative to the slab, through the rise, the 4 s wait at
+   the top, and the descent. They are carried back down when the lift returns.
+   The check needs the host view; a joined client draws riding enemies slightly
+   off the slab, which is expected.
+2. **A chaser boards and rides (bay 1).** Walk onto the lift while it is docked
+   at the bottom and ride it to the ledge. Stand on the ledge. The chaser at
+   (1024, 448) wakes, cannot climb the ledge, walks to the pit, boards the lift
+   while it is docked flush with the floor, stays on through the wait, and rides
+   up. Expect no shuffling on the slab during the wait, and it steps off onto
+   the ledge to reach you. It must never walk into the open pit while the lift is
+   up.
+3. **A sweeper pushes them (bay 2).** From x 600 or so, outside range, watch the
+   two enemies in front of the slab. When it sweeps east it pushes them along
+   ahead of it, with open floor beyond, and they take no damage. When it returns
+   they are left standing clear. Once you walk into range they chase you instead,
+   stepping off the slab's course.
+4. **A crusher damages only against a wall (bay 3).** The open crusher (south
+   lane) pushes its enemy along 192 u with nothing behind it: expect no
+   damage. The wall crusher (north lane) pushes its enemy the last 32 u into
+   the east wall: expect damage every 400 ms until it dies, and the crusher
+   to keep moving to the wall. Watch from x 1100 or farther west to stay out of
+   range.
+5. **A crushed corpse never holds the crusher (bay 3).** The enemy the wall
+   crusher killed stays pinned against the wall while the slab sits on it for the
+   3 s wait. The crusher never stops or backs off for it, and keeps its cycle.
+   When the slab backs off, the corpse is left at the wall (the dev mod removes
+   it after about four seconds).
+6. **A corpse rides a lift (bay 1).** Wait until the lift is at the bottom with a
+   rider on it, then shoot that rider dead with the starting weapon. Expect the
+   corpse to stay on the slab and rise with it, and the lift to carry on without
+   holding or reversing. The dev mod removes a corpse about four seconds after
+   death, so shoot it just as the lift is about to leave the bottom.
+
+## Notes
+
+- This map has no door, so it does not exercise a door gating a route;
+  `mover-setpiece` does (the sliding wall).
+- At the top of its travel the lift leaves an open pit 16 units deep. Enemies on
+  the floor must never walk into it.

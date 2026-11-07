@@ -410,7 +410,7 @@ Worldspawn brushes always follow the rule. A TrenchBroom group or layer cannot c
 
 ## Movers
 
-A `kinematic_mover` is a brush entity that slides along a path of `kinematic_waypoint` points, spins, or both: doors, lifts, platforms, carousels. This section covers what a mover does to a player in its way.
+A `kinematic_mover` is a brush entity that slides along a path of `kinematic_waypoint` points, spins, or both: doors, lifts, platforms, carousels. This section covers what a mover does to a player in its way, and then to enemies and their corpses.
 
 ### Pinned players
 
@@ -440,7 +440,58 @@ A mover never presses a player into the world or into another mover, unless its 
 - **`crush` never yields**, even at `crush_damage` `0`: then it moves through the player and leaves them inside it, unharmed. It also crushes a rider carried sideways into a wall and a player squeezed between it and another mover.
 - **`crush_damage_type`** names the damage type a crusher deals, by the name the mod registers in `defineMod({ damageTypes })`. Empty deals the mod's `defaultDamageType`. A name the mod does not register warns once per load and crushes as the default.
 
-Enemies are never carried or pushed, so none of this applies to them: a `displace` mover ignores them, and a `stop` or `reverse` mover reacts to an enemy on its heading (and fires the blocked event) as it does to a player.
+The rules above also apply to enemies. The next section lists where an enemy or a corpse differs from a player.
+
+### Enemies and corpses
+
+Enemies treat movers as solid ground and solid walls, as a player does. A rider is carried, a `displace` mover pushes an enemy that is not pinned, and a closed door stops one.
+
+| `block_policy` | Enemy in its path | Enemy pinned | Corpse |
+|----------------|-------------------|--------------|--------|
+| `displace` | Pushes them clear. | Holds. The enemy steps out of the mover's course, then the mover carries on. | Pushes it along; never holds. |
+| `stop` | Holds while it touches them. | Holds. The enemy steps out, then the mover carries on. | Never holds. |
+| `reverse` | Backs off along its path. | Backs off. The enemy steps out of its course. | Never backs off. |
+| `crush` | Pushes them along, with no damage. | Keeps moving and damages the enemy. | Keeps moving and keeps damaging it. |
+
+- **Only `crush` damages.** No other block policy hurts an enemy or leaves one embedded in the mover while there is a clear spot to move it to.
+- **`crush` needs a pin.** A `crush` mover damages an enemy only when it presses the enemy against static geometry or another mover, or when it engulfs the enemy. An enemy carried through open air, or pushed along with open floor ahead of it, takes nothing. Damage continues after the enemy dies.
+- **A pinned enemy walks clear.** When a non-`crush` mover pins a living enemy, the engine moves the enemy out of the mover's course, whatever the enemy's behavior is doing, and its behavior resumes once it is clear. An enemy that returns to the doorway afterwards holds the door again, as a player standing there does.
+- **No clear spot.** If the enemy has nowhere to go, or does not get out in time, the mover passes through it and leaves it unharmed.
+- **A rider never stops its own mover.** An enemy standing on a `stop` or `reverse` mover does not hold it.
+- **Corpses ride and never block.** A corpse is an enemy at zero health, or one with a despawn already queued. It falls under gravity, rides lifts and is pushed by movers, but it never stops, backs off or holds a mover, and a pin against it does not hold a mover either. `crush` still damages it. What happens to the corpse is your policy: removal, gibbing or revival.
+- **A corpse pinned in a closing door** ends up inside the door or pushed out of it, depending on how thick the door is and what is behind it. A door thinner than a corpse can push it out the far side. Do not rely on a corpse staying in the door.
+- **Revived inside a mover.** An enemy that gets up inside a mover is pushed out the first tick the mover would push it, and a mover that still pins it holds as for any living enemy.
+
+#### Gibbing a crushed corpse
+
+A crush hit raises an impact like any other, on a living enemy or a corpse alike. To gib a corpse, give the crusher its own damage type with `crush_damage_type`, and write an impact policy on that type that despawns the target once its health is zero. Register the type under `damageTypes` in `defineMod` first (see [Damage types](scripting-reference.md#declaring-and-registering)).
+
+```typescript
+export const crush = defineDamageType({ health: 1 });
+
+export const gibCrushed = defineImpactEvent("gib-crushed", { tag: "enemy" }, (impact) => [
+  { when: impact.type(crush).and(impact.target.healthAfter.le(0)), do: [impact.target.despawn()] },
+]);
+```
+
+Set `crush_damage_type` to `crush` on the mover. Every crush hit on a corpse fires the policy again. See [Impact policies](scripting-reference.md#impact-policies).
+
+#### Making an enemy crush-immune
+
+An enemy is crush-immune when its health and every defense layer resist the crush damage type at `0`. Declare `resist: { crush: 0 }` on its `health`, and on each entry in `layers`. It takes no damage, and the crusher passes through it rather than stopping. An immune enemy left under a crusher is pushed out on the first tick the crusher no longer pins it. If the crusher engulfs it completely, it stays inside until the crusher moves off. See [Attaching layers to health](scripting-reference.md#attaching-layers-to-health).
+
+#### Doors and lifts in enemy routes
+
+Enemies plan around doors and lifts. This needs data that `prl-build` writes into the map, so **rebuild the map** after you add or change a mover. A map built before this existed loads without door or lift routing and logs one warning asking you to rebuild. On such a map doors still block enemies by collision, and enemies do not ride lifts.
+
+- **A docked door closes a route.** A door gates the route through its doorway only while it is docked: resting at one of its waypoints, whether in a timed wait, after a finished run, after a `goToPathNode` hold, or never started. Enemies detour around it, or hold if there is no other way. The brain fact `targetReachable` reads `false` while a docked door cuts the only route (see [Doors and `targetReachable`](scripting-reference.md#doors-and-targetreachable)).
+- **A door in motion gates nothing.** A door stopped between waypoints, one passing a waypoint without waiting there (`wait_ms` of `0`), and a sweeper or crusher do not change enemy routes. They affect enemies by collision and block policy alone.
+- **A hollow doorway stays open.** Only a door that fills the way an enemy would need blocks the route. A mover with a doorway through it does not.
+- **Enemies do not call lifts.** They never press a use control, step on a trigger to start a mover, or open a door. A lift that moves only when a player starts it, or one a script has stopped or parked, offers enemies no route, so enemies plan no route over it.
+- **Enemies ride lifts that move on their own.** A `ping_pong` lift that is started, and is not held by a script or an `auto_close_ms` countdown, offers a route between its two ends. An enemy walks onto it while it is docked, stays on through the wait, rides it, and steps off at the far end. The same holds for a room that rises into place. An enemy riding a lift does not walk off it mid-shaft, and a lift that leaves before an enemy steps on does not draw it into the shaft.
+- **Spinners get no routes.** A mover with any spin gives enemies no door or lift route, because it has no single pose to plan around. Collision and block policy still apply to it.
+
+A closed door stops an enemy's movement. It does not yet stop its line of sight or its shots.
 
 ### Blocked event and sound
 

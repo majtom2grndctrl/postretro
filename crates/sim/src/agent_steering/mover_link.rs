@@ -41,6 +41,8 @@ pub(super) fn advance(
         if let Some(step) = board(agent, position, gate, standing_on) {
             return step;
         }
+    }
+    if agent.ride.is_none() {
         enter_ride_if_carried(agent, gate, collision, standing_on);
     }
     let Some(mut ride) = agent.ride else {

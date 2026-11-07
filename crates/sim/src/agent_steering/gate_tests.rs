@@ -699,3 +699,130 @@ fn combat_positioning_never_picks_a_slot_overlapping_a_docked_door() {
         "no slot overlaps the door: {gated:?}"
     );
 }
+
+/// `count` agents west of the door, all planned through it, chasing a target that
+/// then jumps past the drift band every tick, so every agent wants a replan slot
+/// on every tick a gate change needs them.
+struct Contention {
+    rig: Rig,
+    ids: Vec<EntityId>,
+    goal: Vec3,
+}
+
+impl Contention {
+    fn new(count: usize) -> Self {
+        let mut rig = Rig::new(KinematicMoverMode::Once, 0.0, false);
+        rig.command(MoverCommand::Start);
+        for _ in 0..80 {
+            rig.tick();
+        }
+        let goal = EAST;
+        let ids: Vec<EntityId> = (0..count)
+            .map(|i| {
+                let at = Vec3::new(
+                    0.5 + 0.85 * (i % 5) as f32,
+                    REST_Y,
+                    0.5 + 0.72 * (i / 5) as f32,
+                );
+                rig.agent(at, Some(goal))
+            })
+            .collect();
+        // A still target first: under a moving one the budget serves the lowest
+        // slots again and again, and the rest would never hold a route to cut.
+        for _ in 0..(count as u32).div_ceil(REPLAN_BUDGET_PER_TICK) {
+            rig.tick();
+        }
+        Self { rig, ids, goal }
+    }
+
+    fn tick(&mut self) {
+        self.goal.z = 5.0 + (self.goal.x * 3.0).sin() * 3.0;
+        self.goal.x = 16.0 + (self.goal.x + 0.11) % 3.0;
+        for id in &self.ids {
+            set_destination(&mut self.rig.registry, *id, self.goal);
+        }
+        let result = self.rig.tick();
+        assert!(result.replans <= REPLAN_BUDGET_PER_TICK);
+    }
+
+    fn all(&self, check: impl Fn(&AgentComponent) -> bool) -> bool {
+        self.ids
+            .iter()
+            .all(|id| check(self.rig.agent_state(*id)))
+    }
+}
+
+#[test]
+fn under_contention_a_door_docking_and_leaving_is_answered_within_the_budget() {
+    const AGENTS: u32 = 64;
+    let limit = AGENTS.div_ceil(REPLAN_BUDGET_PER_TICK);
+    let mut scene = Contention::new(AGENTS as usize);
+    assert!(
+        scene.all(|agent| !agent.path.is_empty()),
+        "every agent chases through the open door"
+    );
+
+    scene.rig.command(MoverCommand::Reverse);
+    while !scene.rig.gate().portal_closed(&scene.rig.graph, 0) {
+        scene.tick();
+    }
+    for _ in 0..limit {
+        scene.tick();
+    }
+    assert!(
+        scene.all(|agent| agent.blocked),
+        "each route the dock cut latched blocked within {limit} ticks"
+    );
+
+    scene.rig.command(MoverCommand::Reverse);
+    while scene.rig.gate().portal_closed(&scene.rig.graph, 0) {
+        scene.tick();
+    }
+    for _ in 0..limit {
+        scene.tick();
+    }
+    assert!(
+        scene.all(|agent| !agent.blocked && !agent.path.is_empty()),
+        "each blocked agent replanned within {limit} ticks of the door leaving"
+    );
+}
+
+#[test]
+fn the_longest_owed_agents_are_admitted_first_whatever_their_slot() {
+    let mut rig = closed_door();
+    for command in [MoverCommand::Start, MoverCommand::Reverse] {
+        rig.command(command);
+        for _ in 0..80 {
+            rig.tick();
+        }
+    }
+    assert!(rig.gate().portal_closed(&rig.graph, 0));
+    let generation = rig.gate().generation();
+    assert!(generation >= 2, "the door flipped the gate to close");
+    let spawn = |rig: &mut Rig, row: usize, owed_since: u64| {
+        (0..REPLAN_BUDGET_PER_TICK as usize)
+            .map(|i| {
+                let at = Vec3::new(1.0 + i as f32, REST_Y, 1.0 + 2.0 * row as f32);
+                let id = rig.agent(at, Some(EAST));
+                let mut agent = rig.agent_state(id).clone();
+                agent.blocked = true;
+                agent.planned_destination = Some(EAST);
+                agent.gate_generation = owed_since;
+                rig.registry.set_component(id, agent).unwrap();
+                id
+            })
+            .collect::<Vec<EntityId>>()
+    };
+    let recent = spawn(&mut rig, 0, generation - 1);
+    let oldest = spawn(&mut rig, 1, generation - 2);
+
+    let result = rig.tick();
+
+    assert_eq!(result.replans, REPLAN_BUDGET_PER_TICK);
+    for id in oldest {
+        assert_eq!(rig.agent_state(id).gate_generation, generation);
+    }
+    for id in recent {
+        assert_eq!(rig.agent_state(id).gate_generation, generation - 1);
+    }
+}

@@ -357,7 +357,7 @@ pub fn tick(
 /// [`tick`] for the fixed tick: it also hears which living agents movers yield
 /// to, and fills `corpse_yields` with the pairs the mover should now pass
 /// through. Empty in a tick with no pins, and allocates nothing then.
-pub(crate) fn tick_with_mover_pins(
+pub fn tick_with_mover_pins(
     registry: &mut EntityRegistry,
     collision: &CombinedCollisionWorld<'_>,
     nav_graph: Option<&NavGraph>,
@@ -379,10 +379,10 @@ pub(crate) fn tick_with_mover_pins(
 
 /// What steering hears from the tick's movers.
 #[derive(Clone, Copy)]
-pub(crate) struct MoverPins<'a> {
+pub struct MoverPins<'a> {
     /// The agents movers yielded to since the last blocking pass.
-    pub(crate) yields: &'a [AgentMoverPair],
-    pub(crate) gate: NavGate<'a>,
+    pub yields: &'a [AgentMoverPair],
+    pub gate: NavGate<'a>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -844,7 +844,7 @@ fn admit_replans(
     // Classify each snapshot agent once: drift-driven, staleness-only, or not
     // wanting a replan at all. The cooldown is decremented exactly as the apply
     // loop will, so both passes see the same verdict.
-    let mut gate_driven: Vec<EntityId> = Vec::new();
+    let mut gate_driven: Vec<(u64, EntityId)> = Vec::new();
     let mut drift_driven: Vec<EntityId> = Vec::new();
     let mut staleness_only: Vec<EntityId> = Vec::new();
 
@@ -875,7 +875,7 @@ fn admit_replans(
         let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(1) == 0;
 
         if gate_change_owes_replan(agent, nav_graph, gate) {
-            gate_driven.push(current.id);
+            gate_driven.push((agent.gate_generation, current.id));
         } else if drifted {
             drift_driven.push(current.id);
         } else if cooldown_elapsed {
@@ -886,8 +886,15 @@ fn admit_replans(
     // First pass: drift-driven, up to the budget. Second pass: staleness-only,
     // with the remaining budget. Slot order is preserved within each pass.
     let budget = REPLAN_BUDGET_PER_TICK as usize;
-    let mut admitted = gate_driven;
-    admitted.truncate(budget);
+    // Longest owed first, slot order within a generation: an admitted agent takes
+    // the live generation, so a later flip cannot put it back ahead of one still
+    // waiting, and no agent waits past ceil(N / budget) ticks however often gates flip.
+    gate_driven.sort_by_key(|(generation, _)| *generation);
+    let mut admitted: Vec<EntityId> = gate_driven
+        .into_iter()
+        .take(budget)
+        .map(|(_, id)| id)
+        .collect();
     let remaining = budget - admitted.len();
     admitted.extend(drift_driven.into_iter().take(remaining));
     let remaining = budget - admitted.len();
@@ -1374,6 +1381,8 @@ mod tests;
 mod environment_tests;
 #[cfg(test)]
 mod gate_tests;
+#[cfg(test)]
+mod mover_alloc_tests;
 #[cfg(test)]
 mod mover_contact_tests;
 #[cfg(test)]

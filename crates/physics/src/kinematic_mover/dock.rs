@@ -64,7 +64,8 @@ impl MoverDockTable {
         self.generation = 0;
     }
 
-    pub(super) fn update(&mut self, mover: &KinematicMoverComponent) {
+    /// Record `mover`'s dock state as of this tick. Allocation-free.
+    pub fn update(&mut self, mover: &KinematicMoverComponent) {
         let Some(index) = self.index(mover.mover_id) else {
             return;
         };

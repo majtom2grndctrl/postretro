@@ -55,6 +55,8 @@ mod teleporter_unload_tests;
 #[cfg(test)]
 pub(crate) mod teleporters_surface_tests;
 #[cfg(test)]
+mod stress_gate_harness_tests;
+#[cfg(test)]
 mod traps_surface_tests;
 pub(crate) mod worker;
 

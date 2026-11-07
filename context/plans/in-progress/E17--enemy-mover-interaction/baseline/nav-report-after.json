@@ -1,0 +1,46 @@
+{
+ "closet-reveal": {
+  "map": "closet-reveal",
+  "regions": 7,
+  "portals": 8,
+  "grid": "57x28 grid @ 0.25 m",
+  "nav_seconds": 0.0,
+  "reached_nav_at": 0.3,
+  "gates": 6,
+  "links": 8,
+  "poses": 2
+ },
+ "stress-warren-mini": {
+  "map": "stress-warren-mini",
+  "regions": 445,
+  "portals": 526,
+  "grid": "124x222 grid @ 1 m",
+  "nav_seconds": 0.0,
+  "reached_nav_at": 0.6,
+  "gates": 22,
+  "links": 6,
+  "poses": 6
+ },
+ "mover-setpiece": {
+  "map": "mover-setpiece",
+  "regions": 27,
+  "portals": 31,
+  "grid": "163x131 grid @ 0.25 m",
+  "nav_seconds": 0.046,
+  "reached_nav_at": 0.1,
+  "gates": 4,
+  "links": 5,
+  "poses": 4
+ },
+ "campaign-test": {
+  "map": "campaign-test",
+  "regions": 391,
+  "portals": 468,
+  "grid": "290x449 grid @ 0.25 m",
+  "nav_seconds": 0.302,
+  "reached_nav_at": 1.1,
+  "gates": 20,
+  "links": 0,
+  "poses": 6
+ }
+}

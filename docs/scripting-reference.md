@@ -56,6 +56,8 @@ the manifest lacks any required field.
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
+**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType` and `defineDefenseLayer` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
+
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
 registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
@@ -434,11 +436,10 @@ export default defineMod({
 Luau passes each name explicitly: `Postretro.defineDefenseLayer("shield")`,
 `Postretro.defineDamageType("plasma", { shield = 1.5, armor = 0.5 })`.
 
-- **Names.** In TypeScript, a definer with no name must be the whole
-  initializer of a top-level `const`, `let` or `var` (exported or not) —
-  scripts-build names it by its binding. A `defineDamageType` call also needs
-  its matrix as an object literal, not a variable. Anywhere else (inside an
-  array, a function, a destructuring pattern, a re-export), pass the name. A
+- **Names.** Layers and damage types take their names from their `const`
+  bindings (see [Names from `const` bindings](#mod-entry-point)). A
+  `defineDamageType` call named this way also needs its matrix as an object
+  literal, not a variable. A
   name is 1–64 bytes of ASCII letters, digits, `_` and `-`, for layers and
   damage types alike. Only a layer name reserves `health`; a damage type may
   be named `health`.
@@ -616,7 +617,7 @@ per-player progression.
 
 ```typescript
 // combat-lifecycle.ts — persisted per-player progression
-export const progression = defineStore("progression", {
+export const progression = defineStore({
   shieldCapacity: { type: "number", default: 0, perOwner: true, persist: true, network: "ownerPrivate" },
   shieldTech: { type: "number", default: 0, perOwner: true, persist: true, network: "ownerPrivate" },
 });
@@ -1362,7 +1363,7 @@ sequential writes in one frame observe the preceding write.
 import { defineStore, runtime } from "postretro";
 import { updateState } from "postretro/ui";
 
-const puzzle = defineStore("puzzle", {
+const puzzle = defineStore({
   charge: { type: "number", default: 0, range: [0, 3] },
 });
 const ref = puzzle.charge;
@@ -3008,9 +3009,7 @@ matches is a no-op.
 
 ### Impact policies
 
-`defineImpactEvent("reward", filter, build)` declares what an in-tick hit means. The authored ID is one portable ASCII segment: 1–64 bytes using only letters, digits, `_`, `.`, or `-`. Do not include `:`: when the event is composed, the engine qualifies it as `<modId>:<authoredId>`.
-
-TypeScript also supports binding-name sugar for a direct top-level identifier declaration: `const reward = defineImpactEvent(filter, build)` uses `reward` as the authored ID. Use the explicit form inside helpers and other expression positions. Luau always requires the explicit ID argument. An override must add a `tag`; it can only narrow the base target set.
+`const reward = defineImpactEvent(filter, build)` declares what an in-tick hit means; its binding, `reward`, is its authored ID (see [Names from `const` bindings](#mod-entry-point)). Inside helpers and other expression positions, and in Luau, pass the ID first: `defineImpactEvent("reward", filter, build)`. The authored ID is one portable ASCII segment: 1–64 bytes using only letters, digits, `_`, `.`, or `-`. Do not include `:`: when the event is composed, the engine qualifies it as `<modId>:<authoredId>`. An override must add a `tag`; it can only narrow the base target set.
 
 Every fire evaluates gates and effect operands from one pre-effect snapshot, then applies the selected effects. `healthAfter` is the unfloored result and may be negative even though stored health floors at zero. Unset `target.state(name)` reads `0`. `playAnim(name)` requires that name in the target mesh's declared animation states. `despawn` and `setHealth` accept `{ afterMs }`; omitting it is immediate, while `{ afterMs: 0 }` still enters the deferred queue.
 
@@ -3042,6 +3041,22 @@ authored baseline.
 That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
 The type definitions for this area carry committed `@ts-expect-error` cases, so unsafe narrowing and forged effects fail a type check. Nothing here installs or downloads `tsc` — supply your own, and run `tsc --noEmit` against your scripts.
+
+#### Gibbing a crushed corpse
+
+A `kinematic_mover` crush hit raises an impact on a living enemy or a corpse alike. To gib what a crusher kills, give the crusher its own damage type and despawn the target once its health is zero:
+
+```typescript
+export const crush = defineDamageType({ health: 1 });
+
+export const gibCrushed = defineImpactEvent({ tag: "enemy" }, (impact) => [
+  { when: impact.type(crush).and(impact.target.healthAfter.le(0)), do: [impact.target.despawn()] },
+]);
+
+// In the manifest: damageTypes: [crush], events: [gibCrushed]
+```
+
+On the mover, set `crush_damage_type` to `crush`, the binding's name (see [Movers in `level_design.md`](level_design.md#gibbing-a-crushed-corpse)). Every crush hit on the corpse fires the policy again.
 
 ### `armTrigger` and `disarmTrigger`
 
@@ -3505,7 +3520,7 @@ helper and the target, evaluated on the host every tick for each pair.
 ```typescript
 import { assist, defineStore, read } from "postretro";
 
-export const stats = defineStore("stats", {
+export const stats = defineStore({
   heal: { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
 });
 
@@ -3602,7 +3617,7 @@ const assistBonus = defineReaction("life.assistBonus", (on: PlayerEventParams) =
 );
 
 // Its own impact event, so another event's override cannot evict it.
-export const secondWind = defineImpactEvent("second-wind", { tag: "enemy" }, (impact) => {
+export const secondWind = defineImpactEvent({ tag: "enemy" }, (impact) => {
   const { target, source } = impact;
   const killed = target.healthBefore.gt(0).and(target.healthAfter.le(0));
   return [{
@@ -3874,7 +3889,7 @@ import { onStateCrossing, playSound } from "postretro/ui";
 const player = getGameState().player;
 
 // Host-local count of each player's dives.
-const swimStats = defineStore("swimStats", {
+const swimStats = defineStore({
   dives: { type: "number", default: 0, perOwner: true },
 });
 const markSwimming = defineReaction("swim.markSwimming", (on: PlayerEventParams) =>
@@ -4516,7 +4531,7 @@ value.
 import { defineMod, defineReaction, defineStore } from "postretro";
 import { updateState } from "postretro/ui";
 
-const options = defineStore("options", {
+const options = defineStore({
   master: { type: "number", default: 1, range: [0, 1] },
 });
 

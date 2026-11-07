@@ -438,7 +438,7 @@ A mover never presses a player into the world or into another mover, unless its 
 - **A `once` mover that backs off to its start** ends unstarted: its trigger's `start` runs it again, and a `reverse` command on it at its start sends it out along its path (opens it). An `auto_close_ms` countdown that expires on such a parked mover does nothing.
 - **Dead players' bodies count.** A body left under a default `once` lift holds it until the body is gone.
 - **`crush` never yields**, even at `crush_damage` `0`: then it moves through the player and leaves them inside it, unharmed. It also crushes a rider carried sideways into a wall and a player squeezed between it and another mover.
-- **`crush_damage_type`** names the damage type a crusher deals, by the name the mod registers in `defineMod({ damageTypes })`. Empty deals the mod's `defaultDamageType`. A name the mod does not register warns once per load and crushes as the default.
+- **`crush_damage_type`** names the damage type a crusher deals, by the name the mod registers in `defineMod({ damageTypes })`: in TypeScript, the name of its `const` binding. Empty deals the mod's `defaultDamageType`. A name the mod does not register warns once per load and crushes as the default.
 
 The rules above also apply to enemies. The next section lists where an enemy or a corpse differs from a player.
 
@@ -464,17 +464,7 @@ Enemies treat movers as solid ground and solid walls, as a player does. A rider 
 
 #### Gibbing a crushed corpse
 
-A crush hit raises an impact like any other, on a living enemy or a corpse alike. To gib a corpse, give the crusher its own damage type with `crush_damage_type`, and write an impact policy on that type that despawns the target once its health is zero. Register the type under `damageTypes` in `defineMod` first (see [Damage types](scripting-reference.md#declaring-and-registering)).
-
-```typescript
-export const crush = defineDamageType({ health: 1 });
-
-export const gibCrushed = defineImpactEvent("gib-crushed", { tag: "enemy" }, (impact) => [
-  { when: impact.type(crush).and(impact.target.healthAfter.le(0)), do: [impact.target.despawn()] },
-]);
-```
-
-Set `crush_damage_type` to `crush` on the mover. Every crush hit on a corpse fires the policy again. See [Impact policies](scripting-reference.md#impact-policies).
+A crush hit raises an impact on a living enemy or a corpse alike, so a script can gib what a crusher kills. Give the crusher its own damage type: set `crush_damage_type` to the name your mod registers for it, which is the name of its `const` binding in the script. The script side is in [Gibbing a crushed corpse](scripting-reference.md#gibbing-a-crushed-corpse).
 
 #### Making an enemy crush-immune
 

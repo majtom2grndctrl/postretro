@@ -113,8 +113,8 @@ Source since the brief's `read at` (7dec6ed0) changed only model import and ghos
 | 37 | Bake report on four maps | Region, portal, gate and link counts plus nav bake time; baseline in Task 1 | manual, executor runs; owner's terminal if a bake exceeds 2 h | pass: report in `baseline/nav-report-after.json` (gates and links per map, nav stage unchanged within 0.1 s) |
 | 38 | `mover-setpiece` in-engine | Owner, in-engine | manual | pass (owner, 2026-11-07; map relit that day). First look found the chaser behind the wall whipping left and right and creeping; wall wait raised to 8 s and the stuck-recovery fix below landed, map rebaked. Re-look: no whipping. Riders leave a cycle late, a nav defect outside this brief (Corrections) |
 | 39 | Enemy-movers map; README checks | Owner, in-engine | manual | pass (owner, 2026-11-07): sweepers push without damage (knight arms clip the slab, a model-to-capsule fit, not this brief); the wall crusher kills against the east wall. Knights retreating at zero armor to a home on the lift entered the pit under it; held for the enemy AI sprint (roadmap, Epic 10) |
-| 40 | `docs/scripting-reference.md` wording | Doc edit, owner review | manual | outstanding: owner review of `docs/scripting-reference.md` |
-| 41 | `docs/level_design.md` §Movers wording | Doc edit, owner review | manual | outstanding: owner review of `docs/level_design.md` |
+| 40 | `docs/scripting-reference.md` wording | Doc edit, owner review | manual | pass (owner, 2026-11-07), after definers took their names from `const` bindings and the crushed-corpse gib recipe moved here from `level_design.md` |
+| 41 | `docs/level_design.md` §Movers wording | Doc edit, owner review | manual | pass (owner, 2026-11-07); the gib recipe's script moved to the scripting reference, the map side stays |
 
 ## Tasks
 

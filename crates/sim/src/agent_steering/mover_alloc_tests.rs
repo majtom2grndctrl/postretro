@@ -8,7 +8,9 @@
 use glam::{Quat, Vec3};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::{AgentComponent, PlannedRide};
-use postretro_entities::{KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform};
+use postretro_entities::{
+    KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
+};
 use postretro_foundation::GroundRef;
 
 use super::mover_link::{RideStep, advance};
@@ -253,10 +255,16 @@ fn the_per_tick_mover_paths_allocate_nothing() {
     let window = AllocSnapshot::arm();
     let (ground, beside, generation, rode_and_exited) = scene.drive();
     let allocations = window.allocs_since();
-    assert_eq!(allocations, 0, "carry, contact, gate and ride allocate nothing");
+    assert_eq!(
+        allocations, 0,
+        "carry, contact, gate and ride allocate nothing"
+    );
 
     assert_eq!(ground, GroundRef::Mover(LIFT), "the window carried a rider");
-    assert!(beside.x >= 20.6, "the window left a clear body where it stood");
+    assert!(
+        beside.x >= 20.6,
+        "the window left a clear body where it stood"
+    );
     assert!(generation > 3, "the window flipped the gate");
     assert!(rode_and_exited, "the window boarded and exited a rider");
 }

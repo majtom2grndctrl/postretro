@@ -746,9 +746,7 @@ impl Contention {
     }
 
     fn all(&self, check: impl Fn(&AgentComponent) -> bool) -> bool {
-        self.ids
-            .iter()
-            .all(|id| check(self.rig.agent_state(*id)))
+        self.ids.iter().all(|id| check(self.rig.agent_state(*id)))
     }
 }
 

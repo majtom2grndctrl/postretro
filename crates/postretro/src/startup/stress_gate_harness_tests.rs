@@ -131,10 +131,7 @@ fn under_contention_on_the_stress_map_no_gate_change_outlasts_the_budget() {
             &mut registry,
             &collision,
             Some(&graph),
-            MoverPins {
-                yields: &[],
-                gate,
-            },
+            MoverPins { yields: &[], gate },
             &mut Vec::new(),
             environment,
             DT,
@@ -152,5 +149,8 @@ fn under_contention_on_the_stress_map_no_gate_change_outlasts_the_budget() {
     }
     println!("gate flips {flips}, worst wait {worst} ticks, limit {limit}");
     assert!(flips > 4, "the movers exercised the gate");
-    assert!(worst <= limit, "an agent waited {worst} ticks, limit {limit}");
+    assert!(
+        worst <= limit,
+        "an agent waited {worst} ticks, limit {limit}"
+    );
 }

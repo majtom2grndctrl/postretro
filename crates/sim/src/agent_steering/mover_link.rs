@@ -37,11 +37,12 @@ pub(super) fn advance(
         GroundRef::Mover(mover_id) => Some(mover_id),
         _ => None,
     };
-    if agent.ride.is_none() {
-        if let Some(step) = board(agent, position, gate, standing_on) {
-            return step;
-        }
+    if agent.ride.is_none()
+        && let Some(step) = board(agent, position, gate, standing_on)
+    {
+        return step;
     }
+    // Boarding a planned ride above sets one; an unplanned ride never replaces it.
     if agent.ride.is_none() {
         enter_ride_if_carried(agent, gate, collision, standing_on);
     }

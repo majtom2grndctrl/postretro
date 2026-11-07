@@ -423,7 +423,9 @@ fn read_mover_tables(
     }
 
     let gates = data[gates_start..gates_end]
-        .chunks_exact(GATE_STRIDE)
+        .as_chunks::<GATE_STRIDE>()
+        .0
+        .iter()
         .map(|entry| NavMoverGate {
             mover_id: read_u32(entry, 0),
             waypoint: read_u32(entry, 4),
@@ -431,7 +433,9 @@ fn read_mover_tables(
         })
         .collect();
     let links = data[links_start..links_end]
-        .chunks_exact(LINK_STRIDE)
+        .as_chunks::<LINK_STRIDE>()
+        .0
+        .iter()
         .map(|entry| NavMoverLink {
             mover_id: read_u32(entry, 0),
             waypoint: read_u32(entry, 4),

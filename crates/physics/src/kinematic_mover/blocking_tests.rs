@@ -2799,7 +2799,10 @@ fn crush_immune_agent_takes_no_points_and_never_holds_the_crusher() {
 // a fresh random seed changes on every set.
 #[test]
 fn multi_victim_crush_runs_its_effects_in_one_order_across_runs() {
-    fn run() -> (Vec<(EntityId, f32)>, Vec<(MoverEventKind, u32)>) {
+    /// Damage dealt per victim, then events raised per mover, in run order.
+    type CrushTrace = (Vec<(EntityId, f32)>, Vec<(MoverEventKind, u32)>);
+
+    fn run() -> CrushTrace {
         let (first_id, second_id) = (42, 43);
         let mut registry = EntityRegistry::new();
         for mover_id in [first_id, second_id] {

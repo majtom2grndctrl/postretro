@@ -1,7 +1,7 @@
 # E17--enemy-mover-interaction — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 1ace6e3ec
 branch: claude/e17-enemy-mover-interaction
 
@@ -16,8 +16,8 @@ Source since the brief's `read at` (7dec6ed0) changed only model import and ghos
 - **Quiescence** — Path: "physics needs its own quiescence test." → `is_depleted` is a one-line health read and `DeferredEffectComponent` lives in `entities`, so physics can hold the single definition and `sim`'s `is_quiescent` delegates to it. No second copy to drift.
 - **`find_path` takes more than the gate** — Path lists the gate alone. → Link resolution (O56) needs the mover surface an agent stands on, so the start input carries the agent's `GroundRef` too. Callers: `agent_steering`, `ai/src/compute.rs`, `combat_positioning/scoring.rs`. `bake_navmesh(&geo, &params)` stays as the no-mover wrapper for `nav/bake_contract_tests.rs`.
 - **Row 27 dump scope** — the row wants a byte-identical headless dump, but `is_grounded` becomes `ground` by Decision and the dump serializes `AgentComponent`. → The dump filters to `Transform` (`DumpSpec.component`), per tick, so the bytes stay comparable and motion stays what is proved. New `AgentComponent` fields use `skip_serializing_if`.
-- **Row 27 and corpses** — the row's first clause says agent motion in a mover-free level stays identical, but the Decision *Corpses ride, never block* gives every corpse gravity, in every level. Today a corpse freezes where it died. → Read the row as covering living agents; the proof run has no deaths. A corpse killed in the air now falls in mover-free levels too. **Flagged for owner skim.**
-- **Corpse knockback** — the Decision lists "gravity, carry and displacement" and leaves knockback unsaid. → The corpse branch clears `knockback_velocity` and adds no release velocity, so a killing blow does not start a slide that today's frozen corpse never showed. **Flagged for owner skim.**
+- **Row 27 and corpses** — the row's first clause says agent motion in a mover-free level stays identical, but the Decision *Corpses ride, never block* gives every corpse gravity, in every level. Today a corpse freezes where it died. → Read the row as covering living agents; the proof run has no deaths. A corpse killed in the air now falls in mover-free levels too. Approved by owner with the plan.
+- **Corpse knockback** — the Decision lists "gravity, carry and displacement" and leaves knockback unsaid. → The corpse branch clears `knockback_velocity` and adds no release velocity, so a killing blow does not start a slide that today's frozen corpse never showed. Approved by owner with the plan.
 - **`AgentComponent` on the wire** — `ComponentKind::Agent` maps to a wire kind id, but no codec encodes the component body. Replacing the field changes no wire bytes. Confirms Decision *Host-only*.
 - **`to_section_for_test`** — the `ai` test macro rebuilds `NavGraph` through this adapter, so it must carry the gate and link tables or `ai` tests lose them silently.
 

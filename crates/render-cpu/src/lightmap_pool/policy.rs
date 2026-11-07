@@ -1,28 +1,34 @@
-// Streamed lightmap pool placement policy: per-level pool model and per-drain plans.
+// Streamed lightmap pool placement policy: per-level two-pool model and per-drain plans.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 mod compaction;
 mod copy_order;
 mod growth;
 mod journal;
+mod pair;
 mod placement;
 mod plan;
+mod pool_state;
 mod repack;
 mod reservation;
 
+use postretro_level_format::lightmap_pool::{
+    PerPool, PlanePresence, PoolDemand, PoolKind, mask_item,
+};
 use postretro_level_loader::{LightmapBlockClass, LightmapPoolReport, LightmapTarget};
 
-use super::{BlockPlacement, BlockPool, BlockTableEntry, Slot, block_table_bytes};
+use super::block_table_bytes;
+use super::{BlockAddresses, BlockPlacement, BlockTableEntry, MaskAddresses, Slot};
 use compaction::CompactionScratch;
 pub use copy_order::CopyOrderStats;
 pub use growth::POOL_POLICY_IDENTITY;
 use journal::{JournalOp, Touched};
 pub use plan::{
     BlockUpload, DrainPlan, EvictionReason, NotAPlannedUpload, PlannedEviction, PoolCopy,
-    PoolGrowth, RepackKind, TableWrite,
+    PoolGrowth, PoolPlan, RepackKind, TableWrite,
 };
+pub use pool_state::PoolState;
 use repack::RepackEntry;
-use reservation::DemandRoom;
 
 /// One drain's inputs, as the controller's `LightmapDrainBatch` carries them,
 /// minus payload bytes. The caller validates the batch
@@ -30,7 +36,7 @@ use reservation::DemandRoom;
 /// in range, deltas sorted and disjoint, ready ids unique.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DrainRequest<'a> {
-    pub pool_cap_layers: u32,
+    pub pool_cap_layers: PerPool<u32>,
     pub target_reset: Option<&'a [LightmapTarget]>,
     pub target_set: &'a [LightmapTarget],
     pub target_remove: &'a [u32],
@@ -60,15 +66,20 @@ struct Scratch {
     /// A mandatory or visible target changed, or a block left the pool:
     /// reservation work is due this drain. Nothing else asks for it.
     demand_changed: bool,
-    /// Targets without room, while reservation runs.
+    /// Items of one pool without room, while reservation runs.
     unseated: Vec<u32>,
     /// Resident band blocks, nearest lead first; eviction pops the farthest.
     victims: Vec<u32>,
     victims_built: bool,
     over_cap: Vec<u32>,
-    /// Extents deferred at the device layer limit this drain.
-    device_limited: Vec<(u32, u32)>,
-    /// Resident and ready blocks a repack must seat.
+    /// The pools the last failed placement found no room in, with every band
+    /// block evicted.
+    short: PerPool<bool>,
+    /// Extents deferred at the device layer limit this drain, by pool.
+    device_limited: PerPool<Vec<(u32, u32)>>,
+    /// The drain's pairs' items in the pool a repack runs on.
+    repack_pending: Vec<u32>,
+    /// Resident and ready items a repack must seat.
     repack_keep: Vec<RepackEntry>,
     repack_band: Vec<(u32, u32)>,
     repack_waiting: Vec<u32>,
@@ -79,41 +90,22 @@ struct Scratch {
     compaction: CompactionScratch,
 }
 
-/// The renderer's model of one level's streamed lightmap pool: which block
-/// sits where, the pool's layer count, and the one retiring generation.
+/// The renderer's model of one level's streamed pools: the lightmap pool, the
+/// mask pool, and which block sits where in each.
 ///
-/// The pool texture always carries `layers() + 1` array layers: the last is
-/// the spare a repack stages moves through, never a second pool.
-/// `layers()` never passes the device limit the model was built with.
+/// A block has one lightmap placement and one mask placement per present
+/// plane, and those halves are one atomic pair: they install in one drain or
+/// not at all, and leave together. Each pool repacks, grows and retires alone,
+/// and one journal covers both, so a pair or a drain undoes whole.
 /// Each drain produces a [`DrainPlan`] the GPU layer executes in order; the
 /// model has already applied it, and journals every mutation so the GPU
 /// layer can [`fail_install`](Self::fail_install) one pair or
 /// [`abort_drain`](Self::abort_drain) the whole drain.
 #[derive(Debug)]
 pub struct LightmapPoolModel {
-    edge: u32,
-    alignment: u32,
-    /// True block extents by block id; allocations round each up to
-    /// `alignment`.
-    extents: Vec<(u32, u32)>,
+    demand: PoolDemand,
     targets: Vec<Option<Target>>,
-    slots: Vec<Option<Slot>>,
-    resident: Vec<u32>,
-    /// Index into `resident`, `u32::MAX` when absent.
-    resident_pos: Vec<u32>,
-    pool: BlockPool,
-    /// Allocated texels per allocator layer, for band headroom.
-    used_texels: Vec<u64>,
-    demand_room: DemandRoom,
-    layers: u32,
-    cap_layers: u32,
-    /// Layers every block placed at once fills: no growth reserves past it.
-    all_resident_layers: u32,
-    /// Usable layers the device can hold beside the spare. Growth never
-    /// plans past it; a pair that would need it is deferred.
-    max_layers: u32,
-    retiring: bool,
-    texture_allocations: u32,
+    pools: PerPool<PoolState>,
     #[cfg(test)]
     growth_sizing: growth::GrowthSizing,
     journal: Vec<JournalOp>,
@@ -135,54 +127,32 @@ pub struct LightmapPoolModel {
 
 impl LightmapPoolModel {
     /// A model for a level's blocks, nothing resident, with no device layer
-    /// limit. The first generation holds `min(cap_layers, L)` layers, where
-    /// `L` is what the level needs all-resident: the pool never
-    /// pre-allocates past what every block together would fill. `None` for a
-    /// zero-sized block or one larger than an `edge`² layer; the loader
-    /// rejects both.
-    pub fn new(
-        extents: Vec<(u32, u32)>,
-        alignment: u32,
-        edge: u32,
-        cap_layers: u32,
-    ) -> Option<Self> {
-        Self::with_layer_limit(extents, alignment, edge, cap_layers, u32::MAX)
+    /// limit. Each pool's first generation holds `min(cap, L)` layers, where
+    /// `L` is what the level needs all-resident: a pool never pre-allocates
+    /// past what its items together would fill. `None` for a zero-sized block
+    /// or one larger than an `edge`² layer; the loader rejects both.
+    pub fn new(demand: PoolDemand, edge: u32, caps: PerPool<u32>) -> Option<Self> {
+        Self::with_layer_limit(demand, edge, caps, u32::MAX)
     }
 
-    /// [`new`](Self::new) bounded by the device: the active generation never
+    /// [`new`](Self::new) bounded by the device: no active generation ever
     /// holds more than `max_layers` usable layers (the device's
     /// `maxTextureArrayLayers` minus the spare). A mandatory or visible pair
     /// that would need a layer past it is deferred, a counted miss that,
     /// unlike one while a generation retires, lasts until the resident set
     /// shrinks.
     pub fn with_layer_limit(
-        extents: Vec<(u32, u32)>,
-        alignment: u32,
+        demand: PoolDemand,
         edge: u32,
-        cap_layers: u32,
+        caps: PerPool<u32>,
         max_layers: u32,
     ) -> Option<Self> {
-        let alignment = alignment.max(1);
-        let all_resident_layers = super::place_all_resident(&extents, alignment, edge)?.layer_count;
-        let layers = cap_layers.min(all_resident_layers).min(max_layers);
-        let count = extents.len();
+        let pools = pool_state::new_pools(&demand, edge, caps, max_layers)?;
+        let count = demand.block_count();
         Some(Self {
-            edge,
-            alignment,
-            extents,
+            demand,
             targets: vec![None; count],
-            slots: vec![None; count],
-            resident: Vec::new(),
-            resident_pos: vec![u32::MAX; count],
-            pool: BlockPool::new(edge, None),
-            used_texels: vec![0; layers as usize],
-            demand_room: DemandRoom::new(count),
-            layers,
-            cap_layers,
-            all_resident_layers,
-            max_layers,
-            retiring: false,
-            texture_allocations: 1,
+            pools,
             #[cfg(test)]
             growth_sizing: growth::GrowthSizing::default(),
             journal: Vec::new(),
@@ -199,61 +169,74 @@ impl LightmapPoolModel {
         })
     }
 
-    /// Usable layers of the active generation; its texture has one more.
-    pub fn layers(&self) -> u32 {
-        self.layers
+    /// One pool's shape: layers, spare, generation and retirement.
+    pub fn pool(&self, kind: PoolKind) -> &PoolState {
+        &self.pools[kind]
     }
 
-    /// Array index of the spare layer in the active pool texture.
-    pub fn spare_layer(&self) -> u32 {
-        self.layers
-    }
-
-    /// Pool textures this model has asked for: the first generation plus one
-    /// per growth. A repack never adds one.
-    pub fn texture_allocations(&self) -> u32 {
-        self.texture_allocations
-    }
-
-    /// Whether a grown-out generation still awaits submitted-work-done.
-    pub fn retiring(&self) -> bool {
-        self.retiring
-    }
-
-    /// The GPU layer reports the retiring generation's submitted work done
-    /// and drops it. Growth is possible again from the next drain.
-    pub fn release_retirement(&mut self) {
-        self.retiring = false;
-    }
-
-    /// Layers holding at least one block: one past the highest non-empty.
-    pub fn occupied_layers(&self) -> u32 {
-        self.pool.extent() as u32
+    /// The GPU layer reports a pool's retiring generation's submitted work
+    /// done and drops it. That pool may grow again from the next drain.
+    pub fn release_retirement(&mut self, kind: PoolKind) {
+        self.pools[kind].retiring = false;
     }
 
     pub fn block_count(&self) -> u32 {
-        self.extents.len() as u32
+        self.demand.block_count() as u32
+    }
+
+    /// `block`'s true extent.
+    pub fn extent(&self, block: u32) -> (u32, u32) {
+        self.demand.extents()[block as usize]
+    }
+
+    /// Which planes `block` stores; `None` for a level with no mask pool.
+    pub fn planes(&self, block: u32) -> Option<PlanePresence> {
+        self.demand
+            .has_mask_pool()
+            .then(|| self.demand.planes(block))
     }
 
     pub fn is_resident(&self, block: u32) -> bool {
-        self.slots[block as usize].is_some()
+        self.pools.lightmap.slot(block).is_some()
     }
 
+    /// Where a resident block's lightmap half sits.
     pub fn placement(&self, block: u32) -> Option<BlockPlacement> {
-        self.slots[block as usize].map(placement_of)
+        self.pools.lightmap.slot(block).map(placement_of)
+    }
+
+    /// Where a resident block's `plane` sits; `None` when it stores none.
+    pub fn plane_placement(&self, block: u32, plane: usize) -> Option<BlockPlacement> {
+        self.pools
+            .mask
+            .slot(mask_item(block, plane))
+            .map(placement_of)
+    }
+
+    /// Every address of a resident block.
+    pub fn addresses(&self, block: u32) -> Option<BlockAddresses> {
+        let lightmap = self.placement(block)?;
+        let masks = match self.demand.has_mask_pool() {
+            true => MaskAddresses::Planes([
+                self.plane_placement(block, 0),
+                self.plane_placement(block, 1),
+            ]),
+            false => MaskAddresses::NoPool,
+        };
+        Some(BlockAddresses { lightmap, masks })
     }
 
     /// Resident block ids, in no particular order.
     pub fn resident_blocks(&self) -> &[u32] {
-        &self.resident
+        &self.pools.lightmap.resident
     }
 
     /// Table entry `block + 1` as the model holds it now.
     pub fn table_entry(&self, block: u32) -> BlockTableEntry {
-        let (width, height) = self.extents[block as usize];
-        match self.slots[block as usize] {
-            Some(slot) => BlockTableEntry::Resident {
-                placement: placement_of(slot),
+        let (width, height) = self.demand.extents()[block as usize];
+        match self.addresses(block) {
+            Some(addresses) => BlockTableEntry::Resident {
+                addresses,
                 width,
                 height,
             },
@@ -264,12 +247,9 @@ impl LightmapPoolModel {
     /// The whole table, for the pool's creation at level install. Later
     /// drains write only [`DrainPlan::table_writes`].
     pub fn table_bytes(&self) -> Vec<u8> {
-        let placements: Vec<Option<BlockPlacement>> = self
-            .slots
-            .iter()
-            .map(|slot| slot.map(placement_of))
-            .collect();
-        block_table_bytes(&self.extents, &placements)
+        let addresses: Vec<Option<BlockAddresses>> =
+            (0..self.block_count()).map(|b| self.addresses(b)).collect();
+        block_table_bytes(self.demand.extents(), &addresses)
     }
 
     /// The last drain's plan, updated by `fail_install` and cleared by
@@ -278,17 +258,23 @@ impl LightmapPoolModel {
         &self.plan
     }
 
-    fn alloc_extent(&self, block: u32) -> (u32, u32) {
-        let (width, height) = self.extents[block as usize];
-        (
-            width.next_multiple_of(self.alignment),
-            height.next_multiple_of(self.alignment),
-        )
+    /// The pool halves of `block`: its lightmap item, then each present plane.
+    fn halves(&self, block: u32) -> impl Iterator<Item = (PoolKind, u32)> + use<> {
+        let planes = self.demand.planes(block);
+        let mask = |plane: usize| planes[plane].then(|| (PoolKind::Mask, mask_item(block, plane)));
+        [Some((PoolKind::Lightmap, block)), mask(0), mask(1)]
+            .into_iter()
+            .flatten()
     }
 
-    /// Layers band blocks may use: the cap, bounded by the texture.
-    fn cap_eff(&self) -> u32 {
-        self.cap_layers.min(self.layers)
+    /// Whether a half of `block` sits in `kind`.
+    fn has_half_in(&self, kind: PoolKind, block: u32) -> bool {
+        self.halves(block).any(|(half, _)| half == kind)
+    }
+
+    /// `block`'s extent rounded to its slot, the same in either pool.
+    fn slot_extent(&self, block: u32) -> (u32, u32) {
+        self.pools.lightmap.alloc_extent(block)
     }
 
     fn target(&self, block: u32) -> Option<Target> {
@@ -309,26 +295,10 @@ impl LightmapPoolModel {
         self.pair_stamp[block as usize] == self.drain
     }
 
-    /// Texels free under the cap, reserved room left out. A reserved pair the
-    /// controller holds in hand is charged here and not again there: the
-    /// plan's `room_reserved` tells it which.
-    fn band_headroom_texels(&self) -> u64 {
-        let layer_texels = u64::from(self.edge) * u64::from(self.edge);
-        (0..self.cap_eff() as usize)
-            .map(|layer| {
-                let used = self.used_texels.get(layer).copied().unwrap_or(0);
-                layer_texels - used - self.demand_room.held_texels_in(layer)
-            })
-            .sum()
-    }
-
-    fn report(&self, repacked: bool, grew: bool) -> LightmapPoolReport {
-        LightmapPoolReport {
-            layers: self.layers,
-            band_headroom_texels: self.band_headroom_texels(),
-            repacked,
-            grew,
-            retiring: self.retiring,
+    fn report(&self, repacked: PerPool<bool>, grew: PerPool<bool>) -> LightmapPoolReport {
+        PerPool {
+            lightmap: self.pools.lightmap.report(repacked.lightmap, grew.lightmap),
+            mask: self.pools.mask.report(repacked.mask, grew.mask),
         }
     }
 
@@ -339,10 +309,12 @@ impl LightmapPoolModel {
         let s = &self.scratch;
         let p = &self.plan;
         let mut capacities = s.compaction.capacities();
-        capacities.extend(self.demand_room.capacities());
+        for kind in PoolKind::ALL {
+            capacities.extend(self.pools[kind].capacities());
+            capacities.extend(p.pools[kind].capacities());
+            capacities.push(s.device_limited[kind].capacity());
+        }
         capacities.extend([
-            self.resident.capacity(),
-            self.used_texels.capacity(),
             self.journal.capacity(),
             self.touched.capacity(),
             s.ready.capacity(),
@@ -351,14 +323,13 @@ impl LightmapPoolModel {
             s.unseated.capacity(),
             s.victims.capacity(),
             s.over_cap.capacity(),
-            s.device_limited.capacity(),
+            s.repack_pending.capacity(),
             s.repack_keep.capacity(),
             s.repack_band.capacity(),
             s.repack_waiting.capacity(),
             s.repack_residents.capacity(),
             s.moves.capacity(),
             s.demand.capacity(),
-            p.copies.capacity(),
             p.uploads.capacity(),
             p.table_writes.capacity(),
             p.installed.capacity(),
@@ -366,8 +337,6 @@ impl LightmapPoolModel {
             p.deferred.capacity(),
             p.failed.capacity(),
             p.evicted.capacity(),
-            p.room_reserved.capacity(),
-            p.room_returned.capacity(),
         ]);
         capacities
     }
@@ -382,22 +351,8 @@ fn placement_of(slot: Slot) -> BlockPlacement {
 }
 
 #[cfg(test)]
-mod batch_tests;
-#[cfg(test)]
-mod compaction_proptests;
-#[cfg(test)]
-mod compaction_scale_tests;
-#[cfg(test)]
-mod compaction_tests;
-#[cfg(test)]
 mod gpu_mirror;
 #[cfg(test)]
-mod pool_test_fixtures;
+mod pair_tests;
 #[cfg(test)]
-mod proptests;
-#[cfg(test)]
-mod reservation_tests;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod whole_demand_tests;
+mod per_pool_tests;

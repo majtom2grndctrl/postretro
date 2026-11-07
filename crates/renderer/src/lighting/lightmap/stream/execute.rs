@@ -3,7 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::PreparedLightmapBlock;
-use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, RepackKind};
+use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, PoolKind, RepackKind};
 
 use super::super::pool::block_region_writes;
 use super::textures::{PoolTextures, RetiringPool};
@@ -36,9 +36,14 @@ impl LightmapStreamState {
         queue: &crate::render::uploads::UploadQueue,
         ready: &[PreparedLightmapBlock],
     ) -> Result<Executed, LightmapResidencyDrainError> {
+        // Until the renderer's pool split this drives the lightmap pool's
+        // generation alone: `plan.pools.mask`'s growth and copies run nowhere,
+        // and planes stay beside the block's lightmap placement in the old
+        // side-by-side texture, whatever mask placement the model chose.
         let plan = self.model.plan();
-        if plan.growth.is_none()
-            && plan.copies.is_empty()
+        let pool = &plan.pools.lightmap;
+        if pool.growth.is_none()
+            && pool.copies.is_empty()
             && plan.uploads.is_empty()
             && plan.table_writes.is_empty()
         {
@@ -46,11 +51,11 @@ impl LightmapStreamState {
         }
         let mut executed = Executed {
             submitted: true,
-            copies: plan.copies.len() as u64,
+            copies: pool.copies.len() as u64,
             ..Executed::default()
         };
 
-        let grown = match plan.growth {
+        let grown = match pool.growth {
             Some(growth) => {
                 let required_layers = growth.to_layers + 1;
                 if required_layers > self.max_array_layers {
@@ -74,8 +79,11 @@ impl LightmapStreamState {
                 .copy_layers_into(&mut encoder, next, *from_layers);
         }
         let target = grown.as_ref().map_or(&self.textures, |(_, next)| next);
-        debug_assert_eq!(target.array_layers(), self.model.spare_layer() + 1);
-        for &copy in &plan.copies {
+        debug_assert_eq!(
+            target.array_layers(),
+            self.model.pool(PoolKind::Lightmap).spare_layer() + 1
+        );
+        for &copy in &pool.copies {
             target.record_block_copy(&mut encoder, self.format, copy);
         }
 
@@ -166,12 +174,13 @@ impl LightmapStreamState {
         c.last_drain_table_writes = executed.table_writes;
         c.last_drain_uploads = executed.uploads;
         c.last_drain_install_bytes = executed.install_bytes;
-        if plan.report.repacked {
+        let pool = &plan.pools.lightmap;
+        if pool.repack.is_some() {
             c.repacks += 1;
             c.repack_copy_commands += executed.copies;
         }
-        c.compactions += u64::from(matches!(plan.repack, Some(RepackKind::Compaction(_))));
-        c.compaction_rollbacks += u64::from(plan.compaction_rolled_back);
+        c.compactions += u64::from(matches!(pool.repack, Some(RepackKind::Compaction(_))));
+        c.compaction_rollbacks += u64::from(pool.compaction_rolled_back);
         if executed.submitted {
             c.submissions += 1;
             let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -181,7 +190,7 @@ impl LightmapStreamState {
         if executed.grew {
             c.growths += 1;
             c.pool_texture_sets += 1;
-            c.pool_layers = self.model.layers();
+            c.pool_layers = self.model.pool(PoolKind::Lightmap).layers();
             c.active_pool_bytes = self.textures.bytes();
             c.retiring_pool_bytes = self.retiring.as_ref().map_or(0, RetiringPool::bytes);
             c.growth_transient_peak_bytes = c
@@ -190,7 +199,10 @@ impl LightmapStreamState {
             effects.pool_replaced = true;
             effects.meter_changed = true;
         }
-        debug_assert_eq!(c.pool_texture_sets, self.model.texture_allocations());
+        debug_assert_eq!(
+            c.pool_texture_sets,
+            self.model.pool(PoolKind::Lightmap).texture_allocations()
+        );
     }
 }
 

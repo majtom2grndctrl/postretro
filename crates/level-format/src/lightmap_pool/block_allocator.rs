@@ -210,6 +210,47 @@ impl ShelfLayer {
         Ok(())
     }
 
+    /// The shelf a restore of `width × height` at `(x, y)` lands on, with
+    /// every check a restore makes and nothing touched.
+    fn restorable_shelf(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<usize, RestoreConflict> {
+        if width == 0 || height == 0 || x.saturating_add(width) > self.width {
+            return Err(RestoreConflict);
+        }
+        let index = self
+            .shelves
+            .iter()
+            .position(|s| s.y <= y && y < s.y + s.height)
+            .ok_or(RestoreConflict)?;
+        let shelf = &self.shelves[index];
+        if shelf.is_empty() {
+            if y + height > shelf.y + shelf.height {
+                return Err(RestoreConflict);
+            }
+            return Ok(index);
+        }
+        let span_free = shelf
+            .spans
+            .iter()
+            .any(|s| !s.used() && s.x <= x && x + width <= s.x + s.width);
+        if shelf.y != y || !span_free {
+            return Err(RestoreConflict);
+        }
+        if shelf.height < height {
+            let short = height - shelf.height;
+            self.shelves
+                .get(index + 1)
+                .filter(|next| next.is_empty() && next.height >= short)
+                .ok_or(RestoreConflict)?;
+        }
+        Ok(index)
+    }
+
     /// Re-occupy exactly `width × height` at `(x, y)` for `owner`: the
     /// inverse of [`Self::free`], for an undo journal replayed newest-first.
     /// An empty shelf splits so a shelf starts at `y`; an occupied shelf must
@@ -224,19 +265,9 @@ impl ShelfLayer {
         height: u32,
         owner: u64,
     ) -> Result<(), RestoreConflict> {
-        if width == 0 || height == 0 || x.saturating_add(width) > self.width {
-            return Err(RestoreConflict);
-        }
-        let mut index = self
-            .shelves
-            .iter()
-            .position(|s| s.y <= y && y < s.y + s.height)
-            .ok_or(RestoreConflict)?;
+        let mut index = self.restorable_shelf(x, y, width, height)?;
         if self.shelves[index].is_empty() {
             let (shelf_y, shelf_height) = (self.shelves[index].y, self.shelves[index].height);
-            if y + height > shelf_y + shelf_height {
-                return Err(RestoreConflict);
-            }
             if y > shelf_y {
                 self.shelves[index].height = y - shelf_y;
                 let rest = Self::empty_shelf(y, shelf_y + shelf_height - y, self.width);
@@ -249,33 +280,16 @@ impl ShelfLayer {
                 let rest = Self::empty_shelf(y + height, shelf_height - height, self.width);
                 self.shelves.insert(index + 1, rest);
             }
-        } else {
-            // Every check runs before the borrow below mutates anything, so a
-            // refused restore leaves the layer exactly as it was.
-            let shelf = &self.shelves[index];
-            let span_free = shelf
-                .spans
-                .iter()
-                .any(|s| !s.used() && s.x <= x && x + width <= s.x + s.width);
-            if shelf.y != y || !span_free {
-                return Err(RestoreConflict);
+        } else if self.shelves[index].height < height {
+            let short = height - self.shelves[index].height;
+            if self.shelves[index + 1].height == short {
+                self.shelves.remove(index + 1);
+            } else {
+                let below = &mut self.shelves[index + 1];
+                below.y += short;
+                below.height -= short;
             }
-            if shelf.height < height {
-                let short = height - shelf.height;
-                let below = self
-                    .shelves
-                    .get(index + 1)
-                    .filter(|next| next.is_empty() && next.height >= short)
-                    .ok_or(RestoreConflict)?;
-                if below.height == short {
-                    self.shelves.remove(index + 1);
-                } else {
-                    let below = &mut self.shelves[index + 1];
-                    below.y += short;
-                    below.height -= short;
-                }
-                self.shelves[index].height = height;
-            }
+            self.shelves[index].height = height;
         }
         let shelf = &mut self.shelves[index];
         let span_index = shelf
@@ -409,6 +423,18 @@ impl BlockPool {
             slot.height,
             slot.owner,
         )
+    }
+
+    /// Whether [`Self::restore`] would take `slot`, with nothing touched.
+    pub fn can_restore(&self, slot: Slot) -> bool {
+        if slot.width > self.edge || slot.height > self.edge {
+            return false;
+        }
+        self.layers.get(slot.layer as usize).is_none_or(|layer| {
+            layer
+                .restorable_shelf(slot.x, slot.y, slot.width, slot.height)
+                .is_ok()
+        })
     }
 
     /// Claim exactly `width × height` at `(x, y)` of `layer` under a fresh

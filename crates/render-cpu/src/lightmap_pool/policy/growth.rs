@@ -1,6 +1,8 @@
 // Growth sizing: the layers a drain's first growth reserves for the targeted demand.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+use postretro_level_format::lightmap_pool::PoolKind;
+
 use super::LightmapPoolModel;
 
 /// Headroom a growth reserves over the targeted demand's from-scratch pack.
@@ -36,6 +38,12 @@ impl Ratio {
     }
 }
 
+/// One pool's first generation, the mask pool's included: the cap, bounded by
+/// what its items fill all-resident and by the device.
+pub(super) fn first_generation(cap_layers: u32, all_resident: u32, max_layers: u32) -> u32 {
+    cap_layers.min(all_resident).min(max_layers)
+}
+
 /// How a growth is sized. `PerDrain` is the sizing demand sizing replaced,
 /// kept so tests can show the deferrals it caused.
 #[cfg(test)]
@@ -48,8 +56,8 @@ pub(super) enum GrowthSizing {
 }
 
 impl LightmapPoolModel {
-    /// Layers a drain's first growth reserves, `needed` being one past the
-    /// layer the growing pair landed in.
+    /// Layers `kind`'s first growth of a drain reserves, `needed` being one
+    /// past the layer the growing half landed in.
     ///
     /// Sized to every mandatory and visible target, resident or not, rather
     /// than to the pairs this drain admitted: the shared drain budget admits
@@ -59,29 +67,32 @@ impl LightmapPoolModel {
     /// the level needs all-resident and by the device limit, and never below
     /// `needed`: a fragmented pool can need more than the all-resident
     /// layers. `needed` never passes the device limit.
-    pub(super) fn growth_reserve_layers(&mut self, needed: u32) -> u32 {
+    pub(super) fn growth_reserve_layers(&mut self, kind: PoolKind, needed: u32) -> u32 {
         #[cfg(test)]
         if self.growth_sizing == GrowthSizing::PerDrain {
             return needed;
         }
-        let ceiling = self.all_resident_layers.min(self.max_layers);
+        let pool = &self.pools[kind];
+        let ceiling = pool.all_resident_layers.min(pool.max_layers);
         GROWTH_HEADROOM
-            .of(self.targeted_demand_layers())
+            .of(self.targeted_demand_layers(kind))
             .min(ceiling)
             .max(needed)
     }
 
     /// Layers a from-scratch shelf pack of every mandatory and visible
-    /// target fills, in the shared packing order.
-    pub(super) fn targeted_demand_layers(&mut self) -> u32 {
+    /// target's items in `kind`'s pool fills, in the shared packing order.
+    pub(super) fn targeted_demand_layers(&mut self, kind: PoolKind) -> u32 {
         let mut demand = std::mem::take(&mut self.scratch.demand);
         demand.clear();
+        let pool = &self.pools[kind];
         demand.extend(
-            (0..self.block_count())
-                .filter(|&block| self.target(block).is_some_and(|t| !t.is_band()))
-                .map(|block| self.alloc_extent(block)),
+            pool.items()
+                .iter()
+                .filter(|&&item| self.is_never_refused(kind.block_of(item)))
+                .map(|&item| pool.alloc_extent(item)),
         );
-        let layers = super::super::place_all_resident(&demand, self.alignment, self.edge)
+        let layers = super::super::place_all_resident(&demand, pool.alignment(), pool.edge())
             .map_or(0, |pool| pool.layer_count);
         self.scratch.demand = demand;
         layers

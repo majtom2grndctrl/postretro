@@ -5,10 +5,9 @@ use proptest::prelude::*;
 use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
 
 use super::gpu_mirror::GpuMirror;
+use super::pool_test_fixtures::*;
 use super::*;
 
-const EDGE: u32 = 64;
-const ALIGN: u32 = 4;
 const BLOCKS: usize = 14;
 
 #[derive(Debug, Clone)]
@@ -62,18 +61,21 @@ fn assert_state(model: &LightmapPoolModel, classes: &[Option<LightmapBlockClass>
     let rects: Vec<(u32, Slot)> = model
         .resident_blocks()
         .iter()
-        .map(|&block| (block, model.slots[block as usize].unwrap()))
+        .map(|&block| (block, model.slot_of(block).unwrap()))
         .collect();
     for (i, &(a, sa)) in rects.iter().enumerate() {
         assert!(
             classes[a as usize].is_some(),
             "untargeted block {a} resident"
         );
-        assert!(sa.layer < model.layers());
+        assert!(sa.layer < model.pool(POOL).layers());
         assert!(sa.x + sa.width <= EDGE && sa.y + sa.height <= EDGE);
         assert_eq!((sa.x % ALIGN, sa.y % ALIGN), (0, 0));
         if classes[a as usize] == Some(LightmapBlockClass::Band) {
-            assert!(sa.layer < model.cap_eff(), "band block {a} past the cap");
+            assert!(
+                sa.layer < model.pool(POOL).cap_eff(),
+                "band block {a} past the cap"
+            );
         }
         for &(b, sb) in &rects[i + 1..] {
             let apart = sa.layer != sb.layer
@@ -105,12 +107,12 @@ fn packed_layers(extents: &[(u32, u32)], classes: &[Option<LightmapBlockClass>])
 }
 
 fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
-    let mut model = LightmapPoolModel::new(extents.clone(), ALIGN, EDGE, cap).unwrap();
+    let mut model = test_model(extents.clone(), ALIGN, EDGE, cap, u32::MAX).unwrap();
     let mut gpu = GpuMirror::new(&model);
     let mut classes: Vec<Option<LightmapBlockClass>> = vec![None; BLOCKS];
     for step in steps {
         if step.release {
-            model.release_retirement();
+            model.release_retirement(POOL);
         }
         let mut next = classes.clone();
         let mut leads = [0u32; BLOCKS];
@@ -142,11 +144,11 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
             })
             .collect();
         let resident_before: Vec<bool> = (0..BLOCKS as u32).map(|b| model.is_resident(b)).collect();
-        let retiring_before = model.retiring();
-        let allocations_before = model.texture_allocations();
+        let retiring_before = model.pool(POOL).retiring();
+        let allocations_before = model.pool(POOL).texture_allocations();
 
         model.plan_drain(DrainRequest {
-            pool_cap_layers: step.cap,
+            pool_cap_layers: caps(step.cap),
             target_reset: None,
             target_set: &set,
             target_remove: &remove,
@@ -156,7 +158,7 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
         for &block in &ready {
             if never_refused(next[block as usize]) {
                 assert!(
-                    !plan.refused.contains(&block),
+                    !refused(plan).contains(&block),
                     "never-refused {block} refused"
                 );
                 assert!(
@@ -180,13 +182,13 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
                 class.is_none()
             );
         }
-        if let Some(growth) = plan.growth {
+        if let Some(growth) = plan.pools[POOL].growth {
             assert!(!retiring_before, "growth while retiring");
             // The reserve covers the targeted demand with headroom, bounded
             // by the all-resident layers; only the drain's own placements
             // may need more.
             let (demand, all_resident) = packed_layers(&extents, &next);
-            let occupied = model.occupied_layers();
+            let occupied = model.pool(POOL).occupied_layers();
             assert!(
                 growth.to_layers >= growth::GROWTH_HEADROOM.of(demand).min(all_resident),
                 "{growth:?} below demand {demand} with headroom (all-resident {all_resident})"
@@ -200,18 +202,18 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
                 "{growth:?} past all-resident {all_resident} and occupied {occupied}"
             );
         }
-        assert!(!(plan.report.repacked && plan.growth.is_some()));
-        let grew = plan.growth.is_some();
+        assert!(!(plan.report[POOL].repacked && plan.pools[POOL].growth.is_some()));
+        let grew = plan.pools[POOL].growth.is_some();
         assert_eq!(
-            model.texture_allocations(),
+            model.pool(POOL).texture_allocations(),
             allocations_before + u32::from(grew),
             "only growth allocates a texture"
         );
 
         if step.abort {
             model.abort_drain();
-            assert_eq!(model.retiring(), retiring_before);
-            assert_eq!(model.texture_allocations(), allocations_before);
+            assert_eq!(model.pool(POOL).retiring(), retiring_before);
+            assert_eq!(model.pool(POOL).texture_allocations(), allocations_before);
             gpu.assert_matches(&model);
             continue;
         }

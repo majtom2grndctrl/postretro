@@ -207,7 +207,7 @@ impl BoundLevel {
                 );
             },
             &CellBlocks::new(&self.lightmap, self.cells.cells.len()).unwrap(),
-            &PoolDemand::new(&self.lightmap, Some(&self.shadowmask)).unwrap(),
+            &pool_demand(&self.lightmap, Some(&self.shadowmask)).unwrap(),
             LayerPrices::of(&self.lightmap).unwrap(),
         )
         .unwrap()
@@ -500,16 +500,14 @@ fn compiler_and_runtime_count_the_same_layers() {
         section(expected.lightmap, expected.mask)
     );
 
-    let demand = PoolDemand::new(&level.lightmap, Some(&level.shadowmask)).unwrap();
-    assert_eq!(demand.all_resident().unwrap(), expected);
+    let demand = pool_demand(&level.lightmap, Some(&level.shadowmask)).unwrap();
+    assert_eq!(all_resident_layers(&demand).unwrap(), expected);
 
     let first_three = &blocks[..3];
     let expected = runtime_layers(first_three, alignment);
     assert_eq!(expected.lightmap, 2);
     assert_eq!(
-        demand
-            .layers_of(&[0, 1, 2], &mut PackScratch::default())
-            .unwrap(),
+        layers_of(&demand, &[0, 1, 2], &mut PackScratch::default()).unwrap(),
         expected
     );
 }

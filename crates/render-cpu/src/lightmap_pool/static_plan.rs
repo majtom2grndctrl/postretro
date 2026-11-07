@@ -4,24 +4,52 @@
 // plan into textures.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
-use super::{AllResidentPool, place_all_resident};
+use super::payload::planes_mismatch;
+use super::{
+    AllResidentMasks, AllResidentPool, BlockAddresses, MaskAddresses, PoolDemand, block_table_bytes,
+};
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_GROUP_COUNT, ShadowmaskBlockIndex, group_plane_len,
-};
+use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskBlockIndex};
 
-/// Every block of a level placed in the pool, and whether the shadowmask
-/// groups install beside them.
+/// Every block of a level placed in the lightmap pool, and every plane placed
+/// in the mask pool when the level has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticPoolPlan {
     pub header: LightmapHeader,
     /// `(width, height)` per block id.
     pub extents: Vec<(u32, u32)>,
     pub pool: AllResidentPool,
-    /// Id 42 is present and every block carries well-formed groups.
-    pub with_shadowmask: bool,
+    /// `Some` when id 42 is present, every block carries well-formed planes,
+    /// and the device holds the mask pool.
+    pub masks: Option<AllResidentMasks>,
+}
+
+impl StaticPoolPlan {
+    pub fn with_shadowmask(&self) -> bool {
+        self.masks.is_some()
+    }
+
+    /// The block table of the all-resident pools.
+    pub fn table_bytes(&self) -> Vec<u8> {
+        let addresses: Vec<Option<BlockAddresses>> = self
+            .pool
+            .placements
+            .iter()
+            .enumerate()
+            .map(|(block, &lightmap)| {
+                Some(BlockAddresses {
+                    lightmap,
+                    masks: match &self.masks {
+                        Some(masks) => MaskAddresses::Planes(masks.planes[block]),
+                        None => MaskAddresses::NoPool,
+                    },
+                })
+            })
+            .collect();
+        block_table_bytes(&self.extents, &addresses)
+    }
 }
 
 /// What the static lightmap binds for a level.
@@ -45,18 +73,23 @@ pub enum StaticPool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamingPoolPlan {
     pub header: LightmapHeader,
-    /// `(width, height)` per block id.
-    pub extents: Vec<(u32, u32)>,
-    /// Id 42 is present and the device holds its two-group pool width.
-    pub with_shadowmask: bool,
+    /// Each block's extent and stored planes. A level whose device cannot hold
+    /// the mask pool, or with no id 42, has no mask pool here.
+    pub demand: PoolDemand,
     /// The level's content identity, which every drain batch must carry.
     pub content_tag: [u8; 32],
-    /// The first generation's layer cap, already bounded so the pool plus
-    /// its spare layer fit the device's array-layer limit.
+    /// The first generation's layer cap, already bounded so a pool plus its
+    /// spare layer fit the device's array-layer limit.
     pub pool_cap_layers: u32,
     /// Device `maxTextureArrayLayers`, the spare layer included: the pool
     /// model defers a pair rather than grow past it.
     pub max_array_layers: u32,
+}
+
+impl StreamingPoolPlan {
+    pub fn with_shadowmask(&self) -> bool {
+        self.demand.has_mask_pool()
+    }
 }
 
 impl StaticPool {
@@ -66,8 +99,8 @@ impl StaticPool {
     /// owner's mask. Loaded into the frame uniforms' mask-present bit.
     pub fn static_specular_mask_present(&self) -> bool {
         match self {
-            Self::Blocks(plan) => plan.with_shadowmask,
-            Self::Streaming(plan) => plan.with_shadowmask,
+            Self::Blocks(plan) => plan.with_shadowmask(),
+            Self::Streaming(plan) => plan.with_shadowmask(),
             Self::Absent | Self::Empty | Self::Rejected => false,
         }
     }
@@ -77,7 +110,7 @@ impl StaticPool {
     pub fn static_block_extents(&self) -> Option<&[(u32, u32)]> {
         match self {
             Self::Blocks(plan) => Some(&plan.extents),
-            Self::Streaming(plan) => Some(&plan.extents),
+            Self::Streaming(plan) => Some(plan.demand.extents()),
             _ => None,
         }
     }
@@ -86,9 +119,10 @@ impl StaticPool {
 /// Plan the all-resident pool for `index` and the payloads install moved in.
 /// Degrades to placeholder mode, logging once, when the payloads disagree with
 /// the index (hand-built geometry), or when the device cannot hold a pool
-/// layer or the layer count the shelf allocator needs. The shadowmask drops
-/// to its placeholder alone when only its groups are unusable; the level then
-/// draws no static non-SDF world specular.
+/// layer or the layer count the shelf allocator needs. The mask pool drops to
+/// its placeholder alone when only its planes are unusable, or the device
+/// cannot hold its layers; the level then draws no static non-SDF world
+/// specular.
 pub fn plan_static_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
@@ -120,21 +154,27 @@ pub fn plan_static_pool(
             return StaticPool::Rejected;
         }
     };
-    let with_shadowmask = shadowmask.is_some_and(|_| {
-        usable_shadowmask(&extents, payloads, max_texture_dimension_2d)
-            .inspect_err(|reason| {
-                log::error!(
-                    "[Renderer] ShadowmaskAtlas rejected: {reason}; disabling entity-to-world \
-                     static-light shadowmask; this level gets no static non-SDF world specular"
-                )
-            })
-            .is_ok()
+    let masks = shadowmask.and_then(|shadowmask| {
+        place_masks(
+            index,
+            shadowmask,
+            payloads,
+            max_texture_dimension_2d,
+            max_texture_array_layers,
+        )
+        .inspect_err(|reason| {
+            log::error!(
+                "[Renderer] ShadowmaskAtlas rejected: {reason}; disabling entity-to-world \
+                 static-light shadowmask; this level gets no static non-SDF world specular"
+            )
+        })
+        .ok()
     });
     StaticPool::Blocks(StaticPoolPlan {
         header,
         extents,
         pool,
-        with_shadowmask,
+        masks,
     })
 }
 
@@ -198,10 +238,13 @@ pub fn plan_streaming_pool(
             })
             .is_ok()
     });
+    let demand = PoolDemand::of_indices(index, shadowmask);
     StaticPool::Streaming(StreamingPoolPlan {
         header,
-        extents,
-        with_shadowmask,
+        demand: match with_shadowmask {
+            true => demand,
+            false => demand.without_masks(),
+        },
         content_tag,
         pool_cap_layers: pool_cap_layers.min(max_texture_array_layers - 1),
         max_array_layers: max_texture_array_layers,
@@ -240,7 +283,8 @@ fn place_pool(
              {max_texture_dimension_2d}"
         ));
     }
-    place_all_resident(extents, header.block_alignment(), LIGHTMAP_POOL_LAYER_EDGE)
+    PoolDemand::lightmap_only(header.block_alignment(), extents.to_vec())
+        .place_blocks(LIGHTMAP_POOL_LAYER_EDGE)
         .ok_or_else(|| format!("cell blocks do not fit {LIGHTMAP_POOL_LAYER_EDGE}² pool layers"))
 }
 
@@ -303,26 +347,34 @@ fn payloads_match_index(
     Ok(())
 }
 
-fn usable_shadowmask(
-    extents: &[(u32, u32)],
+/// The all-resident mask pool: every present plane placed, in the same pool
+/// shape a streamed level takes. A level with id 42 and no present plane places
+/// nothing and still has masks, which read zero.
+fn place_masks(
+    index: &LightmapBlockIndex,
+    shadowmask: &ShadowmaskBlockIndex,
     payloads: &[LightmapBlockPayload],
     max_texture_dimension_2d: u32,
-) -> Result<(), String> {
+    max_texture_array_layers: u32,
+) -> Result<AllResidentMasks, String> {
     shadowmask_width_fits(max_texture_dimension_2d)?;
-    for (block, (&(w, h), payload)) in extents.iter().zip(payloads).enumerate() {
-        let expected = group_plane_len(w, h);
-        match &payload.shadowmask {
-            Some([a, b])
-                if expected == Some(a.len() as u64) && expected == Some(b.len() as u64) => {}
-            Some([a, b]) => {
-                return Err(format!(
-                    "block {block} ({w}x{h}) groups are {} and {} byte(s), expected {expected:?}",
-                    a.len(),
-                    b.len(),
-                ));
-            }
-            None => return Err(format!("block {block} arrived without its groups")),
+    let demand = PoolDemand::of_indices(index, Some(shadowmask));
+    for (block, (&(w, h), payload)) in demand.extents().iter().zip(payloads).enumerate() {
+        let planes = demand.planes(block as u32);
+        if let Some(reason) = planes_mismatch((w, h), planes, payload) {
+            return Err(format!("block {block} {reason}"));
         }
     }
-    Ok(())
+    let masks = demand
+        .place_planes(LIGHTMAP_POOL_LAYER_EDGE)
+        .ok_or_else(|| format!("mask planes do not fit {LIGHTMAP_POOL_LAYER_EDGE}² pool layers"))?;
+    if masks.layer_count > max_texture_array_layers {
+        return Err(format!(
+            "the mask pool needs {} array layer(s) for {} plane(s), exceeding device \
+             maxTextureArrayLayers {max_texture_array_layers}",
+            masks.layer_count,
+            demand.plane_count(),
+        ));
+    }
+    Ok(masks)
 }

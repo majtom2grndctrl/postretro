@@ -45,7 +45,7 @@ pub(crate) fn assemble_live_diagnostics(
     live.mandatory_blocks = u64::from(residency.mandatory_blocks);
     live.mandatory_lightmap_bytes = residency.mandatory_lightmap_bytes;
     live.mandatory_shadowmask_bytes = residency.mandatory_shadowmask_bytes;
-    live.band_headroom_texels = controller.pool_report().band_headroom_texels;
+    live.band_headroom_texels = controller.pool_report().lightmap.band_headroom_texels;
     live.in_flight_read_bytes = ledger.in_memory_bytes();
     live.physical_reads = ledger.physical_reads();
 
@@ -194,7 +194,7 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use postretro_level_loader::LightmapPoolReport;
+    use postretro_level_loader::{LightmapPoolReport, PoolReport};
     use postretro_test_log_capture::LogCapture;
     use postretro_visibility::VisibleCells;
 
@@ -477,7 +477,10 @@ mod tests {
         rig.install_all(
             &batch,
             LightmapPoolReport {
-                band_headroom_texels: 4096,
+                lightmap: PoolReport {
+                    band_headroom_texels: 4096,
+                    ..PoolReport::default()
+                },
                 ..LightmapPoolReport::default()
             },
         );

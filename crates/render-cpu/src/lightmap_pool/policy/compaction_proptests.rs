@@ -162,11 +162,10 @@ fn run(history: &History, tally: &Tally, arrival: Arrival) {
     let extents = extents_of(history);
     let count = extents.len();
     assert!(count <= 64);
-    let Some(mut model) = LightmapPoolModel::new(extents.clone(), ALIGN, EDGE, history.layers)
-    else {
+    let Some(mut model) = test_model(extents.clone(), ALIGN, EDGE, history.layers, u32::MAX) else {
         return;
     };
-    let layers = model.layers();
+    let layers = model.pool(POOL).layers();
     let mut gpu = GpuMirror::new(&model);
     let all = if count == 64 {
         u64::MAX
@@ -223,7 +222,7 @@ fn run(history: &History, tally: &Tally, arrival: Arrival) {
         for (at, batch) in batches.iter().enumerate() {
             let (set, remove): (&[_], &[_]) = if at == 0 { (&set, &remove) } else { (&[], &[]) };
             model.plan_drain(DrainRequest {
-                pool_cap_layers: layers,
+                pool_cap_layers: caps(layers),
                 target_reset: None,
                 target_set: set,
                 target_remove: remove,
@@ -232,11 +231,11 @@ fn run(history: &History, tally: &Tally, arrival: Arrival) {
             let plan = model.plan();
             add(&tally.drains, 1);
             let spare = scratch_layers(&extents, next).map_or(0, |used| layers - used);
-            if plan.compaction_rolled_back || matches!(plan.repack, Some(RepackKind::Compaction(_)))
+            if plan.pools[POOL].compaction_rolled_back || matches!(plan.pools[POOL].repack, Some(RepackKind::Compaction(_)))
             {
                 add(&tally.with_spare, u64::from(spare >= 1));
             }
-            if plan.compaction_rolled_back {
+            if plan.pools[POOL].compaction_rolled_back {
                 if spare >= 1 {
                     add(&tally.missed_with_spare, 1);
                 } else {
@@ -244,10 +243,10 @@ fn run(history: &History, tally: &Tally, arrival: Arrival) {
                 }
                 return;
             }
-            assert_eq!(plan.growth, None, "{next:b} packs, so it needs no growth");
+            assert_eq!(plan.pools[POOL].growth, None, "{next:b} packs, so it needs no growth");
             assert!(plan.deferred.is_empty(), "nothing waits on a retirement");
-            repacks += u32::from(plan.repack.is_some());
-            if let Some(RepackKind::Compaction(stats)) = plan.repack {
+            repacks += u32::from(plan.pools[POOL].repack.is_some());
+            if let Some(RepackKind::Compaction(stats)) = plan.pools[POOL].repack {
                 add(&tally.compactions, 1);
                 add(&tally.parked, u64::from(stats.parked));
                 add(&tally.built_over, u64::from(stats.built_over));
@@ -256,7 +255,7 @@ fn run(history: &History, tally: &Tally, arrival: Arrival) {
             }
             gpu.execute(model.plan());
             gpu.assert_matches(&model);
-            assert_eq!(model.texture_allocations(), 1, "no second pool");
+            assert_eq!(model.pool(POOL).texture_allocations(), 1, "no second pool");
             assert_disjoint_within_layers(&model);
         }
         for b in 0..count as u32 {

@@ -11,6 +11,7 @@ use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap_pool::{PackScratch, PoolDemand};
 use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
@@ -23,9 +24,8 @@ mod report;
 mod tests;
 
 use cell_input::BoundCellInput;
-pub(crate) use demand::PoolDemand;
-use demand::PoolLayers;
-use demand::{LayerPrices, PackScratch};
+use demand::{LayerPrices, PoolLayers, layers_of};
+pub(crate) use demand::{all_resident_layers, pool_demand};
 pub(crate) use report::LightmapPoolReport;
 
 /// The bound's two destinations: id 58 and the Build Summary.
@@ -63,9 +63,9 @@ pub(super) fn resolve_lightmap_pool_bound(
         });
     }
     let started = Instant::now();
-    let demand = PoolDemand::new(lightmap, shadowmask)?;
+    let demand = pool_demand(lightmap, shadowmask)?;
     let prices = LayerPrices::of(lightmap)?;
-    let all_resident = demand.all_resident()?;
+    let all_resident = all_resident_layers(&demand)?;
     let bound = match residency {
         Some(residency) => {
             let input = BoundCellInput::new(residency, directory)?;
@@ -194,7 +194,7 @@ fn worst_cell_demand(
         let layers = match packed.get(blocks.as_slice()) {
             Some(&layers) => layers,
             None => {
-                let layers = demand.layers_of(&blocks, &mut scratch)?;
+                let layers = layers_of(demand, &blocks, &mut scratch)?;
                 packed.insert(blocks.as_slice().into(), layers);
                 layers
             }

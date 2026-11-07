@@ -2,6 +2,7 @@
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_format::lightmap::LightmapBlockPayload;
+use postretro_level_format::lightmap_pool::PerPool;
 
 use super::lightmap_stream_error;
 use crate::prl::PrlLoadError;
@@ -39,7 +40,8 @@ pub struct LightmapTarget {
 }
 
 /// A read lightmap/shadowmask pair, owned by the controller until the renderer
-/// reports an outcome. The pair installs whole or not at all.
+/// reports an outcome. The pair installs whole or not at all, and an absent
+/// plane in its payload is an empty one.
 #[derive(Debug)]
 pub struct PreparedLightmapBlock {
     pub generation: u64,
@@ -63,8 +65,8 @@ pub struct PreparedLightmapBlock {
 pub struct LightmapDrainBatch {
     pub generation: u64,
     pub content_tag: [u8; 32],
-    /// Pool cap in layers (the dev-tools slider). Band blocks must fit under
-    /// it; mandatory and visible blocks may grow the pool past it.
+    /// Pool cap in layers (the dev-tools slider), for each pool. Band blocks
+    /// must fit under it; mandatory and visible blocks may grow a pool past it.
     pub pool_cap_layers: u32,
     pub target_reset: Option<Vec<LightmapTarget>>,
     /// New or reclassified targets, sorted by block id, unique.
@@ -126,21 +128,33 @@ impl LightmapDrainBatch {
     }
 }
 
-/// Pool shape after a drain, for controller prefetch gating and diagnostics.
+/// One pool's shape after a drain, for controller prefetch gating and
+/// diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct LightmapPoolReport {
-    /// Layers of the active pool generation.
+pub struct PoolReport {
+    /// Layers of the pool's active generation.
     pub layers: u32,
     /// Texels free under the cap, leaving out room reserved for mandatory and
     /// visible targets: the room band prefetch may still fill. The controller
     /// requests band reads only against this headroom, less the pairs it
     /// holds with no room reserved; the renderer's refusal stays authoritative.
     pub band_headroom_texels: u64,
-    /// Whether this drain repacked in place, or grew a new generation.
+    /// Whether this drain repacked the pool in place, or grew a new generation.
     pub repacked: bool,
     pub grew: bool,
     /// Whether a retiring generation is still awaiting submitted-work-done.
     pub retiring: bool,
+}
+
+/// Both pools after a drain: each has its own headroom, because a pair needs
+/// room in both and the one short of it is the one it waits on.
+pub type LightmapPoolReport = PerPool<PoolReport>;
+
+/// A band pair turned away whole: the pools it found no room in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LightmapRefusal {
+    pub block: u32,
+    pub short: PerPool<bool>,
 }
 
 /// Renderer-to-controller ownership return.
@@ -149,8 +163,9 @@ pub struct LightmapDrainOutcome {
     /// Pairs installed this drain; sampleable from this drain on.
     pub installed: Vec<u32>,
     /// Band pairs that did not fit under the cap. Their payloads are dropped;
-    /// the controller must not re-request them until the pool frees room.
-    pub refused: Vec<u32>,
+    /// the controller must not re-request them until the pool that turned
+    /// them away has room.
+    pub refused: Vec<LightmapRefusal>,
     /// Pairs the renderer could not place yet (a mandatory block waiting on a
     /// retiring pool: a counted transient miss). Returned owned.
     pub deferred: Vec<PreparedLightmapBlock>,
@@ -162,12 +177,16 @@ pub struct LightmapDrainOutcome {
     /// Blocks actually released: removed targets, and band blocks evicted for
     /// cap pressure or to make room for mandatory work.
     pub evicted: Vec<u32>,
-    /// Blocks that newly hold reserved room: `pool`'s headroom already leaves
-    /// it out, so a pair in hand for one of them is not charged against it
-    /// again. Reservation writes no table entry; these blocks stay misses.
-    pub room_reserved: Vec<u32>,
-    /// Blocks that held reserved room and no longer do.
-    pub room_returned: Vec<u32>,
+    /// Pool items that newly hold reserved room: a block id in the lightmap
+    /// pool, a [`mask_item`] in the mask pool, so one plane can hold room
+    /// without the other. `pool`'s headroom already leaves it out, so a pair
+    /// in hand for one of them is not charged against it again. Reservation
+    /// writes no table entry; these blocks stay misses.
+    ///
+    /// [`mask_item`]: postretro_level_format::lightmap_pool::mask_item
+    pub room_reserved: PerPool<Vec<u32>>,
+    /// Pool items that held reserved room and no longer do.
+    pub room_returned: PerPool<Vec<u32>>,
     pub pool: LightmapPoolReport,
 }
 

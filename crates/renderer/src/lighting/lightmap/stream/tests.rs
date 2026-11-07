@@ -15,7 +15,7 @@ use postretro_level_loader::{
     LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapTarget,
     PreparedLightmapBlock,
 };
-use postretro_render_cpu::lightmap_pool::BlockTableEntry;
+use postretro_render_cpu::lightmap_pool::{BlockTableEntry, PoolDemand, PoolKind};
 use postretro_test_log_capture::LogCapture;
 
 use super::super::pool_sample_test::{
@@ -67,13 +67,16 @@ fn fixture(extents: &[(u32, u32)]) -> BlockFixture {
 fn plan(ctx: &GpuCtx, fixture: &BlockFixture, cap: u32, max_layers: u32) -> StreamingPoolPlan {
     StreamingPoolPlan {
         header: fixture.index.header,
-        extents: fixture
-            .index
-            .records
-            .iter()
-            .map(|r| (u32::from(r.width), u32::from(r.height)))
-            .collect(),
-        with_shadowmask: true,
+        demand: PoolDemand::new(
+            fixture.index.header.block_alignment(),
+            fixture
+                .index
+                .records
+                .iter()
+                .map(|r| (u32::from(r.width), u32::from(r.height)))
+                .collect(),
+            Some(vec![[true; 2]; fixture.index.records.len()]),
+        ),
         content_tag: TAG,
         pool_cap_layers: cap,
         max_array_layers: max_layers.min(ctx.device.limits().max_texture_array_layers),
@@ -276,7 +279,7 @@ fn fragmented_single_layer(stream: &mut Stream) {
     let ready = vec![stream.prepared(0), stream.prepared(1), stream.prepared(3)];
     let outcome = stream.drain(stream.reset(vec![mandatory(0), mandatory(1), band(3, 3)], ready));
     assert_eq!(outcome.installed, vec![0, 1, 3]);
-    assert_eq!(stream.state.model().layers(), 1);
+    assert_eq!(stream.state.model().pool(PoolKind::Lightmap).layers(), 1);
     stream.assert_samples_own_texels();
 }
 
@@ -296,14 +299,19 @@ fn repack_through_the_spare_layer_keeps_every_block_on_its_own_texels_without_a_
     let placed_before = stream.state.model().placement(1);
 
     let outcome = stream.drain(stream.delta(vec![mandatory(2)], vec![0], vec![stream.prepared(2)]));
-    assert!(outcome.pool.repacked && !outcome.pool.grew);
+    assert!(outcome.pool.lightmap.repacked && !outcome.pool.lightmap.grew);
     assert_eq!(outcome.installed, vec![2]);
     assert_eq!(outcome.evicted, vec![0]);
     let plan = stream.state.model().plan();
-    let spare = stream.state.model().spare_layer();
-    assert!(!plan.copies.is_empty(), "the repack moved resident blocks");
+    let spare = stream.state.model().pool(PoolKind::Lightmap).spare_layer();
     assert!(
-        plan.copies
+        !plan.pools.lightmap.copies.is_empty(),
+        "the repack moved resident blocks"
+    );
+    assert!(
+        plan.pools
+            .lightmap
+            .copies
             .iter()
             .all(|copy| copy.src.layer == spare || copy.dst.layer == spare),
         "one layer: every move stages through the spare"
@@ -316,12 +324,22 @@ fn repack_through_the_spare_layer_keeps_every_block_on_its_own_texels_without_a_
 
     let counters = stream.state.counters();
     assert_eq!(counters.repacks, 1);
-    assert_eq!(counters.repack_copy_commands, plan.copies.len() as u64);
+    assert_eq!(
+        counters.repack_copy_commands,
+        plan.pools.lightmap.copies.len() as u64
+    );
     assert_eq!(
         counters.pool_texture_sets, 1,
         "a repack creates no pool texture"
     );
-    assert_eq!(stream.state.model().texture_allocations(), 1);
+    assert_eq!(
+        stream
+            .state
+            .model()
+            .pool(PoolKind::Lightmap)
+            .texture_allocations(),
+        1
+    );
     assert_eq!(counters.growths, 0);
     assert_eq!(counters.submissions, 2, "one submission per drain");
     stream.assert_samples_own_texels();
@@ -343,7 +361,7 @@ fn a_failed_install_after_a_repack_leaves_every_entry_on_its_own_block() {
     broken.payload.irradiance.truncate(64);
 
     let outcome = stream.drain(stream.delta(vec![mandatory(2)], vec![0], vec![broken]));
-    assert!(outcome.pool.repacked);
+    assert!(outcome.pool.lightmap.repacked);
     assert!(outcome.installed.is_empty());
     assert_eq!(outcome.failed, vec![2], "the failed pair fails whole");
     assert!(!stream.state.model().is_resident(2));
@@ -381,11 +399,11 @@ fn growth_keeps_every_block_on_its_own_texels_and_retires_the_old_set_until_work
         vec![],
         vec![stream.prepared(1), broken],
     ));
-    assert!(outcome.pool.grew && outcome.pool.retiring);
+    assert!(outcome.pool.lightmap.grew && outcome.pool.lightmap.retiring);
     assert_eq!(outcome.installed, vec![1]);
     assert_eq!(outcome.failed, vec![2]);
     assert!(outcome.refused.is_empty());
-    assert_eq!(outcome.pool.layers, 2);
+    assert_eq!(outcome.pool.lightmap.layers, 2);
     let counters = stream.state.counters();
     assert_eq!(counters.growths, 1);
     assert_eq!(counters.pool_texture_sets, 2);
@@ -410,7 +428,7 @@ fn growth_keeps_every_block_on_its_own_texels_and_retires_the_old_set_until_work
     stream.drain(stream.delta(vec![], vec![], vec![]));
     let retiring = stream.state.retiring_pool().expect("still retiring");
     assert!(!retiring.is_complete());
-    assert!(stream.state.model().retiring());
+    assert!(stream.state.model().pool(PoolKind::Lightmap).retiring());
 
     // Sampling polls the device to completion; the next drain releases it.
     stream.assert_samples_own_texels();
@@ -421,14 +439,14 @@ fn growth_keeps_every_block_on_its_own_texels_and_retires_the_old_set_until_work
             .is_some_and(|r| r.is_complete())
     );
     let outcome = stream.drain(stream.delta(vec![], vec![], vec![stream.prepared(2)]));
-    assert!(!outcome.pool.retiring);
+    assert!(!outcome.pool.lightmap.retiring);
     assert_eq!(
         outcome.installed,
         vec![2],
         "a retry installs in the new set"
     );
     assert!(stream.state.retiring_pool().is_none());
-    assert!(!stream.state.model().retiring());
+    assert!(!stream.state.model().pool(PoolKind::Lightmap).retiring());
     assert_eq!(stream.state.counters().retiring_pool_bytes, 0);
     stream.assert_samples_own_texels();
 }
@@ -596,7 +614,7 @@ fn a_pair_needing_growth_past_the_device_layer_limit_is_deferred() {
     let before = stream.state.counters();
     let logs = LogCapture::start();
     let outcome = stream.drain(stream.delta(vec![mandatory(1)], vec![], vec![stream.prepared(1)]));
-    assert!(outcome.installed.is_empty() && !outcome.pool.grew);
+    assert!(outcome.installed.is_empty() && !outcome.pool.lightmap.grew);
     let deferred: Vec<u32> = outcome.deferred.iter().map(|p| p.block).collect();
     assert_eq!(deferred, vec![1], "the pair is owned back");
     let counters = stream.state.counters();
@@ -606,8 +624,8 @@ fn a_pair_needing_growth_past_the_device_layer_limit_is_deferred() {
         "nothing submitted"
     );
     assert_eq!(counters.pool_texture_sets, 1);
-    assert_eq!(stream.state.model().layers(), 1);
-    assert!(!stream.state.model().retiring());
+    assert_eq!(stream.state.model().pool(PoolKind::Lightmap).layers(), 1);
+    assert!(!stream.state.model().pool(PoolKind::Lightmap).retiring());
     assert!(!stream.state.model().is_resident(1));
     assert_eq!(stream.table(), table);
     stream.assert_samples_own_texels();
@@ -800,7 +818,7 @@ fn reload_while_a_generation_retires_releases_both_pools_and_refuses_the_old_gen
             batch(5, None, vec![mandatory(1)], vec![prepared(&level_a, 5, 1)]),
         )
         .expect("grow for C");
-    assert!(grown.pool.grew && meter_changed);
+    assert!(grown.pool.lightmap.grew && meter_changed);
     let state = resources.stream_state().expect("streamed");
     assert_eq!(state.counters().pool_layers, 2);
     assert_eq!(
@@ -871,7 +889,7 @@ fn reload_while_a_generation_retires_releases_both_pools_and_refuses_the_old_gen
         .expect("the new level's first drain")
         .0;
     assert_eq!(outcome.installed, vec![1]);
-    assert!(!outcome.pool.retiring);
+    assert!(!outcome.pool.lightmap.retiring);
     let state = resources.stream_state().expect("streamed");
     assert_samples_own_texels(&ctx, state, &level_b);
 

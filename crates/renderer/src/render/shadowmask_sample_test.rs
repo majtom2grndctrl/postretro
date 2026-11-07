@@ -19,7 +19,8 @@
 use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, SHADOWMASK_OWNER_CHANNELS};
 use postretro_render_cpu::frame_uniforms::SPEC_SHADOWMASK_FLAG_MASK_PRESENT;
 use postretro_render_cpu::lightmap_pool::{
-    AllResidentPool, BlockPlacement, block_table_bytes, placeholder_block_table,
+    AllResidentMasks, AllResidentPool, BlockAddresses, BlockPlacement, MaskAddresses,
+    block_table_bytes, placeholder_block_table,
 };
 
 use super::gpu_test_harness::{GpuCtx, bc_gpu_or_skip, wgsl_const_line, wgsl_function, wgsl_item};
@@ -518,10 +519,21 @@ fn fixture_pool(ctx: &GpuCtx) -> (wgpu::Texture, Vec<u8>) {
             placements: PLACEMENTS.to_vec(),
             layer_count: 2,
         },
-        with_shadowmask: true,
+        masks: Some(AllResidentMasks {
+            planes: PLACEMENTS.iter().map(|&place| [Some(place); 2]).collect(),
+            layer_count: 2,
+        }),
     };
     let textures = upload_static_pool(&ctx.device, &ctx.queue, &plan, &fixture.payloads);
-    let table = block_table_bytes(&extents, &PLACEMENTS.map(Some));
+    let table = block_table_bytes(
+        &extents,
+        &PLACEMENTS.map(|place| {
+            Some(BlockAddresses {
+                lightmap: place,
+                masks: MaskAddresses::Planes([Some(place); 2]),
+            })
+        }),
+    );
     (
         textures.shadowmask.expect("the plan keeps the shadowmask"),
         table,

@@ -1,15 +1,18 @@
-// Per-drain planner: target deltas, frees, cap eviction, reserved room, placement, band placement.
+// Per-drain planner: target deltas, frees, cap eviction, reserved room, each pool's repack.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
-use postretro_level_loader::{LightmapDrainBatch, LightmapTarget};
+use postretro_level_format::lightmap_pool::{PerPool, PoolKind};
+use postretro_level_loader::{LightmapDrainBatch, LightmapRefusal, LightmapTarget};
 
-use super::plan::{BlockUpload, EvictionReason, PlannedEviction, PoolGrowth, RepackKind};
+use super::journal::{HALVES, half_at};
+use super::plan::{BlockUpload, EvictionReason, PlannedEviction, RepackKind};
 use super::reservation::RepackScope;
-use super::{DrainPlan, DrainRequest, JournalOp, LightmapPoolModel, Slot, Target, placement_of};
+use super::{DrainPlan, DrainRequest, LightmapPoolModel, Target};
 
 impl LightmapPoolModel {
     /// Plan one drain from the controller's batch. Only the ready pairs'
-    /// block ids are read, never their payloads.
+    /// block ids are read, never their payloads. The batch's one cap bounds
+    /// both pools.
     pub fn plan_batch(&mut self, batch: &LightmapDrainBatch) -> &DrainPlan {
         self.plan_batch_inner(batch, false)
     }
@@ -20,7 +23,7 @@ impl LightmapPoolModel {
     /// resident: the drain first frees every placement, and its table writes
     /// turn those entries non-resident. The frees are not reported evicted,
     /// since the new controller never saw those blocks resident. The layers,
-    /// the textures and any retiring generation stand.
+    /// the textures and any retiring generation stand, in both pools.
     pub fn plan_batch_from_empty(&mut self, batch: &LightmapDrainBatch) -> &DrainPlan {
         self.plan_batch_inner(batch, true)
     }
@@ -31,7 +34,7 @@ impl LightmapPoolModel {
         ready.extend(batch.ready.iter().map(|prepared| prepared.block));
         self.plan_drain_inner(
             DrainRequest {
-                pool_cap_layers: batch.pool_cap_layers,
+                pool_cap_layers: PerPool::both(batch.pool_cap_layers),
                 target_reset: batch.target_reset.as_deref(),
                 target_set: &batch.target_set,
                 target_remove: &batch.target_remove,
@@ -46,20 +49,21 @@ impl LightmapPoolModel {
     /// Plan one drain and apply it to the model.
     ///
     /// Frees blocks that left every target, then evicts band blocks at or
-    /// past the cap. Mandatory and visible pairs are never refused. When
-    /// targets changed, every such target with no room reserves what is free.
-    /// A pair lands in its reserved room. With none and no room under the
-    /// current layers, it evicts band blocks farthest lead first, then puts
-    /// back each victim whose rect is still free. Failing that, the drain
-    /// repacks in place for the whole targeted demand: downward under the cap,
-    /// then, in a pool already grown past the cap, downward within its layers,
-    /// then by compaction into any layer, once per demand. A demand past the
-    /// pool repacks for its pairs alone, and failing that grows a new
-    /// generation sized to the whole targeted mandatory and visible demand
-    /// with headroom. A pair that needs growth while a generation still
-    /// retires, or a layer past the device limit, is deferred. Band pairs fit
-    /// under the cap, clear of reserved room, or are refused; they never
-    /// repack or grow the pool.
+    /// past a cap. Mandatory and visible pairs are never refused. When targets
+    /// changed, every such target's items with no room reserve what is free in
+    /// each pool. A pair lands whole: each half in its reserved room, or under
+    /// its pool's cap, or anywhere in its current layers, evicting band blocks
+    /// farthest lead first, then putting back each victim all of whose rects
+    /// are still free. Failing that, each pool short of room repacks alone, in
+    /// place, for its whole targeted demand: downward under the cap, then, in a
+    /// pool already grown past the cap, downward within its layers, then by
+    /// compaction into any layer, once per demand. A demand past a pool repacks
+    /// for its pairs alone, and failing that grows a new generation of that
+    /// pool sized to the whole targeted mandatory and visible demand with
+    /// headroom. A pair that needs growth of a pool still retiring, or a layer
+    /// past the device limit, defers whole and grows nothing. Band pairs fit
+    /// under the caps, clear of reserved room, or are refused whole; they never
+    /// repack or grow a pool.
     pub fn plan_drain(&mut self, request: DrainRequest<'_>) -> &DrainPlan {
         self.plan_drain_inner(request, false)
     }
@@ -75,19 +79,31 @@ impl LightmapPoolModel {
         if from_empty {
             self.forget_residency();
         }
-        let cap_before = self.cap_eff();
-        self.set_cap(request.pool_cap_layers);
-        let full_scan = request.target_reset.is_some() || self.cap_eff() < cap_before;
+        let caps_before = PerPool {
+            lightmap: self.pools.lightmap.cap_eff(),
+            mask: self.pools.mask.cap_eff(),
+        };
+        self.set_caps(request.pool_cap_layers);
+        let cap_lowered = PoolKind::ALL
+            .iter()
+            .any(|&kind| self.pools[kind].cap_eff() < caps_before[kind]);
+        let full_scan = request.target_reset.is_some() || cap_lowered;
         self.apply_targets(request);
         self.evict_band_over_cap(full_scan, request.target_set);
         self.classify_ready(request.ready);
         if self.scratch.demand_changed {
-            self.reopen_compaction();
-            self.hold_room_for_demand();
+            #[cfg(test)]
+            {
+                self.demand_passes += 1;
+            }
+            for kind in PoolKind::ALL {
+                self.reopen_compaction(kind);
+                self.hold_room_for_demand(kind);
+            }
         }
-        let repack = self.place_never_refused();
+        self.place_never_refused();
         self.place_band();
-        self.finish(repack);
+        self.finish();
         &self.plan
     }
 
@@ -111,22 +127,21 @@ impl LightmapPoolModel {
         }
     }
 
-    /// Band blocks never sit at or past the cap's layers. A lowered cap (or
-    /// a reset) scans every resident block; otherwise only blocks whose class
-    /// changed this drain can have become such a band block.
+    /// Band blocks never sit at or past a cap's layers: a half past one takes
+    /// the whole block out. A lowered cap (or a reset) scans every resident
+    /// block; otherwise only blocks whose class changed this drain can have
+    /// become such a band block.
     fn evict_band_over_cap(&mut self, full_scan: bool, target_set: &[LightmapTarget]) {
-        let cap = self.cap_eff();
         let mut over = std::mem::take(&mut self.scratch.over_cap);
         over.clear();
-        let over_cap = |model: &Self, block: u32| {
-            model.is_band(block) && model.slots[block as usize].is_some_and(|s| s.layer >= cap)
-        };
         if full_scan {
             over.extend(
-                self.resident
+                self.pools
+                    .lightmap
+                    .resident
                     .iter()
                     .copied()
-                    .filter(|&block| over_cap(self, block)),
+                    .filter(|&block| self.is_band_past_a_cap(block)),
             );
             over.sort_unstable();
         } else {
@@ -134,13 +149,21 @@ impl LightmapPoolModel {
                 target_set
                     .iter()
                     .map(|t| t.block)
-                    .filter(|&block| over_cap(self, block)),
+                    .filter(|&block| self.is_band_past_a_cap(block)),
             );
         }
         for &block in &over {
             self.release(block, EvictionReason::OverCap);
         }
         self.scratch.over_cap = over;
+    }
+
+    fn is_band_past_a_cap(&self, block: u32) -> bool {
+        self.is_band(block)
+            && self.halves(block).any(|(kind, item)| {
+                let pool = &self.pools[kind];
+                pool.slot(item).is_some_and(|s| s.layer >= pool.cap_eff())
+            })
     }
 
     fn classify_ready(&mut self, ready: &[u32]) {
@@ -150,7 +173,13 @@ impl LightmapPoolModel {
         band.clear();
         for &block in ready {
             match self.target(block) {
-                None => self.plan.refused.push(block),
+                None => {
+                    let short = PerPool {
+                        lightmap: true,
+                        mask: self.has_half_in(PoolKind::Mask, block),
+                    };
+                    self.plan.refused.push(LightmapRefusal { block, short });
+                }
                 Some(_) if self.is_resident(block) => self.plan.installed.push(block),
                 Some(target) if target.is_band() => band.push(block),
                 Some(_) => {
@@ -160,34 +189,54 @@ impl LightmapPoolModel {
             }
         }
         // Tallest first, as shelf packing prefers (the dry run's order).
-        self.sort_tallest_first(&mut never_refused);
+        self.sort_tallest_first(PoolKind::Lightmap, &mut never_refused);
         band.sort_unstable_by_key(|&block| (self.target(block).map_or(0, |t| t.lead), block));
         self.scratch.never_refused = never_refused;
         self.scratch.band_ready = band;
     }
 
-    /// Returns the repack the drain ran, if any.
-    fn place_never_refused(&mut self) -> Option<RepackKind> {
+    fn place_never_refused(&mut self) {
         let list = std::mem::take(&mut self.scratch.never_refused);
         let checkpoint = self.journal.len();
-        let mut repack = None;
-        if !list.iter().all(|&block| self.place_without_growth(block)) {
+        if !list
+            .iter()
+            .all(|&block| self.place_without_growth(block, None))
+        {
             // Start over from the post-free state: a repack moves band blocks
             // evicted above as victims too, since their texels are still in
             // the pool until this plan executes.
+            let short = self.scratch.short;
             self.rollback_to(checkpoint);
             if !self.pairs_failed_last_drain(&list) {
-                repack = self.repack_for(&list);
+                let short = PerPool {
+                    lightmap: short.lightmap || !self.seats_alone(PoolKind::Lightmap, &list),
+                    mask: short.mask || !self.seats_alone(PoolKind::Mask, &list),
+                };
+                for kind in PoolKind::ALL {
+                    if short[kind] {
+                        self.plan.pools[kind].repack = self.repack_for(kind, &list);
+                    }
+                }
             }
-            if repack.is_none() {
-                self.place_with_growth(&list);
-                if self.plan.growth.is_some() {
-                    self.hold_room_for_demand();
+            self.place_with_growth(&list);
+            for kind in PoolKind::ALL {
+                if self.plan.pools[kind].growth.is_some() {
+                    self.hold_room_for_demand(kind);
                 }
             }
         }
         self.scratch.never_refused = list;
-        repack
+    }
+
+    /// Whether `list`'s halves in `kind`'s pool fit, band evictions included,
+    /// with the other pool left out of it. Changes nothing.
+    fn seats_alone(&mut self, kind: PoolKind, list: &[u32]) -> bool {
+        let checkpoint = self.journal.len();
+        let seats = list
+            .iter()
+            .all(|&block| self.place_without_growth(block, Some(kind)));
+        self.rollback_to(checkpoint);
+        seats
     }
 
     /// These pairs were deferred last drain and nothing has made room since,
@@ -203,209 +252,62 @@ impl LightmapPoolModel {
 
     /// Whole demand first, downward and then by compaction, so what repacks
     /// here does not repack again as the demand's pairs arrive. Past the pool,
-    /// the drain's pairs still repack rather than grow.
-    fn repack_for(&mut self, list: &[u32]) -> Option<RepackKind> {
-        if !self.demand_room.compaction_spent {
-            if self.repack_downward(list, RepackScope::WholeDemand) {
+    /// the drain's pairs still repack rather than grow. Each pool repacks on
+    /// its own items alone: `list`'s items take reserved room, and the pairs
+    /// land whole once every pool has had its turn.
+    fn repack_for(&mut self, kind: PoolKind, list: &[u32]) -> Option<RepackKind> {
+        let mut pending = std::mem::take(&mut self.scratch.repack_pending);
+        pending.clear();
+        for &block in list {
+            pending.extend(
+                self.halves(block)
+                    .filter(|&(half, _)| half == kind)
+                    .map(|(_, item)| item),
+            );
+        }
+        let repack = self.repack_with(kind, &pending);
+        self.scratch.repack_pending = pending;
+        repack
+    }
+
+    fn repack_with(&mut self, kind: PoolKind, pending: &[u32]) -> Option<RepackKind> {
+        if !self.pools[kind].room.compaction_spent {
+            if self.repack_downward(kind, pending, RepackScope::WholeDemand) {
                 return Some(RepackKind::Downward);
             }
-            if let Some(stats) = self.compact(list) {
+            if let Some(stats) = self.compact(kind, pending) {
                 return Some(RepackKind::Compaction(stats));
             }
         }
-        self.repack_downward(list, RepackScope::DrainPairs)
+        self.repack_downward(kind, pending, RepackScope::DrainPairs)
             .then_some(RepackKind::Downward)
     }
 
-    /// Land in reserved room, or place under the cap, then anywhere in the
-    /// current layers, evicting band blocks farthest lead first until one of
-    /// those fits. Evictions stand only when the block ends up placed, and
-    /// then only for victims that cannot go back where they were: a failed
-    /// attempt restores every victim, so a pair that then grows or defers
-    /// costs the band nothing.
-    fn place_without_growth(&mut self, block: u32) -> bool {
-        if self.land(block) {
-            return true;
-        }
-        let (width, height) = self.alloc_extent(block);
-        let checkpoint = self.journal.len();
-        loop {
-            if let Some(slot) = self.allocate_in_layers(width, height) {
-                self.place(block, slot);
-                self.reinstate_spare_victims(checkpoint);
-                return true;
-            }
-            let Some(victim) = self.next_victim() else {
-                self.rollback_to(checkpoint);
-                return false;
-            };
-            self.release(victim, EvictionReason::Pressure);
-        }
-    }
-
-    /// First fit under the cap, then within the current layers.
-    pub(super) fn allocate_in_layers(&mut self, width: u32, height: u32) -> Option<Slot> {
-        let cap = self.cap_eff();
-        let under_cap = self.pool.allocate_within(width, height, Some(cap as usize));
-        if under_cap.is_some() || self.layers <= cap {
-            return under_cap;
-        }
-        let layers = self.layers as usize;
-        self.pool.allocate_within(width, height, Some(layers))
-    }
-
-    /// After a placement closes the journal, put back each victim evicted
-    /// before the last one whose rect is still free: farthest-lead-first
-    /// order can evict blocks the final slot never touched. The last victim
-    /// is the one that made room. A reinstated victim returns to the top of
-    /// the victim stack in lead order, so the next pair still evicts
-    /// farthest first.
-    fn reinstate_spare_victims(&mut self, checkpoint: usize) {
-        let placed_at = self.journal.len() - 1;
-        if placed_at <= checkpoint + 1 {
-            return;
-        }
-        for at in (checkpoint..placed_at - 1).rev() {
-            let JournalOp::Free { block, slot } = self.journal[at] else {
-                continue;
-            };
-            if self.pool.restore(slot).is_ok() {
-                self.place(block, slot);
-                self.scratch.victims.push(block);
-            }
-        }
-    }
-
-    fn next_victim(&mut self) -> Option<u32> {
-        if !self.scratch.victims_built {
-            let mut victims = std::mem::take(&mut self.scratch.victims);
-            victims.clear();
-            victims.extend(
-                self.resident
-                    .iter()
-                    .copied()
-                    .filter(|&block| self.is_band(block)),
-            );
-            victims
-                .sort_unstable_by_key(|&block| (self.target(block).map_or(0, |t| t.lead), block));
-            self.scratch.victims = victims;
-            self.scratch.victims_built = true;
-        }
-        while let Some(block) = self.scratch.victims.pop() {
-            if self.is_resident(block) && self.is_band(block) {
-                return Some(block);
-            }
-        }
-        None
-    }
-
-    /// No repack could fit every mandatory and visible block: grow past the
-    /// current layers. One generation per drain, none while the last one is
-    /// still retiring, and never past the device's layer limit; a pair that
-    /// needs growth then is deferred. The first pair to grow reserves the
-    /// targeted demand's layers with headroom
-    /// ([`growth_reserve_layers`](Self::growth_reserve_layers)), so later
-    /// pairs, this drain or while the generation retires, land in layers
-    /// already allocated.
-    ///
-    /// Once a pair is deferred at the device limit, it failed with every
-    /// band victim evicted, so a later pair this drain at least as wide and
-    /// as tall as that one pair cannot fit either: it skips the victim walk,
-    /// taking free space it fits as is or being deferred. Any other pair
-    /// still walks, so an oversized pair that stays wanted never starves
-    /// pairs that fit by evicting band blocks. Each deferred extent is
-    /// compared on its own: a pair larger than a componentwise minimum of
-    /// two deferred extents may still fit. The skip lasts one drain. Without
-    /// it, a level past the device limit repeats a full walk per such pair on
-    /// every drain, since its deferred pairs come back ready.
-    fn place_with_growth(&mut self, list: &[u32]) {
-        let retiring = self.retiring;
-        let start_layers = self.layers;
-        // Extents deferred at the device limit this drain; none contains
-        // another.
-        let mut limited = std::mem::take(&mut self.scratch.device_limited);
-        limited.clear();
-        for &block in list {
-            if self.land(block) {
-                continue;
-            }
-            let (width, height) = self.alloc_extent(block);
-            if limited.iter().any(|&(w, h)| w <= width && h <= height) {
-                match self.allocate_in_layers(width, height) {
-                    Some(slot) => self.place(block, slot),
-                    None => self.plan.deferred.push(block),
-                }
-                continue;
-            }
-            if self.place_without_growth(block) {
-                continue;
-            }
-            if retiring {
-                self.plan.deferred.push(block);
-                continue;
-            }
-            let limit = Some(self.max_layers as usize);
-            let Some(slot) = self.pool.allocate_within(width, height, limit) else {
-                self.plan.deferred.push(block);
-                self.plan.device_limited = true;
-                // This extent contains no entry, or it would have skipped.
-                limited.retain(|&(w, h)| width > w || height > h);
-                limited.push((width, height));
-                continue;
-            };
-            self.place(block, slot);
-            if slot.layer >= self.layers {
-                let needed = slot.layer + 1;
-                self.layers = if self.layers == start_layers {
-                    self.record_growth(start_layers);
-                    self.growth_reserve_layers(needed)
-                } else {
-                    needed
-                };
-            }
-        }
-        self.scratch.device_limited = limited;
-        if self.layers > start_layers {
-            self.plan.growth = Some(PoolGrowth {
-                from_layers: start_layers,
-                to_layers: self.layers,
-            });
-        }
-    }
-
-    fn place_band(&mut self) {
-        let list = std::mem::take(&mut self.scratch.band_ready);
-        let cap = self.cap_eff() as usize;
-        for &block in &list {
-            let (width, height) = self.alloc_extent(block);
-            match self.pool.allocate_within(width, height, Some(cap)) {
-                Some(slot) => self.place(block, slot),
-                None => self.plan.refused.push(block),
-            }
-        }
-        self.scratch.band_ready = list;
-    }
-
-    fn finish(&mut self, repack: Option<RepackKind>) {
+    fn finish(&mut self) {
         for list in [&self.scratch.never_refused, &self.scratch.band_ready] {
             for &block in list {
-                let Some(slot) = self.slots[block as usize] else {
+                let Some(placement) = self.placement(block) else {
                     continue;
                 };
-                let (width, height) = self.extents[block as usize];
+                let (width, height) = self.demand.extents()[block as usize];
                 self.plan.uploads.push(BlockUpload {
                     block,
-                    placement: placement_of(slot),
+                    placement,
+                    planes: [
+                        self.plane_placement(block, 0),
+                        self.plane_placement(block, 1),
+                    ],
                     width,
                     height,
                 });
                 self.plan.installed.push(block);
             }
         }
-        for touched in &self.touched {
+        for at in 0..self.touched.len() {
+            let touched = self.touched[at];
             if let Some(reason) = touched.reason
                 && !touched.forgotten
-                && touched.start.is_some()
+                && touched.start[0].is_some()
                 && !self.is_resident(touched.block)
             {
                 self.plan.evicted.push(PlannedEviction {
@@ -413,30 +315,35 @@ impl LightmapPoolModel {
                     reason,
                 });
             }
-            let held = self.demand_room.slot(touched.block).is_some();
-            if held && !touched.held_at_start {
-                self.plan.room_reserved.push(touched.block);
-            } else if touched.held_at_start && !held {
-                self.plan.room_returned.push(touched.block);
+            let held = self.held_halves(touched.block);
+            for half in 0..HALVES {
+                let (kind, item) = half_at(touched.block, half);
+                if held[half] && !touched.held_at_start[half] {
+                    self.plan.pools[kind].room_reserved.push(item);
+                } else if touched.held_at_start[half] && !held[half] {
+                    self.plan.pools[kind].room_returned.push(item);
+                }
             }
         }
         for &block in &self.plan.deferred {
             self.deferred_stamp[block as usize] = self.drain;
         }
-        // A compaction already planned its copies, before it could commit.
-        if repack == Some(RepackKind::Downward) {
-            self.schedule_repack_copies();
+        for kind in PoolKind::ALL {
+            // A compaction already planned its copies, before it could commit.
+            if self.plan.pools[kind].repack == Some(RepackKind::Downward) {
+                self.schedule_repack_copies(kind);
+            }
+            let plan = &mut self.plan.pools[kind];
+            plan.room_reserved.sort_unstable();
+            plan.room_returned.sort_unstable();
         }
-        self.plan.repack = repack;
         self.rebuild_table_writes();
         self.plan.installed.sort_unstable();
-        self.plan.refused.sort_unstable();
+        self.plan.refused.sort_unstable_by_key(|r| r.block);
         self.plan.deferred.sort_unstable();
-        self.plan.room_reserved.sort_unstable();
-        self.plan.room_returned.sort_unstable();
         self.plan
             .evicted
             .sort_unstable_by_key(|eviction| eviction.block);
-        self.plan.report = self.report(repack.is_some(), self.plan.growth.is_some());
+        self.plan.report = self.report(self.plan.repacked(), self.plan.grew());
     }
 }

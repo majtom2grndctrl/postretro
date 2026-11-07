@@ -13,7 +13,9 @@ use postretro_level_format::lightmap::{
 };
 use postretro_level_format::shadowmask_atlas::group_plane_len;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest};
-use postretro_render_cpu::lightmap_pool::{LightmapPoolModel, RepackKind};
+use postretro_render_cpu::lightmap_pool::{
+    LightmapPoolModel, PerPool, PoolDemand, PoolKind, RepackKind, payload_mismatch,
+};
 
 /// Ticks a grown-out generation stays alive before its submitted work is
 /// reported done. The renderer polls an `on_submitted_work_done` flag at
@@ -79,7 +81,6 @@ pub(super) struct PoolStats {
 #[derive(Debug, Clone, Copy)]
 struct PayloadLayout {
     header: LightmapHeader,
-    with_shadowmask: bool,
 }
 
 pub(super) struct PoolMirror {
@@ -88,11 +89,16 @@ pub(super) struct PoolMirror {
     layout: Option<PayloadLayout>,
     content_tag: [u8; 32],
     /// Bytes of one array layer across the irradiance, direction and (when
-    /// kept) shadowmask planes.
+    /// kept) shadowmask planes: one side-by-side pool's price until the harness
+    /// takes the renderer's pool split.
     layer_bytes: u64,
     clock: RetireClock,
     /// Array layers of the retiring generation and ticks until release.
     retiring: Option<(u32, u32)>,
+    /// Ticks until the mask pool's retiring generation is released. Sized and
+    /// priced with the renderer's pool split; until then only its retirement
+    /// runs, so a mask growth does not defer forever.
+    mask_retiring: Option<u32>,
     /// Frames begun; 0 before the first, so a preload drain marks nothing.
     frame: u64,
     /// Per block: the frame whose latest drain carrying it deferred it, else
@@ -119,19 +125,11 @@ impl PoolMirror {
     ) -> Self {
         let index = manifest.lightmap_index();
         let header = index.header;
-        let extents: Vec<(u32, u32)> = index
-            .records
-            .iter()
-            .map(|r| (u32::from(r.width), u32::from(r.height)))
-            .collect();
-        let block_texels = texel_areas(&extents);
-        let model = LightmapPoolModel::new(
-            extents,
-            header.block_alignment(),
-            LIGHTMAP_POOL_LAYER_EDGE,
-            cap_layers,
-        )
-        .expect("the loader checked every block fits a pool layer");
+        let demand = PoolDemand::of_indices(index, manifest.shadowmask_index());
+        let block_texels = texel_areas(demand.extents());
+        let model =
+            LightmapPoolModel::new(demand, LIGHTMAP_POOL_LAYER_EDGE, PerPool::both(cap_layers))
+                .expect("the loader checked every block fits a pool layer");
         let with_shadowmask = manifest.shadowmask_index().is_some();
         let edge = LIGHTMAP_POOL_LAYER_EDGE;
         let layer_bytes = header.irradiance_len(edge, edge).expect("layer size")
@@ -141,10 +139,7 @@ impl PoolMirror {
             } else {
                 0
             };
-        let layout = PayloadLayout {
-            header,
-            with_shadowmask,
-        };
+        let layout = PayloadLayout { header };
         Self::with_model(
             model,
             block_texels,
@@ -171,7 +166,8 @@ impl PoolMirror {
             })
             .collect();
         let block_texels = texel_areas(&extents);
-        let model = LightmapPoolModel::new(extents, source.block_alignment(), edge, cap_layers)
+        let demand = PoolDemand::lightmap_only(source.block_alignment(), extents);
+        let model = LightmapPoolModel::new(demand, edge, PerPool::both(cap_layers))
             .expect("test blocks fit a layer");
         Self::with_model(model, block_texels, None, source.content_tag(), 0, clock)
     }
@@ -184,7 +180,7 @@ impl PoolMirror {
         layer_bytes: u64,
         clock: RetireClock,
     ) -> Self {
-        let first_layers = model.layers();
+        let first_layers = model.pool(PoolKind::Lightmap).layers();
         let blocks = model.block_count() as usize;
         let mut mirror = Self {
             model,
@@ -193,6 +189,7 @@ impl PoolMirror {
             layer_bytes,
             clock,
             retiring: None,
+            mask_retiring: None,
             frame: 0,
             deferred_on: vec![0; blocks],
             block_texels,
@@ -216,7 +213,7 @@ impl PoolMirror {
 
     /// The active generation's bytes, spare layer included.
     pub(super) fn active_bytes(&self) -> u64 {
-        u64::from(self.model.layers() + 1) * self.layer_bytes
+        u64::from(self.model.pool(PoolKind::Lightmap).layers() + 1) * self.layer_bytes
     }
 
     /// Moves the settled-entry preload's drain out of the per-drain figures, so they
@@ -261,11 +258,19 @@ impl PoolMirror {
     fn tick_retirement(&mut self) {
         if let Some((layers, left)) = self.retiring {
             if left == 0 {
-                self.model.release_retirement();
+                self.model.release_retirement(PoolKind::Lightmap);
                 self.retiring = None;
             } else {
                 self.retiring = Some((layers, left - 1));
             }
+        }
+        match self.mask_retiring {
+            Some(0) => {
+                self.model.release_retirement(PoolKind::Mask);
+                self.mask_retiring = None;
+            }
+            Some(left) => self.mask_retiring = Some(left - 1),
+            None => {}
         }
     }
 
@@ -285,7 +290,7 @@ impl PoolMirror {
                 .ready
                 .iter()
                 .find(|p| p.block == upload.block)
-                .is_some_and(|p| self.payload_fits((upload.width, upload.height), &p.payload));
+                .is_some_and(|p| self.payload_fits(upload.block, &p.payload));
             if !fits {
                 failed.push(upload.block);
             }
@@ -299,7 +304,7 @@ impl PoolMirror {
 
         let plan = self.model.plan();
         debug_assert!(
-            !plan.device_limited,
+            !plan.pools.lightmap.device_limited && !plan.pools.mask.device_limited,
             "the mirror's model has no device layer limit"
         );
         for prepared in &batch.ready {
@@ -308,8 +313,14 @@ impl PoolMirror {
         for &block in &plan.deferred {
             self.deferred_on[block as usize] = self.frame;
         }
-        let submitted = plan.growth.is_some()
-            || !plan.copies.is_empty()
+        // The mirror's figures stay the lightmap pool's until the harness
+        // sizes and prices both, with the renderer's pool split.
+        let pool = &plan.pools.lightmap;
+        if plan.pools.mask.growth.is_some() {
+            self.mask_retiring = Some(RETIRE_AFTER_TICKS);
+        }
+        let submitted = pool.growth.is_some()
+            || !pool.copies.is_empty()
             || !plan.uploads.is_empty()
             || !plan.table_writes.is_empty();
         let drain_install_bytes: u64 = plan
@@ -331,24 +342,24 @@ impl PoolMirror {
         s.evictions += plan.evicted.len() as u64;
         s.refusals += plan.refused.len() as u64;
         s.failed += plan.failed.len() as u64;
-        if plan.report.repacked {
+        if plan.report.lightmap.repacked {
             s.repacks += 1;
-            s.repack_copies += plan.copies.len() as u64;
+            s.repack_copies += pool.copies.len() as u64;
         }
-        s.compaction_rollbacks += u64::from(plan.compaction_rolled_back);
-        let copied_texels: u64 = plan
+        s.compaction_rollbacks += u64::from(pool.compaction_rolled_back);
+        let copied_texels: u64 = pool
             .copies
             .iter()
             .map(|copy| u64::from(copy.width) * u64::from(copy.height))
             .sum();
         let copied_bytes =
             copied_texels * self.layer_bytes / u64::from(LIGHTMAP_POOL_LAYER_EDGE).pow(2);
-        match plan.repack {
+        match pool.repack {
             Some(RepackKind::Compaction(order)) => {
                 s.compactions += 1;
                 s.parks += u64::from(order.parked);
                 s.built_over += u64::from(order.built_over);
-                s.compaction_copies += plan.copies.len() as u64;
+                s.compaction_copies += pool.copies.len() as u64;
                 s.largest_compaction_moves = s.largest_compaction_moves.max(order.moved_blocks);
                 s.compaction_plan_nanos.push(plan_nanos);
                 s.compaction_copy_bytes.push(copied_bytes);
@@ -356,9 +367,10 @@ impl PoolMirror {
             Some(RepackKind::Downward) => s.downward_copy_bytes.push(copied_bytes),
             None => {}
         }
-        let growth = plan.growth;
-        s.peak_occupied_layers = s.peak_occupied_layers.max(self.model.occupied_layers());
-        s.peak_layers = s.peak_layers.max(self.model.layers());
+        let growth = pool.growth;
+        let lightmap = self.model.pool(PoolKind::Lightmap);
+        s.peak_occupied_layers = s.peak_occupied_layers.max(lightmap.occupied_layers());
+        s.peak_layers = s.peak_layers.max(lightmap.layers());
         if let Some(growth) = growth {
             s.growths += 1;
             self.retiring = Some((growth.from_layers + 1, RETIRE_AFTER_TICKS));
@@ -375,22 +387,12 @@ impl PoolMirror {
         self.outcome(batch)
     }
 
-    fn payload_fits(&self, (width, height): (u32, u32), payload: &LightmapBlockPayload) -> bool {
+    fn payload_fits(&self, block: u32, payload: &LightmapBlockPayload) -> bool {
         let Some(layout) = &self.layout else {
             return true;
         };
-        let header = &layout.header;
-        if header.irradiance_len(width, height) != Some(payload.irradiance.len() as u64)
-            || header.direction_len(width, height) != Some(payload.direction.len() as u64)
-        {
-            return false;
-        }
-        if !layout.with_shadowmask {
-            return true;
-        }
-        let expected = group_plane_len(width, height);
-        matches!(&payload.shadowmask, Some([a, b])
-            if expected == Some(a.len() as u64) && expected == Some(b.len() as u64))
+        let (extent, planes) = (self.model.extent(block), self.model.planes(block));
+        payload_mismatch(&layout.header, extent, planes, payload).is_none()
     }
 
     /// As `LightmapStreamState::outcome`.
@@ -411,8 +413,14 @@ impl PoolMirror {
             failed: plan.failed.clone(),
             deferred,
             evicted: plan.evicted.iter().map(|eviction| eviction.block).collect(),
-            room_reserved: plan.room_reserved.clone(),
-            room_returned: plan.room_returned.clone(),
+            room_reserved: PerPool {
+                lightmap: plan.pools.lightmap.room_reserved.clone(),
+                mask: plan.pools.mask.room_reserved.clone(),
+            },
+            room_returned: PerPool {
+                lightmap: plan.pools.lightmap.room_returned.clone(),
+                mask: plan.pools.mask.room_returned.clone(),
+            },
             pool: plan.report,
         }
     }

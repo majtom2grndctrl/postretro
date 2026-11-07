@@ -596,7 +596,8 @@ impl LightmapSection {
 pub struct LightmapBlockPayload {
     pub irradiance: Vec<u8>,
     pub direction: Vec<u8>,
-    /// Shadowmask group A then group B, BC5 at the block extent.
+    /// Shadowmask group A then group B, BC5 at the block extent. An absent
+    /// plane is empty: it takes no placement, no upload and no bytes.
     pub shadowmask: Option<[Vec<u8>; 2]>,
 }
 

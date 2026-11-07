@@ -82,7 +82,7 @@ fn every_block_places_in_block_id_order_with_its_shadowmask() {
     let plan = blocks(pool);
     assert_eq!(plan.pool.layer_count, 1);
     assert_eq!(plan.pool.placements.len(), 3);
-    assert!(plan.with_shadowmask);
+    assert!(plan.with_shadowmask());
     for placement in &plan.pool.placements {
         assert_eq!(
             (placement.x % 4, placement.y % 4),
@@ -153,7 +153,7 @@ fn a_streamed_level_plans_its_pool_shape_without_payloads() {
         panic!("expected a streamed pool, got {pool:?}");
     };
     assert_eq!(plan.content_tag, [3; 32]);
-    assert!(plan.with_shadowmask);
+    assert!(plan.with_shadowmask());
     assert_eq!((plan.pool_cap_layers, plan.max_array_layers), (15, 256));
 
     let StaticPool::Streaming(tight) = streaming_plan_for(&fixture, 8192, 8) else {
@@ -177,7 +177,7 @@ fn a_device_that_cannot_hold_a_streamed_pool_or_its_shadowmask_degrades_with_an_
         let StaticPool::Streaming(plan) = streaming_plan_for(&fixture, 2048, 256) else {
             panic!("a 2048² layer fits; only the two-group shadowmask does not");
         };
-        assert!(!plan.with_shadowmask);
+        assert!(!plan.with_shadowmask());
     });
     let errors = renderer_errors(&logs);
     assert_eq!(errors.len(), 3, "{logs:?}");
@@ -231,15 +231,36 @@ fn a_device_below_the_pool_layer_or_its_layer_count_degrades_to_placeholders() {
     );
 }
 
+// Two 1100-high blocks hold two lightmap layers and, a plane per group, four
+// mask layers: a device of three keeps the lightmap and drops the masks alone.
+#[test]
+fn all_resident_mask_past_device_layers_drops_alone() {
+    let fixture = fixture(&[(2048, 1100), (2048, 1100)]);
+    let logs = capture_logs(|| {
+        let plan = blocks(plan_for(&fixture, 8192, 3));
+        assert_eq!(plan.pool.layer_count, 2);
+        assert!(!plan.with_shadowmask());
+    });
+    let errors = renderer_errors(&logs);
+    assert_eq!(errors.len(), 1, "{logs:?}");
+    assert!(
+        errors[0].contains("the mask pool needs 4 array layer(s)"),
+        "{errors:?}"
+    );
+
+    let plan = blocks(plan_for(&fixture, 8192, 4));
+    assert_eq!(plan.masks.expect("the device holds them").layer_count, 4);
+}
+
 #[test]
 fn unusable_shadowmask_groups_keep_the_lightmap_and_drop_only_the_shadowmask() {
     let mut fixture = fixture(&[(8, 8), (8, 8)]);
     let logs = capture_logs(|| {
         // Two 2048-wide groups need a 4096-wide texture.
         let narrow = blocks(plan_for(&fixture, 2048, 256));
-        assert!(!narrow.with_shadowmask);
+        assert!(!narrow.with_shadowmask());
         fixture.payloads[1].shadowmask = None;
-        assert!(!blocks(plan_for(&fixture, 8192, 256)).with_shadowmask);
+        assert!(!blocks(plan_for(&fixture, 8192, 256)).with_shadowmask());
     });
     let errors = renderer_errors(&logs);
     assert_eq!(errors.len(), 2, "{logs:?}");
@@ -262,7 +283,7 @@ fn unusable_shadowmask_groups_keep_the_lightmap_and_drop_only_the_shadowmask() {
             ..zero_texels()
         },
     );
-    let logs = capture_logs(|| assert!(!blocks(plan_for(&without, 8192, 256)).with_shadowmask));
+    let logs = capture_logs(|| assert!(!blocks(plan_for(&without, 8192, 256)).with_shadowmask()));
     assert!(renderer_errors(&logs).is_empty(), "{logs:?}");
 }
 

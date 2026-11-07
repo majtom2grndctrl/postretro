@@ -58,7 +58,7 @@ impl RectMirror {
         for eviction in &plan.evicted {
             self.blocks.remove(&eviction.block);
         }
-        for copy in &plan.copies {
+        for copy in &plan.pools[POOL].copies {
             assert_ne!(copy.src.layer, copy.dst.layer, "a copy within one layer");
             let block = self
                 .blocks
@@ -73,7 +73,7 @@ impl RectMirror {
                 upload.width.next_multiple_of(SCALE_ALIGN),
                 upload.height.next_multiple_of(SCALE_ALIGN),
             );
-            self.land(upload.block, upload.placement, w, h);
+            self.land(upload.block, upload_at(upload), w, h);
         }
     }
 
@@ -95,7 +95,7 @@ impl RectMirror {
         for &block in model.resident_blocks() {
             assert_eq!(
                 self.blocks.get(&block).map(|&(at, _, _)| at),
-                model.placement(block),
+                model.at(block),
                 "block {block}"
             );
         }
@@ -206,8 +206,8 @@ fn run_history(seed: u64, layers: u32, steps: usize, mode: Mode, tally: &Tally) 
         .map(|_| mix[rng.below(mix.len())])
         .collect();
     let mut model =
-        LightmapPoolModel::new(extents.clone(), SCALE_ALIGN, SCALE_EDGE, layers).unwrap();
-    assert_eq!(model.layers(), layers);
+        test_model(extents.clone(), SCALE_ALIGN, SCALE_EDGE, layers, u32::MAX).unwrap();
+    assert_eq!(model.pool(POOL).layers(), layers);
     let mut gpu = RectMirror::default();
     let mut demand: Vec<u32> = Vec::new();
     let layer_texels = u64::from(SCALE_EDGE).pow(2);
@@ -254,7 +254,7 @@ fn run_history(seed: u64, layers: u32, steps: usize, mode: Mode, tally: &Tally) 
         }
         let start = std::time::Instant::now();
         let plan = model.plan_drain(DrainRequest {
-            pool_cap_layers: layers,
+            pool_cap_layers: caps(layers),
             target_reset: None,
             target_set: &set,
             target_remove: &remove,
@@ -262,8 +262,8 @@ fn run_history(seed: u64, layers: u32, steps: usize, mode: Mode, tally: &Tally) 
         });
         let micros = start.elapsed().as_micros() as u64;
         tally.drains.set(tally.drains.get() + 1);
-        let compacted = matches!(plan.repack, Some(RepackKind::Compaction(_)));
-        let rolled_back = plan.compaction_rolled_back;
+        let compacted = matches!(plan.pools[POOL].repack, Some(RepackKind::Compaction(_)));
+        let rolled_back = plan.pools[POOL].compaction_rolled_back;
         if compacted || rolled_back {
             tally.compactions.set(tally.compactions.get() + 1);
             let packed = scratch_layers(&extents, &demand);
@@ -282,7 +282,7 @@ fn run_history(seed: u64, layers: u32, steps: usize, mode: Mode, tally: &Tally) 
             );
             tally
                 .most_copies
-                .set(tally.most_copies.get().max(plan.copies.len() as u64));
+                .set(tally.most_copies.get().max(plan.pools[POOL].copies.len() as u64));
             let longest = if rolled_back {
                 &tally.most_rollback_micros
             } else {
@@ -293,10 +293,10 @@ fn run_history(seed: u64, layers: u32, steps: usize, mode: Mode, tally: &Tally) 
         if rolled_back {
             break;
         }
-        assert_eq!(plan.growth, None, "the demand packs, so it needs no growth");
+        assert_eq!(plan.pools[POOL].growth, None, "the demand packs, so it needs no growth");
         gpu.execute(plan);
         gpu.assert_matches(&model);
-        assert_eq!(model.texture_allocations(), 1, "no second pool");
+        assert_eq!(model.pool(POOL).texture_allocations(), 1, "no second pool");
     }
     tally.histories.set(tally.histories.get() + 1);
 }
@@ -401,8 +401,8 @@ fn the_hallway_tour_at_its_27_layer_bound_compacts_without_growth() {
             residents + at
         })
         .collect();
-    let mut model = LightmapPoolModel::new(extents, SCALE_ALIGN, edge, cap).unwrap();
-    assert_eq!(model.layers(), layers);
+    let mut model = test_model(extents, SCALE_ALIGN, edge, cap, u32::MAX).unwrap();
+    assert_eq!(model.pool(POOL).layers(), layers);
     let targets: Vec<LightmapTarget> = (0..residents)
         .map(|block| {
             if placed[block as usize].5 {
@@ -413,32 +413,34 @@ fn the_hallway_tour_at_its_27_layer_bound_compacts_without_growth() {
         })
         .collect();
     model.plan_drain(DrainRequest {
-        pool_cap_layers: cap,
+        pool_cap_layers: caps(cap),
         target_reset: None,
         target_set: &targets,
         target_remove: &[],
         ready: &[],
     });
     // The dumped layout is the pool's, so nothing holds room in it yet.
-    model.return_all_room();
+    model.return_all_room(PoolKind::Lightmap);
+    model.return_all_room(PoolKind::Mask);
     let mut gpu = RectMirror::default();
     for (block, &(layer, x, y, w, h, _)) in placed.iter().enumerate() {
-        let slot = model.pool.allocate_at(layer, x, y, w, h).unwrap();
-        model.place(block as u32, slot);
+        let slot = model.pools[POOL].allocator.allocate_at(layer, x, y, w, h).unwrap();
+        model.place(POOL, item(block as u32), slot);
+        place_other_half(&mut model, block as u32);
         gpu.land(block as u32, placement_of(slot), w, h);
     }
 
     let set: Vec<LightmapTarget> = arrivals.iter().map(|&block| mandatory(block)).collect();
     let plan = model.plan_drain(DrainRequest {
-        pool_cap_layers: cap,
+        pool_cap_layers: caps(cap),
         target_reset: None,
         target_set: &set,
         target_remove: &[],
         ready: &arrivals,
     });
-    assert!(matches!(plan.repack, Some(RepackKind::Compaction(_))));
-    assert!(!plan.compaction_rolled_back);
-    assert_eq!(plan.growth, None);
+    assert!(matches!(plan.pools[POOL].repack, Some(RepackKind::Compaction(_))));
+    assert!(!plan.pools[POOL].compaction_rolled_back);
+    assert_eq!(plan.pools[POOL].growth, None);
     assert_eq!(plan.installed, arrivals);
     gpu.execute(plan);
     gpu.assert_matches(&model);

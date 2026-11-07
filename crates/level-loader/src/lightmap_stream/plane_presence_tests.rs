@@ -23,19 +23,6 @@ fn mixed_shadowmask() -> ShadowmaskAtlasSection {
     section
 }
 
-/// What a level whose planes were all stored would hand the pool: zeros
-/// wherever `section` has no blob.
-fn full_planes(section: &ShadowmaskAtlasSection, block: usize) -> [Vec<u8>; 2] {
-    let len = group_plane_len(8, 4).unwrap() as usize;
-    section.blocks[block].clone().map(|plane| {
-        if plane.is_empty() {
-            vec![0; len]
-        } else {
-            plane
-        }
-    })
-}
-
 fn mixed_fixture(name: &str) -> (Fixture, LightmapSection, ShadowmaskAtlasSection) {
     let (lightmap, shadowmask) = (four_block_lightmap(), mixed_shadowmask());
     let blobs = lighting_blobs(&lightmap, Some(&shadowmask), true);
@@ -58,14 +45,16 @@ fn a_block_reads_only_the_planes_it_stores() {
     assert_eq!(stored(3), None);
 }
 
+// The pool places what a payload carries, so an absent plane must stay empty
+// here in both load modes: no placement, no upload, and no bytes.
 #[test]
-fn absent_planes_reach_the_pool_as_zero_planes_in_both_load_modes() {
+fn an_absent_plane_stays_empty_in_both_load_modes() {
     let (fixture, lightmap, shadowmask) = mixed_fixture("postretro_test_lm_planes_payloads.prl");
     let streamed = fixture.manifest();
     let resident = fixture.load(LightmapStreamingMode::AllResident);
     for block in 0..EXTENTS.len() {
         let expected = LightmapBlockPayload {
-            shadowmask: Some(full_planes(&shadowmask, block)),
+            shadowmask: Some(shadowmask.blocks[block].clone()),
             ..expected_payload(&lightmap, None, block)
         };
         assert_eq!(
@@ -78,6 +67,37 @@ fn absent_planes_reach_the_pool_as_zero_planes_in_both_load_modes() {
             "all-resident block {block}"
         );
     }
+}
+
+#[test]
+fn streamed_block_reads_exactly_its_present_plane() {
+    let (fixture, _, shadowmask) = mixed_fixture("postretro_test_lm_planes_exact.prl");
+    let manifest = fixture.manifest();
+    let read = |block: u32| {
+        let before = manifest.read_counters().section_bytes(SHADOWMASK);
+        let payload = manifest.read_block_pair(block).unwrap();
+        let bytes = manifest.read_counters().section_bytes(SHADOWMASK) - before;
+        (payload.shadowmask.unwrap(), bytes)
+    };
+
+    // Block 1 stores only plane B, and block 2 only plane A.
+    let plane_b = shadowmask.blocks[1][1].clone();
+    let plane_a = shadowmask.blocks[2][0].clone();
+    assert!(!plane_a.is_empty() && !plane_b.is_empty());
+    let (only_b, bytes) = read(1);
+    assert_eq!(only_b, [Vec::new(), plane_b.clone()]);
+    assert_eq!(
+        bytes,
+        plane_b.len() as u64,
+        "reads plane B and nothing else"
+    );
+    let (only_a, bytes) = read(2);
+    assert_eq!(only_a, [plane_a.clone(), Vec::new()]);
+    assert_eq!(
+        bytes,
+        plane_a.len() as u64,
+        "reads plane A and nothing else"
+    );
 }
 
 #[test]

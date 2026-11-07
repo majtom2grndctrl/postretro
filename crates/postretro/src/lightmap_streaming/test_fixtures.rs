@@ -11,9 +11,9 @@ use postretro_level_format::cell_residency_set::{CellResidencySetSection, Reside
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload};
 use postretro_level_loader::{
     LightmapBlockFileRanges, LightmapDrainBatch, LightmapDrainOutcome, LightmapPoolReport,
-    PrlLoadError,
+    LightmapRefusal, PoolReport, PrlLoadError,
 };
-use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
+use postretro_render_cpu::lightmap_pool::{LightmapPoolModel, PerPool, PlanePresence, PoolDemand};
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::controller::LightmapResidencyController;
@@ -45,6 +45,7 @@ pub(crate) struct BlockSpec {
     pub(crate) height: u16,
     pub(crate) lightmap: Range<u64>,
     pub(crate) shadowmask: Option<Range<u64>>,
+    pub(crate) planes: PlanePresence,
 }
 
 impl BlockSpec {
@@ -59,6 +60,7 @@ impl BlockSpec {
             height: 64,
             lightmap: start..start + half_bytes,
             shadowmask: shadowmask.then(|| shadow_start..shadow_start + half_bytes),
+            planes: [shadowmask; 2],
         }
     }
 }
@@ -159,6 +161,7 @@ impl LightmapBlockSource for TestBlockSource {
             cell_id: spec.cell,
             width: spec.width,
             height: spec.height,
+            planes: spec.planes,
         })
     }
 
@@ -183,7 +186,7 @@ impl LightmapBlockSource for TestBlockSource {
     }
 
     /// Splits each half at its midpoint: irradiance then direction, group A
-    /// then group B.
+    /// then group B when the block stores both.
     fn payload_from_pair_bytes(
         &self,
         block: u32,
@@ -205,9 +208,13 @@ impl LightmapBlockSource for TestBlockSource {
         Ok(LightmapBlockPayload {
             irradiance: lightmap,
             direction,
-            shadowmask: shadowmask.map(|mut group_a| {
-                let group_b = group_a.split_off(group_a.len() / 2);
-                [group_a, group_b]
+            shadowmask: shadowmask.map(|mut stored| match spec.planes {
+                [true, true] => {
+                    let group_b = stored.split_off(stored.len() / 2);
+                    [stored, group_b]
+                }
+                [true, false] => [stored, Vec::new()],
+                _ => [Vec::new(), stored],
             }),
         })
     }
@@ -449,13 +456,26 @@ impl Rig {
 /// The renderer's placement policy over `source`'s blocks, standing in for
 /// the GPU pool: the same wgpu-free model the renderer drains through.
 pub(crate) fn pool_model(source: &TestBlockSource) -> LightmapPoolModel {
-    let extents = (0..source.block_count())
+    LightmapPoolModel::new(
+        source_demand(source),
+        LIGHTMAP_POOL_LAYER_EDGE,
+        PerPool::both(15),
+    )
+    .expect("test blocks fit")
+}
+
+/// What `source`'s blocks ask of the pools.
+pub(crate) fn source_demand(source: &TestBlockSource) -> PoolDemand {
+    let blocks = 0..source.block_count();
+    let extents = blocks
+        .clone()
         .map(|block| {
             let spec = source.spec(block);
             (u32::from(spec.width), u32::from(spec.height))
         })
         .collect();
-    LightmapPoolModel::new(extents, 4, LIGHTMAP_POOL_LAYER_EDGE, 15).expect("test blocks fit")
+    let planes = blocks.map(|block| source.spec(block).planes).collect();
+    PoolDemand::new(4, extents, Some(planes))
 }
 
 /// One renderer drain through `model`: its plan becomes the outcome, the
@@ -473,7 +493,14 @@ pub(crate) fn model_drain(
         plan.evicted.iter().map(|eviction| eviction.block).collect(),
         plan.report,
     );
-    let (room_reserved, room_returned) = (plan.room_reserved.clone(), plan.room_returned.clone());
+    let room_reserved = PerPool {
+        lightmap: plan.pools.lightmap.room_reserved.clone(),
+        mask: plan.pools.mask.room_reserved.clone(),
+    };
+    let room_returned = PerPool {
+        lightmap: plan.pools.lightmap.room_returned.clone(),
+        mask: plan.pools.mask.room_returned.clone(),
+    };
     LightmapDrainOutcome {
         installed,
         refused,
@@ -490,11 +517,29 @@ pub(crate) fn model_drain(
     }
 }
 
-/// Band headroom for `blocks` 64×64 blocks.
+/// A band pair refused for room in both pools.
+pub(crate) fn refusal(block: u32) -> LightmapRefusal {
+    LightmapRefusal {
+        block,
+        short: PerPool::both(true),
+    }
+}
+
+/// Band headroom for `blocks` 64×64 blocks of two planes each.
 pub(crate) fn headroom(blocks: u64) -> LightmapPoolReport {
-    LightmapPoolReport {
+    pool_room(blocks * 64 * 64)
+}
+
+/// `texels` of lightmap headroom, and room for a block's two planes in the
+/// mask pool beside each block of it.
+pub(crate) fn pool_room(texels: u64) -> LightmapPoolReport {
+    let room = |band_headroom_texels| PoolReport {
         layers: 1,
-        band_headroom_texels: blocks * 64 * 64,
-        ..LightmapPoolReport::default()
+        band_headroom_texels,
+        ..PoolReport::default()
+    };
+    PerPool {
+        lightmap: room(texels),
+        mask: room(texels * 2),
     }
 }

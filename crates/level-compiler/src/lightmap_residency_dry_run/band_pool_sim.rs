@@ -17,7 +17,9 @@ use super::camera_walks::{WalkKind, camera_adjacency, walk_path};
 use super::cell_blocks::{CellBlocks, POOL_LAYER_EDGE};
 use crate::cell_residency_bake::portal_distance::PortalGraphInput;
 use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
-use postretro_render_cpu::lightmap_pool::{DrainRequest, EvictionReason, LightmapPoolModel};
+use postretro_render_cpu::lightmap_pool::{
+    DrainRequest, EvictionReason, LightmapPoolModel, PerPool, PoolDemand, PoolKind,
+};
 
 /// A read of a block freed at most this many steps earlier counts as thrash.
 /// Over a long walk nearly every read is of a block freed at some point, so
@@ -241,7 +243,10 @@ pub(crate) fn simulate_band(
     let block_count = blocks.dims.len();
     let extents = blocks.dims.iter().map(|d| (d.width, d.height)).collect();
     let cap_layers = cap.unwrap_or(u32::MAX);
-    let mut model = LightmapPoolModel::new(extents, blocks.alignment, POOL_LAYER_EDGE, cap_layers)
+    // The dry run's blocks carry no plane presence: the mask pool joins it with
+    // the harness's split.
+    let demand = PoolDemand::lightmap_only(blocks.alignment, extents);
+    let mut model = LightmapPoolModel::new(demand, POOL_LAYER_EDGE, PerPool::both(cap_layers))
         .expect("aligned blocks that fit a pool layer");
     let mut targets = SimTargets {
         blocks,
@@ -298,7 +303,7 @@ pub(crate) fn simulate_band(
                 .filter(|&block| !model.is_resident(block)),
         );
         let plan = model.plan_drain(DrainRequest {
-            pool_cap_layers: cap_layers,
+            pool_cap_layers: PerPool::both(cap_layers),
             target_reset: None,
             target_set: &targets.set,
             target_remove: &targets.remove,
@@ -322,11 +327,11 @@ pub(crate) fn simulate_band(
             freed_at[eviction.block as usize] = step;
             run.band_evictions += usize::from(eviction.reason == EvictionReason::Pressure);
         }
-        run.repack_steps += usize::from(plan.report.repacked);
-        run.growth_steps += usize::from(plan.report.grew);
+        run.repack_steps += usize::from(plan.report.lightmap.repacked);
+        run.growth_steps += usize::from(plan.report.lightmap.grew);
         debug_assert!(plan.deferred.is_empty(), "every growth retires in its step");
-        model.release_retirement();
-        let occupied = model.occupied_layers();
+        model.release_retirement(PoolKind::Lightmap);
+        let occupied = model.pool(PoolKind::Lightmap).occupied_layers();
         run.peak_layers = run.peak_layers.max(occupied as usize);
         run.over_cap_steps += usize::from(cap.is_some_and(|cap| occupied > cap));
     }

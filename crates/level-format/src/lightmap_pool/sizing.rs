@@ -36,7 +36,10 @@ pub fn first_generation_layers(bound: u32, all_resident: u32) -> u32 {
     if all_resident == 0 {
         return 0;
     }
-    LIGHTMAP_POOL_MARGIN.of(bound).min(all_resident.max(bound)).max(1)
+    LIGHTMAP_POOL_MARGIN
+        .of(bound)
+        .min(all_resident.max(bound))
+        .max(1)
 }
 
 /// One mask pool layer: a BC5 plane at the pool edge.

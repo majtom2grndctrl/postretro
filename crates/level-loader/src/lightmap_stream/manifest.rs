@@ -15,7 +15,6 @@ use super::boundary::LightmapDrainBatch;
 use super::lightmap_stream_error;
 use crate::prl::PrlLoadError;
 use crate::prl_file::{PrlFile, PrlReadCounters};
-use crate::prl_lightmap::planes_with_absent_as_zero;
 use crate::sh_stream::read_vec_at;
 
 /// Absolute PRL file ranges of one block pair, in the order its bytes are
@@ -228,8 +227,9 @@ impl LightmapStreamManifest {
     }
 
     /// Split a pair's read buffers into the payload the pool installs. A
-    /// block with no stored plane has one buffer. Rejects buffers whose
-    /// lengths disagree with the block's ranges.
+    /// block with no stored plane has one buffer, and an absent plane comes
+    /// back empty: with plane A absent the buffer is exactly plane B, and the
+    /// reverse. Rejects buffers whose lengths disagree with the block's ranges.
     pub fn payload_from_pair_bytes(
         &self,
         block: u32,
@@ -262,7 +262,7 @@ impl LightmapStreamManifest {
         };
         let shadowmask = self.shadowmask.is_some().then(|| {
             let (group_a, group_b) = stored.unwrap_or_default();
-            planes_with_absent_as_zero(record, [group_a, group_b])
+            [group_a, group_b]
         });
         Ok(LightmapBlockPayload {
             irradiance,

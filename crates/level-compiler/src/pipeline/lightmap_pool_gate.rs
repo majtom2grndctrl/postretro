@@ -9,7 +9,7 @@ use postretro_level_format::lightmap_pool::place_all_resident;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
 use crate::lightmap_bake::{BlockLayout, PreparedAtlas};
-use crate::pack::PoolDemand;
+use crate::pack::{all_resident_layers, pool_demand};
 
 /// Count the runtime pool from finalized compiler blocks, independently of
 /// their internal bake-layer placement. The renderer calls this same shelf
@@ -101,8 +101,8 @@ pub(crate) fn gate_mask_pool_with_floor(
     if shadowmask.is_none() {
         return Ok(0);
     }
-    let demand = PoolDemand::new(lightmap, shadowmask)?;
-    let layers = demand.all_resident()?.mask;
+    let demand = pool_demand(lightmap, shadowmask)?;
+    let layers = all_resident_layers(&demand)?.mask;
     if layers <= floor {
         return Ok(layers);
     }

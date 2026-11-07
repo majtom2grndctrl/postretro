@@ -82,7 +82,12 @@ fn block_table_maps_each_block_local_texel_to_its_placement_plus_local() {
             .iter()
             .any(|p| p.layer == 0 && (p.x, p.y) != (0, 0))
     );
-    let placed: Vec<_> = pool.placements.iter().copied().map(Some).collect();
+    let placed: Vec<_> = pool
+        .placements
+        .iter()
+        .copied()
+        .map(|placement| Some(BlockAddresses::without_masks(placement)))
+        .collect();
     let table = block_table_bytes(&extents, &placed);
     assert_eq!(table.len(), (extents.len() + 1) * BLOCK_TABLE_ENTRY_BYTES);
     assert_eq!(entry(&table, 0), BlockTableEntry::None);
@@ -113,11 +118,11 @@ fn block_table_maps_each_block_local_texel_to_its_placement_plus_local() {
 fn a_missing_block_keeps_its_extent_and_samples_no_pool_texel() {
     let extents = [(16, 8), (32, 4)];
     let placements = [
-        Some(BlockPlacement {
+        Some(BlockAddresses::without_masks(BlockPlacement {
             layer: 1,
             x: 64,
             y: 128,
-        }),
+        })),
         None,
     ];
     let table = block_table_bytes(&extents, &placements);
@@ -132,12 +137,12 @@ fn a_missing_block_keeps_its_extent_and_samples_no_pool_texel() {
     assert_eq!(entry(&table, 1).pool_texel(3, 2), Some((1, 67, 130)));
     // Neither flag marks the miss; RESIDENT and NONE never both appear.
     for index in 0..3 {
-        let flags = u32::from_ne_bytes(
+        let word = u32::from_ne_bytes(
             table[index * BLOCK_TABLE_ENTRY_BYTES + 12..index * BLOCK_TABLE_ENTRY_BYTES + 16]
                 .try_into()
                 .unwrap(),
         );
-        assert_ne!(flags, BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NONE);
+        assert_ne!(word >> 24 & 3, BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NONE);
     }
 }
 
@@ -147,8 +152,70 @@ fn placeholder_table_is_one_entry_that_samples_the_placeholders() {
     assert_eq!(table.len(), BLOCK_TABLE_ENTRY_BYTES);
     assert_eq!(entry(&table, 0), BlockTableEntry::Placeholder);
     assert_eq!(
-        BlockTableEntry::Placeholder.to_words()[3],
-        BLOCK_FLAG_RESIDENT,
-        "the placeholder entry samples, unlike the no-lightmap entry"
+        BlockTableEntry::Placeholder.to_words()[3] >> 24,
+        BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NO_MASK_POOL,
+        "the placeholder entry samples, unlike the no-lightmap entry, and reads \
+         the fully-visible fallback"
+    );
+}
+
+fn place(layer: u32, x: u32, y: u32) -> BlockPlacement {
+    BlockPlacement { layer, x, y }
+}
+
+// The table layout, word by word, at the far end of every field: a 2048
+// extent, a 2044 offset, and a layer past any device's.
+#[test]
+fn entries_pack_three_addresses_and_the_extent_as_laid_out() {
+    let entry = BlockTableEntry::Resident {
+        addresses: BlockAddresses {
+            lightmap: place(16383, 2044, 4),
+            masks: MaskAddresses::Planes([Some(place(1, 8, 2044)), Some(place(2, 12, 16))]),
+        },
+        width: 2048,
+        height: 2048,
+    };
+    let words = entry.to_words();
+    assert_eq!(words[0], 511 | (1 << 9) | (16383 << 18));
+    assert_eq!(words[1], 2 | (511 << 9) | (1 << 18));
+    assert_eq!(words[2], 3 | (4 << 9) | (2 << 18));
+    let flags = BLOCK_FLAG_RESIDENT | BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B;
+    assert_eq!(words[3], 2048 | (2048 << 12) | (flags << 24));
+    assert_eq!(BlockTableEntry::from_words(words), entry);
+}
+
+#[test]
+fn an_entry_tells_every_mask_state_apart() {
+    let lightmap = place(3, 4, 8);
+    let entry = |masks| BlockTableEntry::Resident {
+        addresses: BlockAddresses { lightmap, masks },
+        width: 16,
+        height: 8,
+    };
+    let at = Some(place(0, 0, 0));
+    let flag_sets = [
+        (MaskAddresses::NoPool, BLOCK_FLAG_NO_MASK_POOL),
+        (MaskAddresses::Planes([None, None]), 0),
+        (MaskAddresses::Planes([at, None]), BLOCK_FLAG_PLANE_A),
+        (MaskAddresses::Planes([None, at]), BLOCK_FLAG_PLANE_B),
+        (
+            MaskAddresses::Planes([at, at]),
+            BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B,
+        ),
+    ];
+    for (masks, flags) in flag_sets {
+        let words = entry(masks).to_words();
+        assert_eq!(words[3] >> 24, BLOCK_FLAG_RESIDENT | flags, "{masks:?}");
+        assert_eq!(BlockTableEntry::from_words(words), entry(masks));
+    }
+    // An absent plane's address stays zero, so nothing can read a stale one.
+    assert_eq!(entry(MaskAddresses::Planes([None, at])).to_words()[1], 0);
+    assert_eq!(
+        BlockTableEntry::Missing {
+            width: 16,
+            height: 8
+        }
+        .to_words()[3],
+        16 | (8 << 12)
     );
 }

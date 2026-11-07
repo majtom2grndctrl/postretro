@@ -13,6 +13,8 @@ use postretro_level_loader::{
     LightmapBlockClass, LightmapDrainBatch, LightmapTarget, PreparedLightmapBlock,
 };
 
+use postretro_render_cpu::lightmap_pool::PoolDemand;
+
 use super::super::StreamingPoolPlan;
 use super::super::pool_sample_test::{SCALE, direction_texel, irradiance_texel, mask_byte};
 use super::super::test_fixtures::{FixtureTexels, block_fixture};
@@ -47,8 +49,11 @@ fn lightmap_drain_install_timing() {
     );
     let plan = StreamingPoolPlan {
         header: fixture.index.header,
-        extents: extents.clone(),
-        with_shadowmask: true,
+        demand: PoolDemand::new(
+            fixture.index.header.block_alignment(),
+            extents.clone(),
+            Some(vec![[true; 2]; extents.len()]),
+        ),
         content_tag: TAG,
         pool_cap_layers: 1,
         max_array_layers: ctx.device.limits().max_texture_array_layers,

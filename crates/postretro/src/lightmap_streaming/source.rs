@@ -5,14 +5,16 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use postretro_level_format::lightmap::LightmapBlockPayload;
+use postretro_level_format::lightmap_pool::PlanePresence;
 use postretro_level_loader::{LightmapBlockFileRanges, LightmapStreamManifest, PrlLoadError};
 
-/// One block's index facts: its owning cell and texel extent.
+/// One block's index facts: its owning cell, texel extent and stored planes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BlockSummary {
     pub(crate) cell_id: u32,
     pub(crate) width: u16,
     pub(crate) height: u16,
+    pub(crate) planes: PlanePresence,
 }
 
 /// A level's streamed lightmap blocks. Production reads the retained
@@ -85,15 +87,20 @@ impl LightmapBlockSource for ManifestBlockSource {
     }
 
     fn block_summary(&self, block: u32) -> Option<BlockSummary> {
-        self.manifest
-            .lightmap_index()
-            .records
-            .get(block as usize)
-            .map(|record| BlockSummary {
-                cell_id: record.cell_id,
-                width: record.width,
-                height: record.height,
-            })
+        let record = self.manifest.lightmap_index().records.get(block as usize)?;
+        let planes = self
+            .manifest
+            .shadowmask_index()
+            .map_or([false; 2], |index| {
+                let planes = &index.records[block as usize];
+                [planes.group_a.len != 0, planes.group_b.len != 0]
+            });
+        Some(BlockSummary {
+            cell_id: record.cell_id,
+            width: record.width,
+            height: record.height,
+            planes,
+        })
     }
 
     fn block_alignment(&self) -> u32 {

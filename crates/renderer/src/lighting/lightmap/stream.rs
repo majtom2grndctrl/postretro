@@ -15,12 +15,11 @@ mod textures;
 use crate::render::gpu_create::GpuCreate;
 use std::fmt;
 
-use postretro_level_format::lightmap::{
-    LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload, LightmapHeader,
-};
-use postretro_level_format::shadowmask_atlas::group_plane_len;
+use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapHeader};
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
-use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, LightmapPoolModel};
+use postretro_render_cpu::lightmap_pool::{
+    BLOCK_TABLE_ENTRY_BYTES, LightmapPoolModel, PerPool, PoolKind, payload_mismatch,
+};
 
 pub use counters::LightmapStreamCounters;
 pub(crate) use textures::PoolTextures;
@@ -139,19 +138,19 @@ impl LightmapStreamState {
         // so the model's `max(1)` changes nothing) and refused the level
         // otherwise. `with_layer_limit` fails only when that placement does.
         let model = LightmapPoolModel::with_layer_limit(
-            plan.extents.clone(),
-            plan.header.block_alignment(),
+            plan.demand.clone(),
             LIGHTMAP_POOL_LAYER_EDGE,
-            plan.pool_cap_layers,
+            PerPool::both(plan.pool_cap_layers),
             plan.max_array_layers.saturating_sub(1),
         )
         .expect("plan_streaming_pool checked that every block fits a pool layer");
         let format = PoolFormat::from_header(&plan.header);
+        let lightmap_pool = model.pool(PoolKind::Lightmap);
         let textures = PoolTextures::new(
             device,
             format,
-            model.spare_layer() + 1,
-            plan.with_shadowmask,
+            lightmap_pool.spare_layer() + 1,
+            plan.with_shadowmask(),
         );
         let table_bytes = model.table_bytes();
         // `COPY_SRC` lets a readback check the table the GPU holds.
@@ -164,7 +163,7 @@ impl LightmapStreamState {
         });
         let counters = LightmapStreamCounters {
             pool_texture_sets: 1,
-            pool_layers: model.layers(),
+            pool_layers: lightmap_pool.layers(),
             active_pool_bytes: textures.bytes(),
             table_entries_written: (table_bytes.len() / BLOCK_TABLE_ENTRY_BYTES) as u64,
             ..LightmapStreamCounters::default()
@@ -172,10 +171,10 @@ impl LightmapStreamState {
         log::info!(
             "[Renderer] Lightmap pool (streamed): {} cell block(s), first generation {} layer(s) \
              of {}² plus a spare, shadowmask {}",
-            plan.extents.len(),
-            model.layers(),
+            plan.demand.block_count(),
+            lightmap_pool.layers(),
             LIGHTMAP_POOL_LAYER_EDGE,
-            if plan.with_shadowmask {
+            if plan.with_shadowmask() {
                 "resident"
             } else {
                 "placeholder"
@@ -185,7 +184,7 @@ impl LightmapStreamState {
             model,
             header: plan.header,
             format,
-            with_shadowmask: plan.with_shadowmask,
+            with_shadowmask: plan.with_shadowmask(),
             content_tag: plan.content_tag,
             max_array_layers: plan.max_array_layers,
             generation: 0,
@@ -257,11 +256,17 @@ impl LightmapStreamState {
             .is_some_and(RetiringPool::is_complete)
         {
             self.retiring = None;
-            self.model.release_retirement();
+            self.model.release_retirement(PoolKind::Lightmap);
             self.counters.retiring_pool_bytes = 0;
             effects.meter_changed = true;
         }
-        debug_assert_eq!(self.model.retiring(), self.retiring.is_some());
+        // Until the renderer's pool split the mask pool has no generation of
+        // its own to wait on: its growth holds no texture.
+        self.model.release_retirement(PoolKind::Mask);
+        debug_assert_eq!(
+            self.model.pool(PoolKind::Lightmap).retiring(),
+            self.retiring.is_some()
+        );
 
         let started = std::time::Instant::now();
         if self.generation != 0 && batch.generation != self.generation {
@@ -287,7 +292,9 @@ impl LightmapStreamState {
     /// stay wanted, so it is logged once per level, as the lasting miss it
     /// is; `deferred_pairs` still counts each one.
     fn warn_device_limit_once(&mut self) {
-        if !self.model.plan().device_limited || self.device_limit_warned {
+        let plan = self.model.plan();
+        let limited = plan.pools.lightmap.device_limited || plan.pools.mask.device_limited;
+        if !limited || self.device_limit_warned {
             return;
         }
         self.device_limit_warned = true;
@@ -297,7 +304,7 @@ impl LightmapStreamState {
              mandatory or visible cell blocks still do not fit; they stay missing, a permanent \
              miss rather than a transient one, until fewer blocks are wanted. Logged once per \
              level",
-            self.model.layers(),
+            self.model.pool(PoolKind::Lightmap).layers(),
             self.max_array_layers,
         );
     }
@@ -329,8 +336,8 @@ impl LightmapStreamState {
                 Some(prepared) => payload_mismatch(
                     &self.header,
                     (upload.width, upload.height),
+                    self.model.planes(upload.block),
                     &prepared.payload,
-                    self.with_shadowmask,
                 ),
                 None => Some("no payload arrived".to_string()),
             };
@@ -367,8 +374,14 @@ impl LightmapStreamState {
             failed: plan.failed.clone(),
             deferred,
             evicted: plan.evicted.iter().map(|eviction| eviction.block).collect(),
-            room_reserved: plan.room_reserved.clone(),
-            room_returned: plan.room_returned.clone(),
+            room_reserved: PerPool {
+                lightmap: plan.pools.lightmap.room_reserved.clone(),
+                mask: plan.pools.mask.room_reserved.clone(),
+            },
+            room_returned: PerPool {
+                lightmap: plan.pools.lightmap.room_returned.clone(),
+                mask: plan.pools.mask.room_returned.clone(),
+            },
             pool: plan.report,
         }
     }
@@ -381,42 +394,5 @@ impl LightmapStreamState {
     #[cfg(test)]
     fn retiring_pool(&self) -> Option<&RetiringPool> {
         self.retiring.as_ref()
-    }
-}
-
-/// Why `payload` cannot fill a `width × height` block, or `None` when every
-/// plane the pool keeps matches the block's extent and format.
-fn payload_mismatch(
-    header: &LightmapHeader,
-    (width, height): (u32, u32),
-    payload: &LightmapBlockPayload,
-    with_shadowmask: bool,
-) -> Option<String> {
-    let irradiance = header.irradiance_len(width, height);
-    let direction = header.direction_len(width, height);
-    if irradiance != Some(payload.irradiance.len() as u64)
-        || direction != Some(payload.direction.len() as u64)
-    {
-        return Some(format!(
-            "{width}x{height} block carries {} irradiance and {} direction byte(s), expected \
-             {irradiance:?} and {direction:?}",
-            payload.irradiance.len(),
-            payload.direction.len(),
-        ));
-    }
-    if !with_shadowmask {
-        return None;
-    }
-    let expected = group_plane_len(width, height);
-    match &payload.shadowmask {
-        Some([a, b]) if expected == Some(a.len() as u64) && expected == Some(b.len() as u64) => {
-            None
-        }
-        Some([a, b]) => Some(format!(
-            "shadowmask groups are {} and {} byte(s), expected {expected:?}",
-            a.len(),
-            b.len()
-        )),
-        None => Some("the shadowmask groups are missing".to_string()),
     }
 }

@@ -4,6 +4,7 @@
 use std::time::Instant;
 
 use glam::Vec3;
+use postretro_render_cpu::lightmap_pool::PoolKind;
 
 use super::pool_mirror::{PoolMirror, RetireClock};
 use super::report::mib;
@@ -84,7 +85,7 @@ fn lightmap_install_timing_from_prl() {
             summary.reads.pairs,
             mib(summary.reads.bytes),
             preload.as_secs_f64() * 1000.0,
-            mirror.model().layers(),
+            mirror.model().pool(PoolKind::Lightmap).layers(),
         );
     }
 }

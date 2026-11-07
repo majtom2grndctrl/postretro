@@ -111,8 +111,8 @@ use section_plan::{FinalizedSectionPlanInputs, build_finalized_section_plan};
 mod bound_report;
 mod lightmap_pool_bound;
 mod sh_mandatory_bound;
-pub(crate) use lightmap_pool_bound::PoolDemand;
 use lightmap_pool_bound::{LightmapPoolBoundInputs, resolve_lightmap_pool_bound};
+pub(crate) use lightmap_pool_bound::{all_resident_layers, pool_demand};
 use sh_mandatory_bound::{ShMandatoryBoundInputs, resolve_sh_mandatory_bound};
 
 /// Convert translated map lights into an `AlphaLightsSection` for the format

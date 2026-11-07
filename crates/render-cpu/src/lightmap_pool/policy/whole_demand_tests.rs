@@ -33,21 +33,21 @@ fn two_rows() -> Harness {
     h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
     h.drain(&[mandatory(2)], &[], &[2]);
     h.drain(&[mandatory(3), mandatory(4)], &[], &[3, 4]);
-    assert_eq!(h.model.placement(1).unwrap().layer, 0);
-    assert_eq!(h.model.placement(3).unwrap().x, 8);
-    assert_eq!(h.model.placement(4).unwrap().layer, 1);
+    assert_eq!(h.model.at(1).unwrap().layer, 0);
+    assert_eq!(h.model.at(3).unwrap().x, 8);
+    assert_eq!(h.model.at(4).unwrap().layer, 1);
     h
 }
 
 fn layers_of(h: &Harness, blocks: &[u32]) -> Vec<u32> {
     blocks
         .iter()
-        .map(|&block| h.model.placement(block).unwrap().layer)
+        .map(|&block| h.model.at(block).unwrap().layer)
         .collect()
 }
 
 fn is_compaction(plan: &DrainPlan) -> bool {
-    matches!(plan.repack, Some(RepackKind::Compaction(_)))
+    matches!(plan.pools[POOL].repack, Some(RepackKind::Compaction(_)))
 }
 
 #[test]
@@ -58,14 +58,14 @@ fn downward_repack_must_cover_the_whole_demand() {
     let residents = [0, 1, 3, 4];
     let before = layers_of(&h, &residents);
     let plan = h.drain(&[mandatory(PAIR)], &[LEAVES], &[PAIR]);
-    assert_eq!(plan.repack, Some(RepackKind::Downward));
+    assert_eq!(plan.pools[POOL].repack, Some(RepackKind::Downward));
     assert_eq!(plan.installed, vec![PAIR]);
     assert_eq!(layers_of(&h, &residents), before, "no block moved up");
 
     let plan = h.drain(&[mandatory(WAITING)], &[], &[WAITING]);
-    assert!(is_compaction(plan), "{:?}", plan.repack);
+    assert!(is_compaction(plan), "{:?}", plan.pools[POOL].repack);
     assert_eq!(plan.installed, vec![WAITING]);
-    assert!(plan.growth.is_none());
+    assert!(plan.pools[POOL].growth.is_none());
     assert!(
         layers_of(&h, &[1])[0] > before[1],
         "block 1 had to move up beside block 4"
@@ -77,13 +77,13 @@ fn downward_repack_must_cover_the_whole_demand() {
     // seating the target whose pair is still to come (R18).
     let mut h = two_rows();
     let plan = h.drain(&[mandatory(PAIR), mandatory(WAITING)], &[LEAVES], &[PAIR]);
-    assert!(is_compaction(plan), "{:?}", plan.repack);
+    assert!(is_compaction(plan), "{:?}", plan.pools[POOL].repack);
     assert_eq!(plan.installed, vec![PAIR]);
-    assert!(plan.growth.is_none());
-    assert_eq!(plan.room_reserved, vec![WAITING]);
+    assert!(plan.pools[POOL].growth.is_none());
+    assert_eq!(reserved(plan), vec![WAITING]);
     assert_disjoint_within_layers(&h.model);
     let plan = h.drain(&[], &[], &[WAITING]);
-    assert_eq!(plan.repack, None, "the compaction seated it");
+    assert_eq!(plan.pools[POOL].repack, None, "the compaction seated it");
     assert_eq!(plan.installed, vec![WAITING]);
 }
 
@@ -98,11 +98,11 @@ fn repacks_placing(h: &mut Harness, order: &[u32], first_set: &[LightmapTarget])
         let set = if at == 0 { first_set } else { &[] };
         let plan = h.drain(set, &[], &[block]);
         assert_eq!(plan.installed, vec![block]);
-        assert!(plan.growth.is_none() && plan.deferred.is_empty());
-        if plan.repack.is_some() {
+        assert!(plan.pools[POOL].growth.is_none() && plan.deferred.is_empty());
+        if plan.pools[POOL].repack.is_some() {
             repacks += 1;
         } else {
-            assert!(plan.copies.is_empty(), "no repack, so no copy");
+            assert!(plan.pools[POOL].copies.is_empty(), "no repack, so no copy");
         }
     }
     assert_disjoint_within_layers(&h.model);
@@ -120,8 +120,8 @@ fn demand_arriving_over_drains_repacks_once() {
     h.drain(&[], &[0], &[]);
     let demand = [mandatory(2), mandatory(3), mandatory(4)];
     let plan = h.plan(&demand, &[], &[2]);
-    assert_eq!(plan.repack, Some(RepackKind::Downward));
-    assert_eq!(plan.room_reserved, vec![3, 4]);
+    assert_eq!(plan.pools[POOL].repack, Some(RepackKind::Downward));
+    assert_eq!(reserved(plan), vec![3, 4]);
     h.model.abort_drain();
     assert_eq!(repacks_placing(&mut h, &[2, 3, 4], &demand), 1);
 
@@ -165,18 +165,18 @@ fn demand_past_the_pool_compacts_once_then_grows() {
     // demand past the pool does not grow while no pair needs it (R19).
     let mut h = crossed_layers_with_a_block_past_them(u32::MAX);
     let plan = h.drain(&[mandatory(4), mandatory(5)], &[], &[4]);
-    assert!(is_compaction(plan), "{:?}", plan.repack);
+    assert!(is_compaction(plan), "{:?}", plan.pools[POOL].repack);
     assert_eq!(plan.installed, vec![4]);
-    assert!(plan.growth.is_none());
+    assert!(plan.pools[POOL].growth.is_none());
     let plan = h.drain(&[], &[], &[]);
-    assert_eq!(plan.repack, None);
-    assert!(plan.growth.is_none(), "no ready pair needs it");
+    assert_eq!(plan.pools[POOL].repack, None);
+    assert!(plan.pools[POOL].growth.is_none(), "no ready pair needs it");
 
     // The later pair does not fit as the pool stands: growth, no second
     // compaction (R32).
     let plan = h.drain(&[], &[], &[5]);
-    assert!(!is_compaction(plan), "{:?}", plan.repack);
-    assert!(plan.growth.is_some());
+    assert!(!is_compaction(plan), "{:?}", plan.pools[POOL].repack);
+    assert!(plan.pools[POOL].growth.is_some());
     assert_eq!(plan.installed, vec![5]);
     assert_disjoint_within_layers(&h.model);
 
@@ -186,8 +186,8 @@ fn demand_past_the_pool_compacts_once_then_grows() {
     let mut h = crossed_layers_with_a_block_past_them(u32::MAX);
     assert!(is_compaction(h.drain(&[mandatory(4)], &[], &[4])));
     let plan = h.drain(&[mandatory(5)], &[], &[5]);
-    assert!(!is_compaction(plan), "{:?}", plan.repack);
-    assert!(plan.growth.is_some());
+    assert!(!is_compaction(plan), "{:?}", plan.pools[POOL].repack);
+    assert!(plan.pools[POOL].growth.is_some());
     assert_eq!(plan.installed, vec![5]);
 }
 
@@ -197,13 +197,13 @@ fn a_jam_at_the_device_limit_compacts_once_and_repacks_no_more() {
     let mut h = crossed_layers_with_a_block_past_them(2);
     let plan = h.drain(&[mandatory(4), mandatory(5)], &[], &[4]);
     assert_eq!(plan.installed, vec![4]);
-    assert!(is_compaction(plan), "{:?}", plan.repack);
+    assert!(is_compaction(plan), "{:?}", plan.pools[POOL].repack);
     let passes = h.model.demand_passes;
     for _ in 0..8 {
         let plan = h.drain(&[], &[], &[5]);
         assert_eq!(plan.deferred, vec![5]);
-        assert!(plan.repack.is_none() && plan.copies.is_empty());
-        assert!(plan.device_limited);
+        assert!(plan.pools[POOL].repack.is_none() && plan.pools[POOL].copies.is_empty());
+        assert!(plan.pools[POOL].device_limited);
     }
     assert_eq!(h.model.demand_passes, passes, "no reservation work");
 }
@@ -216,13 +216,13 @@ fn a_jam_behind_a_retiring_generation_repacks_once_and_then_grows() {
     let plan = h.drain(&[mandatory(2), mandatory(3)], &[], &[2, 3]);
     assert_eq!(plan.installed, vec![2]);
     assert_eq!(plan.deferred, vec![3]);
-    assert!(h.model.demand_room.compaction_spent);
+    assert!(h.model.pools[POOL].room.compaction_spent);
     let plan = h.drain(&[], &[], &[3]);
     assert_eq!(plan.deferred, vec![3]);
-    assert!(plan.repack.is_none());
-    h.model.release_retirement();
+    assert!(plan.pools[POOL].repack.is_none());
+    h.model.release_retirement(POOL);
     let plan = h.drain(&[], &[], &[3]);
-    assert!(plan.growth.is_some(), "the retirement was all it waited on");
+    assert!(plan.pools[POOL].growth.is_some(), "the retirement was all it waited on");
     assert_eq!(plan.installed, vec![3]);
 }
 
@@ -230,16 +230,16 @@ fn a_jam_behind_a_retiring_generation_repacks_once_and_then_grows() {
 fn a_spent_demand_ends_when_the_targets_pack_again() {
     let mut h = crossed_layers_with_a_block_past_them(2);
     h.drain(&[mandatory(4), mandatory(5)], &[], &[4, 5]);
-    assert!(h.model.demand_room.compaction_spent);
+    assert!(h.model.pools[POOL].room.compaction_spent);
 
     // Another target joins a demand still past the pool: the same demand.
     let plan = h.drain(&[mandatory(6)], &[], &[5, 6]);
-    assert!(plan.repack.is_none() && plan.copies.is_empty());
-    assert!(h.model.demand_room.compaction_spent);
+    assert!(plan.pools[POOL].repack.is_none() && plan.pools[POOL].copies.is_empty());
+    assert!(h.model.pools[POOL].room.compaction_spent);
 
     // What is left packs: a new demand, free to compact.
     h.drain(&[], &[5, 6], &[]);
-    assert!(!h.model.demand_room.compaction_spent);
+    assert!(!h.model.pools[POOL].room.compaction_spent);
 }
 
 #[test]
@@ -252,20 +252,20 @@ fn a_second_demand_past_a_grown_pool_compacts_and_grows_again() {
     let first: Vec<_> = (4..6).map(mandatory).collect();
     let plan = h.drain(&first, &[], &[4]);
     assert!(is_compaction(plan));
-    assert!(h.model.demand_room.compaction_spent);
+    assert!(h.model.pools[POOL].room.compaction_spent);
     let plan = h.drain(&[], &[], &[5]);
-    assert!(plan.growth.is_some());
-    assert!(!h.model.demand_room.compaction_spent, "the pool is new");
-    h.model.release_retirement();
-    let layers = h.model.layers();
+    assert!(plan.pools[POOL].growth.is_some());
+    assert!(!h.model.pools[POOL].room.compaction_spent, "the pool is new");
+    h.model.release_retirement(POOL);
+    let layers = h.model.pool(POOL).layers();
 
     let second: Vec<_> = (6..13).map(mandatory).collect();
     let ready: Vec<u32> = (6..13).collect();
     let plan = h.drain(&second, &[], &ready);
-    assert!(plan.growth.is_some(), "grown again, for a new demand");
+    assert!(plan.pools[POOL].growth.is_some(), "grown again, for a new demand");
     assert_eq!(plan.installed, ready);
-    assert!(h.model.layers() > layers);
-    assert_eq!(h.model.texture_allocations(), 3);
+    assert!(h.model.pool(POOL).layers() > layers);
+    assert_eq!(h.model.pool(POOL).texture_allocations(), 3);
     assert_disjoint_within_layers(&h.model);
 }
 
@@ -275,16 +275,16 @@ fn a_demand_with_no_copy_order_warns_once() {
     let capture = LogCapture::start();
     let mut h = super::compaction_tests::a_pool_the_planner_cannot_order(3);
     h.plan(&[mandatory(8)], &[], &[8]);
-    assert!(h.model.plan().compaction_rolled_back);
+    assert!(h.model.plan().pools[POOL].compaction_rolled_back);
     assert_eq!(h.model.plan().deferred, vec![8]);
     h.execute();
     for _ in 0..4 {
         let plan = h.drain(&[], &[], &[8]);
-        assert!(!plan.compaction_rolled_back);
+        assert!(!plan.pools[POOL].compaction_rolled_back);
         assert_eq!(plan.deferred, vec![8]);
     }
     capture.assert_logged_once(
         Level::Warn,
-        "Compaction found no copy order through the spare",
+        "found no copy order through the spare",
     );
 }

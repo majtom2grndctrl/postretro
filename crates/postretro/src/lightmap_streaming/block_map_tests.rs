@@ -50,7 +50,7 @@ fn with_mixed_planes(sections: &mut Vec<SectionBlob>) {
 }
 
 #[test]
-fn a_block_charges_and_reads_only_its_stored_planes_and_installs_both() {
+fn a_block_charges_and_reads_only_its_stored_planes() {
     let prl = StreamedLightmapPrl::write_edited(with_mixed_planes);
     let world = prl.load();
     let manifest = Arc::clone(world.lightmap_stream_manifest().unwrap());
@@ -69,6 +69,11 @@ fn a_block_charges_and_reads_only_its_stored_planes_and_installs_both() {
             "block {block}"
         );
         assert_eq!(facts.ranges.len(), reads, "block {block}");
+        assert_eq!(
+            facts.texels.mask,
+            stored_planes * facts.texels.lightmap,
+            "block {block}: a slot per stored plane"
+        );
     }
 
     let planes = |block| {
@@ -80,7 +85,7 @@ fn a_block_charges_and_reads_only_its_stored_planes_and_installs_both() {
     };
     let filled = |block: u32, byte| vec![byte; plane_of(block) as usize];
     assert_eq!(planes(0), [filled(0, 7), filled(0, 9)]);
-    assert_eq!(planes(1), [filled(1, 0), filled(1, 9)]);
-    assert_eq!(planes(2), [filled(2, 7), filled(2, 0)]);
-    assert_eq!(planes(3), [filled(3, 0), filled(3, 0)]);
+    assert_eq!(planes(1), [Vec::new(), filled(1, 9)]);
+    assert_eq!(planes(2), [filled(2, 7), Vec::new()]);
+    assert_eq!(planes(3), [Vec::<u8>::new(), Vec::new()]);
 }

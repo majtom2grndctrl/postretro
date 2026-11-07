@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
+use postretro_level_format::lightmap_pool::{PerPool, PoolKind, mask_item_plane};
 use postretro_level_loader::{
     LightmapBlockClass, LightmapPoolReport, LightmapTarget, PreparedLightmapBlock,
 };
@@ -86,8 +87,8 @@ pub(crate) enum BlockPhase {
     /// The renderer installed it; sampleable until evicted.
     Installed,
     /// A band pair the renderer refused over the cap. Not requested again
-    /// until the pool reports at least one more slot of band headroom than
-    /// it had at refusal.
+    /// until each pool that refused it reports room for one more of its slots
+    /// than it had at refusal.
     Refused,
     /// The read, the payload split, or the renderer's install failed. Not
     /// retried until the block leaves demand and returns, and then only once.
@@ -106,6 +107,37 @@ impl BlockPhase {
     }
 }
 
+/// The halves of a block the renderer holds pool room for: reported band
+/// headroom already leaves them out, so a pair in hand is not charged for them
+/// again. A block can hold room in one pool only, or for one plane of two.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HeldRoom {
+    lightmap: bool,
+    planes: [bool; 2],
+}
+
+impl HeldRoom {
+    /// Records one pool item's room, and whether that changed anything.
+    fn set(&mut self, kind: PoolKind, item: u32, held: bool) -> bool {
+        let half = match kind {
+            PoolKind::Lightmap => &mut self.lightmap,
+            PoolKind::Mask => &mut self.planes[mask_item_plane(item)],
+        };
+        std::mem::replace(half, held) != held
+    }
+
+    /// What a pair in hand still takes from each pool's headroom: its slots
+    /// with no room held.
+    fn unheld_texels(self, facts: &BlockFacts) -> PerPool<u64> {
+        let slot = facts.texels.lightmap;
+        let held_planes = self.planes.iter().filter(|&&held| held).count() as u64;
+        PerPool {
+            lightmap: if self.lightmap { 0 } else { slot },
+            mask: facts.texels.mask - held_planes * slot,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BlockSlot {
     phase: BlockPhase,
@@ -116,16 +148,17 @@ struct BlockSlot {
     pending_delta: bool,
     /// What the pair is charged against while it is in hand.
     charge: PairCharge,
-    /// The renderer holds pool room for this block: reported band headroom
-    /// already leaves it out, so its pair in hand is not charged again.
-    room_reserved: bool,
+    room_held: HeldRoom,
     /// The tier the in-flight read was last submitted at.
     read_tier: ReadTier,
     /// Queued in `promotions`.
     promotion_queued: bool,
     /// Failures this generation; the first warns.
     failures: u8,
-    refused_headroom: u64,
+    /// Each pool's band headroom when the pair was refused.
+    refused_headroom: PerPool<u64>,
+    /// The pools that refused it: only their room can bring it back.
+    refused_by: PerPool<bool>,
 }
 
 /// Cumulative since controller creation, except the two `last_frame_*`
@@ -250,12 +283,12 @@ pub(crate) struct LightmapResidencyController {
     /// Band pairs' share of the permits and in-hand bytes.
     band_permits: usize,
     band_in_hand_bytes: u64,
-    /// Slot texels of the band pairs in hand.
-    band_committed_texels: u64,
+    /// Slot texels of the band pairs in hand, per pool.
+    band_committed_texels: PerPool<u64>,
     /// Slot texels of the mandatory and visible pairs in hand with no room
-    /// reserved. The renderer places them before any band pair, so they come
-    /// off band headroom; a reserved pair's room is off it already.
-    never_refused_texels: u64,
+    /// reserved, per pool. The renderer places them before any band pair, so
+    /// they come off band headroom; a reserved pair's room is off it already.
+    never_refused_texels: PerPool<u64>,
     /// In-flight band reads whose block became mandatory or visible; their
     /// requests are resubmitted at the mandatory tier.
     promotions: Vec<u32>,
@@ -357,10 +390,11 @@ impl LightmapResidencyController {
                     sent: None,
                     pending_delta: false,
                     charge: PairCharge::None,
-                    room_reserved: false,
+                    room_held: HeldRoom::default(),
                     read_tier: ReadTier::Optional,
                     promotion_queued: false,
-                    refused_headroom: 0,
+                    refused_headroom: PerPool::default(),
+                    refused_by: PerPool::default(),
                     failures: 0,
                 };
                 map.block_count()
@@ -380,8 +414,8 @@ impl LightmapResidencyController {
             in_hand_bytes: 0,
             band_permits: 0,
             band_in_hand_bytes: 0,
-            band_committed_texels: 0,
-            never_refused_texels: 0,
+            band_committed_texels: PerPool::default(),
+            never_refused_texels: PerPool::default(),
             promotions: Vec::new(),
             pool: LightmapPoolReport::default(),
             refused_blocks: 0,

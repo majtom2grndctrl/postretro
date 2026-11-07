@@ -22,7 +22,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{SectionBlob, SectionId, write_prl};
 use postretro_level_loader::{LevelWorld, LightmapStreamManifest};
-use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
+use postretro_render_cpu::lightmap_pool::{LightmapPoolModel, PerPool, PoolDemand};
 
 use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 
@@ -83,17 +83,10 @@ impl StreamedLightmapPrl {
 /// The renderer's placement policy over `manifest`'s blocks at the default
 /// cap, standing in for the GPU pool.
 pub(crate) fn manifest_pool_model(manifest: &LightmapStreamManifest) -> LightmapPoolModel {
-    let index = manifest.lightmap_index();
-    let extents = index
-        .records
-        .iter()
-        .map(|record| (u32::from(record.width), u32::from(record.height)))
-        .collect();
     LightmapPoolModel::new(
-        extents,
-        index.header.block_alignment(),
+        PoolDemand::of_indices(manifest.lightmap_index(), manifest.shadowmask_index()),
         LIGHTMAP_POOL_LAYER_EDGE,
-        postretro_renderer::DEFAULT_LIGHTMAP_POOL_CAP_LAYERS,
+        PerPool::both(postretro_renderer::DEFAULT_LIGHTMAP_POOL_CAP_LAYERS),
     )
     .expect("fixture blocks fit a pool layer")
 }

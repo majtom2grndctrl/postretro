@@ -242,6 +242,9 @@ pub(crate) fn block_region_writes<'a>(
             &payload.direction,
         ),
     ];
+    // Until the renderer's pool split, a plane lands beside its block's
+    // lightmap placement, whatever mask placement the model chose, and an
+    // absent plane writes nothing.
     let groups = payload
         .shadowmask
         .as_ref()
@@ -252,7 +255,9 @@ pub(crate) fn block_region_writes<'a>(
                 (placement.x, group_a),
                 (LIGHTMAP_POOL_LAYER_EDGE + placement.x, group_b),
             ]
-            .map(|(group_x, group)| {
+            .into_iter()
+            .filter(|(_, group)| !group.is_empty())
+            .map(move |(group_x, group)| {
                 region(
                     PoolPlane::Shadowmask,
                     (placement.layer, group_x, placement.y),
@@ -325,12 +330,12 @@ pub(crate) fn upload_static_pool(
     payloads: &[LightmapBlockPayload],
 ) -> StaticPoolTextures {
     let format = PoolFormat::from_header(&plan.header);
-    let textures =
-        create_pool_textures(device, format, plan.pool.layer_count, plan.with_shadowmask);
+    let with_shadowmask = plan.with_shadowmask();
+    let textures = create_pool_textures(device, format, plan.pool.layer_count, with_shadowmask);
     for ((&extent, &placement), payload) in
         plan.extents.iter().zip(&plan.pool.placements).zip(payloads)
     {
-        for write in block_region_writes(format, placement, extent, payload, plan.with_shadowmask) {
+        for write in block_region_writes(format, placement, extent, payload, with_shadowmask) {
             let texture = match write.plane {
                 PoolPlane::Irradiance => &textures.irradiance,
                 PoolPlane::Direction => &textures.direction,

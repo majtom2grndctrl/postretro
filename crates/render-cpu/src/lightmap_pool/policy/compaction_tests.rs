@@ -35,10 +35,10 @@ fn input(moves: &[BlockMove], layers: u32) -> CopyOrderInput<'_> {
 fn lands_intact(input: CopyOrderInput<'_>) -> (CopyOrderStats, Vec<PoolCopy>) {
     let mut plan = DrainPlan::default();
     let mut scratch = CopyOrderScratch::default();
-    let stats = plan_copy_order(input, &mut scratch, &mut plan.copies).expect("an order exists");
-    let mut gpu = GpuMirror::blank(EDGE, input.layers);
+    let stats = plan_copy_order(input, &mut scratch, &mut plan.pools[POOL].copies).expect("an order exists");
+    let mut gpu = GpuMirror::blank(POOL, EDGE, input.layers);
     for (block, m) in input.moves.iter().enumerate() {
-        gpu.fill(block as u32, m.src.unwrap(), m.width, m.height);
+        gpu.fill(POOL, block as u32, m.src.unwrap(), m.width, m.height);
     }
     gpu.execute(&plan);
     for (block, m) in input.moves.iter().enumerate() {
@@ -50,9 +50,9 @@ fn lands_intact(input: CopyOrderInput<'_>) -> (CopyOrderStats, Vec<PoolCopy>) {
             landed.layer < input.layers,
             "block {block} left on the spare"
         );
-        gpu.assert_holds(block as u32, landed, m.width, m.height);
+        gpu.assert_holds(POOL, block as u32, landed, m.width, m.height);
     }
-    (stats, plan.copies)
+    (stats, std::mem::take(&mut plan.pools[POOL].copies))
 }
 
 /// Two half-full layers no pending block fits: 32 + 20 texels wide each, with
@@ -63,14 +63,14 @@ fn crossed_layers() -> Harness {
     let mut h = Harness::new(&[(32, 64), (20, 64), (32, 64), (20, 64), (24, 64)], 2);
     h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
     h.drain(&[mandatory(2), mandatory(3)], &[], &[2, 3]);
-    assert_eq!(h.model.layers(), 2);
-    assert_eq!(h.model.placement(0).unwrap().layer, 0);
-    assert_eq!(h.model.placement(2).unwrap().layer, 1);
+    assert_eq!(h.model.pool(POOL).layers(), 2);
+    assert_eq!(h.model.at(0).unwrap().layer, 0);
+    assert_eq!(h.model.at(2).unwrap().layer, 1);
     h
 }
 
 fn compaction_stats(plan: &DrainPlan) -> CopyOrderStats {
-    match plan.repack {
+    match plan.pools[POOL].repack {
         Some(RepackKind::Compaction(stats)) => stats,
         other => panic!("expected a compaction, got {other:?}"),
     }
@@ -155,26 +155,26 @@ fn a_downward_repack_that_fits_never_escalates_to_compaction() {
     h.drain(&[], &[1], &[]);
     h.plan(&[mandatory(3)], &[], &[3]);
     let plan = h.model.plan();
-    assert_eq!(plan.repack, Some(RepackKind::Downward));
-    assert!(plan.growth.is_none());
+    assert_eq!(plan.pools[POOL].repack, Some(RepackKind::Downward));
+    assert!(plan.pools[POOL].growth.is_none());
     h.execute();
 }
 
 #[test]
 fn crossed_layers_compact_by_moving_blocks_up_as_well_as_down() {
     let mut h = crossed_layers();
-    let before: Vec<_> = (0..4).map(|b| h.model.placement(b).unwrap()).collect();
+    let before: Vec<_> = (0..4).map(|b| h.model.at(b).unwrap()).collect();
     h.plan(&[mandatory(4)], &[], &[4]);
     let plan = h.model.plan();
-    assert!(plan.report.repacked && plan.growth.is_none());
+    assert!(plan.report[POOL].repacked && plan.pools[POOL].growth.is_none());
     assert_eq!(plan.installed, vec![4]);
     compaction_stats(plan);
-    let after: Vec<_> = (0..4).map(|b| h.model.placement(b).unwrap()).collect();
+    let after: Vec<_> = (0..4).map(|b| h.model.at(b).unwrap()).collect();
     assert_eq!(after[0].layer, after[2].layer, "the 32s share a layer");
     assert_eq!(after[1].layer, after[3].layer, "the 20s share the other");
     assert!(before.iter().zip(&after).any(|(b, a)| a.layer > b.layer));
     assert!(before.iter().zip(&after).any(|(b, a)| a.layer < b.layer));
-    assert_eq!(h.model.texture_allocations(), 1, "no second pool");
+    assert_eq!(h.model.pool(POOL).texture_allocations(), 1, "no second pool");
     h.execute();
     assert_disjoint_within_layers(&h.model);
 }
@@ -184,13 +184,13 @@ fn crossed_layers_compact_by_moving_blocks_up_as_well_as_down() {
 fn a_pending_block_lands_in_room_a_compaction_vacated() {
     let mut h = crossed_layers();
     let before: Vec<_> = (0..4)
-        .map(|block| h.model.placement(block).unwrap())
+        .map(|block| h.model.at(block).unwrap())
         .collect();
     h.drain(&[mandatory(4)], &[], &[4]);
-    let arrival = h.model.placement(4).unwrap();
+    let arrival = h.model.at(4).unwrap();
     let on_an_old_rect = (0..4).any(|block| {
         let was = before[block];
-        let (width, _) = h.model.alloc_extent(block as u32);
+        let (width, _) = h.model.slot_extent(block as u32);
         was.layer == arrival.layer && arrival.x < was.x + width && was.x < arrival.x + 24
     });
     assert!(
@@ -239,7 +239,7 @@ fn a_pool_past_its_cap_drops_its_band_when_it_compacts() {
     h.drain(&[mandatory(1), mandatory(2)], &[], &[1, 2]);
     h.drain(&[mandatory(3), mandatory(4)], &[], &[3, 4]);
     h.drain(&[mandatory(0)], &[], &[0]);
-    assert_eq!(h.model.placement(0).unwrap().layer, 2);
+    assert_eq!(h.model.at(0).unwrap().layer, 2);
     h.cap = 2;
     h.drain(&[band(6, 1)], &[], &[6]);
     h.plan(&[mandatory(5)], &[], &[5]);
@@ -252,13 +252,13 @@ fn a_pool_past_its_cap_drops_its_band_when_it_compacts() {
 #[test]
 fn aborting_a_compaction_restores_the_layout_and_records_nothing() {
     let mut h = crossed_layers();
-    let before: Vec<_> = (0..4).map(|block| h.model.placement(block)).collect();
+    let before: Vec<_> = (0..4).map(|block| h.model.at(block)).collect();
     h.plan(&[mandatory(4)], &[], &[4]);
     compaction_stats(h.model.plan());
     h.model.abort_drain();
-    assert!(h.model.plan().copies.is_empty());
-    assert_eq!(h.model.plan().repack, None);
-    let after: Vec<_> = (0..4).map(|block| h.model.placement(block)).collect();
+    assert!(h.model.plan().pools[POOL].copies.is_empty());
+    assert_eq!(h.model.plan().pools[POOL].repack, None);
+    let after: Vec<_> = (0..4).map(|block| h.model.at(block)).collect();
     assert_eq!(before, after);
     assert!(!h.model.is_resident(4));
     h.gpu.assert_matches(&h.model);
@@ -319,22 +319,22 @@ fn no_copy_order_rolls_back_to_growth() {
     let capture = LogCapture::start();
     let mut h = a_pool_the_planner_cannot_order(u32::MAX);
     let residents = [0, 1, 2, 4, 5, 6, 7, 9];
-    let before = residents.map(|block| h.model.placement(block));
+    let before = residents.map(|block| h.model.at(block));
     h.plan(&[mandatory(8)], &[], &[8]);
 
     let plan = h.model.plan();
-    assert!(plan.compaction_rolled_back, "no order through the spare");
-    assert_eq!(plan.repack, None);
-    assert!(!plan.report.repacked);
-    assert!(plan.copies.is_empty(), "no partial copy list");
-    assert!(plan.growth.is_some(), "the demand took growth");
+    assert!(plan.pools[POOL].compaction_rolled_back, "no order through the spare");
+    assert_eq!(plan.pools[POOL].repack, None);
+    assert!(!plan.report[POOL].repacked);
+    assert!(plan.pools[POOL].copies.is_empty(), "no partial copy list");
+    assert!(plan.pools[POOL].growth.is_some(), "the demand took growth");
     assert_eq!(plan.installed, vec![8]);
     assert!(plan.evicted.is_empty());
-    let after = residents.map(|block| h.model.placement(block));
+    let after = residents.map(|block| h.model.at(block));
     assert_eq!(before, after, "the failed repack's layout stands exactly");
     capture.assert_logged_once(
         Level::Warn,
-        "Compaction found no copy order through the spare",
+        "found no copy order through the spare",
     );
     h.execute();
     assert_disjoint_within_layers(&h.model);
@@ -347,7 +347,7 @@ fn a_demand_that_does_not_pack_grows_without_warning_of_a_copy_order() {
     h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
     h.plan(&[mandatory(2)], &[], &[2]);
     let plan = h.model.plan();
-    assert!(plan.growth.is_some());
-    assert!(!plan.compaction_rolled_back);
-    capture.assert_not_logged(Level::Warn, "Compaction found no copy order");
+    assert!(plan.pools[POOL].growth.is_some());
+    assert!(!plan.pools[POOL].compaction_rolled_back);
+    capture.assert_not_logged(Level::Warn, "found no copy order");
 }

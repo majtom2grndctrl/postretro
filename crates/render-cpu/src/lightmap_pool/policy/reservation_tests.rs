@@ -8,11 +8,11 @@ use super::*;
 const LAYER: u64 = (EDGE * EDGE) as u64;
 
 fn held(h: &Harness, block: u32) -> Option<BlockPlacement> {
-    h.model.demand_room.slot(block).map(placement_of)
+    h.model.pools[POOL].room.slot(item(block)).map(placement_of)
 }
 
 fn headroom(h: &Harness) -> u64 {
-    h.model.plan().report.band_headroom_texels
+    h.model.plan().report[POOL].band_headroom_texels
 }
 
 /// No resident rect overlaps a reserved one, and no two reserved ones overlap.
@@ -20,9 +20,10 @@ fn assert_room_is_clear(model: &LightmapPoolModel) {
     let rects: Vec<Slot> = (0..model.block_count())
         .filter_map(|block| {
             model
-                .demand_room
-                .slot(block)
-                .or(model.slots[block as usize])
+                .pools[POOL]
+                .room
+                .slot(item(block))
+                .or(model.slot_of(block))
         })
         .collect();
     for (i, a) in rects.iter().enumerate() {
@@ -42,7 +43,7 @@ fn assert_room_is_clear(model: &LightmapPoolModel) {
 fn one_reservation() -> Harness {
     let mut h = Harness::new(&[(64, 40), (64, 40), (32, 16)], 1);
     let plan = h.drain(&[mandatory(0), band(1, 1), band(2, 2)], &[], &[1, 2]);
-    assert_eq!(plan.room_reserved, vec![0]);
+    assert_eq!(reserved(plan), vec![0]);
     h
 }
 
@@ -51,11 +52,11 @@ fn reserved_room_stays_a_miss_and_holds_off_band() {
     let mut h = one_reservation();
     let room = held(&h, 0).unwrap();
     let plan = h.model.plan();
-    assert_eq!(plan.refused, vec![1], "reserved in this drain");
+    assert_eq!(refused(plan), vec![1], "reserved in this drain");
     assert_eq!(plan.installed, vec![2], "band fits clear of the room");
     assert_eq!(plan.table_writes.len(), 1, "band block 2's alone");
     assert_eq!(plan.table_writes[0].index, 3);
-    assert!(plan.copies.is_empty() && plan.evicted.is_empty());
+    assert!(plan.pools[POOL].copies.is_empty() && plan.evicted.is_empty());
     assert!(!h.model.is_resident(0));
     assert_eq!(
         h.model.table_entry(0),
@@ -67,7 +68,7 @@ fn reserved_room_stays_a_miss_and_holds_off_band() {
 
     // A later drain, and a draw between: band still finds no way in.
     let plan = h.drain(&[], &[], &[1]);
-    assert_eq!(plan.refused, vec![1], "reserved in an earlier drain");
+    assert_eq!(refused(plan), vec![1], "reserved in an earlier drain");
     assert!(plan.table_writes.is_empty() && plan.evicted.is_empty());
     assert!(!h.model.is_resident(0));
 
@@ -75,10 +76,10 @@ fn reserved_room_stays_a_miss_and_holds_off_band() {
     // arrives, with no repack.
     let plan = h.drain(&[], &[], &[0]);
     assert_eq!(plan.installed, vec![0]);
-    assert_eq!(plan.uploads[0].placement, room);
+    assert_eq!(upload_at(&plan.uploads[0]), room);
     assert_eq!(plan.table_writes.len(), 1);
-    assert!(plan.repack.is_none());
-    assert_eq!(h.model.placement(0), Some(room));
+    assert!(plan.pools[POOL].repack.is_none());
+    assert_eq!(h.model.at(0), Some(room));
     assert_eq!(held(&h, 0), None);
     assert_disjoint_within_layers(&h.model);
 }
@@ -92,19 +93,19 @@ fn room_a_repack_reserved_is_a_miss_and_holds_off_band_in_that_drain() {
     h.drain(&[mandatory(0)], &[], &[0]);
     h.drain(&[mandatory(1)], &[], &[1]);
     let plan = h.drain(&[mandatory(2), mandatory(3), band(4, 1)], &[0], &[2, 4]);
-    assert_eq!(plan.repack, Some(RepackKind::Downward));
+    assert_eq!(plan.pools[POOL].repack, Some(RepackKind::Downward));
     assert_eq!(plan.installed, vec![2, 4]);
-    assert_eq!(plan.room_reserved, vec![3]);
+    assert_eq!(reserved(plan), vec![3]);
     assert!(plan.table_writes.iter().all(|write| write.index != 4));
     assert!(
-        plan.copies
+        plan.pools[POOL].copies
             .iter()
             .all(|copy| copy.width == 64 && copy.height == 20)
     );
     assert!(held(&h, 3).is_some() && !h.model.is_resident(3));
     assert_room_is_clear(&h.model);
     let plan = h.drain(&[], &[], &[3]);
-    assert!(plan.repack.is_none());
+    assert!(plan.pools[POOL].repack.is_none());
     assert_eq!(plan.installed, vec![3]);
 }
 
@@ -117,18 +118,18 @@ fn a_compaction_holds_room_for_a_target_without_placing_it() {
     h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
     h.drain(&[mandatory(2), mandatory(3)], &[], &[2, 3]);
     let plan = h.plan(&[mandatory(4), mandatory(5)], &[], &[4]);
-    assert!(matches!(plan.repack, Some(RepackKind::Compaction(_))));
+    assert!(matches!(plan.pools[POOL].repack, Some(RepackKind::Compaction(_))));
     assert_eq!(plan.installed, vec![4], "5 has room, not a place");
     assert_eq!(plan.uploads.len(), 1);
     assert!(plan.table_writes.iter().all(|write| write.index != 6));
-    assert_eq!(plan.room_reserved, vec![5]);
+    assert_eq!(reserved(plan), vec![5]);
     assert!(!h.model.is_resident(5));
     h.execute();
     assert_room_is_clear(&h.model);
     let room = held(&h, 5).unwrap();
     let plan = h.drain(&[], &[], &[5]);
-    assert_eq!(plan.uploads[0].placement, room);
-    assert!(plan.repack.is_none() && plan.copies.is_empty());
+    assert_eq!(upload_at(&plan.uploads[0]), room);
+    assert!(plan.pools[POOL].repack.is_none() && plan.pools[POOL].copies.is_empty());
 }
 
 #[test]
@@ -138,7 +139,7 @@ fn reservation_returns_when_its_target_leaves() {
     let before = headroom(&h);
     let plan = h.drain(&[], &[0], &[1]);
     assert_eq!(plan.installed, vec![1], "band landed in the returned room");
-    assert_eq!(plan.room_returned, vec![0]);
+    assert_eq!(returned(plan), vec![0]);
     assert!(plan.evicted.is_empty(), "nothing was resident to evict");
     assert_eq!(headroom(&h), before, "band took all the room that returned");
     assert_eq!(held(&h, 0), None);
@@ -148,11 +149,11 @@ fn reservation_returns_when_its_target_leaves() {
     let mut h = one_reservation();
     let before = headroom(&h);
     let plan = h.drain(&[band(0, 3)], &[], &[]);
-    assert_eq!(plan.room_returned, vec![0]);
+    assert_eq!(returned(plan), vec![0]);
     assert_eq!(headroom(&h), before + 64 * 40);
     let plan = h.drain(&[], &[], &[0]);
     assert_eq!(plan.installed, vec![0]);
-    assert!(plan.repack.is_none());
+    assert!(plan.pools[POOL].repack.is_none());
     assert_eq!(held(&h, 0), None);
 
     // An aborted drain restores the reservation, in place.
@@ -163,23 +164,23 @@ fn reservation_returns_when_its_target_leaves() {
     assert_eq!(held(&h, 0), None);
     h.model.abort_drain();
     assert_eq!(held(&h, 0), room);
-    assert_eq!(h.model.plan().report.band_headroom_texels, before);
+    assert_eq!(h.model.plan().report[POOL].band_headroom_texels, before);
     let plan = h.drain(&[], &[], &[0]);
-    assert_eq!(plan.uploads[0].placement, room.unwrap());
+    assert_eq!(upload_at(&plan.uploads[0]), room.unwrap());
 }
 
 #[test]
 fn band_headroom_tracks_reservations() {
     let mut h = Harness::new(&[(64, 32), (64, 16)], 1);
-    assert_eq!(h.drain(&[], &[], &[]).report.band_headroom_texels, LAYER);
+    assert_eq!(h.drain(&[], &[], &[]).report[POOL].band_headroom_texels, LAYER);
 
     let plan = h.drain(&[mandatory(0), mandatory(1)], &[], &[]);
-    assert_eq!(plan.room_reserved, vec![0, 1]);
+    assert_eq!(reserved(plan), vec![0, 1]);
     assert_eq!(headroom(&h), LAYER - 64 * 32 - 64 * 16);
 
     // A pair landing moves its rect from reserved to used: no room comes back.
     let plan = h.drain(&[], &[], &[0]);
-    assert_eq!(plan.room_returned, vec![0]);
+    assert_eq!(returned(plan), vec![0]);
     assert_eq!(headroom(&h), LAYER - 64 * 32 - 64 * 16);
 
     // Room returning raises headroom.
@@ -193,16 +194,16 @@ fn an_aborted_drain_restores_reservations_landings_and_the_compaction_gate() {
     let mut h = Harness::new(&extents, 2);
     h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
     h.drain(&[mandatory(2), mandatory(3)], &[], &[2, 3]);
-    let before: Vec<_> = (0..4).map(|block| h.model.placement(block)).collect();
+    let before: Vec<_> = (0..4).map(|block| h.model.at(block)).collect();
 
     // A compaction past the pool spends the gate, then the abort restores it.
     h.plan(&[mandatory(4), mandatory(5)], &[], &[4]);
-    assert!(h.model.demand_room.compaction_spent);
+    assert!(h.model.pools[POOL].room.compaction_spent);
     h.model.abort_drain();
-    assert!(!h.model.demand_room.compaction_spent);
+    assert!(!h.model.pools[POOL].room.compaction_spent);
     assert_eq!(
         (0..4)
-            .map(|block| h.model.placement(block))
+            .map(|block| h.model.at(block))
             .collect::<Vec<_>>(),
         before
     );
@@ -227,11 +228,11 @@ fn room_survives_growth_and_growth_seats_the_targets_it_makes_room_for() {
     let room = held(&h, 1);
     let set = [mandatory(2), mandatory(3), mandatory(4)];
     let plan = h.drain(&set, &[], &[2]);
-    assert!(plan.growth.is_some());
-    assert_eq!(plan.room_reserved, vec![3, 4], "the new layers hold them");
+    assert!(plan.pools[POOL].growth.is_some());
+    assert_eq!(reserved(plan), vec![3, 4], "the new layers hold them");
     assert_eq!(held(&h, 1), room);
     let plan = h.drain(&[], &[], &[1, 3, 4]);
-    assert!(plan.growth.is_none() && plan.repack.is_none());
+    assert!(plan.pools[POOL].growth.is_none() && plan.pools[POOL].repack.is_none());
     assert_eq!(plan.installed, vec![1, 3, 4]);
     assert_disjoint_within_layers(&h.model);
 }
@@ -249,8 +250,8 @@ fn a_new_controller_hears_of_the_room_held_for_it() {
         ..Default::default()
     };
     let plan = h.model.plan_batch_from_empty(&batch);
-    assert_eq!(plan.room_reserved, vec![0], "its reset is all it knows");
-    assert!(plan.room_returned.is_empty());
+    assert_eq!(reserved(plan), vec![0], "its reset is all it knows");
+    assert!(returned(plan).is_empty());
     assert!(plan.evicted.is_empty());
 }
 
@@ -262,7 +263,7 @@ fn a_drain_with_unchanged_targets_does_no_reservation_work() {
     let capacities = h.model.scratch_capacities();
     for _ in 0..64 {
         let plan = h.drain(&[], &[], &[]);
-        assert!(plan.room_reserved.is_empty() && plan.room_returned.is_empty());
+        assert!(reserved(plan).is_empty() && returned(plan).is_empty());
         assert!(h.model.journal.is_empty(), "nothing moved at all");
     }
     assert_eq!(h.model.demand_passes, passes);
@@ -343,7 +344,7 @@ proptest! {
         let mut h = Harness::new(&extents, layers);
         let mut heard = vec![false; BLOCKS as usize];
         for step in &steps {
-            let before: Vec<_> = (0..BLOCKS).map(|block| h.model.demand_room.slot(block)).collect();
+            let before: Vec<_> = (0..BLOCKS).map(|block| h.model.pools[POOL].room.slot(item(block))).collect();
             let (set, remove) = deltas(&step.changes);
             let ready: Vec<u32> = (0..BLOCKS)
                 .filter(|&block| {
@@ -357,7 +358,7 @@ proptest! {
             h.plan(&set, &remove, &ready);
             if step.abort {
                 h.model.abort_drain();
-                let after: Vec<_> = (0..BLOCKS).map(|block| h.model.demand_room.slot(block)).collect();
+                let after: Vec<_> = (0..BLOCKS).map(|block| h.model.pools[POOL].room.slot(item(block))).collect();
                 prop_assert_eq!(before, after);
             } else {
                 if step.fail
@@ -367,16 +368,16 @@ proptest! {
                 }
                 h.execute();
                 let plan = h.model.plan();
-                for &block in &plan.room_reserved {
+                for &block in &reserved(plan) {
                     heard[block as usize] = true;
                 }
-                for &block in &plan.room_returned {
+                for &block in &returned(plan) {
                     heard[block as usize] = false;
                 }
             }
             assert_room_is_clear(&h.model);
             for block in 0..BLOCKS {
-                let room = h.model.demand_room.slot(block);
+                let room = h.model.pools[POOL].room.slot(item(block));
                 if !step.abort {
                     prop_assert_eq!(heard[block as usize], room.is_some());
                 }

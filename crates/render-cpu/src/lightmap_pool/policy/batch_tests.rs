@@ -46,7 +46,7 @@ fn a_batch_from_empty_frees_every_block_without_reporting_evictions() {
     assert_eq!(plan.table_writes[1].entry, missing);
     h.execute();
     assert_eq!(h.model.resident_blocks(), &[2]);
-    assert_eq!(h.model.texture_allocations(), 1, "the textures stand");
+    assert_eq!(h.model.pool(POOL).texture_allocations(), 1, "the textures stand");
 
     // An aborted reset restores the residency it started from.
     let mut h = installed();
@@ -76,6 +76,6 @@ fn plan_batch_plans_the_controller_batch_from_its_ready_block_ids() {
     batch.validate_contract(2, [3; 32]).unwrap();
     let plan = h.model.plan_batch(&batch);
     assert_eq!(plan.installed, vec![0]);
-    assert_eq!(plan.refused, vec![1], "the band pair finds the cap full");
+    assert_eq!(refused(plan), vec![1], "the band pair finds the cap full");
     h.execute();
 }

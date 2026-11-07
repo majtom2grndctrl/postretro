@@ -19,7 +19,7 @@ use postretro_level_format::SectionId;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
-use postretro_render_cpu::lightmap_pool::{block_table_bytes, placeholder_block_table};
+use postretro_render_cpu::lightmap_pool::placeholder_block_table;
 
 use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
 use crate::render::{LIGHTMAP_SHADOWMASK, LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE};
@@ -158,7 +158,6 @@ impl LightmapResources {
         let (irradiance_tex, direction_tex, shadowmask_tex, table_buffer) = match pool {
             StaticPool::Blocks(plan) => {
                 let textures = upload_static_pool(device, queue, plan, &payloads.blocks);
-                let placements: Vec<_> = plan.pool.placements.iter().copied().map(Some).collect();
                 log::info!(
                     "[Renderer] Lightmap pool: {} cell block(s) on {} layer(s) of {}², \
                      shadowmask {}",
@@ -177,7 +176,7 @@ impl LightmapResources {
                     textures
                         .shadowmask
                         .unwrap_or_else(|| upload_placeholder_shadowmask(device, queue)),
-                    table_buffer(device, &block_table_bytes(&plan.extents, &placements)),
+                    table_buffer(device, &plan.table_bytes()),
                 )
             }
             StaticPool::Streaming(plan) => {

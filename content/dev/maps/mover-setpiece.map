@@ -411,9 +411,9 @@
 "name" "setpiece_room_lamp"
 "carrier" "setpiece_room"
 "origin" "992 320 -56"
-"light" "75"
+"light" "10"
 "_color" "255 170 90"
-"_falloff_range" "640"
+"_falloff_range" "4"
 "_tags" "dev mover_setpiece setpiece_room_lamp"
 }
 // Baked lights. Arena side, then back room. Falloffs reach across the wall and room.
@@ -422,7 +422,7 @@
 {
 "classname" "light"
 "origin" "256 256 256"
-"light" "75"
+"light" "5"
 "_color" "255 244 230"
 "_falloff_range" "1800"
 }
@@ -430,7 +430,7 @@
 {
 "classname" "light"
 "origin" "640 320 192"
-"light" "75"
+"light" "5"
 "_color" "235 240 255"
 "_falloff_range" "1800"
 }
@@ -438,7 +438,7 @@
 {
 "classname" "light"
 "origin" "992 320 288"
-"light" "75"
+"light" "5"
 "_color" "255 255 255"
 "_falloff_range" "1280"
 }
@@ -457,7 +457,7 @@
 {
 "classname" "light"
 "origin" "240 1376 256"
-"light" "75"
+"light" "5"
 "_color" "200 220 255"
 "_falloff_range" "1800"
 }
@@ -465,7 +465,7 @@
 {
 "classname" "light"
 "origin" "1000 1376 256"
-"light" "75"
+"light" "5"
 "_color" "200 220 255"
 "_falloff_range" "1800"
 }

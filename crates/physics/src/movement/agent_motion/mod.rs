@@ -106,6 +106,9 @@ pub struct SlideResult {
     /// The step ended inside static geometry after starting clear; the caller
     /// logs it (`movement_overlap`).
     pub overlap: Option<StaticOverlap>,
+    /// A wall-like face of a mover in motion stopped the step. That mover moves
+    /// on by itself, so steering reads the stall as waiting, not stuck.
+    pub walled_by_moving_mover: bool,
 }
 
 /// Resolve one tick of agent motion: take a desired horizontal velocity, the
@@ -294,6 +297,7 @@ fn slide(
     let checked_start = current_pos;
     let mut remaining_dt = dt;
     let mut ground = GroundRef::Airborne;
+    let mut walled_by_moving_mover = false;
 
     // Step-up probe before the slide loop: lift only commits when a wall-like
     // obstacle blocks horizontal motion AND a walkable surface sits within the
@@ -340,6 +344,8 @@ fn slide(
 
                 if normal.y >= COS_WALKABLE {
                     ground = ground_ref_from_hit(h);
+                } else if let GroundRef::Mover(mover_id) = ground_ref_from_hit(h) {
+                    walled_by_moving_mover |= mover_in_motion(collision, mover_id);
                 }
                 current_pos += dir * toi;
                 // Project velocity onto the contact plane (slide along surface).
@@ -396,6 +402,7 @@ fn slide(
             current_pos,
             collision_shape,
         ),
+        walled_by_moving_mover,
     }
 }
 
@@ -445,6 +452,11 @@ pub fn carried_by_mover(collision: &CombinedCollisionWorld<'_>, ground: GroundRe
     let GroundRef::Mover(mover_id) = ground else {
         return false;
     };
+    mover_in_motion(collision, mover_id)
+}
+
+/// Whether `mover_id` moved or turned this tick.
+fn mover_in_motion(collision: &CombinedCollisionWorld<'_>, mover_id: u32) -> bool {
     collision.poses.pose(mover_id).is_some_and(|pose| {
         pose.tick_delta != Vec3::ZERO || pose.tick_rotation_delta != glam::Quat::IDENTITY
     })

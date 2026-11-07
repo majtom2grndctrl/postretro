@@ -998,3 +998,100 @@ fn the_longest_owed_agents_are_admitted_first_whatever_their_slot() {
         assert_eq!(rig.agent_state(id).gate_generation, opened - 1);
     }
 }
+
+/// A chaser pressed against a door that slides across its doorway, through one
+/// whole cycle: closing on it, docked shut, then opening. A door in motion gates
+/// nothing, so the chaser walks into the leaf and waits there. It must neither
+/// reverse its travel (its facing follows travel) nor replan beyond the
+/// staleness refresh, and it walks through once the gap fits it.
+#[test]
+fn a_chaser_against_a_sliding_door_waits_without_reversing_through_a_whole_cycle() {
+    // The leaf slides +z out of the doorway into the wall pocket: 2.5 m at
+    // 0.5 m/s is 300 ticks each way, with 180-tick waits at both ends.
+    let open = Vec3::new(10.0, 0.0, 6.5);
+    let mut rig = Rig::with_waypoints(
+        vec![CLOSED, open],
+        KinematicMoverMode::PingPong,
+        3000.0,
+        true,
+    );
+    let mut mover = rig
+        .registry
+        .get_component::<KinematicMoverComponent>(rig.door)
+        .unwrap()
+        .clone();
+    mover.speed_mps = 0.5;
+    rig.registry.set_component(rig.door, mover).unwrap();
+    // Let the door open and start closing before the chaser arrives.
+    for _ in 0..600 {
+        rig.tick();
+    }
+    let id = rig.agent(Vec3::new(1.0, REST_Y, 5.0), Some(EAST));
+
+    let mut pressed = 0u32;
+    let mut held = 0u32;
+    let mut pressed_replans = 0u32;
+    let mut held_replans = 0u32;
+    let mut recoveries = 0u32;
+    let mut reversals = Vec::new();
+    let mut travel: Option<Vec3> = None;
+    let mut previous_window = 0;
+    let mut passed = None;
+    for tick in 0..1200 {
+        let replans = rig.tick().replans;
+        let at = rig.position(id);
+        let agent = rig.agent_state(id);
+        if at.x > 10.5 {
+            passed = Some(tick);
+            break;
+        }
+        let at_door = at.x > 9.5;
+        if at_door {
+            if agent.blocked {
+                held += 1;
+                held_replans += replans;
+            } else {
+                pressed += 1;
+                pressed_replans += replans;
+            }
+            recoveries += u32::from(agent.unstick_window_remaining > previous_window);
+        }
+        previous_window = agent.unstick_window_remaining;
+        // Facing slews toward travel whenever travel reads as moving.
+        let flat = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z);
+        if flat.length() > 0.05 {
+            let direction = flat.normalize();
+            if travel.is_some_and(|last| last.dot(direction) < 0.0) {
+                reversals.push((tick, at, agent.velocity));
+            }
+            travel = Some(direction);
+        }
+    }
+
+    let passed = passed.expect("the chaser passed within the cycle");
+    assert!(
+        pressed >= 60,
+        "it waited at the moving leaf: {pressed} ticks"
+    );
+    assert!(
+        held >= 60,
+        "it held while the door was docked shut: {held} ticks"
+    );
+    assert!(reversals.is_empty(), "travel reversed: {reversals:?}");
+    assert_eq!(recoveries, 0, "stuck recovery fired at the door");
+    // Neither waiting state replans faster than the staleness refresh: a
+    // blocked chaser retries on that cadence, and a pressed one refreshes on it.
+    for (ticks, replans, state) in [
+        (pressed, pressed_replans, "pressed"),
+        (held, held_replans, "held"),
+    ] {
+        assert!(
+            replans <= ticks / REPLAN_STALENESS_TICKS + 1,
+            "{replans} replans in {ticks} {state} ticks"
+        );
+    }
+    // It docks shut 180 ticks in and opens 180 ticks later. Waiting square to
+    // the leaf on z 5, the chaser is clear once the leaf passes z 5.35, about
+    // 160 ticks into the opening; allow it 180 to get there and through.
+    assert!(passed <= 180 + 180 + 180, "passed at tick {passed}");
+}

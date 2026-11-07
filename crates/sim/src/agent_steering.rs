@@ -791,6 +791,10 @@ fn tick_impl(
                 overlap,
             );
         }
+        // A door sliding across the way stalls the agent until it moves on.
+        // That is a wait, not a wedge: recovery would shove the agent sideways
+        // past its line to the goal each window, reversing its travel and its
+        // facing, while the door clears the way by itself.
         if !recovery_active_this_tick {
             update_stuck_ticks(
                 &mut agent,
@@ -798,7 +802,7 @@ fn tick_impl(
                 result.position,
                 steer_velocity,
                 goal_speed * dt,
-                has_recovery_intent,
+                has_recovery_intent && !result.walled_by_moving_mover,
                 easing_onto_mandatory,
             );
         }

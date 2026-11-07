@@ -1,12 +1,12 @@
-// Executes one planned lightmap drain on the GPU: one encoder, one upload
+// Executes one planned drain of both pools on the GPU: one encoder, one upload
 // batch, one submission; then updates the drain counters.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::PreparedLightmapBlock;
-use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, PoolKind, RepackKind};
+use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, PerPool, PoolKind, RepackKind};
 
 use super::super::pool::block_region_writes;
-use super::textures::{PoolTextures, RetiringPool};
+use super::textures::PoolTextures;
 use super::{DrainEffects, LightmapResidencyDrainError, LightmapStreamState};
 use crate::render::StagedUploads;
 
@@ -14,20 +14,22 @@ use crate::render::StagedUploads;
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Executed {
     submitted: bool,
-    grew: bool,
+    grew: PerPool<bool>,
     uploads: u64,
     install_bytes: u64,
     table_writes: u64,
-    copies: u64,
+    copies: PerPool<u64>,
 }
 
 impl LightmapStreamState {
-    /// Record the model's current plan in field order — growth, then the
-    /// repack's moves, then the pair uploads after the moves (a new block
-    /// may land where a moved one was), then the table writes — into one
-    /// encoder, and submit it once. Uploads and table writes are staged
-    /// copies recorded after the moves, never `Queue::write_*`, which would
-    /// land ahead of this submission's command buffer.
+    /// Record the model's current plan in field order, for both pools: each
+    /// pool's growth and repack moves, then the pair uploads after the moves
+    /// (a new block may land where a moved one was), then the table writes,
+    /// all into one encoder, submitted once. A move lands in its pool's new
+    /// generation when that pool grew, and in its live one otherwise; a
+    /// retiring generation is never touched. Uploads and table writes are
+    /// staged copies recorded after the moves, never `Queue::write_*`, which
+    /// would land ahead of this submission's command buffer.
     ///
     /// On an error nothing was submitted; the caller aborts the drain.
     pub(super) fn execute(
@@ -36,27 +38,22 @@ impl LightmapStreamState {
         queue: &crate::render::uploads::UploadQueue,
         ready: &[PreparedLightmapBlock],
     ) -> Result<Executed, LightmapResidencyDrainError> {
-        // Until the renderer's pool split this drives the lightmap pool's
-        // generation alone: `plan.pools.mask`'s growth and copies run nowhere,
-        // and planes stay beside the block's lightmap placement in the old
-        // side-by-side texture, whatever mask placement the model chose.
         let plan = self.model.plan();
-        let pool = &plan.pools.lightmap;
-        if pool.growth.is_none()
-            && pool.copies.is_empty()
-            && plan.uploads.is_empty()
-            && plan.table_writes.is_empty()
-        {
+        let pools_idle = PoolKind::ALL
+            .iter()
+            .all(|&kind| plan.pools[kind].growth.is_none() && plan.pools[kind].copies.is_empty());
+        if pools_idle && plan.uploads.is_empty() && plan.table_writes.is_empty() {
             return Ok(Executed::default());
         }
         let mut executed = Executed {
             submitted: true,
-            copies: pool.copies.len() as u64,
+            copies: PerPool::from_fn(|kind| plan.pools[kind].copies.len() as u64),
             ..Executed::default()
         };
 
-        let grown = match pool.growth {
-            Some(growth) => {
+        let mut grown: PerPool<Option<PoolTextures>> = PerPool::default();
+        for kind in PoolKind::ALL {
+            if let Some(growth) = plan.pools[kind].growth {
                 let required_layers = growth.to_layers + 1;
                 if required_layers > self.max_array_layers {
                     return Err(LightmapResidencyDrainError::GpuCapacity {
@@ -64,29 +61,43 @@ impl LightmapStreamState {
                         max_layers: self.max_array_layers,
                     });
                 }
-                Some((
-                    growth.from_layers,
-                    PoolTextures::new(device, self.format, required_layers, self.with_shadowmask),
-                ))
+                grown[kind] = Some(PoolTextures::new(
+                    device,
+                    kind,
+                    self.format,
+                    required_layers,
+                ));
             }
-            None => None,
-        };
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Streamed Lightmap Drain"),
         });
-        if let Some((from_layers, next)) = &grown {
-            self.textures
-                .copy_layers_into(&mut encoder, next, *from_layers);
-        }
-        let target = grown.as_ref().map_or(&self.textures, |(_, next)| next);
-        debug_assert_eq!(
-            target.array_layers(),
-            self.model.pool(PoolKind::Lightmap).spare_layer() + 1
-        );
-        for &copy in &pool.copies {
-            target.record_block_copy(&mut encoder, self.format, copy);
+        for kind in PoolKind::ALL {
+            let pool = &plan.pools[kind];
+            let Some(generation) = &self.pools[kind] else {
+                debug_assert!(pool.growth.is_none() && pool.copies.is_empty());
+                continue;
+            };
+            if let (Some(growth), Some(next)) = (pool.growth, &grown[kind]) {
+                generation
+                    .live
+                    .copy_layers_into(&mut encoder, next, growth.from_layers);
+            }
+            let target = grown[kind].as_ref().unwrap_or(&generation.live);
+            debug_assert_eq!(
+                target.array_layers(),
+                self.model.pool(kind).spare_layer() + 1
+            );
+            for &copy in &pool.copies {
+                target.record_block_copy(&mut encoder, self.format, copy);
+            }
         }
 
+        let targets = PerPool::from_fn(|kind| {
+            grown[kind]
+                .as_ref()
+                .or(self.pools[kind].as_ref().map(|generation| &generation.live))
+        });
         let reserve = plan
             .uploads
             .iter()
@@ -106,14 +117,14 @@ impl LightmapStreamState {
             let writes = block_region_writes(
                 self.format,
                 upload.placement,
+                upload.planes,
                 (upload.width, upload.height),
                 payload,
-                self.with_shadowmask,
             );
             for write in writes {
-                let texture = target
-                    .plane(write.plane)
-                    .expect("shadowmask writes only when the pool keeps one");
+                let texture = targets[write.plane.pool()]
+                    .expect("a half placed in a pool has that pool's generation")
+                    .plane(write.plane);
                 uploads
                     .write_texture(
                         texture,
@@ -149,10 +160,14 @@ impl LightmapStreamState {
         queue.submit(std::iter::once(encoder.finish()));
         self.upload_scratch = recorded.finish(&self.staging);
 
-        if let Some((_, next)) = grown {
-            let previous = std::mem::replace(&mut self.textures, next);
-            self.retiring = Some(RetiringPool::after_submitted_work(queue.raw(), previous));
-            executed.grew = true;
+        for kind in PoolKind::ALL {
+            if let Some(next) = grown[kind].take() {
+                self.pools[kind]
+                    .as_mut()
+                    .expect("a pool that grew has a generation")
+                    .replace(queue.raw(), next);
+                executed.grew[kind] = true;
+            }
         }
         Ok(executed)
     }
@@ -174,35 +189,41 @@ impl LightmapStreamState {
         c.last_drain_table_writes = executed.table_writes;
         c.last_drain_uploads = executed.uploads;
         c.last_drain_install_bytes = executed.install_bytes;
-        let pool = &plan.pools.lightmap;
-        if pool.repack.is_some() {
-            c.repacks += 1;
-            c.repack_copy_commands += executed.copies;
-        }
-        c.compactions += u64::from(matches!(pool.repack, Some(RepackKind::Compaction(_))));
-        c.compaction_rollbacks += u64::from(pool.compaction_rolled_back);
         if executed.submitted {
             c.submissions += 1;
             let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
             c.last_drain_install_micros = micros;
             c.max_drain_install_micros = c.max_drain_install_micros.max(micros);
         }
-        if executed.grew {
-            c.growths += 1;
-            c.pool_texture_sets += 1;
-            c.pool_layers = self.model.pool(PoolKind::Lightmap).layers();
-            c.active_pool_bytes = self.textures.bytes();
-            c.retiring_pool_bytes = self.retiring.as_ref().map_or(0, RetiringPool::bytes);
-            c.growth_transient_peak_bytes = c
-                .growth_transient_peak_bytes
-                .max(c.active_pool_bytes + c.retiring_pool_bytes);
+        for kind in PoolKind::ALL {
+            let pool = &plan.pools[kind];
+            if pool.repack.is_some() {
+                c.repacks[kind] += 1;
+                c.repack_copy_commands[kind] += executed.copies[kind];
+            }
+            c.compactions[kind] +=
+                u64::from(matches!(pool.repack, Some(RepackKind::Compaction(_))));
+            c.compaction_rollbacks[kind] += u64::from(pool.compaction_rolled_back);
+            if executed.grew[kind] {
+                let generation = self.pools[kind]
+                    .as_ref()
+                    .expect("a pool that grew has a generation");
+                c.growths[kind] += 1;
+                c.pool_texture_sets[kind] += 1;
+                c.pool_layers[kind] = self.model.pool(kind).layers();
+                c.active_pool_bytes[kind] = generation.live.bytes();
+                c.retiring_pool_bytes[kind] = generation.retiring_bytes();
+            }
+            debug_assert_eq!(
+                c.pool_texture_sets[kind],
+                self.model.pool(kind).texture_allocations()
+            );
+        }
+        if executed.grew.any() {
+            c.growth_transient_peak_bytes = c.growth_transient_peak_bytes.max(c.held_bytes());
             effects.pool_replaced = true;
             effects.meter_changed = true;
         }
-        debug_assert_eq!(
-            c.pool_texture_sets,
-            self.model.pool(PoolKind::Lightmap).texture_allocations()
-        );
     }
 }
 

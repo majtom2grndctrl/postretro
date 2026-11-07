@@ -53,6 +53,14 @@ pub struct PerPool<T> {
 }
 
 impl<T> PerPool<T> {
+    /// Each pool's figure, from `f`.
+    pub fn from_fn(mut f: impl FnMut(PoolKind) -> T) -> Self {
+        Self {
+            lightmap: f(PoolKind::Lightmap),
+            mask: f(PoolKind::Mask),
+        }
+    }
+
     pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> PerPool<U> {
         PerPool {
             lightmap: f(self.lightmap),
@@ -73,6 +81,13 @@ impl<T: Clone> PerPool<T> {
 impl PerPool<bool> {
     pub fn any(self) -> bool {
         self.lightmap || self.mask
+    }
+}
+
+impl PerPool<u64> {
+    /// Both pools' figures together.
+    pub fn total(self) -> u64 {
+        self.lightmap + self.mask
     }
 }
 

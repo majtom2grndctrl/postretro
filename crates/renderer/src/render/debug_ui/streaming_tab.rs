@@ -358,18 +358,43 @@ fn lightmap_sections(d: &LightmapStreamingLiveDiagnostics) -> [StreamingSection;
                     "Layers (peak / cap)",
                     format!(
                         "{} ({} / {})",
-                        d.pool_layers, d.peak_pool_layers, d.pool_cap_layers
+                        d.pool_layers.lightmap, d.peak_pool_layers.lightmap, d.pool_cap_layers
                     ),
                 ),
-                ("Pool bytes", format_bytes(d.pool_bytes)),
-                ("Retiring bytes", format_bytes(d.retiring_pool_bytes)),
+                (
+                    "Mask layers (peak)",
+                    format!("{} ({})", d.pool_layers.mask, d.peak_pool_layers.mask),
+                ),
+                ("Pool bytes", format_bytes(d.pool_bytes.lightmap)),
+                ("Mask pool bytes", format_bytes(d.pool_bytes.mask)),
+                (
+                    "Retiring bytes",
+                    format_bytes(d.retiring_pool_bytes.lightmap),
+                ),
+                (
+                    "Mask retiring bytes",
+                    format_bytes(d.retiring_pool_bytes.mask),
+                ),
                 (
                     "Growth transient peak",
                     format_bytes(d.growth_transient_peak_bytes),
                 ),
-                ("Band headroom (texels)", d.band_headroom_texels.to_string()),
-                ("Repacks", d.repacks.to_string()),
-                ("Growths", d.growths.to_string()),
+                (
+                    "Band headroom (texels)",
+                    d.band_headroom_texels.lightmap.to_string(),
+                ),
+                (
+                    "Mask band headroom (texels)",
+                    d.band_headroom_texels.mask.to_string(),
+                ),
+                (
+                    "Repacks (mask)",
+                    format!("{} ({})", d.repacks.lightmap, d.repacks.mask),
+                ),
+                (
+                    "Growths (mask)",
+                    format!("{} ({})", d.growths.lightmap, d.growths.mask),
+                ),
             ],
         },
         StreamingSection {
@@ -446,6 +471,7 @@ fn format_percent(part: u64, whole: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_render_cpu::lightmap_pool::PerPool;
 
     #[test]
     fn bytes_format_in_binary_units() {
@@ -480,8 +506,14 @@ mod tests {
             drawn_outside_baked_set: 3,
             drawn_not_resident: 5,
             last_frame_drawn_not_resident: 1,
-            pool_layers: 7,
-            peak_pool_layers: 9,
+            pool_layers: PerPool {
+                lightmap: 7,
+                mask: 3,
+            },
+            peak_pool_layers: PerPool {
+                lightmap: 9,
+                mask: 4,
+            },
             pool_cap_layers: 15,
             ..LightmapStreamingLiveDiagnostics::default()
         };

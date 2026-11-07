@@ -21,7 +21,10 @@ use postretro_level_format::animated_lightmap_atlas::{
     ANIMATED_BLOCK_TABLE_UNIFORM_BYTES,
 };
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
-use postretro_render_cpu::lightmap_pool::{BLOCK_FLAG_NONE, BLOCK_FLAG_RESIDENT};
+use postretro_render_cpu::lightmap_pool::{
+    BLOCK_FLAG_NO_MASK_POOL, BLOCK_FLAG_NONE, BLOCK_FLAG_PLANE_A, BLOCK_FLAG_PLANE_B,
+    BLOCK_FLAG_RESIDENT, BlockAddresses, BlockPlacement, BlockTableEntry, MaskAddresses, PerPool,
+};
 
 fn capture_logs(f: impl FnOnce()) -> Vec<(Level, String)> {
     let capture = postretro_test_log_capture::LogCapture::start();
@@ -154,19 +157,23 @@ fn a_streamed_level_plans_its_pool_shape_without_payloads() {
     };
     assert_eq!(plan.content_tag, [3; 32]);
     assert!(plan.with_shadowmask());
-    assert_eq!((plan.pool_cap_layers, plan.max_array_layers), (15, 256));
+    assert_eq!(
+        (plan.pool_cap_layers, plan.max_array_layers),
+        (PerPool::both(15), 256)
+    );
 
     let StaticPool::Streaming(tight) = streaming_plan_for(&fixture, 8192, 8) else {
         panic!("eight array layers still hold a pool");
     };
     assert_eq!(
-        tight.pool_cap_layers, 7,
+        tight.pool_cap_layers,
+        PerPool::both(7),
         "the cap leaves room for the spare layer"
     );
 }
 
 #[test]
-fn a_device_that_cannot_hold_a_streamed_pool_or_its_shadowmask_degrades_with_an_error() {
+fn a_device_that_cannot_hold_a_streamed_pool_degrades_with_an_error_and_a_layer_edge_keeps_masks() {
     let fixture = fixture(&[(8, 8)]);
     let logs = capture_logs(|| {
         assert_eq!(
@@ -175,18 +182,17 @@ fn a_device_that_cannot_hold_a_streamed_pool_or_its_shadowmask_degrades_with_an_
         );
         assert_eq!(streaming_plan_for(&fixture, 8192, 1), StaticPool::Rejected);
         let StaticPool::Streaming(plan) = streaming_plan_for(&fixture, 2048, 256) else {
-            panic!("a 2048² layer fits; only the two-group shadowmask does not");
+            panic!("a 2048² layer fits");
         };
-        assert!(!plan.with_shadowmask());
+        assert!(plan.with_shadowmask(), "a mask layer is a pool layer");
     });
     let errors = renderer_errors(&logs);
-    assert_eq!(errors.len(), 3, "{logs:?}");
+    assert_eq!(errors.len(), 2, "{logs:?}");
     assert!(
         errors[0].contains("maxTextureDimension2D 1024"),
         "{errors:?}"
     );
     assert!(errors[1].contains("maxTextureArrayLayers 1"), "{errors:?}");
-    assert!(errors[2].contains("ShadowmaskAtlas rejected"), "{errors:?}");
 }
 
 // The streamed pool holds the all-resident ceiling the same way, spare layer
@@ -233,8 +239,9 @@ fn a_device_below_the_pool_layer_or_its_layer_count_degrades_to_placeholders() {
 
 // Two 1100-high blocks hold two lightmap layers and, a plane per group, four
 // mask layers: a device of three keeps the lightmap and drops the masks alone.
+// `stream/tests/mask_states.rs` follows this through the renderer.
 #[test]
-fn all_resident_mask_past_device_layers_drops_alone() {
+fn a_plan_past_the_devices_mask_layers_drops_the_mask_pool_alone() {
     let fixture = fixture(&[(2048, 1100), (2048, 1100)]);
     let logs = capture_logs(|| {
         let plan = blocks(plan_for(&fixture, 8192, 3));
@@ -256,21 +263,17 @@ fn all_resident_mask_past_device_layers_drops_alone() {
 fn unusable_shadowmask_groups_keep_the_lightmap_and_drop_only_the_shadowmask() {
     let mut fixture = fixture(&[(8, 8), (8, 8)]);
     let logs = capture_logs(|| {
-        // Two 2048-wide groups need a 4096-wide texture.
-        let narrow = blocks(plan_for(&fixture, 2048, 256));
-        assert!(!narrow.with_shadowmask());
+        // A mask layer is a pool layer: the narrowest device that holds one
+        // holds the other.
+        assert!(blocks(plan_for(&fixture, 2048, 256)).with_shadowmask());
         fixture.payloads[1].shadowmask = None;
         assert!(!blocks(plan_for(&fixture, 8192, 256)).with_shadowmask());
     });
     let errors = renderer_errors(&logs);
-    assert_eq!(errors.len(), 2, "{logs:?}");
+    assert_eq!(errors.len(), 1, "{logs:?}");
+    assert!(errors[0].contains("ShadowmaskAtlas rejected"), "{errors:?}");
     assert!(
-        errors
-            .iter()
-            .all(|e| e.contains("ShadowmaskAtlas rejected"))
-    );
-    assert!(
-        errors[1].contains("block 1 arrived without its groups"),
+        errors[0].contains("block 1 arrived without its groups"),
         "{errors:?}"
     );
 
@@ -287,20 +290,23 @@ fn unusable_shadowmask_groups_keep_the_lightmap_and_drop_only_the_shadowmask() {
     assert!(renderer_errors(&logs).is_empty(), "{logs:?}");
 }
 
-// A mask pool the renderer refuses while the lightmap blocks stay usable,
-// all-resident or streamed, logs one `[Renderer]` error and clears the
-// mask-present bit, so the level draws no static non-SDF world specular
-// rather than reading the all-visible placeholder. Refusal never panics.
+// A mask pool the renderer refuses while the lightmap blocks stay usable logs
+// one `[Renderer]` error and clears the mask-present bit, so the level draws no
+// static non-SDF world specular rather than reading the all-visible placeholder.
+// Refusal never panics. Only an all-resident pool refuses: a streamed one holds
+// a subset, and defers past the device instead.
 #[test]
-fn refused_mask_pool_logs_a_renderer_error_and_clears_mask_present_in_both_modes() {
+fn refused_mask_pool_logs_a_renderer_error_and_clears_mask_present() {
     let fixture = fixture(&[(8, 8), (8, 8)]);
     let mut without_groups = fixture.payloads.clone();
     without_groups[1].shadowmask = None;
+    let past_the_device = self::fixture(&[(2048, 1100), (2048, 1100)]);
     let logs = capture_logs(|| {
-        // Two 2048-wide groups need a 4096-wide texture.
         for (mode, pool) in [
-            ("all-resident", plan_for(&fixture, 2048, 256)),
-            ("streamed", streaming_plan_for(&fixture, 2048, 256)),
+            (
+                "all-resident, past the device's layers",
+                plan_for(&past_the_device, 8192, 3),
+            ),
             (
                 "all-resident, block 1 without groups",
                 plan_static_pool(
@@ -323,7 +329,7 @@ fn refused_mask_pool_logs_a_renderer_error_and_clears_mask_present_in_both_modes
         }
     });
     let errors = renderer_errors(&logs);
-    assert_eq!(errors.len(), 3, "{logs:?}");
+    assert_eq!(errors.len(), 2, "{logs:?}");
     for error in errors {
         assert!(error.contains("ShadowmaskAtlas rejected"), "{error}");
         assert!(
@@ -402,8 +408,8 @@ fn pool_textures_are_edge_square_layers_in_stored_formats_and_copyable() {
             shadowmask.size.height,
             shadowmask.size.depth_or_array_layers
         ),
-        (2 * edge, edge, 2),
-        "two mask groups side by side"
+        (edge, edge, 3),
+        "ten 1024² planes, four to a layer"
     );
     assert_eq!(shadowmask.format, wgpu::TextureFormat::Bc5RgUnorm);
     for descriptor in [irradiance, direction, shadowmask] {
@@ -452,6 +458,78 @@ fn lightmap_sample_wgsl_constants_match_the_pool_contract() {
     assert_eq!(
         constant("LIGHTMAP_BLOCK_NONE"),
         format!("{BLOCK_FLAG_NONE}u;")
+    );
+    assert_eq!(
+        constant("LIGHTMAP_BLOCK_PLANE_A"),
+        format!("{BLOCK_FLAG_PLANE_A}u;")
+    );
+    assert_eq!(
+        constant("LIGHTMAP_BLOCK_PLANE_B"),
+        format!("{BLOCK_FLAG_PLANE_B}u;")
+    );
+    assert_eq!(
+        constant("LIGHTMAP_BLOCK_NO_MASK_POOL"),
+        format!("{BLOCK_FLAG_NO_MASK_POOL}u;")
+    );
+}
+
+/// The WGSL decode, mirrored here term by term from its constants, reads back
+/// what `BlockTableEntry` packed: a layer and an offset at the top of every
+/// range, in all three addresses.
+#[test]
+fn lightmap_sample_wgsl_address_constants_decode_the_block_table() {
+    let wgsl = include_str!("../../shaders/lightmap_sample.wgsl");
+    let constant = |name: &str| -> u32 {
+        wgsl.lines()
+            .find_map(|line| line.strip_prefix(&format!("const {name}: u32 = ")))
+            .and_then(|rest| rest.trim_end_matches("u;").parse().ok())
+            .unwrap_or_else(|| panic!("lightmap_sample.wgsl must declare {name}"))
+    };
+    let offset_bits = constant("LIGHTMAP_ADDRESS_OFFSET_BITS");
+    let offset_mask = constant("LIGHTMAP_ADDRESS_OFFSET_MASK");
+    let offset_unit = constant("LIGHTMAP_ADDRESS_OFFSET_UNIT");
+    let layer_shift = constant("LIGHTMAP_ADDRESS_LAYER_SHIFT");
+    let extent_bits = constant("LIGHTMAP_EXTENT_BITS");
+    let extent_mask = constant("LIGHTMAP_EXTENT_MASK");
+    let flags_shift = constant("LIGHTMAP_FLAGS_SHIFT");
+    let decode = |address: u32| BlockPlacement {
+        layer: address >> layer_shift,
+        x: (address & offset_mask) * offset_unit,
+        y: ((address >> offset_bits) & offset_mask) * offset_unit,
+    };
+
+    let lightmap = BlockPlacement {
+        layer: 16383,
+        x: 2044,
+        y: 4,
+    };
+    let plane_a = BlockPlacement {
+        layer: 1,
+        x: 4,
+        y: 2044,
+    };
+    let plane_b = BlockPlacement {
+        layer: 7,
+        x: 1024,
+        y: 512,
+    };
+    let [x, y, z, w] = BlockTableEntry::Resident {
+        addresses: BlockAddresses {
+            lightmap,
+            masks: MaskAddresses::Planes([Some(plane_a), Some(plane_b)]),
+        },
+        width: 2048,
+        height: 1100,
+    }
+    .to_words();
+    assert_eq!(decode(x), lightmap);
+    assert_eq!(decode(y), plane_a);
+    assert_eq!(decode(z), plane_b);
+    assert_eq!(w & extent_mask, 2048);
+    assert_eq!((w >> extent_bits) & extent_mask, 1100);
+    assert_eq!(
+        w >> flags_shift,
+        BLOCK_FLAG_RESIDENT | BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B
     );
 }
 

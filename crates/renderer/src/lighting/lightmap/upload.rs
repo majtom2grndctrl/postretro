@@ -3,7 +3,6 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use crate::render::gpu_create::GpuCreate;
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 
 /// Whether `Rgba16Float` (the uncompressed irradiance pool and animated atlas
 /// format) advertises hardware bilinear filtering on this adapter. Checked
@@ -97,15 +96,15 @@ pub(crate) fn upload_placeholder_shadowmask(
     device: &wgpu::Device,
     queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> wgpu::Texture {
-    // Two white texels: the shader splits the width into two mask groups, so
-    // each group reads one real, fully visible texel.
-    let bytes = [255u8; 8];
+    // Bound wherever no mask pool texture exists. The block table's flags
+    // answer every read there, so no shader samples this white texel.
+    let bytes = [255u8; 4];
     device.new_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Shadowmask Atlas Placeholder"),
             size: wgpu::Extent3d {
-                width: SHADOWMASK_GROUP_COUNT,
+                width: 1,
                 height: 1,
                 depth_or_array_layers: 1,
             },

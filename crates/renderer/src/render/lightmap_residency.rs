@@ -19,7 +19,7 @@ pub const LIGHTMAP_ANIMATED_DIRECTION: &str = "animated_direction";
 pub struct LightmapResidencyReport {
     pub allocations: Vec<ResidencyAllocation>,
     pub total_bytes: u64,
-    /// Bytes a streamed pool's grown-out generation holds until its
+    /// Bytes the streamed pools' grown-out generations hold until their
     /// submitted work is done. Counted apart from `total_bytes`, like SH's
     /// retirement capacity: the rows are the bound, active generation.
     pub retiring_bytes: u64,

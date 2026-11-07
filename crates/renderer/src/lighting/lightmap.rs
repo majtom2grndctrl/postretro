@@ -4,7 +4,11 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 mod bindings;
+#[cfg(test)]
+mod bound_draw_harness;
 mod pool;
+#[cfg(test)]
+mod pool_sample_harness;
 #[cfg(test)]
 mod pool_sample_test;
 mod stream;
@@ -57,10 +61,11 @@ pub struct LightmapResources {
     pub bind_group: wgpu::BindGroup,
     /// Group 6: the vertex-stage block table.
     pub block_table_bind_group: wgpu::BindGroup,
-    /// Whether the shadowmask pool is bound (false = the 2x1x1 placeholder).
-    /// Rejected or absent shadowmask data, and placeholder mode, clear it, and
-    /// the forward pass then reads no owner mask: no static non-SDF world
-    /// specular, no union subtraction.
+    /// Whether the level has a mask pool. Rejected or absent shadowmask data,
+    /// and placeholder mode, clear it, and the forward pass then reads no owner
+    /// mask: no static non-SDF world specular, no union subtraction. A level
+    /// with id 42 and no present plane keeps it set: its masks read zero, with
+    /// the placeholder bound and no plane to sample.
     pub shadowmask_present: bool,
     /// Static irradiance, static direction and shadowmask meter rows, read
     /// from the textures this set actually binds.
@@ -68,7 +73,7 @@ pub struct LightmapResources {
     group4: Group4Bindings,
     /// The streamed pool, when the level streams its blocks.
     stream: Option<LightmapStreamState>,
-    /// The all-visible placeholder a streamed pool without id 42 keeps bound
+    /// The placeholder a streamed level with no mask pool texture keeps bound
     /// across growth rebinds.
     streamed_shadowmask_placeholder: Option<wgpu::Texture>,
     /// Highest drain generation this set or an earlier level accepted.
@@ -155,16 +160,20 @@ impl LightmapResources {
 
         let mut stream = None;
         let mut streamed_shadowmask_placeholder = None;
+        // Whether a real mask pool texture binds, not the placeholder.
+        let mut mask_pool_bound = false;
         let (irradiance_tex, direction_tex, shadowmask_tex, table_buffer) = match pool {
             StaticPool::Blocks(plan) => {
                 let textures = upload_static_pool(device, queue, plan, &payloads.blocks);
+                mask_pool_bound = textures.shadowmask.is_some();
                 log::info!(
-                    "[Renderer] Lightmap pool: {} cell block(s) on {} layer(s) of {}², \
-                     shadowmask {}",
+                    "[Renderer] Lightmap pools: {} cell block(s) on {} lightmap layer(s) and {} \
+                     mask layer(s) of {}², shadowmask {}",
                     plan.extents.len(),
                     plan.pool.layer_count,
+                    plan.masks.as_ref().map_or(0, |masks| masks.layer_count),
                     postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE,
-                    if textures.shadowmask.is_some() {
+                    if mask_pool_bound {
                         "resident"
                     } else {
                         "placeholder"
@@ -181,16 +190,16 @@ impl LightmapResources {
             }
             StaticPool::Streaming(plan) => {
                 let state = LightmapStreamState::new(device, plan, generation_floor);
-                let textures = state.textures();
-                let shadowmask = match &textures.shadowmask {
+                mask_pool_bound = state.shadowmask().is_some();
+                let shadowmask = match state.shadowmask() {
                     Some(shadowmask) => shadowmask.clone(),
                     None => streamed_shadowmask_placeholder
                         .insert(upload_placeholder_shadowmask(device, queue))
                         .clone(),
                 };
                 let bound = (
-                    textures.irradiance.clone(),
-                    textures.direction.clone(),
+                    state.irradiance().clone(),
+                    state.direction().clone(),
                     shadowmask,
                     state.table().clone(),
                 );
@@ -213,10 +222,14 @@ impl LightmapResources {
             StaticPool::Rejected => ResidencyAllocationState::Fallback,
             StaticPool::Absent | StaticPool::Empty => ResidencyAllocationState::Dummy,
         };
-        let shadowmask_state = match (shadowmask.is_some(), shadowmask_present, pool) {
-            (_, true, _) => ResidencyAllocationState::Data,
-            (true, false, StaticPool::Empty) | (false, _, _) => ResidencyAllocationState::Dummy,
-            (true, false, _) => ResidencyAllocationState::Fallback,
+        // Id 42 with no present plane has masks that read zero and nothing to
+        // hold, so its placeholder is a dummy, not a refused pool's fallback.
+        let shadowmask_state = if mask_pool_bound {
+            ResidencyAllocationState::Data
+        } else if shadowmask_present || shadowmask.is_none() || matches!(pool, StaticPool::Empty) {
+            ResidencyAllocationState::Dummy
+        } else {
+            ResidencyAllocationState::Fallback
         };
         let lightmap_sources = section_source(SectionId::Lightmap, index.is_some());
         let shadowmask_sources = section_source(SectionId::ShadowmaskAtlas, shadowmask.is_some());
@@ -279,16 +292,16 @@ impl LightmapResources {
         self.stream.as_ref().map(LightmapStreamState::counters)
     }
 
-    /// Bytes of a grown-out streamed generation awaiting release.
+    /// Bytes of both pools' grown-out generations awaiting release.
     pub(crate) fn retiring_bytes(&self) -> u64 {
         self.stream
             .as_ref()
             .map_or(0, LightmapStreamState::retiring_bytes)
     }
 
-    /// Execute one streamed drain. On growth, group 4 rebinds the new
-    /// generation and the static meter rows follow it. Returns whether the
-    /// byte meter changed.
+    /// Execute one streamed drain. When either pool grows, group 4 rebinds
+    /// over both pools' live textures and the static meter rows follow them.
+    /// Returns whether the byte meter changed.
     pub(crate) fn drain_streaming(
         &mut self,
         device: &wgpu::Device,
@@ -307,25 +320,20 @@ impl LightmapResources {
             },
         ) = stream.drain(device, queue, batch)?;
         if pool_replaced {
-            let textures = stream.textures();
             let [irradiance_row, direction_row, shadowmask_row] = &mut self.residency;
-            refresh_row(irradiance_row, &textures.irradiance);
-            refresh_row(direction_row, &textures.direction);
-            if let Some(shadowmask) = &textures.shadowmask {
+            refresh_row(irradiance_row, stream.irradiance());
+            refresh_row(direction_row, stream.direction());
+            if let Some(shadowmask) = stream.shadowmask() {
                 refresh_row(shadowmask_row, shadowmask);
             }
-            // Without id 42 the install's placeholder stays bound.
-            let shadowmask = textures
-                .shadowmask
-                .as_ref()
+            // With no mask pool texture the install's placeholder stays bound.
+            let shadowmask = stream
+                .shadowmask()
                 .or(self.streamed_shadowmask_placeholder.as_ref())
-                .expect("a streamed pool without a shadowmask keeps its placeholder");
-            self.bind_group = self.group4.bind(
-                device,
-                &textures.irradiance,
-                &textures.direction,
-                shadowmask,
-            );
+                .expect("a streamed pool without a mask texture keeps its placeholder");
+            self.bind_group =
+                self.group4
+                    .bind(device, stream.irradiance(), stream.direction(), shadowmask);
         }
         Ok((outcome, meter_changed))
     }
@@ -333,6 +341,11 @@ impl LightmapResources {
     #[cfg(test)]
     pub(crate) fn stream_state(&self) -> Option<&LightmapStreamState> {
         self.stream.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stream_state_mut(&mut self) -> Option<&mut LightmapStreamState> {
+        self.stream.as_mut()
     }
 }
 

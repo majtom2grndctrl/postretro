@@ -6,12 +6,13 @@
 
 use super::payload::planes_mismatch;
 use super::{
-    AllResidentMasks, AllResidentPool, BlockAddresses, MaskAddresses, PoolDemand, block_table_bytes,
+    AllResidentMasks, AllResidentPool, BlockAddresses, MaskAddresses, PerPool, PoolDemand,
+    block_table_bytes,
 };
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskBlockIndex};
+use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 
 /// Every block of a level placed in the lightmap pool, and every plane placed
 /// in the mask pool when the level has one.
@@ -73,14 +74,14 @@ pub enum StaticPool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamingPoolPlan {
     pub header: LightmapHeader,
-    /// Each block's extent and stored planes. A level whose device cannot hold
-    /// the mask pool, or with no id 42, has no mask pool here.
+    /// Each block's extent and stored planes. A level with no id 42 has no
+    /// mask pool here.
     pub demand: PoolDemand,
     /// The level's content identity, which every drain batch must carry.
     pub content_tag: [u8; 32],
-    /// The first generation's layer cap, already bounded so a pool plus its
-    /// spare layer fit the device's array-layer limit.
-    pub pool_cap_layers: u32,
+    /// Each pool's first generation layer cap, already bounded so a pool plus
+    /// its spare layer fit the device's array-layer limit.
+    pub pool_cap_layers: PerPool<u32>,
     /// Device `maxTextureArrayLayers`, the spare layer included: the pool
     /// model defers a pair rather than grow past it.
     pub max_array_layers: u32,
@@ -155,20 +156,14 @@ pub fn plan_static_pool(
         }
     };
     let masks = shadowmask.and_then(|shadowmask| {
-        place_masks(
-            index,
-            shadowmask,
-            payloads,
-            max_texture_dimension_2d,
-            max_texture_array_layers,
-        )
-        .inspect_err(|reason| {
-            log::error!(
-                "[Renderer] ShadowmaskAtlas rejected: {reason}; disabling entity-to-world \
+        place_masks(index, shadowmask, payloads, max_texture_array_layers)
+            .inspect_err(|reason| {
+                log::error!(
+                    "[Renderer] ShadowmaskAtlas rejected: {reason}; disabling entity-to-world \
                  static-light shadowmask; this level gets no static non-SDF world specular"
-            )
-        })
-        .ok()
+                )
+            })
+            .ok()
     });
     StaticPool::Blocks(StaticPoolPlan {
         header,
@@ -183,9 +178,7 @@ pub fn plan_static_pool(
 /// mode, logging once, when the device cannot hold a pool layer or one layer
 /// plus the spare. A level whose every block at once would not fit the device
 /// still streams, since streaming holds only a subset: the pool model defers
-/// a pair rather than grow past the device's layers. The shadowmask drops to
-/// its placeholder alone when the device cannot hold its two-group width; the
-/// level then draws no static non-SDF world specular.
+/// a pair rather than grow past the device's layers, in either pool.
 pub fn plan_streaming_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
@@ -228,25 +221,11 @@ pub fn plan_streaming_pool(
         );
         return StaticPool::Rejected;
     }
-    let with_shadowmask = shadowmask.is_some_and(|_| {
-        shadowmask_width_fits(max_texture_dimension_2d)
-            .inspect_err(|reason| {
-                log::error!(
-                    "[Renderer] ShadowmaskAtlas rejected: {reason}; disabling entity-to-world \
-                     static-light shadowmask; this level gets no static non-SDF world specular"
-                )
-            })
-            .is_ok()
-    });
-    let demand = PoolDemand::of_indices(index, shadowmask);
     StaticPool::Streaming(StreamingPoolPlan {
         header,
-        demand: match with_shadowmask {
-            true => demand,
-            false => demand.without_masks(),
-        },
+        demand: PoolDemand::of_indices(index, shadowmask),
         content_tag,
-        pool_cap_layers: pool_cap_layers.min(max_texture_array_layers - 1),
+        pool_cap_layers: PerPool::both(pool_cap_layers.min(max_texture_array_layers - 1)),
         max_array_layers: max_texture_array_layers,
     })
 }
@@ -302,19 +281,6 @@ fn array_layers_fit(
     Ok(())
 }
 
-/// The shadowmask pool holds both mask groups side by side, at twice the
-/// pool layer's width.
-fn shadowmask_width_fits(max_texture_dimension_2d: u32) -> Result<(), String> {
-    let width = u64::from(LIGHTMAP_POOL_LAYER_EDGE) * u64::from(SHADOWMASK_GROUP_COUNT);
-    if width > u64::from(max_texture_dimension_2d) {
-        return Err(format!(
-            "pool texture {width}x{LIGHTMAP_POOL_LAYER_EDGE} (two mask groups) exceeds device \
-             maxTextureDimension2D {max_texture_dimension_2d}"
-        ));
-    }
-    Ok(())
-}
-
 /// The loader validated every blob against the index; hand-built geometry can
 /// still pair an index with payloads of another shape, which would fail the
 /// region uploads.
@@ -348,16 +314,15 @@ fn payloads_match_index(
 }
 
 /// The all-resident mask pool: every present plane placed, in the same pool
-/// shape a streamed level takes. A level with id 42 and no present plane places
-/// nothing and still has masks, which read zero.
+/// shape a streamed level takes. Its layers are the lightmap pool's edge, which
+/// `place_pool` already held to the device. A level with id 42 and no present
+/// plane places nothing and still has masks, which read zero.
 fn place_masks(
     index: &LightmapBlockIndex,
     shadowmask: &ShadowmaskBlockIndex,
     payloads: &[LightmapBlockPayload],
-    max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
 ) -> Result<AllResidentMasks, String> {
-    shadowmask_width_fits(max_texture_dimension_2d)?;
     let demand = PoolDemand::of_indices(index, Some(shadowmask));
     for (block, (&(w, h), payload)) in demand.extents().iter().zip(payloads).enumerate() {
         let planes = demand.planes(block as u32);

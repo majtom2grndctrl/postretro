@@ -1,7 +1,8 @@
 // Measurement helper (spatial-residency--lightmap-bounded-pool, repack cost):
 // wall time of one compaction's copies on real layer shapes, submit through
-// queue idle. BC6H 2048², Rg8 1024² and the two BC5 groups side by side, at
-// about the hallway's layers. Not a proof; prints only.
+// queue idle. BC6H 2048² and Rg8 1024² in the lightmap pool and BC5 2048² in the
+// mask pool, the same moves in each, at about the hallway's layers. Not a proof;
+// prints only.
 //
 // Run under `caffeinate`, nothing beside it, on a dev or profiling build:
 //   caffeinate -dims cargo test -p postretro-renderer --lib \
@@ -16,15 +17,15 @@
 
 use std::time::{Duration, Instant};
 
-use postretro_render_cpu::lightmap_pool::{BlockPlacement, PoolCopy};
+use postretro_render_cpu::lightmap_pool::{BlockPlacement, PerPool, PoolCopy, PoolKind};
 
 use super::super::pool::PoolFormat;
 use super::textures::PoolTextures;
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 
 const LAYER_EDGE: u32 = 2048;
-/// Irradiance 4, direction 2, shadowmask 8.
-const LAYER_MIB: f64 = 14.0;
+/// Irradiance 4, direction 2, mask plane 4.
+const LAYER_MIB: f64 = 10.0;
 const WARM_RUNS: usize = 5;
 const DEFAULT_TIMED_RUNS: u32 = 30;
 
@@ -66,7 +67,7 @@ fn rotation(layers: u32, spare: u32, block: u32) -> Vec<PoolCopy> {
 
 fn run_once(
     ctx: &GpuCtx,
-    textures: &PoolTextures,
+    pools: &PerPool<PoolTextures>,
     format: PoolFormat,
     copies: &[PoolCopy],
 ) -> [Duration; 2] {
@@ -75,7 +76,9 @@ fn run_once(
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     for &copy in copies {
-        textures.record_block_copy(&mut encoder, format, copy);
+        for kind in PoolKind::ALL {
+            pools[kind].record_block_copy(&mut encoder, format, copy);
+        }
     }
     let commands = encoder.finish();
     let recorded = started.elapsed();
@@ -88,7 +91,7 @@ fn run_once(
 
 fn report(
     ctx: &GpuCtx,
-    textures: &PoolTextures,
+    pools: &PerPool<PoolTextures>,
     format: PoolFormat,
     label: &str,
     copies: &[PoolCopy],
@@ -102,7 +105,7 @@ fn report(
     let timed_runs = env_number("POSTRETRO_COMPACTION_TIMING_RUNS", DEFAULT_TIMED_RUNS) as usize;
     let mut runs = Vec::new();
     for run in 0..WARM_RUNS + timed_runs {
-        let times = run_once(ctx, textures, format, copies);
+        let times = run_once(ctx, pools, format, copies);
         if run >= WARM_RUNS {
             runs.push(times);
         }
@@ -137,7 +140,7 @@ fn lightmap_compaction_copy_timing() {
         irradiance: wgpu::TextureFormat::Bc6hRgbUfloat,
         direction_scale: 2,
     };
-    let textures = PoolTextures::new(&ctx.device, format, layers + 1, true);
+    let pools = PerPool::from_fn(|kind| PoolTextures::new(&ctx.device, kind, format, layers + 1));
     println!(
         "{layers} layers plus the spare, {:.0} MiB; {block}² blocks",
         f64::from(layers + 1) * LAYER_MIB
@@ -147,12 +150,12 @@ fn lightmap_compaction_copy_timing() {
     let partial = (f64::from(partial_mib) / block_mib) as usize;
     report(
         &ctx,
-        &textures,
+        &pools,
         format,
         "partial",
         &whole[..partial.min(whole.len())],
     );
-    report(&ctx, &textures, format, "every block moved once", &whole);
+    report(&ctx, &pools, format, "every block moved once", &whole);
     let twice: Vec<PoolCopy> = whole.iter().chain(&whole).copied().collect();
-    report(&ctx, &textures, format, "every block moved twice", &twice);
+    report(&ctx, &pools, format, "every block moved twice", &twice);
 }

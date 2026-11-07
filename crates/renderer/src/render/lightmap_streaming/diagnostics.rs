@@ -5,6 +5,8 @@
 // capture report read these values in every build; the dev-tools Streaming
 // tab only renders them and edits the levers.
 
+use postretro_render_cpu::lightmap_pool::PerPool;
+
 use crate::lighting::lightmap::LightmapStreamCounters;
 
 /// One frame's view of lightmap block streaming. The application fills the
@@ -29,8 +31,9 @@ pub struct LightmapStreamingLiveDiagnostics {
     pub mandatory_blocks: u64,
     pub mandatory_lightmap_bytes: u64,
     pub mandatory_shadowmask_bytes: u64,
-    /// Texels free under the cap for band prefetch, from the latest outcome.
-    pub band_headroom_texels: u64,
+    /// Texels free under each pool's cap for band prefetch, from the latest
+    /// outcome.
+    pub band_headroom_texels: PerPool<u64>,
     /// Read bytes delivered by the issuer and not yet taken by the controller.
     pub in_flight_read_bytes: u64,
     // Controller counters.
@@ -55,27 +58,28 @@ pub struct LightmapStreamingLiveDiagnostics {
     /// the loader's index read, preloads, and streaming reads.
     pub lightmap_bytes_read: u64,
     pub shadowmask_bytes_read: u64,
-    // Renderer pool.
-    pub pool_layers: u32,
-    /// Most layers the active pool has held this level.
-    pub peak_pool_layers: u32,
-    /// Requested bytes of the active pool textures, spare layer included.
-    pub pool_bytes: u64,
-    pub retiring_pool_bytes: u64,
-    /// Largest active-plus-retiring bytes any growth held at once.
+    // Renderer pools.
+    pub pool_layers: PerPool<u32>,
+    /// Most layers each pool's live generation has held this level.
+    pub peak_pool_layers: PerPool<u32>,
+    /// Requested bytes of each pool's live textures, spare layer included.
+    pub pool_bytes: PerPool<u64>,
+    pub retiring_pool_bytes: PerPool<u64>,
+    /// Largest live-plus-retiring bytes both pools held at once after a growth.
     pub growth_transient_peak_bytes: u64,
-    pub repacks: u64,
-    pub growths: u64,
+    pub repacks: PerPool<u64>,
+    pub growths: PerPool<u64>,
     pub last_drain_install_micros: u64,
     pub max_drain_install_micros: u64,
 }
 
 impl LightmapStreamingLiveDiagnostics {
-    /// Copy the renderer-owned pool counters and raise the peak layer gauge.
+    /// Copy the renderer-owned pool counters and raise each peak layer gauge.
     /// Controller, route and read fields are left untouched.
     pub fn record_renderer_counters(&mut self, counters: &LightmapStreamCounters) {
         self.pool_layers = counters.pool_layers;
-        self.peak_pool_layers = self.peak_pool_layers.max(counters.pool_layers);
+        self.peak_pool_layers =
+            PerPool::from_fn(|kind| self.peak_pool_layers[kind].max(counters.pool_layers[kind]));
         self.pool_bytes = counters.active_pool_bytes;
         self.retiring_pool_bytes = counters.retiring_pool_bytes;
         self.growth_transient_peak_bytes = counters.growth_transient_peak_bytes;
@@ -130,21 +134,43 @@ mod tests {
             ..LightmapStreamingLiveDiagnostics::default()
         };
         live.record_renderer_counters(&LightmapStreamCounters {
-            pool_layers: 9,
-            active_pool_bytes: 1000,
-            repacks: 2,
-            growths: 1,
+            pool_layers: PerPool {
+                lightmap: 9,
+                mask: 4,
+            },
+            active_pool_bytes: PerPool {
+                lightmap: 1000,
+                mask: 500,
+            },
+            repacks: PerPool {
+                lightmap: 2,
+                mask: 1,
+            },
+            growths: PerPool {
+                lightmap: 1,
+                mask: 0,
+            },
             growth_transient_peak_bytes: 3000,
             last_drain_install_micros: 40,
             max_drain_install_micros: 900,
             ..LightmapStreamCounters::default()
         });
         live.record_renderer_counters(&LightmapStreamCounters {
-            pool_layers: 6,
+            pool_layers: PerPool {
+                lightmap: 6,
+                mask: 5,
+            },
             ..LightmapStreamCounters::default()
         });
-        assert_eq!(live.pool_layers, 6);
-        assert_eq!(live.peak_pool_layers, 9, "the peak survives a smaller pool");
+        assert_eq!(live.pool_layers.lightmap, 6);
+        assert_eq!(
+            live.peak_pool_layers,
+            PerPool {
+                lightmap: 9,
+                mask: 5
+            },
+            "each pool keeps its own peak, through a smaller pool"
+        );
         assert_eq!(live.installs, 7, "controller fields are untouched");
     }
 }

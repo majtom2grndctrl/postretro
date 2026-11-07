@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency), §7.8
 
 use anyhow::{Context, Result, bail};
+use postretro_level_format::lightmap_pool::PerPool;
 use postretro_level_loader::{LevelWorld, LightmapStreamingMode};
 use postretro_renderer::LightmapStreamingLiveDiagnostics;
 
@@ -37,8 +38,8 @@ pub(super) struct CaptureLightmapResidency {
     pub(super) block_count: u32,
     pub(super) resident_blocks: u32,
     pub(super) forced_missing_blocks: u32,
-    /// Usable layers of the streamed pool; `None` unless streaming.
-    pub(super) pool_layers: Option<u32>,
+    /// Usable layers of each streamed pool; `None` unless streaming.
+    pub(super) pool_layers: Option<PerPool<u32>>,
     /// The cap every streamed drain carried; `None` unless streaming.
     pub(super) pool_cap_layers: Option<u32>,
     /// The streaming counters after the preload, the captured view's visible

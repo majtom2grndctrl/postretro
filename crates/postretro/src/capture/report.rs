@@ -405,6 +405,7 @@ struct LightmapStreamingReportJson {
     resident_blocks: u32,
     forced_missing_blocks: u32,
     pool_layers: Option<u32>,
+    mask_pool_layers: Option<u32>,
     pool_cap_layers: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     counters: Option<LightmapStreamingCountersJson>,
@@ -417,7 +418,8 @@ impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
             block_count: residency.block_count,
             resident_blocks: residency.resident_blocks,
             forced_missing_blocks: residency.forced_missing_blocks,
-            pool_layers: residency.pool_layers,
+            pool_layers: residency.pool_layers.map(|layers| layers.lightmap),
+            mask_pool_layers: residency.pool_layers.map(|layers| layers.mask),
             pool_cap_layers: residency.pool_cap_layers,
             counters: residency
                 .counters
@@ -441,9 +443,13 @@ struct LightmapStreamingCountersJson {
     mandatory_lightmap_bytes: u64,
     mandatory_shadowmask_bytes: u64,
     pool_bytes: u64,
+    mask_pool_bytes: u64,
     peak_pool_layers: u32,
+    mask_peak_pool_layers: u32,
     repacks: u64,
+    mask_repacks: u64,
     growths: u64,
+    mask_growths: u64,
     growth_transient_peak_bytes: u64,
     last_drain_install_micros: u64,
     max_drain_install_micros: u64,
@@ -466,10 +472,14 @@ impl From<&LightmapStreamingLiveDiagnostics> for LightmapStreamingCountersJson {
             mandatory_blocks: live.mandatory_blocks,
             mandatory_lightmap_bytes: live.mandatory_lightmap_bytes,
             mandatory_shadowmask_bytes: live.mandatory_shadowmask_bytes,
-            pool_bytes: live.pool_bytes,
-            peak_pool_layers: live.peak_pool_layers,
-            repacks: live.repacks,
-            growths: live.growths,
+            pool_bytes: live.pool_bytes.lightmap,
+            mask_pool_bytes: live.pool_bytes.mask,
+            peak_pool_layers: live.peak_pool_layers.lightmap,
+            mask_peak_pool_layers: live.peak_pool_layers.mask,
+            repacks: live.repacks.lightmap,
+            mask_repacks: live.repacks.mask,
+            growths: live.growths.lightmap,
+            mask_growths: live.growths.mask,
             growth_transient_peak_bytes: live.growth_transient_peak_bytes,
             last_drain_install_micros: live.last_drain_install_micros,
             max_drain_install_micros: live.max_drain_install_micros,
@@ -732,6 +742,7 @@ impl From<ResidencyAllocationShape> for ResidencyShapeJson {
 mod tests {
     use super::super::scene::{CameraPose, CaptureMeasurement, DEFAULT_FOV_DEG};
     use super::*;
+    use postretro_level_format::lightmap_pool::PerPool;
     use serde_json::Value;
 
     fn scene_with_measurement() -> CaptureScene {
@@ -892,7 +903,10 @@ mod tests {
             block_count: 198,
             resident_blocks: 41,
             forced_missing_blocks: 1,
-            pool_layers: Some(3),
+            pool_layers: Some(PerPool {
+                lightmap: 3,
+                mask: 2,
+            }),
             pool_cap_layers: Some(15),
             counters: None,
         }));
@@ -902,6 +916,7 @@ mod tests {
         assert_eq!(lightmap["resident_blocks"], 41);
         assert_eq!(lightmap["forced_missing_blocks"], 1);
         assert_eq!(lightmap["pool_layers"], 3);
+        assert_eq!(lightmap["mask_pool_layers"], 2);
         assert_eq!(lightmap["pool_cap_layers"], 15);
         assert!(lightmap.get("counters").is_none(), "no counters, no object");
     }
@@ -917,10 +932,22 @@ mod tests {
             mandatory_blocks: 3,
             mandatory_lightmap_bytes: 4,
             mandatory_shadowmask_bytes: 5,
-            pool_bytes: 6,
-            peak_pool_layers: 7,
-            repacks: 8,
-            growths: 9,
+            pool_bytes: PerPool {
+                lightmap: 6,
+                mask: 21,
+            },
+            peak_pool_layers: PerPool {
+                lightmap: 7,
+                mask: 22,
+            },
+            repacks: PerPool {
+                lightmap: 8,
+                mask: 23,
+            },
+            growths: PerPool {
+                lightmap: 9,
+                mask: 24,
+            },
             growth_transient_peak_bytes: 10,
             last_drain_install_micros: 11,
             max_drain_install_micros: 12,
@@ -940,7 +967,10 @@ mod tests {
                 block_count: 198,
                 resident_blocks: 41,
                 forced_missing_blocks: 0,
-                pool_layers: Some(7),
+                pool_layers: Some(PerPool {
+                    lightmap: 7,
+                    mask: 22,
+                }),
                 pool_cap_layers: Some(15),
                 counters: Some(live),
             },
@@ -954,9 +984,13 @@ mod tests {
             "mandatory_lightmap_bytes": 4,
             "mandatory_shadowmask_bytes": 5,
             "pool_bytes": 6,
+            "mask_pool_bytes": 21,
             "peak_pool_layers": 7,
+            "mask_peak_pool_layers": 22,
             "repacks": 8,
+            "mask_repacks": 23,
             "growths": 9,
+            "mask_growths": 24,
             "growth_transient_peak_bytes": 10,
             "last_drain_install_micros": 11,
             "max_drain_install_micros": 12,

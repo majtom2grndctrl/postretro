@@ -243,12 +243,12 @@ struct AnimationDescriptor {
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
 
-// Group 4 — baked directional lightmap (static direct lighting). Bindings 0,
-// 1 and 6 are the cell-block pool, holding each block at the pool layer and
-// offset its group-6 table entry names (or the 1×1 neutral placeholders in
-// placeholder mode). Irradiance layers are 2048², direction layers
-// (2048 / direction texel scale)², and shadowmask layers 4096×2048 with the
-// two mask groups side by side. See context/lib/rendering_pipeline.md §4.
+// Group 4 — baked directional lightmap (static direct lighting). Bindings 0
+// and 1 are the lightmap pool and binding 6 the mask pool, each holding a block's
+// texels at the layers and offsets its group-6 table entry names (or the 1×1
+// placeholders where a level has none). Irradiance layers are 2048², direction
+// layers (2048 / direction texel scale)², and mask layers 2048², one placement
+// per present plane. See context/lib/rendering_pipeline.md §4.
 @group(4) @binding(0) var lightmap_irradiance: texture_2d_array<f32>;
 @group(4) @binding(1) var lightmap_direction: texture_2d_array<f32>;
 // Non-filtering (Nearest) sampler — used only for the octahedral direction
@@ -338,11 +338,11 @@ struct LightSpaceMatrices {
 @group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 // Group 6 — lightmap block table, VERTEX only. One vec4<u32> per
-// `WorldVertex::lightmap_block` (block id + 1, 0 = no lightmap): pool layer,
-// packed pool offset, packed block extent, flags. Layout:
-// `postretro_render_cpu::lightmap_pool::BlockTableEntry`. Written at level
-// install only; the vertex stage reads one entry per vertex and hands the
-// fragment stage flat varyings, so no fragment binding is spent.
+// `WorldVertex::lightmap_block` (block id + 1, 0 = no lightmap): the lightmap
+// address, the plane A and plane B addresses, then extent and flags. Layout:
+// `postretro_render_cpu::lightmap_pool::BlockTableEntry`. The vertex stage
+// reads one entry per vertex and hands the fragment stage flat varyings, so no
+// fragment binding is spent.
 @group(6) @binding(0) var<storage, read> lightmap_block_table: array<vec4<u32>>;
 
 
@@ -382,6 +382,9 @@ struct VertexOutput {
     // Face owners, whole per face: every vertex of a face carries the same
     // entry, so flat interpolation never blends two faces' owners.
     @location(9) @interpolate(flat) spec_owners: vec4<u32>,
+    // Plane A and plane B pool addresses, packed: only the mask path decodes
+    // them.
+    @location(10) @interpolate(flat) lightmap_plane_addresses: vec2<u32>,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -424,6 +427,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.lightmap_texel = block.texel;
     out.lightmap_layer_flags = block.layer_flags;
     out.lightmap_rect = block.rect;
+    out.lightmap_plane_addresses = block.plane_addresses;
     out.animated_block = in.lightmap_block_ids.y;
     out.spec_owners = in.spec_owners;
 
@@ -736,7 +740,7 @@ fn spec_shadowmask_forced_one() -> bool {
     return (uniforms.spec_shadowmask_flags & SPEC_SHADOWMASK_FLAG_FORCE_ONE) != 0u;
 }
 
-// Whether id 42's mask pool is bound. Clear for a level without id 42, a pool
+// Whether the level has id 42's masks. Clear for a level without id 42, a pool
 // the renderer refused, and placeholder mode, whose all-visible placeholder
 // must never read as an owner's mask.
 fn static_spec_mask_present() -> bool {
@@ -955,6 +959,7 @@ fn shadowmask_union_subtraction(
     lightmap_texel: vec2<f32>,
     lightmap_layer_flags: u32,
     lightmap_rect: vec4<u32>,
+    lightmap_plane_addresses: vec2<u32>,
     mesh_n: vec3<f32>,
     bump_n: vec3<f32>,
     owners: vec4<u32>,
@@ -980,7 +985,12 @@ fn shadowmask_union_subtraction(
     }
     // Hoisted because every promoted light shares this fragment's lightmap
     // block and texel. A missed block reads zero, so no light subtracts.
-    let mask = sample_shadowmask_atlas(lightmap_texel, lightmap_layer_flags, lightmap_rect);
+    let mask = sample_shadowmask_atlas(
+        lightmap_texel,
+        lightmap_layer_flags,
+        lightmap_rect,
+        lightmap_plane_addresses,
+    );
     let promoted_count = uniforms.total_light_count - promoted_start;
     let influence_len = arrayLength(&light_influence);
     let spec_len = arrayLength(&spec_lights);
@@ -1291,6 +1301,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             in.lightmap_texel,
             in.lightmap_layer_flags,
             in.lightmap_rect,
+            in.lightmap_plane_addresses,
             mesh_n,
             N_shade,
             in.spec_owners,
@@ -1322,7 +1333,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // owner reads no mask.
         var specular_shadowmask = vec4<f32>(0.0);
         if owners_readable && in.spec_owners.x != SPEC_OWNER_EMPTY {
-            specular_shadowmask = sample_shadowmask_atlas(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect);
+            specular_shadowmask = sample_shadowmask_atlas(
+                in.lightmap_texel,
+                in.lightmap_layer_flags,
+                in.lightmap_rect,
+                in.lightmap_plane_addresses,
+            );
         }
         specular_sum = world_static_specular(
             in.world_position,

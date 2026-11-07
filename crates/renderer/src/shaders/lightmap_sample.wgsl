@@ -17,6 +17,19 @@ const LIGHTMAP_POOL_LAYER_EDGE: f32 = 2048.0;
 // ride the high 16 bits of the flat `lightmap_layer_flags` varying.
 const LIGHTMAP_BLOCK_RESIDENT: u32 = 1u;
 const LIGHTMAP_BLOCK_NONE: u32 = 2u;
+const LIGHTMAP_BLOCK_PLANE_A: u32 = 4u;
+const LIGHTMAP_BLOCK_PLANE_B: u32 = 8u;
+const LIGHTMAP_BLOCK_NO_MASK_POOL: u32 = 16u;
+// A pool address word: offset x/4 (9), offset y/4 (9), layer (14). An entry's
+// fourth word: extent w (12), extent h (12), flags (8). `BlockTableEntry` in
+// render-cpu `lightmap_pool` packs both.
+const LIGHTMAP_ADDRESS_OFFSET_BITS: u32 = 9u;
+const LIGHTMAP_ADDRESS_OFFSET_MASK: u32 = 511u;
+const LIGHTMAP_ADDRESS_OFFSET_UNIT: u32 = 4u;
+const LIGHTMAP_ADDRESS_LAYER_SHIFT: u32 = 18u;
+const LIGHTMAP_EXTENT_BITS: u32 = 12u;
+const LIGHTMAP_EXTENT_MASK: u32 = 4095u;
+const LIGHTMAP_FLAGS_SHIFT: u32 = 24u;
 
 // What the vertex stage hands the fragment stage for one vertex's block.
 struct LightmapBlockVaryings {
@@ -26,7 +39,21 @@ struct LightmapBlockVaryings {
     layer_flags: u32,
     // Pool offset (xy) and block extent (zw), in pool texels.
     rect: vec4<u32>,
+    // Plane A and plane B pool addresses, still packed: only the mask path
+    // decodes them.
+    plane_addresses: vec2<u32>,
 };
+
+fn lightmap_address_offset(address: u32) -> vec2<u32> {
+    return vec2<u32>(
+        address & LIGHTMAP_ADDRESS_OFFSET_MASK,
+        (address >> LIGHTMAP_ADDRESS_OFFSET_BITS) & LIGHTMAP_ADDRESS_OFFSET_MASK,
+    ) * LIGHTMAP_ADDRESS_OFFSET_UNIT;
+}
+
+fn lightmap_address_layer(address: u32) -> u32 {
+    return address >> LIGHTMAP_ADDRESS_LAYER_SHIFT;
+}
 
 // Resolve a vertex's cell block (block id + 1, 0 = no lightmap) through the
 // block table: one table fetch per vertex. An id past the table reads entry
@@ -34,11 +61,15 @@ struct LightmapBlockVaryings {
 fn resolve_lightmap_block(block: u32, uv: vec2<f32>) -> LightmapBlockVaryings {
     let index = select(0u, block, block < arrayLength(&lightmap_block_table));
     let entry = lightmap_block_table[index];
-    let extent = vec2<u32>(entry.z & 0xffffu, entry.z >> 16u);
+    let extent = vec2<u32>(
+        entry.w & LIGHTMAP_EXTENT_MASK,
+        (entry.w >> LIGHTMAP_EXTENT_BITS) & LIGHTMAP_EXTENT_MASK,
+    );
     var out: LightmapBlockVaryings;
     out.texel = uv * vec2<f32>(extent);
-    out.layer_flags = (entry.x & 0xffffu) | (entry.w << 16u);
-    out.rect = vec4<u32>(entry.y & 0xffffu, entry.y >> 16u, extent);
+    out.layer_flags = lightmap_address_layer(entry.x) | ((entry.w >> LIGHTMAP_FLAGS_SHIFT) << 16u);
+    out.rect = vec4<u32>(lightmap_address_offset(entry.x), extent);
+    out.plane_addresses = entry.yz;
     return out;
 }
 
@@ -148,15 +179,32 @@ fn animated_block_uv(block_texel: vec2<f32>, block_id: u32) -> AnimatedBlockUv {
     return out;
 }
 
-// Each pool layer holds two BC5 mask groups side by side: channels 0/1 in the
-// left half, 2/3 in the right, a block's group B at `edge + x`. Returns the
-// four channels in one vector. The no-lightmap entry reads all-visible and a
-// missed block reads zero; world specular reads neither, since both drop
-// every owner (`static_spec_owners_readable` in forward.wgsl), and a miss
-// leaves the union nothing to subtract. A rejected or absent shadowmask binds
-// a one-layer, two-texel white texture; clamping the pool layer keeps that
-// fallback on its fully-visible layer.
-fn sample_shadowmask_atlas(texel: vec2<f32>, layer_flags: u32, rect: vec4<u32>) -> vec4<f32> {
+// One plane's two mask channels at its own pool address. The block's
+// half-texel clamp keeps bilinear taps inside the plane's own texels, never in
+// a neighbouring placement.
+fn sample_shadowmask_plane(texel: vec2<f32>, rect: vec4<u32>, address: u32) -> vec2<f32> {
+    return textureSampleLevel(
+        shadowmask_atlas,
+        lightmap_filtering_sampler,
+        lightmap_pool_uv(texel, vec4<u32>(lightmap_address_offset(address), rect.zw)),
+        i32(lightmap_address_layer(address)),
+        0.0,
+    ).rg;
+}
+
+// A block's four mask channels: plane A holds channels 0/1, plane B 2/3, each
+// at its own address in the mask pool. An absent plane samples nothing and
+// reads zero, as the all-zero BC5 it would have stored decodes to. The
+// no-lightmap entry and a level with no mask pool read all-visible; a missed
+// block reads zero. World specular reads neither the no-lightmap entry nor a
+// miss, since both drop every owner (`static_spec_owners_readable` in
+// forward.wgsl), and a miss leaves the union nothing to subtract.
+fn sample_shadowmask_atlas(
+    texel: vec2<f32>,
+    layer_flags: u32,
+    rect: vec4<u32>,
+    plane_addresses: vec2<u32>,
+) -> vec4<f32> {
     let flags = layer_flags >> 16u;
     if (flags & LIGHTMAP_BLOCK_NONE) != 0u {
         return vec4<f32>(1.0);
@@ -164,25 +212,16 @@ fn sample_shadowmask_atlas(texel: vec2<f32>, layer_flags: u32, rect: vec4<u32>) 
     if (flags & LIGHTMAP_BLOCK_RESIDENT) == 0u {
         return vec4<f32>(0.0);
     }
-    let last_layer = textureNumLayers(shadowmask_atlas) - 1u;
-    let safe_layer = min(lightmap_block_layer(layer_flags), last_layer);
-    // The block's half-texel clamp (U and V) keeps each group's bilinear taps
-    // inside the block's own texels in its own half: never across the seam,
-    // never into a neighbouring block.
-    let uv = lightmap_pool_uv(texel, rect);
-    let group0 = textureSampleLevel(
-        shadowmask_atlas,
-        lightmap_filtering_sampler,
-        vec2<f32>(uv.x * 0.5, uv.y),
-        i32(safe_layer),
-        0.0,
-    );
-    let group1 = textureSampleLevel(
-        shadowmask_atlas,
-        lightmap_filtering_sampler,
-        vec2<f32>((1.0 + uv.x) * 0.5, uv.y),
-        i32(safe_layer),
-        0.0,
-    );
-    return vec4<f32>(group0.rg, group1.rg);
+    if (flags & LIGHTMAP_BLOCK_NO_MASK_POOL) != 0u {
+        return vec4<f32>(1.0);
+    }
+    var group_a = vec2<f32>(0.0);
+    var group_b = vec2<f32>(0.0);
+    if (flags & LIGHTMAP_BLOCK_PLANE_A) != 0u {
+        group_a = sample_shadowmask_plane(texel, rect, plane_addresses.x);
+    }
+    if (flags & LIGHTMAP_BLOCK_PLANE_B) != 0u {
+        group_b = sample_shadowmask_plane(texel, rect, plane_addresses.y);
+    }
+    return vec4<f32>(group_a, group_b);
 }

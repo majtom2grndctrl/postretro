@@ -94,7 +94,13 @@ mod resolve_composite_gpu_test;
 #[cfg(test)]
 mod sdf_light_select_test;
 #[cfg(test)]
+mod shadowmask_sample_harness;
+#[cfg(test)]
 mod shadowmask_sample_test;
+#[cfg(test)]
+mod shadowmask_union_fixtures;
+#[cfg(test)]
+mod shadowmask_union_harness;
 #[cfg(test)]
 mod shadowmask_union_test;
 #[cfg(test)]

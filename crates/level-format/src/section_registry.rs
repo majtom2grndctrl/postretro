@@ -251,6 +251,12 @@ pub enum SectionId {
     /// ghosted mover tags. Presentation only: no level digest hashes it.
     /// See `ghost_links::GhostLinksSection`.
     GhostLinks = 56,
+
+    /// Worst mandatory pool layers of any camera cell, per pool. Present when
+    /// Lightmap has blocks and CellResidencySet exists. Id 57 is left free for
+    /// a section another plan claims.
+    /// See `lightmap_pool_bound::LightmapPoolBoundSection`.
+    LightmapPoolBound = 58,
 }
 
 impl SectionId {
@@ -300,6 +306,7 @@ impl SectionId {
             54 => Some(Self::ReflectionProbes),
             55 => Some(Self::Teleporters),
             56 => Some(Self::GhostLinks),
+            58 => Some(Self::LightmapPoolBound),
             _ => None,
         }
     }
@@ -356,6 +363,7 @@ mod tests {
             SectionId::ReflectionProbes,
             SectionId::Teleporters,
             SectionId::GhostLinks,
+            SectionId::LightmapPoolBound,
         ];
 
         for section_id in registered {
@@ -364,5 +372,6 @@ mod tests {
 
         assert_eq!(SectionId::from_u32(14), None);
         assert_eq!(SectionId::from_u32(57), None);
+        assert_eq!(SectionId::from_u32(59), None);
     }
 }

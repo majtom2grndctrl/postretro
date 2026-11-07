@@ -53,9 +53,9 @@ pub(super) fn input_summary(input: &DryRunInput) -> String {
     let stored_bytes: u64 = (0..f.blocks.len()).map(|b| f.stored_block_bytes(b)).sum();
     let _ = writeln!(
         out,
-        "bytes per chart texel: id22 {:.3} + id42 {:.3}; stored blocks {} bytes",
+        "bytes per chart texel: id22 {:.3} + id42 {:.3} per stored plane; stored blocks {} bytes",
         f.lightmap_bytes_per_texel(),
-        f.shadowmask_bytes_per_texel(),
+        f.plane_bytes_per_texel(),
         stored_bytes
     );
     let _ = writeln!(
@@ -88,8 +88,9 @@ pub(super) fn shadowmask_policy(formats: &AtlasFormats) -> String {
     let limit = MAX_SHADOWMASK_TEXTURE_WIDTH / SHADOWMASK_GROUP_COUNT;
     match formats.shadowmask {
         ShadowmaskState::Stored(_) => format!(
-            "id 42 stored: charged 2 B/texel in texel-exact, every stored block, and every \
-             simulated layer up to {limit} wide"
+            "id 42 stored: charged 1 B/texel per stored plane in texel-exact and cell blocks, \
+             its stored bytes in stored blocks, and both planes in every simulated layer up to \
+             {limit} wide"
         ),
         ShadowmaskState::Absent => "id 42 absent: no face has a mask owner, never charged".into(),
     }

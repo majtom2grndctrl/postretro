@@ -64,12 +64,17 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// report.
 ///
 /// v8: each owned channel's chart padding repeats its owner's dilated edge.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 8;
+///
+/// v9: `SMB8`, an all-zero plane has no blob.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 9;
 
-/// A pool layer holds the two mask groups side by side, so it is
-/// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device
-/// texture dimension. The oversize-face cut and cell packing bound every block
-/// by the pool layer edge, so the doubled pool layer fits by construction.
+/// The widest texture the two mask groups may span side by side: the pinned
+/// device texture dimension. The residency dry run prices its rival layouts
+/// against it (`SHADOWMASK_GROUP_COUNT` groups of one pool edge each); no
+/// runtime pool layer is doubled. The bake's own 2W×H encode image is bounded
+/// by the atlas dimension, not by this constant. The oversize-face cut and cell
+/// packing bound every block by the pool layer edge, so the doubled width fits
+/// by construction.
 pub(crate) const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
 
 const _: () =

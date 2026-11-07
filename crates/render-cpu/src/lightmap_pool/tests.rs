@@ -1,7 +1,11 @@
 // All-resident placement and block-table tests.
 
 use super::*;
-use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+use postretro_level_format::lightmap::{
+    IRRADIANCE_FORMAT_BC6H, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockRecord,
+    LightmapHeader, LightmapMode, SectionByteRange,
+};
+use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskBlockRecord};
 
 /// Decode entry `index` of a block table the way the vertex stage reads it.
 fn entry(table: &[u8], index: usize) -> BlockTableEntry {
@@ -82,7 +86,12 @@ fn block_table_maps_each_block_local_texel_to_its_placement_plus_local() {
             .iter()
             .any(|p| p.layer == 0 && (p.x, p.y) != (0, 0))
     );
-    let placed: Vec<_> = pool.placements.iter().copied().map(Some).collect();
+    let placed: Vec<_> = pool
+        .placements
+        .iter()
+        .copied()
+        .map(|placement| Some(BlockAddresses::without_masks(placement)))
+        .collect();
     let table = block_table_bytes(&extents, &placed);
     assert_eq!(table.len(), (extents.len() + 1) * BLOCK_TABLE_ENTRY_BYTES);
     assert_eq!(entry(&table, 0), BlockTableEntry::None);
@@ -113,11 +122,11 @@ fn block_table_maps_each_block_local_texel_to_its_placement_plus_local() {
 fn a_missing_block_keeps_its_extent_and_samples_no_pool_texel() {
     let extents = [(16, 8), (32, 4)];
     let placements = [
-        Some(BlockPlacement {
+        Some(BlockAddresses::without_masks(BlockPlacement {
             layer: 1,
             x: 64,
             y: 128,
-        }),
+        })),
         None,
     ];
     let table = block_table_bytes(&extents, &placements);
@@ -132,12 +141,12 @@ fn a_missing_block_keeps_its_extent_and_samples_no_pool_texel() {
     assert_eq!(entry(&table, 1).pool_texel(3, 2), Some((1, 67, 130)));
     // Neither flag marks the miss; RESIDENT and NONE never both appear.
     for index in 0..3 {
-        let flags = u32::from_ne_bytes(
+        let word = u32::from_ne_bytes(
             table[index * BLOCK_TABLE_ENTRY_BYTES + 12..index * BLOCK_TABLE_ENTRY_BYTES + 16]
                 .try_into()
                 .unwrap(),
         );
-        assert_ne!(flags, BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NONE);
+        assert_ne!(word >> 24 & 3, BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NONE);
     }
 }
 
@@ -147,8 +156,255 @@ fn placeholder_table_is_one_entry_that_samples_the_placeholders() {
     assert_eq!(table.len(), BLOCK_TABLE_ENTRY_BYTES);
     assert_eq!(entry(&table, 0), BlockTableEntry::Placeholder);
     assert_eq!(
-        BlockTableEntry::Placeholder.to_words()[3],
-        BLOCK_FLAG_RESIDENT,
-        "the placeholder entry samples, unlike the no-lightmap entry"
+        BlockTableEntry::Placeholder.to_words()[3] >> 24,
+        BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NO_MASK_POOL,
+        "the placeholder entry samples, unlike the no-lightmap entry, and reads \
+         the fully-visible fallback"
+    );
+}
+
+fn place(layer: u32, x: u32, y: u32) -> BlockPlacement {
+    BlockPlacement { layer, x, y }
+}
+
+// The table layout, word by word, at the far end of every field: a 2048
+// extent, a 2044 offset, and a layer past any device's.
+#[test]
+fn entries_pack_three_addresses_and_the_extent_as_laid_out() {
+    let entry = BlockTableEntry::Resident {
+        addresses: BlockAddresses {
+            lightmap: place(16383, 2044, 4),
+            masks: MaskAddresses::Planes([Some(place(1, 8, 2044)), Some(place(2, 12, 16))]),
+        },
+        width: 2048,
+        height: 2048,
+    };
+    let words = entry.to_words();
+    assert_eq!(words[0], 511 | (1 << 9) | (16383 << 18));
+    assert_eq!(words[1], 2 | (511 << 9) | (1 << 18));
+    assert_eq!(words[2], 3 | (4 << 9) | (2 << 18));
+    let flags = BLOCK_FLAG_RESIDENT | BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B;
+    assert_eq!(words[3], 2048 | (2048 << 12) | (flags << 24));
+    assert_eq!(BlockTableEntry::from_words(words), entry);
+}
+
+#[test]
+fn an_entry_tells_every_mask_state_apart() {
+    let lightmap = place(3, 4, 8);
+    let entry = |masks| BlockTableEntry::Resident {
+        addresses: BlockAddresses { lightmap, masks },
+        width: 16,
+        height: 8,
+    };
+    let at = Some(place(0, 0, 0));
+    let flag_sets = [
+        (MaskAddresses::NoPool, BLOCK_FLAG_NO_MASK_POOL),
+        (MaskAddresses::Planes([None, None]), 0),
+        (MaskAddresses::Planes([at, None]), BLOCK_FLAG_PLANE_A),
+        (MaskAddresses::Planes([None, at]), BLOCK_FLAG_PLANE_B),
+        (
+            MaskAddresses::Planes([at, at]),
+            BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B,
+        ),
+    ];
+    for (masks, flags) in flag_sets {
+        let words = entry(masks).to_words();
+        assert_eq!(words[3] >> 24, BLOCK_FLAG_RESIDENT | flags, "{masks:?}");
+        assert_eq!(BlockTableEntry::from_words(words), entry(masks));
+    }
+    // An absent plane's address stays zero, so nothing can read a stale one.
+    assert_eq!(entry(MaskAddresses::Planes([None, at])).to_words()[1], 0);
+    assert_eq!(
+        BlockTableEntry::Missing {
+            width: 16,
+            height: 8
+        }
+        .to_words()[3],
+        16 | (8 << 12)
+    );
+}
+
+fn block_index(extents: &[(u16, u16)]) -> LightmapBlockIndex {
+    let none = SectionByteRange { offset: 0, len: 0 };
+    LightmapBlockIndex {
+        header: LightmapHeader {
+            block_count: extents.len() as u32,
+            direction_texel_scale: 2,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            mode: LightmapMode::Shadowed,
+        },
+        records: extents
+            .iter()
+            .map(|&(width, height)| LightmapBlockRecord {
+                cell_id: 0,
+                width,
+                height,
+                irradiance: none,
+                direction: none,
+            })
+            .collect(),
+    }
+}
+
+/// Id 42's records: each block's plane A, and plane B on the first `both`.
+fn mask_index(blocks: usize, both: usize) -> ShadowmaskBlockIndex {
+    let plane = |len| SectionByteRange { offset: 0, len };
+    ShadowmaskBlockIndex {
+        owners: Vec::new(),
+        records: (0..blocks)
+            .map(|block| ShadowmaskBlockRecord {
+                group_a: plane(1),
+                group_b: plane(u32::from(block < both)),
+            })
+            .collect(),
+    }
+}
+
+fn first_generation(
+    index: &LightmapBlockIndex,
+    masks: Option<&ShadowmaskBlockIndex>,
+    sizing: StreamedPoolSizing,
+    device_layers: u32,
+) -> PerPool<u32> {
+    let plan = plan_streaming_pool(
+        Some(index),
+        masks,
+        [0; 32],
+        sizing,
+        LIGHTMAP_POOL_LAYER_EDGE,
+        device_layers,
+    );
+    let StaticPool::Streaming(plan) = plan else {
+        panic!("expected a streamed pool, got {plan:?}");
+    };
+    plan.first_generation_layers
+}
+
+// A 2048² layer holds one of these and nothing beside it.
+const FULL_LAYER: (u16, u16) = (2048, 2048);
+
+#[test]
+fn first_generation_is_bound_plus_margin_capped() {
+    let index = block_index(&[FULL_LAYER; 20]);
+    let masks = mask_index(20, 4);
+    let sized = |lightmap, mask| {
+        let bound = PerPool { lightmap, mask };
+        let sizing = StreamedPoolSizing::from_bound(bound);
+        let layers = first_generation(&index, Some(&masks), sizing, 2048);
+        let model = LightmapPoolModel::new(
+            PoolDemand::of_indices(&index, Some(&masks)),
+            LIGHTMAP_POOL_LAYER_EDGE,
+            layers,
+        )
+        .unwrap();
+        for kind in PoolKind::ALL {
+            assert_eq!(
+                model.pool(kind).layers(),
+                layers[kind],
+                "the model takes it"
+            );
+        }
+        layers
+    };
+    let layers = |lightmap, mask| PerPool { lightmap, mask };
+
+    // All-resident is 20 lightmap and 24 mask layers. Each pool's bound stands
+    // alone: the pools' worst cells can differ.
+    assert_eq!(sized(8, 4), layers(10, 5), "bound times 5/4");
+    assert_eq!(sized(7, 13), layers(9, 17), "rounded up, each its own");
+    assert_eq!(sized(18, 21), layers(20, 24), "capped at all-resident");
+    assert_eq!(
+        sized(0, 0),
+        layers(1, 1),
+        "a pool with data takes one layer"
+    );
+}
+
+// No mask pool, and no spare to pay for: a level with no id 42, and one with id
+// 42 and no stored plane. A bound carried over from another load changes
+// neither: the mask pool sizes from what this level's demand holds.
+#[test]
+fn a_mask_pool_with_nothing_to_hold_has_no_layers() {
+    let index = block_index(&[FULL_LAYER; 3]);
+    let sizing = StreamedPoolSizing::from_bound(PerPool {
+        lightmap: 2,
+        mask: 2,
+    });
+    let absent = ShadowmaskBlockIndex {
+        owners: Vec::new(),
+        records: vec![
+            ShadowmaskBlockRecord {
+                group_a: SectionByteRange { offset: 0, len: 0 },
+                group_b: SectionByteRange { offset: 0, len: 0 },
+            };
+            3
+        ],
+    };
+    for masks in [None, Some(&absent)] {
+        let layers = first_generation(&index, masks, sizing, 2048);
+        assert_eq!((layers.lightmap, layers.mask), (3, 0));
+        let demand = PoolDemand::of_indices(&index, masks);
+        let model = LightmapPoolModel::new(demand, LIGHTMAP_POOL_LAYER_EDGE, layers).unwrap();
+        let mask = model.pool(PoolKind::Mask);
+        assert_eq!((mask.layers(), mask.texture_allocations()), (0, 0));
+    }
+}
+
+// Mask planes are one extent each, present planes only, at the block's
+// alignment: a block with two planes counts twice, one with none not at all.
+#[test]
+fn all_resident_mask_layers_count_present_planes_only() {
+    let index = block_index(&[FULL_LAYER; 6]);
+    let layers = PoolDemand::of_indices(&index, Some(&mask_index(6, 2)))
+        .all_resident(LIGHTMAP_POOL_LAYER_EDGE)
+        .unwrap();
+    assert_eq!((layers.lightmap, layers.mask), (6, 8));
+}
+
+// An override sets that pool's first generation and nothing else, past what the
+// level would size itself and past all-resident alike. The device still bounds
+// a pool beside its spare.
+#[test]
+fn a_harness_figure_sets_one_pools_first_generation() {
+    let index = block_index(&[FULL_LAYER; 6]);
+    let masks = mask_index(6, 2);
+    let sizing = |lightmap, mask| StreamedPoolSizing {
+        bound: PerPool {
+            lightmap: 4,
+            mask: 4,
+        },
+        first_generation_override: PerPool { lightmap, mask },
+    };
+    let sized = |lightmap, mask, device| {
+        first_generation(&index, Some(&masks), sizing(lightmap, mask), device)
+    };
+    let layers = |lightmap, mask| PerPool { lightmap, mask };
+    assert_eq!(sized(None, None, 2048), layers(5, 5));
+    assert_eq!(
+        sized(Some(2), None, 2048),
+        layers(2, 5),
+        "the lightmap pool alone"
+    );
+    assert_eq!(
+        sized(None, Some(3), 2048),
+        layers(5, 3),
+        "the mask pool alone"
+    );
+    assert_eq!(sized(Some(9), Some(11), 2048), layers(9, 11));
+    assert_eq!(
+        sized(Some(9), None, 8),
+        layers(7, 5),
+        "the spare fits the device"
+    );
+}
+
+// The identity recorded beside measurements must change with the sizing policy.
+#[test]
+fn pool_policy_identity_changed_with_the_sizing_policy() {
+    let retired = ["demand-sized growth headroom", "4/3"].join(" ");
+    assert_ne!(POOL_POLICY_IDENTITY, retired);
+    assert!(
+        !include_str!("policy/growth.rs").contains(&retired),
+        "the retired policy string survives in the source"
     );
 }

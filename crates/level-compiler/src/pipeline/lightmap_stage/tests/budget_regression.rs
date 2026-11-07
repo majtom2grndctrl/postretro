@@ -7,16 +7,18 @@ use super::*;
 // were recaptured when the fixture pipeline moved to the occluder partition,
 // whose cells regroup their lightmap blocks, and gate-heavily-lit and
 // soft_shadow_test again for the watertight tracer, whose shadow answers
-// move their texels; four-layer-cut is synthetic.
+// move their texels; four-layer-cut is synthetic. The id 42 digests were
+// recaptured for `SMB8`, after these same rows passed with the old tag and
+// every plane stored.
 fn expected_sections(name: &str) -> (&'static str, &'static str) {
     match name {
         "gate-heavily-lit" => (
             "9e5b6e23b38dcfa82468762518706e2a80976f759e9357d42869c5cf5c30a644",
-            "1037c69da2c98b7f453ad119b2787dcac8fd47ac5798233df34fce49103d8a53",
+            "60edd6801ab97d1984d88ef010d52b6290e73bfb59b55299deac4bf3bcb0e6ec",
         ),
         "soft_shadow_test" => (
             "045753ebd02fff2c71287156b9549275888fcdae4e7074358868225b01724acb",
-            "94acef0c28e06bc392e071ae4a29754f17645629ab43d5c44ed0d8e28142488e",
+            "e86079668b0e229a05511269d2d9cdc2c86535d0d28d973262ea72b5948df121",
         ),
         "test_animated_weight_maps_cap" => (
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",
@@ -24,7 +26,7 @@ fn expected_sections(name: &str) -> (&'static str, &'static str) {
         ),
         "test_animated_weight_maps_mixed" => (
             "97c932ecf437223b7a636298e9b98f9e6c3c9fa16184fe8cc0faa51c81b884ed",
-            "a5dd05f6606d47576fc23f9184d1aec3f05bfa463beb71b3a8fd00d493ddb488",
+            "31aaed5aef94c5e8abd3d903d4bded5a1f9b4fe7f764378928f655e068ec5985",
         ),
         "test_animated_weight_maps_occluded" => (
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",
@@ -36,7 +38,7 @@ fn expected_sections(name: &str) -> (&'static str, &'static str) {
         ),
         "four-layer-cut" => (
             "a6faca302b8c39846d56eddc3924eadbc5fc082b55fbddb976ddd25d9c510b12",
-            "f1a1d6e5d9e186c654a130d50ef52ce66e3d391a99022ee3f1f3957a4535d0d3",
+            "d27f73dbf9ff6b708e6e72cd66aa6e14d6c7d6bc6cada0e7ceb2b6dda3006667",
         ),
         _ => panic!("missing pre-change section baseline: {name}"),
     }

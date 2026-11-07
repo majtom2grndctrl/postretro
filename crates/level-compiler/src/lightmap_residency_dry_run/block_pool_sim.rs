@@ -3,10 +3,11 @@
 //! allocates the ones that joined it with the freeing shelf allocator. A cell
 //! in M(c) demands every block it owns.
 //!
-//! Runs an uncapped pool (immediate free) for the peak it grows to, then fixed
+//! Runs an unbounded pool (immediate free) for the peak it grows to, then fixed
 //! pools with immediate free or LRU retention; an allocation that fails with
 //! nothing left to evict triggers a defragmentation, a from-scratch repack of
-//! the mandatory blocks.
+//! the mandatory blocks. These walks place lightmap blocks only: the band
+//! walks (`band_pool_sim`) run both pools through the runtime's model.
 //!
 //! The baseline is the same shelf allocator packing each M(c) from scratch,
 //! so excess over it is fragmentation alone, not the shelf-vs-MaxRects
@@ -19,7 +20,7 @@ use rayon::prelude::*;
 use super::camera_walks::{WalkKind, camera_adjacency, component_count, walk_path};
 use super::cell_blocks::{BlockDims, CellBlocks, POOL_LAYER_EDGE};
 use crate::cell_residency_bake::portal_distance::PortalGraphInput;
-use postretro_render_cpu::lightmap_pool::{BlockPool, Slot};
+use postretro_render_cpu::lightmap_pool::{BlockPool, Slot, packing_order_key};
 
 /// Steps per walk.
 pub(crate) const SIM_STEPS: usize = 20_000;
@@ -62,7 +63,7 @@ impl Eviction {
     }
 }
 
-/// An uncapped pool under immediate free.
+/// An unbounded pool under immediate free.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct UnboundedRun {
     /// Most layers the pool ever had to hold (highest non-empty layer + 1).
@@ -155,12 +156,7 @@ pub(crate) fn run_walks(inputs: &SimInputs<'_>) -> PoolWalks {
 /// tallest first, as shelf packing prefers. Every block fits a pool layer.
 pub(crate) fn allocation_order(blocks: &CellBlocks, set: &[u32]) -> Vec<(u32, BlockDims)> {
     let mut order: Vec<(u32, BlockDims)> = blocks.set_dims(set).collect();
-    order.sort_by(|(block_a, a), (block_b, b)| {
-        b.height
-            .cmp(&a.height)
-            .then(b.width.cmp(&a.width))
-            .then(block_a.cmp(block_b))
-    });
+    order.sort_by_key(|&(block, dims)| packing_order_key(block, (dims.width, dims.height)));
     order
 }
 
@@ -169,7 +165,7 @@ pub(crate) fn shelf_layers_from_scratch(blocks: &CellBlocks, set: &[u32]) -> u32
     let mut pool = BlockPool::new(POOL_LAYER_EDGE, None);
     for (_, dims) in allocation_order(blocks, set) {
         pool.allocate(dims.width, dims.height)
-            .expect("an uncapped pool always places a block that fits a layer");
+            .expect("an unbounded pool always places a block that fits a layer");
     }
     pool.extent() as u32
 }
@@ -272,7 +268,7 @@ fn simulate_unbounded(inputs: &SimInputs<'_>, path: &[u32]) -> UnboundedRun {
             if residency.slots[block as usize].is_none() {
                 let slot = pool
                     .allocate(dims.width, dims.height)
-                    .expect("an uncapped pool always places a block that fits a layer");
+                    .expect("an unbounded pool always places a block that fits a layer");
                 residency.insert(block, slot, step);
             }
         }

@@ -3,7 +3,7 @@
 //! Attributes Lightmap (id 22) and ShadowmaskAtlas (id 42) bytes to the cells
 //! and clusters whose charts own them, then measures each camera cell's
 //! mandatory resident bytes under distance bounds and three atlas layouts:
-//! today's stored packing and soft cluster-ordered packing at two layer caps.
+//! today's stored packing and soft cluster-ordered packing at two layer edges.
 //! A second pass bounds the mandatory set by sampled visibility instead of
 //! distance: everything visible from the cells a movement lead reaches, and
 //! costs those sets under fixed-size tiles owned by one cell or cluster each,
@@ -59,6 +59,7 @@ mod visible_set_tests;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CoupledPairRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
+use postretro_level_format::lightmap_pool::PlanePresence;
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use postretro_level_loader::LevelWorld;
 
@@ -88,6 +89,9 @@ pub(crate) struct ShadowmaskFormat {
     /// Group A plus group B bytes of each stored block, in block order.
     pub block_bytes: Vec<u64>,
     pub payload_bytes: u64,
+    /// Which planes each stored block holds, in block order. An all-zero plane
+    /// has no blob.
+    pub planes: Vec<PlanePresence>,
 }
 
 /// Whether a level carries id 42.
@@ -138,13 +142,19 @@ impl AtlasFormats {
         }
     }
 
-    /// One BC5 block position covers both mask groups.
-    pub(crate) fn shadowmask_unit() -> EncodingUnit {
+    /// One BC5 block position of one mask plane.
+    pub(crate) fn plane_unit() -> EncodingUnit {
         EncodingUnit {
             width: BC_BLOCK_EDGE,
             height: BC_BLOCK_EDGE,
-            bytes: BC_BLOCK_BYTES * u64::from(SHADOWMASK_GROUP_COUNT),
+            bytes: BC_BLOCK_BYTES,
         }
+    }
+
+    /// Bytes of one mask plane over `width × height` irradiance texels.
+    fn plane_bytes_at(width: u32, height: u32) -> u64 {
+        let unit = Self::plane_unit();
+        u64::from(width.div_ceil(unit.width)) * u64::from(height.div_ceil(unit.height)) * unit.bytes
     }
 
     pub(crate) fn stored_shadowmask(&self) -> Option<&ShadowmaskFormat> {
@@ -152,6 +162,12 @@ impl AtlasFormats {
             ShadowmaskState::Stored(format) => Some(format),
             ShadowmaskState::Absent => None,
         }
+    }
+
+    /// Which planes stored block `block` holds: none without id 42.
+    pub(crate) fn stored_planes(&self, block: usize) -> PlanePresence {
+        self.stored_shadowmask()
+            .map_or([false; 2], |sm| sm.planes[block])
     }
 
     pub(crate) fn irr_payload_bytes(&self) -> u64 {
@@ -162,9 +178,10 @@ impl AtlasFormats {
         self.blocks.iter().map(|b| b.direction_bytes).sum()
     }
 
-    /// Whether a layer `width` texels wide would carry id 42: the level stores
-    /// id 42 and the doubled texture fits. A stored block always fits; the
-    /// width rule still bounds the simulated whole layers.
+    /// Whether a simulated whole layer `width` texels wide would carry id 42:
+    /// the level stores id 42 and both planes fit side by side. Only the rival
+    /// whole-layer and tile layouts cost this way; a cell block's planes are
+    /// its own placements in the mask pool (`cell_block_bytes`).
     pub(crate) fn layer_carries_shadowmask(&self, width: u32) -> bool {
         let stored = matches!(self.shadowmask, ShadowmaskState::Stored(_));
         stored
@@ -184,9 +201,9 @@ impl AtlasFormats {
         .alignment()
     }
 
-    /// Id 22 plus id 42 bytes for one layer of `width × height` irradiance
-    /// texels, at the stored encodings and the stored direction scale.
-    pub(crate) fn layer_bytes_at(&self, width: u32, height: u32) -> u64 {
+    /// Id 22 bytes for `width × height` irradiance texels, at the stored
+    /// encodings and the stored direction scale.
+    pub(crate) fn lightmap_bytes_at(&self, width: u32, height: u32) -> u64 {
         let irr = self.irradiance_unit();
         let irradiance = u64::from(width.div_ceil(irr.width))
             * u64::from(height.div_ceil(irr.height))
@@ -198,15 +215,25 @@ impl AtlasFormats {
         );
         let direction =
             u64::from(width / scale) * u64::from(height / scale) * self.direction_texel_bytes;
+        irradiance + direction
+    }
+
+    /// Id 22 plus id 42 bytes for one simulated layer of `width × height`
+    /// irradiance texels, both planes charged.
+    pub(crate) fn layer_bytes_at(&self, width: u32, height: u32) -> u64 {
         let shadowmask = if self.layer_carries_shadowmask(width) {
-            let unit = Self::shadowmask_unit();
-            u64::from(width.div_ceil(unit.width))
-                * u64::from(height.div_ceil(unit.height))
-                * unit.bytes
+            u64::from(SHADOWMASK_GROUP_COUNT) * Self::plane_bytes_at(width, height)
         } else {
             0
         };
-        irradiance + direction + shadowmask
+        self.lightmap_bytes_at(width, height) + shadowmask
+    }
+
+    /// Id 22 plus id 42 bytes of a cell block at this extent: only the planes
+    /// it stores cost anything.
+    pub(crate) fn cell_block_bytes(&self, width: u32, height: u32, planes: PlanePresence) -> u64 {
+        let stored = planes.iter().filter(|&&stored| stored).count() as u64;
+        self.lightmap_bytes_at(width, height) + stored * Self::plane_bytes_at(width, height)
     }
 
     /// Stored id 22 plus id 42 bytes of block `block`, from its records.
@@ -226,20 +253,16 @@ impl AtlasFormats {
         irradiance + self.direction_texel_bytes as f64 / (scale * scale)
     }
 
-    /// Id 42 bytes per irradiance texel of chart area, charged only when id
-    /// 42 is stored.
-    pub(crate) fn shadowmask_bytes_per_texel(&self) -> f64 {
+    /// Id 42 bytes per irradiance texel of chart area for each plane a block
+    /// stores: 0 without id 42.
+    pub(crate) fn plane_bytes_per_texel(&self) -> f64 {
         match self.shadowmask {
             ShadowmaskState::Stored(_) => {
-                let unit = Self::shadowmask_unit();
+                let unit = Self::plane_unit();
                 unit.bytes as f64 / f64::from(unit.width * unit.height)
             }
             ShadowmaskState::Absent => 0.0,
         }
-    }
-
-    pub(crate) fn bytes_per_texel(&self) -> f64 {
-        self.lightmap_bytes_per_texel() + self.shadowmask_bytes_per_texel()
     }
 }
 

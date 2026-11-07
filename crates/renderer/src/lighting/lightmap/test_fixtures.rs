@@ -9,10 +9,75 @@ use postretro_level_format::lightmap::{
 };
 use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, ShadowmaskBlockIndex};
 
+use crate::render::gpu_test_harness::wgsl_function;
+
+const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../../shaders/lightmap_sample.wgsl");
+
 pub(crate) struct BlockFixture {
     pub(crate) index: LightmapBlockIndex,
     pub(crate) shadowmask: Option<ShadowmaskBlockIndex>,
     pub(crate) payloads: Vec<LightmapBlockPayload>,
+}
+
+impl BlockFixture {
+    /// The same blocks with each absent plane stored as id 42 stores it: no
+    /// blob. `planes` holds one presence per block.
+    pub(crate) fn with_planes(mut self, planes: &[[bool; 2]]) -> Self {
+        let blocks: Vec<[Vec<u8>; 2]> = self
+            .payloads
+            .iter_mut()
+            .zip(planes)
+            .map(|(payload, stored)| {
+                let groups = payload
+                    .shadowmask
+                    .as_mut()
+                    .expect("the fixture keeps id 42");
+                for (group, &stored) in groups.iter_mut().zip(stored) {
+                    if !stored {
+                        group.clear();
+                    }
+                }
+                groups.clone()
+            })
+            .collect();
+        self.shadowmask = Some(
+            ShadowmaskAtlasSection {
+                owners: Vec::new(),
+                blocks,
+            }
+            .index(),
+        );
+        self
+    }
+}
+
+/// lightmap_sample.wgsl's block-table decode and shadowmask sampler, spliced
+/// verbatim. The consumer declares `lightmap_block_table`, `shadowmask_atlas`
+/// and `lightmap_filtering_sampler`.
+pub(crate) fn lightmap_block_decode_wgsl() -> String {
+    let consts = LIGHTMAP_SAMPLE_WGSL
+        .lines()
+        .filter(|line| line.starts_with("const LIGHTMAP_"));
+    let varyings = crate::render::gpu_test_harness::wgsl_item(
+        LIGHTMAP_SAMPLE_WGSL,
+        "struct LightmapBlockVaryings {",
+    );
+    let functions = [
+        "lightmap_address_offset",
+        "lightmap_address_layer",
+        "resolve_lightmap_block",
+        "lightmap_block_layer",
+        "lightmap_block_resident",
+        "lightmap_pool_uv",
+        "sample_shadowmask_plane",
+        "sample_shadowmask_atlas",
+    ]
+    .map(|name| wgsl_function(LIGHTMAP_SAMPLE_WGSL, name));
+    consts
+        .chain([varyings])
+        .chain(functions)
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Per-texel and per-BC-block contents of a fixture.

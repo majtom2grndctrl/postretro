@@ -194,26 +194,46 @@ pub(crate) struct MandatoryBytes {
     pub layer: Vec<u64>,
 }
 
-/// Per-cell chart areas and the combined id 22 + id 42 byte rate.
+/// Per-cell chart areas, each with the area its stored mask planes cover, and
+/// the id 22 and per-plane id 42 byte rates.
 pub(crate) struct CellFootprint {
     pub area: Vec<u64>,
     pub half_area: Vec<u64>,
-    pub bytes_per_texel: f64,
+    /// A chart's area once per plane its stored block holds.
+    pub plane_area: Vec<u64>,
+    pub half_plane_area: Vec<u64>,
+    pub lightmap_bytes_per_texel: f64,
+    pub plane_bytes_per_texel: f64,
 }
 
 impl CellFootprint {
     pub(crate) fn new(input: &DryRunInput) -> Self {
         let mut area = vec![0; input.cell_count()];
         let mut half_area = vec![0; input.cell_count()];
+        let mut plane_area = vec![0; input.cell_count()];
+        let mut half_plane_area = vec![0; input.cell_count()];
         for chart in &input.charts {
-            area[chart.cell as usize] += chart.area();
-            half_area[chart.cell as usize] += chart.half_res_area();
+            let cell = chart.cell as usize;
+            let planes = input.formats.stored_planes(chart.layer as usize);
+            let stored = planes.iter().filter(|&&stored| stored).count() as u64;
+            area[cell] += chart.area();
+            half_area[cell] += chart.half_res_area();
+            plane_area[cell] += stored * chart.area();
+            half_plane_area[cell] += stored * chart.half_res_area();
         }
         Self {
             area,
             half_area,
-            bytes_per_texel: input.formats.bytes_per_texel(),
+            plane_area,
+            half_plane_area,
+            lightmap_bytes_per_texel: input.formats.lightmap_bytes_per_texel(),
+            plane_bytes_per_texel: input.formats.plane_bytes_per_texel(),
         }
+    }
+
+    fn bytes(&self, set: &[u32], area: &[u64], plane_area: &[u64]) -> f64 {
+        let sum = |areas: &[u64]| set.iter().map(|&c| areas[c as usize]).sum::<u64>() as f64;
+        sum(area) * self.lightmap_bytes_per_texel + sum(plane_area) * self.plane_bytes_per_texel
     }
 }
 
@@ -223,8 +243,6 @@ pub(crate) fn mandatory_bytes(
     layouts: &[Layout],
     layer_stamp: &mut Vec<bool>,
 ) -> MandatoryBytes {
-    let area: u64 = set.iter().map(|&c| footprint.area[c as usize]).sum();
-    let half_area: u64 = set.iter().map(|&c| footprint.half_area[c as usize]).sum();
     let layer = layouts
         .iter()
         .map(|layout| {
@@ -244,8 +262,8 @@ pub(crate) fn mandatory_bytes(
         .collect();
     MandatoryBytes {
         cell_count: set.len(),
-        texel_exact: area as f64 * footprint.bytes_per_texel,
-        half_res: half_area as f64 * footprint.bytes_per_texel,
+        texel_exact: footprint.bytes(set, &footprint.area, &footprint.plane_area),
+        half_res: footprint.bytes(set, &footprint.half_area, &footprint.half_plane_area),
         layer,
     }
 }

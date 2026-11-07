@@ -3,6 +3,8 @@
 
 use std::ops::Range;
 
+use postretro_level_format::lightmap_pool::{PerPool, PlanePresence};
+
 use super::LightmapResidencyError;
 use super::source::LightmapBlockSource;
 use crate::streaming::cluster_hints::ClusterHints;
@@ -11,12 +13,13 @@ use crate::streaming::request::ReadRanges;
 /// What the controller needs about one block for the level's lifetime.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockFacts {
-    /// Texels of the block's pool slot, its extent rounded up to the slot
-    /// alignment: what placing it takes from the pool's band headroom.
-    pub(crate) texels: u64,
+    /// What placing the block takes from each pool's band headroom: one slot,
+    /// its extent rounded up to the slot alignment, in the lightmap pool, and
+    /// one more per present plane in the mask pool.
+    pub(crate) texels: PerPool<u64>,
     /// Upload bytes of the id-22 half (irradiance plus direction).
     pub(crate) lightmap_bytes: u64,
-    /// Upload bytes of the id-42 half (both groups); 0 without id 42.
+    /// Bytes of the id-42 half as stored, its present planes; 0 with none.
     pub(crate) shadowmask_bytes: u64,
     /// The pair's absolute file ranges, as the issuer reads them.
     pub(crate) ranges: ReadRanges,
@@ -24,6 +27,8 @@ pub(crate) struct BlockFacts {
     pub(crate) priority: u8,
     /// The owning cluster is pinned by an authored resident volume.
     pub(crate) pinned: bool,
+    /// The mask planes the block stores.
+    pub(crate) planes: PlanePresence,
 }
 
 impl BlockFacts {
@@ -107,12 +112,20 @@ impl LevelBlockMap {
                 pinned_blocks.push(block);
             }
             blocks.push(BlockFacts {
-                texels: slot_edge(summary.width) * slot_edge(summary.height),
+                texels: {
+                    let slot = slot_edge(summary.width) * slot_edge(summary.height);
+                    let planes = summary.planes.iter().filter(|&&stored| stored).count();
+                    PerPool {
+                        lightmap: slot,
+                        mask: slot * planes as u64,
+                    }
+                },
                 lightmap_bytes,
                 shadowmask_bytes,
                 ranges: read_ranges,
                 priority,
                 pinned,
+                planes: summary.planes,
             });
         }
         Ok(Self {
@@ -140,3 +153,7 @@ impl LevelBlockMap {
         &self.pinned_blocks
     }
 }
+
+#[cfg(test)]
+#[path = "block_map_tests.rs"]
+mod tests;

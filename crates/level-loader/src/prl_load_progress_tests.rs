@@ -10,6 +10,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES, LightmapBlock,
     LightmapMode, LightmapSection,
 };
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::{SectionBlob, SectionId};
 
 use crate::LoadProgress;
@@ -57,6 +58,14 @@ impl Fixture {
             [
                 blob(SectionId::CellResidencySet, residency.to_bytes()),
                 blob(SectionId::Lightmap, lightmap.to_bytes()),
+                blob(
+                    SectionId::LightmapPoolBound,
+                    LightmapPoolBoundSection {
+                        worst_lightmap_layers: 1,
+                        worst_mask_layers: 0,
+                    }
+                    .to_bytes(),
+                ),
             ],
             name,
         ))

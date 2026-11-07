@@ -18,13 +18,14 @@ use crate::lightmap_streaming::test_fixtures::{
 use crate::session::level_streaming::LevelStreaming;
 use crate::streaming::cell_demand::CellDemand;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
+use postretro_render_cpu::lightmap_pool::PerPool;
 
-/// Each 64×64 corridor block fills one 64² pool layer, and the cap is one
-/// layer, so the camera's mandatory set grows the pool past its first
-/// generation. A growth reserves the targeted set's layers times the pool's
-/// growth headroom (4/3): camera 0's three mandatory blocks reserve four.
+/// Each 64×64 corridor block fills one 64² pool layer, and the first
+/// generation is one layer, so the camera's mandatory set grows the pool past
+/// it. A growth reserves the targeted set's layers times the shared margin
+/// (5/4): camera 0's three mandatory blocks reserve four.
 const LAYER_EDGE: u32 = 64;
-const CAP_LAYERS: u32 = 1;
+const FIRST_GENERATION_LAYERS: u32 = 1;
 const STEP_LIMIT: VisibilityPath = VisibilityPath::PortalStepLimitFallback {
     considered: 0,
     accepted: 0,
@@ -41,17 +42,18 @@ impl Corridor {
     fn new(reads: ReadsMode, clock: RetireClock) -> Self {
         let source = TestBlockSource::new(corridor_blocks(64, false));
         let set = corridor_set();
-        let mut session = LightmapStreamingSession::with_source(
+        let session = LightmapStreamingSession::with_source(
             Arc::clone(&source) as Arc<dyn LightmapBlockSource>,
             &set,
             None,
         )
         .unwrap();
-        session
-            .controller
-            .levers_mut()
-            .set_pool_cap_layers(CAP_LAYERS);
-        let mirror = PoolMirror::for_test_source(source.as_ref(), LAYER_EDGE, CAP_LAYERS, clock);
+        let mirror = PoolMirror::for_test_source(
+            source.as_ref(),
+            LAYER_EDGE,
+            PerPool::both(FIRST_GENERATION_LAYERS),
+            clock,
+        );
         let mut level = LevelStreaming::default();
         level.install_cell_demand(CellDemand::new(set.max_lead));
         level.install_lightmap(session);

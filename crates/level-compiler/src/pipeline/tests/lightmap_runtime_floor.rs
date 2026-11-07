@@ -20,10 +20,17 @@ use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::lightmap_bake::{self, LightmapConfig};
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
-use crate::pipeline::lightmap_pool_gate::gate_runtime_pool_with_floor;
+use crate::pipeline::lightmap_pool_gate::{
+    gate_mask_pool_with_floor, gate_runtime_pool_with_floor,
+};
 use crate::pipeline::lightmap_stage::{FusedLightingOutput, bake_fused_prepared};
 
 const GATE_NAME: &str = "Lightmap runtime all-resident pool";
+const MASK_GATE_NAME: &str = "Shadowmask runtime all-resident pool";
+/// Quiet at the lightmap pool's check, so only the mask pool can fail.
+const LIGHTMAP_FLOOR_CLEARED: u32 = 256;
+/// Trips on any present plane.
+const LIGHTMAP_FLOOR_TRIPPED: u32 = 0;
 
 fn empty_geometry() -> GeometryResult {
     GeometryResult {
@@ -95,6 +102,7 @@ fn compile_adjacent_stages(
     cache: Option<&StageCache>,
     usable_portals: bool,
     no_static_large: bool,
+    lightmap_floor: u32,
 ) -> anyhow::Result<FusedLightingOutput> {
     let mut geometry = empty_geometry();
     if no_static_large {
@@ -175,8 +183,12 @@ fn compile_adjacent_stages(
     let control = BakeControl::unrestricted();
     let id51 = cell_residency_set_bake_cached(&cells, &portals, &locator, None, cache, &control)?;
     assert_eq!(id51.is_some(), usable_portals);
-    let layers =
-        gate_runtime_pool_with_floor(&prepared, !static_lights.is_empty(), id51.is_some(), 0)?;
+    let layers = gate_runtime_pool_with_floor(
+        &prepared,
+        !static_lights.is_empty(),
+        id51.is_some(),
+        lightmap_floor,
+    )?;
     assert_eq!(layers, u32::from(!no_static_large));
 
     let mut args = crate::parse_args_from(
@@ -231,7 +243,7 @@ fn packed_compile_reads_actual_id51_and_warm_memo_keeps_the_cold_pool_warning() 
     let directory = tempfile::tempdir().unwrap();
     let cache = StageCache::new(directory.path()).unwrap();
     let capture = LogCapture::start();
-    let cold = compile_adjacent_stages(Some(&cache), true, false).unwrap();
+    let cold = compile_adjacent_stages(Some(&cache), true, false, LIGHTMAP_FLOOR_TRIPPED).unwrap();
     let cold_warning = gate_warning(&capture);
     assert!(!cold.lightmap.section.blocks.is_empty());
     assert_eq!(cache.test_access("lightmap_section").read_hits, 0);
@@ -240,7 +252,7 @@ fn packed_compile_reads_actual_id51_and_warm_memo_keeps_the_cold_pool_warning() 
 
     capture.clear();
     cache.clear_test_accesses();
-    let warm = compile_adjacent_stages(Some(&cache), true, false).unwrap();
+    let warm = compile_adjacent_stages(Some(&cache), true, false, LIGHTMAP_FLOOR_TRIPPED).unwrap();
     assert_eq!(gate_warning(&capture), cold_warning);
     capture.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
     assert_eq!(cache.test_access("cell_residency_set").read_hits, 1);
@@ -253,16 +265,17 @@ fn packed_compile_reads_actual_id51_and_warm_memo_keeps_the_cold_pool_warning() 
     // id 51. Even populated lightmap/shadowmask memos must not be read.
     capture.clear();
     cache.clear_test_accesses();
-    let warm_error = match compile_adjacent_stages(Some(&cache), false, false) {
-        Err(error) => error.to_string(),
-        Ok(_) => panic!("a level without usable portals must fail the pool floor"),
-    };
+    let warm_error =
+        match compile_adjacent_stages(Some(&cache), false, false, LIGHTMAP_FLOOR_TRIPPED) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("a level without usable portals must fail the pool floor"),
+        };
     assert!(warm_error.contains(GATE_NAME), "{warm_error}");
     assert!(warm_error.contains("cannot stream"), "{warm_error}");
     assert_eq!(cache.test_access("lightmap_section").read_attempts, 0);
     assert_eq!(cache.test_access("shadowmask_atlas").read_attempts, 0);
     capture.assert_not_logged(Level::Warn, GATE_NAME);
-    let cold_error = match compile_adjacent_stages(None, false, false) {
+    let cold_error = match compile_adjacent_stages(None, false, false, LIGHTMAP_FLOOR_TRIPPED) {
         Err(error) => error.to_string(),
         Ok(_) => panic!("an uncached level without usable portals must fail the same floor"),
     };
@@ -273,10 +286,45 @@ fn packed_compile_reads_actual_id51_and_warm_memo_keeps_the_cold_pool_warning() 
 fn no_static_compile_skips_257_layers_of_charts_with_and_without_actual_id51() {
     let capture = LogCapture::start();
     for usable_portals in [false, true] {
-        let output = compile_adjacent_stages(None, usable_portals, true).unwrap();
+        let output =
+            compile_adjacent_stages(None, usable_portals, true, LIGHTMAP_FLOOR_TRIPPED).unwrap();
         assert!(output.lightmap.section.blocks.is_empty());
         assert!(output.lightmap.placements.is_empty());
         assert!(output.shadowmask.is_none());
         capture.assert_not_logged(Level::Warn, GATE_NAME);
     }
+}
+
+/// The post-bake check on a level with no usable portals, past a floor of 0.
+fn mask_gate_error(cache: Option<&StageCache>) -> String {
+    let output = compile_adjacent_stages(cache, false, false, LIGHTMAP_FLOOR_CLEARED).unwrap();
+    gate_mask_pool_with_floor(
+        &output.lightmap.section,
+        output.shadowmask.as_ref(),
+        false,
+        0,
+    )
+    .expect_err("a non-streaming level past the floor must fail")
+    .to_string()
+}
+
+// A memo hit returns the bake's output, so it must still reach this check.
+#[test]
+fn mask_pool_floor_gate_fails_by_name_cold_and_warm() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache = StageCache::new(directory.path()).unwrap();
+    let capture = LogCapture::start();
+
+    let cold = mask_gate_error(Some(&cache));
+    assert!(cold.contains(MASK_GATE_NAME), "{cold}");
+    assert!(cold.contains("cannot stream"), "{cold}");
+    assert_eq!(cache.test_access("shadowmask_atlas").writes, 1);
+
+    cache.clear_test_accesses();
+    let warm = mask_gate_error(Some(&cache));
+    assert_eq!(cache.test_access("shadowmask_atlas").read_hits, 1);
+    assert_eq!(warm, cold);
+    assert_eq!(mask_gate_error(None), cold);
+    capture.assert_not_logged(Level::Warn, GATE_NAME);
+    capture.assert_not_logged(Level::Warn, MASK_GATE_NAME);
 }

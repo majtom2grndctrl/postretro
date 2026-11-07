@@ -11,7 +11,7 @@ use super::inputs::reconstruct_charts;
 use super::layouts::{cluster_ordered_layout, stored_repack_matches};
 use super::mandatory::{DistanceBound, Granularity, MandatoryContext};
 use super::portal_distance::validate_against_stored;
-use super::{ChartRect, FaceSlot, ShadowmaskState, run_dry_run};
+use super::{ChartRect, FaceSlot, ShadowmaskFormat, ShadowmaskState, run_dry_run};
 use crate::cell_residency_bake::portal_distance::{
     HubCell, HubPortal, Neighbors, PortalGraphInput, recompute_pairs,
 };
@@ -64,6 +64,38 @@ fn attribution_gives_a_straddled_block_to_its_majority_cell() {
     // Cell 1 wins block 0; cell 0 owns block 1 (x 4..8) alone.
     assert_eq!(result.irradiance.per_cell, vec![16, 16]);
     assert_eq!(result.shadowmask.unwrap().per_cell, vec![32, 32]);
+}
+
+// Id 42 stores no all-zero plane: an absent plane has no bytes to attribute, so
+// charging every block both planes overruns the payload.
+#[test]
+fn attribution_charges_only_the_planes_a_block_stores() {
+    const PLANES: [[bool; 2]; 4] = [[true, false], [false, true], [true, true], [false, false]];
+    let mut formats = bc6h_formats(64, 4, true);
+    let plane = 16 * 16 * 16;
+    let block_bytes: Vec<u64> = PLANES
+        .iter()
+        .map(|planes| planes.iter().filter(|&&stored| stored).count() as u64 * plane)
+        .collect();
+    formats.shadowmask = ShadowmaskState::Stored(ShadowmaskFormat {
+        payload_bytes: block_bytes.iter().sum(),
+        block_bytes,
+        planes: PLANES.to_vec(),
+    });
+    let charts = (0..4)
+        .map(|block| chart(block, block, 0, 0, 64, 64))
+        .collect();
+    let fixture = input(formats, &[0, 1, 2, 3], charts, Vec::new());
+
+    let shadowmask = attribute(&fixture.formats, &fixture.charts, fixture.cell_count())
+        .shadowmask
+        .expect("fixture carries id 42");
+    assert_eq!(shadowmask.per_cell, [plane, plane, 2 * plane, 0]);
+    assert_eq!(shadowmask.unattributed, 0);
+    assert_eq!(
+        shadowmask.attributed() + shadowmask.unattributed,
+        shadowmask.payload
+    );
 }
 
 #[test]
@@ -239,7 +271,7 @@ fn pinned_clusters_join_every_set_and_unpinned_unreachable_clusters_do_not() {
 }
 
 #[test]
-fn cluster_ordered_packing_keeps_each_cell_on_one_capped_layer() {
+fn cluster_ordered_packing_keeps_each_cell_on_one_layer() {
     let mut charts: Vec<ChartRect> = (0..24u32)
         .flat_map(|cell| {
             let side = 10 + (cell * 7) % 21;

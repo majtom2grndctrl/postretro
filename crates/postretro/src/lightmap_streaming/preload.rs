@@ -30,7 +30,7 @@ impl LightmapResidencyController {
     /// Install time is not frame time. The shared per-drain budget bounds what
     /// a frame spends installing; no frame renders until this batch is
     /// installed, so the whole set goes in one batch. One batch also means at
-    /// most one pool growth and no deferral: the pool is fresh, so no
+    /// most one growth per pool and no deferral: the pool is fresh, so no
     /// generation is retiring. The cost is a transient: every pair's bytes are
     /// held together until the drain.
     ///

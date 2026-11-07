@@ -2,6 +2,8 @@
 // casts, line-index expansion, and PRL world -> LevelGeometry adaptation.
 // See: context/lib/rendering_pipeline.md
 
+use postretro_render_cpu::lightmap_pool::{PerPool, StreamedPoolSizing};
+
 use super::*;
 
 pub(crate) fn build_default_view_projection(aspect: f32) -> Mat4 {
@@ -136,7 +138,13 @@ pub fn level_world_to_geometry<'a>(
         lightmap_streaming: world.lightmap_stream_manifest().map(|manifest| {
             LevelGeometryLightmapStreaming {
                 content_tag: manifest.content_tag(),
-                pool_cap_layers: DEFAULT_LIGHTMAP_POOL_CAP_LAYERS,
+                // The loader refuses a level with blocks and id 51 that lacks
+                // id 58; a level with no blocks has no pool to size.
+                pool_sizing: StreamedPoolSizing::from_bound(
+                    manifest
+                        .pool_bound()
+                        .map_or(PerPool::default(), |bound| bound.layers()),
+                ),
             }
         }),
         chunk_light_list: world.chunk_light_list.as_ref(),

@@ -3,6 +3,7 @@
 
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
+use postretro_render_cpu::lightmap_pool::PerPool;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -53,10 +54,12 @@ pub(crate) struct CaptureScene {
     /// non-resident through the capture. Requires a streamed lightmap.
     #[serde(default)]
     pub(crate) force_missing_lightmap_blocks: Vec<u32>,
-    /// Capture-only streamed-lightmap pool cap in layers, for the first pool
-    /// generation and every drain. Omitted keeps the engine default. Requires
-    /// a streamed lightmap.
-    pub(crate) lightmap_pool_cap_layers: Option<u32>,
+    /// Capture-only first generation of the streamed lightmap pool, in
+    /// layers: that generation's size and nothing else. Omitted sizes the pool
+    /// from the level's id 58. Requires a streamed lightmap.
+    pub(crate) lightmap_pool_layers: Option<u32>,
+    /// As `lightmap_pool_layers`, for the mask pool.
+    pub(crate) mask_pool_layers: Option<u32>,
     /// Capture-only fluid reflection tier, by the player option's names:
     /// `"off"`, `"low"`, `"medium"`, `"high"`, `"very_high"` or `"ultra"`.
     /// Read from this scene file alone, never from player options, so one
@@ -89,6 +92,14 @@ impl CaptureScene {
     /// The scene's light-term mask; validated bits only.
     pub(crate) fn light_term_mask(&self) -> Option<LightTermMask> {
         self.light_term_mask.map(light_term_mask_from_bits)
+    }
+
+    /// The scene's first generation for each streamed pool, where it sets one.
+    pub(crate) fn lightmap_first_generation(&self) -> PerPool<Option<u32>> {
+        PerPool {
+            lightmap: self.lightmap_pool_layers,
+            mask: self.mask_pool_layers,
+        }
     }
 }
 
@@ -248,8 +259,8 @@ pub(crate) enum SceneError {
         LightTermMask::ALL.bits()
     )]
     LightTermMaskOutOfRange { bits: u32 },
-    #[error("invalid capture scene: lightmap_pool_cap_layers must be at least 1")]
-    LightmapPoolCapZero,
+    #[error("invalid capture scene: lightmap_pool_layers and mask_pool_layers must be at least 1")]
+    LightmapPoolLayersZero,
     #[error("invalid capture scene: reflection_march fraction must be finite")]
     NonFiniteReflectionFraction,
     #[error("invalid capture scene: reflection_march fraction must be in (0.0, 1.0], got {value}")]
@@ -371,8 +382,8 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     {
         return Err(SceneError::LightTermMaskOutOfRange { bits });
     }
-    if scene.lightmap_pool_cap_layers == Some(0) {
-        return Err(SceneError::LightmapPoolCapZero);
+    if scene.lightmap_pool_layers == Some(0) || scene.mask_pool_layers == Some(0) {
+        return Err(SceneError::LightmapPoolLayersZero);
     }
     if let Some(march) = &scene.reflection_march {
         validate_reflection_march(march)?;
@@ -457,7 +468,7 @@ mod tests {
         let scene = parse_scene(SCENE_WITH_DEFAULT_FOV).expect("scene must parse");
         assert_eq!(scene.light_term_mask(), None);
         assert!(scene.force_missing_lightmap_blocks.is_empty());
-        assert_eq!(scene.lightmap_pool_cap_layers, None);
+        assert_eq!(scene.lightmap_first_generation(), PerPool::default());
     }
 
     #[test]
@@ -468,7 +479,8 @@ mod tests {
             "\"output\": \"capture.png\"",
             &format!(
                 "\"output\": \"capture.png\", \"light_term_mask\": {masked}, \
-                 \"force_missing_lightmap_blocks\": [3, 7], \"lightmap_pool_cap_layers\": 128"
+                 \"force_missing_lightmap_blocks\": [3, 7], \"lightmap_pool_layers\": 128, \
+                 \"mask_pool_layers\": 9"
             ),
         );
 
@@ -479,11 +491,17 @@ mod tests {
         assert!(!mask.contains(LightTermMask::SPECULAR));
         assert!(mask.contains(LightTermMask::INDIRECT_STATIC));
         assert_eq!(scene.force_missing_lightmap_blocks, vec![3, 7]);
-        assert_eq!(scene.lightmap_pool_cap_layers, Some(128));
+        assert_eq!(
+            scene.lightmap_first_generation(),
+            PerPool {
+                lightmap: Some(128),
+                mask: Some(9),
+            }
+        );
     }
 
     #[test]
-    fn parse_scene_rejects_unwired_mask_bits_and_a_zero_pool_cap() {
+    fn parse_scene_rejects_unwired_mask_bits_and_a_zero_pool_figure() {
         // Bit 7 is the reserved, unwired emissive term.
         let reserved = SCENE_WITH_DEFAULT_FOV.replace(
             "\"output\": \"capture.png\"",
@@ -493,14 +511,16 @@ mod tests {
             parse_scene(&reserved),
             Err(SceneError::LightTermMaskOutOfRange { bits: 128 })
         ));
-        let zero_cap = SCENE_WITH_DEFAULT_FOV.replace(
-            "\"output\": \"capture.png\"",
-            "\"output\": \"capture.png\", \"lightmap_pool_cap_layers\": 0",
-        );
-        assert!(matches!(
-            parse_scene(&zero_cap),
-            Err(SceneError::LightmapPoolCapZero)
-        ));
+        for field in ["lightmap_pool_layers", "mask_pool_layers"] {
+            let zero = SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!("\"output\": \"capture.png\", \"{field}\": 0"),
+            );
+            assert!(matches!(
+                parse_scene(&zero),
+                Err(SceneError::LightmapPoolLayersZero)
+            ));
+        }
     }
 
     // Absent reflection fields keep the renderer's defaults: high, pixel, the
@@ -885,7 +905,8 @@ mod tests {
             measurement: None,
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
-            lightmap_pool_cap_layers: None,
+            lightmap_pool_layers: None,
+            mask_pool_layers: None,
             reflection_quality: None,
             reflection_style: None,
             reflection_march: None,

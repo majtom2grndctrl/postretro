@@ -18,6 +18,7 @@ use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::shadowmask_atlas::{
     FaceOwners, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection, ShadowmaskOwnerBounds,
+    group_plane_len,
 };
 
 mod capture_support;
@@ -76,29 +77,34 @@ fn shadowmask_of(sections: &[prl_format::SectionBlob]) -> ShadowmaskAtlasSection
 type GroupPlanes = Vec<[Vec<u8>; 2]>;
 
 /// Group planes whose every texel holds `channels[c]` in channel `c`, block
-/// for block at the baked lengths. A constant BC4 block is
-/// `[v, v, 0, 0, 0, 0, 0, 0]`, which decodes to exactly `v`.
-fn constant_payload(section: &ShadowmaskAtlasSection, channels: [u8; 4]) -> GroupPlanes {
+/// for block at id 22's extents: a variant fills planes the bake left absent.
+/// A constant BC4 block is `[v, v, 0, 0, 0, 0, 0, 0]`, which decodes to
+/// exactly `v`.
+fn constant_payload(sections: &[prl_format::SectionBlob], channels: [u8; 4]) -> GroupPlanes {
     let bc4 = |value: u8| [value, value, 0, 0, 0, 0, 0, 0];
-    section
-        .blocks
+    let lightmap = sections
         .iter()
-        .map(|groups| {
+        .find(|blob| blob.section_id == SectionId::Lightmap as u32)
+        .expect("fixture must ship a Lightmap section");
+    LightmapBlockIndex::from_prefix(&lightmap.data, lightmap.data.len() as u64)
+        .expect("fixture Lightmap index must parse")
+        .records
+        .iter()
+        .map(|record| {
+            let plane_len = group_plane_len(u32::from(record.width), u32::from(record.height))
+                .expect("a block's plane length fits") as usize;
             std::array::from_fn(|group| {
                 let bc5: Vec<u8> = bc4(channels[group * 2])
                     .into_iter()
                     .chain(bc4(channels[group * 2 + 1]))
                     .collect();
-                let plane = bc5.repeat(groups[group].len() / 16);
-                assert_eq!(plane.len(), groups[group].len());
-                plane
+                bc5.repeat(plane_len / 16)
             })
         })
         .collect()
 }
 
 /// Write a copy of the fixture whose id 42 carries `owners` and `blocks`.
-/// Both keep their original lengths, so no other section moves.
 fn write_variant(
     sections: &[prl_format::SectionBlob],
     owners: Vec<FaceOwners>,
@@ -312,7 +318,7 @@ fn level_with_a_lightmap_but_no_shadowmask_captures_cleanly() {
     write_variant(
         &sections,
         baked.owners.clone(),
-        constant_payload(&baked, [0; 4]),
+        constant_payload(&sections, [0; 4]),
         &closed_masks,
     );
     let (closed_image, closed_stderr) = capture_scene(
@@ -378,7 +384,7 @@ fn owners_in_either_mask_group_reach_the_frame_through_their_own_channels() {
         write_variant(
             &sections,
             baked.owners.clone(),
-            constant_payload(&baked, channels),
+            constant_payload(&sections, channels),
             &path,
         );
         let (image, stderr) = capture_scene(
@@ -509,7 +515,7 @@ fn static_specular_comes_only_from_face_owners_through_their_baked_masks() {
     write_variant(
         &sections,
         baked.owners.clone(),
-        constant_payload(&baked, [0; 4]),
+        constant_payload(&sections, [0; 4]),
         &closed,
     );
     let closed_image = capture_specular_only(&workspace, scratch.path(), &closed, "closed");
@@ -523,7 +529,7 @@ fn static_specular_comes_only_from_face_owners_through_their_baked_masks() {
     write_variant(
         &sections,
         baked.owners.clone(),
-        constant_payload(&baked, [255; 4]),
+        constant_payload(&sections, [255; 4]),
         &open,
     );
     let open_image = capture_specular_only(&workspace, scratch.path(), &open, "open");

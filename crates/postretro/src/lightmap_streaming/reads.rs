@@ -1,6 +1,7 @@
 //! Lightmap controller reads: request order and admission, completions, failures.
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+use postretro_level_format::lightmap_pool::PoolKind::{self, Lightmap, Mask};
 use postretro_level_loader::{LightmapBlockClass, PreparedLightmapBlock};
 
 use super::*;
@@ -14,11 +15,11 @@ pub(super) enum PairCharge {
     /// Not in hand.
     None,
     /// A band pair: the band's share of the permits and in-hand bytes, and
-    /// its slot texels against the pool's band headroom.
+    /// its slot texels against each pool's band headroom.
     Band,
     /// A mandatory or visible pair: any permit, the reserve included. The
     /// renderer places it before any band pair, so its slot texels come off
-    /// the headroom band reads see.
+    /// the headroom band reads see, in each pool.
     NeverRefused,
 }
 
@@ -31,9 +32,10 @@ impl LightmapResidencyController {
     /// camera cell's baked set and the pins.
     ///
     /// Band reads stop at their half of the permits and bytes, and at the
-    /// pool's band headroom from the last outcome less the slots of every
-    /// pair already heading for the pool; the renderer's refusal stays
-    /// authoritative.
+    /// lightmap pool's band headroom from the last outcome less the slots of
+    /// every pair already heading for it; the renderer's refusal stays
+    /// authoritative. The mask pool running out stops only the pairs with
+    /// planes: a pair that stores none asks nothing of it.
     pub(crate) fn take_requests(
         &mut self,
         submit: &mut dyn FnMut(ReadRequest) -> Result<(), &'static str>,
@@ -46,6 +48,7 @@ impl LightmapResidencyController {
             self.rebuild_request_order();
         }
         self.requests_due = false;
+        let mut mask_pool_full = false;
         for index in 0..self.request_order.len() {
             if self.permits_in_use >= MAX_LIGHTMAP_PERMITS {
                 break;
@@ -67,8 +70,16 @@ impl LightmapResidencyController {
                 break;
             }
             let band = target.class == LightmapBlockClass::Band;
-            if band && !self.band_read_fits(&facts) {
-                break;
+            if band {
+                if !self.band_share_fits(&facts) || !self.band_room_fits(Lightmap, &facts) {
+                    break;
+                }
+                if facts.texels.mask != 0 {
+                    mask_pool_full = mask_pool_full || !self.band_room_fits(Mask, &facts);
+                    if mask_pool_full {
+                        continue;
+                    }
+                }
             }
             submit(ReadRequest {
                 resource: StreamResource::LightmapBlock,
@@ -96,18 +107,20 @@ impl LightmapResidencyController {
     }
 
     /// Whether one more band pair fits the band's share of the permits and
-    /// in-hand bytes, and the pool's band headroom less every pair in hand.
-    fn band_read_fits(&self, facts: &BlockFacts) -> bool {
+    /// in-hand bytes.
+    fn band_share_fits(&self, facts: &BlockFacts) -> bool {
         if self.band_permits >= MAX_BAND_PERMITS {
             return false;
         }
-        if self.band_permits > 0
-            && self.band_in_hand_bytes + facts.pair_bytes() > MAX_BAND_IN_HAND_PAIR_BYTES
-        {
-            return false;
-        }
-        self.band_committed_texels + self.never_refused_texels + facts.texels
-            <= self.pool.band_headroom_texels
+        self.band_permits == 0
+            || self.band_in_hand_bytes + facts.pair_bytes() <= MAX_BAND_IN_HAND_PAIR_BYTES
+    }
+
+    /// Whether one more band pair fits `kind`'s band headroom less every pair
+    /// in hand.
+    fn band_room_fits(&self, kind: PoolKind, facts: &BlockFacts) -> bool {
+        self.band_committed_texels[kind] + self.never_refused_texels[kind] + facts.texels[kind]
+            <= self.pool[kind].band_headroom_texels
     }
 
     /// A band read promoted in flight is still queued at the optional tier;
@@ -145,6 +158,23 @@ impl LightmapResidencyController {
         Ok(())
     }
 
+    /// The renderer took or gave back one pool item's reserved room. Headroom
+    /// moves with it, so a pair in hand moves the other way and is charged
+    /// once.
+    pub(super) fn set_room_reserved(&mut self, kind: PoolKind, item: u32, reserved: bool) {
+        let block = kind.block_of(item);
+        // A plane takes its block's slot, so any half is one slot.
+        let texels = self.map.facts(block).texels.lightmap;
+        let slot = &mut self.slots[block as usize];
+        if slot.room_held.set(kind, item, reserved) && slot.charge == PairCharge::NeverRefused {
+            if reserved {
+                self.never_refused_texels[kind] -= texels;
+            } else {
+                self.never_refused_texels[kind] += texels;
+            }
+        }
+    }
+
     /// `block` became mandatory or visible. A band pair in hand moves to the
     /// never-refused charge; a band read in flight is queued for a tier
     /// raise.
@@ -156,7 +186,7 @@ impl LightmapResidencyController {
             self.band_permits -= 1;
             self.band_in_hand_bytes -= facts.pair_bytes();
             self.band_committed_texels -= facts.texels;
-            self.never_refused_texels += facts.texels;
+            self.never_refused_texels += slot.room_held.unheld_texels(&facts);
         }
         if slot.phase == BlockPhase::InFlight
             && slot.read_tier == ReadTier::Optional
@@ -329,7 +359,10 @@ impl LightmapResidencyController {
                 self.band_in_hand_bytes += facts.pair_bytes();
                 self.band_committed_texels += facts.texels;
             }
-            PairCharge::NeverRefused => self.never_refused_texels += facts.texels,
+            PairCharge::NeverRefused => {
+                let held = self.slots[block as usize].room_held;
+                self.never_refused_texels += held.unheld_texels(&facts);
+            }
         }
         self.slots[block as usize].charge = charge;
         self.permits_in_use += 1;
@@ -347,7 +380,9 @@ impl LightmapResidencyController {
                 self.band_in_hand_bytes -= facts.pair_bytes();
                 self.band_committed_texels -= facts.texels;
             }
-            PairCharge::NeverRefused => self.never_refused_texels -= facts.texels,
+            PairCharge::NeverRefused => {
+                self.never_refused_texels -= slot.room_held.unheld_texels(&facts);
+            }
         }
         self.permits_in_use -= 1;
         self.in_hand_bytes -= facts.pair_bytes();

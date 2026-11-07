@@ -2,7 +2,9 @@
 //! with and without dilation, the cost of dilation, the prefetch band, the
 //! would-be residency section's size, and the band-aware pool walks.
 
-use std::fmt::Write as _;
+use std::fmt::{Display, Write as _};
+
+use postretro_level_format::lightmap_pool::PerPool;
 
 use super::band_pool_sim::{BandRun, THRASH_WINDOW_STEPS};
 use super::block_pool_sim::SIM_SEED;
@@ -12,6 +14,11 @@ use super::render::{LOW_TIER_BUDGET_BYTES, LOW_TIER_BUDGET_MIB, mib_f64, percent
 use super::report::DryRunReport;
 use super::visible_set::VisibleSetResult;
 use crate::cell_residency_bake::pvs_sampling::SampleDensity;
+
+/// Both pools' figures, lightmap then mask.
+fn pair<T: Display>(figures: PerPool<T>) -> String {
+    format!("{}/{}", figures.lightmap, figures.mask)
+}
 
 /// Max, p95, the count over Low, and the worst camera cell of one per-camera
 /// metric.
@@ -143,7 +150,12 @@ impl DryRunReport {
         let cameras = &self.camera_cells;
         let blocks = Spread::bytes(&lead.block_bytes, cameras);
         let exact = Spread::of(lead.texel_exact.iter().copied(), cameras);
-        let shelf = Spread::of(lead.shelf_layers.iter().map(|&l| f64::from(l)), cameras);
+        let shelf = PerPool::from_fn(|kind| {
+            Spread::of(
+                lead.shelf_layers.iter().map(|l| f64::from(l[kind])),
+                cameras,
+            )
+        });
         let old = visible
             .cell_blocks
             .leads
@@ -169,8 +181,14 @@ impl DryRunReport {
             mib_f64(blocks.p95),
             mib_f64(exact.max),
             mib_f64(exact.p95),
-            shelf.max,
-            shelf.p95,
+            pair(PerPool {
+                lightmap: shelf.lightmap.max,
+                mask: shelf.mask.max
+            }),
+            pair(PerPool {
+                lightmap: shelf.lightmap.p95,
+                mask: shelf.mask.p95
+            }),
             old
         );
     }
@@ -263,43 +281,39 @@ impl DryRunReport {
         );
         let _ = writeln!(
             out,
-            "mandatory blocks are never refused: a miss evicts band blocks (farthest lead \
-             first), then repacks in place if M(c, L) alone fits the cap, else grows past it. \
-             A repack moves M(c, L), then the band blocks resident at step start (nearest lead \
-             first), under the cap without reads. Band retain keeps resident band blocks under \
-             the cap, freeing any past it, and prefetches the rest (nearest lead first) into free \
-             space under the cap; a block freed this step is not prefetched back this step. \
-             Immediate free keeps only M(c, L). No drain budget: every request completes in its \
-             step. growth = steps where M(c, L) opened a layer at or past the cap; over cap = \
-             steps ending with mandatory blocks past it; hit rate = blocks joining M(c, L) that \
-             were already resident, a cell joining counting every block it owns; demand reads \
-             make a mandatory block resident, prefetch reads a band block (repack moves are not \
-             reads); read MiB/step counts both; thrash = demand and prefetch reads of a block \
-             freed within the last {THRASH_WINDOW_STEPS} steps (an arbitrary window)",
+            "the runtime's pool model over both pools, figures lightmap/mask. Mandatory blocks \
+             are never refused: a miss evicts band blocks (farthest lead first), then repacks in \
+             place, then grows that pool. Band retain keeps resident band blocks and prefetches \
+             the rest (nearest lead first) into free room; a block freed this step is not \
+             prefetched back this step. Immediate free keeps only M(c, L). No drain budget: every \
+             request completes in its step. growth = steps a pool grew; hit rate = blocks joining \
+             M(c, L) that were already resident, a cell joining counting every block it owns; \
+             demand reads make a mandatory block resident, prefetch reads a band block (repack \
+             moves are not reads); read MiB/step counts both; thrash = demand and prefetch reads \
+             of a block freed within the last {THRASH_WINDOW_STEPS} steps (an arbitrary window)",
         );
-        let caps: Vec<String> = walks
-            .caps
+        let sizes: Vec<String> = walks
+            .sizes
             .iter()
-            .map(|cap| {
+            .map(|size| {
                 format!(
-                    "{} layers ({:.1} MiB, {})",
-                    cap.layers,
-                    mib_f64(self.cell_blocks.pool_bytes(cap.layers) as f64),
-                    cap.basis
+                    "{} layers ({:.1} MiB with spares, {})",
+                    pair(size.layers),
+                    mib_f64(self.cell_blocks.streamed_pools_bytes(size.layers) as f64),
+                    size.basis
                 )
             })
             .collect();
-        let _ = writeln!(out, "caps: {}", caps.join(", "));
+        let _ = writeln!(out, "pool sizes: {}", sizes.join(", "));
         for walk in &walks.walks {
             let _ = writeln!(out, "{} ({} steps):", walk.kind.label(), walk.steps);
             let _ = writeln!(
                 out,
-                "    {:<8} {:<15} {:>5} {:>7} {:>9} {:>14} {:>10} {:>9} {:>12} {:>14} {:>14} {:>12} {:>16}",
-                "cap",
+                "    {:<12} {:<15} {:>7} {:>7} {:>14} {:>10} {:>9} {:>12} {:>14} {:>14} {:>12} {:>16}",
+                "pools",
                 "policy",
                 "peak",
                 "growth",
-                "over cap",
                 "repacks",
                 "band evict",
                 "hit rate",
@@ -319,18 +333,12 @@ impl DryRunReport {
         let steps = run.steps.max(1) as f64;
         let _ = writeln!(
             out,
-            "    {:<8} {:<15} {:>5} {:>7} {:>9} {:>14} {:>10} {:>8.1}% {:>12.2} {:>14.2} {:>14.2} {:>12.2} {:>16.2}",
-            run.cap
-                .map_or("uncapped".to_string(), |cap| cap.to_string()),
+            "    {:<12} {:<15} {:>7} {:>7} {:>14} {:>10} {:>8.1}% {:>12.2} {:>14.2} {:>14.2} {:>12.2} {:>16.2}",
+            run.pool_layers.map_or("all-resident".to_string(), pair),
             run.policy.label(),
-            run.peak_layers,
-            run.growth_steps,
-            run.over_cap_steps,
-            format!(
-                "{} ({:.2}%)",
-                run.repack_steps,
-                run.repack_steps as f64 / steps * 100.0
-            ),
+            pair(run.peak_layers),
+            pair(run.growth_steps),
+            pair(run.repack_steps),
             run.band_evictions,
             run.hit_rate() * 100.0,
             run.demand_reads as f64 / steps,

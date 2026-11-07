@@ -8,7 +8,7 @@ mod storage;
 
 pub use boundary::{
     LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapPoolReport,
-    LightmapStreamingMode, LightmapTarget, PreparedLightmapBlock,
+    LightmapRefusal, LightmapStreamingMode, LightmapTarget, PoolReport, PreparedLightmapBlock,
 };
 pub(crate) use load::{LightmapResidencyRead, read_lightmap_for_residency};
 pub use manifest::{LightmapBlockFileRanges, LightmapStreamManifest};

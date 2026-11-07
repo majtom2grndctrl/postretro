@@ -13,6 +13,7 @@ use postretro_level_format::cluster_directory::ClusterDirectoryValidationInputs;
 use postretro_level_format::{SectionDescriptor, SectionId, write_prl_header_and_table};
 use same_file::Handle as FileIdentity;
 
+use super::lightmap_pool_bound::LightmapPoolReport;
 use super::sh_mandatory_bound::ShMandatoryReport;
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
@@ -49,6 +50,15 @@ pub(crate) struct PrlFootprint {
     pub(super) payload_bytes: u64,
     /// The Build Summary's view of id 49's bound.
     pub(crate) sh_mandatory: ShMandatoryReport,
+    /// The Build Summary's view of id 58 and the pools it sizes.
+    pub(crate) lightmap_pool: LightmapPoolReport,
+}
+
+/// What pack's pool bounds hand the Build Summary.
+#[derive(Debug, Default)]
+pub(super) struct BoundReports {
+    pub(super) sh_mandatory: ShMandatoryReport,
+    pub(super) lightmap_pool: LightmapPoolReport,
 }
 
 impl PrlFootprint {
@@ -65,7 +75,7 @@ impl PrlFootprint {
 /// Summarize the planned payloads without invoking their one-shot encoders.
 pub(super) fn report_section_footprint(
     descriptors: &[SectionDescriptor],
-    sh_mandatory: ShMandatoryReport,
+    reports: BoundReports,
 ) -> PrlFootprint {
     let sections: Vec<_> = descriptors
         .iter()
@@ -80,7 +90,8 @@ pub(super) fn report_section_footprint(
     PrlFootprint {
         sections,
         payload_bytes,
-        sh_mandatory,
+        sh_mandatory: reports.sh_mandatory,
+        lightmap_pool: reports.lightmap_pool,
     }
 }
 

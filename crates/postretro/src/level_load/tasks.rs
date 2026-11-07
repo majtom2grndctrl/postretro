@@ -162,13 +162,9 @@ pub(super) fn plan_lightmap(
     world: &LevelWorld,
     payloads: &GpuLightingPayloads,
     limits: &DeviceLimits,
-    pool_cap_layers: u32,
 ) -> LightmapFamilyPlan {
     // The plan reads no material.
-    let mut geometry = level_world_to_geometry(world, &[]);
-    if let Some(streaming) = geometry.lightmap_streaming.as_mut() {
-        streaming.pool_cap_layers = pool_cap_layers;
-    }
+    let geometry = level_world_to_geometry(world, &[]);
     let (animated_light_count, _) = sh_volume_view(world, limits);
     plan_lightmap_family(
         &lightmap_family_inputs(

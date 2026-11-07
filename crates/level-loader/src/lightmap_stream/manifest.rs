@@ -8,6 +8,7 @@ use postretro_level_format::SectionEntry;
 use postretro_level_format::lightmap::{
     LightmapBlockIndex, LightmapBlockPayload, SectionByteRange,
 };
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 
 use super::boundary::LightmapDrainBatch;
@@ -17,9 +18,9 @@ use crate::prl_file::{PrlFile, PrlReadCounters};
 use crate::sh_stream::read_vec_at;
 
 /// Absolute PRL file ranges of one block pair, in the order its bytes are
-/// handed back: id 22's irradiance then direction, and id 42's group A then
-/// group B when the level keeps id 42. Each is one contiguous range, the shape
-/// the shared issuer's two-range request carries.
+/// handed back: id 22's irradiance then direction, and id 42's present planes
+/// when the block has any. Each is one contiguous range, the shape the shared
+/// issuer's two-range request carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightmapBlockFileRanges {
     pub lightmap: Range<u64>,
@@ -45,6 +46,7 @@ pub struct LightmapStreamManifest {
     shadowmask: Option<ShadowmaskBlockIndex>,
     lightmap_section: Range<u64>,
     shadowmask_section: Option<Range<u64>>,
+    pool_bound: Option<LightmapPoolBoundSection>,
     content_tag: [u8; 32],
 }
 
@@ -60,24 +62,27 @@ impl LightmapStreamManifest {
             shadowmask,
             lightmap_section,
             shadowmask_section,
+            pool_bound,
             content_tag,
         } = self;
         format!(
-            "{lightmap:?} {shadowmask:?} {lightmap_section:?} {shadowmask_section:?} {content_tag:?}"
+            "{lightmap:?} {shadowmask:?} {lightmap_section:?} {shadowmask_section:?} \
+             {pool_bound:?} {content_tag:?}"
         )
     }
 }
 
 impl LightmapStreamManifest {
     /// The id-22/42 index parsers already hold each block's blobs adjacent
-    /// (irradiance then direction; group A then group B), so a pair is
-    /// exactly two reads.
+    /// (irradiance then direction; its present planes), so a pair is at most
+    /// two reads.
     pub(crate) fn new(
         file: Arc<PrlFile>,
         lightmap: LightmapBlockIndex,
         shadowmask: Option<ShadowmaskBlockIndex>,
         lightmap_entry: &SectionEntry,
         shadowmask_entry: Option<&SectionEntry>,
+        pool_bound: Option<LightmapPoolBoundSection>,
         content_tag: [u8; 32],
     ) -> Result<Self, PrlLoadError> {
         let lightmap_section = entry_range(lightmap_entry)?;
@@ -103,6 +108,7 @@ impl LightmapStreamManifest {
             shadowmask,
             lightmap_section,
             shadowmask_section,
+            pool_bound,
             content_tag,
         })
     }
@@ -117,6 +123,11 @@ impl LightmapStreamManifest {
 
     pub fn shadowmask_index(&self) -> Option<&ShadowmaskBlockIndex> {
         self.shadowmask.as_ref()
+    }
+
+    /// Id 58: the worst mandatory layers per pool, when the level stores them.
+    pub fn pool_bound(&self) -> Option<LightmapPoolBoundSection> {
+        self.pool_bound
     }
 
     /// The level's content identity for stale-completion checks: the SH
@@ -171,10 +182,10 @@ impl LightmapStreamManifest {
             record.direction,
         )?;
         let shadowmask = match (&self.shadowmask, &self.shadowmask_section) {
-            (Some(shadowmask), Some(section)) => {
-                let groups = shadowmask.records[index];
-                Some(absolute(section, groups.group_a.offset, groups.group_b)?)
-            }
+            (Some(shadowmask), Some(section)) => shadowmask.records[index]
+                .stored_planes()
+                .map(|(first, last)| absolute(section, first.offset, last))
+                .transpose()?,
             _ => None,
         };
         Ok(LightmapBlockFileRanges {
@@ -203,7 +214,7 @@ impl LightmapStreamManifest {
         )
     }
 
-    /// Read one block pair synchronously: its id-22 range, then its id-42
+    /// Read one block pair synchronously: its id-22 range, then any id-42
     /// range. For capture and tests; in play the issuer reads.
     pub fn read_block_pair(&self, block: u32) -> Result<LightmapBlockPayload, PrlLoadError> {
         let ranges = self.block_file_ranges(block)?;
@@ -215,8 +226,10 @@ impl LightmapStreamManifest {
         self.payload_from_pair_bytes(block, lightmap, shadowmask)
     }
 
-    /// Split a pair's two read buffers into the payload the pool installs.
-    /// Rejects buffers whose lengths disagree with the block's ranges.
+    /// Split a pair's read buffers into the payload the pool installs. A
+    /// block with no stored plane has one buffer, and an absent plane comes
+    /// back empty: with plane A absent the buffer is exactly plane B, and the
+    /// reverse. Rejects buffers whose lengths disagree with the block's ranges.
     pub fn payload_from_pair_bytes(
         &self,
         block: u32,
@@ -232,7 +245,7 @@ impl LightmapStreamManifest {
             &ranges.lightmap,
             record.irradiance.len,
         )?;
-        let shadowmask = match (ranges.shadowmask, shadowmask) {
+        let stored = match (ranges.shadowmask, shadowmask) {
             (Some(range), Some(bytes)) => {
                 let group_a_len = self
                     .shadowmask
@@ -243,14 +256,18 @@ impl LightmapStreamManifest {
             (None, None) => None,
             (Some(_), None) | (None, Some(_)) => {
                 return Err(lightmap_stream_error(format!(
-                    "block {block} shadowmask bytes do not match the level's id-42 presence"
+                    "block {block} shadowmask bytes do not match the block's plane presence"
                 )));
             }
         };
+        let shadowmask = self.shadowmask.is_some().then(|| {
+            let (group_a, group_b) = stored.unwrap_or_default();
+            [group_a, group_b]
+        });
         Ok(LightmapBlockPayload {
             irradiance,
             direction,
-            shadowmask: shadowmask.map(|(group_a, group_b)| [group_a, group_b]),
+            shadowmask,
         })
     }
 

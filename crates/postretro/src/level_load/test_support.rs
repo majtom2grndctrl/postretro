@@ -258,7 +258,6 @@ pub(crate) fn inputs_for(map: &Path, prm_cache_root: &Path) -> LevelPrepInputs {
         device_limits: test_device_limits(),
         sh_streaming_mode: postretro_level_loader::requested_streaming_mode()
             .map_err(|error| error.to_string()),
-        lightmap_pool_cap_layers: crate::render::DEFAULT_LIGHTMAP_POOL_CAP_LAYERS,
         tiers: LevelTiers {
             shadow_quality: options.shadow_quality,
             surface_depth_quality: options.surface_depth_quality,

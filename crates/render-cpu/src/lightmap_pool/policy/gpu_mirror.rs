@@ -1,40 +1,30 @@
-// Test-only CPU mirror of the pool texture and block table, executing plans as the GPU layer does.
+// Test-only CPU mirror of both pool textures and the block table, executing plans as the GPU layer does.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
-use super::super::{BLOCK_TABLE_ENTRY_BYTES, BlockTableEntry};
-use super::{DrainPlan, LightmapPoolModel};
+use postretro_level_format::lightmap_pool::{PerPool, PoolKind, mask_item};
 
-/// Each texel records which block's data it holds.
-pub(super) struct GpuMirror {
+use super::super::{
+    BLOCK_TABLE_ENTRY_BYTES, BlockAddresses, BlockPlacement, BlockTableEntry, MaskAddresses,
+};
+use super::{DrainPlan, LightmapPoolModel, PoolCopy, PoolGrowth};
+
+/// One pool texture. Each texel records which item's data it holds: a block
+/// id in the lightmap pool, a plane in the mask pool, so a block's two planes
+/// stay told apart.
+pub(super) struct TextureMirror {
     edge: u32,
     layers: u32,
     texels: Vec<Option<u32>>,
-    table: Vec<BlockTableEntry>,
     texture_allocations: u32,
 }
 
-impl GpuMirror {
-    /// The pool as level install creates it: `layers + 1` array layers and
-    /// the model's whole table.
-    pub(super) fn new(model: &LightmapPoolModel) -> Self {
-        let bytes = model.table_bytes();
-        let table = bytes
-            .as_chunks::<BLOCK_TABLE_ENTRY_BYTES>()
-            .0
-            .iter()
-            .map(|entry| {
-                BlockTableEntry::from_words(std::array::from_fn(|w| {
-                    u32::from_ne_bytes(entry[w * 4..w * 4 + 4].try_into().unwrap())
-                }))
-            })
-            .collect();
-        let edge = model.edge;
+impl TextureMirror {
+    fn new(edge: u32, layers: u32, texture_allocations: u32) -> Self {
         Self {
             edge,
-            layers: model.layers(),
-            texels: vec![None; Self::texel_count(edge, model.layers())],
-            table,
-            texture_allocations: 1,
+            layers,
+            texels: vec![None; Self::texel_count(edge, layers)],
+            texture_allocations,
         }
     }
 
@@ -48,48 +38,155 @@ impl GpuMirror {
         (layer as usize * self.edge as usize + y as usize) * self.edge as usize + x as usize
     }
 
-    pub(super) fn execute(&mut self, plan: &DrainPlan) {
-        if let Some(growth) = plan.growth {
-            assert_eq!(
-                growth.from_layers, self.layers,
-                "growth from the active pool"
-            );
-            assert!(growth.to_layers > growth.from_layers);
-            let live = (growth.from_layers * self.edge * self.edge) as usize;
-            let mut grown = vec![None; Self::texel_count(self.edge, growth.to_layers)];
-            grown[..live].copy_from_slice(&self.texels[..live]);
-            self.texels = grown;
-            self.layers = growth.to_layers;
-            self.texture_allocations += 1;
-        }
-        for copy in &plan.copies {
-            assert_ne!(
-                copy.src.layer, copy.dst.layer,
-                "WebGPU forbids a copy within one subresource: {copy:?}"
-            );
-            let mut rect = Vec::with_capacity((copy.width * copy.height) as usize);
-            for y in 0..copy.height {
-                for x in 0..copy.width {
-                    rect.push(self.texels[self.at(copy.src.layer, copy.src.x + x, copy.src.y + y)]);
-                }
+    fn fill(&mut self, item: u32, place: BlockPlacement, width: u32, height: u32) {
+        for y in 0..height {
+            for x in 0..width {
+                let at = self.at(place.layer, place.x + x, place.y + y);
+                self.texels[at] = Some(item);
             }
-            for y in 0..copy.height {
-                for x in 0..copy.width {
-                    let at = self.at(copy.dst.layer, copy.dst.x + x, copy.dst.y + y);
-                    self.texels[at] = rect[(y * copy.width + x) as usize];
-                }
+        }
+    }
+
+    fn assert_holds(&self, item: u32, place: BlockPlacement, width: u32, height: u32) {
+        for y in 0..height {
+            for x in 0..width {
+                let at = self.at(place.layer, place.x + x, place.y + y);
+                assert_eq!(
+                    self.texels[at],
+                    Some(item),
+                    "item {item} texel ({x}, {y}) at {place:?}"
+                );
+            }
+        }
+    }
+
+    fn grow(&mut self, growth: PoolGrowth) {
+        assert_eq!(
+            growth.from_layers, self.layers,
+            "growth from the active pool"
+        );
+        assert!(growth.to_layers > growth.from_layers);
+        let live = (growth.from_layers * self.edge * self.edge) as usize;
+        let mut grown = vec![None; Self::texel_count(self.edge, growth.to_layers)];
+        grown[..live].copy_from_slice(&self.texels[..live]);
+        self.texels = grown;
+        self.layers = growth.to_layers;
+        self.texture_allocations += 1;
+    }
+
+    fn copy(&mut self, copy: &PoolCopy) {
+        assert_ne!(
+            copy.src.layer, copy.dst.layer,
+            "WebGPU forbids a copy within one subresource: {copy:?}"
+        );
+        let mut rect = Vec::with_capacity((copy.width * copy.height) as usize);
+        for y in 0..copy.height {
+            for x in 0..copy.width {
+                rect.push(self.texels[self.at(copy.src.layer, copy.src.x + x, copy.src.y + y)]);
+            }
+        }
+        for y in 0..copy.height {
+            for x in 0..copy.width {
+                let at = self.at(copy.dst.layer, copy.dst.x + x, copy.dst.y + y);
+                self.texels[at] = rect[(y * copy.width + x) as usize];
+            }
+        }
+    }
+
+    fn upload(&mut self, item: u32, place: BlockPlacement, width: u32, height: u32) {
+        assert!(place.layer < self.layers, "upload into the spare");
+        self.fill(item, place, width, height);
+    }
+}
+
+pub(super) struct GpuMirror {
+    pools: PerPool<TextureMirror>,
+    table: Vec<BlockTableEntry>,
+}
+
+impl GpuMirror {
+    /// The pools as level install creates them: `layers + 1` array layers
+    /// each and the model's whole table.
+    pub(super) fn new(model: &LightmapPoolModel) -> Self {
+        let bytes = model.table_bytes();
+        let table = bytes
+            .as_chunks::<BLOCK_TABLE_ENTRY_BYTES>()
+            .0
+            .iter()
+            .map(|entry| {
+                BlockTableEntry::from_words(std::array::from_fn(|w| {
+                    u32::from_ne_bytes(entry[w * 4..w * 4 + 4].try_into().unwrap())
+                }))
+            })
+            .collect();
+        let mirror = |kind| {
+            let pool = model.pool(kind);
+            TextureMirror::new(pool.edge(), pool.layers(), pool.texture_allocations())
+        };
+        Self {
+            pools: PerPool {
+                lightmap: mirror(PoolKind::Lightmap),
+                mask: mirror(PoolKind::Mask),
+            },
+            table,
+        }
+    }
+
+    /// `kind`'s pool with no model behind it, for a hand-built copy list.
+    pub(super) fn blank(kind: PoolKind, edge: u32, layers: u32) -> Self {
+        let mut pools = PerPool {
+            lightmap: TextureMirror::new(edge, 0, 0),
+            mask: TextureMirror::new(edge, 0, 0),
+        };
+        pools[kind] = TextureMirror::new(edge, layers, 1);
+        Self {
+            pools,
+            table: Vec::new(),
+        }
+    }
+
+    /// Write `item`'s texels at `place` in `kind`'s pool, as an upload would.
+    pub(super) fn fill(
+        &mut self,
+        kind: PoolKind,
+        item: u32,
+        place: BlockPlacement,
+        width: u32,
+        height: u32,
+    ) {
+        self.pools[kind].fill(item, place, width, height);
+    }
+
+    /// Every texel of `width × height` at `place` in `kind`'s pool is `item`'s.
+    pub(super) fn assert_holds(
+        &self,
+        kind: PoolKind,
+        item: u32,
+        place: BlockPlacement,
+        width: u32,
+        height: u32,
+    ) {
+        self.pools[kind].assert_holds(item, place, width, height);
+    }
+
+    pub(super) fn execute(&mut self, plan: &DrainPlan) {
+        for kind in PoolKind::ALL {
+            if let Some(growth) = plan.pools[kind].growth {
+                self.pools[kind].grow(growth);
+            }
+            for copy in &plan.pools[kind].copies {
+                self.pools[kind].copy(copy);
             }
         }
         for upload in &plan.uploads {
-            assert!(
-                upload.placement.layer < self.layers,
-                "upload into the spare"
-            );
-            for y in 0..upload.height {
-                for x in 0..upload.width {
-                    let p = upload.placement;
-                    let at = self.at(p.layer, p.x + x, p.y + y);
-                    self.texels[at] = Some(upload.block);
+            let (block, width, height) = (upload.block, upload.width, upload.height);
+            self.pools
+                .lightmap
+                .upload(block, upload.placement, width, height);
+            for (plane, place) in upload.planes.iter().enumerate() {
+                if let Some(place) = place {
+                    let item = mask_item(block, plane);
+                    self.pools.mask.upload(item, *place, width, height);
                 }
             }
         }
@@ -99,34 +196,46 @@ impl GpuMirror {
     }
 
     /// The mirrored table equals the model's, and every resident entry
-    /// samples its own block's texels in a usable layer of the active pool.
+    /// samples its own block's texels and its own planes in usable layers of
+    /// the active pools.
     pub(super) fn assert_matches(&self, model: &LightmapPoolModel) {
-        assert_eq!(self.layers, model.layers(), "pool layers");
-        assert_eq!(
-            self.texture_allocations,
-            model.texture_allocations(),
-            "texture allocations"
-        );
+        for kind in PoolKind::ALL {
+            let (mirror, pool) = (&self.pools[kind], model.pool(kind));
+            assert_eq!(mirror.layers, pool.layers(), "{} pool layers", kind.name());
+            assert_eq!(
+                mirror.texture_allocations,
+                pool.texture_allocations(),
+                "{} pool texture allocations",
+                kind.name()
+            );
+        }
         assert_eq!(self.table[0], BlockTableEntry::None);
         for block in 0..model.block_count() {
             let entry = self.table[block as usize + 1];
             assert_eq!(entry, model.table_entry(block), "entry of block {block}");
-            if let BlockTableEntry::Resident {
-                placement,
+            let BlockTableEntry::Resident {
+                addresses: BlockAddresses { lightmap, masks },
                 width,
                 height,
             } = entry
-            {
-                assert!(placement.layer < self.layers, "block {block} in the spare");
-                for y in 0..height {
-                    for x in 0..width {
-                        let at = self.at(placement.layer, placement.x + x, placement.y + y);
-                        assert_eq!(
-                            self.texels[at],
-                            Some(block),
-                            "block {block} texel ({x}, {y}) at {placement:?}"
-                        );
-                    }
+            else {
+                continue;
+            };
+            let (pools, layers) = (&self.pools, |kind: PoolKind| self.pools[kind].layers);
+            assert!(
+                lightmap.layer < layers(PoolKind::Lightmap),
+                "block {block} in the spare"
+            );
+            pools.lightmap.assert_holds(block, lightmap, width, height);
+            if let MaskAddresses::Planes(planes) = masks {
+                for (plane, place) in planes.iter().enumerate() {
+                    let Some(place) = place else { continue };
+                    assert!(
+                        place.layer < layers(PoolKind::Mask),
+                        "block {block} plane {plane} in the spare"
+                    );
+                    let item = mask_item(block, plane);
+                    pools.mask.assert_holds(item, *place, width, height);
                 }
             }
         }

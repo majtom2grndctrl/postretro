@@ -94,7 +94,13 @@ mod resolve_composite_gpu_test;
 #[cfg(test)]
 mod sdf_light_select_test;
 #[cfg(test)]
+mod shadowmask_sample_harness;
+#[cfg(test)]
 mod shadowmask_sample_test;
+#[cfg(test)]
+mod shadowmask_union_fixtures;
+#[cfg(test)]
+mod shadowmask_union_harness;
 #[cfg(test)]
 mod shadowmask_union_test;
 #[cfg(test)]
@@ -229,10 +235,7 @@ pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,
 };
-pub use lightmap_streaming::{
-    DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, LightmapStreamingLevers, LightmapStreamingLiveDiagnostics,
-    MAX_LIGHTMAP_POOL_CAP_LAYERS, StreamingReachLever,
-};
+pub use lightmap_streaming::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
 pub use model_cache::{
     CachedModel, ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey,
     ModelEntryIdentity,

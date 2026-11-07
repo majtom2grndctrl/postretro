@@ -5,7 +5,7 @@
 
 use glam::Vec3;
 use postretro_collision::EnvironmentView;
-use postretro_entities::components::agent::PlannedRide;
+use postretro_entities::components::agent::{PinEscape, PlannedRide};
 use postretro_entities::{
     KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand, Transform,
 };
@@ -259,11 +259,25 @@ impl Rig {
     }
 
     fn lift_y(&self) -> f32 {
+        self.lift_position().y
+    }
+
+    fn lift_position(&self) -> Vec3 {
         self.registry
             .get_component::<Transform>(self.lift)
             .unwrap()
             .position
-            .y
+    }
+
+    /// Hold the lift where it stands, as a pin does, or let it go.
+    fn hold(&mut self, held: bool) {
+        let mut mover = self
+            .registry
+            .get_component::<KinematicMoverComponent>(self.lift)
+            .unwrap()
+            .clone();
+        mover.blocked = held;
+        self.registry.set_component(self.lift, mover).unwrap();
     }
 
     /// Tick until `done`, at most `ticks`. Asserts no stuck recovery while riding.
@@ -612,6 +626,7 @@ fn a_body_inside_the_lowered_room_routes_by_its_own_surface_only() {
     let on_floor = NavStart {
         position: Vec3::new(12.0, rest_y(0.0), 5.0),
         ground: GroundRef::Mover(LIFT),
+        height: HEIGHT,
     };
     let path =
         crate::nav::find_path_from(&rig.graph, NavGate::new(rig.movers.docks()), on_floor, goal)
@@ -867,5 +882,157 @@ fn a_rider_keeps_its_ride_through_a_short_hop_and_loses_it_past_the_grace() {
         rig.state(id).ground,
         GroundRef::Airborne,
         "the grace ran out in the air"
+    );
+}
+
+// Regression: a walk across a lift gave up only when an admitted replan failed,
+// so under contention path steering drove the agents that lost the budget race
+// on toward the rim for up to ⌈N / budget⌉ ticks after the lift left.
+#[test]
+fn every_agent_about_to_cross_a_flush_lift_that_leaves_drops_its_path_that_tick_under_contention() {
+    let mut rig = Rig::with_east_floor(LiftSpec::on_trigger(), 0.0);
+    let goal = Vec3::new(20.0, rest_y(0.0), 5.0);
+    // More crossers than two ticks of replan budget, all owed on the same tick.
+    let mut starts: Vec<Vec3> = [8.2, 6.7]
+        .into_iter()
+        .flat_map(|x| [3.6, 4.5, 5.4, 6.3].map(|z| Vec3::new(x, rest_y(0.0), z)))
+        .collect();
+    starts.push(Vec3::new(5.2, rest_y(0.0), 5.0));
+    assert!(starts.len() > 2 * REPLAN_BUDGET_PER_TICK as usize);
+    let ids: Vec<EntityId> = starts.iter().map(|&at| rig.agent(at, Some(goal))).collect();
+    let planned = |rig: &Rig| {
+        ids.iter()
+            .all(|&id| !rig.state(id).path_crossings.is_empty())
+    };
+    for _ in 0..(ids.len() as u32).div_ceil(REPLAN_BUDGET_PER_TICK) + 1 {
+        if planned(&rig) {
+            break;
+        }
+        rig.tick();
+    }
+    assert!(planned(&rig), "every route crosses the lift");
+    for &id in &ids {
+        assert!(rig.position(id).x < 9.0, "short of the rim");
+    }
+
+    rig.command(MoverCommand::Start);
+    let result = rig.tick();
+    assert_eq!(
+        rig.movers.docks().docked_waypoint(LIFT),
+        None,
+        "the lift left"
+    );
+    assert!(result.replans <= REPLAN_BUDGET_PER_TICK);
+    for &id in &ids {
+        let agent = rig.state(id);
+        assert!(
+            agent.path.is_empty() && agent.blocked,
+            "{id:?} dropped its path and latched blocked the tick the lift left"
+        );
+    }
+    for _ in 0..120 {
+        rig.tick();
+        for &id in &ids {
+            let at = rig.position(id);
+            assert!(
+                at.x < 10.0 && at.y > rest_y(0.0) - 0.2,
+                "{id:?} never entered the shaft, at {at:?}"
+            );
+        }
+    }
+}
+
+// Regression: a step clear aimed at a spot on the pinning platform's own deck
+// walked on toward that fixed world point once the pin let go, while the deck
+// carried the agent the other way and off its trailing edge.
+#[test]
+fn an_agent_stepping_clear_across_a_deck_stops_when_the_platform_resumes() {
+    let spec = LiftSpec {
+        waypoints: vec![Vec3::ZERO, Vec3::X * 4.0],
+        ..LiftSpec::shuttle(300.0)
+    };
+    let mut rig = Rig::new(spec);
+    let id = rig.agent(Vec3::new(13.0, rest_y(0.0), 5.0), None);
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::Mover(LIFT);
+    rig.registry.set_component(id, agent).unwrap();
+    assert!(
+        rig.run_until(id, 120, |rig| rig.lift_position().x > 1.0),
+        "the platform set off"
+    );
+    assert_eq!(rig.state(id).ground, GroundRef::Mover(LIFT), "aboard");
+
+    // A pin holds the platform, and the agent sets off for a spot near the
+    // deck's trailing edge.
+    rig.hold(true);
+    let held_at = rig.lift_position();
+    let start = rig.position(id);
+    let target = Vec3::new(10.0 + held_at.x + 0.5, start.y, 5.0);
+    let mut agent = rig.state(id).clone();
+    agent.pin_escape = Some(PinEscape {
+        mover_id: LIFT,
+        target,
+        ticks_left: 90,
+    });
+    rig.registry.set_component(id, agent).unwrap();
+    for _ in 0..5 {
+        rig.tick();
+        assert!(rig.lift_position().distance(held_at) < 1.0e-5, "held");
+        assert!(rig.state(id).pin_escape.is_some(), "walking while held");
+    }
+    assert!(
+        start.x - rig.position(id).x > 0.1,
+        "it walked toward the spot"
+    );
+
+    // The pin lets go mid-walk and the platform moves on.
+    rig.hold(false);
+    rig.tick();
+    assert!(rig.lift_position().x > held_at.x, "moving again");
+    assert!(
+        rig.state(id).pin_escape.is_none(),
+        "the step clear ended once the pin let go"
+    );
+    for _ in 0..60 {
+        rig.tick();
+        let at = rig.position(id);
+        assert_eq!(
+            rig.state(id).ground,
+            GroundRef::Mover(LIFT),
+            "still on the deck, at {at:?}"
+        );
+        assert!(at.y > rest_y(0.0) - 0.2, "never fell, at {at:?}");
+    }
+}
+
+// Regression: a body on a linked lift that never rests found no route start
+// while the lift was between docks, so every replan failed and it latched
+// `blocked` for good, and Ai held its reachability for ever.
+#[test]
+fn an_agent_on_a_lift_that_never_rests_replans_from_the_floor_under_it() {
+    let mut rig = Rig::new(LiftSpec::shuttle(0.0));
+    let deck = rig.lift_y();
+    let goal = Vec3::new(5.0, rest_y(0.0), 5.0);
+    let id = rig.agent(Vec3::new(10.6, deck + rest_y(0.0), 5.0), Some(goal));
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::Mover(LIFT);
+    rig.registry.set_component(id, agent).unwrap();
+    let gate = NavGate::new(rig.movers.docks());
+    assert_eq!(gate.docked_waypoint(LIFT), None, "between docks");
+    assert!(
+        !rig.graph.between_docks(gate, GroundRef::Mover(LIFT)),
+        "plain ground: nothing to wait for"
+    );
+
+    assert!(
+        rig.run_until(id, 10, |rig| !rig.state(id).path.is_empty()),
+        "it planned from the floor under it"
+    );
+    assert!(!rig.state(id).blocked);
+    assert!(rig.state(id).planned_ride.is_none());
+    assert!(
+        rig.run_until(id, 300, |rig| rig.position(id).x < 9.0),
+        "and walked off toward its goal, at {:?}",
+        rig.position(id)
     );
 }

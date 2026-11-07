@@ -67,13 +67,16 @@ pub(super) fn resolve_combat_slots(
         let retained_slot = retained_combat_slot(outcome);
         // Steering routes from the agent's ground; scoring a slot from the
         // floor under a lift would price a route the agent cannot walk.
-        let agent_ground = registry
-            .get_component::<AgentComponent>(outcome.id)
-            .map_or(GroundRef::World, |agent| agent.ground);
+        let (agent_ground, agent_height) =
+            registry.get_component::<AgentComponent>(outcome.id).map_or(
+                (GroundRef::World, nav_graph.agent_params().height),
+                |agent| (agent.ground, agent.height),
+            );
         queries.push(CombatQuery {
             claimant_id: outcome.id.to_raw(),
             agent_pos: outcome.position,
             agent_ground,
+            agent_height,
             // The single query radius feeds both generated ring positions and
             // band scoring; it is the action-relative resolved standoff.
             engagement_radius: outcome.standoff_distance,

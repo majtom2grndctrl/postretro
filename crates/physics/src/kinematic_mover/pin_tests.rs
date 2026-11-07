@@ -2688,6 +2688,67 @@ fn a_lift_rider_pinned_at_the_deck_edge_steps_inward_and_the_lift_resumes() {
     rig.assert_rides(rider, LIFT);
 }
 
+// Regression: the carry test swept each leg only in authored order, so a rider
+// pinned on a `ping_pong` lift's way down was offered a rim spot that only the
+// way up clears: the ascent starts in contact with the lower floor's edge and
+// moves off it, while the descent meets it, re-pinning every cycle.
+#[test]
+fn a_ping_pong_lift_rider_pinned_at_the_rim_on_descent_steps_to_a_spot_the_descent_clears() {
+    // The deck spans x in [-1, 1] and docks at y = 0; the lower floor's slab
+    // starts at x = 1.05, its top at y = 0.25, above the deck's bottom stop.
+    let world = static_boxes(&[(Vec3::new(1.05, -1.0, -5.0), Vec3::new(6.0, 0.25, 5.0))]);
+    let mut rig = Rig::new(world);
+    let lift = rig.add_mover(
+        deck(LIFT, 1.0),
+        vec![Vec3::ZERO, Vec3::new(0.0, 2.5, 0.0)],
+        2.0,
+        KinematicMoverMode::PingPong,
+        BlockPolicy::Displace,
+    );
+    let rider = rig.add_agent(Vec3::new(0.0, rest_y(0.0), 0.0));
+    give_health(&mut rig, rider, 100.0);
+    rig.settle(20);
+    rig.assert_rides(rider, LIFT);
+    rig.start(lift);
+    for _ in 0..60 {
+        if rig.mover_position(lift).y > 1.0 {
+            break;
+        }
+        rig.tick();
+    }
+    // Raised clear of the slab, the rider moves to the rim. Its capsule
+    // overhangs the slab's edge too little to stand on it: the edge meets the
+    // capsule steeply, so the deck stays its floor.
+    let at = rig.position(rider);
+    rig.set_position(rider, Vec3::new(0.7, at.y, 0.0));
+    tick_until_held(&mut rig, lift);
+    let held_at = rig.mover_position(lift).y;
+    assert!(
+        held_at > 0.0 && held_at < 0.25,
+        "held on the way down, short of its stop, at {held_at}"
+    );
+    assert_eq!(rig.table.agent_yields(), &[(rider, LIFT)]);
+
+    let point = rider_clear_point(&rig, rider).expect("an inward spot rides clear both ways");
+    rig.set_position(rider, point);
+    rig.tick();
+    rig.tick();
+    let mut lowest = rig.mover_position(lift).y;
+    for tick in 0..8 {
+        assert!(
+            !rig.mover(lift).blocked,
+            "tick {tick}: the descent from {point:?} pins nothing"
+        );
+        rig.tick();
+        lowest = lowest.min(rig.mover_position(lift).y);
+    }
+    assert!(
+        lowest < held_at - SKIN_DISTANCE,
+        "the lift descends past where it held, to {lowest}"
+    );
+    rig.assert_rides(rider, LIFT);
+}
+
 // Regression: a rider a skin above its deck touches the platform only through
 // the carry that pins it, so its corpse-yield mark dropped in the very pass that
 // should honour it, and the platform held forever.

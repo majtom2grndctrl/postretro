@@ -17,7 +17,7 @@ use glam::Vec3;
 /// What baked records need from the level's movers: a mover and the height of
 /// each waypoint along its path.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NavMoverBound {
+pub(crate) struct NavMoverBound {
     pub mover_id: u32,
     pub waypoint_heights: Vec<f32>,
 }
@@ -45,38 +45,42 @@ impl<'a> NavGate<'a> {
 
     /// The [`Self::generation`] of the latest dock change that could open a
     /// route: a mover leaving a dock that closes a portal, docking where a link
-    /// opens, or starting to move on its own there. Never ahead of the
-    /// generation, so an agent that took the live generation is not owed.
+    /// opens, or, resting at its stops, starting to move on its own there.
+    /// Never ahead of the generation, so an agent that took the live generation
+    /// is not owed.
     pub fn opened_generation(self) -> u64 {
         self.docks.map_or(0, MoverDockTable::opened_generation)
     }
 
-    pub fn docked_at(self, mover_id: u32, waypoint: u32) -> bool {
+    pub(crate) fn docked_at(self, mover_id: u32, waypoint: u32) -> bool {
         self.docks
             .is_some_and(|docks| docks.docked_waypoint(mover_id) == Some(waypoint))
     }
 
-    pub fn is_docked(self, mover_id: u32) -> bool {
+    pub(crate) fn is_docked(self, mover_id: u32) -> bool {
         self.docked_waypoint(mover_id).is_some()
     }
 
-    pub fn docked_waypoint(self, mover_id: u32) -> Option<u32> {
+    pub(crate) fn docked_waypoint(self, mover_id: u32) -> Option<u32> {
         self.docks?.docked_waypoint(mover_id)
     }
 
     /// Whether the mover will leave its dock by itself, so a ride can start.
-    pub fn moves_on_its_own(self, mover_id: u32) -> bool {
+    pub(crate) fn moves_on_its_own(self, mover_id: u32) -> bool {
         self.docks
             .is_some_and(|docks| docks.moves_on_its_own(mover_id))
     }
 
-    /// Whether baked records name this mover, so its docks are tracked.
-    pub fn watches(self, mover_id: u32) -> bool {
-        self.docks.is_some_and(|docks| docks.watches(mover_id))
+    /// Whether a watched mover's own motion ends each leg docked, so it can be
+    /// ridden. Any other mover is plain ground to navigation: a route over it
+    /// starts from the floor beneath, and its links open only to walk across.
+    pub(crate) fn rests_at_stops(self, mover_id: u32) -> bool {
+        self.docks
+            .is_some_and(|docks| docks.rests_at_stops(mover_id))
     }
 
     /// Whether a mover docked at the portal's gate waypoint closes it now.
-    pub fn portal_closed(self, graph: &NavGraph, portal_index: usize) -> bool {
+    pub(crate) fn portal_closed(self, graph: &NavGraph, portal_index: usize) -> bool {
         self.docks.is_some()
             && graph
                 .portal_gates(portal_index)
@@ -94,10 +98,7 @@ impl<'a> NavGate<'a> {
     }
 
     /// Whether a mover's dock now closes a crossing still ahead of a body at
-    /// `position` walking `path` toward `path[cursor]`. A crossing toward an
-    /// earlier waypoint is behind it; one toward the current waypoint is
-    /// behind once the body stands on that waypoint's side of the edge, so a
-    /// door closing at a chaser's back cuts nothing. Allocation-free.
+    /// `position` walking `path` toward `path[cursor]`. Allocation-free.
     pub(crate) fn closes_route_ahead(
         self,
         graph: &NavGraph,
@@ -106,34 +107,71 @@ impl<'a> NavGate<'a> {
         cursor: usize,
         position: Vec3,
     ) -> bool {
+        crossings
+            .iter()
+            .any(|crossing| self.closes_crossing_ahead(graph, crossing, path, cursor, position))
+    }
+
+    /// [`Self::closes_route_ahead`] for the route's links alone: whether the
+    /// mover a walk-across steps onto has left the dock it was planned at.
+    pub(crate) fn closes_link_ahead(
+        self,
+        graph: &NavGraph,
+        crossings: &[PathCrossing],
+        path: &[Vec3],
+        cursor: usize,
+        position: Vec3,
+    ) -> bool {
         crossings.iter().any(|crossing| {
-            let index = crossing.index as usize;
-            let (closed, edge) = match crossing.kind {
-                CrossingKind::Portal => (
-                    self.portal_closed(graph, index),
-                    graph.portals().get(index).map(|p| (p.left, p.right)),
-                ),
-                CrossingKind::Link => (
-                    self.link_closed(graph, index),
-                    graph.links().get(index).map(|l| (l.left, l.right)),
-                ),
-            };
-            if !closed {
-                return false;
-            }
-            let waypoint = crossing.waypoint as usize;
-            if waypoint != cursor {
-                return waypoint > cursor;
-            }
-            let (Some((left, right)), Some(&target)) = (edge, path.get(waypoint)) else {
-                return true;
-            };
-            let edge = (Vec3::from_array(left), Vec3::from_array(right));
-            match (edge_side(edge, position), edge_side(edge, target)) {
-                (Some(here), Some(there)) => here == 0.0 || there == 0.0 || here * there < 0.0,
-                _ => true,
-            }
+            crossing.kind == CrossingKind::Link
+                && self.closes_crossing_ahead(graph, crossing, path, cursor, position)
         })
+    }
+
+    /// Whether `crossing` is closed and still ahead. One toward a later
+    /// waypoint than the cursor is ahead; one two or more behind is behind. One
+    /// toward the cursor's waypoint, or the one just passed, is behind once the
+    /// body stands on that waypoint's side of the edge: the cursor moves on
+    /// within the arrival band of a corner, which can lie just past the edge
+    /// while the body is still short of it. So a door closing at a chaser's back
+    /// cuts nothing.
+    fn closes_crossing_ahead(
+        self,
+        graph: &NavGraph,
+        crossing: &PathCrossing,
+        path: &[Vec3],
+        cursor: usize,
+        position: Vec3,
+    ) -> bool {
+        let index = crossing.index as usize;
+        let (closed, edge) = match crossing.kind {
+            CrossingKind::Portal => (
+                self.portal_closed(graph, index),
+                graph.portals().get(index).map(|p| (p.left, p.right)),
+            ),
+            CrossingKind::Link => (
+                self.link_closed(graph, index),
+                graph.links().get(index).map(|l| (l.left, l.right)),
+            ),
+        };
+        if !closed {
+            return false;
+        }
+        let waypoint = crossing.waypoint as usize;
+        if waypoint > cursor {
+            return true;
+        }
+        if waypoint + 1 < cursor {
+            return false;
+        }
+        let (Some((left, right)), Some(&target)) = (edge, path.get(waypoint)) else {
+            return true;
+        };
+        let edge = (Vec3::from_array(left), Vec3::from_array(right));
+        match (edge_side(edge, position), edge_side(edge, target)) {
+            (Some(here), Some(there)) => here == 0.0 || there == 0.0 || here * there < 0.0,
+            _ => true,
+        }
     }
 }
 
@@ -194,12 +232,12 @@ pub fn install_mover_records(
         .collect();
     graph.validate_mover_records(&bounds);
     let gated: Vec<(u32, u32)> = graph
-        .gates()
+        .gates
         .iter()
         .map(|gate| (gate.mover_id, gate.waypoint))
         .collect();
     let linked: Vec<(u32, u32)> = graph
-        .links()
+        .links
         .iter()
         .map(|link| (link.mover_id, link.waypoint))
         .collect();

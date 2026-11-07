@@ -1055,6 +1055,24 @@ fn a_riders_target_reachability_holds_its_boarding_value_and_recomputes_after_ex
 // must not read as unreachable for the whole trip.
 #[test]
 fn a_body_carried_between_docks_before_its_ride_starts_holds_its_target_reachability() {
+    let (held, after_exit) = reachability_carried_between_docks(500.0);
+    assert!(held, "held while carried between docks");
+    assert!(!after_exit, "recomputed once off the lift");
+}
+
+// A lift that never rests at its stops is plain ground: a body on it routes
+// from the floor under it, so its verdict recomputes rather than freezing.
+#[test]
+fn a_body_on_a_lift_that_never_rests_recomputes_its_target_reachability() {
+    let (held, _) = reachability_carried_between_docks(0.0);
+    assert!(!held, "recomputed from the floor under it while aboard");
+}
+
+/// Carry an enemy on a linked lift waiting `wait_ms` at its stops, between
+/// docks for 24 ticks, its target in a region nothing joins and its cached
+/// verdict reachable. Returns whether the verdict held every tick aboard, and
+/// the verdict 24 ticks after it steps onto world ground.
+fn reachability_carried_between_docks(wait_ms: f32) -> (bool, bool) {
     use postretro_entities::components::agent::AgentComponent;
     use postretro_entities::{
         KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
@@ -1116,7 +1134,7 @@ fn a_body_carried_between_docks_before_its_ride_starts_holds_its_target_reachabi
                     waypoints: vec![Vec3::ZERO, Vec3::Y * 8.0],
                     waypoint_names: vec!["low".into(), "high".into()],
                     speed_mps: 1.0,
-                    wait_ms: 0.0,
+                    wait_ms,
                     mode: KinematicMoverMode::PingPong,
                     started: true,
                     spin_axis: Vec3::ZERO,
@@ -1161,6 +1179,7 @@ fn a_body_carried_between_docks_before_its_ride_starts_holds_its_target_reachabi
             .target_reachable
     };
 
+    let mut held = true;
     for _ in 0..24 {
         tick(&mut registry, &mut movers);
         assert_eq!(
@@ -1168,14 +1187,14 @@ fn a_body_carried_between_docks_before_its_ride_starts_holds_its_target_reachabi
             None,
             "the lift is between docks"
         );
-        assert!(reachable(&registry), "held while carried between docks");
+        held &= reachable(&registry);
     }
     agent.ground = GroundRef::World;
     registry.set_component(enemy, agent).unwrap();
     for _ in 0..24 {
         tick(&mut registry, &mut movers);
     }
-    assert!(!reachable(&registry), "recomputed once off the lift");
+    (held, reachable(&registry))
 }
 
 #[test]

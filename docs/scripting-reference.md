@@ -1904,7 +1904,8 @@ doors and lifts:
   lift's arrival or departure by up to one stride.
 - **Riding a lift.** While the enemy rides a lift, `targetReachable` holds the
   value it had when the enemy boarded, on every acquisition-due tick. It is
-  recomputed on the first one after the enemy steps off.
+  recomputed on the first one after the enemy steps off. It also holds while a
+  lift carries the enemy between its docks, before the ride starts.
 
 Only maps compiled with a current `prl-build` carry the door and lift data the
 fact reads. A map compiled before that reads as if its doors never gate a route.

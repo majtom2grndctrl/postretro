@@ -360,44 +360,55 @@ pub fn tick(
     )
 }
 
-/// [`tick`] for the fixed tick: it also hears which living agents movers yield
-/// to, and fills `corpse_yields` with the pairs the mover should now pass
-/// through. Empty in a tick with no pins, and allocates nothing then.
-pub fn tick_with_mover_pins(
-    registry: &mut EntityRegistry,
-    collision: &CombinedCollisionWorld<'_>,
-    nav_graph: Option<&NavGraph>,
-    pins: MoverPins<'_>,
-    corpse_yields: &mut Vec<AgentMoverPair>,
-    environment: EnvironmentView<'_>,
-    dt: f32,
-) -> AgentTickResult {
-    tick_impl(
-        registry,
-        collision,
-        nav_graph,
-        pins,
-        corpse_yields,
-        environment,
-        dt,
-    )
-}
+// The fixed tick's entry is crate-only; test harnesses outside the crate reach
+// it through `test-support`, as the replan constants above.
+mod fixed_tick {
+    use super::*;
 
-/// What steering hears from the tick's movers.
-#[derive(Clone, Copy)]
-pub struct MoverPins<'a> {
-    /// The agents movers yielded to since the last blocking pass.
-    pub yields: &'a [AgentMoverPair],
-    pub gate: NavGate<'a>,
+    /// [`tick`] for the fixed tick: it also hears which living agents movers
+    /// yield to, and fills `corpse_yields` with the pairs the mover should now
+    /// pass through. Empty in a tick with no pins, and allocates nothing then.
+    pub fn tick_with_mover_pins(
+        registry: &mut EntityRegistry,
+        collision: &CombinedCollisionWorld<'_>,
+        nav_graph: Option<&NavGraph>,
+        pins: MoverPins<'_>,
+        corpse_yields: &mut Vec<AgentMoverPair>,
+        environment: EnvironmentView<'_>,
+        dt: f32,
+    ) -> AgentTickResult {
+        tick_impl(
+            registry,
+            collision,
+            nav_graph,
+            pins,
+            corpse_yields,
+            environment,
+            dt,
+        )
+    }
+
+    /// What steering hears from the tick's movers.
+    #[derive(Clone, Copy)]
+    pub struct MoverPins<'a> {
+        /// The agents movers yielded to since the last blocking pass.
+        pub yields: &'a [AgentMoverPair],
+        pub gate: NavGate<'a>,
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    impl MoverPins<'_> {
+        pub(in crate::agent_steering) const NONE: MoverPins<'static> = MoverPins {
+            yields: &[],
+            gate: NavGate::OPEN,
+        };
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl MoverPins<'_> {
-    const NONE: MoverPins<'static> = MoverPins {
-        yields: &[],
-        gate: NavGate::OPEN,
-    };
-}
+pub use fixed_tick::{MoverPins, tick_with_mover_pins};
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use fixed_tick::{MoverPins, tick_with_mover_pins};
 
 fn tick_impl(
     registry: &mut EntityRegistry,
@@ -500,9 +511,14 @@ fn tick_impl(
             }
         };
 
-        if let Some((mover_id, walk)) =
-            pin_escape::escape_velocity(current.id, &mut agent, position, corpse_yields, dt)
-        {
+        if let Some((mover_id, walk)) = pin_escape::escape_velocity(
+            current.id,
+            &mut agent,
+            position,
+            registry,
+            corpse_yields,
+            dt,
+        ) {
             settle_if_diverted(&mut agent);
             move_without_path(
                 registry,
@@ -521,7 +537,6 @@ fn tick_impl(
         let world = mover_link::RideWorld {
             gate,
             collision,
-            registry: &*registry,
             dt,
         };
         let ride_walk = match mover_link::advance(&mut agent, position, world) {
@@ -601,6 +616,7 @@ fn tick_impl(
             let from = NavStart {
                 position,
                 ground: agent.ground,
+                height: agent.height,
             };
             match nav_graph.and_then(|graph| find_path_from(graph, gate, from, destination)) {
                 Some(path) => {
@@ -650,11 +666,31 @@ fn tick_impl(
             }
         }
         // An agent that WANTED a replan but lost the prioritized budget race this
-        // tick keeps its existing `path` and `planned_destination` untouched (the
-        // path is only ever mutated inside the admitted-replan block above), so it
-        // follows its last route — stale-but-moving — instead of freezing. It
+        // tick keeps its existing `path` and `planned_destination` untouched, so
+        // it follows its last route — stale-but-moving — instead of freezing. It
         // stays eligible: `planned_destination` is unchanged, so the drift test
         // (or the cooldown) still fires next tick until a slot frees up.
+        //
+        // The one exception is a lift that has left the dock a walk across it
+        // was planned at: path steering would carry the agent over the rim
+        // until a slot frees. It gives up at once, as a planned ride does when
+        // its lift leaves, and the search waits for admission. Only an agent
+        // whose generation is unsettled can be owed this, so the test costs
+        // nothing while gates stand still.
+        if !admitted_here
+            && agent.gate_generation != gate.generation()
+            && nav_graph.is_some_and(|graph| {
+                gate.closes_link_ahead(
+                    graph,
+                    &agent.path_crossings,
+                    &agent.path,
+                    agent.waypoint_cursor,
+                    position,
+                )
+            })
+        {
+            mover_link::give_up_boarding(&mut agent);
+        }
 
         // Compute the smoothed path-following velocity from the current path target.
         let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent.radius;
@@ -891,7 +927,6 @@ fn admit_replans(
     let world = mover_link::RideWorld {
         gate,
         collision,
-        registry,
         dt,
     };
 
@@ -945,8 +980,10 @@ fn admit_replans(
 }
 
 /// Whether a gate change still owes `agent`, standing at `position`, a replan,
-/// leaving out agents stepping clear of a mover or riding one, as admission
-/// does. For harnesses that measure how long a gate change waits.
+/// leaving out agents stepping clear of a mover or riding one. Admission also
+/// leaves out boarders and bodies a lift carries off, which this cannot see
+/// without the tick's collision; the stress map it serves has no lift an
+/// agent can board. For harnesses that measure how long a gate change waits.
 #[cfg(any(test, feature = "test-support"))]
 pub fn gate_replan_owed(
     agent: &AgentComponent,
@@ -1044,6 +1081,7 @@ fn blocked_destination_now_directly_routable(
     let from = NavStart {
         position,
         ground: agent.ground,
+        height: agent.height,
     };
     match (
         from.region(graph, gate),

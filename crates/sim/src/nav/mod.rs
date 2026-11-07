@@ -7,7 +7,8 @@ mod path;
 // One-shot path queries. `find_path_from` is the production entry: steering, AI
 // reachability and combat scoring route from a body's position and ground.
 // `find_path_gated` assumes world ground, and `find_path` also ignores gates.
-pub use gate::{MoverNav, NavGate, NavMoverBound, install_mover_records};
+pub(crate) use gate::NavMoverBound;
+pub use gate::{MoverNav, NavGate, install_mover_records};
 pub use path::{NavStart, find_path, find_path_from, find_path_gated};
 
 // Bake→runtime funnel contract tests: bake fixture floors with the real
@@ -325,6 +326,7 @@ impl NavGraph {
 
     /// Baked mover gates, in section order. Empty for a map with no movers or a
     /// version 2 section.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn gates(&self) -> &[NavMoverGate] {
         &self.gates
     }
@@ -382,7 +384,7 @@ impl NavGraph {
 
     /// Drop every record naming a mover, waypoint, portal or region this level
     /// lacks, with one warning each, so the rest of navigation still works.
-    pub fn validate_mover_records(&mut self, movers: &[NavMoverBound]) {
+    pub(crate) fn validate_mover_records(&mut self, movers: &[NavMoverBound]) {
         let waypoint_exists = |mover_id: u32, waypoint: u32| {
             movers.iter().any(|mover| {
                 mover.mover_id == mover_id && (waypoint as usize) < mover.waypoint_heights.len()
@@ -424,9 +426,9 @@ impl NavGraph {
             .collect();
     }
 
-    /// Baked mover links, in section order. Empty for a map with no movers or a
-    /// version 2 section.
-    pub fn links(&self) -> &[NavMoverLink] {
+    /// Baked mover links, in wire order ([`sorted_links`]). Empty for a map with
+    /// no movers or a version 2 section.
+    pub(crate) fn links(&self) -> &[NavMoverLink] {
         &self.links
     }
 
@@ -491,9 +493,11 @@ impl NavGraph {
     /// eroded wall margin.
     ///
     /// This is the routing definition of "which region does this world position
-    /// belong to": `find_path` resolves BOTH endpoints through it, and the
-    /// steering replan gates use it so a target skirting in and out of the
-    /// eroded band does not flap between "routable" and "off-mesh".
+    /// belong to": the route queries (`find_path_from` and its wrappers) resolve
+    /// the goal through it, and the start too unless the body stands on a lift
+    /// it can ride ([`Self::route_mover`]). The steering replan gates use it so
+    /// a target skirting in and out of the eroded band does not flap between
+    /// "routable" and "off-mesh".
     pub(crate) fn resolve_region_at(&self, position: Vec3) -> Option<usize> {
         if let Some(region) = self.region_at(position) {
             return Some(region);
@@ -600,7 +604,8 @@ impl NavGraph {
                 if !gate.docked_at(board.mover_id, board.waypoint) {
                     continue;
                 }
-                let rides = gate.moves_on_its_own(board.mover_id)
+                let rides = gate.rests_at_stops(board.mover_id)
+                    && gate.moves_on_its_own(board.mover_id)
                     && self.is_terminus(board.mover_id, board.waypoint);
                 for exit in self.mover_links(board.mover_id) {
                     let exit = &self.links[exit];
@@ -614,17 +619,29 @@ impl NavGraph {
         false
     }
 
-    /// Whether a body on `ground` has no route start now: it stands on a mover
-    /// with links while that mover is between docks. A route from there
-    /// starts only once the mover docks, so a cached verdict about where the
-    /// body can go should hold until then.
-    pub fn between_docks(&self, gate: NavGate<'_>, ground: GroundRef) -> bool {
+    /// The lift a route from `ground` starts on: a mover with links that rests
+    /// at its stops. A search from it leaves through its links, so the floor
+    /// under it in XZ says nothing about where the body can go. `None` for
+    /// plain ground, a mover with no links or one that never rests included:
+    /// that route starts from the region under the body.
+    pub(crate) fn route_mover(&self, gate: NavGate<'_>, ground: GroundRef) -> Option<u32> {
         match ground {
-            GroundRef::Mover(mover_id) => {
-                !self.mover_links(mover_id).is_empty() && gate.docked_waypoint(mover_id).is_none()
+            GroundRef::Mover(mover_id)
+                if !self.mover_links(mover_id).is_empty() && gate.rests_at_stops(mover_id) =>
+            {
+                Some(mover_id)
             }
-            GroundRef::World | GroundRef::Airborne => false,
+            GroundRef::Mover(_) | GroundRef::World | GroundRef::Airborne => None,
         }
+    }
+
+    /// Whether a body on `ground` has no route start now: it stands on a lift
+    /// ([`Self::route_mover`]) while the lift is between docks. A route from
+    /// there starts only once the lift docks, so a cached verdict about where
+    /// the body can go should hold until then.
+    pub fn between_docks(&self, gate: NavGate<'_>, ground: GroundRef) -> bool {
+        self.route_mover(gate, ground)
+            .is_some_and(|mover_id| gate.docked_waypoint(mover_id).is_none())
     }
 
     /// Iterate the portals touching `region_index` (the per-region adjacency
@@ -1012,6 +1029,70 @@ mod tests {
         assert!(!graph.between_docks(NavGate::new(&docked), GroundRef::Mover(LIFT)));
         assert!(!graph.between_docks(NavGate::new(&moving), GroundRef::World));
         assert!(!graph.between_docks(NavGate::new(&moving), GroundRef::Mover(DOOR)));
+    }
+
+    /// The lift's dock table with no wait at its stops: never resting. Docked
+    /// at its first stop while started, as a pin holds it there, when
+    /// `at_rest`; otherwise between docks.
+    fn restless_lift_docks(links: &[NavMoverLink], at_rest: bool) -> MoverDockTable {
+        let mut movers = MoverTickStateTable::default();
+        let linked: Vec<(u32, u32)> = links
+            .iter()
+            .map(|link| (link.mover_id, link.waypoint))
+            .collect();
+        movers.watch_mover_docks(&[], &linked);
+        let mut docks = movers.docks().clone();
+        let mut lift = lift_component(at_rest);
+        lift.wait_ms = 0.0;
+        docks.update(&lift);
+        docks
+    }
+
+    // A lift that never rests at its stops is plain ground: no ride across it,
+    // and a body on it routes from the floor under it, docked or not.
+    #[test]
+    fn a_lift_that_never_rests_offers_no_ride_and_is_plain_ground_to_a_route_start() {
+        let west = Vec3::new(2.0, 0.05, 2.0);
+        let east = Vec3::new(10.0, 0.05, 2.0);
+        let links = vec![lift_link(0, 0, 4.0), lift_link(1, 1, 8.0)];
+        let graph = NavGraph::from_section(&lift_only_section(links.clone(), false));
+        let resting = lift_docks(&links, false, true);
+        let docked = restless_lift_docks(&links, true);
+        let moving = restless_lift_docks(&links, false);
+        assert!(
+            NavGate::new(&docked).moves_on_its_own(LIFT),
+            "it would leave"
+        );
+        assert!(!NavGate::new(&docked).rests_at_stops(LIFT));
+
+        let ride = find_path_gated(&graph, NavGate::new(&resting), west, east)
+            .expect("a resting lift rides across");
+        assert!(ride.ride().is_some());
+        assert!(
+            find_path_gated(&graph, NavGate::new(&docked), west, east).is_none(),
+            "no ride on a lift that never rests"
+        );
+        assert!(!graph.endpoints_are_topologically_connected(NavGate::new(&docked), west, east));
+
+        // Over the west landing, on the lift.
+        let aboard = NavStart {
+            position: Vec3::new(4.5, 1.0, 2.0),
+            ground: GroundRef::Mover(LIFT),
+            height: 2.0,
+        };
+        for (state, docks) in [("docked", &docked), ("moving", &moving)] {
+            let gate = NavGate::new(docks);
+            assert!(!graph.between_docks(gate, aboard.ground), "{state}");
+            assert_eq!(aboard.region(&graph, gate), Some(0), "{state}");
+            assert!(
+                find_path_from(&graph, gate, aboard, west).is_some(),
+                "{state}: routes from the floor under it"
+            );
+        }
+        // A lift that rests is the route start, and has none between docks.
+        let resting_moving = lift_docks(&links, false, false);
+        assert!(graph.between_docks(NavGate::new(&resting_moving), aboard.ground));
+        assert!(find_path_from(&graph, NavGate::new(&resting_moving), aboard, west).is_none());
     }
 
     // A hand-built or corrupt section can list links in any order; the graph

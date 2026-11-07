@@ -112,21 +112,26 @@ pub fn find_path_gated(
     let start = NavStart {
         position: start,
         ground: GroundRef::World,
+        height: graph.agent.height,
     };
     find_path_from(graph, gate, start, goal)
 }
 
-/// Where a route starts: a position, and what the body stands on there.
+/// Where a route starts: a position, what the body stands on there, and how
+/// tall it is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavStart {
     pub position: Vec3,
     pub ground: GroundRef,
+    /// The body's full standing height; its feet sit half of it below
+    /// `position`. Read only on a lift, to find the surface it stands on.
+    pub height: f32,
 }
 
 impl NavStart {
     /// The region a route from here searches out of, resolved as
     /// [`find_path_from`] resolves it. `None` off the mesh, and for a body on a
-    /// mover with links: its search leaves through the mover's links, so the
+    /// lift it can ride: its search leaves through the lift's links, so the
     /// floor under it in XZ says nothing about where it can go.
     pub(crate) fn region(self, graph: &NavGraph, gate: NavGate<'_>) -> Option<usize> {
         match search_start(graph, gate, self)? {
@@ -140,12 +145,12 @@ impl NavStart {
 #[derive(Clone, Copy)]
 enum SearchStart {
     Region(usize),
-    /// On a mover with links, docked at `dock`, at this surface height. The
-    /// floor under it in XZ says nothing about where it can go.
+    /// On a lift docked at `dock`, its feet at world height `foot`. The floor
+    /// under it in XZ says nothing about where it can go.
     Mover {
         mover_id: u32,
         dock: u32,
-        surface: f32,
+        foot: f32,
     },
 }
 
@@ -221,17 +226,17 @@ pub fn find_path_from(
     Some(path)
 }
 
+/// The search start for a body: its lift's links, or the region under it. A
+/// mover that never rests at its stops is plain ground here, as for
+/// [`NavGraph::between_docks`], which reads the same [`NavGraph::route_mover`].
 fn search_start(graph: &NavGraph, gate: NavGate<'_>, from: NavStart) -> Option<SearchStart> {
-    if let GroundRef::Mover(mover_id) = from.ground
-        && !graph.mover_links(mover_id).is_empty()
-    {
+    if let Some(mover_id) = graph.route_mover(gate, from.ground) {
         // Mid-travel there is nothing to plan from: the ride ends at a dock.
         let dock = gate.docked_waypoint(mover_id)?;
-        let foot = from.position.y - graph.agent.height * 0.5 - SKIN_DISTANCE;
         return Some(SearchStart::Mover {
             mover_id,
             dock,
-            surface: graph.mover_surface(mover_id, dock, foot),
+            foot: from.position.y - from.height * 0.5 - SKIN_DISTANCE,
         });
     }
     graph
@@ -570,20 +575,25 @@ fn astar_corridor(
         }
     };
     let surface_tolerance = graph.agent.step_height.max(0.01);
-    // A link of the mover a body stands on at `dock`, `surface`: its cost to
-    // reach from there, and the dock it rides from when it is not this one.
-    let leave_mover = |exit: usize, dock: u32, surface: f32| -> Option<(f32, Option<u32>)> {
+    // A link of the mover a body stands on at `dock`, its feet at world height
+    // `foot`: its cost to reach from there, and the dock it rides from when it
+    // is not this one. A ride costs its standing price plus the climb, so a
+    // search that starts on the lift prices it as one that boards it does.
+    let leave_mover = |exit: usize, dock: u32, foot: f32| -> Option<(f32, Option<u32>)> {
         let link = &links[exit];
+        let surface = graph.mover_surface(link.mover_id, dock, foot);
         if (graph.link_surface(exit) - surface).abs() > surface_tolerance {
             return None;
         }
         if link.waypoint == dock {
             return Some((0.0, None));
         }
-        let rides = gate.moves_on_its_own(link.mover_id)
+        let rides = gate.rests_at_stops(link.mover_id)
+            && gate.moves_on_its_own(link.mover_id)
             && graph.is_terminus(link.mover_id, dock)
             && graph.is_terminus(link.mover_id, link.waypoint);
-        rides.then_some((RIDE_COST, Some(dock)))
+        let rise = (link.left[1] - foot).abs();
+        rides.then_some((RIDE_COST + rise, Some(dock)))
     };
 
     let node_count = link_base + 2 * links.len();
@@ -633,10 +643,10 @@ fn astar_corridor(
         SearchStart::Mover {
             mover_id,
             dock,
-            surface,
+            foot,
         } => {
             for link in graph.mover_links(mover_id) {
-                let Some((cost, ride)) = leave_mover(link, dock, surface) else {
+                let Some((cost, ride)) = leave_mover(link, dock, foot) else {
                     continue;
                 };
                 let node = exit_node(link);
@@ -658,20 +668,16 @@ fn astar_corridor(
             // Standing on a docked mover: every way off it is one step more.
             let boarded = link_of(node);
             let link = &links[boarded];
-            let surface = graph.link_surface(boarded);
             for next_link in graph.mover_links(link.mover_id) {
                 if next_link == boarded {
                     continue;
                 }
-                let Some((cost, ride)) = leave_mover(next_link, link.waypoint, surface) else {
+                // The boarding edge lies on the surface the body stands on.
+                let Some((cost, ride)) = leave_mover(next_link, link.waypoint, link.left[1]) else {
                     continue;
                 };
                 let next = exit_node(next_link);
-                let rise = (links[next_link].left[1] - link.left[1]).abs();
-                let tentative = g_score[node]
-                    + distance_xz(mid(node), link_mid(next_link))
-                    + cost
-                    + if ride.is_some() { rise } else { 0.0 };
+                let tentative = g_score[node] + distance_xz(mid(node), link_mid(next_link)) + cost;
                 if tentative < g_score[next] {
                     g_score[next] = tentative;
                     came_from[next] = Some(node);
@@ -1833,6 +1839,137 @@ mod tests {
         assert!(
             find_path(&graph, start, goal).is_none(),
             "an unthreadable sub-2*clearance pinch must drop to a clean None"
+        );
+    }
+
+    const LIFT: u32 = 3;
+    /// The lift's top dock: as high as the east floor.
+    const LIFT_TOP: f32 = 8.0;
+
+    /// A lift whose deck spans x 10..14, z 3..7, docked low between the west
+    /// floor (region 0) and, docked high, the east floor (region 2). A corridor
+    /// north of the shaft (region 1) walks round from west to east.
+    fn lift_and_walk_round() -> (NavGraph, crate::kinematic_mover::MoverDockTable) {
+        let region = |x0, z0, x1, z1, low, high| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1,
+            floor_y_min: low,
+            floor_y_max: high,
+        };
+        let mut section = section(
+            vec![
+                region(0, 0, 10, 10, 0.0, 0.0),
+                region(6, 10, 14, 12, 0.0, LIFT_TOP),
+                region(14, 0, 24, 12, LIFT_TOP, LIFT_TOP),
+            ],
+            vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [6.0, 0.0, 10.0],
+                    right: [10.0, 0.0, 10.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [14.0, LIFT_TOP, 12.0],
+                    right: [14.0, LIFT_TOP, 10.0],
+                },
+            ],
+        );
+        section.links = vec![
+            NavMoverLink {
+                mover_id: LIFT,
+                waypoint: 0,
+                region: 0,
+                left: [10.0, 0.0, 3.0],
+                right: [10.0, 0.0, 7.0],
+            },
+            NavMoverLink {
+                mover_id: LIFT,
+                waypoint: 1,
+                region: 2,
+                left: [14.0, LIFT_TOP, 7.0],
+                right: [14.0, LIFT_TOP, 3.0],
+            },
+        ];
+        let mut graph = NavGraph::from_section(&section);
+        graph.validate_mover_records(&[crate::nav::NavMoverBound {
+            mover_id: LIFT,
+            waypoint_heights: vec![0.0, LIFT_TOP],
+        }]);
+
+        let mut movers = crate::kinematic_mover::MoverTickStateTable::default();
+        movers.watch_mover_docks(&[], &[(LIFT, 0), (LIFT, 1)]);
+        let mut docks = movers.docks().clone();
+        // Started and waiting at its low dock: it rests there and will leave.
+        docks.update(&postretro_entities::KinematicMoverComponent::new(
+            LIFT,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::Y * LIFT_TOP],
+                waypoint_names: vec!["low".into(), "high".into()],
+                speed_mps: 2.0,
+                wait_ms: 500.0,
+                mode: postretro_entities::KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        ));
+        (graph, docks)
+    }
+
+    /// A body of `height` standing on the lift's deck at its low dock.
+    fn aboard(height: f32) -> NavStart {
+        NavStart {
+            position: Vec3::new(12.0, height * 0.5 + SKIN_DISTANCE, 5.0),
+            ground: GroundRef::Mover(LIFT),
+            height,
+        }
+    }
+
+    // A ride from the deck costs its climb, as one boarded from the floor does:
+    // here the walk round is shorter than the ride's standing price plus its
+    // 8 m rise, though not shorter than the standing price alone.
+    #[test]
+    fn a_ride_from_the_deck_costs_its_climb_like_one_boarded_from_the_floor() {
+        let (graph, docks) = lift_and_walk_round();
+        let gate = NavGate::new(&docks);
+        let goal = Vec3::new(20.0, LIFT_TOP + 0.9 + SKIN_DISTANCE, 5.0);
+
+        let path = find_path_from(&graph, gate, aboard(1.8), goal).expect("a route east");
+
+        assert!(path.ride().is_none(), "walked round: {path:?}");
+        assert!(
+            path.iter().any(|point| point.z > 10.0),
+            "through the north corridor: {path:?}"
+        );
+    }
+
+    // The deck surface a body stands on comes from its own height, not the
+    // baked agent's: a short body on the deck still leaves by the deck's links.
+    #[test]
+    fn a_body_on_a_lift_finds_its_deck_from_its_own_height() {
+        let (graph, docks) = lift_and_walk_round();
+        let gate = NavGate::new(&docks);
+        let west = Vec3::new(5.0, 0.9 + SKIN_DISTANCE, 5.0);
+
+        let short = aboard(0.8);
+        assert!(
+            find_path_from(&graph, gate, short, west).is_some(),
+            "it steps off onto the west floor"
+        );
+        let misread = NavStart {
+            height: graph.agent_params().height,
+            ..short
+        };
+        assert!(
+            find_path_from(&graph, gate, misread, west).is_none(),
+            "read at the baked height, its feet sit below the deck"
         );
     }
 }

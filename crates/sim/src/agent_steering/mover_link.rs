@@ -9,7 +9,6 @@ use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::agent_motion::carried_by_mover;
 use crate::nav::{NavGate, distance_xz};
 use postretro_entities::components::agent::{AgentComponent, AgentRide, PlannedRide};
-use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry, KinematicMoverMode};
 use postretro_foundation::GroundRef;
 
 /// How close to its boarding point an agent stops steering by path and walks the
@@ -21,17 +20,11 @@ const BOARD_RADIUS_FACTOR: f32 = 3.0;
 /// a rider keeps its ride exactly as long as it keeps from stopping its mover.
 const RIDE_AIRBORNE_GRACE_MS: f32 = crate::kinematic_mover::RIDER_GRACE_MS;
 
-/// The shortest wait at a stop, in ticks, that surely holds a self-driven mover
-/// at rest for one whole tick. A mover arrives part way through a tick, so a
-/// shorter wait can begin and end between two tick boundaries, which is no dock.
-const RESTING_WAIT_TICKS: f32 = 2.0;
-
 /// What the ride code reads besides the agent: this tick's docks and movers.
 #[derive(Clone, Copy)]
 pub(super) struct RideWorld<'a> {
     pub gate: NavGate<'a>,
     pub collision: &'a CombinedCollisionWorld<'a>,
-    pub registry: &'a EntityRegistry,
     pub dt: f32,
 }
 
@@ -139,7 +132,7 @@ fn board(
             // on the rim.
             return Some(walk_towards(agent, position, plan.board_point));
         }
-        if !rests_at_its_stops(world.registry, plan.mover_id, world.dt) {
+        if !world.gate.rests_at_stops(plan.mover_id) {
             give_up_boarding(agent);
             return None;
         }
@@ -193,26 +186,8 @@ fn enter_ride_if_carried(agent: &mut AgentComponent, world: RideWorld<'_>) {
 /// Ride past one leg's travel, or one run, of a moving mover.
 fn carried_off(agent: &AgentComponent, world: RideWorld<'_>) -> Option<u32> {
     let mover_id = standing_on(agent)?;
-    (world.gate.watches(mover_id)
-        && carried_by_mover(world.collision, agent.ground)
-        && rests_at_its_stops(world.registry, mover_id, world.dt))
-    .then_some(mover_id)
-}
-
-/// Whether `mover_id`'s own motion ends each leg docked: a run that completes,
-/// or a wait at each stop of at least [`RESTING_WAIT_TICKS`]. Scans the movers,
-/// so it runs only as a ride is about to start.
-fn rests_at_its_stops(registry: &EntityRegistry, mover_id: u32, dt: f32) -> bool {
-    let resting_wait_ms = RESTING_WAIT_TICKS * dt * 1000.0;
-    registry
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .any(|(_, value)| match value {
-            ComponentValue::KinematicMover(mover) => {
-                mover.mover_id == mover_id
-                    && (mover.mode == KinematicMoverMode::Once || mover.wait_ms >= resting_wait_ms)
-            }
-            _ => false,
-        })
+    (world.gate.rests_at_stops(mover_id) && carried_by_mover(world.collision, agent.ground))
+        .then_some(mover_id)
 }
 
 /// The lift a plan boards waits at the boarding dock and will leave by itself.
@@ -242,9 +217,10 @@ fn start_ride(agent: &mut AgentComponent, ride: AgentRide) {
     agent.ride_airborne_ticks = 0;
 }
 
-/// Drop a ride plan that can no longer board, and owe a replan at once: a lift
-/// a script parked may never flip a gate again to wake the agent.
-fn give_up_boarding(agent: &mut AgentComponent) {
+/// Drop a route that can no longer step onto its lift, a planned ride or a
+/// walk across, and owe a replan at once: a lift a script parked may never
+/// flip a gate again to wake the agent.
+pub(super) fn give_up_boarding(agent: &mut AgentComponent) {
     agent.planned_ride = None;
     clear_path(agent);
     agent.blocked = true;

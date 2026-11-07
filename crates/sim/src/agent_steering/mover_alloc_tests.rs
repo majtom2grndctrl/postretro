@@ -9,7 +9,7 @@ use glam::{Quat, Vec3};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::{AgentComponent, PlannedRide};
 use postretro_entities::{
-    EntityRegistry, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
+    KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
 };
 use postretro_foundation::GroundRef;
 
@@ -95,8 +95,6 @@ struct Scene {
     moving: KinematicMoverComponent,
     capsule: AgentCapsule,
     rider: AgentComponent,
-    /// Holds the lift, so a ride can read how it rests at its stops.
-    registry: EntityRegistry,
 }
 
 impl Scene {
@@ -132,7 +130,13 @@ impl Scene {
                     ],
                 ),
             ],
-            docks: MoverDockTable::default(),
+            // The lift's links are watched, so its docks are tracked and a
+            // ride can read how it rests at its stops.
+            docks: {
+                let mut movers = crate::kinematic_mover::MoverTickStateTable::default();
+                movers.watch_mover_docks(&[], &[(LIFT, 0), (LIFT, 1)]);
+                movers.docks().clone()
+            },
             docked: mover(LIFT, true),
             moving: mover(LIFT, false),
             capsule: AgentCapsule {
@@ -141,12 +145,6 @@ impl Scene {
                 step_height: 0.4,
             },
             rider: AgentComponent::new(0.35, 1.8, 0.4, 4.0),
-            registry: {
-                let mut registry = EntityRegistry::new();
-                let lift = registry.spawn(Transform::default());
-                registry.set_component(lift, mover(LIFT, true)).unwrap();
-                registry
-            },
         }
     }
 
@@ -228,7 +226,6 @@ impl Scene {
         let world = RideWorld {
             gate,
             collision: &collision,
-            registry: &self.registry,
             dt: DT,
         };
         let _ = advance(&mut self.rider, Vec3::ZERO, world);
@@ -252,11 +249,6 @@ impl Scene {
 #[test]
 fn the_per_tick_mover_paths_allocate_nothing() {
     let mut scene = Scene::new();
-    scene.docks = {
-        let mut movers = crate::kinematic_mover::MoverTickStateTable::default();
-        movers.watch_mover_docks(&[], &[(LIFT, 0), (LIFT, 1)]);
-        movers.docks().clone()
-    };
     for _ in 0..3 {
         scene.drive();
     }
@@ -287,6 +279,8 @@ fn the_per_tick_mover_paths_allocate_nothing() {
 fn a_plan_boarded_on_a_lift_already_moving_keeps_its_exit() {
     let mut scene = Scene::new();
     scene.drive();
+    // Under way between its docks.
+    scene.docks.update(&scene.moving);
     let poses = Scene::poses();
     let collision = CombinedCollisionWorld::new(&scene.world, &scene.movers, &poses);
     scene.rider.ground = GroundRef::Mover(LIFT);
@@ -300,7 +294,6 @@ fn a_plan_boarded_on_a_lift_already_moving_keeps_its_exit() {
     let world = RideWorld {
         gate: NavGate::new(&scene.docks),
         collision: &collision,
-        registry: &scene.registry,
         dt: DT,
     };
     let _ = advance(&mut scene.rider, Vec3::ZERO, world);

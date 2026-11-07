@@ -37,11 +37,17 @@ const WALK_BLOCKING_FACE: f32 = 0.2;
 /// their count unbounded.
 const MIN_WALK_SAMPLE_SPACING: f32 = 0.05;
 
+/// Spots on the pinning mover's own top tested per search. Each one that
+/// passes the step where the pin happened costs a sweep of the whole course
+/// both ways; half a ring holds the deck spots nearest the body, and past them
+/// the search goes on off the deck only.
+const MAX_DECK_CANDIDATES: u32 = 8;
+
 /// The nearest point within `reach` where a capsule stands on a floor, walks to
 /// in a straight line, and is out of `mover_id`'s way: off the mover, clear of
-/// every pose of its course; on its top, carried along that whole course
-/// without meeting a blocker. `None` when no such point exists, as in a pit the
-/// mover fills. Ring order is fixed, so two runs pick the same point.
+/// every pose of its course; on its top, carried along that whole course either
+/// way without meeting a blocker. `None` when no such point exists, as in a pit
+/// the mover fills. Ring order is fixed, so two runs pick the same point.
 pub fn find_mover_clear_point(
     registry: &EntityRegistry,
     collision: &CombinedCollisionWorld<'_>,
@@ -73,6 +79,7 @@ pub fn find_mover_clear_point(
     };
     let spacing = capsule.radius.max(COURSE_SAMPLE_SPACING);
     let rings = (reach / spacing).floor() as u32;
+    let mut deck_candidates = 0;
     for ring in 1..=rings {
         let distance = spacing * ring as f32;
         for step in 0..RING_ANGLES {
@@ -90,6 +97,10 @@ pub fn find_mover_clear_point(
             // reads clear of it while the mover carries the body back into its
             // pin. There the carry along the course decides instead.
             let out_of_the_way = if floor == GroundRef::Mover(mover_id) {
+                if deck_candidates == MAX_DECK_CANDIDATES {
+                    continue;
+                }
+                deck_candidates += 1;
                 course.carries_clear(&carry_world, point, capsule)
             } else {
                 !course.reaches(point, capsule)
@@ -210,6 +221,18 @@ fn walk_is_clear(
     true
 }
 
+/// How far `at` lies from the segment a course step travels.
+fn distance_to_step(at: Vec3, (from, to): (Vec3, Vec3)) -> f32 {
+    let span = to - from;
+    let along = span.length_squared();
+    let t = if along > 0.0 {
+        ((at - from).dot(span) / along).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    at.distance(from + span * t)
+}
+
 /// Every pose a mover's path can put it in, its present pose included.
 struct MoverCourse<'a> {
     mover: &'a KinematicMoverComponent,
@@ -238,35 +261,60 @@ impl MoverCourse<'_> {
 
     /// Whether a body standing at `point` on the mover's top rides its whole
     /// course without the carry meeting static geometry or another mover: the
-    /// test that pins a rider, swept leg by leg from the course samples. A mover
-    /// with a spin axis is never ridden clear: its turn is no leg to sweep.
+    /// test that pins a rider, swept step by step over the course samples. Each
+    /// step is swept both ways, since a `ping_pong` mover runs every leg back
+    /// and any mover can be reversed by command; a sweep starting in contact
+    /// and moving off it meets nothing, so one direction can clear where the
+    /// other pins. The step nearest the mover's pose, where the pin happened,
+    /// goes first so a spot that re-pins there fails at once. A mover with a
+    /// spin axis is never ridden clear: its turn is no leg to sweep.
     fn carries_clear(&self, world: &PinWorld<'_>, point: Vec3, capsule: CollisionCapsule) -> bool {
         if self.mover.spin_axis != Vec3::ZERO {
             return false;
         }
         let parry = capsule.parry();
         let now = self.transform.position;
-        self.mover.waypoints.windows(2).all(|leg| {
-            let span = leg[1] - leg[0];
+        let rides_clear = |from: Vec3, to: Vec3| {
+            let step = MoverPose {
+                transform: Transform {
+                    position: to,
+                    ..self.transform
+                },
+                linear_velocity: Vec3::ZERO,
+                tick_delta: to - from,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: 0.0,
+            };
+            world
+                .blocked_carry(self.mover.mover_id, step, point + (from - now), &parry)
+                .is_none()
+        };
+        let both_ways = |(from, to): (Vec3, Vec3)| rides_clear(from, to) && rides_clear(to, from);
+        let Some((nearest, _)) = self.steps().enumerate().min_by(|(_, a), (_, b)| {
+            distance_to_step(now, *a).total_cmp(&distance_to_step(now, *b))
+        }) else {
+            return true;
+        };
+        self.steps().nth(nearest).is_some_and(both_ways)
+            && self
+                .steps()
+                .enumerate()
+                .all(|(index, step)| index == nearest || both_ways(step))
+    }
+
+    /// The course as (from, to) steps of at most [`COURSE_SAMPLE_SPACING`],
+    /// leg by leg in authored order. Empty for a single-waypoint mover.
+    fn steps(&self) -> impl Iterator<Item = (Vec3, Vec3)> + '_ {
+        self.mover.waypoints.windows(2).flat_map(|leg| {
+            let (start, span) = (leg[0], leg[1] - leg[0]);
             let samples = (span.length() / COURSE_SAMPLE_SPACING).ceil().max(1.0) as u32;
-            (0..samples).all(|sample| {
-                let from = leg[0] + span * (sample as f32 / samples as f32);
-                let to = leg[0] + span * ((sample + 1) as f32 / samples as f32);
-                let step = MoverPose {
-                    transform: Transform {
-                        position: to,
-                        ..self.transform
-                    },
-                    linear_velocity: Vec3::ZERO,
-                    tick_delta: to - from,
-                    angular_velocity: Vec3::ZERO,
-                    tick_rotation_delta: Quat::IDENTITY,
-                    carry_yaw: false,
-                    tick_dt: 0.0,
-                };
-                world
-                    .blocked_carry(self.mover.mover_id, step, point + (from - now), &parry)
-                    .is_none()
+            (0..samples).map(move |sample| {
+                (
+                    start + span * (sample as f32 / samples as f32),
+                    start + span * ((sample + 1) as f32 / samples as f32),
+                )
             })
         })
     }

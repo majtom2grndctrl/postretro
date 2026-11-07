@@ -11,7 +11,8 @@ use crate::kinematic_mover::{AgentMoverPair, find_mover_clear_point};
 use crate::nav::distance_xz;
 use crate::scripting_systems::health::is_quiescent;
 use postretro_entities::components::agent::{AgentComponent, PinEscape};
-use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_foundation::GroundRef;
 
 /// How far a pinned agent searches, as seconds of its own travel. Short of the
 /// two seconds a mover may wait on it, with room left for the mover to finish.
@@ -83,17 +84,25 @@ pub(super) fn plan_escapes(
 /// can be zero, and a hold must still end. The last step lands on the point
 /// rather than past it, so a fast agent cannot overshoot the arrival band
 /// back and forth.
+///
+/// The walk also ends once the agent stands on the pinning mover and that
+/// mover no longer holds: the pin has let go, and the clear point is a fixed
+/// world spot that the moving deck would carry the agent away from, so walking
+/// on could take it off the deck.
 pub(super) fn escape_velocity(
     id: EntityId,
     agent: &mut AgentComponent,
     position: Vec3,
+    registry: &EntityRegistry,
     corpse_yields: &mut Vec<AgentMoverPair>,
     dt: f32,
 ) -> Option<(u32, Vec3)> {
     let escape = agent.pin_escape.as_mut()?;
     let remaining = escape.target - position;
     let distance = distance_xz(escape.target, position);
-    if distance <= ESCAPE_ARRIVAL_RADIUS {
+    let released_on_deck = agent.ground == GroundRef::Mover(escape.mover_id)
+        && !mover_holds(registry, escape.mover_id);
+    if distance <= ESCAPE_ARRIVAL_RADIUS || released_on_deck {
         agent.pin_escape = None;
         return None;
     }
@@ -110,4 +119,15 @@ pub(super) fn escape_velocity(
     };
     let walk = Vec3::new(remaining.x, 0.0, remaining.z).normalize_or_zero() * speed;
     Some((escape.mover_id, walk))
+}
+
+/// Whether `mover_id` is held where it stands by a body in its way. Scans the
+/// movers, so it runs only for an agent stepping clear on that mover's deck.
+fn mover_holds(registry: &EntityRegistry, mover_id: u32) -> bool {
+    registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .any(|(_, value)| {
+            matches!(value, ComponentValue::KinematicMover(mover)
+                if mover.mover_id == mover_id && mover.blocked)
+        })
 }

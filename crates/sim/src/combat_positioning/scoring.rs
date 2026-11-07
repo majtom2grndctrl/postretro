@@ -62,6 +62,7 @@ pub(super) fn score_candidate(
     let from = NavStart {
         position: query.agent_pos,
         ground: query.agent_ground,
+        height: query.agent_height,
     };
     let path = find_path_from(query.nav_graph, gate, from, position)?;
     let target_distance = distance_xz(position, query.target_pos);

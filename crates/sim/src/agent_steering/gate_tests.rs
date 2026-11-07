@@ -424,6 +424,54 @@ fn a_failed_replan_keeps_the_path_ahead_of_a_door_closed_behind() {
     );
 }
 
+// Regression: the cursor moves on within the arrival band of a corner, which can
+// lie just past a gated portal while the body is still short of it. The crossing
+// then read as behind, so the door docking cost nothing and a failed replan kept
+// the dead path.
+#[test]
+fn a_door_closing_a_portal_just_ahead_counts_though_the_cursor_passed_the_corner_beyond_it() {
+    let mut rig = closed_door();
+    rig.tick();
+    // Off the mesh, so the replan fails and only the crossing decides the path.
+    let unroutable = Vec3::new(100.0, REST_Y, 100.0);
+    // In the doorway, short of its far portal at x 11; the corner lies past it.
+    let at = Vec3::new(10.8, REST_Y, 5.0);
+    let corner = Vec3::new(11.3, REST_Y, 5.0);
+    assert!(
+        distance_xz(at, corner) <= ARRIVAL_RADIUS_FACTOR * RADIUS,
+        "inside the corner's arrival band"
+    );
+    let id = rig.agent(at, Some(unroutable));
+    let mut agent = rig.agent_state(id).clone();
+    agent.path = vec![Vec3::new(8.0, REST_Y, 5.0), corner, EAST];
+    agent.mandatory_waypoints = vec![false; 3];
+    agent.path_crossings = vec![
+        PathCrossing {
+            kind: CrossingKind::Portal,
+            index: 0,
+            waypoint: 1,
+        },
+        PathCrossing {
+            kind: CrossingKind::Portal,
+            index: 1,
+            waypoint: 1,
+        },
+    ];
+    agent.waypoint_cursor = 2;
+    rig.registry.set_component(id, agent).unwrap();
+
+    assert!(
+        gate_change_owes_replan(rig.agent_state(id), at, Some(&rig.graph), rig.gate()),
+        "the far portal is still ahead"
+    );
+    rig.tick();
+    let agent = rig.agent_state(id);
+    assert!(
+        agent.path.is_empty() && agent.blocked,
+        "the dead path dropped and the agent latched blocked"
+    );
+}
+
 #[test]
 fn a_door_docking_closed_wakes_no_blocked_agent_and_one_leaving_does() {
     let mut rig = closed_door();
@@ -777,6 +825,7 @@ fn combat_positioning_never_picks_a_slot_overlapping_a_docked_door() {
             claimant_id: 1,
             agent_pos: WEST,
             agent_ground: postretro_foundation::GroundRef::World,
+            agent_height: HEIGHT,
             engagement_radius: 0.9,
             target_pos: target,
             enemy_eye_offset: Vec3::Y * 0.7,

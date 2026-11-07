@@ -315,6 +315,7 @@ pub(super) fn evaluate(
             (Some(target), Some(graph)) if evaluate_acquisition => {
                 let agent = registry.get_component::<AgentComponent>(snap.id).ok();
                 let ground = agent.map_or(GroundRef::World, |agent| agent.ground);
+                let height = agent.map_or(graph.agent_params().height, |agent| agent.height);
                 // A rider's route is the ride, so the fact holds its boarding
                 // value until it steps off. A body carried between docks
                 // before steering starts its ride has no route start until
@@ -325,6 +326,7 @@ pub(super) fn evaluate(
                     let from = NavStart {
                         position: snap.position,
                         ground,
+                        height,
                     };
                     brain.target_reachable =
                         find_path_from(graph, gate, from, target.position).is_some();

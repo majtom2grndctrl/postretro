@@ -1,4 +1,4 @@
-// Movable navigation agent: collide-and-slide harness.
+// Movable navigation agent: collide-and-slide controller.
 //
 // A minimal capsule sweep-and-slide for navmesh agents: mover carry and
 // displacement, iterative slide, step-up, ground-stick, gravity and mover

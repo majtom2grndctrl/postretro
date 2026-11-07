@@ -3,9 +3,19 @@
 // See: context/lib/movement.md §6 · context/lib/build_pipeline.md §Navigation bake
 
 use postretro_entities::{KinematicMoverComponent, KinematicMoverMode};
+use postretro_foundation::TICK_DURATION;
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 use super::segment_indices;
+
+/// The shortest wait at a stop, in fixed ticks, that surely holds a self-driven
+/// mover at rest for one whole tick. A mover arrives part way through a tick, so
+/// a shorter wait can begin and end between two tick boundaries, which is no dock.
+const RESTING_WAIT_TICKS: f32 = 2.0;
+
+/// [`RESTING_WAIT_TICKS`] at the fixed simulation step, which every mover tick
+/// runs at, so the table needs no caller's dt.
+const RESTING_WAIT_MS: f32 = RESTING_WAIT_TICKS * TICK_DURATION.as_secs_f32() * 1000.0;
 
 /// The waypoint `mover` rests at this tick, if any. Resting means it began and
 /// ended the tick there: a timed wait, a finished run, a `goToPathNode` hold,
@@ -59,12 +69,22 @@ pub fn mover_moves_on_its_own(mover: &KinematicMoverComponent) -> bool {
         && mover.target_segment.is_none()
 }
 
+/// Whether `mover`'s own motion ends each leg docked: a run that completes, or
+/// a wait at each stop of at least [`RESTING_WAIT_TICKS`]. Mode and wait are
+/// authored and never change, so this is fixed for the mover's life.
+fn mover_rests_at_its_stops(mover: &KinematicMoverComponent) -> bool {
+    mover.mode == KinematicMoverMode::Once || mover.wait_ms >= RESTING_WAIT_MS
+}
+
 /// One watched mover's dock state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MoverDock {
     mover_id: u32,
     waypoint: Option<u32>,
     moves_on_its_own: bool,
+    /// Set from the component before each [`MoverDockTable::record`]. Fixed
+    /// once the mover's first tick sets it, so it bumps no generation itself.
+    rests_at_stops: bool,
     /// Updated by the current mover tick. An entry the tick never reaches has
     /// lost its mover, and is undocked once the tick ends.
     seen: bool,
@@ -109,6 +129,7 @@ impl MoverDockTable {
                     mover_id,
                     waypoint: None,
                     moves_on_its_own: false,
+                    rests_at_stops: false,
                     seen: false,
                 }),
         );
@@ -137,6 +158,7 @@ impl MoverDockTable {
     pub(super) fn undock_unseen(&mut self) {
         for index in 0..self.docks.len() {
             if !self.docks[index].seen {
+                self.docks[index].rests_at_stops = false;
                 self.record(index, None, false);
             }
         }
@@ -147,7 +169,9 @@ impl MoverDockTable {
         let Some(index) = self.index(mover.mover_id) else {
             return;
         };
-        self.docks[index].seen = true;
+        let dock = &mut self.docks[index];
+        dock.seen = true;
+        dock.rests_at_stops = mover_rests_at_its_stops(mover);
         self.record(
             index,
             mover_docked_waypoint(mover),
@@ -172,8 +196,10 @@ impl MoverDockTable {
     }
 
     /// Whether moving `before` to the new state can open a route: it leaves a
-    /// dock that closes a portal, docks where a link opens, or, docked where a
-    /// link opens, starts moving on its own so a ride can begin there.
+    /// dock that closes a portal, docks where a link opens (a walk-across, on
+    /// any mover), or, docked where a link opens, starts moving on its own so a
+    /// ride can begin there. Only a mover that rests at its stops is ridden, so
+    /// for any other that start opens nothing.
     fn change_opens_a_route(
         &self,
         before: MoverDock,
@@ -187,7 +213,7 @@ impl MoverDockTable {
         let link_opens = waypoint.is_some_and(|docked| {
             self.is_linked(mover_id, docked)
                 && (before.waypoint != Some(docked)
-                    || (moves_on_its_own && !before.moves_on_its_own))
+                    || (before.rests_at_stops && moves_on_its_own && !before.moves_on_its_own))
         });
         leaves_a_gate || link_opens
     }
@@ -223,16 +249,27 @@ impl MoverDockTable {
             .is_some_and(|index| self.docks[index].moves_on_its_own)
     }
 
+    /// Whether a watched mover's own motion ends each leg docked: `Once` mode,
+    /// or a wait at each stop of at least two fixed ticks. Only such a mover
+    /// can be ridden; any other is plain ground to navigation, its links open
+    /// for walking across while it happens to dock. False for a mover not
+    /// watched, or not yet seen by a mover tick.
+    pub fn rests_at_stops(&self, mover_id: u32) -> bool {
+        self.index(mover_id)
+            .is_some_and(|index| self.docks[index].rests_at_stops)
+    }
+
     /// Bumped whenever a watched mover's dock state changes.
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
     /// The [`Self::generation`] of the latest change that could open a route: a
-    /// mover leaving a dock that closes a portal, docking where a link opens, or
-    /// starting to move on its own while docked there. An agent that stamped
-    /// the generation before it is owed a fresh look; one change that only
-    /// closes routes leaves it alone. Never ahead of the generation.
+    /// mover leaving a dock that closes a portal, docking where a link opens, or,
+    /// resting at its stops, starting to move on its own while docked there. An
+    /// agent that stamped the generation before it is owed a fresh look; one
+    /// change that only closes routes leaves it alone. Never ahead of the
+    /// generation.
     pub fn opened_generation(&self) -> u64 {
         self.opened_generation
     }
@@ -250,7 +287,7 @@ mod tests {
         MoverTickStateTable, advance_mover_phase_one_tick, apply_mover_command,
         run_kinematic_mover_tick,
     };
-    use super::{MoverDockTable, mover_docked_waypoint};
+    use super::{MoverDockTable, RESTING_WAIT_MS, mover_docked_waypoint};
 
     const DT: f32 = 1.0 / 60.0;
     const DOOR: u32 = 4;
@@ -453,6 +490,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_mover_rests_at_its_stops_when_its_run_ends_or_it_waits_two_ticks() {
+        const ONCE: u32 = 6;
+        const WAITS: u32 = 7;
+        const NO_WAIT: u32 = 8;
+        const SHORT_WAIT: u32 = 9;
+        const NEVER_TICKED: u32 = 10;
+        let path = || vec![Vec3::ZERO, Vec3::Y * 2.0];
+        let movers = [
+            mover(ONCE, path(), KinematicMoverMode::Once, 0.0),
+            mover(WAITS, path(), KinematicMoverMode::PingPong, 1000.0),
+            mover(NO_WAIT, path(), KinematicMoverMode::PingPong, 0.0),
+            mover(SHORT_WAIT, path(), KinematicMoverMode::PingPong, 30.0),
+        ];
+        assert!(30.0 < RESTING_WAIT_MS, "the short wait is under two ticks");
+        let mut docks = MoverDockTable::default();
+        let linked = [ONCE, WAITS, NO_WAIT, SHORT_WAIT, NEVER_TICKED].map(|mover_id| (mover_id, 1));
+        docks.watch(&[], &linked);
+        for mover in &movers {
+            docks.update(mover);
+        }
+
+        assert!(docks.rests_at_stops(ONCE), "a run that ends rests");
+        assert!(docks.rests_at_stops(WAITS), "a long wait rests");
+        assert!(!docks.rests_at_stops(NO_WAIT), "a pass-through never rests");
+        assert!(
+            !docks.rests_at_stops(SHORT_WAIT),
+            "nor does a sub-tick wait"
+        );
+        assert!(!docks.rests_at_stops(NEVER_TICKED), "unknown until ticked");
+        assert!(!docks.rests_at_stops(DOOR), "unwatched");
+    }
+
+    // A ride begins only on a mover that rests at its stops, so one that never
+    // rests opens nothing by starting at a linked dock; docking there opens a
+    // walk-across on either.
+    #[test]
+    fn starting_at_a_linked_dock_opens_a_route_only_on_a_lift_that_rests_at_its_stops() {
+        for (wait_ms, opens_a_ride) in [(1000.0, true), (0.0, false)] {
+            let mut lift = mover(
+                LIFT,
+                vec![Vec3::ZERO, Vec3::Y * 2.0],
+                KinematicMoverMode::PingPong,
+                wait_ms,
+            );
+            let mut docks = MoverDockTable::default();
+            docks.watch(&[], &[(LIFT, 0)]);
+
+            // Never started, it rests at its first stop.
+            docks.update(&lift);
+            assert_eq!(docks.docked_waypoint(LIFT), Some(0));
+            assert_eq!(
+                docks.opened_generation(),
+                docks.generation(),
+                "wait {wait_ms}: docking at a link opens a walk-across"
+            );
+            let docked = docks.generation();
+
+            // Started, and still at that dock this tick, as a pin holds it.
+            lift.started = true;
+            docks.update(&lift);
+            assert_eq!(docks.docked_waypoint(LIFT), Some(0));
+            assert!(docks.moves_on_its_own(LIFT));
+            assert_eq!(docks.generation(), docked + 1, "wait {wait_ms}: changed");
+            assert_eq!(
+                docks.opened_generation() == docks.generation(),
+                opens_a_ride,
+                "wait {wait_ms}: a ride opens only on a lift that rests"
+            );
+        }
+    }
+
     /// One registry mover the mover tick drives.
     fn spawn(registry: &mut EntityRegistry, mover: KinematicMoverComponent) -> EntityId {
         let entity = registry.spawn(Transform {
@@ -494,6 +603,7 @@ mod tests {
         run_kinematic_mover_tick(&mut registry, &mut table, DT);
         assert_eq!(table.docks().docked_waypoint(DOOR), Some(0));
         assert_eq!(table.docks().docked_waypoint(LIFT), None, "mid-travel");
+        assert!(table.docks().rests_at_stops(DOOR), "a `Once` door rests");
         let generation = table.docks().generation();
 
         // The lift was docked nowhere: losing it changes nothing.
@@ -505,6 +615,10 @@ mod tests {
         registry.despawn(door).expect("door despawns");
         run_kinematic_mover_tick(&mut registry, &mut table, DT);
         assert_eq!(table.docks().docked_waypoint(DOOR), None);
+        assert!(
+            !table.docks().rests_at_stops(DOOR),
+            "a lost mover rests nowhere"
+        );
         assert_eq!(table.docks().generation(), generation + 1);
         assert_eq!(table.docks().opened_generation(), generation + 1);
         for _ in 0..3 {

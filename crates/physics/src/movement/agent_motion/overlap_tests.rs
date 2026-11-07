@@ -16,7 +16,7 @@ const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
 const SPAN: (f32, f32) = (-50.0, 50.0);
 
-/// The agent harness fixture capsule: radius 0.35, 1.8 m tall.
+/// The agent controller fixture capsule: radius 0.35, 1.8 m tall.
 fn capsule(step_height: f32) -> AgentCapsule {
     AgentCapsule {
         radius: 0.35,

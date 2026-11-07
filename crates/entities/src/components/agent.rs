@@ -62,7 +62,8 @@ pub struct PathCrossing {
     /// Index of the portal or link in the level's navigation graph.
     pub index: u32,
     /// Index into the agent's `path` of the waypoint it walks toward while
-    /// crossing. Once the cursor is past it the crossing is behind the agent,
+    /// crossing. Once the body stands on this waypoint's side of the crossed
+    /// edge, or the cursor is two past it, the crossing is behind the agent,
     /// and a mover closing it changes nothing about the route ahead.
     pub waypoint: u32,
 }

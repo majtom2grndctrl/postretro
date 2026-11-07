@@ -140,6 +140,28 @@ fn an_outcome_naming_room_past_the_level_is_refused_whole() {
     assert!(rig.controller.apply_outcome(outcome).is_err());
 }
 
+// Room for a plane the block does not store would later free more mask room
+// than the block ever held.
+#[test]
+fn an_outcome_reserving_a_plane_the_block_does_not_store_is_refused_whole() {
+    let mut blocks = corridor_blocks(64, true);
+    blocks[0].planes = [true, false];
+    let mut rig = Rig::new(blocks, corridor_set(), None);
+    rig.portal(0, &[]).unwrap();
+    let outcome = LightmapDrainOutcome {
+        room_reserved: PerPool {
+            lightmap: vec![0],
+            mask: vec![mask_item(0, 0), mask_item(0, 1)],
+        },
+        ..LightmapDrainOutcome::default()
+    };
+    let error = rig.controller.apply_outcome(outcome).unwrap_err();
+    assert!(
+        error.to_string().contains("which the block does not store"),
+        "{error}"
+    );
+}
+
 /// Install camera 0's mandatory pairs, then have the mask pool turn band pair
 /// 3 away with lightmap room to spare.
 fn refuse_block_3_for_mask_room(rig: &mut Rig) {

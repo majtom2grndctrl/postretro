@@ -335,7 +335,7 @@ impl LightmapStreamState {
              device allows (maxTextureArrayLayers {}, one kept as the repack spare) and \
              mandatory or visible cell blocks still do not fit; they stay missing, a permanent \
              miss rather than a transient one, until fewer blocks are wanted. Logged once per \
-             level",
+             pool per level",
             kind.name(),
             self.model.pool(kind).layers(),
             self.max_array_layers,

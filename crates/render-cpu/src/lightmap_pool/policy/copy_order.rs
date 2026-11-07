@@ -140,11 +140,14 @@ const LAYERS_TRIED_FOR_CLEARING: usize = 4;
 
 /// Free-space search an order may spend per block, in candidate rows squared,
 /// before it gives up: planning runs on the frame thread, and a pool that jams
-/// retries every target layer on every open layer. It is checked only between
-/// the candidate layers a target layer tries, never inside a step, so an order
-/// can overrun it: a landing that spends it runs to its end, and clearing a
-/// layer after a build never checks it. Measured on the hallway's block mix, a
-/// tighter budget starts losing orders that exist.
+/// retries every target layer on every open layer. It is checked between
+/// steps, never inside one: before each layer a build over blocks tries, and
+/// before each layer a clear tries. So an order overruns it by at most one
+/// step, one landing or one layer's parking. Once it is spent, no step that
+/// searches free space starts: a build over blocks refuses and a clear does
+/// nothing. Only a build with nothing in its way, which searches nothing,
+/// still lands. Measured on the hallway's block mix, a tighter budget starts
+/// losing orders that exist.
 const WORK_PER_BLOCK: usize = 8192;
 
 /// Append to `copies` an order that takes every block to its target rect and
@@ -232,7 +235,9 @@ impl Order<'_> {
     /// Build `target` on the open layer with the fewest texels in its way,
     /// the one holding most of it in place among equals. A layer with nothing
     /// in the way parks nothing, so it searches no free space and cannot fail:
-    /// it builds even on a spent budget.
+    /// it builds even on a spent budget. A layer with blocks in the way needs
+    /// budget left to start, so a spent budget refuses it and every layer
+    /// ranked after it.
     fn build(&mut self, target: u32) -> bool {
         self.rank_homes(target);
         for at in 0..self.s.ranked.len() {
@@ -355,9 +360,12 @@ impl Order<'_> {
         parked
     }
 
-    /// Keep a layer empty for the next target layer, if one can clear.
+    /// Keep a layer empty for the next target layer, if one can clear. A
+    /// spent budget clears nothing, and tries no further layer once a try
+    /// spends it; the next target layer then lands only where nothing is in
+    /// its way.
     fn clear_a_layer(&mut self) {
-        if self.s.todo.is_empty() {
+        if self.s.todo.is_empty() || self.work_left == 0 {
             return;
         }
         let mut ranked = std::mem::take(&mut self.s.ranked);
@@ -374,6 +382,9 @@ impl Order<'_> {
         ranked.sort_unstable();
         ranked.truncate(LAYERS_TRIED_FOR_CLEARING);
         for &(_, _, layer) in &ranked {
+            if self.work_left == 0 {
+                break;
+            }
             let mark = self.s.hops.len();
             let mut clearing = std::mem::take(&mut self.s.clearing);
             clearing.clear();
@@ -621,5 +632,58 @@ mod tests {
             ]
         );
         assert_eq!(scratch.homes, [0]);
+    }
+
+    /// Two pool layers of two blocks each. Target layer 0 builds on the empty
+    /// spare with nothing in its way. Then neither open layer is empty, and
+    /// each holds a block of target layer 1 off its rect. With budget, a clear
+    /// parks layer 0's block and target layer 1 lands there. On a spent
+    /// budget the clear parks nothing and the build over blocks refuses.
+    #[test]
+    fn a_spent_budget_refuses_a_build_over_blocks_and_clears_nothing() {
+        let at = |layer, x, y| BlockPlacement { layer, x, y };
+        let block = |src, dst| BlockMove {
+            src: Some(src),
+            dst,
+            width: 4,
+            height: 4,
+        };
+        let moves = [
+            block(at(0, 4, 0), at(0, 0, 0)),
+            block(at(1, 4, 0), at(0, 4, 0)),
+            block(at(0, 4, 4), at(1, 0, 0)),
+            block(at(1, 0, 0), at(1, 4, 0)),
+        ];
+        let input = CopyOrderInput {
+            moves: &moves,
+            layers: 2,
+            edge: 8,
+        };
+        let run = |work_left| {
+            let mut scratch = CopyOrderScratch::default();
+            let mut copies = Vec::new();
+            let mut order = Order {
+                input,
+                s: &mut scratch,
+                copies: &mut copies,
+                built_over: 0,
+                work_left,
+            };
+            order.begin(BuildOrder::TallestFirst);
+            let placed = order.run();
+            let parked = scratch.hops.iter().filter(|hop| hop.parked).count();
+            (placed, parked, copies.len())
+        };
+
+        assert_eq!(
+            run(WORK_PER_BLOCK * moves.len()),
+            (true, 1, 7),
+            "with budget, a clear parks one block and every target layer lands"
+        );
+        assert_eq!(
+            run(0),
+            (false, 0, 2),
+            "a spent budget parks nothing after target layer 0's two landings"
+        );
     }
 }

@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency), §7.8
 
 use anyhow::{Context, Result, bail};
-use postretro_level_format::lightmap_pool::PerPool;
+use postretro_level_format::lightmap_pool::{PerPool, PoolDemand};
 use postretro_level_loader::{LevelWorld, LightmapStreamingMode};
 use postretro_renderer::LightmapStreamingLiveDiagnostics;
 
@@ -46,13 +46,23 @@ pub(super) struct CaptureLightmapResidency {
 }
 
 /// Reject lightmap overrides the loaded level cannot honour, before any GPU
-/// work: both need a streamed lightmap, and a forced block must exist.
+/// work: each override needs a streamed lightmap, `mask_pool_layers` needs a
+/// mask pool, and a forced block must exist.
 pub(super) fn validate_lightmap_overrides(scene: &CaptureScene, world: &LevelWorld) -> Result<()> {
+    let demand = world.lightmap_stream_manifest().map(|manifest| {
+        PoolDemand::of_indices(manifest.lightmap_index(), manifest.shadowmask_index())
+    });
+    check_lightmap_overrides(scene, demand.as_ref())
+}
+
+/// [`validate_lightmap_overrides`] over the streamed level's pool demand,
+/// `None` when the level does not stream its lightmap.
+fn check_lightmap_overrides(scene: &CaptureScene, streamed: Option<&PoolDemand>) -> Result<()> {
     let overrides = scene.lightmap_first_generation();
     let wants_streaming = !scene.force_missing_lightmap_blocks.is_empty()
         || overrides.lightmap.is_some()
         || overrides.mask.is_some();
-    let Some(manifest) = world.lightmap_stream_manifest() else {
+    let Some(demand) = streamed else {
         if wants_streaming {
             bail!(
                 "force_missing_lightmap_blocks, lightmap_pool_layers and mask_pool_layers need \
@@ -62,8 +72,10 @@ pub(super) fn validate_lightmap_overrides(scene: &CaptureScene, world: &LevelWor
         }
         return Ok(());
     };
-    let block_count = manifest.block_count();
-    if overrides.mask.is_some() && manifest.shadowmask_index().is_none() {
+    let block_count = demand.block_count() as u32;
+    // No id 42, or an id 42 whose every plane is absent: the mask pool has
+    // no layers, so a figure for it would be silently 0.
+    if overrides.mask.is_some() && demand.plane_count() == 0 {
         bail!("mask_pool_layers needs a level with a shadowmask: this level has no mask pool");
     }
     if let Some(&block) = scene
@@ -163,4 +175,53 @@ pub(super) fn preload_capture_lightmap(
         pool_layers: counters.map(|counters| counters.pool_layers),
         counters: Some(live),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::scene::parse_scene;
+
+    /// A capture scene that sets only the mask pool's first generation.
+    fn mask_override_scene() -> CaptureScene {
+        parse_scene(
+            r#"
+            {
+              "map": "content/dev/maps/test.prl",
+              "camera": { "position": [1.0, 2.0, 3.0], "yaw_deg": 45.0, "pitch_deg": -10.0 },
+              "resolution": [1280, 720],
+              "output": "capture.png",
+              "mask_pool_layers": 2
+            }
+        "#,
+        )
+        .expect("mask override scene must parse")
+    }
+
+    fn refusal(streamed: &PoolDemand) -> String {
+        check_lightmap_overrides(&mask_override_scene(), Some(streamed))
+            .expect_err("a mask pool override on a level with no mask pool is refused")
+            .to_string()
+    }
+
+    #[test]
+    fn mask_pool_override_refuses_a_streamed_level_with_no_shadowmask() {
+        let no_id_42 = PoolDemand::lightmap_only(4, vec![(8, 4), (8, 4)]);
+        assert!(refusal(&no_id_42).contains("this level has no mask pool"));
+    }
+
+    #[test]
+    fn mask_pool_override_refuses_a_streamed_level_whose_shadowmask_stores_no_plane() {
+        let no_plane = PoolDemand::new(4, vec![(8, 4), (8, 4)], Some(vec![[false; 2]; 2]));
+        assert!(refusal(&no_plane).contains("this level has no mask pool"));
+
+        // One stored plane gives the mask pool a layer, so the figure stands.
+        let one_plane = PoolDemand::new(
+            4,
+            vec![(8, 4), (8, 4)],
+            Some(vec![[false; 2], [false, true]]),
+        );
+        check_lightmap_overrides(&mask_override_scene(), Some(&one_plane))
+            .expect("a level with a stored plane honours a mask pool override");
+    }
 }

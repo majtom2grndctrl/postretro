@@ -70,9 +70,9 @@ impl LightmapPoolModel {
     /// the pool moved to the target. Returns `None`, with the pool and the
     /// plan's copies untouched, when `pending` does not pack, or when no
     /// order through the spare was found, even with every band item dropped;
-    /// the plan then records the rollback and the demand falls through to
-    /// growth. Any end but a whole demand seated spends the demand's one
-    /// compaction.
+    /// the plan then records the rollback, and the drain falls back to the
+    /// downward pass, then growth. Any end but a whole demand seated spends
+    /// the demand's one compaction.
     pub(super) fn compact(&mut self, kind: PoolKind, pending: &[u32]) -> Option<CopyOrderStats> {
         #[cfg(test)]
         if self.downward_only {

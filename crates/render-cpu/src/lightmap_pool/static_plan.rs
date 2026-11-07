@@ -12,6 +12,7 @@ use super::{
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
 };
+use postretro_level_format::lightmap_pool::first_generation_layers;
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 
 /// Every block of a level placed in the lightmap pool, and every plane placed
@@ -105,13 +106,14 @@ impl StreamedPoolSizing {
         }
     }
 
-    /// Each pool's first generation for `demand`, in `edge`² layers. `None`
-    /// when a block does not fit a layer.
-    fn first_generation(&self, demand: &PoolDemand, edge: u32) -> Option<PerPool<u32>> {
-        let sized = demand.first_generation(self.bound, edge)?;
-        Some(PerPool::from_fn(|kind| {
-            self.first_generation_override[kind].unwrap_or(sized[kind])
-        }))
+    /// Each pool's first generation, given the layers that hold every block
+    /// at once: the override where one is set, else the bound sized as
+    /// [`PoolDemand::first_generation`] sizes it.
+    fn first_generation(&self, all_resident: PerPool<u32>) -> PerPool<u32> {
+        PerPool::from_fn(|kind| {
+            self.first_generation_override[kind]
+                .unwrap_or_else(|| first_generation_layers(self.bound[kind], all_resident[kind]))
+        })
     }
 }
 
@@ -234,31 +236,34 @@ pub fn plan_streaming_pool(
         .map(|()| pool)
     });
     let demand = PoolDemand::of_indices(index, shadowmask);
-    if shape.is_ok()
-        && let Some(all_resident) = demand.all_resident(LIGHTMAP_POOL_LAYER_EDGE)
-    {
-        for kind in PoolKind::ALL {
-            let layers = all_resident[kind];
-            if layers > 0 && layers + 1 > max_texture_array_layers {
-                log::warn!(
-                    "[Renderer] Streamed lightmap: the {} pool needs {} array layer(s) with the \
-                     spare for all {} block(s), past device maxTextureArrayLayers \
-                     {max_texture_array_layers}; mandatory growth past the device limit defers \
-                     instead",
-                    kind.name(),
-                    layers + 1,
-                    extents.len(),
-                );
-            }
-        }
-    }
-    let first_generation = shape.and_then(|_| {
-        sizing
-            .first_generation(&demand, LIGHTMAP_POOL_LAYER_EDGE)
+    // One all-resident pack serves both the device warning and the sizing.
+    let all_resident = shape.and_then(|_| {
+        demand
+            .all_resident(LIGHTMAP_POOL_LAYER_EDGE)
             .ok_or_else(|| {
                 format!("mask planes do not fit {LIGHTMAP_POOL_LAYER_EDGE}² pool layers")
             })
     });
+    if let Ok(all_resident) = &all_resident {
+        for kind in PoolKind::ALL {
+            let layers = all_resident[kind];
+            if layers > 0 && layers + 1 > max_texture_array_layers {
+                let items = match kind {
+                    PoolKind::Lightmap => format!("{} block(s)", demand.block_count()),
+                    PoolKind::Mask => format!("{} plane(s)", demand.plane_count()),
+                };
+                log::warn!(
+                    "[Renderer] Streamed lightmap: the {} pool needs {} array layer(s) with the \
+                     spare for all {items}, past device maxTextureArrayLayers \
+                     {max_texture_array_layers}; mandatory growth past the device limit defers \
+                     instead",
+                    kind.name(),
+                    layers + 1,
+                );
+            }
+        }
+    }
+    let first_generation = all_resident.map(|all_resident| sizing.first_generation(all_resident));
     let first_generation = match first_generation {
         Ok(layers) => layers,
         Err(reason) => {

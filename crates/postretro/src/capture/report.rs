@@ -449,7 +449,8 @@ struct LightmapStreamingCountersJson {
     /// Of the repacks, those that escalated to compaction.
     compactions: u64,
     mask_compactions: u64,
-    /// Compactions that found no copy order and fell through to growth.
+    /// Compactions that found no copy order: the layout stood, and the drain
+    /// fell back to the downward pass, then growth.
     compaction_rollbacks: u64,
     mask_compaction_rollbacks: u64,
     growths: u64,

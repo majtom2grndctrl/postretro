@@ -68,7 +68,8 @@ pub struct LightmapStreamingLiveDiagnostics {
     pub repacks: PerPool<u64>,
     /// Of those repacks, the ones that escalated to compaction.
     pub compactions: PerPool<u64>,
-    /// Compactions that found no copy order and fell through to growth.
+    /// Compactions that found no copy order: the layout stood, and the drain
+    /// fell back to the downward pass, then growth.
     pub compaction_rollbacks: PerPool<u64>,
     pub growths: PerPool<u64>,
     pub last_drain_install_micros: u64,

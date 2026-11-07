@@ -173,16 +173,16 @@ fn assert_holds_every_block_without_growth(h: &Harness, extents: &[(u32, u32)], 
     assert_disjoint_within_layers(&h.model);
 }
 
-// R24: this set packs into one layer in block-id order and two tallest first.
+// This set packs into one layer in block-id order and two tallest first.
 // The pool counts the bound's order, so it holds it however the blocks come.
 // The mixed level is wholly mandatory from a single cell: every target lands at
 // once, and its pairs arrive over any number of drains in any order.
 #[test]
 fn all_resident_cap_holds_every_block() {
-    let r24 = [(56, 16), (28, 44), (24, 20)];
-    assert_eq!(pack_layers(&r24, 0..3), 2, "tallest first");
+    let tighter_in_id_order = [(56, 16), (28, 44), (24, 20)];
+    assert_eq!(pack_layers(&tighter_in_id_order, 0..3), 2, "tallest first");
     let mixed = mixed_level(0xca9, 120);
-    for extents in [&r24[..], &mixed] {
+    for extents in [&tighter_in_id_order[..], &mixed] {
         let count = extents.len() as u32;
         let set: Vec<LightmapTarget> = (0..count).map(mandatory).collect();
 
@@ -207,12 +207,13 @@ fn all_resident_cap_holds_every_block() {
 
 // The same pool reached cell by cell: each block turns mandatory with its pair
 // in hand, so nothing reserved its room and the last arrivals repack. Band
-// pairs stay out of this: they never repack, and R33 leaves them refused.
+// pairs stay out of this: they never repack, so one the full pool cannot place
+// stays refused.
 #[test]
 fn all_resident_cap_holds_a_demand_that_widens_one_block_at_a_time() {
-    let r24 = [(56, 16), (28, 44), (24, 20)];
+    let tighter_in_id_order = [(56, 16), (28, 44), (24, 20)];
     let mixed = mixed_level(0xca9, 120);
-    for extents in [&r24[..], &mixed] {
+    for extents in [&tighter_in_id_order[..], &mixed] {
         let mut h = at_the_all_resident_cap(extents);
         for block in 0..extents.len() as u32 {
             h.drain(&[mandatory(block)], &[], &[block]);
@@ -240,8 +241,8 @@ fn band_batch(generation: u64, blocks: std::ops::Range<u32>) -> LightmapDrainBat
     }
 }
 
-// R25: a pool sized past the old fifteen-layer default is one pool. A band pair lands in
-// its top layer under the first controller, stays there, and lands there again
+// A pool sized past the old fifteen-layer default is one pool. A band pair lands
+// in its top layer under the first controller, stays there, and lands there again
 // under a controller that replaced it, after a growth as before one.
 #[test]
 fn band_uses_every_layer_under_any_controller() {

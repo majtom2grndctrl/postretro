@@ -15,11 +15,11 @@ fn layers_in_order(extents: &[(u32, u32)], edge: u32) -> u32 {
     pool.extent() as u32
 }
 
-// R24: block-id order packs this set in one layer and tallest first in two, so
+// Block-id order packs this set in one layer and tallest first in two, so
 // a cap counted in block-id order would sit a layer below the bound. The
 // all-resident count must take the bound's order and see the second layer.
 #[test]
-fn all_resident_counts_the_bounds_order_not_block_id_order_r24() {
+fn all_resident_counts_the_bounds_order_not_block_id_order() {
     let extents = [(56, 16), (28, 44), (24, 20)];
     assert_eq!(layers_in_order(&extents, 64), 1, "block-id order");
     assert_eq!(order_of(&extents), [1, 2, 0]);

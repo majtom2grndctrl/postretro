@@ -374,6 +374,26 @@ fn a_level_of_no_camera_cell_stores_a_zero_bound_and_names_no_cell() {
     assert!(!line.contains("peaks"), "{line}");
 }
 
+// Camera cells whose sets hold no block cost 0 bytes, and a 0-byte cell is
+// no peak worth naming.
+#[test]
+fn a_level_whose_camera_cells_all_pack_to_no_layers_names_no_peak_cell() {
+    let level = BoundLevel::new(
+        &[block(1, FULL, BOTH_PLANES)],
+        &[],
+        DEFAULT_LEAD,
+        &[&[], &[]],
+    );
+    let worst = level.worst_with(&[]);
+    assert_eq!(worst.layers, layers(0, 0));
+    assert_eq!(worst.peak, None);
+    let bound = level.resolve();
+    assert_eq!(bound.section, section(0, 0));
+    let line = &bound.report.lines()[0];
+    assert!(line.contains("worst case of 0 and 0"), "{line}");
+    assert!(!line.contains("peaks"), "{line}");
+}
+
 #[test]
 fn added_cell_raises_the_bound_through_the_cell_input() {
     let level = hand_level();

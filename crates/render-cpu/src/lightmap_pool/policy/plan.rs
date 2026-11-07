@@ -84,7 +84,8 @@ pub struct PoolPlan {
     /// The repack that produced `copies`, if any.
     pub repack: Option<RepackKind>,
     /// A compaction packed the demand but found no copy order through the
-    /// spare: the layout stands, and the demand fell through to growth.
+    /// spare: no copies, the layout stands, and the drain falls back to the
+    /// downward pass, then growth.
     pub compaction_rolled_back: bool,
     pub copies: Vec<PoolCopy>,
     /// A pair was deferred because this pool holds the device's every usable

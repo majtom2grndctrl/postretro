@@ -25,7 +25,8 @@ pub struct LightmapStreamCounters {
     pub repacks: PerPool<u64>,
     /// Of those, drains that escalated to compaction.
     pub compactions: PerPool<u64>,
-    /// Compactions that found no copy order and fell through to growth.
+    /// Compactions that found no copy order: the layout stood, and the drain
+    /// fell back to the downward pass, then growth.
     pub compaction_rollbacks: PerPool<u64>,
     /// Same-texture moves those repacks recorded. A move within one layer
     /// stages through the spare layer and takes two; a move to another layer

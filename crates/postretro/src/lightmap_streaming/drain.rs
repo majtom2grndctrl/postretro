@@ -164,8 +164,9 @@ impl LightmapResidencyController {
             );
         }
         for prepared in outcome.deferred {
-            // A transient miss: the pair stays owned, and in hand, for a
-            // later drain.
+            // A deferral is transient while a pool it must grow retires, and
+            // lasts at the device limit. Either way the pair stays owned, and
+            // in hand, for a later drain.
             self.slots[prepared.block as usize].phase = BlockPhase::Ready;
             self.ready.insert(prepared.block, prepared);
             self.counters.deferrals += 1;
@@ -299,7 +300,7 @@ impl LightmapResidencyController {
         }
         for &item in &outcome.room_reserved.mask {
             let block = PoolKind::Mask.block_of(item);
-            let plane = postretro_level_format::lightmap_pool::mask_item_plane(item);
+            let plane = mask_item_plane(item);
             if !self.map.facts(block).planes[plane] {
                 return invalid(format!(
                     "reserved-room item {item} names mask plane {plane} of block {block}, \

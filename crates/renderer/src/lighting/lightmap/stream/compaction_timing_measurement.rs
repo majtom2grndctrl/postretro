@@ -1,9 +1,10 @@
 // Measurement helper: wall time of one compaction's copies on real layer shapes.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
-// Submit through queue idle. BC6H 2048² and Rg8 1024² in the lightmap pool and
-// BC5 2048² in the mask pool, the same moves in each, at about the hallway's
-// layers. Not a proof; prints only.
+// Each timed run submits the copies and waits for queue idle. The lightmap pool
+// holds BC6H 2048² and Rg8 1024² layers and the mask pool BC5 2048², with the
+// same moves in each, at about the hallway's layer count. It proves nothing and
+// only prints.
 //
 // Run under `caffeinate`, nothing beside it, on a dev or profiling build:
 //   caffeinate -dims cargo test -p postretro-renderer --lib \

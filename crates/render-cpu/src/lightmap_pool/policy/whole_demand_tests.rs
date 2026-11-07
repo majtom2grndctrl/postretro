@@ -53,7 +53,7 @@ fn is_compaction(plan: &DrainPlan) -> bool {
 #[test]
 fn downward_repack_must_cover_the_whole_demand() {
     // The whole demand fits downward, so nothing moves up. Then a target joins
-    // that only a move up can seat: that drain compacts (R10).
+    // that only a move up can seat: that drain compacts.
     let mut h = two_rows();
     let residents = [0, 1, 3, 4];
     let before = layers_of(&h, &residents);
@@ -74,7 +74,7 @@ fn downward_repack_must_cover_the_whole_demand() {
 
     // The same pair fits downward alone, but the demand behind it does not:
     // the downward pass counts as failed and compaction runs in this drain,
-    // seating the target whose pair is still to come (R18).
+    // seating the target whose pair is still to come.
     let mut h = two_rows();
     let plan = h.drain(&[mandatory(PAIR), mandatory(WAITING)], &[LEAVES], &[PAIR]);
     assert!(is_compaction(plan), "{:?}", plan.pools[POOL].repack);
@@ -87,8 +87,9 @@ fn downward_repack_must_cover_the_whole_demand() {
     assert_eq!(plan.installed, vec![WAITING]);
 }
 
-/// R20's sizes, in the order its pairs arrive.
-const R20: [(u32, u32); 3] = [(28, 36), (8, 28), (4, 44)];
+/// Three blocks that pack one 64² layer together, in the order their pairs
+/// arrive.
+const ONE_LAYER_DEMAND: [(u32, u32); 3] = [(28, 36), (8, 28), (4, 44)];
 
 /// Feed `order`, one pair a drain, counting repacks; a drain's copies stop
 /// with the last repack, and no drain grows the pool or defers a pair.
@@ -112,8 +113,14 @@ fn repacks_placing(h: &mut Harness, order: &[u32], first_set: &[LightmapTarget])
 #[test]
 fn demand_arriving_over_drains_repacks_once() {
     // A fragmented pool: the first pair finds no room, the first repack
-    // reserves for every target, and the later pairs land there (R11, R20).
-    let extents = [(64, 12), (64, 20), R20[0], R20[1], R20[2]];
+    // reserves for every target, and the later pairs land there.
+    let extents = [
+        (64, 12),
+        (64, 20),
+        ONE_LAYER_DEMAND[0],
+        ONE_LAYER_DEMAND[1],
+        ONE_LAYER_DEMAND[2],
+    ];
     let mut h = Harness::new(&extents, 1);
     h.drain(&[mandatory(0)], &[], &[0]);
     h.drain(&[mandatory(1)], &[], &[1]);
@@ -127,14 +134,14 @@ fn demand_arriving_over_drains_repacks_once() {
 
     // The first pair already resident when the rest arrive: its repack comes
     // with the last pair, and there is only that one.
-    let mut h = Harness::new(&R20, 1);
+    let mut h = Harness::new(&ONE_LAYER_DEMAND, 1);
     h.drain(&[mandatory(0)], &[], &[0]);
     let later = [mandatory(1), mandatory(2)];
     assert_eq!(repacks_placing(&mut h, &[1, 2], &later), 1);
 
     // An empty pool: the targets' room is free as it stands, tallest first, so
     // the same arrival takes no repack at all. One is a ceiling, not a floor.
-    let mut h = Harness::new(&R20, 1);
+    let mut h = Harness::new(&ONE_LAYER_DEMAND, 1);
     let all = [mandatory(0), mandatory(1), mandatory(2)];
     assert_eq!(repacks_placing(&mut h, &[0, 1, 2], &all), 0);
 }
@@ -162,7 +169,7 @@ fn crossed_layers_with_a_block_past_them(layer_limit: u32) -> Harness {
 #[test]
 fn demand_past_the_pool_compacts_once_then_grows() {
     // Both targets arrive first: the first pair fits by compaction, and the
-    // demand past the pool does not grow while no pair needs it (R19).
+    // demand past the pool does not grow while no pair needs it.
     let mut h = crossed_layers_with_a_block_past_them(u32::MAX);
     let plan = h.drain(&[mandatory(4), mandatory(5)], &[], &[4]);
     assert!(is_compaction(plan), "{:?}", plan.pools[POOL].repack);
@@ -172,8 +179,7 @@ fn demand_past_the_pool_compacts_once_then_grows() {
     assert_eq!(plan.pools[POOL].repack, None);
     assert!(plan.pools[POOL].growth.is_none(), "no ready pair needs it");
 
-    // The later pair does not fit as the pool stands: growth, no second
-    // compaction (R32).
+    // The later pair does not fit as the pool stands: growth, no second compaction.
     let plan = h.drain(&[], &[], &[5]);
     assert!(!is_compaction(plan), "{:?}", plan.pools[POOL].repack);
     assert!(plan.pools[POOL].growth.is_some());

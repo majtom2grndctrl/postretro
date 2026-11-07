@@ -35,7 +35,7 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 | First lookup, every probe | 27.4 | 34.2 | 31.4 |
 
 - These rows are interim, read from the second run's log; the checked report and 720p reference figures replace them before promotion.
-- First lookup: the fetch was about 1.2 ms of +7.8; per-corner `normalize`, texture-size query and integer divide by a runtime row width carried the rest.
+- First lookup: the fetch was about 1.2 ms of +7.8 (measured). Attributing the rest to the per-corner `normalize`, texture-size query and runtime-width integer divide is inferred: the cheap-lookup binaries differ only by dropping those three (source commit pinned with the finished Mac report).
 - About 1 ms of the sparse cost is the declared texture itself, paid with no tile read: naga's Metal writer declares globals as entry arguments and the AMD driver charges per declared argument (`rendering_pipeline.md` §7.3a, Two pipelines).
 - Hashed sparse selection scatters tiles; real tiles cluster at thin walls, so divergence should be no worse.
 - Run-to-run spread at 4K ≤ 0.32 ms; one run per cell suffices there.
@@ -45,10 +45,12 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 - Forward fragment textures: 16 with cube arrays, 15 without (`FORWARD_SAMPLED_TEXTURE_BUDGET`, `forward_pipeline_sampled_texture_request_matches_bgl_definitions`). The shared group contributes total atlas, depth moments and direct atlas.
 - `sh_direct_atlas` in the shared layout: forward and fog do not declare it; billboard and fluid read it only from `vs_main`. Kinematic and skinned read it in `fs_main` through the superset.
 - Vertex inventories after the change: billboard and fluid group 3 go from 4 to 5 sampled textures (limit 16). Kinematic and skinned fragment: 11 → 12 with cube arrays.
-- Indirection word (`sh_indirection.wgsl`): level bits 0–1, valid bit 2, scale bits 3–4, slot bits 5–31. No spare bit. R holds `E[d]` as f16, which is non-negative, so its sign bit can flag a tile reference spread across R and G.
+- Indirection word (`sh_indirection.wgsl`): level bits 0–1, valid bit 2, scale bits 3–4, slot bits 5–31. No spare bit. R and G hold `E[d]` and `E[d²]` as f16, both non-negative by construction; the id-34 loader does not validate them today.
+- `sdf_shadow.wgsl` decodes R raw as `E[d]` for its open-space skip, through the same moments view; keeping R untouched leaves it unchanged.
 
 ## Memory
-- Hallway at 6×6: 16,481 tiles × 8×8 texels × 4 B ≈ 4.2 MB resident and on disk. Ceiling 5.3 MiB.
+- Hallway at 8×8: 13,451 tiles × 10×10 bordered texels × 4 B ≈ 5.1 MiB resident and on disk; ceiling 6.4 MiB. At 6×6 it would be 16,481 tiles, ≈ 4.0 MiB.
+- Cap: 32,767 tiles per level, the sign-flagged reference's limit in a 16-bit channel; ≈ 12.5 MiB at 8×8.
 - Tiles on every probe instead: 125–346 MiB across tile sizes. The measurement hack's per-slot layout: 67 MB at 6×6.
 - Existing dense moments texture: 8 B per lattice probe, whole-resident.
 
@@ -59,5 +61,22 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 - Do not move the closet's north wall: y 760 is the worst measured lattice phase.
 
 ## Doors this leaves open
-- Per-mover tiles: closed-pose tiles reach a probe through its tile reference. A step switch on dock suits a door that snaps shut; a glow that ramps with door travel needs a runtime-composed tile blending both moment sets by travel. The owning brief decides.
+- Per-mover tiles: closed-pose tiles reach a probe through the CPU reference table. A step switch on dock suits a door that snaps shut; a glow that ramps with door travel needs a runtime-composed tile blending both moment sets by travel. The probe channel decides.
 - Relocation (roadmap, Majercik 2021): moving a probe off a wall moves its bake position; irradiance, moments and tiles follow together.
+
+## Measure
+- Frame mean and pixel moves are Rec. 709 luma of the post-tonemap sRGB PNG (0–255), as the spike's `pngstat.py` and `pngdiff.py`; a "move" is |Δluma| > 2. Closet 960×540; hallway Q2 views 1920×1080.
+
+## Orderings
+
+| Id | Scenario | Ordering | Expected |
+|---|---|---|---|
+| O1 | Warm hit | Cold build writes `sh_base_volume`; second build of unchanged inputs hits it | Same id 59 bytes as the cold build; dropped count logged again |
+| O2 | Stale cache | Entry written by the read-at compiler; tiled compiler builds the same inputs | Entry misses (stage version moves); tiles emitted |
+| O3 | Texel writers | Whole-load pack; streamed promote; evict then promote; session clear then promote | Each written texel of a tiled valid probe decodes to its tile |
+| O4 | Pool growth | Tiles resident; mandatory demand grows the dense pool; next frame samples | Rebuilt groups bind the level's tile texture and tile-row constant; visibility unchanged across the growth frame |
+| O5 | Same-drain race | Reference rewrite and cluster promote for one probe queued in one drain, both orders | Rewrite wins in both orders |
+| O6 | Redirect then evict | Rewrite; cluster evicted; cluster reinstalled | Texel decodes to the rewritten tile |
+| O7 | Clear | Probe with tile; reference cleared | Averaged moments restored; visibility equals today's bit for bit |
+| O8 | Second reader | Tiled probe; SDF open-space skip reads the same texel that frame | Reads a non-negative distance; shadow factor unchanged by the reference |
+| O9 | Cap ties | Candidates with equal visibility change straddle the cap | Lower probe index kept; same set on every build |

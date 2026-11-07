@@ -7,7 +7,9 @@ use std::collections::BinaryHeap;
 use std::ops::Deref;
 
 use glam::Vec3;
-use postretro_level_format::navmesh::NavPortal;
+use postretro_entities::components::agent::PlannedRide;
+use postretro_foundation::GroundRef;
+use postretro_level_format::navmesh::{NavMoverLink, NavPortal};
 
 use crate::collision::SKIN_DISTANCE;
 
@@ -26,6 +28,8 @@ pub struct NavPath {
     mandatory_waypoints: Vec<bool>,
     /// The portals the corridor crosses, in order.
     portals: Vec<u32>,
+    /// The ride this path ends in. The route past it is planned after exit.
+    ride: Option<PlannedRide>,
 }
 
 impl NavPath {
@@ -34,11 +38,16 @@ impl NavPath {
             points: vec![start, goal],
             mandatory_waypoints: vec![false, false],
             portals: Vec::new(),
+            ride: None,
         }
     }
 
     pub(crate) fn portals(&self) -> &[u32] {
         &self.portals
+    }
+
+    pub(crate) fn ride(&self) -> Option<PlannedRide> {
+        self.ride
     }
 
     /// Split into the parallel `(points, mandatory_waypoints)` vectors. The two
@@ -99,6 +108,42 @@ pub fn find_path_gated(
     start: Vec3,
     goal: Vec3,
 ) -> Option<NavPath> {
+    let start = NavStart {
+        position: start,
+        ground: GroundRef::World,
+    };
+    find_path_from(graph, gate, start, goal)
+}
+
+/// Where a route starts: a position, and what the body stands on there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NavStart {
+    pub position: Vec3,
+    pub ground: GroundRef,
+}
+
+/// Where the search begins.
+#[derive(Clone, Copy)]
+enum SearchStart {
+    Region(usize),
+    /// On a mover with links, docked at `dock`, at this surface height. The
+    /// floor under it in XZ says nothing about where it can go.
+    Mover {
+        mover_id: u32,
+        dock: u32,
+        surface: f32,
+    },
+}
+
+/// [`find_path_gated`] for a body whose ground matters: one standing on a mover
+/// resolves through its links, and a route may end in a ride.
+pub fn find_path_from(
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    from: NavStart,
+    goal: Vec3,
+) -> Option<NavPath> {
+    let start = from.position;
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
     // false, silently collapsing the result to a straight `[start, goal]` line
     // that may cross solid geometry. Reject it rather than emit a path through a
@@ -111,16 +156,25 @@ pub fn find_path_gated(
         return None;
     }
 
-    let start_region = graph.resolve_region_at(start)?;
     let goal_region = graph.resolve_region_at(goal)?;
-
-    if start_region == goal_region {
+    let search_start = search_start(graph, gate, from)?;
+    if let SearchStart::Region(start_region) = search_start
+        && start_region == goal_region
+    {
         // Same region: no portal to cross, the straight segment is the path.
         return Some(NavPath::direct(start, goal));
     }
 
-    let corridor = astar_corridor(graph, gate, start, goal, start_region, goal_region)?;
-    let portals = oriented_portals(graph, &corridor);
+    let corridor = astar_corridor(graph, gate, start, goal, search_start, goal_region)?;
+    let route = walked_route(graph, &corridor, start);
+    let goal = route.ride.map_or(goal, |ride| ride.board_point);
+    let ride = route.ride;
+    let portals = route.edges;
+    if portals.is_empty() {
+        let mut path = NavPath::direct(start, goal);
+        path.ride = ride;
+        return Some(path);
+    }
     // The start/goal guard above does not cover the corridor's own geometry: a
     // corrupt baked portal endpoint (NaN/inf) makes the funnel's area tests false
     // and collapses the corridor to a straight `[start, goal]` line through walls,
@@ -143,15 +197,148 @@ pub fn find_path_gated(
     let pulled_path = funnel(start, goal, &gates);
     let mut path =
         clearance::ensure_endpoint_clearance(&pulled_path, &gates, corner_clearance_radius)?;
-    path.portals = corridor.iter().map(|hop| hop.portal_index as u32).collect();
+    path.portals = route.portals;
+    path.ride = ride;
     Some(path)
 }
 
-/// One hop of the region corridor: which portal A* crossed and which direction
-/// (`from_region` is the region the agent leaves through this portal).
-struct CorridorHop {
-    portal_index: usize,
-    from_region: usize,
+fn search_start(graph: &NavGraph, gate: NavGate<'_>, from: NavStart) -> Option<SearchStart> {
+    if let GroundRef::Mover(mover_id) = from.ground
+        && !graph.mover_links(mover_id).is_empty()
+    {
+        // Mid-travel there is nothing to plan from: the ride ends at a dock.
+        let dock = gate.docked_waypoint(mover_id)?;
+        let foot = from.position.y - graph.agent.height * 0.5 - SKIN_DISTANCE;
+        return Some(SearchStart::Mover {
+            mover_id,
+            dock,
+            surface: graph.mover_surface(mover_id, dock, foot),
+        });
+    }
+    graph
+        .resolve_region_at(from.position)
+        .map(SearchStart::Region)
+}
+
+/// Standing cost of a ride, in metres of walking: a lift is the long way round
+/// unless it is the only way.
+const RIDE_COST: f32 = 8.0;
+
+/// How far past an edge a boarding or exit walk aims, in capsule radii: well onto
+/// the far surface, so standing there is no accident of the rim.
+const STEP_THROUGH_RADII: f32 = 3.0;
+
+/// The route as walked: funnel edges up to the first ride, and that ride.
+struct WalkedRoute {
+    edges: Vec<(Vec3, Vec3)>,
+    portals: Vec<u32>,
+    ride: Option<PlannedRide>,
+}
+
+fn walked_route(graph: &NavGraph, corridor: &[CorridorHop], start: Vec3) -> WalkedRoute {
+    let portals = graph.portals();
+    let links = graph.links();
+    let reach = STEP_THROUGH_RADII * graph.agent.radius.max(0.1);
+    let mut route = WalkedRoute {
+        edges: Vec::with_capacity(corridor.len()),
+        portals: Vec::new(),
+        ride: None,
+    };
+    for (index, hop) in corridor.iter().enumerate() {
+        match *hop {
+            CorridorHop::Portal {
+                portal_index,
+                from_region,
+            } => {
+                let portal = &portals[portal_index];
+                let left = Vec3::from_array(portal.left);
+                let right = Vec3::from_array(portal.right);
+                // Crossing region_a -> region_b keeps the bake orientation;
+                // crossing region_b -> region_a reverses it.
+                route
+                    .edges
+                    .push(if from_region == portal.region_a as usize {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    });
+                route.portals.push(portal_index as u32);
+            }
+            CorridorHop::Board { link } => {
+                let boarding = &links[link];
+                // Links run mover to region, so boarding walks them backwards.
+                route.edges.push((
+                    Vec3::from_array(boarding.right),
+                    Vec3::from_array(boarding.left),
+                ));
+                if let Some(CorridorHop::Exit {
+                    link: exit,
+                    ride_from: Some(_),
+                }) = corridor.get(index + 1)
+                {
+                    route.ride = Some(planned_ride(
+                        boarding.waypoint,
+                        link_midpoint(boarding) - link_outward(boarding) * reach,
+                        &links[*exit],
+                        reach,
+                    ));
+                    break;
+                }
+            }
+            CorridorHop::Exit { link, ride_from } => {
+                let exit = &links[link];
+                if let Some(dock) = ride_from {
+                    route.ride = Some(planned_ride(dock, start, exit, reach));
+                    break;
+                }
+                route
+                    .edges
+                    .push((Vec3::from_array(exit.left), Vec3::from_array(exit.right)));
+            }
+        }
+    }
+    route
+}
+
+fn planned_ride(
+    board_waypoint: u32,
+    board_point: Vec3,
+    exit: &NavMoverLink,
+    reach: f32,
+) -> PlannedRide {
+    PlannedRide {
+        mover_id: exit.mover_id,
+        board_waypoint,
+        exit_waypoint: exit.waypoint,
+        board_point,
+        exit_point: link_midpoint(exit) + link_outward(exit) * reach,
+    }
+}
+
+fn link_midpoint(link: &NavMoverLink) -> Vec3 {
+    (Vec3::from_array(link.left) + Vec3::from_array(link.right)) * 0.5
+}
+
+/// The horizontal direction from mover to landing. Links carry portal
+/// handedness, so `left` is on the left walking that way.
+fn link_outward(link: &NavMoverLink) -> Vec3 {
+    let along = Vec3::from_array(link.left) - Vec3::from_array(link.right);
+    Vec3::new(along.z, 0.0, -along.x).normalize_or_zero()
+}
+
+/// One hop of the corridor.
+#[derive(Clone, Copy)]
+enum CorridorHop {
+    /// A portal crossing; `from_region` is the region it leaves.
+    Portal {
+        portal_index: usize,
+        from_region: usize,
+    },
+    /// Stepping onto a docked mover over a link.
+    Board { link: usize },
+    /// Stepping off a mover over a link. `ride_from` is the dock the mover
+    /// carries the body from first, when the exit is not at the boarding dock.
+    Exit { link: usize, ride_from: Option<u32> },
 }
 
 /// Midpoint of a portal's segment as a world position.
@@ -210,19 +397,36 @@ fn astar_corridor(
     gate: NavGate<'_>,
     start: Vec3,
     goal: Vec3,
-    start_region: usize,
+    search_start: SearchStart,
     goal_region: usize,
 ) -> Option<Vec<CorridorHop>> {
     let portals = graph.portals();
-    let mid = |portal_index: usize| portal_midpoint(&portals[portal_index]);
-    // The region a directed node arrives in, and the region it was left through.
-    let arrived_region = |node: usize| -> usize {
+    let links = graph.links();
+    // Node ids: `2 * portal + dir`, then per link `board` and `exit`.
+    let link_base = portals.len() * 2;
+    let board_node = |link: usize| link_base + 2 * link;
+    let exit_node = |link: usize| link_base + 2 * link + 1;
+    let link_of = |node: usize| (node - link_base) / 2;
+    let is_board = |node: usize| node >= link_base && (node - link_base).is_multiple_of(2);
+    let link_mid = |link: usize| link_midpoint(&links[link]);
+    let mid = |node: usize| {
+        if node < link_base {
+            portal_midpoint(&portals[node / 2])
+        } else {
+            link_mid(link_of(node))
+        }
+    };
+    // The region a node arrives in; a boarding node arrives on a mover.
+    let arrived_region = |node: usize| -> Option<usize> {
+        if node >= link_base {
+            return (!is_board(node)).then(|| links[link_of(node)].region as usize);
+        }
         let p = &portals[node / 2];
-        if node.is_multiple_of(2) {
+        Some(if node.is_multiple_of(2) {
             p.region_b as usize
         } else {
             p.region_a as usize
-        }
+        })
     };
     let from_region = |node: usize| -> usize {
         let p = &portals[node / 2];
@@ -244,41 +448,133 @@ fn astar_corridor(
             None
         }
     };
+    let surface_tolerance = graph.agent.step_height.max(0.01);
+    // A link of the mover a body stands on at `dock`, `surface`: its cost to
+    // reach from there, and the dock it rides from when it is not this one.
+    let leave_mover = |exit: usize, dock: u32, surface: f32| -> Option<(f32, Option<u32>)> {
+        let link = &links[exit];
+        if (graph.link_surface(exit) - surface).abs() > surface_tolerance {
+            return None;
+        }
+        if link.waypoint == dock {
+            return Some((0.0, None));
+        }
+        let rides = gate.moves_on_its_own(link.mover_id)
+            && graph.is_terminus(link.mover_id, dock)
+            && graph.is_terminus(link.mover_id, link.waypoint);
+        rides.then_some((RIDE_COST, Some(dock)))
+    };
 
-    let node_count = portals.len() * 2;
+    let node_count = link_base + 2 * links.len();
     let mut g_score = vec![f32::INFINITY; node_count];
     // `came_from[node] = Some(previous_node)`, or `None` when reached from the
     // virtual start (the first crossing out of `start_region`).
     let mut came_from: Vec<Option<usize>> = vec![None; node_count];
+    // The dock a mover carries the body from before this exit node, if any.
+    let mut rode_from: Vec<Option<u32>> = vec![None; links.len()];
     let mut open = BinaryHeap::new();
 
-    // Seed: cross each portal of the start region, costed from the true start.
-    for &portal_index in graph.region_portal_indices(start_region) {
-        if gate.portal_closed(graph, portal_index) {
-            continue;
+    match search_start {
+        SearchStart::Region(start_region) => {
+            // Seed: cross each portal of the start region, costed from the true start.
+            for &portal_index in graph.region_portal_indices(start_region) {
+                if gate.portal_closed(graph, portal_index) {
+                    continue;
+                }
+                let Some(node) = directed_leaving(portal_index, start_region) else {
+                    continue;
+                };
+                let g = distance_xz(start, mid(node));
+                if g < g_score[node] {
+                    g_score[node] = g;
+                    came_from[node] = None;
+                    open.push(Frontier {
+                        node,
+                        f: g + distance_xz(mid(node), goal),
+                    });
+                }
+            }
+            for &link in graph.region_links(start_region) {
+                if !gate.docked_at(links[link].mover_id, links[link].waypoint) {
+                    continue;
+                }
+                let node = board_node(link);
+                let g = distance_xz(start, link_mid(link));
+                if g < g_score[node] {
+                    g_score[node] = g;
+                    open.push(Frontier {
+                        node,
+                        f: g + distance_xz(link_mid(link), goal),
+                    });
+                }
+            }
         }
-        let Some(node) = directed_leaving(portal_index, start_region) else {
-            continue;
-        };
-        let g = distance_xz(start, mid(portal_index));
-        if g < g_score[node] {
-            g_score[node] = g;
-            came_from[node] = None;
-            open.push(Frontier {
-                node,
-                f: g + distance_xz(mid(portal_index), goal),
-            });
+        SearchStart::Mover {
+            mover_id,
+            dock,
+            surface,
+        } => {
+            for link in graph.mover_links(mover_id) {
+                let Some((cost, ride)) = leave_mover(link, dock, surface) else {
+                    continue;
+                };
+                let node = exit_node(link);
+                let g = distance_xz(start, link_mid(link)) + cost;
+                if g < g_score[node] {
+                    g_score[node] = g;
+                    rode_from[link] = ride;
+                    open.push(Frontier {
+                        node,
+                        f: g + distance_xz(link_mid(link), goal),
+                    });
+                }
+            }
         }
     }
 
     while let Some(Frontier { node, .. }) = open.pop() {
-        let region = arrived_region(node);
+        let Some(region) = arrived_region(node) else {
+            // Standing on a docked mover: every way off it is one step more.
+            let boarded = link_of(node);
+            let link = &links[boarded];
+            let surface = graph.link_surface(boarded);
+            for next_link in graph.mover_links(link.mover_id) {
+                if next_link == boarded {
+                    continue;
+                }
+                let Some((cost, ride)) = leave_mover(next_link, link.waypoint, surface) else {
+                    continue;
+                };
+                let next = exit_node(next_link);
+                let rise = (links[next_link].left[1] - link.left[1]).abs();
+                let tentative = g_score[node]
+                    + distance_xz(mid(node), link_mid(next_link))
+                    + cost
+                    + if ride.is_some() { rise } else { 0.0 };
+                if tentative < g_score[next] {
+                    g_score[next] = tentative;
+                    came_from[next] = Some(node);
+                    rode_from[next_link] = ride;
+                    open.push(Frontier {
+                        node: next,
+                        f: tentative + distance_xz(link_mid(next_link), goal),
+                    });
+                }
+            }
+            continue;
+        };
         if region == goal_region {
-            return Some(reconstruct(&came_from, &from_region, node));
+            return Some(reconstruct(
+                &came_from,
+                &rode_from,
+                link_base,
+                &from_region,
+                node,
+            ));
         }
 
         for &portal_index in graph.region_portal_indices(region) {
-            if portal_index == node / 2 {
+            if node < link_base && portal_index == node / 2 {
                 continue; // don't immediately re-cross the portal just crossed
             }
             if gate.portal_closed(graph, portal_index) {
@@ -287,13 +583,28 @@ fn astar_corridor(
             let Some(next) = directed_leaving(portal_index, region) else {
                 continue;
             };
-            let tentative = g_score[node] + distance_xz(mid(node / 2), mid(portal_index));
+            let tentative = g_score[node] + distance_xz(mid(node), mid(next));
             if tentative < g_score[next] {
                 g_score[next] = tentative;
                 came_from[next] = Some(node);
                 open.push(Frontier {
                     node: next,
-                    f: tentative + distance_xz(mid(portal_index), goal),
+                    f: tentative + distance_xz(mid(next), goal),
+                });
+            }
+        }
+        for &link in graph.region_links(region) {
+            if !gate.docked_at(links[link].mover_id, links[link].waypoint) {
+                continue;
+            }
+            let next = board_node(link);
+            let tentative = g_score[node] + distance_xz(mid(node), link_mid(link));
+            if tentative < g_score[next] {
+                g_score[next] = tentative;
+                came_from[next] = Some(node);
+                open.push(Frontier {
+                    node: next,
+                    f: tentative + distance_xz(link_mid(link), goal),
                 });
             }
         }
@@ -303,47 +614,37 @@ fn astar_corridor(
 }
 
 /// Walk `came_from` back from the closing crossing to build the forward-ordered
-/// corridor. Each directed node is one `CorridorHop` (its portal plus the region
-/// it was left through).
+/// corridor.
 fn reconstruct(
     came_from: &[Option<usize>],
+    rode_from: &[Option<u32>],
+    link_base: usize,
     from_region: &impl Fn(usize) -> usize,
     end_node: usize,
 ) -> Vec<CorridorHop> {
     let mut hops = Vec::new();
     let mut current = Some(end_node);
     while let Some(node) = current {
-        hops.push(CorridorHop {
-            portal_index: node / 2,
-            from_region: from_region(node),
+        hops.push(if node < link_base {
+            CorridorHop::Portal {
+                portal_index: node / 2,
+                from_region: from_region(node),
+            }
+        } else {
+            let link = (node - link_base) / 2;
+            if (node - link_base).is_multiple_of(2) {
+                CorridorHop::Board { link }
+            } else {
+                CorridorHop::Exit {
+                    link,
+                    ride_from: rode_from[link],
+                }
+            }
         });
         current = came_from[node];
     }
     hops.reverse();
     hops
-}
-
-/// Resolve each corridor hop to a traversal-oriented `(left, right)` portal
-/// segment. Stored `left`/`right` are bake-fixed relative to `region_a < region_b`;
-/// when the agent crosses from `region_b` to `region_a` the handedness flips, so
-/// swap them to keep "left" on the agent's left for the funnel.
-fn oriented_portals(graph: &NavGraph, corridor: &[CorridorHop]) -> Vec<(Vec3, Vec3)> {
-    let portals = graph.portals();
-    corridor
-        .iter()
-        .map(|hop| {
-            let portal = &portals[hop.portal_index];
-            let left = Vec3::from_array(portal.left);
-            let right = Vec3::from_array(portal.right);
-            // Crossing region_a -> region_b keeps the bake orientation; crossing
-            // region_b -> region_a reverses it.
-            if hop.from_region == portal.region_a as usize {
-                (left, right)
-            } else {
-                (right, left)
-            }
-        })
-        .collect()
 }
 
 /// Twice the signed area of triangle (a, b, c) on the XZ plane. The sign encodes

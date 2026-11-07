@@ -84,6 +84,11 @@ impl MoverDockTable {
             .ok()
     }
 
+    /// Whether this mover's docks are tracked.
+    pub fn watches(&self, mover_id: u32) -> bool {
+        self.index(mover_id).is_some()
+    }
+
     /// The waypoint a watched mover rests at.
     pub fn docked_waypoint(&self, mover_id: u32) -> Option<u32> {
         self.index(mover_id)

@@ -21,12 +21,13 @@ use crate::movement::MovementCollisionSource;
 use crate::movement::agent_motion::{
     AgentCapsule, carried_by_mover, collide_and_slide, escape_slide,
 };
-use crate::nav::{NavGate, NavGraph, distance_xz, find_path_gated};
+use crate::nav::{NavGate, NavGraph, NavStart, distance_xz, find_path_from};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
 mod corpse;
+mod mover_link;
 mod pin_escape;
 
 mod tick_diagnostics {
@@ -272,6 +273,7 @@ pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     updated.planned_destination = None;
     updated.path.clear();
     updated.path_portals.clear();
+    updated.planned_ride = None;
     updated.mandatory_waypoints.clear();
     updated.waypoint_cursor = 0;
     updated.steer_velocity = Vec3::ZERO;
@@ -484,42 +486,37 @@ fn tick_impl(
         if let Some((mover_id, walk)) =
             pin_escape::escape_velocity(current.id, &mut agent, position, corpse_yields)
         {
-            agent.steer_velocity = Vec3::ZERO;
-            agent.stuck_ticks = 0;
-            agent.unstick_window_remaining = 0;
-            let capsule = AgentCapsule {
-                radius: agent.radius,
-                half_height: agent.half_height(),
-                step_height: agent.step_height,
-            };
-            let result = escape_slide(
+            move_without_path(
+                registry,
                 collision,
-                &capsule,
+                current.id,
+                agent,
                 position,
-                agent.ground,
-                mover_id,
-                walk + agent.knockback_velocity,
-                agent.velocity.y,
-                &mut agent.knockback_velocity,
+                walk,
+                Some(mover_id),
                 environment,
                 dt,
             );
-            agent.velocity = result.velocity;
-            agent.ground = result.ground;
-            if let Some(overlap) = &result.overlap {
-                crate::sim::report_static_overlap(
-                    collision.static_world,
-                    registry,
-                    current.id,
-                    overlap,
-                );
-            }
-            if let Ok(transform) = registry.get_component::<Transform>(current.id) {
-                let mut t = *transform;
-                t.position = result.position;
-                let _ = registry.set_component(current.id, t);
-            }
-            let _ = registry.set_component(current.id, agent);
+            continue;
+        }
+
+        let ride_walk = match mover_link::advance(&mut agent, position, gate, collision) {
+            mover_link::RideStep::Free => None,
+            mover_link::RideStep::Hold => Some(Vec3::ZERO),
+            mover_link::RideStep::Walk(walk) => Some(walk),
+        };
+        if let Some(walk) = ride_walk {
+            move_without_path(
+                registry,
+                collision,
+                current.id,
+                agent,
+                position,
+                walk,
+                None,
+                environment,
+                dt,
+            );
             continue;
         }
 
@@ -575,10 +572,15 @@ fn tick_impl(
             agent.replan_cooldown_ticks = REPLAN_STALENESS_TICKS;
             agent.planned_destination = Some(destination);
             agent.gate_generation = gate.generation();
-            match nav_graph.and_then(|graph| find_path_gated(graph, gate, position, destination)) {
+            let from = NavStart {
+                position,
+                ground: agent.ground,
+            };
+            match nav_graph.and_then(|graph| find_path_from(graph, gate, from, destination)) {
                 Some(path) => {
                     agent.path_portals.clear();
                     agent.path_portals.extend_from_slice(path.portals());
+                    agent.planned_ride = path.ride();
                     (agent.path, agent.mandatory_waypoints) = path.into_parts();
                     agent.waypoint_cursor = 0;
                     agent.arrived = false;
@@ -604,6 +606,7 @@ fn tick_impl(
                     if agent.arrived || path_crosses_closed_gate(&agent, nav_graph, gate) {
                         agent.path.clear();
                         agent.path_portals.clear();
+                        agent.planned_ride = None;
                         agent.mandatory_waypoints.clear();
                         agent.waypoint_cursor = 0;
                         agent.arrived = false;
@@ -749,6 +752,68 @@ fn tick_impl(
     AgentTickResult { replans }
 }
 
+/// Move an agent that follows no path this tick: stepping clear of `escaping`, or
+/// riding a mover. Steering state rests, so neither reads as stuck.
+#[allow(clippy::too_many_arguments)]
+fn move_without_path(
+    registry: &mut EntityRegistry,
+    collision: &CombinedCollisionWorld<'_>,
+    id: EntityId,
+    mut agent: AgentComponent,
+    position: Vec3,
+    walk: Vec3,
+    escaping: Option<u32>,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) {
+    agent.steer_velocity = Vec3::ZERO;
+    agent.stuck_ticks = 0;
+    agent.unstick_window_remaining = 0;
+    let capsule = AgentCapsule {
+        radius: agent.radius,
+        half_height: agent.half_height(),
+        step_height: agent.step_height,
+    };
+    let desired = walk + agent.knockback_velocity;
+    let vertical = agent.velocity.y;
+    let result = match escaping {
+        Some(mover_id) => escape_slide(
+            collision,
+            &capsule,
+            position,
+            agent.ground,
+            mover_id,
+            desired,
+            vertical,
+            &mut agent.knockback_velocity,
+            environment,
+            dt,
+        ),
+        None => collide_and_slide(
+            collision,
+            &capsule,
+            position,
+            agent.ground,
+            desired,
+            vertical,
+            &mut agent.knockback_velocity,
+            environment,
+            dt,
+        ),
+    };
+    agent.velocity = result.velocity;
+    agent.ground = result.ground;
+    if let Some(overlap) = &result.overlap {
+        crate::sim::report_static_overlap(collision.static_world, registry, id, overlap);
+    }
+    if let Ok(transform) = registry.get_component::<Transform>(id) {
+        let mut t = *transform;
+        t.position = result.position;
+        let _ = registry.set_component(id, t);
+    }
+    let _ = registry.set_component(id, agent);
+}
+
 /// Decide which agents replan this tick under the per-tick budget, prioritizing
 /// DRIFT-driven replans over STALENESS-only refreshes when the budget is
 /// contended. Returns the admitted ids in slot order.
@@ -790,8 +855,9 @@ fn admit_replans(
         let Some(destination) = agent.destination else {
             continue;
         };
-        // A body stepping clear of a mover follows no path until it arrives.
-        if agent.pin_escape.is_some() {
+        // A body stepping clear of a mover, or riding one, follows no path until
+        // it is off.
+        if agent.pin_escape.is_some() || agent.ride.is_some() {
             continue;
         }
 
@@ -1310,6 +1376,8 @@ mod environment_tests;
 mod gate_tests;
 #[cfg(test)]
 mod mover_contact_tests;
+#[cfg(test)]
+mod mover_link_tests;
 
 #[cfg(test)]
 mod held_world_participation {

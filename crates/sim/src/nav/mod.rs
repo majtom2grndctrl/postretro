@@ -8,7 +8,7 @@ mod path;
 // the primary production caller is the agent steering tick (`agent_steering`),
 // and combat positioning (`combat_positioning`) also queries it.
 pub use gate::{MoverNav, NavGate, NavMoverBound, install_mover_records};
-pub use path::{find_path, find_path_gated};
+pub use path::{NavStart, find_path, find_path_from, find_path_gated};
 
 // Bake→runtime funnel contract tests: bake fixture floors with the real
 // `navmesh_bake::bake_navmesh`, then run the real `find_path` over the result.
@@ -96,6 +96,21 @@ pub struct NavGraph {
     links: Vec<NavMoverLink>,
     /// `portal_gates[i]` = the (mover, waypoint) docks that close portal `i`.
     portal_gates: Vec<Vec<(u32, u32)>>,
+    /// `region_links[i]` = link indices landing in region `i`.
+    region_links: Vec<Vec<usize>>,
+    /// Waypoint heights of each mover with records, once validated.
+    mover_heights: Vec<(u32, Vec<f32>)>,
+}
+
+/// Per-region link lists from the link table.
+fn region_links(links: &[NavMoverLink], region_count: usize) -> Vec<Vec<usize>> {
+    let mut by_region = vec![Vec::new(); region_count];
+    for (index, link) in links.iter().enumerate() {
+        if let Some(list) = by_region.get_mut(link.region as usize) {
+            list.push(index);
+        }
+    }
+    by_region
 }
 
 /// Per-portal dock lists from the gate table. Out-of-range records wait for
@@ -188,6 +203,24 @@ impl NavGraph {
             }
             component_count += 1;
         }
+        // A lift joins its landings, so components stay a superset of what any
+        // dock state can connect.
+        for pair in section.links.windows(2) {
+            if pair[0].mover_id != pair[1].mover_id {
+                continue;
+            }
+            let joined = (
+                region_components.get(pair[0].region as usize).copied(),
+                region_components.get(pair[1].region as usize).copied(),
+            );
+            if let (Some(keep), Some(merge)) = joined {
+                for component in region_components.iter_mut() {
+                    if *component == merge {
+                        *component = keep;
+                    }
+                }
+            }
+        }
 
         Self {
             grid,
@@ -199,6 +232,8 @@ impl NavGraph {
             gates: section.gates.clone(),
             links: section.links.clone(),
             portal_gates: portal_gates(&section.gates, section.portals.len()),
+            region_links: region_links(&section.links, section.regions.len()),
+            mover_heights: Vec::new(),
         }
     }
 
@@ -278,6 +313,49 @@ impl NavGraph {
             .map_or(&[], Vec::as_slice)
     }
 
+    /// Links landing in `region`.
+    pub(crate) fn region_links(&self, region: usize) -> &[usize] {
+        self.region_links.get(region).map_or(&[], Vec::as_slice)
+    }
+
+    /// Link indices of one mover. Links sort by mover, so they are one run.
+    pub(crate) fn mover_links(&self, mover_id: u32) -> std::ops::Range<usize> {
+        let start = self.links.partition_point(|link| link.mover_id < mover_id);
+        let end = self.links.partition_point(|link| link.mover_id <= mover_id);
+        start..end
+    }
+
+    fn waypoint_height(&self, mover_id: u32, waypoint: u32) -> Option<f32> {
+        self.mover_heights
+            .iter()
+            .find(|(id, _)| *id == mover_id)
+            .and_then(|(_, heights)| heights.get(waypoint as usize).copied())
+    }
+
+    /// A link's boarding surface in mover-local height, which is what stays
+    /// constant from dock to dock: a floor and a roof differ, the same floor at
+    /// two docks does not.
+    pub(crate) fn link_surface(&self, link_index: usize) -> f32 {
+        let link = &self.links[link_index];
+        link.left[1]
+            - self
+                .waypoint_height(link.mover_id, link.waypoint)
+                .unwrap_or(0.0)
+    }
+
+    /// `height` in the same frame, for a body on `mover_id` docked at `waypoint`.
+    pub(crate) fn mover_surface(&self, mover_id: u32, waypoint: u32, height: f32) -> f32 {
+        height - self.waypoint_height(mover_id, waypoint).unwrap_or(0.0)
+    }
+
+    /// Whether a self-driven mover waits here: only a path's two ends qualify.
+    pub(crate) fn is_terminus(&self, mover_id: u32, waypoint: u32) -> bool {
+        self.mover_heights
+            .iter()
+            .find(|(id, _)| *id == mover_id)
+            .is_none_or(|(_, heights)| waypoint == 0 || waypoint as usize + 1 == heights.len())
+    }
+
     /// Every mover a surviving record names, sorted.
     pub(crate) fn record_mover_ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self
@@ -295,9 +373,9 @@ impl NavGraph {
     /// lacks, with one warning each, so the rest of navigation still works.
     pub fn validate_mover_records(&mut self, movers: &[NavMoverBound]) {
         let waypoint_exists = |mover_id: u32, waypoint: u32| {
-            movers
-                .iter()
-                .any(|mover| mover.mover_id == mover_id && waypoint < mover.waypoint_count)
+            movers.iter().any(|mover| {
+                mover.mover_id == mover_id && (waypoint as usize) < mover.waypoint_heights.len()
+            })
         };
         let portal_count = self.portals.len();
         self.gates.retain(|gate| {
@@ -328,6 +406,11 @@ impl NavGraph {
             valid
         });
         self.portal_gates = portal_gates(&self.gates, portal_count);
+        self.region_links = region_links(&self.links, region_count);
+        self.mover_heights = movers
+            .iter()
+            .map(|mover| (mover.mover_id, mover.waypoint_heights.clone()))
+            .collect();
     }
 
     /// Baked mover links, in section order. Empty for a map with no movers or a

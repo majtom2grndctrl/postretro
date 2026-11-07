@@ -56,6 +56,8 @@ fn move_corpse(
     agent.stuck_ticks = 0;
     agent.unstick_window_remaining = 0;
     agent.pin_escape = None;
+    agent.planned_ride = None;
+    agent.ride = None;
     let result = settle_corpse(
         collision,
         &capsule,

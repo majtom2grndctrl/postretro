@@ -12,11 +12,12 @@ use crate::collision::moving::{
 use crate::kinematic_mover::{MoverDockTable, MoverTickStateTable};
 use glam::Vec3;
 
-/// What baked records need from the level's movers: a mover and its path length.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What baked records need from the level's movers: a mover and the height of
+/// each waypoint along its path.
+#[derive(Debug, Clone, PartialEq)]
 pub struct NavMoverBound {
     pub mover_id: u32,
-    pub waypoint_count: u32,
+    pub waypoint_heights: Vec<f32>,
 }
 
 /// One tick's gate state. `Copy` and read-only, so Ai, combat scoring and
@@ -45,8 +46,22 @@ impl<'a> NavGate<'a> {
     }
 
     pub fn is_docked(self, mover_id: u32) -> bool {
+        self.docked_waypoint(mover_id).is_some()
+    }
+
+    pub fn docked_waypoint(self, mover_id: u32) -> Option<u32> {
+        self.docks?.docked_waypoint(mover_id)
+    }
+
+    /// Whether the mover will leave its dock by itself, so a ride can start.
+    pub fn moves_on_its_own(self, mover_id: u32) -> bool {
         self.docks
-            .is_some_and(|docks| docks.docked_waypoint(mover_id).is_some())
+            .is_some_and(|docks| docks.moves_on_its_own(mover_id))
+    }
+
+    /// Whether baked records name this mover, so its docks are tracked.
+    pub fn watches(self, mover_id: u32) -> bool {
+        self.docks.is_some_and(|docks| docks.watches(mover_id))
     }
 
     /// Whether a mover docked at the portal's gate waypoint closes it now.
@@ -109,7 +124,7 @@ pub fn install_mover_records(
         .filter_map(|(_, value)| match value {
             ComponentValue::KinematicMover(mover) => Some(NavMoverBound {
                 mover_id: mover.mover_id,
-                waypoint_count: mover.waypoints.len() as u32,
+                waypoint_heights: mover.waypoints.iter().map(|at| at.y).collect(),
             }),
             _ => None,
         })

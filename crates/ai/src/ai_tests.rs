@@ -1003,6 +1003,54 @@ fn target_reachability_reads_the_door_that_cuts_the_only_route() {
 }
 
 #[test]
+fn a_riders_target_reachability_holds_its_boarding_value_and_recomputes_after_exit() {
+    use postretro_entities::components::agent::{AgentComponent, AgentRide};
+
+    let graph = reachability_graph();
+    let nav_graph = reachability_nav_graph(vec![NavRegion {
+        x0: 0,
+        z0: 0,
+        x1: 8,
+        z1: 4,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    }]);
+    let mut registry = EntityRegistry::new();
+    spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    // The boarding value: it read false when it got on.
+    brain.target_reachable = false;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    agent.ride = Some(AgentRide {
+        mover_id: 1,
+        board_waypoint: Some(0),
+        exit_waypoint: Some(1),
+        exit_point: Vec3::ZERO,
+        departed: true,
+    });
+    registry.set_component(enemy, agent.clone()).unwrap();
+    let mut runtime = AiRuntime::new();
+    let reachable = |registry: &EntityRegistry| {
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable
+    };
+
+    for _ in 0..24 {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+        assert!(!reachable(&registry), "held on every tick of the ride");
+    }
+    agent.ride = None;
+    registry.set_component(enemy, agent).unwrap();
+    for _ in 0..24 {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    }
+    assert!(reachable(&registry), "recomputed after exit");
+}
+
+#[test]
 fn target_reachability_cache_holds_until_the_next_acquisition_tick() {
     let graph = reachability_cache_graph();
     let nav_graph = reachability_nav_graph(vec![

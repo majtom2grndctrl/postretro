@@ -615,7 +615,7 @@ fn faulty_records_drop_with_a_warning_and_the_rest_of_navigation_works() {
     let mut graph = NavGraph::from_section(&section);
     graph.validate_mover_records(&[NavMoverBound {
         mover_id: DOOR,
-        waypoint_count: 2,
+        waypoint_heights: vec![0.0, 4.0],
     }]);
     assert_eq!(graph.gates().len(), 2, "the good records survive");
     let warnings = capture

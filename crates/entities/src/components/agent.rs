@@ -31,6 +31,32 @@ pub struct PinEscape {
     pub ticks_left: u32,
 }
 
+/// A ride a planned path ends in: board `mover_id` where it docks now, get off
+/// at its other dock. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlannedRide {
+    pub mover_id: u32,
+    pub board_waypoint: u32,
+    pub exit_waypoint: u32,
+    /// A point on the mover's top, past the boarding edge.
+    pub board_point: Vec3,
+    /// A point on the landing, past the exit edge.
+    pub exit_point: Vec3,
+}
+
+/// A ride under way: the agent stands on `mover_id` and does not steer. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AgentRide {
+    pub mover_id: u32,
+    /// Where it got on, when it boarded by plan.
+    pub board_waypoint: Option<u32>,
+    /// Where it means to get off; `None` for a body a mover simply carried off.
+    pub exit_waypoint: Option<u32>,
+    pub exit_point: Vec3,
+    /// The mover has left the dock it boarded at.
+    pub departed: bool,
+}
+
 /// Live state for one movable navigation agent.
 ///
 /// The capsule geometry (`radius`, `height`, `step_height`) is fixed at attach
@@ -145,6 +171,12 @@ pub struct AgentComponent {
     /// with no portals, and for a manual path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub path_portals: Vec<u32>,
+    /// The ride the current path ends in, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_ride: Option<PlannedRide>,
+    /// The ride under way, if any. While set the agent neither steers nor replans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ride: Option<AgentRide>,
     /// The gate generation this agent last answered. Behind the live one while
     /// a gate change still owes it a replan, so any number of flips before
     /// admission cost one.
@@ -178,6 +210,8 @@ impl AgentComponent {
             ground: GroundRef::Airborne,
             pin_escape: None,
             path_portals: Vec::new(),
+            planned_ride: None,
+            ride: None,
             gate_generation: 0,
             path: Vec::new(),
             mandatory_waypoints: Vec::new(),

@@ -220,6 +220,12 @@ impl StagedUploads {
         }
     }
 
+    /// Discard the staged writes unrecorded and hand back the scratch vector,
+    /// so a batch abandoned on an error keeps its allocation for the next.
+    pub(crate) fn into_scratch(self) -> Vec<u8> {
+        self.bytes
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.copies.is_empty()
     }

@@ -1,6 +1,6 @@
 // GPU-backed proofs for streamed lightmap cell blocks in headless capture:
-// parity with all-resident mode (AC 4), each pool's first-generation override,
-// and a forced miss's terms (AC 7).
+// parity with all-resident mode, each pool's first-generation override,
+// and a forced miss's terms.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency), §7.8
 //
 // Captures compare on one adapter; no golden images.
@@ -161,7 +161,7 @@ fn reported_layers(capture: &Capture) -> PerPool<u32> {
     }
 }
 
-/// AC 4 on one map: streaming renders byte-identical PNGs to all-resident mode
+/// Parity on one map: streaming renders byte-identical PNGs to all-resident mode
 /// from every pose, with the level's own pools (partial, placed in drain order),
 /// with one pool's first generation overridden, and with pools holding every
 /// block. An override sets that pool's first generation and nothing else, and
@@ -314,7 +314,7 @@ fn streamed_lightmap_capture_matches_all_resident_on_hallway_inspection() {
     );
 }
 
-/// AC 7 on a fixture with static lights and no SDF-shadowed ones, bloom off.
+/// A forced miss on a fixture with static lights and no SDF-shadowed ones, bloom off.
 /// For each
 /// block `b`, its region `R_b` is the pixels a forced miss of `b` changes
 /// from the all-resident capture. The proof:

@@ -12,8 +12,8 @@ use crate::lightmap_bake::{BlockLayout, PreparedAtlas};
 use crate::pack::{all_resident_layers, pool_demand};
 
 /// Count the runtime pool from finalized compiler blocks, independently of
-/// their internal bake-layer placement. The renderer calls this same shelf
-/// placement through render-cpu's unchanged public entry point.
+/// their internal bake-layer placement. The renderer reaches the same
+/// `place_all_resident` in level-format, via `PoolDemand::place_blocks`.
 pub(crate) fn runtime_pool_layers(layout: &BlockLayout) -> anyhow::Result<u32> {
     let extents: Vec<_> = layout.blocks.iter().map(|b| (b.width, b.height)).collect();
     place_all_resident(&extents, layout.alignment(), LIGHTMAP_POOL_LAYER_EDGE)

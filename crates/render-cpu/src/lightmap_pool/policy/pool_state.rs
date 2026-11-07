@@ -15,8 +15,8 @@ const NOT_RESIDENT: u32 = u32::MAX;
 /// mask pool item is one plane of one block, so a block's two planes are told
 /// apart everywhere a placement is. Absent planes have no item.
 ///
-/// The pool texture always carries `layers() + 1` array layers: the last is
-/// the spare a repack stages moves through, never a second pool. `layers()`
+/// A pool with layers carries `layers() + 1` array layers: the last is the
+/// spare a repack stages moves through, never a second pool. `layers()`
 /// never passes the device limit the model was built with.
 #[derive(Debug)]
 pub struct PoolState {
@@ -69,6 +69,8 @@ impl PoolState {
         let all_resident_layers = place_all_resident(&present, alignment, edge)?.layer_count;
         let layers = match all_resident_layers {
             0 => 0,
+            // Floor of one layer: a nonzero pool with a bound of 0 still needs room
+            // (see `first_generation_layers`).
             _ => first_generation.max(1).min(max_layers),
         };
         Some(Self {

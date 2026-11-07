@@ -301,7 +301,9 @@ impl LightmapResources {
 
     /// Execute one streamed drain. When either pool grows, group 4 rebinds
     /// over both pools' live textures and the static meter rows follow them.
-    /// Returns whether the byte meter changed.
+    /// Returns whether the byte meter changed. An error carries no flag, but a
+    /// retirement the drain released before failing stands, so
+    /// [`Self::retiring_bytes`] shows it.
     pub(crate) fn drain_streaming(
         &mut self,
         device: &wgpu::Device,

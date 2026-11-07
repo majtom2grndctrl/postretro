@@ -95,6 +95,7 @@ struct Scratch {
 /// plane, and those halves are one atomic pair: they install in one drain or
 /// not at all, and leave together. Each pool repacks, grows and retires alone,
 /// and one journal covers both, so a pair or a drain undoes whole.
+///
 /// Each drain produces a [`DrainPlan`] the GPU layer executes in order; the
 /// model has already applied it, and journals every mutation so the GPU
 /// layer can [`fail_install`](Self::fail_install) one pair or

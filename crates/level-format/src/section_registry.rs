@@ -253,8 +253,8 @@ pub enum SectionId {
     GhostLinks = 56,
 
     /// Worst mandatory pool layers of any camera cell, per pool. Present when
-    /// Lightmap has blocks and CellResidencySet exists; 57 belongs to another
-    /// branch.
+    /// Lightmap has blocks and CellResidencySet exists. Id 57 is left free for
+    /// a section another plan claims.
     /// See `lightmap_pool_bound::LightmapPoolBoundSection`.
     LightmapPoolBound = 58,
 }

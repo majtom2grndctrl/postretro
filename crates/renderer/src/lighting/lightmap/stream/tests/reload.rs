@@ -7,7 +7,7 @@ fn streamed_resources(ctx: &GpuCtx, fixture: &BlockFixture, floor: u64) -> Light
     sized_resources(ctx, fixture, mask_holds_every_plane(fixture, 1), floor)
 }
 
-// Growth through the resource set, then P9 / AC 13: group 4 rebinds the new
+// Growth through the resource set, then group 4 rebinds the new
 // generation and the meter follows it with the retiring set counted apart;
 // a reload while that set is alive releases both pools (the queue callback
 // keeps only its flag), and the new level's first drain sees none of the

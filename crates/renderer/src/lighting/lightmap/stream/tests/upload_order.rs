@@ -3,8 +3,8 @@
 
 use super::*;
 
-// Upload batching P4/P7: the actual drain must consume preceding frame
-// writes before its own table copies, and leave later writes for the scene.
+// The actual drain consumes the frame's preceding writes before its own table
+// copies, and leaves later writes for the scene.
 #[test]
 fn frame_writes_land_before_lightmap_drain_copies_and_later_writes_wait_for_scene() {
     let Some(mut stream) = Stream::new(
@@ -42,8 +42,8 @@ fn frame_writes_land_before_lightmap_drain_copies_and_later_writes_wait_for_scen
     );
 }
 
-// Upload batching P1: an execution failure rolls back the real placement
-// model while preserving staged frame bytes for the next submit that frame.
+// An execution failure rolls back the real placement model while preserving
+// staged frame bytes for the next submit that frame.
 #[test]
 fn failed_lightmap_growth_rolls_back_without_consuming_pending_frame_writes() {
     let Some(mut stream) = Stream::new(
@@ -117,8 +117,9 @@ fn empty_lightmap_drain_does_not_acquire_frame_staging_or_submit() {
     assert_eq!(stream.queue.pool_counts(), pool);
 }
 
-// Upload batching P4: use both real drain implementations, including the
-// SH sparse growth's first submit, before the frame's consuming commands.
+// Both real drain implementations, the SH sparse growth's first submit
+// included, ahead of the frame's consuming commands: each submit takes only the
+// frame writes staged before it.
 #[test]
 fn lightmap_then_sh_growth_then_scene_each_consumes_only_its_preceding_frame_writes() {
     let Some(mut stream) = Stream::new(

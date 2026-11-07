@@ -8,7 +8,7 @@
 use postretro_level_format::lightmap_pool::{PerPool, PoolKind};
 use postretro_level_loader::LightmapRefusal;
 
-use super::plan::{EvictionReason, PoolGrowth};
+use super::plan::{EvictionReason, PoolGrowth, RepackKind};
 use super::{JournalOp, LightmapPoolModel};
 
 impl LightmapPoolModel {
@@ -142,7 +142,8 @@ impl LightmapPoolModel {
     /// that needs growth then is deferred whole, and neither pool grows for it.
     /// A pool's first half to grow reserves the targeted demand's layers with
     /// the shared margin
-    /// ([`growth_reserve_layers`](Self::growth_reserve_layers)), so later pairs, this drain or while the generation retires, land in layers
+    /// ([`growth_reserve_layers`](Self::growth_reserve_layers)), so later
+    /// pairs, this drain or while the generation retires, land in layers
     /// already allocated.
     ///
     /// Once a pair is deferred at the device limit in a pool, it failed with
@@ -195,6 +196,20 @@ impl LightmapPoolModel {
         self.scratch.device_limited = limited;
         for kind in PoolKind::ALL {
             let (from_layers, to_layers) = (start_layers[kind], self.pools[kind].layers);
+            // A compaction seats every pending half of its pool, so that pool
+            // is never short here. Its copies took the spare's index from the
+            // layers at plan time, where a downward repack's are scheduled
+            // after growth, so a compacted pool that grew would stage through
+            // a layer the new generation uses.
+            debug_assert!(
+                to_layers == from_layers
+                    || !matches!(
+                        self.plan.pools[kind].repack,
+                        Some(RepackKind::Compaction(_))
+                    ),
+                "the {} pool grew in the drain it compacted",
+                kind.name(),
+            );
             if to_layers > from_layers {
                 self.plan.pools[kind].growth = Some(PoolGrowth {
                     from_layers,

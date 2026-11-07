@@ -66,4 +66,13 @@ impl LightmapPoolModel {
         self.scratch.demand = demand;
         layers
     }
+
+    /// `targeted_demand_layers` of both pools, for tests outside this crate that
+    /// check a count against the model's own.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn targeted_layers(&mut self) -> postretro_level_format::lightmap_pool::PerPool<u32> {
+        postretro_level_format::lightmap_pool::PerPool::from_fn(|kind| {
+            self.targeted_demand_layers(kind)
+        })
+    }
 }

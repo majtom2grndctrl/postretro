@@ -29,7 +29,9 @@ use super::pool::{PoolFormat, PoolPlane};
 use crate::render::StagingPool;
 
 /// A drain the renderer refused. Every variant leaves the pool, the table
-/// and the model exactly as they were before the drain.
+/// and the model exactly as they were before the drain, except that a failed
+/// execution keeps any retirement the drain released, since its GPU work was
+/// already done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LightmapResidencyDrainError {
     /// The installed level does not stream its lightmap.
@@ -118,13 +120,15 @@ pub(crate) struct LightmapStreamState {
     upload_scratch: Vec<u8>,
     failed_scratch: Vec<u32>,
     counters: LightmapStreamCounters,
-    /// A deferral at the device's layer limit was logged for this level.
-    device_limit_warned: bool,
+    /// Each pool whose deferral at the device's layer limit was logged for this
+    /// level.
+    device_limit_warned: PerPool<bool>,
 }
 
 impl LightmapStreamState {
     /// Build the model and each pool's first generation: `layers() + 1` array
-    /// layers (the spare included, never a second pool), and the whole table,
+    /// layers for a pool that has layers (the spare included, never a second
+    /// pool; a pool with none has no generation and no spare), and the whole table,
     /// every real block non-resident and entry 0 the "none" entry.
     pub(crate) fn new(
         device: &wgpu::Device,
@@ -179,7 +183,7 @@ impl LightmapStreamState {
         };
         log::info!(
             "[Renderer] Lightmap pools (streamed): {} cell block(s), first generation {} lightmap \
-             layer(s) and {} mask layer(s) of {}², each plus a spare, shadowmask {}",
+             layer(s) and {} mask layer(s) of {}², each pool with layers plus a spare, shadowmask {}",
             plan.demand.block_count(),
             model.pool(PoolKind::Lightmap).layers(),
             model.pool(PoolKind::Mask).layers(),
@@ -204,7 +208,7 @@ impl LightmapStreamState {
             upload_scratch: Vec::new(),
             failed_scratch: Vec::new(),
             counters,
-            device_limit_warned: false,
+            device_limit_warned: PerPool::both(false),
         }
     }
 
@@ -312,17 +316,20 @@ impl LightmapStreamState {
     }
 
     /// A deferral at the device limit repeats every drain the same blocks
-    /// stay wanted, so it is logged once per level, as the lasting miss it
-    /// is; `deferred_pairs` still counts each one.
+    /// stay wanted, so it is logged once per pool per level, as the lasting
+    /// miss it is; `deferred_pairs` still counts each one.
     fn warn_device_limit_once(&mut self) {
-        let plan = self.model.plan();
-        let limited = PoolKind::ALL
-            .into_iter()
-            .find(|&kind| plan.pools[kind].device_limited);
-        let Some(kind) = limited.filter(|_| !self.device_limit_warned) else {
-            return;
-        };
-        self.device_limit_warned = true;
+        let limited = PerPool::from_fn(|kind| self.model.plan().pools[kind].device_limited);
+        for kind in PoolKind::ALL {
+            if !limited[kind] || self.device_limit_warned[kind] {
+                continue;
+            }
+            self.device_limit_warned[kind] = true;
+            self.log_device_limit(kind);
+        }
+    }
+
+    fn log_device_limit(&self, kind: PoolKind) {
         log::warn!(
             "[Renderer] Streamed lightmap: the {} pool holds all {} usable array layer(s) the \
              device allows (maxTextureArrayLayers {}, one kept as the repack spare) and \

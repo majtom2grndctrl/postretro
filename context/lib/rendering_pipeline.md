@@ -278,7 +278,7 @@ walk path.
 During Settling its cells join the settle set on any path, as the main view's drawn cells
 do (`boot_sequence.md` §1). Its cells outside the baked set are
 over-inclusion (§2), whose demand is never refused, so they count against the bake-gap
-gate: under one pool policy, the pool may defer no more lightmap texel area with the
+gate: under one pool policy, the pools may defer no more lightmap texel area with the
 mirror than without it. In the dev-tools Streaming tab, a level-scope slider sets L (default 16 m,
 up to the baked maximum of 32 m) for both resources. It is not a player setting.
 
@@ -322,8 +322,8 @@ residency.
 `POSTRETRO_LIGHTMAP_STREAMING=all-resident|stream` selects the mode. Unset or `stream`
 streams a level with blocks, a usable id 51 and usable portals. A level with blocks that
 lacks either, or runs `all-resident`, places every block and plane at install, in the same two
-pools with no spare: the parity baseline that mirrors SH's `off`. A level that can stream must
-carry id 58 in either mode; its absence or an unknown version refuses the load by name. The
+pools with no spare: the parity baseline that mirrors SH's `off`. A level with blocks and a usable id 51
+must carry id 58 in either mode; its absence or an unknown version refuses the load by name. The
 compiler refuses a level that cannot stream whose all-resident lightmap or mask pool exceeds
 the device array-layer floor, and warns for one that can; it counts pool layers with shared
 level-format placement, tallest first, also used by the renderer. A streaming load

@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use super::BlockPlacement;
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 /// Bytes of one entry: a WGSL `vec4<u32>`.
 pub const BLOCK_TABLE_ENTRY_BYTES: usize = 16;
@@ -23,6 +24,9 @@ pub const BLOCK_FLAG_NO_MASK_POOL: u32 = 1 << 4;
 const OFFSET_BITS: u32 = 9;
 const OFFSET_MASK: u32 = (1 << OFFSET_BITS) - 1;
 const OFFSET_UNIT: u32 = 4;
+// An offset must hold every texel position in a layer. The WGSL block-table
+// unpack shares these widths, so changing the layer edge changes it too.
+const _: () = assert!(LIGHTMAP_POOL_LAYER_EDGE / OFFSET_UNIT <= 1 << OFFSET_BITS);
 /// An address's layer bits, past any device's array limit.
 const LAYER_BITS: u32 = 14;
 const LAYER_SHIFT: u32 = OFFSET_BITS * 2;

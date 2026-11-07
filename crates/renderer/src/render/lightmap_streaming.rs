@@ -40,16 +40,26 @@ impl Renderer {
         let Some(level) = full.level.as_mut() else {
             return Err(LightmapResidencyDrainError::NotStreaming);
         };
-        let (outcome, meter_changed) = level
+        let drained = level
             .lightmap_resources
-            .drain_streaming(device, queue, batch)?;
+            .drain_streaming(device, queue, batch);
+        let meter_changed = match &drained {
+            Ok((_, meter_changed)) => *meter_changed,
+            // A failed drain keeps a retirement it released before planning,
+            // the one meter change an error can leave: only the retiring
+            // bytes can differ.
+            Err(_) => {
+                level.lightmap_residency_report.retiring_bytes
+                    != level.lightmap_resources.retiring_bytes()
+            }
+        };
         if meter_changed {
             level.lightmap_residency_report = level.lightmap_residency_report.with_static_rows(
                 level.lightmap_resources.residency.clone(),
                 level.lightmap_resources.retiring_bytes(),
             );
         }
-        Ok(outcome)
+        drained.map(|(outcome, _)| outcome)
     }
 
     /// Counters of the installed level's streamed lightmap pool, `None` when

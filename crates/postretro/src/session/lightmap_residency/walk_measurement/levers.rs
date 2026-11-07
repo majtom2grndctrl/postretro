@@ -91,7 +91,7 @@ mod tests {
         PerPool { lightmap, mask }
     }
 
-    // Task 10's sweeps name each pool apart, and one pool alone.
+    // A sweep can name each pool apart, and one pool alone.
     #[test]
     fn pool_layers_list_sets_each_pool_apart_and_leaves_the_rest_to_id_58() {
         assert_eq!(

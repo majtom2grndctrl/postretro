@@ -27,6 +27,8 @@ pub(crate) struct BlockFacts {
     pub(crate) priority: u8,
     /// The owning cluster is pinned by an authored resident volume.
     pub(crate) pinned: bool,
+    /// The mask planes the block stores.
+    pub(crate) planes: postretro_level_format::lightmap_pool::PlanePresence,
 }
 
 impl BlockFacts {
@@ -123,6 +125,7 @@ impl LevelBlockMap {
                 ranges: read_ranges,
                 priority,
                 pinned,
+                planes: summary.planes,
             });
         }
         Ok(Self {

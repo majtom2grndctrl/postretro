@@ -4,10 +4,10 @@
 // plan into textures.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
-use super::payload::planes_mismatch;
+use super::payload::{payload_mismatch, planes_mismatch};
 use super::{
     AllResidentMasks, AllResidentPool, BlockAddresses, MaskAddresses, PerPool, PoolDemand,
-    block_table_bytes,
+    PoolKind, block_table_bytes,
 };
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
@@ -204,7 +204,8 @@ pub fn plan_static_pool(
 /// Plan a streamed pool for `index`: the level's blocks install later, per
 /// drain, so only the pool shape and each pool's first generation are settled
 /// here. Degrades to placeholder mode, logging once, when the device cannot
-/// hold a pool layer or one layer plus the spare. A level whose every block at
+/// hold a pool layer or one layer plus the spare, or when the mask planes do
+/// not fit the pool layer edge. A level whose every block at
 /// once would not fit the device still streams, since streaming holds only a
 /// subset: the pool model defers a pair rather than grow past the device's
 /// layers, in either pool.
@@ -232,18 +233,25 @@ pub fn plan_streaming_pool(
         )
         .map(|()| pool)
     });
-    if let Ok(pool) = &shape
-        && pool.layer_count + 1 > max_texture_array_layers
-    {
-        log::warn!(
-            "[Renderer] Streamed lightmap: all {} cell block(s) need {} array layer(s) with the \
-             spare, past device maxTextureArrayLayers {max_texture_array_layers}; mandatory \
-             growth past the device limit defers instead",
-            extents.len(),
-            pool.layer_count + 1,
-        );
-    }
     let demand = PoolDemand::of_indices(index, shadowmask);
+    if shape.is_ok()
+        && let Some(all_resident) = demand.all_resident(LIGHTMAP_POOL_LAYER_EDGE)
+    {
+        for kind in PoolKind::ALL {
+            let layers = all_resident[kind];
+            if layers > 0 && layers + 1 > max_texture_array_layers {
+                log::warn!(
+                    "[Renderer] Streamed lightmap: the {} pool needs {} array layer(s) with the \
+                     spare for all {} block(s), past device maxTextureArrayLayers \
+                     {max_texture_array_layers}; mandatory growth past the device limit defers \
+                     instead",
+                    kind.name(),
+                    layers + 1,
+                    extents.len(),
+                );
+            }
+        }
+    }
     let first_generation = shape.and_then(|_| {
         sizing
             .first_generation(&demand, LIGHTMAP_POOL_LAYER_EDGE)
@@ -337,18 +345,9 @@ fn payloads_match_index(
             extents.len()
         ));
     }
-    for (block, (&(w, h), payload)) in extents.iter().zip(payloads).enumerate() {
-        let irradiance = header.irradiance_len(w, h);
-        let direction = header.direction_len(w, h);
-        if irradiance != Some(payload.irradiance.len() as u64)
-            || direction != Some(payload.direction.len() as u64)
-        {
-            return Err(format!(
-                "block {block} ({w}x{h}) carries {} irradiance and {} direction byte(s), \
-                 expected {irradiance:?} and {direction:?}",
-                payload.irradiance.len(),
-                payload.direction.len(),
-            ));
+    for (block, (&extent, payload)) in extents.iter().zip(payloads).enumerate() {
+        if let Some(reason) = payload_mismatch(header, extent, None, payload) {
+            return Err(format!("block {block}: {reason}"));
         }
     }
     Ok(())

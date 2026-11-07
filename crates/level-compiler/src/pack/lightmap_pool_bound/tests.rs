@@ -13,7 +13,18 @@ use postretro_level_format::cluster_directory::{
     CLUSTER_HINT_FLAG_PINNED, ClusterHintRecord, ClusterRecord,
 };
 use postretro_level_format::lightmap::{
-    IRRADIANCE_FORMAT_BC6H, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlock, LightmapMode,
+    IRRADIANCE_FORMAT_BC6H, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlock, LightmapBlockPayload,
+    LightmapHeader, LightmapMode,
+};
+use postretro_level_format::lightmap_pool::{
+    MASK_POOL_LAYER_BYTES, PerPool, PoolKind, all_resident_pool_bytes, lightmap_pool_layer_bytes,
+    streamed_pool_bytes,
+};
+use postretro_level_format::shadowmask_atlas::group_plane_len;
+use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
+use postretro_render_cpu::lightmap_pool::{
+    DrainRequest, LightmapPoolModel, StaticPool, StreamedPoolSizing, plan_static_pool,
+    plan_streaming_pool,
 };
 use postretro_test_log_capture::LogCapture;
 
@@ -447,34 +458,26 @@ fn bound_cell_input_reads_no_water_plane_data() {
     );
 }
 
-/// Expected on the runtime's side of the dev-dependency edge, from extents
-/// alone: one per block, and one per present plane.
-fn runtime_layers(blocks: &[Block], alignment: u32) -> PoolLayers {
-    let place = |extents: &[(u32, u32)]| {
-        postretro_render_cpu::lightmap_pool::place_all_resident(
-            extents,
-            alignment,
-            LIGHTMAP_POOL_LAYER_EDGE,
-        )
-        .unwrap()
-        .layer_count
-    };
-    let extent = |block: &Block| (u32::from(block.extent.0), u32::from(block.extent.1));
-    let lightmap: Vec<_> = blocks.iter().map(extent).collect();
-    let mask: Vec<_> = blocks
+/// `targeted`'s layers as the runtime counts them, across the dev-dependency
+/// edge: the demand a loaded level reads from its id 22 and id 42 indices, and
+/// the streamed pool model's own pack of its mandatory targets.
+fn runtime_layers(level: &BoundLevel, targeted: &[u32]) -> PoolLayers {
+    let demand = PoolDemand::of_indices(&level.lightmap.index(), Some(&level.shadowmask.index()));
+    let mut model = LightmapPoolModel::new(demand, LIGHTMAP_POOL_LAYER_EDGE, PerPool::both(1))
+        .expect("every fixture block fits a layer");
+    let targets: Vec<LightmapTarget> = targeted
         .iter()
-        .flat_map(|block| {
-            block
-                .planes
-                .iter()
-                .filter(|&&stored| stored)
-                .map(|_| extent(block))
+        .map(|&block| LightmapTarget {
+            block,
+            class: LightmapBlockClass::Mandatory,
+            lead: 0,
         })
         .collect();
-    PoolLayers {
-        lightmap: place(&lightmap),
-        mask: place(&mask),
-    }
+    model.plan_drain(DrainRequest {
+        target_reset: Some(&targets),
+        ..DrainRequest::default()
+    });
+    model.targeted_layers()
 }
 
 #[test]
@@ -491,9 +494,9 @@ fn compiler_and_runtime_count_the_same_layers() {
         })
         .collect();
     let level = BoundLevel::new(&blocks, &[], DEFAULT_LEAD, &[&[(0, 0)]]);
-    let alignment = level.lightmap.header().block_alignment();
 
-    let expected = runtime_layers(&blocks, alignment);
+    let every_block: Vec<u32> = (0..blocks.len() as u32).collect();
+    let expected = runtime_layers(&level, &every_block);
     assert!(expected.lightmap > 1 && expected.mask > 1, "{expected:?}");
     assert_eq!(
         level.resolve().section,
@@ -503,8 +506,7 @@ fn compiler_and_runtime_count_the_same_layers() {
     let demand = pool_demand(&level.lightmap, Some(&level.shadowmask)).unwrap();
     assert_eq!(all_resident_layers(&demand).unwrap(), expected);
 
-    let first_three = &blocks[..3];
-    let expected = runtime_layers(first_three, alignment);
+    let expected = runtime_layers(&level, &[0, 1, 2]);
     assert_eq!(expected.lightmap, 2);
     assert_eq!(
         layers_of(&demand, &[0, 1, 2], &mut PackScratch::default()).unwrap(),
@@ -655,37 +657,109 @@ fn summary_bytes(bound: &LightmapPoolBound) -> String {
     bytes.to_string()
 }
 
+/// What the runtime allocates first for `level` given `bound`, in the Build
+/// Summary's MiB: render-cpu's streamed plan from the stored section, or with
+/// none the all-resident plan the renderer uploads, each priced per layer.
+fn runtime_first_generation_bytes(level: &BoundLevel, bound: &LightmapPoolBound) -> String {
+    const MAX_DIMENSION: u32 = 8192;
+    const MAX_LAYERS: u32 = 2048;
+    let index = level.lightmap.index();
+    let masks = level.shadowmask.index();
+    let layer_bytes = PerPool {
+        lightmap: lightmap_pool_layer_bytes(&index.header).unwrap(),
+        mask: MASK_POOL_LAYER_BYTES,
+    };
+    let bytes: u64 = match bound.section {
+        Some(section) => {
+            let plan = plan_streaming_pool(
+                Some(&index),
+                Some(&masks),
+                [0; 32],
+                StreamedPoolSizing::from_bound(section.layers()),
+                MAX_DIMENSION,
+                MAX_LAYERS,
+            );
+            let StaticPool::Streaming(plan) = plan else {
+                panic!("a level with id 58 streams: {plan:?}");
+            };
+            PoolKind::ALL
+                .iter()
+                .map(|&kind| {
+                    streamed_pool_bytes(plan.first_generation_layers[kind], layer_bytes[kind])
+                })
+                .sum()
+        }
+        None => {
+            let payloads: Vec<_> = level
+                .lightmap
+                .blocks
+                .iter()
+                .zip(&level.shadowmask.blocks)
+                .map(|(block, planes)| sized_payload(&index.header, block, planes))
+                .collect();
+            let plan = plan_static_pool(
+                Some(&index),
+                Some(&masks),
+                &payloads,
+                MAX_DIMENSION,
+                MAX_LAYERS,
+            );
+            let StaticPool::Blocks(plan) = plan else {
+                panic!("a level without id 58 is all-resident: {plan:?}");
+            };
+            let mask_pool = plan.masks.as_ref().expect("the device holds the mask pool");
+            all_resident_pool_bytes(plan.pool.layer_count, layer_bytes.lightmap)
+                + all_resident_pool_bytes(mask_pool.layer_count, layer_bytes.mask)
+        }
+    };
+    format!("{:.1}", bytes as f64 / MIB as f64)
+}
+
+/// Zeroed bytes of the lengths `block` and its stored planes need: the
+/// all-resident plan checks lengths before it places anything.
+fn sized_payload(
+    header: &LightmapHeader,
+    block: &LightmapBlock,
+    planes: &[Vec<u8>; 2],
+) -> LightmapBlockPayload {
+    let (width, height) = (u32::from(block.width), u32::from(block.height));
+    let zeroed = |len: Option<u64>| vec![0; len.unwrap() as usize];
+    LightmapBlockPayload {
+        irradiance: zeroed(header.irradiance_len(width, height)),
+        direction: zeroed(header.direction_len(width, height)),
+        shadowmask: Some(planes.each_ref().map(|plane| match plane.is_empty() {
+            true => Vec::new(),
+            false => zeroed(group_plane_len(width, height)),
+        })),
+    }
+}
+
+/// The summary's bytes equal `hand` MiB and what the runtime allocates first.
+fn assert_summary_bytes(level: &BoundLevel, bound: &LightmapPoolBound, hand: u64) {
+    let summary = summary_bytes(bound);
+    assert_eq!(summary, format!("{hand}.0"));
+    assert_eq!(summary, runtime_first_generation_bytes(level, bound));
+}
+
 #[test]
 fn summary_bytes_equal_first_generation_bytes() {
     // Below the cap: 8 × 5/4 = 10 of 20 lightmap layers and, with both planes,
     // 16 × 5/4 = 20 of 40 mask layers. Each pool adds its spare.
     let level = full_block_level(20, 8, BOTH_PLANES);
-    assert_eq!(
-        summary_bytes(&level.resolve()),
-        format!("{}.0", 11 * 6 + 21 * 4)
-    );
+    assert_summary_bytes(&level, &level.resolve(), 11 * 6 + 21 * 4);
 
     // At the cap: 10 × 5/4 rounds to 13, the whole level's 13 layers, and
     // plane A alone gives the mask pool the same figures. Spares stay.
     let level = full_block_level(13, 10, PLANE_A);
-    assert_eq!(
-        summary_bytes(&level.resolve()),
-        format!("{}.0", 14 * 6 + 14 * 4)
-    );
+    assert_summary_bytes(&level, &level.resolve(), 14 * 6 + 14 * 4);
 
     // No id 51: the whole level, with no spare in either pool.
-    assert_eq!(
-        summary_bytes(&level.resolve_without_id_51()),
-        format!("{}.0", 13 * 6 + 13 * 4)
-    );
+    assert_summary_bytes(&level, &level.resolve_without_id_51(), 13 * 6 + 13 * 4);
 
     // Id 42 with no present plane: no mask pool, so no mask spare either way.
     let level = full_block_level(20, 8, NO_PLANES);
-    assert_eq!(summary_bytes(&level.resolve()), format!("{}.0", 11 * 6));
-    assert_eq!(
-        summary_bytes(&level.resolve_without_id_51()),
-        format!("{}.0", 20 * 6)
-    );
+    assert_summary_bytes(&level, &level.resolve(), 11 * 6);
+    assert_summary_bytes(&level, &level.resolve_without_id_51(), 20 * 6);
 }
 
 #[test]

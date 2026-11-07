@@ -208,7 +208,7 @@ pub(crate) struct LightmapResidencyCounters {
 
 /// Gauges of what is resident and what the current camera cell's mandatory
 /// set (lead L plus the pins) needs, in upload bytes per section: id 22
-/// (irradiance plus direction) and id 42 (both shadowmask groups). Kept
+/// (irradiance plus direction) and id 42 (its present planes). Kept
 /// incrementally on install, eviction and retarget, never recomputed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct LightmapResidencyBytes {

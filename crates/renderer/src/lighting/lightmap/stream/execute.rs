@@ -107,7 +107,10 @@ impl LightmapStreamState {
             + plan.table_writes.len() * BLOCK_TABLE_ENTRY_BYTES;
         let mut uploads =
             StagedUploads::from_scratch(std::mem::take(&mut self.upload_scratch), reserve);
-        let upload_error = |error| LightmapResidencyDrainError::Upload(format!("{error:?}"));
+        // An error abandons the batch unrecorded; its scratch comes back.
+        let upload_error = |error: crate::render::uploads::UploadError| {
+            LightmapResidencyDrainError::Upload(format!("{error:?}"))
+        };
         for upload in &plan.uploads {
             let payload = &ready
                 .iter()
@@ -125,16 +128,17 @@ impl LightmapStreamState {
                 let texture = targets[write.plane.pool()]
                     .expect("a half placed in a pool has that pool's generation")
                     .plane(write.plane);
-                uploads
-                    .write_texture(
-                        texture,
-                        write.origin,
-                        write.data,
-                        write.bytes_per_row,
-                        write.rows,
-                        write.extent,
-                    )
-                    .map_err(upload_error)?;
+                if let Err(error) = uploads.write_texture(
+                    texture,
+                    write.origin,
+                    write.data,
+                    write.bytes_per_row,
+                    write.rows,
+                    write.extent,
+                ) {
+                    self.upload_scratch = uploads.into_scratch();
+                    return Err(upload_error(error));
+                }
                 executed.install_bytes += write.data.len() as u64;
             }
             executed.uploads += 1;
@@ -150,9 +154,10 @@ impl LightmapStreamState {
                 bytes.copy_from_slice(&word.to_ne_bytes());
             }
             let offset = u64::from(write.index) * BLOCK_TABLE_ENTRY_BYTES as u64;
-            uploads
-                .write_buffer(&self.table, offset, &entry)
-                .map_err(upload_error)?;
+            if let Err(error) = uploads.write_buffer(&self.table, offset, &entry) {
+                self.upload_scratch = uploads.into_scratch();
+                return Err(upload_error(error));
+            }
         }
         executed.table_writes = plan.table_writes.len() as u64;
 

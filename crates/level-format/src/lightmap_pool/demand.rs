@@ -20,9 +20,8 @@ pub type PlanePresence = [bool; 2];
 pub struct PoolDemand {
     alignment: u32,
     extents: Vec<(u32, u32)>,
-    /// `None` for a level with no mask pool at all: no id 42, or a mask pool
-    /// the device cannot hold. Distinct from a level whose every plane is
-    /// absent, which has masks that read zero.
+    /// `None` for a level with no mask pool at all: no id 42. Distinct from a
+    /// level whose every plane is absent, which has masks that read zero.
     planes: Option<Vec<PlanePresence>>,
 }
 
@@ -102,12 +101,6 @@ impl PoolDemand {
 
     pub fn has_mask_pool(&self) -> bool {
         self.planes.is_some()
-    }
-
-    /// The same blocks with no mask pool: every plane stays out of it.
-    pub fn without_masks(mut self) -> Self {
-        self.planes = None;
-        self
     }
 
     pub fn planes(&self, block: u32) -> PlanePresence {

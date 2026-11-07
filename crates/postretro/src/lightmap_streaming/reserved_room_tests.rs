@@ -1,4 +1,4 @@
-//! Band reads against reserved room: the controller's half of band headroom (R29).
+//! Band reads against reserved room: the controller's half of band headroom.
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::{LightmapDrainOutcome, LightmapRefusal};

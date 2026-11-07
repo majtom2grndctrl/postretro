@@ -101,8 +101,8 @@ impl LightmapPoolModel {
         }
         if matches!(layout, Layout::NoOrder) {
             log::warn!(
-                "[Lightmap] Compaction of the {} pool found no copy order through the spare for \
-                 {} items in {} layers; demand falls through to growth",
+                "[Renderer] Compaction of the {} pool found no copy order through the spare for \
+                 {} items in {} layers; the drain falls back to the downward pass, then growth",
                 kind.name(),
                 c.moves.len(),
                 self.pools[kind].layers,

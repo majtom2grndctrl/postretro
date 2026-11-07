@@ -140,8 +140,11 @@ const LAYERS_TRIED_FOR_CLEARING: usize = 4;
 
 /// Free-space search an order may spend per block, in candidate rows squared,
 /// before it gives up: planning runs on the frame thread, and a pool that jams
-/// retries every target layer on every open layer. Measured on the hallway's
-/// block mix, a tighter budget starts losing orders that exist.
+/// retries every target layer on every open layer. It is checked only between
+/// the candidate layers a target layer tries, never inside a step, so an order
+/// can overrun it: a landing that spends it runs to its end, and clearing a
+/// layer after a build never checks it. Measured on the hallway's block mix, a
+/// tighter budget starts losing orders that exist.
 const WORK_PER_BLOCK: usize = 8192;
 
 /// Append to `copies` an order that takes every block to its target rect and
@@ -227,15 +230,16 @@ impl Order<'_> {
     }
 
     /// Build `target` on the open layer with the fewest texels in its way,
-    /// the one holding most of it in place among equals. An empty layer
-    /// costs nothing.
+    /// the one holding most of it in place among equals. A layer with nothing
+    /// in the way parks nothing, so it searches no free space and cannot fail:
+    /// it builds even on a spent budget.
     fn build(&mut self, target: u32) -> bool {
         self.rank_homes(target);
         for at in 0..self.s.ranked.len() {
-            if self.work_left == 0 {
+            let (in_the_way, _, layer) = self.s.ranked[at];
+            if self.work_left == 0 && in_the_way > 0 {
                 return false;
             }
-            let (in_the_way, _, layer) = self.s.ranked[at];
             let mark = self.s.hops.len();
             if self.land_on(target, layer) {
                 self.s.open[layer as usize] = false;
@@ -568,4 +572,54 @@ fn overlap(at_a: BlockPlacement, a: &BlockMove, at_b: BlockPlacement, b: &BlockM
         && at_b.x < at_a.x + a.width
         && at_a.y < at_b.y + b.height
         && at_b.y < at_a.y + a.height
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-layer pool whose block moves within its layer: the target layer
+    /// builds on the empty spare, with nothing in its way, then moves off it.
+    /// A budget spent before that build, as a step that emptied a layer can
+    /// spend it, must not refuse a build that searches nothing.
+    #[test]
+    fn a_target_layer_with_nothing_in_its_way_builds_on_a_spent_budget() {
+        let at = |layer, x, y| BlockPlacement { layer, x, y };
+        let moves = [BlockMove {
+            src: Some(at(0, 0, 0)),
+            dst: at(0, 4, 0),
+            width: 4,
+            height: 4,
+        }];
+        let input = CopyOrderInput {
+            moves: &moves,
+            layers: 1,
+            edge: 64,
+        };
+        let mut scratch = CopyOrderScratch::default();
+        let mut copies = Vec::new();
+        let mut order = Order {
+            input,
+            s: &mut scratch,
+            copies: &mut copies,
+            built_over: 0,
+            work_left: 0,
+        };
+        order.begin(BuildOrder::TallestFirst);
+        assert!(order.run(), "a build with nothing in the way cannot fail");
+        let copy = |src, dst| PoolCopy {
+            src,
+            dst,
+            width: 4,
+            height: 4,
+        };
+        assert_eq!(
+            copies,
+            [
+                copy(at(0, 0, 0), at(1, 4, 0)),
+                copy(at(1, 4, 0), at(0, 4, 0)),
+            ]
+        );
+        assert_eq!(scratch.homes, [0]);
+    }
 }

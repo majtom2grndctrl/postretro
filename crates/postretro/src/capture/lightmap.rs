@@ -63,6 +63,9 @@ pub(super) fn validate_lightmap_overrides(scene: &CaptureScene, world: &LevelWor
         return Ok(());
     };
     let block_count = manifest.block_count();
+    if overrides.mask.is_some() && manifest.shadowmask_index().is_none() {
+        bail!("mask_pool_layers needs a level with a shadowmask: this level has no mask pool");
+    }
     if let Some(&block) = scene
         .force_missing_lightmap_blocks
         .iter()

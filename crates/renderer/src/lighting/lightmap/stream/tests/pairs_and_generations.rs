@@ -3,7 +3,7 @@
 
 use super::*;
 
-// AC 8, renderer side: a pair missing a shadowmask group, or carrying a short
+// A pair missing a shadowmask group, or carrying a short
 // one, fails whole — none of its planes upload and its entry never turns
 // resident — while a well-formed pair in the same drain installs.
 #[test]
@@ -55,7 +55,7 @@ fn a_pair_missing_a_shadowmask_group_fails_whole_and_its_entry_stays_non_residen
     stream.assert_samples_own_texels();
 }
 
-// P6: evicting A and placing B in A's region happen in one submission; the
+// Evicting A and placing B in A's region happen in one submission; the
 // table read back shows A non-resident and B on its own texels, never A
 // through B's texels. Each plane fills a mask layer, so the mask pool holds two.
 #[test]
@@ -88,7 +88,7 @@ fn an_evicted_block_turns_non_resident_in_the_submission_that_fills_its_region()
     stream.assert_samples_own_texels();
 }
 
-// P3: a batch from another generation, or with another level's identity, is
+// A batch from another generation, or with another level's identity, is
 // rejected before anything changes; the next valid batch still drains.
 #[test]
 fn a_batch_from_another_generation_is_rejected_without_mutating_state() {
@@ -190,7 +190,7 @@ fn a_new_generation_starts_from_an_empty_residency_without_reporting_evictions()
     stream.assert_samples_own_texels();
 }
 
-// AC 15, renderer half: a drain that changes nothing issues no table write,
+// A drain that changes nothing issues no table write,
 // no upload and no submission; a reclassification writes nothing either, and
 // a removal writes exactly its one entry.
 #[test]

@@ -372,6 +372,17 @@ fn lightmap_sections(d: &LightmapStreamingLiveDiagnostics) -> [StreamingSection;
                     format!("{} ({})", d.repacks.lightmap, d.repacks.mask),
                 ),
                 (
+                    "Compactions (mask)",
+                    format!("{} ({})", d.compactions.lightmap, d.compactions.mask),
+                ),
+                (
+                    "Compaction rollbacks (mask)",
+                    format!(
+                        "{} ({})",
+                        d.compaction_rollbacks.lightmap, d.compaction_rollbacks.mask
+                    ),
+                ),
+                (
                     "Growths (mask)",
                     format!("{} ({})", d.growths.lightmap, d.growths.mask),
                 ),
@@ -477,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn lightmap_sections_split_bytes_by_section_and_show_both_miss_buckets() {
+    fn lightmap_sections_split_bytes_by_section_and_show_misses_and_each_pools_work() {
         let diagnostics = LightmapStreamingLiveDiagnostics {
             block_count: 198,
             resident_blocks: 41,
@@ -493,6 +504,18 @@ mod tests {
             peak_pool_layers: PerPool {
                 lightmap: 9,
                 mask: 4,
+            },
+            repacks: PerPool {
+                lightmap: 6,
+                mask: 5,
+            },
+            compactions: PerPool {
+                lightmap: 2,
+                mask: 3,
+            },
+            compaction_rollbacks: PerPool {
+                lightmap: 0,
+                mask: 1,
             },
             ..LightmapStreamingLiveDiagnostics::default()
         };
@@ -514,7 +537,11 @@ mod tests {
             value("Residency", "Visible misses (outside set / not resident)"),
             "3 / 5 (last frame 0 / 1)"
         );
-        assert_eq!(value("Pool", "Layers (peak / cap)"), "7 (9 / 15)");
+        assert_eq!(value("Pool", "Layers (peak)"), "7 (9)");
+        assert_eq!(value("Pool", "Mask layers (peak)"), "3 (4)");
+        assert_eq!(value("Pool", "Repacks (mask)"), "6 (5)");
+        assert_eq!(value("Pool", "Compactions (mask)"), "2 (3)");
+        assert_eq!(value("Pool", "Compaction rollbacks (mask)"), "0 (1)");
     }
 
     #[test]

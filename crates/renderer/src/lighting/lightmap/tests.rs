@@ -11,6 +11,7 @@ use super::pool::{
 };
 use super::test_fixtures::{BlockFixture, block_fixture, zero_texels};
 use super::*;
+use crate::render::residency::texture_bytes;
 
 use log::Level;
 use postretro_level_format::animated_light_weight_maps::{
@@ -21,6 +22,9 @@ use postretro_level_format::animated_lightmap_atlas::{
     ANIMATED_BLOCK_TABLE_UNIFORM_BYTES,
 };
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+use postretro_level_format::lightmap_pool::{
+    MASK_POOL_LAYER_BYTES, all_resident_pool_bytes, lightmap_pool_layer_bytes,
+};
 use postretro_render_cpu::lightmap_pool::{
     BLOCK_FLAG_NO_MASK_POOL, BLOCK_FLAG_NONE, BLOCK_FLAG_PLANE_A, BLOCK_FLAG_PLANE_B,
     BLOCK_FLAG_RESIDENT, BlockAddresses, BlockPlacement, BlockTableEntry, MaskAddresses, PerPool,
@@ -397,7 +401,7 @@ fn mask_present_is_set_only_for_a_bound_mask_pool() {
 }
 
 #[test]
-fn pool_textures_are_edge_square_layers_in_stored_formats_and_copyable() {
+fn pool_textures_are_edge_square_layers_in_stored_formats_at_layer_price_and_copyable() {
     let plan = blocks(plan_for(&fixture(&[(1024, 1024); 5]), 8192, 256));
     let edge = LIGHTMAP_POOL_LAYER_EDGE;
     let irradiance = irradiance_pool_descriptor(&plan);
@@ -432,6 +436,19 @@ fn pool_textures_are_edge_square_layers_in_stored_formats_and_copyable() {
         "ten 1024² planes, four to a layer"
     );
     assert_eq!(shadowmask.format, wgpu::TextureFormat::Bc5RgUnorm);
+    // The Build Summary prices an all-resident level at the shared layer bytes,
+    // with no spare: these textures cost exactly that.
+    let bytes = |descriptor: &wgpu::TextureDescriptor<'_>| {
+        texture_bytes(descriptor.format, descriptor.size)
+    };
+    assert_eq!(
+        bytes(&irradiance) + bytes(&direction),
+        all_resident_pool_bytes(2, lightmap_pool_layer_bytes(&plan.header).unwrap())
+    );
+    assert_eq!(
+        bytes(&shadowmask),
+        all_resident_pool_bytes(3, MASK_POOL_LAYER_BYTES)
+    );
     for descriptor in [irradiance, direction, shadowmask] {
         assert!(descriptor.usage.contains(
             wgpu::TextureUsages::TEXTURE_BINDING

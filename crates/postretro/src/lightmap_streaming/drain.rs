@@ -183,14 +183,14 @@ impl LightmapResidencyController {
         Ok(())
     }
 
-    /// A growth is demand the compiled bound does not model. The renderer's
+    /// A growth is demand the pool's first generation did not hold. The renderer's
     /// pool knows no cell, so the warning is logged here, once per growth.
     fn warn_growth(&self, pools: &LightmapPoolReport) {
         for kind in PoolKind::ALL {
             if pools[kind].grew {
                 log::warn!(
                     "[Lightmap streaming] The {} pool grew to {} layers at camera cell {}: demand \
-                     past the compiled bound. It keeps that size for the level",
+                     past the pool's first generation. It keeps that size for the level",
                     kind.name(),
                     pools[kind].layers,
                     self.camera_cell
@@ -294,6 +294,16 @@ impl LightmapResidencyController {
                 return invalid(format!(
                     "reserved-room item {item} of the {} pool is out of range",
                     kind.name()
+                ));
+            }
+        }
+        for &item in &outcome.room_reserved.mask {
+            let block = PoolKind::Mask.block_of(item);
+            let plane = postretro_level_format::lightmap_pool::mask_item_plane(item);
+            if !self.map.facts(block).planes[plane] {
+                return invalid(format!(
+                    "reserved-room item {item} names mask plane {plane} of block {block}, \
+                     which the block does not store"
                 ));
             }
         }

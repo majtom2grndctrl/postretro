@@ -133,7 +133,9 @@ fn format_line(
          ({reads} reads, id 22 {read_22}, id 42 {read_42}), {installs} installs, \
          {evictions} evictions, {refusals} refusals, {deferrals} deferrals, \
          {failed_installs} failed installs, {failed_reads} failed reads, {repacks} repacks \
-         ({mask_repacks} mask), {growths} growths ({mask_growths} mask), visible misses (may overlap) {outside} outside baked set, \
+         ({mask_repacks} mask), {compactions} compactions ({mask_compactions} mask), \
+         {rollbacks} compaction rollbacks ({mask_rollbacks} mask), {growths} growths \
+         ({mask_growths} mask), visible misses (may overlap) {outside} outside baked set, \
          {not_resident} not resident \
          | now: lead {lead:.1} of {max_lead:.1} m, resident {resident_blocks} of {blocks} \
          blocks {resident} (id 22 {resident_22}, id 42 {resident_42}), mandatory \
@@ -154,6 +156,10 @@ fn format_line(
         failed_reads = delta(|d| d.failed_reads),
         repacks = delta(|d| d.repacks.lightmap),
         mask_repacks = delta(|d| d.repacks.mask),
+        compactions = delta(|d| d.compactions.lightmap),
+        mask_compactions = delta(|d| d.compactions.mask),
+        rollbacks = delta(|d| d.compaction_rollbacks.lightmap),
+        mask_rollbacks = delta(|d| d.compaction_rollbacks.mask),
         growths = delta(|d| d.growths.lightmap),
         mask_growths = delta(|d| d.growths.mask),
         outside = delta(|d| d.drawn_outside_baked_set),
@@ -425,6 +431,14 @@ mod tests {
             installs: 10,
             lightmap_bytes_read: 1024 * 1024,
             drawn_not_resident: 4,
+            repacks: PerPool {
+                lightmap: 2,
+                mask: 1,
+            },
+            compactions: PerPool {
+                lightmap: 1,
+                mask: 0,
+            },
             ..LightmapStreamingLiveDiagnostics::default()
         };
         let now = LightmapStreamingLiveDiagnostics {
@@ -458,6 +472,18 @@ mod tests {
                 lightmap: 64,
                 mask: 32,
             },
+            repacks: PerPool {
+                lightmap: 5,
+                mask: 3,
+            },
+            compactions: PerPool {
+                lightmap: 2,
+                mask: 1,
+            },
+            compaction_rollbacks: PerPool {
+                lightmap: 1,
+                mask: 0,
+            },
             last_drain_install_micros: 420,
             max_drain_install_micros: 3_100,
             ..LightmapStreamingLiveDiagnostics::default()
@@ -472,6 +498,12 @@ mod tests {
         );
         assert!(
             line.contains("visible misses (may overlap) 1 outside baked set, 2 not resident"),
+            "{line}"
+        );
+        assert!(
+            line.contains(
+                "3 repacks (2 mask), 1 compactions (1 mask), 1 compaction rollbacks (0 mask)"
+            ),
             "{line}"
         );
         assert!(line.contains("lead 16.0 of 32.0 m"), "{line}");

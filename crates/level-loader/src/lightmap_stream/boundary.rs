@@ -165,8 +165,10 @@ pub struct LightmapDrainOutcome {
     /// the controller must not re-request them until the pool that turned
     /// them away has room.
     pub refused: Vec<LightmapRefusal>,
-    /// Pairs the renderer could not place yet (a mandatory block waiting on a
-    /// retiring pool: a counted transient miss). Returned owned.
+    /// Pairs the renderer could not place yet. Returned owned. The cause is
+    /// either a mandatory block waiting on a retiring pool (a counted transient
+    /// miss) or a pool that cannot grow past the device's array-layer limit,
+    /// which lasts until demand falls.
     pub deferred: Vec<PreparedLightmapBlock>,
     /// Pairs whose payload could not fill their block at install (a contract
     /// violation, not pressure). Payloads are dropped and entries stay

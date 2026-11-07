@@ -396,7 +396,7 @@ impl From<LightmapResidencyReport> for LightmapResidencyReportJson {
 }
 
 /// Lightmap block residency at the captured instant: the mode, blocks
-/// resident of the level's total, the streamed pool's layers and cap, and
+/// resident of the level's total, each streamed pool's layers, and
 /// (streaming only) the residency counters.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LightmapStreamingReportJson {
@@ -446,6 +446,12 @@ struct LightmapStreamingCountersJson {
     mask_peak_pool_layers: u32,
     repacks: u64,
     mask_repacks: u64,
+    /// Of the repacks, those that escalated to compaction.
+    compactions: u64,
+    mask_compactions: u64,
+    /// Compactions that found no copy order and fell through to growth.
+    compaction_rollbacks: u64,
+    mask_compaction_rollbacks: u64,
     growths: u64,
     mask_growths: u64,
     growth_transient_peak_bytes: u64,
@@ -476,6 +482,10 @@ impl From<&LightmapStreamingLiveDiagnostics> for LightmapStreamingCountersJson {
             mask_peak_pool_layers: live.peak_pool_layers.mask,
             repacks: live.repacks.lightmap,
             mask_repacks: live.repacks.mask,
+            compactions: live.compactions.lightmap,
+            mask_compactions: live.compactions.mask,
+            compaction_rollbacks: live.compaction_rollbacks.lightmap,
+            mask_compaction_rollbacks: live.compaction_rollbacks.mask,
             growths: live.growths.lightmap,
             mask_growths: live.growths.mask,
             growth_transient_peak_bytes: live.growth_transient_peak_bytes,
@@ -945,6 +955,14 @@ mod tests {
                 lightmap: 8,
                 mask: 23,
             },
+            compactions: PerPool {
+                lightmap: 25,
+                mask: 26,
+            },
+            compaction_rollbacks: PerPool {
+                lightmap: 27,
+                mask: 28,
+            },
             growths: PerPool {
                 lightmap: 9,
                 mask: 24,
@@ -989,6 +1007,10 @@ mod tests {
             "mask_peak_pool_layers": 22,
             "repacks": 8,
             "mask_repacks": 23,
+            "compactions": 25,
+            "mask_compactions": 26,
+            "compaction_rollbacks": 27,
+            "mask_compaction_rollbacks": 28,
             "growths": 9,
             "mask_growths": 24,
             "growth_transient_peak_bytes": 10,

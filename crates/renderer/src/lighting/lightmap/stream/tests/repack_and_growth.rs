@@ -3,7 +3,7 @@
 
 use super::*;
 
-// AC 10, GPU half: a repack moves blocks through the spare layer of the one
+// A repack moves blocks through the spare layer of the one
 // pool texture; every resident block then samples its own texels, and no
 // second pool texture is ever created.
 #[test]
@@ -65,8 +65,8 @@ fn repack_through_the_spare_layer_keeps_every_block_on_its_own_texels_without_a_
     stream.assert_samples_own_texels();
 }
 
-// P7, repack half: an install that fails after a repack leaves the repack's
-// moves standing and every entry addressing its own block.
+// An install that fails after a repack leaves the repack's moves standing and
+// every entry addressing its own block.
 #[test]
 fn a_failed_install_after_a_repack_leaves_every_entry_on_its_own_block() {
     let Some(mut stream) = Stream::new(
@@ -96,10 +96,10 @@ fn a_failed_install_after_a_repack_leaves_every_entry_on_its_own_block() {
     stream.assert_samples_own_texels();
 }
 
-// Growth, plus P7's growth half: a mandatory block that fits no repack grows
-// a new generation; the old one retires and is released only once its
-// submitted work is done, and a pair failing in the growth drain leaves every
-// other entry on its own block in the new generation.
+// Growth: a mandatory block that fits no repack grows a new generation; the old
+// one retires and is released only once its submitted work is done, and a pair
+// failing in the growth drain leaves every other entry on its own block in the
+// new generation.
 #[test]
 fn growth_keeps_every_block_on_its_own_texels_and_retires_the_old_set_until_work_is_done() {
     let Some(mut stream) = Stream::new(

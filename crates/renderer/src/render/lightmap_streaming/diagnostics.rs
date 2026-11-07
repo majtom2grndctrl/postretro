@@ -14,7 +14,7 @@ use crate::lighting::lightmap::LightmapStreamCounters;
 /// from [`LightmapStreamCounters`] via [`Self::record_renderer_counters`].
 ///
 /// Bytes are per section: "lightmap" is id 22 (irradiance plus direction),
-/// "shadowmask" is id 42 (both groups). Gauges describe the current frame;
+/// "shadowmask" is id 42 (the present planes). Gauges describe the current frame;
 /// every other count is cumulative since the level's streaming began.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LightmapStreamingLiveDiagnostics {
@@ -66,6 +66,10 @@ pub struct LightmapStreamingLiveDiagnostics {
     /// Largest live-plus-retiring bytes both pools held at once after a growth.
     pub growth_transient_peak_bytes: u64,
     pub repacks: PerPool<u64>,
+    /// Of those repacks, the ones that escalated to compaction.
+    pub compactions: PerPool<u64>,
+    /// Compactions that found no copy order and fell through to growth.
+    pub compaction_rollbacks: PerPool<u64>,
     pub growths: PerPool<u64>,
     pub last_drain_install_micros: u64,
     pub max_drain_install_micros: u64,
@@ -82,6 +86,8 @@ impl LightmapStreamingLiveDiagnostics {
         self.retiring_pool_bytes = counters.retiring_pool_bytes;
         self.growth_transient_peak_bytes = counters.growth_transient_peak_bytes;
         self.repacks = counters.repacks;
+        self.compactions = counters.compactions;
+        self.compaction_rollbacks = counters.compaction_rollbacks;
         self.growths = counters.growths;
         self.last_drain_install_micros = counters.last_drain_install_micros;
         self.max_drain_install_micros = counters.max_drain_install_micros;
@@ -132,6 +138,14 @@ mod tests {
                 lightmap: 2,
                 mask: 1,
             },
+            compactions: PerPool {
+                lightmap: 1,
+                mask: 1,
+            },
+            compaction_rollbacks: PerPool {
+                lightmap: 0,
+                mask: 1,
+            },
             growths: PerPool {
                 lightmap: 1,
                 mask: 0,
@@ -141,6 +155,24 @@ mod tests {
             max_drain_install_micros: 900,
             ..LightmapStreamCounters::default()
         });
+        assert_eq!(
+            (live.repacks, live.compactions, live.compaction_rollbacks),
+            (
+                PerPool {
+                    lightmap: 2,
+                    mask: 1
+                },
+                PerPool {
+                    lightmap: 1,
+                    mask: 1
+                },
+                PerPool {
+                    lightmap: 0,
+                    mask: 1
+                },
+            ),
+            "each pool's repacks, compactions and rollbacks"
+        );
         live.record_renderer_counters(&LightmapStreamCounters {
             pool_layers: PerPool {
                 lightmap: 6,

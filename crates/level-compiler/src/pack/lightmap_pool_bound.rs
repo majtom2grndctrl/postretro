@@ -166,7 +166,7 @@ impl WorstDemand {
         self.layers.mask = self.layers.mask.max(layers.mask);
         let bytes = prices.all_resident_bytes(layers);
         let beats = |peak: PeakCell| (bytes, Reverse(cell)) > (peak.bytes, Reverse(peak.cell));
-        if self.peak.is_none_or(beats) {
+        if bytes > 0 && self.peak.is_none_or(beats) {
             self.peak = Some(PeakCell { cell, bytes });
         }
     }

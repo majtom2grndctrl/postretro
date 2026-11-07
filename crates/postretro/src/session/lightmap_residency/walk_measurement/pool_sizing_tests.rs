@@ -125,7 +125,7 @@ fn runtime_first_generation(
     }))
 }
 
-// Row 56. The figures are worked by hand from the bound, the 5/4 margin and the
+// Pool sizing. The figures are worked by hand from the bound, the 5/4 margin and the
 // shipped layer prices; the renderer's own counters confirm them where an
 // adapter exists. Spares count, and a pool with nothing to hold has neither
 // layers nor a spare.
@@ -299,7 +299,7 @@ impl MaskedCorridor {
     }
 }
 
-// Row 43, through the harness: the model's `walk_within_bound_never_grows` holds
+// Never growing within the bound, through the harness: the model's `walk_within_bound_never_grows` holds
 // on the real controller, issuer and mirror, in both pools. One layer short of
 // the bound, that pool alone grows, so the walk does press on its bound.
 #[test]
@@ -338,7 +338,7 @@ fn walk_harness_at_the_bound_with_no_margin_never_grows() {
     );
 }
 
-// R9: a mask growth blocks later mask growth until its own release, and the
+// A mask growth blocks later mask growth until its own release, and the
 // lightmap pool neither grows nor retires for it.
 #[test]
 fn a_mask_growth_blocks_only_mask_growth_until_its_own_release() {
@@ -375,7 +375,7 @@ fn a_mask_growth_blocks_only_mask_growth_until_its_own_release() {
     assert_eq!(corridor.stats().pools.lightmap.peak_layers, 8);
 }
 
-// R9 the other way: the lightmap pool's retiring generation holds back a pair
+// The other way: the lightmap pool's retiring generation holds back a pair
 // that needs lightmap growth, and not the mask growth of a pair with lightmap
 // room.
 #[test]

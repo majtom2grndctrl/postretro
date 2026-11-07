@@ -1,7 +1,6 @@
 //! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks closed and open
 //! and `setpiece_room` blocks at either end, the texels and probes they gate and where; each
-//! mover's side count. Built from `mover-setpiece-lightgate-fixture.map`, the set piece as it
-//! was lit when these rows were proved, so relighting the playable map moves no row here.
+//! mover's side count.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 mod prl_build_support;
@@ -21,11 +20,12 @@ fn engine_x(quake_y: f64) -> f64 {
 }
 
 /// The closed wall spans Quake y 1040 to 1072; the arena ends at y 1024 and
-/// the back room starts at y 1088 (`mover-setpiece-lightgate-fixture.map`).
+/// the back room runs from y 1088 to 1600 (`mover-setpiece.map`).
 const WALL_ARENA_FACE_Y: f64 = 1040.0;
 const WALL_BACK_FACE_Y: f64 = 1072.0;
 const ARENA_EDGE_Y: f64 = 1024.0;
 const BACK_ROOM_EDGE_Y: f64 = 1088.0;
+const BACK_ROOM_FAR_Y: f64 = 1600.0;
 /// Rounding slack on a gated texel centre, far under one texel.
 const SLACK_M: f64 = 1.0e-3;
 /// The pocket the open wall fills starts at Quake x 640: its mouth plane,
@@ -34,32 +34,84 @@ const MOUTH_Z: f64 = -640.0 * UNIT;
 /// The lightmap texel pitch: the compiler's default density, since the map
 /// sets none and the build passes no `--lightmap-density`.
 const TEXEL_PITCH_M: f64 = 0.025;
+/// The emitter radius of every baked light here: the compiler's default,
+/// since the map sets no `_light_size`.
+const EMITTER_RADIUS_M: f64 = 0.25;
 
-const ARENA_LIGHTS: [&str; 3] = ["256 256 256", "640 320 192", "368 560 288"];
-const BACK_ROOM_LIGHTS: [&str; 2] = ["240 1376 256", "1000 1376 256"];
-const SHAFT_LIGHT: &str = "992 320 288";
+/// The arena lights whose falloff reaches past the wall: three points and
+/// two spots aimed at it.
+const ARENA_LIGHTS: [&str; 5] = [
+    "256 256 256",
+    "640 320 192",
+    "992 320 288",
+    "368 560 288",
+    "60 900 250",
+];
+/// Two points, and the spot aimed at the plinth just behind the wall.
+const BACK_ROOM_LIGHTS: [&str; 3] = ["240 1376 256", "1000 1376 256", "150 1420 290"];
+/// The arena spots that never reach the wall: one aims down and away from
+/// it, and the other's falloff ends 264 units short of it.
+const WALL_SHY_SPOTS: [&str; 2] = ["560 760 305", "560 60 300"];
 const CLOSED: &str = "kinematic_mover 'setpiece_wall' at first waypoint 'setpiece_wall_closed'";
 const LOWERED: &str = "kinematic_mover 'setpiece_room' at first waypoint 'setpiece_room_lowered'";
 const RAISED: &str = "kinematic_mover 'setpiece_room' at last waypoint 'setpiece_room_raised'";
 const OPEN: &str = "kinematic_mover 'setpiece_wall' at last waypoint 'setpiece_wall_open'";
-/// The baked lights that light the pocket through its mouth. The other
-/// arena light and the shaft light lie past their falloff from it, and the
-/// east back-room light lies east of the mouth, so no segment from the
-/// pocket reaches it.
-const POCKET_LIGHTS: [&str; 3] = ["640 320 192", "368 560 288", "240 1376 256"];
+/// The baked lights that light the pocket through its mouth: every light
+/// that reaches the wall from west of the mouth plane or on it. The shaft
+/// light and the east back-room light lie east of it, so no segment from
+/// the pocket reaches them.
+const POCKET_LIGHTS: [&str; 6] = [
+    "256 256 256",
+    "640 320 192",
+    "368 560 288",
+    "60 900 250",
+    "240 1376 256",
+    "150 1420 290",
+];
 /// The arena light on the mouth plane. Every centre segment the open wall
 /// gates for it crosses static wall beside the mouth, never the closed
 /// wall, so the bake lit those texels only through off-centre samples.
 const MOUTH_PLANE_LIGHT: &str = "640 320 192";
+/// Its Quake y, which sets how far past the mouth its emitter reaches.
+const MOUTH_PLANE_LIGHT_Y: f64 = 320.0;
 /// The pocket lights whose segments from the pocket also cross the closed
-/// wall: the spot, and the west back-room light behind the wall. Open, each
-/// gates some texels at both termini and some only open.
-const SHARED_POCKET_LIGHTS: [&str; 2] = ["368 560 288", "240 1376 256"];
-/// The arena's point lights; the spot is aimed at the wall, away from the
-/// shaft.
-const ARENA_POINT_LIGHTS: [&str; 2] = ["256 256 256", "640 320 192"];
-/// `setpiece_room_lamp`, the dynamic light `setpiece_room` carries.
+/// wall, and that gate some texels at both termini and some only open: the
+/// west arena point, both spots aimed at the wall, and the west back-room
+/// point. The plinth spot reaches only a small patch by the mouth, all of
+/// it gated at both termini.
+const SHARED_POCKET_LIGHTS: [&str; 4] =
+    ["256 256 256", "368 560 288", "60 900 250", "240 1376 256"];
+/// The baked lights that light the shaft through the hole: the arena's three
+/// points, the spot aimed at the room's doorway wall, and the west back-room
+/// point through the opening.
+const ROOM_LIGHTS: [&str; 5] = [
+    "256 256 256",
+    "640 320 192",
+    "992 320 288",
+    "560 60 300",
+    "240 1376 256",
+];
+/// The arena's point lights, each above the raised room's roof and west of
+/// its east edge.
+const ARENA_POINT_LIGHTS: [&str; 3] = ["256 256 256", "640 320 192", "992 320 288"];
+/// The spot aimed at the room's doorway wall. Every wall behind the raised
+/// room lies past its falloff, 700 units: the nearest, the east wall, is
+/// 720 units east of it.
+const DOORWAY_SPOT: &str = "560 60 300";
+/// The spot whose pool lands in the arena beside the hole. Every shaft
+/// surface it sees through the hole lies past its falloff, the nearest 770
+/// units off, and its cone misses everything behind the raised room; only
+/// probes in the shaft's upper air lie within reach.
+const SHAFT_PROBE_SPOT: &str = "560 760 305";
+/// The raised room's roof top, its east edge and the arena's east wall, in
+/// Quake units.
+const RAISED_ROOF_TOP_Z: f64 = 176.0;
+const ROOM_EAST_X: f64 = 1152.0;
+const ARENA_EAST_WALL_X: f64 = 1280.0;
+/// `setpiece_room_lamp` and `setpiece_room_corner_spot`, the dynamic
+/// lights `setpiece_room` carries.
 const ROOM_LAMP: &str = "'light_dynamic' at origin \"992 320 -56\"";
+const ROOM_CORNER_SPOT: &str = "'light_dynamic_spot' at origin \"900 220 -40\"";
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -78,8 +130,8 @@ fn setpiece_logs() -> &'static str {
 
 fn compile_setpiece() -> String {
     let workspace = workspace_root();
-    let input = workspace.join("content/dev/maps/mover-setpiece-lightgate-fixture.map");
-    assert!(input.exists(), "fixture map missing: {}", input.display());
+    let input = workspace.join("content/dev/maps/mover-setpiece.map");
+    assert!(input.exists(), "map missing: {}", input.display());
     let temp = tempfile::tempdir().expect("create output directory");
     let output: Output = prl_build()
         .env(
@@ -233,7 +285,7 @@ fn assert_gate_never_warns(logs: &str) {
 }
 
 #[test]
-fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_wall() {
+fn setpiece_wall_closed_gates_every_baked_light_that_reaches_across_the_wall() {
     let logs = setpiece_logs();
     assert_gate_never_warns(logs);
 
@@ -243,14 +295,14 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
         .collect();
     assert_eq!(info.len(), 1, "one info line for the closed wall\n{logs}");
     assert!(
-        info[0].contains("gates 5 baked light(s)") && info[0].ends_with("and 1 more"),
+        info[0].contains("gates 8 baked light(s)") && info[0].ends_with("and 4 more"),
         "{}",
         info[0]
     );
 
     let rows = rows(logs, CLOSED);
     // The info line names the first four rows' lights, in report order, by
-    // origin; the fifth is the "1 more".
+    // origin; the other four are the "4 more".
     let named: Vec<&str> = info[0]
         .split("at origin \"")
         .skip(1)
@@ -269,13 +321,15 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
     expected.sort_unstable();
     assert_eq!(origins, expected, "closed-wall rows\n{logs}");
 
-    let shaft = format!("at origin \"{SHAFT_LIGHT}\"");
-    assert!(
-        !logs
-            .lines()
-            .any(|line| line.contains("'setpiece_wall'") && line.contains(&shaft)),
-        "the shaft light is in no setpiece_wall row"
-    );
+    for spot in WALL_SHY_SPOTS {
+        let at = format!("at origin \"{spot}\"");
+        assert!(
+            !logs
+                .lines()
+                .any(|line| line.contains("'setpiece_wall'") && line.contains(&at)),
+            "spot {spot} is in no setpiece_wall row"
+        );
+    }
 
     // Where the gated texels and probes lie. An arena light's lie at or
     // past the wall's arena face, none in the arena, and some in the back
@@ -329,23 +383,28 @@ fn inside_shaft(bounds: &Bounds) -> bool {
 }
 
 #[test]
-fn setpiece_room_gates_the_shaft_lowered_and_the_arena_floor_raised() {
+fn setpiece_room_gates_the_shaft_lowered_and_beyond_it_raised() {
     let logs = setpiece_logs();
     assert_gate_never_warns(logs);
     let lowered = rows(logs, LOWERED);
     let raised = rows(logs, RAISED);
 
-    for light in ARENA_POINT_LIGHTS {
-        let at = |rows: &[Row]| -> usize {
-            rows.iter()
-                .position(|row| row.origin == light)
-                .unwrap_or_else(|| panic!("a row for arena light {light}\n{logs}"))
-        };
-        let (low, high) = (&lowered[at(&lowered)], &raised[at(&raised)]);
+    // Each terminus gates the shaft's lights and no other.
+    let mut expected: Vec<&str> = ROOM_LIGHTS.to_vec();
+    expected.push(SHAFT_PROBE_SPOT);
+    expected.sort_unstable();
+    for rows in [&lowered, &raised] {
+        let mut origins: Vec<&str> = rows.iter().map(|row| row.origin.as_str()).collect();
+        origins.sort_unstable();
+        assert_eq!(origins, expected, "setpiece_room rows\n{logs}");
+    }
 
-        // Lowered, the roof closes the shaft: the arena light's gated texels
-        // and probes all lie in it, and the raised room's floor, flush with
-        // the arena floor, still covers each of them.
+    for light in ROOM_LIGHTS {
+        let (low, high) = (row_of(&lowered, light, logs), row_of(&raised, light, logs));
+
+        // Lowered, the roof closes the shaft: the light's gated texels and
+        // probes all lie in it, and the raised room's floor, flush with the
+        // arena floor, still covers each of them.
         assert!(low.gated_texels > 0 && low.gated_probes > 0, "{low:?}");
         assert!(inside_shaft(&low.texels.expect("texels")), "{low:?}");
         assert!(inside_shaft(&low.probes.expect("probes")), "{low:?}");
@@ -358,15 +417,54 @@ fn setpiece_room_gates_the_shaft_lowered_and_the_arena_floor_raised() {
         assert!(high.differing_texels > 0, "{high:?}");
         assert!(!inside_shaft(&high.texels.expect("texels")), "{high:?}");
     }
-    // Raised, the room shades the arena light farthest from it on the floor
-    // alone: its gated texels reach the arena floor (engine y 0) and
-    // nothing above it.
-    let corner = raised
-        .iter()
-        .find(|row| row.origin == ARENA_POINT_LIGHTS[0])
-        .expect("a raised row");
-    let texels = corner.texels.expect("texels");
-    assert!(texels.max[1].abs() <= SLACK_M, "{corner:?}");
+
+    // Raised, the roof's east edge casts each arena point light's shadow
+    // highest on the arena's east wall: the gated texels top out within a
+    // texel below where the line from the light over that edge meets it.
+    for light in ARENA_POINT_LIGHTS {
+        let high = row_of(&raised, light, logs);
+        let [x, _, z] = quake_origin(light);
+        let top_z = RAISED_ROOF_TOP_Z
+            - (ARENA_EAST_WALL_X - ROOM_EAST_X) * (z - RAISED_ROOF_TOP_Z) / (ROOM_EAST_X - x);
+        let top = top_z * UNIT;
+        let max_y = high.texels.expect("texels").max[1];
+        assert!(
+            max_y <= top + SLACK_M && max_y >= top - TEXEL_PITCH_M,
+            "shadow top {max_y} m, edge line meets the east wall at {top:.3} m: {high:?}"
+        );
+    }
+    // Raised, the room shades the doorway spot on the floor alone: its
+    // gated texels reach the arena floor (engine y 0) and nothing above it.
+    let doorway = row_of(&raised, DOORWAY_SPOT, logs);
+    let texels = doorway.texels.expect("texels");
+    assert!(texels.max[1].abs() <= SLACK_M, "{doorway:?}");
+
+    // The shaft spot gates probes in the shaft and no texel at either end.
+    let (low, high) = (
+        row_of(&lowered, SHAFT_PROBE_SPOT, logs),
+        row_of(&raised, SHAFT_PROBE_SPOT, logs),
+    );
+    for row in [low, high] {
+        assert!(row.gated_texels == 0 && row.gated_probes > 0, "{row:?}");
+    }
+    assert!(inside_shaft(&low.probes.expect("probes")), "{low:?}");
+    assert_eq!(low.shared_probes, low.gated_probes, "{low:?}");
+}
+
+/// The row in `rows` for the light at `origin`.
+fn row_of<'a>(rows: &'a [Row], origin: &str, logs: &str) -> &'a Row {
+    rows.iter()
+        .find(|row| row.origin == origin)
+        .unwrap_or_else(|| panic!("a row for light {origin}\n{logs}"))
+}
+
+/// A light's authored origin, in Quake units.
+fn quake_origin(origin: &str) -> [f64; 3] {
+    let numbers: Vec<f64> = origin
+        .split(' ')
+        .map(|number| number.parse().expect("a coordinate"))
+        .collect();
+    [numbers[0], numbers[1], numbers[2]]
 }
 
 #[test]
@@ -414,11 +512,14 @@ fn setpiece_wall_open_gates_the_pocket_it_fills_and_shares_what_the_closed_wall_
 }
 
 #[test]
-fn setpiece_wall_mouth_plane_light_open_only_texels_lie_within_one_column() {
+fn setpiece_wall_mouth_plane_light_open_only_texels_lie_within_its_penumbra_of_the_mouth() {
     // The static-edge bias of the one-segment estimate, bounded for the one
     // light whose open-only texels come only from it: none is gated closed,
-    // so all are open-only, and each lies within 1.5 pitches of the mouth
-    // plane, so its footprint reaches the one-texel strip there. Other
+    // so all are open-only. A texel past the mouth plane is lit only by
+    // emitter samples west of the plane whose segments clear the wall's
+    // back face, so the farthest one, on the back room's far wall, lies at
+    // most the emitter radius times (far wall − back face) / (back face −
+    // light) past the plane, plus 1.5 pitches for its footprint. Other
     // lights' open-only texels follow the closed wall's shadow edge into
     // the pocket, wherever their placement puts it.
     let logs = setpiece_logs();
@@ -429,9 +530,11 @@ fn setpiece_wall_mouth_plane_light_open_only_texels_lie_within_one_column() {
     assert_eq!(row.shared_texels, 0, "{row:?}");
     let bounds = differing_centres(logs, OPEN, MOUTH_PLANE_LIGHT).expect("differing centres");
     let pitches = pitches_from_mouth(&bounds);
+    let lever = (BACK_ROOM_FAR_Y - BACK_ROOM_EDGE_Y) / (BACK_ROOM_EDGE_Y - MOUTH_PLANE_LIGHT_Y);
+    let bound = 1.5 + EMITTER_RADIUS_M * lever / TEXEL_PITCH_M;
     assert!(
-        pitches <= 1.5,
-        "{pitches:.2} pitches from the mouth: {bounds:?}"
+        pitches <= bound,
+        "{pitches:.2} pitches from the mouth, over {bound:.2}: {bounds:?}"
     );
 }
 
@@ -449,7 +552,7 @@ fn side_count_line<'a>(logs: &'a str, name: &str) -> &'a str {
 }
 
 #[test]
-fn setpiece_room_side_count_is_its_carried_lamp_and_the_wall_has_none() {
+fn setpiece_room_side_count_is_its_carried_lights_and_the_wall_has_none() {
     let logs = setpiece_logs();
     assert_gate_never_warns(logs);
 
@@ -459,8 +562,9 @@ fn setpiece_room_side_count_is_its_carried_lamp_and_the_wall_has_none() {
         .nth(1)
         .expect("counts follow the label");
     assert!(
-        carried.starts_with("1 carried dynamic light(s): ")
+        carried.starts_with("2 carried dynamic light(s): ")
             && carried.contains(ROOM_LAMP)
+            && carried.contains(ROOM_CORNER_SPOT)
             && carried.ends_with("; 0 other dynamic light(s)"),
         "{room}"
     );
@@ -483,12 +587,15 @@ fn setpiece_room_side_count_is_its_carried_lamp_and_the_wall_has_none() {
     );
     assert_eq!(
         summary[1],
-        "  side count: 1 carried dynamic light(s), 0 other"
+        "  side count: 2 carried dynamic light(s), 0 other"
     );
 
     let elsewhere: Vec<&str> = logs
         .lines()
-        .filter(|line| line.contains("[MoverLight]") && line.contains(ROOM_LAMP))
+        .filter(|line| {
+            line.contains("[MoverLight]")
+                && (line.contains(ROOM_LAMP) || line.contains(ROOM_CORNER_SPOT))
+        })
         .filter(|line| !line.contains(" side count: "))
         .collect();
     assert!(

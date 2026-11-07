@@ -130,8 +130,20 @@ and movers do not hide the player from that check.
 
 The chaser's patrol runs through the sliding wall's opening. In map units its
 points are the enemy spot (368, 1232), (368, 996) just south of the wall in the
-middle of the opening, and (132, 996) at the opening's west end, so each pass
-meets the wall closed, sliding, or open.
+middle of the opening, and (132, 996) at the opening's west end. The riders'
+points lie outside the room, on the arena floor south of the shaft, so they
+leave the room whenever it is up.
+
+Patrol has two known defects, held for the enemy AI sprint (roadmap, Epic 10,
+Enemy AI playtest defects):
+
+- **An enemy stops just short of its next point** and never moves on. The
+  chaser stands just south of the wall after its first pass; the riders stop
+  short of their first point.
+- **No route rounds the shaft hole's south-west corner.** The riders' route
+  out of the risen room needs it, so on the first rise they stay inside. They
+  leave on the second rise, pause at the doorway until the room lowers, then
+  cross its roof.
 
 | Enemy | Origin | Tag | Where |
 |---|---|---|---|
@@ -148,9 +160,10 @@ needs a rebuild with a current `prl-build` (a stale `.prl` loads with no door or
 lift routing and one warning). These are manual, in-engine checks.
 
 1. **Chaser on patrol.** Stay at the spawn and watch through the opening. The
-   chaser walks its patrol through the doorway and back. At the closed wall it
-   stops and waits facing the slab, then goes on once the opening fits it. It
-   must not turn left and right, drift side to side, or lurch in repeated
+   chaser walks from the enemy spot to just south of the wall, meeting it
+   closed, sliding, or open, and stops there (a known patrol defect, above). At
+   the wall it waits facing the slab until the opening fits it. It must not
+   turn left and right, drift side to side, or lurch in repeated
    stuck-recovery nudges. Give it a full wall cycle (about 30 s).
 2. **Chaser behind the sliding wall.** Walk to station 1, 13 m from the enemy
    spot; the chaser wakes as you come within 16 m and heads for you through the
@@ -168,4 +181,6 @@ lift routing and one warning). These are manual, in-engine checks.
    with the lamp on, not pace or shuffle. When the room reaches the top they
    leave through the west doorway onto the arena and chase you. They must ride
    up with their feet planted (idle pose, no walk cycle), not slide or sink into
-   the floor.
+   the floor. Stand on the roof or inside the room and they stop at the arena
+   floor's edge: an enemy routes to the floor under a target standing on a
+   mover, so it follows only once you step off.

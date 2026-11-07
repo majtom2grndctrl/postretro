@@ -791,18 +791,27 @@ fn tick_impl(
                 overlap,
             );
         }
-        // A door sliding across the way stalls the agent until it moves on.
-        // That is a wait, not a wedge: recovery would shove the agent sideways
-        // past its line to the goal each window, reversing its travel and its
-        // facing, while the door clears the way by itself.
-        if !recovery_active_this_tick {
+        // A door sliding across the way stalls the agent until it docks. That is
+        // a wait, not a wedge: recovery would shove the agent sideways past its
+        // line to the goal each window, reversing its travel and its facing,
+        // while the door clears the way by itself. Only a door navigation
+        // watches and that rests at its stops is sure to dock; a spinner or a
+        // mover that never rests may wall the agent forever, so it stays an
+        // obstacle to recover from. The count holds rather than resets, so a
+        // real wedge beside the door still escalates once the door docks.
+        let waiting_on_door = result
+            .walled_by_moving_mover
+            .is_some_and(|mover_id| gate.rests_at_stops(mover_id));
+        if waiting_on_door {
+            agent.unstick_window_remaining = 0;
+        } else if !recovery_active_this_tick {
             update_stuck_ticks(
                 &mut agent,
                 position,
                 result.position,
                 steer_velocity,
                 goal_speed * dt,
-                has_recovery_intent && !result.walled_by_moving_mover,
+                has_recovery_intent,
                 easing_onto_mandatory,
             );
         }

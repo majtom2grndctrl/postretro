@@ -999,20 +999,14 @@ fn the_longest_owed_agents_are_admitted_first_whatever_their_slot() {
     }
 }
 
-/// A chaser pressed against a door that slides across its doorway, through one
-/// whole cycle: closing on it, docked shut, then opening. A door in motion gates
-/// nothing, so the chaser walks into the leaf and waits there. It must neither
-/// reverse its travel (its facing follows travel) nor replan beyond the
-/// staleness refresh, and it walks through once the gap fits it.
-#[test]
-fn a_chaser_against_a_sliding_door_waits_without_reversing_through_a_whole_cycle() {
-    // The leaf slides +z out of the doorway into the wall pocket: 2.5 m at
-    // 0.5 m/s is 300 ticks each way, with 180-tick waits at both ends.
+/// A door whose leaf slides +z out of the doorway into the wall pocket: 2.5 m at
+/// 0.5 m/s is 300 ticks each way, waiting `wait_ms` at both ends.
+fn sliding_door(wait_ms: f32) -> Rig {
     let open = Vec3::new(10.0, 0.0, 6.5);
     let mut rig = Rig::with_waypoints(
         vec![CLOSED, open],
         KinematicMoverMode::PingPong,
-        3000.0,
+        wait_ms,
         true,
     );
     let mut mover = rig
@@ -1022,6 +1016,18 @@ fn a_chaser_against_a_sliding_door_waits_without_reversing_through_a_whole_cycle
         .clone();
     mover.speed_mps = 0.5;
     rig.registry.set_component(rig.door, mover).unwrap();
+    rig
+}
+
+/// A chaser pressed against a door that slides across its doorway, through one
+/// whole cycle: closing on it, docked shut, then opening. A door in motion gates
+/// nothing, so the chaser walks into the leaf and waits there. It must neither
+/// reverse its travel (its facing follows travel) nor replan beyond the
+/// staleness refresh, and it walks through once the gap fits it.
+#[test]
+fn a_chaser_against_a_sliding_door_waits_without_reversing_through_a_whole_cycle() {
+    // 180-tick waits at both ends.
+    let mut rig = sliding_door(3000.0);
     // Let the door open and start closing before the chaser arrives.
     for _ in 0..600 {
         rig.tick();
@@ -1094,4 +1100,26 @@ fn a_chaser_against_a_sliding_door_waits_without_reversing_through_a_whole_cycle
     // the leaf on z 5, the chaser is clear once the leaf passes z 5.35, about
     // 160 ticks into the opening; allow it 180 to get there and through.
     assert!(passed <= 180 + 180 + 180, "passed at tick {passed}");
+}
+
+/// A mover that never rests at its stops may wall an agent for good, so pressing
+/// on it is still stuck evidence: recovery fires against it as against a wall.
+#[test]
+fn a_chaser_against_a_door_that_never_rests_still_recovers() {
+    let mut rig = sliding_door(0.0);
+    // By tick 470 the closing leaf covers the chaser's line (z 5). It turns
+    // back at 600 without a wait and clears that line again near tick 760.
+    for _ in 0..470 {
+        rig.tick();
+    }
+    let id = rig.agent(Vec3::new(8.0, REST_Y, 5.0), Some(EAST));
+    let mut fired = 0;
+    let mut previous = 0;
+    for _ in 0..240 {
+        rig.tick();
+        let window = rig.agent_state(id).unstick_window_remaining;
+        fired += u32::from(window > previous);
+        previous = window;
+    }
+    assert!(fired >= 1, "stuck recovery never fired");
 }

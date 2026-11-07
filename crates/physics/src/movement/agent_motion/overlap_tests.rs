@@ -814,3 +814,79 @@ fn an_agent_shoved_up_off_a_moving_platform_keeps_the_platform_velocity() {
         "the platform's velocity rides on in its knockback: {knockback:?}"
     );
 }
+
+/// The mover at `at`, turned by `turn` about +Y this tick.
+struct Turned {
+    at: Vec3,
+    turn: f32,
+}
+
+impl MoverPoseSource for Turned {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        (mover_id == HULL).then_some(MoverPose {
+            transform: postretro_entities::Transform {
+                position: self.at,
+                ..Default::default()
+            },
+            linear_velocity: Vec3::ZERO,
+            tick_delta: Vec3::ZERO,
+            angular_velocity: Vec3::Y * (self.turn / DT),
+            tick_rotation_delta: glam::Quat::from_rotation_y(self.turn),
+            carry_yaw: false,
+            tick_dt: DT,
+        })
+    }
+}
+
+#[test]
+fn walking_into_a_mover_reports_it_as_the_wall_only_while_it_moves_or_turns() {
+    let capsule = capsule(STEP);
+    let floor = Geometry::default().floor(SPAN, 0.0).build();
+    let movers = [crusher()];
+    // The crusher's -x face stands at x 1; the agent starts just short of it.
+    let at = Vec3::new(3.0, 0.0, 0.0);
+    let start = Vec3::new(
+        1.0 - capsule.radius - SKIN_DISTANCE - 0.01,
+        rest_y(&capsule, 0.0),
+        0.0,
+    );
+    let walk = Vec3::new(4.0, 0.0, 0.0);
+    let walled = |poses: &dyn MoverPoseSource| {
+        let collision = CombinedCollisionWorld::new(&floor, &movers, poses);
+        step_on(&collision, &capsule, start, GroundRef::World, walk, 0.0).walled_by_moving_mover
+    };
+
+    let sliding = Posed {
+        at,
+        delta: Vec3::new(0.0, 0.0, 0.05),
+    };
+    assert_eq!(walled(&sliding), Some(HULL), "sliding across the way");
+    let turning = Turned { at, turn: 0.05 };
+    assert_eq!(walled(&turning), Some(HULL), "turning in place");
+    let still = Posed {
+        at,
+        delta: Vec3::ZERO,
+    };
+    assert_eq!(walled(&still), None, "a mover at rest is a plain wall");
+
+    // A rising deck is floor, not wall.
+    let movers = [thin_deck()];
+    let rising = Posed {
+        at: Vec3::ZERO,
+        delta: Vec3::new(0.0, 0.05, 0.0),
+    };
+    let collision = CombinedCollisionWorld::new(&floor, &movers, &rising);
+    let on_deck = Vec3::new(0.0, rest_y(&capsule, 0.0), 0.0);
+    let result = step_on(
+        &collision,
+        &capsule,
+        on_deck,
+        GroundRef::Mover(HULL),
+        walk,
+        0.0,
+    );
+    assert_eq!(
+        result.walled_by_moving_mover, None,
+        "its rider is not walled"
+    );
+}

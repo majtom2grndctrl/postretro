@@ -134,11 +134,14 @@ needs a rebuild with a current `prl-build` (a stale `.prl` loads with no door or
 lift routing and one warning). These are manual, in-engine checks.
 
 1. **Chaser behind the sliding wall.** Spawn at station 1. The chaser is 13 m
-   from the start, so it wakes at once and walks to the closed wall. Expect it to
-   stop at the wall and wait there without jitter or foot-shuffling for the rest
-   of the closed wait. It must not drift side to side or lurch in repeated
-   stuck-recovery nudges. When the wall opens it passes through the opening and
-   comes at you. Give it a full wall cycle (about 30 s).
+   from the start, so it wakes at once and walks to the wall. The wall starts
+   moving at spawn, so the chaser may meet it closed, sliding, or resting open.
+   A moving wall does not hold it back in its route, so it walks into the slab
+   and stands pressed against it, facing it, until the gap fits it. It must not
+   turn left and right, drift side to side, or lurch in repeated stuck-recovery
+   nudges. At the closed wall it stops and waits without jitter or
+   foot-shuffling for the rest of the closed wait. Once the opening fits it,
+   it passes through and comes at you. Give it a full wall cycle (about 30 s).
 2. **Riders in the rising room.** Walk to station 2 (560, 320, 48), within 16 m
    of both riders, and face east. The room is lowered, so the riders cannot
    reach you: their doorway fronts the shaft wall. Expect them to stand inside

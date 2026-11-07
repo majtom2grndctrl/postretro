@@ -1,6 +1,7 @@
 //! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks closed and open
 //! and `setpiece_room` blocks at either end, the texels and probes they gate and where; each
-//! mover's side count.
+//! mover's side count. Built from `mover-setpiece-lightgate-fixture.map`, the set piece as it
+//! was lit when these rows were proved, so relighting the playable map moves no row here.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 mod prl_build_support;
@@ -20,7 +21,7 @@ fn engine_x(quake_y: f64) -> f64 {
 }
 
 /// The closed wall spans Quake y 1040 to 1072; the arena ends at y 1024 and
-/// the back room starts at y 1088 (`mover-setpiece.map` header).
+/// the back room starts at y 1088 (`mover-setpiece-lightgate-fixture.map`).
 const WALL_ARENA_FACE_Y: f64 = 1040.0;
 const WALL_BACK_FACE_Y: f64 = 1072.0;
 const ARENA_EDGE_Y: f64 = 1024.0;
@@ -77,7 +78,7 @@ fn setpiece_logs() -> &'static str {
 
 fn compile_setpiece() -> String {
     let workspace = workspace_root();
-    let input = workspace.join("content/dev/maps/mover-setpiece.map");
+    let input = workspace.join("content/dev/maps/mover-setpiece-lightgate-fixture.map");
     assert!(input.exists(), "fixture map missing: {}", input.display());
     let temp = tempfile::tempdir().expect("create output directory");
     let output: Output = prl_build()

@@ -472,14 +472,6 @@ fn deepest_mover_penetration_with<const BROAD_PHASE: bool>(
     deepest
 }
 
-/// Whether `point` lies inside any mover's closed hull at its current pose.
-/// Contact queries see only triangles, so a shape wholly inside a hull reports
-/// none. Uses the generalized winding number (summed signed solid angles,
-/// Van Oosterom–Strackee): about ±1 inside a closed mesh of either winding, 0
-/// outside, and free of the edge and vertex degeneracies of ray parity. A point
-/// on a surface is undefined, so callers ask only after contact came back clear.
-/// Movers whose bounding sphere cannot reach the point are skipped;
-/// allocation-free.
 /// Whether a capsule at `position` overlaps `mover` as posed, or sits inside it.
 pub fn capsule_overlaps_mover(
     mover: &MoverCollider,
@@ -492,6 +484,14 @@ pub fn capsule_overlaps_mover(
         || point_inside_mover(mover, poses, position)
 }
 
+/// Whether `point` lies inside any mover's closed hull at its current pose.
+/// Contact queries see only triangles, so a shape wholly inside a hull reports
+/// none. Uses the generalized winding number (summed signed solid angles,
+/// Van Oosterom–Strackee): about ±1 inside a closed mesh of either winding, 0
+/// outside, and free of the edge and vertex degeneracies of ray parity. A point
+/// on a surface is undefined, so callers ask only after contact came back clear.
+/// Movers whose bounding sphere cannot reach the point are skipped;
+/// allocation-free.
 pub(crate) fn point_inside_mover(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),

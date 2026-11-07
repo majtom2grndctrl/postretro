@@ -47,10 +47,12 @@ pub fn bake_or_load_navmesh(
     section
 }
 
-/// The stage key over every bake input: geometry, nav parameters, and each
-/// mover's identity, origin, path, spin axis and brushes, plus the waypoints
-/// its path walks. Only inputs the bake reads go in, so a speed or sound edit
-/// still hits.
+/// The stage key over every bake input: geometry, nav parameters, each mover's
+/// id, origin, path name, spin axis and brushes (planes, bounds, side
+/// geometry), and every waypoint's name, next link and origin. All waypoints
+/// are folded, not just the ones a mover's path walks, so an unrelated
+/// waypoint edit misses the cache. Anything the bake does not read (textures,
+/// speed, sound) stays out, so those edits still hit.
 pub(super) fn stage_key(
     geo: &GeometryResult,
     params: &NavParams,

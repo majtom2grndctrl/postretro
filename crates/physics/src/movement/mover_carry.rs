@@ -6,8 +6,8 @@ use glam::Vec3;
 use parry3d::shape::Capsule;
 
 use crate::collision::moving::{
-    CollisionSource, CombinedCastHit, CombinedCollisionWorld, MoverPenetration,
-    deepest_mover_penetration, deepest_mover_push_penetration,
+    CollisionSource, CombinedCastHit, CombinedCollisionWorld, MoverCollider, MoverPenetration,
+    MoverPose, MoverPoseSource, deepest_mover_penetration, deepest_mover_push_penetration,
     deepest_mover_push_penetration_excluding_swept, point_inside_mover,
 };
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule_parry};
@@ -103,12 +103,21 @@ pub(super) fn displace_from_movers(
     candidate
 }
 
-/// A body whose centre lies inside a mover's hull: `Some` with where it ends up,
-/// `None` for any other body. Contact reads the nearest face from inside, so its
-/// normal points deeper in; left to [`displace_from_movers`] a trailing face
-/// would drag the body along inside the hull. This pushes it out through that
-/// face instead, or leaves it in place when static geometry blocks the way. A
-/// body touching no face stays until the mover moves off it.
+/// A body embedded in a mover: `Some` with where it ends up, `None` for any
+/// other body, which [`displace_from_movers`] handles.
+///
+/// A body whose centre lies inside the hull: contact reads the nearest face
+/// from inside, so its normal points deeper in, and left to
+/// [`displace_from_movers`] a trailing face would drag the body along inside the
+/// hull. This pushes it out through that face instead, or leaves it in place
+/// when static geometry blocks the way. A body touching no face stays until the
+/// mover moves off it.
+///
+/// A body already overlapping the mover before this tick's motion, its centre
+/// outside: the overlap is no new hit, so the mover's sweep says nothing about
+/// it, and its swept push would drag the body along behind a mover moving off
+/// it. Present contact alone pushes it, again left in place when static
+/// geometry blocks the way.
 pub(super) fn displace_out_of_hull(
     previous_ground: GroundRef,
     collision: &CombinedCollisionWorld<'_>,
@@ -124,14 +133,65 @@ pub(super) fn displace_out_of_hull(
         .iter()
         .find(|mover| mover.mover_id == touching.mover_id)?;
     if !point_inside_mover(std::slice::from_ref(mover), collision.poses, position) {
-        return None;
+        return embedded_before_tick(mover, collision.poses, capsule, position).then(|| {
+            unblocked_mover_displacement(position, touching, collision, capsule).unwrap_or(position)
+        });
+    }
+    // Contact depth is how far the capsule reaches past the face, plus one skin
+    // of margin. Leaving through that face takes the capsule's whole extent
+    // across it less that reach, and a skin more to end clear of it. A lift or
+    // crusher face pierced end-on spans the capsule's axis as well as its radius.
+    let reach = touching.depth - SKIN_DISTANCE;
+    let depth = 2.0 * capsule_half_extent(capsule, touching.normal) - reach + SKIN_DISTANCE;
+    if depth <= 0.0 {
+        return Some(position);
     }
     let exit = MoverPenetration {
         mover_id: touching.mover_id,
         normal: -touching.normal,
-        depth: 2.0 * capsule.radius - touching.depth + SKIN_DISTANCE,
+        depth,
     };
     Some(unblocked_mover_displacement(position, exit, collision, capsule).unwrap_or(position))
+}
+
+/// Whether a capsule at `position` overlapped `mover` at its pose before this
+/// tick's motion.
+fn embedded_before_tick(
+    mover: &MoverCollider,
+    poses: &dyn MoverPoseSource,
+    capsule: &Capsule,
+    position: Vec3,
+) -> bool {
+    let Some(pose) = poses.pose(mover.mover_id) else {
+        return false;
+    };
+    let mut start = pose;
+    start.transform.position -= pose.tick_delta;
+    start.transform.rotation = pose.tick_rotation_delta.inverse() * pose.transform.rotation;
+    let at_start = TickStartPose {
+        mover_id: mover.mover_id,
+        pose: start,
+    };
+    let mover = std::slice::from_ref(mover);
+    deepest_mover_penetration(mover, &at_start, position, capsule).is_some()
+        || point_inside_mover(mover, &at_start, position)
+}
+
+/// One mover at its pose before this tick's motion.
+struct TickStartPose {
+    mover_id: u32,
+    pose: MoverPose,
+}
+
+impl MoverPoseSource for TickStartPose {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        (mover_id == self.mover_id).then_some(self.pose)
+    }
+}
+
+/// How far `capsule` extends from its centre along the unit `normal`.
+fn capsule_half_extent(capsule: &Capsule, normal: Vec3) -> f32 {
+    0.5 * (capsule.segment.b - capsule.segment.a).dot(normal).abs() + capsule.radius
 }
 
 /// Whether a capsule at `position` overlaps `mover_id` as it stands.

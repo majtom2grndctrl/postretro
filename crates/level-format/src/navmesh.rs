@@ -59,6 +59,10 @@ pub struct NavMoverGate {
 /// the mover surface the link leaves, so its height tells that surface apart
 /// from any other the mover has at this dock. `left`/`right` follow the
 /// [`NavPortal`] handedness convention for mover → region travel.
+///
+/// Frame: world-space endpoints with the mover posed at `waypoint`. The runtime
+/// compares link height in mover-local terms, subtracting that waypoint's
+/// height (`link_surface` in `sim::nav`), so the same deck matches at every dock.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavMoverLink {
     pub mover_id: u32,
@@ -95,16 +99,20 @@ pub struct NavMoverLink {
 /// `left.x, left.y, left.z` under f32 total order (`to_bits`). Fixed field
 /// order plus pre-sorted inputs make `to_bytes` deterministic. `to_bytes` writes
 /// gates sorted by `(mover_id, waypoint, portal)` and links by `(mover_id,
-/// waypoint, region, left)` with `left` compared by `to_bits`, both unique.
+/// waypoint, region, left, right)` with `left` and `right` compared by
+/// `to_bits` (`right` only as the final tie-break), both unique on that key.
 ///
 /// `portal_count == 0` is valid — a single isolated region. A *present* section
 /// always carries at least one region (`region_count >= 1`); `from_bytes`
 /// rejects a present-but-region-less section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NavMeshSection {
-    /// Section-internal serialized-version gate (the body's first field,
-    /// distinct from the container `SectionEntry` version). Bump it when the
-    /// body layout or a serialized-data semantic contract changes.
+    /// Section-internal serialized-version gate, distinct from the container
+    /// `SectionEntry` version. In memory it is always [`NAVMESH_VERSION`]:
+    /// `to_bytes` writes that constant whatever this holds, and `from_bytes`
+    /// reports it even for a version 2 body (the tables are simply empty).
+    /// Bump the constant when the body layout or a serialized-data semantic
+    /// contract changes.
     pub version: u16,
     /// World-space minimum corner of the navigation grid.
     pub origin: [f32; 3],
@@ -246,7 +254,7 @@ impl NavMeshSection {
         // into warn-and-ignore → no navigation, the intended loud degradation.
         if version != NAVMESH_VERSION && version != NAVMESH_VERSION_WITHOUT_MOVER_TABLES {
             return Err(invalid(format!(
-                "navmesh section version {version}, expected {NAVMESH_VERSION} — recompile the map"
+                "navmesh section version {version}, expected {NAVMESH_VERSION_WITHOUT_MOVER_TABLES} or {NAVMESH_VERSION} — recompile the map"
             )));
         }
         let origin = read_vec3(data, 2);
@@ -382,7 +390,8 @@ fn link_key(link: &NavMoverLink) -> (u32, u32, u32, [u32; 3], [u32; 3]) {
     )
 }
 
-/// `links` in wire order: sorted by `(mover_id, waypoint, region, left)`, unique.
+/// `links` in wire order: sorted by `(mover_id, waypoint, region, left, right)`
+/// under `link_key`, unique on that key.
 pub fn sorted_unique_links(links: &[NavMoverLink]) -> Vec<NavMoverLink> {
     let mut sorted = links.to_vec();
     sorted.sort_unstable_by_key(link_key);

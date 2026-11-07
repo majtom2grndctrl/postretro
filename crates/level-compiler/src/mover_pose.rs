@@ -1,5 +1,5 @@
 // Mover path walking and brush posing, for the mover light gate and the navmesh bake.
-// See: context/lib/build_pipeline.md §Navigation bake
+// See: context/lib/build_pipeline.md §Navigation bake; §Compiler pipeline step 12 (Mover light gate)
 
 use std::collections::{HashMap, HashSet};
 

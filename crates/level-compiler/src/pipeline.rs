@@ -655,8 +655,9 @@ fn run_after_parsing(
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::NavMesh);
     // Walkable navigation graph baked from the extracted geometry's triangles
-    // (already filtered to empty, non-exterior leaf faces). `None` when no
-    // walkable region survives — the section is then omitted and the build still
+    // (already filtered to empty, non-exterior leaf faces), plus mover gates and
+    // links from the kinematic movers and waypoints. `None` when no walkable
+    // region survives — the section is then omitted and the build still
     // succeeds (SDF-atlas precedent). This runs before atlas preparation, so the
     // stage key sees no lightmap attributes.
     let navmesh_section = navmesh_bake::bake_or_load_navmesh(

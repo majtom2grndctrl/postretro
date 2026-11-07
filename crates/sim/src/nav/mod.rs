@@ -356,19 +356,6 @@ impl NavGraph {
             .is_none_or(|(_, heights)| waypoint == 0 || waypoint as usize + 1 == heights.len())
     }
 
-    /// Every mover a surviving record names, sorted.
-    pub(crate) fn record_mover_ids(&self) -> Vec<u32> {
-        let mut ids: Vec<u32> = self
-            .gates
-            .iter()
-            .map(|gate| gate.mover_id)
-            .chain(self.links.iter().map(|link| link.mover_id))
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    }
-
     /// Drop every record naming a mover, waypoint, portal or region this level
     /// lacks, with one warning each, so the rest of navigation still works.
     pub fn validate_mover_records(&mut self, movers: &[NavMoverBound]) {

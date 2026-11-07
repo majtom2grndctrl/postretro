@@ -1,12 +1,14 @@
 // Tick overlap invariant for agents: own movement never ends a tick inside
-// static geometry. Also the source gates on the controller's shared primitives.
+// static geometry. Also the source gates on the controller's shared primitives,
+// and how an agent leaves a mover it stands inside or is shoved off.
 // See: context/lib/movement.md §1, §7 · context/lib/entity_model.md §7
 
 use glam::Vec3;
 
-use super::{AgentCapsule, SlideResult, collide_and_slide};
-use crate::collision::moving::CombinedCollisionWorld;
+use super::{AgentCapsule, SlideResult, collide_and_slide, settle_corpse};
+use crate::collision::moving::{CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource};
 use crate::collision::{CollisionCapsule, CollisionWorld, OVERLAP_TOLERANCE, SKIN_DISTANCE};
+use crate::movement::mover_carry::displace_out_of_hull;
 use postretro_collision::EnvironmentView;
 use postretro_foundation::GroundRef;
 
@@ -459,8 +461,6 @@ fn a_falling_agent_beside_a_step_still_steps_up() {
 
 #[test]
 fn an_agent_steps_onto_a_mover_top_as_its_pawn_neighbour_does() {
-    use crate::collision::moving::{MoverCollider, MoverPose, MoverPoseSource};
-
     struct Still;
     impl MoverPoseSource for Still {
         fn pose(&self, id: u32) -> Option<MoverPose> {
@@ -518,5 +518,299 @@ fn an_agent_steps_onto_a_mover_top_as_its_pawn_neighbour_does() {
     assert!(
         position.x > 6.0 && (position.y - rest_y(&capsule, rise)).abs() < 2.0e-3,
         "on the mover top, at {position:?}"
+    );
+}
+
+// --- Leaving a mover ---------------------------------------------------------------
+
+const HULL: u32 = 7;
+
+impl Geometry {
+    /// A closed box, wound outward. Each horizontal face splits along the line
+    /// from its (min x, min z) corner to its (max x, max z) one.
+    fn solid_box(self, min: Vec3, max: Vec3) -> Self {
+        let c = Vec3::new;
+        self.quad(
+            [
+                c(min.x, min.y, min.z),
+                c(max.x, min.y, min.z),
+                c(max.x, min.y, max.z),
+                c(min.x, min.y, max.z),
+            ],
+            Vec3::NEG_Y,
+        )
+        .quad(
+            [
+                c(min.x, max.y, min.z),
+                c(max.x, max.y, min.z),
+                c(max.x, max.y, max.z),
+                c(min.x, max.y, max.z),
+            ],
+            Vec3::Y,
+        )
+        .quad(
+            [
+                c(min.x, min.y, min.z),
+                c(min.x, max.y, min.z),
+                c(min.x, max.y, max.z),
+                c(min.x, min.y, max.z),
+            ],
+            Vec3::NEG_X,
+        )
+        .quad(
+            [
+                c(max.x, min.y, min.z),
+                c(max.x, max.y, min.z),
+                c(max.x, max.y, max.z),
+                c(max.x, min.y, max.z),
+            ],
+            Vec3::X,
+        )
+        .quad(
+            [
+                c(min.x, min.y, min.z),
+                c(max.x, min.y, min.z),
+                c(max.x, max.y, min.z),
+                c(min.x, max.y, min.z),
+            ],
+            Vec3::NEG_Z,
+        )
+        .quad(
+            [
+                c(min.x, min.y, max.z),
+                c(max.x, min.y, max.z),
+                c(max.x, max.y, max.z),
+                c(min.x, max.y, max.z),
+            ],
+            Vec3::Z,
+        )
+    }
+
+    fn mover(self, mover_id: u32) -> MoverCollider {
+        MoverCollider::from_local_triangles(mover_id, &self.points, &self.tris)
+            .expect("the box is a valid mover")
+    }
+}
+
+/// A crusher 4 m square and 3 m tall, its origin at its bottom face.
+fn crusher() -> MoverCollider {
+    Geometry::default()
+        .solid_box(Vec3::new(-2.0, 0.0, -2.0), Vec3::new(2.0, 3.0, 2.0))
+        .mover(HULL)
+}
+
+/// A lift deck 4 m square and 0.2 m thick, its origin at its top face.
+fn thin_deck() -> MoverCollider {
+    Geometry::default()
+        .solid_box(Vec3::new(-2.0, -0.2, -2.0), Vec3::new(2.0, 0.0, 2.0))
+        .mover(HULL)
+}
+
+/// The mover at `at`, having moved by `delta` this tick.
+struct Posed {
+    at: Vec3,
+    delta: Vec3,
+}
+
+impl MoverPoseSource for Posed {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        (mover_id == HULL).then_some(MoverPose {
+            transform: postretro_entities::Transform {
+                position: self.at,
+                ..Default::default()
+            },
+            linear_velocity: self.delta / DT,
+            tick_delta: self.delta,
+            angular_velocity: Vec3::ZERO,
+            tick_rotation_delta: glam::Quat::IDENTITY,
+            carry_yaw: false,
+            tick_dt: DT,
+        })
+    }
+}
+
+/// Where a body stands for these tests: well off every face's split and edges,
+/// so a face it crosses reads that face's own normal.
+fn body_on(capsule: &AgentCapsule, floor_y: f32) -> Vec3 {
+    Vec3::new(0.8, rest_y(capsule, floor_y), -0.8)
+}
+
+fn parry_shape(capsule: &AgentCapsule) -> parry3d::shape::Capsule {
+    CollisionCapsule::new(capsule.radius, capsule.half_height).parry()
+}
+
+// Regression: the way out of a hull assumed the capsule spans only its diameter
+// across the face it leaves by. A crusher bottom pierced along the capsule's
+// axis then read a negative exit, and the body was dragged up inside.
+#[test]
+fn a_body_inside_a_rising_crusher_leaves_through_its_bottom_or_stays_on_the_floor() {
+    let capsule = capsule(STEP);
+    let shape = parry_shape(&capsule);
+    let body = body_on(&capsule, 0.0);
+    let movers = [crusher()];
+    // The bottom face sits under the centre by less than the axis half-length
+    // less the radius.
+    let posed = Posed {
+        at: Vec3::new(0.0, body.y - 0.1, 0.0),
+        delta: Vec3::Y * 0.02,
+    };
+
+    let floor = Geometry::default().floor((-50.0, 60.0), 0.0).build();
+    let collision = CombinedCollisionWorld::new(&floor, &movers, &posed);
+    assert_eq!(
+        displace_out_of_hull(GroundRef::World, &collision, &shape, body),
+        Some(body),
+        "the floor blocks the way out: it stays"
+    );
+
+    let pit = Geometry::default().floor((-50.0, 60.0), -50.0).build();
+    let collision = CombinedCollisionWorld::new(&pit, &movers, &posed);
+    let out = displace_out_of_hull(GroundRef::World, &collision, &shape, body)
+        .expect("the body is inside the hull");
+    let top = out.y + capsule.half_height + capsule.radius;
+    assert!(
+        (top - (posed.at.y - SKIN_DISTANCE)).abs() < 5.0e-3,
+        "out through the bottom face, a skin under it: top {top}, face {}",
+        posed.at.y
+    );
+}
+
+// Regression: the same short exit pushed a body inside a thin descending deck
+// down into the floor, unchecked against it.
+#[test]
+fn a_body_inside_a_thin_descending_deck_leaves_through_its_nearer_top() {
+    let capsule = capsule(STEP);
+    let body = body_on(&capsule, 0.0);
+    let movers = [thin_deck()];
+    let posed = Posed {
+        at: Vec3::new(0.0, body.y + 0.05, 0.0),
+        delta: Vec3::NEG_Y * 0.03,
+    };
+    let floor = Geometry::default().floor((-50.0, 60.0), 0.0).build();
+    let collision = CombinedCollisionWorld::new(&floor, &movers, &posed);
+    let out = displace_out_of_hull(GroundRef::World, &collision, &parry_shape(&capsule), body)
+        .expect("the body is inside the hull");
+    let bottom = out.y - capsule.half_height - capsule.radius;
+    assert!(
+        (bottom - (posed.at.y + SKIN_DISTANCE)).abs() < 5.0e-3,
+        "out through the top face, a skin over it: bottom {bottom}, top {}",
+        posed.at.y
+    );
+}
+
+// Regression: on the tick the crusher's bottom face rose past the body's
+// centre, its swept push, aimed along the mover's motion, dragged the body up
+// after it by the whole tick's travel and more.
+#[test]
+fn a_crusher_rising_off_a_corpse_or_a_crush_immune_agent_leaves_it_in_place() {
+    let capsule = capsule(STEP);
+    let floor = Geometry::default().floor((-50.0, 60.0), 0.0).build();
+    let movers = [crusher()];
+    let delta = Vec3::Y * DT;
+    for corpse in [true, false] {
+        let start = body_on(&capsule, 0.0);
+        let (mut body, mut ground, mut vertical) = (start, GroundRef::World, 0.0);
+        // Half a tick off, so no tick ends with the bottom face on the centre,
+        // where inside and outside are undefined.
+        let mut bottom = start.y - 0.15 - 0.5 * delta.y;
+        for tick in 0..90 {
+            bottom += delta.y;
+            let posed = Posed {
+                at: Vec3::new(0.0, bottom, 0.0),
+                delta,
+            };
+            let collision = CombinedCollisionWorld::new(&floor, &movers, &posed);
+            let result = if corpse {
+                settle_corpse(
+                    &collision,
+                    &capsule,
+                    body,
+                    ground,
+                    vertical,
+                    EnvironmentView::level_only(GRAVITY),
+                    DT,
+                )
+            } else {
+                step_on(&collision, &capsule, body, ground, Vec3::ZERO, vertical)
+            };
+            (body, ground, vertical) = (result.position, result.ground, result.velocity.y);
+            assert!(
+                (body - start).length() < 1.0e-2,
+                "corpse {corpse}, tick {tick}: moved from {start:?} to {body:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_thin_lift_descending_through_a_corpse_never_pushes_it_into_the_floor() {
+    let capsule = capsule(STEP);
+    let floor = Geometry::default().floor((-50.0, 60.0), 0.0).build();
+    let movers = [thin_deck()];
+    let start = body_on(&capsule, 0.0);
+    let (mut body, mut ground, mut vertical) = (start, GroundRef::World, 0.0);
+    let mut top: f32 = 2.5;
+    for tick in 0..150 {
+        let next = (top - 2.0 * DT).max(0.2);
+        let posed = Posed {
+            at: Vec3::new(0.0, next, 0.0),
+            delta: Vec3::Y * (next - top),
+        };
+        top = next;
+        let collision = CombinedCollisionWorld::new(&floor, &movers, &posed);
+        let result = settle_corpse(
+            &collision,
+            &capsule,
+            body,
+            ground,
+            vertical,
+            EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+        (body, ground, vertical) = (result.position, result.ground, result.velocity.y);
+        assert!(
+            body.y >= start.y - 1.0e-2,
+            "tick {tick}: pushed down to {body:?} under the deck top {top}"
+        );
+    }
+    assert!(
+        (body.y - rest_y(&capsule, 0.2)).abs() < 1.0e-2,
+        "the corpse came out on top and rode the deck down, at {body:?}"
+    );
+}
+
+// The player keeps a mover ground through an upward shove so the next tick
+// carries it once more and hands it the mover's velocity. An agent's component
+// keeps the ground the same way, and its controller then does the same.
+#[test]
+fn an_agent_shoved_up_off_a_moving_platform_keeps_the_platform_velocity() {
+    let capsule = capsule(STEP);
+    let world = Geometry::default().floor((-50.0, 60.0), -10.0).build();
+    let movers = [thin_deck()];
+    let delta = Vec3::X * (3.0 * DT);
+    let posed = Posed { at: delta, delta };
+    let collision = CombinedCollisionWorld::new(&world, &movers, &posed);
+    let start = Vec3::new(0.0, rest_y(&capsule, 0.0), 0.0);
+    let mut knockback = Vec3::Y * 4.0;
+    let result = collide_and_slide(
+        &collision,
+        &capsule,
+        start,
+        GroundRef::Mover(HULL),
+        Vec3::ZERO,
+        4.0,
+        &mut knockback,
+        EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
+    assert_eq!(result.ground, GroundRef::Airborne, "it left the platform");
+    assert!(
+        (result.position.x - delta.x).abs() < 1.0e-4,
+        "carried once more, to {:?}",
+        result.position
+    );
+    assert!(
+        (knockback.x - 3.0).abs() < 1.0e-3,
+        "the platform's velocity rides on in its knockback: {knockback:?}"
     );
 }

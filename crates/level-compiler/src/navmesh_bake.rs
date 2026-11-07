@@ -1,5 +1,4 @@
-// Navmesh bake: rasterize walkable surfaces into a span grid, then decompose
-// into rectangular regions joined by portals.
+// Navmesh bake: span grid, regions and portals, then mover gates and links from posed movers.
 // See: context/lib/build_pipeline.md §Navigation bake
 
 use glam::Vec3;

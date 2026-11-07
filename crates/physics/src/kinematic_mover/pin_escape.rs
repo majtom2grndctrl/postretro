@@ -1,15 +1,16 @@
 // Where a pinned agent can step to: the nearest standing point the mover's
-// course never reaches. Runs on the pin edge alone, so its casts stay off the
-// per-tick path.
+// course never reaches, or a spot on its top it rides clear from. Runs on the
+// pin edge alone, so its casts stay off the per-tick path.
 // See: context/lib/movement.md §6
 
+use std::collections::HashMap;
 use std::f32::consts::TAU;
 
 use glam::{Quat, Vec3};
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_foundation::GroundRef;
 
-use super::pin::OneMoverPose;
+use super::pin::{OneMoverPose, PinWorld};
 use crate::collision::moving::{
     CombinedCollisionWorld, EMPTY_MOVER_POSES, MoverCollider, MoverPose,
     cast_capsule_combined_parry, deepest_mover_penetration, point_inside_mover,
@@ -32,13 +33,15 @@ const SPIN_SAMPLES: u32 = 12;
 /// How squarely a face must oppose the walk to stop it, as a cosine.
 const WALK_BLOCKING_FACE: f32 = 0.2;
 
-/// Fractions of the walk checked against the pinning mover's present pose.
-const WALK_SAMPLES: [f32; 2] = [0.5, 0.75];
+/// Floor on the spacing of walk samples, so a degenerate capsule cannot make
+/// their count unbounded.
+const MIN_WALK_SAMPLE_SPACING: f32 = 0.05;
 
 /// The nearest point within `reach` where a capsule stands on a floor, walks to
-/// in a straight line, and stays clear of every pose of `mover_id`'s course.
-/// `None` when no such point exists, as in a pit the mover fills. Ring order is
-/// fixed, so two runs pick the same point.
+/// in a straight line, and is out of `mover_id`'s way: off the mover, clear of
+/// every pose of its course; on its top, carried along that whole course
+/// without meeting a blocker. `None` when no such point exists, as in a pit the
+/// mover fills. Ring order is fixed, so two runs pick the same point.
 pub fn find_mover_clear_point(
     registry: &EntityRegistry,
     collision: &CombinedCollisionWorld<'_>,
@@ -58,6 +61,16 @@ pub fn find_mover_clear_point(
         collider,
         transform,
     };
+    // Other movers stand parked for the carry test. An empty map allocates
+    // nothing.
+    let parked = HashMap::new();
+    let carry_world = PinWorld {
+        static_world: collision.static_world,
+        mover_colliders: collision.movers,
+        mover_poses: collision.poses,
+        next_travel: &parked,
+        corpse_yields: &[],
+    };
     let spacing = capsule.radius.max(COURSE_SAMPLE_SPACING);
     let rings = (reach / spacing).floor() as u32;
     for ring in 1..=rings {
@@ -65,13 +78,23 @@ pub fn find_mover_clear_point(
         for step in 0..RING_ANGLES {
             let angle = TAU * step as f32 / RING_ANGLES as f32;
             let offset = Vec3::new(angle.cos(), 0.0, angle.sin()) * distance;
-            let Some(point) = standing_point(collision, capsule, position + offset, step_height)
+            let Some((point, floor)) =
+                standing_point(collision, capsule, position + offset, step_height)
             else {
                 continue;
             };
-            if walk_is_clear(collision, collider, capsule, position, point, step_height)
-                && !course.reaches(point, capsule)
-            {
+            if !walk_is_clear(collision, collider, capsule, position, point, step_height) {
+                continue;
+            }
+            // The course test ignores carry: a spot on the mover's own top
+            // reads clear of it while the mover carries the body back into its
+            // pin. There the carry along the course decides instead.
+            let out_of_the_way = if floor == GroundRef::Mover(mover_id) {
+                course.carries_clear(&carry_world, point, capsule)
+            } else {
+                !course.reaches(point, capsule)
+            };
+            if out_of_the_way {
                 return Some(point);
             }
         }
@@ -95,13 +118,13 @@ fn mover_by_id(
 }
 
 /// The capsule pose resting on a walkable floor near `candidate`, clear of
-/// static geometry and of every mover as they stand now.
+/// static geometry and of every mover as they stand now, and that floor.
 fn standing_point(
     collision: &CombinedCollisionWorld<'_>,
     capsule: CollisionCapsule,
     candidate: Vec3,
     step_height: f32,
-) -> Option<Vec3> {
+) -> Option<(Vec3, GroundRef)> {
     let lifted = candidate + Vec3::Y * step_height;
     let floor = floor_below(
         collision,
@@ -115,7 +138,7 @@ fn standing_point(
     let clear = !collision.static_world.overlaps_static(point, capsule)
         && deepest_mover_penetration(collision.movers, collision.poses, point, &parry).is_none()
         && !point_inside_mover(collision.movers, collision.poses, point);
-    (clear && !matches!(floor.ground, GroundRef::Airborne)).then_some(point)
+    (clear && !matches!(floor.ground, GroundRef::Airborne)).then_some((point, floor.ground))
 }
 
 /// Whether the body can walk straight to `point`: no wall in the way, at floor
@@ -152,16 +175,39 @@ fn walk_is_clear(
     if blocked_from(position) && blocked_from(position + Vec3::Y * step_height) {
         return false;
     }
-    // A body can start embedded, so the walk may keep that depth but not add to it.
+    // A body can start embedded, so the walk may keep that depth but not add to
+    // it. Samples sit at most a capsule radius apart, the start and the clear
+    // point (already tested at its own height) at either end, so no part of the
+    // mover lies between two of them unseen.
     let pinning = std::slice::from_ref(collider);
     let depth_at = |at: Vec3| {
         deepest_mover_penetration(pinning, collision.poses, at, &parry)
             .map_or(0.0, |penetration| penetration.depth)
     };
-    let allowed = depth_at(position) + 2.0 * SKIN_DISTANCE;
-    WALK_SAMPLES
-        .iter()
-        .all(|fraction| depth_at(position + walk * *fraction) <= allowed)
+    let mut allowed = depth_at(position) + 2.0 * SKIN_DISTANCE;
+    // A body whose centre starts inside the hull meets its deepest contact as
+    // its axis crosses the face it leaves by: the walk out may pass through
+    // any depth until it is first out and clear, and is held to clear after.
+    let inside = |at: Vec3| point_inside_mover(pinning, collision.poses, at);
+    let mut leaving = inside(position);
+    let samples = (distance / capsule.radius.max(MIN_WALK_SAMPLE_SPACING))
+        .ceil()
+        .max(1.0) as u32;
+    for sample in 1..samples {
+        let at = position + walk * (sample as f32 / samples as f32);
+        let depth = depth_at(at);
+        if leaving {
+            if depth > 0.0 || inside(at) {
+                continue;
+            }
+            leaving = false;
+            allowed = 2.0 * SKIN_DISTANCE;
+        }
+        if depth > allowed {
+            return false;
+        }
+    }
+    true
 }
 
 /// Every pose a mover's path can put it in, its present pose included.
@@ -186,6 +232,41 @@ impl MoverCourse<'_> {
             (0..=samples).any(|sample| {
                 let at = leg[0] + span * (sample as f32 / samples as f32);
                 self.reaches_at(at, point, capsule)
+            })
+        })
+    }
+
+    /// Whether a body standing at `point` on the mover's top rides its whole
+    /// course without the carry meeting static geometry or another mover: the
+    /// test that pins a rider, swept leg by leg from the course samples. A mover
+    /// with a spin axis is never ridden clear: its turn is no leg to sweep.
+    fn carries_clear(&self, world: &PinWorld<'_>, point: Vec3, capsule: CollisionCapsule) -> bool {
+        if self.mover.spin_axis != Vec3::ZERO {
+            return false;
+        }
+        let parry = capsule.parry();
+        let now = self.transform.position;
+        self.mover.waypoints.windows(2).all(|leg| {
+            let span = leg[1] - leg[0];
+            let samples = (span.length() / COURSE_SAMPLE_SPACING).ceil().max(1.0) as u32;
+            (0..samples).all(|sample| {
+                let from = leg[0] + span * (sample as f32 / samples as f32);
+                let to = leg[0] + span * ((sample + 1) as f32 / samples as f32);
+                let step = MoverPose {
+                    transform: Transform {
+                        position: to,
+                        ..self.transform
+                    },
+                    linear_velocity: Vec3::ZERO,
+                    tick_delta: to - from,
+                    angular_velocity: Vec3::ZERO,
+                    tick_rotation_delta: Quat::IDENTITY,
+                    carry_yaw: false,
+                    tick_dt: 0.0,
+                };
+                world
+                    .blocked_carry(self.mover.mover_id, step, point + (from - now), &parry)
+                    .is_none()
             })
         })
     }

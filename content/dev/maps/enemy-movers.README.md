@@ -12,8 +12,10 @@ cargo run -p postretro-level-compiler -- content/dev/maps/enemy-movers.map -o co
 ```
 
 Do not commit the `.prl` or any `baked/materials/` sidecars. The `.prl` is not
-checked in, and this map has been baked but not yet played. Enemy routing over doors and lifts needs a map built with the current
-`prl-build`; a stale `.prl` loads with no door or lift routing and logs one
+checked in.
+
+Enemy routing over doors and lifts needs a map built with the current
+`prl-build`. A stale `.prl` loads with no door or lift routing and logs one
 warning.
 
 The `.map` was written by a one-off script that is not checked in. Edit it

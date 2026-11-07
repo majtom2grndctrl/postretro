@@ -3,7 +3,7 @@
 // never reachable through `worldQuery` (the `PlayerMovement` precedent).
 //
 // Carries the agent's collision capsule (radius / height / step_height), its
-// current velocity and grounded flag, the path it is following (an ordered list
+// current velocity and ground, the path it is following (an ordered list
 // of world-space waypoints plus a cursor into them), and a destination. The
 // capsule is seeded at attach time from the navmesh's baked `NavAgentParams`,
 // so each agent matches what the bake eroded the navmesh for; storing it per
@@ -78,15 +78,15 @@ pub struct AgentComponent {
     pub height: f32,
     /// Maximum vertical step the agent can climb in one tick, in world units.
     /// Seeded from `NavAgentParams::step_height` (NOT the radius as a
-    /// stand-in). The collide-and-slide harness's step-up / ground-stick logic
-    /// reads this; it is a stored field so downstream steering uses the baked
-    /// step the navmesh was eroded for.
+    /// stand-in). The agent controller's step-up / ground-stick logic reads
+    /// this; it is a stored field so downstream steering uses the baked step
+    /// the navmesh was eroded for.
     pub step_height: f32,
     /// Top horizontal speed the steering system drives the agent at, in
     /// world-units/sec. Passed to `attach_agent` at attach time.
     pub move_speed: f32,
-    /// Live velocity (world space) the collide-and-slide harness integrates and
-    /// resolves each tick.
+    /// Live velocity (world space) the agent controller integrates and resolves
+    /// each tick.
     pub velocity: Vec3,
     /// External velocity protected from path steering's horizontal replacement.
     #[serde(default)]
@@ -110,7 +110,7 @@ pub struct AgentComponent {
     /// lateral bias before collision resolution.
     #[serde(default)]
     pub unstick_window_remaining: u32,
-    /// What the agent's capsule rests on, resolved by the harness. The single
+    /// What the agent's capsule rests on, resolved by the agent controller. The single
     /// source for mover carry, rider exemption, stuck suppression and link
     /// resolution; [`Self::is_grounded`] is its projection.
     #[serde(default)]
@@ -193,8 +193,8 @@ impl AgentComponent {
     /// `step_height` and `move_speed`. Takes the geometry as plain arguments —
     /// it deliberately does NOT call `NavGraph::agent_params()`; the spawn call
     /// site reads the baked params and passes them down (see [`attach_agent`]).
-    /// Velocity starts at rest, ungrounded (the harness re-acquires the floor on
-    /// the first tick), with no path and no destination.
+    /// Velocity starts at rest, ungrounded (the agent controller re-acquires the
+    /// floor on the first tick), with no path and no destination.
     pub fn new(radius: f32, height: f32, step_height: f32, move_speed: f32) -> Self {
         Self {
             radius,
@@ -240,7 +240,10 @@ impl AgentComponent {
         }
         self.velocity = velocity;
         self.knockback_velocity = knockback_velocity;
-        if impulse.y > 0.0 && velocity.y > 0.0 {
+        // A mover ground stays until the next tick carries the body once more
+        // and hands it the mover's release velocity; world contact has no
+        // release, so it clears at once. The player's knockback does the same.
+        if impulse.y > 0.0 && velocity.y > 0.0 && !matches!(self.ground, GroundRef::Mover(_)) {
             self.ground = GroundRef::Airborne;
         }
         true
@@ -362,6 +365,21 @@ mod tests {
         assert_eq!(agent.height, 1.8);
         assert_eq!(agent.step_height, 0.4, "step_height seeded from params");
         assert_eq!(agent.move_speed, 6.5);
+    }
+
+    // Regression: an upward shove dropped a mover ground at once, so the next
+    // tick neither carried the agent nor handed it the mover's release velocity.
+    #[test]
+    fn an_upward_shove_keeps_a_mover_ground_and_clears_a_world_one() {
+        let mut on_mover = AgentComponent::new(0.35, 1.8, 0.4, 5.0);
+        on_mover.ground = GroundRef::Mover(3);
+        assert!(on_mover.add_knockback(Vec3::Y * 4.0));
+        assert_eq!(on_mover.ground, GroundRef::Mover(3));
+
+        let mut on_floor = AgentComponent::new(0.35, 1.8, 0.4, 5.0);
+        on_floor.ground = GroundRef::World;
+        assert!(on_floor.add_knockback(Vec3::Y * 4.0));
+        assert_eq!(on_floor.ground, GroundRef::Airborne);
     }
 
     #[test]

@@ -74,9 +74,11 @@ impl MoverTickStateTable {
         &self.docks
     }
 
-    /// Track these movers' docks from the next mover tick on.
-    pub fn watch_mover_docks(&mut self, mover_ids: &[u32]) {
-        self.docks.watch(mover_ids);
+    /// Track the docks of every mover a navigation record names from the next
+    /// mover tick on: `gated` and `linked` are the (mover id, waypoint) docks
+    /// that close a portal and that open a link. See [`MoverDockTable`].
+    pub fn watch_mover_docks(&mut self, gated: &[(u32, u32)], linked: &[(u32, u32)]) {
+        self.docks.watch(gated, linked);
     }
 
     fn begin_tick(&mut self) {
@@ -84,6 +86,7 @@ impl MoverTickStateTable {
         self.translation_legs.clear();
         self.endpoint_arrivals.clear();
         self.mover_entities.clear();
+        self.docks.begin_tick();
     }
 
     pub fn publish(&mut self, mover_id: u32, state: MoverTickState) {
@@ -254,6 +257,7 @@ pub fn run_kinematic_mover_tick(
                 .push((mover_id, endpoint_arrivals));
         }
     }
+    side_table.docks.undock_unseen();
 }
 
 pub fn mover_pose_for_current_phase(

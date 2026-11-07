@@ -3401,7 +3401,7 @@ mod tests {
         capture.assert_logged_once(
             log::Level::Warn,
             &format!(
-                "navmesh section version {STALE_NAVMESH_VERSION}, expected {NAVMESH_VERSION} — recompile the map"
+                "navmesh section version {STALE_NAVMESH_VERSION}, expected 2 or {NAVMESH_VERSION} — recompile the map"
             ),
         );
         std::fs::remove_file(&tmp).ok();

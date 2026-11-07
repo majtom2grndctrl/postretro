@@ -298,6 +298,7 @@ fn resolve_blocking(
     pin::retain_corpse_yields_in_contact(
         corpse_yields,
         registry,
+        static_world,
         mover_colliders,
         mover_poses,
         all_bodies,

@@ -6,9 +6,10 @@ use glam::Vec3;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{BlockPolicy, EntityId, KinematicMoverMode};
 
-use super::MoverAutoCloseTimers;
 use super::pin_test_fixtures::*;
-use crate::collision::{OVERLAP_TOLERANCE, SKIN_DISTANCE};
+use super::{MoverAutoCloseTimers, find_mover_clear_point};
+use crate::collision::moving::CombinedCollisionWorld;
+use crate::collision::{CollisionCapsule, OVERLAP_TOLERANCE, SKIN_DISTANCE};
 use postretro_entities::MoverCommand;
 
 const LIFT: u32 = 1;
@@ -2591,4 +2592,122 @@ fn a_corpse_yield_marked_on_a_held_mover_survives_until_the_mover_moves_through(
     rig.tick();
     assert!(rig.mover_position(door).x < at.x, "and it proceeds");
     assert!(rig.table.agent_yields_as_corpse(agent, DOOR));
+}
+
+/// A platform carrying an agent along +X, over a pit, into an arch too low for
+/// it, held there by the agent's pin. `ledge` adds a floor beside the course,
+/// short of the arch.
+fn arch_platform_rig(ledge: bool) -> (Rig, EntityId, EntityId) {
+    let mut boxes = vec![(Vec3::new(3.0, 1.8, -5.0), Vec3::new(4.0, 6.0, 5.0))];
+    if ledge {
+        boxes.push((Vec3::new(-5.0, -1.0, 1.5), Vec3::new(2.8, 0.0, 5.0)));
+    }
+    let mut rig = Rig::new(static_boxes(&boxes));
+    let platform = rig.add_mover(
+        deck(LIFT, 1.0),
+        vec![Vec3::ZERO, Vec3::new(6.0, 0.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    let rider = rig.add_agent(Vec3::new(0.0, rest_y(0.0), 0.0));
+    give_health(&mut rig, rider, 100.0);
+    rig.settle(20);
+    rig.assert_rides(rider, LIFT);
+    rig.start(platform);
+    tick_until_held(&mut rig, platform);
+    assert_eq!(rig.table.agent_yields(), &[(rider, LIFT)]);
+    (rig, platform, rider)
+}
+
+/// The clear point steering would walk the rider to.
+fn rider_clear_point(rig: &Rig, rider: EntityId) -> Option<Vec3> {
+    let agent = rig.agent(rider);
+    find_mover_clear_point(
+        &rig.registry,
+        &CombinedCollisionWorld::new(&rig.world, &rig.colliders, &rig.table),
+        LIFT,
+        rig.position(rider),
+        CollisionCapsule::new(agent.radius, agent.half_height()),
+        agent.step_height,
+        5.0,
+    )
+}
+
+// Regression: the search took a spot elsewhere on the platform's own top, which
+// the platform carried straight back into the arch, re-pinning every cycle. The
+// arch spans the whole course, so every spot on the deck re-pins.
+#[test]
+fn a_platform_riders_clear_point_is_off_the_platform() {
+    let (rig, _, rider) = arch_platform_rig(true);
+    let point = rider_clear_point(&rig, rider).expect("the ledge beside the course is clear");
+    // The deck spans z in [-1, 1].
+    assert!(
+        point.z > 1.0,
+        "the clear point stands off the deck, at {point:?}"
+    );
+}
+
+// A spot on the pinning mover's own top is a way out when the carry from it
+// along the whole course meets nothing: a lift rider overhanging the upper
+// floor's edge steps inward rather than yielding to be carried into the slab.
+#[test]
+fn a_lift_rider_pinned_at_the_deck_edge_steps_inward_and_the_lift_resumes() {
+    // The deck spans x in [-1, 1]; the upper floor's slab starts at x = 1.1,
+    // its underside at y = 2.5.
+    let world = static_boxes(&[(Vec3::new(1.1, 2.5, -5.0), Vec3::new(6.0, 3.0, 5.0))]);
+    let mut rig = Rig::new(world);
+    let lift = rig.add_mover(
+        deck(LIFT, 1.0),
+        vec![Vec3::ZERO, Vec3::new(0.0, 3.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    let rider = rig.add_agent(Vec3::new(0.8, rest_y(0.0), 0.0));
+    give_health(&mut rig, rider, 100.0);
+    rig.settle(20);
+    rig.assert_rides(rider, LIFT);
+    rig.start(lift);
+    tick_until_held(&mut rig, lift);
+    assert_eq!(rig.table.agent_yields(), &[(rider, LIFT)]);
+
+    let point = rider_clear_point(&rig, rider).expect("an inward spot rides up clear");
+    assert!(
+        point.x + RADIUS < 1.1 - SKIN_DISTANCE && point.x.abs() < 1.0 && point.z.abs() < 1.0,
+        "the clear point stands on the deck, inside the slab's edge, at {point:?}"
+    );
+
+    // Steering walks it there; place it, as the walk ends.
+    rig.set_position(rider, point);
+    let held_at = rig.mover_position(lift).y;
+    rig.tick();
+    rig.tick();
+    assert!(!rig.mover(lift).blocked, "the hold released");
+    assert!(rig.mover_position(lift).y > held_at, "and the lift rises");
+    rig.assert_rides(rider, LIFT);
+}
+
+// Regression: a rider a skin above its deck touches the platform only through
+// the carry that pins it, so its corpse-yield mark dropped in the very pass that
+// should honour it, and the platform held forever.
+#[test]
+fn with_no_clear_point_a_platform_rider_yields_and_the_hold_ends() {
+    let (mut rig, platform, rider) = arch_platform_rig(false);
+    assert_eq!(
+        rider_clear_point(&rig, rider),
+        None,
+        "nowhere to stand but the platform"
+    );
+    rig.tick_with(|rig| rig.table.yield_agent_as_corpse(rider, LIFT));
+    assert!(
+        rig.table.agent_yields_as_corpse(rider, LIFT),
+        "the mark holds while the carry stays blocked"
+    );
+    assert!(!rig.mover(platform).blocked, "the pass let the platform go");
+    let at = rig.mover_position(platform);
+    rig.tick();
+    assert!(rig.mover_position(platform).x > at.x, "and it proceeds");
+    assert!(rig.table.agent_yields_as_corpse(rider, LIFT));
+    assert_eq!(health(&rig, rider), 100.0, "unharmed");
 }

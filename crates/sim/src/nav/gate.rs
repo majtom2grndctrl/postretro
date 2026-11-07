@@ -130,5 +130,15 @@ pub fn install_mover_records(
         })
         .collect();
     graph.validate_mover_records(&bounds);
-    mover_tick_states.watch_mover_docks(&graph.record_mover_ids());
+    let gated: Vec<(u32, u32)> = graph
+        .gates()
+        .iter()
+        .map(|gate| (gate.mover_id, gate.waypoint))
+        .collect();
+    let linked: Vec<(u32, u32)> = graph
+        .links()
+        .iter()
+        .map(|link| (link.mover_id, link.waypoint))
+        .collect();
+    mover_tick_states.watch_mover_docks(&gated, &linked);
 }

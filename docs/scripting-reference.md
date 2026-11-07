@@ -1896,6 +1896,12 @@ doors and lifts:
   `brain.acquisitionDue` as shown above.
 - **A door stopped between waypoints** is not a gate. The fact does not change,
   and the door blocks the enemy by collision alone.
+- **A target reachable only across a lift.** The route boards a lift only
+  while it rests at the enemy's landing, so `targetReachable` reads `false`
+  while the lift is away from that landing or travelling, and `true` while it
+  is docked there. The fact therefore flips as the lift cycles. It is
+  recomputed on the brain's acquisition stride, not every tick, so it can lag a
+  lift's arrival or departure by up to one stride.
 - **Riding a lift.** While the enemy rides a lift, `targetReachable` holds the
   value it had when the enemy boarded, on every acquisition-due tick. It is
   recomputed on the first one after the enemy steps off.
@@ -3019,8 +3025,8 @@ expression; `set(ref, value)` writes an absolute value; and
 not an atomic increment. Use `when(condition, effects)` to defer a group until
 its boolean expression is true. If one fire writes the same slot more than
 once, every operand reads the same starting value and the last applied write
-wins. Impact policies currently run only for in-tick weapon and AI damage;
-`applyDamage` reactions and other app-drain producers run no policy in v1.
+wins. Impact policies currently run only for in-tick weapon damage, AI damage,
+and `kinematic_mover` crush damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
 
 `impact.target.adjustSentimentToward(impact.source, delta)` adjusts the target
 faction's live sentiment **toward** the source faction; calling the method on

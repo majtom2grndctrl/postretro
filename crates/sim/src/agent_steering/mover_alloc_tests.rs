@@ -240,7 +240,7 @@ fn the_per_tick_mover_paths_allocate_nothing() {
     let mut scene = Scene::new();
     scene.docks = {
         let mut movers = crate::kinematic_mover::MoverTickStateTable::default();
-        movers.watch_mover_docks(&[LIFT]);
+        movers.watch_mover_docks(&[], &[(LIFT, 0), (LIFT, 1)]);
         movers.docks().clone()
     };
     for _ in 0..3 {

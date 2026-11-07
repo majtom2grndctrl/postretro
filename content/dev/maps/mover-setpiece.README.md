@@ -4,10 +4,11 @@ Measurement and proof surface for **large** theatrical movers. Two movers that
 each fill a big share of the screen cycle unattended in a small, quick-to-bake
 two-room map. Intended uses:
 
-1. A/B the GPU cost of the mover pass on the Mac target.
-2. Prove that movers block shots, sight and enemies (the sliding wall stands
-   between the player start and a marked enemy spot). Verifiable once
-   `E17--movers-block-shots-and-sight` and `E17--enemy-mover-interaction` land.
+1. A/B the GPU cost of the mover pass on the Mac target. Timing setup and
+   the `kinematic_brush` pass are in `context/lib/rendering_pipeline.md` §12.
+2. Prove enemies on movers: the sliding wall stops the chaser until it opens,
+   and the rising room carries its riders (see Enemy checks). Movers do not yet
+   block shots and sight.
 3. Prove mover rest-state lighting (baked lights reach across both movers at
    both ends of their travel). Verifiable once mover light flow's probe and
    world-surface channels land (roadmap, Lighting and GI).
@@ -98,9 +99,8 @@ while the wall is open.
 336–400, y 1200–1264 in the back room; its centre is 4.1 m behind the closed wall. It
 lies on the line from station 1 through the closed wall's centre. A
 `reference_enemy` (the chaser) stands on it at (368, 1232, 16), facing south.
-It also serves to prove that the closed wall blocks shots, sight and enemy
-perception, and that the open wall does not (those land with
-`E17--movers-block-shots-and-sight`).
+It proves the door and lift routing in Enemy checks. Movers do not yet block
+shots and sight, so the closed wall does not hide it from the player.
 
 ## Enemies
 

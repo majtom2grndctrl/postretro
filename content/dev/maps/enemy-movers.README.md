@@ -3,7 +3,7 @@
 Manual QA map for how enemies and corpses meet movers: riding a lift, being
 pushed by a sweeper, being crushed against a wall, and a corpse on a lift. One
 straight hall with a bay per case, small enough to bake quickly (11 world
-brushes, 4 movers, 9 baked lights).
+brushes, 4 movers, 13 baked lights).
 
 Build a local artifact on demand:
 
@@ -37,7 +37,7 @@ Reload the map to reset a bay.
 | Bay | x | Mover | Policy | Enemies |
 |---|---|---|---|---|
 | 1 lift | pit 704–896, ledge 896–1152 | `em_lift`, `ping_pong`, 1.5 m/s, 4 s wait, rises 96 u (2.4 m) | `displace` | Two on the lift (`em_lift_rider`), one on the floor beyond the ledge (`em_lift_chaser`) |
-| 2 sweeper | 1280→1536 | `em_sweeper`, 384 wide, `ping_pong`, 1.5 m/s, 1.5 s wait | `displace` | Two in its course (`em_sweeper_victim`) |
+| 2 sweeper | 1280→1536 | `em_sweeper`, 384 wide, `ping_pong`, 4.5 m/s, 1.5 s wait | `displace` | Two in its course (`em_sweeper_victim`) |
 | 3 open crusher | 1728→1920, y 48–208 | `em_crusher_open`, `ping_pong`, 1 m/s, 3 s wait | `crush`, 100 dmg / 400 ms | One ahead of it (`em_crusher_open_victim`) |
 | 3 wall crusher | 1728→2032, y 304–464 | `em_crusher_wall`, `ping_pong`, 1 m/s, 3 s wait | `crush`, 100 dmg / 400 ms | One between it and the east wall (`em_crusher_wall_victim`) |
 
@@ -48,19 +48,24 @@ uses the dev mod's default damage type.
 
 ## Lights
 
-Dim point lights fill the hall; one bright spot picks out each bay. Every point
-light reaches most of the hall, so on large faces the lowest-ranked points lose
-their shadowmask specular channel and the compiler warns once per light and
-face. Those faces show no static highlight from the losing points. Diffuse
-lighting and the spots are unaffected.
+Faint point lights are the ambient; one bright spot picks out each bay, and
+four angled accent spots throw pockets of brighter light. Every point light
+reaches most of the hall, so on large faces the lowest-ranked lights lose their
+shadowmask specular channel and the compiler warns once per light and face:
+mostly the points, and three spots on a few small patches. Those faces show no
+static highlight from the losing lights. Diffuse lighting is unaffected.
 
 | Light | Origin | Intensity | Falloff | Lights |
 |---|---|---|---|---|
-| `light` × 5 | (400, 900, 1300, 1700, 1980; 256, 256) | 75 | 1600 | The hall, alternating warm and cool |
+| `light` × 5 | (400, 900, 1300, 1700, 1980; 256, 256) | 10 | 1600 | Ambient for the hall, alternating warm and cool |
 | `light_spot` (cone 22/42, angles −39 39 0) | (560, 96, 300) | 350 | 700 | The lift and the ledge edge |
 | `light_spot` (cone 25/48, angles −42 317 0) | (1180, 480, 300) | 300 | 750 | The sweeper's course |
 | `light_spot` (cone 18/36, angles −47 22 0) | (1640, 40, 300) | 300 | 600 | The open crusher lane, cool |
 | `light_spot` (cone 16/34, angles −52 335 0) | (1820, 470, 300) | 350 | 600 | The wall crusher's pin against the east wall, red |
+| `light_spot` (cone 14/30, angles −46 294 0) | (240, 470, 300) | 250 | 600 | A warm pool by the start |
+| `light_spot` (cone 14/30, angles −18 105 0) | (600, 40, 290) | 250 | 700 | A cyan rake up the north wall |
+| `light_spot` (cone 16/32, angles −46 288 0) | (1000, 490, 300) | 250 | 500 | A cool pool on the ledge top |
+| `light_spot` (cone 12/26, angles −22 288 0) | (1500, 440, 300) | 300 | 700 | An amber rake down the south wall, between the sweeper and the crushers |
 
 ## Checks
 
@@ -83,7 +88,9 @@ authored content. Each one also says how to reach it.
    up.
 3. **A sweeper pushes them (bay 2).** From x 600 or so, outside range, watch the
    two enemies in front of the slab. When it sweeps east it pushes them along
-   ahead of it, with open floor beyond, and they take no damage. When it returns
+   ahead of it, with open floor beyond, and they take no damage. At 4.5 m/s it
+   outruns them (they walk at 3 m/s), so it shoves them the length of its sweep
+   and does the same to you. When it returns
    they are left standing clear. Once you walk into range they chase you instead,
    stepping off the slab's course.
 4. **A crusher damages only against a wall (bay 3).** The open crusher (south

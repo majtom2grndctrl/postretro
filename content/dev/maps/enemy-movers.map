@@ -154,7 +154,7 @@
 "classname" "kinematic_mover"
 "name" "em_sweeper"
 "path" "em_sweeper_west"
-"speed" "1.5"
+"speed" "4.5"
 "wait_ms" "1500"
 "move_mode" "ping_pong"
 "start_on_spawn" "1"
@@ -257,12 +257,13 @@
 "name" "em_crusher_wall_end"
 "origin" "2032 384 48"
 }
-// Lights. Dim point lights fill the hall; one bright spot picks out each bay.
+// Lights. Faint point lights are the ambient; one bright spot picks out each bay, and angled
+// accent spots throw pockets of brighter light.
 // entity 13
 {
 "classname" "light"
 "origin" "400 256 256"
-"light" "75"
+"light" "10"
 "_color" "255 244 230"
 "_falloff_range" "1600"
 }
@@ -270,7 +271,7 @@
 {
 "classname" "light"
 "origin" "900 256 256"
-"light" "75"
+"light" "10"
 "_color" "235 240 255"
 "_falloff_range" "1600"
 }
@@ -278,7 +279,7 @@
 {
 "classname" "light"
 "origin" "1300 256 256"
-"light" "75"
+"light" "10"
 "_color" "255 244 230"
 "_falloff_range" "1600"
 }
@@ -286,7 +287,7 @@
 {
 "classname" "light"
 "origin" "1700 256 256"
-"light" "75"
+"light" "10"
 "_color" "235 240 255"
 "_falloff_range" "1600"
 }
@@ -294,7 +295,7 @@
 {
 "classname" "light"
 "origin" "1980 256 256"
-"light" "75"
+"light" "10"
 "_color" "255 220 200"
 "_falloff_range" "1600"
 }
@@ -343,50 +344,96 @@
 "_cone" "16"
 "_cone2" "34"
 }
-// Enemies. Origins sit 16 units above the surface they stand on.
+// Accent spots: a pool by the start, a rake up the north wall, a pool on the ledge top,
+// and an amber rake down the south wall between the sweeper and the crushers.
 // entity 22
+{
+"classname" "light_spot"
+"origin" "240 470 300"
+"light" "250"
+"_color" "255 225 180"
+"_falloff_range" "600"
+"angles" "-46 294 0"
+"_cone" "14"
+"_cone2" "30"
+}
+// entity 23
+{
+"classname" "light_spot"
+"origin" "600 40 290"
+"light" "250"
+"_color" "150 230 255"
+"_falloff_range" "700"
+"angles" "-18 105 0"
+"_cone" "14"
+"_cone2" "30"
+}
+// entity 24
+{
+"classname" "light_spot"
+"origin" "1000 490 300"
+"light" "250"
+"_color" "200 215 255"
+"_falloff_range" "500"
+"angles" "-46 288 0"
+"_cone" "16"
+"_cone2" "32"
+}
+// entity 25
+{
+"classname" "light_spot"
+"origin" "1500 440 300"
+"light" "300"
+"_color" "255 180 90"
+"_falloff_range" "700"
+"angles" "-22 288 0"
+"_cone" "12"
+"_cone2" "26"
+}
+// Enemies. Origins sit 16 units above the surface they stand on.
+// entity 26
 {
 "classname" "reference_enemy"
 "origin" "768 256 16"
 "angles" "0 0 0"
 "_tags" "enemy em_lift_rider"
 }
-// entity 23
+// entity 27
 {
 "classname" "reference_enemy"
 "origin" "832 320 16"
 "angles" "0 0 0"
 "_tags" "enemy em_lift_rider"
 }
-// entity 24
+// entity 28
 {
 "classname" "reference_enemy"
 "origin" "1024 448 16"
 "angles" "0 270 0"
 "_tags" "enemy em_lift_chaser"
 }
-// entity 25
+// entity 29
 {
 "classname" "reference_enemy"
 "origin" "1344 144 16"
 "angles" "0 180 0"
 "_tags" "enemy em_sweeper_victim"
 }
-// entity 26
+// entity 30
 {
 "classname" "reference_enemy"
 "origin" "1344 368 16"
 "angles" "0 180 0"
 "_tags" "enemy em_sweeper_victim"
 }
-// entity 27
+// entity 31
 {
 "classname" "reference_enemy"
 "origin" "1824 128 16"
 "angles" "0 180 0"
 "_tags" "enemy em_crusher_open_victim"
 }
-// entity 28
+// entity 32
 {
 "classname" "reference_enemy"
 "origin" "2000 384 16"
@@ -394,7 +441,7 @@
 "_tags" "enemy em_crusher_wall_victim"
 }
 // Player start: west end, facing east down the hall.
-// entity 29
+// entity 33
 {
 "classname" "player_spawn"
 "origin" "64 256 48"

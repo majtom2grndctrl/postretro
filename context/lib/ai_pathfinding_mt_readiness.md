@@ -6,6 +6,8 @@
 
 `NavGraph` and `CollisionWorld` are immutable shared-reference query surfaces and are guarded by compile-time `Send + Sync` assertions. Their data types are ready to cross worker-thread boundaries.
 
+Route queries also read per-tick mover state: the nav gate, a read view over the host's mover dock table, and mover poses for combat-slot placement; and they start from the body's ground, which may be a docked mover (`build_pipeline.md` §Navigation bake). That state changes only in the mover tick, so one tick's batch can share it, but it carries no `Send + Sync` assertion yet, and the pose source is a trait object.
+
 The blocker is scheduling, not spatial-data ownership. AI currently interleaves enemy-eye reads from the single-threaded entity registry with navigation queries. The first task in a parallel-pathfinding project must split that loop into two phases: snapshot all registry-derived request data on the simulation thread, then execute an ordered batch of navigation-only requests in a fork-join window.
 
 The scheduler owns request identity, deterministic result ordering, worker-local A* scratch, and the fallback when a worker cannot produce a route. Keep registry handles and mutable gameplay effects outside the batch. Do not add a batch API before its scheduler consumer defines those contracts.

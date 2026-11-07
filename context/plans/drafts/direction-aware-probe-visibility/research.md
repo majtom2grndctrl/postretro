@@ -3,7 +3,7 @@
 Read at 2968de0ad. Spike: branch `spike/per-direction-depth`, `context/research/per-direction-depth-spike/README.md` (Windows), plus the Mac sections on local branch `measure/pdd-mac-timing` (to be pushed beside it).
 
 ## Cause
-`sh_corner_depth_visibility` (`sh_sample.wgsl`) reads one `(E[d], E[d²])` pair per dense lattice probe from `sh_depth_moments` (`Rgba16Uint` 3D; R/G the f16 moments, B/A the indirection word). The bake (`bake_probe_rgb_with_moments`, `sh_bake/probe.rs`) averages 256 fixed Fibonacci rays from the lattice point; sky misses count as `4·|cell_size|`. A probe 0.09 m from a closed door has a long average, because most rays cross the bright room, so closet points 0.8 m behind the door pass Chebyshev.
+`sh_corner_depth_visibility` (`sh_sample.wgsl`) reads one `(E[d], E[d²])` pair per dense lattice probe from `sh_depth_moments` (`Rgba16Uint` 3D; R/G the f16 moments, B/A the indirection word). The bake (`bake_probe_with_source` → `bake_probe_rgb_along`, `sh_bake/probe.rs`) averages 256 fixed Fibonacci rays from the lattice point; sky misses count as `4·|cell_size|`. A probe 0.09 m from a closed door has a long average, because most rays cross the bright room, so closet points 0.8 m behind the door pass Chebyshev.
 
 ## Spike (Windows, GTX 1660 SUPER, 256 rays)
 Static-door reference closet; station 3 mean, station 2 mean, then mean brightness in floor bands 0.04 / 0.26 / 0.48 m behind the door.
@@ -50,7 +50,7 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 
 ## Memory
 - Hallway at 8×8: 13,451 tiles × 10×10 bordered texels × 4 B ≈ 5.1 MiB resident and on disk; ceiling 6.4 MiB. At 6×6 it would be 16,481 tiles, ≈ 4.0 MiB.
-- Cap: 32,767 tiles per level, the sign-flagged reference's limit in a 16-bit channel; ≈ 12.5 MiB at 8×8.
+- Cap: 32,768 tiles per level (indices 0–32,767), the sign-flagged reference's limit in a 16-bit channel; ≈ 12.5 MiB at 8×8. Decode tests the raw sign bit: tile 0 is f16 −0 and the top indices are −inf or NaN as floats.
 - Tiles on every probe instead: 125–346 MiB across tile sizes. The measurement hack's per-slot layout: 67 MB at 6×6.
 - Existing dense moments texture: 8 B per lattice probe, whole-resident.
 
@@ -65,6 +65,7 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 - Relocation (roadmap, Majercik 2021): moving a probe off a wall moves its bake position; irradiance, moments and tiles follow together.
 
 ## Measure
+- No-tile PRL: the tiled bake's PRL with id 59 removed and the section table rewritten, so every other section is byte-identical; the Automated "today" rows and the Manual cross-build row load that file.
 - Frame mean and pixel moves are Rec. 709 luma of the post-tonemap sRGB PNG (0–255), as the spike's `pngstat.py` and `pngdiff.py`; a "move" is |Δluma| > 2. Closet 960×540; hallway Q2 views 1920×1080.
 
 ## Orderings
@@ -79,4 +80,5 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 | O6 | Redirect then evict | Rewrite; cluster evicted; cluster reinstalled | Texel decodes to the rewritten tile |
 | O7 | Clear | Probe with tile; reference cleared | Averaged moments restored; visibility equals today's bit for bit |
 | O8 | Second reader | Tiled probe; SDF open-space skip reads the same texel that frame | Reads a non-negative distance; shadow factor unchanged by the reference |
+| O10 | Level change | Rewrite on the published load; build a second load of the same map, publish it, then reload | Each load's texels decode to its own id 59; no rewrite carries across |
 | O9 | Cap ties | Candidates with equal visibility change straddle the cap | Lower probe index kept; same set on every build |

@@ -214,7 +214,7 @@
 "name" "setpiece_wall"
 "path" "setpiece_wall_closed"
 "speed" "2"
-"wait_ms" "3000"
+"wait_ms" "8000"
 "move_mode" "ping_pong"
 "start_on_spawn" "1"
 "_tags" "dev mover_setpiece setpiece_wall"

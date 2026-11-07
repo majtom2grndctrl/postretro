@@ -39,7 +39,7 @@ TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
 
 | Mover | Brushes | Waypoint 0 | Waypoint 1 | Travel | Speed | `wait_ms` | Mode |
 |---|---|---|---|---|---|---|---|
-| `setpiece_wall` | 8 (4 columns × 2 rows, alternating metal) | `setpiece_wall_closed` (368, 1056, 112) | `setpiece_wall_open` (912, 1056, 112) | +x 544 (13.8 m) | 2 m/s | 3000 | `ping_pong`, `start_on_spawn 1` |
+| `setpiece_wall` | 8 (4 columns × 2 rows, alternating metal) | `setpiece_wall_closed` (368, 1056, 112) | `setpiece_wall_open` (912, 1056, 112) | +x 544 (13.8 m) | 2 m/s | 8000 | `ping_pong`, `start_on_spawn 1` |
 | `setpiece_room` | 8 (floor, roof, 3 walls, doorway wall in 3 pieces) | `setpiece_room_lowered` (992, 320, −96) | `setpiece_room_raised` (992, 320, 80) | +z 176 (4.5 m) | 1 m/s | 6000 | `ping_pong`, `start_on_spawn 1` |
 
 - **Sliding wall.** A 13.8 × 5.7 × 0.8 m slab, authored closed in the opening.
@@ -47,7 +47,7 @@ TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
   a door that seals the opening (`Door recognition: 1 of 2 kinematic movers
   seal a doorway at their closed pose: movers 0`, then `kinematic mover 0
   seals generated portal …` lines). It slides east into the pocket and fills
-  it exactly. One cycle (close, wait, open, wait) takes about 20 s.
+  it exactly. One cycle (close, wait, open, wait) takes about 30 s.
 - **Rising room.** An 8.1 × 8.1 m room, 4 m tall inside, with a 2.4 × 3.3 m
   doorway facing west (−x). It is authored lowered: its roof is flush with the
   arena floor and plugs the hole. It rises until its floor is level with the
@@ -138,7 +138,7 @@ lift routing and one warning). These are manual, in-engine checks.
    stop at the wall and wait there without jitter or foot-shuffling for the rest
    of the closed wait. It must not drift side to side or lurch in repeated
    stuck-recovery nudges. When the wall opens it passes through the opening and
-   comes at you. Give it a full wall cycle (about 20 s).
+   comes at you. Give it a full wall cycle (about 30 s).
 2. **Riders in the rising room.** Walk to station 2 (560, 320, 48), within 16 m
    of both riders, and face east. The room is lowered, so the riders cannot
    reach you: their doorway fronts the shaft wall. Expect them to stand inside

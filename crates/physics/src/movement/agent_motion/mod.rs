@@ -420,7 +420,7 @@ fn ground_outside_mover_hull(
     let Some(mover) = collision
         .movers
         .iter()
-        .find(|mover| mover.mover_id() == mover_id)
+        .find(|mover| mover.mover_id == mover_id)
     else {
         return ground;
     };

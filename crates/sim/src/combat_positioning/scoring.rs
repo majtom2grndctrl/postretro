@@ -8,7 +8,7 @@ use super::{CombatCandidate, CombatQuery, path_length};
 use crate::collision::{
     CapsulePlacement, SKIN_DISTANCE, capsule_static_placement_center, line_of_sight,
 };
-use crate::nav::{NavGraph, distance_xz, find_path};
+use crate::nav::{NavGraph, distance_xz, find_path_gated};
 
 pub(super) fn capsule_placement(nav_graph: &NavGraph) -> Option<CapsulePlacement> {
     let params = nav_graph.agent_params();
@@ -44,6 +44,11 @@ pub(super) fn score_candidate(
     if !dynamic_placement_is_clear(query, placement, position) {
         return None;
     }
+    // Gated routes never gate regions, so only this keeps a slot out of a door.
+    let capsule = crate::collision::CollisionCapsule::new(placement.radius, placement.half_height);
+    if query.mover_nav.overlaps_docked_mover(position, capsule) {
+        return None;
+    }
     // Slot visibility is a positioning heuristic only. The following tick's
     // actual-position fire gate remains authoritative for damage.
     if !line_of_sight(
@@ -53,7 +58,8 @@ pub(super) fn score_candidate(
     ) {
         return None;
     }
-    let path = find_path(query.nav_graph, query.agent_pos, position)?;
+    let gate = query.mover_nav.gate;
+    let path = find_path_gated(query.nav_graph, gate, query.agent_pos, position)?;
     let target_distance = distance_xz(position, query.target_pos);
     if !has_tactically_direct_target_path(query, placement, position, target_distance) {
         return None;
@@ -77,14 +83,18 @@ fn has_tactically_direct_target_path(
     position: Vec3,
     target_distance: f32,
 ) -> bool {
-    let Some(target_path) = find_path(query.nav_graph, position, query.target_pos) else {
+    let gate = query.mover_nav.gate;
+    let Some(target_path) = find_path_gated(query.nav_graph, gate, position, query.target_pos)
+    else {
         // The funnel can conservatively refuse a route when a moving endpoint
         // grazes a clearance disk, even while its regions remain connected.
         // Keep a reachable slot in that narrow case so pursuit keeps moving;
         // a disconnected corral still has no shared component and is rejected.
-        return query
-            .nav_graph
-            .endpoints_are_topologically_connected(position, query.target_pos);
+        return query.nav_graph.endpoints_are_topologically_connected(
+            gate,
+            position,
+            query.target_pos,
+        );
     };
 
     // A local engagement may bend around one clearance disk at a nearby portal

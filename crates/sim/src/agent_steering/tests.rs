@@ -16,7 +16,7 @@ use postretro_entities::Transform;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 use crate::collision::{CollisionWorld, SKIN_DISTANCE};
-use crate::nav::NavAgentParams;
+use crate::nav::{NavAgentParams, find_path};
 
 const EPS: f32 = 1e-3;
 const DT: f32 = 1.0 / 60.0;

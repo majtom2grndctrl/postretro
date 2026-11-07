@@ -2,11 +2,13 @@
 // surface that the pathfinding query (`nav/path.rs`) and steering sit on.
 // See: context/lib/build_pipeline.md §Navigation bake
 
+mod gate;
 mod path;
 // One-shot path query. Re-exported so callers import `crate::nav::find_path`;
 // the primary production caller is the agent steering tick (`agent_steering`),
 // and combat positioning (`combat_positioning`) also queries it.
-pub use path::find_path;
+pub use gate::{MoverNav, NavGate, NavMoverBound, install_mover_records};
+pub use path::{find_path, find_path_gated};
 
 // Bake→runtime funnel contract tests: bake fixture floors with the real
 // `navmesh_bake::bake_navmesh`, then run the real `find_path` over the result.
@@ -92,6 +94,20 @@ pub struct NavGraph {
     gates: Vec<NavMoverGate>,
     /// Baked mover links, unvalidated like `gates`.
     links: Vec<NavMoverLink>,
+    /// `portal_gates[i]` = the (mover, waypoint) docks that close portal `i`.
+    portal_gates: Vec<Vec<(u32, u32)>>,
+}
+
+/// Per-portal dock lists from the gate table. Out-of-range records wait for
+/// [`NavGraph::validate_mover_records`] to name and drop them.
+fn portal_gates(gates: &[NavMoverGate], portal_count: usize) -> Vec<Vec<(u32, u32)>> {
+    let mut by_portal = vec![Vec::new(); portal_count];
+    for gate in gates {
+        if let Some(list) = by_portal.get_mut(gate.portal as usize) {
+            list.push((gate.mover_id, gate.waypoint));
+        }
+    }
+    by_portal
 }
 
 impl NavGraph {
@@ -182,6 +198,7 @@ impl NavGraph {
             region_components,
             gates: section.gates.clone(),
             links: section.links.clone(),
+            portal_gates: portal_gates(&section.gates, section.portals.len()),
         }
     }
 
@@ -252,6 +269,65 @@ impl NavGraph {
     /// version 2 section.
     pub fn gates(&self) -> &[NavMoverGate] {
         &self.gates
+    }
+
+    /// The (mover, waypoint) docks that close `portal_index`.
+    pub(crate) fn portal_gates(&self, portal_index: usize) -> &[(u32, u32)] {
+        self.portal_gates
+            .get(portal_index)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Every mover a surviving record names, sorted.
+    pub(crate) fn record_mover_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .gates
+            .iter()
+            .map(|gate| gate.mover_id)
+            .chain(self.links.iter().map(|link| link.mover_id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// Drop every record naming a mover, waypoint, portal or region this level
+    /// lacks, with one warning each, so the rest of navigation still works.
+    pub fn validate_mover_records(&mut self, movers: &[NavMoverBound]) {
+        let waypoint_exists = |mover_id: u32, waypoint: u32| {
+            movers
+                .iter()
+                .any(|mover| mover.mover_id == mover_id && waypoint < mover.waypoint_count)
+        };
+        let portal_count = self.portals.len();
+        self.gates.retain(|gate| {
+            let valid = waypoint_exists(gate.mover_id, gate.waypoint)
+                && (gate.portal as usize) < portal_count;
+            if !valid {
+                log::warn!(
+                    "[Nav] dropped mover gate: mover {} waypoint {} portal {} is not in this level",
+                    gate.mover_id,
+                    gate.waypoint,
+                    gate.portal
+                );
+            }
+            valid
+        });
+        let region_count = self.regions.len();
+        self.links.retain(|link| {
+            let valid = waypoint_exists(link.mover_id, link.waypoint)
+                && (link.region as usize) < region_count;
+            if !valid {
+                log::warn!(
+                    "[Nav] dropped mover link: mover {} waypoint {} region {} is not in this level",
+                    link.mover_id,
+                    link.waypoint,
+                    link.region
+                );
+            }
+            valid
+        });
+        self.portal_gates = portal_gates(&self.gates, portal_count);
     }
 
     /// Baked mover links, in section order. Empty for a map with no movers or a
@@ -366,14 +442,51 @@ impl NavGraph {
     /// region component. This is deliberately weaker than [`find_path`]: it
     /// distinguishes a genuinely disconnected destination from a transient
     /// funnel-clearance refusal without rerunning a graph search.
-    pub(crate) fn endpoints_are_topologically_connected(&self, start: Vec3, goal: Vec3) -> bool {
+    pub(crate) fn endpoints_are_topologically_connected(
+        &self,
+        gate: NavGate<'_>,
+        start: Vec3,
+        goal: Vec3,
+    ) -> bool {
         let Some(start_region) = self.resolve_region_at(start) else {
             return false;
         };
         let Some(goal_region) = self.resolve_region_at(goal) else {
             return false;
         };
+        // Components ignore gates, so they are a superset of what connects now.
         self.region_components.get(start_region) == self.region_components.get(goal_region)
+            && (self.gates.is_empty()
+                || self.connected_through_open_portals(gate, start_region, goal_region))
+    }
+
+    /// Flood from `start` across portals open now. Off the per-tick path: only
+    /// a refused funnel near a gated level reaches it.
+    fn connected_through_open_portals(&self, gate: NavGate<'_>, start: usize, goal: usize) -> bool {
+        let mut seen = vec![false; self.regions.len()];
+        let mut frontier = vec![start];
+        seen[start] = true;
+        while let Some(region) = frontier.pop() {
+            if region == goal {
+                return true;
+            }
+            for &portal_index in self.region_portal_indices(region) {
+                if gate.portal_closed(self, portal_index) {
+                    continue;
+                }
+                let portal = &self.portals[portal_index];
+                let next = if portal.region_a as usize == region {
+                    portal.region_b as usize
+                } else {
+                    portal.region_a as usize
+                };
+                if !seen[next] {
+                    seen[next] = true;
+                    frontier.push(next);
+                }
+            }
+        }
+        false
     }
 
     /// Iterate the portals touching `region_index` (the per-region adjacency
@@ -612,6 +725,7 @@ mod tests {
     fn endpoints_topological_connectivity_distinguishes_portal_components() {
         let connected = NavGraph::from_section(&stacked_region_section());
         assert!(connected.endpoints_are_topologically_connected(
+            NavGate::OPEN,
             Vec3::new(2.0, 0.0, 1.0),
             Vec3::new(2.0, 0.0, 5.0),
         ));
@@ -620,10 +734,12 @@ mod tests {
         disconnected_section.portals.clear();
         let disconnected = NavGraph::from_section(&disconnected_section);
         assert!(!disconnected.endpoints_are_topologically_connected(
+            NavGate::OPEN,
             Vec3::new(2.0, 0.0, 1.0),
             Vec3::new(2.0, 0.0, 5.0),
         ));
         assert!(!connected.endpoints_are_topologically_connected(
+            NavGate::OPEN,
             Vec3::new(100.0, 0.0, 100.0),
             Vec3::new(2.0, 0.0, 5.0),
         ));

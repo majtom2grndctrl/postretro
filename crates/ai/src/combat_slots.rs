@@ -20,6 +20,7 @@ pub(super) const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
 pub(super) fn resolve_combat_slots(
     outcomes: &mut [EnemyOutcome],
     nav_graph: Option<&NavGraph>,
+    mover_nav: crate::nav::MoverNav<'_>,
     collision_world: Option<&CollisionWorld>,
 ) {
     for outcome in outcomes.iter_mut() {
@@ -73,6 +74,7 @@ pub(super) fn resolve_combat_slots(
             scan_challengers: retained_slot.is_none(),
             other_agents: &other_agents,
             nav_graph,
+            mover_nav,
             collision_world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
         });

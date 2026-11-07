@@ -140,6 +140,20 @@ pub struct AgentComponent {
     /// path steering and any motion verb.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_escape: Option<PinEscape>,
+    /// Portal indices `path` crosses, in order. Lets a gate change find the
+    /// agents it affects without re-resolving their paths. Empty for a path
+    /// with no portals, and for a manual path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_portals: Vec<u32>,
+    /// The gate generation this agent last answered. Behind the live one while
+    /// a gate change still owes it a replan, so any number of flips before
+    /// admission cost one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gate_generation: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl AgentComponent {
@@ -163,6 +177,8 @@ impl AgentComponent {
             unstick_window_remaining: 0,
             ground: GroundRef::Airborne,
             pin_escape: None,
+            path_portals: Vec::new(),
+            gate_generation: 0,
             path: Vec::new(),
             mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,

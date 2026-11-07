@@ -122,7 +122,7 @@ pub(super) fn displace_out_of_hull(
     let mover = collision
         .movers
         .iter()
-        .find(|mover| mover.mover_id() == touching.mover_id)?;
+        .find(|mover| mover.mover_id == touching.mover_id)?;
     if !point_inside_mover(std::slice::from_ref(mover), collision.poses, position) {
         return None;
     }
@@ -144,7 +144,7 @@ pub(super) fn embedded_in_mover(
     collision
         .movers
         .iter()
-        .find(|mover| mover.mover_id() == mover_id)
+        .find(|mover| mover.mover_id == mover_id)
         .is_some_and(|mover| {
             deepest_mover_penetration(
                 std::slice::from_ref(mover),

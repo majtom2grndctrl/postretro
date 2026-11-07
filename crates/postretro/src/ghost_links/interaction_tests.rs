@@ -348,6 +348,7 @@ fn acquired_after_ticks(registry: &mut EntityRegistry, enemy: EntityId) -> Optio
             &mut runtime,
             1.0 / 60.0,
             AiTickInputs {
+                mover_nav: postretro_sim::nav::MoverNav::none(),
                 nav_graph: None,
                 collision_world: None,
                 descriptors: &[],

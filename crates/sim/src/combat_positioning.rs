@@ -50,6 +50,7 @@ pub struct CombatQuery<'a> {
     pub scan_challengers: bool,
     pub other_agents: &'a [CombatAgentSnapshot],
     pub nav_graph: &'a NavGraph,
+    pub mover_nav: crate::nav::MoverNav<'a>,
     pub collision_world: &'a CollisionWorld,
     pub path_length_score_weight: f32,
 }
@@ -490,6 +491,7 @@ mod tests {
             scan_challengers: true,
             other_agents: &[],
             nav_graph,
+            mover_nav: crate::nav::MoverNav::none(),
             collision_world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
         }
@@ -515,6 +517,7 @@ mod tests {
             scan_challengers: true,
             other_agents,
             nav_graph,
+            mover_nav: crate::nav::MoverNav::none(),
             collision_world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
         }
@@ -589,6 +592,7 @@ mod tests {
             scan_challengers: true,
             other_agents: &[],
             nav_graph: &nav_graph,
+            mover_nav: crate::nav::MoverNav::none(),
             collision_world: &world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
         });

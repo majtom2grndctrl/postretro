@@ -51,7 +51,7 @@ use super::targeting::{
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
 use crate::agent_steering;
-use crate::nav::find_path;
+use crate::nav::find_path_gated;
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_foundation::{ActionVerb, BRAIN_NO_TARGET_DISTANCE, MotionVerb};
 
@@ -66,6 +66,7 @@ pub(super) fn evaluate(
     tick_dt: f32,
     dt_ms: f32,
     nav_graph: Option<&crate::nav::NavGraph>,
+    gate: crate::nav::NavGate<'_>,
     collision_world: Option<&crate::collision::CollisionWorld>,
     factions: &LiveFactionSentiment<'_>,
 ) -> Vec<super::EnemyOutcome> {
@@ -310,7 +311,8 @@ pub(super) fn evaluate(
                 false
             }
             (Some(target), Some(graph)) if evaluate_acquisition => {
-                let reachable = find_path(graph, snap.position, target.position).is_some();
+                let reachable =
+                    find_path_gated(graph, gate, snap.position, target.position).is_some();
                 brain.target_reachable = reachable;
                 reachable
             }

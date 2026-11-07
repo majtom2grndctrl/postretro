@@ -16,11 +16,12 @@ use glam::Vec3;
 
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::kinematic_mover::AgentMoverPair;
+#[cfg(any(test, feature = "test-support"))]
 use crate::movement::MovementCollisionSource;
 use crate::movement::agent_motion::{
     AgentCapsule, carried_by_mover, collide_and_slide, escape_slide,
 };
-use crate::nav::{NavGraph, distance_xz, find_path};
+use crate::nav::{NavGate, NavGraph, distance_xz, find_path_gated};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
@@ -270,6 +271,7 @@ pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     updated.destination = None;
     updated.planned_destination = None;
     updated.path.clear();
+    updated.path_portals.clear();
     updated.mandatory_waypoints.clear();
     updated.waypoint_cursor = 0;
     updated.steer_velocity = Vec3::ZERO;
@@ -373,14 +375,20 @@ pub(crate) fn tick_with_mover_pins(
     )
 }
 
-/// The agents movers yielded to since the last blocking pass.
+/// What steering hears from the tick's movers.
 #[derive(Clone, Copy)]
 pub(crate) struct MoverPins<'a> {
+    /// The agents movers yielded to since the last blocking pass.
     pub(crate) yields: &'a [AgentMoverPair],
+    pub(crate) gate: NavGate<'a>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl MoverPins<'_> {
-    const NONE: MoverPins<'static> = MoverPins { yields: &[] };
+    const NONE: MoverPins<'static> = MoverPins {
+        yields: &[],
+        gate: NavGate::OPEN,
+    };
 }
 
 fn tick_impl(
@@ -432,7 +440,8 @@ fn tick_impl(
     // will, so the two passes agree on each agent's drift/staleness verdict.
     // Admitted ids are collected in slot order; total admissions stay ≤
     // REPLAN_BUDGET_PER_TICK.
-    let admitted = admit_replans(registry, &snapshot, nav_graph);
+    let gate = pins.gate;
+    let admitted = admit_replans(registry, &snapshot, nav_graph, gate);
 
     let mut replans = 0u32;
 
@@ -467,6 +476,10 @@ fn tick_impl(
 
         // Tick down the staleness cooldown regardless of what happens below.
         agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(1);
+        // A gate change this agent's route never touched is settled at once.
+        if !gate_change_owes_replan(&agent, nav_graph, gate) {
+            agent.gate_generation = gate.generation();
+        }
 
         if let Some((mover_id, walk)) =
             pin_escape::escape_velocity(current.id, &mut agent, position, corpse_yields)
@@ -561,8 +574,11 @@ fn tick_impl(
             replans += 1;
             agent.replan_cooldown_ticks = REPLAN_STALENESS_TICKS;
             agent.planned_destination = Some(destination);
-            match nav_graph.and_then(|graph| find_path(graph, position, destination)) {
+            agent.gate_generation = gate.generation();
+            match nav_graph.and_then(|graph| find_path_gated(graph, gate, position, destination)) {
                 Some(path) => {
+                    agent.path_portals.clear();
+                    agent.path_portals.extend_from_slice(path.portals());
                     (agent.path, agent.mandatory_waypoints) = path.into_parts();
                     agent.waypoint_cursor = 0;
                     agent.arrived = false;
@@ -583,8 +599,11 @@ fn tick_impl(
                     // obsolete cursor/steering state and report the live
                     // destination as blocked rather than retaining a false
                     // arrived/has-path result.
-                    if agent.arrived {
+                    //
+                    // A kept path through a closed door is no route at all.
+                    if agent.arrived || path_crosses_closed_gate(&agent, nav_graph, gate) {
                         agent.path.clear();
+                        agent.path_portals.clear();
                         agent.mandatory_waypoints.clear();
                         agent.waypoint_cursor = 0;
                         agent.arrived = false;
@@ -755,10 +774,12 @@ fn admit_replans(
     registry: &EntityRegistry,
     snapshot: &[AgentSnapshot],
     nav_graph: Option<&NavGraph>,
+    gate: NavGate<'_>,
 ) -> Vec<EntityId> {
     // Classify each snapshot agent once: drift-driven, staleness-only, or not
     // wanting a replan at all. The cooldown is decremented exactly as the apply
     // loop will, so both passes see the same verdict.
+    let mut gate_driven: Vec<EntityId> = Vec::new();
     let mut drift_driven: Vec<EntityId> = Vec::new();
     let mut staleness_only: Vec<EntityId> = Vec::new();
 
@@ -787,7 +808,9 @@ fn admit_replans(
         // (or 0) this tick reaches 0 after the decrement and counts as stale.
         let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(1) == 0;
 
-        if drifted {
+        if gate_change_owes_replan(agent, nav_graph, gate) {
+            gate_driven.push(current.id);
+        } else if drifted {
             drift_driven.push(current.id);
         } else if cooldown_elapsed {
             staleness_only.push(current.id);
@@ -797,11 +820,39 @@ fn admit_replans(
     // First pass: drift-driven, up to the budget. Second pass: staleness-only,
     // with the remaining budget. Slot order is preserved within each pass.
     let budget = REPLAN_BUDGET_PER_TICK as usize;
-    let mut admitted = drift_driven;
+    let mut admitted = gate_driven;
     admitted.truncate(budget);
+    let remaining = budget - admitted.len();
+    admitted.extend(drift_driven.into_iter().take(remaining));
     let remaining = budget - admitted.len();
     admitted.extend(staleness_only.into_iter().take(remaining));
     admitted
+}
+
+/// Whether the live gate generation owes `agent` a replan it has not had: its
+/// route crosses a gate now closed, or it is latched `blocked` and a gate or
+/// link may have opened. Costs nothing while the generation stands.
+fn gate_change_owes_replan(
+    agent: &AgentComponent,
+    nav_graph: Option<&NavGraph>,
+    gate: NavGate<'_>,
+) -> bool {
+    agent.gate_generation != gate.generation()
+        && agent.destination.is_some()
+        && (agent.blocked || path_crosses_closed_gate(agent, nav_graph, gate))
+}
+
+fn path_crosses_closed_gate(
+    agent: &AgentComponent,
+    nav_graph: Option<&NavGraph>,
+    gate: NavGate<'_>,
+) -> bool {
+    nav_graph.is_some_and(|graph| {
+        agent
+            .path_portals
+            .iter()
+            .any(|&portal| gate.portal_closed(graph, portal as usize))
+    })
 }
 
 fn destination_topology_changed(
@@ -1255,6 +1306,8 @@ mod tests;
 
 #[cfg(test)]
 mod environment_tests;
+#[cfg(test)]
+mod gate_tests;
 #[cfg(test)]
 mod mover_contact_tests;
 

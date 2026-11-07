@@ -16,6 +16,7 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 mod auto_close;
 mod blocking;
 mod command;
+mod dock;
 mod pin;
 mod pin_escape;
 #[cfg(test)]
@@ -26,6 +27,7 @@ mod pin_tests;
 pub use auto_close::MoverAutoCloseTimers;
 pub use blocking::{AgentMoverPair, MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
 pub use command::apply_mover_command;
+pub use dock::{MoverDockTable, mover_docked_waypoint, mover_moves_on_its_own};
 pub use pin::run_mover_pin_pretest;
 pub use pin_escape::find_mover_clear_point;
 
@@ -54,6 +56,7 @@ pub struct MoverTickStateTable {
     endpoint_arrivals: Vec<(u32, MoverEndpointArrivals)>,
     blocking_state: MoverBlockingState,
     mover_entities: Vec<EntityId>,
+    docks: MoverDockTable,
 }
 
 impl MoverTickStateTable {
@@ -63,6 +66,17 @@ impl MoverTickStateTable {
         self.endpoint_arrivals.clear();
         self.blocking_state.clear();
         self.mover_entities.clear();
+        self.docks.clear();
+    }
+
+    /// Dock state of the movers navigation records name.
+    pub fn docks(&self) -> &MoverDockTable {
+        &self.docks
+    }
+
+    /// Track these movers' docks from the next mover tick on.
+    pub fn watch_mover_docks(&mut self, mover_ids: &[u32]) {
+        self.docks.watch(mover_ids);
     }
 
     fn begin_tick(&mut self) {
@@ -205,6 +219,7 @@ pub fn run_kinematic_mover_tick(
             };
             let (pose, endpoint_arrivals, translation_legs) =
                 advance_mover_phase_one_tick_with_arrivals(mover, &mut transform, tick_dt);
+            side_table.docks.update(mover);
             (
                 mover.mover_id,
                 mover.carry_yaw,

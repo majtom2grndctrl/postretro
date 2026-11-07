@@ -947,6 +947,11 @@ where
             tick_dt,
             AiTickInputs {
                 nav_graph,
+                mover_nav: crate::nav::MoverNav {
+                    gate: crate::nav::NavGate::new(mover_tick_states.docks()),
+                    movers: mover_colliders,
+                    poses: &*mover_tick_states,
+                },
                 collision_world: Some(collision_world),
                 descriptors,
                 descriptor_generation,
@@ -986,6 +991,7 @@ where
             nav_graph,
             agent_steering::MoverPins {
                 yields: mover_tick_states.agent_yields(),
+                gate: crate::nav::NavGate::new(mover_tick_states.docks()),
             },
             &mut corpse_yields,
             environment,

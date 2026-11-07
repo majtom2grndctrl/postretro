@@ -11,7 +11,7 @@ use postretro_level_format::navmesh::NavPortal;
 
 use crate::collision::SKIN_DISTANCE;
 
-use super::{NavGraph, distance_xz};
+use super::{NavGate, NavGraph, distance_xz};
 
 mod clearance;
 
@@ -24,6 +24,8 @@ mod clearance;
 pub struct NavPath {
     points: Vec<Vec3>,
     mandatory_waypoints: Vec<bool>,
+    /// The portals the corridor crosses, in order.
+    portals: Vec<u32>,
 }
 
 impl NavPath {
@@ -31,7 +33,12 @@ impl NavPath {
         Self {
             points: vec![start, goal],
             mandatory_waypoints: vec![false, false],
+            portals: Vec::new(),
         }
+    }
+
+    pub(crate) fn portals(&self) -> &[u32] {
+        &self.portals
     }
 
     /// Split into the parallel `(points, mandatory_waypoints)` vectors. The two
@@ -81,6 +88,17 @@ impl Deref for NavPath {
 /// waypoints are `start`/`goal` (or their disk-boundary standoffs); a goal in the
 /// start region is a trivial two-point `[start, goal]`.
 pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
+    find_path_gated(graph, NavGate::OPEN, start, goal)
+}
+
+/// [`find_path`] refusing every portal `gate` holds closed. Regions are never
+/// gated, so an agent beside a closed door plans out on its own side.
+pub fn find_path_gated(
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    start: Vec3,
+    goal: Vec3,
+) -> Option<NavPath> {
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
     // false, silently collapsing the result to a straight `[start, goal]` line
     // that may cross solid geometry. Reject it rather than emit a path through a
@@ -101,7 +119,7 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
         return Some(NavPath::direct(start, goal));
     }
 
-    let corridor = astar_corridor(graph, start, goal, start_region, goal_region)?;
+    let corridor = astar_corridor(graph, gate, start, goal, start_region, goal_region)?;
     let portals = oriented_portals(graph, &corridor);
     // The start/goal guard above does not cover the corridor's own geometry: a
     // corrupt baked portal endpoint (NaN/inf) makes the funnel's area tests false
@@ -123,7 +141,10 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
     let corner_clearance_radius = graph.agent.radius.max(0.0) + SKIN_DISTANCE;
     let gates = inset_portals(&portals, corner_clearance_radius)?;
     let pulled_path = funnel(start, goal, &gates);
-    clearance::ensure_endpoint_clearance(&pulled_path, &gates, corner_clearance_radius)
+    let mut path =
+        clearance::ensure_endpoint_clearance(&pulled_path, &gates, corner_clearance_radius)?;
+    path.portals = corridor.iter().map(|hop| hop.portal_index as u32).collect();
+    Some(path)
 }
 
 /// One hop of the region corridor: which portal A* crossed and which direction
@@ -186,6 +207,7 @@ impl Ord for Frontier {
 /// disconnected.
 fn astar_corridor(
     graph: &NavGraph,
+    gate: NavGate<'_>,
     start: Vec3,
     goal: Vec3,
     start_region: usize,
@@ -232,6 +254,9 @@ fn astar_corridor(
 
     // Seed: cross each portal of the start region, costed from the true start.
     for &portal_index in graph.region_portal_indices(start_region) {
+        if gate.portal_closed(graph, portal_index) {
+            continue;
+        }
         let Some(node) = directed_leaving(portal_index, start_region) else {
             continue;
         };
@@ -255,6 +280,9 @@ fn astar_corridor(
         for &portal_index in graph.region_portal_indices(region) {
             if portal_index == node / 2 {
                 continue; // don't immediately re-cross the portal just crossed
+            }
+            if gate.portal_closed(graph, portal_index) {
+                continue;
             }
             let Some(next) = directed_leaving(portal_index, region) else {
                 continue;

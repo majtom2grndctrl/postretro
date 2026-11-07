@@ -216,6 +216,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
     let mut callback = |_: &mut postretro_entities::EntityRegistry| {};
     let mut host = SimAiHost::new(&mut callback);
     let inputs = || AiTickInputs {
+        mover_nav: postretro_sim::nav::MoverNav::none(),
         nav_graph: None,
         collision_world: None,
         descriptors: &[],

@@ -175,7 +175,6 @@ impl MoverCollider {
         self.local_radius
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn mover_id(&self) -> u32 {
         self.mover_id
     }
@@ -481,6 +480,18 @@ fn deepest_mover_penetration_with<const BROAD_PHASE: bool>(
 /// on a surface is undefined, so callers ask only after contact came back clear.
 /// Movers whose bounding sphere cannot reach the point are skipped;
 /// allocation-free.
+/// Whether a capsule at `position` overlaps `mover` as posed, or sits inside it.
+pub fn capsule_overlaps_mover(
+    mover: &MoverCollider,
+    poses: &(impl MoverPoseSource + ?Sized),
+    position: Vec3,
+    capsule: CollisionCapsule,
+) -> bool {
+    let mover = std::slice::from_ref(mover);
+    deepest_mover_penetration(mover, poses, position, &capsule.parry()).is_some()
+        || point_inside_mover(mover, poses, position)
+}
+
 pub(crate) fn point_inside_mover(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),

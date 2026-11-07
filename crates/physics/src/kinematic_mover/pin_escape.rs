@@ -51,7 +51,7 @@ pub fn find_mover_clear_point(
     let collider = collision
         .movers
         .iter()
-        .find(|collider| collider.mover_id() == mover_id)?;
+        .find(|collider| collider.mover_id == mover_id)?;
     let (mover, transform) = mover_by_id(registry, mover_id)?;
     let course = MoverCourse {
         mover,

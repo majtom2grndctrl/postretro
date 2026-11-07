@@ -57,27 +57,38 @@ TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
   rests on the shaft floor and fronts no open space. Its lowered roof still
   covers the portals between the arena and the shaft, so the compiler logs
   `kinematic mover 1 seals generated portal …` for them.
-- **Carried light.** `light_dynamic` `setpiece_room_lamp` (warm, falloff 320)
-  has `carrier setpiece_room`. It is authored at (992, 320, −56), near the
-  lowered room's ceiling, and rides with the room.
+- **Carried lights.** Two dynamic lights have `carrier setpiece_room` and ride
+  with the room. Both are authored at the lowered pose. `light_dynamic`
+  `setpiece_room_lamp` (warm, intensity 75, falloff 640) is at (992, 320, −56),
+  near the lowered room's ceiling. `light_dynamic_spot`
+  `setpiece_room_corner_spot` (warm, intensity 150, cone 20/40, falloff
+  600) is at (900, 220, −40), aimed at the north-east inside corner. A carried
+  spot keeps its authored direction; only its position follows the room.
 
 ## Lights
 
-Six baked lights and one carried dynamic light. Every baked falloff crosses the
-wall or the room. More than four baked lights reach some large faces, such as
-the single ceiling brush. On those faces the lowest-ranked lights lose their
-shadowmask specular channel, and the compiler warns once per light and face.
-Those faces show no static highlight from the losing lights. Diffuse lighting
-is unaffected.
+Five baked point lights, five baked spots and two carried dynamic lights. Point lights
+are dim (intensity 75) with wide falloff (double the earlier values); the spots
+add contrast and angle. Every baked falloff crosses the wall or the room. More
+than four baked lights reach some large faces, such as the single ceiling brush.
+On those faces the lowest-ranked lights lose their shadowmask specular channel,
+and the compiler warns once per light and face. Those faces show no static
+highlight from the losing lights. Diffuse lighting is unaffected.
 
-| Light | Origin | Falloff | Reaches |
-|---|---|---|---|
-| `light` | (256, 256, 256) | 900 | West arena, south face of the wall |
-| `light` | (640, 320, 192) | 900 | West face and doorway of the risen room; the wall |
-| `light` | (992, 320, 288) | 640 | The roof over the hole, the room's roof and walls |
-| `light_spot` (cone 30/50, pitch −21, yaw 90) | (368, 560, 288) | 1100 | Aimed at the wall's south face; through the opening into the back room |
-| `light` | (240, 1376, 256) | 900 | North face of the wall, the enemy spot, the arena through the opening |
-| `light` | (1000, 1376, 256) | 900 | Back room east, the pocket end, the arena through the opening |
+| Light | Origin | Intensity | Falloff | Reaches |
+|---|---|---|---|---|
+| `light` | (256, 256, 256) | 75 | 1800 | West arena, south face of the wall |
+| `light` | (640, 320, 192) | 75 | 1800 | West face and doorway of the risen room; the wall |
+| `light` | (992, 320, 288) | 75 | 1280 | The roof over the hole, the room's roof and walls |
+| `light_spot` (cone 30/50, pitch −21, yaw 90) | (368, 560, 288) | 400 | 1100 | Aimed at the wall's south face; through the opening into the back room |
+| `light` | (240, 1376, 256) | 75 | 1800 | North face of the wall, the enemy spot, the arena through the opening |
+| `light` | (1000, 1376, 256) | 75 | 1800 | Back room east, the pocket end, the arena through the opening |
+| `light_spot` (cone 20/40, angles −23 19 0) | (60, 900, 250) | 250 | 1000 | Rakes across the wall's south face from the west |
+| `light_spot` (cone 12/28, angles −44 319 0) | (150, 1420, 290) | 300 | 650 | A tight pool on the enemy plinth |
+| `light_spot` (cone 14/32, angles −59 319 0) | (560, 760, 305) | 300 | 700 | A cool shaft landing in the arena, off the station 1 sightline |
+| `light_spot` (cone 18/38, angles −28 44 0) | (560, 60, 300) | 200 | 700 | Rakes across the rising room's doorway wall |
+| `light_dynamic` `setpiece_room_lamp` (carried) | (992, 320, −56) | 75 | 640 | Inside the room, at every height |
+| `light_dynamic_spot` `setpiece_room_corner_spot` (carried, cone 20/40, angles −22 46 0) | (900, 220, −40) | 150 | 600 | The room's north-east inside corner |
 
 ## Stations
 

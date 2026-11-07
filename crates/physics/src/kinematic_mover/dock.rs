@@ -504,7 +504,7 @@ mod tests {
             mover(NO_WAIT, path(), KinematicMoverMode::PingPong, 0.0),
             mover(SHORT_WAIT, path(), KinematicMoverMode::PingPong, 30.0),
         ];
-        assert!(30.0 < RESTING_WAIT_MS, "the short wait is under two ticks");
+        const { assert!(30.0 < RESTING_WAIT_MS, "the short wait is under two ticks") };
         let mut docks = MoverDockTable::default();
         let linked = [ONCE, WAITS, NO_WAIT, SHORT_WAIT, NEVER_TICKED].map(|mover_id| (mover_id, 1));
         docks.watch(&[], &linked);

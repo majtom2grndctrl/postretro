@@ -59,7 +59,7 @@ TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
   `kinematic mover 1 seals generated portal …` for them.
 - **Carried lights.** Two dynamic lights have `carrier setpiece_room` and ride
   with the room. Both are authored at the lowered pose. `light_dynamic`
-  `setpiece_room_lamp` (warm, intensity 75, falloff 640) is at (992, 320, −56),
+  `setpiece_room_lamp` (warm, intensity 10, falloff 4) is at (992, 320, −56),
   near the lowered room's ceiling. `light_dynamic_spot`
   `setpiece_room_corner_spot` (warm, intensity 150, cone 20/40, falloff
   600) is at (900, 220, −40), aimed at the north-east inside corner. A carried
@@ -87,7 +87,7 @@ highlight from the losing lights. Diffuse lighting is unaffected.
 | `light_spot` (cone 12/28, angles −44 319 0) | (150, 1420, 290) | 300 | 650 | A tight pool on the enemy plinth |
 | `light_spot` (cone 14/32, angles −59 319 0) | (560, 760, 305) | 300 | 700 | A cool shaft landing in the arena, off the station 1 sightline |
 | `light_spot` (cone 18/38, angles −28 44 0) | (560, 60, 300) | 200 | 700 | Rakes across the rising room's doorway wall |
-| `light_dynamic` `setpiece_room_lamp` (carried) | (992, 320, −56) | 75 | 640 | Inside the room, at every height |
+| `light_dynamic` `setpiece_room_lamp` (carried) | (992, 320, −56) | 10 | 4 | A faint glow at the lamp, at every height |
 | `light_dynamic_spot` `setpiece_room_corner_spot` (carried, cone 20/40, angles −22 46 0) | (900, 220, −40) | 150 | 600 | The room's north-east inside corner |
 
 ## Stations

@@ -17,6 +17,7 @@ mod auto_close;
 mod blocking;
 mod command;
 mod pin;
+mod pin_escape;
 #[cfg(test)]
 mod pin_test_fixtures;
 #[cfg(test)]
@@ -26,6 +27,7 @@ pub use auto_close::MoverAutoCloseTimers;
 pub use blocking::{AgentMoverPair, MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
 pub use command::apply_mover_command;
 pub use pin::run_mover_pin_pretest;
+pub use pin_escape::find_mover_clear_point;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoverTickState {

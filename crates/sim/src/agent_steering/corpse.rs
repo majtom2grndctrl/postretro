@@ -55,6 +55,7 @@ fn move_corpse(
     agent.steer_velocity = Vec3::ZERO;
     agent.stuck_ticks = 0;
     agent.unstick_window_remaining = 0;
+    agent.pin_escape = None;
     let result = settle_corpse(
         collision,
         &capsule,

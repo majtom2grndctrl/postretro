@@ -8,9 +8,9 @@ use parry3d::shape::Capsule;
 use crate::collision::moving::{
     CollisionSource, CombinedCastHit, CombinedCollisionWorld, MoverPenetration,
     deepest_mover_penetration, deepest_mover_push_penetration,
-    deepest_mover_push_penetration_excluding_swept,
+    deepest_mover_push_penetration_excluding_swept, point_inside_mover,
 };
-use crate::collision::{CollisionWorld, cast_capsule_parry};
+use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule_parry};
 use postretro_foundation::GroundRef;
 
 pub(super) fn ground_ref_from_hit(hit: CombinedCastHit) -> GroundRef {
@@ -101,6 +101,59 @@ pub(super) fn displace_from_movers(
         candidate = recovered;
     }
     candidate
+}
+
+/// A body whose centre lies inside a mover's hull: `Some` with where it ends up,
+/// `None` for any other body. Contact reads the nearest face from inside, so its
+/// normal points deeper in; left to [`displace_from_movers`] a trailing face
+/// would drag the body along inside the hull. This pushes it out through that
+/// face instead, or leaves it in place when static geometry blocks the way. A
+/// body touching no face stays until the mover moves off it.
+pub(super) fn displace_out_of_hull(
+    previous_ground: GroundRef,
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &Capsule,
+    position: Vec3,
+) -> Option<Vec3> {
+    let touching = deepest_mover_penetration(collision.movers, collision.poses, position, capsule)?;
+    if previous_ground == GroundRef::Mover(touching.mover_id) {
+        return None;
+    }
+    let mover = collision
+        .movers
+        .iter()
+        .find(|mover| mover.mover_id() == touching.mover_id)?;
+    if !point_inside_mover(std::slice::from_ref(mover), collision.poses, position) {
+        return None;
+    }
+    let exit = MoverPenetration {
+        mover_id: touching.mover_id,
+        normal: -touching.normal,
+        depth: 2.0 * capsule.radius - touching.depth + SKIN_DISTANCE,
+    };
+    Some(unblocked_mover_displacement(position, exit, collision, capsule).unwrap_or(position))
+}
+
+/// Whether a capsule at `position` overlaps `mover_id` as it stands.
+pub(super) fn embedded_in_mover(
+    collision: &CombinedCollisionWorld<'_>,
+    mover_id: u32,
+    capsule: &Capsule,
+    position: Vec3,
+) -> bool {
+    collision
+        .movers
+        .iter()
+        .find(|mover| mover.mover_id() == mover_id)
+        .is_some_and(|mover| {
+            deepest_mover_penetration(
+                std::slice::from_ref(mover),
+                collision.poses,
+                position,
+                capsule,
+            )
+            .is_some()
+        })
 }
 
 fn unblocked_mover_displacement(

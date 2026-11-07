@@ -369,11 +369,18 @@ fn command_between_two_simulate_ticks_is_pin_tested_before_the_mover_tick() {
 fn a_door_pinning_a_living_agent_holds_and_steering_can_read_the_yield() {
     let mut rig = Rig::agent_at_jamb(BlockPolicy::Displace);
     rig.close_until_held();
-    for _ in 0..30 {
-        rig.tick();
-        assert_eq!(rig.movers.agent_yields(), &[(rig.rider, LIFT)]);
-    }
-    assert!(rig.lift().0.blocked, "the hold lasts as long as the pin");
+    assert_eq!(rig.movers.agent_yields(), &[(rig.rider, LIFT)]);
+    rig.tick();
+    assert!(rig.lift().0.blocked, "the door holds while the agent walks");
+    assert!(
+        rig.registry
+            .borrow()
+            .get_component::<AgentComponent>(rig.rider)
+            .unwrap()
+            .pin_escape
+            .is_some(),
+        "steering read the yield"
+    );
     assert_eq!(
         rig.registry
             .borrow()
@@ -432,4 +439,248 @@ fn a_door_closes_through_a_corpse_or_an_agent_with_a_queued_despawn() {
             assert!(rig.lift().0.completed, "{policy:?}: the door closed");
         }
     }
+}
+
+// --- Stepping clear --------------------------------------------------------------
+
+impl Rig {
+    fn door_position(&self) -> Vec3 {
+        self.lift().1
+    }
+
+    fn agent_position(&self) -> Vec3 {
+        self.registry
+            .borrow()
+            .get_component::<Transform>(self.rider)
+            .unwrap()
+            .position
+    }
+
+    fn agent_health(&self) -> f32 {
+        self.registry
+            .borrow()
+            .get_component::<HealthComponent>(self.rider)
+            .unwrap()
+            .current
+    }
+
+    fn with_agent(&mut self, change: impl FnOnce(&mut AgentComponent)) {
+        let mut registry = self.registry.borrow_mut();
+        let mut agent = registry
+            .get_component::<AgentComponent>(self.rider)
+            .unwrap()
+            .clone();
+        change(&mut agent);
+        registry.set_component(self.rider, agent).unwrap();
+    }
+
+    /// Tick until the door docks at x = -1, for at most `ticks`. Returns how
+    /// long it took.
+    fn ticks_until_docked(&mut self, ticks: u32) -> Option<u32> {
+        (1..=ticks).find(|_| {
+            self.tick();
+            self.door_position().x <= -1.0 + 1.0e-3
+        })
+    }
+}
+
+const TWO_SECONDS: u32 = 120;
+
+#[test]
+fn a_pinned_agent_steps_clear_and_the_door_docks_within_two_seconds() {
+    for policy in [BlockPolicy::Displace, BlockPolicy::Stop] {
+        let mut rig = Rig::agent_at_jamb(policy);
+        rig.close_until_held();
+        assert!(
+            rig.ticks_until_docked(TWO_SECONDS).is_some(),
+            "{policy:?}: docked within 2 s of the first pin, door at {:?}",
+            rig.door_position()
+        );
+        let at = rig.agent_position();
+        assert!(at.z.abs() > 1.5, "{policy:?}: out of the course, at {at:?}");
+        assert_eq!(rig.agent_health(), 100.0, "{policy:?}: unharmed");
+    }
+}
+
+#[test]
+fn a_pinned_agent_steps_clear_whatever_held_it_still() {
+    // Blocked with a destination, or with no steering and no knockback at all.
+    let latched = |agent: &mut AgentComponent| {
+        agent.destination = Some(Vec3::new(8.0, 1.2, 0.0));
+        agent.blocked = true;
+    };
+    let frozen = |agent: &mut AgentComponent| {
+        agent.knockback.scale = 0.0;
+        agent.knockback.control = 0.0;
+    };
+    let changes: [&dyn Fn(&mut AgentComponent); 2] = [&latched, &frozen];
+    for change in changes {
+        let mut rig = Rig::agent_at_jamb(BlockPolicy::Displace);
+        rig.with_agent(change);
+        rig.close_until_held();
+        assert!(rig.ticks_until_docked(TWO_SECONDS).is_some());
+        assert_eq!(rig.agent_health(), 100.0);
+    }
+}
+
+#[test]
+fn stepping_clear_drops_blocked_and_resumes_authored_motion() {
+    let mut rig = Rig::agent_at_jamb(BlockPolicy::Displace);
+    let goal = Vec3::new(8.0, 1.2, 0.0);
+    rig.with_agent(|agent| {
+        agent.destination = Some(goal);
+        agent.blocked = true;
+    });
+    rig.close_until_held();
+    rig.tick();
+    let agent_then = rig
+        .registry
+        .borrow()
+        .get_component::<AgentComponent>(rig.rider)
+        .unwrap()
+        .clone();
+    assert!(agent_then.pin_escape.is_some(), "it is walking clear");
+    assert!(!agent_then.blocked, "the latch dropped");
+    for _ in 0..TWO_SECONDS {
+        rig.tick();
+    }
+    let agent_after = rig
+        .registry
+        .borrow()
+        .get_component::<AgentComponent>(rig.rider)
+        .unwrap()
+        .clone();
+    assert_eq!(agent_after.pin_escape, None, "the walk ended");
+    assert_eq!(agent_after.destination, Some(goal), "its order stands");
+}
+
+#[test]
+fn with_no_clear_point_a_pinned_agent_yields_as_a_corpse_unharmed() {
+    let mut rig = Rig::agent_at_jamb(BlockPolicy::Displace);
+    // Walls either side of the agent make a pit the door closes into.
+    rig.world = CollisionWorld::from_triangles_for_test(
+        vec![
+            Vec3::new(-10.0, 0.0, -10.0),
+            Vec3::new(10.0, 0.0, -10.0),
+            Vec3::new(10.0, 0.0, 10.0),
+            Vec3::new(-10.0, 0.0, 10.0),
+            Vec3::new(-1.0, 0.0, -3.0),
+            Vec3::new(-1.0, 3.0, -3.0),
+            Vec3::new(-1.0, 3.0, 3.0),
+            Vec3::new(-1.0, 0.0, 3.0),
+            Vec3::new(-1.0, 0.0, 0.45),
+            Vec3::new(4.0, 0.0, 0.45),
+            Vec3::new(4.0, 3.0, 0.45),
+            Vec3::new(-1.0, 3.0, 0.45),
+            Vec3::new(-1.0, 0.0, -0.45),
+            Vec3::new(4.0, 0.0, -0.45),
+            Vec3::new(4.0, 3.0, -0.45),
+            Vec3::new(-1.0, 3.0, -0.45),
+        ],
+        vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [8, 9, 10],
+            [8, 10, 11],
+            [12, 14, 13],
+            [12, 15, 14],
+        ],
+    );
+    rig.close_until_held();
+    assert!(
+        rig.ticks_until_docked(TWO_SECONDS).is_some(),
+        "the door docked, at {:?}",
+        rig.door_position()
+    );
+    assert_eq!(rig.agent_health(), 100.0, "embedded and unharmed");
+}
+
+impl Rig {
+    /// Re-seat the door at `closed`, with `open` beyond it.
+    fn seat_door(&mut self, closed: Vec3, open: Vec3) {
+        let mut registry = self.registry.borrow_mut();
+        let mut door = registry
+            .get_component::<KinematicMoverComponent>(self.lift)
+            .unwrap()
+            .clone();
+        door.waypoints = vec![closed, open];
+        registry.set_component(self.lift, door).unwrap();
+        let mut transform = *registry.get_component::<Transform>(self.lift).unwrap();
+        transform.position = closed;
+        registry.set_component(self.lift, transform).unwrap();
+    }
+}
+
+#[test]
+fn a_corpse_revived_in_a_closed_door_steps_clear_and_the_door_then_opens() {
+    let mut rig = Rig::agent_at_jamb(BlockPolicy::Stop);
+    // Closed through the corpse's body, opening onto it against the wall.
+    rig.seat_door(Vec3::new(-0.4, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
+    rig.set_rider_health(0.0);
+    for _ in 0..10 {
+        rig.tick();
+    }
+    rig.set_rider_health(100.0);
+    rig.command(MoverCommand::Start);
+    rig.tick();
+    rig.tick();
+    assert!(rig.lift().0.blocked, "the revived agent holds the door");
+    assert!(
+        rig.ticks_until_docked(TWO_SECONDS).is_some(),
+        "the door docked open, at {:?}",
+        rig.door_position()
+    );
+    let at = rig.agent_position();
+    assert!(
+        at.z.abs() > 1.5 || at.x - 0.4 > -0.4,
+        "out of the door's course, at {at:?}"
+    );
+    assert_eq!(rig.agent_health(), 100.0);
+}
+
+#[test]
+fn a_crush_immune_agent_is_pushed_clear_once_the_crusher_stops_pinning_it() {
+    use postretro_foundation::defense::{DamageTypeDeclaration, DefenseVocabulary, PoolMultiplier};
+
+    let mut rig = Rig::agent_at_jamb(BlockPolicy::Crush);
+    rig.registry
+        .borrow_mut()
+        .set_defense_vocabulary(std::sync::Arc::new(DefenseVocabulary {
+            layers: Vec::new(),
+            damage_types: vec![DamageTypeDeclaration {
+                name: "crush".to_string(),
+                matrix: std::collections::BTreeMap::from([(
+                    "health".to_string(),
+                    PoolMultiplier::Scale(0.0),
+                )]),
+            }],
+            default_damage_type: None,
+        }));
+    // The crusher docks through the agent's axis, then stops pressing it.
+    let closed = Vec3::new(-0.6, 0.0, 0.0);
+    {
+        let mut registry = rig.registry.borrow_mut();
+        let mut door = registry
+            .get_component::<KinematicMoverComponent>(rig.lift)
+            .unwrap()
+            .clone();
+        door.waypoints[1] = closed;
+        door.crush_damage = 10.0;
+        door.crush_interval_ms = 100.0;
+        door.crush_damage_type = Some("crush".to_string());
+        registry.set_component(rig.lift, door).unwrap();
+    }
+    rig.command(MoverCommand::Start);
+    for _ in 0..240 {
+        rig.tick();
+    }
+    assert!(rig.lift().0.completed, "the crusher never held");
+    assert_eq!(rig.agent_health(), 100.0, "immune");
+    let at = rig.agent_position();
+    assert!(
+        at.x - 0.4 >= closed.x - 1.0e-2,
+        "pushed clear of the leaf, at {at:?}"
+    );
 }

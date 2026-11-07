@@ -12,14 +12,17 @@
 
 use glam::Vec3;
 
-use crate::collision::moving::CombinedCollisionWorld;
+use crate::collision::moving::{
+    CombinedCollisionWorld, MoverPose, MoverPoseSource, MoverTranslationLeg, point_inside_mover,
+};
 use crate::collision::{CollisionCapsule, SKIN_DISTANCE, StaticOverlap};
 use crate::movement::mover_carry::{
-    apply_mover_carry, displace_from_movers, ground_ref_from_hit, mover_release_velocity,
+    apply_mover_carry, displace_from_movers, displace_out_of_hull, embedded_in_mover,
+    ground_ref_from_hit, mover_release_velocity,
 };
 use crate::movement::overlap_check::check_own_movement;
 use crate::movement::substrate::cast_capsule_query;
-use crate::movement::swept::{StepParams, snap_to_floor, step_up};
+use crate::movement::swept::{StepParams, floor_below, ground_stick_reach, snap_to_floor, step_up};
 use postretro_collision::{EnvironmentView, resolve_gravity};
 use postretro_foundation::GroundRef;
 
@@ -153,6 +156,82 @@ pub fn collide_and_slide(
     result
 }
 
+/// [`collide_and_slide`] for a body walking out of `mover_id`'s course. A body
+/// embedded in that mover walks as if it were not there: every sweep from inside
+/// it stops at once, so the walk would never start. A body merely touching it, or
+/// riding it, keeps it solid and keeps its floor.
+#[allow(clippy::too_many_arguments)]
+pub fn escape_slide(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    mover_id: u32,
+    desired_horizontal: Vec3,
+    vertical_velocity: f32,
+    knockback_velocity: &mut Vec3,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> SlideResult {
+    let embedded = previous_ground != GroundRef::Mover(mover_id)
+        && embedded_in_mover(
+            collision,
+            mover_id,
+            &capsule.collision_shape().parry(),
+            position,
+        );
+    if !embedded {
+        return collide_and_slide(
+            collision,
+            capsule,
+            position,
+            previous_ground,
+            desired_horizontal,
+            vertical_velocity,
+            knockback_velocity,
+            environment,
+            dt,
+        );
+    }
+    let poses = PosesWithout {
+        poses: collision.poses,
+        mover_id,
+    };
+    collide_and_slide(
+        &CombinedCollisionWorld::new(collision.static_world, collision.movers, &poses),
+        capsule,
+        position,
+        previous_ground,
+        desired_horizontal,
+        vertical_velocity,
+        knockback_velocity,
+        environment,
+        dt,
+    )
+}
+
+/// A pose source with one mover missing: queries skip a mover with no pose.
+struct PosesWithout<'a> {
+    poses: &'a dyn MoverPoseSource,
+    mover_id: u32,
+}
+
+impl MoverPoseSource for PosesWithout<'_> {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        (mover_id != self.mover_id)
+            .then(|| self.poses.pose(mover_id))
+            .flatten()
+    }
+
+    fn translation_legs(&self, mover_id: u32) -> Option<&[MoverTranslationLeg]> {
+        self.poses.translation_legs(mover_id)
+    }
+
+    fn had_endpoint_arrival(&self, mover_id: u32) -> bool {
+        self.poses.had_endpoint_arrival(mover_id)
+    }
+}
+
 /// One tick of corpse motion: gravity, mover carry and displacement, and no
 /// steering, knockback or release velocity. A corpse keeps the place it fell, so
 /// a killing blow or a lift it slides off starts no slide.
@@ -206,7 +285,10 @@ fn slide(
     );
 
     let mut current_pos = apply_mover_carry(position, previous_ground, collision);
-    current_pos = displace_from_movers(previous_ground, collision, &parry_shape, current_pos);
+    current_pos = displace_out_of_hull(previous_ground, collision, &parry_shape, current_pos)
+        .unwrap_or_else(|| {
+            displace_from_movers(previous_ground, collision, &parry_shape, current_pos)
+        });
     // Mover policy polices carry and displacement; the tick overlap check covers
     // the agent's own movement from here.
     let checked_start = current_pos;
@@ -287,6 +369,15 @@ fn slide(
         ground = floor.ground;
     }
 
+    ground = ground_outside_mover_hull(
+        collision,
+        collision_shape,
+        current_pos,
+        previous_ground,
+        ground,
+        step,
+    );
+
     // Once resting on the floor, stop accumulating downward speed so the next
     // tick's gravity integration starts from rest (no runaway fall while
     // grounded). Wall-projected residual +Y is also cleared when grounded.
@@ -306,6 +397,45 @@ fn slide(
             collision_shape,
         ),
     }
+}
+
+/// A body wholly inside a mover touches only the far side of its hull, which is
+/// no floor: standing on it would carry the body along, where an engulfed body
+/// stays put until the mover moves off it. Checked as ground changes, so a rider
+/// pays nothing.
+fn ground_outside_mover_hull(
+    collision: &CombinedCollisionWorld<'_>,
+    shape: CollisionCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    ground: GroundRef,
+    step: StepParams,
+) -> GroundRef {
+    let GroundRef::Mover(mover_id) = ground else {
+        return ground;
+    };
+    if previous_ground == ground {
+        return ground;
+    }
+    let Some(mover) = collision
+        .movers
+        .iter()
+        .find(|mover| mover.mover_id() == mover_id)
+    else {
+        return ground;
+    };
+    if !point_inside_mover(std::slice::from_ref(mover), collision.poses, position) {
+        return ground;
+    }
+    let static_only = CombinedCollisionWorld::static_only(collision.static_world);
+    floor_below(
+        &static_only,
+        shape,
+        position,
+        ground_stick_reach(step),
+        step.cos_walkable,
+    )
+    .map_or(GroundRef::Airborne, |floor| floor.ground)
 }
 
 /// Whether `ground` is a mover that moved this tick. A carried body's world

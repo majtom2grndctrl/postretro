@@ -561,3 +561,37 @@ fn an_agent_on_a_lift_replays_identically() {
     }
     assert_eq!(run(), run());
 }
+
+#[test]
+fn an_agent_wholly_inside_a_mover_stays_until_the_mover_moves_off_it() {
+    let world = floor_world();
+    let movers = [solid_box(
+        Vec3::new(-3.0, 0.0, -3.0),
+        Vec3::new(3.0, 4.0, 3.0),
+    )];
+    let mut block = MoverTrack::at(Vec3::ZERO);
+    let mut registry = EntityRegistry::new();
+    let start = Vec3::new(0.0, rest_y(0.0), 0.0);
+    let id = spawn(&mut registry, start, None);
+
+    for tick_index in 0..30 {
+        block.advance(Vec3::ZERO);
+        step(&mut registry, &world, &movers, &block);
+        let at = position(&registry, id);
+        assert!(
+            (at.x, at.z) == (0.0, 0.0),
+            "tick {tick_index}: no contact to push it by, at {at:?}"
+        );
+    }
+    for _ in 0..60 {
+        block.advance(Vec3::X * 8.0);
+        step(&mut registry, &world, &movers, &block);
+    }
+    let at = position(&registry, id);
+    assert!(at.x.abs() < 1.0, "the block left it behind, at {at:?}");
+    assert!(
+        block.pose.transform.position.x - 3.0 > at.x + RADIUS - 1.0e-3,
+        "the block moved off it: {:?}, agent {at:?}",
+        block.pose.transform.position
+    );
+}

@@ -20,6 +20,17 @@ use serde::{Deserialize, Serialize};
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
 use postretro_foundation::{GroundRef, KnockbackResponse, NavAgentParams};
 
+/// A pinned agent's walk out of a mover's course. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PinEscape {
+    /// The mover that pinned it.
+    pub mover_id: u32,
+    /// The clear point it walks to.
+    pub target: Vec3,
+    /// Ticks left before it gives up and yields as a corpse.
+    pub ticks_left: u32,
+}
+
 /// Live state for one movable navigation agent.
 ///
 /// The capsule geometry (`radius`, `height`, `step_height`) is fixed at attach
@@ -125,6 +136,10 @@ pub struct AgentComponent {
     /// and drift/topology gates. Cleared on a successful plan or a cleared
     /// destination.
     pub blocked: bool,
+    /// The walk out of a pinning mover's course, while one runs. It overrides
+    /// path steering and any motion verb.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_escape: Option<PinEscape>,
 }
 
 impl AgentComponent {
@@ -147,6 +162,7 @@ impl AgentComponent {
             stuck_ticks: 0,
             unstick_window_remaining: 0,
             ground: GroundRef::Airborne,
+            pin_escape: None,
             path: Vec::new(),
             mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,

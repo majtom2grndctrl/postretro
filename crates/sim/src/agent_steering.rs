@@ -15,14 +15,18 @@
 use glam::Vec3;
 
 use crate::collision::moving::CombinedCollisionWorld;
+use crate::kinematic_mover::AgentMoverPair;
 use crate::movement::MovementCollisionSource;
-use crate::movement::agent_motion::{AgentCapsule, carried_by_mover, collide_and_slide};
+use crate::movement::agent_motion::{
+    AgentCapsule, carried_by_mover, collide_and_slide, escape_slide,
+};
 use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
 mod corpse;
+mod pin_escape;
 
 mod tick_diagnostics {
     /// Maximum number of agents that may recompute a path in a single tick.
@@ -335,28 +339,61 @@ pub fn tick(
     dt: f32,
 ) -> AgentTickResult {
     let collision = collision.combined_collision();
-    tick_impl(registry, &collision, nav_graph, environment, dt)
+    tick_impl(
+        registry,
+        &collision,
+        nav_graph,
+        MoverPins::NONE,
+        &mut Vec::new(),
+        environment,
+        dt,
+    )
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
-pub(crate) fn tick(
+/// [`tick`] for the fixed tick: it also hears which living agents movers yield
+/// to, and fills `corpse_yields` with the pairs the mover should now pass
+/// through. Empty in a tick with no pins, and allocates nothing then.
+pub(crate) fn tick_with_mover_pins(
     registry: &mut EntityRegistry,
-    collision: &impl MovementCollisionSource,
+    collision: &CombinedCollisionWorld<'_>,
     nav_graph: Option<&NavGraph>,
+    pins: MoverPins<'_>,
+    corpse_yields: &mut Vec<AgentMoverPair>,
     environment: EnvironmentView<'_>,
     dt: f32,
 ) -> AgentTickResult {
-    let collision = collision.combined_collision();
-    tick_impl(registry, &collision, nav_graph, environment, dt)
+    tick_impl(
+        registry,
+        collision,
+        nav_graph,
+        pins,
+        corpse_yields,
+        environment,
+        dt,
+    )
+}
+
+/// The agents movers yielded to since the last blocking pass.
+#[derive(Clone, Copy)]
+pub(crate) struct MoverPins<'a> {
+    pub(crate) yields: &'a [AgentMoverPair],
+}
+
+impl MoverPins<'_> {
+    const NONE: MoverPins<'static> = MoverPins { yields: &[] };
 }
 
 fn tick_impl(
     registry: &mut EntityRegistry,
     collision: &CombinedCollisionWorld<'_>,
     nav_graph: Option<&NavGraph>,
+    pins: MoverPins<'_>,
+    corpse_yields: &mut Vec<AgentMoverPair>,
     environment: EnvironmentView<'_>,
     dt: f32,
 ) -> AgentTickResult {
+    pin_escape::plan_escapes(registry, collision, pins.yields, corpse_yields);
+
     // Start-of-tick position snapshot for separation. Built once, read by every
     // agent's neighbor pass, so the result is order-independent.
     let snapshot: Vec<AgentSnapshot> = registry
@@ -430,6 +467,49 @@ fn tick_impl(
 
         // Tick down the staleness cooldown regardless of what happens below.
         agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(1);
+
+        if let Some((mover_id, walk)) =
+            pin_escape::escape_velocity(current.id, &mut agent, position, corpse_yields)
+        {
+            agent.steer_velocity = Vec3::ZERO;
+            agent.stuck_ticks = 0;
+            agent.unstick_window_remaining = 0;
+            let capsule = AgentCapsule {
+                radius: agent.radius,
+                half_height: agent.half_height(),
+                step_height: agent.step_height,
+            };
+            let result = escape_slide(
+                collision,
+                &capsule,
+                position,
+                agent.ground,
+                mover_id,
+                walk + agent.knockback_velocity,
+                agent.velocity.y,
+                &mut agent.knockback_velocity,
+                environment,
+                dt,
+            );
+            agent.velocity = result.velocity;
+            agent.ground = result.ground;
+            if let Some(overlap) = &result.overlap {
+                crate::sim::report_static_overlap(
+                    collision.static_world,
+                    registry,
+                    current.id,
+                    overlap,
+                );
+            }
+            if let Ok(transform) = registry.get_component::<Transform>(current.id) {
+                let mut t = *transform;
+                t.position = result.position;
+                let _ = registry.set_component(current.id, t);
+            }
+            let _ = registry.set_component(current.id, agent);
+            continue;
+        }
+
         let Some(destination) = agent.destination else {
             // No destination: idle steering, but still run the shared capsule
             // settle path so spawned/stationary agents obey gravity and
@@ -689,6 +769,10 @@ fn admit_replans(
         let Some(destination) = agent.destination else {
             continue;
         };
+        // A body stepping clear of a mover follows no path until it arrives.
+        if agent.pin_escape.is_some() {
+            continue;
+        }
 
         let drifted = agent.planned_destination.is_none_or(|planned| {
             distance_xz(planned, destination) > REPLAN_DEST_THRESHOLD

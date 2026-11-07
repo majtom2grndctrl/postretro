@@ -977,15 +977,23 @@ where
         let mut registry = registry.borrow_mut();
         let substage = cpu.scope(SimStage::SteerAgents);
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
+        let mut corpse_yields = Vec::new();
         let agent_collision =
             CombinedCollisionWorld::new(collision_world, mover_colliders, &*mover_tick_states);
-        let _ = agent_steering::tick(
+        let _ = agent_steering::tick_with_mover_pins(
             &mut registry,
             &agent_collision,
             nav_graph,
+            agent_steering::MoverPins {
+                yields: mover_tick_states.agent_yields(),
+            },
+            &mut corpse_yields,
             environment,
             tick_dt,
         );
+        for (agent, mover_id) in corpse_yields {
+            mover_tick_states.yield_agent_as_corpse(agent, mover_id);
+        }
         drop(substage);
         let substage = cpu.scope(SimStage::SteerPose);
         update_player_animation_locomotion(&mut registry, hit_zone_store, anim_time);

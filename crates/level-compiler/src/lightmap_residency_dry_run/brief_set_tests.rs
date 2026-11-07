@@ -15,6 +15,7 @@ use crate::cell_residency_bake::lead_map::{LeadMap, meters_fixed, portal_neighbo
 use crate::cell_residency_bake::portal_distance::{
     HubCell, HubPortal, Neighbors, PortalGraphInput,
 };
+use postretro_level_format::lightmap_pool::PerPool;
 
 /// `n` unit cubes chained along X by portals `k ↔ k + 1`.
 fn chain_graph(n: u32) -> PortalGraphInput {
@@ -297,7 +298,8 @@ fn band_retention_keeps_a_block_exactly_in_the_band() {
     assert_eq!(immediate.thrash_reads, 3, "cell 2 is re-read too");
     assert_eq!(retain.prefetch_reads, 0, "cell 2 was already resident at B");
     for run in [retain, immediate] {
-        assert_eq!((run.growth_steps, run.repack_steps), (0, 0));
+        assert_eq!(run.growth_steps, PerPool::default());
+        assert_eq!(run.repack_steps, PerPool::default());
     }
 }
 
@@ -311,7 +313,7 @@ fn sized_blocks(sizes: &[(u32, u32)]) -> CellBlocks {
         .map(|(&(width, height), &cell)| chart(cell, 0, 0, 0, width, height))
         .collect();
     let blocks = CellBlocks::new(&input(
-        bc6h_formats(2048, 1, true),
+        bc6h_formats(2048, 1, false),
         &cells,
         charts,
         Vec::new(),
@@ -322,20 +324,25 @@ fn sized_blocks(sizes: &[(u32, u32)]) -> CellBlocks {
     blocks
 }
 
-/// A band-retain walk over hand-picked per-camera sets.
+/// A band-retain walk over hand-picked per-camera sets, on a lightmap pool of
+/// `pool_layers`. The blocks here store no planes.
 fn band_walk(
     blocks: &CellBlocks,
     mandatory: &[Vec<u32>],
     band: &[Vec<u32>],
     path: &[u32],
-    cap: u32,
+    pool_layers: u32,
 ) -> BandRun {
     let inputs = BandSimInputs {
         blocks,
         mandatory,
         band,
     };
-    simulate_band(&inputs, path, Some(cap), BandPolicy::BandRetain)
+    let layers = PerPool {
+        lightmap: pool_layers,
+        mask: 0,
+    };
+    simulate_band(&inputs, path, Some(layers), BandPolicy::BandRetain)
 }
 
 #[test]
@@ -348,7 +355,11 @@ fn mandatory_blocks_grow_the_pool_and_prefetch_takes_what_they_leave() {
     // A one-layer pool fits all three.
     let run = band_walk(&blocks, &mandatory, &band, &[1], 1);
     assert_eq!(
-        (run.growth_steps, run.demand_reads, run.prefetch_reads),
+        (
+            run.growth_steps.lightmap,
+            run.demand_reads,
+            run.prefetch_reads
+        ),
         (0, 2, 1)
     );
 
@@ -359,13 +370,70 @@ fn mandatory_blocks_grow_the_pool_and_prefetch_takes_what_they_leave() {
     let mandatory = vec![vec![0, 1, 2], vec![0, 1]];
     let band = vec![vec![3], vec![3, 2]];
     let run = band_walk(&blocks, &mandatory, &band, &[0], 2);
-    assert_eq!((run.peak_layers, run.growth_steps), (3, 1));
+    assert_eq!(
+        (run.peak_layers.lightmap, run.growth_steps.lightmap),
+        (3, 1)
+    );
     assert_eq!(run.prefetch_reads, 1, "band cell 3 prefetched");
     // At camera 1, cell 2 drops into the band and stays where it sits: grown
     // layers count, so nothing is read again.
     let run = band_walk(&blocks, &mandatory, &band, &[0, 1, 1, 1], 2);
-    assert_eq!(run.growth_steps, 1);
+    assert_eq!(run.growth_steps.lightmap, 1);
     assert_eq!((run.demand_reads, run.prefetch_reads), (3, 1));
+}
+
+// The pool split: a block's planes place in the mask pool, which grows and
+// repacks apart from the lightmap pool, and `None` holds both whole.
+#[test]
+fn band_walk_runs_each_pool_at_its_own_size() {
+    // Every block is a third of a layer and stores both planes: camera 0's four
+    // blocks fill two lightmap layers and three mask layers.
+    let cells: Vec<u32> = (0..4).collect();
+    let charts = cells
+        .iter()
+        .map(|&cell| chart(cell, 0, 0, 0, 2048, 680))
+        .collect();
+    let blocks = CellBlocks::new(&input(
+        bc6h_formats(2048, 1, true),
+        &cells,
+        charts,
+        Vec::new(),
+    ));
+    let mandatory = vec![vec![0, 1, 2, 3]];
+    let inputs = BandSimInputs {
+        blocks: &blocks,
+        mandatory: &mandatory,
+        band: &[Vec::new()],
+    };
+    let run = |layers| simulate_band(&inputs, &[0], layers, BandPolicy::BandRetain);
+
+    let at_size = run(Some(PerPool {
+        lightmap: 2,
+        mask: 3,
+    }));
+    assert_eq!(at_size.growth_steps, PerPool::default());
+    let expected = PerPool {
+        lightmap: 2,
+        mask: 3,
+    };
+    assert_eq!(at_size.peak_layers, expected);
+
+    let short_of_masks = run(Some(PerPool {
+        lightmap: 2,
+        mask: 1,
+    }));
+    assert_eq!(
+        short_of_masks.growth_steps,
+        PerPool {
+            lightmap: 0,
+            mask: 1
+        }
+    );
+
+    let all_resident = run(None);
+    assert_eq!(all_resident.growth_steps, PerPool::default());
+    assert_eq!(all_resident.peak_layers, expected);
+    assert_eq!(all_resident.pool_layers, None);
 }
 
 #[test]
@@ -373,16 +441,16 @@ fn a_repack_moves_a_resident_band_block_without_a_read() {
     // One layer. Camera 0 stacks 0 (768 high) and 1 (512 high) and prefetches
     // band cell 3 below them. At camera 1, cell 0 leaves, and 2 (1280 high)
     // fits no shelf even with 3 evicted: a repack places 2 and 1, then moves
-    // 3 back into the space left under the cap.
+    // 3 back into the space left in the pool.
     let blocks = sized_blocks(&[(2048, 768), (2048, 512), (2048, 1280), (64, 64)]);
     let mandatory = vec![vec![0, 1], vec![1, 2]];
     let band = vec![vec![3], vec![3]];
     let run = band_walk(&blocks, &mandatory, &band, &[0, 1], 1);
-    assert_eq!(run.repack_steps, 1);
+    assert_eq!(run.repack_steps.lightmap, 1);
     assert_eq!(run.demand_reads, 3, "cells 0 and 1, then 2");
     assert_eq!(run.prefetch_reads, 1, "cell 3 is read once and then moved");
     assert_eq!((run.band_evictions, run.thrash_reads), (0, 0));
-    assert_eq!(run.peak_layers, 1);
+    assert_eq!(run.peak_layers.lightmap, 1);
 }
 
 #[test]
@@ -394,7 +462,7 @@ fn a_victim_is_not_read_back_in_the_step_that_evicted_it() {
     let mandatory = vec![vec![0], vec![3]];
     let band = vec![vec![1, 2], vec![1, 2]];
     let run = band_walk(&blocks, &mandatory, &band, &[0, 1], 1);
-    assert_eq!((run.repack_steps, run.band_evictions), (0, 2));
+    assert_eq!((run.repack_steps.lightmap, run.band_evictions), (0, 2));
     assert_eq!(run.prefetch_reads, 2, "no read back in the evicting step");
     assert_eq!(run.thrash_reads, 0);
     // The next step reads both back, as thrash.
@@ -433,16 +501,19 @@ fn u_turn_brief_set_drops_the_cluster_term_and_dilates_one_hop() {
     let old = &visible.dense[0];
     assert_eq!(old.granularity, Granularity::Cell);
     assert_eq!(old.leads[0].cells[2].1.cell_count, 3);
-    // One-layer sets: the shelf p95 and worst caps merge; 125% rounds to 2.
-    let caps: Vec<(u32, &str)> = brief
+    // One-layer sets: the shelf p95 and worst sizes merge; 125% rounds to 2.
+    let sizes: Vec<(PerPool<u32>, &str)> = brief
         .walks
-        .caps
+        .sizes
         .iter()
-        .map(|cap| (cap.layers, cap.basis.as_str()))
+        .map(|size| (size.layers, size.basis.as_str()))
         .collect();
     assert_eq!(
-        caps,
-        vec![(1, "shelf p95 = 100% shelf worst"), (2, "125% shelf worst")]
+        sizes,
+        vec![
+            (PerPool::both(1), "shelf p95 = 100% shelf worst"),
+            (PerPool::both(2), "125% shelf worst")
+        ]
     );
     assert!(brief.walks.walks.iter().all(|walk| walk.runs.len() == 6));
     let rendered = report.render();

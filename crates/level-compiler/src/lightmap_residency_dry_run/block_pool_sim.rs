@@ -3,10 +3,11 @@
 //! allocates the ones that joined it with the freeing shelf allocator. A cell
 //! in M(c) demands every block it owns.
 //!
-//! Runs an uncapped pool (immediate free) for the peak it grows to, then fixed
+//! Runs an unbounded pool (immediate free) for the peak it grows to, then fixed
 //! pools with immediate free or LRU retention; an allocation that fails with
 //! nothing left to evict triggers a defragmentation, a from-scratch repack of
-//! the mandatory blocks.
+//! the mandatory blocks. These walks place lightmap blocks only: the band
+//! walks (`band_pool_sim`) run both pools through the runtime's model.
 //!
 //! The baseline is the same shelf allocator packing each M(c) from scratch,
 //! so excess over it is fragmentation alone, not the shelf-vs-MaxRects
@@ -62,7 +63,7 @@ impl Eviction {
     }
 }
 
-/// An uncapped pool under immediate free.
+/// An unbounded pool under immediate free.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct UnboundedRun {
     /// Most layers the pool ever had to hold (highest non-empty layer + 1).
@@ -164,7 +165,7 @@ pub(crate) fn shelf_layers_from_scratch(blocks: &CellBlocks, set: &[u32]) -> u32
     let mut pool = BlockPool::new(POOL_LAYER_EDGE, None);
     for (_, dims) in allocation_order(blocks, set) {
         pool.allocate(dims.width, dims.height)
-            .expect("an uncapped pool always places a block that fits a layer");
+            .expect("an unbounded pool always places a block that fits a layer");
     }
     pool.extent() as u32
 }
@@ -267,7 +268,7 @@ fn simulate_unbounded(inputs: &SimInputs<'_>, path: &[u32]) -> UnboundedRun {
             if residency.slots[block as usize].is_none() {
                 let slot = pool
                     .allocate(dims.width, dims.height)
-                    .expect("an uncapped pool always places a block that fits a layer");
+                    .expect("an unbounded pool always places a block that fits a layer");
                 residency.insert(block, slot, step);
             }
         }

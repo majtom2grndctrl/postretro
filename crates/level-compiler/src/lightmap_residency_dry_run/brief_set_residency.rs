@@ -5,8 +5,8 @@
 
 use rayon::prelude::*;
 
-use super::band_pool_sim::{BandSimInputs, BandWalks, pool_caps, run_band_walks};
-use super::block_pool_sim::{SIM_SEED, SIM_STEPS, shelf_layers_from_scratch};
+use super::band_pool_sim::{BandSimInputs, BandWalks, pool_sizes, run_band_walks};
+use super::block_pool_sim::{SIM_SEED, SIM_STEPS};
 use super::brief_set::{
     BakedCheck, BakedRelation, BriefSetSources, Dilation, LeadCheck, build_lead_map, check_baked,
     check_every_breakpoint, pinned_cells, visible_sources,
@@ -18,6 +18,7 @@ use super::visible_set::{MOVEMENT_LEADS_METERS, VisibleSetInputs};
 use crate::cell_residency_bake::lead_map::{
     LeadMap, MAX_LEAD_METERS, meters_fixed, portal_neighbours,
 };
+use postretro_level_format::lightmap_pool::{PackScratch, PerPool, PoolKind};
 
 /// Wire format of the brief's cell residency set: a four-`u32` header,
 /// `u32` CSR offsets, and `(cell_id u32, lead u32)` entries.
@@ -30,12 +31,13 @@ const SECTION_ENTRY_BYTES: u64 = 8;
 pub(crate) struct BriefLeadResult {
     pub lead_meters: u32,
     pub set_cells: Vec<usize>,
-    /// Summed cell-block bytes (id 22 + id 42 at each block's extent).
+    /// Summed cell-block bytes: id 22, and id 42's stored planes, at each
+    /// block's extent.
     pub block_bytes: Vec<u64>,
     /// Chart texel bytes, id 42 charged as blocks charge it.
     pub texel_exact: Vec<f64>,
-    /// Shelf allocator layers packing `M(c, L)` from scratch.
-    pub shelf_layers: Vec<u32>,
+    /// Layers of each pool packing `M(c, L)` from scratch.
+    pub shelf_layers: Vec<PerPool<u32>>,
 }
 
 /// The prefetch band at one lead, parallel to the camera cells.
@@ -184,19 +186,22 @@ fn evaluate_lead(
     lead_meters: u32,
 ) -> BriefLeadResult {
     let fixed = meters_fixed(lead_meters);
-    let per_camera: Vec<(usize, u64, f64, u32)> = inputs
+    let per_camera: Vec<(usize, u64, f64, PerPool<u32>)> = inputs
         .camera_cells
         .par_iter()
-        .map_init(Vec::new, |layer_stamp, &camera| {
-            let set = map.mandatory(camera, fixed, pinned);
-            let exact = mandatory_bytes(&set, inputs.footprint, &[], layer_stamp);
-            (
-                set.len(),
-                inputs.cell_blocks.set_bytes(&set),
-                exact.texel_exact,
-                shelf_layers_from_scratch(inputs.cell_blocks, &set),
-            )
-        })
+        .map_init(
+            || (Vec::new(), Vec::new(), PackScratch::default()),
+            |(layer_stamp, blocks, scratch), &camera| {
+                let set = map.mandatory(camera, fixed, pinned);
+                let exact = mandatory_bytes(&set, inputs.footprint, &[], layer_stamp);
+                (
+                    set.len(),
+                    inputs.cell_blocks.set_bytes(&set),
+                    exact.texel_exact,
+                    inputs.cell_blocks.set_pool_layers(&set, blocks, scratch),
+                )
+            },
+        )
         .collect();
     BriefLeadResult {
         lead_meters,
@@ -250,15 +255,18 @@ fn band_walks(
         .iter()
         .map(|&camera| map.band(camera, fixed, pinned))
         .collect();
-    let mut layers: Vec<(f64, u32)> = sim_lead
-        .shelf_layers
-        .iter()
-        .zip(inputs.camera_cells)
-        .map(|(&layers, &cell)| (f64::from(layers), cell))
-        .collect();
-    layers.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    let worst = layers.first().map_or(0, |v| v.0 as u32);
-    let p95 = percentile_desc(&layers, 95) as u32;
+    let sorted_layers = |kind: PoolKind| {
+        let mut layers: Vec<(f64, u32)> = sim_lead
+            .shelf_layers
+            .iter()
+            .zip(inputs.camera_cells)
+            .map(|(layers, &cell)| (f64::from(layers[kind]), cell))
+            .collect();
+        layers.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        layers
+    };
+    let worst = PerPool::from_fn(|kind| sorted_layers(kind).first().map_or(0, |v| v.0 as u32));
+    let p95 = PerPool::from_fn(|kind| percentile_desc(&sorted_layers(kind), 95) as u32);
     run_band_walks(
         &BandSimInputs {
             blocks: inputs.cell_blocks,
@@ -267,7 +275,7 @@ fn band_walks(
         },
         inputs.camera_cells,
         inputs.graph,
-        pool_caps(worst, p95),
+        pool_sizes(worst, p95),
         SIM_STEPS,
         SIM_SEED,
     )

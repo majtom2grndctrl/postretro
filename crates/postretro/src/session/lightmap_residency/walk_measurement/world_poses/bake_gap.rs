@@ -253,10 +253,13 @@ fn replay(
         }
     }
     let (_, _, mirror) = rig.driver.finish();
+    let pools = &mirror.stats.pools;
+    let layer_bytes = mirror.layer_bytes();
     let pool = format!(
-        "{}, growths {}",
-        pool_layers_line(&mirror.stats, mirror.layer_bytes()),
-        mirror.stats.growths
+        "lightmap {}, mask {}, growths {}",
+        pool_layers_line(&pools.lightmap, layer_bytes.lightmap),
+        pool_layers_line(&pools.mask, layer_bytes.mask),
+        mirror.stats.growths()
     );
     (results, pool)
 }

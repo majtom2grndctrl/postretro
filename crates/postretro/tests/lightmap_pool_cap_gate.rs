@@ -49,14 +49,9 @@ const CAP_DOCS: &[&str] = &[
     "context/plans/large-map-spatial-residency.md",
 ];
 
-/// Modules compiled only under `cfg(test)` that the file-name rule cannot see.
-const TEST_ONLY_DIRS: &[&str] = &["walk_measurement", "lightmap_residency_dry_run"];
-
 fn is_test_source(path: &Path) -> bool {
-    path.components().any(|part| {
-        let part = part.as_os_str().to_string_lossy();
-        part.contains("test") || TEST_ONLY_DIRS.contains(&part.as_ref())
-    })
+    path.components()
+        .any(|part| part.as_os_str().to_string_lossy().contains("test"))
 }
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {

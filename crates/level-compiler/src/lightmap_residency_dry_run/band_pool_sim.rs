@@ -1,10 +1,10 @@
 //! Cell-block pool walks under the brief's miss policy, over the brief set.
 //!
 //! Each step is one drain of the renderer's placement policy,
-//! `postretro_render_cpu::lightmap_pool::LightmapPoolModel`: `M(c, L)` is
-//! targeted mandatory and never refused, and band retain also targets the
-//! band, nearest lead first; immediate free targets only `M(c, L)`. Every
-//! targeted block that is not resident is ready at once and every growth
+//! `postretro_render_cpu::lightmap_pool::LightmapPoolModel`, over both pools:
+//! `M(c, L)` is targeted mandatory and never refused, and band retain also
+//! targets the band, nearest lead first; immediate free targets only `M(c, L)`.
+//! Every targeted block that is not resident is ready at once and every growth
 //! retires before the next step: no drain budget or GPU latency is modelled.
 //!
 //! Reuses the walks of `block_pool_sim`.
@@ -18,7 +18,7 @@ use super::cell_blocks::{CellBlocks, POOL_LAYER_EDGE};
 use crate::cell_residency_bake::portal_distance::PortalGraphInput;
 use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
 use postretro_render_cpu::lightmap_pool::{
-    DrainRequest, EvictionReason, LightmapPoolModel, PerPool, PoolDemand, PoolKind,
+    DrainRequest, EvictionReason, LightmapPoolModel, PerPool, PoolKind,
 };
 
 /// A read of a block freed at most this many steps earlier counts as thrash.
@@ -31,7 +31,7 @@ pub(crate) const THRASH_WINDOW_STEPS: u64 = 8;
 pub(crate) enum BandPolicy {
     /// Free every block outside `M(c, L)` at the next step.
     ImmediateFree,
-    /// Keep and prefetch band blocks under the cap; free the rest.
+    /// Keep and prefetch band blocks in the pools' room; free the rest.
     BandRetain,
 }
 
@@ -55,20 +55,17 @@ pub(crate) struct BandSimInputs<'a> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BandRun {
     pub policy: BandPolicy,
-    /// `None` is uncapped: the first generation holds every block, so
-    /// nothing is evicted for room.
-    pub cap: Option<u32>,
+    /// Each pool's first generation in layers. `None` is all-resident: the
+    /// first generation holds every block, so nothing is evicted for room.
+    pub pool_layers: Option<PerPool<u32>>,
     pub steps: usize,
-    /// Most layers holding a block at a step's end.
-    pub peak_layers: usize,
-    /// Steps that allocated a new pool generation: a mandatory block needed a
-    /// layer past the pool's, and a repack under the cap could not hold
-    /// `M(c, L)`. The pool never shrinks, so later steps reuse those layers.
-    pub growth_steps: usize,
-    /// Steps ending with blocks at or past the cap. Only mandatory blocks
-    /// sit there: band blocks past it are evicted at the start of each step.
-    pub over_cap_steps: usize,
-    pub repack_steps: usize,
+    /// Most layers of each pool holding a block at a step's end.
+    pub peak_layers: PerPool<u32>,
+    /// Steps that allocated a new generation of each pool: a mandatory block
+    /// needed a layer past the pool's, and a repack could not hold `M(c, L)`.
+    /// A pool never shrinks, so later steps reuse those layers.
+    pub growth_steps: PerPool<usize>,
+    pub repack_steps: PerPool<usize>,
     /// Band blocks evicted to make room for mandatory ones and not moved
     /// back by a repack.
     pub band_evictions: usize,
@@ -102,64 +99,65 @@ pub(crate) struct BandWalk {
     pub runs: Vec<BandRun>,
 }
 
-/// A pool cap and what sized it.
+/// Both pools' sizes and what sized them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PoolCap {
-    pub layers: u32,
+pub(crate) struct PoolSize {
+    pub layers: PerPool<u32>,
     pub basis: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BandWalks {
-    pub caps: Vec<PoolCap>,
+    pub sizes: Vec<PoolSize>,
     pub walks: Vec<BandWalk>,
 }
 
-/// Caps the walks run at: the shelf p95, the one cap below the worst so
-/// growth past it can occur, then each `FIXED_POOL_PERCENT` of the shelf
-/// worst. Equal caps merge into one, naming every basis.
-pub(crate) fn pool_caps(shelf_worst: u32, shelf_p95: u32) -> Vec<PoolCap> {
+/// Sizes the walks run at, each pool taken from its own figures: the shelf p95,
+/// the one size below the worst so growth past it can occur, then each
+/// `FIXED_POOL_PERCENT` of the shelf worst. Equal sizes merge into one, naming
+/// every basis.
+pub(crate) fn pool_sizes(shelf_worst: PerPool<u32>, shelf_p95: PerPool<u32>) -> Vec<PoolSize> {
     let candidates = std::iter::once((shelf_p95, "shelf p95".to_string())).chain(
         FIXED_POOL_PERCENT.iter().map(|&percent| {
             (
-                (shelf_worst * percent).div_ceil(100),
+                shelf_worst.map(|worst| (worst * percent).div_ceil(100)),
                 format!("{percent}% shelf worst"),
             )
         }),
     );
-    let mut caps: Vec<PoolCap> = Vec::new();
+    let mut sizes: Vec<PoolSize> = Vec::new();
     for (layers, basis) in candidates {
-        match caps.iter_mut().find(|cap| cap.layers == layers) {
-            Some(cap) => cap.basis = format!("{} = {basis}", cap.basis),
-            None => caps.push(PoolCap { layers, basis }),
+        match sizes.iter_mut().find(|size| size.layers == layers) {
+            Some(size) => size.basis = format!("{} = {basis}", size.basis),
+            None => sizes.push(PoolSize { layers, basis }),
         }
     }
-    caps
+    sizes
 }
 
-/// Every walk kind, uncapped and at each of `caps`, under both policies.
+/// Every walk kind, all-resident and at each of `sizes`, under both policies.
 pub(crate) fn run_band_walks(
     inputs: &BandSimInputs<'_>,
     camera_cells: &[u32],
     graph: &PortalGraphInput,
-    caps: Vec<PoolCap>,
+    sizes: Vec<PoolSize>,
     steps: usize,
     seed: u64,
 ) -> BandWalks {
     let adjacency = camera_adjacency(graph, camera_cells);
-    let run_caps: Vec<Option<u32>> = std::iter::once(None)
-        .chain(caps.iter().map(|cap| Some(cap.layers)))
+    let run_sizes: Vec<Option<PerPool<u32>>> = std::iter::once(None)
+        .chain(sizes.iter().map(|size| Some(size.layers)))
         .collect();
     let walks = WalkKind::ALL
         .par_iter()
         .map(|&kind| {
             let (path, _) = walk_path(kind, &adjacency, steps, seed);
-            let runs: Vec<(Option<u32>, BandPolicy)> = run_caps
+            let runs: Vec<(Option<PerPool<u32>>, BandPolicy)> = run_sizes
                 .iter()
-                .flat_map(|&cap| {
+                .flat_map(|&layers| {
                     [
-                        (cap, BandPolicy::ImmediateFree),
-                        (cap, BandPolicy::BandRetain),
+                        (layers, BandPolicy::ImmediateFree),
+                        (layers, BandPolicy::BandRetain),
                     ]
                 })
                 .collect();
@@ -168,12 +166,12 @@ pub(crate) fn run_band_walks(
                 steps: path.len(),
                 runs: runs
                     .par_iter()
-                    .map(|&(cap, policy)| simulate_band(inputs, &path, cap, policy))
+                    .map(|&(layers, policy)| simulate_band(inputs, &path, layers, policy))
                     .collect(),
             }
         })
         .collect();
-    BandWalks { caps, walks }
+    BandWalks { sizes, walks }
 }
 
 /// Per-step target deltas against the model's accepted targets. A staged
@@ -236,21 +234,19 @@ impl SimTargets<'_> {
 pub(crate) fn simulate_band(
     inputs: &BandSimInputs<'_>,
     path: &[u32],
-    cap: Option<u32>,
+    pool_layers: Option<PerPool<u32>>,
     policy: BandPolicy,
 ) -> BandRun {
     let blocks = inputs.blocks;
     let block_count = blocks.dims.len();
-    let extents = blocks.dims.iter().map(|d| (d.width, d.height)).collect();
-    // The dry run's blocks carry no plane presence: the mask pool joins it with
-    // the harness's split.
-    let demand = PoolDemand::lightmap_only(blocks.alignment, extents);
-    let all_resident = demand
+    let all_resident = blocks
+        .demand
         .all_resident(POOL_LAYER_EDGE)
         .expect("aligned blocks that fit a pool layer");
-    let first_generation = cap.map_or(all_resident, PerPool::both);
-    let mut model = LightmapPoolModel::new(demand, POOL_LAYER_EDGE, first_generation)
-        .expect("aligned blocks that fit a pool layer");
+    let first_generation = pool_layers.unwrap_or(all_resident);
+    let mut model =
+        LightmapPoolModel::new(blocks.demand.clone(), POOL_LAYER_EDGE, first_generation)
+            .expect("aligned blocks that fit a pool layer");
     let mut targets = SimTargets {
         blocks,
         current: vec![None; block_count],
@@ -265,12 +261,11 @@ pub(crate) fn simulate_band(
     let mut ready = Vec::new();
     let mut run = BandRun {
         policy,
-        cap,
+        pool_layers,
         steps: path.len(),
-        peak_layers: 0,
-        growth_steps: 0,
-        over_cap_steps: 0,
-        repack_steps: 0,
+        peak_layers: PerPool::default(),
+        growth_steps: PerPool::default(),
+        repack_steps: PerPool::default(),
         band_evictions: 0,
         entering_blocks: 0,
         entering_resident: 0,
@@ -329,13 +324,14 @@ pub(crate) fn simulate_band(
             freed_at[eviction.block as usize] = step;
             run.band_evictions += usize::from(eviction.reason == EvictionReason::Pressure);
         }
-        run.repack_steps += usize::from(plan.report.lightmap.repacked);
-        run.growth_steps += usize::from(plan.report.lightmap.grew);
         debug_assert!(plan.deferred.is_empty(), "every growth retires in its step");
-        model.release_retirement(PoolKind::Lightmap);
-        let occupied = model.pool(PoolKind::Lightmap).occupied_layers();
-        run.peak_layers = run.peak_layers.max(occupied as usize);
-        run.over_cap_steps += usize::from(cap.is_some_and(|cap| occupied > cap));
+        let report = plan.report;
+        for kind in PoolKind::ALL {
+            run.repack_steps[kind] += usize::from(report[kind].repacked);
+            run.growth_steps[kind] += usize::from(report[kind].grew);
+            model.release_retirement(kind);
+            run.peak_layers[kind] = run.peak_layers[kind].max(model.pool(kind).occupied_layers());
+        }
     }
     run
 }

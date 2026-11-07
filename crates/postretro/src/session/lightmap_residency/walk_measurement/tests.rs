@@ -18,6 +18,7 @@ use crate::lightmap_streaming::test_fixtures::{
 use crate::session::level_streaming::LevelStreaming;
 use crate::streaming::cell_demand::CellDemand;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
+use postretro_render_cpu::lightmap_pool::PerPool;
 
 /// Each 64×64 corridor block fills one 64² pool layer, and the first
 /// generation is one layer, so the camera's mandatory set grows the pool past
@@ -50,7 +51,7 @@ impl Corridor {
         let mirror = PoolMirror::for_test_source(
             source.as_ref(),
             LAYER_EDGE,
-            FIRST_GENERATION_LAYERS,
+            PerPool::both(FIRST_GENERATION_LAYERS),
             clock,
         );
         let mut level = LevelStreaming::default();

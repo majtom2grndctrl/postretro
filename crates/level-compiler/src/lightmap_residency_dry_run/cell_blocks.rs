@@ -4,12 +4,18 @@
 //! that fits one pool layer owns one tight block, a larger cell several, so
 //! every block fits a pool layer.
 //!
-//! A block is costed as its own `width × height` layer region at the stored
-//! encodings (`AtlasFormats::layer_bytes_at`).
+//! A block is costed as its own `width × height` region at the stored
+//! encodings, each plane it stores charged (`AtlasFormats::cell_block_bytes`).
+//! A repacked block stores a plane when any stored block its charts came from
+//! does.
 
 use std::ops::Range;
 
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+use postretro_level_format::lightmap_pool::{
+    MASK_POOL_LAYER_BYTES, PackScratch, PerPool, PlanePresence, PoolDemand, PoolKind,
+    streamed_pool_bytes,
+};
 use rayon::prelude::*;
 
 use super::{ChartRect, DryRunInput};
@@ -43,14 +49,16 @@ pub(crate) struct CellBlocks {
     pub dims: Vec<BlockDims>,
     /// Id 22 + id 42 bytes of each block, parallel to `dims`.
     pub block_bytes: Vec<u64>,
+    /// What the blocks ask of the two pools, as the runtime counts it.
+    pub demand: PoolDemand,
     /// Owning cell of each block, parallel to `dims`.
     pub cell_of_block: Vec<u32>,
     /// Blocks of each cell id; empty for a cell with no charts.
     pub cell_blocks: Vec<Range<u32>>,
     /// Padded chart area of each cell.
     pub chart_texels: Vec<u64>,
-    /// Id 22 + id 42 bytes of one `POOL_LAYER_EDGE²` pool layer.
-    pub pool_layer_bytes: u64,
+    /// Bytes of one `POOL_LAYER_EDGE²` layer of each pool.
+    pub pool_layer_bytes: PerPool<u64>,
     /// Cells whose recovered charts sit on more than one stored block.
     pub cells_spanning_stored_blocks: usize,
     /// Texel grid every block extent sits on (`AtlasFormats::block_alignment`).
@@ -68,44 +76,66 @@ impl CellBlocks {
             .filter(|charts| charts.iter().any(|c| c.layer != charts[0].layer))
             .count();
         let alignment = input.formats.block_alignment();
-        let packed: Vec<Vec<BlockDims>> = per_cell
+        let formats = &input.formats;
+        let packed: Vec<Vec<(BlockDims, PlanePresence)>> = per_cell
             .par_iter()
             .map(|charts| {
                 let sizes: Vec<(u32, u32)> = charts.iter().map(|c| (c.width, c.height)).collect();
                 pack_cell_sub_blocks(&sizes, alignment, POOL_LAYER_EDGE)
                     .into_iter()
-                    .map(|sub| BlockDims {
-                        width: sub.block.width,
-                        height: sub.block.height,
+                    .map(|sub| {
+                        let dims = BlockDims {
+                            width: sub.block.width,
+                            height: sub.block.height,
+                        };
+                        let mut planes = [false; 2];
+                        for &member in &sub.members {
+                            let stored = formats.stored_planes(charts[member].layer as usize);
+                            planes = [planes[0] || stored[0], planes[1] || stored[1]];
+                        }
+                        (dims, planes)
                     })
                     .collect()
             })
             .collect();
         let mut dims = Vec::new();
+        let mut planes = Vec::new();
         let mut cell_of_block = Vec::new();
         let mut cell_blocks = Vec::with_capacity(packed.len());
         for (cell, blocks) in packed.into_iter().enumerate() {
             let start = dims.len() as u32;
             cell_of_block.extend(std::iter::repeat_n(cell as u32, blocks.len()));
-            dims.extend(blocks);
+            for (block_dims, block_planes) in blocks {
+                dims.push(block_dims);
+                planes.push(block_planes);
+            }
             cell_blocks.push(start..dims.len() as u32);
         }
         let block_bytes = dims
             .iter()
-            .map(|d| input.formats.layer_bytes_at(d.width, d.height))
+            .zip(&planes)
+            .map(|(d, &planes)| formats.cell_block_bytes(d.width, d.height, planes))
             .collect();
+        let extents = dims.iter().map(|d| (d.width, d.height)).collect();
+        let demand = PoolDemand::new(
+            alignment,
+            extents,
+            formats.stored_shadowmask().map(|_| planes),
+        );
         Self {
             dims,
             block_bytes,
+            demand,
             cell_of_block,
             cell_blocks,
             chart_texels: per_cell
                 .iter()
                 .map(|charts| charts.iter().map(ChartRect::area).sum())
                 .collect(),
-            pool_layer_bytes: input
-                .formats
-                .layer_bytes_at(POOL_LAYER_EDGE, POOL_LAYER_EDGE),
+            pool_layer_bytes: PerPool {
+                lightmap: formats.lightmap_bytes_at(POOL_LAYER_EDGE, POOL_LAYER_EDGE),
+                mask: MASK_POOL_LAYER_BYTES,
+            },
             cells_spanning_stored_blocks,
             alignment,
         }
@@ -122,9 +152,33 @@ impl CellBlocks {
         &self.dims[blocks.start as usize..blocks.end as usize]
     }
 
-    /// Bytes of a pool of `layers` `POOL_LAYER_EDGE²` layers.
-    pub(crate) fn pool_bytes(&self, layers: u32) -> u64 {
-        u64::from(layers) * self.pool_layer_bytes
+    /// Bytes of a lightmap pool of `layers` `POOL_LAYER_EDGE²` layers, no spare:
+    /// the single-pool walks' figure.
+    pub(crate) fn lightmap_pool_bytes(&self, layers: u32) -> u64 {
+        u64::from(layers) * self.pool_layer_bytes.lightmap
+    }
+
+    /// Both streamed pools' bytes at `layers`, each with its spare.
+    pub(crate) fn streamed_pools_bytes(&self, layers: PerPool<u32>) -> u64 {
+        PoolKind::ALL
+            .iter()
+            .map(|&kind| streamed_pool_bytes(layers[kind], self.pool_layer_bytes[kind]))
+            .sum()
+    }
+
+    /// Layers `cells`, distinct, need in each pool, packed from scratch as the
+    /// bound and the runtime pack.
+    pub(crate) fn set_pool_layers(
+        &self,
+        cells: &[u32],
+        blocks: &mut Vec<u32>,
+        scratch: &mut PackScratch,
+    ) -> PerPool<u32> {
+        blocks.clear();
+        blocks.extend(self.set_blocks(cells));
+        self.demand
+            .layers_of(blocks, POOL_LAYER_EDGE, scratch)
+            .expect("cell packing bounds every block by the pool edge")
     }
 
     /// Every block `cells`, distinct, own.

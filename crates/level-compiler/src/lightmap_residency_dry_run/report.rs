@@ -20,8 +20,8 @@ use super::tiles::{TileLayout, tile_layouts};
 use super::visible_set::{VisibleSetInputs, VisibleSetResult, run_visible_set};
 use crate::cell_residency_bake::portal_distance::{Neighbors, recompute_pairs};
 
-/// Layer caps simulated for soft cluster-ordered packing.
-pub(crate) const SIMULATED_LAYER_CAPS: [u32; 2] = [1024, 2048];
+/// Layer edges simulated for soft cluster-ordered packing.
+pub(crate) const SIMULATED_LAYER_EDGES: [u32; 2] = [1024, 2048];
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BoundResult {
@@ -95,8 +95,8 @@ pub(crate) struct DryRunReport {
 pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
     let attribution = attribute(&input.formats, &input.charts, input.cell_count());
     let mut layouts = vec![stored_layout(input)];
-    for cap in SIMULATED_LAYER_CAPS {
-        layouts.push(cluster_ordered_layout(input, cap));
+    for edge in SIMULATED_LAYER_EDGES {
+        layouts.push(cluster_ordered_layout(input, edge));
     }
     let repack = stored_repack_matches(input);
     let tile_layouts = tile_layouts(input);

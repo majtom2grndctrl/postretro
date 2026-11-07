@@ -63,9 +63,10 @@ impl DryRunReport {
         );
         let _ = writeln!(
             out,
-            "largest block {largest}; pool layer {POOL_LAYER_EDGE}² = {:.1} MiB (id22 + id42); \
-             cells packed into several blocks: {}",
-            mib_f64(blocks.pool_layer_bytes as f64),
+            "largest block {largest}; pool layer {POOL_LAYER_EDGE}² = {:.1} MiB lightmap, {:.1} \
+             MiB mask; cells packed into several blocks: {}",
+            mib_f64(blocks.pool_layer_bytes.lightmap as f64),
+            mib_f64(blocks.pool_layer_bytes.mask as f64),
             overhead.multi_block_cells.len()
         );
         for &cell in &overhead.multi_block_cells {
@@ -165,7 +166,7 @@ impl DryRunReport {
                 max_bytes / exact_max.max(1.0),
                 max_layers,
                 percentile_desc(&layers, 95),
-                mib_f64(self.cell_blocks.pool_bytes(max_layers as u32) as f64),
+                mib_f64(self.cell_blocks.lightmap_pool_bytes(max_layers as u32) as f64),
                 lead.unplaceable_blocks
             );
         }
@@ -219,7 +220,7 @@ impl DryRunReport {
             let _ = writeln!(
                 out,
                 "{}: {} steps, {} distinct of {} camera cells ({} portal components), {} \
-                 teleports; uncapped immediate-free pool: peak {} layers ({:.1} MiB) vs shelf \
+                 teleports; unbounded immediate-free pool: peak {} layers ({:.1} MiB) vs shelf \
                  from scratch worst of visited cells {} (all cells {shelf_worst}); steps over \
                  their own shelf count {} ({:.1}%), excess mean {:.2} / max {} layers",
                 walk.kind.label(),
@@ -229,7 +230,7 @@ impl DryRunReport {
                 walks.camera_components,
                 walk.teleports,
                 u.peak_layers,
-                mib_f64(self.cell_blocks.pool_bytes(u.peak_layers as u32) as f64),
+                mib_f64(self.cell_blocks.lightmap_pool_bytes(u.peak_layers as u32) as f64),
                 u.walk_static_peak,
                 u.steps_over_static,
                 u.steps_over_static as f64 / walk.steps.max(1) as f64 * 100.0,
@@ -242,7 +243,7 @@ impl DryRunReport {
                     "    pool {:>3} layers ({:>6.1} MiB) {:<9}: defrag steps {:>6} ({:>5.2}%), \
                      hard-fail steps {:>6} ({} blocks), LRU evictions {}",
                     run.pool_layers,
-                    mib_f64(self.cell_blocks.pool_bytes(run.pool_layers) as f64),
+                    mib_f64(self.cell_blocks.lightmap_pool_bytes(run.pool_layers) as f64),
                     run.eviction.label(),
                     run.defrag_steps,
                     run.defrag_steps as f64 / walk.steps.max(1) as f64 * 100.0,
@@ -255,7 +256,8 @@ impl DryRunReport {
         let _ = writeln!(
             out,
             "fixed pools are {} of the shelf from-scratch worst at L={SIM_LEAD_METERS}m \
-             ({shelf_worst} layers), rounded up",
+             ({shelf_worst} layers), rounded up; these walks place lightmap blocks only, so \
+             their MiB are the lightmap pool's, no spare",
             FIXED_POOL_PERCENT
                 .iter()
                 .map(|p| format!("{p}%"))

@@ -34,6 +34,7 @@ pub(super) fn bc6h_formats(dim: u32, layers: u32, shadowmask: bool) -> AtlasForm
             ShadowmaskState::Stored(ShadowmaskFormat {
                 block_bytes: vec![bc_blocks * 32; layers as usize],
                 payload_bytes: bc_blocks * 32 * u64::from(layers),
+                planes: vec![[true, true]; layers as usize],
             })
         } else {
             ShadowmaskState::Absent

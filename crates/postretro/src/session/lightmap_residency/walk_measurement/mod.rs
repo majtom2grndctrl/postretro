@@ -38,9 +38,15 @@
 //
 // Optional: `POSTRETRO_LIGHTMAP_WALK_STEPS` (default 2000),
 // `POSTRETRO_LIGHTMAP_WALK_RUNS` = `default` | `all` (default `all`: the
-// default levers plus the cap and lead sweeps),
-// `POSTRETRO_LIGHTMAP_WALK_CAPS` = comma-separated caps, which replaces every
-// run with one at each cap and the default lead. Leave
+// default levers, then the pools at the bound with no margin, then the lead
+// sweep). A run with no size passed takes each pool's first generation from
+// the level's id 58, as the runtime does.
+// `POSTRETRO_LIGHTMAP_WALK_POOL_LAYERS` replaces every run with one per entry
+// at the default lead: comma-separated `LIGHTMAP/MASK` layer counts (`levers`),
+// either left out to size that pool from id 58 (`34/15,30,/15`), or `bound` for
+// both pools at id 58 with no margin. A walk also draws cells its camera cell's
+// set does not hold, which the bound leaves out, so a real walk at `bound` can
+// grow where a walk of mandatory demand alone cannot. Leave
 // `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
 // `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
@@ -76,10 +82,13 @@ mod baked_set;
 mod completed_reads;
 mod frame_driver;
 mod install_timing;
+mod levers;
 mod mirror;
 mod modes;
 mod paths;
 mod pool_mirror;
+#[cfg(test)]
+mod pool_sizing_tests;
 mod report;
 #[cfg(test)]
 mod tests;
@@ -105,10 +114,11 @@ use baked_set::{
     mandatory_set_sizes,
 };
 use frame_driver::{FrameDriver, FrameInput};
+use levers::{DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, parse_pool_layers};
 use mirror::{MirrorStats, WalkMirror};
 use modes::{ReadsMode, WalkModes, render_camera};
 use paths::{SplitMix64, WALK_SEED, WalkKind};
-use pool_mirror::PoolMirror;
+use pool_mirror::{PoolMirror, pool_sizing};
 use report::{RunReport, print_run, print_split};
 use trip_record::{FrameRecord, RunRecord, pose_fingerprint};
 use walk::{MAX_DWELL_FRAMES, RUN_SPEED, Walk, eye_point};
@@ -116,21 +126,8 @@ use walk::{MAX_DWELL_FRAMES, RUN_SPEED, Walk, eye_point};
 const PRL_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PRL";
 const STEPS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_STEPS";
 const RUNS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_RUNS";
-const CAPS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_CAPS";
 const DEFAULT_STEPS: usize = 2_000;
 const FRAME_SECONDS: f64 = 1.0 / 60.0;
-
-#[derive(Debug, Clone, Copy)]
-struct Levers {
-    lead_metres: f32,
-    cap_layers: u32,
-}
-
-/// The shipped levers: the run every lever sweep varies one lever from.
-const DEFAULT_LEVERS: Levers = Levers {
-    lead_metres: 16.0,
-    cap_layers: 15,
-};
 
 fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
     (
@@ -141,10 +138,10 @@ fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
 
 fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
     format!(
-        "{} | L {} m | cap {} | {}",
+        "{} | L {} m | {} | {}",
         walk.kind.label(),
         levers.lead_metres,
-        levers.cap_layers,
+        levers.pools_label(),
         modes.label()
     )
 }
@@ -182,7 +179,11 @@ impl<'w> Rig<'w> {
         stage.set_lead_metres(levers.lead_metres);
         let lead = stage.lead();
         session.controller.set_lead(lead);
-        let mirror = PoolMirror::new(view.manifest, levers.cap_layers, reads.retire_clock());
+        let mirror = PoolMirror::new(
+            view.manifest,
+            pool_sizing(world, levers.pool_layers),
+            reads.retire_clock(),
+        );
         let mut level = LevelStreaming::default();
         level.install_cell_demand(stage);
         level.install_lightmap(session);
@@ -511,15 +512,18 @@ fn lightmap_residency_walks_from_prl() {
         None => println!("planar off: camera walk only"),
     }
 
+    let bound = pool_sizing(&world, DEFAULT_LEVERS.pool_layers).bound;
+    println!(
+        "id 58 bound {} lightmap and {} mask layers",
+        bound.lightmap, bound.mask
+    );
     let default = DEFAULT_LEVERS;
     let mut configs = vec![default];
     if runs == "all" {
-        for cap in [7, 12, 25] {
-            configs.push(Levers {
-                cap_layers: cap,
-                ..default
-            });
-        }
+        configs.push(Levers {
+            pool_layers: bound.map(Some),
+            ..default
+        });
         for lead_metres in [0.0, 32.0] {
             configs.push(Levers {
                 lead_metres,
@@ -527,11 +531,12 @@ fn lightmap_residency_walks_from_prl() {
             });
         }
     }
-    if let Ok(caps) = std::env::var(CAPS_ENV) {
-        configs = caps
-            .split(',')
-            .map(|cap| Levers {
-                cap_layers: cap.trim().parse().expect(CAPS_ENV),
+    if let Ok(runs) = std::env::var(POOL_LAYERS_ENV) {
+        configs = parse_pool_layers(&runs, bound)
+            .unwrap_or_else(|why| panic!("{why}"))
+            .into_iter()
+            .map(|pool_layers| Levers {
+                pool_layers,
                 ..default
             })
             .collect();

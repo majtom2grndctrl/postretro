@@ -10,11 +10,12 @@ use super::camera_walks::{
 use super::cell_block_residency::static_maxrects_layers;
 use super::cell_blocks::{BlockDims, CellBlocks};
 use super::dry_run_test_fixtures::{bc6h_formats, chart, input, multi_block_input};
-use super::mandatory::Granularity;
+use super::mandatory::{CellFootprint, Granularity, mandatory_bytes};
 use super::visible_set_tests::u_turn_input;
-use super::{ChartRect, run_dry_run};
+use super::{ChartRect, ShadowmaskState, run_dry_run};
 use crate::cell_residency_bake::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use crate::lightmap_bake::{PackedBlock, pack_cell_block as pack_sizes};
+use postretro_level_format::lightmap_pool::{PackScratch, PerPool};
 
 /// The bake's packer over recovered chart rects.
 fn pack_cell_block(charts: &[ChartRect], align: u32) -> Option<PackedBlock> {
@@ -78,7 +79,8 @@ fn cell_block_ratio_is_at_least_one_and_a_single_aligned_chart_packs_exactly() {
     assert!(overhead.block_texels >= overhead.chart_texels);
     assert!(overhead.ratios.iter().all(|&(ratio, _)| ratio >= 1.0));
     // Block bytes never undercut the cell's texel-exact bytes.
-    let rate = fixture.formats.bytes_per_texel();
+    let rate =
+        fixture.formats.lightmap_bytes_per_texel() + 2.0 * fixture.formats.plane_bytes_per_texel();
     for cell in 0..fixture.cell_count() {
         let bytes = blocks.set_bytes(&[cell as u32]);
         assert!(bytes as f64 >= blocks.chart_texels[cell] as f64 * rate);
@@ -92,7 +94,7 @@ fn cell_block_ratio_is_at_least_one_and_a_single_aligned_chart_packs_exactly() {
 #[test]
 fn cell_blocks_align_to_the_direction_scale_above_the_bc_block_edge() {
     // Direction at 1/8 of irradiance: a 4-aligned 36-texel edge would not map
-    // to whole direction texels and `layer_bytes_at` would refuse it.
+    // to whole direction texels and `lightmap_bytes_at` would refuse it.
     let mut formats = bc6h_formats(2048, 1, true);
     formats.direction_texel_scale = 8;
     formats.blocks[0].direction_bytes = 256 * 256 * 2;
@@ -312,7 +314,9 @@ fn cell_blocks_count_every_block_of_a_cell_past_one_pool_layer() {
     assert_eq!(blocks.cell_dims(1), [dims(64, 64)]);
     assert!(blocks.dims.iter().all(|d| d.fits_pool_layer()));
     assert_eq!(blocks.cell_of_block, [0, 0, 1]);
-    let cell0_bytes = formats.layer_bytes_at(2000, 1500) + formats.layer_bytes_at(1500, 1500);
+    let both = [true, true];
+    let cell0_bytes =
+        formats.cell_block_bytes(2000, 1500, both) + formats.cell_block_bytes(1500, 1500, both);
     assert_eq!(blocks.set_bytes(&[0]), cell0_bytes);
     assert_eq!(blocks.set_dims(&[0, 1]).count(), 3);
     let overhead = blocks.overhead();
@@ -372,5 +376,85 @@ fn cell_blocks_count_every_block_of_a_cell_past_one_pool_layer() {
     assert_eq!((run.entering_blocks, run.entering_resident), (2, 0));
     assert_eq!(run.demand_reads, 3);
     assert_eq!(run.read_bytes, blocks.set_bytes(&[0, 1]));
-    assert_eq!(run.peak_layers, 2);
+    assert_eq!(run.peak_layers.lightmap, 2);
+}
+
+/// `multi_block_input` with these planes on its three stored blocks.
+fn multi_block_input_storing(planes: Vec<[bool; 2]>) -> super::DryRunInput {
+    let mut fixture = multi_block_input();
+    let ShadowmaskState::Stored(masks) = &mut fixture.formats.shadowmask else {
+        panic!("the fixture stores id 42");
+    };
+    masks.planes = planes;
+    fixture
+}
+
+// Id 42 stores no all-zero plane, so a cell block costs and places only the
+// planes it stores: the bytes, the texel-exact charge and the mask pool agree.
+#[test]
+fn cell_blocks_charge_and_place_only_the_planes_they_store() {
+    let fixture = multi_block_input_storing(vec![[true, false], [false, false], [false, true]]);
+    let formats = &fixture.formats;
+    let blocks = CellBlocks::new(&fixture);
+    let lightmap = |width, height| formats.lightmap_bytes_at(width, height);
+    // A BC5 plane costs one byte a texel.
+    assert_eq!(
+        blocks.block_bytes,
+        [
+            lightmap(2000, 1500) + 2000 * 1500,
+            lightmap(1500, 1500),
+            lightmap(64, 64) + 64 * 64,
+        ]
+    );
+    assert_eq!(blocks.demand.plane_count(), 2);
+    assert_eq!(blocks.demand.planes(1), [false, false]);
+
+    let footprint = CellFootprint::new(&fixture);
+    let exact = mandatory_bytes(&[1], &footprint, &[], &mut Vec::new()).texel_exact;
+    let texels = (64 * 64) as f64;
+    assert_eq!(exact, texels * formats.lightmap_bytes_per_texel() + texels);
+
+    let mut scratch = (Vec::new(), PackScratch::default());
+    let layers = blocks.set_pool_layers(&[0, 1], &mut scratch.0, &mut scratch.1);
+    assert_eq!(
+        layers,
+        PerPool {
+            lightmap: shelf_layers_from_scratch(&blocks, &[0, 1]),
+            mask: 1,
+        },
+        "the 2000×1500 plane leaves room for the 64² one"
+    );
+    assert_eq!(
+        blocks.streamed_pools_bytes(layers),
+        3 * blocks.pool_layer_bytes.lightmap + 2 * blocks.pool_layer_bytes.mask,
+        "each pool carries its spare"
+    );
+}
+
+// A repacked block holds whatever charts it gathers, so it stores a plane any
+// of their stored blocks did.
+#[test]
+fn a_repacked_cell_block_stores_every_plane_its_charts_came_from() {
+    let mut fixture = multi_block_input_storing(vec![[true, false], [false, true], [false, false]]);
+    fixture.charts = vec![chart(0, 0, 0, 0, 32, 32), chart(0, 1, 0, 0, 32, 32)];
+    let blocks = CellBlocks::new(&fixture);
+    assert_eq!(blocks.dims.len(), 1);
+    assert_eq!(blocks.demand.planes(0), [true, true]);
+}
+
+// Without id 42 there is no mask pool at all, not an empty one.
+#[test]
+fn cell_blocks_of_a_level_with_no_id_42_have_no_mask_pool() {
+    let fixture = input(
+        bc6h_formats(64, 1, false),
+        &[0],
+        vec![chart(0, 0, 0, 0, 64, 64)],
+        Vec::new(),
+    );
+    let blocks = CellBlocks::new(&fixture);
+    assert!(!blocks.demand.has_mask_pool());
+    assert_eq!(
+        blocks.block_bytes,
+        [fixture.formats.lightmap_bytes_at(64, 64)]
+    );
 }

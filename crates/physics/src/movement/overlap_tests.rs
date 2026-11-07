@@ -1220,7 +1220,7 @@ fn the_substrate_writes_no_body_position_outside_a_swept_move() {
     let mut allowed = vec![
         // Mover carry and mover displacement: mover policy, exempt.
         "current_pos = apply_mover_carry(position, carry_ground, collision);",
-        "current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);",
+        "current_pos = displace_from_movers(carry_ground, collision, &capsule, current_pos);",
         // The slide sweep's advance: to its hit, or the whole move it proved clear.
         "current_pos += velocity * remaining_dt;",
         "current_pos += dir * toi;",

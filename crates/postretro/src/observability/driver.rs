@@ -284,6 +284,7 @@ fn run_headless_inner(
             // No "use" verb in the runspec yet; headless drives no trigger stage.
             use_pressed: false,
             drop_pressed: false,
+            assist_held: false,
         };
 
         // The post-movement closure returns the runspec's aim (origin + a

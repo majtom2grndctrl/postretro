@@ -1,12 +1,14 @@
 // Tick overlap invariant for agents: own movement never ends a tick inside
-// static geometry.
+// static geometry. Also the source gates on the controller's shared primitives.
 // See: context/lib/movement.md §1, §7 · context/lib/entity_model.md §7
 
 use glam::Vec3;
 
 use super::{AgentCapsule, SlideResult, collide_and_slide};
+use crate::collision::moving::CombinedCollisionWorld;
 use crate::collision::{CollisionCapsule, CollisionWorld, OVERLAP_TOLERANCE, SKIN_DISTANCE};
 use postretro_collision::EnvironmentView;
+use postretro_foundation::GroundRef;
 
 const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
@@ -103,11 +105,30 @@ fn step(
     desired: Vec3,
     vertical: f32,
 ) -> SlideResult {
-    let mut knockback = Vec3::ZERO;
-    collide_and_slide(
-        world,
+    step_on(
+        &CombinedCollisionWorld::static_only(world),
         capsule,
         position,
+        GroundRef::World,
+        desired,
+        vertical,
+    )
+}
+
+fn step_on(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    ground: GroundRef,
+    desired: Vec3,
+    vertical: f32,
+) -> SlideResult {
+    let mut knockback = Vec3::ZERO;
+    collide_and_slide(
+        collision,
+        capsule,
+        position,
+        ground,
         desired,
         vertical,
         &mut knockback,
@@ -137,7 +158,7 @@ fn run_clear(
         let result = step(world, capsule, position, desired, vertical);
         position = result.position;
         vertical = result.velocity.y;
-        grounded = result.grounded;
+        grounded = result.ground.is_grounded();
         let depth = world.overlap_depth_for_test(position, shape);
         assert!(
             depth <= OVERLAP_TOLERANCE,
@@ -267,7 +288,8 @@ fn the_agent_controller_writes_no_body_position_outside_a_swept_move() {
     // Every write, once per occurrence: a new write fails, and so does one
     // this list no longer matches.
     let mut allowed = vec![
-        "current_pos = position;",
+        "current_pos = apply_mover_carry(position, previous_ground, collision);",
+        "current_pos = displace_from_movers(previous_ground, collision, &parry_shape, current_pos);",
         "current_pos = lifted;",
         "current_pos += velocity * remaining_dt;",
         "current_pos += dir * toi;",
@@ -299,7 +321,9 @@ fn the_agent_controller_writes_no_body_position_outside_a_swept_move() {
 }
 
 // Players and enemies share the geometry primitives, not controllers: the
-// agent reaches step-up and snap-to-floor only through `movement::swept`.
+// agent reaches step-up, snap-to-floor, mover carry, displacement, release
+// velocity and the push-blocked test only through `movement::swept` and
+// `movement::mover_carry`, and the player substrate calls the same ones.
 #[test]
 fn the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own() {
     let src = controller_source();
@@ -310,6 +334,16 @@ fn the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own() {
         // A floor probe or lift of its own.
         "cast_ray",
         "step_height +",
+        // Mover contact of its own.
+        "fn apply_mover_carry",
+        "fn displace_from_movers",
+        "fn mover_release_velocity",
+        "fn ground_ref_from_hit",
+        "angular_velocity",
+        "linear_velocity",
+        "deepest_mover",
+        "mover_push_is_blocked_by_static",
+        "cast_capsule_parry",
     ] {
         assert!(
             !src.contains(copy),
@@ -320,95 +354,23 @@ fn the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own() {
         src.contains("use crate::movement::swept::{StepParams, snap_to_floor, step_up};"),
         "the agent controller calls the shared primitives"
     );
-}
-
-// --- The warning -------------------------------------------------------------------
-
-#[test]
-fn an_overlap_warns_once_per_level_load_naming_descriptor_texture_and_position() {
-    use log::Level;
-    use postretro_entities::{
-        DescriptorProvenance, DescriptorSpawnPath, EntityRegistry, Transform,
-    };
-    use postretro_test_log_capture::LogCapture;
-
-    use crate::movement::overlap_check::{check_own_movement, disarm_overlap_assert_for_test};
-
-    // A floor whose two triangles carry texture 0 of the level's names.
-    let level = || {
-        CollisionWorld::from_textured_triangles_for_test(
-            vec![
-                Vec3::new(-50.0, 0.0, -50.0),
-                Vec3::new(50.0, 0.0, -50.0),
-                Vec3::new(50.0, 0.0, 50.0),
-                Vec3::new(-50.0, 0.0, 50.0),
-            ],
-            vec![[0, 2, 1], [0, 3, 2]],
-            vec![0, 0],
-            vec![String::from("metal/floor_grate")],
-        )
-    };
-    let mut registry = EntityRegistry::new();
-    let mut spawn = |name: &str| {
-        let body = registry.spawn(Transform::default());
-        registry
-            .set_component(
-                body,
-                DescriptorProvenance {
-                    canonical_name: String::from(name),
-                    owned_components: Default::default(),
-                    map_overrides: Default::default(),
-                    spawn_path: DescriptorSpawnPath::MapPlacement,
-                },
-            )
-            .unwrap();
-        body
-    };
-    let grunt = spawn("enemy.grunt");
-    let drone = spawn("enemy.drone");
-    let shape = CollisionCapsule::new(0.35, 0.55);
-    let clear = Vec3::new(0.0, 0.92, 0.0);
-    // Engine (x, y, z) = (-2.54, 0.85, 5.08) is TrenchBroom (-200 100 33).
-    let sunk = Vec3::new(-2.54, 0.85, 5.08);
-    let _disarmed = disarm_overlap_assert_for_test();
-    let capture = LogCapture::start();
-
-    let world = level();
-    let report = check_own_movement(&world, clear, sunk, shape)
-        .expect("an overlapping end pose handed to the check is reported");
-    assert_eq!(report.position, sunk, "the check moves nothing");
-    crate::sim::report_static_overlap(&world, &registry, grunt, &report);
-    capture.assert_logged_once(
-        Level::Warn,
-        "[Movement] `enemy.grunt` ended a tick inside static geometry against texture \
-         `metal/floor_grate` at TrenchBroom (-200 100 33)",
-    );
-    // A second overlap in the same level load is silent, whoever it is.
-    crate::sim::report_static_overlap(&world, &registry, drone, &report);
-    capture.assert_logged_once(Level::Warn, "inside static geometry");
-    capture.assert_not_logged(Level::Warn, "enemy.drone");
-
-    // A level reload builds a new world, which warns again.
-    let reloaded = level();
-    let report = check_own_movement(&reloaded, clear, sunk, shape).unwrap();
-    crate::sim::report_static_overlap(&reloaded, &registry, grunt, &report);
-    let warnings = capture
-        .records()
-        .iter()
-        .filter(|record| {
-            record.level == Level::Warn && record.message.contains("inside static geometry")
-        })
-        .count();
-    assert_eq!(warnings, 2, "the reload re-arms the one warning");
-
-    // An untextured face names the position alone.
-    let untextured = Geometry::default().floor((-50.0, 50.0), 0.0).build();
-    let report = check_own_movement(&untextured, clear, sunk, shape).unwrap();
-    crate::sim::report_static_overlap(&untextured, &registry, drone, &report);
-    capture.assert_logged_once(
-        Level::Warn,
-        "[Movement] `enemy.drone` ended a tick inside static geometry at TrenchBroom \
-         (-200 100 33); further overlaps this level stay silent",
+    let substrate = include_str!("../substrate.rs");
+    for call in [
+        "apply_mover_carry(",
+        "displace_from_movers(",
+        "mover_release_velocity(",
+        "ground_ref_from_hit(",
+    ] {
+        assert!(src.contains(call), "the agent controller calls `{call}`");
+        assert!(
+            substrate.contains(call),
+            "the player substrate calls `{call}`"
+        );
+    }
+    let primitives = include_str!("../mover_carry.rs");
+    assert!(
+        primitives.contains("mover_push_is_blocked_by_static("),
+        "displacement holds the one push-blocked test"
     );
 }
 
@@ -487,7 +449,7 @@ fn a_falling_agent_beside_a_step_still_steps_up() {
         );
         position = result.position;
         vertical = result.velocity.y;
-        grounded = result.grounded;
+        grounded = result.ground.is_grounded();
     }
     assert!(
         grounded && position.x > 5.0 && (position.y - rest_y(&capsule, 0.0)).abs() < 2.0e-3,
@@ -496,10 +458,8 @@ fn a_falling_agent_beside_a_step_still_steps_up() {
 }
 
 #[test]
-fn an_agent_ignores_a_mover_top_its_pawn_neighbour_steps_onto() {
-    use crate::collision::moving::{
-        CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource,
-    };
+fn an_agent_steps_onto_a_mover_top_as_its_pawn_neighbour_does() {
+    use crate::collision::moving::{MoverCollider, MoverPose, MoverPoseSource};
 
     struct Still;
     impl MoverPoseSource for Still {
@@ -536,38 +496,27 @@ fn an_agent_ignores_a_mover_top_its_pawn_neighbour_steps_onto() {
     )
     .unwrap()];
     let world = Geometry::default().floor((-50.0, 60.0), 0.0).build();
-    // The pawn's query sees the mover and steps onto its top...
-    let combined = CombinedCollisionWorld::new(&world, &movers, &Still);
-    let start = Vec3::new(3.0, rest_y(&capsule(STEP), 0.0), 0.0);
-    let lifted = crate::movement::swept::step_up(
-        &combined,
-        CollisionCapsule::new(0.35, 0.55),
-        Vec3::new(4.5, 0.92, 0.0),
-        Vec3::new(3.0, 0.0, 0.0),
-        DT,
-        crate::movement::swept::StepParams {
-            step_height: STEP,
-            lift_margin: crate::collision::STEP_UP_LIFT_MARGIN,
-            cos_walkable: crate::collision::COS_WALKABLE,
-        },
-    );
+    let collision = CombinedCollisionWorld::new(&world, &movers, &Still);
+    let capsule = capsule(STEP);
+    let mut position = Vec3::new(3.0, rest_y(&capsule, 0.0), 0.0);
+    let mut ground = GroundRef::World;
+    let mut vertical = 0.0;
+    for _ in 0..80 {
+        let result = step_on(
+            &collision,
+            &capsule,
+            position,
+            ground,
+            Vec3::new(3.0, 0.0, 0.0),
+            vertical,
+        );
+        position = result.position;
+        ground = result.ground;
+        vertical = result.velocity.y;
+    }
+    assert_eq!(ground, GroundRef::Mover(1), "the agent stands on the mover");
     assert!(
-        lifted.is_some(),
-        "the combined query steps up onto the mover"
-    );
-    // ...while the agent, querying static geometry only, walks on at floor
-    // height through where the mover stands, as it always has.
-    let (end, grounded) = run_clear(
-        &world,
-        &capsule(STEP),
-        start,
-        Vec3::new(3.0, 0.0, 0.0),
-        80,
-        "agent past mover",
-    );
-    assert!(grounded && end.x > 6.0, "the agent walked on, at {end:?}");
-    assert!(
-        (end.y - start.y).abs() < 1.0e-3,
-        "at floor height, never on the mover"
+        position.x > 6.0 && (position.y - rest_y(&capsule, rise)).abs() < 2.0e-3,
+        "on the mover top, at {position:?}"
     );
 }

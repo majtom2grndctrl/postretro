@@ -1,4 +1,5 @@
-// Mover carry, release velocity, and displacement for player movement.
+// Mover carry, release velocity and displacement: body-agnostic primitives the
+// player substrate and the agent controller both call, in the same order.
 // See: context/lib/movement.md §6
 
 use glam::Vec3;
@@ -10,7 +11,7 @@ use crate::collision::moving::{
     deepest_mover_push_penetration_excluding_swept,
 };
 use crate::collision::{CollisionWorld, cast_capsule_parry};
-use postretro_foundation::{GroundRef, PlayerMovementComponent};
+use postretro_foundation::GroundRef;
 
 pub(super) fn ground_ref_from_hit(hit: CombinedCastHit) -> GroundRef {
     match hit.source {
@@ -33,27 +34,27 @@ pub(super) fn apply_mover_carry(
     })
 }
 
-pub(super) fn apply_mover_release_velocity(
-    component: &mut PlayerMovementComponent,
+/// The velocity a body keeps from the mover it just left: `None` while it stays
+/// on that mover, or when it rode none. Each controller decides where it lands.
+pub(super) fn mover_release_velocity(
     previous_ground: GroundRef,
+    ground: GroundRef,
     collision: &CombinedCollisionWorld<'_>,
-    player_position: Vec3,
-) {
+    position: Vec3,
+) -> Option<Vec3> {
     let GroundRef::Mover(mover_id) = previous_ground else {
-        return;
+        return None;
     };
-    if component.ground == GroundRef::Mover(mover_id) {
-        return;
+    if ground == GroundRef::Mover(mover_id) {
+        return None;
     }
-    if let Some(pose) = collision.poses.pose(mover_id) {
+    collision.poses.pose(mover_id).map(|pose| {
         let pivot = pose.transform.position - pose.tick_delta;
-        component.velocity +=
-            pose.linear_velocity + pose.angular_velocity.cross(player_position - pivot);
-    }
+        pose.linear_velocity + pose.angular_velocity.cross(position - pivot)
+    })
 }
 
 pub(super) fn displace_from_movers(
-    _component: &PlayerMovementComponent,
     previous_ground: GroundRef,
     collision: &CombinedCollisionWorld<'_>,
     capsule: &Capsule,

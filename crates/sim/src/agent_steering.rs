@@ -6,7 +6,7 @@
 // component — `combat_positioning` also queries `find_path` when scoring
 // candidate positions. It owns the replan policy (per-tick budget + per-agent
 // staleness gate), the waypoint-following loop, and the O(n²) separation pass;
-// the actual capsule sweep lives in `agent::collide_and_slide`.
+// the actual capsule sweep lives in `movement::agent_motion::collide_and_slide`.
 //
 // See: context/lib/build_pipeline.md §Navigation bake (pathfinding query surface)
 //      context/lib/entity_model.md §7 (collision), §5 (fixed-tick game logic)
@@ -14,8 +14,9 @@
 
 use glam::Vec3;
 
-use crate::agent::{AgentCapsule, collide_and_slide};
-use crate::collision::CollisionWorld;
+use crate::collision::moving::CombinedCollisionWorld;
+use crate::movement::MovementCollisionSource;
+use crate::movement::agent_motion::{AgentCapsule, carried_by_mover, collide_and_slide};
 use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::AgentComponent;
@@ -314,6 +315,8 @@ struct AgentSnapshot {
 /// add the separation term, move through the world via the collide-and-slide
 /// harness, advance the waypoint cursor on arrival, and set arrived/blocked.
 ///
+/// `collision` is the static world plus the tick's movers, or a bare
+/// `CollisionWorld` for a level or test without them.
 /// `nav_graph` is `None` when the loaded map has no navmesh bake; agents then
 /// cannot plan (every destination resolves to blocked). `environment` is the level
 /// gravity plus installed volumes; each agent resolves its own gravity from it at
@@ -324,28 +327,30 @@ struct AgentSnapshot {
 #[cfg(any(test, feature = "test-support"))]
 pub fn tick(
     registry: &mut EntityRegistry,
-    collision_world: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     nav_graph: Option<&NavGraph>,
     environment: EnvironmentView<'_>,
     dt: f32,
 ) -> AgentTickResult {
-    tick_impl(registry, collision_world, nav_graph, environment, dt)
+    let collision = collision.combined_collision();
+    tick_impl(registry, &collision, nav_graph, environment, dt)
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
 pub(crate) fn tick(
     registry: &mut EntityRegistry,
-    collision_world: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     nav_graph: Option<&NavGraph>,
     environment: EnvironmentView<'_>,
     dt: f32,
 ) -> AgentTickResult {
-    tick_impl(registry, collision_world, nav_graph, environment, dt)
+    let collision = collision.combined_collision();
+    tick_impl(registry, &collision, nav_graph, environment, dt)
 }
 
 fn tick_impl(
     registry: &mut EntityRegistry,
-    collision_world: &CollisionWorld,
+    collision: &CombinedCollisionWorld<'_>,
     nav_graph: Option<&NavGraph>,
     environment: EnvironmentView<'_>,
     dt: f32,
@@ -406,7 +411,7 @@ fn tick_impl(
         crate::movement::knockback::decay(
             &mut agent.knockback_velocity,
             &agent.knockback,
-            agent.is_grounded,
+            agent.ground.is_grounded(),
             dt,
         );
         agent.velocity += agent.knockback_velocity;
@@ -436,9 +441,10 @@ fn tick_impl(
                 step_height: agent.step_height,
             };
             let result = collide_and_slide(
-                collision_world,
+                collision,
                 &capsule,
                 position,
+                agent.ground,
                 agent.knockback_velocity,
                 agent.velocity.y,
                 &mut agent.knockback_velocity,
@@ -446,9 +452,14 @@ fn tick_impl(
                 dt,
             );
             agent.velocity = result.velocity;
-            agent.is_grounded = result.grounded;
+            agent.ground = result.ground;
             if let Some(overlap) = &result.overlap {
-                crate::sim::report_static_overlap(collision_world, registry, current.id, overlap);
+                crate::sim::report_static_overlap(
+                    collision.static_world,
+                    registry,
+                    current.id,
+                    overlap,
+                );
             }
             if let Ok(transform) = registry.get_component::<Transform>(current.id) {
                 let mut t = *transform;
@@ -535,8 +546,10 @@ fn tick_impl(
         agent.steer_velocity = steer_velocity;
         let mut desired = steer_velocity;
 
-        let has_recovery_intent =
-            !knocked && has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
+        // A carried rider's world motion is its mover's: no stuck evidence.
+        let has_recovery_intent = !knocked
+            && !carried_by_mover(collision, agent.ground)
+            && has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
         if has_recovery_intent {
             if agent.unstick_window_remaining == 0 && agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
                 // Fire recovery: clear the plan latch so the next tick's
@@ -588,9 +601,10 @@ fn tick_impl(
             step_height: agent.step_height,
         };
         let result = collide_and_slide(
-            collision_world,
+            collision,
             &capsule,
             position,
+            agent.ground,
             Vec3::new(desired.x, 0.0, desired.z),
             agent.velocity.y,
             &mut agent.knockback_velocity,
@@ -599,9 +613,14 @@ fn tick_impl(
         );
 
         agent.velocity = result.velocity;
-        agent.is_grounded = result.grounded;
+        agent.ground = result.ground;
         if let Some(overlap) = &result.overlap {
-            crate::sim::report_static_overlap(collision_world, registry, current.id, overlap);
+            crate::sim::report_static_overlap(
+                collision.static_world,
+                registry,
+                current.id,
+                overlap,
+            );
         }
         if !recovery_active_this_tick {
             update_stuck_ticks(
@@ -1148,10 +1167,13 @@ mod tests;
 
 #[cfg(test)]
 mod environment_tests;
+#[cfg(test)]
+mod mover_contact_tests;
 
 #[cfg(test)]
 mod held_world_participation {
     use super::*;
+    use crate::collision::CollisionWorld;
     use postretro_entities::Transform;
     use postretro_entities::components::inventory::Inventory;
 

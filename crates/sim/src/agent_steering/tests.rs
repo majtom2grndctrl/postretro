@@ -15,7 +15,7 @@ use glam::Vec3;
 use postretro_entities::Transform;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
-use crate::collision::SKIN_DISTANCE;
+use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 use crate::nav::NavAgentParams;
 
 const EPS: f32 = 1e-3;
@@ -2457,7 +2457,7 @@ fn idle_agent_without_destination_still_settles_to_ground() {
         registry
             .get_component::<AgentComponent>(id)
             .unwrap()
-            .is_grounded,
+            .is_grounded(),
         "idle agent should be grounded after settling"
     );
 }
@@ -3139,7 +3139,7 @@ fn knockback_moves_idle_agent_and_wall_contact_consumes_it() {
         .get_component::<AgentComponent>(id)
         .unwrap()
         .clone();
-    agent.is_grounded = true;
+    agent.ground = postretro_foundation::GroundRef::World;
     agent.knockback.ground_drag = 0.0;
     agent.add_knockback(Vec3::X * 12.0);
     registry.set_component(id, agent).unwrap();
@@ -3186,7 +3186,7 @@ fn knockback_survives_path_steering_and_vertical_launch_lands() {
         .get_component::<AgentComponent>(id)
         .unwrap()
         .clone();
-    agent.is_grounded = true;
+    agent.ground = postretro_foundation::GroundRef::World;
     agent.knockback.control = 0.0;
     agent.add_knockback(Vec3::new(1.0, 6.0, 0.0));
     registry.set_component(id, agent).unwrap();
@@ -3227,7 +3227,7 @@ fn knockback_survives_path_steering_and_vertical_launch_lands() {
     let (before_release, after_release, release_velocity) =
         release.expect("ground drag should end protected knockback");
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
-    assert!(agent.is_grounded);
+    assert!(agent.is_grounded());
     assert!(agent.knockback_velocity.length() < EPS);
 
     let first_recovery_speed = STEERING_ACCEL_PER_SPEED * agent.move_speed * DT;
@@ -3262,7 +3262,7 @@ fn partial_knockback_control_scales_turn_rate_and_preserves_steer_speed() {
         .get_component::<AgentComponent>(id)
         .unwrap()
         .clone();
-    agent.is_grounded = false;
+    agent.ground = postretro_foundation::GroundRef::Airborne;
     agent.knockback.control = 0.5;
     agent.steer_velocity = Vec3::Z * agent.move_speed;
     agent.velocity = agent.steer_velocity;

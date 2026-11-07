@@ -977,9 +977,11 @@ where
         let mut registry = registry.borrow_mut();
         let substage = cpu.scope(SimStage::SteerAgents);
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
+        let agent_collision =
+            CombinedCollisionWorld::new(collision_world, mover_colliders, &*mover_tick_states);
         let _ = agent_steering::tick(
             &mut registry,
-            collision_world,
+            &agent_collision,
             nav_graph,
             environment,
             tick_dt,
@@ -2028,6 +2030,8 @@ fn foot_probe_inverse(
 
 mod host_movement;
 mod movement_overlap;
+#[cfg(test)]
+mod movement_overlap_tests;
 mod reload;
 pub(crate) mod weapon_stage;
 

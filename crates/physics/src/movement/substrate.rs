@@ -10,7 +10,7 @@ use crate::collision::moving::{
 use crate::collision::{CollisionCapsule, SKIN_DISTANCE, STEP_UP_LIFT_MARGIN};
 use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
-    apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
+    apply_mover_carry, displace_from_movers, ground_ref_from_hit, mover_release_velocity,
 };
 use crate::movement::swept::{self, StepParams};
 use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
@@ -141,7 +141,7 @@ pub(super) fn integrate_collision(
     let drift_is_3d = matches!(component.movement_state, MovementState::Swim { .. });
 
     let mut current_pos = apply_mover_carry(position, carry_ground, collision);
-    current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);
+    current_pos = displace_from_movers(carry_ground, collision, &capsule, current_pos);
     let checked_start = current_pos;
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
@@ -405,7 +405,11 @@ pub(super) fn integrate_collision(
     // an exit that misses the top) while riding its target's mover keeps that
     // mover's velocity instead of stopping dead. On a continuing vault tick the
     // next path velocity overwrites it.
-    apply_mover_release_velocity(component, carry_ground, collision, current_pos);
+    if let Some(release) =
+        mover_release_velocity(carry_ground, component.ground, collision, current_pos)
+    {
+        component.velocity += release;
+    }
 
     // Air-tick hysteresis. The step-up probe lifts the capsule only at genuine
     // walkable steps (pure walls skip the lift), but cornering events or the

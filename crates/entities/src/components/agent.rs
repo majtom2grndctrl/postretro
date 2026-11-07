@@ -18,13 +18,13 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
-use postretro_foundation::{KnockbackResponse, NavAgentParams};
+use postretro_foundation::{GroundRef, KnockbackResponse, NavAgentParams};
 
 /// Live state for one movable navigation agent.
 ///
 /// The capsule geometry (`radius`, `height`, `step_height`) is fixed at attach
 /// time from the baked agent parameters and never mutated by the steering tick;
-/// `velocity`, `steer_velocity`, stuck-recovery counters, `is_grounded`, the
+/// `velocity`, `steer_velocity`, stuck-recovery counters, `ground`, the
 /// path/cursor, and `destination` are the live fields the steering system
 /// writes each tick.
 ///
@@ -73,9 +73,11 @@ pub struct AgentComponent {
     /// lateral bias before collision resolution.
     #[serde(default)]
     pub unstick_window_remaining: u32,
-    /// Grounded flag resolved by the harness's ground-stick down-cast. `true`
-    /// when the agent's capsule rests on a walkable floor.
-    pub is_grounded: bool,
+    /// What the agent's capsule rests on, resolved by the harness. The single
+    /// source for mover carry, rider exemption, stuck suppression and link
+    /// resolution; [`Self::is_grounded`] is its projection.
+    #[serde(default)]
+    pub ground: GroundRef,
     /// Current path: ordered world-space waypoints from the agent toward its
     /// destination, produced by the pathfinding query. Empty when the agent has
     /// no active path.
@@ -144,7 +146,7 @@ impl AgentComponent {
             steer_velocity: Vec3::ZERO,
             stuck_ticks: 0,
             unstick_window_remaining: 0,
-            is_grounded: false,
+            ground: GroundRef::Airborne,
             path: Vec::new(),
             mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,
@@ -173,9 +175,14 @@ impl AgentComponent {
         self.velocity = velocity;
         self.knockback_velocity = knockback_velocity;
         if impulse.y > 0.0 && velocity.y > 0.0 {
-            self.is_grounded = false;
+            self.ground = GroundRef::Airborne;
         }
         true
+    }
+
+    /// Whether the capsule rests on a walkable floor, static or mover.
+    pub fn is_grounded(&self) -> bool {
+        self.ground.is_grounded()
     }
 
     /// Construct an agent from baked navmesh agent parameters. Seeds the capsule
@@ -249,7 +256,7 @@ mod tests {
         assert_eq!(agent.steer_velocity, Vec3::ZERO);
         assert_eq!(agent.stuck_ticks, 0);
         assert_eq!(agent.unstick_window_remaining, 0);
-        assert!(!agent.is_grounded);
+        assert!(!agent.is_grounded());
         assert!(agent.path.is_empty());
         assert!(agent.mandatory_waypoints.is_empty());
         assert_eq!(agent.waypoint_cursor, 0);

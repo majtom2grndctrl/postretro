@@ -42,6 +42,9 @@ Source since the brief's `read at` (7dec6ed0) changed only model import and ghos
 - **Row 10 on the stress map found starvation across flips** — the harness first read a 41-tick wait against a 16-tick limit. The gate tier admitted in slot order, so a flip close behind another put the low slots back ahead of high slots still waiting. Gate-driven agents now go longest owed first (`gate_generation` ascending, slot order within one): an admitted agent takes the live generation, so none waits past ⌈N / budget⌉ ticks however often gates flip. `the_longest_owed_agents_are_admitted_first_whatever_their_slot` covers it; the harness now reads 98 flips, worst wait 15 ticks.
 - **A lift already moving overwrote a planned ride** — `advance` boarded a planned ride, then `enter_ride_if_carried` replaced it with an unplanned one, losing the exit. It now runs only when no ride exists. Found through the row 35 window; `a_plan_boarded_on_a_lift_already_moving_keeps_its_exit` covers it.
 - **Row 36 windows, and enemies never reached lift 0** — the stress map bakes 32 gates and no links: its lift decks stand 0.61 m above both floors, past the 0.4 m step, so no route boards them. A live-introspection run at lift 0 found no enemy within 12 m of the lift across 225 s, apart from one 17–33 m above it. Both windows therefore measure overhead with no agent touching a mover. The 64-agent combined baseline is about 1.95 ms, so the 0.8 ms stop is about 40% of it, not a quarter. Windows are 120 frames, about 2 s each, vsync-bound at 16.53 ms.
+- **Lifts that never rest are plain ground (decided in review, owner to confirm)** — a watched mover is ridden, planned through as a ride, or used as a route start only if it rests at its stops: `Once` mode, or a wait of two fixed ticks or more (`RESTING_WAIT_MS`, about 33.3 ms; docs say 34 ms or more). A started lift with a shorter wait never docks long enough to board, and a ride on it could never end at a stop. Docs say so.
+- **A pinned rider may step to a spot on its own deck (decided in review)** — only on a non-spinner, and only when the carry from that spot along the whole course, both ways, stays clear. The spot is kept in the deck's frame while walking, and the walk ends if the body lands off that deck. Mid-shaft lift riders at an overhanging edge step inward this way instead of yielding as corpses. The search caps full-course sweeps at 8 per pin.
+- **Route crossings replace `path_portals`** — a route records each gated portal and lift link it walks, with the waypoint it is walked toward, so only closures still ahead cost a replan or drop a path. Blocked agents wake only on a dock change that can open a route (`opened_generation`).
 
 ## Delegated answers
 
@@ -67,49 +70,49 @@ Source since the brief's `read at` (7dec6ed0) changed only model import and ghos
 
 ## AC-to-proof
 
-| AC | Row (short) | Proof | Status |
-|---|---|---|---|
-| 1 | Closed mover stops; opens; `displace` pushes (O40) | `sim` agent_steering: `agent_stops_at_closed_mover_and_passes_once_open`, `displace_mover_pushes_unpinned_agent_clear` | achievable as stated |
-| 2 | Carry within 1e-4 m; descender; release decay (O2–O5, O33) | `sim` lift scenario, moving and idle agent, across start, reverse, stop | achievable as stated |
-| 3 | Riders and grace exempt; non-rider triggers (O6) | `physics` blocking_tests | achievable as stated |
-| 4 | Non-crush pin holds or backs off; one decision (O9a–O9c) | `physics` pin_tests, agent and agent+player | achievable as stated |
-| 5 | Crush only pinned or engulfed; past death (O7–O9) | `physics` blocking_tests | achievable as stated |
-| 6 | Crush order, ≥4 victims, ≥8 runs (O10) | `physics` test over repeated runs, comparing order | achievable as stated |
-| 7 | Corpses and queued despawn; killed-while-pinned timing (O11, O11a, O39, O47) | `physics` pin_tests + `sim` corpse-on-lift; `fixed_tick_queued_despawn_quiesces_brain_agent_steering` rewritten | achievable as stated |
-| 8 | Latch `blocked`, spread ≤ 0.05 m/5 s, stuck ≤ 1, pass ≤ 2 s; one replan; kept path (O12–O14, O28) | `sim` gate scenario | achievable as stated |
-| 9 | 16 agents within ⌈16/budget⌉ ticks (O29) | `sim` gate scenario | achievable as stated |
-| 10 | Contention on `stress-env-volumes` (O43) | Routine `sim` fixture at N=64 with drift filling the budget, plus an `#[ignore]` harness over the compiled map, run once at the gate | achievable as stated |
-| 11 | Lift returning onto blocked or `Freeze`, knockback 0; pit (O42, O61) | `sim` scenarios, 2 s bound | achievable as stated |
-| 12 | No path through a docked door; both sides plan; hollow room (O28, O30, O41, O44) | `sim` nav/gate tests over a real bake | achievable as stated |
-| 13 | `targetReachable` tracks gate; one generation (O31, O32) | `ai` test | achievable as stated |
-| 14 | Mid-exit, mid-shaft, knocked off, riser, no mid-ride replan (O34–O38) | `sim` mover_link tests | achievable as stated |
-| 15 | Rider holds `targetReachable` (O38, O48) | `ai` test | achievable as stated |
-| 16 | Route through lift; no ride on parked or trigger lift; shaft safety; ride bounds (O15–O18, O35, O53, O54, O62, O63) | `sim` mover_link tests | achievable as stated |
-| 17 | Holds through ≥3 s wait (O15, O17, O55) | `sim` mover_link test | achievable as stated |
-| 18 | Rising room lowered: no roof route, rides up, exits (O19, O44, O56) | `a_rising_rooms_floor_and_roof_link_apart_and_its_walls_leave_only_the_doorway` (real bake) with `a_body_inside_the_lowered_room_routes_by_its_own_surface_only` (runtime, the same record shape); end to end in row 38 | achievable as stated |
-| 19 | No combat slot overlapping a docked door (O59) | `sim` combat_positioning test | achievable as stated |
-| 20 | Walks across a flush lift (O37, O45) | `sim` mover_link test | achievable as stated |
-| 21 | Unload and reload starts clean (O49) | `sim` gate test | achievable as stated |
-| 22 | Gate and link every tick of a wait; stop on leaving (O24, O46) | `physics` dock predicate + `sim` gate test | achievable as stated |
-| 23 | Door spawned closed gates from tick one (O25) | `sim` gate test | achievable as stated |
-| 24 | Held at dock keeps gate; `reverse` undocks at mid-node (O26, O50) | `sim` gate test | achievable as stated |
-| 25 | Sweeper and mid-travel door: no generation change (O27) | `sim` gate test over a full cycle | achievable as stated |
-| 26 | `goToPathNode` node gates and links; pass-through does not (O22, O23) | `sim` gate test | achievable as stated |
-| 27 | Spinner none; zero-mover dump identical (O20, O21, O57) | Bake test, then headless `Transform` dump of `movement-feel` (0 movers, 4 agents) against the Task 1 baseline. See Corrections | achievable as stated |
-| 28 | Player suites pass; recorded mover run bit-identical | Golden trace test pinned in Task 1 before any move, plus existing movement and predict/reconcile suites | achievable as stated |
-| 29 | Source-text gate covers mover-contact primitives | `the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own`, moved and widened | achievable as stated |
-| 30 | v3 round-trip; v2 load + one warning; deterministic bake; empty tables; no wire/digest diff | `level-format` tests, `level-compiler` bake test, grep gate at preflight | achievable as stated |
-| 31 | Mover edits miss the stage; result equals cold (O58) | `level-compiler` stage-key test | achievable as stated |
-| 32 | Faulty records dropped; spawn failure disables all (O60) | `sim` gate test with log capture | achievable as stated |
-| 33 | Crush-immune, corpse impact cadence, revived corpse (O51, O52) | `physics` + `sim` tests | achievable as stated |
-| 34 | Agent-on-lift determinism | `an_agent_on_a_lift_replays_identically` in `agent_steering/mover_contact_tests.rs` | achievable as stated |
-| 35 | New paths allocate nothing | `alloc_probe` test in `sim`, with the one-allocation control window | achievable as stated |
-| 36 | Cost tripwire, 0.8 ms combined | Windowed `POSTRETRO_CPU_TIMING` before and after at the measurement room, plus a second window at lift 0 (owner, 2026-11-06); baseline captured in Task 1 | manual, executor runs and reports |
-| 37 | Bake report on four maps | Region, portal, gate and link counts plus nav bake time; baseline in Task 1 | manual, executor runs; owner's terminal if a bake exceeds 2 h |
-| 38 | `mover-setpiece` in-engine | Owner, in-engine | manual |
-| 39 | Enemy-movers map; README checks | Owner, in-engine | manual |
-| 40 | `docs/scripting-reference.md` wording | Doc edit, owner review | manual |
-| 41 | `docs/level_design.md` §Movers wording | Doc edit, owner review | manual |
+| AC | Row (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Closed mover stops; opens; `displace` pushes (O40) | `sim` agent_steering: `agent_stops_at_closed_mover_and_passes_once_open`, `displace_mover_pushes_unpinned_agent_clear` | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 2 | Carry within 1e-4 m; descender; release decay (O2–O5, O33) | `sim` lift scenario, moving and idle agent, across start, reverse, stop | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 3 | Riders and grace exempt; non-rider triggers (O6) | `physics` blocking_tests | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 4 | Non-crush pin holds or backs off; one decision (O9a–O9c) | `physics` pin_tests, agent and agent+player | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 5 | Crush only pinned or engulfed; past death (O7–O9) | `physics` blocking_tests | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 6 | Crush order, ≥4 victims, ≥8 runs (O10) | `physics` test over repeated runs, comparing order | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 7 | Corpses and queued despawn; killed-while-pinned timing (O11, O11a, O39, O47) | `physics` pin_tests + `sim` corpse-on-lift; `fixed_tick_queued_despawn_quiesces_brain_agent_steering` rewritten | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 8 | Latch `blocked`, spread ≤ 0.05 m/5 s, stuck ≤ 1, pass ≤ 2 s; one replan; kept path (O12–O14, O28) | `sim` gate scenario | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 9 | 16 agents within ⌈16/budget⌉ ticks (O29) | `sim` gate scenario | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 10 | Contention on `stress-env-volumes` (O43) | Routine `sim` fixture at N=64 with drift filling the budget, plus an `#[ignore]` harness over the compiled map, run once at the gate | achievable as stated | pass: 64-agent fixture; stress-map harness 98 gate flips, worst wait 15 ticks of 16 |
+| 11 | Lift returning onto blocked or `Freeze`, knockback 0; pit (O42, O61) | `sim` scenarios, 2 s bound | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 12 | No path through a docked door; both sides plan; hollow room (O28, O30, O41, O44) | `sim` nav/gate tests over a real bake | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 13 | `targetReachable` tracks gate; one generation (O31, O32) | `ai` test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 14 | Mid-exit, mid-shaft, knocked off, riser, no mid-ride replan (O34–O38) | `sim` mover_link tests | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 15 | Rider holds `targetReachable` (O38, O48) | `ai` test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 16 | Route through lift; no ride on parked or trigger lift; shaft safety; ride bounds (O15–O18, O35, O53, O54, O62, O63) | `sim` mover_link tests | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 17 | Holds through ≥3 s wait (O15, O17, O55) | `sim` mover_link test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 18 | Rising room lowered: no roof route, rides up, exits (O19, O44, O56) | `a_rising_rooms_floor_and_roof_link_apart_and_its_walls_leave_only_the_doorway` (real bake) with `a_body_inside_the_lowered_room_routes_by_its_own_surface_only` (runtime, the same record shape); end to end in row 38 | achievable as stated | pass (automated halves); in-engine half is row 38 |
+| 19 | No combat slot overlapping a docked door (O59) | `sim` combat_positioning test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 20 | Walks across a flush lift (O37, O45) | `sim` mover_link test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 21 | Unload and reload starts clean (O49) | `sim` gate test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 22 | Gate and link every tick of a wait; stop on leaving (O24, O46) | `physics` dock predicate + `sim` gate test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 23 | Door spawned closed gates from tick one (O25) | `sim` gate test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 24 | Held at dock keeps gate; `reverse` undocks at mid-node (O26, O50) | `sim` gate test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 25 | Sweeper and mid-travel door: no generation change (O27) | `sim` gate test over a full cycle | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 26 | `goToPathNode` node gates and links; pass-through does not (O22, O23) | `sim` gate test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 27 | Spinner none; zero-mover dump identical (O20, O21, O57) | Bake test, then headless `Transform` dump of `movement-feel` (0 movers, 4 agents) against the Task 1 baseline. See Corrections | achievable as stated | pass: dumps byte-identical at 300 and 900 ticks, rechecked after every review fix |
+| 28 | Player suites pass; recorded mover run bit-identical | Golden trace test pinned in Task 1 before any move, plus existing movement and predict/reconcile suites | achievable as stated | pass: golden trace bit-identical; player suites pass |
+| 29 | Source-text gate covers mover-contact primitives | `the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own`, moved and widened | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 30 | v3 round-trip; v2 load + one warning; deterministic bake; empty tables; no wire/digest diff | `level-format` tests, `level-compiler` bake test, grep gate at preflight | achievable as stated | pass: tests pass; grep gate finds no change under `crates/net` or `crates/netcode` |
+| 31 | Mover edits miss the stage; result equals cold (O58) | `level-compiler` stage-key test | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 32 | Faulty records dropped; spawn failure disables all (O60) | `sim` gate test with log capture | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 33 | Crush-immune, corpse impact cadence, revived corpse (O51, O52) | `physics` + `sim` tests | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 34 | Agent-on-lift determinism | `an_agent_on_a_lift_replays_identically` in `agent_steering/mover_contact_tests.rs` | achievable as stated | pass (workspace gate 14,871 passed, 0 failed) |
+| 35 | New paths allocate nothing | `alloc_probe` test in `sim`, with the one-allocation control window | achievable as stated | **fail on one path, owner ruling**: carry, contact, gate, ride and corpse carry read 0 allocations; displacing an overlapped body reads 68, inside parry's EPA (player path identical). Held open by `displacing_a_body_allocates_nothing` (`#[ignore]`) |
+| 36 | Cost tripwire, 0.8 ms combined | Windowed `POSTRETRO_CPU_TIMING` before and after at the measurement room, plus a second window at lift 0 (owner, 2026-11-06); baseline captured in Task 1 | manual, executor runs and reports | pass: combined +0.11 ms at the room (1.95 → 2.06); at lift 0 +0.12 ms (1.92 → 2.04), one earlier lift run read +0.39 ms with every stage high and settling. No enemy reached the lift, so both windows read idle overhead. Stop is 0.8 ms |
+| 37 | Bake report on four maps | Region, portal, gate and link counts plus nav bake time; baseline in Task 1 | manual, executor runs; owner's terminal if a bake exceeds 2 h | pass: report in `baseline/nav-report-after.json` (gates and links per map, nav stage unchanged within 0.1 s) |
+| 38 | `mover-setpiece` in-engine | Owner, in-engine | manual | outstanding: owner, in-engine (map baked; relit 2026-11-07) |
+| 39 | Enemy-movers map; README checks | Owner, in-engine | manual | outstanding: owner, in-engine (map baked) |
+| 40 | `docs/scripting-reference.md` wording | Doc edit, owner review | manual | outstanding: owner review of `docs/scripting-reference.md` |
+| 41 | `docs/level_design.md` §Movers wording | Doc edit, owner review | manual | outstanding: owner review of `docs/level_design.md` |
 
 ## Tasks
 
@@ -129,3 +132,13 @@ Sequential on the feature branch: the machine is disk-bound, each task needs com
 | 10 | Close the proofs: `alloc_probe` window, row 27 dump comparison, `stress-env-volumes` harness, rows 36 and 37 "after". Rows 10, 27, 35–37 | integrating executor | 9 | done: row 10 harness 98 flips, worst 15 ticks of 16, and 64-agent fixture; row 27 dumps byte-identical at 300 and 900 ticks; row 35 zero for carry, contact, gate and ride, 68 for displacing an overlapped body (open, owner); row 36 combined +0.12 ms at the measurement room (1.95 → 2.07) and +0.14 ms at lift 0 (1.92 → 2.07), two runs each, alternated; row 37 in `baseline/nav-report-after.json` |
 
 Stop conditions during the build: Task 1 failing its falsification tests goes to the owner, since it undercuts shared primitives. Row 36 growth above 0.8 ms stops with the profile. Any new false Decision premise blocks.
+
+## Review loop
+
+- **Preflight:** fmt, clippy (skill command and `--workspace --all-targets` except `postretro-model`, whose two test lints predate this branch), workspace tests, renderer single-threaded, release check, crate graph.
+- **Round 1:** 10 lenses (3 hygiene, 4 tracers, 1 contract verifier, 2 adversarial) over the whole branch; about 45 findings after dedupe, all acted on except the row 35 EPA allocation (owner) and two low-risk notes. Real defects fixed: walk-across into an empty shaft; ride forever on a lift that never docks; a door closing behind a chaser costing a replan and freezing it on a failed replan; admission slots spent on boarding agents; blocked agents woken by closings; replan storms on a mover; a crusher dragging a corpse up inside it; a dock missed after a command back; a rider's clear point on its own platform; a corpse yield dropped on a rider pin; despawned movers freezing gates; corpse carry allocating; combat scoring routing from the floor under a lift; doc errors (crusher routes, spin axis, lift authoring, gib recipe).
+- **Round 2:** 4 lenses over the fixes; 5 real findings (walk-across guard under contention, crossing read as behind early, deck escape target drift, one-way carry sweep, stuck on a never-resting lift), fixed.
+- **Round 3:** 3 lenses; 2 findings (deck escape cut short by a reversing mover, candidate cap spent by ring 1), fixed.
+- **Round 4:** 1 lens on the last fix; 1 finding (body knocked off the deck chased its spot), fixed. Two nits left: a clear point on a different moving mover keeps a fixed world target; the nearest course step is recomputed per candidate (pin edge only).
+- **Full gate after the loop:** all green; 14,871 tests passed, 0 failed, 106 ignored. Rows 10, 27 and 36 rechecked after the last fix.
+- **Noted, not fixed:** drift admission serves low slots first under a moving target (existing behavior); corpse-yield retention treats other movers as parked; the embedded-before-tick branch skips a second mover's swept push.

@@ -5,6 +5,7 @@
 
 use glam::Vec3;
 use postretro_collision::EnvironmentView;
+use postretro_entities::components::agent::{CrossingKind, PathCrossing};
 use postretro_entities::{
     KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand, Transform,
 };
@@ -311,12 +312,14 @@ fn a_chaser_latches_blocked_holds_and_passes_once_the_door_opens() {
 fn a_kept_path_through_a_door_that_docks_is_dropped() {
     let mut rig = Rig::new(KinematicMoverMode::Once, 0.0, false);
     rig.command(MoverCommand::Start);
-    let id = rig.agent(Vec3::new(2.0, REST_Y, 5.0), Some(EAST));
     // Fully open and parked, so the route crosses the doorway.
     for _ in 0..80 {
         rig.tick();
     }
-    assert!(!rig.agent_state(id).path_portals.is_empty(), "it planned");
+    // Far enough back that the door docks while the doorway is still ahead.
+    let id = rig.agent(Vec3::new(1.0, REST_Y, 5.0), Some(EAST));
+    rig.tick();
+    assert!(!rig.agent_state(id).path_crossings.is_empty(), "it planned");
     rig.command(MoverCommand::Reverse);
     let mut closed = false;
     for _ in 0..120 {
@@ -328,7 +331,7 @@ fn a_kept_path_through_a_door_that_docks_is_dropped() {
     }
     assert!(closed, "the door docked closed");
     let agent = rig.agent_state(id);
-    assert!(agent.path.is_empty() && agent.path_portals.is_empty());
+    assert!(agent.path.is_empty() && agent.path_crossings.is_empty());
     assert!(agent.blocked);
 }
 
@@ -346,6 +349,115 @@ fn a_failed_replan_keeps_a_path_that_crosses_no_gate() {
     let agent = rig.agent_state(id);
     assert_eq!(agent.path, kept, "stale but moving");
     assert!(!agent.blocked);
+}
+
+// Regression: every portal from the route's start counted, so a door closing
+// behind a chaser cost it a gate-driven replan.
+#[test]
+fn a_door_closing_behind_a_chaser_costs_no_replan() {
+    let mut rig = Rig::new(KinematicMoverMode::Once, 0.0, false);
+    rig.command(MoverCommand::Start);
+    for _ in 0..80 {
+        rig.tick();
+    }
+    let id = rig.agent(Vec3::new(6.0, REST_Y, 5.0), Some(EAST));
+    let through = (0..200).any(|_| {
+        rig.tick();
+        rig.position(id).x > 11.6
+    });
+    assert!(through, "it walked through the open doorway");
+    let mut agent = rig.agent_state(id).clone();
+    agent.replan_cooldown_ticks = u32::MAX;
+    rig.registry.set_component(id, agent).unwrap();
+
+    rig.command(MoverCommand::Reverse);
+    let mut replans = 0;
+    let mut closed = false;
+    for _ in 0..120 {
+        replans += rig.tick().replans;
+        closed |= rig.gate().portal_closed(&rig.graph, 0);
+    }
+    assert!(closed, "the door docked closed behind it");
+    assert_eq!(replans, 0, "a door at its back cuts nothing ahead");
+    let agent = rig.agent_state(id);
+    assert!(!agent.blocked && !agent.path.is_empty());
+    assert_eq!(agent.gate_generation, rig.gate().generation(), "settled");
+}
+
+// Regression: a failed replan dropped any kept path whose crossings included a
+// closed gate, even one already behind the agent.
+#[test]
+fn a_failed_replan_keeps_the_path_ahead_of_a_door_closed_behind() {
+    let mut rig = closed_door();
+    rig.tick();
+    // Off the mesh, so every replan fails.
+    let unroutable = Vec3::new(100.0, REST_Y, 100.0);
+    let kept = vec![Vec3::new(8.0, REST_Y, 5.0), EAST];
+    let crossings: Vec<PathCrossing> = (0..2)
+        .map(|portal| PathCrossing {
+            kind: CrossingKind::Portal,
+            index: portal,
+            waypoint: 1,
+        })
+        .collect();
+    let walking = |rig: &mut Rig, at: Vec3| {
+        let id = rig.agent(at, Some(unroutable));
+        let mut agent = rig.agent_state(id).clone();
+        agent.path = kept.clone();
+        agent.mandatory_waypoints = vec![false, false];
+        agent.path_crossings = crossings.clone();
+        agent.waypoint_cursor = 1;
+        rig.registry.set_component(id, agent).unwrap();
+        id
+    };
+    let past = walking(&mut rig, Vec3::new(13.0, REST_Y, 5.0));
+    let short = walking(&mut rig, Vec3::new(8.0, REST_Y, 5.0));
+
+    assert_eq!(rig.tick().replans, 2, "both replanned and failed");
+    let past = rig.agent_state(past);
+    assert_eq!(past.path, kept, "the route ahead still leads on");
+    assert!(!past.blocked);
+    let short = rig.agent_state(short);
+    assert!(
+        short.path.is_empty() && short.blocked,
+        "the closed door is still ahead of this one"
+    );
+}
+
+#[test]
+fn a_door_docking_closed_wakes_no_blocked_agent_and_one_leaving_does() {
+    let mut rig = closed_door();
+    // Off the mesh: blocked whatever the door does, so each admission is one
+    // failing search.
+    let id = rig.agent(WEST, Some(Vec3::new(100.0, REST_Y, 100.0)));
+    for _ in 0..3 {
+        rig.tick();
+    }
+    assert!(rig.agent_state(id).blocked);
+    // Hold the cooldown off, so only a gate change can admit it.
+    let run = |rig: &mut Rig, ticks: u32| -> u32 {
+        (0..ticks)
+            .map(|_| {
+                let mut agent = rig.agent_state(id).clone();
+                agent.replan_cooldown_ticks = u32::MAX;
+                rig.registry.set_component(id, agent).unwrap();
+                rig.tick().replans
+            })
+            .sum()
+    };
+
+    rig.command(MoverCommand::Start);
+    assert_eq!(run(&mut rig, 90), 1, "leaving its gate wakes it once");
+    assert_eq!(rig.movers.docks().docked_waypoint(DOOR), Some(1), "open");
+
+    rig.command(MoverCommand::Reverse);
+    assert_eq!(
+        run(&mut rig, 90),
+        0,
+        "leaving the open dock and docking closed wake nothing"
+    );
+    assert!(rig.gate().portal_closed(&rig.graph, 0), "docked closed");
+    assert!(rig.agent_state(id).blocked);
 }
 
 #[test]
@@ -664,6 +776,7 @@ fn combat_positioning_never_picks_a_slot_overlapping_a_docked_door() {
         combat_candidates(&CombatQuery {
             claimant_id: 1,
             agent_pos: WEST,
+            agent_ground: postretro_foundation::GroundRef::World,
             engagement_radius: 0.9,
             target_pos: target,
             enemy_eye_offset: Vec3::Y * 0.7,
@@ -788,7 +901,14 @@ fn under_contention_a_door_docking_and_leaving_is_answered_within_the_budget() {
 #[test]
 fn the_longest_owed_agents_are_admitted_first_whatever_their_slot() {
     let mut rig = closed_door();
-    for command in [MoverCommand::Start, MoverCommand::Reverse] {
+    // Two open-and-close cycles, so the generation of the last opening leaves
+    // room for two older owed generations below it.
+    for command in [
+        MoverCommand::Start,
+        MoverCommand::Reverse,
+        MoverCommand::Start,
+        MoverCommand::Reverse,
+    ] {
         rig.command(command);
         for _ in 0..80 {
             rig.tick();
@@ -796,7 +916,12 @@ fn the_longest_owed_agents_are_admitted_first_whatever_their_slot() {
     }
     assert!(rig.gate().portal_closed(&rig.graph, 0));
     let generation = rig.gate().generation();
-    assert!(generation >= 2, "the door flipped the gate to close");
+    // The door leaving its gate was the last change that opened a route.
+    let opened = rig.gate().opened_generation();
+    assert!(
+        opened >= 3 && generation > opened,
+        "the door opened, then closed"
+    );
     let spawn = |rig: &mut Rig, row: usize, owed_since: u64| {
         (0..REPLAN_BUDGET_PER_TICK as usize)
             .map(|i| {
@@ -811,8 +936,8 @@ fn the_longest_owed_agents_are_admitted_first_whatever_their_slot() {
             })
             .collect::<Vec<EntityId>>()
     };
-    let recent = spawn(&mut rig, 0, generation - 1);
-    let oldest = spawn(&mut rig, 1, generation - 2);
+    let recent = spawn(&mut rig, 0, opened - 1);
+    let oldest = spawn(&mut rig, 1, opened - 2);
 
     let result = rig.tick();
 
@@ -821,6 +946,6 @@ fn the_longest_owed_agents_are_admitted_first_whatever_their_slot() {
         assert_eq!(rig.agent_state(id).gate_generation, generation);
     }
     for id in recent {
-        assert_eq!(rig.agent_state(id).gate_generation, generation - 1);
+        assert_eq!(rig.agent_state(id).gate_generation, opened - 1);
     }
 }

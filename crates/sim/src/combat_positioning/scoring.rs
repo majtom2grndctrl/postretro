@@ -8,7 +8,7 @@ use super::{CombatCandidate, CombatQuery, path_length};
 use crate::collision::{
     CapsulePlacement, SKIN_DISTANCE, capsule_static_placement_center, line_of_sight,
 };
-use crate::nav::{NavGraph, distance_xz, find_path_gated};
+use crate::nav::{NavGraph, NavStart, distance_xz, find_path_from, find_path_gated};
 
 pub(super) fn capsule_placement(nav_graph: &NavGraph) -> Option<CapsulePlacement> {
     let params = nav_graph.agent_params();
@@ -59,7 +59,11 @@ pub(super) fn score_candidate(
         return None;
     }
     let gate = query.mover_nav.gate;
-    let path = find_path_gated(query.nav_graph, gate, query.agent_pos, position)?;
+    let from = NavStart {
+        position: query.agent_pos,
+        ground: query.agent_ground,
+    };
+    let path = find_path_from(query.nav_graph, gate, from, position)?;
     let target_distance = distance_xz(position, query.target_pos);
     if !has_tactically_direct_target_path(query, placement, position, target_distance) {
         return None;
@@ -84,6 +88,8 @@ fn has_tactically_direct_target_path(
     target_distance: f32,
 ) -> bool {
     let gate = query.mover_nav.gate;
+    // The slot is a floor placement, never a mover top, so it starts on world
+    // ground.
     let Some(target_path) = find_path_gated(query.nav_graph, gate, position, query.target_pos)
     else {
         // The funnel can conservatively refuse a route when a moving endpoint

@@ -4,9 +4,9 @@
 
 mod gate;
 mod path;
-// One-shot path query. Re-exported so callers import `crate::nav::find_path`;
-// the primary production caller is the agent steering tick (`agent_steering`),
-// and combat positioning (`combat_positioning`) also queries it.
+// One-shot path queries. `find_path_from` is the production entry: steering, AI
+// reachability and combat scoring route from a body's position and ground.
+// `find_path_gated` assumes world ground, and `find_path` also ignores gates.
 pub use gate::{MoverNav, NavGate, NavMoverBound, install_mover_records};
 pub use path::{NavStart, find_path, find_path_from, find_path_gated};
 
@@ -25,6 +25,7 @@ use postretro_level_format::navmesh::{
     NavMeshSection, NavMoverGate, NavMoverLink, NavPortal, NavRegion,
 };
 
+use postretro_foundation::GroundRef;
 pub use postretro_foundation::NavAgentParams;
 
 /// XZ-plane (ground) distance between two world positions, ignoring Y. Shared by
@@ -92,7 +93,8 @@ pub struct NavGraph {
     /// Baked mover gates, unvalidated: the section cannot see the movers, so
     /// references are checked after mover spawn.
     gates: Vec<NavMoverGate>,
-    /// Baked mover links, unvalidated like `gates`.
+    /// Baked mover links, unvalidated like `gates`, in wire order
+    /// ([`sorted_links`]).
     links: Vec<NavMoverLink>,
     /// `portal_gates[i]` = the (mover, waypoint) docks that close portal `i`.
     portal_gates: Vec<Vec<(u32, u32)>>,
@@ -111,6 +113,25 @@ fn region_links(links: &[NavMoverLink], region_count: usize) -> Vec<Vec<usize>> 
         }
     }
     by_region
+}
+
+/// Links in wire order: by mover, waypoint, region, then the boarding edge's
+/// bits. [`NavGraph::mover_links`] and the component merge read each mover's
+/// links as one run, and `from_bytes` checks counts and strides only, so the
+/// order is made here rather than trusted. Stable, so equal keys keep section
+/// order.
+fn sorted_links(links: &[NavMoverLink]) -> Vec<NavMoverLink> {
+    let mut sorted = links.to_vec();
+    sorted.sort_by_key(|link| {
+        (
+            link.mover_id,
+            link.waypoint,
+            link.region,
+            link.left.map(f32::to_bits),
+            link.right.map(f32::to_bits),
+        )
+    });
+    sorted
 }
 
 /// Per-portal dock lists from the gate table. Out-of-range records wait for
@@ -204,8 +225,10 @@ impl NavGraph {
             component_count += 1;
         }
         // A lift joins its landings, so components stay a superset of what any
-        // dock state can connect.
-        for pair in section.links.windows(2) {
+        // dock state can connect. Sorted links put each mover's in one run, so
+        // neighbouring pairs chain all of them.
+        let links = sorted_links(&section.links);
+        for pair in links.windows(2) {
             if pair[0].mover_id != pair[1].mover_id {
                 continue;
             }
@@ -230,9 +253,9 @@ impl NavGraph {
             region_portals,
             region_components,
             gates: section.gates.clone(),
-            links: section.links.clone(),
             portal_gates: portal_gates(&section.gates, section.portals.len()),
-            region_links: region_links(&section.links, section.regions.len()),
+            region_links: region_links(&links, section.regions.len()),
+            links,
             mover_heights: Vec::new(),
         }
     }
@@ -318,7 +341,8 @@ impl NavGraph {
         self.region_links.get(region).map_or(&[], Vec::as_slice)
     }
 
-    /// Link indices of one mover. Links sort by mover, so they are one run.
+    /// Link indices of one mover: one run, since [`sorted_links`] orders them
+    /// by mover first.
     pub(crate) fn mover_links(&self, mover_id: u32) -> std::ops::Range<usize> {
         let start = self.links.partition_point(|link| link.mover_id < mover_id);
         let end = self.links.partition_point(|link| link.mover_id <= mover_id);
@@ -508,10 +532,11 @@ impl NavGraph {
         best.map(|(i, _, _)| i)
     }
 
-    /// Whether two resolved endpoints belong to the same portal-connected
-    /// region component. This is deliberately weaker than [`find_path`]: it
-    /// distinguishes a genuinely disconnected destination from a transient
-    /// funnel-clearance refusal without rerunning a graph search.
+    /// Whether two resolved endpoints connect through the portals and links
+    /// open now. Deliberately weaker than [`find_path_from`]: it ignores funnel
+    /// clearance and link surfaces, so it tells a genuinely disconnected
+    /// destination from a transient funnel-clearance refusal without rerunning
+    /// a graph search.
     pub(crate) fn endpoints_are_topologically_connected(
         &self,
         gate: NavGate<'_>,
@@ -524,18 +549,36 @@ impl NavGraph {
         let Some(goal_region) = self.resolve_region_at(goal) else {
             return false;
         };
-        // Components ignore gates, so they are a superset of what connects now.
-        self.region_components.get(start_region) == self.region_components.get(goal_region)
-            && (self.gates.is_empty()
-                || self.connected_through_open_portals(gate, start_region, goal_region))
+        // Components join every portal and link whatever the dock state, so
+        // they are a superset of what connects now, and exact for a level
+        // with no mover records.
+        if self.region_components.get(start_region) != self.region_components.get(goal_region) {
+            return false;
+        }
+        (self.gates.is_empty() && self.links.is_empty())
+            || self.connected_now(gate, start_region, goal_region)
     }
 
-    /// Flood from `start` across portals open now. Off the per-tick path: only
-    /// a refused funnel near a gated level reaches it.
-    fn connected_through_open_portals(&self, gate: NavGate<'_>, start: usize, goal: usize) -> bool {
+    /// Flood from `start` across open portals and open links: a link is open
+    /// while its mover docks at its waypoint, and leads to the mover's other
+    /// links as A* would, at the same dock or by a ride between termini. Off
+    /// the per-tick path: only a refused funnel in a level with mover records
+    /// reaches it.
+    fn connected_now(&self, gate: NavGate<'_>, start: usize, goal: usize) -> bool {
+        if start == goal {
+            return true;
+        }
         let mut seen = vec![false; self.regions.len()];
         let mut frontier = vec![start];
         seen[start] = true;
+        let mut reach = |region: usize, frontier: &mut Vec<usize>| {
+            if let Some(slot) = seen.get_mut(region)
+                && !*slot
+            {
+                *slot = true;
+                frontier.push(region);
+            }
+        };
         while let Some(region) = frontier.pop() {
             if region == goal {
                 return true;
@@ -546,17 +589,42 @@ impl NavGraph {
                 }
                 let portal = &self.portals[portal_index];
                 let next = if portal.region_a as usize == region {
-                    portal.region_b as usize
+                    portal.region_b
                 } else {
-                    portal.region_a as usize
+                    portal.region_a
                 };
-                if !seen[next] {
-                    seen[next] = true;
-                    frontier.push(next);
+                reach(next as usize, &mut frontier);
+            }
+            for &boarding in self.region_links(region) {
+                let board = &self.links[boarding];
+                if !gate.docked_at(board.mover_id, board.waypoint) {
+                    continue;
+                }
+                let rides = gate.moves_on_its_own(board.mover_id)
+                    && self.is_terminus(board.mover_id, board.waypoint);
+                for exit in self.mover_links(board.mover_id) {
+                    let exit = &self.links[exit];
+                    let same_dock = exit.waypoint == board.waypoint;
+                    if same_dock || (rides && self.is_terminus(exit.mover_id, exit.waypoint)) {
+                        reach(exit.region as usize, &mut frontier);
+                    }
                 }
             }
         }
         false
+    }
+
+    /// Whether a body on `ground` has no route start now: it stands on a mover
+    /// with links while that mover is between docks. A route from there
+    /// starts only once the mover docks, so a cached verdict about where the
+    /// body can go should hold until then.
+    pub fn between_docks(&self, gate: NavGate<'_>, ground: GroundRef) -> bool {
+        match ground {
+            GroundRef::Mover(mover_id) => {
+                !self.mover_links(mover_id).is_empty() && gate.docked_waypoint(mover_id).is_none()
+            }
+            GroundRef::World | GroundRef::Airborne => false,
+        }
     }
 
     /// Iterate the portals touching `region_index` (the per-region adjacency
@@ -592,6 +660,8 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<NavGraph>();
     }
+    use crate::kinematic_mover::{MoverDockTable, MoverTickStateTable};
+    use postretro_entities::{KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode};
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavPortal, NavRegion};
 
     /// Single region, non-zero origin and cell size, so the cell→world decode
@@ -813,6 +883,183 @@ mod tests {
             Vec3::new(100.0, 0.0, 100.0),
             Vec3::new(2.0, 0.0, 5.0),
         ));
+    }
+
+    const LIFT: u32 = 7;
+    const DOOR: u32 = 8;
+
+    fn lift_component(at_rest: bool) -> KinematicMoverComponent {
+        let mut lift = KinematicMoverComponent::new(
+            LIFT,
+            KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::Y * 4.0],
+                waypoint_names: vec!["low".into(), "high".into()],
+                speed_mps: 2.0,
+                wait_ms: 500.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        if !at_rest {
+            lift.segment_elapsed_ms = 100.0;
+            lift.current_linear_velocity = Vec3::Y * 2.0;
+        }
+        lift
+    }
+
+    fn lift_link(waypoint: u32, region: u32, x: f32) -> NavMoverLink {
+        NavMoverLink {
+            mover_id: LIFT,
+            waypoint,
+            region,
+            left: [x, 0.0, 0.0],
+            right: [x, 0.0, 4.0],
+        }
+    }
+
+    /// Regions 0 and 1 share no portal, so only the lift joins them. Region 2
+    /// meets region 0 through a portal a door gates when `gated`.
+    fn lift_only_section(links: Vec<NavMoverLink>, gated: bool) -> NavMeshSection {
+        let region = |x0, z0, x1, z1| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1,
+            floor_y_min: 0.0,
+            floor_y_max: 0.1,
+        };
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 1.0,
+            dim_x: 16,
+            dim_z: 16,
+            agent_radius: 0.35,
+            agent_height: 2.0,
+            step_height: 0.5,
+            max_slope_deg: 50.0,
+            regions: vec![region(0, 0, 4, 4), region(8, 0, 12, 4), region(0, 4, 4, 8)],
+            portals: vec![NavPortal {
+                region_a: 0,
+                region_b: 2,
+                left: [0.0, 0.05, 4.0],
+                right: [4.0, 0.05, 4.0],
+            }],
+            gates: if gated {
+                vec![NavMoverGate {
+                    mover_id: DOOR,
+                    waypoint: 0,
+                    portal: 0,
+                }]
+            } else {
+                Vec::new()
+            },
+            links,
+        }
+    }
+
+    /// The lift's dock table, with the door watched too when `gated`.
+    fn lift_docks(links: &[NavMoverLink], gated: bool, at_rest: bool) -> MoverDockTable {
+        let mut movers = MoverTickStateTable::default();
+        let door: &[(u32, u32)] = if gated { &[(DOOR, 0)] } else { &[] };
+        let linked: Vec<(u32, u32)> = links
+            .iter()
+            .map(|link| (link.mover_id, link.waypoint))
+            .collect();
+        movers.watch_mover_docks(door, &linked);
+        let mut docks = movers.docks().clone();
+        docks.update(&lift_component(at_rest));
+        docks
+    }
+
+    #[test]
+    fn a_lift_only_connection_reads_the_same_with_or_without_gates_in_the_level() {
+        let west = Vec3::new(2.0, 0.05, 2.0);
+        let east = Vec3::new(10.0, 0.05, 2.0);
+        let walk_across = vec![lift_link(0, 0, 4.0), lift_link(0, 1, 8.0)];
+        let ride = vec![lift_link(0, 0, 4.0), lift_link(1, 1, 8.0)];
+        for (route, links) in [("walk across", walk_across), ("ride", ride)] {
+            for at_rest in [true, false] {
+                let [without, with] = [false, true].map(|gated| {
+                    let graph = NavGraph::from_section(&lift_only_section(links.clone(), gated));
+                    let docks = lift_docks(&links, gated, at_rest);
+                    graph.endpoints_are_topologically_connected(NavGate::new(&docks), west, east)
+                });
+                assert_eq!(
+                    without, with,
+                    "{route}, docked {at_rest}: gates elsewhere change nothing"
+                );
+                assert_eq!(
+                    with, at_rest,
+                    "{route}: connected only while the lift docks"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_is_between_docks_only_on_a_linked_mover_in_motion() {
+        let links = vec![lift_link(0, 0, 4.0), lift_link(1, 1, 8.0)];
+        let graph = NavGraph::from_section(&lift_only_section(links.clone(), false));
+        let moving = lift_docks(&links, false, false);
+        let docked = lift_docks(&links, false, true);
+
+        assert!(graph.between_docks(NavGate::new(&moving), GroundRef::Mover(LIFT)));
+        assert!(!graph.between_docks(NavGate::new(&docked), GroundRef::Mover(LIFT)));
+        assert!(!graph.between_docks(NavGate::new(&moving), GroundRef::World));
+        assert!(!graph.between_docks(NavGate::new(&moving), GroundRef::Mover(DOOR)));
+    }
+
+    // A hand-built or corrupt section can list links in any order; the graph
+    // still reads each mover's links as one run.
+    #[test]
+    fn links_out_of_wire_order_still_read_as_one_run_per_mover() {
+        let mut section = stacked_region_section();
+        section.portals.clear();
+        let link = |mover_id, waypoint, region| NavMoverLink {
+            mover_id,
+            waypoint,
+            region,
+            left: [1.0, 0.0, 4.0],
+            right: [2.0, 0.0, 4.0],
+        };
+        section.links = vec![link(5, 0, 1), link(2, 1, 1), link(5, 1, 0), link(2, 0, 0)];
+
+        let graph = NavGraph::from_section(&section);
+
+        let movers_of = |mover_id| {
+            graph
+                .mover_links(mover_id)
+                .map(|index| graph.links()[index].mover_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(movers_of(2), vec![2, 2]);
+        assert_eq!(movers_of(5), vec![5, 5]);
+        assert!(
+            graph
+                .links()
+                .windows(2)
+                .all(|pair| (pair[0].mover_id, pair[0].waypoint)
+                    <= (pair[1].mover_id, pair[1].waypoint)),
+            "links sit in wire order"
+        );
+        for region in 0..2 {
+            assert!(
+                graph
+                    .region_links(region)
+                    .iter()
+                    .all(|&index| graph.links()[index].region as usize == region),
+                "region {region} indexes the sorted table"
+            );
+        }
+        assert_eq!(
+            graph.region_components[0], graph.region_components[1],
+            "each lift joins the two regions no portal does"
+        );
     }
 
     #[test]

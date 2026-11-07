@@ -7,7 +7,7 @@ use std::collections::BinaryHeap;
 use std::ops::Deref;
 
 use glam::Vec3;
-use postretro_entities::components::agent::PlannedRide;
+use postretro_entities::components::agent::{CrossingKind, PathCrossing, PlannedRide};
 use postretro_foundation::GroundRef;
 use postretro_level_format::navmesh::{NavMoverLink, NavPortal};
 
@@ -26,8 +26,9 @@ mod clearance;
 pub struct NavPath {
     points: Vec<Vec3>,
     mandatory_waypoints: Vec<bool>,
-    /// The portals the corridor crosses, in order.
-    portals: Vec<u32>,
+    /// The gated portals and links the walk crosses, in order, each with the
+    /// waypoint it is crossed toward.
+    crossings: Vec<PathCrossing>,
     /// The ride this path ends in. The route past it is planned after exit.
     ride: Option<PlannedRide>,
 }
@@ -37,13 +38,13 @@ impl NavPath {
         Self {
             points: vec![start, goal],
             mandatory_waypoints: vec![false, false],
-            portals: Vec::new(),
+            crossings: Vec::new(),
             ride: None,
         }
     }
 
-    pub(crate) fn portals(&self) -> &[u32] {
-        &self.portals
+    pub(crate) fn crossings(&self) -> &[PathCrossing] {
+        &self.crossings
     }
 
     pub(crate) fn ride(&self) -> Option<PlannedRide> {
@@ -122,6 +123,19 @@ pub struct NavStart {
     pub ground: GroundRef,
 }
 
+impl NavStart {
+    /// The region a route from here searches out of, resolved as
+    /// [`find_path_from`] resolves it. `None` off the mesh, and for a body on a
+    /// mover with links: its search leaves through the mover's links, so the
+    /// floor under it in XZ says nothing about where it can go.
+    pub(crate) fn region(self, graph: &NavGraph, gate: NavGate<'_>) -> Option<usize> {
+        match search_start(graph, gate, self)? {
+            SearchStart::Region(region) => Some(region),
+            SearchStart::Mover { .. } => None,
+        }
+    }
+}
+
 /// Where the search begins.
 #[derive(Clone, Copy)]
 enum SearchStart {
@@ -169,7 +183,7 @@ pub fn find_path_from(
     let route = walked_route(graph, &corridor, start);
     let goal = route.ride.map_or(goal, |ride| ride.board_point);
     let ride = route.ride;
-    let portals = route.edges;
+    let portals = &route.edges;
     if portals.is_empty() {
         let mut path = NavPath::direct(start, goal);
         path.ride = ride;
@@ -193,11 +207,16 @@ pub fn find_path_from(
     // collision sweep's skin across that seam so a radius-clear corner does
     // not still consume the first steering ticks in `collide_and_slide`.
     let corner_clearance_radius = graph.agent.radius.max(0.0) + SKIN_DISTANCE;
-    let gates = inset_portals(&portals, corner_clearance_radius)?;
+    let gates = inset_portals(portals, corner_clearance_radius)?;
     let pulled_path = funnel(start, goal, &gates);
     let mut path =
         clearance::ensure_endpoint_clearance(&pulled_path, &gates, corner_clearance_radius)?;
-    path.portals = route.portals;
+    path.crossings = locate_crossings(
+        &path.points,
+        &route.edges,
+        &route.crossings,
+        corner_clearance_radius,
+    );
     path.ride = ride;
     Some(path)
 }
@@ -228,11 +247,31 @@ const RIDE_COST: f32 = 8.0;
 /// the far surface, so standing there is no accident of the rim.
 const STEP_THROUGH_RADII: f32 = 3.0;
 
-/// The route as walked: funnel edges up to the first ride, and that ride.
+/// The route as walked: funnel edges up to the first ride, the crossings a
+/// mover's dock can close, and that ride.
 struct WalkedRoute {
     edges: Vec<(Vec3, Vec3)>,
-    portals: Vec<u32>,
+    crossings: Vec<RouteCrossing>,
     ride: Option<PlannedRide>,
+}
+
+/// A crossing of the walked route, before the funnel fixes its waypoint.
+struct RouteCrossing {
+    kind: CrossingKind,
+    index: u32,
+    /// Which of the route's funnel edges it is.
+    edge: usize,
+}
+
+impl WalkedRoute {
+    /// Record a crossing over the edge pushed last.
+    fn cross(&mut self, kind: CrossingKind, index: usize) {
+        self.crossings.push(RouteCrossing {
+            kind,
+            index: index as u32,
+            edge: self.edges.len() - 1,
+        });
+    }
 }
 
 fn walked_route(graph: &NavGraph, corridor: &[CorridorHop], start: Vec3) -> WalkedRoute {
@@ -241,7 +280,7 @@ fn walked_route(graph: &NavGraph, corridor: &[CorridorHop], start: Vec3) -> Walk
     let reach = STEP_THROUGH_RADII * graph.agent.radius.max(0.1);
     let mut route = WalkedRoute {
         edges: Vec::with_capacity(corridor.len()),
-        portals: Vec::new(),
+        crossings: Vec::new(),
         ride: None,
     };
     for (index, hop) in corridor.iter().enumerate() {
@@ -262,7 +301,11 @@ fn walked_route(graph: &NavGraph, corridor: &[CorridorHop], start: Vec3) -> Walk
                     } else {
                         (right, left)
                     });
-                route.portals.push(portal_index as u32);
+                // An ungated portal never closes, so only a gated one can
+                // cut the route.
+                if !graph.portal_gates(portal_index).is_empty() {
+                    route.cross(CrossingKind::Portal, portal_index);
+                }
             }
             CorridorHop::Board { link } => {
                 let boarding = &links[link];
@@ -271,6 +314,9 @@ fn walked_route(graph: &NavGraph, corridor: &[CorridorHop], start: Vec3) -> Walk
                     Vec3::from_array(boarding.right),
                     Vec3::from_array(boarding.left),
                 ));
+                // Walking onto a mover depends on its dock, whether the route
+                // rides it or only walks across.
+                route.cross(CrossingKind::Link, link);
                 if let Some(CorridorHop::Exit {
                     link: exit,
                     ride_from: Some(_),
@@ -294,10 +340,85 @@ fn walked_route(graph: &NavGraph, corridor: &[CorridorHop], start: Vec3) -> Walk
                 route
                     .edges
                     .push((Vec3::from_array(exit.left), Vec3::from_array(exit.right)));
+                route.cross(CrossingKind::Link, link);
             }
         }
     }
     route
+}
+
+/// Distance from an edge's line, in metres, within which a point counts as on
+/// it. Funnel corners are interpolated along portal segments, so they sit on
+/// the line only to rounding.
+const ON_EDGE_LINE: f32 = 1.0e-4;
+
+/// Signed XZ distance of `point` from the line through `edge`: positive on one
+/// side, negative on the other, and zero within [`ON_EDGE_LINE`] of it. `None`
+/// for a degenerate edge.
+pub(super) fn edge_side(edge: (Vec3, Vec3), point: Vec3) -> Option<f32> {
+    let (l, r) = edge;
+    let along = Vec3::new(r.x - l.x, 0.0, r.z - l.z);
+    let length = along.length();
+    if length <= f32::EPSILON || !length.is_finite() {
+        return None;
+    }
+    let side = (along.x * (point.z - l.z) - along.z * (point.x - l.x)) / length;
+    Some(if side.abs() <= ON_EDGE_LINE {
+        0.0
+    } else {
+        side
+    })
+}
+
+/// Pin each crossing to the waypoint the path walks toward as it crosses: the
+/// end of the first segment, at or after the previous crossing's, that leaves
+/// one side of the edge's line for the other within the edge's extent, give or
+/// take `tolerance`. A segment that only ends on the line has not crossed yet,
+/// so a corner on a portal keeps that portal ahead until the agent walks off
+/// the corner. A crossing no segment matches stays at the last waypoint, ahead
+/// until the agent arrives, which can cost a replan but never misses a closure.
+fn locate_crossings(
+    points: &[Vec3],
+    edges: &[(Vec3, Vec3)],
+    crossings: &[RouteCrossing],
+    tolerance: f32,
+) -> Vec<PathCrossing> {
+    let last = points.len().saturating_sub(1) as u32;
+    let segments = points.len().saturating_sub(1);
+    let mut from_segment = 0;
+    crossings
+        .iter()
+        .map(|crossing| {
+            let edge = edges[crossing.edge];
+            let found = (from_segment..segments).find(|&segment| {
+                segment_crosses_edge(points[segment], points[segment + 1], edge, tolerance)
+            });
+            if let Some(segment) = found {
+                from_segment = segment;
+            }
+            PathCrossing {
+                kind: crossing.kind,
+                index: crossing.index,
+                waypoint: found.map_or(last, |segment| segment as u32 + 1),
+            }
+        })
+        .collect()
+}
+
+fn segment_crosses_edge(a: Vec3, b: Vec3, edge: (Vec3, Vec3), tolerance: f32) -> bool {
+    let (Some(side_a), Some(side_b)) = (edge_side(edge, a), edge_side(edge, b)) else {
+        return false;
+    };
+    if side_b == 0.0 || (side_a != 0.0 && side_a.signum() == side_b.signum()) {
+        return false;
+    }
+    // Where the segment meets the line, measured along the edge.
+    let meet = a + (b - a) * (side_a / (side_a - side_b));
+    let (l, r) = edge;
+    let along = Vec3::new(r.x - l.x, 0.0, r.z - l.z);
+    let length = along.length();
+    let at = Vec3::new(meet.x - l.x, 0.0, meet.z - l.z).dot(along) / length;
+    (-tolerance..=length + tolerance).contains(&at)
 }
 
 fn planned_ride(
@@ -1050,6 +1171,50 @@ mod tests {
                 "segment {segment:?} cuts the corner disk: clearance={clearance}, path={path:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_route_records_each_gated_portal_at_the_waypoint_it_is_walked_toward() {
+        use postretro_level_format::navmesh::NavMoverGate;
+
+        let mut section = l_corridor_section();
+        section.gates = (0..2)
+            .map(|portal| NavMoverGate {
+                mover_id: 1,
+                waypoint: 0,
+                portal,
+            })
+            .collect();
+        let graph = NavGraph::from_section(&section);
+        let path = find_path(&graph, Vec3::new(1.0, 0.0, 1.0), Vec3::new(7.0, 0.0, 5.0))
+            .expect("L corridor connects");
+        // The bend sits on the second portal's line; reaching it does not cross.
+        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius + SKIN_DISTANCE);
+        let corner = path
+            .iter()
+            .position(|w| approx_xz(*w, inset_corner))
+            .expect("the route bends at the inset corner") as u32;
+
+        let crossings = path.crossings();
+        assert_eq!(crossings.len(), 2, "{crossings:?}");
+        assert_eq!(
+            (crossings[0].kind, crossings[0].index),
+            (CrossingKind::Portal, 0)
+        );
+        assert!(crossings[0].waypoint <= corner, "{crossings:?} {path:?}");
+        assert_eq!(
+            (crossings[1].kind, crossings[1].index, crossings[1].waypoint),
+            (CrossingKind::Portal, 1, corner + 1),
+            "{path:?}"
+        );
+    }
+
+    #[test]
+    fn an_ungated_portal_is_no_crossing() {
+        let graph = NavGraph::from_section(&l_corridor_section());
+        let path = find_path(&graph, Vec3::new(1.0, 0.0, 1.0), Vec3::new(7.0, 0.0, 5.0))
+            .expect("L corridor connects");
+        assert!(path.crossings().is_empty(), "no mover can close it");
     }
 
     // Raw wide-portal endpoints of `l_corridor_section`: the two ends of the z=4

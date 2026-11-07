@@ -44,6 +44,29 @@ pub struct PlannedRide {
     pub exit_point: Vec3,
 }
 
+/// What a [`PathCrossing`] crosses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CrossingKind {
+    /// A portal a mover's dock can close; `index` is the portal's.
+    Portal,
+    /// A step onto or off a mover; `index` is the link's. Closed unless the
+    /// mover docks at the link's waypoint.
+    Link,
+}
+
+/// One place a route depends on a mover's dock: a gated portal it walks
+/// through, or a link it walks over. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathCrossing {
+    pub kind: CrossingKind,
+    /// Index of the portal or link in the level's navigation graph.
+    pub index: u32,
+    /// Index into the agent's `path` of the waypoint it walks toward while
+    /// crossing. Once the cursor is past it the crossing is behind the agent,
+    /// and a mover closing it changes nothing about the route ahead.
+    pub waypoint: u32,
+}
+
 /// A ride under way: the agent stands on `mover_id` and does not steer. Host-only.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AgentRide {
@@ -166,17 +189,22 @@ pub struct AgentComponent {
     /// path steering and any motion verb.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_escape: Option<PinEscape>,
-    /// Portal indices `path` crosses, in order. Lets a gate change find the
-    /// agents it affects without re-resolving their paths. Empty for a path
-    /// with no portals, and for a manual path.
+    /// The gated portals and links `path` crosses, in order, each with the
+    /// waypoint it is crossed toward. Lets a gate change find the agents whose
+    /// route ahead it closes without re-resolving their paths. Empty for a path
+    /// that depends on no mover, and for a manual path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub path_portals: Vec<u32>,
+    pub path_crossings: Vec<PathCrossing>,
     /// The ride the current path ends in, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_ride: Option<PlannedRide>,
     /// The ride under way, if any. While set the agent neither steers nor replans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ride: Option<AgentRide>,
+    /// Consecutive ticks a rider has spent airborne off its mover. A ride
+    /// survives a short hop, as the blocking pass's rider grace does.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub ride_airborne_ticks: u32,
     /// The gate generation this agent last answered. Behind the live one while
     /// a gate change still owes it a replan, so any number of flips before
     /// admission cost one.
@@ -185,6 +213,10 @@ pub struct AgentComponent {
 }
 
 fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
@@ -209,9 +241,10 @@ impl AgentComponent {
             unstick_window_remaining: 0,
             ground: GroundRef::Airborne,
             pin_escape: None,
-            path_portals: Vec::new(),
+            path_crossings: Vec::new(),
             planned_ride: None,
             ride: None,
+            ride_airborne_ticks: 0,
             gate_generation: 0,
             path: Vec::new(),
             mandatory_waypoints: Vec::new(),

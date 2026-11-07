@@ -1,12 +1,17 @@
 // Per-tick navigation-agent steering: refresh paths under a replan budget,
 // steer along the current path with lookahead, separate from crowding neighbors,
-// and move each agent through the world via the collide-and-slide harness.
+// and move each agent through the world, movers included, via the agent
+// controller.
 //
-// This is the primary production caller for `nav::find_path` and the agent
-// component — `combat_positioning` also queries `find_path` when scoring
-// candidate positions. It owns the replan policy (per-tick budget + per-agent
-// staleness gate), the waypoint-following loop, and the O(n²) separation pass;
-// the actual capsule sweep lives in `movement::agent_motion::collide_and_slide`.
+// This is the primary production caller for the route query
+// (`nav::find_path_from`) and the agent component; Ai reachability and
+// `combat_positioning` query routes too. It owns the replan policy (per-tick
+// budget, admitted gate-owed first, then target drift, then staleness), the
+// waypoint-following loop and the O(n²) separation pass. Siblings take the
+// ticks path steering does not: `pin_escape` walks a pinned agent clear of a
+// mover, `mover_link` boards, rides and exits lifts, and `corpse` moves the
+// dead. The capsule sweep, carry and displacement live in
+// `movement::agent_motion`.
 //
 // See: context/lib/build_pipeline.md §Navigation bake (pathfinding query surface)
 //      context/lib/entity_model.md §7 (collision), §5 (fixed-tick game logic)
@@ -200,8 +205,9 @@ const SEPARATION_STRENGTH: f32 = 0.6;
 /// the previous route (stale-but-moving) rather than wiping it, so `blocked`
 /// only latches when the agent holds no path at all — its destination is
 /// genuinely unroutable from where it stands (endpoints are snap-resolved by
-/// `find_path`, so the eroded wall margin never causes this). The blocked
-/// state is transient by design: retries ride the replan cooldown plus the
+/// the route query, so the eroded wall margin never causes this), or a mover
+/// closed the route ahead. The blocked state is transient by design: retries
+/// ride the replan cooldown, a gate or link opening, and the
 /// drift/topology/direct-routable admission clauses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AgentPathState {
@@ -243,7 +249,7 @@ pub struct AgentPathState {
 /// (stale-but-moving) until a budget slot frees up. It also stops a transient
 /// call from clearing `blocked` before the tick's blocked-warn can observe it.
 ///
-/// A non-finite `pos` is rejected as a silent no-op (matching `find_path`'s
+/// A non-finite `pos` is rejected as a silent no-op (matching the route query's
 /// finiteness guard) so a NaN/inf target never enters the steering state. Also a
 /// silent no-op when the entity has no agent component.
 pub fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
@@ -272,7 +278,7 @@ pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     updated.destination = None;
     updated.planned_destination = None;
     updated.path.clear();
-    updated.path_portals.clear();
+    updated.path_crossings.clear();
     updated.planned_ride = None;
     updated.mandatory_waypoints.clear();
     updated.waypoint_cursor = 0;
@@ -322,8 +328,8 @@ struct AgentSnapshot {
 
 /// Per-tick agent steering. For every agent with a destination: refresh its path
 /// under the replan budget + staleness gate, steer toward the path/lookahead target,
-/// add the separation term, move through the world via the collide-and-slide
-/// harness, advance the waypoint cursor on arrival, and set arrived/blocked.
+/// add the separation term, move through the world via the agent controller,
+/// advance the waypoint cursor on arrival, and set arrived/blocked.
 ///
 /// `collision` is the static world plus the tick's movers, or a bare
 /// `CollisionWorld` for a level or test without them.
@@ -403,6 +409,7 @@ fn tick_impl(
     dt: f32,
 ) -> AgentTickResult {
     pin_escape::plan_escapes(registry, collision, pins.yields, corpse_yields);
+    let gate = pins.gate;
 
     // Start-of-tick position snapshot for separation. Built once, read by every
     // agent's neighbor pass, so the result is order-independent.
@@ -430,20 +437,20 @@ fn tick_impl(
         .collect();
 
     // Admission pass: decide which agents may replan this tick, BEFORE any agent
-    // moves. The per-tick budget is contended, so admit DRIFT-driven replans (the
-    // target genuinely moved or was never planned) ahead of STALENESS-only ones
-    // (a refresh of an essentially-unchanged plan whose cooldown merely elapsed).
-    // Without this priority a staleness refresher earlier in slot order could
-    // consume a budget slot on a no-op re-plan that a genuinely-drifted agent
-    // needed this tick — crowding out the agent whose target actually moved.
+    // moves, in three tiers under the one budget: agents a gate change owes a
+    // replan (their route ahead closed, or they are blocked and a route may have
+    // opened), then DRIFT-driven ones (the target genuinely moved or was never
+    // planned), then STALENESS-only ones (a refresh of an essentially-unchanged
+    // plan whose cooldown merely elapsed). A lower tier never crowds out a higher
+    // one: a door docking across a route is answered before a moved target, and
+    // a no-op refresh never takes the slot a drifted agent needed.
     //
     // Reads each agent's LIVE component (set/clear destination may have mutated it
     // after the snapshot) with the cooldown decremented exactly as the apply loop
-    // will, so the two passes agree on each agent's drift/staleness verdict.
-    // Admitted ids are collected in slot order; total admissions stay ≤
-    // REPLAN_BUDGET_PER_TICK.
-    let gate = pins.gate;
-    let admitted = admit_replans(registry, &snapshot, nav_graph, gate);
+    // will, so the two passes agree on each agent's verdict. Agents the ride code
+    // will move this tick are left out, so every slot goes to an agent that
+    // replans. Total admissions stay ≤ REPLAN_BUDGET_PER_TICK.
+    let admitted = admit_replans(registry, &snapshot, nav_graph, gate, collision, dt);
 
     let mut replans = 0u32;
 
@@ -478,14 +485,25 @@ fn tick_impl(
 
         // Tick down the staleness cooldown regardless of what happens below.
         agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(1);
-        // A gate change this agent's route never touched is settled at once.
-        if !gate_change_owes_replan(&agent, nav_graph, gate) {
+        // A gate change this agent's route ahead never touched is settled at once.
+        if !gate_change_owes_replan(&agent, position, nav_graph, gate) {
             agent.gate_generation = gate.generation();
         }
+        // Admission leaves out every agent the ride code takes, so this holds
+        // only if the two ever disagree. An admitted agent then still takes the
+        // live generation, or it would keep the head of the gate tier, which is
+        // served longest owed first, while never replanning.
+        let admitted_here = admitted.contains(&current.id);
+        let settle_if_diverted = |agent: &mut AgentComponent| {
+            if admitted_here {
+                agent.gate_generation = gate.generation();
+            }
+        };
 
         if let Some((mover_id, walk)) =
-            pin_escape::escape_velocity(current.id, &mut agent, position, corpse_yields)
+            pin_escape::escape_velocity(current.id, &mut agent, position, corpse_yields, dt)
         {
+            settle_if_diverted(&mut agent);
             move_without_path(
                 registry,
                 collision,
@@ -500,12 +518,19 @@ fn tick_impl(
             continue;
         }
 
-        let ride_walk = match mover_link::advance(&mut agent, position, gate, collision) {
+        let world = mover_link::RideWorld {
+            gate,
+            collision,
+            registry: &*registry,
+            dt,
+        };
+        let ride_walk = match mover_link::advance(&mut agent, position, world) {
             mover_link::RideStep::Free => None,
             mover_link::RideStep::Hold => Some(Vec3::ZERO),
             mover_link::RideStep::Walk(walk) => Some(walk),
         };
         if let Some(walk) = ride_walk {
+            settle_if_diverted(&mut agent);
             move_without_path(
                 registry,
                 collision,
@@ -563,10 +588,11 @@ fn tick_impl(
         };
 
         // Whether this agent replans this tick was decided by the prioritized
-        // admission pass above (drift-driven before staleness-only, capped at the
-        // budget) — the ONLY place the path is (re)built. An agent that WANTED a
-        // replan but lost the prioritized race is simply not in `admitted`.
-        if admitted.contains(&current.id) {
+        // admission pass above (gate-owed, then drift-driven, then
+        // staleness-only, capped at the budget) — the ONLY place the path is
+        // (re)built. An agent that WANTED a replan but lost the prioritized race
+        // is simply not in `admitted`.
+        if admitted_here {
             // Admitted: rebuild the path now.
             replans += 1;
             agent.replan_cooldown_ticks = REPLAN_STALENESS_TICKS;
@@ -578,8 +604,8 @@ fn tick_impl(
             };
             match nav_graph.and_then(|graph| find_path_from(graph, gate, from, destination)) {
                 Some(path) => {
-                    agent.path_portals.clear();
-                    agent.path_portals.extend_from_slice(path.portals());
+                    agent.path_crossings.clear();
+                    agent.path_crossings.extend_from_slice(path.crossings());
                     agent.planned_ride = path.ride();
                     (agent.path, agent.mandatory_waypoints) = path.into_parts();
                     agent.waypoint_cursor = 0;
@@ -587,25 +613,28 @@ fn tick_impl(
                     agent.blocked = false;
                 }
                 None => {
-                    // No route from the current position. `find_path` already
-                    // snaps eroded-band endpoints onto the graph, so this is a
-                    // GENUINE no-route (a disconnected or far-off-mesh
-                    // destination — or a map with no navmesh at all), never a
-                    // mere near-wall wobble. Path failure must stay TRANSIENT:
-                    // a still-moving existing path is KEPT — the agent follows
-                    // its last good route (stale-but-moving) instead of
-                    // freezing — and the cooldown (set above) gates the next
-                    // retry, with the drift / topology / direct-routable
+                    // No route from the current position. The route query
+                    // already snaps eroded-band endpoints onto the graph, so
+                    // this is a GENUINE no-route (a disconnected or far-off-mesh
+                    // destination, a mover closing the way, or a map with no
+                    // navmesh at all), never a mere near-wall wobble. Path
+                    // failure must stay TRANSIENT: a still-moving existing path
+                    // is KEPT — the agent follows its last good route
+                    // (stale-but-moving) instead of freezing — and the cooldown
+                    // (set above) gates the next retry, with a gate or link
+                    // opening and the drift / topology / direct-routable
                     // admission clauses able to retry sooner. A completed path
                     // cannot provide that useful motion, though: discard its
                     // obsolete cursor/steering state and report the live
                     // destination as blocked rather than retaining a false
                     // arrived/has-path result.
                     //
-                    // A kept path through a closed door is no route at all.
-                    if agent.arrived || path_crosses_closed_gate(&agent, nav_graph, gate) {
+                    // A kept path through a closed door, or over a lift that
+                    // has left, is no route at all. One the mover closed only
+                    // behind the agent still leads on.
+                    if agent.arrived || route_ahead_closed(&agent, position, nav_graph, gate) {
                         agent.path.clear();
-                        agent.path_portals.clear();
+                        agent.path_crossings.clear();
                         agent.planned_ride = None;
                         agent.mandatory_waypoints.clear();
                         agent.waypoint_cursor = 0;
@@ -814,39 +843,57 @@ fn move_without_path(
     let _ = registry.set_component(id, agent);
 }
 
-/// Decide which agents replan this tick under the per-tick budget, prioritizing
-/// DRIFT-driven replans over STALENESS-only refreshes when the budget is
-/// contended. Returns the admitted ids in slot order.
+/// Decide which agents replan this tick under the per-tick budget. Returns the
+/// admitted ids, at most [`REPLAN_BUDGET_PER_TICK`], tier by tier:
 ///
-/// A wants-replan agent is DRIFT-driven when it has no plan yet
-/// (`planned_destination` is `None`) OR its live destination has drifted more
-/// than [`REPLAN_DEST_THRESHOLD`] (XZ) from the position the current plan was
-/// built for OR, when a nav graph is available, the live destination resolves to
-/// different nav topology than the planned destination OR a previously-blocked
-/// empty plan is now directly routable from the agent's current region to the
-/// live destination region. It is STALENESS-only when it qualifies ONLY because
-/// the cooldown elapsed (`replan_cooldown_ticks == 0` after this tick's
-/// decrement) while drift/topology/direct-routable recovery stayed unchanged —
-/// a refresh of an essentially-unchanged plan.
+/// 1. GATE-owed: a dock change closed a crossing still ahead on the agent's
+///    route, or the agent is latched `blocked` and a gate or link has opened
+///    since it last planned (see [`gate_change_owes_replan`]). Served longest
+///    owed first: ascending `gate_generation`, slot order within one.
+/// 2. DRIFT-driven: no plan yet (`planned_destination` is `None`), the live
+///    destination has drifted more than [`REPLAN_DEST_THRESHOLD`] (XZ) from the
+///    position the plan was built for, it resolves to different nav topology,
+///    or a blocked agent's destination now shares its start region. Slot order.
+/// 3. STALENESS-only: the cooldown elapsed (`replan_cooldown_ticks == 0` after
+///    this tick's decrement) and nothing above holds. Slot order.
 ///
-/// Two passes over the snapshot: first admit drift-driven agents up to the
-/// budget, then admit staleness-only agents with whatever budget remains. A
-/// staleness refresher therefore never crowds out a genuinely-drifted agent; an
-/// arrived agent whose destination then moved is drift-driven and re-acquires
-/// promptly. Total admissions stay ≤ [`REPLAN_BUDGET_PER_TICK`]. Reads live
-/// components only — no component writes happen here.
+/// Each tier takes what budget the one before left, so a staleness refresher
+/// never crowds out a drifted agent, and an arrived agent whose destination
+/// then moved is drift-driven and re-acquires promptly.
+///
+/// Exempt: agents with no destination, and agents whose tick belongs elsewhere —
+/// one stepping clear of a pinning mover, and one the ride code moves this
+/// tick (riding, boarding, or carried off by a mover; see
+/// [`mover_link::takes_tick`]). They follow no path this tick, so a slot spent
+/// on them would replan nothing.
+///
+/// The gate tier's bound: an admitted agent takes the live generation, and an
+/// agent not owed takes it every tick, so a newly owed agent can never sort
+/// ahead of one already waiting. However often gates flip, an owed agent waits
+/// at most ⌈N / budget⌉ admissible ticks, N being the agents owed when it
+/// became owed; ticks it spends exempt do not count.
+///
+/// Reads live components only — no component writes happen here.
 fn admit_replans(
     registry: &EntityRegistry,
     snapshot: &[AgentSnapshot],
     nav_graph: Option<&NavGraph>,
     gate: NavGate<'_>,
+    collision: &CombinedCollisionWorld<'_>,
+    dt: f32,
 ) -> Vec<EntityId> {
-    // Classify each snapshot agent once: drift-driven, staleness-only, or not
-    // wanting a replan at all. The cooldown is decremented exactly as the apply
-    // loop will, so both passes see the same verdict.
+    // Classify each snapshot agent once into a tier, or none. The cooldown is
+    // decremented exactly as the apply loop will, so both passes see the same
+    // verdict.
     let mut gate_driven: Vec<(u64, EntityId)> = Vec::new();
     let mut drift_driven: Vec<EntityId> = Vec::new();
     let mut staleness_only: Vec<EntityId> = Vec::new();
+    let world = mover_link::RideWorld {
+        gate,
+        collision,
+        registry,
+        dt,
+    };
 
     for current in snapshot {
         let Ok(agent) = registry.get_component::<AgentComponent>(current.id) else {
@@ -855,9 +902,7 @@ fn admit_replans(
         let Some(destination) = agent.destination else {
             continue;
         };
-        // A body stepping clear of a mover, or riding one, follows no path until
-        // it is off.
-        if agent.pin_escape.is_some() || agent.ride.is_some() {
+        if agent.pin_escape.is_some() || mover_link::takes_tick(agent, current.position, world) {
             continue;
         }
 
@@ -866,6 +911,7 @@ fn admit_replans(
                 || destination_topology_changed(nav_graph, planned, destination)
         }) || blocked_destination_now_directly_routable(
             nav_graph,
+            gate,
             agent,
             current.position,
             destination,
@@ -874,7 +920,7 @@ fn admit_replans(
         // (or 0) this tick reaches 0 after the decrement and counts as stale.
         let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(1) == 0;
 
-        if gate_change_owes_replan(agent, nav_graph, gate) {
+        if gate_change_owes_replan(agent, current.position, nav_graph, gate) {
             gate_driven.push((agent.gate_generation, current.id));
         } else if drifted {
             drift_driven.push(current.id);
@@ -883,12 +929,8 @@ fn admit_replans(
         }
     }
 
-    // First pass: drift-driven, up to the budget. Second pass: staleness-only,
-    // with the remaining budget. Slot order is preserved within each pass.
     let budget = REPLAN_BUDGET_PER_TICK as usize;
-    // Longest owed first, slot order within a generation: an admitted agent takes
-    // the live generation, so a later flip cannot put it back ahead of one still
-    // waiting, and no agent waits past ceil(N / budget) ticks however often gates flip.
+    // Longest owed first, slot order within a generation (the sort is stable).
     gate_driven.sort_by_key(|(generation, _)| *generation);
     let mut admitted: Vec<EntityId> = gate_driven
         .into_iter()
@@ -902,29 +944,56 @@ fn admit_replans(
     admitted
 }
 
-/// Whether the live gate generation owes `agent` a replan it has not had: its
-/// route crosses a gate now closed, or it is latched `blocked` and a gate or
-/// link may have opened. Costs nothing while the generation stands.
-fn gate_change_owes_replan(
+/// Whether a gate change still owes `agent`, standing at `position`, a replan,
+/// leaving out agents stepping clear of a mover or riding one, as admission
+/// does. For harnesses that measure how long a gate change waits.
+#[cfg(any(test, feature = "test-support"))]
+pub fn gate_replan_owed(
     agent: &AgentComponent,
+    position: Vec3,
     nav_graph: Option<&NavGraph>,
     gate: NavGate<'_>,
 ) -> bool {
-    agent.gate_generation != gate.generation()
-        && agent.destination.is_some()
-        && (agent.blocked || path_crosses_closed_gate(agent, nav_graph, gate))
+    agent.pin_escape.is_none()
+        && agent.ride.is_none()
+        && gate_change_owes_replan(agent, position, nav_graph, gate)
 }
 
-fn path_crosses_closed_gate(
+/// Whether the live gate state owes `agent` a replan it has not had. Either a
+/// dock change since it last answered closed a crossing still ahead on its
+/// route, or it is latched `blocked` and a change since then could have opened
+/// a route: a mover leaving a gate, or docking where a link opens. A change
+/// that only closes routes leaves a blocked agent alone, so a cycling lift or
+/// door does not rerun a failing search for every blocked agent on each flip.
+/// Costs nothing while the generations stand.
+fn gate_change_owes_replan(
     agent: &AgentComponent,
+    position: Vec3,
+    nav_graph: Option<&NavGraph>,
+    gate: NavGate<'_>,
+) -> bool {
+    agent.destination.is_some()
+        && ((agent.blocked && agent.gate_generation < gate.opened_generation())
+            || (agent.gate_generation != gate.generation()
+                && route_ahead_closed(agent, position, nav_graph, gate)))
+}
+
+/// Whether a mover's dock closes a gated portal or a link still ahead of the
+/// agent on its path.
+fn route_ahead_closed(
+    agent: &AgentComponent,
+    position: Vec3,
     nav_graph: Option<&NavGraph>,
     gate: NavGate<'_>,
 ) -> bool {
     nav_graph.is_some_and(|graph| {
-        agent
-            .path_portals
-            .iter()
-            .any(|&portal| gate.portal_closed(graph, portal as usize))
+        gate.closes_route_ahead(
+            graph,
+            &agent.path_crossings,
+            &agent.path,
+            agent.waypoint_cursor,
+            position,
+        )
     })
 }
 
@@ -937,8 +1006,8 @@ fn destination_topology_changed(
         return false;
     };
 
-    // Resolve through the snapping resolver — the same definition `find_path`
-    // routes with — so a target skirting in and out of the eroded wall margin
+    // Resolve through the snapping resolver — the same definition the route
+    // query resolves endpoints with — so a target skirting in and out of the eroded wall margin
     // does not flap between "routable" and "off-mesh" and force a replan storm.
     match (
         graph.resolve_region_at(planned),
@@ -950,8 +1019,14 @@ fn destination_topology_changed(
     }
 }
 
+/// Whether a blocked agent's destination now lies in the region its route would
+/// start from. The start resolves as the route query resolves it, ground
+/// included: a body on a mover with links searches from the mover, so the floor
+/// under it in XZ never counts, or a failing search would read as newly
+/// routable every tick and bypass the cooldown.
 fn blocked_destination_now_directly_routable(
     nav_graph: Option<&NavGraph>,
+    gate: NavGate<'_>,
     agent: &AgentComponent,
     position: Vec3,
     destination: Vec3,
@@ -966,8 +1041,12 @@ fn blocked_destination_now_directly_routable(
         return false;
     };
 
+    let from = NavStart {
+        position,
+        ground: agent.ground,
+    };
     match (
-        graph.resolve_region_at(position),
+        from.region(graph, gate),
         graph.resolve_region_at(destination),
     ) {
         (Some(position_region), Some(destination_region)) => position_region == destination_region,

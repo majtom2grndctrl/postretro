@@ -14,7 +14,7 @@ use postretro_physics::kinematic_mover::{
     MoverTickStateTable, apply_mover_command, run_kinematic_mover_tick,
 };
 use postretro_sim::agent_steering::{
-    MoverPins, REPLAN_BUDGET_PER_TICK, set_destination, tick_with_mover_pins,
+    MoverPins, REPLAN_BUDGET_PER_TICK, gate_replan_owed, set_destination, tick_with_mover_pins,
 };
 use postretro_sim::nav::{NavGate, NavGraph, install_mover_records};
 
@@ -72,16 +72,8 @@ fn command_every_mover(registry: &mut EntityRegistry, command: &MoverCommand) {
 }
 
 /// Whether the live gate generation still owes `agent` a replan.
-fn owed(agent: &AgentComponent, graph: &NavGraph, gate: NavGate<'_>) -> bool {
-    agent.gate_generation != gate.generation()
-        && agent.destination.is_some()
-        && agent.ride.is_none()
-        && agent.pin_escape.is_none()
-        && (agent.blocked
-            || agent
-                .path_portals
-                .iter()
-                .any(|portal| gate.portal_closed(graph, *portal as usize)))
+fn owed(agent: &AgentComponent, position: Vec3, graph: &NavGraph, gate: NavGate<'_>) -> bool {
+    gate_replan_owed(agent, position, Some(graph), gate)
 }
 
 #[test]
@@ -139,7 +131,8 @@ fn under_contention_on_the_stress_map_no_gate_change_outlasts_the_budget() {
         assert!(result.replans <= REPLAN_BUDGET_PER_TICK);
         for (index, id) in ids.iter().enumerate() {
             let agent = registry.get_component::<AgentComponent>(*id).unwrap();
-            waiting[index] = if owed(agent, &graph, gate) {
+            let position = registry.get_component::<Transform>(*id).unwrap().position;
+            waiting[index] = if owed(agent, position, &graph, gate) {
                 waiting[index] + 1
             } else {
                 0

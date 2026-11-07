@@ -24,7 +24,7 @@ use crate::collision::moving::{
 // A rider leaves a moving base with jump plus inherited base velocity. 150 ms
 // covers the handful of fixed movement ticks needed to clear a mover travelling
 // at roughly twice jump velocity, without masking a later path re-entry.
-const RIDER_GRACE_MS: f32 = 150.0;
+pub const RIDER_GRACE_MS: f32 = 150.0;
 
 /// Host-local mover transition kinds. Task 6 resolves each entry through the
 /// mover's authored named-event address; connected clients never emit entries.

@@ -214,7 +214,7 @@ pub(super) fn ensure_endpoint_clearance(
     Some(NavPath {
         points: repaired.iter().map(|waypoint| waypoint.point).collect(),
         mandatory_waypoints: repaired.iter().map(|waypoint| waypoint.mandatory).collect(),
-        portals: Vec::new(),
+        crossings: Vec::new(),
         ride: None,
     })
 }

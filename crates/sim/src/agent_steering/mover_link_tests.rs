@@ -5,6 +5,7 @@
 
 use glam::Vec3;
 use postretro_collision::EnvironmentView;
+use postretro_entities::components::agent::PlannedRide;
 use postretro_entities::{
     KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand, Transform,
 };
@@ -476,13 +477,16 @@ fn a_rider_knocked_off_resumes_steering_and_replans() {
     let id = rig.boarded();
     let mut agent = rig.state(id).clone();
     agent.ground = GroundRef::Airborne;
-    agent.knockback_velocity = Vec3::new(-8.0, 3.0, 0.0);
+    agent.knockback_velocity = Vec3::new(-8.0, 6.0, 0.0);
     agent.velocity = agent.knockback_velocity;
     rig.registry.set_component(id, agent).unwrap();
-    rig.tick();
-    let agent = rig.state(id);
-    assert!(agent.ride.is_none(), "off the ride");
-    assert_eq!(agent.planned_destination, None, "a replan is owed");
+    // Landing off the deck, or staying up past the airborne grace, ends it.
+    assert!(
+        rig.run_until(id, 30, |rig| rig.state(id).ride.is_none()),
+        "off the ride, at {:?}",
+        rig.position(id)
+    );
+    assert_eq!(rig.state(id).planned_destination, None, "a replan is owed");
 }
 
 #[test]
@@ -615,5 +619,253 @@ fn a_body_inside_the_lowered_room_routes_by_its_own_surface_only() {
     let ride = path.ride().expect("through a ride");
     assert_eq!(ride.board_waypoint, 0);
     assert_eq!(ride.exit_waypoint, 1);
-    assert!(path.portals().is_empty());
+    assert!(path.crossings().is_empty());
+}
+
+// Regression: a walk across a flush lift recorded no crossing, so the lift
+// leaving just before the agent stepped on left its path standing and it
+// walked into the shaft.
+#[test]
+fn an_agent_about_to_cross_a_flush_lift_that_leaves_drops_its_path_at_the_landing() {
+    let mut rig = Rig::with_east_floor(LiftSpec::on_trigger(), 0.0);
+    let goal = Vec3::new(20.0, rest_y(0.0), 5.0);
+    let id = rig.agent(Vec3::new(6.0, rest_y(0.0), 5.0), Some(goal));
+    assert!(
+        rig.run_until(id, 120, |rig| rig.position(id).x > 9.0),
+        "it walked up to the lift, at {:?}",
+        rig.position(id)
+    );
+    assert!(
+        !rig.state(id).path_crossings.is_empty(),
+        "its route crosses the lift"
+    );
+    assert_ne!(
+        rig.state(id).ground,
+        GroundRef::Mover(LIFT),
+        "not on it yet"
+    );
+
+    rig.command(MoverCommand::Start);
+    for _ in 0..120 {
+        rig.tick();
+        let at = rig.position(id);
+        assert!(
+            at.x < 10.0 && at.y > rest_y(0.0) - 0.2,
+            "it never entered the shaft, at {at:?}"
+        );
+        assert!(rig.state(id).ride.is_none());
+    }
+    let agent = rig.state(id);
+    assert!(
+        agent.path.is_empty() && agent.blocked,
+        "it dropped its path and latched blocked at the landing"
+    );
+}
+
+// Regression: a lift passing through its stops never docks, so a body it
+// carried off rode it for ever with no stop to end the ride at.
+#[test]
+fn a_lift_that_never_rests_at_a_stop_carries_an_agent_without_a_ride() {
+    let mut rig = Rig::new(LiftSpec::shuttle(0.0));
+    let deck = rig.lift_y();
+    let id = rig.agent(Vec3::new(12.0, deck + rest_y(0.0), 5.0), None);
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::Mover(LIFT);
+    rig.registry.set_component(id, agent).unwrap();
+    let mut carried = 0;
+    // Past a full cycle: two 2 s legs.
+    for _ in 0..300 {
+        rig.tick();
+        assert_eq!(
+            rig.movers.docks().docked_waypoint(LIFT),
+            None,
+            "never docks"
+        );
+        assert!(rig.state(id).ride.is_none(), "no ride starts");
+        carried += u32::from(rig.state(id).ground == GroundRef::Mover(LIFT));
+    }
+    assert!(carried > 200, "the lift carried it: {carried} ticks");
+}
+
+// Regression: a boarder or a rider took a replan slot it never used, so the
+// budget served fewer agents than it admitted.
+#[test]
+fn replan_slots_go_past_an_agent_the_ride_code_steers() {
+    let mut rig = Rig::new(LiftSpec::shuttle(3000.0));
+    let goal = Vec3::new(20.0, rest_y(TOP), 5.0);
+    let at = Vec3::new(9.4, rest_y(0.0), 5.0);
+    let boarder = rig.agent(at, Some(goal));
+    let board_point = Vec3::new(14.0 - 3.0 * RADIUS, 0.0, 5.0);
+    let mut agent = rig.state(boarder).clone();
+    // At the end of its walk to the lift, its plan owed a refresh.
+    agent.ground = GroundRef::World;
+    agent.planned_ride = Some(PlannedRide {
+        mover_id: LIFT,
+        board_waypoint: 0,
+        exit_waypoint: 1,
+        board_point,
+        exit_point: Vec3::new(15.05, TOP, 5.0),
+    });
+    agent.path = vec![at, board_point];
+    agent.mandatory_waypoints = vec![false, false];
+    agent.arrived = true;
+    agent.planned_destination = None;
+    rig.registry.set_component(boarder, agent).unwrap();
+    // Later in slot order, enough drifters to fill the budget.
+    let drifters: Vec<EntityId> = (0..REPLAN_BUDGET_PER_TICK)
+        .map(|i| {
+            let from = Vec3::new(2.0 + i as f32, rest_y(0.0), 2.0);
+            rig.agent(from, Some(Vec3::new(2.0, rest_y(0.0), 8.0)))
+        })
+        .collect();
+
+    assert_eq!(
+        rig.tick().replans,
+        REPLAN_BUDGET_PER_TICK,
+        "every slot replanned an agent"
+    );
+    for id in drifters {
+        assert!(
+            rig.state(id).planned_destination.is_some(),
+            "{id:?} planned"
+        );
+    }
+    assert!(
+        rig.state(boarder).planned_ride.is_some(),
+        "boarding went on"
+    );
+}
+
+// Regression: the replan gate read the floor under a body on a docked lift, so
+// a target there read as directly routable every tick, and a search from the
+// lift that failed ran every tick past the cooldown.
+#[test]
+fn a_blocked_agent_on_a_docked_lift_waits_out_its_cooldown() {
+    let mut rig = Rig::new(LiftSpec::shuttle(6000.0));
+    let mut section = section(TOP);
+    // The shaft's floor: no portal or link reaches it.
+    section.regions.push(NavRegion {
+        x0: 10,
+        z0: 0,
+        x1: 14,
+        z1: 10,
+        floor_y_min: -8.0,
+        floor_y_max: -8.0,
+    });
+    rig.graph = NavGraph::from_section(&section);
+    crate::nav::install_mover_records(&mut rig.graph, &rig.registry, &mut rig.movers);
+    let target = Vec3::new(12.0, rest_y(-8.0), 5.0);
+    let id = rig.agent(Vec3::new(12.0, rest_y(0.0), 5.0), Some(target));
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::Mover(LIFT);
+    rig.registry.set_component(id, agent).unwrap();
+
+    let replans: u32 = (0..60).map(|_| rig.tick().replans).sum();
+    assert_eq!(rig.state(id).ground, GroundRef::Mover(LIFT), "on the lift");
+    assert!(rig.state(id).blocked, "no route from the lift to the shaft");
+    assert!(
+        replans <= 3,
+        "{replans} replans in 60 ticks: the cooldown holds"
+    );
+}
+
+// Regression: the ride began at the first touch of the deck, leaving the body
+// on the rim; a lift setting off down from its top dock could drop it.
+#[test]
+fn an_agent_boarding_a_descending_lift_at_its_top_dock_stays_aboard() {
+    let mut rig = Rig::new(LiftSpec::shuttle(3000.0));
+    for _ in 0..600 {
+        rig.tick();
+        if rig.movers.docks().docked_waypoint(LIFT) == Some(1) {
+            break;
+        }
+    }
+    assert_eq!(
+        rig.movers.docks().docked_waypoint(LIFT),
+        Some(1),
+        "at the top"
+    );
+    let goal = Vec3::new(5.0, rest_y(0.0), 5.0);
+    let id = rig.agent(Vec3::new(18.0, rest_y(TOP), 5.0), Some(goal));
+    assert!(
+        rig.run_until(id, 150, |rig| rig.state(id).ride.is_some()),
+        "it boarded at the top, at {:?}",
+        rig.position(id)
+    );
+    // The boarding point lies three radii in from the east edge at x 14.
+    let board_x = 14.0 - 3.0 * RADIUS;
+    assert!(
+        rig.position(id).x < board_x + 1.5 * RADIUS + 0.05,
+        "it walked well onto the deck before standing, at {:?}",
+        rig.position(id)
+    );
+
+    let mut descended = false;
+    for _ in 0..600 {
+        rig.tick();
+        let agent = rig.state(id);
+        if agent.ride.is_none() {
+            break;
+        }
+        // Mid-shaft only: stepping off at the low dock changes its ground.
+        if (0.1..TOP - 0.1).contains(&rig.lift_y()) {
+            descended = true;
+            assert_eq!(
+                agent.ground,
+                GroundRef::Mover(LIFT),
+                "aboard on the way down, at {:?}",
+                rig.position(id)
+            );
+        }
+    }
+    assert!(descended, "it rode down");
+    assert!(
+        rig.run_until(id, 300, |rig| rig.position(id).x < 9.0),
+        "it stepped off at the low landing, at {:?}",
+        rig.position(id)
+    );
+    assert!(rig.position(id).y < 1.5, "on the low floor");
+}
+
+// Regression: one airborne tick ended a ride, losing its exit; landing back on
+// the deck then started an unplanned one.
+#[test]
+fn a_rider_keeps_its_ride_through_a_short_hop_and_loses_it_past_the_grace() {
+    let mut rig = Rig::new(LiftSpec::shuttle(6000.0));
+    let id = rig.boarded();
+    let exit = rig.state(id).ride.unwrap().exit_waypoint;
+    assert!(exit.is_some(), "a planned ride");
+    let hop = |rig: &mut Rig, up: f32| {
+        let mut agent = rig.state(id).clone();
+        agent.ground = GroundRef::Airborne;
+        agent.velocity = Vec3::Y * up;
+        rig.registry.set_component(id, agent).unwrap();
+        let mut transform = *rig.registry.get_component::<Transform>(id).unwrap();
+        transform.position.y += 0.05;
+        rig.registry.set_component(id, transform).unwrap();
+    };
+
+    // About 0.12 s in the air: inside the 150 ms grace.
+    hop(&mut rig, 1.0);
+    let mut airborne = 0;
+    for _ in 0..30 {
+        rig.tick();
+        let ride = rig.state(id).ride.expect("a short hop keeps the ride");
+        assert_eq!(ride.exit_waypoint, exit, "and its exit");
+        airborne += u32::from(rig.state(id).ground == GroundRef::Airborne);
+    }
+    assert!(airborne > 0, "it left the deck");
+    assert_eq!(rig.state(id).ground, GroundRef::Mover(LIFT), "and landed");
+
+    // About 0.4 s in the air: past the grace.
+    hop(&mut rig, 4.0);
+    assert!(
+        rig.run_until(id, 30, |rig| rig.state(id).ride.is_none()),
+        "a long leap ends the ride"
+    );
+    assert_eq!(
+        rig.state(id).ground,
+        GroundRef::Airborne,
+        "the grace ran out in the air"
+    );
 }

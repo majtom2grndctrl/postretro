@@ -2,9 +2,11 @@
 // so a portal closes only while its mover is docked at its waypoint.
 // See: context/lib/build_pipeline.md §Navigation bake
 
+use postretro_entities::components::agent::{CrossingKind, PathCrossing};
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
 
 use super::NavGraph;
+use super::path::edge_side;
 use crate::collision::CollisionCapsule;
 use crate::collision::moving::{
     EMPTY_MOVER_POSES, MoverCollider, MoverPoseSource, capsule_overlaps_mover,
@@ -35,9 +37,18 @@ impl<'a> NavGate<'a> {
         Self { docks: Some(docks) }
     }
 
-    /// Changes only on a dock or undock of a mover with baked records.
+    /// Changes on every dock-state change of a mover with baked records: a
+    /// dock, an undock, or a change in whether it moves on its own.
     pub fn generation(self) -> u64 {
         self.docks.map_or(0, MoverDockTable::generation)
+    }
+
+    /// The [`Self::generation`] of the latest dock change that could open a
+    /// route: a mover leaving a dock that closes a portal, docking where a link
+    /// opens, or starting to move on its own there. Never ahead of the
+    /// generation, so an agent that took the live generation is not owed.
+    pub fn opened_generation(self) -> u64 {
+        self.docks.map_or(0, MoverDockTable::opened_generation)
     }
 
     pub fn docked_at(self, mover_id: u32, waypoint: u32) -> bool {
@@ -71,6 +82,58 @@ impl<'a> NavGate<'a> {
                 .portal_gates(portal_index)
                 .iter()
                 .any(|&(mover_id, waypoint)| self.docked_at(mover_id, waypoint))
+    }
+
+    /// Whether a link is closed now: its mover rests anywhere but the link's
+    /// waypoint, as A* reads it.
+    pub(crate) fn link_closed(self, graph: &NavGraph, link_index: usize) -> bool {
+        graph
+            .links()
+            .get(link_index)
+            .is_none_or(|link| !self.docked_at(link.mover_id, link.waypoint))
+    }
+
+    /// Whether a mover's dock now closes a crossing still ahead of a body at
+    /// `position` walking `path` toward `path[cursor]`. A crossing toward an
+    /// earlier waypoint is behind it; one toward the current waypoint is
+    /// behind once the body stands on that waypoint's side of the edge, so a
+    /// door closing at a chaser's back cuts nothing. Allocation-free.
+    pub(crate) fn closes_route_ahead(
+        self,
+        graph: &NavGraph,
+        crossings: &[PathCrossing],
+        path: &[Vec3],
+        cursor: usize,
+        position: Vec3,
+    ) -> bool {
+        crossings.iter().any(|crossing| {
+            let index = crossing.index as usize;
+            let (closed, edge) = match crossing.kind {
+                CrossingKind::Portal => (
+                    self.portal_closed(graph, index),
+                    graph.portals().get(index).map(|p| (p.left, p.right)),
+                ),
+                CrossingKind::Link => (
+                    self.link_closed(graph, index),
+                    graph.links().get(index).map(|l| (l.left, l.right)),
+                ),
+            };
+            if !closed {
+                return false;
+            }
+            let waypoint = crossing.waypoint as usize;
+            if waypoint != cursor {
+                return waypoint > cursor;
+            }
+            let (Some((left, right)), Some(&target)) = (edge, path.get(waypoint)) else {
+                return true;
+            };
+            let edge = (Vec3::from_array(left), Vec3::from_array(right));
+            match (edge_side(edge, position), edge_side(edge, target)) {
+                (Some(here), Some(there)) => here == 0.0 || there == 0.0 || here * there < 0.0,
+                _ => true,
+            }
+        })
     }
 }
 

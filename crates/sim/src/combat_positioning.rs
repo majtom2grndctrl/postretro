@@ -3,14 +3,16 @@
 //! This module is deliberately decoupled from AI steering state. Callers pass a
 //! target position and the canonical enemy-eye/target-aim LOS endpoints
 //! supplied by AI perception, plus the nav/collision
-//! query surfaces required to prove each candidate is reachable, statically
-//! occupiable, and visible from its own eye point.
+//! query surfaces required to prove each candidate is reachable by a route
+//! that respects mover gates and links, statically occupiable, clear of any
+//! docked mover, and visible from its own eye point.
 //!
 //! See: context/lib/entity_model.md §7c.
 
 use std::cmp::Ordering;
 
 use glam::Vec3;
+use postretro_foundation::GroundRef;
 
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, distance_xz};
@@ -39,6 +41,9 @@ pub(crate) const COMBAT_SLOT_SWITCH_MARGIN: f32 = 1.0;
 pub struct CombatQuery<'a> {
     pub claimant_id: u32,
     pub agent_pos: Vec3,
+    /// What the agent stands on, so a route from a docked lift starts through
+    /// its links rather than from the floor beneath it.
+    pub agent_ground: GroundRef,
     pub engagement_radius: f32,
     pub target_pos: Vec3,
     /// Offset from the candidate slot's grounded center to the shared enemy
@@ -483,6 +488,7 @@ mod tests {
         CombatQuery {
             claimant_id: 1,
             agent_pos,
+            agent_ground: GroundRef::World,
             engagement_radius: 2.0,
             target_pos,
             enemy_eye_offset: LOS_EYE_OFFSET,
@@ -509,6 +515,7 @@ mod tests {
         CombatQuery {
             claimant_id,
             agent_pos,
+            agent_ground: GroundRef::World,
             engagement_radius: 2.0,
             target_pos,
             enemy_eye_offset: LOS_EYE_OFFSET,
@@ -584,6 +591,7 @@ mod tests {
         let candidates = combat_candidates(&CombatQuery {
             claimant_id: 1,
             agent_pos: Vec3::new(2.0, REST_Y, 2.0),
+            agent_ground: GroundRef::World,
             engagement_radius: 1.0,
             target_pos: Vec3::new(10.0, REST_Y, 10.0),
             enemy_eye_offset: LOS_EYE_OFFSET,

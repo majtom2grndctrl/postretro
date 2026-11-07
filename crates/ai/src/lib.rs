@@ -506,7 +506,13 @@ where
         )
     };
 
-    resolve_combat_slots(&mut outcomes, nav_graph, mover_nav, collision_world);
+    resolve_combat_slots(
+        registry,
+        &mut outcomes,
+        nav_graph,
+        mover_nav,
+        collision_world,
+    );
 
     apply::apply_outcomes(
         registry,

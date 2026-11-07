@@ -25,7 +25,9 @@ mod pin_test_fixtures;
 mod pin_tests;
 
 pub use auto_close::MoverAutoCloseTimers;
-pub use blocking::{AgentMoverPair, MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
+pub use blocking::{
+    AgentMoverPair, MoverBlockingState, MoverEventKind, RIDER_GRACE_MS, run_mover_blocking_pass,
+};
 pub use command::apply_mover_command;
 pub use dock::{MoverDockTable, mover_docked_waypoint, mover_moves_on_its_own};
 pub use pin::run_mover_pin_pretest;

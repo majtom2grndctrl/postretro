@@ -4,6 +4,9 @@
 use std::collections::HashMap;
 
 use glam::Vec3;
+use postretro_entities::EntityRegistry;
+use postretro_entities::components::agent::AgentComponent;
+use postretro_foundation::GroundRef;
 
 use super::EnemyOutcome;
 use crate::collision::CollisionWorld;
@@ -18,6 +21,7 @@ use crate::nav::NavGraph;
 pub(super) const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
 
 pub(super) fn resolve_combat_slots(
+    registry: &EntityRegistry,
     outcomes: &mut [EnemyOutcome],
     nav_graph: Option<&NavGraph>,
     mover_nav: crate::nav::MoverNav<'_>,
@@ -61,9 +65,15 @@ pub(super) fn resolve_combat_slots(
             continue;
         };
         let retained_slot = retained_combat_slot(outcome);
+        // Steering routes from the agent's ground; scoring a slot from the
+        // floor under a lift would price a route the agent cannot walk.
+        let agent_ground = registry
+            .get_component::<AgentComponent>(outcome.id)
+            .map_or(GroundRef::World, |agent| agent.ground);
         queries.push(CombatQuery {
             claimant_id: outcome.id.to_raw(),
             agent_pos: outcome.position,
+            agent_ground,
             // The single query radius feeds both generated ring positions and
             // band scoring; it is the action-relative resolved standoff.
             engagement_radius: outcome.standoff_distance,

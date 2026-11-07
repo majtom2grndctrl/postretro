@@ -1050,6 +1050,134 @@ fn a_riders_target_reachability_holds_its_boarding_value_and_recomputes_after_ex
     assert!(reachable(&registry), "recomputed after exit");
 }
 
+// Ai runs before steering starts a ride, so a body a lift carries off before it
+// boards has no ride yet. Its route has no start until the lift docks, which
+// must not read as unreachable for the whole trip.
+#[test]
+fn a_body_carried_between_docks_before_its_ride_starts_holds_its_target_reachability() {
+    use postretro_entities::components::agent::AgentComponent;
+    use postretro_entities::{
+        KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
+    };
+    use postretro_foundation::GroundRef;
+    use postretro_level_format::navmesh::NavMoverLink;
+    use postretro_physics::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
+
+    const LIFT: u32 = 4;
+    let region = |x0, x1| NavRegion {
+        x0,
+        z0: 0,
+        x1,
+        z1: 4,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    };
+    let link = |waypoint| NavMoverLink {
+        mover_id: LIFT,
+        waypoint,
+        region: 0,
+        left: [2.0, 0.0, 4.0],
+        right: [2.0, 0.0, 0.0],
+    };
+    // The target stands in a region nothing joins, so a recompute reads false.
+    let mut nav_graph = NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [0.0, 0.0, 0.0],
+        cell_size: 1.0,
+        dim_x: 8,
+        dim_z: 4,
+        agent_radius: 0.35,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions: vec![region(0, 4), region(5, 8)],
+        portals: Vec::new(),
+        gates: Vec::new(),
+        links: vec![link(0), link(1)],
+    });
+
+    let graph = reachability_graph();
+    let mut registry = EntityRegistry::new();
+    spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.target_reachable = true;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    agent.ground = GroundRef::Mover(LIFT);
+    agent.ride = None;
+    registry.set_component(enemy, agent.clone()).unwrap();
+    let lift = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            lift,
+            KinematicMoverComponent::new(
+                LIFT,
+                KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::Y * 8.0],
+                    waypoint_names: vec!["low".into(), "high".into()],
+                    speed_mps: 1.0,
+                    wait_ms: 0.0,
+                    mode: KinematicMoverMode::PingPong,
+                    started: true,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            ),
+        )
+        .unwrap();
+    let mut movers = MoverTickStateTable::default();
+    crate::nav::install_mover_records(&mut nav_graph, &registry, &mut movers);
+    let factions = FactionRegistry::default();
+    let sentiment = RefCell::new(FactionSentimentState::default());
+    let mut runtime = AiRuntime::new();
+    let mut tick = |registry: &mut EntityRegistry, movers: &mut MoverTickStateTable| {
+        run_kinematic_mover_tick(registry, movers, 0.016);
+        run_ai_tick_with_navigation_and_impact(
+            registry,
+            &mut runtime,
+            0.016,
+            AiTickInputs {
+                mover_nav: crate::nav::MoverNav {
+                    gate: crate::nav::NavGate::new(movers.docks()),
+                    movers: &[],
+                    poses: &*movers,
+                },
+                nav_graph: Some(&nav_graph),
+                collision_world: None,
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &factions,
+                faction_sentiment: &sentiment,
+            },
+            |_| {},
+        );
+    };
+    let reachable = |registry: &EntityRegistry| {
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable
+    };
+
+    for _ in 0..24 {
+        tick(&mut registry, &mut movers);
+        assert_eq!(
+            movers.docks().docked_waypoint(LIFT),
+            None,
+            "the lift is between docks"
+        );
+        assert!(reachable(&registry), "held while carried between docks");
+    }
+    agent.ground = GroundRef::World;
+    registry.set_component(enemy, agent).unwrap();
+    for _ in 0..24 {
+        tick(&mut registry, &mut movers);
+    }
+    assert!(!reachable(&registry), "recomputed once off the lift");
+}
+
 #[test]
 fn target_reachability_cache_holds_until_the_next_acquisition_tick() {
     let graph = reachability_cache_graph();

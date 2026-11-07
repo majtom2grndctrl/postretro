@@ -51,9 +51,10 @@ use super::targeting::{
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
 use crate::agent_steering;
-use crate::nav::find_path_from;
+use crate::nav::{NavStart, find_path_from};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
-use postretro_foundation::{ActionVerb, BRAIN_NO_TARGET_DISTANCE, MotionVerb};
+use postretro_entities::components::agent::AgentComponent;
+use postretro_foundation::{ActionVerb, BRAIN_NO_TARGET_DISTANCE, GroundRef, MotionVerb};
 
 /// Pass 2: evaluate each immutable enemy snapshot into an outcome.
 #[allow(clippy::too_many_arguments)] // orchestration keeps each compute-stage input explicit.
@@ -300,34 +301,35 @@ pub(super) fn evaluate(
             is_hostile(factions, enemy_faction, entity_faction(registry, target))
         });
         // Reachability is the nav floor's pathfinder verdict, cached on the
-        // existing acquisition stride. It deliberately mirrors the same
-        // `find_path` capability chase consumes, rather than claiming a
-        // stronger ground-truth answer. An absent nav graph has no route query,
-        // so it is immediately unreachable even if a restored brain retained a
-        // cached result from an earlier map or acquisition stride.
-        let (agent_ride, ground) = registry
-            .get_component::<postretro_entities::components::agent::AgentComponent>(snap.id)
-            .map_or((None, postretro_foundation::GroundRef::World), |agent| {
-                (agent.ride, agent.ground)
-            });
+        // existing acquisition stride. It deliberately mirrors the gated route
+        // query chase consumes, from the agent's own ground, rather than
+        // claiming a stronger ground-truth answer. An absent nav graph has no
+        // route query, so it is immediately unreachable even if a restored
+        // brain retained a cached result from an earlier map or acquisition
+        // stride.
         let target_reachable = match (target, nav_graph) {
             (Some(_), None) => {
                 brain.target_reachable = false;
                 false
             }
-            // A rider's route is the ride: the fact holds its boarding value
-            // until it steps off.
-            (Some(_), Some(_)) if evaluate_acquisition && agent_ride.is_some() => {
-                brain.target_reachable
-            }
             (Some(target), Some(graph)) if evaluate_acquisition => {
-                let from = crate::nav::NavStart {
-                    position: snap.position,
-                    ground,
-                };
-                let reachable = find_path_from(graph, gate, from, target.position).is_some();
-                brain.target_reachable = reachable;
-                reachable
+                let agent = registry.get_component::<AgentComponent>(snap.id).ok();
+                let ground = agent.map_or(GroundRef::World, |agent| agent.ground);
+                // A rider's route is the ride, so the fact holds its boarding
+                // value until it steps off. A body carried between docks
+                // before steering starts its ride has no route start until
+                // the mover docks, so its last verdict holds too.
+                let holds = agent.is_some_and(|agent| agent.ride.is_some())
+                    || graph.between_docks(gate, ground);
+                if !holds {
+                    let from = NavStart {
+                        position: snap.position,
+                        ground,
+                    };
+                    brain.target_reachable =
+                        find_path_from(graph, gate, from, target.position).is_some();
+                }
+                brain.target_reachable
             }
             (Some(_), Some(_)) => brain.target_reachable,
             (None, _) => {

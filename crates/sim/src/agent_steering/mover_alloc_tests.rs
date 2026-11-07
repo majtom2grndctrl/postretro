@@ -9,11 +9,11 @@ use glam::{Quat, Vec3};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::{AgentComponent, PlannedRide};
 use postretro_entities::{
-    KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
+    EntityRegistry, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
 };
 use postretro_foundation::GroundRef;
 
-use super::mover_link::{RideStep, advance};
+use super::mover_link::{RideStep, RideWorld, advance};
 use crate::alloc_probe::AllocSnapshot;
 use crate::collision::moving::{CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource};
 use crate::collision::{CollisionWorld, SKIN_DISTANCE};
@@ -95,6 +95,8 @@ struct Scene {
     moving: KinematicMoverComponent,
     capsule: AgentCapsule,
     rider: AgentComponent,
+    /// Holds the lift, so a ride can read how it rests at its stops.
+    registry: EntityRegistry,
 }
 
 impl Scene {
@@ -139,6 +141,12 @@ impl Scene {
                 step_height: 0.4,
             },
             rider: AgentComponent::new(0.35, 1.8, 0.4, 4.0),
+            registry: {
+                let mut registry = EntityRegistry::new();
+                let lift = registry.spawn(Transform::default());
+                registry.set_component(lift, mover(LIFT, true)).unwrap();
+                registry
+            },
         }
     }
 
@@ -217,14 +225,20 @@ impl Scene {
             exit_point: Vec3::X * 9.0,
         });
         self.rider.ride = None;
-        let _ = advance(&mut self.rider, Vec3::ZERO, gate, &collision);
+        let world = RideWorld {
+            gate,
+            collision: &collision,
+            registry: &self.registry,
+            dt: DT,
+        };
+        let _ = advance(&mut self.rider, Vec3::ZERO, world);
         let rode = self.rider.ride.is_some();
         let exit = matches!(
-            advance(&mut self.rider, Vec3::ZERO, gate, &collision),
+            advance(&mut self.rider, Vec3::ZERO, world),
             RideStep::Walk(_)
         );
         self.rider.ground = GroundRef::World;
-        let _ = advance(&mut self.rider, Vec3::X * 9.0, gate, &collision);
+        let _ = advance(&mut self.rider, Vec3::X * 9.0, world);
 
         (
             carried.ground,
@@ -283,12 +297,13 @@ fn a_plan_boarded_on_a_lift_already_moving_keeps_its_exit() {
         board_point: Vec3::ZERO,
         exit_point: Vec3::X * 9.0,
     });
-    let _ = advance(
-        &mut scene.rider,
-        Vec3::ZERO,
-        NavGate::new(&scene.docks),
-        &collision,
-    );
+    let world = RideWorld {
+        gate: NavGate::new(&scene.docks),
+        collision: &collision,
+        registry: &scene.registry,
+        dt: DT,
+    };
+    let _ = advance(&mut scene.rider, Vec3::ZERO, world);
     let ride = scene.rider.ride.expect("it boarded");
     assert_eq!(ride.exit_waypoint, Some(0));
 }

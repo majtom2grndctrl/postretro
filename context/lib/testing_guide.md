@@ -151,7 +151,7 @@ Resource proof covers the full lifetime in [Development Guide](./development_gui
 
 Zero-allocation assertions use `postretro_sim::alloc_probe` (`AllocSnapshot::arm` / `allocs_since`). The probe counts only when `alloc_probe::CountingAllocator` is the test binary's `#[global_allocator]`, and that attribute must sit on a crate-root static. Every crate whose tests arm the probe installs it under `#[cfg(test)]` at its own root. `arm` panics when the allocator is missing; each such crate also carries a positive-control test asserting a real heap allocation is counted.
 
-Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload.
+Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload. A performance ceiling is the chosen design's measured cost plus a stated margin (default 25%), citing the run that measured it. A build over its ceiling stops for the owner; it never starts a tuning loop.
 
 ### GPU tests
 

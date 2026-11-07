@@ -50,6 +50,7 @@ Each keeps the meaning of its Decision or Acceptance row. Any the owner reads di
 - **Row 43's fixture** — grew 5→7 on the pre-brief model at 6a813bdcd with cap = bound = 5. A `#[cfg(test)]` `downward_only` switch in tree runs the same walk with 2 growths and the test asserts more than 0, so the fixture cannot go stale silently.
 - **`forced_missing_lightmap_block_drops_exactly_its_static_direct_and_specular`** — fails before this branch too: a `--no-cache` bake with the 6a813bdcd compiler also reports 0 portals for `specular-shadowmask-capture.map` and skips id 51. Test left untouched and red. It needs a map change or another fixture; `switch-demo`, `trap-wave` and `shadowmask-groups-capture` also have 0 portals, and `closet-reveal` streams but has 0 mask layers. Goes to the owner at results.
 - **`--all-features`** fails on `observability/driver.rs` (missing `assist_held`, `swim`, `vault`), code no commit on this branch touches.
+- **`large-map-spatial-residency.md`** lives in `context/plans/`, not `context/lib/`; the gate reads it there. Its "Today" bullet still names `DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES` and `DEFAULT_GPU_FLOOR_BYTES`, which no longer exist; left alone as out of scope.
 
 ## Delegated answers
 
@@ -150,7 +151,7 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 | 6 | Renderer: split `stream/tests.rs` first. Separate pool generations, one-submission execution, all-resident planes, mask placeholder, meter, shader and varying. Rows 12–17, 37, 39, 40, 51, 54 | worker, renderer | 5 | done: rows pass with a GPU required, 1,246 renderer tests. Streamed hallway capture is byte-identical to all-resident at 2 poses |
 | 7 | Sizing: pools from id 58, cap retired from batch, levers, slider and capture, shared margin, growth warning, policy identity. Rows 42–46, 48–50, 52, 53, 57 | worker, app + renderer seam | 4, 5, 6 | done: rows 42–46, 48–50, 52, 53, 57 pass, GPU required for 48. Hallway first generation 34 and 15 layers, 274 MiB with spares, equal to the Build Summary; growths 0. `campaign-test` 3 streamed configs byte-identical to all-resident at 2 poses on a fresh copy |
 | 8 | Harnesses: `pool_mirror`, the compiler dry run, walk sizing with no size passed. Rows 43, 56 | worker, measurement | 7 | |
-| 9 | Docs: `rendering_pipeline.md` §4 and §7.8, `build_pipeline.md`, `large-map-spatial-residency.md`, with the grep gates. Row 47 | integrating executor | 7 | |
+| 9 | Docs: `rendering_pipeline.md` §4 and §7.8, `build_pipeline.md`, `large-map-spatial-residency.md`, with the grep gates. Row 47 | worker, docs | 7 | done: row 47 passes as `docs_describe_no_lightmap_pool_cap` in the cap gate, shown failing on reintroduced wording in both docs. Also touched `resource_management.md` and `rendering_pipeline.md` §10 |
 | 10 | Cold rebake at this commit, old-compiler baselines baked fresh, harness ported to a throwaway branch, rows 59–67 | integrating executor; owner for 61, 63 review, 64, 67 | 8, 9 | |
 | 11 | `/preflight`, `/review-panel`, `/fix-review-findings` loop, results table | integrating executor | 10 | |
 

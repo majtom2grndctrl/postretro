@@ -1,5 +1,6 @@
 // Grep gate: the lightmap pool is the cap. No non-test source sizes a pool from
-// the old default, carries a cap on a drain, or offers a pool cap lever.
+// the old default, carries a cap on a drain, or offers a pool cap lever, and no
+// context doc describes one.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use std::fs;
@@ -22,6 +23,30 @@ const RETIRED: &[&str] = &[
     "peak / cap",
     "pool cap ",
     "pool-cap",
+];
+
+/// How the docs described the retired cap, lowercase. These docs hold other,
+/// legitimate caps (shadow pools, SH), so each phrase names the lightmap's, and
+/// matches whole words: "pool capacity" is not "pool cap".
+const RETIRED_DOC_WORDING: &[&str] = &[
+    "lightmap cap",
+    "lightmap pool cap",
+    "pool cap",
+    "pool-cap",
+    "cap slider",
+    "lightmap slider",
+    "default cap",
+    "fixed cap",
+    "grows past its cap",
+    "pairs past the cap",
+    "the cap bounds",
+    "holds the cap",
+];
+
+/// The docs that described the cap, from the workspace root.
+const CAP_DOCS: &[&str] = &[
+    "context/lib/rendering_pipeline.md",
+    "context/plans/large-map-spatial-residency.md",
 ];
 
 /// Modules compiled only under `cfg(test)` that the file-name rule cannot see.
@@ -91,6 +116,43 @@ fn no_lightmap_pool_cap_survives() {
     assert!(
         survivors.is_empty(),
         "the retired lightmap pool cap survives:\n{}",
+        survivors.join("\n")
+    );
+}
+
+/// `doc` as one lowercase line, so a phrase matches across a hard wrap, in a
+/// blockquote too.
+fn doc_words(doc: &str) -> String {
+    let words: Vec<&str> = doc.split_whitespace().filter(|&word| word != ">").collect();
+    words.join(" ").to_lowercase()
+}
+
+fn has_whole_phrase(text: &str, phrase: &str) -> bool {
+    let boundary = |c: Option<char>| !c.is_some_and(char::is_alphanumeric);
+    text.match_indices(phrase).any(|(at, _)| {
+        boundary(text[..at].chars().next_back())
+            && boundary(text[at + phrase.len()..].chars().next())
+    })
+}
+
+#[test]
+fn docs_describe_no_lightmap_pool_cap() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the crate sits two levels under the workspace root");
+    let mut survivors = Vec::new();
+    for doc in CAP_DOCS {
+        let words = doc_words(&fs::read_to_string(root.join(doc)).expect("read a context doc"));
+        for phrase in RETIRED_DOC_WORDING {
+            if has_whole_phrase(&words, phrase) {
+                survivors.push(format!("{doc}: {phrase}"));
+            }
+        }
+    }
+    assert!(
+        survivors.is_empty(),
+        "a doc still describes the retired lightmap pool cap:\n{}",
         survivors.join("\n")
     );
 }

@@ -4,10 +4,10 @@
 > (`context/plans/done/sh-probe-streaming/`). Generalizing to further resources is
 > unplanned. Stage 5 (lightmap-shaped data first) shipped as the brief
 > `done/spatial-residency--lightmap-cell-blocks/`: compiler cell blocks, a baked residency set (id 51), a runtime pool and
-> vertex block table, streaming through the shared issuer, and a dev-panel meter. Its budget is a debug-tool
-> pool-cap slider. Its findings recommend a pool-policy change before the Low tier fits, and moving the
-> payload split off the frame thread. The player-facing tier is a later spec: `experimental_spikes.md`
-> forbids user-facing settings in a spike. Not ready for `/build-brief`.
+> vertex block table, streaming through the shared issuer, and a dev-panel meter. The compiler bounds each
+> pool's worst mandatory layers (id 58) and the runtime sizes its pools from that bound, which gives the tiers
+> below a checkable input. Moving the payload split off the frame thread is still open. The player-facing tier
+> is a later spec: `experimental_spikes.md` forbids user-facing settings in a spike. Not ready for `/build-brief`.
 > **Supporting research:** `context/research/spatial-streaming.md`. Shipped SH residency:
 > `context/lib/rendering_pipeline.md` §Cluster SH residency.
 
@@ -93,9 +93,9 @@ byte counts residency is designed around.
   order scatters a cluster's cells across layers, and layer size follows the largest cell.
   Whole layers are therefore the wrong residency unit. The unit is the cell block (see
   Packing granularity).
-- Lightmap (id 22) and shadowmask (id 42) share the fragment's layer index and nothing
-  else. The shadowmask is twice the lightmap width (two mask groups side by side,
-  `sample_shadowmask_atlas`). They are resident together or not at all.
+- Lightmap (id 22) and shadowmask (id 42) place apart: mask planes have their own pool,
+  and the block table carries each plane's address. A block's halves are resident
+  together or not at all.
 - The forward fragment stage has no free binding. Indirection never adds a fragment
   binding. The animated atlas resolves per-face blocks in the fragment stage from the
   binding-7 uniform. Static cell blocks resolve in the vertex stage from a table in free
@@ -157,8 +157,14 @@ bullets below are leanings, not decisions.
   held twice (`DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES` in `plan_initial_pool_floor`,
   `DEFAULT_GPU_FLOOR_BYTES` in `ShResidencyAccounting`). Pools reserve the smaller of the
   whole map and their share at install.
-- **Stage 5 budget.** A debug-tool pool-cap slider. The player-facing tier below is a
-  later spec.
+- **Stage 5 budget.** The compiled pool bound. Id 58 stores each pool's worst mandatory
+  layers over every camera cell at the default lead, the runtime sizes its pools from
+  that figure, and the Build Summary reports the bytes. It is the checkable input for the
+  validity rule under Owner decisions below, for ids 22 and 42 alone: the animated atlas
+  and weight maps stay outside it, and planar mirror cells do too. The player-facing tier
+  below is a later spec. At the default 0.025 m/texel the hallway misses Low at any
+  measured lead, so the cell-block findings under Pre-planning measurements, taken before
+  that default moved, no longer hold there.
 - **Shape.** Lean: Low, Medium, High, and an auto default. One planner splits the tier into
   per-resource GPU caps and per-drain budgets, replacing both constants. Resource-neutral
   settings key. Options slot, menu control ("Applies after reload") and SDK type follow

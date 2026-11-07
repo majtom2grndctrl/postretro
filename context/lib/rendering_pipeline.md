@@ -220,16 +220,20 @@ the same drain, or not at all. A cell's blocks are not a pair: demand for a cell
 of its blocks, and each installs independently. A face cut across two blocks (the oversize-face
 cut) shows the ordinary miss until its second block lands. Whole-cell atomic install would make a huge cell
 one unbounded drain. The renderer
-places blocks in a pool of 2048² array layers plus one spare layer; each shadowmask layer
-holds both BC5 groups side by side. Block identity resolves in the forward vertex stage.
-Each world vertex carries block id + 1 (0 = no lightmap) and a block-local UV (§6). Group 6
-binding 0 is a VERTEX-only storage table of one `vec4<u32>` per id: pool layer, packed pool
-offset, packed block extent, and flags (RESIDENT, NONE). The vertex stage fetches its entry
-once, interpolates the block-local texel (UV × extent), and passes layer, flags, offset and
-extent flat, so no fragment binding is added. The fragment clamps the texel to the block's
-half-texel rect, snaps it to 1/256 texel, then adds the pool offset (`lightmap_pool_uv`).
-A block therefore samples identically wherever the pool places it, and bilinear taps never
-reach a neighbour. Table writes happen on install, eviction and repack, never per frame.
+places blocks in two pools of 2048² array layers: the lightmap pool (irradiance and direction)
+and the mask pool, where each present BC5 plane is its own placement. A block's lightmap and
+its two planes can sit at three different layers and offsets. Block identity resolves in the
+forward vertex stage. Each world vertex carries block id + 1 (0 = no lightmap) and a
+block-local UV (§6). Group 6 binding 0 is a VERTEX-only storage table of one `vec4<u32>` per
+id: the lightmap address, the plane A address, the plane B address, each a packed layer and
+offset, then packed block extent and flags (RESIDENT, NONE, PLANE_A, PLANE_B, NO_MASK_POOL).
+The vertex stage fetches its entry once, interpolates the block-local texel (UV × extent), and
+passes layer, flags, offset and extent flat, plus both plane addresses still packed in one
+flat varying, so no fragment binding is added. The fragment decodes a plane address only on
+the mask path. It clamps the texel to the block's half-texel rect, snaps it to 1/256 texel,
+then adds the pool offset (`lightmap_pool_uv`). A block therefore samples identically wherever
+the pools place it, and bilinear taps never reach a neighbour. Table writes happen on install,
+eviction and repack, never per frame.
 
 In a level with blocks, entry 0 means no lightmap: zero static irradiance, neutral
 direction, all-visible shadowmask. A real block whose entry is not resident is a miss. A miss drops exactly the
@@ -237,6 +241,13 @@ terms that read the block: lightmap irradiance, owner static specular, and the
 shadowmask union subtraction. SH indirect and SDF-shadowed static light stay. A level with
 no id 22, or zero blocks, runs placeholder mode: every vertex reads 1×1 neutral textures
 (white irradiance, +Y direction, all-visible shadowmask).
+
+Id 42 stores no all-zero plane. A resident block's absent plane samples nothing and reads
+zero, exactly what the plane would decode to, so this holds on an owned face too and the miss
+and no-owner rules stand. A level with no mask pool is a separate state, carried by a table
+flag: it reads fully visible. A level with id 42 and no present plane has masks that read zero:
+it places nothing, binds the 1×1 mask placeholder and stays mask-present. That placeholder is
+bound wherever no mask pool texture exists and is never sampled, because flags answer every read.
 
 Demand comes from the baked CellResidencySet (id 51), a streaming-owned cell relation keyed
 by cell, not an id-46 axis. For each camera cell it lists every cell within portal-path lead
@@ -252,8 +263,9 @@ when the lightmap does not stream or is declined. The mandatory set is the camer
 entries within L plus the cells of id-49 pinned clusters. Entries between L and the baked
 maximum form the band, which id-49 priority regions rank. Baked demand is recomputed only when the camera cell or L changes;
 this frame's drawn cells add visible demand. Mandatory and visible blocks are never
-refused: the pool grows past its cap to hold them. The cap bounds band blocks, which stay
-resident while they remain in the band. Blocks outside both are freed at the next drain.
+refused: when nothing else makes room, a pool grows to hold them. Band blocks fill what that
+demand leaves, and stay resident while they remain in the band. Blocks outside both are freed
+at the next drain.
 Every non-portal visibility path demands only the camera cell's baked set, and nothing new
 from a solid or exterior camera cell. On those frames, drawn blocks already resident stay
 resident without new reads, and the frames count visible misses. The planar water
@@ -268,8 +280,7 @@ do (`boot_sequence.md` §1). Its cells outside the baked set are
 over-inclusion (§2), whose demand is never refused, so they count against the bake-gap
 gate: under one pool policy, the pool may defer no more lightmap texel area with the
 mirror than without it. In the dev-tools Streaming tab, a level-scope slider sets L (default 16 m,
-up to the baked maximum of 32 m) for both resources, and a lightmap slider sets the pool
-cap (1–255 layers, default 15). Neither is a player setting.
+up to the baked maximum of 32 m) for both resources. It is not a player setting.
 
 SH clusters and lightmap blocks share one read issuer thread and one per-drain byte
 budget. The issuer reads the mandatory tier (SH visible, pinned and lead; block visible,
@@ -280,33 +291,21 @@ index. The drain admits ready work in tier order up to the shared budget, always
 one item. Blocks upload in their stored formats with no decode, and a pair is admitted or
 deferred whole.
 
-The renderer owns the pool, its placement, upload, growth, repack and retirement; the
-placement policy is wgpu-free logic in `postretro-render-cpu`. Each drain frees untargeted
-blocks, refuses band pairs past the cap, and evicts resident band blocks farthest lead
-first. Before growing, it repacks in place: blocks move between layers of the same texture
-through the spare layer, because WebGPU copies within one texture only between distinct
-subresources. A repack never moves a block to a higher layer, so one spare suffices and no
-second pool is allocated. Only mandatory or visible pairs grow the pool, and growth is
-sized to the whole targeted demand, not to the pairs one drain admitted: the shared budget
-admits a large set over several drains, and a second growth would wait behind the first's
-retirement. A drain's first growth reserves a from-scratch shelf pack of every mandatory and
-visible block, resident or not, times `GROWTH_HEADROOM` (4/3, the fragmentation a runtime
-pool carries over a fresh pack), bounded by the level's all-resident layers and the device
-limit, and never below the layers the drain's pairs land in. The pool never shrinks, so the
-reserve is held for the level. Growth allocates a new generation and copies the old layers
-into it GPU-side, so every placement keeps its address. At most one generation retires at
-a time, released on submitted-work-done. A pair that needs growth while a generation
-retires, which happens only once demand, or fragmentation of the pool, outgrows the last reserve, or past the device's
-array-layer limit, is deferred and counts as a miss. The first generation holds the cap or
-what the level needs all-resident, whichever is smaller. One drain's copies, uploads and
-table writes reach the GPU in one submission.
+The renderer owns both pools, their placement, upload, growth, repack and retirement; the
+placement policy is wgpu-free logic in `postretro-render-cpu`. One journal covers both pools,
+so a pair or a whole drain undoes as one.
 
-**Bounded lightmap pool** *(not built yet)*. Replaces the shared layer index, the side-by-side mask layer, the fixed cap and its slider, and the downward-only repack above.
+**Bounded lightmap pool.** The compiler bounds worst mandatory demand, each pool is sized once at load from that bound plus a margin, and growth is a logged exception.
 
-- *Planes.* Id 42 stores no all-zero plane, and an absent plane reads zero, exactly what it would decode to. Mask planes live in their own pool, one placement each, and the block table carries each address. A block stays one pair across both pools: its halves install and leave together.
-- *Pool size.* Both pools are sized once at load from the compiled bound (`build_pipeline.md` §PRL section IDs, Lightmap pool bound) times 5/4, capped at what the level needs all-resident. The pool is the cap, grown layers included: no drain carries a cap, and no slider sets one. Band blocks fill what mandatory demand leaves.
-- *Repack.* The downward repack runs first. If it cannot fit the whole targeted demand, blocks may move to any layer through that pool's spare, never a second copy of a pool. Any set that packs from scratch therefore fits at runtime. Repack holds room for every mandatory and visible target, and compacts at most once before growth.
-- *Growth.* Demand the bound does not model evicts band blocks, repacks, then grows that pool once by the same margin and warns, naming the pool and camera cell. That demand is drawn cells outside the camera cell's set for the bound, a planar mirror's included, a raised dev lead, Settling on a fallback path, and a seam pre-commit.
+- *Pairs.* A block is one atomic pair across both pools: its lightmap half and each present plane install in one drain or not at all, and leave together. A block with no plane takes no mask placement and no mask read. Evicting a band block frees both halves, even when only one pool needed room, and a band block one pool's repack drops leaves the other pool too.
+- *Pool size.* Each pool's first generation is its compiled bound (`build_pipeline.md` §PRL section IDs, Lightmap pool bound) times the shared 5/4 margin, rounded up, and no more than the level needs all-resident. Shelf packing is not monotone, so a bound above that all-resident count stands: a pool never starts below its bound. A pool with anything to hold takes at least one layer, so band pairs can land even at a bound of 0; a pool with nothing to hold takes none, and no spare. Each pool with layers carries one spare, and the device's array-layer limit bounds the whole. The margin holds drawn demand the bound does not model, and keeps band blocks, which cut reads and misses. The compiler prices the same figures, so the Build Summary's bytes are the bytes allocated. Only a harness overrides a first generation, one figure per pool.
+- *No second figure.* The pool's own layers, grown ones included, are the only capacity. No drain carries another, no slider sets one, and band blocks may land in any layer.
+- *Drain.* Each drain frees untargeted blocks. A mandatory or visible pair lands each half in its reserved room or anywhere in its pool's layers, evicting resident band blocks farthest lead first, then returns each victim all of whose rects are still free. A victim with any rect taken stays out whole. Band pairs take free room clear of reservations or are refused whole, naming the pools short of room, and never repack or grow a pool. A refused pair is read again only when the pool that refused it has room. A full mask pool stops band reads only for pairs with planes.
+- *Reserved room.* When targets change or a pool grows, each pool reserves room for every mandatory and visible target without any, tallest first, from free space only, never by eviction. A reservation is a real allocation and not a placement: the block stays a miss with no table write until its pair uploads, and no band pair lands there. It returns in the drain its target leaves targeted demand, by removal or by dropping to band. Band headroom leaves reserved room out. A demand arriving over several drains therefore needs at most one repack. Past the pool, a later pair may take an unready target's room through a pairs-only repack, because growth comes last.
+- *Repack.* A pool short of room repacks alone, in place, through its spare, because WebGPU copies within one texture only between distinct subresources. No second copy of a pool is allocated. The downward pass runs first: blocks move only to the same or a lower layer, and it counts only if it seats the whole targeted demand. Failing that, the pool compacts: it packs that demand from scratch, tallest first, then resident band blocks nearest lead first as far as they fit, and blocks may land in any layer, a higher one included. A demand that does not pack still compacts for the drain's pairs. A pool compacts once per demand: a compaction that leaves a target without room, or finds no layout, spends the demand until targets change into a set that packs from scratch or the pool grows. A compaction that seats everything spends nothing. After that, only a downward repack for the drain's pairs remains.
+- *Compaction order.* Copies are planned on the CPU before the model changes or any copy records. The target's layers build one at a time into a rolling empty layer: the spare starts empty and takes the first, the least-full open layer parks its blocks in free space elsewhere, and that emptied layer takes the next. A target layer that finds no empty layer builds over the open layer with the fewest texels in its way. A target layer left on the spare's index moves to the last open layer, so the spare ends empty at its fixed index. Every returned plan is valid, and a failed plan changes nothing: the pool retries with the band dropped, then warns by name and the demand falls through to growth. A set that packs from scratch with a layer to spare fits at runtime, by measurement rather than proof. With no layer to spare the planner can rarely miss, and the miss takes logged growth; a level at its all-resident size with every block mandatory is such a case.
+- *Growth.* A logged safety net for demand the bound does not model: drawn cells outside the camera cell's set for the bound, a planar mirror's included, a raised dev lead, Settling on a fallback path, and a seamless level swap's pre-commit *(not built yet)*. Only a ready mandatory or visible pair grows a pool, once band eviction and every repack have failed, and only the pools it is short in. A pool's first growth of a drain reserves a from-scratch pack of the whole targeted demand, resident or not, times the same 5/4, bounded by the all-resident layers and the device limit, and never below the layers the pair lands in. It sizes to the demand, not the drain's pairs, because the shared budget admits a large set over several drains and a second growth would wait behind the first's retirement. A new generation of that pool takes GPU copies of the old layers, so every placement keeps its address. Each growth warns, naming the pool and the camera cell; the application logs it, since the pool knows no cell. Pools never shrink, so an overshoot stays for the level. A later demand past a grown pool grows and warns again.
+- *Generations.* Each pool grows and retires apart, on its own generations: at most one retires per pool, released on submitted-work-done. A pair that must grow a pool still retiring, or needs a layer past the device's array-layer limit, defers whole, grows neither pool and counts as a miss. A retiring pool holds back only a pair short in that pool. One drain's growth copies, repack moves, uploads and table writes, across both pools, reach the GPU in order in one submission, and a block moved in both pools takes one table write carrying both addresses.
 
 Level install reads no block. Settling's drains make the presented pose's set resident
 before the first world frame (`boot_sequence.md` §1, Settling), and play never waits on a
@@ -322,16 +321,19 @@ residency.
 
 `POSTRETRO_LIGHTMAP_STREAMING=all-resident|stream` selects the mode. Unset or `stream`
 streams a level with blocks, a usable id 51 and usable portals. A level with blocks that
-lacks either, or runs `all-resident`, places every block at install: the parity baseline
-that mirrors SH's `off`. The compiler refuses a level that cannot stream whose
-all-resident pool exceeds the device array-layer floor, and warns for one that can; it
-counts pool layers with shared level-format placement, also used by the renderer. A streaming load
+lacks either, or runs `all-resident`, places every block and plane at install, in the same two
+pools with no spare: the parity baseline that mirrors SH's `off`. A level that can stream must
+carry id 58 in either mode; its absence or an unknown version refuses the load by name. The
+compiler refuses a level that cannot stream whose all-resident lightmap or mask pool exceeds
+the device array-layer floor, and warns for one that can; it counts pool layers with shared
+level-format placement, tallest first, also used by the renderer. A streaming load
 keeps only the id-22/42 indexes and a retained file handle, never either whole payload.
 The id-22 header `mode` is recorded, but the renderer does not honour it; `Unshadowed`
 logs a load warning. Lightmap streaming reports through a throttled
 `[Lightmap streaming]` log line, the dev-tools Streaming tab, the capture report's
 `lightmap_streaming` block, and the `lightmap_residency` and `lightmap_drain` CPU-timing
-stages (§12).
+stages (§12). Layers, peak layers, live and retiring bytes, band headroom, repacks,
+compactions, compaction rollbacks and growths count per pool.
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and
@@ -461,7 +463,7 @@ Ids 27, 41, and 45 use packed RGB16F delta texels in both PRL and renderer stora
 | Skinned mesh | direct-SH base | id 45 composed delta; promoted animated tier crossfades to pool self-shadow at rest direction | runtime direct loop |
 | Billboard | id 47 direct scatter (legacy: direct-SH base) | id 48 composed scatter delta (legacy: id 45 direct-SH delta) | dynamic prefix only (legacy: total light count) |
 
-**World specular shadowmask.** The baked `ShadowmaskAtlas` mask shadows world static specular from each face's owners (Static specular ownership, below), independent of pool-shadow promotion and its crossfade. With the shadowmask pool as BC5 groups side by side per layer (`build_pipeline.md` §PRL), one sampling path reads both groups at the fragment's block's pool layer and returns the four owner channels in one vector; world specular and the promoted-union subtraction both read a light's channel by its position in the face's owner entry. Each group samples as its own clamp-to-edge texture; bilinear never blends groups. Each consumer samples the mask at most once per fragment, and not at all on a face with no owners. A too-wide, misaligned, unknown-format or wrong-length atlas resolves to the all-visible placeholder with a `[Renderer]` error; the placeholder is two texels wide so each group reads a real texel, and it clears the load-fixed mask-present bit, so owners add no specular and the union subtracts nothing.
+**World specular shadowmask.** The baked `ShadowmaskAtlas` mask shadows world static specular from each face's owners (Static specular ownership, below), independent of pool-shadow promotion and its crossfade. One sampling path reads each present plane at its own mask pool address and returns the four owner channels in one vector, an absent plane's as zero with no texture read; world specular and the promoted-union subtraction both read a light's channel by its position in the face's owner entry. The block's half-texel clamp keeps each plane's bilinear taps inside its own placement. Each consumer samples the mask at most once per fragment, and not at all on a face with no owners. A mask pool the device cannot hold, or planes that disagree with their payloads, drop the mask pool alone with a `[Renderer]` error, on the all-resident path only: a streamed pool defers past the device instead. The level then has no mask pool: entries read all-visible and the load-fixed mask-present bit clears, so owners add no specular and the union subtracts nothing.
 
 **Static specular ownership.** A light the bake found occluded on a surface never adds world specular there: world static specular comes only from lights that own the face, each shadowed by its baked mask.
 - **Owners.** Each lightmapped face carries up to four owner lights, one per mask channel, as ascending compact static spec-light indices. A face's owners are fixed at load; streaming never changes them.
@@ -971,7 +973,7 @@ and the report gains a planar block (preset, crop, selected plane height,
 mirror walk path and mirror cell counts) only where planar ran, so a capture
 below very high reports as it did without planar.
 
-**Lightmap-family byte meter.** Every level set's build makes one report of resident bytes for its five group-4 lightmap textures — static irradiance, static direction, shadowmask, animated irradiance, animated direction — read back from the textures it binds, so a rejected pool or atlas reports its placeholder. The renderer reports the active set's; with no set active (the Frontend, after an unload) no lightmap texture is bound and the report is empty: no rows, zero bytes. The three static rows are pool layers: all-resident, every layer the level's blocks fill; streamed, the active generation's layers plus the spare. A streamed pool's growth and its retirement release rebuild the static rows, and a retiring generation's bytes report apart from the total. It uses the same row model and Data/Dummy/Fallback and section-citation conventions as the SH report below. The load log (`[Renderer] Lightmap residency:`), the dev panel's Performance tab ("Lightmap memory") and the capture measurement JSON (`renderer_accounted_lightmap`) all print that one report.
+**Lightmap-family byte meter.** Every level set's build makes one report of resident bytes for its five group-4 lightmap textures — static irradiance, static direction, shadowmask, animated irradiance, animated direction — read back from the textures it binds, so a rejected pool or atlas reports its placeholder. The renderer reports the active set's; with no set active (the Frontend, after an unload) no lightmap texture is bound and the report is empty: no rows, zero bytes. The three static rows are pool layers: all-resident, every layer the level's blocks and planes fill; streamed, each pool's active generation's layers plus its spare. The shadowmask row is the mask pool, or the 1×1 placeholder where no mask pool texture exists. Either pool's growth or retirement release rebuilds the static rows, and both pools' retiring generations report apart from the total, one pool's release leaving the other's counted. It uses the same row model and Data/Dummy/Fallback and section-citation conventions as the SH report below. The load log (`[Renderer] Lightmap residency:`), the dev panel's Performance tab ("Lightmap memory") and the capture measurement JSON (`renderer_accounted_lightmap`) all print that one report.
 
 **Planned SH residency accounting.** The renderer records requested bytes for every
 level-owned SH texture and buffer at the allocation decision that creates it. Each physical
@@ -1084,7 +1086,7 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 1 | Material (albedo texture, normal map, per-material uniforms) |
 | 2 | Dynamic lights, influence volumes, per-chunk static light lists |
 | 3 | Octahedral irradiance atlas array (sampled total `texture_2d_array`, grid/tile/layer uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) + direct static-light atlas array (`BIND_SH_DIRECT_ATLAS = 15`; billboards use it only on their legacy fallback) + billboard direct-scatter 3D texture (binding 17, VERTEX-only) |
-| 4 | Lightmap pool (irradiance, dominant direction, shadowmask array layers), animated atlas pair, nearest + linear samplers, animated block table uniform (binding 7) |
+| 4 | Lightmap pool (irradiance, dominant direction array layers), mask pool (shadowmask array layers), animated atlas pair, nearest + linear samplers, animated block table uniform (binding 7) |
 | 5 | Shadow resources: binding 0 = `spot_shadow_depth` (depth 2D-array, spot pool); binding 1 = comparison sampler (shared by spot and cube paths); binding 2 = `light_space_matrices` uniform (spot slots); binding 3 = SDF shadow factor (half-res `Rgba8Unorm`); binding 4 = full-res scene depth; binding 5 = `point_shadow_cube` (`texture_depth_cube_array`, point-light cube shadows) |
 | 6 | Forward: lightmap block table (binding 0, VERTEX-only storage; §4 "Lightmap cell-block residency"). Pipeline-local: billboard binds its sprite instances here (§7.4), fog its volume resources |
 
@@ -1104,7 +1106,7 @@ The fluid surface pass (§7.3a) also owns its layout: groups 0 camera, 2 lightin
 
 **Planar layouts and budget.** The planar passes (§7.3a) own two layouts. The mask's group 0 holds the planar inputs uniform and scene depth. The resolve's groups are 0 the shared camera, 1 the world material (read for its texel grid) and 2 the same inputs uniform plus mirror colour and mirror depth, read by `textureLoad`; it binds no probe group and no storage buffer. The mirror's world, mover, skinned and billboard draws reuse their main pipelines with the mirror's own group 0, and group 2 swaps to the mirror's light records while a mirror-only light holds a slot. The selected plane's fluid draws bind a second group 5 with the shared layout, over scene depth and the planar layer with its own uniform, so the fluid fragment inventory is unchanged. Resident memory is the mirror colour and planar layer (`Rgba16Float`) plus the mirror and layer depths (`Depth32Float`), each at the preset scale of the scene extent: at 4K native, ultra, scale ½, 49,766,400 B (47.5 MiB, 2.3% of the 2 GB pool); scale 1 quadruples it. The mirror cull runs on the CPU, so no per-view GPU cull buffers exist. The mirror's light records match the main light buffer, and its sprite store starts at 1 KiB and grows monotonically. Measured cost: §12.
 
-The renderer also requires `max_texture_dimension_2d ≥ 8192` (per-layer lightmap and SH atlas cap; wgpu's default already grants 8192) and `max_texture_array_layers ≥ 256` (lightmap and SH array-atlas layer cap; wgpu's default grants 256). Lightmap pools and SH irradiance/direct atlases are `texture_2d_array` resources. Lightmap pool layers are a fixed 2048² (the shadowmask layer twice as wide); SH atlases cap each PRL layer to the 2D floor and spill overflow into array layers. An adapter pre-check fail-fasts with a named `[Renderer]` error if either limit is below its floor. Runtime guards degrade a lightmap pool the device cannot hold to the neutral placeholder (a streamed pool instead defers growth past the array-layer limit) and disable oversized SH volumes cleanly, rather than panicking during texture creation or upload. An SH section with a non-finite origin, or a cell-size axis that is not finite and positive, is refused the same way with an error: the level then has no SH volume for any consumer. Streamed SH pool growth clamps to the device and refuses a cluster past it instead of ending the session (§4).
+The renderer also requires `max_texture_dimension_2d ≥ 8192` (per-layer baked atlas limit; wgpu's default already grants 8192) and `max_texture_array_layers ≥ 256` (lightmap and SH array-atlas layer limit; wgpu's default grants 256). Lightmap and mask pools and SH irradiance/direct atlases are `texture_2d_array` resources. Lightmap and mask pool layers are a fixed 2048²; SH atlases cap each PRL layer to the 2D floor and spill overflow into array layers. An adapter pre-check fail-fasts with a named `[Renderer]` error if either limit is below its floor. Runtime guards degrade a lightmap pool the device cannot hold to the neutral placeholder, and drop an all-resident mask pool alone (streamed pools instead defer growth past the array-layer limit), and disable oversized SH volumes cleanly, rather than panicking during texture creation or upload. An SH section with a non-finite origin, or a cell-size axis that is not finite and positive, is refused the same way with an error: the level then has no SH volume for any consumer. Streamed SH pool growth clamps to the device and refuses a cluster past it instead of ending the session (§4).
 
 **Target hardware.** The renderer targets mid-2020 mid-range discrete GPUs — the envelope the lean wgpu pipeline is built toward. **Perf floor** (must hold an acceptable framerate): NVIDIA GTX 16-series (Turing, e.g. GTX 1660 Super). No RT cores at this tier, so SDF shadows sphere-trace in compute (§4) and hardware ray tracing stays a non-goal (§13). **Mac perf target** (perf-tuned, not only must-run): AMD Radeon Pro 5300M/5500M-class (RDNA1, the 2019–2020 16-inch MacBook Pro discrete GPU) on the Metal backend. Work that cuts frame cost here counts in full, Metal-only wins included (§5 Visible-span draws names one); findings and briefs label each lever Metal-only or all-backends. Adapters in this class can lack timestamp queries; §12 covers measuring without them. A live-tunable quality panel (dev-tools) explores settings on this class. Perf-gated renderer decisions — SDF shadow budgets and the like (§4) — are measured against this envelope; measured per-pass numbers live with the `POSTRETRO_GPU_TIMING` diagnostics (§12), not here. *(Adaptive base-probe spacing sets a lower binding floor for its own footprint work: laptop shared-memory iGPU smoothness, below this desktop perf floor — an owner-stated divergence for that feature, not a change to the renderer-wide target. See §4 "Adaptive base-probe spacing".)*
 

@@ -1,7 +1,7 @@
 # spatial-residency--lightmap-bounded-pool — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 3d66934ce
 
 No crate source changed between the brief's `read at` (6a813bdcd) and this commit. Every symbol cited by Decisions and Path was re-read at this commit. No Decision premise is false, and no Acceptance row needs restatement.
@@ -146,13 +146,13 @@ Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_G
 | 58 | GPU rows run with an adapter required | preflight run under `POSTRETRO_REQUIRE_GPU=1` | achievable as stated | pass: preflight and the ignored GPU capture tests ran under `POSTRETRO_REQUIRE_GPU=1` |
 | 59 | Hallway ceiling | executor records on the 5300M, task 10; finding, not a gate | manual | recorded: 1,962 MiB steady, 1,974 peak, against 2,170 and 2,574; 0 lightmap growth. Finding, not a gate |
 | 60 | Walks at 5/4 and one step either side | executor, no-GPU harness, task 10 | manual | recorded: 0 growth at 32/14, 34/15 and 36/16 on both walks; **owner accepted 5/4** (2026-11-07): 36/16 beats it on every walk figure for 16 MiB, but the Metal route shows no player-visible difference; revisit if repacks show in play |
-| 61 | Frames on five maps | executor captures and diffs at equal clock; owner reviews | manual | executor part done: 754 frame pairs byte-identical on five maps at three clocks; **owner review outstanding** |
+| 61 | Frames on five maps | executor captures and diffs at equal clock; owner reviews | manual | executor part done: 754 frame pairs byte-identical on five maps at three clocks; **pass**: owner waived the visual review on byte-identity (2026-11-07) |
 | 62 | Repack cost | executor records, task 10; a visible hitch goes to the owner | manual | recorded: 3 to 4 repack frames a minute, worst 34.2 ms (one missed vsync, 1 of 50 repacks), median change about 0 ms; **owner accepted: not a hitch on this card** (2026-11-07); the copies fit in about 7 ms of GPU headroom, so lower-end hardware is the place to watch |
-| 63 | Mask-heavy map | executor records; owner reviews frames | manual | recorded: 1 lightmap and 2 mask layers, 14,680,076 B, same as old, frames byte-identical; **owner review outstanding** |
+| 63 | Mask-heavy map | executor records; owner reviews frames | manual | recorded: 1 lightmap and 2 mask layers, 14,680,076 B, same as old, frames byte-identical; **pass**: owner waived the visual review on byte-identity (2026-11-07) |
 | 64 | Theatrical moments | owner, in-engine, on the hallway; task 10 finds a closet reveal and a door from the `.map` and gives the owner positions | manual | **pass, owner in-engine** (2026-11-07): `warren_door_3` opened from inside the room; closet reveal (`warren_closet_trigger_0`) looks as the owner remembers it, with 0 visible not-resident blocks, 0 outside the set and no pool events in any 5 s window through it; positions in Corrections ("Row 64 positions") |
 | 65 | Planar mirrors | executor, no-GPU harness, task 10; any growth goes to the owner | manual | recorded: 0 growth with the mirror on or off on both maps; first layers equal all-resident; nothing for the owner |
 | 66 | Bound cost | executor, warm and cold, task 10 | manual | pass: 0.16 s of a 1,429 s cold hallway bake; about 0.15% of a warm one |
-| 67 | Cleanup | executor records driver memory; owner confirms | manual | recorded: exit returns to about baseline, 5 reloads with no trend; **owner confirms** |
+| 67 | Cleanup | executor records driver memory; owner confirms | manual | recorded: exit returns to about baseline, 5 reloads with no trend; **pass, owner confirmed** (2026-11-07) |
 
 ## Tasks
 

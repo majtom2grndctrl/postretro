@@ -10,6 +10,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES, LightmapBlock,
     LightmapBlockPayload, LightmapMode, LightmapSection,
 };
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::shadowmask_atlas::{
     ShadowmaskAtlasSection, ShadowmaskOwnerBounds, group_plane_len,
 };
@@ -33,6 +34,15 @@ const FACE_FREE_BOUNDS: ShadowmaskOwnerBounds = ShadowmaskOwnerBounds {
     face_count: 0,
     static_spec_light_count: 0,
 };
+
+/// What every fixture with blocks and id 51 stores for id 58.
+const FIXTURE_POOL_BOUND: LightmapPoolBoundSection = LightmapPoolBoundSection {
+    worst_lightmap_layers: 27,
+    worst_mask_layers: 12,
+};
+
+#[path = "plane_presence_tests.rs"]
+mod plane_presence_tests;
 
 // ---- Fixtures ----
 
@@ -106,6 +116,12 @@ fn lighting_blobs(
             SectionId::CellResidencySet,
             residency_set().to_bytes(),
         ));
+        if !lightmap.blocks.is_empty() {
+            blobs.push(blob(
+                SectionId::LightmapPoolBound,
+                FIXTURE_POOL_BOUND.to_bytes(),
+            ));
+        }
     }
     blobs.push(blob(SectionId::Lightmap, lightmap.to_bytes()));
     if let Some(shadowmask) = shadowmask {

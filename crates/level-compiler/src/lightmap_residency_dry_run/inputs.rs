@@ -65,6 +65,11 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
             ShadowmaskState::Stored(ShadowmaskFormat {
                 payload_bytes: block_bytes.iter().sum(),
                 block_bytes,
+                planes: index
+                    .records
+                    .iter()
+                    .map(|r| [r.group_a.len != 0, r.group_b.len != 0])
+                    .collect(),
             })
         }
         // The bake emits id 42 whenever any face admits a mask owner.

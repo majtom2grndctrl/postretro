@@ -33,7 +33,6 @@ pub(crate) fn assemble_live_diagnostics(
     renderer: Option<&LightmapStreamCounters>,
     reads: Option<&dyn SectionReadBytes>,
 ) {
-    live.pool_cap_layers = controller.levers().pool_cap_layers();
     live.lead_metres = controller.lead_metres();
     live.max_lead_metres = controller.max_lead_metres();
 
@@ -45,7 +44,8 @@ pub(crate) fn assemble_live_diagnostics(
     live.mandatory_blocks = u64::from(residency.mandatory_blocks);
     live.mandatory_lightmap_bytes = residency.mandatory_lightmap_bytes;
     live.mandatory_shadowmask_bytes = residency.mandatory_shadowmask_bytes;
-    live.band_headroom_texels = controller.pool_report().band_headroom_texels;
+    let report = controller.pool_report();
+    live.band_headroom_texels = report.map(|pool| pool.band_headroom_texels);
     live.in_flight_read_bytes = ledger.in_memory_bytes();
     live.physical_reads = ledger.physical_reads();
 
@@ -132,14 +132,17 @@ fn format_line(
         "[Lightmap streaming] last {elapsed_seconds:.1} s: {requested} pairs requested \
          ({reads} reads, id 22 {read_22}, id 42 {read_42}), {installs} installs, \
          {evictions} evictions, {refusals} refusals, {deferrals} deferrals, \
-         {failed_installs} failed installs, {failed_reads} failed reads, {repacks} repacks, \
-         {growths} growths, visible misses (may overlap) {outside} outside baked set, \
+         {failed_installs} failed installs, {failed_reads} failed reads, {repacks} repacks \
+         ({mask_repacks} mask), {compactions} compactions ({mask_compactions} mask), \
+         {rollbacks} compaction rollbacks ({mask_rollbacks} mask), {growths} growths \
+         ({mask_growths} mask), visible misses (may overlap) {outside} outside baked set, \
          {not_resident} not resident \
          | now: lead {lead:.1} of {max_lead:.1} m, resident {resident_blocks} of {blocks} \
          blocks {resident} (id 22 {resident_22}, id 42 {resident_42}), mandatory \
          {mandatory_blocks} blocks {mandatory} (id 22 {mandatory_22}, id 42 {mandatory_42}), \
-         pool {layers} layers (peak {peak}, cap {cap}) {pool} + {retiring} retiring, \
-         growth peak {growth_peak}, install last {install_last_ms:.2} ms / max \
+         pool {layers} layers (peak {peak}) {pool} + {retiring} retiring, \
+         headroom {headroom} texels, mask pool {mask_layers} layers (peak {mask_peak}) \
+         {mask_pool} + {mask_retiring} retiring, headroom {mask_headroom} texels, growth peak {growth_peak}, install last {install_last_ms:.2} ms / max \
          {install_max_ms:.2} ms",
         requested = delta(|d| d.reads_requested),
         reads = delta(|d| d.physical_reads),
@@ -151,8 +154,14 @@ fn format_line(
         deferrals = delta(|d| d.deferrals),
         failed_installs = delta(|d| d.failed_installs),
         failed_reads = delta(|d| d.failed_reads),
-        repacks = delta(|d| d.repacks),
-        growths = delta(|d| d.growths),
+        repacks = delta(|d| d.repacks.lightmap),
+        mask_repacks = delta(|d| d.repacks.mask),
+        compactions = delta(|d| d.compactions.lightmap),
+        mask_compactions = delta(|d| d.compactions.mask),
+        rollbacks = delta(|d| d.compaction_rollbacks.lightmap),
+        mask_rollbacks = delta(|d| d.compaction_rollbacks.mask),
+        growths = delta(|d| d.growths.lightmap),
+        mask_growths = delta(|d| d.growths.mask),
         outside = delta(|d| d.drawn_outside_baked_set),
         not_resident = delta(|d| d.drawn_not_resident),
         lead = now.lead_metres,
@@ -166,11 +175,16 @@ fn format_line(
         mandatory = format_bytes(now.mandatory_bytes()),
         mandatory_22 = format_bytes(now.mandatory_lightmap_bytes),
         mandatory_42 = format_bytes(now.mandatory_shadowmask_bytes),
-        layers = now.pool_layers,
-        peak = now.peak_pool_layers,
-        cap = now.pool_cap_layers,
-        pool = format_bytes(now.pool_bytes),
-        retiring = format_bytes(now.retiring_pool_bytes),
+        layers = now.pool_layers.lightmap,
+        peak = now.peak_pool_layers.lightmap,
+        pool = format_bytes(now.pool_bytes.lightmap),
+        retiring = format_bytes(now.retiring_pool_bytes.lightmap),
+        headroom = now.band_headroom_texels.lightmap,
+        mask_layers = now.pool_layers.mask,
+        mask_peak = now.peak_pool_layers.mask,
+        mask_pool = format_bytes(now.pool_bytes.mask),
+        mask_retiring = format_bytes(now.retiring_pool_bytes.mask),
+        mask_headroom = now.band_headroom_texels.mask,
         growth_peak = format_bytes(now.growth_transient_peak_bytes),
         install_last_ms = now.last_drain_install_micros as f64 / 1000.0,
         install_max_ms = now.max_drain_install_micros as f64 / 1000.0,
@@ -192,9 +206,10 @@ fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use postretro_level_format::lightmap_pool::PerPool;
     use std::collections::BTreeMap;
 
-    use postretro_level_loader::LightmapPoolReport;
+    use postretro_level_loader::{LightmapPoolReport, PoolReport};
     use postretro_test_log_capture::LogCapture;
     use postretro_visibility::VisibleCells;
 
@@ -416,6 +431,14 @@ mod tests {
             installs: 10,
             lightmap_bytes_read: 1024 * 1024,
             drawn_not_resident: 4,
+            repacks: PerPool {
+                lightmap: 2,
+                mask: 1,
+            },
+            compactions: PerPool {
+                lightmap: 1,
+                mask: 0,
+            },
             ..LightmapStreamingLiveDiagnostics::default()
         };
         let now = LightmapStreamingLiveDiagnostics {
@@ -433,10 +456,34 @@ mod tests {
             resident_lightmap_bytes: 1024 * 1024,
             resident_shadowmask_bytes: 2 * 1024 * 1024,
             mandatory_blocks: 38,
-            pool_layers: 7,
-            peak_pool_layers: 9,
-            pool_cap_layers: 15,
-            pool_bytes: 98 * 1024 * 1024,
+            pool_layers: PerPool {
+                lightmap: 7,
+                mask: 3,
+            },
+            peak_pool_layers: PerPool {
+                lightmap: 9,
+                mask: 4,
+            },
+            pool_bytes: PerPool {
+                lightmap: 98 * 1024 * 1024,
+                mask: 12 * 1024 * 1024,
+            },
+            band_headroom_texels: PerPool {
+                lightmap: 64,
+                mask: 32,
+            },
+            repacks: PerPool {
+                lightmap: 5,
+                mask: 3,
+            },
+            compactions: PerPool {
+                lightmap: 2,
+                mask: 1,
+            },
+            compaction_rollbacks: PerPool {
+                lightmap: 1,
+                mask: 0,
+            },
             last_drain_install_micros: 420,
             max_drain_install_micros: 3_100,
             ..LightmapStreamingLiveDiagnostics::default()
@@ -453,13 +500,23 @@ mod tests {
             line.contains("visible misses (may overlap) 1 outside baked set, 2 not resident"),
             "{line}"
         );
+        assert!(
+            line.contains(
+                "3 repacks (2 mask), 1 compactions (1 mask), 1 compaction rollbacks (0 mask)"
+            ),
+            "{line}"
+        );
         assert!(line.contains("lead 16.0 of 32.0 m"), "{line}");
         assert!(
             line.contains("resident 41 of 198 blocks 3.0 MiB (id 22 1.0 MiB, id 42 2.0 MiB)"),
             "{line}"
         );
+        assert!(line.contains("pool 7 layers (peak 9) 98.0 MiB"), "{line}");
+        assert!(line.contains("headroom 64 texels"), "{line}");
         assert!(
-            line.contains("pool 7 layers (peak 9, cap 15) 98.0 MiB"),
+            line.contains(
+                "mask pool 3 layers (peak 4) 12.0 MiB + 0 B retiring, headroom 32 texels"
+            ),
             "{line}"
         );
         assert!(
@@ -477,8 +534,14 @@ mod tests {
         rig.install_all(
             &batch,
             LightmapPoolReport {
-                band_headroom_texels: 4096,
-                ..LightmapPoolReport::default()
+                lightmap: PoolReport {
+                    band_headroom_texels: 4096,
+                    ..PoolReport::default()
+                },
+                mask: PoolReport {
+                    band_headroom_texels: 1024,
+                    ..PoolReport::default()
+                },
             },
         );
         let mut live = LightmapStreamingLiveDiagnostics::default();
@@ -489,9 +552,9 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(live.band_headroom_texels, 4096);
+        assert_eq!(live.band_headroom_texels.lightmap, 4096);
+        assert_eq!(live.band_headroom_texels.mask, 1024);
         assert_eq!(live.block_count, 7);
-        assert_eq!(live.pool_cap_layers, 15);
         assert_eq!(live.lead_metres, 16.0);
     }
 }

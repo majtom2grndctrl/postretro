@@ -11,6 +11,7 @@ Read `context/lib/index.md` before doing anything else. It routes to the right c
 - **No `unsafe` without approval.** See `context/lib/development_guide.md` §3.5.
 - **Renderer owns GPU.** All wgpu calls live in the renderer module.
 - **Frame order:** Input → Game logic → Audio → Render → Present.
+- **Owner rules live in git.** A rule for later sessions goes in `context/lib/` (engine, product) or the `draft-session` / `draft-brief` skills (planning), not only local memory. Write it per `context/lib/context_style_guide.md`; say where it landed.
 
 ## Content tooling
 

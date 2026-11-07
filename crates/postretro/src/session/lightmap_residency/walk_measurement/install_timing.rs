@@ -4,8 +4,10 @@
 use std::time::Instant;
 
 use glam::Vec3;
+use postretro_render_cpu::lightmap_pool::PoolKind;
 
-use super::pool_mirror::{PoolMirror, RetireClock};
+use super::levers::DEFAULT_LEVERS;
+use super::pool_mirror::{PoolMirror, RetireClock, pool_sizing};
 use super::report::mib;
 use super::{LightmapLevelView, LightmapStreamingSession, PRL_ENV};
 use crate::streaming::cluster_hints::decode_level_hints;
@@ -67,7 +69,7 @@ fn lightmap_install_timing_from_prl() {
             LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
         let mut mirror = PoolMirror::new(
             view.manifest,
-            session.controller.levers().pool_cap_layers(),
+            pool_sizing(&world, DEFAULT_LEVERS.pool_layers),
             RetireClock::Drains,
         );
         let camera_cell = world.locate_cell(spawn_eye) as u32;
@@ -79,12 +81,14 @@ fn lightmap_install_timing_from_prl() {
         let preload = preload_started.elapsed();
         println!(
             "repeat {repeat}: stream load {:.1} ms; settled-entry preload (cell \
-             {camera_cell}) {} pairs, {:.1} MiB, {:.1} ms; pool first generation {} layers",
+             {camera_cell}) {} pairs, {:.1} MiB, {:.1} ms; first generation {} lightmap and {} \
+             mask layers",
             load.as_secs_f64() * 1000.0,
             summary.reads.pairs,
             mib(summary.reads.bytes),
             preload.as_secs_f64() * 1000.0,
-            mirror.model().layers(),
+            mirror.model().pool(PoolKind::Lightmap).layers(),
+            mirror.model().pool(PoolKind::Mask).layers(),
         );
     }
 }

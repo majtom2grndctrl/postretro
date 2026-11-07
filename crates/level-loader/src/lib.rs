@@ -43,8 +43,9 @@ mod sh_stream_tests;
 #[cfg(feature = "load-prl")]
 pub use lightmap_stream::{
     LightmapBlockClass, LightmapBlockFileRanges, LightmapDrainBatch, LightmapDrainOutcome,
-    LightmapPoolReport, LightmapStorage, LightmapStreamManifest, LightmapStreamingMode,
-    LightmapTarget, PreparedLightmapBlock, requested_lightmap_streaming_mode,
+    LightmapPoolReport, LightmapRefusal, LightmapStorage, LightmapStreamManifest,
+    LightmapStreamingMode, LightmapTarget, PoolReport, PreparedLightmapBlock,
+    requested_lightmap_streaming_mode,
 };
 pub use load_progress::{
     LOAD_PHASE_WEIGHT_PARSE, LOAD_PHASE_WEIGHT_PREP, LOAD_PHASE_WEIGHT_SETTLING,

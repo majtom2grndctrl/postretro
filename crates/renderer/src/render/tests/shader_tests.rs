@@ -703,7 +703,7 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
 }
 
 #[test]
-fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
+fn forward_shader_shadowmask_samples_each_plane_at_its_own_address_hoisted() {
     // The forward consumer plus the lightmap sampling snippet it composes.
     let src = concat!(
         include_str!("../../shaders/forward.wgsl"),
@@ -711,23 +711,22 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         include_str!("../../shaders/lightmap_sample.wgsl"),
     );
     let helper = wgsl_function(src, "sample_shadowmask_atlas");
+    let plane = wgsl_function(src, "sample_shadowmask_plane");
 
     assert!(
-        helper.contains("textureNumLayers(shadowmask_atlas) - 1u")
-            && helper.contains("min(lightmap_block_layer(layer_flags), last_layer)")
-            && helper.matches("i32(safe_layer)").count() == 2,
-        "both group samples must read the fragment's one clamped pool layer",
+        plane.contains("i32(lightmap_address_layer(address))"),
+        "a plane reads its own address's layer",
     );
-    // Every read of the atlas binding — samples, dimension and layer queries —
-    // sits inside the helper's brace-matched body; only the binding
-    // declaration names it elsewhere. Whitespace-insensitive by construction.
+    // Every read of the atlas binding sits inside the plane sampler's
+    // brace-matched body; only the binding declaration names it elsewhere.
+    // Whitespace-insensitive by construction.
     let code = strip_line_comments(src);
     let declaration = "@group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;";
     let declaration_at = code
         .find(declaration)
         .expect("shadowmask atlas binding declaration");
     let declaration_range = declaration_at..declaration_at + declaration.len();
-    let body = wgsl_function(&code, "sample_shadowmask_atlas");
+    let body = wgsl_function(&code, "sample_shadowmask_plane");
     let body_at = code.find(body).expect("helper body lies in the source");
     let body_range = body_at..body_at + body.len();
     let atlas_uses = identifier_offsets(&code, "shadowmask_atlas");
@@ -742,7 +741,7 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         .collect();
     assert!(
         stray.is_empty(),
-        "all shadowmask reads must route through the layer-safe helper; stray uses at {stray:?}",
+        "all shadowmask reads must route through the plane sampler; stray uses at {stray:?}",
     );
     let atlas_samples = |text: &str| {
         text.match_indices("textureSampleLevel(")
@@ -756,17 +755,17 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
     };
     assert_eq!(
         atlas_samples(body),
-        2,
-        "the helper issues exactly one sample per mask group",
+        1,
+        "the plane sampler issues exactly one sample",
     );
     assert_eq!(
         atlas_samples(&code),
-        2,
-        "all shadowmask samples must route through the layer-safe helper",
+        1,
+        "all shadowmask samples must route through the plane sampler",
     );
-    // Each group's coordinate derives only from the block-local texel and the
-    // block's pool rect: clamp to the block's half-texel rect in U and V, then
-    // map into a group half.
+    // A plane's coordinate derives only from the block-local texel, the
+    // block's extent and the plane's own offset: the block's half-texel clamp
+    // in U and V, then that offset.
     let pool_uv = wgsl_function(src, "lightmap_pool_uv");
     assert!(
         pool_uv.contains("clamp(texel, vec2<f32>(0.5), extent - vec2<f32>(0.5))")
@@ -774,11 +773,21 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         "the pool UV must clamp the texel to the block's half-texel rect on both axes",
     );
     assert!(
-        helper.contains("let uv = lightmap_pool_uv(texel, rect);")
-            && helper.contains("vec2<f32>(uv.x * 0.5, uv.y)")
-            && helper.contains("vec2<f32>((1.0 + uv.x) * 0.5, uv.y)")
-            && helper.contains("return vec4<f32>(group0.rg, group1.rg);"),
-        "group coordinates must come from the block-clamped pool UV alone",
+        plane.contains(
+            "lightmap_pool_uv(texel, vec4<u32>(lightmap_address_offset(address), rect.zw))"
+        ),
+        "a plane's coordinate comes from the block-clamped pool UV at its own offset",
+    );
+    // Each plane samples only behind its flag, from its own packed address.
+    assert!(
+        helper.contains(
+            "if (flags & LIGHTMAP_BLOCK_PLANE_A) != 0u {\n        group_a = \
+             sample_shadowmask_plane(texel, rect, plane_addresses.x);"
+        ) && helper.contains(
+            "if (flags & LIGHTMAP_BLOCK_PLANE_B) != 0u {\n        group_b = \
+             sample_shadowmask_plane(texel, rect, plane_addresses.y);"
+        ) && helper.contains("return vec4<f32>(group_a, group_b);"),
+        "an absent plane must skip its sample and read zero",
     );
 
     assert_eq!(
@@ -789,11 +798,11 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
     for (function, call) in [
         (
             "fn shadowmask_union_subtraction(",
-            "sample_shadowmask_atlas(lightmap_texel, lightmap_layer_flags, lightmap_rect)",
+            "sample_shadowmask_atlas(\n        lightmap_texel,",
         ),
         (
             "fn fs_main(",
-            "sample_shadowmask_atlas(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect)",
+            "sample_shadowmask_atlas(\n                in.lightmap_texel,",
         ),
         // The union samples once per call, so its one call must sit outside
         // every fs_main loop too.
@@ -827,6 +836,54 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
     assert!(
         src.contains("let owners_readable = static_spec_owners_readable(in.lightmap_layer_flags);"),
         "fs_main must gate world static specular owners on the readable test",
+    );
+}
+
+// The block table stays VERTEX-only: only the vertex stage's resolve reads it,
+// and a block's plane addresses reach the fragment stage raw, through one flat
+// varying, inside the inter-stage budget. No fragment binding pays for them.
+#[test]
+fn forward_plane_addresses_ride_one_flat_varying_past_the_vertex_only_table() {
+    let src = concat!(
+        include_str!("../../shaders/forward.wgsl"),
+        "\n",
+        include_str!("../../shaders/lightmap_sample.wgsl"),
+    );
+    let code = strip_line_comments(src);
+    let varyings = crate::render::gpu_test_harness::wgsl_item(&code, "struct VertexOutput {");
+    assert!(
+        varyings.contains("@location(10) @interpolate(flat) lightmap_plane_addresses: vec2<u32>,"),
+        "the plane addresses ride location 10, flat and packed",
+    );
+    let locations = varyings.matches("@location(").count();
+    assert_eq!(locations, 11, "locations 0 to 10");
+    assert!(
+        locations <= wgpu::Limits::default().max_inter_stage_shader_variables as usize,
+        "{locations} inter-stage locations pass the device default",
+    );
+    let resolve = wgsl_function(&code, "resolve_lightmap_block");
+    let resolve_at = code.find(resolve).expect("the resolve lies in the source");
+    let resolve_range = resolve_at..resolve_at + resolve.len();
+    let declaration = "@group(6) @binding(0) var<storage, read> lightmap_block_table";
+    let declaration_at = code.find(declaration).expect("the table's declaration");
+    let declaration_range = declaration_at..declaration_at + declaration.len();
+    let stray: Vec<usize> = identifier_offsets(&code, "lightmap_block_table")
+        .into_iter()
+        .filter(|at| !declaration_range.contains(at) && !resolve_range.contains(at))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "only the resolve reads the table: {stray:?}"
+    );
+    let fragment = &code[code.find("fn fs_main(").expect("fs_main")..];
+    let fragment = &fragment[..fragment.find("\nfn ").unwrap_or(fragment.len())];
+    assert!(
+        !fragment.contains("resolve_lightmap_block("),
+        "the fragment stage must not resolve a block",
+    );
+    assert!(
+        code.contains("out.lightmap_plane_addresses = block.plane_addresses;"),
+        "the vertex stage hands the addresses on as it fetched them",
     );
 }
 

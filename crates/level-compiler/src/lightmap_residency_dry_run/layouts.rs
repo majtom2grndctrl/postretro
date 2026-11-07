@@ -1,5 +1,5 @@
 //! Atlas layouts the dry run compares: the stored cell blocks (each block one
-//! region), and soft cluster-ordered whole-layer packing at a capped layer size
+//! region), and soft cluster-ordered whole-layer packing at a fixed layer edge
 //! driven through the bake's leaf-cohesive chart packer
 //! (`pack_layers_with_layer_limit`).
 
@@ -14,9 +14,9 @@ use crate::lightmap_bake::{
     pack_layers_with_layer_limit,
 };
 
-/// A cell that cannot pack alone into one capped layer. Leaf cohesion forbids
+/// A cell that cannot pack alone into one layer of the edge. Leaf cohesion forbids
 /// splitting it, so the model gives it a dedicated layer at its own size,
-/// outside the capped array.
+/// outside the shared array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OversizeCell {
     pub cell: u32,
@@ -33,7 +33,7 @@ pub(crate) struct Layout {
     pub layer_dims: Vec<(u32, u32)>,
     /// Id 22 + id 42 bytes of each layer.
     pub layer_bytes: Vec<u64>,
-    /// Layers of the shared capped array (excludes oversize layers).
+    /// Layers of the shared array (excludes oversize layers).
     pub regular_layer_count: u32,
     pub oversize_cells: Vec<OversizeCell>,
     /// Placement per input chart, parallel to `DryRunInput::charts`.
@@ -85,9 +85,9 @@ pub(crate) fn stored_layout(input: &DryRunInput) -> Layout {
     }
 }
 
-/// Pack every chart in (cluster, cell, face) order with layers capped at
-/// `cap²`. Cells too large for one capped layer are reported as oversize.
-pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
+/// Pack every chart in (cluster, cell, face) order into `edge²` layers. Cells
+/// too large for one layer are reported as oversize.
+pub(crate) fn cluster_ordered_layout(input: &DryRunInput, edge: u32) -> Layout {
     let mut order: Vec<usize> = (0..input.charts.len()).collect();
     order.sort_by_key(|&i| {
         let cell = input.charts[i].cell;
@@ -100,13 +100,13 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
     let mut oversize = vec![false; input.cell_count()];
     for chart in &input.charts {
         cell_area[chart.cell as usize] += chart.area();
-        if chart.width > cap || chart.height > cap {
+        if chart.width > edge || chart.height > edge {
             oversize[chart.cell as usize] = true;
         }
     }
-    let cap_area = u64::from(cap) * u64::from(cap);
+    let edge_area = u64::from(edge) * u64::from(edge);
     for (cell, &area) in cell_area.iter().enumerate() {
-        if area > cap_area {
+        if area > edge_area {
             oversize[cell] = true;
         }
     }
@@ -121,12 +121,12 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
             .iter()
             .map(|&i| chart_for(&input.charts[i]))
             .collect();
-        match pack_layers_with_layer_limit(&charts, cap, u32::MAX) {
+        match pack_layers_with_layer_limit(&charts, edge, u32::MAX) {
             Ok(pack) => break (packed, pack),
             Err(LightmapBakeError::LeafTooLarge { leaf_index, .. }) => {
                 oversize[leaf_index as usize] = true;
             }
-            Err(error) => panic!("capped packing failed: {error}"),
+            Err(error) => panic!("layer packing failed: {error}"),
         }
     };
     let (packed, pack) = pack;
@@ -187,7 +187,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
     }
     Layout {
         name: format!(
-            "cluster-ordered cap {cap} ({}²)",
+            "cluster-ordered edge {edge} ({}²)",
             if regular_layer_count == 0 {
                 0
             } else {

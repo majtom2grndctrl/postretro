@@ -1,5 +1,6 @@
 // GPU-backed proofs for streamed lightmap cell blocks in headless capture:
-// parity with all-resident mode (AC 4) and a forced miss's terms (AC 7).
+// parity with all-resident mode, each pool's first-generation override,
+// and a forced miss's terms.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency), §7.8
 //
 // Captures compare on one adapter; no golden images.
@@ -8,8 +9,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_level_loader::ShadowType;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
+use postretro_render_cpu::lightmap_pool::{PerPool, PoolDemand};
 
 mod capture_support;
 
@@ -17,9 +20,6 @@ use capture_support::{capture_command, compile_dev_map, load_capture_rgba, works
 
 const PARITY_RESOLUTION: [u32; 2] = [320, 240];
 const MISS_RESOLUTION: [u32; 2] = [160, 120];
-/// A cap past every evidence map's all-resident layer count (the hallway
-/// needs 101): the first pool generation then holds every block.
-const CAP_HOLDING_EVERY_BLOCK: u32 = 256;
 
 #[derive(Clone, Copy)]
 struct Pose {
@@ -131,14 +131,51 @@ fn evidence_map(workspace: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// AC 4 on one map: streaming renders byte-identical PNGs to all-resident
-/// mode from every pose, with the default pool cap (a partial pool, placed in
-/// drain order) and with a cap whose first generation holds every block.
+/// Each pool's first generation from the level's own id 58, and the layers
+/// that hold every block.
+fn level_pool_layers(map: &Path) -> (PerPool<u32>, PerPool<u32>) {
+    let world = postretro_level_loader::load_prl(&map.to_string_lossy()).expect("load the PRL");
+    let manifest = world
+        .lightmap_stream_manifest()
+        .expect("the evidence map streams its lightmap");
+    let demand = PoolDemand::of_indices(manifest.lightmap_index(), manifest.shadowmask_index());
+    let bound = manifest
+        .pool_bound()
+        .expect("a streamed level stores id 58");
+    (
+        demand
+            .first_generation(bound.layers(), LIGHTMAP_POOL_LAYER_EDGE)
+            .expect("every block fits a layer"),
+        demand
+            .all_resident(LIGHTMAP_POOL_LAYER_EDGE)
+            .expect("every block fits a layer"),
+    )
+}
+
+/// The layers a capture's report names for each pool.
+fn reported_layers(capture: &Capture) -> PerPool<u32> {
+    let layers = |key: &str| capture.lightmap[key].as_u64().expect(key) as u32;
+    PerPool {
+        lightmap: layers("pool_layers"),
+        mask: layers("mask_pool_layers"),
+    }
+}
+
+/// Parity on one map: streaming renders byte-identical PNGs to all-resident mode
+/// from every pose, with the level's own pools (partial, placed in drain order),
+/// with one pool's first generation overridden, and with pools holding every
+/// block. An override sets that pool's first generation and nothing else, and
+/// no report names a cap.
 fn assert_streamed_capture_matches_all_resident(map_name: &str, poses: &[Pose]) {
     let workspace = workspace_root();
     let Some(map) = evidence_map(&workspace, map_name) else {
         return;
     };
+    let (sized, every_block) = level_pool_layers(&map);
+    eprintln!(
+        "{map_name}: first generation {} lightmap and {} mask layer(s), all-resident {} and {}",
+        sized.lightmap, sized.mask, every_block.lightmap, every_block.mask,
+    );
     let temp = tempfile::tempdir().expect("create isolated capture directory");
     for (index, &pose) in poses.iter().enumerate() {
         let run = |label: &str, mode: &str, overrides: serde_json::Value| {
@@ -162,19 +199,45 @@ fn assert_streamed_capture_matches_all_resident(map_name: &str, poses: &[Pose]) 
         let Some(streamed) = run("stream", "stream", serde_json::json!({})) else {
             return;
         };
-        let Some(streamed_uncapped) = run(
+        let one_pool = PerPool {
+            lightmap: sized.lightmap,
+            mask: sized.mask + 1,
+        };
+        let Some(streamed_one_pool) = run(
+            "stream-one-pool",
+            "stream",
+            serde_json::json!({ "mask_pool_layers": one_pool.mask }),
+        ) else {
+            return;
+        };
+        let Some(streamed_every_block) = run(
             "stream-every-block",
             "stream",
-            serde_json::json!({ "lightmap_pool_cap_layers": CAP_HOLDING_EVERY_BLOCK }),
+            serde_json::json!({
+                "lightmap_pool_layers": every_block.lightmap,
+                "mask_pool_layers": every_block.mask,
+            }),
         ) else {
             return;
         };
 
         assert_eq!(all_resident.lightmap["mode"], "all-resident");
-        for (label, capture) in [
-            ("default cap", &streamed),
-            ("every block", &streamed_uncapped),
+        for (label, capture, layers) in [
+            ("level's pools", &streamed, sized),
+            ("one pool set", &streamed_one_pool, one_pool),
+            ("every block", &streamed_every_block, every_block),
         ] {
+            assert_eq!(
+                reported_layers(capture),
+                layers,
+                "{map_name} pose {index} ({label}): {}",
+                capture.lightmap
+            );
+            assert!(
+                !capture.lightmap.to_string().contains("cap_layers"),
+                "the capture report names no cap: {}",
+                capture.lightmap
+            );
             assert_eq!(
                 capture.lightmap["mode"], "stream",
                 "{map_name} pose {index} ({label}) must stream its lightmap: {}",
@@ -191,18 +254,18 @@ fn assert_streamed_capture_matches_all_resident(map_name: &str, poses: &[Pose]) 
             lit_pixels(&all_resident.image) > 0,
             "{map_name} pose {index} must see lit geometry"
         );
-        assert!(
-            streamed.png == all_resident.png,
-            "{map_name} pose {index}: streamed capture (default cap) differs from all-resident \
-             in {} pixel(s)",
-            differing_pixels(&streamed.image, &all_resident.image),
-        );
-        assert!(
-            streamed_uncapped.png == all_resident.png,
-            "{map_name} pose {index}: streamed capture (every block fits) differs from \
-             all-resident in {} pixel(s)",
-            differing_pixels(&streamed_uncapped.image, &all_resident.image),
-        );
+        for (label, capture) in [
+            ("level's pools", &streamed),
+            ("one pool set", &streamed_one_pool),
+            ("every block", &streamed_every_block),
+        ] {
+            assert!(
+                capture.png == all_resident.png,
+                "{map_name} pose {index}: streamed capture ({label}) differs from all-resident \
+                 in {} pixel(s)",
+                differing_pixels(&capture.image, &all_resident.image),
+            );
+        }
     }
 }
 
@@ -251,7 +314,7 @@ fn streamed_lightmap_capture_matches_all_resident_on_hallway_inspection() {
     );
 }
 
-/// AC 7 on a fixture with static lights and no SDF-shadowed ones, bloom off.
+/// A forced miss on a fixture with static lights and no SDF-shadowed ones, bloom off.
 /// For each
 /// block `b`, its region `R_b` is the pixels a forced miss of `b` changes
 /// from the all-resident capture. The proof:

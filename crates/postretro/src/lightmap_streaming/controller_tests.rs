@@ -197,7 +197,7 @@ fn refused_band_block_is_not_requested_again_until_headroom_grows() {
     );
     rig.controller
         .apply_outcome(LightmapDrainOutcome {
-            refused: vec![3],
+            refused: vec![refusal(3)],
             pool: headroom(1),
             ..LightmapDrainOutcome::default()
         })
@@ -415,10 +415,10 @@ fn camera_cell_and_lead_change_in_one_frame_recompute_demand_once() {
     );
 }
 
-// P8 (controller side): a lowered cap rides the next batch; the renderer
-// may evict band blocks for it, never mandatory or visible ones.
+// P8 (controller side): the renderer may evict band blocks, never mandatory or
+// visible ones.
 #[test]
-fn lowered_pool_cap_rides_the_next_batch_and_only_band_blocks_may_be_evicted() {
+fn only_band_blocks_may_be_evicted() {
     let mut rig = Rig::corridor(None);
     rig.settle(0, &[5], headroom(8));
     assert_eq!(
@@ -427,9 +427,7 @@ fn lowered_pool_cap_rides_the_next_batch_and_only_band_blocks_may_be_evicted() {
         "band resident"
     );
 
-    rig.controller.levers_mut().set_pool_cap_layers(1);
-    let batch = rig.portal(0, &[5]).unwrap();
-    assert_eq!(batch.pool_cap_layers, 1);
+    rig.portal(0, &[5]).unwrap();
     for protected in [0, 5] {
         let error = rig
             .controller
@@ -504,7 +502,7 @@ fn drawn_cell_outside_the_baked_set_is_visible_demand_never_refused() {
     let error = rig
         .controller
         .apply_outcome(LightmapDrainOutcome {
-            refused: vec![5],
+            refused: vec![refusal(5)],
             installed: batch
                 .ready
                 .iter()
@@ -801,7 +799,7 @@ fn step_limit_frame_neither_reads_nor_holds_a_drawn_absent_block_and_counts_it()
 }
 
 // Regression: a held band block kept its band target, so the renderer could
-// evict it over the cap while a non-portal frame drew it.
+// evict it under pressure while a non-portal frame drew it.
 #[test]
 fn step_limit_frame_raises_a_drawn_resident_band_block_to_visible() {
     let mut rig = Rig::corridor(None);
@@ -896,11 +894,7 @@ fn band_reads_hold_at_most_half_the_permits_and_mandatory_reads_use_the_reserve(
         .map(|block| BlockSpec::standard(block, block, 64, true))
         .collect();
     let mut rig = Rig::new(blocks, residency_set(40, &rows, 32), None);
-    let room = LightmapPoolReport {
-        layers: 1,
-        band_headroom_texels: 1 << 30,
-        ..LightmapPoolReport::default()
-    };
+    let room = pool_room(1 << 30);
 
     let batch = rig.portal(0, &[]).unwrap();
     assert_eq!(rig.requested_blocks(), vec![0]);
@@ -986,11 +980,7 @@ fn band_reads_charge_the_aligned_slot_of_each_block() {
     rig.complete_all();
     let batch = rig.portal(0, &[]).unwrap();
     // Room for both blocks' raw texels (2 × 3844), not for both slots.
-    let room = LightmapPoolReport {
-        layers: 1,
-        band_headroom_texels: 7_700,
-        ..LightmapPoolReport::default()
-    };
+    let room = pool_room(7_700);
     rig.install_all(&batch, room);
     rig.portal(0, &[]);
     assert_eq!(rig.requested_blocks(), vec![3], "one 64 × 64 slot of room");
@@ -1012,26 +1002,21 @@ fn refused_band_block_waits_for_a_whole_slot_of_new_headroom() {
     rig.portal(0, &[]).unwrap();
     rig.controller
         .apply_outcome(LightmapDrainOutcome {
-            refused: vec![3],
+            refused: vec![refusal(3)],
             pool: headroom(1),
             ..LightmapDrainOutcome::default()
         })
         .unwrap();
-    let room = |texels| LightmapPoolReport {
-        layers: 1,
-        band_headroom_texels: texels,
-        ..LightmapPoolReport::default()
-    };
 
     let batch = rig.portal(0, &[]).unwrap();
-    rig.install_all(&batch, room(2 * 64 * 64 - 1));
+    rig.install_all(&batch, pool_room(2 * 64 * 64 - 1));
     assert_eq!(
         rig.controller.phase(3),
         BlockPhase::Refused,
         "short of a slot"
     );
     let batch = rig.portal(0, &[]).unwrap();
-    rig.install_all(&batch, room(2 * 64 * 64));
+    rig.install_all(&batch, pool_room(2 * 64 * 64));
     assert_eq!(
         rig.controller.phase(3),
         BlockPhase::Absent,

@@ -36,6 +36,7 @@ pub mod light_membership;
 pub mod light_tags;
 pub mod lightmap;
 pub mod lightmap_pool;
+pub mod lightmap_pool_bound;
 pub mod map_entity;
 pub mod navmesh;
 pub mod octahedral;

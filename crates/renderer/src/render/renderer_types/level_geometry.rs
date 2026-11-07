@@ -3,6 +3,8 @@
 // a loaded world), and the section-45 roster they reserve.
 // See: context/lib/boot_sequence.md §3
 
+use postretro_render_cpu::lightmap_pool::StreamedPoolSizing;
+
 use super::*;
 
 /// SH ownership reaching the renderer installation boundary. Streaming keeps
@@ -24,9 +26,9 @@ pub struct LevelGeometryLightmapStreaming {
     /// The level's content identity, which every drain batch must carry
     /// (`LightmapStreamManifest::content_tag`).
     pub content_tag: [u8; 32],
-    /// The first pool generation's layer cap. Later drains carry the live
-    /// cap; raising it past this takes effect at the next growth.
-    pub pool_cap_layers: u32,
+    /// How the pools take their first generation: from id 58, or a harness's
+    /// figure. Nothing later changes what a pool holds but growth.
+    pub pool_sizing: StreamedPoolSizing,
 }
 
 pub struct LevelGeometry<'a> {

@@ -37,9 +37,9 @@ pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// pass) and binding 8 in the compose shader are independent numbering spaces for
 /// the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
-/// Static-light shadowmask pool (BC5 `.rg`, two mask groups side by side at
-/// twice the pool width), layer- and offset-matched to the irradiance pool.
-/// Sampled by forward union-subtraction and static world-specular visibility.
+/// Static-light mask pool (BC5 `.rg`): each present plane at its own layer and
+/// offset, named by the block table. Sampled by forward union-subtraction and
+/// static world-specular visibility.
 pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 /// Animated block table for the forward shader: where each animated face's
 /// block sits in the compact atlas. FRAGMENT-only uniform.
@@ -69,8 +69,7 @@ pub(crate) fn block_table_bind_group_layout_entries() -> [wgpu::BindGroupLayoutE
 
 /// The linear lightmap sampler. Clamp-to-edge guards only the texture
 /// border: the block-rect clamp in `lightmap_pool_uv` keeps bilinear taps
-/// inside the block, and so inside the block's own half of the shadowmask
-/// pool.
+/// inside the block, in the lightmap pool and in each mask plane alike.
 pub(crate) fn filtering_sampler_descriptor() -> wgpu::SamplerDescriptor<'static> {
     wgpu::SamplerDescriptor {
         label: Some("Lightmap Sampler (Linear)"),

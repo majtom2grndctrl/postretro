@@ -2,7 +2,9 @@
 
 use glam::Vec3;
 use log::Level;
-use postretro_level_format::lightmap::LightmapBlockIndex;
+use postretro_level_format::lightmap::{
+    IRRADIANCE_FORMAT_BC6H, LightmapBlock, LightmapBlockIndex, LightmapMode,
+};
 use postretro_test_log_capture::LogCapture;
 
 use super::*;
@@ -145,4 +147,108 @@ fn compiler_count_matches_renderer_on_id22_built_from_its_finalized_scale8_layou
     .unwrap();
     assert_eq!(count, renderer.layer_count);
     assert_eq!(renderer.layer_count, 4);
+}
+
+const MASK_GATE_NAME: &str = "Shadowmask runtime all-resident pool";
+
+/// Full-layer blocks: `planes` holds each block's stored plane count.
+fn mask_fixture(planes: &[usize]) -> (LightmapSection, ShadowmaskAtlasSection) {
+    let edge = LIGHTMAP_POOL_LAYER_EDGE as u16;
+    let lightmap = LightmapSection {
+        direction_texel_scale: 2,
+        irradiance_format: IRRADIANCE_FORMAT_BC6H,
+        mode: LightmapMode::Shadowed,
+        blocks: (0..planes.len() as u32)
+            .map(|cell_id| LightmapBlock {
+                cell_id,
+                width: edge,
+                height: edge,
+                irradiance: Vec::new(),
+                direction: Vec::new(),
+            })
+            .collect(),
+    };
+    let shadowmask = ShadowmaskAtlasSection {
+        owners: Vec::new(),
+        blocks: planes
+            .iter()
+            .map(|&stored| {
+                [
+                    vec![1; usize::from(stored > 0)],
+                    vec![1; usize::from(stored > 1)],
+                ]
+            })
+            .collect(),
+    };
+    (lightmap, shadowmask)
+}
+
+// Three blocks are a lightmap pool of 3, under a floor of 4; their six planes
+// are a mask pool of 6, over it.
+#[test]
+fn mask_pool_floor_gate_fails_a_level_over_the_floor_in_the_mask_pool_alone_by_name() {
+    let (lightmap, shadowmask) = mask_fixture(&[2, 2, 2]);
+    let capture = LogCapture::start();
+    let error = gate_mask_pool_with_floor(&lightmap, Some(&shadowmask), false, 4)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(MASK_GATE_NAME), "{error}");
+    assert!(
+        error.contains("6 mask plane(s) need 6 pool layers"),
+        "{error}"
+    );
+    assert!(
+        error.contains("4-layer runtime array-layer floor"),
+        "{error}"
+    );
+    assert!(error.contains("cannot stream"), "{error}");
+    assert!(capture.records().is_empty(), "refusal does not also warn");
+}
+
+#[test]
+fn mask_pool_floor_gate_passes_a_level_at_or_under_the_floor_quietly() {
+    let (lightmap, shadowmask) = mask_fixture(&[2, 2, 2]);
+    let capture = LogCapture::start();
+    for can_stream in [false, true] {
+        let layers =
+            gate_mask_pool_with_floor(&lightmap, Some(&shadowmask), can_stream, 6).unwrap();
+        assert_eq!(layers, 6);
+    }
+    assert!(capture.records().is_empty());
+}
+
+#[test]
+fn mask_pool_floor_gate_warns_a_streaming_level_over_the_floor() {
+    let (lightmap, shadowmask) = mask_fixture(&[2, 2, 2]);
+    let capture = LogCapture::start();
+    let layers = gate_mask_pool_with_floor(&lightmap, Some(&shadowmask), true, 4).unwrap();
+    assert_eq!(layers, 6);
+    capture.assert_logged_once(Level::Warn, MASK_GATE_NAME);
+    capture.assert_logged(Level::Warn, "6 pool layers");
+    capture.assert_logged(Level::Warn, "POSTRETRO_LIGHTMAP_STREAMING=all-resident");
+}
+
+// An absent plane takes no layer, so stored planes alone decide this.
+#[test]
+fn mask_pool_floor_gate_counts_only_present_planes() {
+    let (lightmap, shadowmask) = mask_fixture(&[2, 0, 1, 0]);
+    let layers = gate_mask_pool_with_floor(&lightmap, Some(&shadowmask), false, 3).unwrap();
+    assert_eq!(layers, 3);
+}
+
+#[test]
+fn mask_pool_floor_gate_is_quiet_with_no_mask_pool_at_any_floor() {
+    let (lightmap, none_stored) = mask_fixture(&[0, 0]);
+    let capture = LogCapture::start();
+    for can_stream in [false, true] {
+        assert_eq!(
+            gate_mask_pool_with_floor(&lightmap, Some(&none_stored), can_stream, 0).unwrap(),
+            0
+        );
+        assert_eq!(
+            gate_mask_pool_with_floor(&lightmap, None, can_stream, 0).unwrap(),
+            0
+        );
+    }
+    assert!(capture.records().is_empty());
 }

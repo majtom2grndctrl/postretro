@@ -145,11 +145,8 @@ impl PreparedCapture {
             &static_light_influences,
             &static_entity_shadow_lights,
         );
-        if let (Some(streaming), Some(cap)) = (
-            geometry.lightmap_streaming.as_mut(),
-            scene.lightmap_pool_cap_layers,
-        ) {
-            streaming.pool_cap_layers = cap;
+        if let Some(streaming) = geometry.lightmap_streaming.as_mut() {
+            streaming.pool_sizing.first_generation_override = scene.lightmap_first_generation();
         }
         renderer.install_level_geometry(&geometry, gpu_lighting_payloads)?;
         renderer.install_fluid_surfaces(

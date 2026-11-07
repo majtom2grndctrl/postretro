@@ -1,6 +1,5 @@
 //! Streaming tab: SH cluster residency and lightmap cell-block residency
-//! gauges, cumulative counters, the lightmap pool-cap lever and the level's
-//! lead L lever.
+//! gauges, cumulative counters, and the level's lead L lever.
 //!
 //! Rows are built as plain label/value strings first so the grouping and
 //! formatting are testable without an egui context.
@@ -9,18 +8,12 @@ use super::super::Renderer;
 #[cfg(test)]
 use super::super::ShComposePassDiagnostics;
 use super::super::ShStreamingLiveDiagnostics;
-use super::super::{
-    LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
-    StreamingReachLever,
-};
+use super::super::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
 
-/// The Streaming tab's lightmap input: the live counters, shown read-only,
-/// and the pool-cap lever, edited in place. The caller writes changed levers
-/// back to the residency controller after the frame's UI runs.
+/// The Streaming tab's lightmap input: the live counters, shown read-only.
 #[derive(Debug)]
 pub struct LightmapStreamingTab<'a> {
     pub diagnostics: &'a LightmapStreamingLiveDiagnostics,
-    pub levers: &'a mut LightmapStreamingLevers,
 }
 
 pub(super) fn draw_streaming_tab(
@@ -55,20 +48,7 @@ pub(super) fn draw_streaming_tab(
 }
 
 fn draw_lightmap_streaming(ui: &mut egui::Ui, tab: LightmapStreamingTab<'_>) {
-    let LightmapStreamingTab {
-        diagnostics,
-        levers,
-    } = tab;
-    ui.label("Pool cap (layers)");
-    ui.add(
-        egui::Slider::new(
-            &mut levers.pool_cap_layers,
-            1..=MAX_LIGHTMAP_POOL_CAP_LAYERS,
-        )
-        .logarithmic(true),
-    );
-    ui.label(egui::RichText::new("Dev-tools lever: the cap rides the next drain.").weak());
-    for section in lightmap_sections(diagnostics) {
+    for section in lightmap_sections(tab.diagnostics) {
         egui::CollapsingHeader::new(section.title)
             .id_salt(("lightmap_streaming", section.title))
             .default_open(true)
@@ -355,21 +335,57 @@ fn lightmap_sections(d: &LightmapStreamingLiveDiagnostics) -> [StreamingSection;
             title: "Pool",
             rows: vec![
                 (
-                    "Layers (peak / cap)",
+                    "Layers (peak)",
                     format!(
-                        "{} ({} / {})",
-                        d.pool_layers, d.peak_pool_layers, d.pool_cap_layers
+                        "{} ({})",
+                        d.pool_layers.lightmap, d.peak_pool_layers.lightmap
                     ),
                 ),
-                ("Pool bytes", format_bytes(d.pool_bytes)),
-                ("Retiring bytes", format_bytes(d.retiring_pool_bytes)),
+                (
+                    "Mask layers (peak)",
+                    format!("{} ({})", d.pool_layers.mask, d.peak_pool_layers.mask),
+                ),
+                ("Pool bytes", format_bytes(d.pool_bytes.lightmap)),
+                ("Mask pool bytes", format_bytes(d.pool_bytes.mask)),
+                (
+                    "Retiring bytes",
+                    format_bytes(d.retiring_pool_bytes.lightmap),
+                ),
+                (
+                    "Mask retiring bytes",
+                    format_bytes(d.retiring_pool_bytes.mask),
+                ),
                 (
                     "Growth transient peak",
                     format_bytes(d.growth_transient_peak_bytes),
                 ),
-                ("Band headroom (texels)", d.band_headroom_texels.to_string()),
-                ("Repacks", d.repacks.to_string()),
-                ("Growths", d.growths.to_string()),
+                (
+                    "Band headroom (texels)",
+                    d.band_headroom_texels.lightmap.to_string(),
+                ),
+                (
+                    "Mask band headroom (texels)",
+                    d.band_headroom_texels.mask.to_string(),
+                ),
+                (
+                    "Repacks (mask)",
+                    format!("{} ({})", d.repacks.lightmap, d.repacks.mask),
+                ),
+                (
+                    "Compactions (mask)",
+                    format!("{} ({})", d.compactions.lightmap, d.compactions.mask),
+                ),
+                (
+                    "Compaction rollbacks (mask)",
+                    format!(
+                        "{} ({})",
+                        d.compaction_rollbacks.lightmap, d.compaction_rollbacks.mask
+                    ),
+                ),
+                (
+                    "Growths (mask)",
+                    format!("{} ({})", d.growths.lightmap, d.growths.mask),
+                ),
             ],
         },
         StreamingSection {
@@ -446,6 +462,7 @@ fn format_percent(part: u64, whole: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_render_cpu::lightmap_pool::PerPool;
 
     #[test]
     fn bytes_format_in_binary_units() {
@@ -471,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn lightmap_sections_split_bytes_by_section_and_show_both_miss_buckets() {
+    fn lightmap_sections_split_bytes_by_section_and_show_misses_and_each_pools_work() {
         let diagnostics = LightmapStreamingLiveDiagnostics {
             block_count: 198,
             resident_blocks: 41,
@@ -480,9 +497,26 @@ mod tests {
             drawn_outside_baked_set: 3,
             drawn_not_resident: 5,
             last_frame_drawn_not_resident: 1,
-            pool_layers: 7,
-            peak_pool_layers: 9,
-            pool_cap_layers: 15,
+            pool_layers: PerPool {
+                lightmap: 7,
+                mask: 3,
+            },
+            peak_pool_layers: PerPool {
+                lightmap: 9,
+                mask: 4,
+            },
+            repacks: PerPool {
+                lightmap: 6,
+                mask: 5,
+            },
+            compactions: PerPool {
+                lightmap: 2,
+                mask: 3,
+            },
+            compaction_rollbacks: PerPool {
+                lightmap: 0,
+                mask: 1,
+            },
             ..LightmapStreamingLiveDiagnostics::default()
         };
         let sections = lightmap_sections(&diagnostics);
@@ -503,7 +537,11 @@ mod tests {
             value("Residency", "Visible misses (outside set / not resident)"),
             "3 / 5 (last frame 0 / 1)"
         );
-        assert_eq!(value("Pool", "Layers (peak / cap)"), "7 (9 / 15)");
+        assert_eq!(value("Pool", "Layers (peak)"), "7 (9)");
+        assert_eq!(value("Pool", "Mask layers (peak)"), "3 (4)");
+        assert_eq!(value("Pool", "Repacks (mask)"), "6 (5)");
+        assert_eq!(value("Pool", "Compactions (mask)"), "2 (3)");
+        assert_eq!(value("Pool", "Compaction rollbacks (mask)"), "0 (1)");
     }
 
     #[test]

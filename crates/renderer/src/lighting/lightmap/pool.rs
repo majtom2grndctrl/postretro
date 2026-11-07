@@ -1,6 +1,7 @@
-// Static lightmap pool textures: irradiance, direction and shadowmask
-// `texture_2d_array`s of `LIGHTMAP_POOL_LAYER_EDGE`² layers, and where a cell
-// block's texels land in each (region writes, block copies).
+// Lightmap and mask pool textures: irradiance and direction in the lightmap
+// pool, BC5 planes in the mask pool, each a `texture_2d_array` of
+// `LIGHTMAP_POOL_LAYER_EDGE`² layers, and where a cell block's texels land in
+// each (region writes, block copies).
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use crate::render::gpu_create::GpuCreate;
@@ -8,8 +9,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_TEXEL_BYTES,
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
-use postretro_render_cpu::lightmap_pool::{BlockPlacement, PoolCopy};
+use postretro_render_cpu::lightmap_pool::{BlockPlacement, PoolCopy, PoolKind};
 
 use postretro_render_cpu::lightmap_pool::StaticPoolPlan;
 
@@ -26,7 +26,8 @@ const POOL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
 pub(crate) struct StaticPoolTextures {
     pub(crate) irradiance: wgpu::Texture,
     pub(crate) direction: wgpu::Texture,
-    /// `None` when the plan keeps the all-visible shadowmask placeholder.
+    /// `None` when the level has no mask pool, or a mask pool with no plane to
+    /// place: the placeholder binds in its place.
     pub(crate) shadowmask: Option<wgpu::Texture>,
 }
 
@@ -67,6 +68,16 @@ pub(crate) enum PoolPlane {
     Irradiance,
     Direction,
     Shadowmask,
+}
+
+impl PoolPlane {
+    /// The pool whose generation holds this texture.
+    pub(crate) fn pool(self) -> PoolKind {
+        match self {
+            Self::Irradiance | Self::Direction => PoolKind::Lightmap,
+            Self::Shadowmask => PoolKind::Mask,
+        }
+    }
 }
 
 fn pool_descriptor(
@@ -125,12 +136,11 @@ pub(crate) fn direction_descriptor(
     )
 }
 
-/// Shadowmask: BC5 `.rg`, two mask groups side by side per layer. Group A of
-/// a block at `(x, y)` lives at `(x, y)`, group B at `(edge + x, y)`.
+/// The mask pool: BC5 `.rg`, each present plane its own placement.
 pub(crate) fn shadowmask_descriptor(layers: u32) -> wgpu::TextureDescriptor<'static> {
     pool_descriptor(
         "Shadowmask Pool",
-        LIGHTMAP_POOL_LAYER_EDGE * SHADOWMASK_GROUP_COUNT,
+        LIGHTMAP_POOL_LAYER_EDGE,
         LIGHTMAP_POOL_LAYER_EDGE,
         layers,
         wgpu::TextureFormat::Bc5RgUnorm,
@@ -153,22 +163,7 @@ pub(crate) fn direction_pool_descriptor(plan: &StaticPoolPlan) -> wgpu::TextureD
 pub(crate) fn shadowmask_pool_descriptor(
     plan: &StaticPoolPlan,
 ) -> wgpu::TextureDescriptor<'static> {
-    shadowmask_descriptor(plan.pool.layer_count)
-}
-
-/// Create one pool texture set of `layers` array layers. Unwritten texels
-/// stay wgpu's zero initialization.
-pub(crate) fn create_pool_textures(
-    device: &wgpu::Device,
-    format: PoolFormat,
-    layers: u32,
-    with_shadowmask: bool,
-) -> StaticPoolTextures {
-    StaticPoolTextures {
-        irradiance: device.new_texture(&irradiance_descriptor(format, layers)),
-        direction: device.new_texture(&direction_descriptor(format, layers)),
-        shadowmask: with_shadowmask.then(|| device.new_texture(&shadowmask_descriptor(layers))),
-    }
+    shadowmask_descriptor(plan.masks.as_ref().map_or(0, |masks| masks.layer_count))
 }
 
 /// One region write of a block's stored bytes into a pool texture, in the
@@ -213,23 +208,23 @@ fn region<'a>(
     }
 }
 
-/// The region writes that put one block's pair at `placement`: irradiance at
-/// the block's extent, Rg8 direction at `extent / scale`, and — when the pool
-/// keeps a shadowmask — BC5 group A at `x` and group B at `edge + x`. The
-/// caller has matched every blob's length to the block's extent.
+/// The region writes that put one block's pair in the pools: irradiance at the
+/// block's extent and Rg8 direction at `extent / scale` at `placement`, and
+/// each stored BC5 plane at its own place in the mask pool. A plane with no
+/// place writes nothing. The caller has matched every blob's length to the
+/// block's extent.
 pub(crate) fn block_region_writes<'a>(
     format: PoolFormat,
     placement: BlockPlacement,
+    planes: [Option<BlockPlacement>; 2],
     (width, height): (u32, u32),
     payload: &'a LightmapBlockPayload,
-    with_shadowmask: bool,
 ) -> impl Iterator<Item = RegionWrite<'a>> {
     let scale = format.direction_scale;
-    let at = (placement.layer, placement.x, placement.y);
     let lightmap = [
         region(
             PoolPlane::Irradiance,
-            at,
+            (placement.layer, placement.x, placement.y),
             (width, height),
             format.irradiance_unit(),
             &payload.irradiance,
@@ -242,27 +237,23 @@ pub(crate) fn block_region_writes<'a>(
             &payload.direction,
         ),
     ];
-    let groups = payload
-        .shadowmask
-        .as_ref()
-        .filter(|_| with_shadowmask)
-        .into_iter()
-        .flat_map(move |[group_a, group_b]| {
-            [
-                (placement.x, group_a),
-                (LIGHTMAP_POOL_LAYER_EDGE + placement.x, group_b),
-            ]
-            .map(|(group_x, group)| {
-                region(
-                    PoolPlane::Shadowmask,
-                    (placement.layer, group_x, placement.y),
-                    (width, height),
-                    (BC_BLOCK_EDGE, BC_BLOCK_BYTES),
-                    group,
-                )
+    let masks = payload.shadowmask.iter().flat_map(move |groups| {
+        planes
+            .into_iter()
+            .zip(groups)
+            .filter_map(move |(plane, group)| {
+                plane.map(|at| {
+                    region(
+                        PoolPlane::Shadowmask,
+                        (at.layer, at.x, at.y),
+                        (width, height),
+                        (BC_BLOCK_EDGE, BC_BLOCK_BYTES),
+                        group,
+                    )
+                })
             })
-        });
-    lightmap.into_iter().chain(groups)
+    });
+    lightmap.into_iter().chain(masks)
 }
 
 /// One same-texture region copy between two array layers.
@@ -274,50 +265,42 @@ pub(crate) struct RegionCopy {
     pub(crate) extent: wgpu::Extent3d,
 }
 
-/// The per-texture copies of one planned block move. Plan coordinates are
-/// irradiance texels: the direction copy divides them by the scale, and the
-/// shadowmask copies both group halves.
+/// The per-texture copies of one planned move in `pool`. Plan coordinates are
+/// that pool's texels: a lightmap move also copies direction at the scale, and
+/// a mask move copies its one plane.
 pub(crate) fn block_copy_regions(
+    pool: PoolKind,
     format: PoolFormat,
     copy: PoolCopy,
-    with_shadowmask: bool,
 ) -> impl Iterator<Item = RegionCopy> {
-    let scale = format.direction_scale;
-    let origin = |p: BlockPlacement, dx: u32, divide: u32| wgpu::Origin3d {
-        x: dx + p.x / divide,
+    let origin = |p: BlockPlacement, divide: u32| wgpu::Origin3d {
+        x: p.x / divide,
         y: p.y / divide,
         z: p.layer,
     };
-    let extent = |divide: u32| wgpu::Extent3d {
-        width: copy.width / divide,
-        height: copy.height / divide,
-        depth_or_array_layers: 1,
-    };
-    let plane = |plane, dx, divide| RegionCopy {
+    let region = |plane, divide: u32| RegionCopy {
         plane,
-        src: origin(copy.src, dx, divide),
-        dst: origin(copy.dst, dx, divide),
-        extent: extent(divide),
+        src: origin(copy.src, divide),
+        dst: origin(copy.dst, divide),
+        extent: wgpu::Extent3d {
+            width: copy.width / divide,
+            height: copy.height / divide,
+            depth_or_array_layers: 1,
+        },
     };
-    let lightmap = [
-        plane(PoolPlane::Irradiance, 0, 1),
-        plane(PoolPlane::Direction, 0, scale),
-    ];
-    let groups = with_shadowmask
-        .then(|| {
-            [
-                plane(PoolPlane::Shadowmask, 0, 1),
-                plane(PoolPlane::Shadowmask, LIGHTMAP_POOL_LAYER_EDGE, 1),
-            ]
-        })
-        .into_iter()
-        .flatten();
-    lightmap.into_iter().chain(groups)
+    let regions = match pool {
+        PoolKind::Lightmap => [
+            Some(region(PoolPlane::Irradiance, 1)),
+            Some(region(PoolPlane::Direction, format.direction_scale)),
+        ],
+        PoolKind::Mask => [Some(region(PoolPlane::Shadowmask, 1)), None],
+    };
+    regions.into_iter().flatten()
 }
 
-/// Create the pool textures and write every block at its placement, in its
-/// stored format with no decode. Runs once per level install; the payloads
-/// drop after.
+/// Create the pool textures and write every block at its placements, in its
+/// stored format with no decode. Unwritten texels stay wgpu's zero
+/// initialization. Runs once per level install; the payloads drop after.
 pub(crate) fn upload_static_pool(
     device: &wgpu::Device,
     queue: &dyn crate::render::queue_writes::QueueWrites,
@@ -325,19 +308,35 @@ pub(crate) fn upload_static_pool(
     payloads: &[LightmapBlockPayload],
 ) -> StaticPoolTextures {
     let format = PoolFormat::from_header(&plan.header);
-    let textures =
-        create_pool_textures(device, format, plan.pool.layer_count, plan.with_shadowmask);
-    for ((&extent, &placement), payload) in
-        plan.extents.iter().zip(&plan.pool.placements).zip(payloads)
+    let layers = plan.pool.layer_count;
+    let textures = StaticPoolTextures {
+        irradiance: device.new_texture(&irradiance_descriptor(format, layers)),
+        direction: device.new_texture(&direction_descriptor(format, layers)),
+        shadowmask: plan
+            .masks
+            .as_ref()
+            .filter(|masks| masks.layer_count > 0)
+            .map(|masks| device.new_texture(&shadowmask_descriptor(masks.layer_count))),
+    };
+    for (block, ((&extent, &placement), payload)) in plan
+        .extents
+        .iter()
+        .zip(&plan.pool.placements)
+        .zip(payloads)
+        .enumerate()
     {
-        for write in block_region_writes(format, placement, extent, payload, plan.with_shadowmask) {
+        let planes = plan
+            .masks
+            .as_ref()
+            .map_or([None; 2], |masks| masks.planes[block]);
+        for write in block_region_writes(format, placement, planes, extent, payload) {
             let texture = match write.plane {
                 PoolPlane::Irradiance => &textures.irradiance,
                 PoolPlane::Direction => &textures.direction,
                 PoolPlane::Shadowmask => textures
                     .shadowmask
                     .as_ref()
-                    .expect("shadowmask writes only when the pool keeps one"),
+                    .expect("a plane with a place has a mask pool texture"),
             };
             debug_assert_eq!(
                 write.data.len() as u64,

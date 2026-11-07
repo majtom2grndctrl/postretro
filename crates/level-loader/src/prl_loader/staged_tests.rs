@@ -17,6 +17,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES, LightmapBlock,
     LightmapMode as WireLightmapMode, LightmapSection,
 };
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 
 use super::tests::{cluster_directory_blob, sample_kinematic_section, zero_grid_cluster_directory};
 use super::{HandOut, HandOutCollector, HandOutStage, LoadCancel, StagedParseOutcome, assemble};
@@ -532,6 +533,15 @@ fn portal_lightmap_mover_fixture(name: &str) -> TempPrl {
         [
             blob(SectionId::CellResidencySet, 1, residency.to_bytes()),
             blob(SectionId::Lightmap, 1, lightmap.to_bytes()),
+            blob(
+                SectionId::LightmapPoolBound,
+                1,
+                LightmapPoolBoundSection {
+                    worst_lightmap_layers: 1,
+                    worst_mask_layers: 0,
+                }
+                .to_bytes(),
+            ),
             blob(SectionId::KinematicGeometry, 1, movers.to_bytes()),
         ],
         name,

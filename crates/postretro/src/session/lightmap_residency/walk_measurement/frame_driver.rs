@@ -74,9 +74,10 @@ pub(super) struct FrameOutcome {
     pub(super) deferred_texels: u64,
     /// Texel area of the `left_behind` blocks.
     pub(super) left_behind_texels: u64,
-    /// A pool growth began this frame.
+    /// A growth of either pool began this frame.
     pub(super) grew: bool,
-    /// A grown-out generation was still retiring as the frame began.
+    /// Either pool's grown-out generation was still retiring as the frame
+    /// began.
     pub(super) retiring_at_start: bool,
     pub(super) drains: u32,
     /// Delivered read bytes not yet admitted, before the first drain.
@@ -149,7 +150,7 @@ impl FrameDriver {
             retiring_at_start: self.mirror.retiring(),
             ..FrameOutcome::default()
         };
-        let growths = self.mirror.stats.growths;
+        let growths = self.mirror.stats.growths();
         let cpu = StageFrame::<StreamingStage>::new(TimingGate::ON);
         for drain in 0..self.reads.drains_per_frame() {
             if let Some(gate) = &mut self.gate {
@@ -199,7 +200,7 @@ impl FrameDriver {
         out.outside = counters.last_frame_drawn_outside_baked_set;
         out.not_resident = counters.last_frame_drawn_not_resident;
         out.residency_nanos = cpu.value(StreamingStage::LightmapResidency).unwrap_or(0);
-        out.grew = self.mirror.stats.growths > growths;
+        out.grew = self.mirror.stats.growths() > growths;
         let mirror = &self.mirror;
         let mut tally = |blocks: Range<u32>| {
             for block in blocks.filter(|&block| !mirror.model().is_resident(block)) {

@@ -1,7 +1,9 @@
-// Streamed lightmap pool, GPU half: the placement model, the active and
-// retiring texture generations, the vertex block table, and each drain.
+// Streamed lightmap and mask pools, GPU half: the placement model, each pool's
+// live and retiring texture generations, the vertex block table, and each drain.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+#[cfg(test)]
+mod compaction_timing_measurement;
 mod counters;
 mod execute;
 #[cfg(test)]
@@ -13,23 +15,23 @@ mod textures;
 use crate::render::gpu_create::GpuCreate;
 use std::fmt;
 
-use postretro_level_format::lightmap::{
-    LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload, LightmapHeader,
-};
-use postretro_level_format::shadowmask_atlas::group_plane_len;
+use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapHeader};
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
-use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, LightmapPoolModel};
+use postretro_render_cpu::lightmap_pool::{
+    BLOCK_TABLE_ENTRY_BYTES, LightmapPoolModel, PerPool, PoolKind, payload_mismatch,
+};
 
 pub use counters::LightmapStreamCounters;
-pub(crate) use textures::PoolTextures;
-use textures::RetiringPool;
+use textures::{PoolGeneration, PoolTextures};
 
 use super::StreamingPoolPlan;
-use super::pool::PoolFormat;
+use super::pool::{PoolFormat, PoolPlane};
 use crate::render::StagingPool;
 
 /// A drain the renderer refused. Every variant leaves the pool, the table
-/// and the model exactly as they were before the drain.
+/// and the model exactly as they were before the drain, except that a failed
+/// execution keeps any retirement the drain released, since its GPU work was
+/// already done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LightmapResidencyDrainError {
     /// The installed level does not stream its lightmap.
@@ -84,23 +86,23 @@ impl std::error::Error for LightmapResidencyDrainError {}
 /// What a successful drain changed outside the state itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DrainEffects {
-    /// A new generation replaced the active textures: group 4 must rebind.
+    /// A new generation replaced one pool's live textures: group 4 must
+    /// rebind.
     pub(crate) pool_replaced: bool,
     /// The byte meter changed: growth, or a retirement released.
     pub(crate) meter_changed: bool,
 }
 
-/// One level's streamed lightmap pool.
+/// One level's streamed lightmap and mask pools.
 ///
 /// Owned by `LightmapResources` for the level's lifetime. Level unload or
-/// reload drops it, and with it the active textures, the block table and any
+/// reload drops it, and with it each pool's textures, the block table and any
 /// retiring generation, whether or not that generation's release has fired:
 /// the queue callback holds only a flag.
 pub(crate) struct LightmapStreamState {
     model: LightmapPoolModel,
     header: LightmapHeader,
     format: PoolFormat,
-    with_shadowmask: bool,
     content_tag: [u8; 32],
     max_array_layers: u32,
     /// Generation of the last accepted batch; 0 before the first. One
@@ -110,21 +112,24 @@ pub(crate) struct LightmapStreamState {
     /// Highest generation any earlier level install accepted. A batch at or
     /// below it is from a previous level.
     generation_floor: u64,
-    textures: PoolTextures,
-    retiring: Option<RetiringPool>,
+    /// Each pool's generations, `None` for a pool with nothing to hold: a
+    /// mask pool of a level with no id 42, or with no present plane.
+    pools: PerPool<Option<PoolGeneration>>,
     table: wgpu::Buffer,
     staging: StagingPool,
     upload_scratch: Vec<u8>,
     failed_scratch: Vec<u32>,
     counters: LightmapStreamCounters,
-    /// A deferral at the device's layer limit was logged for this level.
-    device_limit_warned: bool,
+    /// Each pool whose deferral at the device's layer limit was logged for this
+    /// level.
+    device_limit_warned: PerPool<bool>,
 }
 
 impl LightmapStreamState {
-    /// Build the model and the first generation: `layers() + 1` array layers
-    /// (the spare included, never a second pool) and the whole table, every
-    /// real block non-resident and entry 0 the "none" entry.
+    /// Build the model and each pool's first generation: `layers() + 1` array
+    /// layers for a pool that has layers (the spare included, never a second
+    /// pool; a pool with none has no generation and no spare), and the whole table,
+    /// every real block non-resident and entry 0 the "none" entry.
     pub(crate) fn new(
         device: &wgpu::Device,
         plan: &StreamingPoolPlan,
@@ -135,22 +140,27 @@ impl LightmapStreamState {
         // `StreamingPoolPlan`, after its `place_pool` placed these same
         // extents with this same alignment (`block_alignment()` is at least 4,
         // so the model's `max(1)` changes nothing) and refused the level
-        // otherwise. `with_layer_limit` fails only when that placement does.
+        // otherwise. `with_layer_limit` fails only when that placement does,
+        // and a plane's extent is its block's.
         let model = LightmapPoolModel::with_layer_limit(
-            plan.extents.clone(),
-            plan.header.block_alignment(),
+            plan.demand.clone(),
             LIGHTMAP_POOL_LAYER_EDGE,
-            plan.pool_cap_layers,
+            plan.first_generation_layers,
             plan.max_array_layers.saturating_sub(1),
         )
         .expect("plan_streaming_pool checked that every block fits a pool layer");
         let format = PoolFormat::from_header(&plan.header);
-        let textures = PoolTextures::new(
-            device,
-            format,
-            model.spare_layer() + 1,
-            plan.with_shadowmask,
-        );
+        let pools = PerPool::from_fn(|kind| {
+            let pool = model.pool(kind);
+            (pool.layers() > 0).then(|| {
+                PoolGeneration::new(PoolTextures::new(
+                    device,
+                    kind,
+                    format,
+                    pool.spare_layer() + 1,
+                ))
+            })
+        });
         let table_bytes = model.table_bytes();
         // `COPY_SRC` lets a readback check the table the GPU holds.
         let table = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -161,19 +171,24 @@ impl LightmapStreamState {
                 | wgpu::BufferUsages::COPY_SRC,
         });
         let counters = LightmapStreamCounters {
-            pool_texture_sets: 1,
-            pool_layers: model.layers(),
-            active_pool_bytes: textures.bytes(),
+            pool_texture_sets: PerPool::from_fn(|kind| model.pool(kind).texture_allocations()),
+            pool_layers: PerPool::from_fn(|kind| model.pool(kind).layers()),
+            active_pool_bytes: PerPool::from_fn(|kind| {
+                pools[kind]
+                    .as_ref()
+                    .map_or(0, |generation| generation.live.bytes())
+            }),
             table_entries_written: (table_bytes.len() / BLOCK_TABLE_ENTRY_BYTES) as u64,
             ..LightmapStreamCounters::default()
         };
         log::info!(
-            "[Renderer] Lightmap pool (streamed): {} cell block(s), first generation {} layer(s) \
-             of {}² plus a spare, shadowmask {}",
-            plan.extents.len(),
-            model.layers(),
+            "[Renderer] Lightmap pools (streamed): {} cell block(s), first generation {} lightmap \
+             layer(s) and {} mask layer(s) of {}², each pool with layers plus a spare, shadowmask {}",
+            plan.demand.block_count(),
+            model.pool(PoolKind::Lightmap).layers(),
+            model.pool(PoolKind::Mask).layers(),
             LIGHTMAP_POOL_LAYER_EDGE,
-            if plan.with_shadowmask {
+            if pools.mask.is_some() {
                 "resident"
             } else {
                 "placeholder"
@@ -183,24 +198,39 @@ impl LightmapStreamState {
             model,
             header: plan.header,
             format,
-            with_shadowmask: plan.with_shadowmask,
             content_tag: plan.content_tag,
             max_array_layers: plan.max_array_layers,
             generation: 0,
             generation_floor,
-            textures,
-            retiring: None,
+            pools,
             table,
             staging: StagingPool::default(),
             upload_scratch: Vec::new(),
             failed_scratch: Vec::new(),
             counters,
-            device_limit_warned: false,
+            device_limit_warned: PerPool::both(false),
         }
     }
 
-    pub(crate) fn textures(&self) -> &PoolTextures {
-        &self.textures
+    fn live_texture(&self, plane: PoolPlane) -> Option<&wgpu::Texture> {
+        self.pools[plane.pool()]
+            .as_ref()
+            .map(|generation| generation.live.plane(plane))
+    }
+
+    pub(crate) fn irradiance(&self) -> &wgpu::Texture {
+        self.live_texture(PoolPlane::Irradiance)
+            .expect("a streamed level keeps its lightmap pool")
+    }
+
+    pub(crate) fn direction(&self) -> &wgpu::Texture {
+        self.live_texture(PoolPlane::Direction)
+            .expect("a streamed level keeps its lightmap pool")
+    }
+
+    /// The mask pool's live texture, `None` where the placeholder binds.
+    pub(crate) fn shadowmask(&self) -> Option<&wgpu::Texture> {
+        self.live_texture(PoolPlane::Shadowmask)
     }
 
     pub(crate) fn table(&self) -> &wgpu::Buffer {
@@ -213,18 +243,19 @@ impl LightmapStreamState {
         self.generation.max(self.generation_floor)
     }
 
+    /// Both pools' retiring bytes: one pool's release leaves the other's.
     pub(crate) fn retiring_bytes(&self) -> u64 {
-        self.retiring.as_ref().map_or(0, RetiringPool::bytes)
+        self.counters.retiring_pool_bytes.total()
     }
 
     pub(crate) fn counters(&self) -> LightmapStreamCounters {
         self.counters
     }
 
-    /// Run one drain: validate, release a completed retirement, plan, then
-    /// execute the plan in one encoder and one upload batch (growth copies,
-    /// repack moves through the spare layer, pair uploads, table writes)
-    /// and submit it once.
+    /// Run one drain: validate, release each pool's completed retirement,
+    /// plan, then execute the plan in one encoder and one upload batch (each
+    /// pool's growth copies and repack moves through its spare layer, pair
+    /// uploads, table writes) and submit it once.
     ///
     /// A pair whose payload does not match its block fails whole: none of its
     /// planes upload and its entry stays non-resident. It is reported in
@@ -249,17 +280,20 @@ impl LightmapStreamState {
         self.check_generation(&batch)?;
 
         let mut effects = DrainEffects::default();
-        if self
-            .retiring
-            .as_ref()
-            .is_some_and(RetiringPool::is_complete)
-        {
-            self.retiring = None;
-            self.model.release_retirement();
-            self.counters.retiring_pool_bytes = 0;
-            effects.meter_changed = true;
+        for kind in PoolKind::ALL {
+            let Some(generation) = self.pools[kind].as_mut() else {
+                continue;
+            };
+            if generation.release_completed() {
+                self.model.release_retirement(kind);
+                self.counters.retiring_pool_bytes[kind] = 0;
+                effects.meter_changed = true;
+            }
+            debug_assert_eq!(
+                self.model.pool(kind).retiring(),
+                generation.retiring.is_some()
+            );
         }
-        debug_assert_eq!(self.model.retiring(), self.retiring.is_some());
 
         let started = std::time::Instant::now();
         if self.generation != 0 && batch.generation != self.generation {
@@ -282,20 +316,28 @@ impl LightmapStreamState {
     }
 
     /// A deferral at the device limit repeats every drain the same blocks
-    /// stay wanted, so it is logged once per level, as the lasting miss it
-    /// is; `deferred_pairs` still counts each one.
+    /// stay wanted, so it is logged once per pool per level, as the lasting
+    /// miss it is; `deferred_pairs` still counts each one.
     fn warn_device_limit_once(&mut self) {
-        if !self.model.plan().device_limited || self.device_limit_warned {
-            return;
+        let limited = PerPool::from_fn(|kind| self.model.plan().pools[kind].device_limited);
+        for kind in PoolKind::ALL {
+            if !limited[kind] || self.device_limit_warned[kind] {
+                continue;
+            }
+            self.device_limit_warned[kind] = true;
+            self.log_device_limit(kind);
         }
-        self.device_limit_warned = true;
+    }
+
+    fn log_device_limit(&self, kind: PoolKind) {
         log::warn!(
-            "[Renderer] Streamed lightmap: the pool holds all {} usable array layer(s) the \
+            "[Renderer] Streamed lightmap: the {} pool holds all {} usable array layer(s) the \
              device allows (maxTextureArrayLayers {}, one kept as the repack spare) and \
              mandatory or visible cell blocks still do not fit; they stay missing, a permanent \
              miss rather than a transient one, until fewer blocks are wanted. Logged once per \
-             level",
-            self.model.layers(),
+             pool per level",
+            kind.name(),
+            self.model.pool(kind).layers(),
             self.max_array_layers,
         );
     }
@@ -327,8 +369,8 @@ impl LightmapStreamState {
                 Some(prepared) => payload_mismatch(
                     &self.header,
                     (upload.width, upload.height),
+                    self.model.planes(upload.block),
                     &prepared.payload,
-                    self.with_shadowmask,
                 ),
                 None => Some("no payload arrived".to_string()),
             };
@@ -365,6 +407,14 @@ impl LightmapStreamState {
             failed: plan.failed.clone(),
             deferred,
             evicted: plan.evicted.iter().map(|eviction| eviction.block).collect(),
+            room_reserved: PerPool {
+                lightmap: plan.pools.lightmap.room_reserved.clone(),
+                mask: plan.pools.mask.room_reserved.clone(),
+            },
+            room_returned: PerPool {
+                lightmap: plan.pools.lightmap.room_returned.clone(),
+                mask: plan.pools.mask.room_returned.clone(),
+            },
             pool: plan.report,
         }
     }
@@ -375,44 +425,12 @@ impl LightmapStreamState {
     }
 
     #[cfg(test)]
-    fn retiring_pool(&self) -> Option<&RetiringPool> {
-        self.retiring.as_ref()
+    fn retiring_pool(&self, kind: PoolKind) -> Option<&textures::RetiringPool> {
+        self.pools[kind].as_ref()?.retiring.as_ref()
     }
-}
 
-/// Why `payload` cannot fill a `width × height` block, or `None` when every
-/// plane the pool keeps matches the block's extent and format.
-fn payload_mismatch(
-    header: &LightmapHeader,
-    (width, height): (u32, u32),
-    payload: &LightmapBlockPayload,
-    with_shadowmask: bool,
-) -> Option<String> {
-    let irradiance = header.irradiance_len(width, height);
-    let direction = header.direction_len(width, height);
-    if irradiance != Some(payload.irradiance.len() as u64)
-        || direction != Some(payload.direction.len() as u64)
-    {
-        return Some(format!(
-            "{width}x{height} block carries {} irradiance and {} direction byte(s), expected \
-             {irradiance:?} and {direction:?}",
-            payload.irradiance.len(),
-            payload.direction.len(),
-        ));
-    }
-    if !with_shadowmask {
-        return None;
-    }
-    let expected = group_plane_len(width, height);
-    match &payload.shadowmask {
-        Some([a, b]) if expected == Some(a.len() as u64) && expected == Some(b.len() as u64) => {
-            None
-        }
-        Some([a, b]) => Some(format!(
-            "shadowmask groups are {} and {} byte(s), expected {expected:?}",
-            a.len(),
-            b.len()
-        )),
-        None => Some("the shadowmask groups are missing".to_string()),
+    #[cfg(test)]
+    fn retiring_pool_mut(&mut self, kind: PoolKind) -> Option<&mut textures::RetiringPool> {
+        self.pools[kind].as_mut()?.retiring.as_mut()
     }
 }

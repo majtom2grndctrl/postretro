@@ -643,7 +643,8 @@ brush by positive volume is pinned. Pins are never pressure-suppressed or
 selected as eviction victims, so they raise the level's mandatory SH memory
 (the probe memory the level must always keep loaded). Build Summary reports it
 as "SH mandatory memory" and warns when it is too high; many or large pins raise
-it, so pin only what must stay warm.
+it, so pin only what must stay warm. Lightmaps in pinned cells stay loaded too,
+so pins also raise what Build Summary reports as "Lightmap pool memory".
 
 ### `stream_priority_region`
 

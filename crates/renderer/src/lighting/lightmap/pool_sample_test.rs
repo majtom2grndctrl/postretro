@@ -1,38 +1,23 @@
-// GPU readback of the forward shader's cell-block lightmap path: blocks
-// placed at non-zero offsets on two pool layers through the renderer's own
-// pool upload, resolved through the real block table, and sampled through the
-// real WGSL helpers — irradiance, direction, shadowmask, and the gate that
-// lets face owners read their mask channels — spliced verbatim from
-// lightmap_sample.wgsl and forward.wgsl.
+// GPU readback of the forward shader's cell-block lightmap path: blocks placed
+// at non-zero offsets on two pool layers through the renderer's own pool upload,
+// read through `pool_sample_harness`.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
-//
-// The streamed-pool tests (`stream/tests.rs`) reuse this harness.
-//
-// Intentional exception to testing_guide.md §3 "No GPU context in tests": the
-// helpers are WGSL, so verifying them means running them. Each probe renders
-// two pixels of a one-row target. The harness self-skips without a BC-capable
-// adapter and says so; a skipped run proves nothing. Set
-// `POSTRETRO_REQUIRE_GPU` to any non-empty value other than `0` to make a
-// missing adapter fail the test instead of skipping it.
 
-use postretro_render_cpu::frame_uniforms::SPEC_SHADOWMASK_FLAG_MASK_PRESENT;
 use postretro_render_cpu::lightmap_pool::{
-    AllResidentPool, BlockPlacement, block_table_bytes, placeholder_block_table,
+    AllResidentMasks, AllResidentPool, BlockAddresses, BlockPlacement, MaskAddresses,
+    block_table_bytes, placeholder_block_table,
 };
 
 use super::pool::upload_static_pool;
+use super::pool_sample_harness::{
+    BoundLightmap, Probe, SCALE, assert_near, direction_texel, expected_texel, irradiance_texel,
+    mask_byte, resident_probe, run_probes,
+};
 use super::test_fixtures::{FixtureTexels, block_fixture};
 use super::upload::{upload_placeholder_direction, upload_placeholder_irradiance};
-use super::{StaticPoolPlan, filtering_sampler_descriptor, upload_placeholder_shadowmask};
+use super::{StaticPoolPlan, upload_placeholder_shadowmask};
 
-use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip, wgsl_const_line, wgsl_item};
-
-const FORWARD_WGSL: &str = include_str!("../../shaders/forward.wgsl");
-const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../../shaders/lightmap_sample.wgsl");
-const PROBE_BYTES: usize = 16;
-const OUTPUT_TEXEL_BYTES: u32 = 16;
-const PIXELS_PER_PROBE: u32 = 2;
-const TARGET_COUNT: usize = 2;
+use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 
 /// Resident blocks 0–3 and a fifth, unplaced block 4. Block 1 sits flush
 /// right of block 0 and block 3 flush below block 2, so a clamp that let a
@@ -61,173 +46,17 @@ const PLACEMENTS: [BlockPlacement; 4] = [
     },
 ];
 const MISSING_BLOCK: u32 = 4;
-pub(super) const SCALE: u32 = 2;
 
-fn shader_source() -> String {
-    let prelude = r#"
-struct HarnessUniforms {
-    spec_shadowmask_flags: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-};
-struct Probe {
-    uv: vec2<f32>,
-    block: u32,
-    owner_position: u32,
-};
-@group(0) @binding(0) var lightmap_irradiance: texture_2d_array<f32>;
-@group(0) @binding(1) var lightmap_direction: texture_2d_array<f32>;
-@group(0) @binding(2) var shadowmask_atlas: texture_2d_array<f32>;
-@group(0) @binding(3) var lightmap_filtering_sampler: sampler;
-@group(0) @binding(4) var lightmap_sampler: sampler;
-@group(0) @binding(5) var<storage, read> lightmap_block_table: array<vec4<u32>>;
-@group(0) @binding(6) var<storage, read> probes: array<Probe>;
-@group(0) @binding(7) var<uniform> uniforms: HarnessUniforms;
-"#;
-    let entry = r#"
-struct HarnessOut {
-    // Even pixel: irradiance. Odd pixel: direction.
-    @location(0) sampled: vec4<f32>,
-    // Even pixel: the shadowmask. Odd pixel: gated selects.
-    @location(1) mask: vec4<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((index << 1u) & 2u) * 2.0 - 1.0;
-    let y = f32(index & 2u) * 2.0 - 1.0;
-    return vec4<f32>(x, y, 0.0, 1.0);
-}
-
-@fragment
-fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
-    let pixel = u32(position.x);
-    let probe = probes[pixel / 2u];
-    let block = resolve_lightmap_block(probe.block, probe.uv);
-    let irradiance = sample_lightmap_irradiance(block.texel, block.layer_flags, block.rect);
-    let direction = sample_lightmap_direction(block.texel, block.layer_flags, block.rect);
-    let mask = sample_shadowmask_atlas(block.texel, block.layer_flags, block.rect);
-    let missing = lightmap_block_missing(block.layer_flags);
-    // World static specular's own gate and channel select for the owner at
-    // `owner_position`: the visibility it multiplies that owner's highlight
-    // by, or 0 when owners may not read the mask at all.
-    let readable = static_spec_owners_readable(block.layer_flags);
-    let selects = vec4<f32>(
-        select(0.0, shadowmask_channel_value(mask, probe.owner_position), readable),
-        shadowmask_channel_value(mask, 0u),
-        select(0.0, 1.0, missing),
-        select(0.0, 1.0, readable),
-    );
-    let odd = (pixel & 1u) == 1u;
-    var out: HarnessOut;
-    out.sampled = select(vec4<f32>(irradiance, 1.0), direction, odd);
-    out.mask = select(mask, selects, odd);
-    return out;
-}
-"#;
-    let mut items: Vec<&str> = [
-        "LIGHTMAP_POOL_LAYER_EDGE",
-        "LIGHTMAP_BLOCK_RESIDENT",
-        "LIGHTMAP_BLOCK_NONE",
-    ]
-    .into_iter()
-    .map(|name| wgsl_const_line(LIGHTMAP_SAMPLE_WGSL, name))
-    .collect();
-    items.push(wgsl_const_line(
-        FORWARD_WGSL,
-        "SPEC_SHADOWMASK_FLAG_MASK_PRESENT",
-    ));
-    items.push(wgsl_item(
-        LIGHTMAP_SAMPLE_WGSL,
-        "struct LightmapBlockVaryings {",
-    ));
-    for name in [
-        "resolve_lightmap_block",
-        "lightmap_block_layer",
-        "lightmap_block_resident",
-        "lightmap_block_missing",
-        "lightmap_pool_uv",
-        "sample_lightmap_irradiance",
-        "sample_lightmap_direction",
-        "sample_shadowmask_atlas",
-    ] {
-        items.push(wgsl_item(LIGHTMAP_SAMPLE_WGSL, &format!("fn {name}(")));
-    }
-    for name in [
-        "shadowmask_channel_value",
-        "static_spec_mask_present",
-        "static_spec_owners_readable",
-    ] {
-        items.push(wgsl_item(FORWARD_WGSL, &format!("fn {name}(")));
-    }
-    format!("{prelude}\n{}\n{entry}", items.join("\n\n"))
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Probe {
-    /// Block-local unorm UV, as the vertex attribute carries it.
-    pub(super) uv: [f32; 2],
-    /// Cell block id + 1, as `WorldVertex::lightmap_block` names it.
-    pub(super) block: u32,
-    /// Owner position (mask channel 0..3) whose visibility the probe reads.
-    pub(super) owner_position: u32,
-}
-
-impl Probe {
-    fn bytes(self) -> [u8; PROBE_BYTES] {
-        let words = [
-            self.uv[0].to_bits(),
-            self.uv[1].to_bits(),
-            self.block,
-            self.owner_position,
-        ];
-        let mut out = [0u8; PROBE_BYTES];
-        for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(words) {
-            chunk.copy_from_slice(&word.to_ne_bytes());
-        }
-        out
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct ProbeResult {
-    pub(super) irradiance: [f32; 4],
-    pub(super) direction: [f32; 4],
-    pub(super) mask: [f32; 4],
-    /// The visibility world static specular gives the probe's owner.
-    pub(super) owner_visibility: f32,
-    /// The union's channel-0 read, ungated: the mask value owner position 0
-    /// selects.
-    pub(super) union_channel0_visibility: f32,
-    pub(super) missing: bool,
-    /// Whether owners may read their mask at this fragment.
-    pub(super) owners_readable: bool,
-}
-
-pub(super) struct BoundLightmap {
-    pub(super) irradiance: wgpu::Texture,
-    pub(super) direction: wgpu::Texture,
-    pub(super) shadowmask: wgpu::Texture,
-    pub(super) table: Vec<u8>,
-    /// The frame uniforms' mask-present bit for this binding: set for a real
-    /// id-42 pool, clear for the placeholder.
-    pub(super) mask_present: bool,
-}
-
-pub(super) fn irradiance_texel(block: usize, x: u32, y: u32) -> [f32; 4] {
-    [block as f32 + 1.0, x as f32, y as f32, 0.5]
-}
-
-pub(super) fn direction_texel(block: usize, x: u32, y: u32) -> [u8; 2] {
+/// Plane A at the block's lightmap place and plane B beside it, so a block's
+/// two planes stay apart and its neighbour stays flush in both.
+fn plane_places(place: BlockPlacement) -> [Option<BlockPlacement>; 2] {
     [
-        (10 + 40 * block as u32 + 3 * x) as u8,
-        (7 + 5 * y + 50 * block as u32) as u8,
+        Some(place),
+        Some(BlockPlacement {
+            x: place.x + 512,
+            ..place
+        }),
     ]
-}
-
-pub(super) fn mask_byte(block: usize, channel: u32, bx: u32, by: u32) -> u8 {
-    (10 + channel * 50 + bx * 20 + by * 7 + block as u32 * 3) as u8
 }
 
 /// The two-layer pool holding blocks 0–3, and a table naming them resident
@@ -250,10 +79,21 @@ fn fixture_pool(ctx: &GpuCtx) -> BoundLightmap {
             placements: PLACEMENTS.to_vec(),
             layer_count: 2,
         },
-        with_shadowmask: true,
+        masks: Some(AllResidentMasks {
+            planes: PLACEMENTS.iter().copied().map(plane_places).collect(),
+            layer_count: 2,
+        }),
     };
     let textures = upload_static_pool(&ctx.device, &ctx.queue, &plan, &fixture.payloads);
-    let mut placements: Vec<_> = PLACEMENTS.iter().copied().map(Some).collect();
+    let mut placements: Vec<_> = PLACEMENTS
+        .iter()
+        .map(|&place| {
+            Some(BlockAddresses {
+                lightmap: place,
+                masks: MaskAddresses::Planes(plane_places(place)),
+            })
+        })
+        .collect();
     placements.push(None);
     BoundLightmap {
         irradiance: textures.irradiance,
@@ -261,324 +101,6 @@ fn fixture_pool(ctx: &GpuCtx) -> BoundLightmap {
         shadowmask: textures.shadowmask.expect("the plan keeps the shadowmask"),
         table: block_table_bytes(&EXTENTS, &placements),
         mask_present: true,
-    }
-}
-
-pub(super) fn run_probes(
-    ctx: &GpuCtx,
-    bound: &BoundLightmap,
-    probes: &[Probe],
-) -> Vec<ProbeResult> {
-    use wgpu::util::DeviceExt;
-
-    let device = &ctx.device;
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("pool_sample_test shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source().into()),
-    });
-    let array_view = |texture: &wgpu::Texture| {
-        texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        })
-    };
-    let views = [
-        array_view(&bound.irradiance),
-        array_view(&bound.direction),
-        array_view(&bound.shadowmask),
-    ];
-    let filtering = device.create_sampler(&filtering_sampler_descriptor());
-    let nearest = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("pool_sample_test nearest"),
-        ..Default::default()
-    });
-    let table = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("block table"),
-        contents: &bound.table,
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let probe_bytes: Vec<u8> = probes.iter().flat_map(|probe| probe.bytes()).collect();
-    let probe_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("probes"),
-        contents: &probe_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let mut uniform_bytes = [0u8; 16];
-    if bound.mask_present {
-        uniform_bytes[..4].copy_from_slice(&SPEC_SHADOWMASK_FLAG_MASK_PRESENT.to_ne_bytes());
-    }
-    let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("harness uniforms"),
-        contents: &uniform_bytes,
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-
-    let texture_entry = |binding: u32, filterable: bool| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable },
-            view_dimension: wgpu::TextureViewDimension::D2Array,
-            multisampled: false,
-        },
-        count: None,
-    };
-    let buffer_entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    };
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("pool_sample_test layout"),
-        entries: &[
-            texture_entry(0, true),
-            texture_entry(1, false),
-            texture_entry(2, true),
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                count: None,
-            },
-            buffer_entry(5, wgpu::BufferBindingType::Storage { read_only: true }),
-            buffer_entry(6, wgpu::BufferBindingType::Storage { read_only: true }),
-            buffer_entry(7, wgpu::BufferBindingType::Uniform),
-        ],
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("pool_sample_test bind group"),
-        layout: &layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&views[0]),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&views[1]),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(&views[2]),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::Sampler(&filtering),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Sampler(&nearest),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: table.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 6,
-                resource: probe_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 7,
-                resource: uniforms.as_entire_binding(),
-            },
-        ],
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("pool_sample_test pipeline layout"),
-        bind_group_layouts: &[Some(&layout)],
-        immediate_size: 0,
-    });
-    let target_format = wgpu::TextureFormat::Rgba32Float;
-    let target_state = Some(wgpu::ColorTargetState {
-        format: target_format,
-        blend: None,
-        write_mask: wgpu::ColorWrites::ALL,
-    });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("pool_sample_test pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[target_state.clone(), target_state],
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
-
-    let width = probes.len() as u32 * PIXELS_PER_PROBE;
-    let targets: Vec<wgpu::Texture> = (0..TARGET_COUNT)
-        .map(|_| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("pool_sample_test target"),
-                size: wgpu::Extent3d {
-                    width,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: target_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            })
-        })
-        .collect();
-    let target_views: Vec<_> = targets
-        .iter()
-        .map(|target| target.create_view(&Default::default()))
-        .collect();
-    let row_bytes =
-        (width * OUTPUT_TEXEL_BYTES).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let readbacks: Vec<wgpu::Buffer> = (0..TARGET_COUNT)
-        .map(|_| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("pool_sample_test readback"),
-                size: u64::from(row_bytes),
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        })
-        .collect();
-
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let attachments: Vec<_> = target_views
-            .iter()
-            .map(|view| {
-                Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })
-            })
-            .collect();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("pool_sample_test pass"),
-            color_attachments: &attachments,
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
-    for (target, readback) in targets.iter().zip(&readbacks) {
-        encoder.copy_texture_to_buffer(
-            target.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row_bytes),
-                    rows_per_image: Some(1),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
-    ctx.queue.submit([encoder.finish()]);
-
-    let read = |buffer: &wgpu::Buffer| -> Vec<[f32; 4]> {
-        let slice = buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |result| {
-            result.expect("map pool_sample_test readback");
-        });
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("poll pool_sample_test device");
-        let bytes = slice
-            .get_mapped_range()
-            .expect("buffer mapped for readback");
-        let texels = bytes[..(width * OUTPUT_TEXEL_BYTES) as usize]
-            .as_chunks::<{ OUTPUT_TEXEL_BYTES as usize }>()
-            .0
-            .iter()
-            .map(|texel| {
-                std::array::from_fn(|c| {
-                    f32::from_ne_bytes(texel[c * 4..c * 4 + 4].try_into().unwrap())
-                })
-            })
-            .collect();
-        drop(bytes);
-        buffer.unmap();
-        texels
-    };
-    let sampled = read(&readbacks[0]);
-    let masks = read(&readbacks[1]);
-    sampled
-        .as_chunks::<{ PIXELS_PER_PROBE as usize }>()
-        .0
-        .iter()
-        .zip(masks.as_chunks::<{ PIXELS_PER_PROBE as usize }>().0.iter())
-        .map(|(sampled, masks)| ProbeResult {
-            irradiance: sampled[0],
-            direction: sampled[1],
-            mask: masks[0],
-            owner_visibility: masks[1][0],
-            union_channel0_visibility: masks[1][1],
-            missing: masks[1][2] == 1.0,
-            owners_readable: masks[1][3] == 1.0,
-        })
-        .collect()
-}
-
-pub(super) fn assert_near(actual: &[f32], expected: &[f32], tolerance: f32, what: &str) {
-    for (component, (&a, &e)) in actual.iter().zip(expected).enumerate() {
-        assert!(
-            (a - e).abs() <= tolerance,
-            "{what}: component {component} is {a}, expected {e} (all: {actual:?} vs {expected:?})"
-        );
-    }
-}
-
-/// The texels block `block`'s own local texel `(x, y)` holds.
-pub(super) fn expected_texel(block: usize, x: u32, y: u32) -> ([f32; 3], [f32; 2], [f32; 4]) {
-    let [r, g, b, _] = irradiance_texel(block, x, y);
-    let direction = direction_texel(block, x / SCALE, y / SCALE).map(|c| f32::from(c) / 255.0);
-    let mask = std::array::from_fn(|channel| {
-        f32::from(mask_byte(block, channel as u32, x / 4, y / 4)) / 255.0
-    });
-    ([r, g, b], direction, mask)
-}
-
-pub(super) fn resident_probe(uv: [f32; 2], block: u32) -> Probe {
-    Probe {
-        uv,
-        block: block + 1,
-        owner_position: 0,
     }
 }
 
@@ -752,4 +274,160 @@ fn placeholder_mode_reads_the_neutral_placeholders_for_every_block_id() {
         assert!(!result.owners_readable, "{what}: no mask, no owner reads");
         assert_eq!(result.owner_visibility, 0.0, "{what}: no owner specular");
     }
+}
+
+/// Two blocks whose lightmap, plane A and plane B sit at three layers and
+/// offsets, each block's three places another block's neighbours.
+fn three_address_pool(ctx: &GpuCtx) -> (BoundLightmap, [(u32, u32); 2]) {
+    let at = |layer, x, y| BlockPlacement { layer, x, y };
+    let extents = [(8, 8), (12, 8)];
+    let lightmap = [at(0, 16, 8), at(1, 1024, 512)];
+    let planes = [
+        [Some(at(2, 2040, 2040)), Some(at(1, 200, 96))],
+        [Some(at(0, 200, 96)), Some(at(2, 16, 8))],
+    ];
+    let fixture = block_fixture(
+        &extents,
+        SCALE,
+        &FixtureTexels {
+            irradiance: &irradiance_texel,
+            direction: &direction_texel,
+            shadowmask: Some(&mask_byte),
+        },
+    );
+    let plan = StaticPoolPlan {
+        header: fixture.index.header,
+        extents: extents.to_vec(),
+        pool: AllResidentPool {
+            placements: lightmap.to_vec(),
+            layer_count: 2,
+        },
+        masks: Some(AllResidentMasks {
+            planes: planes.to_vec(),
+            layer_count: 3,
+        }),
+    };
+    let textures = upload_static_pool(&ctx.device, &ctx.queue, &plan, &fixture.payloads);
+    let bound = BoundLightmap {
+        irradiance: textures.irradiance,
+        direction: textures.direction,
+        shadowmask: textures.shadowmask.expect("the plan keeps the shadowmask"),
+        table: plan.table_bytes(),
+        mask_present: true,
+    };
+    (bound, extents)
+}
+
+// A block reads its lightmap from one address, plane A from a second and plane
+// B from a third: layers and offsets all differ, and each plane's channels
+// come back from its own place.
+#[test]
+fn block_samples_three_addresses() {
+    let Some(ctx) = bc_gpu_or_skip("block_samples_three_addresses") else {
+        return;
+    };
+    let (bound, extents) = three_address_pool(&ctx);
+    let mut probes = Vec::new();
+    let mut expected = Vec::new();
+    for (block, &(width, height)) in extents.iter().enumerate() {
+        for y in 0..height {
+            for x in 0..width {
+                let center = |t: u32, size: u32| (t as f32 + 0.5) / size as f32;
+                probes.push(resident_probe(
+                    [center(x, width), center(y, height)],
+                    block as u32,
+                ));
+                expected.push((block, x, y));
+            }
+        }
+    }
+    let results = run_probes(&ctx, &bound, &probes);
+    assert_eq!(results.len(), probes.len());
+    for (result, &(block, x, y)) in results.iter().zip(&expected) {
+        let what = format!("block {block} local ({x}, {y})");
+        let (irradiance, direction, mask) = expected_texel(block, x, y);
+        assert_near(&result.irradiance[..3], &irradiance, 1.0e-3, &what);
+        assert_near(&result.direction[..2], &direction, 1.0e-5, &what);
+        assert_near(&result.mask, &mask, 1.0e-5, &what);
+        assert!(result.owners_readable, "{what}");
+    }
+}
+
+// The block states read as they did: in a level with masks the no-lightmap
+// entry reads all-visible, a miss reads zero, and a resident block its own mask.
+// In a level without id 42 a resident block reads the fully-visible fallback
+// through the no-mask-pool flag, the no-lightmap entry the same, and a miss
+// still zero. Without id 42 the mask-present bit is clear, so no owner reads
+// any of it.
+#[test]
+fn shadowmask_block_states_read_as_before() {
+    let Some(ctx) = bc_gpu_or_skip("shadowmask_block_states_read_as_before") else {
+        return;
+    };
+    let with_masks = fixture_pool(&ctx);
+    let probe = |block: u32| Probe {
+        uv: [0.4, 0.6],
+        block,
+        owner_position: 1,
+    };
+    let probes = [probe(0), probe(MISSING_BLOCK + 1), probe(1), probe(99)];
+    let results = run_probes(&ctx, &with_masks, &probes);
+    let [none, miss, resident, past_the_table] = &results[..] else {
+        panic!("four probes");
+    };
+    assert_eq!(none.mask, [1.0; 4], "no lightmap reads all-visible");
+    assert!(!none.owners_readable && !none.missing);
+    assert_eq!(miss.mask, [0.0; 4], "a miss reads zero");
+    assert!(miss.missing && !miss.owners_readable);
+    let (_, _, own) = expected_texel(0, 3, 4);
+    assert_near(&resident.mask, &own, 1.0e-5, "a resident block");
+    assert!(resident.owners_readable);
+    assert_eq!(past_the_table.mask, [1.0; 4], "past the table is entry 0");
+
+    let extents = [(8, 8), (8, 8)];
+    let fixture = block_fixture(
+        &extents,
+        SCALE,
+        &FixtureTexels {
+            irradiance: &irradiance_texel,
+            direction: &direction_texel,
+            shadowmask: None,
+        },
+    );
+    let plan = StaticPoolPlan {
+        header: fixture.index.header,
+        extents: extents.to_vec(),
+        pool: AllResidentPool {
+            placements: PLACEMENTS[..2].to_vec(),
+            layer_count: 1,
+        },
+        masks: None,
+    };
+    let textures = upload_static_pool(&ctx.device, &ctx.queue, &plan, &fixture.payloads);
+    assert!(textures.shadowmask.is_none(), "no id 42, no mask pool");
+    let without_masks = BoundLightmap {
+        irradiance: textures.irradiance,
+        direction: textures.direction,
+        shadowmask: upload_placeholder_shadowmask(&ctx.device, &ctx.queue),
+        table: block_table_bytes(
+            &extents,
+            &[Some(BlockAddresses::without_masks(PLACEMENTS[0])), None],
+        ),
+        mask_present: false,
+    };
+    let results = run_probes(&ctx, &without_masks, &[probe(1), probe(0), probe(2)]);
+    let [resident, none, miss] = &results[..] else {
+        panic!("three probes");
+    };
+    assert_eq!(resident.mask, [1.0; 4], "the fully-visible fallback");
+    assert_ne!(
+        resident.irradiance[..3],
+        [0.0; 3],
+        "its lightmap still reads"
+    );
+    assert!(!resident.owners_readable, "no mask, no owner reads");
+    assert_eq!(resident.owner_visibility, 0.0);
+    assert_eq!(none.mask, [1.0; 4]);
+    assert_eq!(miss.mask, [0.0; 4], "a miss still reads zero");
+    assert!(miss.missing);
 }

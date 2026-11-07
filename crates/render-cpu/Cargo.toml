@@ -9,6 +9,10 @@ license.workspace = true
 [features]
 default = []
 dev-tools = []
+# Exposes the streamed pool model's own layer count for a targeted set, so the
+# level compiler's tests can check its bound against the runtime. Never enabled
+# by production dependencies.
+test-support = []
 
 [dependencies]
 bytemuck.workspace = true

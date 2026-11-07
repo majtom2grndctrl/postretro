@@ -8,15 +8,7 @@ use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 
 use super::Renderer;
 use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
-pub use diagnostics::{
-    LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
-    StreamingReachLever,
-};
-
-/// Default pool cap in layers (15 × 14 MiB = 210 MiB of BC pool at the
-/// default lead). The first generation holds this many layers, or fewer
-/// when every block fits in less.
-pub const DEFAULT_LIGHTMAP_POOL_CAP_LAYERS: u32 = 15;
+pub use diagnostics::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
 
 impl Renderer {
     /// Execute the controller's lightmap drain batch. Call once per frame,
@@ -48,16 +40,26 @@ impl Renderer {
         let Some(level) = full.level.as_mut() else {
             return Err(LightmapResidencyDrainError::NotStreaming);
         };
-        let (outcome, meter_changed) = level
+        let drained = level
             .lightmap_resources
-            .drain_streaming(device, queue, batch)?;
+            .drain_streaming(device, queue, batch);
+        let meter_changed = match &drained {
+            Ok((_, meter_changed)) => *meter_changed,
+            // A failed drain keeps a retirement it released before planning,
+            // the one meter change an error can leave: only the retiring
+            // bytes can differ.
+            Err(_) => {
+                level.lightmap_residency_report.retiring_bytes
+                    != level.lightmap_resources.retiring_bytes()
+            }
+        };
         if meter_changed {
             level.lightmap_residency_report = level.lightmap_residency_report.with_static_rows(
                 level.lightmap_resources.residency.clone(),
                 level.lightmap_resources.retiring_bytes(),
             );
         }
-        Ok(outcome)
+        drained.map(|(outcome, _)| outcome)
     }
 
     /// Counters of the installed level's streamed lightmap pool, `None` when

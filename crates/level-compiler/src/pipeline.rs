@@ -1690,6 +1690,17 @@ fn run_after_parsing(
         layer_count: static_atlas_layer_count,
         layout: lightmap_layout,
     } = lightmap_bake_output;
+    // Plane presence is known only now, and a memo hit reaches here too.
+    let mask_pool_layers = lightmap_pool_gate::gate_mask_pool(
+        &lightmap_section,
+        shadowmask_atlas_section.as_ref(),
+        cell_residency_set_section.is_some(),
+    )?;
+    if args.verbose {
+        log::info!(
+            "[Compiler] Shadowmask runtime all-resident pool: {mask_pool_layers} pool layers"
+        );
+    }
     let fused_elapsed = stage_start.elapsed();
     timings.push((
         StageId::LightmapBake.label(),
@@ -2121,6 +2132,7 @@ fn run_after_parsing(
     );
     // Part of Packing, listed alone because it runs on every build.
     timings.push(("SH bound", footprint.sh_mandatory.elapsed));
+    timings.push(("Lightmap bound", footprint.lightmap_pool.elapsed));
 
     if let Some(cache) = stage_cache.as_ref() {
         cache.finish_successful_build(args.cache_max_bytes);
@@ -2129,6 +2141,7 @@ fn run_after_parsing(
         footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
     let mut details = mover_light_summary.lines(lightmap_family_bytes);
     details.extend(footprint.sh_mandatory.lines());
+    details.extend(footprint.lightmap_pool.lines());
     reporter.finalize(BuildSummary {
         timings,
         total: started.elapsed(),

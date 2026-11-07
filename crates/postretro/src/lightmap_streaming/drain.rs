@@ -2,7 +2,7 @@
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::{
-    LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapTarget,
+    LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapRefusal, LightmapTarget,
 };
 
 use super::*;
@@ -37,9 +37,9 @@ impl LightmapResidencyController {
         Ok(())
     }
 
-    /// Builds this drain's batch after the shared admission: the pool cap,
-    /// a target reset on the generation's first drain or the sorted deltas
-    /// since the last batch, and the admitted pairs. `None` while the
+    /// Builds this drain's batch after the shared admission: a target reset
+    /// on the generation's first drain or the sorted deltas since the last
+    /// batch, and the admitted pairs. `None` while the
     /// previous batch's outcome is outstanding; its deltas wait.
     pub(crate) fn finish_drain(
         &mut self,
@@ -61,7 +61,6 @@ impl LightmapResidencyController {
         let mut batch = LightmapDrainBatch {
             generation: self.generation,
             content_tag: self.content_tag,
-            pool_cap_layers: self.levers.pool_cap_layers(),
             ..LightmapDrainBatch::default()
         };
         if self.needs_target_reset {
@@ -118,6 +117,15 @@ impl LightmapResidencyController {
         outcome: LightmapDrainOutcome,
     ) -> Result<(), LightmapResidencyError> {
         self.validate_outcome(&outcome)?;
+        self.warn_growth(&outcome.pool);
+        for kind in PoolKind::ALL {
+            for &item in &outcome.room_reserved[kind] {
+                self.set_room_reserved(kind, item, true);
+            }
+            for &item in &outcome.room_returned[kind] {
+                self.set_room_reserved(kind, item, false);
+            }
+        }
         for &block in &outcome.evicted {
             self.residency.remove_resident(self.map.facts(block));
             self.slots[block as usize].phase = BlockPhase::Absent;
@@ -131,11 +139,14 @@ impl LightmapResidencyController {
             self.slots[block as usize].phase = BlockPhase::Installed;
             self.counters.installs += 1;
         }
-        for &block in &outcome.refused {
+        let headroom = outcome.pool.map(|pool| pool.band_headroom_texels);
+        for refusal in &outcome.refused {
+            let block = refusal.block;
             self.release_in_hand(block);
             let slot = &mut self.slots[block as usize];
             slot.phase = BlockPhase::Refused;
-            slot.refused_headroom = outcome.pool.band_headroom_texels;
+            slot.refused_headroom = headroom;
+            slot.refused_by = refusal.short;
             self.demand.recheck_if_held(block);
             self.refused_blocks += 1;
             self.counters.refusals += 1;
@@ -153,21 +164,41 @@ impl LightmapResidencyController {
             );
         }
         for prepared in outcome.deferred {
-            // A transient miss: the pair stays owned, and in hand, for a
-            // later drain.
+            // A deferral is transient while a pool it must grow retires, and
+            // lasts at the device limit. Either way the pair stays owned, and
+            // in hand, for a later drain.
             self.slots[prepared.block as usize].phase = BlockPhase::Ready;
             self.ready.insert(prepared.block, prepared);
             self.counters.deferrals += 1;
         }
-        let headroom_grew = outcome.pool.band_headroom_texels > self.pool.band_headroom_texels;
+        let headroom_grew = PoolKind::ALL
+            .iter()
+            .any(|&kind| headroom[kind] > self.pool[kind].band_headroom_texels);
         self.pool = outcome.pool;
         if headroom_grew {
             self.requests_due = true;
-            self.unrefuse_with_room(self.pool.band_headroom_texels);
+            self.unrefuse_with_room(headroom);
         }
         self.in_drain.clear();
         self.drain_outstanding = false;
         Ok(())
+    }
+
+    /// A growth is demand the pool's first generation did not hold. The renderer's
+    /// pool knows no cell, so the warning is logged here, once per growth.
+    fn warn_growth(&self, pools: &LightmapPoolReport) {
+        for kind in PoolKind::ALL {
+            if pools[kind].grew {
+                log::warn!(
+                    "[Lightmap streaming] The {} pool grew to {} layers at camera cell {}: demand \
+                     past the pool's first generation. It keeps that size for the level",
+                    kind.name(),
+                    pools[kind].layers,
+                    self.camera_cell
+                        .map_or_else(|| "none".to_owned(), |cell| cell.to_string()),
+                );
+            }
+        }
     }
 
     /// The renderer failed the outstanding batch and rolled it back whole:
@@ -192,20 +223,21 @@ impl LightmapResidencyController {
         self.counters.aborted_drains += 1;
     }
 
-    /// Refused band blocks become requestable again once the pool reports
-    /// room for at least one more of their slots than it had when it refused
-    /// them, so a refused block is not re-read on every small gain.
-    fn unrefuse_with_room(&mut self, headroom: u64) {
+    /// Refused band blocks become requestable again once every pool that
+    /// refused them reports room for at least one more of their slots than it
+    /// had then, so a refused block is not re-read on every small gain, nor on
+    /// room in a pool that never turned it away.
+    fn unrefuse_with_room(&mut self, headroom: PerPool<u64>) {
         if self.refused_blocks == 0 {
             return;
         }
         for (block, slot) in self.slots.iter_mut().enumerate() {
-            if slot.phase == BlockPhase::Refused
-                && slot
-                    .refused_headroom
-                    .saturating_add(self.map.facts(block as u32).texels)
-                    <= headroom
-            {
+            let texels = self.map.facts(block as u32).texels;
+            let has_room = |kind: PoolKind| {
+                !slot.refused_by[kind]
+                    || slot.refused_headroom[kind].saturating_add(texels[kind]) <= headroom[kind]
+            };
+            if slot.phase == BlockPhase::Refused && PoolKind::ALL.iter().all(|&k| has_room(k)) {
                 slot.phase = BlockPhase::Absent;
                 self.refused_blocks -= 1;
             }
@@ -222,13 +254,8 @@ impl LightmapResidencyController {
         }
         let scratch = &mut self.outcome_scratch;
         scratch.clear();
-        scratch.extend(
-            outcome
-                .installed
-                .iter()
-                .chain(&outcome.refused)
-                .chain(&outcome.failed),
-        );
+        scratch.extend(outcome.installed.iter().chain(&outcome.failed));
+        scratch.extend(outcome.refused.iter().map(|refusal| refusal.block));
         scratch.extend(outcome.deferred.iter().map(|prepared| prepared.block));
         scratch.sort_unstable();
         self.in_drain.sort_unstable();
@@ -238,7 +265,7 @@ impl LightmapResidencyController {
                     .into(),
             );
         }
-        for &block in &outcome.refused {
+        for &LightmapRefusal { block, .. } in &outcome.refused {
             if !matches!(
                 self.slots[block as usize].sent,
                 Some(LightmapTarget {
@@ -256,6 +283,28 @@ impl LightmapResidencyController {
                 return invalid(format!(
                     "deferred block {} does not match this generation",
                     prepared.block
+                ));
+            }
+        }
+        let blocks = self.slots.len() as u32;
+        for kind in PoolKind::ALL {
+            let room = outcome.room_reserved[kind]
+                .iter()
+                .chain(&outcome.room_returned[kind]);
+            if let Some(item) = room.copied().find(|&item| kind.block_of(item) >= blocks) {
+                return invalid(format!(
+                    "reserved-room item {item} of the {} pool is out of range",
+                    kind.name()
+                ));
+            }
+        }
+        for &item in &outcome.room_reserved.mask {
+            let block = PoolKind::Mask.block_of(item);
+            let plane = mask_item_plane(item);
+            if !self.map.facts(block).planes[plane] {
+                return invalid(format!(
+                    "reserved-room item {item} names mask plane {plane} of block {block}, \
+                     which the block does not store"
                 ));
             }
         }

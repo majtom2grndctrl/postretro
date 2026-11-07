@@ -3,8 +3,10 @@
 
 use std::time::Duration;
 
+use postretro_render_cpu::lightmap_pool::{PerPool, PoolKind};
+
 use super::mirror::MirrorStats;
-use super::pool_mirror::PoolStats;
+use super::pool_mirror::{PoolRun, PoolStats};
 use super::trip_record::{GateSplit, RunRecord, SplitTotals};
 use super::{Levers, Walk};
 
@@ -95,7 +97,7 @@ pub(super) struct RunReport {
     pub(super) counters: Option<crate::lightmap_streaming::controller::LightmapResidencyCounters>,
     pub(super) physical_reads: u64,
     pub(super) pool: PoolStats,
-    pub(super) layer_bytes: u64,
+    pub(super) layer_bytes: PerPool<u64>,
     pub(super) first_not_resident: Vec<(usize, u32, u32)>,
     pub(super) first_outside: Vec<(usize, u32, u32)>,
     /// Drawn non-resident block-frames by cause, after the last drain.
@@ -239,14 +241,16 @@ pub(super) fn mib(bytes: u64) -> f64 {
     bytes as f64 / MIB
 }
 
-/// Peak pool layers beside peak occupancy. Growth reserves the targeted
-/// demand with headroom and the pool never shrinks, so the layers never
-/// filled are what that headroom cost.
-pub(super) fn pool_layers_line(pool: &PoolStats, layer_bytes: u64) -> String {
+/// One pool's first generation, then its peak layers beside peak occupancy.
+/// Growth reserves the targeted demand with headroom and the pool never
+/// shrinks, so the layers never filled are what that headroom cost.
+pub(super) fn pool_layers_line(pool: &PoolRun, layer_bytes: u64) -> String {
     let headroom = pool.peak_layers.saturating_sub(pool.peak_occupied_layers);
     format!(
-        "first {} layers, peak {} layers ({} occupied; headroom cost {} layers, {:.1} MiB)",
+        "first {} layers ({:.1} MiB with the spare), peak {} layers ({} occupied; headroom cost \
+         {} layers, {:.1} MiB)",
         pool.first_layers,
+        mib(pool.first_bytes),
         pool.peak_layers,
         pool.peak_occupied_layers,
         headroom,
@@ -275,6 +279,41 @@ fn micros_line(label: &str, nanos: &[u64]) -> String {
     )
 }
 
+/// One pool's layers, growth, repacks and compactions.
+fn print_pool(kind: PoolKind, pool: &PoolRun, layer_bytes: u64, steps: u64) {
+    let name = kind.name();
+    println!(
+        "   {name} pool: {}, layer {:.1} MiB; growths {}; repacks {} ({:.2}% of steps, {} copies)",
+        pool_layers_line(pool, layer_bytes),
+        mib(layer_bytes),
+        pool.growths,
+        pool.repacks,
+        pool.repacks as f64 * 100.0 / steps as f64,
+        pool.repack_copies,
+    );
+    let (copy_max, copy_p95) = max_and_p95(pool.compaction_copy_bytes.clone());
+    let (plan_max, plan_p95) = max_and_p95(pool.compaction_plan_nanos.clone());
+    let (downward_max, downward_p95) = max_and_p95(pool.downward_copy_bytes.clone());
+    println!(
+        "   {name} compaction: {} of {} repacks, {} rolled back; {} parked, {} target layers built \
+         over a layer; {} copies, largest moved {} blocks; copy MiB max / p95 {:.1} / {:.1}; \
+         planning ms max / p95 {:.2} / {:.2}; downward repack copy MiB max / p95 {:.1} / {:.1}",
+        pool.compactions,
+        pool.repacks,
+        pool.compaction_rollbacks,
+        pool.parks,
+        pool.built_over,
+        pool.compaction_copies,
+        pool.largest_compaction_moves,
+        mib(copy_max),
+        mib(copy_p95),
+        plan_max as f64 / 1e6,
+        plan_p95 as f64 / 1e6,
+        mib(downward_max),
+        mib(downward_p95),
+    );
+}
+
 pub(super) fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
     let steps = report.step_bytes.len().max(1) as u64;
     let column = |i: usize| report.step_bytes.iter().map(|b| b[i]).collect::<Vec<_>>();
@@ -299,10 +338,10 @@ pub(super) fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
     let c = report.counters.unwrap_or_default();
     let (drain_bytes_max, drain_bytes_p95) = max_and_p95(pool.drain_install_bytes.clone());
     println!(
-        "== {} | L = {} m | cap {} | {} steps, {} teleports, {} frames ({} paced), wall {:.1} s",
+        "== {} | L = {} m | {} | {} steps, {} teleports, {} frames ({} paced), wall {:.1} s",
         walk.kind.label(),
         levers.lead_metres,
-        levers.cap_layers,
+        levers.pools_label(),
         report.step_bytes.len(),
         walk.teleports(),
         report.frames,
@@ -336,22 +375,18 @@ pub(super) fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
         mib(man42_p95),
     );
     println!(
-        "   pool: {}, layer {:.1} MiB; peak held {:.1} MiB (spare and retiring included); \
-         growths {}, growth transient peak {:.1} MiB; repacks {} ({:.2}% of steps, {} copies); \
-         deferred {}; evictions {}; refusals {}; failed {}",
-        pool_layers_line(pool, report.layer_bytes),
-        mib(report.layer_bytes),
+        "   pools: peak held {:.1} MiB (spares and retiring included); growth transient peak \
+         {:.1} MiB; deferred {}; evictions {}; refusals {}; failed {}",
         mib(pool.peak_pool_bytes),
-        pool.growths,
         mib(pool.growth_transient_peak_bytes),
-        pool.repacks,
-        pool.repacks as f64 * 100.0 / steps as f64,
-        pool.repack_copies,
         pool.deferred,
         pool.evictions,
         pool.refusals,
         pool.failed,
     );
+    for kind in PoolKind::ALL {
+        print_pool(kind, &pool.pools[kind], report.layer_bytes[kind], steps);
+    }
     println!(
         "   reads (after spawn): id 22 {:.1} MiB, id 42 {:.1} MiB; per step mean {:.2} MiB, \
          p95 {:.2}, max {:.2}; {} pairs requested, {} physical reads; installs {} ({:.1} MiB \

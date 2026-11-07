@@ -4,7 +4,6 @@
 pub(crate) mod block_map;
 pub(crate) mod controller;
 pub(crate) mod demand;
-pub(crate) mod levers;
 #[cfg(test)]
 mod planar_demand_tests;
 #[cfg(test)]

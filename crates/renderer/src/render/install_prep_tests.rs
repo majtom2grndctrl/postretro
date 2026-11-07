@@ -239,7 +239,7 @@ fn assert_prep_matches_install(
                 .lightmap_streaming
                 .map(|streaming| LightmapStreamingInputs {
                     content_tag: streaming.content_tag,
-                    pool_cap_layers: streaming.pool_cap_layers,
+                    pool_sizing: streaming.pool_sizing,
                 }),
             payload_blocks: &payloads.blocks,
             weight_maps: geometry.animated_light_weight_maps,
@@ -256,7 +256,7 @@ fn assert_prep_matches_install(
             geometry.lightmap,
             geometry.shadowmask_atlas,
             streaming.content_tag,
-            streaming.pool_cap_layers,
+            streaming.pool_sizing,
             device_limits.max_texture_dimension_2d,
             device_limits.max_texture_array_layers,
         ),

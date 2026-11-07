@@ -69,7 +69,7 @@ pub(crate) fn attribute(
     let scale = formats.direction_texel_scale.max(1);
     let mut owners = Vec::new();
     let mut tally = Vec::with_capacity(16);
-    for (block, block_charts) in formats.blocks.iter().zip(&by_block) {
+    for (index, (block, block_charts)) in formats.blocks.iter().zip(&by_block).enumerate() {
         let width = block.width as usize;
         let height = block.height as usize;
         owners.clear();
@@ -107,11 +107,14 @@ pub(crate) fn attribute(
             &mut tally,
         );
         if let Some(out) = result.shadowmask.as_mut() {
-            let unit = AtlasFormats::shadowmask_unit();
+            // Both planes share a block's grid, so a position costs each plane
+            // the block stores. An absent plane has no blob to attribute.
+            let stored = formats.stored_planes(index).iter().filter(|&&s| s).count();
+            let unit = AtlasFormats::plane_unit();
             grid.attribute_units(
                 block.width.div_ceil(unit.width),
                 block.height.div_ceil(unit.height),
-                unit.bytes,
+                unit.bytes * stored as u64,
                 out,
                 &mut tally,
             );

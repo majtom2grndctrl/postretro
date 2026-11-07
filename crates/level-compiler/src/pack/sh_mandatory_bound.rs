@@ -233,7 +233,9 @@ fn names_dense_probes(directory: &ClusterDirectorySection) -> bool {
     })
 }
 
-fn pinned_clusters(directory: &ClusterDirectorySection) -> impl Iterator<Item = u32> + '_ {
+pub(super) fn pinned_clusters(
+    directory: &ClusterDirectorySection,
+) -> impl Iterator<Item = u32> + '_ {
     directory
         .cluster_hints
         .iter()

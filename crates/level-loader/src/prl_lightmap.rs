@@ -8,6 +8,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::lightmap::{
     LightmapBlockIndex, LightmapBlockPayload, SectionByteRange,
 };
+use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskOwnerBounds};
 use postretro_render_data::geometry::WorldVertex;
 
@@ -23,7 +24,8 @@ pub(crate) struct LoadedLightmap {
 }
 
 /// Id 42 as loaded: the per-face owner table and block records the level
-/// keeps, and each block's group A then group B planes in id-22 block order.
+/// keeps, and each block's group A then group B planes in id-22 block order,
+/// an absent plane empty.
 pub(crate) struct LoadedShadowmask {
     pub(crate) index: ShadowmaskBlockIndex,
     pub(crate) groups: Vec<[Vec<u8>; 2]>,
@@ -159,9 +161,27 @@ pub(crate) fn read_shadowmask_atlas(
         "[PRL] ShadowmaskAtlas: {} cell block(s), {} face owner entr(y/ies), {} payload byte(s)",
         groups.len(),
         index.owners.len(),
-        groups.iter().map(|[a, b]| a.len() + b.len()).sum::<usize>(),
+        index
+            .records
+            .iter()
+            .map(|record| u64::from(record.group_a.len) + u64::from(record.group_b.len))
+            .sum::<u64>(),
     );
     Ok(Some(LoadedShadowmask { index, groups }))
+}
+
+/// Id 58, when the level stores it. Both load modes read it, so an unknown
+/// version fails either.
+pub(crate) fn read_lightmap_pool_bound(
+    container: &PrlContainer,
+) -> Result<Option<LightmapPoolBoundSection>, PrlLoadError> {
+    container
+        .read_section(SectionId::LightmapPoolBound as u32)?
+        .map(|data| {
+            LightmapPoolBoundSection::from_bytes(&data)
+                .map_err(|err| section_validation_from_error("LightmapPoolBound", err))
+        })
+        .transpose()
 }
 
 /// A range the index validated against this section's length.

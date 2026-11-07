@@ -20,8 +20,6 @@ use super::lightmap_streaming_diagnostics::{
 use crate::lightmap_streaming::block_map::LevelBlockMap;
 use crate::lightmap_streaming::controller::{LightmapPreloadReads, LightmapResidencyController};
 use crate::lightmap_streaming::demand::DemandFrame;
-#[cfg(feature = "capture")]
-use crate::lightmap_streaming::levers::LightmapLevers;
 use crate::lightmap_streaming::route::{
     LightmapCompletion, LightmapReadRoute, LightmapRouteLedger, lightmap_route,
 };
@@ -511,32 +509,6 @@ impl LightmapStreamingSession {
     #[cfg(any(feature = "capture", feature = "dev-tools"))]
     pub(crate) fn live_diagnostics(&self) -> &LightmapStreamingLiveDiagnostics {
         &self.live
-    }
-
-    /// Capture's pool-cap override writes here; the dev-tools sliders go
-    /// through `set_slider_levers`.
-    #[cfg(feature = "capture")]
-    pub(crate) fn levers_mut(&mut self) -> &mut LightmapLevers {
-        self.controller.levers_mut()
-    }
-
-    /// The levers as the dev-tools Streaming tab edits them.
-    #[cfg(feature = "dev-tools")]
-    pub(crate) fn slider_levers(&self) -> postretro_renderer::LightmapStreamingLevers {
-        postretro_renderer::LightmapStreamingLevers {
-            pool_cap_layers: self.controller.levers().pool_cap_layers(),
-        }
-    }
-
-    /// Applies the Streaming tab's lever: the cap rides the next drain batch.
-    #[cfg(feature = "dev-tools")]
-    pub(crate) fn set_slider_levers(
-        &mut self,
-        sliders: postretro_renderer::LightmapStreamingLevers,
-    ) {
-        self.controller
-            .levers_mut()
-            .set_pool_cap_layers(sliders.pool_cap_layers);
     }
 
     #[cfg(test)]

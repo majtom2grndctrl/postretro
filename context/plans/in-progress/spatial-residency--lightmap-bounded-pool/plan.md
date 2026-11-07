@@ -61,6 +61,7 @@ Each keeps the meaning of its Decision or Acceptance row. Any the owner reads di
 - **Fallback frames** — the route's real spikes are solid-cell fallback frames, 50 to 80 ms, where the tour enters solid cells. Drawn-not-resident block-frames are 20.7k to 20.9k on the route, all on 39 such frames in the run checked, 0 on 17,994 portal frames. Not compared with the old build. Goes to the owner at results.
 - **Review round 1** — 9 reviewers (4 tracers, contract verifier, adversarial tester, seam tracer, 2 hygiene). No depth lens found a code-path bug. Fixed: a stale Streaming tab test behind `dev-tools` that preflight does not build, the retired side-by-side comment in `shadowmask_bake.rs`, dead `PoolDemand::without_masks`, one payload check, row 8's test (runtime side now counts through `LightmapPoolModel` via render-cpu's new `test-support` feature) and row 55's (runtime side in all five cases), per-pool device-limit warnings, a mask-pool install warning, outcome validation of reserved mask planes, the meter after an aborted drain, the upload scratch on error, the compaction budget (a build with nothing in the way no longer fails on a spent budget), a debug assert that a compacted pool does not grow, a const assert on table address bits, compactions and rollbacks shown per pool in diagnostics, log line, Streaming tab and capture JSON (schema stays v3, additive), capture refusing `mask_pool_layers` on a level with no mask pool, and comment and doc drift.
 - **Left after review, for the owner** — band-block churn can reopen a spent compaction gate while mandatory demand is unchanged, and band additions do not; id 58 figures are trusted with no sanity check; the SH streaming install drops its upload scratch on an upload error the same way (pre-existing, not this branch's code); `context/plans/large-map-spatial-residency.md`'s Decided stage text still says "(layer, offset)".
+- **Review round 3** (adversarial, on the round 2 fixes) — nothing breaks; the budget bound holds, every sizing caller passes the right pool's figure, and the task 1 compaction measurement remains a lower bound under the new budget. Nits left: the per-layer budget check in `clear_a_layer` is not tested on its own, and the walk harness prints an override figure where the model floors a pool. Review loop ended here.
 - **Ignored capture tests** — run with `--ignored` and a GPU required after the rebakes: hallway and `campaign-test` parity pass; `forced_missing…` still fails as recorded above.
 - **Review round 2** (on the round 1 fixes, adversarial + hygiene) — no code-path bug. Fixed: capture now refuses `mask_pool_layers` on a level whose id 42 stores no plane too; the compaction budget caps work again once spent (a build with nothing in the way still passes, a build over blocks refuses and a clear does nothing), proved by two inline tests; the mask install warning counts planes; one all-resident pack serves both the warning and sizing (`StreamedPoolSizing::first_generation` takes the all-resident counts); tests for the reserved-plane refusal and the no-demand summary; rollback docs say the drain falls back to the downward pass, then growth; plan pins removed from branch-added test lines.
 - **Load flakes seen once in the full workspace run** — `render::uploads::tests::two_frames_in_flight_reach_a_bounded_staging_steady_state` (3 driver staging buffers after warmup, want 2) and `startup::lifecycle::lifecycle_load_tests::line_c_names_staged_marks_and_adds_up` (upload 533.9 ms reported inside a 533.6 ms bundle_ready). Each passed 3 of 3 alone and in its crate's feature run.
@@ -82,75 +83,75 @@ Each keeps the meaning of its Decision or Acceptance row. Any the owner reads di
 
 Test names are planned. "Req GPU" means the test runs under `POSTRETRO_REQUIRE_GPU=1`, per row 58.
 
-| AC | Row (short) | Proof | Status |
-|---|---|---|---|
-| 1 | Nonzero plane stored unchanged, zero plane has no blob; A only, B only, both, neither | `zero_planes_have_no_blob_in_every_presence_combination` | achievable as stated |
-| 2 | Old tag refused by name; id 58 missing or unknown version refused by name | `rejects_retired_smb7_with_a_rebake_hint`, `level_needing_the_bound_refuses_absent_or_unknown_id_58` | achievable as stated |
-| 3 | Bad length, offset on an absent plane, non-adjacent planes refused by name | `rejects_malformed_plane_records_by_name` | achievable as stated |
-| 4 | Hand-computed bound: pools differ, entry at lead counts, past it does not, pinned once | `bound_matches_hand_computed_fixture` | achievable as stated |
-| 5 | Added cell raises the bound, id 58 layout unchanged | `added_cell_raises_the_bound_through_the_cell_input` | achievable as stated |
-| 6 | Cell input reads no water-plane data | grep gate `bound_cell_input_reads_no_water_plane_data` | achievable as stated |
-| 7 | Id 58 byte-identical warm and cold | `id_58_is_byte_identical_warm_and_cold` | achievable as stated |
-| 8 | Compiler and runtime agree on layers, both pools | `compiler_and_runtime_count_the_same_layers` (dev-dep edge) | achievable as stated |
-| 9 | No usable id 51: no section, all-resident | `level_without_id_51_has_no_bound_and_runs_all_resident` | achievable as stated |
-| 10 | Build Summary bytes and worst cell, tie to lowest id; no-bound form; warning both sides | `build_summary_reports_bound_and_warns_past_threshold` | achievable as stated |
-| 11 | Mask-pool floor: fails cold and warm, passes under, warns when streaming | `mask_pool_floor_gate_*` | achievable as stated |
-| 12 | All-resident mask over device layers drops the mask pool alone, by name | `all_resident_mask_past_device_layers_drops_alone` | achievable as stated |
-| 13 | Absent plane samples as stored zero: union, specular, unowned, owned, channels 0 and 1 | `absent_plane_samples_as_stored_zero` in `shadowmask_sample_test`, `shadowmask_union_test`, req GPU | achievable as stated |
-| 14 | Three addresses each sampled from their own | `block_samples_three_addresses` req GPU | achievable as stated |
-| 15 | No-lightmap, miss, and no-id-42 reads hold | `shadowmask_block_states_read_as_before` req GPU | achievable as stated |
-| 16 | All-resident and streamed place planes alike and sample alike | `all_resident_and_streamed_sample_identically` req GPU | achievable as stated |
-| 17 | Id 42 with no plane loads both modes, reads zero (R27) | `id_42_with_no_plane_reads_zero_in_both_modes` req GPU | achievable, see Corrections (R27's pool) |
-| 18 | Pair short in one pool installs nothing, retries whole; band refused whole (R1) | `pair_short_in_either_pool_installs_nothing` | achievable as stated |
-| 19 | Half needs growth while other retires: defers whole (R13) | `pair_defers_whole_when_other_pool_retires` | achievable as stated |
-| 20 | Evicting a band block frees both halves (R2) | `eviction_frees_both_halves` | achievable as stated |
-| 21 | Victim returns whole or stays out whole (R16) | `band_victim_returns_only_whole` | achievable as stated |
-| 22 | Band pair read again only when the refusing pool has room (R17) | `refused_band_pair_waits_on_the_refusing_pool` | achievable as stated |
-| 23 | No planes: no mask placement or read; one plane: one placement (R3) | `mask_placements_follow_plane_presence` | achievable as stated |
-| 24 | Payload disagreeing with presence fails whole | `payload_disagreeing_with_presence_fails_whole` | achievable as stated |
-| 25 | A-absent reads exactly B's bytes, and the reverse | `streamed_block_reads_exactly_its_present_plane` | achievable as stated |
-| 26 | Abort restores both pools and table; failed install frees both halves (R4) | `abort_restores_both_pools`, `failed_install_frees_both_halves` | achievable as stated |
-| 27 | Level change and first drain leave nothing resident in either pool (R5) | `new_generation_empties_both_pools` | achievable as stated |
-| 28 | Any history: set that packs with a layer spare places with no growth, copies complete through one spare; no-spare misses reported | real-scale test in `compaction_scale_tests`, plus small proptest `compaction_places_any_set_that_packs_from_scratch` | restated by the owner, see Corrections |
-| 29 | Downward pass enough: nothing moves up; drain-only fit gives way (R10, R18) | `downward_repack_must_cover_the_whole_demand` | achievable as stated |
-| 30 | Demand over one drain's budget, shortest first: one repack, no growth (R11, R20) | `demand_arriving_over_drains_repacks_once` | achievable as stated |
-| 31 | Demand past the pool compacts at most once before growing (R32) | `demand_past_the_pool_compacts_once_then_grows` | achievable as stated |
-| 32 | Reserved room: stays a miss, no band lands there (R28) | `reserved_room_stays_a_miss_and_holds_off_band` | achievable as stated |
-| 33 | Reservation returns on leaving demand, by removal or to band (R21) | `reservation_returns_when_its_target_leaves` | achievable as stated |
-| 34 | Headroom leaves out reservations, counts a pair in hand once (R29) | `band_headroom_tracks_reservations` | achievable as stated |
-| 35 | No copy order: layout stands, growth, warned by name (R22) | `no_copy_order_rolls_back_to_growth`, on a real search miss with a whole spare | achievable as stated |
-| 36 | Up, down, same-layer, swap land intact; planes told apart (R6) | `every_move_shape_lands_intact` on `gpu_mirror` | achievable as stated |
-| 37 | One pool's repack leaves the other, band drop leaves both; one submission (R7, R15) | `one_pool_repack_leaves_the_other`, queue-counted, req GPU | achievable as stated |
-| 38 | Mask-only repack rewrites only moved entries (R14) | `mask_repack_rewrites_moved_entries_only` | achievable as stated |
-| 39 | One repacks, one grows: one submission, only the grown retires (R23) | `repack_beside_growth_lands_in_one_submission` req GPU | achievable as stated |
-| 40 | Both repack: one submission, one table write per block (R31) | `both_pools_repack_with_one_table_write` req GPU | achievable as stated |
-| 41 | Repack while retiring touches the live generation only (R8) | `repack_while_retiring_touches_live_generation` | achievable as stated |
-| 42 | First generation is bound plus margin, capped | `first_generation_is_bound_plus_margin_capped` | achievable, see Corrections (bound of 0) |
-| 43 | Walk within the bound never grows at no margin, on a fixture that grows today | `walk_within_bound_never_grows` | achievable as stated |
-| 44 | At the all-resident cap, holds every block; R24's set; wholly mandatory from one cell | `all_resident_cap_holds_every_block` | achievable as stated |
-| 45 | Band places in any layer, past the old default, after growth, under a replaced controller (R25) | `band_uses_every_layer_under_any_controller` | achievable as stated |
-| 46 | No non-test source sizes from the old default, carries a drain cap, or offers a lever | grep gate `no_lightmap_pool_cap_survives` | achievable as stated |
-| 47 | Docs describe no cap, slider or default cap | grep gate over both docs, task 9 | achievable, see Corrections |
-| 48 | Capture override per pool, report names no cap, full pool matches all-resident | `capture_lightmap_streaming`, req GPU | achievable as stated |
-| 49 | Grows once and warns, only when a ready pair cannot place; band stays; device defers (R19) | `demand_past_pool_grows_once_and_warns`, log capture | achievable as stated |
-| 50 | Growth reserves targeted pack times margin, capped; no separate headroom | `growth_reserves_demand_times_the_shared_margin` | achievable as stated |
-| 51 | After either pool grows alone, next draw samples the grown layer (R30) | `next_draw_samples_a_grown_layer` req GPU | achievable as stated |
-| 52 | Second demand grows and warns again (R26) | `second_demand_grows_and_warns_again` | achievable as stated |
-| 53 | Settling past the pool grows once, reaches reveal, keeps size (R12) | `settling_past_the_pool_grows_once_and_keeps_size` | achievable as stated |
-| 54 | Pools grow and retire apart; meter reports both with spares and retiring (R9) | `pools_retire_independently_and_meter_counts_both` req GPU | achievable as stated |
-| 55 | Summary bytes equal first-generation bytes, below the cap, at it, and with no id 51 | `summary_bytes_equal_first_generation_bytes` | achievable, see Corrections (R27's pool) |
-| 56 | Walk harness first layers and bytes equal the runtime's, no size passed | `walk_harness_first_generation_matches_runtime` | achievable as stated |
-| 57 | Policy identity differs from the old string | grep gate | achievable as stated |
-| 58 | GPU rows run with an adapter required | preflight run under `POSTRETRO_REQUIRE_GPU=1` | achievable as stated |
-| 59 | Hallway ceiling | executor records on the 5300M, task 10; finding, not a gate | manual |
-| 60 | Walks at 5/4 and one step either side | executor, no-GPU harness, task 10 | manual |
-| 61 | Frames on five maps | executor captures and diffs at equal clock; owner reviews | manual |
-| 62 | Repack cost | executor records, task 10; a visible hitch goes to the owner | manual |
-| 63 | Mask-heavy map | executor records; owner reviews frames | manual |
-| 64 | Theatrical moments | owner, in-engine, on the hallway; task 10 finds a closet reveal and a door from the `.map` and gives the owner positions | manual |
-| 65 | Planar mirrors | executor, no-GPU harness, task 10; any growth goes to the owner | manual |
-| 66 | Bound cost | executor, warm and cold, task 10 | manual |
-| 67 | Cleanup | executor records driver memory; owner confirms | manual |
+| AC | Row (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Nonzero plane stored unchanged, zero plane has no blob; A only, B only, both, neither | `zero_planes_have_no_blob_in_every_presence_combination` | achievable as stated | pass |
+| 2 | Old tag refused by name; id 58 missing or unknown version refused by name | `rejects_retired_smb7_with_a_rebake_hint`, `level_needing_the_bound_refuses_absent_or_unknown_id_58` | achievable as stated | pass |
+| 3 | Bad length, offset on an absent plane, non-adjacent planes refused by name | `rejects_malformed_plane_records_by_name` | achievable as stated | pass |
+| 4 | Hand-computed bound: pools differ, entry at lead counts, past it does not, pinned once | `bound_matches_hand_computed_fixture` | achievable as stated | pass |
+| 5 | Added cell raises the bound, id 58 layout unchanged | `added_cell_raises_the_bound_through_the_cell_input` | achievable as stated | pass |
+| 6 | Cell input reads no water-plane data | grep gate `bound_cell_input_reads_no_water_plane_data` | achievable as stated | pass |
+| 7 | Id 58 byte-identical warm and cold | `id_58_is_byte_identical_warm_and_cold` | achievable as stated | pass |
+| 8 | Compiler and runtime agree on layers, both pools | `compiler_and_runtime_count_the_same_layers` (dev-dep edge) | achievable as stated | pass; runtime side counts through `LightmapPoolModel` after review |
+| 9 | No usable id 51: no section, all-resident | `level_without_id_51_has_no_bound_and_runs_all_resident` | achievable as stated | pass |
+| 10 | Build Summary bytes and worst cell, tie to lowest id; no-bound form; warning both sides | `build_summary_reports_bound_and_warns_past_threshold` | achievable as stated | pass |
+| 11 | Mask-pool floor: fails cold and warm, passes under, warns when streaming | `mask_pool_floor_gate_*` | achievable as stated | pass |
+| 12 | All-resident mask over device layers drops the mask pool alone, by name | `all_resident_mask_past_device_layers_drops_alone` | achievable as stated | pass |
+| 13 | Absent plane samples as stored zero: union, specular, unowned, owned, channels 0 and 1 | `absent_plane_samples_as_stored_zero` in `shadowmask_sample_test`, `shadowmask_union_test`, req GPU | achievable as stated | pass, GPU required |
+| 14 | Three addresses each sampled from their own | `block_samples_three_addresses` req GPU | achievable as stated | pass, GPU required |
+| 15 | No-lightmap, miss, and no-id-42 reads hold | `shadowmask_block_states_read_as_before` req GPU | achievable as stated | pass, GPU required |
+| 16 | All-resident and streamed place planes alike and sample alike | `all_resident_and_streamed_sample_identically` req GPU | achievable as stated | pass, GPU required |
+| 17 | Id 42 with no plane loads both modes, reads zero (R27) | `id_42_with_no_plane_reads_zero_in_both_modes` req GPU | achievable, see Corrections (R27's pool) | pass, GPU required |
+| 18 | Pair short in one pool installs nothing, retries whole; band refused whole (R1) | `pair_short_in_either_pool_installs_nothing` | achievable as stated | pass |
+| 19 | Half needs growth while other retires: defers whole (R13) | `pair_defers_whole_when_other_pool_retires` | achievable as stated | pass as read with R9 (a pair defers only when a pool that must grow is retiring); owner to confirm the reading |
+| 20 | Evicting a band block frees both halves (R2) | `eviction_frees_both_halves` | achievable as stated | pass |
+| 21 | Victim returns whole or stays out whole (R16) | `band_victim_returns_only_whole` | achievable as stated | pass |
+| 22 | Band pair read again only when the refusing pool has room (R17) | `refused_band_pair_waits_on_the_refusing_pool` | achievable as stated | pass |
+| 23 | No planes: no mask placement or read; one plane: one placement (R3) | `mask_placements_follow_plane_presence` | achievable as stated | pass |
+| 24 | Payload disagreeing with presence fails whole | `payload_disagreeing_with_presence_fails_whole` | achievable as stated | pass |
+| 25 | A-absent reads exactly B's bytes, and the reverse | `streamed_block_reads_exactly_its_present_plane` | achievable as stated | pass |
+| 26 | Abort restores both pools and table; failed install frees both halves (R4) | `abort_restores_both_pools`, `failed_install_frees_both_halves` | achievable as stated | pass |
+| 27 | Level change and first drain leave nothing resident in either pool (R5) | `new_generation_empties_both_pools` | achievable as stated | pass |
+| 28 | Any history: set that packs with a layer spare places with no growth, copies complete through one spare; no-spare misses reported | real-scale test in `compaction_scale_tests`, plus small proptest `compaction_places_any_set_that_packs_from_scratch` | restated by the owner, see Corrections | pass: 0 misses in 262,818 real-scale compactions with a layer spare; no-spare miss rate 0.10% and 0.18% at 27 and 34 layers, reported |
+| 29 | Downward pass enough: nothing moves up; drain-only fit gives way (R10, R18) | `downward_repack_must_cover_the_whole_demand` | achievable as stated | pass |
+| 30 | Demand over one drain's budget, shortest first: one repack, no growth (R11, R20) | `demand_arriving_over_drains_repacks_once` | achievable as stated | pass (at most one repack) |
+| 31 | Demand past the pool compacts at most once before growing (R32) | `demand_past_the_pool_compacts_once_then_grows` | achievable as stated | pass |
+| 32 | Reserved room: stays a miss, no band lands there (R28) | `reserved_room_stays_a_miss_and_holds_off_band` | achievable as stated | pass |
+| 33 | Reservation returns on leaving demand, by removal or to band (R21) | `reservation_returns_when_its_target_leaves` | achievable as stated | pass |
+| 34 | Headroom leaves out reservations, counts a pair in hand once (R29) | `band_headroom_tracks_reservations` | achievable as stated | pass |
+| 35 | No copy order: layout stands, growth, warned by name (R22) | `no_copy_order_rolls_back_to_growth`, on a real search miss with a whole spare | achievable as stated | pass, on a real search miss |
+| 36 | Up, down, same-layer, swap land intact; planes told apart (R6) | `every_move_shape_lands_intact` on `gpu_mirror` | achievable as stated | pass |
+| 37 | One pool's repack leaves the other, band drop leaves both; one submission (R7, R15) | `one_pool_repack_leaves_the_other`, queue-counted, req GPU | achievable as stated | pass, GPU required |
+| 38 | Mask-only repack rewrites only moved entries (R14) | `mask_repack_rewrites_moved_entries_only` | achievable as stated | pass |
+| 39 | One repacks, one grows: one submission, only the grown retires (R23) | `repack_beside_growth_lands_in_one_submission` req GPU | achievable as stated | pass, GPU required |
+| 40 | Both repack: one submission, one table write per block (R31) | `both_pools_repack_with_one_table_write` req GPU | achievable as stated | pass, GPU required |
+| 41 | Repack while retiring touches the live generation only (R8) | `repack_while_retiring_touches_live_generation` | achievable as stated | pass |
+| 42 | First generation is bound plus margin, capped | `first_generation_is_bound_plus_margin_capped` | achievable, see Corrections (bound of 0) | pass |
+| 43 | Walk within the bound never grows at no margin, on a fixture that grows today | `walk_within_bound_never_grows` | achievable as stated | pass; model and harness at no margin. A real random walk at no margin grew the mask pool once (row 60), which the row allows |
+| 44 | At the all-resident cap, holds every block; R24's set; wholly mandatory from one cell | `all_resident_cap_holds_every_block` | achievable as stated | pass |
+| 45 | Band places in any layer, past the old default, after growth, under a replaced controller (R25) | `band_uses_every_layer_under_any_controller` | achievable as stated | pass |
+| 46 | No non-test source sizes from the old default, carries a drain cap, or offers a lever | grep gate `no_lightmap_pool_cap_survives` | achievable as stated | pass |
+| 47 | Docs describe no cap, slider or default cap | grep gate over both docs, task 9 | achievable, see Corrections | pass, `docs_describe_no_lightmap_pool_cap` |
+| 48 | Capture override per pool, report names no cap, full pool matches all-resident | `capture_lightmap_streaming`, req GPU | achievable as stated | pass, GPU required, hallway and `campaign-test`. `forced_missing…` in the same file fails, recorded in Corrections, and is not this row |
+| 49 | Grows once and warns, only when a ready pair cannot place; band stays; device defers (R19) | `demand_past_pool_grows_once_and_warns`, log capture | achievable as stated | pass |
+| 50 | Growth reserves targeted pack times margin, capped; no separate headroom | `growth_reserves_demand_times_the_shared_margin` | achievable as stated | pass |
+| 51 | After either pool grows alone, next draw samples the grown layer (R30) | `next_draw_samples_a_grown_layer` req GPU | achievable as stated | pass, GPU required |
+| 52 | Second demand grows and warns again (R26) | `second_demand_grows_and_warns_again` | achievable as stated | pass |
+| 53 | Settling past the pool grows once, reaches reveal, keeps size (R12) | `settling_past_the_pool_grows_once_and_keeps_size` | achievable as stated | pass |
+| 54 | Pools grow and retire apart; meter reports both with spares and retiring (R9) | `pools_retire_independently_and_meter_counts_both` req GPU | achievable as stated | pass, GPU required |
+| 55 | Summary bytes equal first-generation bytes, below the cap, at it, and with no id 51 | `summary_bytes_equal_first_generation_bytes` | achievable, see Corrections (R27's pool) | pass; runtime side checked in all five cases after review |
+| 56 | Walk harness first layers and bytes equal the runtime's, no size passed | `walk_harness_first_generation_matches_runtime` | achievable as stated | pass, GPU required |
+| 57 | Policy identity differs from the old string | grep gate | achievable as stated | pass, `pool_policy_identity_changed_with_the_sizing_policy` |
+| 58 | GPU rows run with an adapter required | preflight run under `POSTRETRO_REQUIRE_GPU=1` | achievable as stated | pass: preflight and the ignored GPU capture tests ran under `POSTRETRO_REQUIRE_GPU=1` |
+| 59 | Hallway ceiling | executor records on the 5300M, task 10; finding, not a gate | manual | recorded: 1,962 MiB steady, 1,974 peak, against 2,170 and 2,574; 0 lightmap growth. Finding, not a gate |
+| 60 | Walks at 5/4 and one step either side | executor, no-GPU harness, task 10 | manual | recorded: 0 growth at 32/14, 34/15 and 36/16 on both walks; **owner**: 36/16 beats 5/4 on every walk figure for 16 MiB, while the Metal route shows no player-visible difference |
+| 61 | Frames on five maps | executor captures and diffs at equal clock; owner reviews | manual | executor part done: 754 frame pairs byte-identical on five maps at three clocks; **owner review outstanding** |
+| 62 | Repack cost | executor records, task 10; a visible hitch goes to the owner | manual | recorded: 3 to 4 repack frames a minute, worst 34.2 ms (one missed vsync, 1 of 50 repacks), median change about 0 ms; **owner** judges whether that is a hitch |
+| 63 | Mask-heavy map | executor records; owner reviews frames | manual | recorded: 1 lightmap and 2 mask layers, 14,680,076 B, same as old, frames byte-identical; **owner review outstanding** |
+| 64 | Theatrical moments | owner, in-engine, on the hallway; task 10 finds a closet reveal and a door from the `.map` and gives the owner positions | manual | **outstanding, owner in-engine**; positions in Corrections ("Row 64 positions") |
+| 65 | Planar mirrors | executor, no-GPU harness, task 10; any growth goes to the owner | manual | recorded: 0 growth with the mirror on or off on both maps; first layers equal all-resident; nothing for the owner |
+| 66 | Bound cost | executor, warm and cold, task 10 | manual | pass: 0.16 s of a 1,429 s cold hallway bake; about 0.15% of a warm one |
+| 67 | Cleanup | executor records driver memory; owner confirms | manual | recorded: exit returns to about baseline, 5 reloads with no trend; **owner confirms** |
 
 ## Tasks
 

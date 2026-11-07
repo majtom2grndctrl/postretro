@@ -11,6 +11,7 @@ use super::{MoverAutoCloseTimers, find_mover_clear_point};
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::collision::{CollisionCapsule, OVERLAP_TOLERANCE, SKIN_DISTANCE};
 use postretro_entities::MoverCommand;
+use postretro_foundation::GroundRef;
 
 const LIFT: u32 = 1;
 const DOOR: u32 = 2;
@@ -2620,8 +2621,8 @@ fn arch_platform_rig(ledge: bool) -> (Rig, EntityId, EntityId) {
     (rig, platform, rider)
 }
 
-/// The clear point steering would walk the rider to.
-fn rider_clear_point(rig: &Rig, rider: EntityId) -> Option<Vec3> {
+/// The clear point steering would walk the rider to, and the floor under it.
+fn rider_clear_point(rig: &Rig, rider: EntityId) -> Option<(Vec3, GroundRef)> {
     let agent = rig.agent(rider);
     find_mover_clear_point(
         &rig.registry,
@@ -2640,22 +2641,24 @@ fn rider_clear_point(rig: &Rig, rider: EntityId) -> Option<Vec3> {
 #[test]
 fn a_platform_riders_clear_point_is_off_the_platform() {
     let (rig, _, rider) = arch_platform_rig(true);
-    let point = rider_clear_point(&rig, rider).expect("the ledge beside the course is clear");
+    let (point, floor) =
+        rider_clear_point(&rig, rider).expect("the ledge beside the course is clear");
     // The deck spans z in [-1, 1].
     assert!(
         point.z > 1.0,
         "the clear point stands off the deck, at {point:?}"
     );
+    assert_eq!(floor, GroundRef::World, "on the ledge, not the platform");
 }
 
 // A spot on the pinning mover's own top is a way out when the carry from it
 // along the whole course meets nothing: a lift rider overhanging the upper
 // floor's edge steps inward rather than yielding to be carried into the slab.
-#[test]
-fn a_lift_rider_pinned_at_the_deck_edge_steps_inward_and_the_lift_resumes() {
-    // The deck spans x in [-1, 1]; the upper floor's slab starts at x = 1.1,
-    // its underside at y = 2.5.
-    let world = static_boxes(&[(Vec3::new(1.1, 2.5, -5.0), Vec3::new(6.0, 3.0, 5.0))]);
+/// A lift whose deck spans x and z in [-1, 1], rising under an upper floor's
+/// slab whose underside, at y = 2.5, starts at x = `slab_edge`; its rider stands
+/// at x = 0.8 and is held there by its pin, its capsule under the slab.
+fn deck_edge_rig(slab_edge: f32) -> (Rig, EntityId, EntityId) {
+    let world = static_boxes(&[(Vec3::new(slab_edge, 2.5, -5.0), Vec3::new(6.0, 3.0, 5.0))]);
     let mut rig = Rig::new(world);
     let lift = rig.add_mover(
         deck(LIFT, 1.0),
@@ -2671,12 +2674,19 @@ fn a_lift_rider_pinned_at_the_deck_edge_steps_inward_and_the_lift_resumes() {
     rig.start(lift);
     tick_until_held(&mut rig, lift);
     assert_eq!(rig.table.agent_yields(), &[(rider, LIFT)]);
+    (rig, lift, rider)
+}
 
-    let point = rider_clear_point(&rig, rider).expect("an inward spot rides up clear");
+#[test]
+fn a_lift_rider_pinned_at_the_deck_edge_steps_inward_and_the_lift_resumes() {
+    let (mut rig, lift, rider) = deck_edge_rig(1.1);
+
+    let (point, floor) = rider_clear_point(&rig, rider).expect("an inward spot rides up clear");
     assert!(
         point.x + RADIUS < 1.1 - SKIN_DISTANCE && point.x.abs() < 1.0 && point.z.abs() < 1.0,
         "the clear point stands on the deck, inside the slab's edge, at {point:?}"
     );
+    assert_eq!(floor, GroundRef::Mover(LIFT), "reported as on the deck");
 
     // Steering walks it there; place it, as the walk ends.
     rig.set_position(rider, point);
@@ -2686,6 +2696,32 @@ fn a_lift_rider_pinned_at_the_deck_edge_steps_inward_and_the_lift_resumes() {
     assert!(!rig.mover(lift).blocked, "the hold released");
     assert!(rig.mover_position(lift).y > held_at, "and the lift rises");
     rig.assert_rides(rider, LIFT);
+}
+
+// Regression: the cap on deck spots counted every spot on the deck, including
+// those the step where the pin happened re-pins at once, so the ring next to
+// the body spent it and a clear spot one ring further in was never tried; the
+// rider yielded as a corpse though a way out existed. With the slab's edge at
+// x = 0.75, every ring-1 spot (0.4 m out from x = 0.8) leaves the capsule under
+// the slab, and ring 2 (0.8 m out) reaches past it.
+#[test]
+fn a_deck_spot_two_rings_in_is_found_when_every_spot_in_the_first_ring_re_pins() {
+    let slab_edge = 0.75;
+    let (rig, _, rider) = deck_edge_rig(slab_edge);
+    let start = rig.position(rider);
+
+    let (point, floor) =
+        rider_clear_point(&rig, rider).expect("a spot two rings in rides up clear");
+    assert_eq!(floor, GroundRef::Mover(LIFT), "on the deck, at {point:?}");
+    assert!(
+        point.x + RADIUS < slab_edge - SKIN_DISTANCE && point.z.abs() < 1.0,
+        "out from under the slab, at {point:?}"
+    );
+    let out = Vec3::new(point.x - start.x, 0.0, point.z - start.z).length();
+    assert!(
+        (out - 2.0 * RADIUS).abs() < 1.0e-3,
+        "the second ring, {out} m out from {start:?}"
+    );
 }
 
 // Regression: the carry test swept each leg only in authored order, so a rider
@@ -2729,7 +2765,7 @@ fn a_ping_pong_lift_rider_pinned_at_the_rim_on_descent_steps_to_a_spot_the_desce
     );
     assert_eq!(rig.table.agent_yields(), &[(rider, LIFT)]);
 
-    let point = rider_clear_point(&rig, rider).expect("an inward spot rides clear both ways");
+    let (point, _) = rider_clear_point(&rig, rider).expect("an inward spot rides clear both ways");
     rig.set_position(rider, point);
     rig.tick();
     rig.tick();

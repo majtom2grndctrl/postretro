@@ -37,17 +37,23 @@ const WALK_BLOCKING_FACE: f32 = 0.2;
 /// their count unbounded.
 const MIN_WALK_SAMPLE_SPACING: f32 = 0.05;
 
-/// Spots on the pinning mover's own top tested per search. Each one that
-/// passes the step where the pin happened costs a sweep of the whole course
-/// both ways; half a ring holds the deck spots nearest the body, and past them
-/// the search goes on off the deck only.
-const MAX_DECK_CANDIDATES: u32 = 8;
+/// Spots on the pinning mover's own top swept along its whole course per
+/// search. A spot the step where the pin happened re-pins fails after that one
+/// step and is not counted: the spots next to a body pressed against a blocker
+/// usually all fail there, and counting them would spend the search before a
+/// spot one ring further in is tried. A spot that clears that step costs a
+/// sweep of the whole course both ways; past this many, the search goes on off
+/// the deck only.
+const MAX_DECK_COURSE_SWEEPS: u32 = 8;
 
 /// The nearest point within `reach` where a capsule stands on a floor, walks to
 /// in a straight line, and is out of `mover_id`'s way: off the mover, clear of
 /// every pose of its course; on its top, carried along that whole course either
-/// way without meeting a blocker. `None` when no such point exists, as in a pit
-/// the mover fills. Ring order is fixed, so two runs pick the same point.
+/// way without meeting a blocker. Returns the point and the floor it stands on;
+/// a floor of `GroundRef::Mover(mover_id)` marks a spot on the mover's own top,
+/// which moves with the mover once it is let go. `None` when no such point
+/// exists, as in a pit the mover fills. Ring order is fixed, so two runs pick
+/// the same point.
 pub fn find_mover_clear_point(
     registry: &EntityRegistry,
     collision: &CombinedCollisionWorld<'_>,
@@ -56,7 +62,7 @@ pub fn find_mover_clear_point(
     capsule: CollisionCapsule,
     step_height: f32,
     reach: f32,
-) -> Option<Vec3> {
+) -> Option<(Vec3, GroundRef)> {
     let collider = collision
         .movers
         .iter()
@@ -79,7 +85,7 @@ pub fn find_mover_clear_point(
     };
     let spacing = capsule.radius.max(COURSE_SAMPLE_SPACING);
     let rings = (reach / spacing).floor() as u32;
-    let mut deck_candidates = 0;
+    let mut deck_course_sweeps = 0;
     for ring in 1..=rings {
         let distance = spacing * ring as f32;
         for step in 0..RING_ANGLES {
@@ -97,16 +103,22 @@ pub fn find_mover_clear_point(
             // reads clear of it while the mover carries the body back into its
             // pin. There the carry along the course decides instead.
             let out_of_the_way = if floor == GroundRef::Mover(mover_id) {
-                if deck_candidates == MAX_DECK_CANDIDATES {
+                if deck_course_sweeps == MAX_DECK_COURSE_SWEEPS {
                     continue;
                 }
-                deck_candidates += 1;
-                course.carries_clear(&carry_world, point, capsule)
+                match course.carry_from(&carry_world, point, capsule) {
+                    DeckCarry::Clear => true,
+                    DeckCarry::PinsOnCourse => {
+                        deck_course_sweeps += 1;
+                        false
+                    }
+                    DeckCarry::PinsWhereHeld => false,
+                }
             } else {
                 !course.reaches(point, capsule)
             };
             if out_of_the_way {
-                return Some(point);
+                return Some((point, floor));
             }
         }
     }
@@ -233,6 +245,16 @@ fn distance_to_step(at: Vec3, (from, to): (Vec3, Vec3)) -> f32 {
     at.distance(from + span * t)
 }
 
+/// How far the carry from a spot on the mover's top got along its course.
+enum DeckCarry {
+    /// The step where the pin happened pins it again: one step swept.
+    PinsWhereHeld,
+    /// Clear where the pin happened, pinned further along: a course sweep run.
+    PinsOnCourse,
+    /// Carried the whole course both ways without meeting a blocker.
+    Clear,
+}
+
 /// Every pose a mover's path can put it in, its present pose included.
 struct MoverCourse<'a> {
     mover: &'a KinematicMoverComponent,
@@ -259,18 +281,25 @@ impl MoverCourse<'_> {
         })
     }
 
-    /// Whether a body standing at `point` on the mover's top rides its whole
-    /// course without the carry meeting static geometry or another mover: the
-    /// test that pins a rider, swept step by step over the course samples. Each
+    /// How far a body standing at `point` on the mover's top rides its course
+    /// before the carry meets static geometry or another mover: the test that
+    /// pins a rider, swept step by step over the course samples. Each
     /// step is swept both ways, since a `ping_pong` mover runs every leg back
     /// and any mover can be reversed by command; a sweep starting in contact
     /// and moving off it meets nothing, so one direction can clear where the
     /// other pins. The step nearest the mover's pose, where the pin happened,
-    /// goes first so a spot that re-pins there fails at once. A mover with a
-    /// spin axis is never ridden clear: its turn is no leg to sweep.
-    fn carries_clear(&self, world: &PinWorld<'_>, point: Vec3, capsule: CollisionCapsule) -> bool {
+    /// goes first so a spot that re-pins there fails at once, and the answer
+    /// says whether it got past that step, which is what the search caps. A
+    /// mover with a spin axis is never ridden clear: its turn is no leg to
+    /// sweep.
+    fn carry_from(
+        &self,
+        world: &PinWorld<'_>,
+        point: Vec3,
+        capsule: CollisionCapsule,
+    ) -> DeckCarry {
         if self.mover.spin_axis != Vec3::ZERO {
-            return false;
+            return DeckCarry::PinsWhereHeld;
         }
         let parry = capsule.parry();
         let now = self.transform.position;
@@ -295,13 +324,20 @@ impl MoverCourse<'_> {
         let Some((nearest, _)) = self.steps().enumerate().min_by(|(_, a), (_, b)| {
             distance_to_step(now, *a).total_cmp(&distance_to_step(now, *b))
         }) else {
-            return true;
+            return DeckCarry::Clear;
         };
-        self.steps().nth(nearest).is_some_and(both_ways)
-            && self
-                .steps()
-                .enumerate()
-                .all(|(index, step)| index == nearest || both_ways(step))
+        if !self.steps().nth(nearest).is_some_and(both_ways) {
+            return DeckCarry::PinsWhereHeld;
+        }
+        if self
+            .steps()
+            .enumerate()
+            .all(|(index, step)| index == nearest || both_ways(step))
+        {
+            DeckCarry::Clear
+        } else {
+            DeckCarry::PinsOnCourse
+        }
     }
 
     /// The course as (from, to) steps of at most [`COURSE_SAMPLE_SPACING`],

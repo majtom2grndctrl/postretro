@@ -181,9 +181,9 @@ fn enter_ride_if_carried(agent: &mut AgentComponent, world: RideWorld<'_>) {
 }
 
 /// The watched mover carrying this agent off, if one is and a ride on it ends.
-/// A ride ends at the mover's next stop, so one that never rests at a stop
-/// carries the body as plain ground and never starts a ride: no rider stays in
-/// Ride past one leg's travel, or one run, of a moving mover.
+/// A mover that never rests at a stop carries the body as plain ground and
+/// never starts a ride. Every ride therefore ends at a stop, within one leg's
+/// travel or one run.
 fn carried_off(agent: &AgentComponent, world: RideWorld<'_>) -> Option<u32> {
     let mover_id = standing_on(agent)?;
     (world.gate.rests_at_stops(mover_id) && carried_by_mover(world.collision, agent.ground))

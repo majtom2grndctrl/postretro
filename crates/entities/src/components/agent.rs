@@ -25,8 +25,14 @@ use postretro_foundation::{GroundRef, KnockbackResponse, NavAgentParams};
 pub struct PinEscape {
     /// The mover that pinned it.
     pub mover_id: u32,
-    /// The clear point it walks to.
+    /// The clear point it walks to, in world space. For a point on the pinning
+    /// mover's own top, re-derived each tick from `deck_offset`.
     pub target: Vec3,
+    /// The clear point in the pinning mover's frame, when it stands on that
+    /// mover's top. The deck carries the agent while it walks, so a fixed world
+    /// point there drifts across the deck, or off it, as the mover moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deck_offset: Option<Vec3>,
     /// Ticks left before it gives up and yields as a corpse.
     pub ticks_left: u32,
 }

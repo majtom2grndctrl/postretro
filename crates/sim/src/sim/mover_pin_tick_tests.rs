@@ -598,6 +598,179 @@ fn with_no_clear_point_a_pinned_agent_yields_as_a_corpse_unharmed() {
 }
 
 impl Rig {
+    /// A `reverse` `ping_pong` lift whose deck spans x and z in [-1, 1] and
+    /// docks at y = 0 and y = 2.5, beside a lower floor's slab that starts at
+    /// x = 1.05 with its top at y = 0.25, above the bottom stop. A living agent
+    /// rides the deck's centre; the lift is parked until started.
+    fn agent_on_reverse_lift() -> Self {
+        let (mut points, mut tris) = (Vec::new(), Vec::new());
+        let mut quad = |corners: [Vec3; 4]| {
+            let base = points.len() as u32;
+            points.extend(corners);
+            tris.push([base, base + 2, base + 1]);
+            tris.push([base, base + 3, base + 2]);
+        };
+        // The slab's top, facing up, and its face toward the shaft, facing -X.
+        quad([
+            Vec3::new(1.05, 0.25, -5.0),
+            Vec3::new(6.0, 0.25, -5.0),
+            Vec3::new(6.0, 0.25, 5.0),
+            Vec3::new(1.05, 0.25, 5.0),
+        ]);
+        quad([
+            Vec3::new(1.05, -1.0, -5.0),
+            Vec3::new(1.05, 0.25, -5.0),
+            Vec3::new(1.05, 0.25, 5.0),
+            Vec3::new(1.05, -1.0, 5.0),
+        ]);
+        let world = CollisionWorld::from_triangles_for_test(points, tris);
+        let deck = MoverCollider::from_local_triangles(
+            LIFT,
+            &[
+                Vec3::new(-1.0, 0.0, -1.0),
+                Vec3::new(1.0, 0.0, -1.0),
+                Vec3::new(1.0, 0.0, 1.0),
+                Vec3::new(-1.0, 0.0, 1.0),
+            ],
+            &[[0, 2, 1], [0, 3, 2]],
+        )
+        .expect("deck collider is valid");
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (lift, agent) = {
+            let mut registry = registry.borrow_mut();
+            let lift = registry.spawn(Transform::default());
+            let mut mover = KinematicMoverComponent::new(
+                LIFT,
+                KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::new(0.0, 2.5, 0.0)],
+                    waypoint_names: vec!["bottom".into(), "top".into()],
+                    speed_mps: 2.0,
+                    wait_ms: 500.0,
+                    mode: KinematicMoverMode::PingPong,
+                    started: false,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            );
+            mover.block_policy = BlockPolicy::Reverse;
+            registry.set_component(lift, mover).unwrap();
+            let agent = registry.spawn(Transform {
+                position: Vec3::new(0.0, 1.2 + SKIN_DISTANCE, 0.0),
+                ..Transform::default()
+            });
+            let mut component = AgentComponent::new(0.4, 2.4, 0.3, 4.0);
+            component.ground = GroundRef::Mover(LIFT);
+            registry.set_component(agent, component).unwrap();
+            (lift, agent)
+        };
+        let mut rig = Self {
+            registry,
+            world,
+            colliders: vec![deck],
+            movers: MoverTickStateTable::default(),
+            hit_zones: HitZoneStore::new(),
+            progress: ProgressTracker::new(),
+            lift,
+            rider: agent,
+        };
+        rig.set_rider_health(100.0);
+        rig
+    }
+
+    fn agent(&self) -> AgentComponent {
+        self.registry
+            .borrow()
+            .get_component::<AgentComponent>(self.rider)
+            .unwrap()
+            .clone()
+    }
+
+    fn set_agent_position(&self, position: Vec3) {
+        let mut registry = self.registry.borrow_mut();
+        let mut transform = *registry.get_component::<Transform>(self.rider).unwrap();
+        transform.position = position;
+        registry.set_component(self.rider, transform).unwrap();
+    }
+}
+
+// Regression: a step clear ended as soon as the agent stood on its pinning
+// mover and that mover was not held. A `reverse` mover yields by backing off,
+// never holding, so the walk ended on its first tick; the rider stayed at the
+// rim and the lift shuttled back into the same pin every cycle.
+#[test]
+fn a_rider_pinned_at_the_rim_of_a_reverse_lift_walks_clear_and_the_lift_then_passes_the_pin() {
+    let mut rig = Rig::agent_on_reverse_lift();
+    for _ in 0..20 {
+        rig.tick();
+    }
+    assert_eq!(rig.agent().ground, GroundRef::Mover(LIFT), "it rides");
+    rig.command(MoverCommand::Start);
+    for _ in 0..60 {
+        if rig.door_position().y > 1.0 {
+            break;
+        }
+        rig.tick();
+    }
+    // Raised clear of the slab, the rider moves to the rim. Its capsule
+    // overhangs the slab's edge too little to stand on it, so the deck stays
+    // its floor, and the way down pins it against that edge.
+    let at = rig.agent_position();
+    rig.set_agent_position(Vec3::new(0.7, at.y, 0.0));
+
+    let mut ticks = 0;
+    while rig.agent().pin_escape.is_none() {
+        assert!(ticks < 300, "the descent pinned the rider");
+        rig.tick();
+        ticks += 1;
+    }
+    let pinned_at = rig.door_position().y;
+    assert!(
+        pinned_at > 0.0 && pinned_at < 0.25,
+        "pinned on the way down, short of the bottom stop, at {pinned_at}"
+    );
+    let escape = rig.agent().pin_escape.unwrap();
+    let spot = escape
+        .deck_offset
+        .expect("an inward spot on the deck rides clear both ways");
+
+    // The lift backs off while the rider walks; the walk runs to the spot.
+    let mut ticks = 0;
+    while rig.agent().pin_escape.is_some() {
+        assert!(
+            ticks < 90,
+            "the walk arrives, at {:?}",
+            rig.agent_position()
+        );
+        rig.tick();
+        ticks += 1;
+    }
+    let on_deck = rig.agent_position() - rig.door_position();
+    assert!(
+        crate::nav::distance_xz(on_deck, spot) <= 0.12,
+        "at the deck spot {spot:?}, at {on_deck:?} on the deck"
+    );
+
+    // The lift finishes backing off, turns at its top stop and runs its leg
+    // down past where it pinned the rider, to the bottom stop.
+    let mut ticks = 0;
+    while rig.door_position().y > 1.0e-3 {
+        assert!(
+            ticks < 360,
+            "the lift reached its bottom stop, at {:?}",
+            rig.door_position()
+        );
+        rig.tick();
+        ticks += 1;
+        assert!(rig.agent().pin_escape.is_none(), "never pinned again");
+        assert!(!rig.lift().0.blocked, "never held");
+    }
+    assert_eq!(rig.agent().ground, GroundRef::Mover(LIFT), "still aboard");
+    assert_eq!(rig.agent_health(), 100.0, "unharmed");
+}
+
+impl Rig {
     /// Re-seat the door at `closed`, with `open` beyond it.
     fn seat_door(&mut self, closed: Vec3, open: Vec3) {
         let mut registry = self.registry.borrow_mut();

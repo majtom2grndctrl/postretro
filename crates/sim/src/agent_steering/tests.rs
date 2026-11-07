@@ -27,7 +27,7 @@ const GRAVITY: f32 = -20.0;
 const SEGMENTED_CONCAVE_ESCAPE_DISTANCE: f32 = 0.025;
 
 /// Canonical agent params for the fixtures: 0.35 m radius, 1.8 m tall, 0.4 m
-/// step. Matches the harness's own test capsule.
+/// step. Matches the agent controller's fixture capsule.
 fn agent_params() -> NavAgentParams {
     NavAgentParams {
         radius: 0.35,
@@ -752,7 +752,7 @@ fn funnel_path_routes_concave_corner_without_stuck_detection() {
         // Keep the vertical channel neutral so this strict horizontal-progress
         // assertion exercises the funnel/capsule route rather than a separate
         // floor-settling contact tick. Ground-stick remains active here; the
-        // harness's gravity and settling behavior are covered independently.
+        // controller's gravity and settling behavior are covered independently.
         tick(
             &mut registry,
             &world,

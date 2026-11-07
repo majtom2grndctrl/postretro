@@ -515,7 +515,7 @@ fn tick_impl(
             current.id,
             &mut agent,
             position,
-            registry,
+            collision,
             corpse_yields,
             dt,
         ) {

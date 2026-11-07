@@ -33,7 +33,7 @@ const SLIDE_ITERATIONS: u32 = 4;
 
 /// A surface counts as walkable (floor, not wall) when its contact normal's Y
 /// component is at least this. cos(50°) ≈ 0.643; the navmesh bake's default
-/// `max_slope_deg` is in this neighborhood. A fixed threshold keeps the harness
+/// `max_slope_deg` is in this neighborhood. A fixed threshold keeps the controller
 /// self-contained — it does not read the per-agent slope budget (the navmesh
 /// already eroded unwalkable slopes out of the agent's corridor).
 const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
@@ -56,7 +56,7 @@ const NORMAL_NUDGE: f32 = 1.0e-4;
 /// the slide loop exits rather than spinning on sub-millimetre advances.
 const SLIDE_REMAINING_EPSILON_SQ: f32 = 1.0e-10;
 
-/// Capsule geometry the harness sweeps with. `step_height` is carried IN (not
+/// Capsule geometry the controller sweeps with. `step_height` is carried IN (not
 /// hardcoded) so the step-up / ground-stick logic uses the baked step the
 /// agent was seeded with — downstream steering builds this from the agent
 /// component's stored `radius` / `height` / `step_height`.
@@ -120,7 +120,7 @@ pub struct SlideResult {
 /// replacement and decays with knockback drag.
 ///
 /// `desired_horizontal` is the steering velocity (XZ; any Y is ignored). The
-/// vertical channel is owned by the harness: `vertical_velocity` carries the
+/// vertical channel is owned by the controller: `vertical_velocity` carries the
 /// fall speed in from the previous tick (0 when freshly grounded). Gravity is
 /// resolved from `environment` once, at the tick-start `position`
 /// ([`agent_gravity`]).

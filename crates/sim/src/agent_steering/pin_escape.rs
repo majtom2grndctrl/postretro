@@ -11,7 +11,7 @@ use crate::kinematic_mover::{AgentMoverPair, find_mover_clear_point};
 use crate::nav::distance_xz;
 use crate::scripting_systems::health::is_quiescent;
 use postretro_entities::components::agent::{AgentComponent, PinEscape};
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::GroundRef;
 
 /// How far a pinned agent searches, as seconds of its own travel. Short of the
@@ -60,14 +60,27 @@ pub(super) fn plan_escapes(
             agent.step_height,
             agent.move_speed * ESCAPE_REACH_SECONDS,
         );
-        let Some(target) = clear_point else {
+        let Some((target, floor)) = clear_point else {
             corpse_yields.push((id, mover_id));
             continue;
+        };
+        // A spot on the pinning mover's own top is kept in that mover's frame,
+        // read from the pose the search stood it on. A `reverse` mover is
+        // already backing off, and any mover moves on once the agent leaves its
+        // pin, carrying the agent with it either way.
+        let deck_offset = if floor == GroundRef::Mover(mover_id) {
+            collision
+                .poses
+                .pose(mover_id)
+                .map(|pose| pose.transform.rotation.inverse() * (target - pose.transform.position))
+        } else {
+            None
         };
         let mut updated = agent.clone();
         updated.pin_escape = Some(PinEscape {
             mover_id,
             target,
+            deck_offset,
             ticks_left: ESCAPE_TIMEOUT_TICKS,
         });
         // A latched `blocked` is no reason to stand under a mover. Replan from
@@ -85,24 +98,27 @@ pub(super) fn plan_escapes(
 /// rather than past it, so a fast agent cannot overshoot the arrival band
 /// back and forth.
 ///
-/// The walk also ends once the agent stands on the pinning mover and that
-/// mover no longer holds: the pin has let go, and the clear point is a fixed
-/// world spot that the moving deck would carry the agent away from, so walking
-/// on could take it off the deck.
+/// A clear point on the pinning mover's own top is aimed at where that spot on
+/// the deck stands now, not where it stood at the pin: the walk runs to it
+/// whether the mover still holds, backs off or has moved on, since the search
+/// checked that spot and no other on the deck.
 pub(super) fn escape_velocity(
     id: EntityId,
     agent: &mut AgentComponent,
     position: Vec3,
-    registry: &EntityRegistry,
+    collision: &CombinedCollisionWorld<'_>,
     corpse_yields: &mut Vec<AgentMoverPair>,
     dt: f32,
 ) -> Option<(u32, Vec3)> {
     let escape = agent.pin_escape.as_mut()?;
+    if let Some(offset) = escape.deck_offset
+        && let Some(target) = deck_point_at_tick_start(collision, escape.mover_id, offset)
+    {
+        escape.target = target;
+    }
     let remaining = escape.target - position;
     let distance = distance_xz(escape.target, position);
-    let released_on_deck = agent.ground == GroundRef::Mover(escape.mover_id)
-        && !mover_holds(registry, escape.mover_id);
-    if distance <= ESCAPE_ARRIVAL_RADIUS || released_on_deck {
+    if distance <= ESCAPE_ARRIVAL_RADIUS {
         agent.pin_escape = None;
         return None;
     }
@@ -121,13 +137,18 @@ pub(super) fn escape_velocity(
     Some((escape.mover_id, walk))
 }
 
-/// Whether `mover_id` is held where it stands by a body in its way. Scans the
-/// movers, so it runs only for an agent stepping clear on that mover's deck.
-fn mover_holds(registry: &EntityRegistry, mover_id: u32) -> bool {
-    registry
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .any(|(_, value)| {
-            matches!(value, ComponentValue::KinematicMover(mover)
-                if mover.mover_id == mover_id && mover.blocked)
-        })
+/// Where the spot `offset` in `mover_id`'s frame stood as this tick began. The
+/// agent's `position` is read before the carry moves it by this tick's mover
+/// step, so its target is read in that same frame: the carry then moves both
+/// together, and the walk is the deck-relative step alone. Mirrors the carry's
+/// pivot, so a turning deck agrees with it too. An id lookup in the pose table,
+/// so it allocates nothing.
+fn deck_point_at_tick_start(
+    collision: &CombinedCollisionWorld<'_>,
+    mover_id: u32,
+    offset: Vec3,
+) -> Option<Vec3> {
+    let pose = collision.poses.pose(mover_id)?;
+    let start_rotation = pose.tick_rotation_delta.inverse() * pose.transform.rotation;
+    Some(pose.transform.position - pose.tick_delta + start_rotation * offset)
 }

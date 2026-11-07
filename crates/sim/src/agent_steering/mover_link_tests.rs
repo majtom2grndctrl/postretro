@@ -269,17 +269,6 @@ impl Rig {
             .position
     }
 
-    /// Hold the lift where it stands, as a pin does, or let it go.
-    fn hold(&mut self, held: bool) {
-        let mut mover = self
-            .registry
-            .get_component::<KinematicMoverComponent>(self.lift)
-            .unwrap()
-            .clone();
-        mover.blocked = held;
-        self.registry.set_component(self.lift, mover).unwrap();
-    }
-
     /// Tick until `done`, at most `ticks`. Asserts no stuck recovery while riding.
     fn run_until(&mut self, id: EntityId, ticks: u32, done: impl Fn(&Self) -> bool) -> bool {
         for _ in 0..ticks {
@@ -943,10 +932,12 @@ fn every_agent_about_to_cross_a_flush_lift_that_leaves_drops_its_path_that_tick_
 }
 
 // Regression: a step clear aimed at a spot on the pinning platform's own deck
-// walked on toward that fixed world point once the pin let go, while the deck
-// carried the agent the other way and off its trailing edge.
+// walked toward that fixed world point while the deck carried the agent on, so
+// the spot drifted toward the trailing edge and the agent followed it off. The
+// spot is kept in the deck's frame: the agent reaches it on the deck wherever
+// the platform has gone, with no hold or release in between.
 #[test]
-fn an_agent_stepping_clear_across_a_deck_stops_when_the_platform_resumes() {
+fn an_agent_stepping_clear_to_a_deck_spot_reaches_it_on_the_moving_platform() {
     let spec = LiftSpec {
         waypoints: vec![Vec3::ZERO, Vec3::X * 4.0],
         ..LiftSpec::shuttle(300.0)
@@ -962,46 +953,49 @@ fn an_agent_stepping_clear_across_a_deck_stops_when_the_platform_resumes() {
     );
     assert_eq!(rig.state(id).ground, GroundRef::Mover(LIFT), "aboard");
 
-    // A pin holds the platform, and the agent sets off for a spot near the
-    // deck's trailing edge.
-    rig.hold(true);
-    let held_at = rig.lift_position();
+    // A spot 2 m back along the deck, 1 m in from its trailing edge (deck x
+    // 10..14 in the mover's frame). The walk takes about 30 ticks, over which
+    // the platform travels about a metre.
+    let set_off_at = rig.lift_position();
     let start = rig.position(id);
-    let target = Vec3::new(10.0 + held_at.x + 0.5, start.y, 5.0);
+    let spot = Vec3::new(11.0, start.y - set_off_at.y, 5.0);
     let mut agent = rig.state(id).clone();
     agent.pin_escape = Some(PinEscape {
         mover_id: LIFT,
-        target,
+        target: set_off_at + spot,
+        deck_offset: Some(spot),
         ticks_left: 90,
     });
     rig.registry.set_component(id, agent).unwrap();
-    for _ in 0..5 {
+    let mut ticks = 0;
+    while rig.state(id).pin_escape.is_some() {
+        assert!(ticks < 60, "the walk arrives, at {:?}", rig.position(id));
         rig.tick();
-        assert!(rig.lift_position().distance(held_at) < 1.0e-5, "held");
-        assert!(rig.state(id).pin_escape.is_some(), "walking while held");
-    }
-    assert!(
-        start.x - rig.position(id).x > 0.1,
-        "it walked toward the spot"
-    );
-
-    // The pin lets go mid-walk and the platform moves on.
-    rig.hold(false);
-    rig.tick();
-    assert!(rig.lift_position().x > held_at.x, "moving again");
-    assert!(
-        rig.state(id).pin_escape.is_none(),
-        "the step clear ended once the pin let go"
-    );
-    for _ in 0..60 {
-        rig.tick();
+        ticks += 1;
         let at = rig.position(id);
         assert_eq!(
             rig.state(id).ground,
             GroundRef::Mover(LIFT),
-            "still on the deck, at {at:?}"
+            "on the deck, at {at:?}"
         );
         assert!(at.y > rest_y(0.0) - 0.2, "never fell, at {at:?}");
+    }
+    assert!(
+        rig.lift_position().x - set_off_at.x > 0.5,
+        "the platform moved on under the walk, to {:?}",
+        rig.lift_position()
+    );
+
+    // Arrived at the spot on the deck, not at the world point it set off for,
+    // and carried there from then on.
+    for _ in 0..20 {
+        let on_deck = rig.position(id) - rig.lift_position();
+        assert!(
+            distance_xz(on_deck, spot) <= 0.12,
+            "at the deck spot {spot:?}, at {on_deck:?} on the deck"
+        );
+        assert_eq!(rig.state(id).ground, GroundRef::Mover(LIFT));
+        rig.tick();
     }
 }
 

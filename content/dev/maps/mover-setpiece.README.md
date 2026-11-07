@@ -26,7 +26,7 @@ Do not commit generated `.prl` files or `baked/materials/` sidecars.
 TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
 (8.1 m).
 
-- **Arena (south):** x 0–1280, y 0–1024 (32.5 × 26 m). Holds the player start
+- **Arena (south):** x 0–1280, y 0–1024 (32.5 × 26 m). Holds the player spawn
   and the rising-room shaft.
 - **Dividing wall:** y 1024–1088 (1.6 m thick). Its opening spans x 96–640,
   z 0–224 (13.8 × 5.7 m). East of the opening a door pocket runs x 640–1184
@@ -95,10 +95,16 @@ highlight from the losing lights. Diffuse lighting is unaffected.
 Use dev-tools noclip, or walk: the back room is reachable through the opening
 while the wall is open.
 
-- **Station 1 — wall ahead (player start).** (368, 720, 48), yaw 90
+**Spawn.** The player spawns in the arena's south-west corner at (64, 64, 48),
+yaw 75, looking north-east through the opening at the enemy spot. Every enemy is
+more than 16 m away (the chaser 30.7 m, the riders 22.8 m and 26.6 m), so none
+wakes at spawn.
+
+- **Station 1 — wall ahead.** (368, 720, 48), yaw 90
   (facing +y, north). The closed wall is 8.1 m away, centred, and covers about
   37% of the frame at FOV 100. While open, only the pocket edge and the back room show. This is
-  the perf station.
+  the perf station. Walk or noclip here from the spawn; the measurement
+  harness sets its own camera.
 - **Station 2 — rising room from outside.** (560, 320, 48), yaw 0 (facing +x,
   east). The room's doorway wall is 6.9 m ahead. Watch the roof sit flush in
   the floor, then the room rise with the lamp lit inside.
@@ -116,8 +122,16 @@ shots and sight, so the closed wall does not hide it from the player.
 ## Enemies
 
 Three `reference_enemy` instances, all tagged `enemy`. This map ships no
-combat script of its own, so they use the dev mod's shipped behavior: idle until
-the player comes within about 16 m (about 630 units), then chase and melee.
+combat script of its own, so they use the dev mod's shipped behavior. Until the
+player comes within 16 m (about 630 units) each walks a back-and-forth patrol
+through three points measured from its spawn: (0, 0), (6, 0) and (6, 6) m on the
+engine's floor axes. Once the player is within 16 m it chases and melees. Walls
+and movers do not hide the player from that check.
+
+The chaser's patrol runs through the sliding wall's opening. In map units its
+points are the enemy spot (368, 1232), (368, 996) just south of the wall in the
+middle of the opening, and (132, 996) at the opening's west end, so each pass
+meets the wall closed, sliding, or open.
 
 | Enemy | Origin | Tag | Where |
 |---|---|---|---|
@@ -133,16 +147,22 @@ The map is unbaked until you build it, and the enemy routing in these checks
 needs a rebuild with a current `prl-build` (a stale `.prl` loads with no door or
 lift routing and one warning). These are manual, in-engine checks.
 
-1. **Chaser behind the sliding wall.** Spawn at station 1. The chaser is 13 m
-   from the start, so it wakes at once and walks to the wall. The wall starts
-   moving at spawn, so the chaser may meet it closed, sliding, or resting open.
+1. **Chaser on patrol.** Stay at the spawn and watch through the opening. The
+   chaser walks its patrol through the doorway and back. At the closed wall it
+   stops and waits facing the slab, then goes on once the opening fits it. It
+   must not turn left and right, drift side to side, or lurch in repeated
+   stuck-recovery nudges. Give it a full wall cycle (about 30 s).
+2. **Chaser behind the sliding wall.** Walk to station 1, 13 m from the enemy
+   spot; the chaser wakes as you come within 16 m and heads for you through the
+   wall. The wall cycles from spawn, so the chaser may meet it closed, sliding,
+   or resting open.
    A moving wall does not hold it back in its route, so it walks into the slab
    and stands pressed against it, facing it, until the gap fits it. It must not
    turn left and right, drift side to side, or lurch in repeated stuck-recovery
    nudges. At the closed wall it stops and waits without jitter or
    foot-shuffling for the rest of the closed wait. Once the opening fits it,
    it passes through and comes at you. Give it a full wall cycle (about 30 s).
-2. **Riders in the rising room.** Walk to station 2 (560, 320, 48), within 16 m
+3. **Riders in the rising room.** Walk to station 2 (560, 320, 48), within 16 m
    of both riders, and face east. The room is lowered, so the riders cannot
    reach you: their doorway fronts the shaft wall. Expect them to stand inside
    with the lamp on, not pace or shuffle. When the room reaches the top they

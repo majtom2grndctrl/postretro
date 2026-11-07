@@ -493,12 +493,14 @@
 "angles" "0 180 0"
 "_tags" "enemy setpiece_rider"
 }
-// Station 1: the sliding wall fills the view. Yaw 90 faces +y.
+// Spawn: the arena's south-west corner, more than 16 m from every enemy so none
+// wakes at spawn. Yaw 75 looks north-east through the opening at the enemy spot.
+// Station 1 (368, 720, 48), yaw 90, is the perf station; walk or noclip there.
 // entity 17
 {
 "classname" "player_spawn"
-"origin" "368 720 48"
-"angles" "0 90 0"
+"origin" "64 64 48"
+"angles" "0 75 0"
 }
 // Theatrical lighting. Angled spots; baked unless noted. The carried spot rides the
 // rising room and is authored at the lowered pose, aimed at the north-east inside corner.

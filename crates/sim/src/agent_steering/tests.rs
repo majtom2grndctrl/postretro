@@ -217,6 +217,8 @@ impl LWall {
                 left: [0.0, 0.0, self.bz1],
                 right: [self.bx0, 0.0, self.bz1],
             }],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -310,6 +312,8 @@ impl FreestandingWall {
                     right: [3.0, 0.0, 7.3],
                 },
             ],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -465,6 +469,8 @@ impl ConcaveCorner {
                     right: [self.wall_end, 0.0, self.wall_end],
                 },
             ],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 

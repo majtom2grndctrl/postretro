@@ -3371,7 +3371,12 @@ mod tests {
                 floor_y_max: 0.0,
             }],
             portals: Vec::new(),
+            gates: Vec::new(),
+            links: Vec::new(),
         };
+        // `to_bytes` always writes the current version.
+        let mut stale_bytes = stale_navmesh.to_bytes();
+        stale_bytes[0..2].copy_from_slice(&STALE_NAVMESH_VERSION.to_le_bytes());
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -3380,7 +3385,7 @@ mod tests {
             prl_format::SectionBlob {
                 section_id: SectionId::NavMesh as u32,
                 version: 1,
-                data: stale_navmesh.to_bytes(),
+                data: stale_bytes,
             },
         ];
         let tmp = write_prl_fixture(sections, "postretro_test_stale_navmesh_version.prl");

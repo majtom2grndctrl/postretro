@@ -282,6 +282,8 @@ mod tests {
                     right: [3.0, 0.0, 7.3],
                 },
             ],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -317,6 +319,8 @@ mod tests {
                     right: [7.0, 0.0, 2.45],
                 },
             ],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 

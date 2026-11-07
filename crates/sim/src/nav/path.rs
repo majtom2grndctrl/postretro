@@ -526,6 +526,8 @@ mod tests {
             max_slope_deg: 45.0,
             regions,
             portals,
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 

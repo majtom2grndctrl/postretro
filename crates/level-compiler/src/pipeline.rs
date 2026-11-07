@@ -657,65 +657,15 @@ fn run_after_parsing(
     // Walkable navigation graph baked from the extracted geometry's triangles
     // (already filtered to empty, non-exterior leaf faces). `None` when no
     // walkable region survives — the section is then omitted and the build still
-    // succeeds (SDF-atlas precedent). Cached on blake3(postcard(geo_result) ||
-    // postcard(nav params)); this runs before atlas preparation, so the hash
-    // sees no lightmap attributes.
-    let navmesh_section = {
-        let nav_input_hash = {
-            let mut buf =
-                postcard::to_allocvec(&geo_result).expect("postcard serialize geo_result");
-            buf.extend_from_slice(
-                &postcard::to_allocvec(&map_data.nav_params)
-                    .expect("postcard serialize nav params"),
-            );
-            *blake3::hash(&buf).as_bytes()
-        };
-        let nav_key = cache::CacheKey::new(
-            "navmesh",
-            navmesh_bake::NAVMESH_STAGE_VERSION,
-            &nav_input_hash,
-        );
-
-        // Cache stores the section's `to_bytes()`; an empty payload is the
-        // sentinel for a cached "no walkable region" result (no section).
-        let cached = stage_cache.as_ref().and_then(|c| c.get(&nav_key));
-        match cached {
-            Some(bytes) if bytes.is_empty() => {
-                log::info!("[cache] navmesh hit (no walkable region)");
-                None
-            }
-            Some(bytes) => {
-                match postretro_level_format::navmesh::NavMeshSection::from_bytes(&bytes) {
-                    Ok(section) => {
-                        log::info!("[cache] navmesh hit");
-                        Some(section)
-                    }
-                    Err(e) => {
-                        log::warn!("[cache] corrupt navmesh entry, re-baking: {e}");
-                        let section = navmesh_bake::bake_navmesh(&geo_result, &map_data.nav_params);
-                        if let Some(ref c) = stage_cache {
-                            c.put(
-                                &nav_key,
-                                &section.as_ref().map(|s| s.to_bytes()).unwrap_or_default(),
-                            );
-                        }
-                        section
-                    }
-                }
-            }
-            None => {
-                log::info!("[cache] navmesh miss");
-                let section = navmesh_bake::bake_navmesh(&geo_result, &map_data.nav_params);
-                if let Some(ref c) = stage_cache {
-                    c.put(
-                        &nav_key,
-                        &section.as_ref().map(|s| s.to_bytes()).unwrap_or_default(),
-                    );
-                }
-                section
-            }
-        }
-    };
+    // succeeds (SDF-atlas precedent). This runs before atlas preparation, so the
+    // stage key sees no lightmap attributes.
+    let navmesh_section = navmesh_bake::bake_or_load_navmesh(
+        &geo_result,
+        &map_data.nav_params,
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+        stage_cache.as_ref(),
+    );
     finish_stage(
         &mut timings,
         reporter.as_ref(),

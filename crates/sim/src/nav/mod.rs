@@ -19,7 +19,9 @@ mod bake_contract_tests;
 use glam::Vec3;
 #[cfg(any(test, feature = "test-support"))]
 use postretro_level_format::navmesh::NAVMESH_VERSION;
-use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
+use postretro_level_format::navmesh::{
+    NavMeshSection, NavMoverGate, NavMoverLink, NavPortal, NavRegion,
+};
 
 pub use postretro_foundation::NavAgentParams;
 
@@ -85,6 +87,11 @@ pub struct NavGraph {
     /// Connected-component id per region. Built once at load so callers can
     /// distinguish a disconnected destination from a path-repair refusal.
     region_components: Vec<usize>,
+    /// Baked mover gates, unvalidated: the section cannot see the movers, so
+    /// references are checked after mover spawn.
+    gates: Vec<NavMoverGate>,
+    /// Baked mover links, unvalidated like `gates`.
+    links: Vec<NavMoverLink>,
 }
 
 impl NavGraph {
@@ -173,6 +180,8 @@ impl NavGraph {
             portals: section.portals.clone(),
             region_portals,
             region_components,
+            gates: section.gates.clone(),
+            links: section.links.clone(),
         }
     }
 
@@ -192,6 +201,8 @@ impl NavGraph {
             max_slope_deg: self.agent.max_slope_deg,
             regions: self.regions.iter().map(|region| region.cell).collect(),
             portals: self.portals.clone(),
+            gates: self.gates.clone(),
+            links: self.links.clone(),
         }
     }
 
@@ -235,6 +246,18 @@ impl NavGraph {
     /// All portals (world-space segments).
     pub fn portals(&self) -> &[NavPortal] {
         &self.portals
+    }
+
+    /// Baked mover gates, in section order. Empty for a map with no movers or a
+    /// version 2 section.
+    pub fn gates(&self) -> &[NavMoverGate] {
+        &self.gates
+    }
+
+    /// Baked mover links, in section order. Empty for a map with no movers or a
+    /// version 2 section.
+    pub fn links(&self) -> &[NavMoverLink] {
+        &self.links
     }
 
     /// World-space point → region index. Uses only the XZ footprint (regions
@@ -410,6 +433,8 @@ mod tests {
                 floor_y_max: 0.25,
             }],
             portals: Vec::new(),
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -450,7 +475,34 @@ mod tests {
                 left: [0.0, 0.05, 4.0],
                 right: [4.0, 0.55, 4.0],
             }],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
+    }
+
+    // The `ai` test macro rebuilds graphs through `to_section_for_test`, so a table
+    // it dropped would vanish from those tests silently.
+    #[test]
+    fn mover_records_survive_the_graph_and_its_test_section_round_trip() {
+        let mut section = stacked_region_section();
+        section.gates = vec![NavMoverGate {
+            mover_id: 3,
+            waypoint: 1,
+            portal: 0,
+        }];
+        section.links = vec![NavMoverLink {
+            mover_id: 4,
+            waypoint: 0,
+            region: 1,
+            left: [1.0, 0.5, 4.0],
+            right: [2.0, 0.5, 4.0],
+        }];
+
+        let graph = NavGraph::from_section(&section);
+
+        assert_eq!(graph.gates(), section.gates);
+        assert_eq!(graph.links(), section.links);
+        assert_eq!(graph.to_section_for_test(), section);
     }
 
     #[test]

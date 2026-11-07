@@ -53,6 +53,7 @@ pub mod logger;
 pub mod map_data;
 pub mod map_format;
 pub(crate) mod mover_light_gate;
+pub(crate) mod mover_pose;
 pub mod navmesh_bake;
 pub mod pack;
 pub mod parse;

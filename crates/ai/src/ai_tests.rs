@@ -773,6 +773,8 @@ fn reachability_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
         max_slope_deg: 45.0,
         regions,
         portals: Vec::new(),
+        gates: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -5027,6 +5029,8 @@ impl OpenFloor {
                 floor_y_max: 0.25,
             }],
             portals: vec![],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -5125,6 +5129,8 @@ impl JumpableCorral {
                 },
             ],
             portals: vec![],
+            gates: Vec::new(),
+            links: Vec::new(),
         })
     }
 }
@@ -5269,6 +5275,8 @@ fn small_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
         max_slope_deg: 45.0,
         regions,
         portals: vec![],
+        gates: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -6544,6 +6552,8 @@ impl CornerArena {
                 left: [0.0, 0.0, 5.5],
                 right: [4.5, 0.0, 5.5],
             }],
+            gates: Vec::new(),
+            links: Vec::new(),
         })
     }
 }

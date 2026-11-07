@@ -6,13 +6,24 @@ use glam::Vec3;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 use crate::geometry::GeometryResult;
-use crate::map_data::NavParams;
+use crate::map_data::{MapKinematicMover, MapKinematicWaypoint, NavParams};
+
+mod mover_footprint;
+mod mover_gates;
+mod mover_links;
+mod mover_poses;
+mod stage;
+
+pub use stage::bake_or_load_navmesh;
+
+use mover_footprint::MoverFootprints;
+use mover_poses::nav_poses;
 
 /// Bump when the bake algorithm or its input layout changes. Folded into the
 /// stage cache key so a stale on-disk entry from a prior version is a miss on
 /// the first build after the bump and a hit on the second (matches the SDF and
 /// SH stage pattern).
-pub const NAVMESH_STAGE_VERSION: u32 = 4;
+pub const NAVMESH_STAGE_VERSION: u32 = 5;
 
 /// Tolerance on every `step_height` comparison. A floor delta exactly equal to
 /// `step_height` must count as a climbable step (a one-step riser is reachable),
@@ -100,25 +111,43 @@ impl WalkGrid {
     }
 }
 
+/// Bake a navmesh with no movers: [`bake_navmesh_with_movers`] with empty mover
+/// inputs. The `prl-build` pipeline always passes its movers, so this is library
+/// surface, for bake contract tests in other crates.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn bake_navmesh(geo: &GeometryResult, params: &NavParams) -> Option<NavMeshSection> {
+    bake_navmesh_with_movers(geo, params, &[], &[])
+}
+
 /// Bake a navmesh from the extracted geometry's triangles plus the resolved
-/// nav parameters. Returns `None` when no walkable region survives (then the
-/// caller emits no section and the build still succeeds).
+/// nav parameters, with mover gates and links for `movers` along `waypoints`.
+/// Returns `None` when no walkable region survives (then the caller emits no
+/// section and the build still succeeds).
 ///
 /// Sequential and allocation-stable: no `HashMap`-iteration-ordered output and
 /// no parallel reductions, so identical inputs produce byte-identical section
 /// bytes (the stage cache keys on those bytes).
-pub fn bake_navmesh(geo: &GeometryResult, params: &NavParams) -> Option<NavMeshSection> {
+pub fn bake_navmesh_with_movers(
+    geo: &GeometryResult,
+    params: &NavParams,
+    movers: &[MapKinematicMover],
+    waypoints: &[MapKinematicWaypoint],
+) -> Option<NavMeshSection> {
     let triangles = collect_triangles(geo);
     if triangles.is_empty() {
         return None;
     }
 
     let grid = rasterize(&triangles, params)?;
-    let regions = decompose_regions(&grid);
+    let poses = nav_poses(movers, waypoints, params);
+    let footprints = MoverFootprints::of_poses(&grid, &poses, params);
+    let regions = decompose_regions(&grid, &footprints);
     if regions.is_empty() {
         return None;
     }
     let portals = extract_portals(&grid, &regions, params);
+    let gates = mover_gates::bake_gates(&grid, &regions, &portals, &poses, params);
+    let links = mover_links::bake_links(&grid, &regions, &poses, &triangles, params);
 
     log::info!(
         "[Compiler] NavMesh: {} regions, {} portals ({}x{} grid @ {} m)",
@@ -127,6 +156,12 @@ pub fn bake_navmesh(geo: &GeometryResult, params: &NavParams) -> Option<NavMeshS
         grid.dim_x,
         grid.dim_z,
         grid.cell_size,
+    );
+    log::info!(
+        "[Compiler] NavMesh movers: {} gates, {} links ({} poses)",
+        gates.len(),
+        links.len(),
+        poses.len(),
     );
 
     Some(NavMeshSection {
@@ -141,6 +176,8 @@ pub fn bake_navmesh(geo: &GeometryResult, params: &NavParams) -> Option<NavMeshS
         max_slope_deg: params.max_slope_deg,
         regions,
         portals,
+        gates,
+        links,
     })
 }
 
@@ -491,15 +528,13 @@ const LEVEL_EPS: f32 = 1.0e-3;
 /// order: ascending z then x; at each unclaimed span grow the x-run, then grow
 /// z. A span merges into the growing rectangle only while every interior
 /// adjacent-cell floor delta stays within `LEVEL_EPS` (a near-uniform level), so
-/// a region carries a single floor level and a step riser splits regions.
-/// Returns regions sorted by the section's invariant order.
-fn decompose_regions(grid: &WalkGrid) -> Vec<NavRegion> {
+/// a region carries a single floor level and a step riser splits regions. A span
+/// also merges only with spans under the same mover poses, so a posed mover's
+/// footprint edge is always a region boundary, and a portal the gate pass can
+/// test. Returns regions sorted by the section's invariant order.
+fn decompose_regions(grid: &WalkGrid, footprints: &MoverFootprints) -> Vec<NavRegion> {
     let dim_x = grid.dim_x;
     let dim_z = grid.dim_z;
-    // Region growth uses the tight same-level band, not `step_height`: a region
-    // is one floor level, so a climbable step becomes a region boundary (and a
-    // portal), not an in-region delta.
-    let step = LEVEL_EPS;
     // Per-column claimed span heights (claiming a span removes it from
     // consideration). A column may have spans on multiple levels.
     let mut claimed: Vec<Vec<f32>> = vec![Vec::new(); grid.cells.len()];
@@ -510,13 +545,23 @@ fn decompose_regions(grid: &WalkGrid) -> Vec<NavRegion> {
             continue;
         }
 
+        let growth = RegionGrowth {
+            grid,
+            footprints,
+            seed_poses: footprints.poses_at(seed.x, seed.z, seed.floor_y),
+            // The tight same-level band, not `step_height`: a region is one
+            // floor level, so a climbable step becomes a region boundary (and a
+            // portal), not an in-region delta.
+            step: LEVEL_EPS,
+        };
+
         // Grow the x-run from the seed: include the next column only while it
         // carries an unclaimed span within step of the run's previous height.
         let mut prev_h = seed.floor_y;
         let mut row_heights = vec![seed.floor_y];
         let mut x1 = seed.x + 1;
         while x1 < dim_x {
-            match unclaimed_span_within_step(grid, &claimed, x1, seed.z, prev_h, step) {
+            match growth.next_span(&claimed, x1, seed.z, prev_h) {
                 Some(h) => {
                     prev_h = h;
                     row_heights.push(h);
@@ -531,8 +576,7 @@ fn decompose_regions(grid: &WalkGrid) -> Vec<NavRegion> {
         let mut accepted_rows = vec![row_heights.clone()];
         let mut z1 = seed.z + 1;
         while z1 < dim_z {
-            let Some(next_heights) =
-                row_extends(grid, &claimed, seed.x, x1, z1, &row_heights, step)
+            let Some(next_heights) = growth.row_extends(&claimed, seed.x, x1, z1, &row_heights)
             else {
                 break;
             };
@@ -594,41 +638,43 @@ fn is_claimed(claimed: &[Vec<f32>], grid: &WalkGrid, x: u32, z: u32, height: f32
         .any(|&c| (c - height).abs() <= 1.0e-4)
 }
 
-/// The unclaimed span at `(x, z)` within `step` of `reference`, or `None`.
-fn unclaimed_span_within_step(
-    grid: &WalkGrid,
-    claimed: &[Vec<f32>],
-    x: u32,
-    z: u32,
-    reference: f32,
+/// What one growing rectangle may absorb: the seed's level and mover poses.
+struct RegionGrowth<'a> {
+    grid: &'a WalkGrid,
+    footprints: &'a MoverFootprints,
+    seed_poses: &'a [u32],
     step: f32,
-) -> Option<f32> {
-    let h = span_height_at(grid, x, z, reference, step)?;
-    if is_claimed(claimed, grid, x, z, h) {
-        return None;
-    }
-    Some(h)
 }
 
-/// Whether row `z` over columns `[x0, x1)` can extend the growing rectangle:
-/// every column carries an unclaimed span within `step` of the cell directly
-/// below it (`below_heights`, parallel to the column range). Returns the row's
-/// span heights on success so the next row references them.
-fn row_extends(
-    grid: &WalkGrid,
-    claimed: &[Vec<f32>],
-    x0: u32,
-    x1: u32,
-    z: u32,
-    below_heights: &[f32],
-    step: f32,
-) -> Option<Vec<f32>> {
-    let mut heights = Vec::with_capacity((x1 - x0) as usize);
-    for (col, x) in (x0..x1).enumerate() {
-        let h = unclaimed_span_within_step(grid, claimed, x, z, below_heights[col], step)?;
-        heights.push(h);
+impl RegionGrowth<'_> {
+    /// The unclaimed span at `(x, z)` within `step` of `reference` and under the
+    /// seed's mover poses, or `None`.
+    fn next_span(&self, claimed: &[Vec<f32>], x: u32, z: u32, reference: f32) -> Option<f32> {
+        let h = span_height_at(self.grid, x, z, reference, self.step)?;
+        if is_claimed(claimed, self.grid, x, z, h) {
+            return None;
+        }
+        (self.footprints.poses_at(x, z, h) == self.seed_poses).then_some(h)
     }
-    Some(heights)
+
+    /// Whether row `z` over columns `[x0, x1)` can extend the growing rectangle:
+    /// every column carries a [`Self::next_span`] from the cell directly below
+    /// it (`below_heights`, parallel to the column range). Returns the row's
+    /// span heights on success so the next row references them.
+    fn row_extends(
+        &self,
+        claimed: &[Vec<f32>],
+        x0: u32,
+        x1: u32,
+        z: u32,
+        below_heights: &[f32],
+    ) -> Option<Vec<f32>> {
+        let mut heights = Vec::with_capacity((x1 - x0) as usize);
+        for (col, x) in (x0..x1).enumerate() {
+            heights.push(self.next_span(claimed, x, z, below_heights[col])?);
+        }
+        Some(heights)
+    }
 }
 
 /// Extract portals over shared region edges. A portal exists where two regions
@@ -812,5 +858,7 @@ fn region_ref_height(region: &NavRegion) -> f32 {
     0.5 * (region.floor_y_min + region.floor_y_max)
 }
 
+#[cfg(test)]
+mod mover_tests;
 #[cfg(test)]
 mod tests;

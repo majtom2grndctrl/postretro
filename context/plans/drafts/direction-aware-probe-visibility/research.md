@@ -59,5 +59,5 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 - Do not move the closet's north wall: y 760 is the worst measured lattice phase.
 
 ## Doors this leaves open
-- Per-mover tiles: the mover channel bakes tiles for a door's closed pose and rewrites the reference in the moments texel while the door rests closed.
+- Per-mover tiles: closed-pose tiles reach a probe through its tile reference. A step switch on dock suits a door that snaps shut; a glow that ramps with door travel needs a runtime-composed tile blending both moment sets by travel. The owning brief decides.
 - Relocation (roadmap, Majercik 2021): moving a probe off a wall moves its bake position; irradiance, moments and tiles follow together.

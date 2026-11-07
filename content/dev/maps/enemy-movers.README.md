@@ -3,7 +3,7 @@
 Manual QA map for how enemies and corpses meet movers: riding a lift, being
 pushed by a sweeper, being crushed against a wall, and a corpse on a lift. One
 straight hall with a bay per case, small enough to bake quickly (11 world
-brushes, 4 movers, 5 baked lights).
+brushes, 4 movers, 9 baked lights).
 
 Build a local artifact on demand:
 
@@ -45,6 +45,22 @@ All movers start on spawn. The lift's slab fills its pit and sits flush with the
 floor at the bottom, and flush with the ledge top at the top. The ledge is 2.4 m
 high, too tall to jump, so the lift is the only way up. The crusher damage
 uses the dev mod's default damage type.
+
+## Lights
+
+Dim point lights fill the hall; one bright spot picks out each bay. Every point
+light reaches most of the hall, so on large faces the lowest-ranked points lose
+their shadowmask specular channel and the compiler warns once per light and
+face. Those faces show no static highlight from the losing points. Diffuse
+lighting and the spots are unaffected.
+
+| Light | Origin | Intensity | Falloff | Lights |
+|---|---|---|---|---|
+| `light` × 5 | (400, 900, 1300, 1700, 1980; 256, 256) | 75 | 1600 | The hall, alternating warm and cool |
+| `light_spot` (cone 22/42, angles −39 39 0) | (560, 96, 300) | 350 | 700 | The lift and the ledge edge |
+| `light_spot` (cone 25/48, angles −42 317 0) | (1180, 480, 300) | 300 | 750 | The sweeper's course |
+| `light_spot` (cone 18/36, angles −47 22 0) | (1640, 40, 300) | 300 | 600 | The open crusher lane, cool |
+| `light_spot` (cone 16/34, angles −52 335 0) | (1820, 470, 300) | 350 | 600 | The wall crusher's pin against the east wall, red |
 
 ## Checks
 

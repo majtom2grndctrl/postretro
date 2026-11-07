@@ -257,91 +257,136 @@
 "name" "em_crusher_wall_end"
 "origin" "2032 384 48"
 }
-// Light 1
+// Lights. Dim point lights fill the hall; one bright spot picks out each bay.
 // entity 13
 {
 "classname" "light"
 "origin" "400 256 256"
-"light" "300"
+"light" "75"
 "_color" "255 244 230"
-"_falloff_range" "800"
+"_falloff_range" "1600"
 }
 // entity 14
 {
 "classname" "light"
 "origin" "900 256 256"
-"light" "300"
+"light" "75"
 "_color" "235 240 255"
-"_falloff_range" "800"
+"_falloff_range" "1600"
 }
 // entity 15
 {
 "classname" "light"
 "origin" "1300 256 256"
-"light" "300"
+"light" "75"
 "_color" "255 244 230"
-"_falloff_range" "800"
+"_falloff_range" "1600"
 }
 // entity 16
 {
 "classname" "light"
 "origin" "1700 256 256"
-"light" "300"
+"light" "75"
 "_color" "235 240 255"
-"_falloff_range" "800"
+"_falloff_range" "1600"
 }
 // entity 17
 {
 "classname" "light"
 "origin" "1980 256 256"
-"light" "300"
+"light" "75"
 "_color" "255 220 200"
-"_falloff_range" "800"
+"_falloff_range" "1600"
+}
+// Bay spots: the lift and ledge, the sweeper's course, the open crusher lane, and the wall crusher's pin.
+// entity 18
+{
+"classname" "light_spot"
+"origin" "560 96 300"
+"light" "350"
+"_color" "255 240 220"
+"_falloff_range" "700"
+"angles" "-39 39 0"
+"_cone" "22"
+"_cone2" "42"
+}
+// entity 19
+{
+"classname" "light_spot"
+"origin" "1180 480 300"
+"light" "300"
+"_color" "230 240 255"
+"_falloff_range" "750"
+"angles" "-42 317 0"
+"_cone" "25"
+"_cone2" "48"
+}
+// entity 20
+{
+"classname" "light_spot"
+"origin" "1640 40 300"
+"light" "300"
+"_color" "210 225 255"
+"_falloff_range" "600"
+"angles" "-47 22 0"
+"_cone" "18"
+"_cone2" "36"
+}
+// entity 21
+{
+"classname" "light_spot"
+"origin" "1820 470 300"
+"light" "350"
+"_color" "255 140 100"
+"_falloff_range" "600"
+"angles" "-52 335 0"
+"_cone" "16"
+"_cone2" "34"
 }
 // Enemies. Origins sit 16 units above the surface they stand on.
-// entity 18
+// entity 22
 {
 "classname" "reference_enemy"
 "origin" "768 256 16"
 "angles" "0 0 0"
 "_tags" "enemy em_lift_rider"
 }
-// entity 19
+// entity 23
 {
 "classname" "reference_enemy"
 "origin" "832 320 16"
 "angles" "0 0 0"
 "_tags" "enemy em_lift_rider"
 }
-// entity 20
+// entity 24
 {
 "classname" "reference_enemy"
 "origin" "1024 448 16"
 "angles" "0 270 0"
 "_tags" "enemy em_lift_chaser"
 }
-// entity 21
+// entity 25
 {
 "classname" "reference_enemy"
 "origin" "1344 144 16"
 "angles" "0 180 0"
 "_tags" "enemy em_sweeper_victim"
 }
-// entity 22
+// entity 26
 {
 "classname" "reference_enemy"
 "origin" "1344 368 16"
 "angles" "0 180 0"
 "_tags" "enemy em_sweeper_victim"
 }
-// entity 23
+// entity 27
 {
 "classname" "reference_enemy"
 "origin" "1824 128 16"
 "angles" "0 180 0"
 "_tags" "enemy em_crusher_open_victim"
 }
-// entity 24
+// entity 28
 {
 "classname" "reference_enemy"
 "origin" "2000 384 16"
@@ -349,7 +394,7 @@
 "_tags" "enemy em_crusher_wall_victim"
 }
 // Player start: west end, facing east down the hall.
-// entity 25
+// entity 29
 {
 "classname" "player_spawn"
 "origin" "64 256 48"

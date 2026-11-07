@@ -20,6 +20,11 @@ The skinned-mesh render path, combat loop, navigation, statechart behavior, line
   - **Script assignment.** A selector sets routes under authored conditions (`npcs({ tag }).update(...)`, beside `aggro`).
   - **Nearest route.** An enemy that chased the player into another area patrols the route nearest it, not its home route.
   - **Open:** unknown route name (load error or hold); cursor reset on reassignment; nearest route versus retreat to the home anchor; overlap with runtime-movable home anchor, which also re-aims a patrol.
+- [ ] **Enemy AI playtest defects** — found on `mover-setpiece` (owner, 2026-11-07); held for the enemy AI sprint:
+  - **Patrol stalls short of a point.** Steering stops within 1.5 × radius (about 0.53 m at 0.35 m); patrol advances only within 0.5 m, so the cursor never moves on.
+  - **No route round a stepped eroded corner.** Bake erosion at a floor hole's corner leaves one-cell strips; clearance repair livelocks on their overlapping disks and `find_path` returns none. Pinned by `a_route_rounds_a_stepped_eroded_corner` (ignored); trace in the E17 enemy–mover brief's Corrections.
+  - **Target on a mover.** Its goal resolves to the floor region under the mover, so chasers stop at the floor edge and follow only once it steps off. Accepted in the E17 brief as a known limit.
+  - **Retreat with armor gone.** The reference knight retreats at zero armor. Unverified whether armor recharges, or whether every later engagement retreats at once.
 - [ ] **Faction binding-name sugar** — `defineFaction()` with no name, named by its binding, as `done/E16--damage-types-and-defense-layers/` names damage types and defense layers. Until then factions keep their explicit string.
 - [ ] **Movement-feel capstone** — integrated tuning pass across the landed feel specs on the movement-feel fixture, plus durable capture: steering pipeline order-of-operations, determinism invariants, and tuning vocabulary migrate into a `context/lib/` enemy-AI doc with an index-router entry. Closes the follow-up wave.
 

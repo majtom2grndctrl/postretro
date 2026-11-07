@@ -1972,4 +1972,60 @@ mod tests {
             "read at the baked height, its feet sit below the deck"
         );
     }
+
+    // Known failure, outside the E17 mover work: the mover-setpiece riders'
+    // route out of the risen room rounds this corner. The bake's rounded
+    // erosion at a floor hole leaves one-cell strips whose portal endpoints sit
+    // about 0.35 m apart; their clearance disks overlap, each bevel lands inside the
+    // next disk, and the repair spends its budget, so the route reads as none.
+    #[test]
+    #[ignore = "known failure: clearance repair livelocks on a stepped eroded corner"]
+    fn a_route_rounds_a_stepped_eroded_corner() {
+        // The regions and portals `mover-setpiece` bakes at the rising-room
+        // shaft's corner, re-indexed west to east.
+        let strip = |x0, z0, x1| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1: 127,
+            floor_y_min: 0.0,
+            floor_y_max: 0.0,
+        };
+        let step = |region_a: u32, x: f32, z: f32| NavPortal {
+            region_a,
+            region_b: region_a + 1,
+            left: [x, 0.0, -0.762],
+            right: [x, 0.0, z],
+        };
+        let section = NavMeshSection {
+            origin: [-40.64, -4.8768, -32.512],
+            cell_size: 0.25,
+            dim_x: 163,
+            dim_z: 131,
+            agent_radius: 0.4,
+            step_height: 0.5,
+            ..section(
+                vec![
+                    strip(113, 49, 147),
+                    strip(147, 48, 148),
+                    strip(148, 47, 149),
+                    strip(149, 12, 160),
+                ],
+                vec![
+                    step(0, -3.89, -20.262),
+                    step(1, -3.64, -20.512),
+                    step(2, -3.39, -20.762),
+                ],
+            )
+        };
+        let graph = NavGraph::from_section(&section);
+        let start = Vec3::new(-5.0, 0.0, -10.0);
+        let goal = Vec3::new(-2.0, 0.0, -27.0);
+        assert_eq!(graph.region_at(start), Some(0));
+        assert_eq!(graph.region_at(goal), Some(3));
+        assert!(
+            find_path(&graph, start, goal).is_some(),
+            "a corridor joins the two regions, so a route exists"
+        );
+    }
 }

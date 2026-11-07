@@ -4467,7 +4467,8 @@ mod tests {
     }
 
     // Regression: the AI brain skipped a queued despawn, but the later
-    // fixed-tick steering stage still followed its retained path.
+    // fixed-tick steering stage still followed its retained path. A queued
+    // despawn makes the agent a corpse: it keeps falling, and takes no steering.
     #[test]
     fn fixed_tick_queued_despawn_quiesces_brain_agent_steering() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -4522,13 +4523,15 @@ mod tests {
 
         assert!(events.ai.is_empty(), "queued despawn must suppress attacks");
         let registry = registry.borrow();
+        let position = registry.get_component::<Transform>(enemy).unwrap().position;
         assert_eq!(
-            registry.get_component::<Transform>(enemy).unwrap().position,
-            start.position,
-            "the real fixed-tick steering stage must not move a queued-despawn brain",
+            (position.x, position.z),
+            (start.position.x, start.position.z),
+            "the real fixed-tick steering stage must not steer a queued-despawn brain",
         );
         let agent = registry.get_component::<AgentComponent>(enemy).unwrap();
-        assert_eq!(agent.velocity, Vec3::ZERO);
+        assert_eq!(agent.steer_velocity, Vec3::ZERO);
+        assert_eq!((agent.velocity.x, agent.velocity.z), (0.0, 0.0));
         assert_eq!(agent.destination, Some(Vec3::new(12.0, 1.0, 2.0)));
         let effects = registry
             .get_component::<postretro_entities::DeferredEffectComponent>(enemy)

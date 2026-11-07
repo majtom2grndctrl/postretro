@@ -22,6 +22,8 @@ use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
+mod corpse;
+
 mod tick_diagnostics {
     /// Maximum number of agents that may recompute a path in a single tick.
     /// Bounds the per-frame pathfinding cost regardless of how many agents
@@ -642,6 +644,8 @@ fn tick_impl(
         }
         let _ = registry.set_component(current.id, agent);
     }
+
+    corpse::tick_corpses(registry, collision, environment, dt);
 
     AgentTickResult { replans }
 }

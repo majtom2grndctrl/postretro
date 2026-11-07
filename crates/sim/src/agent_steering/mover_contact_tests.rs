@@ -351,3 +351,213 @@ fn a_rider_walking_against_its_mover_is_not_stuck() {
         );
     }
 }
+
+/// A platform 8 m wide under an agent at the given height above it, descending
+/// faster than ground-stick reaches.
+#[test]
+fn an_agent_above_a_descender_beyond_ground_stick_falls_under_gravity() {
+    let world = floor_world();
+    let movers = [solid_box(
+        Vec3::new(-8.0, -0.5, -8.0),
+        Vec3::new(8.0, 0.0, 8.0),
+    )];
+    let mut lift = MoverTrack::at(Vec3::new(0.0, 6.0, 0.0));
+    let mut registry = EntityRegistry::new();
+    let id = spawn(&mut registry, Vec3::new(0.0, rest_y(6.0) + 1.5, 0.0), None);
+
+    let start = position(&registry, id).y;
+    for tick_index in 1..=6 {
+        lift.advance(Vec3::NEG_Y * 2.0);
+        step(&mut registry, &world, &movers, &lift);
+        assert_eq!(
+            agent(&registry, id).ground,
+            GroundRef::Airborne,
+            "tick {tick_index}: no floor in reach"
+        );
+    }
+    let fallen = start - position(&registry, id).y;
+    let free_fall = 0.5 * 20.0 * (6.0 * DT) * (6.0 * DT);
+    assert!(
+        (fallen - free_fall).abs() < 0.05,
+        "fell {fallen} m, free fall is {free_fall} m"
+    );
+}
+
+#[test]
+fn stepping_off_a_moving_mover_adds_release_velocity_that_decays_with_knockback_drag() {
+    let world = floor_world();
+    // A 2 m platform 0.2 m over the floor, running +X, its rider walking off.
+    let movers = [solid_box(
+        Vec3::new(-1.0, -0.2, -8.0),
+        Vec3::new(1.0, 0.0, 8.0),
+    )];
+    let mut lift = MoverTrack::at(Vec3::new(0.0, 0.2, 0.0));
+    let mut registry = EntityRegistry::new();
+    let id = spawn(
+        &mut registry,
+        Vec3::new(0.0, rest_y(0.2), 0.0),
+        Some(Vec3::new(0.0, rest_y(0.0), 40.0)),
+    );
+    let drive = Vec3::X * 3.0;
+
+    let mut released = None;
+    for tick_index in 0..200 {
+        lift.advance(drive);
+        step(&mut registry, &world, &movers, &lift);
+        let rider = agent(&registry, id);
+        if rider.knockback_velocity != Vec3::ZERO {
+            released = Some((tick_index, rider.knockback_velocity));
+            break;
+        }
+    }
+    let (_, release) = released.expect("the agent left the mover");
+    assert!(
+        (release.x - drive.x).abs() < 1.0e-4,
+        "the mover's velocity entered the knockback layer: {release:?}"
+    );
+
+    // Steering does not wipe it; drag does.
+    let mut previous = release.x;
+    for _ in 0..30 {
+        lift.advance(drive);
+        step(&mut registry, &world, &movers, &lift);
+        let now = agent(&registry, id).knockback_velocity.x;
+        assert!(now <= previous, "knockback decays, {now} after {previous}");
+        previous = now;
+    }
+    assert!(
+        previous < release.x,
+        "drag took some of it: {previous} of {}",
+        release.x
+    );
+}
+
+fn corpse_of(registry: &mut EntityRegistry, id: EntityId) {
+    registry
+        .set_component(
+            id,
+            postretro_entities::components::health::HealthComponent {
+                max: 100.0,
+                current: 0.0,
+                hitbox: None,
+                death_handled: false,
+                pending_kill_credit: None,
+                zone_multipliers: Default::default(),
+                contributor_ledger: Default::default(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_corpse_rides_a_lift_and_takes_no_steering() {
+    let world = floor_world();
+    let movers = [solid_box(
+        Vec3::new(-8.0, -0.5, -8.0),
+        Vec3::new(8.0, 0.0, 8.0),
+    )];
+    let mut lift = MoverTrack::at(Vec3::new(0.0, 0.5, 0.0));
+    let mut registry = EntityRegistry::new();
+    let id = spawn(
+        &mut registry,
+        Vec3::new(1.0, rest_y(0.5), 0.0),
+        Some(Vec3::new(30.0, rest_y(0.5), 0.0)),
+    );
+    corpse_of(&mut registry, id);
+
+    let mut before = position(&registry, id);
+    for tick_index in 0..120 {
+        let velocity = lift_course(tick_index);
+        lift.advance(velocity);
+        step(&mut registry, &world, &movers, &lift);
+        let at = position(&registry, id);
+        assert_eq!(at.x, 1.0, "tick {tick_index}: no steering");
+        if tick_index > 0 {
+            assert_eq!(agent(&registry, id).ground, GroundRef::Mover(MOVER));
+            assert!(((at.y - before.y) - velocity.y * DT).abs() < CARRY_TOLERANCE);
+        }
+        before = at;
+    }
+}
+
+#[test]
+fn a_corpse_falls_and_a_killing_blow_starts_no_slide() {
+    let world = floor_world();
+    let mut registry = EntityRegistry::new();
+    let id = spawn(&mut registry, Vec3::new(0.0, rest_y(0.0) + 3.0, 0.0), None);
+    corpse_of(&mut registry, id);
+    let mut body = agent(&registry, id).clone();
+    body.knockback_velocity = Vec3::new(5.0, 2.0, 0.0);
+    body.velocity = body.knockback_velocity;
+    registry.set_component(id, body).unwrap();
+
+    for _ in 0..120 {
+        tick(&mut registry, &world, None, ENV, DT);
+    }
+    let at = position(&registry, id);
+    assert_eq!(at.x, 0.0, "no slide");
+    assert!(
+        (at.y - rest_y(0.0)).abs() < 2.0e-3,
+        "the corpse lay down on the floor, at {at:?}"
+    );
+    assert_eq!(agent(&registry, id).ground, GroundRef::World);
+    assert_eq!(agent(&registry, id).knockback_velocity, Vec3::ZERO);
+}
+
+#[test]
+fn a_corpse_leaves_a_moving_mover_with_no_release_velocity() {
+    let world = floor_world();
+    let movers = [solid_box(
+        Vec3::new(-8.0, -0.5, -8.0),
+        Vec3::new(8.0, 0.0, 8.0),
+    )];
+    let mut lift = MoverTrack::at(Vec3::new(0.0, 0.5, 0.0));
+    let mut registry = EntityRegistry::new();
+    let id = spawn(&mut registry, Vec3::new(0.0, rest_y(0.5), 0.0), None);
+    corpse_of(&mut registry, id);
+    lift.advance(Vec3::ZERO);
+    step(&mut registry, &world, &movers, &lift);
+    assert_eq!(agent(&registry, id).ground, GroundRef::Mover(MOVER));
+
+    // The platform leaves sideways from under it at speed.
+    for _ in 0..60 {
+        lift.advance(Vec3::X * 12.0);
+        step(&mut registry, &world, &movers, &lift);
+    }
+    let body = agent(&registry, id);
+    assert_eq!(body.knockback_velocity, Vec3::ZERO);
+    assert_eq!(body.velocity.x, 0.0);
+}
+
+/// The same lift ride and walk twice lands on the same bits.
+#[test]
+fn an_agent_on_a_lift_replays_identically() {
+    fn run() -> Vec<(u32, u32, u32, GroundRef)> {
+        let world = floor_world();
+        let movers = [solid_box(
+            Vec3::new(-8.0, -0.5, -8.0),
+            Vec3::new(8.0, 0.0, 8.0),
+        )];
+        let mut lift = MoverTrack::at(Vec3::new(0.0, 0.5, 0.0));
+        let mut registry = EntityRegistry::new();
+        let id = spawn(
+            &mut registry,
+            Vec3::new(0.0, rest_y(0.5), 0.0),
+            Some(Vec3::new(30.0, rest_y(0.0), 3.0)),
+        );
+        (0..240)
+            .map(|tick_index| {
+                lift.advance(lift_course(tick_index));
+                step(&mut registry, &world, &movers, &lift);
+                let at = position(&registry, id);
+                (
+                    at.x.to_bits(),
+                    at.y.to_bits(),
+                    at.z.to_bits(),
+                    agent(&registry, id).ground,
+                )
+            })
+            .collect()
+    }
+    assert_eq!(run(), run());
+}

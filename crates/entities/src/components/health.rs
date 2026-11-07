@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
+use crate::components::deferred_effect::{DeferredEffectComponent, DeferredEffectKind};
 use crate::data_descriptors::HealthDescriptor;
 use crate::registry::{EntityId, EntityRegistry};
 use postretro_foundation::DamagePayload;
@@ -282,6 +283,42 @@ pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f
         updated.contributor_ledger = ContributorLedger::default();
     }
     let _ = registry.set_component(id, updated);
+}
+
+/// One health predicate shared by the pre-sweep simulation gates and the death
+/// sweep. A missing Health component is not depleted.
+pub fn is_depleted(health: &HealthComponent) -> bool {
+    health.current <= 0.0 || !health.current.is_finite()
+}
+
+/// Whether deferred lifecycle state has committed this entity to removal.
+/// The registry id remains live until the frame-end pass, so consumers must
+/// inspect this state before applying a precomputed target outcome.
+///
+/// This is a narrow cross-crate read seam: netcode must reject late hit
+/// declarations for an entity whose deferred removal is already committed,
+/// even though the registry id remains live until the frame-end pass.
+pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: EntityId) -> bool {
+    registry
+        .get_component::<DeferredEffectComponent>(entity)
+        .is_ok_and(|effects| {
+            effects.inert
+                || effects
+                    .pending
+                    .iter()
+                    .any(|effect| effect.kind == DeferredEffectKind::Despawn)
+        })
+}
+
+/// Shared pre-sweep gate for simulation systems that must stop an entity as
+/// soon as it is depleted or committed to removal. Health is optional: an
+/// entity without it remains active unless its deferred lifecycle is terminal.
+/// An agent that reads true is a corpse: it rides and never blocks.
+pub fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool {
+    registry
+        .get_component::<HealthComponent>(entity)
+        .is_ok_and(is_depleted)
+        || is_terminally_committed_to_removal(registry, entity)
 }
 
 #[cfg(test)]

@@ -18,36 +18,13 @@ use postretro_entities::components::health::{
 };
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
-use postretro_entities::{DeferredEffectComponent, DeferredEffectKind};
 
 /// Event name fired once when the player pawn's HP reaches zero. Latched by
 /// `HealthComponent::death_handled` so a persisting zero-HP pawn never re-fires.
 pub(crate) const PLAYER_DIED_EVENT: &str = "playerDied";
 
-/// One health predicate shared by the pre-sweep simulation gates and the death
-/// sweep. A missing Health component is not depleted.
-pub(crate) fn is_depleted(health: &HealthComponent) -> bool {
-    health.current <= 0.0 || !health.current.is_finite()
-}
-
-/// Whether deferred lifecycle state has committed this entity to removal.
-/// The registry id remains live until the frame-end pass, so consumers must
-/// inspect this state before applying a precomputed target outcome.
-///
-/// This is a narrow cross-crate read seam: netcode must reject late hit
-/// declarations for an entity whose deferred removal is already committed,
-/// even though the registry id remains live until the frame-end pass.
-pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: EntityId) -> bool {
-    registry
-        .get_component::<DeferredEffectComponent>(entity)
-        .is_ok_and(|effects| {
-            effects.inert
-                || effects
-                    .pending
-                    .iter()
-                    .any(|effect| effect.kind == DeferredEffectKind::Despawn)
-        })
-}
+pub use postretro_entities::components::health::is_terminally_committed_to_removal;
+pub(crate) use postretro_entities::components::health::{is_depleted, is_quiescent};
 
 /// A damage target must carry Health and have no terminal lifecycle commitment
 /// or inventory ownership. Declared player life profiles supply damageability;
@@ -66,16 +43,6 @@ pub fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) ->
         })
         && !registry.is_inventory_owned(entity)
         && !is_terminally_committed_to_removal(registry, entity)
-}
-
-/// Shared pre-sweep gate for simulation systems that must stop an entity as
-/// soon as it is depleted or committed to removal. Health is optional: an
-/// entity without it remains active unless its deferred lifecycle is terminal.
-pub(crate) fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool {
-    registry
-        .get_component::<HealthComponent>(entity)
-        .is_ok_and(is_depleted)
-        || is_terminally_committed_to_removal(registry, entity)
 }
 
 /// What one death sweep observed, returned to the caller because the sweep

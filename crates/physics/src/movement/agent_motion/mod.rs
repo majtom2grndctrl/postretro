@@ -133,6 +133,64 @@ pub fn collide_and_slide(
     environment: EnvironmentView<'_>,
     dt: f32,
 ) -> SlideResult {
+    let mut result = slide(
+        collision,
+        capsule,
+        position,
+        previous_ground,
+        desired_horizontal,
+        vertical_velocity,
+        knockback_velocity,
+        environment,
+        dt,
+    );
+    if let Some(release) =
+        mover_release_velocity(previous_ground, result.ground, collision, result.position)
+    {
+        result.velocity += release;
+        *knockback_velocity += release;
+    }
+    result
+}
+
+/// One tick of corpse motion: gravity, mover carry and displacement, and no
+/// steering, knockback or release velocity. A corpse keeps the place it fell, so
+/// a killing blow or a lift it slides off starts no slide.
+pub fn settle_corpse(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    vertical_velocity: f32,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> SlideResult {
+    slide(
+        collision,
+        capsule,
+        position,
+        previous_ground,
+        Vec3::ZERO,
+        vertical_velocity,
+        &mut Vec3::ZERO,
+        environment,
+        dt,
+    )
+}
+
+/// Everything in [`collide_and_slide`] short of release velocity.
+#[allow(clippy::too_many_arguments)]
+fn slide(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    desired_horizontal: Vec3,
+    vertical_velocity: f32,
+    knockback_velocity: &mut Vec3,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> SlideResult {
     let collision_shape = capsule.collision_shape();
     let parry_shape = collision_shape.parry();
     let step = capsule.step_params();
@@ -234,11 +292,6 @@ pub fn collide_and_slide(
     if ground.is_grounded() {
         velocity.y = 0.0;
         knockback_velocity.y = 0.0;
-    }
-
-    if let Some(release) = mover_release_velocity(previous_ground, ground, collision, current_pos) {
-        velocity += release;
-        *knockback_velocity += release;
     }
 
     SlideResult {

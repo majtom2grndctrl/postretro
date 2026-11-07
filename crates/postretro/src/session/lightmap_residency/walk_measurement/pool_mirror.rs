@@ -210,6 +210,17 @@ impl PoolMirror {
             panic!("the loader checked that the level's blocks stream");
         };
         let block_texels = texel_areas(plan.demand.extents());
+        // A pool that starts at all-resident grows only if compaction fails,
+        // so a walk's growth reads against this figure.
+        if let Some(all_resident) = plan.demand.all_resident(LIGHTMAP_POOL_LAYER_EDGE) {
+            println!(
+                "all-resident {} lightmap and {} mask layers; first generation {} and {}",
+                all_resident.lightmap,
+                all_resident.mask,
+                plan.first_generation_layers.lightmap,
+                plan.first_generation_layers.mask,
+            );
+        }
         let model = LightmapPoolModel::with_layer_limit(
             plan.demand,
             LIGHTMAP_POOL_LAYER_EDGE,

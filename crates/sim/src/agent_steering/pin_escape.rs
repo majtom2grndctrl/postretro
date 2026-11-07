@@ -101,7 +101,10 @@ pub(super) fn plan_escapes(
 /// A clear point on the pinning mover's own top is aimed at where that spot on
 /// the deck stands now, not where it stood at the pin: the walk runs to it
 /// whether the mover still holds, backs off or has moved on, since the search
-/// checked that spot and no other on the deck.
+/// checked that spot and no other on the deck. A body that lands off that deck
+/// (knocked onto the floor or another mover) stops chasing it: the spot travels
+/// the mover's course, so following it from outside would walk back into that
+/// course. Airborne, it keeps the walk.
 pub(super) fn escape_velocity(
     id: EntityId,
     agent: &mut AgentComponent,
@@ -111,6 +114,12 @@ pub(super) fn escape_velocity(
     dt: f32,
 ) -> Option<(u32, Vec3)> {
     let escape = agent.pin_escape.as_mut()?;
+    let off_the_deck = !matches!(agent.ground, GroundRef::Airborne)
+        && agent.ground != GroundRef::Mover(escape.mover_id);
+    if escape.deck_offset.is_some() && off_the_deck {
+        agent.pin_escape = None;
+        return None;
+    }
     if let Some(offset) = escape.deck_offset
         && let Some(target) = deck_point_at_tick_start(collision, escape.mover_id, offset)
     {

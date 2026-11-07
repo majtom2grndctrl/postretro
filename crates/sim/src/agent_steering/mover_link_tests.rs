@@ -999,6 +999,52 @@ fn an_agent_stepping_clear_to_a_deck_spot_reaches_it_on_the_moving_platform() {
     }
 }
 
+#[test]
+fn an_agent_knocked_off_the_deck_mid_escape_stops_chasing_the_deck_spot() {
+    let spec = LiftSpec {
+        waypoints: vec![Vec3::ZERO, Vec3::X * 4.0],
+        ..LiftSpec::shuttle(300.0)
+    };
+    let mut rig = Rig::new(spec);
+    let id = rig.agent(Vec3::new(13.0, rest_y(0.0), 5.0), None);
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::Mover(LIFT);
+    rig.registry.set_component(id, agent).unwrap();
+    assert!(rig.run_until(id, 120, |rig| rig.lift_position().x > 1.0));
+
+    let spot = Vec3::new(11.0, 0.0, 5.0);
+    let mut agent = rig.state(id).clone();
+    agent.pin_escape = Some(PinEscape {
+        mover_id: LIFT,
+        target: rig.lift_position() + spot,
+        deck_offset: Some(spot),
+        ticks_left: 90,
+    });
+    rig.registry.set_component(id, agent).unwrap();
+    // Thrown onto the floor short of the platform's course.
+    let floor = Vec3::new(5.0, rest_y(0.0), 5.0);
+    rig.registry
+        .set_component(
+            id,
+            Transform {
+                position: floor,
+                ..Transform::default()
+            },
+        )
+        .unwrap();
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::World;
+    rig.registry.set_component(id, agent).unwrap();
+
+    rig.tick();
+    assert!(rig.state(id).pin_escape.is_none(), "the walk ended");
+    assert!(
+        distance_xz(rig.position(id), floor) < 0.2,
+        "and it stayed where it landed, at {:?}",
+        rig.position(id)
+    );
+}
+
 // Regression: a body on a linked lift that never rests found no route start
 // while the lift was between docks, so every replan failed and it latched
 // `blocked` for good, and Ai held its reachability for ever.

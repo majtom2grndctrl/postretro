@@ -1,5 +1,6 @@
 // Host tick-order rig for mover pin tests: pre-tick pin test, driver, player
-// movement, trigger stage, auto-close and blocking pass in `simulate_tick`'s order.
+// movement, trigger stage, agent motion, auto-close and blocking pass in
+// `simulate_tick`'s order.
 // See: context/lib/movement.md §6 · context/lib/entity_model.md §5
 
 use std::collections::HashMap;
@@ -7,6 +8,8 @@ use std::collections::HashMap;
 use glam::{Vec2, Vec3};
 use parry3d::shape::Capsule;
 use postretro_collision::EnvironmentView;
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::health::is_quiescent;
 use postretro_entities::{
     BlockPolicy, ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverConfig, KinematicMoverMode, MoverCommand, Transform,
@@ -24,6 +27,7 @@ use crate::collision::moving::{
     CombinedCollisionWorld, MoverCollider, deepest_mover_penetration, point_inside_mover,
 };
 use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE};
+use crate::movement::agent_motion::{AgentCapsule, collide_and_slide, settle_corpse};
 use crate::movement::{MovementInput, tick};
 
 pub(super) const DT: f32 = 1.0 / 60.0;
@@ -108,6 +112,9 @@ pub(super) fn walk(direction: Vec3) -> MovementInput {
         ..idle()
     }
 }
+
+/// How fast a rig agent walks.
+const AGENT_SPEED: f32 = 4.0;
 
 /// Closed axis-aligned box triangles, wound outward.
 pub(super) fn box_triangles(
@@ -243,6 +250,7 @@ pub(super) struct Rig {
     pub auto_close: Option<MoverAutoCloseTimers>,
     inputs: HashMap<EntityId, MovementInput>,
     pawns: Vec<EntityId>,
+    agents: Vec<EntityId>,
     desc: PlayerMovementDescriptor,
 }
 
@@ -256,6 +264,7 @@ impl Rig {
             auto_close: None,
             inputs: HashMap::new(),
             pawns: Vec::new(),
+            agents: Vec::new(),
             desc: descriptor(),
         }
     }
@@ -312,6 +321,29 @@ impl Rig {
         self.pawns.push(pawn);
         self.inputs.insert(pawn, idle());
         pawn
+    }
+
+    /// Add an idle agent at `position` (capsule centre), the size of a pawn so
+    /// the two read alike against one fixture.
+    pub(super) fn add_agent(&mut self, position: Vec3) -> EntityId {
+        let agent = self.registry.spawn(Transform {
+            position,
+            ..Transform::default()
+        });
+        let height = 2.0 * (HALF_HEIGHT + RADIUS);
+        self.registry
+            .set_component(agent, AgentComponent::new(RADIUS, height, 0.3, AGENT_SPEED))
+            .expect("agent attaches");
+        self.agents.push(agent);
+        self.inputs.insert(agent, idle());
+        agent
+    }
+
+    pub(super) fn agent(&self, agent: EntityId) -> AgentComponent {
+        self.registry
+            .get_component::<AgentComponent>(agent)
+            .expect("agent is live")
+            .clone()
     }
 
     pub(super) fn remove_pawn(&mut self, pawn: EntityId) {
@@ -404,17 +436,19 @@ impl Rig {
             .expect("pawn transform updates");
     }
 
-    fn capsule(&self, pawn: EntityId) -> CapsuleParams {
-        self.pawn(pawn).capsule
+    fn capsule(&self, body: EntityId) -> CollisionCapsule {
+        if self.agents.contains(&body) {
+            let agent = self.agent(body);
+            return CollisionCapsule::new(agent.radius, agent.half_height());
+        }
+        let capsule = self.pawn(body).capsule;
+        CollisionCapsule::new(capsule.radius, capsule.half_height)
     }
 
-    /// Depth the pawn's capsule overlaps static geometry.
+    /// Depth the body's capsule overlaps static geometry.
     pub(super) fn static_overlap(&self, pawn: EntityId) -> f32 {
-        let capsule = self.capsule(pawn);
-        self.world.overlap_depth_for_test(
-            self.position(pawn),
-            CollisionCapsule::new(capsule.radius, capsule.half_height),
-        )
+        self.world
+            .overlap_depth_for_test(self.position(pawn), self.capsule(pawn))
     }
 
     /// Depth the pawn's capsule overlaps any mover at its published pose,
@@ -501,6 +535,7 @@ impl Rig {
         }
 
         trigger_stage(self);
+        self.step_agents();
         if let Some(auto_close) = self.auto_close.as_ref() {
             auto_close.tick(&mut self.registry, DT);
         }
@@ -518,11 +553,65 @@ impl Rig {
         TickReport { events, impacts }
     }
 
-    /// Assert the pawn is grounded on `mover_id`, as a rider settled on its
+    /// Agent motion as steering runs it: a corpse settles, and a living agent
+    /// walks along its `set_input` direction.
+    fn step_agents(&mut self) {
+        for id in self.agents.clone() {
+            let position = self.position(id);
+            let mut agent = self.agent(id);
+            let capsule = AgentCapsule {
+                radius: agent.radius,
+                half_height: agent.half_height(),
+                step_height: agent.step_height,
+            };
+            let collision = CombinedCollisionWorld::new(&self.world, &self.colliders, &self.table);
+            let result = if is_quiescent(&self.registry, id) {
+                settle_corpse(
+                    &collision,
+                    &capsule,
+                    position,
+                    agent.ground,
+                    agent.velocity.y,
+                    ENV,
+                    DT,
+                )
+            } else {
+                let wish = self.inputs.get(&id).map_or(Vec2::ZERO, |i| i.wish_dir);
+                collide_and_slide(
+                    &collision,
+                    &capsule,
+                    position,
+                    agent.ground,
+                    Vec3::new(wish.x, 0.0, -wish.y) * AGENT_SPEED,
+                    agent.velocity.y,
+                    &mut agent.knockback_velocity,
+                    ENV,
+                    DT,
+                )
+            };
+            agent.velocity = result.velocity;
+            agent.ground = result.ground;
+            self.set_position(id, result.position);
+            self.registry
+                .set_component(id, agent)
+                .expect("agent updates");
+        }
+    }
+
+    /// What the pawn or agent stands on.
+    pub(super) fn ground(&self, body: EntityId) -> GroundRef {
+        if self.agents.contains(&body) {
+            self.agent(body).ground
+        } else {
+            self.pawn(body).ground
+        }
+    }
+
+    /// Assert the body is grounded on `mover_id`, as a rider settled on its
     /// deck is.
     pub(super) fn assert_rides(&self, pawn: EntityId, mover_id: u32) {
         assert_eq!(
-            self.pawn(pawn).ground,
+            self.ground(pawn),
             GroundRef::Mover(mover_id),
             "the fixture pawn rides mover {mover_id} at {:?}",
             self.position(pawn)

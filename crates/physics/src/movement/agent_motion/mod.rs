@@ -165,6 +165,7 @@ pub fn settle_corpse(
     environment: EnvironmentView<'_>,
     dt: f32,
 ) -> SlideResult {
+    let mut knockback = Vec3::ZERO;
     slide(
         collision,
         capsule,
@@ -172,7 +173,7 @@ pub fn settle_corpse(
         previous_ground,
         Vec3::ZERO,
         vertical_velocity,
-        &mut Vec3::ZERO,
+        &mut knockback,
         environment,
         dt,
     )

@@ -23,7 +23,7 @@ mod pin_test_fixtures;
 mod pin_tests;
 
 pub use auto_close::MoverAutoCloseTimers;
-pub use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
+pub use blocking::{AgentMoverPair, MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
 pub use command::apply_mover_command;
 pub use pin::run_mover_pin_pretest;
 
@@ -93,6 +93,21 @@ impl MoverTickStateTable {
                 .into_iter()
                 .flatten()
             })
+    }
+
+    /// See [`MoverBlockingState::agent_yields`].
+    pub fn agent_yields(&self) -> &[AgentMoverPair] {
+        self.blocking_state.agent_yields()
+    }
+
+    /// See [`MoverBlockingState::yield_agent_as_corpse`].
+    pub fn yield_agent_as_corpse(&mut self, agent: EntityId, mover_id: u32) {
+        self.blocking_state.yield_agent_as_corpse(agent, mover_id);
+    }
+
+    /// See [`MoverBlockingState::agent_yields_as_corpse`].
+    pub fn agent_yields_as_corpse(&self, agent: EntityId, mover_id: u32) -> bool {
+        self.blocking_state.agent_yields_as_corpse(agent, mover_id)
     }
 
     /// Split the tick-local pose view from the host-only policy timers. The
@@ -1455,6 +1470,8 @@ mod tests {
         let mover = registry.spawn(Transform::default());
         let victim = registry.spawn(Transform::default());
         table.blocking_state.seed_test_cadence(mover, victim);
+        table.blocking_state.note_agent_yield(victim, 7);
+        table.yield_agent_as_corpse(victim, 7);
 
         table.clear();
 

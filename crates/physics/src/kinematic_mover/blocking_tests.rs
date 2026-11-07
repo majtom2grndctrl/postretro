@@ -284,6 +284,15 @@ fn add_enemy(registry: &mut EntityRegistry, health: Option<f32>) -> EntityId {
     enemy
 }
 
+fn set_enemy_ground(registry: &mut EntityRegistry, enemy: EntityId, ground: GroundRef) {
+    let mut agent = registry
+        .get_component::<AgentComponent>(enemy)
+        .expect("agent remains attached")
+        .clone();
+    agent.ground = ground;
+    registry.set_component(enemy, agent).expect("agent updates");
+}
+
 fn blocking_static_wall() -> CollisionWorld {
     let points = vec![
         Vec3::new(0.1, 0.0, -1.0),
@@ -1364,7 +1373,7 @@ fn translating_rotating_crossing_lands_crush_damage() {
 
     run_mover_blocking_pass(
         &mut registry,
-        &CollisionWorld::new(),
+        &blocking_static_wall(),
         std::slice::from_ref(&swept_wall(mover_id)),
         &translating_rotating_crossing_pose(mover_id),
         &mut MoverBlockingState::default(),
@@ -1645,7 +1654,7 @@ fn crush_policy_emits_no_impact_or_event_without_health() {
 
     run_mover_blocking_pass(
         &mut registry,
-        &CollisionWorld::new(),
+        &blocking_static_wall(),
         std::slice::from_ref(&swept_wall(mover_id)),
         &moving_contact_pose(mover_id),
         &mut MoverBlockingState::default(),
@@ -1674,7 +1683,7 @@ fn zero_damage_crush_emits_no_impact_or_event() {
 
     run_mover_blocking_pass(
         &mut registry,
-        &CollisionWorld::new(),
+        &blocking_static_wall(),
         std::slice::from_ref(&swept_wall(mover_id)),
         &moving_contact_pose(mover_id),
         &mut MoverBlockingState::default(),
@@ -1935,7 +1944,7 @@ fn reverse_policy_reacts_once_when_two_enemies_contact_in_one_pass() {
 }
 
 #[test]
-fn crush_policy_damages_enemy_on_overlap_and_continues_after_death_latch() {
+fn crush_policy_damages_pinned_enemy_and_continues_after_death_latch() {
     let mover_id = 42;
     let mut registry = EntityRegistry::new();
     let mover_entity = registry.spawn(Transform::default());
@@ -1949,7 +1958,7 @@ fn crush_policy_damages_enemy_on_overlap_and_continues_after_death_latch() {
     let enemy = add_enemy(&mut registry, Some(15.0));
 
     let collider = swept_wall(mover_id);
-    let static_world = CollisionWorld::new();
+    let static_world = blocking_static_wall();
     let poses = moving_contact_pose(mover_id);
     let mut blocking_state = MoverBlockingState::default();
     let mut events = Vec::new();
@@ -1974,7 +1983,7 @@ fn crush_policy_damages_enemy_on_overlap_and_continues_after_death_latch() {
         );
     };
 
-    run_pass(&mut registry); // First overlap hit lands immediately.
+    run_pass(&mut registry); // First pinned hit lands immediately.
     run_pass(&mut registry);
     run_pass(&mut registry); // The second hit reaches zero HP.
     postretro_sim::scripting_systems::health::sweep_deaths_for_test(&mut registry);
@@ -2006,7 +2015,7 @@ fn crush_policy_damages_enemy_on_overlap_and_continues_after_death_latch() {
 }
 
 #[test]
-fn displace_policy_ignores_enemy_contacts() {
+fn displace_policy_ignores_unpinned_enemy_contacts() {
     let mover_id = 42;
     let mut registry = EntityRegistry::new();
     let mover_entity = registry.spawn(Transform::default());
@@ -2066,7 +2075,7 @@ fn crush_policy_restarts_enemy_cadence_after_unpin() {
     let enemy = add_enemy(&mut registry, Some(100.0));
 
     let collider = swept_wall(mover_id);
-    let static_world = CollisionWorld::new();
+    let static_world = blocking_static_wall();
     let poses = moving_contact_pose(mover_id);
     let mut blocking_state = MoverBlockingState::default();
     let mut events = Vec::new();
@@ -2083,7 +2092,7 @@ fn crush_policy_restarts_enemy_cadence_after_unpin() {
         );
     };
 
-    run_pass(&mut registry); // First overlap hit lands immediately.
+    run_pass(&mut registry); // First pinned hit lands immediately.
     let mut transform = *registry
         .get_component::<Transform>(enemy)
         .expect("enemy transform remains attached");
@@ -2140,9 +2149,14 @@ fn held_world_participation_excludes_blockers_and_crush_victims_until_release() 
         let poses = moving_contact_pose(mover_id);
         let mut state = MoverBlockingState::default();
         let mut events = Vec::new();
+        let world = if policy == BlockPolicy::Crush {
+            blocking_static_wall()
+        } else {
+            CollisionWorld::new()
+        };
         run_mover_blocking_pass(
             &mut registry,
-            &CollisionWorld::new(),
+            &world,
             std::slice::from_ref(&collider),
             &poses,
             &mut state,
@@ -2180,7 +2194,7 @@ fn held_world_participation_excludes_blockers_and_crush_victims_until_release() 
             .unwrap();
         run_mover_blocking_pass(
             &mut registry,
-            &CollisionWorld::new(),
+            &world,
             std::slice::from_ref(&collider),
             &poses,
             &mut state,
@@ -2220,7 +2234,7 @@ fn held_world_participation_rechecks_queued_crush_victims_after_callback() {
     let mut events = Vec::new();
     run_mover_blocking_pass(
         &mut registry,
-        &CollisionWorld::new(),
+        &blocking_static_wall(),
         std::slice::from_ref(&collider),
         &poses,
         &mut MoverBlockingState::default(),
@@ -2228,7 +2242,6 @@ fn held_world_participation_rechecks_queued_crush_victims_after_callback() {
         &mut events,
         &mut |registry| {
             callbacks += 1;
-            // Contact iteration order is deliberately irrelevant to this proof.
             let mut inventory = Inventory::default();
             inventory.wieldables[8] = Some(first);
             inventory.wieldables[9] = Some(second);
@@ -2314,5 +2327,592 @@ fn crush_deals_its_crush_damage_type() {
         crush(&mut registry),
         50.0,
         "an unregistered name deals the default type"
+    );
+}
+
+fn is_blocked(registry: &EntityRegistry, mover: EntityId) -> bool {
+    registry
+        .get_component::<KinematicMoverComponent>(mover)
+        .expect("mover remains live")
+        .blocked
+}
+
+fn health_of(registry: &EntityRegistry, entity: EntityId) -> f32 {
+    registry
+        .get_component::<HealthComponent>(entity)
+        .expect("health remains attached")
+        .current
+}
+
+/// One pass at `tick_dt` against an empty world, the mover moving into contact.
+fn contact_pass(
+    registry: &mut EntityRegistry,
+    mover_id: u32,
+    state: &mut MoverBlockingState,
+    tick_dt: f32,
+    events: &mut Vec<(MoverEventKind, u32)>,
+) {
+    run_mover_blocking_pass(
+        registry,
+        &CollisionWorld::new(),
+        std::slice::from_ref(&swept_wall(mover_id)),
+        &moving_contact_pose(mover_id),
+        state,
+        tick_dt,
+        events,
+        &mut |_| {},
+    );
+}
+
+// --- Agents as riders ----------------------------------------------------------------------------
+
+#[test]
+fn grounded_agent_does_not_stop_or_reverse_its_mover() {
+    for policy in [BlockPolicy::Stop, BlockPolicy::Reverse] {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = policy;
+        registry.set_component(mover_entity, mover).unwrap();
+        let enemy = add_enemy(&mut registry, None);
+        set_enemy_ground(&mut registry, enemy, GroundRef::Mover(mover_id));
+
+        let mut state = MoverBlockingState::default();
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+        }
+
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap();
+        assert!(!mover.blocked, "{policy:?}: its own rider holds nothing");
+        assert_eq!(mover.direction_sign, 1, "{policy:?}: nor reverses it");
+        assert!(events.is_empty());
+    }
+}
+
+#[test]
+fn airborne_rider_grace_keeps_a_departing_agent_from_stopping_then_expires() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Stop;
+    registry.set_component(mover_entity, mover).unwrap();
+    let enemy = add_enemy(&mut registry, None);
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+
+    set_enemy_ground(&mut registry, enemy, GroundRef::Mover(mover_id));
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+
+    set_enemy_ground(&mut registry, enemy, GroundRef::Airborne);
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    assert!(events.is_empty(), "a fresh grace window skips the contact");
+    assert!(!is_blocked(&registry, mover_entity));
+
+    contact_pass(&mut registry, mover_id, &mut state, 0.051, &mut events);
+    assert!(
+        is_blocked(&registry, mover_entity),
+        "the bounded airborne exemption expires after RIDER_GRACE_MS"
+    );
+    assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+}
+
+#[test]
+fn airborne_rider_grace_keeps_a_departing_agent_from_reversing() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Reverse;
+    registry.set_component(mover_entity, mover).unwrap();
+    let enemy = add_enemy(&mut registry, None);
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+
+    set_enemy_ground(&mut registry, enemy, GroundRef::Mover(mover_id));
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    set_enemy_ground(&mut registry, enemy, GroundRef::Airborne);
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+
+    assert_eq!(
+        registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap()
+            .direction_sign,
+        1
+    );
+    assert!(events.is_empty());
+}
+
+#[test]
+fn agent_riding_another_mover_or_past_its_grace_still_stops_and_reverses_this_one() {
+    for policy in [BlockPolicy::Stop, BlockPolicy::Reverse] {
+        for ground in [GroundRef::Mover(7), GroundRef::World, GroundRef::Airborne] {
+            let mover_id = 42;
+            let mut registry = EntityRegistry::new();
+            let mover_entity = registry.spawn(Transform::default());
+            let mut mover = mover(mover_id);
+            mover.block_policy = policy;
+            registry.set_component(mover_entity, mover).unwrap();
+            let enemy = add_enemy(&mut registry, None);
+            set_enemy_ground(&mut registry, enemy, ground);
+
+            let mut events = Vec::new();
+            contact_pass(
+                &mut registry,
+                mover_id,
+                &mut MoverBlockingState::default(),
+                0.1,
+                &mut events,
+            );
+
+            assert_eq!(
+                events,
+                vec![(MoverEventKind::Blocked, mover_id)],
+                "{policy:?} reacts to an agent on {ground:?}"
+            );
+        }
+    }
+}
+
+// --- `crush` and agents --------------------------------------------------------------------------
+
+#[test]
+fn crusher_overlapping_an_agent_in_open_air_deals_no_damage() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Crush;
+    mover.crush_damage = 10.0;
+    registry.set_component(mover_entity, mover).unwrap();
+    let walker = add_enemy(&mut registry, Some(100.0));
+    let rider = add_enemy(&mut registry, Some(100.0));
+    set_enemy_ground(&mut registry, rider, GroundRef::Mover(mover_id));
+
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+    for _ in 0..4 {
+        contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    }
+
+    assert_eq!(health_of(&registry, walker), 100.0);
+    assert_eq!(health_of(&registry, rider), 100.0);
+    assert!(events.is_empty());
+    assert!(registry.take_impact_dispatches().is_empty());
+}
+
+#[test]
+fn crusher_pressing_an_agent_against_another_mover_damages_it() {
+    let mover_id = 42;
+    let other_id = 43;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut crusher = mover(mover_id);
+    crusher.block_policy = BlockPolicy::Crush;
+    crusher.crush_damage = 10.0;
+    registry.set_component(mover_entity, crusher).unwrap();
+    let other_entity = registry.spawn(Transform::default());
+    let mut parked = mover(other_id);
+    parked.started = false;
+    registry.set_component(other_entity, parked).unwrap();
+    let enemy = add_enemy(&mut registry, Some(100.0));
+
+    // The same plane as the static wall fixture, as a parked mover.
+    let parked_wall = MoverCollider::from_local_triangles(
+        other_id,
+        &[
+            Vec3::new(0.1, 0.0, -1.0),
+            Vec3::new(0.1, 2.0, -1.0),
+            Vec3::new(0.1, 2.0, 1.0),
+            Vec3::new(0.1, 0.0, 1.0),
+        ],
+        &[[0, 1, 2], [0, 2, 3]],
+    )
+    .expect("wall fixture is valid");
+    let colliders = [swept_wall(mover_id), parked_wall];
+    let poses = TwoMoverPoses {
+        first: moving_contact_pose(mover_id),
+        second: stationary_contact_pose(other_id),
+    };
+    let mut events = Vec::new();
+    run_mover_blocking_pass(
+        &mut registry,
+        &CollisionWorld::new(),
+        &colliders,
+        &poses,
+        &mut MoverBlockingState::default(),
+        0.1,
+        &mut events,
+        &mut |_| {},
+    );
+
+    assert_eq!(health_of(&registry, enemy), 90.0);
+    assert_eq!(events, vec![(MoverEventKind::Crushed, mover_id)]);
+}
+
+/// A closed box around the origin's upper half, large enough to hold a whole
+/// agent standing at `Vec3::Y` clear of every face.
+fn engulfing_box(mover_id: u32) -> MoverCollider {
+    let min = Vec3::new(-2.0, -2.0, -2.0);
+    let max = Vec3::new(2.0, 4.0, 2.0);
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+    MoverCollider::from_local_triangles(
+        mover_id,
+        &corners,
+        &[
+            [0, 1, 2],
+            [0, 2, 3],
+            [4, 6, 5],
+            [4, 7, 6],
+            [0, 4, 5],
+            [0, 5, 1],
+            [1, 5, 6],
+            [1, 6, 2],
+            [2, 6, 7],
+            [2, 7, 3],
+            [3, 7, 4],
+            [3, 4, 0],
+        ],
+    )
+    .expect("box fixture is valid")
+}
+
+// A hull that closed around an agent in one tick reports no contact at all, and
+// the agent's own displacement has nothing to push it out by.
+#[test]
+fn crusher_that_engulfs_an_agent_damages_it_with_no_contact_to_read() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Crush;
+    mover.crush_damage = 10.0;
+    mover.crush_interval_ms = 100.0;
+    registry.set_component(mover_entity, mover).unwrap();
+    let enemy = add_enemy(&mut registry, Some(100.0));
+    let player = add_player(&mut registry, Some(100.0));
+
+    let collider = engulfing_box(mover_id);
+    let poses = stationary_contact_pose(mover_id);
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+    for _ in 0..3 {
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |_| {},
+        );
+    }
+
+    assert_eq!(
+        health_of(&registry, enemy),
+        80.0,
+        "hit at once, then at the cadence"
+    );
+    assert_eq!(
+        health_of(&registry, player),
+        100.0,
+        "the player path has no engulfment test"
+    );
+    assert_eq!(events.len(), 2);
+    assert!(!is_blocked(&registry, mover_entity));
+}
+
+#[test]
+fn corpse_pinned_by_a_crusher_takes_hits_and_raises_impact_facts_at_the_cadence() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Crush;
+    mover.crush_damage = 10.0;
+    mover.crush_interval_ms = 100.0;
+    registry.set_component(mover_entity, mover).unwrap();
+    let corpse = add_enemy(&mut registry, Some(0.0));
+
+    let collider = swept_wall(mover_id);
+    let world = blocking_static_wall();
+    let poses = moving_contact_pose(mover_id);
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+    let mut facts = Vec::new();
+    for _ in 0..4 {
+        run_mover_blocking_pass(
+            &mut registry,
+            &world,
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |registry| facts.extend(registry.take_impact_dispatches()),
+        );
+    }
+
+    assert_eq!(facts.len(), 2, "one fact per cadence, not per tick");
+    assert!(facts.iter().all(|fact| fact.target == corpse));
+    assert!(
+        facts.iter().all(|fact| fact.health_before <= 0.0),
+        "an impact policy keys on health left at 0"
+    );
+    assert_eq!(events.len(), 2);
+    assert!(!is_blocked(&registry, mover_entity));
+}
+
+#[test]
+fn agent_with_a_queued_despawn_is_still_crushed_as_a_corpse() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Crush;
+    mover.crush_damage = 10.0;
+    registry.set_component(mover_entity, mover).unwrap();
+    let enemy = add_enemy(&mut registry, Some(100.0));
+    postretro_sim::impact_effects::despawn(&mut registry, enemy, Some(500.0));
+
+    let mut events = Vec::new();
+    run_mover_blocking_pass(
+        &mut registry,
+        &blocking_static_wall(),
+        std::slice::from_ref(&swept_wall(mover_id)),
+        &moving_contact_pose(mover_id),
+        &mut MoverBlockingState::default(),
+        0.1,
+        &mut events,
+        &mut |_| {},
+    );
+
+    assert_eq!(health_of(&registry, enemy), 90.0);
+    assert_eq!(events, vec![(MoverEventKind::Crushed, mover_id)]);
+}
+
+#[test]
+fn corpse_contact_never_stops_or_reverses_a_mover() {
+    for policy in [BlockPolicy::Stop, BlockPolicy::Reverse] {
+        for despawning in [false, true] {
+            let mover_id = 42;
+            let mut registry = EntityRegistry::new();
+            let mover_entity = registry.spawn(Transform::default());
+            let mut mover = mover(mover_id);
+            mover.block_policy = policy;
+            registry.set_component(mover_entity, mover).unwrap();
+            if despawning {
+                let enemy = add_enemy(&mut registry, Some(100.0));
+                postretro_sim::impact_effects::despawn(&mut registry, enemy, Some(500.0));
+            } else {
+                add_enemy(&mut registry, Some(0.0));
+            }
+
+            let mut events = Vec::new();
+            contact_pass(
+                &mut registry,
+                mover_id,
+                &mut MoverBlockingState::default(),
+                0.1,
+                &mut events,
+            );
+
+            let mover = registry
+                .get_component::<KinematicMoverComponent>(mover_entity)
+                .unwrap();
+            assert!(!mover.blocked && mover.direction_sign == 1);
+            assert!(events.is_empty());
+        }
+    }
+}
+
+// Health resisting the crush type at 0 is the whole of crush immunity: the hit
+// lands for 0 points, its facts still raise, and nothing makes the crusher yield.
+#[test]
+fn crush_immune_agent_takes_no_points_and_never_holds_the_crusher() {
+    use postretro_foundation::defense::{DamageTypeDeclaration, DefenseVocabulary, PoolMultiplier};
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    registry.set_defense_vocabulary(std::sync::Arc::new(DefenseVocabulary {
+        layers: Vec::new(),
+        damage_types: vec![DamageTypeDeclaration {
+            name: "crush".to_string(),
+            matrix: std::collections::BTreeMap::from([(
+                "health".to_string(),
+                PoolMultiplier::Scale(0.0),
+            )]),
+        }],
+        default_damage_type: None,
+    }));
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Crush;
+    mover.crush_damage = 10.0;
+    mover.crush_interval_ms = 100.0;
+    mover.crush_damage_type = Some("crush".to_string());
+    registry.set_component(mover_entity, mover).unwrap();
+    let enemy = add_enemy(&mut registry, Some(100.0));
+
+    let collider = swept_wall(mover_id);
+    let world = blocking_static_wall();
+    let poses = moving_contact_pose(mover_id);
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+    let mut facts = Vec::new();
+    for _ in 0..3 {
+        run_mover_blocking_pass(
+            &mut registry,
+            &world,
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut state,
+            0.05,
+            &mut events,
+            &mut |registry| facts.extend(registry.take_impact_dispatches()),
+        );
+    }
+
+    assert_eq!(health_of(&registry, enemy), 100.0);
+    assert_eq!(facts.len(), 2);
+    assert!(facts.iter().all(|fact| fact.amount == 0.0));
+    assert!(!is_blocked(&registry, mover_entity));
+}
+
+// --- Crush effect order --------------------------------------------------------------------------
+
+// Regression: damage, events and impact callbacks ran in `HashSet` order, which
+// a fresh random seed changes on every set.
+#[test]
+fn multi_victim_crush_runs_its_effects_in_one_order_across_runs() {
+    fn run() -> (Vec<(EntityId, f32)>, Vec<(MoverEventKind, u32)>) {
+        let (first_id, second_id) = (42, 43);
+        let mut registry = EntityRegistry::new();
+        for mover_id in [first_id, second_id] {
+            let entity = registry.spawn(Transform::default());
+            let mut mover = mover(mover_id);
+            mover.block_policy = BlockPolicy::Crush;
+            mover.crush_damage = mover_id as f32;
+            registry.set_component(entity, mover).unwrap();
+        }
+        add_player(&mut registry, Some(100.0));
+        for _ in 0..4 {
+            add_enemy(&mut registry, Some(100.0));
+        }
+        add_enemy(&mut registry, Some(0.0));
+        add_player(&mut registry, Some(100.0));
+
+        let colliders = [swept_wall(first_id), swept_wall(second_id)];
+        let poses = TwoMoverPoses {
+            first: moving_contact_pose(first_id),
+            second: moving_contact_pose(second_id),
+        };
+        let mut facts = Vec::new();
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            &colliders,
+            &poses,
+            &mut MoverBlockingState::default(),
+            0.1,
+            &mut events,
+            &mut |registry| {
+                facts.extend(
+                    registry
+                        .take_impact_dispatches()
+                        .into_iter()
+                        .map(|fact| (fact.target, fact.raw)),
+                );
+            },
+        );
+        (facts, events)
+    }
+
+    let first = run();
+    assert_eq!(first.0.len(), 14, "seven victims under two crushers");
+    assert_eq!(first.1.len(), 14);
+    for attempt in 1..16 {
+        assert_eq!(run(), first, "run {attempt} kept the first run's order");
+    }
+}
+
+// --- Corpse yields -------------------------------------------------------------------------------
+
+#[test]
+fn corpse_yield_stops_a_contact_reaction_and_drops_once_out_of_contact() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Stop;
+    registry.set_component(mover_entity, mover).unwrap();
+    let enemy = add_enemy(&mut registry, Some(100.0));
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+    let move_enemy_to = |registry: &mut EntityRegistry, x: f32| {
+        let mut transform = *registry.get_component::<Transform>(enemy).unwrap();
+        transform.position.x = x;
+        registry.set_component(enemy, transform).unwrap();
+    };
+
+    state.yield_agent_as_corpse(enemy, mover_id);
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    assert!(events.is_empty(), "the touching pair stops nothing");
+    assert!(!is_blocked(&registry, mover_entity));
+    assert!(state.agent_yields_as_corpse(enemy, mover_id));
+
+    move_enemy_to(&mut registry, 30.0);
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    assert!(!state.agent_yields_as_corpse(enemy, mover_id));
+
+    move_enemy_to(&mut registry, 0.0);
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    assert_eq!(events, vec![(MoverEventKind::Blocked, mover_id)]);
+}
+
+#[test]
+fn corpse_yield_drops_with_its_agent_and_under_a_crusher() {
+    let mover_id = 42;
+    let mut registry = EntityRegistry::new();
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Stop;
+    registry.set_component(mover_entity, mover).unwrap();
+    let despawned = add_enemy(&mut registry, Some(100.0));
+    let crushed = add_enemy(&mut registry, Some(100.0));
+    let mut state = MoverBlockingState::default();
+    let mut events = Vec::new();
+
+    state.yield_agent_as_corpse(despawned, mover_id);
+    registry.despawn(despawned).unwrap();
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    assert!(!state.agent_yields_as_corpse(despawned, mover_id));
+
+    let mut crusher = registry
+        .get_component::<KinematicMoverComponent>(mover_entity)
+        .unwrap()
+        .clone();
+    crusher.block_policy = BlockPolicy::Crush;
+    registry.set_component(mover_entity, crusher).unwrap();
+    state.yield_agent_as_corpse(crushed, mover_id);
+    contact_pass(&mut registry, mover_id, &mut state, 0.1, &mut events);
+    assert!(
+        !state.agent_yields_as_corpse(crushed, mover_id),
+        "nothing yields to a crusher as a corpse"
     );
 }

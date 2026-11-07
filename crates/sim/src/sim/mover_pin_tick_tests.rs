@@ -7,9 +7,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::Vec3;
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{
-    EntityId, EntityRegistry, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
-    MoverCommand, Transform,
+    BlockPolicy, EntityId, EntityRegistry, KinematicMoverComponent, KinematicMoverConfig,
+    KinematicMoverMode, MoverCommand, Transform,
 };
 use postretro_foundation::GroundRef;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -17,7 +19,7 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 use super::tests::{sim_command, trigger_movement};
 use super::{PostMovementCommand, simulate_tick};
 use crate::collision::moving::MoverCollider;
-use crate::collision::{CollisionCapsule, CollisionWorld};
+use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE};
 use crate::kinematic_mover::{MoverTickStateTable, apply_mover_command};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 
@@ -104,6 +106,110 @@ impl Rig {
             lift,
             rider,
         }
+    }
+
+    /// A door closing along -X onto a living agent flush against a jamb.
+    fn agent_at_jamb(policy: BlockPolicy) -> Self {
+        let world = CollisionWorld::from_triangles_for_test(
+            vec![
+                Vec3::new(-10.0, 0.0, -10.0),
+                Vec3::new(10.0, 0.0, -10.0),
+                Vec3::new(10.0, 0.0, 10.0),
+                Vec3::new(-10.0, 0.0, 10.0),
+                Vec3::new(-1.0, 0.0, -3.0),
+                Vec3::new(-1.0, 3.0, -3.0),
+                Vec3::new(-1.0, 3.0, 3.0),
+                Vec3::new(-1.0, 0.0, 3.0),
+            ],
+            vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]],
+        );
+        let leaf = MoverCollider::from_local_triangles(
+            LIFT,
+            &[
+                Vec3::new(0.0, 0.0, -1.5),
+                Vec3::new(0.0, 3.0, -1.5),
+                Vec3::new(0.0, 3.0, 1.5),
+                Vec3::new(0.0, 0.0, 1.5),
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        )
+        .expect("leaf collider is valid");
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (door, agent) = {
+            let mut registry = registry.borrow_mut();
+            let waypoints = vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0)];
+            let door = registry.spawn(Transform {
+                position: waypoints[0],
+                ..Transform::default()
+            });
+            let mut mover = KinematicMoverComponent::new(
+                LIFT,
+                KinematicMoverConfig {
+                    waypoints,
+                    waypoint_names: vec!["open".into(), "closed".into()],
+                    speed_mps: 2.0,
+                    wait_ms: 0.0,
+                    mode: KinematicMoverMode::Once,
+                    started: false,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            );
+            mover.block_policy = policy;
+            registry.set_component(door, mover).unwrap();
+            let agent = registry.spawn(Transform {
+                position: Vec3::new(-0.6 + SKIN_DISTANCE, 1.2 + SKIN_DISTANCE, 0.0),
+                ..Transform::default()
+            });
+            registry
+                .set_component(agent, AgentComponent::new(0.4, 2.4, 0.3, 4.0))
+                .unwrap();
+            (door, agent)
+        };
+        let mut rig = Self {
+            registry,
+            world,
+            colliders: vec![leaf],
+            movers: MoverTickStateTable::default(),
+            hit_zones: HitZoneStore::new(),
+            progress: ProgressTracker::new(),
+            lift: door,
+            rider: agent,
+        };
+        rig.set_rider_health(100.0);
+        rig
+    }
+
+    fn set_rider_health(&mut self, current: f32) {
+        self.registry
+            .borrow_mut()
+            .set_component(
+                self.rider,
+                HealthComponent {
+                    max: 100.0,
+                    current,
+                    hitbox: None,
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+    }
+
+    /// Tick until the door holds.
+    fn close_until_held(&mut self) {
+        self.command(MoverCommand::Start);
+        for _ in 0..180 {
+            self.tick();
+            if self.lift().0.blocked {
+                return;
+            }
+        }
+        panic!("the door never held");
     }
 
     fn tick(&mut self) {
@@ -257,4 +363,73 @@ fn command_between_two_simulate_ticks_is_pin_tested_before_the_mover_tick() {
         !lift.started && position.y.abs() < 1.0e-3,
         "the reversed lift came home unstarted: {position:?}"
     );
+}
+
+#[test]
+fn a_door_pinning_a_living_agent_holds_and_steering_can_read_the_yield() {
+    let mut rig = Rig::agent_at_jamb(BlockPolicy::Displace);
+    rig.close_until_held();
+    for _ in 0..30 {
+        rig.tick();
+        assert_eq!(rig.movers.agent_yields(), &[(rig.rider, LIFT)]);
+    }
+    assert!(rig.lift().0.blocked, "the hold lasts as long as the pin");
+    assert_eq!(
+        rig.registry
+            .borrow()
+            .get_component::<HealthComponent>(rig.rider)
+            .unwrap()
+            .current,
+        100.0
+    );
+}
+
+// The Weapons stage kills after the blocking pass, so the pre-tick test is the
+// first to see the corpse; it only adds yields, and the pass is what releases.
+#[test]
+fn an_agent_killed_after_the_pass_frees_its_door_in_the_next_pass_and_it_moves_the_tick_after() {
+    let mut rig = Rig::agent_at_jamb(BlockPolicy::Displace);
+    rig.close_until_held();
+    rig.tick();
+    assert!(rig.lift().0.blocked);
+    rig.set_rider_health(0.0);
+
+    let (_, held_at) = rig.lift();
+    rig.tick();
+    let (door, position) = rig.lift();
+    assert_eq!(position, held_at, "held through its own mover tick");
+    assert!(!door.blocked, "released by that tick's pass");
+    assert!(rig.movers.agent_yields().is_empty());
+
+    rig.tick();
+    assert!(rig.lift().1.x < held_at.x, "and moves the tick after");
+}
+
+#[test]
+fn a_door_closes_through_a_corpse_or_an_agent_with_a_queued_despawn() {
+    for policy in [
+        BlockPolicy::Displace,
+        BlockPolicy::Stop,
+        BlockPolicy::Reverse,
+    ] {
+        for despawning in [false, true] {
+            let mut rig = Rig::agent_at_jamb(policy);
+            if despawning {
+                crate::impact_effects::despawn(
+                    &mut rig.registry.borrow_mut(),
+                    rig.rider,
+                    Some(60_000.0),
+                );
+            } else {
+                rig.set_rider_health(0.0);
+            }
+            rig.command(MoverCommand::Start);
+            for _ in 0..150 {
+                rig.tick();
+                let (door, _) = rig.lift();
+                assert!(!door.blocked && door.direction_sign == 1, "{policy:?}");
+            }
+            assert!(rig.lift().0.completed, "{policy:?}: the door closed");
+        }
+    }
 }

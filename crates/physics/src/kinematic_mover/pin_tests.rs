@@ -15,6 +15,9 @@ const LIFT: u32 = 1;
 const DOOR: u32 = 2;
 const LEAF: u32 = 3;
 
+/// How a fixture places its body: `Rig::add_pawn` or `Rig::add_agent`.
+type Spawn = fn(&mut Rig, Vec3) -> EntityId;
+
 fn give_health(rig: &mut Rig, pawn: EntityId, current: f32) {
     rig.registry
         .set_component(
@@ -42,6 +45,15 @@ fn health(rig: &Rig, pawn: EntityId) -> f32 {
 /// A lift rising from y = 0 to `top` under a ceiling at `ceiling`, with a rider
 /// settled on its deck.
 fn low_ceiling_lift(policy: BlockPolicy, top: f32, ceiling: f32) -> (Rig, EntityId, EntityId) {
+    low_ceiling_lift_with(policy, top, ceiling, Rig::add_pawn)
+}
+
+fn low_ceiling_lift_with(
+    policy: BlockPolicy,
+    top: f32,
+    ceiling: f32,
+    spawn: Spawn,
+) -> (Rig, EntityId, EntityId) {
     let world = static_boxes(&[(
         Vec3::new(-10.0, ceiling, -10.0),
         Vec3::new(10.0, ceiling + 1.0, 10.0),
@@ -54,7 +66,7 @@ fn low_ceiling_lift(policy: BlockPolicy, top: f32, ceiling: f32) -> (Rig, Entity
         KinematicMoverMode::Once,
         policy,
     );
-    let rider = rig.add_pawn(Vec3::new(0.0, rest_y(0.0), 0.0));
+    let rider = spawn(&mut rig, Vec3::new(0.0, rest_y(0.0), 0.0));
     rig.settle(20);
     rig.assert_rides(rider, LIFT);
     (rig, lift, rider)
@@ -158,6 +170,10 @@ fn default_double_door_never_traps_a_pawn_in_a_leaf() {
 /// A platform sliding +X under a static wall whose underside clears the deck
 /// but not a standing rider.
 fn sideways_crusher_rig(damage: f32) -> (Rig, EntityId, EntityId) {
+    sideways_crusher_rig_with(damage, Rig::add_pawn)
+}
+
+fn sideways_crusher_rig_with(damage: f32, spawn: Spawn) -> (Rig, EntityId, EntityId) {
     let world = static_boxes(&[
         floor(),
         (Vec3::new(3.0, 0.6, -5.0), Vec3::new(4.0, 6.0, 5.0)),
@@ -177,7 +193,7 @@ fn sideways_crusher_rig(damage: f32) -> (Rig, EntityId, EntityId) {
         mover.crush_damage = damage;
         mover.crush_interval_ms = 100.0;
     });
-    let rider = rig.add_pawn(Vec3::new(0.0, rest_y(0.2), 0.0));
+    let rider = spawn(&mut rig, Vec3::new(0.0, rest_y(0.2), 0.0));
     give_health(&mut rig, rider, 100.0);
     rig.settle(20);
     rig.assert_rides(rider, LIFT);
@@ -187,6 +203,10 @@ fn sideways_crusher_rig(damage: f32) -> (Rig, EntityId, EntityId) {
 /// A crusher door closing along -X onto a pawn standing against a second,
 /// closed mover rather than static geometry.
 fn two_mover_crusher_rig(damage: f32) -> (Rig, EntityId, EntityId) {
+    two_mover_crusher_rig_with(damage, Rig::add_pawn)
+}
+
+fn two_mover_crusher_rig_with(damage: f32, spawn: Spawn) -> (Rig, EntityId, EntityId) {
     let mut rig = Rig::new(static_boxes(&[floor()]));
     let crusher = rig.add_mover(
         box_collider(
@@ -212,7 +232,7 @@ fn two_mover_crusher_rig(damage: f32) -> (Rig, EntityId, EntityId) {
         KinematicMoverMode::Once,
         BlockPolicy::Displace,
     );
-    let pawn = rig.add_pawn(Vec3::new(-0.5, rest_y(0.0), 0.0));
+    let pawn = spawn(&mut rig, Vec3::new(-0.5, rest_y(0.0), 0.0));
     give_health(&mut rig, pawn, 100.0);
     rig.settle(20);
     (rig, crusher, pawn)
@@ -737,6 +757,10 @@ fn first_pinned_preview_holds_rider_in_place_or_reverses_it_away() {
 
 /// A `once` door closing along -X onto a pawn at a static jamb.
 fn jamb_door_rig(policy: BlockPolicy) -> (Rig, EntityId, EntityId) {
+    jamb_door_rig_with(policy, Rig::add_pawn)
+}
+
+fn jamb_door_rig_with(policy: BlockPolicy, spawn: Spawn) -> (Rig, EntityId, EntityId) {
     let world = static_boxes(&[
         floor(),
         (Vec3::new(-2.0, 0.0, -2.0), Vec3::new(-1.0, 3.0, 2.0)),
@@ -749,7 +773,7 @@ fn jamb_door_rig(policy: BlockPolicy) -> (Rig, EntityId, EntityId) {
         KinematicMoverMode::Once,
         policy,
     );
-    let pawn = rig.add_pawn(Vec3::new(-0.5, rest_y(0.0), 0.0));
+    let pawn = spawn(&mut rig, Vec3::new(-0.5, rest_y(0.0), 0.0));
     rig.settle(20);
     (rig, door, pawn)
 }
@@ -1026,6 +1050,13 @@ fn vault_onto_rising_mover_under_ceiling_never_embeds() {
 /// its reversal pin a body. Returns the rig, lift, rider, pawn under it and
 /// the Blocked edges fired through that tick.
 fn pinned_both_ways_rig(policy: BlockPolicy) -> (Rig, EntityId, EntityId, EntityId, usize) {
+    pinned_both_ways_rig_with(policy, Rig::add_pawn)
+}
+
+fn pinned_both_ways_rig_with(
+    policy: BlockPolicy,
+    spawn: Spawn,
+) -> (Rig, EntityId, EntityId, EntityId, usize) {
     let pawn_top = rest_y(0.0) + HALF_HEIGHT + RADIUS;
     // On the pin tick the deck sits half a tick above the pawn's head and the
     // rider's head half a tick outside the ceiling's skin band; a tick
@@ -1050,7 +1081,7 @@ fn pinned_both_ways_rig(policy: BlockPolicy) -> (Rig, EntityId, EntityId, Entity
         KinematicMoverMode::Once,
         policy,
     );
-    let rider = rig.add_pawn(Vec3::new(0.0, rest_y(start_y), 0.0));
+    let rider = spawn(&mut rig, Vec3::new(0.0, rest_y(start_y), 0.0));
     rig.settle(20);
     rig.assert_rides(rider, LIFT);
     rig.start(lift);
@@ -1060,7 +1091,7 @@ fn pinned_both_ways_rig(policy: BlockPolicy) -> (Rig, EntityId, EntityId, Entity
         blocked_events += rig
             .tick_with(|rig| {
                 if rig.mover_position(lift).y >= pin_deck_y - 1.0e-4 {
-                    under = Some(rig.add_pawn(Vec3::new(0.0, rest_y(0.0), 0.0)));
+                    under = Some(spawn(rig, Vec3::new(0.0, rest_y(0.0), 0.0)));
                 }
             })
             .blocked_events(LIFT);
@@ -1929,4 +1960,635 @@ fn stacked_cage_held_by_its_top_rider_fires_once_per_part() {
     );
     assert_eq!(roof_fired, 1, "the roof fires once for its pin");
     assert_eq!(floor_fired, 1, "the floor fires once for its pin");
+}
+
+// --- Living agents and corpses -------------------------------------------------------------------
+
+/// Where an agent stands flush against the jamb of `jamb_door_rig_with`, so the
+/// door first meets it as a pin rather than a contact.
+const AT_JAMB_X: f32 = -1.0 + RADIUS + SKIN_DISTANCE;
+
+fn agent_at_jamb(policy: BlockPolicy) -> (Rig, EntityId, EntityId) {
+    let (mut rig, door, agent) = jamb_door_rig_with(policy, Rig::add_agent);
+    let mut position = rig.position(agent);
+    position.x = AT_JAMB_X;
+    rig.set_position(agent, position);
+    give_health(&mut rig, agent, 100.0);
+    (rig, door, agent)
+}
+
+fn tick_until_held(rig: &mut Rig, mover: EntityId) {
+    for _ in 0..180 {
+        if rig.mover(mover).blocked {
+            return;
+        }
+        rig.tick();
+    }
+    panic!("the mover never held");
+}
+
+/// A door 4 m wide in Z closing along -X onto bodies against a jamb.
+fn wide_door_rig(policy: BlockPolicy) -> (Rig, EntityId) {
+    let world = static_boxes(&[
+        floor(),
+        (Vec3::new(-2.0, 0.0, -3.0), Vec3::new(-1.0, 3.0, 3.0)),
+    ]);
+    let mut rig = Rig::new(world);
+    let door = rig.add_mover(
+        box_collider(
+            DOOR,
+            &[(Vec3::new(0.0, 0.0, -2.0), Vec3::new(2.0, 3.0, 2.0))],
+        ),
+        vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        policy,
+    );
+    (rig, door)
+}
+
+/// A thick crusher closing along -X over an agent at a jamb, ending with the
+/// whole agent inside its hull.
+fn thick_crusher_rig(damage: f32, agent_health: f32) -> (Rig, EntityId, EntityId) {
+    let world = static_boxes(&[
+        floor(),
+        (Vec3::new(-2.0, 0.0, -2.0), Vec3::new(-1.0, 3.0, 2.0)),
+    ]);
+    let mut rig = Rig::new(world);
+    let crusher = rig.add_mover(
+        box_collider(
+            DOOR,
+            &[(Vec3::new(0.0, 0.0, -1.0), Vec3::new(2.0, 3.0, 1.0))],
+        ),
+        vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Crush,
+    );
+    rig.edit_mover(crusher, |mover| {
+        mover.crush_damage = damage;
+        mover.crush_interval_ms = 100.0;
+    });
+    let agent = rig.add_agent(Vec3::new(AT_JAMB_X, rest_y(0.0), 0.0));
+    give_health(&mut rig, agent, agent_health);
+    rig.settle(20);
+    (rig, crusher, agent)
+}
+
+#[test]
+fn door_holds_for_a_pinned_agent_unharmed_and_resumes_once_it_leaves() {
+    for policy in [BlockPolicy::Displace, BlockPolicy::Stop] {
+        let (mut rig, door, agent) = agent_at_jamb(policy);
+        // The leaf spans z in [-0.15, 0.15].
+        hold_then_release(
+            &mut rig,
+            &[door],
+            agent,
+            Vec3::NEG_Z,
+            |p| p.z + RADIUS < -0.15 - SKIN_DISTANCE - 1.0e-3,
+            "agent at a jamb",
+        );
+        assert_eq!(health(&rig, agent), 100.0, "{policy:?} deals no damage");
+    }
+}
+
+#[test]
+fn descending_lift_holds_for_a_pinned_agent_and_resumes_once_it_leaves() {
+    let mut rig = Rig::new(static_boxes(&[floor()]));
+    let lift = rig.add_mover(
+        deck(LIFT, 1.5),
+        vec![Vec3::new(0.0, 4.0, 0.0), Vec3::new(0.0, 0.2, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    let agent = rig.add_agent(Vec3::new(0.0, rest_y(0.0), 0.0));
+    give_health(&mut rig, agent, 100.0);
+    rig.settle(20);
+    hold_then_release(
+        &mut rig,
+        &[lift],
+        agent,
+        Vec3::X,
+        |p| p.x - RADIUS > 1.5 + SKIN_DISTANCE + 1.0e-3,
+        "descending lift",
+    );
+    assert_eq!(health(&rig, agent), 100.0);
+}
+
+#[test]
+fn reverse_door_backs_off_a_pinned_agent_when_its_reversed_course_pins_nothing() {
+    let (mut rig, door, agent) = agent_at_jamb(BlockPolicy::Reverse);
+    rig.start(door);
+    let mut fired = 0;
+    for _ in 0..180 {
+        fired += rig.tick().blocked_events(DOOR);
+        assert!(!rig.inside_mover_hull(agent));
+        if rig.mover(door).direction_sign < 0 {
+            break;
+        }
+    }
+    assert!(rig.mover(door).direction_sign < 0, "the door backed off");
+    assert_eq!(fired, 1);
+    let at = rig.mover_position(door);
+    rig.tick();
+    assert!(rig.mover_position(door).x > at.x, "and keeps backing off");
+    assert_eq!(health(&rig, agent), 100.0);
+    assert!(rig.mover_overlap(agent) <= OVERLAP_TOLERANCE);
+}
+
+#[test]
+fn reverse_lift_pinned_both_ways_by_agents_holds_without_flipping_and_fires_once() {
+    let (mut rig, lift, rider, under, fired) =
+        pinned_both_ways_rig_with(BlockPolicy::Reverse, Rig::add_agent);
+    give_health(&mut rig, rider, 100.0);
+    give_health(&mut rig, under, 100.0);
+    assert_eq!(rig.mover(lift).direction_sign, 1);
+    let later = hold_pinned_both_ways(&mut rig, lift, rider, under, 60, |_, _| {});
+    assert!(rig.mover(lift).blocked, "the lift holds");
+    assert_eq!(fired + later, 1, "one blocked event for the whole pin");
+    assert_eq!(health(&rig, rider), 100.0);
+    assert_eq!(health(&rig, under), 100.0);
+}
+
+#[test]
+fn lift_never_carries_an_agent_rider_into_a_low_ceiling_under_any_yielding_policy() {
+    for policy in [
+        BlockPolicy::Displace,
+        BlockPolicy::Stop,
+        BlockPolicy::Reverse,
+    ] {
+        let (mut rig, lift, rider) = low_ceiling_lift_with(policy, 3.0, 4.6, Rig::add_agent);
+        give_health(&mut rig, rider, 100.0);
+        rig.start(lift);
+        let mut fired = 0;
+        for _ in 0..240 {
+            fired += rig.tick().blocked_events(LIFT);
+            assert_clear_of_static(&rig, rider, "agent rider");
+        }
+        assert_eq!(fired, 1, "{policy:?}: one yield to the pinned rider");
+        assert_eq!(health(&rig, rider), 100.0);
+        assert_eq!(
+            rig.ground(rider),
+            postretro_foundation::GroundRef::Mover(LIFT),
+            "{policy:?}: the agent stays on its lift"
+        );
+    }
+}
+
+#[test]
+fn an_agent_and_a_pawn_pinned_on_one_tick_get_one_decision() {
+    for policy in [
+        BlockPolicy::Displace,
+        BlockPolicy::Stop,
+        BlockPolicy::Reverse,
+    ] {
+        let (mut rig, door) = wide_door_rig(policy);
+        let agent = rig.add_agent(Vec3::new(AT_JAMB_X, rest_y(0.0), 1.0));
+        let pawn = rig.add_pawn(Vec3::new(AT_JAMB_X, rest_y(0.0), -1.0));
+        give_health(&mut rig, agent, 100.0);
+        give_health(&mut rig, pawn, 100.0);
+        rig.settle(20);
+        rig.start(door);
+        let fired: usize = (0..150).map(|_| rig.tick().blocked_events(DOOR)).sum();
+        assert_eq!(fired, 1, "{policy:?}: one decision covers both bodies");
+        if policy == BlockPolicy::Reverse {
+            assert_eq!(rig.mover(door).direction_sign, -1);
+        } else {
+            assert!(rig.mover(door).blocked);
+        }
+        assert_eq!(health(&rig, agent), 100.0);
+        assert_eq!(health(&rig, pawn), 100.0);
+    }
+}
+
+#[test]
+fn crusher_crushes_an_agent_carried_sideways_into_a_wall() {
+    let (mut rig, platform, rider) = sideways_crusher_rig_with(10.0, Rig::add_agent);
+    rig.start(platform);
+    for _ in 0..120 {
+        rig.tick();
+    }
+    assert!(
+        health(&rig, rider) < 100.0,
+        "the crusher carried its rider into the wall unharmed at {:?}",
+        rig.position(rider)
+    );
+}
+
+#[test]
+fn crusher_crushes_an_agent_squeezed_against_another_mover() {
+    let (mut rig, crusher, agent) = two_mover_crusher_rig_with(10.0, Rig::add_agent);
+    rig.start(crusher);
+    for _ in 0..120 {
+        rig.tick();
+    }
+    assert!(
+        health(&rig, agent) < 100.0,
+        "the crusher squeezed the agent against a mover unharmed at {:?}",
+        rig.position(agent)
+    );
+}
+
+#[test]
+fn crusher_carrying_an_agent_through_open_air_deals_no_damage() {
+    let (mut rig, lift, rider) =
+        low_ceiling_lift_with(BlockPolicy::Crush, 3.0, 40.0, Rig::add_agent);
+    rig.edit_mover(lift, |mover| mover.crush_damage = 10.0);
+    give_health(&mut rig, rider, 100.0);
+    rig.start(lift);
+    for _ in 0..180 {
+        let report = rig.tick();
+        assert_eq!(report.impacts, 0);
+        rig.assert_rides(rider, LIFT);
+    }
+    assert!(rig.mover(lift).completed);
+    assert_eq!(health(&rig, rider), 100.0);
+}
+
+#[test]
+fn crusher_pushing_an_unpinned_agent_across_open_floor_deals_no_damage() {
+    let mut rig = Rig::new(static_boxes(&[floor()]));
+    let crusher = rig.add_mover(
+        door_leaf(DOOR),
+        vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(-3.0, 0.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Crush,
+    );
+    rig.edit_mover(crusher, |mover| mover.crush_damage = 10.0);
+    let agent = rig.add_agent(Vec3::new(0.0, rest_y(0.0), 0.0));
+    give_health(&mut rig, agent, 100.0);
+    rig.settle(20);
+    rig.start(crusher);
+    for _ in 0..240 {
+        assert_eq!(rig.tick().impacts, 0);
+    }
+    assert!(rig.mover(crusher).completed);
+    assert_eq!(health(&rig, agent), 100.0);
+    assert!(rig.position(agent).x < -3.0, "it was pushed along the way");
+}
+
+#[test]
+fn crusher_closing_over_an_agent_keeps_its_cadence_past_death_and_after_it_arrives() {
+    let (mut rig, crusher, agent) = thick_crusher_rig(10.0, 15.0);
+    rig.start(crusher);
+    let mut hits = Vec::new();
+    let mut arrived_at = None;
+    for tick in 0..300 {
+        if rig.tick().impacts > 0 {
+            hits.push(tick);
+        }
+        if arrived_at.is_none() && rig.mover(crusher).completed {
+            arrived_at = Some(tick);
+        }
+    }
+    let arrived_at = arrived_at.expect("a crusher never holds");
+    assert!(health(&rig, agent) <= 0.0);
+    assert!(
+        rig.inside_mover_hull(agent),
+        "the agent ended inside the hull at {:?}",
+        rig.position(agent)
+    );
+    assert!(
+        hits.iter().filter(|tick| **tick > arrived_at).count() >= 10,
+        "an engulfed body keeps taking hits after the crusher stops: {hits:?}"
+    );
+    assert!(
+        hits.windows(2)
+            .all(|gap| (6..=7).contains(&(gap[1] - gap[0]))),
+        "hits land at the 100 ms cadence: {hits:?}"
+    );
+}
+
+// Health at ×0 is immunity: a hit for no points, and a crusher that never yields.
+#[test]
+fn crusher_passes_through_a_crush_immune_agent_unharmed() {
+    use postretro_foundation::defense::{DamageTypeDeclaration, DefenseVocabulary, PoolMultiplier};
+    let (mut rig, crusher, agent) = thick_crusher_rig(10.0, 100.0);
+    rig.registry
+        .set_defense_vocabulary(std::sync::Arc::new(DefenseVocabulary {
+            layers: Vec::new(),
+            damage_types: vec![DamageTypeDeclaration {
+                name: "crush".to_string(),
+                matrix: std::collections::BTreeMap::from([(
+                    "health".to_string(),
+                    PoolMultiplier::Scale(0.0),
+                )]),
+            }],
+            default_damage_type: None,
+        }));
+    rig.edit_mover(crusher, |mover| {
+        mover.crush_damage_type = Some("crush".to_string());
+    });
+    rig.start(crusher);
+    let mut impacts = 0;
+    for _ in 0..240 {
+        impacts += rig.tick().impacts;
+        assert!(!rig.mover(crusher).blocked);
+    }
+    assert!(rig.mover(crusher).completed, "the crusher passed through");
+    assert_eq!(health(&rig, agent), 100.0);
+    assert!(impacts > 0, "the hits still landed, for no points");
+}
+
+fn make_corpse(rig: &mut Rig, agent: EntityId, despawning: bool) {
+    if despawning {
+        postretro_sim::impact_effects::despawn(&mut rig.registry, agent, Some(60_000.0));
+    } else {
+        give_health(rig, agent, 0.0);
+    }
+}
+
+#[test]
+fn corpse_at_a_jamb_never_holds_or_reverses_the_door_closing_on_it() {
+    for policy in [
+        BlockPolicy::Displace,
+        BlockPolicy::Stop,
+        BlockPolicy::Reverse,
+    ] {
+        for despawning in [false, true] {
+            let (mut rig, door, agent) = agent_at_jamb(policy);
+            make_corpse(&mut rig, agent, despawning);
+            rig.start(door);
+            let what = format!("{policy:?}, despawning {despawning}");
+            for _ in 0..150 {
+                let report = rig.tick();
+                assert_eq!(report.blocked_events(DOOR), 0, "{what}");
+                assert!(!rig.mover(door).blocked, "{what}: no hold");
+                assert_eq!(rig.mover(door).direction_sign, 1, "{what}: no reversal");
+                assert!(rig.table.agent_yields().is_empty(), "{what}: no yield");
+            }
+            assert!(rig.mover(door).completed, "{what}: the door closed");
+            let expected = if despawning { 100.0 } else { 0.0 };
+            assert_eq!(health(&rig, agent), expected, "{what}: only crush damages");
+        }
+    }
+}
+
+#[test]
+fn closing_door_pushes_an_unpinned_corpse_clear() {
+    let mut rig = Rig::new(static_boxes(&[floor()]));
+    let door = rig.add_mover(
+        door_leaf(DOOR),
+        vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Displace,
+    );
+    let corpse = rig.add_agent(Vec3::new(-0.5, rest_y(0.0), 0.0));
+    give_health(&mut rig, corpse, 0.0);
+    rig.settle(20);
+    rig.start(door);
+    for _ in 0..150 {
+        rig.tick();
+    }
+    assert!(rig.mover(door).completed);
+    assert!(
+        rig.position(corpse).x + RADIUS <= -1.0 + OVERLAP_TOLERANCE,
+        "the door pushed it clear: {:?}",
+        rig.position(corpse)
+    );
+}
+
+#[test]
+fn a_corpse_beside_a_pinned_agent_adds_nothing_to_the_hold() {
+    let (mut rig, door) = wide_door_rig(BlockPolicy::Displace);
+    let agent = rig.add_agent(Vec3::new(AT_JAMB_X, rest_y(0.0), 1.0));
+    let corpse = rig.add_agent(Vec3::new(AT_JAMB_X, rest_y(0.0), -1.0));
+    give_health(&mut rig, agent, 100.0);
+    give_health(&mut rig, corpse, 0.0);
+    rig.settle(20);
+    rig.start(door);
+    tick_until_held(&mut rig, door);
+    assert_eq!(rig.table.agent_yields(), &[(agent, DOOR)]);
+
+    // Only the living agent held it: its leaving frees the door.
+    rig.set_input(agent, walk(Vec3::Z));
+    for _ in 0..120 {
+        rig.tick();
+    }
+    assert!(!rig.mover(door).blocked);
+    assert!(rig.mover_position(door).x < 0.0, "the door closes on");
+}
+
+// A kill after the pass, as the Weapons stage lands one.
+#[test]
+fn agent_killed_after_the_pass_releases_its_mover_in_the_next_pass_and_it_moves_after() {
+    let (mut rig, door, agent) = agent_at_jamb(BlockPolicy::Displace);
+    rig.start(door);
+    tick_until_held(&mut rig, door);
+    rig.tick();
+    assert!(rig.mover(door).blocked);
+    give_health(&mut rig, agent, 0.0);
+
+    let held_at = rig.mover_position(door);
+    let report = rig.tick();
+    assert_eq!(report.blocked_events(DOOR), 0, "no new hold or onset");
+    assert_eq!(rig.mover_position(door), held_at, "held through its tick");
+    assert!(!rig.mover(door).blocked, "the pass released it");
+
+    rig.tick();
+    assert!(
+        rig.mover_position(door).x < held_at.x,
+        "it moves the tick after"
+    );
+}
+
+// Movers run in registry order, so a crusher ahead of the door kills the agent
+// before the door answers its pin: only liveness fixed at the start of the pass
+// gives one answer in both orders.
+#[test]
+fn agent_crushed_in_the_pass_still_holds_the_mover_pinning_it_that_tick() {
+    for crusher_first in [false, true] {
+        let world = static_boxes(&[
+            floor(),
+            (Vec3::new(-2.0, 0.0, -2.0), Vec3::new(-1.0, 3.0, 2.0)),
+        ]);
+        let mut rig = Rig::new(world);
+        let add_slab = |rig: &mut Rig| {
+            let slab = rig.add_mover(
+                deck(LEAF, 1.5),
+                vec![
+                    Vec3::new(AT_JAMB_X, 3.0, 0.0),
+                    Vec3::new(AT_JAMB_X, 0.5, 0.0),
+                ],
+                2.0,
+                KinematicMoverMode::Once,
+                BlockPolicy::Crush,
+            );
+            rig.edit_mover(slab, |mover| mover.crush_damage = 50.0);
+            slab
+        };
+        let first_slab = crusher_first.then(|| add_slab(&mut rig));
+        let door = rig.add_mover(
+            door_leaf(DOOR),
+            vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0)],
+            2.0,
+            KinematicMoverMode::Once,
+            BlockPolicy::Displace,
+        );
+        let slab = first_slab.unwrap_or_else(|| add_slab(&mut rig));
+        let agent = rig.add_agent(Vec3::new(AT_JAMB_X, rest_y(0.0), 0.0));
+        give_health(&mut rig, agent, 5.0);
+        rig.settle(20);
+        rig.start(door);
+        tick_until_held(&mut rig, door);
+        rig.start(slab);
+        let crushed = (0..90).any(|_| rig.tick().impacts > 0);
+        assert!(crushed, "the slab reached the agent");
+        assert!(health(&rig, agent) <= 0.0);
+        assert!(
+            rig.mover(door).blocked,
+            "crusher first {crusher_first}: the pass read the agent alive at its start"
+        );
+
+        let held_at = rig.mover_position(door);
+        let report = rig.tick();
+        assert_eq!(report.blocked_events(DOOR), 0, "no new hold or onset");
+        assert_eq!(rig.mover_position(door), held_at, "held through its tick");
+        assert!(
+            !rig.mover(door).blocked,
+            "the corpse rule frees it in the pass"
+        );
+
+        rig.tick();
+        assert!(
+            rig.mover_position(door).x < held_at.x,
+            "it moves the tick after"
+        );
+    }
+}
+
+// Steering runs between the pre-tick test and the pass, so the record has to
+// carry yields from both across it.
+#[test]
+fn a_yield_to_a_pinned_agent_is_readable_every_tick_of_the_hold_and_names_only_living_agents() {
+    let (mut rig, door) = wide_door_rig(BlockPolicy::Displace);
+    let agent = rig.add_agent(Vec3::new(AT_JAMB_X, rest_y(0.0), 1.0));
+    let pawn = rig.add_pawn(Vec3::new(AT_JAMB_X, rest_y(0.0), -1.0));
+    give_health(&mut rig, agent, 100.0);
+    rig.settle(20);
+    assert!(rig.table.agent_yields().is_empty());
+    rig.start(door);
+    tick_until_held(&mut rig, door);
+
+    for _ in 0..10 {
+        rig.tick_with(|rig| {
+            assert_eq!(
+                rig.table.agent_yields(),
+                &[(agent, DOOR)],
+                "steering sees the yield"
+            );
+        });
+        assert_eq!(
+            rig.table.agent_yields(),
+            &[(agent, DOOR)],
+            "one entry however long the hold"
+        );
+    }
+
+    // The pawn still pins the door; the record drops only the agent.
+    rig.set_input(agent, walk(Vec3::Z));
+    for _ in 0..60 {
+        rig.tick();
+    }
+    assert!(rig.mover(door).blocked, "the pawn still holds it: {pawn:?}");
+    assert!(rig.table.agent_yields().is_empty());
+}
+
+// A free contact reverses the lift, but the reversal would pin the agent under
+// it: the hold answers that agent, so it is the one that has to step clear.
+#[test]
+fn a_reverse_hold_names_the_agent_its_reversed_course_would_pin() {
+    let under_top = rest_y(0.0) + HALF_HEIGHT + RADIUS;
+    let deck_y = under_top + 0.2 + 0.25 * SKIN_DISTANCE;
+    let ledge_y = deck_y + 1.5 * TICK_TRAVEL;
+    let mut rig = Rig::new(static_boxes(&[
+        floor(),
+        (
+            Vec3::new(-0.2, ledge_y - 0.1, -0.2),
+            Vec3::new(0.2, ledge_y, 0.2),
+        ),
+    ]));
+    let lift = rig.add_mover(
+        deck(LIFT, 1.5),
+        vec![Vec3::new(0.0, deck_y, 0.0), Vec3::new(0.0, 6.0, 0.0)],
+        2.0,
+        KinematicMoverMode::Once,
+        BlockPolicy::Reverse,
+    );
+    let free = rig.add_agent(Vec3::new(0.0, rest_y(ledge_y), 0.0));
+    let under = rig.add_agent(Vec3::new(0.0, rest_y(0.0), 0.0));
+    rig.settle(20);
+    rig.start(lift);
+    for _ in 0..3 {
+        rig.tick();
+    }
+    assert!(rig.mover(lift).blocked, "the reversal held");
+    assert_eq!(rig.mover(lift).direction_sign, 1);
+    assert_eq!(
+        rig.table.agent_yields(),
+        &[(under, LIFT)],
+        "the free agent at {:?} pins nothing",
+        rig.position(free)
+    );
+}
+
+#[test]
+fn an_agent_yielding_as_a_corpse_lets_the_mover_through_and_is_pinned_again_once_clear() {
+    for policy in [
+        BlockPolicy::Displace,
+        BlockPolicy::Stop,
+        BlockPolicy::Reverse,
+    ] {
+        let (mut rig, door, agent) = agent_at_jamb(policy);
+        rig.start(door);
+        let reach = AT_JAMB_X + RADIUS + 2.0 * SKIN_DISTANCE + TICK_TRAVEL;
+        for _ in 0..240 {
+            let report = rig.tick_with(|rig| {
+                if rig.mover_position(door).x <= reach && !rig.mover(door).completed {
+                    rig.table.yield_agent_as_corpse(agent, DOOR);
+                }
+            });
+            assert_eq!(report.blocked_events(DOOR), 0, "{policy:?}: no yield");
+            assert_eq!(rig.mover(door).direction_sign, 1, "{policy:?}: no reversal");
+            assert!(!rig.mover(door).blocked, "{policy:?}: no hold");
+        }
+        assert!(rig.mover(door).completed, "{policy:?}: the door closed");
+        assert_eq!(health(&rig, agent), 100.0, "{policy:?}: unharmed");
+
+        // Sent back, the door leaves the agent and the mark goes with it.
+        rig.command(door, MoverCommand::Reverse);
+        for _ in 0..180 {
+            rig.tick();
+        }
+        assert!(
+            !rig.table.agent_yields_as_corpse(agent, DOOR),
+            "{policy:?}: out of contact"
+        );
+
+        // So the next closing is judged afresh.
+        rig.set_position(agent, Vec3::new(AT_JAMB_X, rest_y(0.0), 0.0));
+        rig.start(door);
+        let fired: usize = (0..180).map(|_| rig.tick().blocked_events(DOOR)).sum();
+        assert_eq!(fired, 1, "{policy:?}: the door yields again");
+    }
+}
+
+// A held mover touches its agent only through the course it is held off: a mark
+// that read only present overlap would drop at once and hold it forever.
+#[test]
+fn a_corpse_yield_marked_on_a_held_mover_survives_until_the_mover_moves_through() {
+    let (mut rig, door, agent) = agent_at_jamb(BlockPolicy::Displace);
+    rig.start(door);
+    tick_until_held(&mut rig, door);
+    rig.tick();
+    rig.tick_with(|rig| rig.table.yield_agent_as_corpse(agent, DOOR));
+    assert!(rig.table.agent_yields_as_corpse(agent, DOOR));
+    assert!(!rig.mover(door).blocked, "the pass let the door go");
+    let at = rig.mover_position(door);
+    rig.tick();
+    assert!(rig.mover_position(door).x < at.x, "and it proceeds");
+    assert!(rig.table.agent_yields_as_corpse(agent, DOOR));
 }

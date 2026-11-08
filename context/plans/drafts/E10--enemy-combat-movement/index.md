@@ -33,7 +33,7 @@ When this is done:
 - **An encounter is a map entity, `ai_encounter`** (`@SolidClass`): `_tags`, `encounter_tag`, and `attack_budget` (empty takes the mod value).
   - **At most one is active per level.** Starting one ends the active one. Existing trigger `command` `start` and `stop` on its `_tags` start and end it, and scripts drive the same member as `getMapEntities("encounter")` with `start` and `stop`, as trap members do. `start` on the active encounter and `stop` on an inactive one are no-ops. Both apply on the host only, and a level starts with none active.
   - **Membership.** An enemy is a member while it carries `encounter_tag`, live, so later spawns join through `spawned_tags`. An enemy inside the entity's brushes when it starts is also a member until the encounter ends; leaving the volume does not remove it, and arriving later does not add it. The volume test runs once per start, one point-in-brush test per AI enemy, with no per-tick cost.
-  - **Ending.** On `stop`, or on replacement, members return to the default pool and keep any held turn, which then counts against the default pool until it ends by its own rule.
+  - **Ending.** On `stop`, or on replacement, members return to the default pool.
   - **Validation.** An invalid `attack_budget` warns and takes the mod value. An empty `encounter_tag` is a compile error naming the entity, since tag membership is the encounter's identity; a volume-only encounter is not a case.
   - The active encounter and its volume members are serializable state: they survive a serialize-and-restore.
   - **Load-time declaration.** The entity seeds level data; scripts and triggers change only which encounter is active (`build_pipeline.md` §Load-time gameplay declarations gains it beside `trigger_teleport`).
@@ -61,8 +61,7 @@ When this is done:
   - **Back-off and kiting.** `reposition` covers fire-then-move. A third verb waits for a consumer.
   - **Softening attacks from outside the target's view.** An additive follow-up on the budget.
   - **Several active encounters, or an encounter suspending the default pool.** One active encounter, stacking beside the default pool, is the owner's call.
-  - **Script-only encounters and per-enemy budget overrides.** An encounter is map data; a script starts and stops it. `npcs().update({ attackBudget })` was dropped with the per-enemy model.
-  - **Live volume membership.** Volume membership is captured at start.
+  - **Script-only encounters.** An encounter is map data; a script starts and stops it.
   - **Protective cover and squad tactics.** Their exclusion stands from the line-of-sight and positioning briefs.
   - **Per-activity speed.** The statecharts brief keeps it additive, so a strafe and a run share `moveSpeed` until it lands.
 
@@ -158,6 +157,12 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] An enemy leaving a pool while holding a turn keeps it. The turn counts against its new pool until it ends by its own rule, and no grant in that pool fits around it (pin P13).
 - [ ] An empty `encounter_tag` is a compile error naming the entity. A manifest budget below 1, a negative `attackCost` or a non-finite value rejects with a pathed error in both runtimes.
 - [ ] A level with no `ai_encounter` behaves as the default pool alone.
+- [ ] Start and stop requests follow pin P14: a trigger-bound start applies before that tick's arbitration, and two starts on one tick leave the later-issued one active.
+- [ ] A volume member that left the brushes is still a member after a serialize-and-restore, and an enemy that entered after start is not (pin P15).
+- [ ] An encounter active when its level restarts or changes is not active in the next install, and its members draw from the default pool from that install's first tick.
+- [ ] A volume member that despawns stops being a member; an untagged enemy later spawned into its registry slot is not one.
+- [ ] While an encounter with an empty `attack_budget` is active, a mod reload that changes `attackBudget` changes that encounter's pool budget from the next tick.
+- [ ] Two levels differing only in an `ai_encounter`'s `attack_budget` or brushes produce the same level content digest.
 
 **Surface**
 - [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content. After `arena.start` fires, a tagged guard draws from a budget-1 pool.
@@ -172,7 +177,8 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
   - `apply_outcomes` (`crates/ai/src/apply.rs`): cooldown and the per-activity count commit with the effect.
   - `resolve_combat_slots` / `select_combat_positions_batch`: the batch step precedent for arbitration.
   - `tick_impl`, `path_state` and `AgentComponent::knockback_velocity` (`crates/sim/src/agent_steering.rs`).
-  - The trap member (`getMapEntities("trap")`, PRL id 44, `crates/sim/src/traps`) as the precedent for a map entity with `start` and `stop` from triggers and scripts; `trigger_commands.rs` for routing `start` and `stop` by member kind.
+  - The trap member (`getMapEntities("trap")`, carried by the id-29 map-entity record) as the precedent for a map entity with `start` and `stop` from triggers and scripts. For brushes, the precedent is the id-55 Teleporters convex-leaf record plus its id-29 companion; id 44 holds AABBs only.
+  - `trigger_direct_commands.rs` routes a trigger's `command` by member kind. Script `start` and `stop` steps run on the trigger's tick only through `CONSEQUENTIAL_PRIMITIVES` (`trigger_bindings/partition.rs`) and `command_binding.rs`. The build-time member table (`MapMemberKind`, `script_light_membership.rs`) needs the new kind too.
   - `trigger_teleport`'s brush peel and union-of-convex-brushes test as the precedent for the start-time volume test.
   - The spawner's `spawned_tags` path (`crates/sim/src/spawner.rs`), which carries tag membership to later spawns.
 - **Shape.** Turns live on `BrainComponent`, as the held target, the counted pool and the wait clock (all transient). The encounter's state lives on its own serializable component; an empty budget stays unresolved, so a later change to the mod value still applies. Per-pool, per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.

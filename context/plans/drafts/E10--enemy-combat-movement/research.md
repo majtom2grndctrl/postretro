@@ -47,7 +47,6 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 - An encounter is a tag, as in `plans/done/E18--enemy-group-handle`: `_tags` on placed enemies, and `entity_spawner.spawned_tags` passes tags to each spawn (`crates/sim/src/spawner.rs`). `content/dev/maps/closet-reveal.map` already groups its closet this way.
 - Map members with `start` and `stop` from triggers and scripts: trap members (`getMapEntities("trap")`, `scripting.md` §12 Entity addressing).
 - A brush entity that tests a point against the union of its convex brushes: `trigger_teleport` (`entity_model.md` §7, Teleporter regions).
-- Owner decisions, 2026-11-08: separate pools per encounter, at most one active, start replaces; tag membership live plus volume membership captured at start; the `ai_encounter` entity over a script-only command or new trigger command words; per-enemy budget keys and `update({ attackBudget })` dropped.
 
 ## Pin table
 
@@ -66,3 +65,5 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 | P11 | Restored from serialized state | A holder and a waiter, one a member of an active encounter by volume, are serialized and restored. | No turn held, wait clocks at zero; the first tick arbitrates from scratch. The active encounter and its volume members survive. |
 | P12 | Longest waiter does not fit | Budget 2; cost-1 enemies rotate so a turn is always held; a cost-3 enemy has waited longest. | No later requester is granted past it. It is granted once the target has no counted holder, within a bounded wait. |
 | P13 | Enemy changes pool while holding a turn | Tick N: an encounter at budget 1 starts while two cost-1 members hold default-pool turns on one target, or ends while its members hold encounter turns. | No turn is revoked; each counts against its holder's new pool and ends by its own rule. No grant in that pool lands until held cost plus the requester's cost fits. |
+| P14 | Encounter request timing | Tick N: a trigger command or trigger-bound step starts B while A is active; two triggers each start a different encounter; a start and a stop of one encounter land on one tick; a named, player-event or post-wait start is issued. | A trigger or trigger-bound request applies before tick N's arbitration. Every other request latches to tick N+1 and applies first there. Requests apply in issue order, so the later-issued start is active and a start then stop leaves none active. |
+| P15 | Restore after a volume member left | A volume member of the active encounter walks out of the brushes; an untagged enemy walks in; then serialize and restore. | After restore the leaver is still a member and the newcomer is not. No recapture runs. |

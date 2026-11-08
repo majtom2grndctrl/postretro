@@ -15,7 +15,7 @@ use postretro_level_format::environment_volumes::{
     EnvironmentBrush, EnvironmentPlane, EnvironmentVolumeRecord, EnvironmentVolumesSection,
 };
 use postretro_level_loader::{
-    KinematicGeometry, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint,
+    KinematicGeometry, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint, PortalData,
 };
 use postretro_renderer::ShSampleRegion;
 use postretro_visibility::VisibleCells;
@@ -337,7 +337,8 @@ impl KinematicMoverRenderCollector {
                 current_world_aabb.min,
                 current_world_aabb.max,
                 drawn_cell_bounds,
-            ) {
+            ) || docked_door_borders_visible_cell(drawn, mover, &world.portals)
+            {
                 self.instances.push(instance);
                 self.sh_sample_regions.push(ShSampleRegion::new(
                     current_world_aabb.min.min(world_aabb.min),
@@ -714,6 +715,34 @@ fn mover_visible_against_cell_bounds(
                 .any(|(_, min, max)| aabb_intersects(world_min, world_max, *min, *max))
         }
     }
+}
+
+/// Whether `mover` is a docked-closed door sealing a portal with a cell in
+/// `visible` (`rendering_pipeline.md` §7.3). The bounds test cannot admit it
+/// reliably: a flush door touches the near cell's bounds on one plane, and
+/// the two sides round to f32 by different routes (origin-relative vertices
+/// plus origin, against absolute leaf bounds), so they can miss by an ulp.
+/// This asks the same question that blocked the portals
+/// (`rebuild_blocked_portals`), so the door that hides an interior draws.
+fn docked_door_borders_visible_cell(
+    visible: &VisibleCells,
+    mover: &KinematicMoverComponent,
+    portals: &[PortalData],
+) -> bool {
+    // `DrawAll` admits every mover before this runs.
+    let VisibleCells::Culled(cells) = visible else {
+        return false;
+    };
+    if mover.sealed_portal_ids.is_empty() || !crate::kinematic_mover::mover_is_docked_closed(mover)
+    {
+        return false;
+    }
+    mover
+        .sealed_portal_ids
+        .iter()
+        .filter_map(|&portal_id| portals.get(portal_id as usize))
+        .flat_map(|portal| [portal.front_cell, portal.back_cell])
+        .any(|cell| u32::try_from(cell).is_ok_and(|cell| cells.contains(&cell)))
 }
 
 fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
@@ -1857,6 +1886,146 @@ pub(crate) mod tests {
             Vec3::new(5.0, 5.0, 5.0),
             &[(2, Vec3::ZERO, Vec3::ONE)],
         ));
+    }
+
+    /// Quake-unit coordinate to metres through the compiler's f64 path.
+    fn q_to_m(q: f64) -> f64 {
+        q * 0.0254
+    }
+
+    /// A closed door flush in its doorway, laid out like the hallway warren's
+    /// closet door on one axis: its near face sits at q=1920, its origin at
+    /// q=1900. Cell 0 is the near room, whose bounds start at the door's
+    /// face; cell 1 is the doorway cell holding the door's origin; cell 2 is
+    /// elsewhere. Portal 0 joins cells 0 and 1 and is the door's sealed
+    /// portal. The door's f32 face lands one ulp short of cell 0's bound, so
+    /// the bounds test alone misses it.
+    fn sealed_doorway_world() -> (EntityRegistry, LevelWorld, EntityId) {
+        let face = q_to_m(1920.0);
+        let origin = q_to_m(1900.0);
+        let local_far = (face - origin) as f32;
+        let local_near = (q_to_m(1880.0) - origin) as f32;
+        let origin = origin as f32;
+        let near_cell_min_x = face as f32;
+        assert!(
+            local_far + origin < near_cell_min_x,
+            "fixture must reproduce the one-ulp miss on the door's near face"
+        );
+
+        let mut geometry = geometry(0);
+        let mover = &mut geometry.movers[0];
+        mover.origin = Vec3::new(origin, 0.0, 0.0);
+        mover.vertices = vec![
+            vertex([local_near, 0.0, 0.0]),
+            vertex([local_far, 1.0, 0.0]),
+            vertex([local_near, 0.0, 1.0]),
+        ];
+        mover.sealed_portal_ids = vec![0];
+        geometry.waypoints[0].origin = Vec3::new(origin, 0.0, 0.0);
+        geometry.waypoints[1].origin = Vec3::new(origin + 5.0, 0.0, 0.0);
+
+        let cell =
+            |bounds_min: Vec3, bounds_max: Vec3, portal_ref_start, portal_ref_count| CellData {
+                bounds_min,
+                bounds_max,
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start,
+                portal_ref_count,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
+            };
+        let doorway_min_x = q_to_m(1880.0) as f32;
+        let mut world = LevelWorld::new_visibility_only(
+            vec![
+                cell(
+                    Vec3::new(near_cell_min_x, -1.0, -1.0),
+                    Vec3::new(near_cell_min_x + 8.0, 2.0, 2.0),
+                    0,
+                    1,
+                ),
+                cell(
+                    Vec3::new(doorway_min_x, -1.0, -1.0),
+                    Vec3::new(near_cell_min_x, 2.0, 2.0),
+                    1,
+                    1,
+                ),
+                cell(Vec3::splat(-100.0), Vec3::splat(-90.0), 2, 0),
+            ],
+            vec![0, 0],
+            CellLocatorChild::Cell(1),
+            Vec::new(),
+            vec![PortalData {
+                polygon: vec![
+                    Vec3::new(near_cell_min_x, 0.0, 0.0),
+                    Vec3::new(near_cell_min_x, 1.0, 0.0),
+                    Vec3::new(near_cell_min_x, 0.0, 1.0),
+                ],
+                front_cell: 0,
+                back_cell: 1,
+            }],
+            true,
+        )
+        .expect("sealed doorway fixture must be visibility-valid");
+        world.kinematic_geometry = geometry;
+
+        let mut registry = EntityRegistry::new();
+        let door = spawn_from_geometry(&mut registry, &world.kinematic_geometry).unwrap()[0];
+        (registry, world, door)
+    }
+
+    // Regression: a docked door flush with its doorway rendered as a void
+    // from the near side of its sealed portal.
+    #[test]
+    fn docked_door_draws_from_the_near_side_of_its_sealed_portal() {
+        let (registry, world, door) = sealed_doorway_world();
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(door)
+            .unwrap();
+        assert!(crate::kinematic_mover::mover_is_docked_closed(mover));
+
+        let near_room = VisibleCells::Culled(vec![0]);
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &near_room, 1.0);
+        assert_eq!(
+            collector.instances().len(),
+            1,
+            "the door that seals the near room's portal draws from that room"
+        );
+        assert_eq!(collector.sh_sample_regions().len(), 1);
+    }
+
+    #[test]
+    fn docked_door_stays_culled_when_neither_sealed_portal_cell_is_visible() {
+        let (registry, world, _) = sealed_doorway_world();
+        let elsewhere = VisibleCells::Culled(vec![2]);
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &elsewhere, 1.0);
+        assert!(
+            collector.instances().is_empty(),
+            "a door bordering no visible cell is culled like any other mover"
+        );
+    }
+
+    #[test]
+    fn undocked_door_does_not_take_the_sealed_portal_path() {
+        let (mut registry, world, door) = sealed_doorway_world();
+        let mut mover = registry
+            .get_component::<KinematicMoverComponent>(door)
+            .unwrap()
+            .clone();
+        mover.was_active_this_tick = true;
+        registry.set_component(door, mover).unwrap();
+
+        let near_room = VisibleCells::Culled(vec![0]);
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &near_room, 1.0);
+        assert!(
+            collector.instances().is_empty(),
+            "the seal path is gated on docked-closed; this frozen visible set \
+             stands in for the walk, which reaches the doorway once it opens"
+        );
     }
 
     #[test]

@@ -2,8 +2,8 @@
 
 mode: resumable
 status: blocked
-blocked on: direction-aware probe visibility, its own spec (owner verdict 2026-11-04, see Leak diagnosis result)
-returned to drafts: 2026-11-04, by the owner. Promote it again before resuming; this plan and its captures stay as the record.
+blocked on: promotion of the revised brief. Direction-aware probe visibility landed (PR #660); the brief was revised 2026-11-07 (reference closet resolved, closed-pose depth, citations re-read at 38ef0dfc2 and 9382e3c23, after PR #662 split the direct atlas). On resume, re-verify source against the brief, revise Corrections and the task table for the closed-pose depth decision, then set `proposed` for the owner's skim.
+returned to drafts: 2026-11-04, by the owner. This plan and its captures stay as the record.
 read at: 44881f797
 
 Feature branch: `feat/mover-light-flow--probe-channel`. The brief was claimed on `main` at 44881f797. Every symbol cited by Decisions and Path was re-read at that commit. Since the brief's 33ac590, the bake, format and physics crates changed only in `reflection_probes`, and `frame_loop/mod.rs` kept its mover sites. No Decision premise is false. No Acceptance row needs restatement.
@@ -81,6 +81,8 @@ Adopted 2026-11-03.
 - **The door's closet face (Manual 3).** That face also samples bright-side probes, with backface rejection off and mover-absent depth moments. A bright-side probe looking toward the door sees the door's lit face, so the closet face could read bright even with correct channel data. This is `research.md`'s leak-across-walls risk. Task 4's slice PRL is the first evidence; if it glows, I stop and report.
 
 ## Leak diagnosis result (task 1, Manual 1)
+
+**Resolved 2026-11-07.** Direction-aware probe visibility landed; the tiled static-door reference reads 0.033 at station 3, and the owner accepted it as the reference (brief, Reference closet). The record below is the 2026-11-04 diagnosis.
 
 **Owner verdict, 2026-11-04: the reference glows.** The owner sees a little glow in the static-door column of `verdict-sheet.png`. Under the owner's ruling, direction-aware probe visibility comes first as its own spec, and this brief pauses. Do not start task 2. Resume here once that spec has landed, and re-capture the reference before continuing. The closet bar stands unchanged.
 

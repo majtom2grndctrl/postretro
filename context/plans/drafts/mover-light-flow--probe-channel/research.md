@@ -26,7 +26,7 @@ Read at fd8cf76, 2026-11-03. Every handoff fact below was re-read in source this
 | Mover phase replicates; host/client docked agreement is pinned | `WireKinematicMoverState`; `client_predicted_mover_phase_matches_host_door_occlusion_phase` |
 | Streamed compose plans per-pass triggers and per-row membership | `sh_streaming/compose_plan.rs` `ComposePlannerFrame`, `PassMembership`; `compose_staleness.rs` `PassTriggers` |
 | `LIT_ENDPOINT_DRIFT` is 12, summed RGB | `crates/postretro/tests/capture_frame.rs` |
-| Free section id | `section_registry.rs` ends at `GhostLinks = 56`; no draft or ready plan claims 57 |
+| Free section id | `section_registry.rs` holds 58 (`LightmapPoolBound`) and 59 (`ProbeDepthTiles`); 57 stays free and `build_pipeline.md` names it `MoverProbeChannel` (re-read at 38ef0dfc2) |
 
 ## Representation
 
@@ -93,9 +93,55 @@ The union counts a shared probe once: total − shared ÷ 2. Both columns count 
 | P21 | Patch cache across stages | The mover bounce bake runs after the id-34 gather and must finish before the base storage-level classifier, which today runs before mover poses resolve | Mover poses resolve before the bounce bake; the patch cache drops exactly once, after it and before atlas preparation; the SH gate prices every bake stage it outlives |
 | P22 | Own tile against final id 41 | A gated selected light's id-41 entry at a cell is removed by the exact-zero drop or reshaped by coarsening | The own-tile flag is decided against ids 41 and 45 as emitted, after the drop and coarsening; where no entry survives, the entry carries its tile |
 | P23 | Degenerate path | A mover's total path length is at or below the minimum segment length, or one interior segment is | t stays finite: 0 for a zero-length path; a degenerate segment adds no length; no NaN reaches compose |
+| P24 | First supply of a held mover | A level installs with a mover docked at its seeded terminus; its t′ never changes after the first frame the game hands it over | That first frame writes every live tile the mover changes with lerp(D₀, D₁, t′) at its seeded t′ and points each probe's reference at it, in the submission before that frame's forward pass; no frame samples a live tile that was never written; before that first hand-over the probe keeps its id-59 tile or averaged moments |
+| P25 | Depth and compose in one frame | A mover's t′ changes on tick N, including a step from 1 to 0 in one tick | Frame N's forward pass samples live tiles at frame N's t′, the same frame direct and bounce compose at it; no frame pairs S^b_0 with D₁ or S^b_1 with D₀ |
+| P26 | Two movers, one live tile | Movers A and B both change a probe's depth; both advance on one tick, or A holds at 0.3 while B travels, with their states handed over in either order | The tile is written once per frame from both movers' current t′ under the delegated rule; its bytes do not depend on hand-over order; while A holds, each rewrite B triggers uses A's held t′ |
+| P27 | Relevel, restart, hand-over before install | Level B installs after A, reusing mover id 0 at the same t′ as A's last frame; a restart re-seeds a mover; or a t′ is handed over while no level is installed | B's first frame writes every live tile from B's own D₀/D₁ at B's t′, whether or not it equals A's; a hand-over with no level writes nothing and is not consumed as B's state |
+| P28 | Live-tile write on a frame that records nothing | A skipped present, a held world-less frame, or a failed encode sees a mover's t′ change; later frames' t′ is unchanged | The next recording frame's live tiles hold the current t′; a change is never consumed unwritten, as P12 for compose |
+| P29 | Live tiles without id 59 | A PRL whose id 59 is absent or has zero tiles carries a depth block | The tile texture, grid words and whole-load moments are sized from the live tiles alone; the closed door's probes reference their live tiles; stripping id 57 as well restores the 1×1 dummy |
+| P30 | t′ change and unload on one frame | A mover's t′ changes on the frame its level unloads or a relevel installs | No live-tile write or reference texel lands in either level's textures; no upload is pending at the install or unload boundary |
+| P31 | Id-59 trim after mover depth | Id 59 is ranked inside the base gather at the full cap and cached with id 34; the mover tile count N is known only after the posed re-gather, cold or from the bounce memo | After the mover bake, id 59 keeps exactly the tiles a selection at cap − N would keep, by its own rank; a mover-only edit that changes N traces no id-34 ray and re-trims; the depth-tile log line and the build summary report the trimmed count and the shrunk cap |
 
 ## Indirect half (added 2026-11-03)
 
 Owner chose option A after confirming the leak: every surface's indirect comes from the SH probe grid (`rendering_pipeline.md` §4), and neither the SH bake nor the surface radiance cache reads sealed portals or posed movers (no `sealed_portal`, `blocked_portal` or door handling under `level-compiler/src/sh_bake*` or `surface_radiance/`). A dark room behind a closed door therefore reads bright-room bounce near the doorway. The id-34 bake runs in `surface_radiance/stage.rs` `bake_sh_base`, which drops the patch cache at gather end; the runtime base read is `sh_compose.wgsl` (`sh_base_atlas`, then id-27 deltas).
 
 Options weighed: per-mover summed static bounce states (chosen); per-light bounce states (about 200× the bytes, and the risky '451 shape for curve-driven lights); defer to the first-slice A/B (leaves the closet case wrong). IP reading: `ip-check.md` §Bake position against '451 and the 2026-11-03 boundary report, item 11b (bounce blended by occluder state, static lights: out, leaning).
+
+## Closed-pose depth (re-read at 38ef0dfc2)
+
+Why the bounce half alone leaves the closet glowing: closet probes get closed-pose bounce, but bright-side probes stay correctly bright, and their depth (id-34 moments, id-59 tiles) was baked with the door absent. A closet fragment near the door blends them at full Chebyshev weight, as the static door did before tiles.
+
+| Claim | Symbol |
+|---|---|
+| The tile texture is sized at load from id 59's count and keeps only its view | `renderer` `ShDepthTiles::new`; `ProbeDepthTileTextureLayout::for_tile_count`; render-cpu `depth_tile_texture_plan` |
+| The reference table's tile count is fixed; references past it are refused | render-cpu `ProbeDepthTileReferences::set_reference` → `TileOutOfRange` |
+| Id 59 cannot carry spare tiles: tile i belongs to strictly ascending `probe_indices[i]` | level-format `ProbeDepthTilesSection::from_bytes` |
+| Reference is 15 bits under a sign flag; cap 1 << 15 | `DEPTH_TILE_REFERENCE_FLAG`, `MAX_PROBE_DEPTH_TILES` |
+| Any gather's per-ray distances bin to a tile; selection and cap are separate | `sh_bake/depth_tiles.rs` `TileRayTable::interior`, `bordered_tile`, `DepthTileSelector::consider` |
+| Tile bytes reach the SH ledger from the texture extent | `ShDepthTiles::new` → `depth_tile_allocation`; `probe_depth_tile_texture_bytes` |
+| Whole-load id-34 moments are kept only when the reference table has a layout; the rewrite expects them; the tile texture is sampled + copy-dst only, and `Rg16Float` storage writes need an adapter feature the device does not request | `ShDepthTiles::new` (`whole_load_moments`); `set_depth_tile_reference`; `sampled_upload_usage`, `depth_tile_allocation`; `request_renderer_device` |
+
+**Blend, not switch.** Moments are expectations, so lerp(D₀, D₁, t′) is the moment pair of the mixture distribution "depth from D₀ with probability 1 − t′, else from D₁". It is a valid moment set at every t′ (variance stays ≥ 0 by Jensen), the Chebyshev bound reads it unchanged, and t′ = 0 or 1 reproduces a terminus exactly. A reference switch would hold D₀ until the door leaves its dock, then jump to D₁, while the direct and bounce terms ramp from the same t′. IP: `ip-372-direction-aware-visibility.md` design lever 7 names switching or blending moment sets as the safe shape; counsel question 9 asks about switching.
+
+**Closet water was a separate defect**, fixed by PR #662 before this brief: a mover near a selected static light promoted it, and fluids added promoted static lights back unshadowed through walls. Fluids and legacy billboards now sample a promotion-free direct atlas; movers and skinned meshes sample the handoff atlas (`rendering_pipeline.md` §4, Baked direct for dynamic receivers).
+
+## Acceptance instruments (AC audit, 2026-11-08)
+
+Notes for the executor from the achievability audit; none changes a row.
+
+- q is stored as a byte, so "equals" in Bake 1 holds within 1/510; the denominator is the joint-sample static count (plan of record, owner ruling 2026-11-03).
+- No knob lowers the tile cap today: production passes the full constant into `bake_sh_base`. Rows under "a lowered test cap" need a test seam. The 1 << 15 load case needs a synthetic PRL.
+- `bake_counters` cannot tell id-34 gather rays from the mover re-gather's; prove "traces no id-34 ray" with id 34's `[cache] … hit` line.
+- The full re-bake domain check runs about four whole id-34 bakes on `mover-setpiece`: `#[ignore]`.
+- "Measured peak" is the compiler's `live_bytes` ledger, which counts only what routes through it; name the fixtures.
+- The duplicated static light in the cache row is appended to the map; an in-place duplicate shifts later lights' seeds.
+- The no-change parity map must be authored with movers no probe ray reaches.
+- Exact compose mixes hold only with values exact in f16 (q bytes 0 and 255); the two-mover sum and the clamp need their own fixtures.
+- The tile texture lacks `COPY_SRC` (`sh_allocation.rs`); readback rows add it.
+- Capture writes one image per run; frame-to-frame rows (P24, P25) and the tick-driven ramp row need an offscreen renderer test or a capture extension. Capture poses movers only at rest today; forced mover t is this brief's.
+- "Sampler shader byte-identical to the parent's" needs a pinned hash or a preflight diff gate.
+- Rows that mix a game-side half with a GPU compose half (blend-scalar ordering rows, the animated-light row) split by crate.
+- `mover-setpiece`'s chaser patrols off the enemy spot: capture and the manual A/B hold a receiver there.
+- Live-tile uploads share the per-frame upload copy batch; their cost is travelling minus docked.
+- `mover-setpiece` was relit 2026-11-07 (49e03a39c); the foundation's `mover_light_gate_setpiece.rs` holds the current light sets.

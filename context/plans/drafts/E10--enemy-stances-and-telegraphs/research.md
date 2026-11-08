@@ -73,3 +73,9 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 | P11 | Killed in the pass that enters a stance | An earlier outcome in the apply pass kills the enemy that compute moved into a stance. | No entry sound and no cue on any peer. |
 | P12 | Hold at zero or equal bounds | `holdMs: 0`, `[0, 0]`, `[x, x]`. | All load. Zero leaves on the first evaluation; `[x, x]` matches a fixed `x`. |
 | P13 | Initial activity at spawn | A fresh brain seats its initial activity before per-instance spawn state is set. | The first evaluation reads this enemy's own salted roll. Two same-tick spawns differ, and replay reproduces both. |
+| P14 | Stance entered on a client's join tick | On tick N an enemy enters its stance; the client begins participating that frame, before or after the host publishes tick N's cue. | A cue published after participation began plays once, at the captured position if the enemy is not yet materialized (P9). One published before is never delivered. Materializing the enemy mid-stance plays no sound. |
+
+## Review round 2 corrections
+- `WeaponCuesMessage` sends one cue per message and carries a `participation_epoch`. `MAX_WEAPON_CUES` is 64, and an invalid (over-cap) message is silently not sent (`crates/net/src/transport.rs`). So the enemy cue goes one per message.
+- `MAX_DELAY_MICROS` (250 ms) is `pub(crate)` in `crates/netcode/src/interpolation.rs`, and netcode depends on sim. So the floor constant lives outside netcode, guarded by a netcode test (precedent: `SPAWN_ATTACK_WINDUP_MS`, `enemy_replication_harness_test.rs`).
+- `"*"` rows evaluate before every activity's own rows at that level (`graph_eval.rs`). So they can leave a release and win a tie with the break row.

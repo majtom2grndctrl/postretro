@@ -18,11 +18,17 @@ When this is done:
 
 ## Decisions
 - **A stance is SDK vocabulary, not an engine noun.** `stance(name, options)` is an author-time builder like `activation.shot()` (`scripting.md` §11). It returns a fragment `{ entry, activities, transitions }` of plain activities named `<name>`, `<name>_release` and `<name>_recover`. The engine sees only activities. This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
-- **`merge()` composes fragments.** It is an SDK helper, in TypeScript and Luau, that combines activity and transition maps. A duplicate key rejects load with the key named, so nothing overwrites silently. Extra exits from a stance go in that level's `"*"` rows.
+- **`merge()` composes fragments.** It is an SDK helper, in TypeScript and Luau, that combines activity and transition maps. A duplicate key rejects load with the key named, so nothing overwrites silently. Two maps that both carry `"*"` collide too. Extra exits from a stance go in that level's `"*"` rows.
 - **One stance names one attack.** The pose is the tell. A stance with several follow-ups is hand-authored from the same parts.
-- **Defaults for novices.** `holdMs` and `recover` are optional, with seeded defaults above the co-op floor. Experts override them.
-- **A co-op floor on the tell.** A stance whose minimum hold falls below the worst-case interpolation delay plus a reaction budget warns at load. This is the closet-reveal rule from `plans/done/E17--doors-as-occluders` research. A tell a remote player cannot see is no tell, so the floor is engine-owned. The hold above it is taste.
-- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` (`drafts/E10--enemy-combat-movement`), so one turn spans the cycle. Only this marking depends on that brief. The roll, the damage fact and the co-op slices land independently.
+- **Defaults for novices.** `holdMs` and `recover` are optional, and experts override them.
+  - An omitted `holdMs` takes a seeded range above the co-op floor.
+  - An omitted `recover` holds the release clip for a seeded duration.
+- **A co-op floor on the tell.** A tell a remote player cannot see is no tell, so the floor is engine-owned; the hold above it is taste. This is the closet-reveal rule from `plans/done/E17--doors-as-occluders` research.
+  - **The floor** is the remote interpolation buffer's ceiling (netcode's 250 ms clamp) plus a reaction budget.
+  - **Where the constant lives.** The floor is an engine constant outside netcode, exported to both SDKs. A netcode test fails if the floor falls below the buffer ceiling, as with `SPAWN_ATTACK_WINDUP_MS`.
+  - **What it doesn't cover.** Network transit has no load-time bound, so the floor leaves it out.
+  - **Where it's checked.** `stance()` warns through the script log when a stance's minimum hold falls below the floor. The engine cannot tell a stance's hold from any other activity.
+- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` (`drafts/E10--enemy-combat-movement`), so one turn spans the cycle.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
   - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity is left.
   - It is a fact the engine computes, not an IR node.
@@ -34,7 +40,7 @@ When this is done:
 - **Per-activity damage fact: `@brain.damageInActivity`.** It is scope-relative: damage drained from layers and health since that level's activity was entered, for every producer, `applyDamage` included.
 - **Stagger is authored on that fact, for short activities.**
   - A stance's optional `breakOn` adds a row leaving the hold for a sibling activity. The same guard works on any short activity, such as an aim.
-  - Release is committed and has no break row.
+  - Release is committed: it has no break row, and only the level's `"*"` rows can leave it. Those rows outrank the stance's own rows, as they do every activity's.
   - On a long activity the sum grows without limit, so this brief does not offer stagger mid-chase.
   - This supersedes the deleted `E10--enemy-stagger` draft.
 - **Telegraph sounds reach every peer.**
@@ -46,8 +52,8 @@ When this is done:
   - The reference knight's slam becomes two stances.
   - The limitator's aim gains a break into its unwired `hit_reaction` flinch.
   - `sdk/behaviors/reference` shows a stance.
-  - `docs/` explains stances, the co-op floor, and that a client sees a stance late by about half the round trip plus one snapshot.
-  - Tests pinned to the old hand-written cycle are updated, and the build report lists each one.
+  - `docs/` explains stances and the co-op floor. It also says a client sees a stance late by about half the round trip plus one snapshot, which the floor does not cover.
+  - Tests pinned to the old hand-written cycle are updated.
 - **Non-goals:**
   - **Compensating client latency.** It would mean predicting enemy behavior on clients, and graph evaluation is host-only (`entity_model.md` §7c). The floor and `docs/` cover authors instead.
   - **Stagger mid-chase.** A recency-windowed damage fact can be appended later.
@@ -104,18 +110,21 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - [ ] With a fixed `holdMs` and a `breakOn`, `stance()` output equals a checked-in hand-written fixture of the three activities and their rows, row order included.
 - [ ] `merge()` with a duplicate activity or transition key rejects load naming the key.
 - [ ] These reject load with a pathed error:
-  - a `then` or `breakOn.to` naming no sibling, or naming the stance's own hold;
+  - a `then` or `breakOn.to` naming no sibling, or naming the stance's own `_release`;
+  - a `breakOn.to` naming the stance's own hold;
   - `holdMs` with min > max, or a negative bound;
   - a `breakOn.damage` of zero or below;
   - a negative `release.ms` or `recover.ms`;
   - any non-finite value.
-- [ ] A stance whose minimum hold is below the co-op floor loads with one warning naming it. One at or above loads silently.
-- [ ] A stance given only `animation`, `release` and `then` gets the seeded hold and recovery, both above the floor.
+- [ ] A stance whose minimum hold is below the co-op floor loads with one warning naming it, `holdMs: 0` included. One at or above loads silently.
+- [ ] A `then` naming the stance's own hold loads, and chains back-to-back stances.
+- [ ] A test fails if the co-op floor falls below the remote interpolation buffer ceiling, and passes when the floor is above it.
+- [ ] A stance given only `animation`, `release` and `then` loads silently. It gets the seeded hold range, above the floor, and a recovery that holds the release clip for the seeded duration.
 - [ ] Once `attackTurn` exists, all three emitted activities carry it.
 
 **Roll**
 - [ ] Across many entries, the hold's threshold varies within [min, max], and the hold ends on the first tick at or past it. A fixed `holdMs` never varies.
-- [ ] `holdMs: 0` leaves on the first evaluation after entry. `[x, x]` holds exactly as many ticks as `x` (pin P12).
+- [ ] `holdMs: 0` leaves on the first evaluation after entry, and `[x, x]` holds like a fixed `x` (pin P12).
 - [ ] The roll is fixed for one entry, and a re-entry draws again. An activity reseated and left on one tick reads its own fresh roll (pin P3).
 - [ ] Levels seated by one descent draw independent rolls. A nested transition redraws and zeroes only the nested level (pin P4).
 - [ ] Selector guards read their own level's roll and damage sum (pin P5).
@@ -128,7 +137,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - [ ] `damageInActivity` sums every hit since entry, across armor and health. The covered sources are hitscan, projectile, melee, splash and `applyDamage`. Two hits on one tick both count.
 - [ ] A hit after the AI pass on the tick an activity is entered counts toward that activity on its first evaluation. A hit before the AI pass that tick counts only toward the activity left (pin P2).
 - [ ] `breakOn` leaves the hold on the first evaluation at or past the threshold, never below it. When the timer and threshold pass together, the break wins and the release never fires (pin P1).
-- [ ] During release, the same damage does not break. Damage taken in `flinch` does not carry into the activity it resumes.
+- [ ] During release, the same damage does not break. A level `"*"` row that passes during release or recover leaves it, outranking the stance's own rows. Damage taken in `flinch` does not carry into the activity it resumes.
 - [ ] Enough damage during the limitator's aim enters `hit_reaction`, and its flinch resumes on its timer.
 - [ ] A brain serialized before these fields deserializes. Its sums read 0, and its next entry draws a roll.
 
@@ -139,6 +148,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - [ ] A cue for an entity the client lacks plays once at the host-captured position and never replays (pin P9).
 - [ ] An enemy killed in the apply pass that enters its stance plays no stance sound on any peer (pin P11).
 - [ ] A client receiving a cue runs no `onEnter` reaction.
+- [ ] A client that begins participating on the tick an enemy enters its stance plays that stance's sound at most once, and only from a cue. Materializing an enemy mid-stance plays no sound (pin P14).
 - [ ] A previous-protocol client is refused.
 - [ ] Entering an activity whose clip is already playing restarts nothing on host or client.
 
@@ -156,6 +166,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
   - **The determinism gate's** single enemy spawns after both pawns, so today's reversal cannot catch an `EntityId` seed.
 - **Shape.** A fragment builder plus `merge()`. The rival, a composite activity with a nested graph, needs an engine "nested graph finished" fact to exit, and can't hold a turn across siblings.
 - **First slice.** The roll fact, its seed, and the extended determinism gate: the one-way door, falsified fastest.
+- **Dependency.** Only the builder's `attackTurn` marking waits on `E10--enemy-combat-movement`. The roll, the damage fact and the co-op slices land independently, and the builder adds the marking once the field exists.
 
 ## Open questions
 - Seed salt, a per-instance replay-stable identity — **delegated**: meet both seed requirements in Decisions and report the choice.
@@ -178,12 +189,12 @@ If `E10--enemy-combat-movement` lands first, these facts append after its two.
 ## Wire format
 **Enemy cue message, host to clients.** It follows `WeaponCuesMessage`:
 - the same codec and the same reliable-ordered channel;
-- a batch per tick, never sent empty;
+- one cue per message, sent when the host event fires, so no batch cap can drop one;
 - sent to every participating client.
 
-Per cue, in order:
-- **anchor:** `WeaponCueAnchor`, the entity `NetworkId` with the captured origin, falling back to the origin alone;
-- **sound:** encoded as `WeaponCue.sound`;
-- **kind:** a `u8`, where 0 is an activity entry and 1 is a contact attack.
+Fields, in order:
+- **participation epoch:** as `WeaponCuesMessage` carries it;
+- **anchor:** the enemy's `NetworkId` with the captured origin, or the captured origin alone when the enemy has no network id. No contact list;
+- **sound:** required, encoded as `WeaponCue.sound`'s string.
 
 Weapon attack sounds stay on `WeaponCue`. The new message is appended to the server message enum under an append-layout guard, and bumps `PROTOCOL_ID`. No snapshot record changes.

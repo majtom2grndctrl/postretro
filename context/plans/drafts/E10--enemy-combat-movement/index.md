@@ -24,7 +24,7 @@ When this is done:
   - An airborne launch plays `jump_loop` when the mesh declares one, after the player's fall delay (`MeshDescriptor.animations` typedoc). Otherwise it keeps its current state.
 - **Directional travel variants.** Under target facing, an activity animation `X` resolves to `X_left`, `X_right` or `X_backward` by travel direction relative to facing, and plays `X` when a variant is missing. The host resolves the name, and it replicates as an ordinary animation state. This extends the player's `walk_backward` naming.
 - **The attack budget is an engine mechanism with authored values** (`scripting.md` §1: pacing is taste; the engine seeds a default).
-  - The budget is per target. An enemy is granted a turn when the target's held cost plus its own fits within **its own effective budget**, or when nobody holds a turn on that target, so an oversized archetype is never locked out.
+  - The budget is per target. An enemy is granted a turn when the target's held cost plus its own fits within **its own effective budget**, or when no counted turn is held on that target, so an oversized archetype is never locked out.
   - **Effective budget, most specific wins:** a script override, then a map or spawner value, then the mod's `attackBudget`, then the engine's seeded default of 3. The seeded value is tuning, not contract.
   - **Valid values.** A budget must be at least 1. `attackCost` defaults to 1. Cost 0 never counts and is always granted: the lever for fodder that chips while heavies take turns.
   - **Host-only, and outside the co-op compatibility digest.** Clients never read the budget.
@@ -32,24 +32,32 @@ When this is done:
 - **Encounter budgets reuse the aggro surfaces** (`AiEnemy.enabled_on_spawn`, `entity_spawner.spawned_tags`, `npcs({ tag }).update`):
   - a placed enemy's `attack_budget` key;
   - a spawner's `spawned_attack_budget` key, carried by each spawn;
-  - `npcs({ tag }).update({ attackBudget })` at runtime, which applies to the members at fire time, as `aggro` does.
-  - An invalid map value warns and falls back to the next level.
+  - `npcs({ tag }).update({ attackBudget })` at runtime, which applies to the members at fire time, as `aggro` does. It works with or without `aggro`, from a named reaction and from a trigger-bound sequence step.
+  - **Validation.** An invalid map value warns and falls back to the next level. Both SDKs validate `update({ attackBudget })` when it is authored and throw an error naming the field.
+  - An encounter budget is brain state: it survives a serialize-and-restore, as `aggro` does.
 - **Turn lifetime.**
   - **Marked activities.** An activity marked `attackTurn: true` requests on entry and keeps requesting until granted. The turn holds while any marked activity is on the active path, so a windup → commit → recover chain holds one turn.
   - **Unmarked attacks.** With no marked activity on its path, an attack requests only on a tick it is otherwise ready to fire. It holds the turn until that attack's cooldown ends, and a weapon until its execution clears and then its cooldown.
-  - **Every turn** also holds through an execution already started. It is released on a target change and when the holder leaves the AI set.
+  - **One turn, one attack.** A second unmarked attack never rides a held turn. It requests behind the existing waiters.
+  - **Every turn** holds through an execution already started. A target change cancels that execution and releases the turn, and so does the holder leaving the AI set.
+  - A turn held under more than one rule ends when the last of them ends.
+  - Lowering a budget revokes no turn.
 - **The budget is a hard gate, plus two facts.** An attack starts only while its enemy holds a turn. A refused attack commits nothing.
   - `@brain.hasAttackTurn`.
   - `@brain.attackTurnFree`: "a request from me would be granted now". It reads 0 with no target.
-- **Arbitration is host-only and deterministic.** It runs as one batch step after compute and before apply fires. The longest wait wins, where a wait starts at the first request after last holding a turn. Slot order breaks ties. Turns are derived host state and never replicate.
+- **Arbitration is host-only and deterministic.**
+  - It runs as one batch step after compute and before apply fires.
+  - The longest wait wins, where a wait starts at the first request after last holding a turn. Slot order breaks ties.
+  - **Head of line.** A longest waiter that does not fit blocks later grants on that target until it fits, or until the target has no counted holder. Nobody starves, and a budget-1 arena guard waits for a quiet target.
+  - Turns are derived host state and never replicate.
 - **Shipped content adopts the vocabulary in this brief.**
   - `content/dev` and `sdk/behaviors/reference`, the patterns every SDK bundle copies.
   - The limitator and rifle squads gain strafe-while-waiting and fire-then-reposition, a three-shot `enemy_rifle_burst`, and `walk_left`, `walk_right` and `walk_backward` states bound from the Mixamo library.
-  - Tests pinned to pile-on behavior are updated, and the build report lists each one.
+  - Tests pinned to pile-on behavior or to bursts following a new target are updated.
 - **Non-goals:**
   - **Back-off and kiting.** `reposition` covers fire-then-move. A third verb waits for a consumer.
   - **Softening attacks from outside the target's view.** An additive follow-up on the budget.
-  - **Clearing a script override back to the map or mod value.** Set the number explicitly.
+  - **Clearing a script override.** An override is final for that enemy, so a mixed group cannot return to its per-enemy map values. A clear command can be added later without breaking anything.
   - **Protective cover and squad tactics.** Their exclusion stands from the line-of-sight and positioning briefs.
   - **Per-activity speed.** The statecharts brief keeps it additive, so a strafe and a run share `moveSpeed` until it lands.
 
@@ -86,8 +94,10 @@ behavior: {
   },
 }
 
-// level script — a boss arena allows one attacker at a time
-npcs({ tag: "arena_guard" }).update({ attackBudget: 1 });
+// level script — entering the boss arena allows one attacker at a time
+defineReaction("arena.start", {
+  sequence: [npcs({ tag: "arena_guard" }).update({ attackBudget: 1 })],
+});
 ```
 The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`). In TrenchBroom, `attack_budget` sits on every `AiEnemy` class and `spawned_attack_budget` on `entity_spawner`.
 
@@ -107,29 +117,35 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 
 **Budget**
 - [ ] With no `attackBudget` authored, budget 3 applies: a fourth cost-1 requester waits.
-- [ ] Under budget 2 and cost 1, a third requester never starts an attack until a holder releases. The longest waiter is granted even when a fresher requester is earlier in slot order, and equal waits go to the earlier slot (pin P1).
-- [ ] With three requesters on one tick and one turn free, exactly one is granted. Replaying the run grants the same one.
-- [ ] Under budget 2: cost 2 is granted alone and refused beside a cost-1 holder; cost 3 is granted when no counted holder remains. A cost-0 enemy attacks without counting and never blocks the cost-3 requester (pin P8).
-- [ ] An attack refused for want of a turn commits no cooldown, no `attacksFiredInActivity` count, no event and no weapon request. The enemy fires on its first granted tick in the same activity (pin P2).
-- [ ] Under budget 1, three contact attackers ready together: at most one holds a turn on any tick, each holds until its own cooldown ends, and each attacks within a bounded window.
-- [ ] Under budget 1, an unmarked three-shot weapon attack holds its turn until its execution clears and its cooldown ends. A second enemy ready the whole time starts only after that, never between shots (pin P4).
-- [ ] A granted unmarked attack that does not start that tick releases its turn that tick. Two cases are covered: the target was killed earlier in the pass, and the weapon is still executing (pin P3).
+- [ ] Under budget 2 and cost 1, a third requester never starts until a holder releases. Grants follow pin P1.
+- [ ] With three requesters on one tick and one turn free, exactly one is granted. A replay grants the same one.
+- [ ] Under budget 2: cost 2 is granted alone and refused beside a cost-1 holder; cost 3 is granted when no counted holder remains. Cost 0 never counts or blocks (pin P8).
+- [ ] Under budget 2, a waiting cost-3 enemy among cost-1 enemies that keep a turn held is granted within a bounded wait. No cost-1 enemy is granted past it in the meantime (pin P12).
+- [ ] A refused attack commits nothing and fires on its first granted tick in the same activity (pin P2).
+- [ ] Under budget 1, three contact attackers ready together: at most one holds a turn on any tick. Each holds until its own cooldown ends, even after leaving its attacking activity. Each attacks within a bounded window.
+- [ ] Under budget 1, an enemy alternating two unmarked attacks never starts the second under the first's turn while another enemy waits.
+- [ ] Under budget 1, an unmarked three-shot weapon attack holds its turn through the execution and its cooldown. A ready neighbor never starts between shots (pin P4).
+- [ ] A granted unmarked attack that does not start that tick releases its turn (pin P3).
 - [ ] An unmarked attack requests no turn while out of range or line of sight, so a ready neighbor under budget 1 is granted at once.
-- [ ] A turn holds across a transition between marked siblings with no release-and-regrant gap. It holds after leaving a marked activity mid-burst until the execution clears, then releases.
-- [ ] Turns are released in each of these cases, and no turn leaks: target death, target switch, the holder's death, a queued despawn, aggro closing, a graph reseat, and becoming inventory-owned. A switcher frees its old turn that tick and requests on the new target behind existing waiters. A returning enemy re-requests (pins P5, P6).
-- [ ] `hasAttackTurn` first reads 1 on the tick after the grant. Three waiters that read `attackTurnFree` 1 together and enter their turn activity leave exactly one new holder under one free turn (pin P7).
-- [ ] A serialize-and-restore of a holder and a waiter leaves no turn held and both wait clocks at zero (pin P11).
+- [ ] A turn holds across marked siblings with no release-and-regrant gap. It holds after leaving a marked activity mid-burst until the execution clears.
+- [ ] A target switch mid-burst cancels the burst and releases the turn. No shot lands on the new target from that burst (pin P6).
+- [ ] No turn leaks across any release case in pin P5, and a returning enemy re-requests.
+- [ ] `hasAttackTurn` and `attackTurnFree` follow pin P7. `attackTurnFree` reads 0 with no target.
+- [ ] A serialize-and-restore follows pin P11.
 - [ ] Two manifests differing only in `attackBudget` produce the same compatibility digest.
 
 **Encounter budgets**
-- [ ] Precedence: a script `update({ attackBudget })` overrides a placed enemy's `attack_budget`, which overrides the mod value.
+- [ ] Precedence: a script `update({ attackBudget })` overrides a placed enemy's `attack_budget`, which overrides the mod value. The override applies alone, without `aggro`, from both a named reaction and a trigger-bound sequence step.
 - [ ] Each spawn of a spawner with `spawned_attack_budget` carries it.
-- [ ] Mixed budgets on one target: under one held turn, a budget-1 requester waits while a budget-3 requester is granted.
+- [ ] Mixed budgets on one target, with one turn held:
+  - A budget-3 requester ahead in line is granted, while a budget-1 requester behind it waits.
+  - With the budget-1 requester at the head of the line, nobody is granted until the target has no counted holder. Then it is granted.
 - [ ] An `update` reaches only members present when it fires. A later spawn keeps its spawner's value.
-- [ ] An invalid map value warns and falls back. An invalid script value, a budget below 1, a negative `attackCost`, or a non-finite value rejects with a pathed error in both runtimes.
+- [ ] Lowering a budget below the held cost revokes no turn. The next grant waits until the cost fits (pin P13).
+- [ ] An invalid map value warns and falls back. In both SDKs, an `update` with a budget below 1 or a non-finite value throws an error naming the field. A manifest budget below 1, a negative `attackCost` or a non-finite value rejects with a pathed error in both runtimes.
 
 **Surface**
-- [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content.
+- [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content. After `arena.start` fires, a tagged guard's effective budget is 1.
 
 ### Manual
 - [ ] On `movement-feel`, the shipped rifle squad under its authored budget: shooters relocate after a burst while waiters strafe and take over. A closet reveal on `closet-reveal` releases its payload without a pile-on. A rocket-launched knight keeps its facing in flight.
@@ -141,9 +157,10 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
   - `apply_outcomes` (`crates/ai/src/apply.rs`): cooldown and the per-activity count commit with the effect.
   - `resolve_combat_slots` / `select_combat_positions_batch`: the batch step precedent for arbitration.
   - `tick_impl`, `path_state` and `AgentComponent::knockback_velocity` (`crates/sim/src/agent_steering.rs`).
-  - `UpdateNpcStateArgs` (`crates/sim/src/scripting/reactions/npc_state.rs`): the additive partial `attackBudget` joins.
+  - `UpdateNpcStateArgs` (`crates/sim/src/scripting/reactions/npc_state.rs`), the additive partial `attackBudget` joins. Its helper returns early when `aggro` is absent. The trigger-bound path in `command_binding.rs` and `trigger_commands.rs` forwards only `aggro`, so both need widening.
+  - `npcs().update` in `sdk/lib/data_script/commands.ts` and `data_script.luau` passes fields through unchecked. That is where the authoring-time validation goes.
   - The spawner's `spawned_tags` path (`crates/sim/src/spawner.rs`).
-- **Shape.** Turns live on `BrainComponent` as the held target, the effective budget and the wait clock. Per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
+- **Shape.** Turns live on `BrainComponent`, as the held target and the wait clock (both transient). The encounter override is stored as authored, not resolved, so a later change to the mod value still applies. Per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
 - **First slice.** The knockback facing split. It touches the fewest seams and proves the velocity separation strafe needs.
 - **Watch for.**
   - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly.
@@ -163,8 +180,8 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 | turn marking | `BehaviorActivityDescriptor::attack_turn: bool` | `"attackTurn"` | `attackTurn?` | `attackTurn` | n/a |
 | archetype cost | `BehaviorGraphDescriptor::attack_cost` | `"attackCost"` | `attackCost?` | `attackCost` | n/a |
 | mod budget | `ModManifestResult` field | `"attackBudget"` | `attackBudget?` | `attackBudget` | n/a |
-| encounter budget (placed) | brain override | — | — | — | `attack_budget` (`AiEnemy`) |
-| encounter budget (spawned) | spawner field | — | — | — | `spawned_attack_budget` (`entity_spawner`) |
+| encounter budget (placed) | brain override | — | — | — | `attack_budget(integer)` on `AiEnemy`; empty inherits |
+| encounter budget (spawned) | spawner field | — | — | — | `spawned_attack_budget(integer)` on `entity_spawner`; empty inherits |
 | script override | `UpdateNpcStateArgs::attack_budget` | `"attackBudget"` | `update({ attackBudget })` | same | n/a |
 | turn held | `BRAIN_INPUTS` tail | `"@brain.hasAttackTurn"` | `brain.hasAttackTurn` | `brain.hasAttackTurn` | n/a |
 | turn free | `BRAIN_INPUTS` tail, after the above | `"@brain.attackTurnFree"` | `brain.attackTurnFree` | `brain.attackTurnFree` | n/a |

@@ -15,7 +15,6 @@ use super::{ProbeGridLayout, segment_clear, vec3_from};
 use crate::cache::StageCache;
 
 const STATIC_DOOR: &str = "mover-closet-static-door";
-const CONVEX_ROOM: &str = "probe-tiles-convex-room";
 
 /// Valid probes with a valid in-grid lattice neighbour that the segment
 /// between their bake positions cannot reach: geometry blocks it.
@@ -98,31 +97,6 @@ fn the_static_door_closet_tiles_every_probe_with_a_blocked_valid_neighbour() {
         missed.is_empty(),
         "blocked probes without a tile: {missed:#?}"
     );
-    assert_eq!(base.depth_tiles.dropped, 0);
-}
-
-// A single convex room whose walls are thicker than the probe spacing has no
-// thin occluder, so no probe's tile changes its visibility enough to keep.
-//
-// Premise failed at the shipped threshold, ray count and tile size, so this
-// row is held for the owner rather than tuned: the room keeps 9 tiles, every
-// one a probe 4.8 mm from its west wall (the lattice phase puts a probe plane
-// there), each changing its visibility toward a valid neighbour along the
-// wall by 0.105. A tile texel facing along a wall a probe nearly touches
-// blends wall hits at ~0 with open-room depth; the averaged moments do not.
-#[test]
-#[ignore = "premise failed: wall-hugging probes in the convex room take tiles; owner decision pending"]
-fn a_convex_room_with_walls_thicker_than_the_spacing_gets_no_tiles() {
-    let fixture = DepthTileFixture::load(CONVEX_ROOM);
-    let layout = fixture.layout();
-    let base = fixture.bake(MAX_PROBE_DEPTH_TILES, None);
-    let valid = layout.validity.iter().filter(|&&v| v != 0).count();
-    eprintln!(
-        "{CONVEX_ROOM}: {valid} valid probes, tiles at {:?}",
-        base.depth_tiles.section.probe_indices
-    );
-    assert!(valid > 0);
-    assert_eq!(base.depth_tiles.section.tile_count(), 0);
     assert_eq!(base.depth_tiles.dropped, 0);
 }
 

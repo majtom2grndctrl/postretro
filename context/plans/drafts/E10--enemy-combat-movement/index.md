@@ -23,9 +23,10 @@ The owner wants combat that is more fun to fight and easier to design encounters
   - **Absent means unlimited.** With no budget authored, every request is granted and behavior is unchanged.
   - **When a turn is granted.** The held cost plus the requester's cost must fit the budget, or nobody holds a turn on that target, so an oversized archetype is never locked out.
 - **Turns are scoped to activities.**
-  - An activity marked `attackTurn: true` requests a turn on entry and keeps requesting until granted. The turn is held while that activity is on the active path.
-  - An attack activity outside any such activity requests on its own entry.
-  - A turn is released on leaving that activity, on a target change, and on quiescence or despawn.
+  - An activity marked `attackTurn: true` requests a turn on entry and keeps requesting until granted.
+  - The turn is held while any marked activity is on the active path. A transition between marked siblings keeps it, so a windup → commit → recover chain holds one turn throughout.
+  - An attack activity with no marked activity on its path requests on its own entry.
+  - A turn is released when no marked activity remains on the path, on a target change, and on quiescence or despawn.
 - **The budget is a hard gate, plus two facts.**
   - With a budget authored, an attack starts only while its enemy holds a turn on its target. A weapon sequence that has already started keeps its shipped cancellation rules.
   - Guards read `@brain.hasAttackTurn` and `@brain.attackTurnFree`. Both are appended to the tail of `BRAIN_INPUTS` (`scripting.md` §11, append-only).
@@ -91,6 +92,7 @@ The Luau twin mirrors it field for field.
 - [ ] With budget 2 and cost 1, a third enemy in its turn activity never starts an attack until a holder leaves. On the tick a holder leaves, the longest-waiting requester is granted.
 - [ ] With three requesters on one tick and one turn free, exactly one is granted. Replaying the same run grants the same one.
 - [ ] Cost 2 under budget 2 is granted alone and refused beside a cost-1 holder. Cost 3 under budget 2 is granted when no one holds a turn.
+- [ ] A turn holds across a transition between two marked sibling activities, with no release-and-regrant gap on that tick. It is released on the tick a transition lands on an unmarked activity.
 - [ ] A turn is released on target death, target switch, the holder's death and leaving the activity. No turn leaks across any of these.
 - [ ] A three-shot enemy weapon fires all three shots inside one held turn. Releasing the turn mid-sequence follows the shipped cancellation rules and starts nothing new.
 - [ ] `hasAttackTurn` and `attackTurnFree` read 0 and 1 correctly for a holder, a waiter, and an enemy with no target.

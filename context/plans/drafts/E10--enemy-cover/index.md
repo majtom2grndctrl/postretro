@@ -1,6 +1,6 @@
 # E10--enemy-cover
 
-Brief · resumable · Epic 10 · reads: `context/lib/entity_model.md` §7, §7c · `context/lib/scripting.md` §1, §11 · `context/lib/build_pipeline.md` §Navigation bake, §Build Cache, §Ray traversal, §Custom FGD, §PRL section IDs · `context/lib/networking.md` §Combat authority · read at 7ee9389f
+Brief · resumable · Epic 10 · reads: `context/lib/entity_model.md` §7, §7c · `context/lib/scripting.md` §1, §11, §12 · `context/lib/build_pipeline.md` §Navigation bake, §Build Cache, §Ray traversal, §Custom FGD, §PRL section IDs · `context/lib/networking.md` §Combat authority, §World-LOS-only validation · read at 7ee9389f
 
 Depends on `drafts/E10--enemy-combat-movement`: `reposition` with `arc` and `minTravel`, the slot scorer's per-query constraints, directional clip resolution, and attack turns.
 
@@ -77,11 +77,13 @@ The Luau twin mirrors it with Luau call syntax.
 ### Automated
 **Bake**
 - [ ] On a fixture with a wall and a crate, the bake derives `full` points beside the wall and `half` points beside the crate, normals facing away from each. Open floor gets none.
-- [ ] Two bakes of one map produce byte-identical cover tables.
+- [ ] Two bakes of one map produce byte-identical cover tables. A derived point exactly on an `ai_cover_suppress` plane is removed, identically across bakes (pin P12).
+- [ ] A map with no cover round-trips an empty table, and `cover: "any"` holds.
 - [ ] `ai_cover` adds a spot with its authored class, or the measured class when `height` is omitted. `ai_cover_suppress` removes derived spots inside it and keeps an authored spot inside it.
 - [ ] A navmesh of the previous version decodes with no cover and one warning, and its level still paths.
 - [ ] A tracer epoch change rebakes cover; a light-only edit does not.
 - [ ] A docked mover beside a candidate neither adds nor removes cover.
+- [ ] Two peers whose maps differ only in cover authoring pass the compatibility check.
 
 **Choosing cover**
 - [ ] `cover: "full"` ends at a point hidden from the target's eye at standing eye height; `"half"` at one hidden at crouched eye height and visible standing; `"any"` at either.
@@ -89,7 +91,9 @@ The Luau twin mirrors it with Luau call syntax.
 - [ ] `arc` and `minTravel` filter cover candidates, with a point just inside and just outside each bound.
 - [ ] With no qualifying point, the enemy holds and does not oscillate. Without `cover`, `reposition` uses the ring exactly as the combat-movement brief specifies.
 - [ ] Two enemies seeking cover on one tick never claim one point (pin P1).
-- [ ] The target walking around the cover flips `targetVisible` to 1 within the grace window, and the authored transition fires.
+- [ ] The target walking around the cover flips `targetVisible` to 1 on the first tick its eye ray clears, and the authored transition fires.
+- [ ] The target standing on a cover point never has it claimed (pin P10).
+- [ ] A level change or hot reload that alters cover drops held cover claims; the next entry re-picks from the new table (pin P11).
 
 **Posture**
 - [ ] Crouch lowers the eye and an enemy-without-zones' damage box, never the capsule. Standing up beside a low ceiling does not stick.
@@ -98,6 +102,8 @@ The Luau twin mirrors it with Luau call syntax.
 - [ ] Posture changes on the activity-entry tick, and perception that tick reads the new eye (pin P3).
 - [ ] Crouching back into cover after a peek leaves `targetVisible` at 0 on the posture-change tick when the crouched eye is hidden; a crouched eye still in sight reads 1 (pin P4).
 - [ ] Co-op loopback: a remote shot at standing chest height over half cover misses a crouched enemy without hit zones, and hits it standing.
+- [ ] A `stand` activity at a `half` point stays standing.
+- [ ] A peer from before the protocol bump is refused at handshake.
 
 **Routes**
 - [ ] With two equal-length routes, a cover reposition takes the one whose cells are not coupled with the target's cell; a chase takes either as today. Without id 46, both cost as today.

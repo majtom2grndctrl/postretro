@@ -34,3 +34,6 @@
 | P2 | Clip resolution under crouch and direction | Activity animation `walk`, crouch, travel left under target facing; the mesh may lack any of the composed names. | Tries `crouch_walk_left`, then `crouch_walk`, then the stand chain (`walk_left`, `walk`). The host resolves the name; it replicates as ordinary animation state. |
 | P3 | Posture on activity entry | Tick N: a transition enters a crouch activity; perception and the damage box are read later in tick N. | The new eye and box apply from tick N. Leaving the activity restores standing on the leave tick. |
 | P4 | Duck after a peek | Tick N: `peek` → `settle` changes posture to crouch while `targetVisible` is 1 and the grace window is open. | Tick N's perception reads the crouched eye with no grace carried over. Hidden → 0 that tick; visible → 1. Without a posture change, today's grace holds. |
+| P10 | Target on a cover point | The target occupies a candidate. | Dynamic placement rejects it; it is never claimed. |
+| P11 | Level change or hot reload alters cover | An enemy holds a cover slot. | The claim drops on reload; the next entry re-picks from the new table. |
+| P12 | Cover point on a suppress boundary | A derived point lies exactly on an `ai_cover_suppress` plane. | Counted inside and removed, identically across bakes. |

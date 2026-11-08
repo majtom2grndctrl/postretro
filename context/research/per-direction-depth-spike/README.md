@@ -200,3 +200,14 @@ Every site carries a `SPIKE HACK` comment.
 - **Fixture.** `gen_closet.py` gained `--no-door`.
 
 IP: every probe keeps a continuous weight. No probe is excluded, and no mask or binary visibility decision was added.
+
+## Mac
+
+Radeon Pro 5300M, Metal, hallway Q2 views a / b / c, base 2968de0ad's parent (bc5af2dac). Summary only; raw runs and the measurement shader patch were discarded. The brief's `research.md` (`direction-aware-probe-visibility`) carries the tables that set its ceiling.
+
+- **Method.** `POSTRETRO_GPU_TIMING` is unsupported on this adapter (no timestamp features), so forward time is the `Textured Pass` encoder's per-frame time from a Metal System Trace (`xctrace record --launch`), extracted by `kit/mac/q2mac.py` and `mst_rows.py`. Measure at 4K: at low resolution capture mode lets the GPU clock fall and runs swing by milliseconds. At 720p, alternate configurations every frame in one process and take the median back-to-back difference. `xctrace record` sometimes hangs after the engine exits; the script's watchdog kills and reruns that run. Keep `caffeinate` on and check for the screen saver per run.
+- **First lookup, every probe tiled:** +6.3 to +7.8 ms forward at 4K (23–40%), any tile size. The fetch was about 1.2 ms of it; per-corner `normalize`, texture-size query and runtime-width integer divide carried the rest.
+- **Cheap lookup** (no normalize, constants instead of the size query, power-of-two row with shifts): every probe tiled +2.6 to +3.3 ms; sparse (hashed 1.7% of slots) +1.13 to +1.19 ms (4–6%).
+- **Declared-texture floor:** +0.85 to +1.02 ms of the sparse cost is paid with no tile read; naga's Metal writer declares globals as entry arguments and the AMD driver charges per argument.
+- **720p, paired:** sparse +0.01 to +0.06 ms over no tile read; every probe tiled +0.28 to +0.40 ms.
+- **Binding:** the tiles cannot replace the depth-moments texture (its B/A carry the probe indirection word). They take a new binding while the direct-SH atlas drops fragment visibility in the shared SH layout, keeping forward at 16 sampled textures.

@@ -188,6 +188,7 @@ pub(super) fn install_level(
                 light_influences: &[],
                 sh_volume: sh,
                 sh_storage: LevelGeometryShStorage::Legacy,
+                probe_depth_tiles: None,
                 lightmap: None,
                 lightmap_streaming: None,
                 chunk_light_list: None,

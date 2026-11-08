@@ -134,6 +134,7 @@ pub fn level_world_to_geometry<'a>(
         light_influences: &world.light_influences,
         sh_volume: world.sh_volume(),
         sh_storage,
+        probe_depth_tiles: world.probe_depth_tiles(),
         lightmap: world.lightmap.as_ref(),
         lightmap_streaming: world.lightmap_stream_manifest().map(|manifest| {
             LevelGeometryLightmapStreaming {

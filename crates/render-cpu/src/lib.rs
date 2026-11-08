@@ -24,6 +24,7 @@ pub mod screen_effects;
 pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;
+pub mod sh_depth_tiles;
 pub mod sh_residency;
 pub mod sh_volume;
 pub mod shadow_reach;

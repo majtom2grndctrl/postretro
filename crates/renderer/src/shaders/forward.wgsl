@@ -179,16 +179,17 @@ struct ChunkGridInfo {
 // Group 3 — octahedral irradiance atlas. The sampled total atlas carries
 // composed indirect irradiance. Alpha is used only as L1 stored-corner
 // presence; the depth-moment word is the source of probe validity. A 3D Uint
-// texture (@binding(14) sh_depth_moments) carries f16 depth-moment bits in R/G.
+// texture (@binding(14) sh_depth_moments) carries f16 E[d] bits in R and, in
+// G, E[d²] bits or a sign-flagged reference into the depth tiles (@binding(18)).
 // When `grid.has_sh_volume` is 0 the bindings point at dummy textures and
 // the shader skips SH sampling. See crates/renderer/src/render/sh_volume.rs.
 struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
     cell_size: vec3<f32>,
-    _pad0: u32,
+    depth_tile_row_shift: u32,
     grid_dimensions: vec3<u32>,
-    _pad1: u32,
+    depth_tile_inv_width: f32,
     atlas_dimensions: vec2<u32>,
     tile_dimension: u32,
     tile_border: u32,
@@ -199,7 +200,7 @@ struct ShGridInfo {
     probe_occlusion: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,
-    _pad3: u32,
+    depth_tile_inv_height: f32,
 };
 
 // Per-light animation descriptor — matches ANIMATION_DESCRIPTOR_SIZE (48 B)
@@ -242,6 +243,8 @@ struct AnimationDescriptor {
 // Uploaded by `LightBridge::update → Renderer::upload_bridge_descriptors`.
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
+// Per-direction depth tiles (id 59); a tiled probe's moment G names its tile.
+@group(3) @binding(18) var sh_depth_tiles: texture_2d<f32>;
 
 // Group 4 — baked directional lightmap (static direct lighting). Bindings 0
 // and 1 are the lightmap pool and binding 6 the mask pool, each holding a block's

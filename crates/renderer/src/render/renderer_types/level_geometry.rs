@@ -46,6 +46,10 @@ pub struct LevelGeometry<'a> {
     /// 1×1 atlas resources and shader skips octahedral SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     pub sh_storage: LevelGeometryShStorage<'a>,
+    /// Id 59: per-direction depth tiles, whole-resident in either SH storage
+    /// mode. `None` and a zero-tile section install the same GPU inputs.
+    pub probe_depth_tiles:
+        Option<&'a postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection>,
     /// Id-22 cell-block index. `None` or zero blocks is placeholder mode: the
     /// 1×1 white placeholder, and bumped-Lambert falls back to flat white.
     /// The index only; the blobs travel as `GpuLightingPayloads` beside this

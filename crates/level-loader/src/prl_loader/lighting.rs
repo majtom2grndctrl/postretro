@@ -9,6 +9,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{self as prl_format, SectionId};
@@ -68,6 +69,8 @@ pub(super) struct LightingDecode {
     pub(super) lights: Vec<MapLight>,
     pub(super) light_influences: Vec<LightInfluence>,
     pub(super) sh_volume: Option<OctahedralShVolumeSection>,
+    /// Id 59, validated against id 34's lattice in either SH storage mode.
+    pub(super) probe_depth_tiles: Option<ProbeDepthTilesSection>,
     pub(super) lightmap: Option<LoadedLightmap>,
     pub(super) lightmap_residency: LightmapResidencyRead,
     pub(super) shadowmask_atlas: Option<LoadedShadowmask>,
@@ -189,6 +192,7 @@ pub(super) fn decode_lighting(
         None => match read_section(SectionId::OctahedralShVolume)? {
             Some(data) => {
                 let section = OctahedralShVolumeSection::from_bytes(&data)?;
+                crate::prl_probe_depth_tiles::refuse_signed_valid_moments(&section.probes)?;
                 log::info!(
                     "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, {} animated descriptor(s))",
                     section.grid_dimensions[0],
@@ -208,6 +212,22 @@ pub(super) fn decode_lighting(
             }
             None => return Err(PrlLoadError::NoOctahedralShVolume),
         },
+    };
+
+    // Id 59 is whole-resident in both SH storage modes; it validates against
+    // whichever id-34 metadata this load holds.
+    let probe_depth_tiles = match (streaming, sh_volume.as_ref()) {
+        (Some(manifest), _) => crate::prl_probe_depth_tiles::read_probe_depth_tiles(
+            container,
+            manifest.base().grid_dimensions,
+            &manifest.base().probes,
+        )?,
+        (None, Some(section)) => crate::prl_probe_depth_tiles::read_probe_depth_tiles(
+            container,
+            section.grid_dimensions,
+            &section.probes,
+        )?,
+        (None, None) => None,
     };
 
     // Populate `MapLight.animated_slot` from the SH-volume slot table.
@@ -323,6 +343,7 @@ pub(super) fn decode_lighting(
         lights,
         light_influences,
         sh_volume,
+        probe_depth_tiles,
         lightmap,
         lightmap_residency,
         shadowmask_atlas,

@@ -208,9 +208,9 @@ struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
     cell_size: vec3<f32>,
-    _pad0: u32,
+    depth_tile_row_shift: u32,
     grid_dimensions: vec3<u32>,
-    _pad1: u32,
+    depth_tile_inv_width: f32,
     atlas_dimensions: vec2<u32>,
     tile_dimension: u32,
     tile_border: u32,
@@ -221,13 +221,15 @@ struct ShGridInfo {
     probe_occlusion: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,
-    _pad3: u32,
+    depth_tile_inv_height: f32,
 };
 
 @group(4) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
 @group(4) @binding(14) var sh_depth_moments: texture_3d<u32>;
+// Per-direction depth tiles (id 59); a tiled probe's moment G names its tile.
+@group(4) @binding(18) var sh_depth_tiles: texture_2d<f32>;
 // Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
 // `BIND_SH_DIRECT_ATLAS` (group 4 binding 15) on the mesh group-4 superset by
 // render/sh_volume.rs. Same octahedral tile geometry as `sh_total_atlas`, so it

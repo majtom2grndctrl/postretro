@@ -157,6 +157,26 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
         ]
     };
 
+    // Group 3's three fragment textures are the total atlas, depth moments and
+    // id-59 depth tiles. The direct atlas (15) is VERTEX-only in this shared
+    // layout, so the tiles take its fragment slot and the totals hold.
+    let group3_fragment_textures: Vec<u32> = sh_volume::sh_bind_group_layout_entries()
+        .iter()
+        .filter(|entry| {
+            entry.visibility.contains(wgpu::ShaderStages::FRAGMENT)
+                && matches!(entry.ty, wgpu::BindingType::Texture { .. })
+        })
+        .map(|entry| entry.binding)
+        .collect();
+    assert_eq!(
+        group3_fragment_textures,
+        [
+            postretro_render_cpu::sh_volume::BIND_SH_TOTAL_ATLAS,
+            postretro_render_cpu::sh_volume::BIND_SH_DEPTH_MOMENTS,
+            postretro_render_cpu::sh_volume::BIND_SH_DEPTH_TILES,
+        ]
+    );
+
     // Supported: Group 5 = 4, total = 16.
     let supported = per_group(true);
     assert_eq!(
@@ -338,7 +358,8 @@ fn billboard_pipeline_vertex_sampled_texture_budget_includes_scatter_only_in_ver
         vertex_sampled_textures(&sh_volume::sh_bind_group_layout_entries()),
         vertex_sampled_textures(&smoke::sprite_instance_bind_group_layout_entries()),
     ];
-    assert_eq!(per_group, [0, 0, 0, 4, 0]);
+    // Group 3: total atlas, depth moments, depth tiles, direct atlas, scatter.
+    assert_eq!(per_group, [0, 0, 0, 5, 0]);
     let total: u32 = per_group.iter().sum();
     assert_eq!(billboard_pipeline_vertex_sampled_texture_count(), total);
     assert!(total <= 16);
@@ -402,7 +423,8 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
     assert!(vertex_storage.iter().sum::<u32>() <= 8);
 
     // Albedo, emissive, specular and normal (group 1), the SH atlas, depth
-    // moments and direct atlas (group 3), the reflection probe array and its
+    // moments and depth tiles (group 3; the direct atlas is VERTEX-only
+    // there), the reflection probe array and its
     // distance array (group 4), and scene depth for depth fog and the
     // screen-space reflection target (group 5): 11 of the 16.
     let fragment_sampled = per_group(fragment_sampled_textures);
@@ -415,9 +437,10 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
     );
     assert!(fragment_total <= FORWARD_SAMPLED_TEXTURE_BUDGET);
 
-    // Group 3's VERTEX-visible textures, the billboard scatter volume included.
+    // Group 3's VERTEX-visible textures, the depth tiles and billboard
+    // scatter volume included.
     let vertex_sampled = per_group(vertex_sampled_textures);
-    assert_eq!(vertex_sampled, [0, 0, 0, 4, 0, 0]);
+    assert_eq!(vertex_sampled, [0, 0, 0, 5, 0, 0]);
     assert!(vertex_sampled.iter().sum::<u32>() <= 16);
 }
 
@@ -583,6 +606,8 @@ fn forward_bindings_add_only_the_vertex_block_table() {
             (3, 14),
             (3, 15),
             (3, 17),
+            // Shared SH depth tiles (id 59), visible where the moments are.
+            (3, postretro_render_cpu::sh_volume::BIND_SH_DEPTH_TILES),
         ]
         .to_vec();
         let added: Vec<(usize, u32)> = vertex_visible

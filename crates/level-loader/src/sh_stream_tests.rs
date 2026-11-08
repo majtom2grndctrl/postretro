@@ -58,6 +58,8 @@ const PROBE_COUNT: u32 = 16 * 16 * 4;
 const AFFINITY_COUNT: u32 = 4 * 4;
 const STORED_TILES: u32 = PROBE_COUNT;
 
+pub(crate) const STREAM_FIXTURE_GRID: [u32; 3] = GRID_DIMENSIONS;
+
 pub(crate) struct StreamFixture {
     _directory: tempfile::TempDir,
     pub(crate) path: PathBuf,
@@ -448,6 +450,58 @@ pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
 }
 
 fn write_stream_fixture_with(id50_body: Id50Body, shape: DirectoryShape) -> StreamFixture {
+    write_stream_fixture_variant(id50_body, shape, |_| {}, Vec::new())
+}
+
+/// A valid stream fixture whose id-34 base `edit_base` changes before every
+/// dependent section is built from it, plus `extra_sections`.
+pub(crate) fn write_stream_fixture_with_base(
+    edit_base: impl FnOnce(&mut OctahedralShVolumeSection),
+    extra_sections: Vec<SectionBlob>,
+) -> StreamFixture {
+    write_stream_fixture_variant(
+        Id50Body::Valid,
+        DirectoryShape::default(),
+        edit_base,
+        extra_sections,
+    )
+}
+
+/// [`write_stream_fixture_with_base`] without ids 49 and 50: a level that can
+/// only load its SH whole, through the id-34 body.
+pub(crate) fn write_whole_load_fixture_with_base(
+    edit_base: impl FnOnce(&mut OctahedralShVolumeSection),
+    extra_sections: Vec<SectionBlob>,
+) -> StreamFixture {
+    let mut fixture = write_stream_fixture_with_base(edit_base, extra_sections);
+    let whole = fixture.path.with_file_name("whole-load.prl");
+    let data = std::fs::read(&fixture.path).unwrap();
+    let container = read_container(&mut std::io::Cursor::new(&data)).unwrap();
+    let sections: Vec<SectionBlob> = container
+        .sections
+        .iter()
+        .filter(|entry| {
+            entry.section_id != SectionId::ClusterDirectory as u32
+                && entry.section_id != SectionId::ClusterShPayloads as u32
+        })
+        .map(|entry| SectionBlob {
+            section_id: entry.section_id,
+            version: entry.version,
+            data: data[entry.offset as usize..(entry.offset + entry.size) as usize].to_vec(),
+        })
+        .collect();
+    let mut file = std::fs::File::create(&whole).unwrap();
+    write_prl(&mut file, &sections).unwrap();
+    fixture.path = whole;
+    fixture
+}
+
+fn write_stream_fixture_variant(
+    id50_body: Id50Body,
+    shape: DirectoryShape,
+    edit_base: impl FnOnce(&mut OctahedralShVolumeSection),
+    extra_sections: Vec<SectionBlob>,
+) -> StreamFixture {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("cluster-stream.prl");
     let cells = fixture_cells();
@@ -461,7 +515,8 @@ fn write_stream_fixture_with(id50_body: Id50Body, shape: DirectoryShape) -> Stre
         root_node_index: 0,
     };
     let locator = fixture_locator();
-    let base = large_base_section();
+    let mut base = large_base_section();
+    edit_base(&mut base);
     let direct = direct_section(&base);
     let indirect_delta = indirect_delta_section();
     let direct_delta = direct_delta_section();
@@ -508,7 +563,7 @@ fn write_stream_fixture_with(id50_body: Id50Body, shape: DirectoryShape) -> Stre
     };
     let id50_metadata_len = ClusterShPayloadsSection::metadata_len_from_header(&id50).unwrap_or(0);
 
-    let sections = vec![
+    let mut sections = vec![
         blob(
             SectionId::Geometry,
             GEOMETRY_CONTAINER_VERSION,
@@ -573,6 +628,7 @@ fn write_stream_fixture_with(id50_body: Id50Body, shape: DirectoryShape) -> Stre
             EnvironmentVolumesSection::default().to_bytes(),
         ),
     ];
+    sections.extend(extra_sections);
 
     let mut file = std::fs::File::create(&path).unwrap();
     write_prl(&mut file, &sections).unwrap();

@@ -448,6 +448,7 @@ pub(crate) fn level_world(
         light_influences: Vec::new(),
         sh_volume: None,
         sh_storage: postretro_level_loader::ShStorage::Legacy,
+        probe_depth_tiles: None,
         lightmap: None,
         lightmap_mode: Default::default(),
         sdf_atlas: None,

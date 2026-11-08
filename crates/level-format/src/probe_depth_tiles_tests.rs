@@ -29,11 +29,18 @@ fn section_id_is_pinned() {
 fn tiles_round_trip_with_the_header_indices_then_texels_in_index_order() {
     let section = two_tiles();
     let bytes = section.to_bytes();
-    assert_eq!(&bytes[0..16], &[1, 0, 0, 0, 8, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]);
+    assert_eq!(
+        &bytes[0..16],
+        &[1, 0, 0, 0, 8, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]
+    );
     assert_eq!(&bytes[16..24], &[4, 0, 0, 0, 9, 0, 0, 0]);
     assert_eq!(bytes.len(), 16 + 8 + 2 * 100 * 4);
     let first = f32_to_f16_bits(1.0).to_le_bytes();
-    assert_eq!(&bytes[24..26], &first, "first texel's E[d] follows the indices");
+    assert_eq!(
+        &bytes[24..26],
+        &first,
+        "first texel's E[d] follows the indices"
+    );
     assert_eq!(ProbeDepthTilesSection::from_bytes(&bytes).unwrap(), section);
 }
 
@@ -55,16 +62,34 @@ fn with_word(mut bytes: Vec<u8>, at: usize, value: u32) -> Vec<u8> {
 fn malformed_sections_refuse_by_name() {
     let good = two_tiles().to_bytes();
     let cases: Vec<(Vec<u8>, &str)> = vec![
-        (with_word(good.clone(), 0, 2), "ProbeDepthTiles version 2 is unknown"),
-        (with_word(good.clone(), 4, 6), "ProbeDepthTiles tile edge 6 is unsupported"),
-        (with_word(good.clone(), 8, 0), "ProbeDepthTiles border 0 is unsupported"),
+        (
+            with_word(good.clone(), 0, 2),
+            "ProbeDepthTiles version 2 is unknown",
+        ),
+        (
+            with_word(good.clone(), 4, 6),
+            "ProbeDepthTiles tile edge 6 is unsupported",
+        ),
+        (
+            with_word(good.clone(), 8, 0),
+            "ProbeDepthTiles border 0 is unsupported",
+        ),
         (
             with_word(good.clone(), 12, MAX_PROBE_DEPTH_TILES + 1),
             "past the 32768-tile cap",
         ),
-        (with_word(good.clone(), 20, 4), "must ascend without repeats; 4 follows 4"),
-        (with_word(good.clone(), 20, 3), "must ascend without repeats; 3 follows 4"),
-        (good[..good.len() - 1].to_vec(), "ProbeDepthTiles section is 823 bytes"),
+        (
+            with_word(good.clone(), 20, 4),
+            "must ascend without repeats; 4 follows 4",
+        ),
+        (
+            with_word(good.clone(), 20, 3),
+            "must ascend without repeats; 3 follows 4",
+        ),
+        (
+            good[..good.len() - 1].to_vec(),
+            "ProbeDepthTiles section is 823 bytes",
+        ),
         (
             [good.as_slice(), &[0, 0, 0, 0]].concat(),
             "ProbeDepthTiles section is 828 bytes",
@@ -101,14 +126,20 @@ fn lattice_validation_refuses_an_index_outside_or_naming_an_invalid_probe() {
             .validate_against_lattice([2, 3, 2], valid)
             .expect_err("invalid probe")
     );
-    assert!(message.contains("probe index 9 names an invalid probe"), "{message}");
+    assert!(
+        message.contains("probe index 9 names an invalid probe"),
+        "{message}"
+    );
     let message = format!(
         "{:?}",
         section
             .validate_against_lattice([2, 2, 2], |_| true)
             .expect_err("outside")
     );
-    assert!(message.contains("probe index 9 is outside the 2×2×2 probe lattice"), "{message}");
+    assert!(
+        message.contains("probe index 9 is outside the 2×2×2 probe lattice"),
+        "{message}"
+    );
     section
         .validate_against_lattice([2, 3, 2], |_| true)
         .expect("in range and valid");
@@ -117,7 +148,11 @@ fn lattice_validation_refuses_an_index_outside_or_naming_an_invalid_probe() {
 #[test]
 fn reference_flag_reads_the_raw_sign_bit() {
     assert_eq!(tile_reference_bits(0), 0x8000, "tile 0 is f16 -0");
-    assert_eq!(tile_reference_bits(32_767), 0xffff, "the top tile is an f16 NaN");
+    assert_eq!(
+        tile_reference_bits(32_767),
+        0xffff,
+        "the top tile is an f16 NaN"
+    );
     assert_eq!(
         decode_moment_second_channel(0x8000),
         MomentSecondChannel::Tile(0)

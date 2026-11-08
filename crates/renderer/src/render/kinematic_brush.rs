@@ -1376,19 +1376,22 @@ mod tests {
                 fragment_sampled_textures(&material_bind_group_layout_entries()),
                 fragment_sampled_textures(&light_bind_group_layout_entries(cube_array_supported)),
                 0, // group 3 instance storage buffer
-                fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()),
+                // Group 4 is the mesh superset full init builds this pass
+                // against: total atlas, depth moments, depth tiles and the
+                // fragment-visible direct atlas.
+                fragment_sampled_textures(&sh_volume::mesh_bind_group_layout_entries()),
             ];
             (per_group, per_group.iter().sum::<u32>())
         };
 
         let (cube_groups, cube_total) = total(true);
-        assert_eq!(cube_groups, [0, 4, 4, 0, 3]);
-        assert_eq!(cube_total, 11);
+        assert_eq!(cube_groups, [0, 4, 4, 0, 4]);
+        assert_eq!(cube_total, 12);
         assert!(cube_total <= 16);
 
         let (no_cube_groups, no_cube_total) = total(false);
-        assert_eq!(no_cube_groups, [0, 4, 2, 0, 3]);
-        assert_eq!(no_cube_total, 9);
+        assert_eq!(no_cube_groups, [0, 4, 2, 0, 4]);
+        assert_eq!(no_cube_total, 10);
         assert!(no_cube_total <= 16);
     }
 

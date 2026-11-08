@@ -13,8 +13,7 @@ pub const PROBE_DEPTH_TILE_EDGE: u32 = 8;
 /// Octahedral wrap border on each side, as SH irradiance tiles carry.
 pub const PROBE_DEPTH_TILE_BORDER: u32 = 1;
 /// Bordered tile side: the stride between tiles in the tile texture.
-pub const PROBE_DEPTH_TILE_BORDERED_EDGE: u32 =
-    PROBE_DEPTH_TILE_EDGE + 2 * PROBE_DEPTH_TILE_BORDER;
+pub const PROBE_DEPTH_TILE_BORDERED_EDGE: u32 = PROBE_DEPTH_TILE_EDGE + 2 * PROBE_DEPTH_TILE_BORDER;
 /// Interior texels in one tile, `E[d]` and `E[d²]` each.
 pub const PROBE_DEPTH_TILE_INTERIOR_TEXELS: usize =
     (PROBE_DEPTH_TILE_EDGE * PROBE_DEPTH_TILE_EDGE) as usize;
@@ -318,8 +317,7 @@ pub fn bordered_tile(interior: &[[u16; 2]]) -> Vec<[u16; 2]> {
     let mut out = Vec::with_capacity(PROBE_DEPTH_TILE_TEXELS);
     for y in 0..bordered {
         for x in 0..bordered {
-            let [sx, sy] =
-                irradiance_tile_source_texel(x, y, bordered, PROBE_DEPTH_TILE_BORDER);
+            let [sx, sy] = irradiance_tile_source_texel(x, y, bordered, PROBE_DEPTH_TILE_BORDER);
             out.push(interior[(sy * PROBE_DEPTH_TILE_EDGE + sx) as usize]);
         }
     }
@@ -342,10 +340,7 @@ pub fn sample_tile_moments(tile: &[[u16; 2]], dir: [f32; 3]) -> [f32; 2] {
     let last = PROBE_DEPTH_TILE_BORDERED_EDGE as i32 - 1;
     let clamp = |c: f32| (c as i32).clamp(0, last) as usize;
     let (x0, y0) = (clamp(x0), clamp(y0));
-    let (x1, y1) = (
-        (x0 + 1).min(last as usize),
-        (y0 + 1).min(last as usize),
-    );
+    let (x1, y1) = ((x0 + 1).min(last as usize), (y0 + 1).min(last as usize));
     let stride = PROBE_DEPTH_TILE_BORDERED_EDGE as usize;
     let mut out = [0.0f32; 2];
     for (x, y, w) in [

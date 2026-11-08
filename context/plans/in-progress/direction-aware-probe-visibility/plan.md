@@ -58,7 +58,8 @@ A3 fraction: _set by task 4's pilot._
 |---|---|---|---|---|
 | 1 | Id 59 format, reference encoding, texture layout, CPU tile sampler (`level-format::probe_depth_tiles`) | integrating executor | — | done |
 | 2 | Bake: bin gather hits into tiles, select by 26-neighbour change, cap and rank, ride the `sh_base_volume` entry (stage version 3), pack id 59, build summary tile bytes; closet static-door, no-door and convex-room fixtures | worker (compiler) | 1 | |
-| 3 | Runtime: load and validate id 59 and id-34 sign bits; reference table; tile texture and binding 18; direct atlas drops fragment visibility in the shared layout; WGSL decode and lookup; every texel writer; rewrite seam; ledger; growth rebind | worker (renderer + loader) | 1 | |
+| 3a | Runtime: load and validate id 59 and id-34 sign bits; reference table; tile texture and binding 18 in every SH group incl. growth; direct atlas drops fragment visibility in the shared layout; WGSL decode and lookup; whole-load packer; ledger (A9, A10, A12, A19–A23, A8 CPU side) | worker (renderer + loader) | 1 | done: render-cpu 792, loader 347, renderer 1255 passed (GPU required) |
+| 3b | Runtime: streamed writers pack G from the table; runtime rewrite seam (whole-load keeps id-34 `E[d²]` for clear); O3–O7, O10, A11, A13–A16 | worker (renderer) | 3a | |
 | 4 | First slice: bake closet, capture st2/st3 with and without tiles, pilot the A3 fraction | integrating executor | 2, 3 | |
 | 5 | Reflection capture parity: CPU mirror decode + stage key | worker (compiler) | 2 | |
 | 6 | Capture acceptance tests A1–A8, A25 | integrating executor | 4 | |

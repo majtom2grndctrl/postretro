@@ -51,6 +51,7 @@ mod sh_allocation;
 mod sh_atlas;
 mod sh_compose;
 mod sh_compose_dispatch;
+mod sh_depth_tiles;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
 #[cfg(feature = "dev-tools")]

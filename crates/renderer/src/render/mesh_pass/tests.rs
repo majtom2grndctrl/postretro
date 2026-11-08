@@ -771,14 +771,17 @@ fn skinned_mesh_pipeline_fragment_texture_budget_includes_shared_emissive_bindin
         (per_group, per_group.iter().sum::<u32>())
     };
 
+    // Group 4 is the superset the pass binds: total atlas, depth moments,
+    // depth tiles and the direct atlas, which the superset keeps
+    // fragment-visible.
     let (cube_groups, cube_total) = total(true);
-    assert_eq!(cube_groups, [0, 4, 4, 0, 3]);
-    assert_eq!(cube_total, 11);
+    assert_eq!(cube_groups, [0, 4, 4, 0, 4]);
+    assert_eq!(cube_total, 12);
     assert!(cube_total <= 16);
 
     let (no_cube_groups, no_cube_total) = total(false);
-    assert_eq!(no_cube_groups, [0, 4, 2, 0, 3]);
-    assert_eq!(no_cube_total, 9);
+    assert_eq!(no_cube_groups, [0, 4, 2, 0, 4]);
+    assert_eq!(no_cube_total, 10);
     assert!(no_cube_total <= 16);
 }
 

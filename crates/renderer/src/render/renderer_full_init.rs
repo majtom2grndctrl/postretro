@@ -86,6 +86,7 @@ pub(crate) fn build_full_renderer(
         device,
         queue,
         ShVolumeSections {
+            depth_tiles: None,
             sh: None,
             stream_base_present: false,
             stream_animation_descriptors: None,

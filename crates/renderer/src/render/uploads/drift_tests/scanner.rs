@@ -735,6 +735,7 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
             "upload_texture_data" | "upload_texture_array_data",
         ) => Some("load"),
         ("render/sh_atlas.rs", "", "upload_depth_moment_texture") => Some("load"),
+        ("render/sh_depth_tiles.rs", "ShDepthTiles", "new") => Some("load"),
         ("render/sdf_atlas.rs", "SdfAtlasResources", "new") => Some("load"),
         ("render/smoke.rs", "", "create_sprite_placeholder_array") => Some("load"),
         ("render/smoke.rs", "SmokePass", "upload_sprite_asset") => Some("install"),

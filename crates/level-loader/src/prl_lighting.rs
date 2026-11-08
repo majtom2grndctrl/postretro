@@ -146,6 +146,13 @@ impl LevelWorld {
         self.prl_read_counters.as_ref()
     }
 
+    /// Id 59, in either SH storage mode: tiles are never streamed.
+    pub fn probe_depth_tiles(
+        &self,
+    ) -> Option<&postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection> {
+        self.probe_depth_tiles.as_ref()
+    }
+
     pub fn sh_volume(&self) -> Option<&OctahedralShVolumeSection> {
         (!self.sh_storage.is_streaming())
             .then_some(self.sh_volume.as_ref())

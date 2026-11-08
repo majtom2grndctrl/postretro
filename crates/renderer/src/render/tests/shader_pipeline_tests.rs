@@ -157,6 +157,7 @@ fn forward_wgsl_dummy_buffers_meet_shader_min_binding_size() {
         atlas_layer_count: 1,
         present: false,
         probe_occlusion_enabled: true,
+        depth_tiles: postretro_render_cpu::sh_volume::DepthTileGridWords::NONE,
     });
     if let Some(&min) = min_sizes.get(&(3, sh_grid_binding)) {
         assert!(

@@ -101,6 +101,7 @@ pub(super) fn read_base_metadata(
     }
     postretro_level_format::sh_volume::validate_probe_metadata(grid_dimensions, &probes)
         .map_err(PrlLoadError::FormatError)?;
+    crate::prl_probe_depth_tiles::refuse_signed_valid_moments(&probes)?;
     postretro_level_format::sh_volume::validate_metadata_projection(
         grid_dimensions,
         probe_stride,

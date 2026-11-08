@@ -48,6 +48,7 @@ impl UploadOrderSh {
             device,
             queue,
             ShVolumeSections {
+                depth_tiles: None,
                 sh: None,
                 stream_base_present: true,
                 stream_animation_descriptors: Some(&[]),

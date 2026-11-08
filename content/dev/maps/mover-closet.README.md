@@ -97,9 +97,9 @@ Use dev-tools noclip, or walk: the closet is reachable while the door is open.
 
 ## Reference variants
 
-Two sibling maps share this layout, lights, pool, fog, stations and probe
+Three sibling maps share this layout, lights, pool, fog, stations and probe
 lattice, and differ from this map only as below; an edit here belongs in all
-three, with the north wall at y 760 in each. They were generated with this map
+four, with the north wall at y 760 in each. They were generated with this map
 by the spike's `kit/gen_closet.py` (`spike/per-direction-depth`).
 
 - **`mover-closet-static-door.map`** (`--static-door`): the `kinematic_mover` and
@@ -109,6 +109,11 @@ by the spike's `kit/gen_closet.py` (`spike/per-direction-depth`).
   blocked lattice neighbour here.
 - **`mover-closet-no-door.map`** (`--no-door`): the doorway stays open. The
   open-doorway baseline: per-direction depth must leave it reading as before.
+- **`mover-closet-kinematic-receiver.map`**: the static-door reference plus a
+  dynamic receiver in station 3's view: a `kinematic_mover` slab (x 296–344,
+  y 505–521, z 0–8) resting at its first waypoint on the closet floor just
+  behind the door, where the averaged moments glow. Hand-edited from the
+  static-door map, not generated.
 
 Build either the same way as this map, with its own name. Each sits beside this
 map, so the compiler finds the same content root.

@@ -37,6 +37,15 @@ pub(crate) struct SlotRead {
     pub base: Vec3,
 }
 
+/// Which forward-family sampler the mirror follows: a surface (normal offset
+/// and backface rejection, the capture's case) or a camera-facing sprite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Receiver {
+    Surface,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Billboard,
+}
+
 /// A probe's load-derived indirection: storage level, node scale and the
 /// stored-atlas slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +154,25 @@ impl<'a> ShVolumeSampler<'a> {
         &self,
         position: Vec3,
         normal: Vec3,
+        slots: Option<&mut Vec<SlotRead>>,
+    ) -> Vec3 {
+        self.sample(position, normal, slots, Receiver::Surface)
+    }
+
+    /// Irradiance as the billboard pass samples it at a sprite's `position`
+    /// (`billboard.wgsl` `sample_sh_indirect`): no normal offset and no
+    /// backface rejection, `normal` choosing only the SH direction.
+    #[cfg(test)]
+    pub(crate) fn indirect_as_billboard(&self, position: Vec3, normal: Vec3) -> Vec3 {
+        self.sample(position, normal, None, Receiver::Billboard)
+    }
+
+    fn sample(
+        &self,
+        position: Vec3,
+        normal: Vec3,
         mut slots: Option<&mut Vec<SlotRead>>,
+        receiver: Receiver,
     ) -> Vec3 {
         if let Some(slots) = slots.as_deref_mut() {
             slots.clear();
@@ -157,7 +184,10 @@ impl<'a> ShVolumeSampler<'a> {
         let cell = Vec3::from(s.cell_size);
         let origin = Vec3::from(s.grid_origin);
         let dims = UVec3::from(s.grid_dimensions);
-        let offset_world = position + normal * SH_NORMAL_OFFSET_M * cell;
+        let offset_world = match receiver {
+            Receiver::Surface => position + normal * SH_NORMAL_OFFSET_M * cell,
+            Receiver::Billboard => position,
+        };
         let gdims_f = (dims.as_vec3() - Vec3::ONE).max(Vec3::ZERO);
         let cell_coord = (offset_world - origin) / cell.max(Vec3::splat(1.0e-6));
         let gf = cell_coord.clamp(Vec3::ZERO, gdims_f);
@@ -186,6 +216,7 @@ impl<'a> ShVolumeSampler<'a> {
                 offset_world,
                 normal,
                 indirection.is_some(),
+                receiver,
             );
             read.weight = weight;
             sum += weight * sample.max(Vec3::ZERO);
@@ -217,6 +248,7 @@ impl<'a> ShVolumeSampler<'a> {
         sample_world: Vec3,
         geo_normal: Vec3,
         valid: bool,
+        receiver: Receiver,
     ) -> f32 {
         if !valid {
             return 0.0;
@@ -226,7 +258,10 @@ impl<'a> ShVolumeSampler<'a> {
         let trilinear = axis.x * axis.y * axis.z;
         let cell = Vec3::from(self.section.cell_size);
         let dir_to_probe = (offset.as_vec3() - gfrac) * cell;
-        let backface = dir_to_probe.dot(geo_normal).max(0.0);
+        let backface = match receiver {
+            Receiver::Surface => dir_to_probe.dot(geo_normal).max(0.0),
+            Receiver::Billboard => 1.0,
+        };
         let visibility = if self.probe_occlusion {
             self.depth_visibility(probe, idx, sample_world)
         } else {

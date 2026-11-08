@@ -482,3 +482,108 @@ fn hallway_tiles_darken_no_pixel_and_fit_the_memory_ceiling() {
         );
     }
 }
+
+/// Largest share of its no-tile brightness the kinematic receiver behind the
+/// static door may keep with tiles (A3). The first-slice pilot measured it;
+/// see the plan of record.
+const KINEMATIC_FRACTION_CEILING: f64 = 0.10;
+
+/// Pixel of a map-unit point seen from `pose` at `resolution`, with the
+/// capture's horizontal field of view; `None` behind the camera.
+fn project(point: [f32; 3], pose: Pose, fov_deg: f32, resolution: [u32; 2]) -> Option<[f32; 2]> {
+    let d = [0, 1, 2].map(|i| point[i] - pose.map[i]);
+    let (sy, cy) = pose.yaw.to_radians().sin_cos();
+    let (sp, cp) = pose.pitch.to_radians().sin_cos();
+    let forward = [cy * cp, sy * cp, sp];
+    let right = [sy, -cy, 0.0];
+    let up = [-cy * sp, -sy * sp, cp];
+    let dot = |a: [f32; 3]| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+    let depth = dot(forward);
+    if depth <= 0.0 {
+        return None;
+    }
+    let [w, h] = resolution.map(|v| v as f32);
+    let half_x = (fov_deg.to_radians() / 2.0).tan();
+    let half_y = half_x * h / w;
+    Some([
+        w / 2.0 * (1.0 + dot(right) / depth / half_x),
+        h / 2.0 * (1.0 - dot(up) / depth / half_y),
+    ])
+}
+
+// A3, kinematic half: a resting kinematic slab on the closet floor just behind
+// the static door keeps at most a set share of its no-tile brightness. Its
+// pixels are those inside its projected box that it changes against the plain
+// static-door map, both without tiles. (The sprite half reads through the
+// billboard sampler's CPU mirror: capture draws no billboards.)
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
+fn kinematic_receiver_behind_the_static_door_darkens_with_tiles() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let plain = tiled_pair(&workspace, "mover-closet-static-door");
+    let receiver = tiled_pair(&workspace, "mover-closet-kinematic-receiver");
+    let backdrop = closet_capture(
+        &workspace,
+        scratch.path(),
+        &plain.today,
+        "backdrop",
+        STATION_3,
+    );
+    let today = closet_capture(
+        &workspace,
+        scratch.path(),
+        &receiver.today,
+        "today",
+        STATION_3,
+    );
+    let tiled = closet_capture(
+        &workspace,
+        scratch.path(),
+        &receiver.tiled,
+        "tiled",
+        STATION_3,
+    );
+
+    // The slab's box, mover-closet.README.md §Reference variants.
+    let corners = [296.0, 344.0].iter().flat_map(|&x| {
+        [505.0, 521.0]
+            .iter()
+            .flat_map(move |&y| [0.0, 8.0].map(move |z| [x, y, z]))
+    });
+    let pixels: Vec<[f32; 2]> = corners
+        .map(|c| {
+            project(c, STATION_3, 100.0, [CLOSET_WIDTH, CLOSET_HEIGHT]).expect("slab in front")
+        })
+        .collect();
+    let lo = pixels
+        .iter()
+        .fold([f32::MAX; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
+    let hi = pixels
+        .iter()
+        .fold([f32::MIN; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]);
+    let (mut before, mut after, mut count) = (0.0f64, 0.0f64, 0usize);
+    for (x, y, pixel) in today.enumerate_pixels() {
+        let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+        if fx < lo[0] || fx > hi[0] || fy < lo[1] || fy > hi[1] {
+            continue;
+        }
+        if backdrop.get_pixel(x, y).0 == pixel.0 {
+            continue;
+        }
+        before += luma(pixel.0);
+        after += luma(tiled.get_pixel(x, y).0);
+        count += 1;
+    }
+    assert!(count > 0, "the slab must be in station 3's view");
+    let (before, after) = (before / count as f64, after / count as f64);
+    let fraction = after / before;
+    eprintln!(
+        "kinematic slab: {count} px, today {before:.3}, tiled {after:.3}, fraction {fraction:.3}"
+    );
+    assert!(before > 1.0, "the slab must glow without tiles: {before}");
+    assert!(
+        fraction <= KINEMATIC_FRACTION_CEILING,
+        "the slab keeps {fraction:.3} of its no-tile brightness"
+    );
+}

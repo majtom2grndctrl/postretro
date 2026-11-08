@@ -130,3 +130,40 @@ fn the_static_door_closet_floor_reads_darker_with_tiles() {
         );
     }
 }
+
+/// Largest share of its no-tile indirect a sprite behind the static door may
+/// keep with tiles (A3). The first-slice pilot measured it; see the plan.
+const SPRITE_FRACTION_CEILING: f32 = 0.10;
+
+// A3, sprite half: a sprite on the closet floor at the door, sampled as the
+// billboard pass samples it (capture draws no billboards), keeps at most a set
+// share of its no-tile indirect with tiles.
+#[test]
+fn a_sprite_behind_the_static_door_darkens_with_tiles() {
+    let fixture = DepthTileFixture::load("mover-closet-static-door");
+    let base = fixture.bake(MAX_PROBE_DEPTH_TILES, None);
+    let (volume, _) = pack_indirect_section(base.section, Some(Level::L0)).unwrap();
+    let plain = ShVolumeSampler::new(&volume, PRODUCTION_PROBE_OCCLUSION).unwrap();
+    let tiled = ShVolumeSampler::new(&volume, PRODUCTION_PROBE_OCCLUSION)
+        .unwrap()
+        .with_depth_tiles(&base.depth_tiles.section)
+        .unwrap();
+    // Station 3 faces −y at pitch −38°; a billboard's normal is camera forward.
+    let pitch = (-38.0f64).to_radians();
+    let forward = crate::parse::quake_to_engine(DVec3::new(0.0, -pitch.cos(), pitch.sin()))
+        .as_vec3()
+        .normalize();
+    for (map_y, map_z) in [(508.0, 8.0), (512.0, 16.0), (520.0, 16.0)] {
+        let point =
+            (crate::parse::quake_to_engine(DVec3::new(320.0, map_y, map_z)) * 0.0254).as_vec3();
+        let without = plain.indirect_as_billboard(point, forward).max_element();
+        let with = tiled.indirect_as_billboard(point, forward).max_element();
+        let fraction = with / without;
+        eprintln!("sprite at map y {map_y} z {map_z}: without {without}, with {with}, fraction {fraction}");
+        assert!(without > 0.0, "y {map_y}: the averaged moments leak onto the sprite");
+        assert!(
+            fraction <= SPRITE_FRACTION_CEILING,
+            "y {map_y}: the sprite keeps {fraction} of its no-tile indirect"
+        );
+    }
+}

@@ -11,6 +11,9 @@ Source since the brief's read-at (2968de0ad) changed only navmesh, mover and AI 
 - Path's "tile-row constant" has no uniform slot → `ShGridInfo` spare words carry it: `_pad0` (28) the tiles-per-row shift, `_pad1` (44) and `_pad3` (92) the texture's reciprocal width and height as f32, so the lookup needs no texture-size query. The 96-byte ABI is unchanged.
 - Path cites no tile binding number → group 3 binding 18 (`BIND_SH_DEPTH_TILES`), `sh_depth_tiles: texture_2d<f32>`.
 
+- A3 says a sprite is read at station 3, but capture draws no billboards (emitters spawn, no particle ever draws) → the sprite reads through the CPU mirror of the SH sampler in a billboard mode matching `billboard.wgsl` `sample_sh_indirect` (no normal offset, no backface rejection), whose tile decode A4's parity tests pin; the kinematic brush is captured. Same meaning, different instrument.
+- The closet pool reads lit (~17 luma) in any closet variant that carries a `kinematic_mover`, and dark in the static-door map, with or without tiles. Not caused by tiles; unrelated to this brief. Recorded for the owner, not chased.
+
 ## Delegated answers
 - Hallway Q2 view poses for the Windows ceiling run — reuse the spike's capture scenes (`kit/mk_scenes.py` on `spike/per-direction-depth`), so the ceiling compares against the run that set it.
 
@@ -25,7 +28,7 @@ Capture tests live in `crates/postretro/tests/capture_probe_depth_tiles.rs` (fea
 |---|---|---|
 | A1 no tiles: static-door st3 ≥ 0.4 | capture test, static-door variant, stripped PRL | achievable as stated |
 | A2 tiles: st3 ≤ 0.05, st2 ≤ 0.02 | capture test, static-door variant | achievable as stated |
-| A3 sprite + kinematic brush at st3 floor ≤ fraction of no-tile | capture test on a static-door variant carrying both; fraction from first-slice pilot (recorded below) | achievable as stated |
+| A3 sprite + kinematic brush at st3 floor ≤ fraction of no-tile | kinematic: capture test on `mover-closet-kinematic-receiver`; sprite: compiler test through the billboard sampler's CPU mirror (see Corrections); fraction from the pilot (below) | achievable as stated |
 | A4 reflection capture parity + id 59 re-keys stage | compiler test: CPU mirror samples tiles through the shared decode and darkens behind the door; stage key changes with id 59 bytes | achievable as stated |
 | A5 open doorway within 0.02, ≤ 0.1% px move > 2 | capture test, no-door variant | achievable as stated |
 | A6 hallway Q2 1080p: no px darkens > 2 | `#[ignore]` capture test, bakes stress-warren-hallway-inspection | achievable as stated |
@@ -54,7 +57,7 @@ Capture tests live in `crates/postretro/tests/capture_probe_depth_tiles.rs` (fea
 | M3 owner in-engine | owner | manual |
 | M4 fog bleed observation | owner | manual |
 
-A3 fraction: _set by task 4's pilot._
+A3 fraction: **0.10**, for both receivers. First-slice pilot (Mac, Radeon Pro 5300M): the kinematic slab at station 3 keeps 0.006 of its no-tile brightness (3.434 → 0.020 luma over 7,644 px); a sprite on the closet floor at the door keeps 0.033–0.049 of its no-tile indirect (three points, billboard sampler mirror). 0.10 is the worst measured share with about 2× margin.
 
 ## Tasks
 
@@ -64,7 +67,7 @@ A3 fraction: _set by task 4's pilot._
 | 2 | Bake (done, 33 + 8 compiler tests; convex-room unit test now held `#[ignore]` pending its capture restatement): bin gather hits into tiles, select by 26-neighbour change, cap and rank, ride the `sh_base_volume` entry (stage version 3), pack id 59, build summary tile bytes; closet static-door, no-door and convex-room fixtures | worker (compiler) | 1 | |
 | 3a | Runtime: load and validate id 59 and id-34 sign bits; reference table; tile texture and binding 18 in every SH group incl. growth; direct atlas drops fragment visibility in the shared layout; WGSL decode and lookup; whole-load packer; ledger (A9, A10, A12, A19–A23, A8 CPU side) | worker (renderer + loader) | 1 | done: render-cpu 792, loader 347, renderer 1255 passed (GPU required) |
 | 3b | Runtime: streamed writers pack G from the table; runtime rewrite seam (whole-load keeps id-34 `E[d²]` for clear); O3–O7, O10, A11, A13–A16 | worker (renderer) | 3a | done: renderer 1263 passed (GPU required) |
-| 4 | First slice: bake closet, capture st2/st3 with and without tiles, pilot the A3 fraction | integrating executor | 2, 3 | |
+| 4 | First slice: bake closet, capture st2/st3 with and without tiles, pilot the A3 fraction | integrating executor | 2, 3 | done: st3 0.495 → 0.033, st2 0.149 → 0.009 |
 | 5 | Reflection capture parity: CPU mirror decode + stage key | worker (compiler) | 2 | done in task 2's slice |
 | 6 | Capture acceptance tests A1–A8, A25 | integrating executor | 4 | |
 | 7 | Preflight, review panel, fixes | integrating executor | 5, 6 | |

@@ -87,6 +87,18 @@ pub(crate) struct CaptureScene {
     /// Capture-only ghost transparency, `"blend"` or `"dither"`, standing in
     /// for `render.ghosts`. Omitted keeps the renderer's default, blend.
     pub(crate) ghost_transparency: Option<CaptureGhostTransparency>,
+    /// TEMPORARY (mover-light-flow--probe-channel plan task 1; task 11's
+    /// forced mover t replaces it): draws one named mover parked at one of
+    /// its waypoints instead of at rest. Pose only: no portal seal.
+    pub(crate) dev_pose_mover: Option<DevPoseMover>,
+}
+
+/// TEMPORARY: see [`CaptureScene::dev_pose_mover`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DevPoseMover {
+    pub(crate) name: String,
+    pub(crate) waypoint: String,
 }
 
 impl CaptureScene {
@@ -916,6 +928,7 @@ mod tests {
             planar_reflection: None,
             ghost_styles: None,
             ghost_transparency: None,
+            dev_pose_mover: None,
         };
         assert!(matches!(
             validate_scene(&scene),

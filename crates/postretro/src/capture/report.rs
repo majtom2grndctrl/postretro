@@ -778,6 +778,7 @@ mod tests {
             planar_reflection: None,
             ghost_styles: None,
             ghost_transparency: None,
+            dev_pose_mover: None,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,

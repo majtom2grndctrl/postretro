@@ -15,6 +15,7 @@ use super::{
 };
 use crate::lightmap_bake::soft_visibility_early_out;
 use crate::map_data::MapLight;
+use crate::mover_probe_channel::{JointVisibility, PosedOccluder, joint_soft_visibility};
 use crate::texel_footprint::ProbeEarlyOut;
 
 /// Indirect-only SH L2 RGB for the per-light delta SH baker (`delta_sh_bake.rs`),
@@ -93,6 +94,32 @@ pub(crate) fn bake_probe_direct_rgb(
     early_outs: &[ProbeEarlyOut],
     probe_index: u64,
 ) -> [f32; 27] {
+    bake_probe_direct_rgb_posed(
+        ctx,
+        probe_pos,
+        lights,
+        light_global_indices,
+        early_outs,
+        probe_index,
+        // TEMPORARY (mover-light-flow--probe-channel plan task 1): the dev
+        // pose switch; unset, this is `None` and the bake is today's.
+        crate::mover_probe_channel::dev_pose::posed_occluder(),
+    )
+}
+
+/// [`bake_probe_direct_rgb`] with `posed` added as an occluder: each
+/// light's term scales by its surviving-visibility byte q, so the probe
+/// holds that terminus's composed state S = q × T. A light whose samples
+/// cannot meet the pose keeps its term bit for bit.
+pub(crate) fn bake_probe_direct_rgb_posed(
+    ctx: &RaytracingCtx<'_>,
+    probe_pos: Vec3,
+    lights: &[&MapLight],
+    light_global_indices: &[u64],
+    early_outs: &[ProbeEarlyOut],
+    probe_index: u64,
+    posed: Option<&PosedOccluder>,
+) -> [f32; 27] {
     debug_assert_eq!(lights.len(), early_outs.len());
     let mut acc = [0f32; 27];
     for (light_index, light) in lights.iter().enumerate() {
@@ -103,7 +130,7 @@ pub(crate) fn bake_probe_direct_rgb(
         // No per-ray axis here (direct is a single shadow query per light, not a
         // sphere of rays), so the ray-index seed axis is fixed at 0.
         let seed = soft_visibility_seed(probe_index, 0, global_index);
-        let v = soft_visibility_early_out(
+        let mut v = soft_visibility_early_out(
             probe_pos,
             l,
             light,
@@ -112,6 +139,23 @@ pub(crate) fn bake_probe_direct_rgb(
             early_outs[light_index],
             |from, to| segment_clear(ctx, from, to),
         );
+        if let Some(occluder) = posed
+            && v > 0.0
+            && occluder.may_meet(probe_pos, light)
+        {
+            let joint = probe_direct_joint_visibility(
+                ctx,
+                probe_pos,
+                l,
+                light,
+                seed,
+                early_outs[light_index],
+                occluder,
+            );
+            if joint.meets_mover() {
+                v *= f32::from(joint.surviving_byte()) / 255.0;
+            }
+        }
         if v <= 0.0 {
             continue;
         }
@@ -119,6 +163,29 @@ pub(crate) fn bake_probe_direct_rgb(
     }
     apply_cosine_lobe_rgb(&mut acc);
     acc
+}
+
+/// The joint static / posed soft visibility of `light` at a direct-SH probe,
+/// on the probe bake's own lift, lattice, seed and early-out.
+pub(crate) fn probe_direct_joint_visibility(
+    ctx: &RaytracingCtx<'_>,
+    probe_pos: Vec3,
+    l: Vec3,
+    light: &MapLight,
+    seed: u64,
+    early_out: ProbeEarlyOut,
+    occluder: &PosedOccluder,
+) -> JointVisibility {
+    joint_soft_visibility(
+        probe_pos,
+        l,
+        light,
+        seed,
+        crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+        early_out,
+        |from, to| segment_clear(ctx, from, to),
+        |from, to| occluder.blocks(probe_pos, from, to),
+    )
 }
 
 /// The probe gather's fixed direction set: one Fibonacci sphere of

@@ -1093,6 +1093,16 @@ impl SoftProbes {
             probes,
         }
     }
+
+    /// The escalated count, clamped to at least the probe count.
+    pub(crate) fn full_samples(&self) -> u32 {
+        self.full_samples
+    }
+
+    /// The probe subset's lattice indices.
+    pub(crate) fn indices(&self) -> &[u32; SOFT_PROBE_SAMPLES as usize] {
+        &self.probes
+    }
 }
 
 thread_local! {

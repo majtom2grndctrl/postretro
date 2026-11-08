@@ -214,6 +214,10 @@ impl PreparedCapture {
         // Capture has no script context or levelLoad event. Stand up only the
         // VM-free map-authored receiver state the windowed render frame collects.
         let mut registry = spawn_capture_receiver_registry(&world)?;
+        // TEMPORARY (plan task 1): see `CaptureScene::dev_pose_mover`.
+        if let Some(pose) = scene.dev_pose_mover.as_ref() {
+            super::receivers::park_dev_pose_mover(&mut registry, &world, pose)?;
+        }
         // Selected-static promotion needs no bridge: its forward record is
         // appended by the renderer from the selection itself.
         if forced_promotion_weights

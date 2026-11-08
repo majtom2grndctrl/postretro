@@ -951,6 +951,12 @@ fn run_after_parsing(
         }
     }
 
+    // TEMPORARY (mover-light-flow--probe-channel plan task 1): the dev pose
+    // switch for the direct-SH bakes; a no-op unless its env var is set.
+    crate::mover_probe_channel::dev_pose::install(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+    )?;
     let stage_start = begin_stage(reporter.as_ref(), StageId::DirectShBake);
     let direct_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DirectShBake, direct_sh_progress.clone());
@@ -990,7 +996,10 @@ fn run_after_parsing(
         let raw = direct_sh_bake::bake_direct_sh_volume_cached_controlled(
             &inputs,
             &sh_config,
-            stage_cache.as_ref(),
+            // TEMPORARY (plan task 1): a posed bake keys nothing of the pose.
+            stage_cache
+                .as_ref()
+                .filter(|_| !crate::mover_probe_channel::dev_pose::active()),
             &direct_sh_control,
         );
         if args.verbose {

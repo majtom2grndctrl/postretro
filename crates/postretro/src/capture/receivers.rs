@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result, bail};
 use glam::Vec3;
-use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
+use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_visibility::VisibleCells;
 
 use crate::runtime_movers::{
@@ -39,6 +39,48 @@ pub(super) fn spawn_capture_receiver_registry(
     apply_classname_dispatch(&map_entities, &dispatch, &mut registry);
 
     Ok(registry)
+}
+
+/// TEMPORARY (mover-light-flow--probe-channel plan task 1; task 11's forced
+/// mover t replaces it): park mover `pose.name` at its waypoint
+/// `pose.waypoint`. Capture runs no tick, so the transform alone places its
+/// drawn geometry, shadow casters and occluder bounds.
+pub(super) fn park_dev_pose_mover(
+    registry: &mut EntityRegistry,
+    world: &postretro_level_loader::LevelWorld,
+    pose: &super::scene::DevPoseMover,
+) -> Result<()> {
+    let mover_id = world
+        .kinematic_geometry
+        .movers
+        .iter()
+        .find(|mover| mover.name == pose.name)
+        .map(|mover| mover.mover_id)
+        .with_context(|| format!("dev_pose_mover: no kinematic mover named `{}`", pose.name))?;
+    let (entity, position) = registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .find_map(|(id, value)| match value {
+            ComponentValue::KinematicMover(mover) if mover.mover_id == mover_id => mover
+                .waypoint_names
+                .iter()
+                .position(|name| *name == pose.waypoint)
+                .map(|at| (id, mover.waypoints[at])),
+            _ => None,
+        })
+        .with_context(|| {
+            format!(
+                "dev_pose_mover: mover `{}` has no waypoint `{}`",
+                pose.name, pose.waypoint
+            )
+        })?;
+    let mut transform = *registry
+        .get_component::<Transform>(entity)
+        .context("dev_pose_mover: mover has no transform")?;
+    transform.position = position;
+    registry
+        .set_component(entity, transform)
+        .context("dev_pose_mover: set mover transform")?;
+    Ok(())
 }
 
 /// Validate model handles placed by capture's built-in map dispatch. An empty

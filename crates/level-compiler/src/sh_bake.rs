@@ -28,6 +28,8 @@ pub(crate) use light_eval::{
 #[cfg(test)]
 pub(crate) use probe::bake_probe;
 pub(crate) use probe::{bake_probe_direct_rgb, bake_probe_indirect_rgb};
+#[cfg(test)]
+pub(crate) use probe::{bake_probe_direct_rgb_posed, probe_direct_joint_visibility};
 pub use section::log_stats;
 #[cfg(test)]
 pub(crate) use section::section_heap_bytes;

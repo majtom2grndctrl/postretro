@@ -21,16 +21,25 @@ The owner wants combat that is more fun to fight and easier to design encounters
 - **Attack budget: the engine owns the mechanism, the mod owns the numbers.**
   - **Budget and cost.** A mod-wide `attackBudget` per target goes in the `ModManifest`, as a top-level scalar beside `factionSentimentDecay`, and joins the compatibility digest. An archetype's `behavior.attackCost` defaults to 1.
   - **Absent means unlimited.** With no budget authored, every request is granted and behavior is unchanged.
+  - **A literal for now.** A Number expression over store values, for difficulty scaling, can be added later without breaking anything. The defense-layer parameters are the precedent.
   - **When a turn is granted.** The held cost plus the requester's cost must fit the budget, or nobody holds a turn on that target, so an oversized archetype is never locked out.
 - **Turns are scoped to activities.**
   - An activity marked `attackTurn: true` requests a turn on entry and keeps requesting until granted.
   - The turn is held while any marked activity is on the active path. A transition between marked siblings keeps it, so a windup → commit → recover chain holds one turn throughout.
-  - An attack activity with no marked activity on its path requests on its own entry.
-  - A turn is released when no marked activity remains on the path, on a target change, and on quiescence or despawn.
+  - It is released when no marked activity remains on the path.
+- **An unmarked attack holds a turn for the attack itself.**
+  - With no marked activity on its path, an enemy requests a turn only on a tick its attack is otherwise ready to start: range, facing, line of sight and cooldown all pass.
+  - It holds the turn through that attack, including a weapon sequence, and releases it when the attack ends.
+  - That way an activity that chases and attacks for a whole fight still rotates turns. This is the idiom `sdk/behaviors/reference` and `positional-sound.ts` ship.
+- **Every turn is also released** on a target change and on quiescence or despawn.
 - **The budget is a hard gate, plus two facts.**
   - With a budget authored, an attack starts only while its enemy holds a turn on its target. A weapon sequence that has already started keeps its shipped cancellation rules.
   - Guards read `@brain.hasAttackTurn` and `@brain.attackTurnFree`. Both are appended to the tail of `BRAIN_INPUTS` (`scripting.md` §11, append-only).
-  - The gate is engine floor, like line of sight (`perception::fire_gate`), so no graph can opt out of fairness.
+  - The gate enforces the budget the mod chose: pacing is taste (`scripting.md` §1). An archetype opts out with `attackCost: 0`.
+- **Shipped dev content adopts the new vocabulary in this brief.**
+  - The dev mod authors `attackBudget`.
+  - The limitator, and through it the rifle squads, gains strafe-while-waiting and fire-then-reposition.
+  - Tests pinned to the old pile-on behavior are updated rather than preserved.
 - **Arbitration is host-only and deterministic.** Requests resolve during the serial apply pass. The longest-waiting requester wins, measured since it last held a turn, and existing slot order breaks ties. Turns are derived host state and never replicated: clients see only the resulting activities.
 - **Non-goals:**
   - **Softening attacks from outside the target's view.** A follow-up item on the budget.
@@ -88,7 +97,9 @@ The Luau twin mirrors it field for field.
 - [ ] A launched enemy plays `jump_loop` when declared, and never a travel cycle driven by knockback speed.
 
 **Budget**
-- [ ] Without `attackBudget`, every existing AI and determinism test passes unchanged.
+- [ ] A mod without `attackBudget` grants every request: an enemy's attack timing matches the same run with the budget machinery absent.
+- [ ] Under budget 2, three enemies camped in one chase-and-attack activity hand the turns on after each attack. Every one of them lands attacks within a bounded window, and none holds a turn between attacks.
+- [ ] An unmarked attack requests no turn while out of range or line of sight, and requests one on the first tick it could otherwise fire.
 - [ ] With budget 2 and cost 1, a third enemy in its turn activity never starts an attack until a holder leaves. On the tick a holder leaves, the longest-waiting requester is granted.
 - [ ] With three requesters on one tick and one turn free, exactly one is granted. Replaying the same run grants the same one.
 - [ ] Cost 2 under budget 2 is granted alone and refused beside a cost-1 holder. Cost 3 under budget 2 is granted when no one holds a turn.
@@ -99,7 +110,7 @@ The Luau twin mirrors it field for field.
 - [ ] `attackBudget` and `attackCost` reject a non-finite or negative value with a pathed error in both runtimes. The Scripting surface example parses identically in TypeScript and Luau.
 
 ### Manual
-- [ ] On `movement-feel`, a rifle squad under budget 2: two fire while the others strafe. The shooters relocate after a burst and the waiters take over. A rocket-launched knight keeps its facing in flight.
+- [ ] On `movement-feel`, the dev mod's shipped rifle squad under its authored budget: two fire while the others strafe. The shooters relocate after a burst and the waiters take over. A rocket-launched knight keeps its facing in flight.
 - [ ] Co-op loopback: a client sees the same strafing, directional clips and launch facing as the host.
 
 ## Path

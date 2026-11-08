@@ -7,26 +7,36 @@ The owner wants For Honor–style attacks, a requested capability. An enemy shou
 - An author declares a stance in one call, naming its pose, hold range, attack and recovery.
 - The hold length varies per entry within the author's bounds and replays deterministically on the host.
 - Every peer hears stance and melee sounds and sees each re-entry.
-- Enough damage during a stance, or during any authored activity, can stagger the enemy.
+- Enough damage during a stance, or during another short authored activity, can stagger the enemy.
 
 ## Decisions
 - **A stance is SDK vocabulary, not an engine noun.** `stance(name, options)` is an author-time builder, as `activation.shot()` is (`scripting.md` §11). It returns a graph fragment `{ entry, activities, transitions }` of plain activities: hold, then release, then recover. The engine sees only activities. This spends the `stance` word that `plans/done/E10--hierarchical-behavior-statecharts` reserved. The builder is the first SDK helper to emit graph structure, and ships in TypeScript and Luau with byte-equal output.
 - **One stance names one attack.** The pose is the tell. A stance with several follow-ups is hand-authored from the same parts.
-- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` (`drafts/E10--enemy-combat-movement`), so one turn spans the cycle. That brief lands first, and this one depends on it.
+- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` (`drafts/E10--enemy-combat-movement`), so one turn spans the cycle. Only this marking depends on that brief. The roll, the damage fact and the co-op slices land independently, and the builder adds the marking once the field exists.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
   - It is scope-relative like `timeInActivityMs`, drawn when that level's activity is entered and fixed until it is left.
   - The IR stays RNG-free: the roll is a fact the engine computes, not a node.
+  - Its reach is intended: any guard at that level reads it, including outgoing rows. So chance-based branching ("use the overhead stance half the time"), random patrol and chance-based pain are all authorable.
   - A hold given as `[min, max]` compiles to `timeInActivityMs ≥ lerp(min, max, activityRoll)`. A single number is a fixed hold.
 - **The roll is a second carve-out from the randomness posture** (`networking.md`: host-only, load-time, consequences only), and the owner approved it.
   - Brain activity entry rolls on the host only. Only the resulting activities replicate.
   - The seed must survive the determinism gate's spawn-order reversal. Two enemies of one descriptor on the same entry count must not roll alike.
   - `EntityId` fails the first requirement, and descriptor name alone fails the second.
-  - This lands in `networking.md` at promotion.
+  - This lands in `networking.md` at promotion, described at that full reach.
 - **Per-activity damage fact: `@brain.damageInActivity`.**
   - It is scope-relative: damage drained from layers and health since that level's activity was entered.
   - It is fed at the damage chokepoint for every producer, `applyDamage` included.
   - Hits that land after the AI pass count on the next evaluation, which is the shipped stage order.
-- **Stagger is authored on that fact.** A stance's optional `breakOn` adds the row that leaves the hold for a sibling activity when the fact crosses a threshold. A general stagger is an ordinary scoped `"*"` row. Release is committed and has no break row. This retires `drafts/E10--enemy-stagger`: its tuning block, accumulator and pulse are superseded. Chain-stagger guarding is authored, because the flinch activity resets the fact on entry.
+- **Stagger is authored on that fact, and only for short activities.**
+  - A stance's optional `breakOn` adds the row that leaves the hold for a sibling activity when the fact crosses a threshold. The same row works on any other short activity, such as a windup or an aim.
+  - Release is committed and has no break row.
+  - On a long activity (approach, chase, patrol) the sum grows without limit, so scattered chip damage would eventually stagger.
+  - This retires `drafts/E10--enemy-stagger`. Its tuning block, accumulator and pulse are superseded.
+  - Chain-stagger guarding is authored: the flinch activity resets the fact on entry.
+- **Shipped dev content adopts the new vocabulary in this brief.**
+  - The reference knight's slam becomes two stances.
+  - The limitator's aim gains a break into its unwired `hit_reaction` flinch.
+  - Tests and fixtures pinned to the old hand-written cycle are updated.
 - **Telegraph sounds reach every peer.**
   - An activity's `sound` and a contact attack's `sound` play on each participating client, anchored to the enemy as the observer weapon cue is. The host plays its own as today.
   - This takes the enemy slice of roadmap E12 step 4. Door, crusher and other world sounds stay there.
@@ -35,7 +45,7 @@ The owner wants For Honor–style attacks, a requested capability. An enemy shou
 - **Re-entry is visible.** The replicated animation state carries an entry sequence, and a client restarts the clip whenever the sequence advances, even under the same name. This is a snapshot record change, so `SNAPSHOT_VERSION` is bumped.
 - **Non-goals:**
   - **Compensating client latency.** A client sees a stance late by about half the round trip plus one snapshot. Author guidance in `docs/` covers it, and authors set hold minimums with it in mind.
-  - **Chance-based entry.** The roll fixes how long, never whether: a roll on entry cannot gate that entry.
+  - **Stagger mid-chase.** A recency-windowed damage fact ("damage in the last N ms") can be appended later. This brief ships only the since-entry sum.
   - **An engine-drawn release indicator.** The release activity's own sound and animation are the last-instant cue.
 
 ### Scripting surface
@@ -60,12 +70,17 @@ offense: {
     approach: { animation: "walk" },
     flinch: { animation: "pain", motion: "hold" },
     ...overhead.activities,
+    ...sweep.activities,
   },
   transitions: {
-    "*": [{ to: "flinch", when: brain.damageInActivity.ge(40) }],
-    approach: [{ to: overhead.entry, when: brain.targetDistance.le(3.5) }],
+    // half the time overhead, otherwise the sweep stance (declared the same way)
+    approach: [
+      { to: overhead.entry, when: brain.targetDistance.le(3.5).and(brain.activityRoll.lt(0.5)) },
+      { to: sweep.entry, when: brain.targetDistance.le(3.5) },
+    ],
     flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(450) }],
     ...overhead.transitions,
+    ...sweep.transitions,
   },
 },
 ```
@@ -92,7 +107,8 @@ The Luau twin mirrors it field for field. `then` and `breakOn.to` name same-leve
 - [ ] A hit landing after the AI pass is read on the next evaluation, never lost.
 - [ ] `breakOn` leaves the hold on the first evaluation at or past the threshold, and never below it.
 - [ ] During release, the same damage does not break.
-- [ ] Damage taken during `flinch` does not re-trigger the `"*"` stagger until the flinch resets.
+- [ ] Damage taken during `flinch` does not carry into the activity it resumes, which starts at 0.
+- [ ] A guard on an outgoing row reads the active activity's roll. On one entry of `approach`, both branches of the example see the same value.
 
 **Co-op**
 - [ ] On a loopback client, an enemy's activity `sound` and a contact attack's `sound` each play exactly once per host event. The host plays each exactly once.
@@ -114,7 +130,7 @@ The Luau twin mirrors it field for field. `then` and `breakOn.to` name same-leve
 - **Shape.** Chosen: a fragment builder spread into the author's maps. Rival: a composite activity with a nested graph. That needs an engine "nested graph finished" fact to exit, and it can't hold an attack turn across siblings.
 - **First slice.** The roll fact plus its seed. It is the one-way door, and the determinism gate falsifies it fastest.
 - **Verify the host first:** check whether a same-named re-entry restarts the clip there. The client must match the host, not exceed it.
-- **Wire the limitator too.** It declares `hit_reaction` but leaves it unwired, waiting for "stagger N ms then resume". `damageInActivity` with a flinch activity delivers that. Wire it as a second consumer.
+- **Limitator flinch.** Its file comments say the flinch waits on "stagger N ms then resume". A graph flinch activity left by a `timeInActivityMs` guard delivers that.
 
 ## Open questions
 - Seed salt, a per-instance replay-stable identity — **delegated**: must meet both seed requirements in Decisions. Report the choice.

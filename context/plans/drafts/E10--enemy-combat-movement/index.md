@@ -203,7 +203,7 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - **First slice.** The knockback facing split. It touches the fewest seams and proves the velocity separation strafe needs.
 - **Watch for.**
   - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly.
-  - `score_candidate` and the batch take per-query constraints (arc, minimum travel, exclusions) rather than fixed terms. `strafe` and `reposition` are the first consumers; the cover brief adds a mode. The ring has eight directions, so an arc resolves in 45° steps; a denser ring is the executor's call if a 60–120° arc proves too coarse.
+  - `score_candidate` and the batch take per-query constraints (arc, minimum travel, exclusions) rather than fixed terms. `strafe` and `reposition` are the first consumers; the cover brief adds a mode. The shared ring is eight world-axis directions, so an arc narrower than 45° would hold or not depending on approach angle. `reposition` generates its candidates on a ring rotated to the entry bearing instead, which leaves the shared ring and the searches the perf brief measures unchanged.
   - `drafts/perf-ai-tick-cost` touches the same batch. Add a wave-scale stress row for arbitration against its baseline.
 - **Files past ~800 lines:** check `compute.rs` and `apply.rs` before extending them.
 

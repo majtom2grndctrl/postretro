@@ -48,6 +48,31 @@ Measurement depends on `6e9e5ba42` (promoted tail weight no longer compounds acr
 
 On the reproduce scene, `w=0` and `w=1` agree within the golden's `LIT_ENDPOINT_DRIFT` (12, summed RGB) on the door's lit texels. The prop-shadow population keeps darkening with `w`.
 
+## Diagnosis (2026-11-08, at c4a3d980c)
+
+The pop is representational, not a convention bug. The baked arm reaches the receiver as an L2 SH lobe, point-sampled into a 4×4-interior octahedral tile (6×6 with border) and bilinearly filtered, then blended trilinearly across probes. The runtime arm is exact per fragment. Both arms use the same radiance, falloff and cone, and the crossfade weight applies once per arm.
+
+- **Today's numbers.** The repro reads 170 at `w=0` and 176 at `w=1` on the end-face crop, not 145 and 186. Over the whole door, 5657 of 19097 pixels brighten by more than 12 summed RGB and none darken. On the west face, 4745 of 11507 do.
+- **Isolated arms.** Captures used `light_term_mask` 48 at radiance 1, so `w=0` shows the baked arm alone and `w=1` the runtime arm alone. A CPU model of the bake, tile and sampler predicts the linear baked/runtime ratio within about 4% on six faces:
+
+| Case | GPU | Model |
+|---|---|---|
+| spawner-test, west face | 0.85 | 0.82 |
+| closet brushes removed, end face | 0.86 | 0.87 |
+| closet brushes removed, west face | 0.84 | 0.82 |
+| light square to the west face (n·l ≈ 1) | 0.81 | 0.81 |
+| selected static light (id 41), west face | 0.84 | 0.80 |
+| same static light, grazing end face (n·l ≈ 0.06) | 2.28 | 2.32 |
+
+  The spawner-test end face is the one outlier: 0.92 on the GPU against 0.995 in the model.
+- **Ruled out.** Probe blending across the closet is ruled out: removing the closet leaves the gap as large or larger. A radiance convention mismatch is ruled out: the ratio ranges from 0.81 to 2.3 with geometry, and no single factor fits. The compose weight is ruled out: the forced `w=0.5` frame is the linear midpoint of `w=0` and `w=1`, within ±1 level.
+- **Causes, in order.**
+  1. Tile resolution. Texel centres sit about 35° from a face normal on an octahedral axis, so a single light's lobe loses 14% on average and up to 27%.
+  2. L2 truncation. L2 reads +6% at n·l = 1 and −7% at n·l ≈ 0.56, and rings to about 2× at grazing angles.
+  3. Probe interpolation. It adds roughly ±10%, depending on where the probes fall.
+- **The id-41 arm shares it.** A static light (id 41) shows the same gap, and a larger one at grazing angles, where the baked arm is brighter.
+- **Least-squares tile texels are not enough.** Fitting the tile texels to what the bilinear sampler reads back, a bake-only change, only lifts the light-facing case from 0.81 to 0.91. L2 truncation and probe interpolation remain, so the absolute no-pop row still fails.
+
 ## Separate item — stale mixed-fixture golden PRL
 
 `crates/level-compiler/tests/fixtures/golden/test_animated_weight_maps_mixed.pre-script-light-membership.prl` still carries an SH volume v9 section, and the runtime loader now requires v11. Its only remaining consumer is the ignored level-compiler test `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl`. That test fails on `804351717` with "an un-targeted static light changed the pre-feature PRL output". The fresh bake has 26 container sections; the golden has 21. The capture test no longer reads this golden.

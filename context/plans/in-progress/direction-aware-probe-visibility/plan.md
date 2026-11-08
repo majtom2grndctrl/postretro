@@ -14,6 +14,9 @@ Source since the brief's read-at (2968de0ad) changed only navmesh, mover and AI 
 ## Delegated answers
 - Hallway Q2 view poses for the Windows ceiling run — reuse the spike's capture scenes (`kit/mk_scenes.py` on `spike/per-direction-depth`), so the ceiling compares against the run that set it.
 
+## Owner rulings
+- 2026-11-07, convex room row. The bake gives the convex-room fixture 9 tiles (an off-phase room 16): every one on a probe millimetres from a wall or ceiling, because the lattice origin sits on the geometry bounds, changing visibility 0.105–0.29 toward a neighbour along the surface. These are correct per-direction depth, not false flags; selection stays unchanged. The row is restated as a no-visible-harm capture check, and the cause is recorded against probe relocation in the roadmap.
+
 ## AC-to-proof
 
 Capture tests live in `crates/postretro/tests/capture_probe_depth_tiles.rs` (feature `capture`, GPU-gated; `POSTRETRO_REQUIRE_GPU` makes a missing adapter fail). "Today" is the same tiled PRL with id 59 stripped.
@@ -36,7 +39,8 @@ Capture tests live in `crates/postretro/tests/capture_probe_depth_tiles.rs` (fea
 | A14 both writers carry the reference (O3) | renderer unit tests | achievable as stated |
 | A15 pool growth keeps the tile (O4) | renderer streaming growth test | achievable as stated |
 | A16 rewrite absent from next load (O10) | renderer per-load state test | achievable as stated |
-| A17 bake determinism, warm ≡ cold, stale entry misses, convex room none, closet blocked-neighbour probes all tiled (O1, O2) | compiler tests (closet compiles in seconds) | achievable as stated |
+| A17 bake determinism, warm ≡ cold, stale entry misses, closet blocked-neighbour probes all tiled (O1, O2) | compiler tests (closet compiles in seconds) | achievable as stated |
+| A17b convex room: tiles move no px > 2 against no id 59, along the wall-hugging probes; summary reports count | capture test (restated by owner, 2026-11-07; see Owner rulings) | achievable as restated |
 | A18 cap ties (O9) | compiler unit test, lowered cap | achievable as stated |
 | A19 set sign bit refuses by name | loader tests, whole-load and streamed metadata | achievable as stated |
 | A20 malformed id 59 refuses by name | `probe_depth_tiles_tests` + loader test naming the section | achievable as stated |
@@ -57,10 +61,10 @@ A3 fraction: _set by task 4's pilot._
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Id 59 format, reference encoding, texture layout, CPU tile sampler (`level-format::probe_depth_tiles`) | integrating executor | — | done |
-| 2 | Bake: bin gather hits into tiles, select by 26-neighbour change, cap and rank, ride the `sh_base_volume` entry (stage version 3), pack id 59, build summary tile bytes; closet static-door, no-door and convex-room fixtures | worker (compiler) | 1 | |
+| 2 | Bake (done, 33 + 8 compiler tests; convex-room unit test now held `#[ignore]` pending its capture restatement): bin gather hits into tiles, select by 26-neighbour change, cap and rank, ride the `sh_base_volume` entry (stage version 3), pack id 59, build summary tile bytes; closet static-door, no-door and convex-room fixtures | worker (compiler) | 1 | |
 | 3a | Runtime: load and validate id 59 and id-34 sign bits; reference table; tile texture and binding 18 in every SH group incl. growth; direct atlas drops fragment visibility in the shared layout; WGSL decode and lookup; whole-load packer; ledger (A9, A10, A12, A19–A23, A8 CPU side) | worker (renderer + loader) | 1 | done: render-cpu 792, loader 347, renderer 1255 passed (GPU required) |
-| 3b | Runtime: streamed writers pack G from the table; runtime rewrite seam (whole-load keeps id-34 `E[d²]` for clear); O3–O7, O10, A11, A13–A16 | worker (renderer) | 3a | |
+| 3b | Runtime: streamed writers pack G from the table; runtime rewrite seam (whole-load keeps id-34 `E[d²]` for clear); O3–O7, O10, A11, A13–A16 | worker (renderer) | 3a | done: renderer 1263 passed (GPU required) |
 | 4 | First slice: bake closet, capture st2/st3 with and without tiles, pilot the A3 fraction | integrating executor | 2, 3 | |
-| 5 | Reflection capture parity: CPU mirror decode + stage key | worker (compiler) | 2 | |
+| 5 | Reflection capture parity: CPU mirror decode + stage key | worker (compiler) | 2 | done in task 2's slice |
 | 6 | Capture acceptance tests A1–A8, A25 | integrating executor | 4 | |
 | 7 | Preflight, review panel, fixes | integrating executor | 5, 6 | |

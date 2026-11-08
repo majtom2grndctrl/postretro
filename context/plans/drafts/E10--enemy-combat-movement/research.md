@@ -43,10 +43,11 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 - Doom 2016/Eternal grant a few attack tokens per player, and enemies without one reposition. The brief takes that shape.
 - "Longest waiting wins" keeps slot-index order from starving the same enemy every time.
 
-## Encounter-budget precedent
-- `AiEnemy.enabled_on_spawn` in `sdk/TrenchBroom/postretro.fgd` is the per-placed-enemy aggro key.
-- `entity_spawner.spawned_tags` passes tags to each spawn (`crates/sim/src/spawner.rs`).
-- `npcs({ tag }).update({ aggro })` lowers to `updateNpcState` (`UpdateNpcStateArgs`, a deny-unknown additive partial). It applies to members at fire time.
+## Encounter precedent
+- An encounter is a tag, as in `plans/done/E18--enemy-group-handle`: `_tags` on placed enemies, and `entity_spawner.spawned_tags` passes tags to each spawn (`crates/sim/src/spawner.rs`). `content/dev/maps/closet-reveal.map` already groups its closet this way.
+- Map members with `start` and `stop` from triggers and scripts: trap members (`getMapEntities("trap")`, `scripting.md` §12 Entity addressing).
+- A brush entity that tests a point against the union of its convex brushes: `trigger_teleport` (`entity_model.md` §7, Teleporter regions).
+- Owner decisions, 2026-11-08: separate pools per encounter, at most one active, start replaces; tag membership live plus volume membership captured at start; the `ai_encounter` entity over a script-only command or new trigger command words; per-enemy budget keys and `update({ attackBudget })` dropped.
 
 ## Pin table
 
@@ -62,6 +63,6 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 | P8 | Cost-0 enemy beside an oversized requester | Budget 2; a cost-0 enemy in a marked activity; a cost-3 requester waits. | Cost 0 attacks without counting and reads `hasAttackTurn` 1 in a marked activity. Cost 3 is granted when no counted holder remains. |
 | P9 | Strafe with no usable neighbor | Both neighbors unusable, or the batch gives the next slot to another strafer. | A batch loser reverses once. With neither neighbor usable it holds its slot, facing and firing, and does not flip again until a neighbor frees. |
 | P10 | Launch and landing | Upward push on tick N, landing on tick M; activity and steering unchanged. | `jump_loop` after the fall delay, or the current clip when none is declared. Tick M switches back to the resolved clip. |
-| P11 | Brain restored from serialized state | A holder and a waiter, one carrying a map or script encounter budget, are serialized and restored. | No turn held, wait clocks at zero; the first tick arbitrates from scratch. The encounter budget survives, as `aggro` does. |
+| P11 | Restored from serialized state | A holder and a waiter, one a member of an active encounter by volume, are serialized and restored. | No turn held, wait clocks at zero; the first tick arbitrates from scratch. The active encounter and its volume members survive. |
 | P12 | Longest waiter does not fit | Budget 2; cost-1 enemies rotate so a turn is always held; a cost-3 enemy has waited longest. | No later requester is granted past it. It is granted once the target has no counted holder, within a bounded wait. |
-| P13 | Budget lowered while turns are held | Tick N: `update({ attackBudget: 1 })` reaches members while two cost-1 turns are held on one target. | Neither turn is revoked; each ends by its own rule. No member is granted again until held cost plus its cost fits the new budget. |
+| P13 | Enemy changes pool while holding a turn | Tick N: an encounter at budget 1 starts while two cost-1 members hold default-pool turns on one target, or ends while its members hold encounter turns. | No turn is revoked; each counts against its holder's new pool and ends by its own rule. No grant in that pool lands until held cost plus the requester's cost fits. |

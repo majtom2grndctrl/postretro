@@ -68,7 +68,6 @@ Stations, capture method, measure and spike figures: `research.md` §Fixture, §
 - First slice: bake closet tiles, hook the lookup, capture station 3. It tests both the quality claim and the binding plan.
 
 ## Open questions
-- Pin the Mac ceiling and 720p reference from the finished timing report; current figures come from the interim run log. — owner: drafter — **blocks build**
 - Hallway Q2 view poses for the Windows ceiling run: reuse the spike's capture scenes. — **delegated**
 
 ## Boundary inventory

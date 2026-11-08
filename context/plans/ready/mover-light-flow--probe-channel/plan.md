@@ -2,7 +2,7 @@
 
 mode: resumable
 status: blocked
-blocked on: promotion of the revised brief. Direction-aware probe visibility landed (PR #660); the brief was revised 2026-11-07 (reference closet resolved, closed-pose depth, citations re-read at 38ef0dfc2 and 9382e3c23, after PR #662 split the direct atlas). On resume, re-verify source against the brief, revise Corrections and the task table for the closed-pose depth decision, then set `proposed` for the owner's skim.
+blocked on: re-plan. The brief was revised and promoted again 2026-11-08 (reference closet resolved, closed-pose depth blended with travel, gated terms in both direct atlases, AC audit; read at 9382e3c23). This plan's task table and AC-to-proof predate it. On `/build-brief`, re-verify source against the brief, rewrite Corrections, the AC-to-proof table and the tasks, then set `proposed` for the owner's skim.
 returned to drafts: 2026-11-04, by the owner. This plan and its captures stay as the record.
 read at: 44881f797
 

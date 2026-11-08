@@ -16,7 +16,7 @@
 4. **Probe-to-patch links.** Probe diffuse SH = Σ weight × patch radiance; reflection tiles not re-shaded.
 5. **Shipped animated paths.** Animated SH deltas (id 27): runtime compose = base + Σ curve(t) × per-light baked unit delta. Animated lightmap compose: per-light weight maps × curve, in compute.
 6. **Bake-only artefacts.** Surface radiance cache and gather; summed static bounce layer; door influence graph; light → cell reach; distance-to-edge owner masks. Nothing derived from a light change at runtime.
-7. **Door and mover channels.** Per (door, baked light) closed and open visibility masks, blended by door state on door events. The probe channel (`plans/drafts/mover-light-flow--probe-channel/`) adds per-probe direct visibility and static lights' bounce per mover state.
+7. **Door and mover channels.** Per (door, baked light) closed and open visibility masks, blended by door state on door events. The probe channel (`plans/ready/mover-light-flow--probe-channel/`) adds per-probe direct visibility and static lights' bounce per mover state.
 
 ## Filings found
 
@@ -178,8 +178,8 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | Filing | Element | Proposal | Reading |
 |---|---|---|---|
 | Take-Two '688 / '404 | Claims: '688 cl. 1–7, a per-location dynamic terrain type selecting a surface shader plus a trail map of character marks, stored while off-camera and applied near it (snow, mud). '404 cl. 1–4, a top-down rendered reflected-light texture map plus a same-resolution height map, sampled for ground bounce per pixel (box blur; bent normal to the ground plane). Doors appear only in the shared description: "a new baked ambient is placed over the area of the door as it opens" | Direct-light visibility masks per (door or mover rest pose, light), blended by mover state | **Granted claims absent.** No claim element touches doors, movers or state-swapped baked layers |
-| '451 | Light change → coefficient × transfer | Direct visibility blended by mover state; static lights' bounce stored absolute per mover state | Direct half absent: no light changes, no indirect. Bounce half out-leaning (medium) |
-| Square Enix '372 | Doors as zone occluders; visibility mask "pre-computed for each probe" (cl. 33) | Door factor on direct-SH entries; closed-pose depth tiles switch a probe's moment set through the tile reference; probes never dropped | Absent while no probe is excluded and no mask is stored; whether switching a tile by door state moves toward cl. 33 is counsel question 8 |
+| '451 | Light change → coefficient × transfer | Direct visibility blended by mover state; static lights' bounce stored absolute per mover state; at a probe several movers affect, id 34 plus their lerped bounce differences | Direct half absent: no light changes, no indirect. Bounce half out-leaning (medium). The several-mover sum is the base + delta shape the design rules avoid, kept on element (a)'s absence: counsel question 15 |
+| Square Enix '372 | Doors as zone occluders; visibility mask "pre-computed for each probe" (cl. 33) | Door factor on direct-SH entries; a probe a mover's pose changes reads a live depth tile, the linear blend of its two terminus tiles by mover position, through the tile reference; probes never dropped | Absent while no probe is excluded and no mask is stored; whether a moment set that follows door state moves toward cl. 33 is counsel question 8 |
 
 **Verdict: appears clear on the granted claims.** The Take-Two family is application 16/373,514 ('688) and its continuation 18/056,862 ('404, issued 2025-04-01); Google Patents lists no further member. Residual risk: a later continuation could claim the description's door-ambient sentence, and filings from the last 18 months are invisible to search. Keep the design-around anyway, since it costs nothing: visibility masks per light, not a swapped ambient or AO layer. Contact AO swapped on mover state stays closest to the description. For '451, mover bounce follows the mover rules in §Tencent US12293451B2: absolute states, never base + delta, never a light that carries a curve.
 
@@ -355,5 +355,6 @@ Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirme
 12. Is Suntracker's "per vertex in a vertex shader" limiting against compute compose?
 13. ARM '177 against any future guided gather in the bake.
 14. Chart Tencent CN114419240B / WO2023185262A1 (priority 2022-04-01, a separate family with the same title as '451) and any US counterpart.
+15. '451 at a probe several movers affect: id 34 plus each mover's lerped bounce difference is base + 1 × delta. Does element (a)'s absence (no light-source change; weights follow mover position over static lights only) alone keep claim 1 off it?
 
 **Top cost unknowns.** (1) Radiance-cache SH bake: grey single-bounce parity with id 34 and hallway-mini bake time. (2) Patch count, link bytes, link bake time and K-truncation energy loss on the hallway and campaign. (3) Glossy world-surface cost on the 5300M, plus the 16-texture fix. (4) CPU Jacobi under animated load, validating the hybrid and its error when doors cut a light's region.

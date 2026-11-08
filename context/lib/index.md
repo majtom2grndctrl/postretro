@@ -29,7 +29,7 @@
 - **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs / compile working-set budget / lightmap bake scale** → `build_pipeline.md` §Compiler pipeline
 - **Bake ray tracing / BVH ray queries / watertight hit test and its tolerance τ / occluder cache / tracer epoch** → `build_pipeline.md` §Ray traversal
 - **Lightmap exact skips / reach cull / coverage proof and hole warnings / destructible or openable static geometry versus bake culls** → `build_pipeline.md` §Compiler pipeline step 12 (Exact skips)
-- **Mover lighting analysis / mover light gate / what baked light a mover blocks / mover-lighting Build Summary block / mover probe channel, mover state lighting, light ramp keys (id 57)** → `build_pipeline.md` §Compiler pipeline step 12 (Mover light gate, Mover probe channel) · memos: §Build Cache · runtime: `rendering_pipeline.md` §4 (Mover state lighting)
+- **Mover lighting analysis / mover light gate / what baked light a mover blocks / mover-lighting Build Summary block / mover probe channel, mover state lighting, light ramp keys, closed-pose depth and live tiles (id 57)** → `build_pipeline.md` §Compiler pipeline step 12 (Mover light gate, Mover probe channel) · memos: §Build Cache · runtime: `rendering_pipeline.md` §4 (Mover state lighting)
 - **Build cache / warm vs cold builds / why a stage re-baked / cache disk footprint / stage epochs and keys** → `build_pipeline.md` §Build Cache
 - **Audio / spatial sound / positional sound events / descriptor sound fields / reverb zones** → `audio.md` · emitter token: `scripting.md` §12
 - **Entity model / game objects / sprites** → `entity_model.md`

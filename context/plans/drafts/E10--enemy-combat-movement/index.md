@@ -11,7 +11,7 @@ The defect: a rocket-launched enemy turns to face its flight path, because knock
 
 When this is done:
 - An author gives enemies strafing and fire-then-relocate behavior that reads correctly on screen.
-- A per-target attack budget, seeded by the engine, tunable per mod and given its own pool by a map-authored encounter, keeps idle enemies moving instead of piling on.
+- A per-target attack budget, seeded by the engine, shaped per mod into named profiles with per-class limits, and given its own pool by a map-authored encounter, keeps idle enemies moving instead of piling on.
 - A launched enemy keeps the yaw it had at impact.
 
 ## Decisions
@@ -24,19 +24,19 @@ When this is done:
   - An airborne launch plays `jump_loop` when the mesh declares one, after the player's fall delay (`MeshDescriptor.animations` typedoc). Otherwise it keeps its current state.
 - **Directional travel variants.** Under target facing, an activity animation `X` resolves to `X_left`, `X_right` or `X_backward` by travel direction relative to facing, and plays `X` when a variant is missing. The host resolves the name, and it replicates as an ordinary animation state. This extends the player's `walk_backward` naming.
 - **The attack budget is an engine mechanism with authored values** (`scripting.md` §1: pacing is taste; the engine seeds a default).
-  - **Pools.** Every enemy draws from one pool. Members of the active encounter draw from the encounter's pool, and everyone else from the default pool. Each pool has one budget and keeps its own held cost per target, so the two pools stack on one player.
-  - **Grants.** An enemy is granted a turn when its pool's held cost on that target plus its own cost fits the pool's budget, or when its pool holds no counted turn on that target, so an oversized archetype is never locked out.
-  - **The default pool's budget** is the mod's `attackBudget`, else the engine's seeded 3. The seeded value is tuning, not contract.
-  - **Valid values.** A budget must be at least 1. `attackCost` defaults to 1. Cost 0 never counts and is always granted: the lever for fodder that chips while heavies take turns.
+  - **Pools.** Every enemy draws from one pool. Members of the active encounter draw from the encounter's pool, and everyone else from the default pool. Each pool keeps its own held cost per target, so the two pools stack on one player.
+  - **Profiles.** A pool's limits come from a named budget profile: a `total` and optional per-class limits. The mod declares profiles in `defineMod({ attackBudgets })`. The default pool uses the profile `default`; the engine seeds `default` as `{ total: 3 }` when the mod omits it. The seeded value is tuning, not contract.
+  - **Classes.** An archetype may declare an author-named `attackClass`, so one class can span several archetypes. An archetype with no class, or a class its pool's profile does not limit, is limited by `total` alone.
+  - **Grants.** Every limit counts cost. An enemy is granted a turn when its cost fits both its pool's `total` and its class's limit on that target. A limit with no counted turn held under it always admits, so an oversized archetype is never locked out.
+  - **Valid values.** A `total` and every class limit must be an integer of at least 1. `attackCost` defaults to 1. Cost 0 never counts and is always granted: the lever for fodder that chips while heavies take turns.
   - **Host-only, and outside the co-op compatibility digest.** Clients never read the budget.
   - A literal for now. A store-derived expression can be added later without breaking anything; defense layers are the precedent.
-- **An encounter is a map entity, `ai_encounter`** (`@SolidClass`): `_tags`, `encounter_tag`, and `attack_budget` (empty takes the mod value).
+- **An encounter is a map entity, `ai_encounter`** (`@PointClass`): `_tags`, `encounter_tag`, and `budget_profile` (empty means `default`).
   - **At most one is active per level.** Starting one ends the active one. Existing trigger `command` `start` and `stop` on its `_tags` start and end it, and scripts drive the same member as `getMapEntities("encounter")` with `start` and `stop`, as trap members do. `start` on the active encounter and `stop` on an inactive one are no-ops. Both apply on the host only, and a level starts with none active.
-  - **Membership.** An enemy is a member while it carries `encounter_tag`, live, so later spawns join through `spawned_tags`. An enemy inside the entity's brushes when it starts is also a member until the encounter ends; leaving the volume does not remove it, and arriving later does not add it. The volume test runs once per start, one point-in-brush test per AI enemy, with no per-tick cost.
+  - **Membership is the tag, live.** An enemy is a member while it carries `encounter_tag`, so later spawns join through `spawned_tags`.
   - **Ending.** On `stop`, or on replacement, members return to the default pool.
-  - **Validation.** An invalid `attack_budget` warns and takes the mod value. An empty `encounter_tag` is a compile error naming the entity, since tag membership is the encounter's identity; a volume-only encounter is not a case.
-  - The active encounter and its volume members are serializable state: they survive a serialize-and-restore.
-  - **Load-time declaration.** The entity seeds level data; scripts and triggers change only which encounter is active (`build_pipeline.md` §Load-time gameplay declarations gains it beside `trigger_teleport`).
+  - **Validation.** An empty `encounter_tag` is a compile error naming the entity. A `budget_profile` the mod does not declare warns at level load and uses `default`.
+  - The active encounter is serializable state: it survives a serialize-and-restore.
 - **Turn lifetime.**
   - **Marked activities.** An activity marked `attackTurn: true` requests on entry and keeps requesting until granted. The turn holds while any marked activity is on the active path, so a windup → commit → recover chain holds one turn.
   - **Unmarked attacks.** With no marked activity on its path, an attack requests only on a tick it is otherwise ready to fire. It holds the turn until that attack's cooldown ends, and a weapon until its execution clears and then its cooldown.
@@ -51,7 +51,7 @@ When this is done:
   - It runs as one batch step after compute and before apply fires.
   - The longest wait wins, where a wait starts at the first request after last holding a turn. Slot order breaks ties.
   - Arbitration runs per pool and target, and one pool never blocks another.
-  - **Head of line.** Within a pool, a longest waiter that does not fit blocks that pool's later grants on that target until it fits, or until the pool holds no counted turn there. Nobody starves.
+  - **Head of line.** Within a pool, a longest waiter that does not fit blocks later grants on that target that compete for the limit it failed: a class limit blocks only its class, and the `total` blocks the whole pool. It blocks until it fits, or until that limit holds no counted turn. Nobody starves, and grunts keep taking turns while a heavy waits on its class.
   - Turns are derived host state and never replicate.
 - **Shipped content adopts the vocabulary in this brief.**
   - `content/dev` and `sdk/behaviors/reference`, the patterns every SDK bundle copies.
@@ -61,19 +61,27 @@ When this is done:
   - **Back-off and kiting.** `reposition` covers fire-then-move. A third verb waits for a consumer.
   - **Softening attacks from outside the target's view.** An additive follow-up on the budget.
   - **Several active encounters, or an encounter suspending the default pool.** One active encounter, stacking beside the default pool, is the owner's call.
-  - **Script-only encounters.** An encounter is map data; a script starts and stops it.
+  - **Volume membership.** Engines pair a trigger volume that fires on entry with tag-addressed targets; the tag already names who belongs.
+  - **Per-attack classes.** A class sits on the archetype. A per-attack override can be added later without breaking anything.
   - **Protective cover and squad tactics.** Their exclusion stands from the line-of-sight and positioning briefs.
   - **Per-activity speed.** The statecharts brief keeps it additive, so a strafe and a run share `moveSpeed` until it lands.
 
 ### Scripting surface
 ```ts
 // Proposed design
-// start-script.ts — mod-wide budget per target (engine seeds 3 when omitted)
-export default defineMod({ /* … */ attackBudget: 2 });
+// start-script.ts — budget profiles per target (engine seeds default { total: 3 })
+export default defineMod({
+  /* … */
+  attackBudgets: {
+    default: { total: 3, heavy: 1 },
+    arena:   { total: 1 },
+  },
+});
 
 // rifle trooper behavior (excerpt)
 behavior: {
   attackCost: 1,
+  attackClass: "rifle",
   attacks: { shoot: { weapon: "enemy_rifle_burst", standoffDistance: 6 } },
   activities: {
     engage: {
@@ -108,10 +116,10 @@ defineReaction("arena.start", {
 // TrenchBroom: the arena, one attacker at a time on each player
 {
 "classname" "ai_encounter"
+"origin" "0 0 0"
 "_tags" "arena"
 "encounter_tag" "arena_guard"
-"attack_budget" "1"
-// brushes: the arena floor; enemies inside at start join too
+"budget_profile" "arena"
 }
 ```
 The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
@@ -131,11 +139,13 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] An airborne launch with unchanged activity and steering switches to `jump_loop` after the fall delay and back to the activity's resolved clip on landing. A horizontal shove keeps the ground clip (pin P10).
 
 **Budget**
-- [ ] With no `attackBudget` authored, budget 3 applies: a fourth cost-1 requester waits.
+- [ ] With no `attackBudgets` authored, `default` is `{ total: 3 }`: a fourth cost-1 requester waits.
 - [ ] Under budget 2 and cost 1, a third requester never starts until a holder releases. Grants follow pin P1.
 - [ ] With three requesters on one tick and one turn free, exactly one is granted. A replay grants the same one.
 - [ ] Under budget 2: cost 2 is granted alone and refused beside a cost-1 holder; cost 3 is granted when no counted holder remains. Cost 0 never counts or blocks (pin P8).
 - [ ] Under budget 2, a waiting cost-3 enemy among cost-1 enemies that keep a turn held is granted within a bounded wait. No cost-1 enemy is granted past it in the meantime (pin P12).
+- [ ] Under `{ total: 3, heavy: 1 }` with cost 1 throughout: a second heavy waits while one heavy holds, and unclassed enemies are granted past it up to the total. A heavy at the head of the line blocks only heavies (pin P14).
+- [ ] An archetype whose class the profile does not limit is limited by `total` alone. A heavy of cost 2 under `heavy: 1` is granted when no heavy holds.
 - [ ] A refused attack commits nothing and fires on its first granted tick in the same activity (pin P2).
 - [ ] Under budget 1, three contact attackers ready together: at most one holds a turn on any tick. Each holds until its own cooldown ends, even after leaving its attacking activity. Each attacks within a bounded window.
 - [ ] Under budget 1, an enemy alternating two unmarked attacks never starts the second under the first's turn while another enemy waits.
@@ -147,25 +157,23 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] No turn leaks across any release case in pin P5, and a returning enemy re-requests.
 - [ ] `hasAttackTurn` and `attackTurnFree` follow pin P7. `attackTurnFree` reads 0 with no target.
 - [ ] A serialize-and-restore follows pin P11.
-- [ ] Two manifests differing only in `attackBudget` produce the same compatibility digest.
+- [ ] Two manifests differing only in `attackBudgets` or `attackClass` produce the same compatibility digest.
 
 **Encounters**
-- [ ] Starting an `ai_encounter` by trigger `start` and by script `start` each make its members draw from a pool with its `attack_budget`. An empty value takes the mod value; an invalid one warns and takes it.
-- [ ] Separate pools: an encounter at budget 1 and the default pool at budget 2 on one player give at most three counted holders. A head-of-line waiter in one pool never blocks a grant in the other.
-- [ ] Starting a second encounter ends the first. Its members return to the default pool on that tick, and so does every member on `stop`. A repeated `start` does not recapture the volume, and `stop` on an inactive encounter changes nothing.
-- [ ] Membership: a tag holder present at start, a later spawn whose `spawned_tags` carry the tag, and an untagged enemy inside the brushes at start are members. An untagged enemy that enters the volume after start is not, and a volume member that leaves stays one.
+- [ ] Starting an `ai_encounter` by trigger `start` and by script `start` each make its members draw from a pool with its profile's limits. An empty `budget_profile` uses `default`; an undeclared one warns at level load and uses `default`.
+- [ ] Separate pools: an encounter under `{ total: 1 }` and the default pool under `{ total: 2 }` on one player give at most three counted holders. A head-of-line waiter in one pool never blocks a grant in the other.
+- [ ] Starting a second encounter ends the first. Its members return to the default pool on that tick, and so does every member on `stop`. `stop` on an inactive encounter changes nothing.
+- [ ] Membership: a tag holder present at start and a later spawn whose `spawned_tags` carry the tag are members; an enemy whose tag is gone is not.
 - [ ] An enemy leaving a pool while holding a turn keeps it. The turn counts against its new pool until it ends by its own rule, and no grant in that pool fits around it (pin P13).
-- [ ] An empty `encounter_tag` is a compile error naming the entity. A manifest budget below 1, a negative `attackCost` or a non-finite value rejects with a pathed error in both runtimes.
+- [ ] An empty `encounter_tag` is a compile error naming the entity. In both runtimes, a profile `total` or class limit below 1 or non-integer, a negative `attackCost`, an empty `attackClass` or a non-finite value rejects with a pathed error.
 - [ ] A level with no `ai_encounter` behaves as the default pool alone.
-- [ ] Start and stop requests follow pin P14: a trigger-bound start applies before that tick's arbitration, and two starts on one tick leave the later-issued one active.
-- [ ] A volume member that left the brushes is still a member after a serialize-and-restore, and an enemy that entered after start is not (pin P15).
+- [ ] Start and stop requests follow pin P15: a trigger-bound start applies before that tick's arbitration, and two starts on one tick leave the later-issued one active.
 - [ ] An encounter active when its level restarts or changes is not active in the next install, and its members draw from the default pool from that install's first tick.
-- [ ] A volume member that despawns stops being a member; an untagged enemy later spawned into its registry slot is not one.
-- [ ] While an encounter with an empty `attack_budget` is active, a mod reload that changes `attackBudget` changes that encounter's pool budget from the next tick.
-- [ ] Two levels differing only in an `ai_encounter`'s `attack_budget` or brushes produce the same level content digest.
+- [ ] While an encounter uses `default`, a mod reload that changes `default` changes that encounter's limits from the next tick.
+- [ ] Two levels differing only in an `ai_encounter`'s `budget_profile` produce the same level content digest.
 
 **Surface**
-- [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content. After `arena.start` fires, a tagged guard draws from a budget-1 pool.
+- [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content. After `arena.start` fires, a tagged guard draws from the `arena` profile's pool.
 
 ### Manual
 - [ ] On `movement-feel`, the shipped rifle squad under its authored budget: shooters relocate after a burst while waiters strafe and take over. A closet reveal on `closet-reveal` releases its payload without a pile-on. A rocket-launched knight keeps its facing in flight.
@@ -177,12 +185,11 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
   - `apply_outcomes` (`crates/ai/src/apply.rs`): cooldown and the per-activity count commit with the effect.
   - `resolve_combat_slots` / `select_combat_positions_batch`: the batch step precedent for arbitration.
   - `tick_impl`, `path_state` and `AgentComponent::knockback_velocity` (`crates/sim/src/agent_steering.rs`).
-  - The trap member (`getMapEntities("trap")`, carried by the id-29 map-entity record) as the precedent for a map entity with `start` and `stop` from triggers and scripts. For brushes, the precedent is the id-55 Teleporters convex-leaf record plus its id-29 companion; id 44 holds AABBs only.
+  - The trap member (`getMapEntities("trap")`, a point entity carried by the id-29 map-entity record) as the precedent for a map entity with `start` and `stop` from triggers and scripts.
   - `trigger_direct_commands.rs` routes a trigger's `command` by member kind. Script `start` and `stop` steps run on the trigger's tick only through `CONSEQUENTIAL_PRIMITIVES` (`trigger_bindings/partition.rs`) and `command_binding.rs`. The build-time member table (`MapMemberKind`, `script_light_membership.rs`) needs the new kind too.
-  - `trigger_teleport`'s brush peel and union-of-convex-brushes test as the precedent for the start-time volume test.
   - The spawner's `spawned_tags` path (`crates/sim/src/spawner.rs`), which carries tag membership to later spawns.
-- **Shape.** Turns live on `BrainComponent`, as the held target, the counted pool and the wait clock (all transient). The encounter's state lives on its own serializable component; an empty budget stays unresolved, so a later change to the mod value still applies. Per-pool, per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
-- **Encounter-model rivals, rejected.** Per-enemy overrides in one shared pool (the earlier draft): a budget-1 group at the head of the line held back every other enemy on its target. A script-only `startEncounter` command: map-only authors could not build an encounter. Trigger command words carrying the budget in `command_arg`: the encounter's config would live on whichever trigger starts it.
+- **Shape.** Turns live on `BrainComponent`, as the held target, the counted pool and the wait clock (all transient). The encounter's state lives on its own serializable component; its profile resolves by name each tick, so a mod reload applies. Per-pool, per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
+- **Encounter-model rivals, rejected.** Per-enemy overrides in one shared pool (the earlier draft): a budget-1 group at the head of the line held back every other enemy on its target. A script-only `startEncounter` command: map-only authors could not build an encounter. Settings on the starting trigger: an arena with two entries would carry two copies, and a switch, script or stop could not address it. A brush volume selecting members: a second region doing the tag's job. Per-class limits inline in a map string: class names belong to code, so maps name a profile.
 - **First slice.** The knockback facing split. It touches the fewest seams and proves the velocity separation strafe needs.
 - **Watch for.**
   - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly.
@@ -201,8 +208,9 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 | activity facing | `BehaviorActivityDescriptor::facing: Option<FacingPolicy>` | `"facing"`: `"target"` \| `"travel"` | `facing?` | `facing` | n/a |
 | turn marking | `BehaviorActivityDescriptor::attack_turn: bool` | `"attackTurn"` | `attackTurn?` | `attackTurn` | n/a |
 | archetype cost | `BehaviorGraphDescriptor::attack_cost` | `"attackCost"` | `attackCost?` | `attackCost` | n/a |
-| mod budget | `ModManifestResult` field | `"attackBudget"` | `attackBudget?` | `attackBudget` | n/a |
-| encounter entity | encounter component | PRL record (section delegated) | — | — | `ai_encounter` (`@SolidClass`): `_tags`, `encounter_tag`, `attack_budget(integer)`; empty budget inherits |
+| archetype class | `BehaviorGraphDescriptor::attack_class: Option<String>` | `"attackClass"` | `attackClass?` | `attackClass` | n/a |
+| budget profiles | `ModManifestResult` field, name → `{ total, classes }` | `"attackBudgets"`: `{ [profile]: { total, [class]: limit } }` | `attackBudgets?` | `attackBudgets` | n/a |
+| encounter entity | encounter component | id-29 map-entity record | — | — | `ai_encounter` (`@PointClass`): `_tags`, `encounter_tag`, `budget_profile(string)`; empty means `default` |
 | encounter member | encounter member handle | — | `getMapEntities("encounter")` → `start`, `stop` | same | trigger `command` `start` / `stop` |
 | turn held | `BRAIN_INPUTS` tail | `"@brain.hasAttackTurn"` | `brain.hasAttackTurn` | `brain.hasAttackTurn` | n/a |
 | turn free | `BRAIN_INPUTS` tail, after the above | `"@brain.attackTurnFree"` | `brain.attackTurnFree` | `brain.attackTurnFree` | n/a |

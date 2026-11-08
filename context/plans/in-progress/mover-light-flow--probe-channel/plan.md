@@ -33,6 +33,8 @@ Three Decision premises failed when measured (`research.md` §Bounce slice measu
 2. **The depth domain overflows.** On setpiece, "every probe whose gather rays the posed mover changes" is 39,990 closed-pose tiles and 11,566 live tiles; with id 59 that is 159% of 1 << 15, and the depth block is 16.2 MB. If the CPU holds the closed-pose tiles (the delegated CPU-write answer), the GPU count is about 37%. Each travelling-wall frame would still upload about 11k tiles. Bounding it changes the "Closed-pose depth" Decision.
 3. **The B7 reference misses its bar.** 14 of 232 raised-room interior probes miss the BC6H bar, by at most 0.0034, mostly at floor height. Re-seeding the patches moves the count between 9 and 14. The reference build changes faces, patches and cells, as research §Risks warned.
 
+**Owner rulings (2026-11-08).** (1) Bounce: perceptual floor. (2) Depth: CPU-held closed-pose tiles plus a significance floor scored with id 59's visibility-change metric. Both are recorded in the brief's Decisions; their values come from a sweep at Stop 2. (3) B7: investigate the floor-height misses before any restatement. The remaining Stop 2 work (captures, M1, sweep) runs now.
+
 These held: B3 and B4 pass on the closet (only closet probes affected, none in the bright room; S^b₁ is bit-exact). One pose costs about 1.5 s against setpiece's 1.4 s SH Bake.
 
 ## Delegated answers

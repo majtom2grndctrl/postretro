@@ -1,7 +1,7 @@
 # direction-aware-probe-visibility — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 5932287f4
 
 Source since the brief's read-at (2968de0ad) changed only navmesh, mover and AI code; no SH bake, renderer, loader or format file the Decisions cite moved, so the grounded Decision reads stand.

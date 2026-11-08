@@ -1,7 +1,7 @@
 # Square Enix '372 against direction-aware probe visibility
 
 **Date investigated:** 2026-11-07, repo at `55f61eab2` (branch `feature/direction-aware-probe-visibility`)
-**Status:** Engineering triage for counsel, not legal advice. "Appears present", "appears absent", "reads on" and "arguable" are engineering readings of claim text, not opinions on infringement, validity or freedom to operate. Companion to [ip-check.md](ip-check.md) §Piece 2 and counsel question 8. Brief: `context/plans/in-progress/direction-aware-probe-visibility/`.
+**Status:** Engineering triage for counsel, not legal advice. "Appears present", "appears absent", "reads on" and "arguable" are engineering readings of claim text, not opinions on infringement, validity or freedom to operate. Companion to [ip-check.md](ip-check.md) §Piece 2 and counsel question 8. Brief: `context/plans/done/direction-aware-probe-visibility/`.
 
 > **Read this when:** changing how SH probes are weighted, stored or selected (Chebyshev floor, depth tiles, backface factor, validity), adding per-probe visibility data of any kind, or briefing counsel on US10137372B2.
 > **Sources.** **Verified** means the primary text was read. *(snippet)* means search-result or summarizer text only. Patent text: Google Patents full text of US10137372B2, the A1 publication US20180093183A1, EP3306569B1 and CA2944435C, all read 2026-11-07 (**verified**). Not read: the US file wrapper (15/377,913). Patent Center's public API refused (HTTP 405), the USPTO assignment API was unreachable, and ppubs anonymous access ends today. Prior-art reads are in §Prior art. Column numbers are not given because Google's text has none, so passages are quoted instead.

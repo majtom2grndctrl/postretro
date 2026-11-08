@@ -17,6 +17,7 @@
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
 - **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets / bounded SH pool / SH mandatory bound** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51: `build_pipeline.md` §PRL section IDs
+- **Probe depth visibility / Chebyshev weight and its floor / direction-aware probe visibility / probe depth tiles (id 59) / moment-texel tile reference / runtime tile-reference rewrite / probe-weight IP rules (Square Enix '372)** → `rendering_pipeline.md` §4 (Probe depth moments, Direction-aware probe visibility) · format, bake and selection: `build_pipeline.md` §PRL section IDs · IP: `context/research/gi-rtx-lite/ip-check.md` §Piece 2
 - **Lightmap/shadowmask residency / cell blocks / lightmap pool / bounded lightmap pool / lightmap pool bound / mask pool / vertex block table / lightmap miss policy / `POSTRETRO_LIGHTMAP_STREAMING` / shared SH+lightmap read issuer and drain budget** → `rendering_pipeline.md` §4 (Lightmap cell-block residency) · ids 22/42/51/58: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
 - **Render resolution / HiDPI / scene extent vs surface extent / integer upscale / native UI layer / covers-HUD effect switches** → `rendering_pipeline.md` §7.8 · `player_options.md` §4 · `ui.md` §5
@@ -161,7 +162,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Visibility | prl-build (portal generation — runtime traverses portal graph each frame) |
 | Cell locator | prl-build (compiler BSP-derived point-to-cell decision tree) |
 | Light entities | FGD entities parsed and translated to canonical format at compile time |
-| Indirect lighting | DDGI-style octahedral irradiance probe atlas, with per-probe depth moments, baked from canonical lights |
+| Indirect lighting | DDGI-style octahedral irradiance probe atlas, with per-probe depth moments and sparse per-direction depth tiles, baked from canonical lights |
 | Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
 | Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
 | Reflection probes | prl-build: probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time into colour and distance tiles |

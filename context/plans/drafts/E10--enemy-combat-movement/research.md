@@ -48,6 +48,12 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 - Map members with `start` and `stop` from triggers and scripts: trap members (`getMapEntities("trap")`, `scripting.md` §12 Entity addressing).
 - Engines pair an entry-firing trigger volume with tag- or group-addressed targets: Godot `Area3D.body_entered` plus groups, Unreal `OnActorBeginOverlap` plus Gameplay Tags, Unity `OnTriggerEnter` plus tags, Bevy with Avian `On<CollisionStart>` observers. None selects encounter members by volume. DOOM (2016) limited tokens per attack type, scaled by difficulty.
 
+## Flanking
+- The target's facing is not on `TargetPawn` (`crates/ai/src/targeting.rs`). The owner chose the enemy's entry bearing over target facing: aim moves too often, and a remote player's host-side yaw lags.
+- The shipped positioning brief planned a flank or angle preference term and never shipped it (`plans/done/E10--enemy-combat-positioning`).
+- Ring: `RING_DIRECTIONS` (8) × `RADIAL_MULTIPLIERS` around the target (`generated_positions`, `crates/sim/src/combat_positioning.rs`); score is `score_candidate` (`combat_positioning/scoring.rs`).
+- Flank routes out of sight need pathfinder cost hooks (`astar_corridor` takes none) and multiply A* work; deferred to the cover brief.
+
 ## Pin table
 
 | id | scenario | ordering | expected outcome |
@@ -67,3 +73,4 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 | P13 | Enemy changes pool while holding a turn | Tick N: an encounter at budget 1 starts while two cost-1 members hold default-pool turns on one target, or ends while its members hold encounter turns. | No turn is revoked; each counts against its holder's new pool and ends by its own rule. No grant in that pool lands until held cost plus the requester's cost fits. |
 | P14 | Class limit at the head of the line | Profile `{ total: 3, heavy: 1 }`, cost 1. One heavy holds; a second heavy has waited longest; two unclassed enemies request after it. | Both unclassed enemies are granted past the waiting heavy. The heavy is granted the tick the holding heavy releases, ahead of any later heavy. |
 | P15 | Encounter request timing | Tick N: a trigger command or trigger-bound step starts B while A is active; two triggers each start a different encounter; a start and a stop of one encounter land on one tick; a named, player-event or post-wait start is issued. | A trigger or trigger-bound request applies before tick N's arbitration. Every other request latches to tick N+1 and applies first there. Requests apply in issue order, so the later-issued start is active and a start then stop leaves none active. |
+| P16 | Target moves during a `reposition` | Tick N: entry records the bearing from target to enemy and the enemy's position; ticks N+1…: the target walks across the room. | The arc stays measured from the tick-N bearing, the minimum travel from the tick-N position; the slot is re-scored around the target's current position. Leaving and re-entering records a new bearing and position. |

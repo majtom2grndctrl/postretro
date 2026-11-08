@@ -10,14 +10,18 @@ Today an engaged enemy can only chase, hold, or walk to a fixed point. It cannot
 The defect: a rocket-launched enemy turns to face its flight path, because knockback velocity feeds the facing and locomotion choice.
 
 When this is done:
-- An author gives enemies strafing and fire-then-relocate behavior that reads correctly on screen.
+- An author gives enemies strafing, fire-then-relocate and flanking behavior that reads correctly on screen.
 - A per-target attack budget, seeded by the engine, shaped per mod into named profiles with per-class limits, and given its own pool by a map-authored encounter, keeps idle enemies moving instead of piling on.
 - A launched enemy keeps the yaw it had at impact.
 
 ## Decisions
-- **Two new engaged motion verbs, `strafe` and `reposition`.** Both resolve goals on the combat-slot ring (`plans/done/E10--enemy-combat-positioning`) at the standoff `chaseTarget` uses. Both hold the target and may carry an action, unlike position goals (`entity_model.md` §7c). They stay closed and parameterless.
+- **Two new engaged motion verbs, `strafe` and `reposition`.** Both resolve goals on the combat-slot ring (`plans/done/E10--enemy-combat-positioning`) at the standoff `chaseTarget` uses. Both hold the target and may carry an action, unlike position goals (`entity_model.md` §7c). The verb set stays closed; `strafe` takes no parameters.
   - **`strafe`** steps to the neighboring ring slot and keeps going in one direction, reversing when the next slot is unreachable, occupied or blind.
-  - **`reposition`** claims the best slot at least one spacing from both its held slot and its position at entry. It picks again on each entry and holds on arrival.
+  - **`reposition`** claims the best slot at least one spacing from its held slot. It picks again on each entry and holds on arrival. With no slot that qualifies, it holds.
+  - **`reposition` takes two optional properties**, both fixed at entry so the goal never chases itself:
+    - `arc: [min, max]`, in degrees: how far around the target the slot sits, measured from the bearing from the target to the enemy at entry. 0° is straight back toward the enemy's start, 90° is lateral, 180° is the far side. Either side qualifies. Default `[0, 180]`.
+    - `minTravel`, in metres: how far the slot must be from the enemy's position at entry. Default one slot spacing.
+  - **Flanking is `reposition` with a lateral arc.** It reads the enemy's own approach, never the target's facing: aim changes too often to steer by, and a remote co-op player's yaw on the host lags their view.
 - **Per-activity `facing`: `"target"` or `"travel"`.** Omitted, the verb's default applies. Existing verbs keep today's rule, and `strafe` and `reposition` face the target. A target-facing mover passes the shipped facing gate unchanged.
 - **Knockback never steers facing or picks a stride.** "Launched" means knockback velocity remains.
   - While launched, facing ignores both steering and knockback and holds the impact yaw, except that a target-facing activity re-aims at the normal slew rate.
@@ -65,6 +69,7 @@ When this is done:
   - **Per-attack classes.** A class sits on the archetype. A per-attack override can be added later without breaking anything.
   - **Protective cover and squad tactics.** Their exclusion stands from the line-of-sight and positioning briefs.
   - **Per-activity speed.** The statecharts brief keeps it additive, so a strafe and a run share `moveSpeed` until it lands.
+  - **Cover, and flank routes that avoid the target's sight.** Both need exposure data the navmesh does not carry; the cover brief owns them.
 
 ### Scripting surface
 ```ts
@@ -92,7 +97,8 @@ behavior: {
           activities: {
             wait:  { animation: "walk", motion: "strafe" },
             burst: { animation: "idle_aiming", motion: "hold", action: { attack: "shoot" }, attackTurn: true },
-            move:  { animation: "run", motion: "reposition", facing: "travel" },
+            move:  { animation: "run", motion: "reposition", facing: "travel",
+                     reposition: { arc: [60, 120] } },   // flank: lateral to the target
           },
           transitions: {
             wait:  [{ to: "burst", when: brain.attackTurnFree.and(brain.targetVisible) }],
@@ -130,6 +136,10 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] A `strafe` enemy moves around its target at standoff while facing it, and fires its action mid-move when facing, range and line of sight pass.
 - [ ] `strafe` reverses at a blocked, occupied or blind next slot. With neither neighbor usable it holds its slot, still facing the target, and does not flip direction on consecutive ticks. A strafer that loses its next slot to another on one tick reverses once (pin P9).
 - [ ] `reposition` arrives at least one spacing from both its position and its held slot at entry, including after a `hold` predecessor and with no slot held. Re-entering picks again. With no valid slot it holds rather than oscillating.
+- [ ] `arc: [60, 120]` picks only slots 60° to 120° around the target from the entry bearing, on either side, and `arc: [135, 180]` picks the far side. A slot just inside each bound qualifies and one just outside does not. With no slot in the arc it holds (pin P16).
+- [ ] The arc and the entry position stay fixed while the target moves during the move. Re-entering measures them again (pin P16).
+- [ ] `minTravel: 8` refuses a slot 7 m from the entry position and accepts one at 9 m.
+- [ ] In both runtimes, an `arc` outside 0–180, with min above max or non-finite, a negative or non-finite `minTravel`, or `reposition` properties on an activity whose motion is not `reposition`, rejects with a pathed error.
 - [ ] `facing: "travel"` on `reposition` faces travel, and `facing: "target"` on `chaseTarget` faces the target while moving. With no knockback active, an activity without `facing` behaves as today on every existing verb.
 - [ ] Sideways travel under target facing selects `walk_left` or `walk_right`, and backward travel selects `walk_backward`. Under travel facing the same motion plays `walk`. A mesh without the variants plays `walk`.
 
@@ -193,6 +203,7 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - **First slice.** The knockback facing split. It touches the fewest seams and proves the velocity separation strafe needs.
 - **Watch for.**
   - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly.
+  - `score_candidate` and the batch take per-query constraints (arc, minimum travel, exclusions) rather than fixed terms. `strafe` and `reposition` are the first consumers; the cover brief adds a mode. The ring has eight directions, so an arc resolves in 45° steps; a denser ring is the executor's call if a 60–120° arc proves too coarse.
   - `drafts/perf-ai-tick-cost` touches the same batch. Add a wave-scale stress row for arbitration against its baseline.
 - **Files past ~800 lines:** check `compute.rs` and `apply.rs` before extending them.
 
@@ -206,6 +217,7 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 | strafe verb | `MotionVerb::Strafe` | `"strafe"` | `"strafe"` | `"strafe"` | n/a |
 | reposition verb | `MotionVerb::Reposition` | `"reposition"` | `"reposition"` | `"reposition"` | n/a |
 | activity facing | `BehaviorActivityDescriptor::facing: Option<FacingPolicy>` | `"facing"`: `"target"` \| `"travel"` | `facing?` | `facing` | n/a |
+| reposition properties | `BehaviorActivityDescriptor::reposition: Option<RepositionParams { arc_deg: [f32; 2], min_travel_m: f32 }>` | `"reposition"`: `{ "arc"?, "minTravel"? }` | `reposition?: { arc?: [number, number]; minTravel?: number }` | `reposition` | n/a |
 | turn marking | `BehaviorActivityDescriptor::attack_turn: bool` | `"attackTurn"` | `attackTurn?` | `attackTurn` | n/a |
 | archetype cost | `BehaviorGraphDescriptor::attack_cost` | `"attackCost"` | `attackCost?` | `attackCost` | n/a |
 | archetype class | `BehaviorGraphDescriptor::attack_class: Option<String>` | `"attackClass"` | `attackClass?` | `attackClass` | n/a |

@@ -1,8 +1,12 @@
 // Direct SH compose compute pass.
 // See: context/lib/rendering_pipeline.md §4
 //
-// Produces a sampled Rgba16Float direct atlas from the BC6H/Rgba16Float base
-// direct atlas minus selected static-light direct delta tiles.
+// Writes two Rgba16Float outputs from the BC6H/Rgba16Float base direct atlas:
+// the promotion handoff atlas (base minus weighted selected static-light delta
+// tiles), sampled only by movers and skinned meshes, and, when
+// `store_promotion_free` is set, the promotion-free direct atlas (the
+// mask-gated base) that every other consumer samples. On section-45 maps the
+// handoff output is Pass B's intermediate and Pass B writes both finals.
 
 struct GridDims {
     grid_dimensions: vec3<u32>,
@@ -36,9 +40,11 @@ struct DebugOverride {
 
 // Private Pass-A input. Its mask mirrors group-0's FrameUniforms snapshot
 // because this compose pipeline has an independent bind-group layout.
+// `store_promotion_free` is load-fixed: nonzero only on maps without section
+// 45, where Pass A writes the final promotion-free atlas itself.
 struct DirectComposeParams {
     light_term_mask: u32,
-    _pad0: u32,
+    store_promotion_free: u32,
     _pad1: u32,
     _pad2: u32,
 };
@@ -48,7 +54,11 @@ struct DirectComposeParams {
 // rest; Metal disallows textureLoad (lowered to `.read()`) on compressed formats,
 // so the base value is fetched via a point sample at the exact texel center.
 @group(0) @binding(2) var base_sampler: sampler;
-@group(0) @binding(1) var direct_composed_atlas: texture_storage_2d_array<rgba16float, write>;
+// Promotion handoff output: the final handoff atlas, or Pass B's intermediate.
+@group(0) @binding(1) var direct_handoff_atlas: texture_storage_2d_array<rgba16float, write>;
+// Promotion-free output; bound on every map, written only under
+// `store_promotion_free`.
+@group(0) @binding(4) var direct_atlas: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(18) var<uniform> grid: GridDims;
 @group(0) @binding(20) var<storage, read> delta_subblocks: array<u32>;
 @group(0) @binding(21) var<storage, read> affinity_offsets: array<u32>;
@@ -387,17 +397,18 @@ fn compose_main(
     let use_baked_direct_static = (direct_compose_params.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
     let use_dynamic_direct = (direct_compose_params.light_term_mask & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
     let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;
+    let store_promotion_free = output_is_stored && direct_compose_params.store_promotion_free != 0u;
 
     // Keeping the accumulator private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
     // geometry is fixed at 6×6 by PRL validation.
     var accum: array<vec4<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+        let tile_texel = vec2<u32>(
+            texel_index % RUNTIME_TILE_DIMENSION,
+            texel_index / RUNTIME_TILE_DIMENSION,
+        );
         if (output_is_stored && use_baked_direct_static) {
-            let tile_texel = vec2<u32>(
-                texel_index % RUNTIME_TILE_DIMENSION,
-                texel_index / RUNTIME_TILE_DIMENSION,
-            );
             let atlas_texel = tile_origin.xy + tile_texel;
             let uv = (vec2<f32>(atlas_texel) + 0.5)
                 / vec2<f32>(textureDimensions(direct_base_atlas));
@@ -410,6 +421,19 @@ fn compose_main(
             );
         } else {
             accum[texel_index] = vec4<f32>(0.0);
+        }
+        // The promotion-free atlas is the mask-gated base, never subtracted:
+        // with every weight zero it equals the handoff output exactly.
+        if (store_promotion_free) {
+            textureStore(
+                direct_atlas,
+                vec2<i32>(tile_origin.xy + tile_texel),
+                i32(tile_origin.z),
+                vec4<f32>(
+                    max(accum[texel_index].rgb, vec3<f32>(0.0)),
+                    select(0.0, 1.0, stored_slot.valid),
+                ),
+            );
         }
     }
 
@@ -521,7 +545,7 @@ fn compose_main(
                 texel_index / RUNTIME_TILE_DIMENSION,
             );
             textureStore(
-                direct_composed_atlas,
+                direct_handoff_atlas,
                 vec2<i32>(tile_origin.xy + tile_texel),
                 i32(tile_origin.z),
                 vec4<f32>(

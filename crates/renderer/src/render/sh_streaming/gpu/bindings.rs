@@ -1,6 +1,7 @@
 //! Sample-side bind groups and streamed-grid uniform construction.
 
 use super::*;
+use crate::render::direct_sh_resources::{mesh_superset_entries, shared_direct_atlas_entry};
 use crate::render::gpu_create::GpuCreate;
 
 pub(super) fn create_sample_bind_groups(
@@ -25,11 +26,32 @@ pub(super) fn create_sample_bind_groups(
         dimension: Some(wgpu::TextureViewDimension::D3),
         ..Default::default()
     });
-    let direct_view = dense
-        .direct_total_sampled_view
-        .as_ref()
-        .or(dense.direct_base_view.as_ref())
-        .unwrap_or(&sh.direct.atlas_view);
+    let (entries, mesh_entries) =
+        sample_bind_group_entries(sh, dense, grid_info, &depth_view, &sampler);
+    let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Streamed SH Volume Bind Group"),
+        layout: &sh.bind_group_layout,
+        entries: &entries,
+    });
+    let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Streamed SH Mesh Bind Group"),
+        layout: &sh.mesh_bind_group_layout,
+        entries: &mesh_entries,
+    });
+    (bind_group, mesh_bind_group)
+}
+
+/// The shared group-3 entries and the mesh superset's. Binding 15 differs:
+/// the shared group samples the promotion-free direct atlas, the mesh
+/// superset the promotion handoff atlas.
+pub(super) fn sample_bind_group_entries<'a>(
+    sh: &'a ShVolumeResources,
+    dense: &'a DenseTextures,
+    grid_info: &'a wgpu::Buffer,
+    depth_view: &'a wgpu::TextureView,
+    sampler: &'a wgpu::Sampler,
+) -> (Vec<wgpu::BindGroupEntry<'a>>, Vec<wgpu::BindGroupEntry<'a>>) {
+    let (direct_view, handoff_view) = dense.direct_sample_views(sh);
     let entries = vec![
         wgpu::BindGroupEntry {
             binding: BIND_SH_TOTAL_ATLAS,
@@ -37,7 +59,7 @@ pub(super) fn create_sample_bind_groups(
         },
         wgpu::BindGroupEntry {
             binding: BIND_SH_ATLAS_SAMPLER,
-            resource: wgpu::BindingResource::Sampler(&sampler),
+            resource: wgpu::BindingResource::Sampler(sampler),
         },
         wgpu::BindGroupEntry {
             binding: BIND_SH_GRID_INFO,
@@ -57,35 +79,22 @@ pub(super) fn create_sample_bind_groups(
         },
         wgpu::BindGroupEntry {
             binding: BIND_SH_DEPTH_MOMENTS,
-            resource: wgpu::BindingResource::TextureView(&depth_view),
+            resource: wgpu::BindingResource::TextureView(depth_view),
         },
         // Whole-resident, so growth rebinds the level's one tile texture.
         sh.depth_tiles.bind_group_entry(),
-        wgpu::BindGroupEntry {
-            binding: BIND_SH_DIRECT_ATLAS,
-            resource: wgpu::BindingResource::TextureView(direct_view),
-        },
+        shared_direct_atlas_entry(direct_view),
         wgpu::BindGroupEntry {
             binding: BIND_BILLBOARD_DIRECT_SCATTER,
             resource: wgpu::BindingResource::TextureView(&sh.billboard_direct_scatter.sampled_view),
         },
     ];
-    let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Streamed SH Volume Bind Group"),
-        layout: &sh.bind_group_layout,
-        entries: &entries,
-    });
-    let mut mesh_entries = entries;
-    mesh_entries.push(wgpu::BindGroupEntry {
-        binding: BIND_DYNAMIC_DIRECT_PARAMS,
-        resource: sh.direct.dynamic_direct_params_binding(),
-    });
-    let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Streamed SH Mesh Bind Group"),
-        layout: &sh.mesh_bind_group_layout,
-        entries: &mesh_entries,
-    });
-    (bind_group, mesh_bind_group)
+    let mesh_entries = mesh_superset_entries(
+        &entries,
+        handoff_view,
+        sh.direct.dynamic_direct_params_binding(),
+    );
+    (entries, mesh_entries)
 }
 
 pub(super) fn create_grid_info(

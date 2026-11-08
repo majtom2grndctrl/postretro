@@ -49,6 +49,28 @@ impl PromotedBakedLightSource {
     }
 }
 
+/// The promotion row a capture-pinned crossfade `w` addresses, in the same two
+/// raw namespaces as [`PromotedBakedLightSource`]. Capture only: windowed
+/// frames never pin a weight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum CapturePromotionRow {
+    /// Position in the level's `EntityShadowLights` selection.
+    SelectedStatic(usize),
+    /// Raw section-45 `AnimatedBakedLights` roster row.
+    AnimatedBaked(usize),
+}
+
+/// One capture-pinned crossfade `w`: the promotion row it addresses and the
+/// authored `force_promotion` tag that named the row, so a failure names what
+/// the author wrote rather than an internal index. Capture only.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturePromotionPin {
+    pub row: CapturePromotionRow,
+    pub weight: f32,
+    /// The first `force_promotion` tag that resolved to `row`.
+    pub tag: String,
+}
+
 /// One baked light promoted into a shadow pool slot this frame. Selected-static
 /// records append a forward light record; animated-baked records instead point
 /// at their already-reserved section-45 forward tail. Both use the same static
@@ -77,6 +99,11 @@ pub(crate) struct PromotedBakedLightState {
     pub pool_kind: Option<PromotedShadowPoolKind>,
     pub slot: u32,
     pub last_score: f32,
+    /// The lifecycle's own weight while a capture pin overrides `weight` for
+    /// the rest of this frame; restored before the next lifecycle step, so a
+    /// pin never feeds ranking, demotion or the next ramp. Always `None`
+    /// outside capture.
+    pub capture_natural_weight: Option<f32>,
 }
 
 /// The one CPU seam for an animated-baked promotion's runtime share. Both the

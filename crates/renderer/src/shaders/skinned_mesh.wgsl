@@ -230,7 +230,8 @@ struct ShGridInfo {
 @group(4) @binding(14) var sh_depth_moments: texture_3d<u32>;
 // Per-direction depth tiles (id 59); a tiled probe's moment G names its tile.
 @group(4) @binding(18) var sh_depth_tiles: texture_2d<f32>;
-// Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
+// The promotion handoff direct SH atlas: baked direct with promoted lights
+// subtracted, which the shadowed runtime loop adds back. Bound at
 // `BIND_SH_DIRECT_ATLAS` (group 4 binding 15) on the mesh group-4 superset by
 // render/sh_volume.rs. Same octahedral tile geometry as `sh_total_atlas`, so it
 // samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.

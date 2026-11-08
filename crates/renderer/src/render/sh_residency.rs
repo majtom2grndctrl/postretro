@@ -243,6 +243,7 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
         ShAllocationKind::DirectBaseAtlas => "direct_base_atlas",
         ShAllocationKind::DirectDynamicParams => "direct_dynamic_params",
         ShAllocationKind::DirectComposedAtlas => "direct_composed_atlas",
+        ShAllocationKind::DirectHandoffAtlas => "direct_handoff_atlas",
         ShAllocationKind::DirectIntermediateAtlas => "direct_intermediate_atlas",
         ShAllocationKind::IndirectComposeDeltaSubblocks => "indirect_compose_delta_subblocks",
         ShAllocationKind::IndirectComposeAffinityOffsets => "indirect_compose_affinity_offsets",

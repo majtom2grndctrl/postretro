@@ -17,6 +17,7 @@ use passes::{StreamingAnimatedPass, StreamingPromotionPass};
 pub(super) use sparse::DirectSparseRowUpload;
 use sparse::{RetiredDirectSparseResources, checked_ledger_sum};
 
+use super::dense::ComposedPool;
 use super::gpu::StagedUploads;
 use super::{
     AtlasShape, ShResidencyDrainError, SparseCapacities, SparseComposeLayouts,
@@ -28,14 +29,71 @@ use crate::render::renderer_types::PromotedBakedLightState;
 use crate::render::sh_volume::ShVolumeResources;
 
 /// Texture views supplied by the streamed GPU-pool owner. Id 45 makes Pass A
-/// write `intermediate_storage`, then Pass B samples it and writes
-/// `total_storage`; id 41 alone lets Pass A write the final target directly.
+/// write `intermediate`, then Pass B samples it and the base and writes both
+/// finals; id 41 alone lets Pass A write both final targets directly. The
+/// promotion-free atlas feeds the shared group 3, the handoff atlas the mesh
+/// superset.
+#[derive(Clone, Copy)]
 pub(super) struct StreamingDirectViews<'a> {
     pub(super) base: &'a wgpu::TextureView,
-    pub(super) intermediate_storage: Option<&'a wgpu::TextureView>,
-    pub(super) intermediate_sampled: Option<&'a wgpu::TextureView>,
-    pub(super) total_storage: &'a wgpu::TextureView,
+    pub(super) intermediate: Option<&'a ComposedPool>,
+    pub(super) promotion_free: &'a ComposedPool,
+    pub(super) handoff: &'a ComposedPool,
     pub(super) selection_weights: &'a wgpu::Buffer,
+}
+
+impl<'a> StreamingDirectViews<'a> {
+    /// Pass A's two storage outputs and whether it stores the promotion-free
+    /// one itself (no id 45) or leaves it to Pass B.
+    fn promotion_outputs(
+        &self,
+        animated: bool,
+    ) -> Result<PromotionOutputs<'a>, ShResidencyDrainError> {
+        let handoff = if animated {
+            &self
+                .intermediate
+                .ok_or(ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed animated direct compose requires an intermediate atlas",
+                })?
+                .storage_view
+        } else {
+            &self.handoff.storage_view
+        };
+        Ok(PromotionOutputs {
+            handoff,
+            promotion_free: &self.promotion_free.storage_view,
+            stores_promotion_free: !animated,
+        })
+    }
+
+    fn animated_views(&self) -> Result<AnimatedViews<'a>, ShResidencyDrainError> {
+        Ok(AnimatedViews {
+            intermediate_sampled: &self
+                .intermediate
+                .ok_or(ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed animated direct compose requires an intermediate sampled view",
+                })?
+                .sampled_view,
+            base_sampled: self.base,
+            handoff_storage: &self.handoff.storage_view,
+            promotion_free_storage: &self.promotion_free.storage_view,
+        })
+    }
+}
+
+/// Pass A's storage outputs; `handoff` is the intermediate on id-45 levels.
+pub(super) struct PromotionOutputs<'a> {
+    pub(super) handoff: &'a wgpu::TextureView,
+    pub(super) promotion_free: &'a wgpu::TextureView,
+    pub(super) stores_promotion_free: bool,
+}
+
+/// Pass B's textures: intermediate and base in, both final atlases out.
+pub(super) struct AnimatedViews<'a> {
+    pub(super) intermediate_sampled: &'a wgpu::TextureView,
+    pub(super) base_sampled: &'a wgpu::TextureView,
+    pub(super) handoff_storage: &'a wgpu::TextureView,
+    pub(super) promotion_free_storage: &'a wgpu::TextureView,
 }
 
 pub(super) struct StreamingDirectCompose {
@@ -95,15 +153,6 @@ impl StreamingDirectCompose {
         sparse_compose: &SparseComposeLayouts,
         sparse_capacities: &SparseCapacities,
     ) -> Result<Self, ShResidencyDrainError> {
-        let promotion_output = if sources.animated_direct_delta.is_some() {
-            views
-                .intermediate_storage
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed animated direct compose requires an intermediate atlas",
-                })?
-        } else {
-            views.total_storage
-        };
         let promotion = StreamingPromotionPass::new(
             device,
             limits,
@@ -111,7 +160,7 @@ impl StreamingDirectCompose {
             gpu::planned_direct_layout(sparse_compose)?,
             shape,
             views.base,
-            promotion_output,
+            views.promotion_outputs(sources.animated_direct_delta.is_some())?,
             views.selection_weights,
             compose_indirection,
             pipelines,
@@ -124,10 +173,7 @@ impl StreamingDirectCompose {
                 base,
                 source,
                 shape,
-                views.intermediate_sampled.ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed animated direct compose requires an intermediate sampled view",
-                })?,
-                views.total_storage,
+                views.animated_views()?,
                 compose_indirection,
                 sh,
                 pipelines,
@@ -167,18 +213,13 @@ impl StreamingDirectCompose {
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
     ) {
-        let promotion_output = if self.animated.is_some() {
-            views
-                .intermediate_storage
-                .expect("prevalidated animated direct growth has an intermediate storage view")
-        } else {
-            views.total_storage
-        };
         self.promotion.rebind_dense(
             device,
             shape,
             views.base,
-            promotion_output,
+            views
+                .promotion_outputs(self.animated.is_some())
+                .expect("prevalidated animated direct growth has an intermediate storage view"),
             views.selection_weights,
             compose_indirection,
         );
@@ -187,9 +228,8 @@ impl StreamingDirectCompose {
                 device,
                 shape,
                 views
-                    .intermediate_sampled
+                    .animated_views()
                     .expect("prevalidated animated direct growth has an intermediate sampled view"),
-                views.total_storage,
                 compose_indirection,
                 sh,
             );
@@ -217,15 +257,6 @@ impl StreamingDirectCompose {
     ) -> Result<DirectSparseReplacement, ShResidencyDrainError> {
         match section_id {
             41 => {
-                let output = if self.animated.is_some() {
-                    views
-                        .intermediate_storage
-                        .ok_or(ShResidencyDrainError::GpuCapacity {
-                            reason: "streamed direct id-41 growth lost its intermediate atlas",
-                        })?
-                } else {
-                    views.total_storage
-                };
                 let replacement = StreamingPromotionPass::new(
                     device,
                     limits,
@@ -233,7 +264,7 @@ impl StreamingDirectCompose {
                     gpu::planned_direct_layout(sparse_compose)?,
                     shape,
                     views.base,
-                    output,
+                    views.promotion_outputs(self.animated.is_some())?,
                     views.selection_weights,
                     compose_indirection,
                     pipelines,
@@ -256,12 +287,7 @@ impl StreamingDirectCompose {
                     base,
                     source,
                     shape,
-                    views
-                        .intermediate_sampled
-                        .ok_or(ShResidencyDrainError::GpuCapacity {
-                            reason: "streamed id-45 growth lost its sampled intermediate atlas",
-                        })?,
-                    views.total_storage,
+                    views.animated_views()?,
                     compose_indirection,
                     sh,
                     pipelines,

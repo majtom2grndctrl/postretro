@@ -679,8 +679,8 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
 
 // Baked light is per vertex: the ambient floor, SH indirect and baked direct
 // SH evaluate in vs_main and reach the fragment interpolated, so no fragment
-// entry samples the SH volume. Dynamic and promoted-static runtime lights
-// stay per fragment, so a dynamic light near a large face shades it smoothly.
+// entry samples the SH volume. Dynamic runtime lights stay per fragment, so a
+// dynamic light near a large face shades it smoothly.
 // Baked direct comes from direct SH, never from the VERTEX-only billboard
 // scatter.
 #[test]
@@ -1701,7 +1701,16 @@ fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the
         ",V,n)",
         "dot(V,n)",
     ] {
-        assert!(!fragment.contains(flipped), "fog reads `{flipped}`");
+        // The runtime lights rightly shade the viewer side, so their call is
+        // exempt. Assert the needle still matches, or a rename in the WGSL would
+        // make the replace a silent no-op and fail this test for the wrong reason.
+        const RUNTIME_LIGHT_CALL: &str = "fluid_light(i,in.world_position,n)";
+        assert!(
+            fragment.contains(RUNTIME_LIGHT_CALL),
+            "`{RUNTIME_LIGHT_CALL}` must match the whitespace-stripped runtime-light call in fluid_surface.wgsl"
+        );
+        let fog_reads = fragment.replace(RUNTIME_LIGHT_CALL, "");
+        assert!(!fog_reads.contains(flipped), "fog reads `{flipped}`");
     }
 
     let cpu = code_only(wgsl_fn(
@@ -2689,8 +2698,8 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
 // `animated_light_scale` from its descriptor fetch on, token for token; only
 // the fetch differs, indexing the roster-indexed descriptors directly where SH
 // compose goes through its delta-light index table. It is not
-// `animated_direct_sh_compose.wgsl`'s form, which multiplies the promotion
-// weight and gates on the lighting mask and its debug override.
+// `animated_direct_sh_compose.wgsl`'s form, which gates on the lighting mask
+// and its debug override and feeds the promotion weight.
 #[test]
 fn fluid_reflection_light_value_ports_the_sh_compose_light_scale() {
     let fluid = code_only(wgsl_fn(FLUID_WGSL, "fluid_reflection_light_value"));
@@ -2707,7 +2716,7 @@ fn fluid_reflection_light_value_ports_the_sh_compose_light_scale() {
 
     let promoted = code_only(wgsl_fn(
         include_str!("../shaders/animated_direct_sh_compose.wgsl"),
-        "animated_light_scale",
+        "animated_compose_main",
     ));
     assert!(promoted.contains("animated_compose_weight(light_index)"));
     assert!(!fluid.contains("animated_compose_weight"));

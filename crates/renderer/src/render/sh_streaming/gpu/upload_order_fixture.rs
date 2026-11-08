@@ -13,6 +13,21 @@ use crate::render::sh_volume::ShVolumeSections;
 use crate::render::uploads::UploadQueue;
 use wgpu::util::DeviceExt;
 
+/// f16 bit patterns a prepared cluster's payloads carry: every atlas texel's
+/// RGB, and every sparse delta tile half. Zero is the plain fixture.
+#[derive(Clone, Copy, Default)]
+pub(in crate::render::sh_streaming) struct PayloadFill {
+    pub(in crate::render::sh_streaming) atlas: u16,
+    pub(in crate::render::sh_streaming) sparse_tile: u16,
+}
+
+impl PayloadFill {
+    /// A filled texel is a valid one; the plain fixture stays all zero.
+    fn atlas_alpha(self) -> u16 {
+        if self.atlas == 0 { 0 } else { 0x3C00 }
+    }
+}
+
 pub(crate) struct UploadOrderSh {
     map: SyntheticMap,
     pub(in crate::render::sh_streaming) state: ShResidencyState,
@@ -20,6 +35,8 @@ pub(crate) struct UploadOrderSh {
     uniforms: wgpu::BindGroupLayout,
     pipelines: crate::render::sh_streaming::StreamingShPipelines,
     weights: wgpu::Buffer,
+    /// What [`Self::prepared`] writes into atlas texels and sparse tiles.
+    pub(in crate::render::sh_streaming) payload_fill: PayloadFill,
 }
 
 impl UploadOrderSh {
@@ -34,6 +51,19 @@ impl UploadOrderSh {
 
     pub(crate) fn with_direct_compose(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         Self::with_map(device, queue, 128, SyntheticMap::new([8, 4, 4], [1, 1, 1]))
+    }
+
+    /// Id 41 without id 45: the promotion pass stores both direct outputs.
+    pub(in crate::render::sh_streaming) fn with_static_direct_compose(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Self {
+        Self::with_map(
+            device,
+            queue,
+            128,
+            SyntheticMap::new([8, 4, 4], [1, 1, 1]).without_animated_direct(),
+        )
     }
 
     fn with_map(
@@ -91,6 +121,7 @@ impl UploadOrderSh {
             pipelines: crate::render::sh_streaming::StreamingShPipelines::new(device, &uniforms),
             uniforms,
             weights,
+            payload_fill: PayloadFill::default(),
         };
         // Only the initial capacities are reduced. Allocation, installation,
         // growth, retirement and submission all run through production code.
@@ -138,6 +169,7 @@ impl UploadOrderSh {
         &self,
         cluster: u32,
     ) -> postretro_level_loader::PreparedShCluster {
+        let fill = self.payload_fill;
         let mut ready = self.map.prepared(&self.state, cluster);
         // CPU transaction fixtures omit atlas texels; supply real 8x8 slot
         // payloads here so the exact GPU validators and uploads also execute.
@@ -150,7 +182,11 @@ impl UploadOrderSh {
                 for word in [IRRADIANCE_FORMAT_RGBA16F, slots, slots * 8, 8, 1] {
                     bytes.extend_from_slice(&word.to_le_bytes());
                 }
-                bytes.resize(bytes.len() + slots as usize * 8 * 8 * 8, 0);
+                for _ in 0..slots as usize * 8 * 8 {
+                    for half in [fill.atlas, fill.atlas, fill.atlas, fill.atlas_alpha()] {
+                        bytes.extend_from_slice(&half.to_le_bytes());
+                    }
+                }
             } else if block.kind == crate::render::sh_streaming::SPARSE_ROWS_BLOCK {
                 let body = &ready.chunk.bytes[previous];
                 let word =
@@ -171,7 +207,8 @@ impl UploadOrderSh {
                 for entry in 0..entries {
                     words.extend_from_slice(&[0, entry * stride, stride, 0]);
                 }
-                words.resize(words.len() + (entries * stride / 2) as usize, 0);
+                let tile_word = u32::from(fill.sparse_tile) | (u32::from(fill.sparse_tile) << 16);
+                words.resize(words.len() + (entries * stride / 2) as usize, tile_word);
                 for word in words {
                     bytes.extend_from_slice(&word.to_le_bytes());
                 }
@@ -309,7 +346,8 @@ impl UploadOrderSh {
                 &[],
             )
             .expect("real streamed compose plan");
-        let mut uniform_bytes = [0u8; 96];
+        // Bytes 88..92 are `FrameUniforms::light_term_mask` (`build_uniform_data`).
+        let mut uniform_bytes = [0u8; postretro_render_cpu::frame_uniforms::UNIFORM_SIZE];
         uniform_bytes[88..92].copy_from_slice(&mask.bits().to_ne_bytes());
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("streamed compose inventory uniforms"),
@@ -365,6 +403,8 @@ impl UploadOrderSh {
 
 #[path = "depth_tile_texel_tests.rs"]
 mod depth_tile_texel_tests;
+#[path = "direct_split_tests.rs"]
+mod direct_split_tests;
 #[path = "limit_tests.rs"]
 mod limit_tests;
 #[path = "pool_admission_tests.rs"]

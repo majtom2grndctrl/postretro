@@ -6,8 +6,9 @@ use glam::{Mat4, Vec3};
 use postretro_level_loader::requested_streaming_mode;
 
 use crate::render::{
-    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor,
-    LightmapResidencyReport, Renderer, ShResidencyReport, ShSampleRegion,
+    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin,
+    CapturePromotionRow, ClearColor, LightmapResidencyReport, Renderer, ShResidencyReport,
+    ShSampleRegion,
 };
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::scripting_systems::ghost_render::GhostRenderCollector;
@@ -33,7 +34,7 @@ use super::setup::{
     apply_scene_reflection, capture_camera, capture_level_geometry,
     capture_static_lights_and_shadow_selection, derive_texture_materials,
     install_capture_animated_promotion_bridge, install_forced_active_animation_descriptors,
-    resolve_forced_animated_promotion_rows_from_metadata,
+    resolve_forced_promotion_rows_from_metadata,
 };
 
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
@@ -78,7 +79,7 @@ pub(super) struct PreparedCapture {
     planar: CapturePlanar,
     view_proj: Mat4,
     eye: Vec3,
-    forced_promotion_weights: Vec<(usize, f32)>,
+    forced_promotion_weights: Vec<CapturePromotionPin>,
     mover_sample_regions: Vec<ShSampleRegion>,
     measurement_animation: CaptureMeasurementAnimationClock,
     resolution: [u32; 2],
@@ -158,10 +159,11 @@ impl PreparedCapture {
             &world.lights,
             scene.force_active.as_deref(),
         )?;
-        let forced_promotion_weights = resolve_forced_animated_promotion_rows_from_metadata(
+        let forced_promotion_weights = resolve_forced_promotion_rows_from_metadata(
             &world.lights,
             world.animated_direct_descriptor_indices(),
             world.animated_direct_affinity_lights(),
+            world.entity_shadow_lights(),
             scene.force_promotion.as_deref(),
         )?;
 
@@ -212,7 +214,12 @@ impl PreparedCapture {
         // Capture has no script context or levelLoad event. Stand up only the
         // VM-free map-authored receiver state the windowed render frame collects.
         let mut registry = spawn_capture_receiver_registry(&world)?;
-        if !forced_promotion_weights.is_empty() {
+        // Selected-static promotion needs no bridge: its forward record is
+        // appended by the renderer from the selection itself.
+        if forced_promotion_weights
+            .iter()
+            .any(|pin| matches!(pin.row, CapturePromotionRow::AnimatedBaked(_)))
+        {
             install_capture_animated_promotion_bridge(
                 &mut renderer,
                 &world,
@@ -348,10 +355,9 @@ impl PreparedCapture {
                 .expect("streaming capture was initialized")
                 .read_one_sync()?
             {}
-            // Preload only warms SH residency. Pinning here would feed each
-            // forced `w` back into the promotion ramp, which cannot advance at
-            // capture's frozen instant, so a pinned zero would drop the row's
-            // record before the captured frame could pin it.
+            // Preload only warms SH residency, so it leaves every promotion on
+            // its natural lifecycle; pins and their slot checks start at the
+            // first captured or measured frame.
             let _ = self.submit_frame_without_readback(false, 0.0)?;
         }
         bail!("SH capture preload did not make its settle set sampleable")
@@ -447,7 +453,7 @@ impl PreparedCapture {
     ) -> Result<Option<CaptureGpuTimingWindow>> {
         let sh_drain_batch = self.take_sh_drain_batch()?;
         self.set_mirror_light_reach();
-        let forced_promotion_weights: &[(usize, f32)] = if pin_promotion {
+        let forced_promotion_weights: &[CapturePromotionPin] = if pin_promotion {
             &self.forced_promotion_weights
         } else {
             &[]

@@ -1,16 +1,17 @@
 //! Existing direct-compose binding layouts and small wire-format helpers.
 
-use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::sh_compose::DYNAMIC_COMPOSE_GRID_DIMS_SIZE;
 
 #[cfg(test)]
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
+use crate::render::animated_direct_sh_compose::BIND_ANIMATED_DIRECT_BASE;
 use crate::render::direct_sh_compose::{
     BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
     BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER,
-    BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS, BIND_PROBE_INDIRECTION,
-    DirectShDebugOverride, dynamic_compose_grid_bgl_entry, sampler_bgl_entry, storage_bgl_entry,
-    storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
+    BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS, BIND_DIRECT_ATLAS_OUTPUT,
+    BIND_PROBE_INDIRECTION, DirectShDebugOverride, dynamic_compose_grid_bgl_entry,
+    sampler_bgl_entry, storage_bgl_entry, storage_texture_bgl_entry, texture_bgl_entry,
+    uniform_bgl_entry,
 };
 
 const BIND_SELECTION_WEIGHTS: u32 = 26;
@@ -28,6 +29,7 @@ pub(in crate::render::sh_streaming) fn promotion_bgl_entries() -> Vec<wgpu::Bind
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),
         storage_texture_bgl_entry(1),
+        storage_texture_bgl_entry(BIND_DIRECT_ATLAS_OUTPUT),
         dynamic_compose_grid_bgl_entry(),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
         storage_bgl_entry(BIND_AFFINITY_OFFSETS),
@@ -48,6 +50,8 @@ pub(in crate::render::sh_streaming) fn animated_bgl_entries() -> Vec<wgpu::BindG
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),
         storage_texture_bgl_entry(1),
+        texture_bgl_entry(BIND_ANIMATED_DIRECT_BASE),
+        storage_texture_bgl_entry(BIND_DIRECT_ATLAS_OUTPUT),
         dynamic_compose_grid_bgl_entry(),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
         storage_bgl_entry(BIND_AFFINITY_OFFSETS),
@@ -125,12 +129,6 @@ pub(super) fn debug_override_bytes(value: DirectShDebugOverride) -> [u8; DEBUG_O
     bytes
 }
 
-pub(super) fn light_term_mask_bytes(mask: LightTermMask) -> [u8; DIRECT_COMPOSE_PARAMS_SIZE] {
-    let mut bytes = [0; DIRECT_COMPOSE_PARAMS_SIZE];
-    bytes[0..4].copy_from_slice(&mask.bits().to_ne_bytes());
-    bytes
-}
-
 pub(super) fn u32_bytes(values: &[u32]) -> Vec<u8> {
     values
         .iter()
@@ -154,14 +152,14 @@ mod tests {
                 .iter()
                 .map(|entry| entry.binding)
                 .collect::<Vec<_>>(),
-            vec![0, 2, 1, 18, 20, 21, 24, 26, 27, 28, 29, 30]
+            vec![0, 2, 1, 4, 18, 20, 21, 24, 26, 27, 28, 29, 30]
         );
         assert_eq!(
             animated
                 .iter()
                 .map(|entry| entry.binding)
                 .collect::<Vec<_>>(),
-            vec![0, 2, 1, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+            vec![0, 2, 1, 3, 4, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28]
         );
         let storage_count = |entries: &[wgpu::BindGroupLayoutEntry]| {
             entries

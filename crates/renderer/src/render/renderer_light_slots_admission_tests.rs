@@ -42,6 +42,7 @@ fn promoted(slot: u32, weight: f32) -> PromotedBakedLightState {
         pool_kind: Some(PromotedShadowPoolKind::Spot),
         slot,
         last_score: 1.0,
+        ..PromotedBakedLightState::default()
     }
 }
 

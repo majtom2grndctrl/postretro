@@ -112,6 +112,13 @@ impl SyntheticMap {
         self
     }
 
+    /// The same map with id-41 but no id-45 data, as a level with
+    /// entity-shadow selection and no animated lights.
+    pub(super) fn without_animated_direct(mut self) -> Self {
+        self.sparse_sections = &[INDIRECT_DELTA_ID, DIRECT_DELTA_ID];
+        self
+    }
+
     pub(super) fn cluster_count(&self) -> u32 {
         self.clusters.iter().product()
     }

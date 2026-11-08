@@ -16,7 +16,7 @@ pub(super) use super::sh_allocation::{DirectAtlasLayout, atlas_fits};
 use super::sh_allocation::{
     DirectAtlasUsage, ShAllocationKind, buffer_allocation, direct_atlas_usage,
     direct_base_atlas_allocation, direct_base_atlas_dummy_allocation,
-    direct_composed_atlas_allocation,
+    direct_composed_atlas_allocation, texture_allocation_bytes,
 };
 use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::AnimatedLightBuffers;
@@ -26,13 +26,22 @@ use super::sh_volume::AnimatedLightBuffers;
 /// This owns the direct receiver path independently from indirect SH resources
 /// so future billboard-specific direct fields can share its load/compose seam
 /// without widening the indirect resource owner.
+///
+/// Compose writes two atlases. The promotion-free direct atlas (`atlas_view`,
+/// shared group-3 binding 15) carries every baked direct light whatever the
+/// promotion weights; fluid and legacy billboards sample it. The promotion
+/// handoff atlas (`handoff_atlas_view`, mesh-superset binding 15) subtracts
+/// promoted lights for movers and skinned meshes, which add them back through
+/// their shadowed runtime term. Without a compose both name the base.
 pub(super) struct DirectShResources {
     pub(super) has_direct: bool,
     pub(super) has_direct_base: bool,
     pub(super) compose_layout: Option<DirectAtlasLayout>,
     pub(super) atlas_view: wgpu::TextureView,
+    pub(super) handoff_atlas_view: wgpu::TextureView,
     pub(super) base_atlas_view: wgpu::TextureView,
-    pub(super) composed_storage_view: Option<wgpu::TextureView>,
+    pub(super) atlas_storage_view: Option<wgpu::TextureView>,
+    pub(super) handoff_storage_view: Option<wgpu::TextureView>,
     pub(super) intermediate_storage_view: Option<wgpu::TextureView>,
     pub(super) intermediate_sampled_view: Option<wgpu::TextureView>,
     dynamic_direct_params_buffer: wgpu::Buffer,
@@ -79,29 +88,29 @@ impl DirectShResources {
         });
         let (
             atlas_view,
-            composed_storage_view,
+            handoff_atlas_view,
+            atlas_storage_view,
+            handoff_storage_view,
             intermediate_storage_view,
             intermediate_sampled_view,
         ) = if has_direct && direct_usage.needs_composed_atlas {
-            let texture = create_direct_composed_atlas_texture(
+            let (atlas_sampled, atlas_storage) = create_direct_composed_atlas_views(
                 device,
                 ShAllocationKind::DirectComposedAtlas,
-                direct_usage.atlas_dimensions,
-                direct_usage.layer_count,
-                "SH Direct Composed Octahedral Atlas",
+                direct_usage,
+                "SH Direct Composed Atlas",
                 &direct_sources,
                 ledger,
             );
-            let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("SH Direct Composed Octahedral Atlas Sampled View"),
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            });
-            let storage = texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("SH Direct Composed Octahedral Atlas Storage View"),
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            });
+            let (handoff_sampled, handoff_storage) = create_direct_composed_atlas_views(
+                device,
+                ShAllocationKind::DirectHandoffAtlas,
+                direct_usage,
+                "SH Direct Promotion Handoff Atlas",
+                &direct_sources,
+                ledger,
+            );
+            log_direct_atlas_bytes(direct_usage);
             if direct_usage.needs_intermediate_atlas {
                 let intermediate = create_direct_composed_atlas_texture(
                     device,
@@ -123,16 +132,32 @@ impl DirectShResources {
                     ..Default::default()
                 });
                 (
-                    sampled,
-                    Some(storage),
+                    atlas_sampled,
+                    handoff_sampled,
+                    Some(atlas_storage),
+                    Some(handoff_storage),
                     Some(intermediate_storage),
                     Some(intermediate_sampled),
                 )
             } else {
-                (sampled, Some(storage), None, None)
+                (
+                    atlas_sampled,
+                    handoff_sampled,
+                    Some(atlas_storage),
+                    Some(handoff_storage),
+                    None,
+                    None,
+                )
             }
         } else {
-            (base_atlas_view.clone(), None, None, None)
+            (
+                base_atlas_view.clone(),
+                base_atlas_view.clone(),
+                None,
+                None,
+                None,
+                None,
+            )
         };
 
         let dynamic_direct_params_bytes = build_dynamic_direct_params_bytes(1.0, has_direct);
@@ -159,8 +184,10 @@ impl DirectShResources {
             has_direct_base,
             compose_layout: direct_usage.layout(),
             atlas_view,
+            handoff_atlas_view,
             base_atlas_view,
-            composed_storage_view,
+            atlas_storage_view,
+            handoff_storage_view,
             intermediate_storage_view,
             intermediate_sampled_view,
             dynamic_direct_params_buffer,
@@ -172,6 +199,25 @@ impl DirectShResources {
 
     pub(super) fn dynamic_direct_params_binding(&self) -> wgpu::BindingResource<'_> {
         self.dynamic_direct_params_buffer.as_entire_binding()
+    }
+
+    /// The whole-load shared group-3 binding-15 entry: the promotion-free
+    /// direct atlas.
+    pub(super) fn shared_atlas_entry(&self) -> wgpu::BindGroupEntry<'_> {
+        shared_direct_atlas_entry(&self.atlas_view)
+    }
+
+    /// The whole-load mesh superset's entries over `shared`: binding 15 names
+    /// the promotion handoff atlas, binding 16 the dynamic-direct params.
+    pub(super) fn mesh_superset_entries<'a>(
+        &'a self,
+        shared: &[wgpu::BindGroupEntry<'a>],
+    ) -> Vec<wgpu::BindGroupEntry<'a>> {
+        mesh_superset_entries(
+            shared,
+            &self.handoff_atlas_view,
+            self.dynamic_direct_params_binding(),
+        )
     }
 
     pub(super) fn write_dynamic_direct_params(
@@ -230,6 +276,50 @@ pub(super) fn append_shared_bind_group_layout_entries(
         },
         count: None,
     });
+}
+
+/// The shared group-3 entry for binding 15: the promotion-free direct atlas.
+/// Fluid and legacy billboards read it, so promotion never changes them.
+pub(super) fn shared_direct_atlas_entry(view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+    wgpu::BindGroupEntry {
+        binding: BIND_SH_DIRECT_ATLAS,
+        resource: wgpu::BindingResource::TextureView(view),
+    }
+}
+
+/// The mesh superset's entries: the shared group-3 entries with binding 15
+/// swapped for the promotion handoff atlas, plus the dynamic-direct params.
+/// Only movers and skinned meshes bind this group, and only they add promoted
+/// lights back through their shadowed runtime term.
+pub(super) fn mesh_superset_entries<'a>(
+    shared: &[wgpu::BindGroupEntry<'a>],
+    handoff_view: &'a wgpu::TextureView,
+    dynamic_direct_params: wgpu::BindingResource<'a>,
+) -> Vec<wgpu::BindGroupEntry<'a>> {
+    let mut entries: Vec<wgpu::BindGroupEntry<'a>> = shared
+        .iter()
+        .map(|entry| {
+            if entry.binding == BIND_SH_DIRECT_ATLAS {
+                wgpu::BindGroupEntry {
+                    binding: BIND_SH_DIRECT_ATLAS,
+                    resource: wgpu::BindingResource::TextureView(handoff_view),
+                }
+            } else {
+                entry.clone()
+            }
+        })
+        .collect();
+    debug_assert!(
+        entries
+            .iter()
+            .any(|entry| entry.binding == BIND_SH_DIRECT_ATLAS),
+        "the shared group-3 entries must carry binding 15",
+    );
+    entries.push(wgpu::BindGroupEntry {
+        binding: BIND_DYNAMIC_DIRECT_PARAMS,
+        resource: dynamic_direct_params,
+    });
+    entries
 }
 
 pub(super) fn mesh_dynamic_direct_params_layout_entry() -> wgpu::BindGroupLayoutEntry {
@@ -347,6 +437,56 @@ fn create_direct_composed_atlas_texture(
     let allocation = direct_composed_atlas_allocation(kind, atlas_dimensions, layer_count);
     ledger.record_texture(allocation, sources, false, ResidencyAllocationState::Data);
     device.new_texture(&allocation.descriptor(Some(label)))
+}
+
+/// One compose output: its sampled view for consumers and its storage view for
+/// the compose passes.
+fn create_direct_composed_atlas_views(
+    device: &wgpu::Device,
+    kind: ShAllocationKind,
+    usage: DirectAtlasUsage,
+    label: &str,
+    sources: &[u16],
+    ledger: &mut ShAllocationLedger,
+) -> (wgpu::TextureView, wgpu::TextureView) {
+    let texture = create_direct_composed_atlas_texture(
+        device,
+        kind,
+        usage.atlas_dimensions,
+        usage.layer_count,
+        label,
+        sources,
+        ledger,
+    );
+    let view = |suffix: &str| {
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&format!("{label} {suffix} View")),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        })
+    };
+    (view("Sampled"), view("Storage"))
+}
+
+/// Logs each whole-load direct atlas once per load, so a measurement can read
+/// what the promotion-free and handoff pair costs.
+fn log_direct_atlas_bytes(usage: DirectAtlasUsage) {
+    let atlas_bytes = texture_allocation_bytes(direct_composed_atlas_allocation(
+        ShAllocationKind::DirectComposedAtlas,
+        usage.atlas_dimensions,
+        usage.layer_count,
+    ));
+    let intermediate_bytes = if usage.needs_intermediate_atlas {
+        atlas_bytes
+    } else {
+        0
+    };
+    log::info!(
+        "[Renderer] Direct SH atlases: direct (promotion-free) {atlas_bytes} B, promotion handoff {atlas_bytes} B, compose intermediate {intermediate_bytes} B ({}x{}x{} Rgba16Float)",
+        usage.atlas_dimensions[0].max(1),
+        usage.atlas_dimensions[1].max(1),
+        usage.layer_count.max(1),
+    );
 }
 
 #[cfg(test)]

@@ -12,18 +12,18 @@ use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSourceMetadata};
 use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE};
 use postretro_render_cpu::sh_volume::{
     BIND_ANIM_DESCRIPTORS, BIND_ANIM_SAMPLES, BIND_BILLBOARD_DIRECT_SCATTER,
-    BIND_DYNAMIC_DIRECT_PARAMS, BIND_SCRIPTED_LIGHT_DESCRIPTORS, BIND_SH_ATLAS_SAMPLER,
-    BIND_SH_DEPTH_MOMENTS, BIND_SH_DIRECT_ATLAS, BIND_SH_GRID_INFO, BIND_SH_TOTAL_ATLAS,
-    DepthTileGridWords, STREAMED_SH_PHYSICAL_TILE_STRIDE, ShGridInfoParams, build_grid_info_bytes,
+    BIND_SCRIPTED_LIGHT_DESCRIPTORS, BIND_SH_ATLAS_SAMPLER, BIND_SH_DEPTH_MOMENTS,
+    BIND_SH_GRID_INFO, BIND_SH_TOTAL_ATLAS, DepthTileGridWords, STREAMED_SH_PHYSICAL_TILE_STRIDE,
+    ShGridInfoParams, build_grid_info_bytes,
 };
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 
-use super::dense::DenseTextures;
+use super::dense::{ComposedPool, DenseTextures, DirectPools};
 use super::direct_compose::{
-    DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose, StreamingDirectViews,
+    DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose,
 };
 use super::pool_size::{InitialPool, WholeMapCap};
 use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacities};
@@ -61,6 +61,8 @@ use atlas_shape::PHYSICAL_TILE_DIMENSION;
 use atlas_shape::{
     DENSE_FRAGMENTATION_HEADROOM_DENOMINATOR, DENSE_FRAGMENTATION_HEADROOM_NUMERATOR,
 };
+#[cfg(test)]
+use bindings::sample_bind_group_entries;
 use bindings::{create_grid_info, create_sample_bind_groups};
 use capacity::preflight_initial_resource_limits;
 pub(in crate::render::sh_streaming) use capacity::{
@@ -144,12 +146,11 @@ pub(super) struct StreamingGpuPools {
     pub(super) total_sampled_view: wgpu::TextureView,
     pub(super) direct_base: Option<wgpu::Texture>,
     pub(super) direct_base_view: Option<wgpu::TextureView>,
-    pub(super) direct_intermediate: Option<wgpu::Texture>,
-    pub(super) direct_intermediate_storage_view: Option<wgpu::TextureView>,
-    pub(super) direct_intermediate_sampled_view: Option<wgpu::TextureView>,
-    pub(super) direct_total: Option<wgpu::Texture>,
-    pub(super) direct_total_storage_view: Option<wgpu::TextureView>,
-    pub(super) direct_total_sampled_view: Option<wgpu::TextureView>,
+    /// The promotion-free direct atlas pool the shared group 3 samples.
+    pub(super) direct_atlas: Option<ComposedPool>,
+    /// The promotion handoff atlas pool the mesh superset samples.
+    pub(super) direct_handoff: Option<ComposedPool>,
+    pub(super) direct_intermediate: Option<ComposedPool>,
     pub(super) depth_moments: wgpu::Texture,
     pub(super) compose_indirection: wgpu::Buffer,
     pub(super) sampled_indirection: wgpu::Buffer,
@@ -304,7 +305,7 @@ pub(super) fn texture_format(format: u32) -> Result<wgpu::TextureFormat, ShResid
     }
 }
 
-pub(super) fn array_view(texture: &wgpu::Texture, label: &'static str) -> wgpu::TextureView {
+pub(super) fn array_view(texture: &wgpu::Texture, label: &str) -> wgpu::TextureView {
     texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some(label),
         dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -312,7 +313,7 @@ pub(super) fn array_view(texture: &wgpu::Texture, label: &'static str) -> wgpu::
     })
 }
 
-fn texture_bytes(format: wgpu::TextureFormat, extent: wgpu::Extent3d) -> u64 {
+pub(super) fn texture_bytes(format: wgpu::TextureFormat, extent: wgpu::Extent3d) -> u64 {
     match format {
         wgpu::TextureFormat::Bc6hRgbUfloat => {
             u64::from(extent.width.div_ceil(4))

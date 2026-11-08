@@ -819,10 +819,7 @@ impl ShVolumeResources {
                 resource: wgpu::BindingResource::TextureView(&depth_moment_view),
             },
             depth_tiles.bind_group_entry(),
-            wgpu::BindGroupEntry {
-                binding: postretro_render_cpu::sh_volume::BIND_SH_DIRECT_ATLAS,
-                resource: wgpu::BindingResource::TextureView(&direct.atlas_view),
-            },
+            direct.shared_atlas_entry(),
             wgpu::BindGroupEntry {
                 binding: BIND_BILLBOARD_DIRECT_SCATTER,
                 resource: wgpu::BindingResource::TextureView(
@@ -837,20 +834,17 @@ impl ShVolumeResources {
             entries: &entries,
         });
 
-        // Mesh group-4 SUPERSET: the shared SH entries PLUS the mesh-only
-        // dynamic-direct params uniform at binding 16. Built from a separate BGL
-        // so the shared `bind_group` (forward/billboard/fog) stays free of
-        // mesh-only fields.
+        // Mesh group-4 SUPERSET: the shared SH entries with binding 15 swapped
+        // for the promotion handoff atlas, PLUS the mesh-only dynamic-direct
+        // params uniform at binding 16. Built from a separate BGL so the shared
+        // `bind_group` (forward/billboard/fog/fluid) stays free of mesh-only
+        // fields.
         let mesh_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("SH Volume Mesh Superset BGL"),
                 entries: &mesh_bind_group_layout_entries(),
             });
-        let mut mesh_entries = entries;
-        mesh_entries.push(wgpu::BindGroupEntry {
-            binding: postretro_render_cpu::sh_volume::BIND_DYNAMIC_DIRECT_PARAMS,
-            resource: direct.dynamic_direct_params_binding(),
-        });
+        let mesh_entries = direct.mesh_superset_entries(&entries);
         let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Volume Mesh Superset Bind Group"),
             layout: &mesh_bind_group_layout,

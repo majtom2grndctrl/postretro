@@ -1,5 +1,7 @@
 // Animated-direct SH addition pass. See `context/lib/rendering_pipeline.md` §4,
 // “Animated direct SH for dynamic receivers”; separate from promotion composition so section-45 resources and bindings stay isolated from legacy Case 1.
+// It writes both direct outputs: the promotion handoff atlas and the
+// promotion-free direct atlas.
 
 use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
@@ -13,8 +15,8 @@ use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 use super::direct_sh_compose::{
     BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
     BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
-    dynamic_compose_grid_bgl_entry, nearest_sampler, sampler_bgl_entry, storage_bgl_entry,
-    storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
+    BIND_DIRECT_ATLAS_OUTPUT, dynamic_compose_grid_bgl_entry, nearest_sampler, sampler_bgl_entry,
+    storage_bgl_entry, storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
 use super::install_pipelines::new_install_compute_pipeline;
@@ -71,6 +73,8 @@ impl AnimatedDirectShDebugOverride {
     }
 }
 
+/// The id-35 base, sampled to seed the promotion-free output.
+pub(super) const BIND_ANIMATED_DIRECT_BASE: u32 = 3;
 const BIND_ANIMATED_LIGHT_SCALE: u32 = 26;
 /// Combined low/high valid-probe mask words, one coarsening level per cell,
 /// then one f16-half payload offset per post-drop CSR entry. Binding 26 is the
@@ -164,11 +168,13 @@ pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) last_animated_light_scale_bytes: [u8; ANIMATED_LIGHT_SCALE_SIZE],
 }
 
-/// The two textures that carry animated-direct composition from the promotion
-/// pass into the final stored atlas.
+/// Pass B's textures: Pass A's intermediate and the id-35 base in, the
+/// promotion handoff and promotion-free direct atlases out.
 pub(super) struct AnimatedDirectShPassViews<'a> {
     pub(super) intermediate_sampled: &'a wgpu::TextureView,
-    pub(super) output_storage: &'a wgpu::TextureView,
+    pub(super) base_sampled: &'a wgpu::TextureView,
+    pub(super) handoff_storage: &'a wgpu::TextureView,
+    pub(super) promotion_free_storage: &'a wgpu::TextureView,
 }
 
 #[expect(
@@ -371,7 +377,15 @@ pub(super) fn build_animated_direct_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(views.output_storage),
+                resource: wgpu::BindingResource::TextureView(views.handoff_storage),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_ANIMATED_DIRECT_BASE,
+                resource: wgpu::BindingResource::TextureView(views.base_sampled),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_DIRECT_ATLAS_OUTPUT,
+                resource: wgpu::BindingResource::TextureView(views.promotion_free_storage),
             },
             wgpu::BindGroupEntry {
                 binding: 18,
@@ -434,6 +448,8 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),
         storage_texture_bgl_entry(1),
+        texture_bgl_entry(BIND_ANIMATED_DIRECT_BASE),
+        storage_texture_bgl_entry(BIND_DIRECT_ATLAS_OUTPUT),
         dynamic_compose_grid_bgl_entry(),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
         storage_bgl_entry(BIND_DELTA_COMPACTION_META),

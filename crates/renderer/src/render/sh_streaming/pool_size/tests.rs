@@ -356,13 +356,14 @@ fn pool_bytes_charge_every_coupled_direct_dense_texture() {
     )
     .unwrap();
 
-    // id34 BC6H base + indirect total + id35 BC6H base + direct total
-    // + animated direct intermediate: 64 + 512 + 64 + 512 + 512 bytes.
+    // id34 BC6H base + indirect total + id35 BC6H base + promotion-free
+    // direct atlas + promotion handoff atlas + animated direct intermediate:
+    // 64 + 512 + 64 + 512 + 512 + 512 bytes.
     assert_eq!(plan.dense_slots, 100);
     // Seven 16-tile layers.
     assert_eq!(
         plan.pool_bytes,
-        112 * 1_664 + 2 * sh_sparse_capacity_bytes(1, 2)
+        112 * 2_176 + 2 * sh_sparse_capacity_bytes(1, 2)
     );
 }
 

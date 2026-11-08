@@ -10,19 +10,20 @@ use super::super::gpu::StagedUploads;
 use super::super::{ShResidencyDrainError, SparseComposeLayout};
 use super::layout::{
     ANIMATED_LIGHT_SCALE_SIZE, DEBUG_OVERRIDE_SIZE, debug_override_bytes, dynamic_grid_entry,
-    light_term_mask_bytes, sampler_entry, storage_entry, storage_texture_entry, texture_entry,
-    u32_bytes, uniform_entry,
+    sampler_entry, storage_entry, storage_texture_entry, texture_entry, u32_bytes, uniform_entry,
 };
 use super::sparse::{
     DirectSparseRowUpload, RetiredDirectSparseResources, StreamingSparseBuffers,
     build_grid_and_sparse, checked_ledger_sum,
 };
+use super::{AnimatedViews, PromotionOutputs};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
+use crate::render::animated_direct_sh_compose::BIND_ANIMATED_DIRECT_BASE;
 use crate::render::direct_sh_compose::{
     BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
     BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER,
-    BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS, BIND_PROBE_INDIRECTION,
-    DirectShDebugOverride, nearest_sampler,
+    BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS, BIND_DIRECT_ATLAS_OUTPUT,
+    BIND_PROBE_INDIRECTION, DirectShDebugOverride, direct_compose_params_bytes, nearest_sampler,
 };
 use crate::render::renderer_types::PromotedBakedLightState;
 use crate::render::sh_compose_dispatch::{
@@ -57,6 +58,9 @@ pub(super) struct StreamingPromotionPass {
     max_buffer_size: u64,
     light_term_mask: wgpu::Buffer,
     last_light_term_mask: LightTermMask,
+    /// Fixed for the pass's life: no id 45 means Pass A writes the
+    /// promotion-free atlas itself.
+    stores_promotion_free: bool,
     debug_override: wgpu::Buffer,
     last_debug_override: [u8; DEBUG_OVERRIDE_SIZE],
     grid_upload: DynamicComposeGridUpload,
@@ -71,7 +75,7 @@ impl StreamingPromotionPass {
         layout: &SparseComposeLayout,
         shape: AtlasShape,
         base_view: &wgpu::TextureView,
-        output_storage: &wgpu::TextureView,
+        outputs: PromotionOutputs<'_>,
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
         pipelines: &StreamingShPipelines,
@@ -95,16 +99,20 @@ impl StreamingPromotionPass {
         });
         let light_term_mask = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed Direct SH Light-Term Mask"),
-            contents: &light_term_mask_bytes(LightTermMask::ALL),
+            contents: &direct_compose_params_bytes(
+                LightTermMask::ALL,
+                outputs.stores_promotion_free,
+            ),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bgl = pipelines.promotion.bind_group_layout.clone();
         let pipeline = pipelines.promotion.pipeline.clone();
+        let stores_promotion_free = outputs.stores_promotion_free;
         let bind_group = Self::build_bind_group(
             device,
             &bgl,
             base_view,
-            output_storage,
+            &outputs,
             &sampler,
             &grid_buffer,
             &sparse,
@@ -136,6 +144,7 @@ impl StreamingPromotionPass {
             max_buffer_size: limits.max_buffer_size,
             light_term_mask,
             last_light_term_mask: LightTermMask::ALL,
+            stores_promotion_free,
             debug_override,
             last_debug_override: initial_debug_override,
             grid_upload: DynamicComposeGridUpload::default(),
@@ -147,7 +156,7 @@ impl StreamingPromotionPass {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         base_view: &wgpu::TextureView,
-        output_storage: &wgpu::TextureView,
+        outputs: &PromotionOutputs<'_>,
         sampler: &wgpu::Sampler,
         grid_buffer: &wgpu::Buffer,
         sparse: &StreamingSparseBuffers,
@@ -161,7 +170,8 @@ impl StreamingPromotionPass {
             layout,
             entries: &[
                 texture_entry(0, base_view),
-                storage_texture_entry(1, output_storage),
+                storage_texture_entry(1, outputs.handoff),
+                storage_texture_entry(BIND_DIRECT_ATLAS_OUTPUT, outputs.promotion_free),
                 sampler_entry(BIND_BASE_SAMPLER, sampler),
                 dynamic_grid_entry(grid_buffer),
                 storage_entry(BIND_DELTA_SUBBLOCKS, sparse.tile_words()),
@@ -184,10 +194,11 @@ impl StreamingPromotionPass {
         device: &wgpu::Device,
         shape: AtlasShape,
         base_view: &wgpu::TextureView,
-        output_storage: &wgpu::TextureView,
+        outputs: PromotionOutputs<'_>,
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
     ) {
+        debug_assert_eq!(outputs.stores_promotion_free, self.stores_promotion_free);
         self.grid.atlas_dimensions = [shape.extent().width, shape.extent().height];
         self.grid.atlas_tiles_per_row = shape.tiles_per_row;
         self.grid.tiles_per_layer = shape.tiles_per_layer;
@@ -198,7 +209,7 @@ impl StreamingPromotionPass {
             device,
             &self.bind_group_layout,
             base_view,
-            output_storage,
+            &outputs,
             &self.sampler,
             &self.grid_buffer,
             &self.sparse,
@@ -254,7 +265,7 @@ impl StreamingPromotionPass {
             queue.write_buffer(
                 &self.light_term_mask,
                 0,
-                &light_term_mask_bytes(light_term_mask),
+                &direct_compose_params_bytes(light_term_mask, self.stores_promotion_free),
             );
             self.last_light_term_mask = light_term_mask;
         }
@@ -339,8 +350,7 @@ impl StreamingAnimatedPass {
         base: &ShStreamBaseMetadata,
         source: &ShStreamSparseMetadata,
         shape: AtlasShape,
-        intermediate_sampled: &wgpu::TextureView,
-        output_storage: &wgpu::TextureView,
+        views: AnimatedViews<'_>,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
         pipelines: &StreamingShPipelines,
@@ -380,8 +390,7 @@ impl StreamingAnimatedPass {
         let bind_group = Self::build_bind_group(
             device,
             &bgl,
-            intermediate_sampled,
-            output_storage,
+            &views,
             &sampler,
             &grid_buffer,
             &sparse,
@@ -423,8 +432,7 @@ impl StreamingAnimatedPass {
     fn build_bind_group(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
-        intermediate_sampled: &wgpu::TextureView,
-        output_storage: &wgpu::TextureView,
+        views: &AnimatedViews<'_>,
         sampler: &wgpu::Sampler,
         grid_buffer: &wgpu::Buffer,
         sparse: &StreamingSparseBuffers,
@@ -438,8 +446,10 @@ impl StreamingAnimatedPass {
             label: Some("Streamed Animated Direct SH Bind Group"),
             layout,
             entries: &[
-                texture_entry(0, intermediate_sampled),
-                storage_texture_entry(1, output_storage),
+                texture_entry(0, views.intermediate_sampled),
+                storage_texture_entry(1, views.handoff_storage),
+                texture_entry(BIND_ANIMATED_DIRECT_BASE, views.base_sampled),
+                storage_texture_entry(BIND_DIRECT_ATLAS_OUTPUT, views.promotion_free_storage),
                 sampler_entry(BIND_BASE_SAMPLER, sampler),
                 dynamic_grid_entry(grid_buffer),
                 storage_entry(BIND_DELTA_SUBBLOCKS, sparse.tile_words()),

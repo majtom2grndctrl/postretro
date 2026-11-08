@@ -26,7 +26,8 @@ struct Uniforms {
     // Bit 0: a baked DIRECT SH section is present. Bits 1..31: the raw
     // section-45 AnimatedBakedLights tail count.
     has_direct: u32,
-    // Dynamic tier, then the mover-only animated-baked tail, then promoted static.
+    // Dynamic tier, then the mover-only animated-baked tail, then promoted
+    // static. The fluid reads only the dynamic prefix (`light_count`).
     total_light_count: u32,
     _spec_shadowmask_flags_inert: u32,
 };
@@ -107,8 +108,8 @@ struct AnimationDescriptor {
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
 // Per-direction depth tiles (id 59); a tiled probe's moment G names its tile.
 @group(3) @binding(18) var sh_depth_tiles: texture_2d<f32>;
-// Baked direct SH. Fluid takes baked direct from here per vertex (`vs_main`), never from
-// the VERTEX-only billboard scatter volume (binding 17).
+// The promotion-free baked direct SH atlas. Fluid takes baked direct from here per
+// vertex (`vs_main`), never from the VERTEX-only billboard scatter volume (binding 17).
 @group(3) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 // --- Group 4: per-volume parameters, one uniform window of draw slots ---
@@ -317,9 +318,9 @@ fn fluid_sample_sh(world_pos: vec3<f32>, n: vec3<f32>, want_direct: bool) -> ShD
 // per vertex and interpolating buys what per fragment did, at a fraction of
 // the cost. The lookup lifts along the viewer-side normal, as the fragment's
 // runtime lights shade: for a planar face every vertex takes the same side.
-// Static/animated isolation happens in the compose passes; the composed
-// direct atlas already has promoted static lights removed while dynamic
-// direct is on, so the fragment's runtime loop adds them back.
+// Static/animated isolation happens in the compose passes. Binding 15 here is
+// the promotion-free direct atlas: every baked light at full weight whatever
+// promotion does, so promotion never changes a fluid.
 fn fluid_baked_light(world_pos: vec3<f32>, outward: vec3<f32>) -> vec3<f32> {
     var n = normalize(outward);
     if dot(n, uniforms.camera_position - world_pos) < 0.0 {
@@ -339,9 +340,8 @@ fn fluid_baked_light(world_pos: vec3<f32>, outward: vec3<f32>) -> vec3<f32> {
     return lighting + sh.b * uniforms.direct_scale;
 }
 
-// One runtime light's diffuse contribution. Scripted descriptors exist only
-// for the dynamic prefix; promoted-static records pass `false`.
-fn fluid_light(light_idx: u32, world_pos: vec3<f32>, n: vec3<f32>, scripted: bool) -> vec3<f32> {
+// One dynamic-prefix runtime light's diffuse contribution, unshadowed.
+fn fluid_light(light_idx: u32, world_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let influence = light_influence[light_idx];
     let inf_radius = influence.w;
     if inf_radius <= 1.0e30 {
@@ -356,28 +356,26 @@ fn fluid_light(light_idx: u32, world_pos: vec3<f32>, n: vec3<f32>, scripted: boo
     let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
     var effective_color = light.color_and_falloff_model.xyz;
     var effective_aim = light.direction_and_range.xyz;
-    if scripted {
-        let desc = scripted_light_descriptors[light_idx];
-        if desc.is_active != 0u {
-            let cycle_t = animation_curve_t(desc.period, desc.phase, uniforms.time);
-            if desc.color_count > 0u {
-                let unit_sample = max(
-                    sample_color_catmull_rom(desc.color_offset, desc.color_count, cycle_t, desc.base_color),
-                    vec3<f32>(0.0),
-                );
-                let intensity = light_eval_scripted_intensity_scalar(light.color_and_falloff_model.xyz, desc.base_color);
-                let brightness = max(sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, cycle_t), 0.0);
-                effective_color = unit_sample * intensity * brightness;
-            } else if desc.brightness_count > 0u {
-                let brightness = max(sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, cycle_t), 0.0);
-                effective_color = light.color_and_falloff_model.xyz * brightness;
-            }
-            if light_type == 1u && desc.direction_count > 0u {
-                effective_aim = light_eval_animated_direction(desc, cycle_t, effective_aim);
-            }
-        } else if light_eval_scripted_descriptor_present(desc) {
-            effective_color = vec3<f32>(0.0);
+    let desc = scripted_light_descriptors[light_idx];
+    if desc.is_active != 0u {
+        let cycle_t = animation_curve_t(desc.period, desc.phase, uniforms.time);
+        if desc.color_count > 0u {
+            let unit_sample = max(
+                sample_color_catmull_rom(desc.color_offset, desc.color_count, cycle_t, desc.base_color),
+                vec3<f32>(0.0),
+            );
+            let intensity = light_eval_scripted_intensity_scalar(light.color_and_falloff_model.xyz, desc.base_color);
+            let brightness = max(sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, cycle_t), 0.0);
+            effective_color = unit_sample * intensity * brightness;
+        } else if desc.brightness_count > 0u {
+            let brightness = max(sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, cycle_t), 0.0);
+            effective_color = light.color_and_falloff_model.xyz * brightness;
         }
+        if light_type == 1u && desc.direction_count > 0u {
+            effective_aim = light_eval_animated_direction(desc, cycle_t, effective_aim);
+        }
+    } else if light_eval_scripted_descriptor_present(desc) {
+        effective_color = vec3<f32>(0.0);
     }
 
     var L: vec3<f32>;
@@ -446,19 +444,13 @@ fn fluid_shade(in: VertexOutput) -> FluidShaded {
     // Baked terms arrive per vertex, interpolated across the grid.
     var lighting = in.baked;
 
-    // Runtime lights: the dynamic prefix, then the promoted-static suffix. The
-    // mover-only animated-baked tail between them is skipped; fluid takes those
-    // lights from the composed direct atlas, as billboards do.
+    // Runtime lights: the dynamic prefix only. Promoted static and animated
+    // lights reach the fluid through the promotion-free baked direct term,
+    // which keeps their static occlusion; adding their unshadowed runtime
+    // records too would count them twice and light through walls.
     if use_dynamic {
         for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u) {
-            lighting = lighting + fluid_light(i, in.world_position, n, true);
-        }
-        let promoted_begin = min(
-            uniforms.light_count + (uniforms.has_direct >> 1u),
-            uniforms.total_light_count,
-        );
-        for (var i: u32 = promoted_begin; i < uniforms.total_light_count; i = i + 1u) {
-            lighting = lighting + fluid_light(i, in.world_position, n, false);
+            lighting = lighting + fluid_light(i, in.world_position, n);
         }
     }
 

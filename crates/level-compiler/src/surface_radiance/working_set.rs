@@ -12,7 +12,7 @@ use super::patches::{PatchCountExceeded, PatchSet, Side};
 use super::reach::{PatchReachIndex, REACH_INDEX_BYTES_PER_PATCH};
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
-use crate::sh_bake::{probe_grid_dims, sh_volume_bytes};
+use crate::sh_bake::{depth_tile_bytes, probe_grid_dims, sh_volume_bytes};
 
 /// The SH base stage's predicted host working set: the peak of each phase
 /// and the terms they sum. Every term is priced from the patch set, the
@@ -47,10 +47,12 @@ pub(crate) struct ShBaseWorkingSetProjection {
     /// The sum and the later-bounce buffers.
     pub(crate) bounce_phase_bytes: u64,
     /// The sum read by the probe gather beside the dense probes and atlas,
-    /// and the compact section built from them.
+    /// and the compact section built from them, with the probe depth tiles'
+    /// ranked candidates and the section they become.
     pub(crate) gather_phase_bytes: u64,
-    /// The id-34 section beside its build-cache entry: written on a miss
-    /// (the patch cache already freed), read and decoded on a hit.
+    /// The id-34 section and depth tiles beside their build-cache entry:
+    /// written on a miss (the patch cache already freed), read and decoded
+    /// on a hit.
     pub(crate) volume_entry_phase_bytes: u64,
     pub(crate) estimated_peak_bytes: u64,
     pub(crate) budget_bytes: u64,
@@ -203,6 +205,16 @@ fn project(
         .ok_or_else(|| overflow("later-bounce buffer projection"))?;
     let volume =
         sh_volume_bytes(inputs.probe_dims).ok_or_else(|| overflow("SH volume projection"))?;
+    // Depth tiles at the cap, in two representations at once: the ranked
+    // candidates and the section they become, the section and its entry
+    // bytes, or the raw entry and its decode.
+    let tiles = inputs
+        .probe_dims
+        .iter()
+        .try_fold(1u64, |acc, &d| acc.checked_mul(u64::from(d)))
+        .map(depth_tile_bytes)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or_else(|| overflow("probe depth tile projection"))?;
     let reach_index = patch_count
         .checked_mul(REACH_INDEX_BYTES_PER_PATCH)
         .ok_or_else(|| overflow("reach index projection"))?;
@@ -250,6 +262,7 @@ fn project(
             volume.section,
             volume.atlas,
             tables,
+            tiles,
         ],
     )?;
     // A miss writes the section serialized whole: the serializer reserves
@@ -262,11 +275,11 @@ fn project(
         .ok_or_else(|| overflow("SH volume entry projection"))?;
     let volume_entry_phase_bytes = sum(
         "SH volume entry write projection",
-        &[resident, volume.section, tables, encoded_buffer],
+        &[resident, volume.section, tables, encoded_buffer, tiles],
     )?
     .max(sum(
         "SH volume entry read projection",
-        &[patch_cache, volume.section, tables, volume.encoded],
+        &[patch_cache, volume.section, tables, volume.encoded, tiles],
     )?);
 
     let estimated_peak_bytes = [
@@ -337,7 +350,8 @@ mod tests {
 
     // A map with no static light prices no layer, and with no patch its
     // peak is the probe gather's: the dense volume beside the compact
-    // section, both copies of the compact atlas.
+    // section, both copies of the compact atlas, and two representations of
+    // a depth tile per probe (the cap is far above 24 probes).
     #[test]
     fn no_static_lights_price_no_layer() {
         let patches = no_patches();
@@ -347,7 +361,12 @@ mod tests {
         assert_eq!(projection.bounce_buffer_bytes, 0);
         assert_eq!(
             projection.gather_phase_bytes,
-            patches.heap_bytes() + volume.layout + volume.dense + volume.section + volume.atlas
+            patches.heap_bytes()
+                + volume.layout
+                + volume.dense
+                + volume.section
+                + volume.atlas
+                + 2 * depth_tile_bytes(24)
         );
         assert_eq!(
             projection.estimated_peak_bytes,

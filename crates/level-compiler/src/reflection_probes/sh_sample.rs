@@ -5,10 +5,15 @@ use glam::{UVec3, Vec3, Vec4};
 use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::octahedral::{encode_unquantized_uv, irradiance_array_tile_location};
+use postretro_level_format::probe_depth_tiles::{
+    MomentSecondChannel, ProbeDepthTilesSection, decode_moment_second_channel, sample_tile_moments,
+    tile_reference_bits,
+};
 use postretro_level_format::sh_reconstruct::{Level, stored_node_prefix_sum};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::bc6h::f16_bits_to_f32;
+use crate::sh_bake::{chebyshev_visibility, probe_depth_bias};
 
 /// The renderer's production probe-occlusion default
 /// (`render_cpu::sh_volume::DEFAULT_PROBE_OCCLUSION`): Chebyshev depth
@@ -16,11 +21,9 @@ use crate::bc6h::f16_bits_to_f32;
 /// runtime, a diagnostic the capture does not follow.
 pub(crate) const PRODUCTION_PROBE_OCCLUSION: bool = true;
 
-// `sh_sample.wgsl` / `forward.wgsl` constants, mirrored.
+// `sh_sample.wgsl` / `forward.wgsl` constants, mirrored. The depth
+// visibility's own live with the bake's mirror (`sh_bake::chebyshev_visibility`).
 const SH_NORMAL_OFFSET_M: f32 = 0.1;
-const SH_DEPTH_MIN_VARIANCE_M2: f32 = 1.0e-4;
-const SH_DEPTH_BIAS_CELL_FRACTION: f32 = 0.05;
-const SH_DEPTH_MIN_VISIBILITY: f32 = 0.03;
 const SH_WEIGHT_EPSILON: f32 = 1.0e-5;
 
 /// One stored slot an SH sample read: its final linear weight in the sample
@@ -53,6 +56,16 @@ pub(crate) struct ShVolumeSampler<'a> {
     /// Per probe; `None` for an invalid probe.
     indirection: Vec<Option<ProbeIndirection>>,
     probe_occlusion: bool,
+    /// Id 59, when it holds a tile.
+    depth_tiles: Option<DepthTiles<'a>>,
+}
+
+/// Id 59 as the runtime reads it: each probe's moment-texel second channel,
+/// `E[d²]` bits for an untiled probe or a reference to its tile, decoded
+/// through the same raw-bit test.
+struct DepthTiles<'a> {
+    tiles: &'a ProbeDepthTilesSection,
+    second_channel: Vec<u16>,
 }
 
 impl<'a> ShVolumeSampler<'a> {
@@ -76,7 +89,41 @@ impl<'a> ShVolumeSampler<'a> {
             section,
             indirection,
             probe_occlusion,
+            depth_tiles: None,
         })
+    }
+
+    /// This sampler weighing each tiled probe by its tile's moments toward
+    /// the sample, as the runtime does; an untiled probe weighs as before,
+    /// bit for bit. Fails when a tile names a probe outside the lattice or
+    /// an invalid one, as the loader refuses it.
+    pub(crate) fn with_depth_tiles(
+        mut self,
+        tiles: &'a ProbeDepthTilesSection,
+    ) -> anyhow::Result<Self> {
+        if tiles.tile_count() == 0 {
+            return Ok(self);
+        }
+        let probes = &self.section.probes;
+        tiles
+            .validate_against_lattice(self.section.grid_dimensions, |probe| {
+                probes
+                    .get(probe as usize)
+                    .is_some_and(|record| record.validity != 0)
+            })
+            .map_err(|e| anyhow::anyhow!("ProbeDepthTiles does not fit id 34: {e}"))?;
+        let mut second_channel: Vec<u16> = probes
+            .iter()
+            .map(|record| record.mean_sq_distance)
+            .collect();
+        for (tile, &probe) in tiles.probe_indices.iter().enumerate() {
+            second_channel[probe as usize] = tile_reference_bits(tile as u16);
+        }
+        self.depth_tiles = Some(DepthTiles {
+            tiles,
+            second_channel,
+        });
+        Ok(self)
     }
 
     /// Irradiance for a surface at `position` with unit `normal` (shading,
@@ -188,24 +235,30 @@ impl<'a> ShVolumeSampler<'a> {
         trilinear * backface * visibility
     }
 
-    /// Chebyshev visibility from the probe's baked depth moments.
+    /// Chebyshev visibility from the probe's baked depth moments: its
+    /// tile's toward the sample when it has one, else its averaged pair.
     fn depth_visibility(&self, probe: usize, idx: UVec3, sample_world: Vec3) -> f32 {
         let s = self.section;
         let record = &s.probes[probe];
-        let mean = f16_bits_to_f32(record.mean_distance);
-        let mean2 = f16_bits_to_f32(record.mean_sq_distance);
-        let variance = (mean2 - mean * mean).max(SH_DEPTH_MIN_VARIANCE_M2);
         let cell = Vec3::from(s.cell_size);
         let probe_world = Vec3::from(s.grid_origin) + idx.as_vec3() * cell;
-        let distance = (sample_world - probe_world).length();
-        let bias = cell.min_element().max(0.0) * SH_DEPTH_BIAS_CELL_FRACTION;
-        let delta = (distance - mean - bias).max(0.0);
-        let visibility = if delta > 0.0 {
-            variance / (variance + delta * delta)
-        } else {
-            1.0
+        let to_sample = sample_world - probe_world;
+        let averaged = |mean_sq: u16| {
+            [
+                f16_bits_to_f32(record.mean_distance),
+                f16_bits_to_f32(mean_sq),
+            ]
         };
-        visibility.clamp(SH_DEPTH_MIN_VISIBILITY, 1.0)
+        let moments = match &self.depth_tiles {
+            Some(depth) => match decode_moment_second_channel(depth.second_channel[probe]) {
+                MomentSecondChannel::Tile(tile) => {
+                    sample_tile_moments(depth.tiles.tile(usize::from(tile)), to_sample.to_array())
+                }
+                MomentSecondChannel::Averaged(mean_sq) => averaged(mean_sq),
+            },
+            None => averaged(record.mean_sq_distance),
+        };
+        chebyshev_visibility(moments, to_sample.length(), probe_depth_bias(s.cell_size))
     }
 
     /// One corner's sample, recording each stored slot it read with its
@@ -487,6 +540,10 @@ fn probe_indirection(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+#[path = "sh_sample_tiles_tests.rs"]
+mod tiles_tests;
 
 #[cfg(test)]
 mod tests {

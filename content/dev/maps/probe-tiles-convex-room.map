@@ -1,0 +1,81 @@
+// Game: Postretro
+// Format: Standard
+// Probe-tiles convex room: one sealed box room with walls thicker than the probe spacing.
+// See probe-tiles-convex-room.README.md.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/probe-tiles-convex-room.map -o content/dev/maps/probe-tiles-convex-room.prl
+// Layout, TrenchBroom units, 1 unit = 0.0254 m, floor top at z 0.
+// Room: x 0 to 512, y 0 to 384, ceiling z 256. Every wall, the floor and the ceiling are 64 units thick.
+// Every brush is an axis-aligned box. Keep comments free of braces and quotes.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// brush floor
+{
+( -64 448 -64 ) ( -64 -64 0 ) ( -64 -64 -64 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -64 -64 0 ) ( 576 -64 -64 ) ( -64 -64 -64 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -64 -64 -64 ) ( 576 448 -64 ) ( -64 448 -64 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -64 448 0 ) ( 576 -64 0 ) ( -64 -64 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 576 448 0 ) ( -64 448 0 ) ( -64 448 -64 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 576 -64 -64 ) ( 576 448 0 ) ( 576 448 -64 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush ceiling
+{
+( -64 448 256 ) ( -64 -64 320 ) ( -64 -64 256 ) debug_ceiling_grey 0 0 0 1 1
+( -64 -64 320 ) ( 576 -64 256 ) ( -64 -64 256 ) debug_ceiling_grey 0 0 0 1 1
+( -64 -64 256 ) ( 576 448 256 ) ( -64 448 256 ) debug_ceiling_grey 0 0 0 1 1
+( -64 448 320 ) ( 576 -64 320 ) ( -64 -64 320 ) debug_ceiling_grey 0 0 0 1 1
+( 576 448 320 ) ( -64 448 320 ) ( -64 448 256 ) debug_ceiling_grey 0 0 0 1 1
+( 576 -64 256 ) ( 576 448 320 ) ( 576 448 256 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush wall_west
+{
+( -64 448 0 ) ( -64 -64 256 ) ( -64 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -64 -64 256 ) ( 0 -64 0 ) ( -64 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -64 -64 0 ) ( 0 448 0 ) ( -64 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -64 448 256 ) ( 0 -64 256 ) ( -64 -64 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 448 256 ) ( -64 448 256 ) ( -64 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -64 0 ) ( 0 448 256 ) ( 0 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_east
+{
+( 512 448 0 ) ( 512 -64 256 ) ( 512 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 -64 256 ) ( 576 -64 0 ) ( 512 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 -64 0 ) ( 576 448 0 ) ( 512 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 448 256 ) ( 576 -64 256 ) ( 512 -64 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 576 448 256 ) ( 512 448 256 ) ( 512 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 576 -64 0 ) ( 576 448 256 ) ( 576 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_south
+{
+( 0 0 0 ) ( 0 -64 256 ) ( 0 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -64 256 ) ( 512 -64 0 ) ( 0 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -64 0 ) ( 512 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 256 ) ( 512 -64 256 ) ( 0 -64 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 0 256 ) ( 0 0 256 ) ( 0 0 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 -64 0 ) ( 512 0 256 ) ( 512 0 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_north
+{
+( 0 448 0 ) ( 0 384 256 ) ( 0 384 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 384 256 ) ( 512 384 0 ) ( 0 384 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 384 0 ) ( 512 448 0 ) ( 0 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 448 256 ) ( 512 384 256 ) ( 0 384 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 448 256 ) ( 0 448 256 ) ( 0 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 384 0 ) ( 512 448 256 ) ( 512 448 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+}
+// One baked light at the room's centre, under the ceiling.
+{
+"classname" "light"
+"origin" "256 192 192"
+"light" "300"
+"_falloff_range" "640"
+}
+{
+"classname" "player_spawn"
+"origin" "256 64 48"
+"angles" "0 90 0"
+}

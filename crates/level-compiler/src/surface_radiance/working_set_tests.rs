@@ -358,6 +358,7 @@ fn a_handoff_whose_reach_disagrees_with_its_patches_stops_the_bake() {
             &NO_EMBEDDED_EMITTERS,
             None,
             &BakeControl::unrestricted(),
+            postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
         );
     });
 }

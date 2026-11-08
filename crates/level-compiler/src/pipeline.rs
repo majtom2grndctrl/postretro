@@ -849,14 +849,19 @@ fn run_after_parsing(
     // one entry keyed on everything the gather reads; on a miss they read
     // and write each light's patch layer, so a light edit re-shades only its
     // layer and a `_bounce_fill` edit re-shades none. The patch cache is
-    // freed inside the bake; only id 34 leaves the stage.
-    let mut sh_volume_section = surface_radiance::bake_sh_base(
+    // freed inside the bake; only id 34 and the probe depth tiles (id 59),
+    // binned from the same gather rays, leave the stage.
+    let surface_radiance::ShBase {
+        section: mut sh_volume_section,
+        depth_tiles: probe_depth_tiles,
+    } = surface_radiance::bake_sh_base(
         &sh_ctx,
         &sh_config,
         sh_base_handoff,
         &bounce_embedded_emitters,
         stage_cache.as_ref(),
         &sh_control,
+        postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
     );
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
@@ -2032,6 +2037,7 @@ fn run_after_parsing(
             exterior_leaves: &full_exterior_leaves,
             lightmap: &lightmap_section,
             sh_volume: &packed_sh_volume,
+            depth_tiles: &probe_depth_tiles.section,
             delta_sh: delta_sections.indirect.as_ref(),
             animated_weight_maps: animated_light_weight_maps_section.as_ref(),
             animated_direct_sh: delta_sections.animated_direct.as_ref(),
@@ -2091,6 +2097,7 @@ fn run_after_parsing(
         alpha_lights: &alpha_lights_section,
         light_influence: &light_influence_section,
         sh_volume: &sh_volume_section,
+        probe_depth_tiles: &probe_depth_tiles.section,
         direct_sh_volume: direct_sh_volume_section.as_ref(),
         entity_shadow_lights: delta_sections.entity_shadow_lights.as_ref(),
         direct_sh_delta_volumes: delta_sections.direct.as_ref(),
@@ -2141,6 +2148,7 @@ fn run_after_parsing(
         footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
     let mut details = mover_light_summary.lines(lightmap_family_bytes);
     details.extend(footprint.sh_mandatory.lines());
+    details.push(probe_depth_tiles.summary_line());
     details.extend(footprint.lightmap_pool.lines());
     reporter.finalize(BuildSummary {
         timings,

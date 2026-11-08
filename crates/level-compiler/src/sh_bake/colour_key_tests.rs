@@ -55,6 +55,7 @@ fn keys(
             1.0,
             DEFAULT_BOUNCE_FILL,
             TRACER_EPOCH,
+            postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
         ),
     ];
     let animated = room

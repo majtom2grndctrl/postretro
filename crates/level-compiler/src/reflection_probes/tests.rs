@@ -21,6 +21,7 @@ use postretro_level_format::octahedral::irradiance_tile_texel_coord;
 use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, cache_filename_for_key,
 };
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeBinding,
     ReflectionProbeLightShare, ReflectionProbesSection,
@@ -115,6 +116,7 @@ pub(super) const CEILING: usize = 1;
 /// The stage inputs beyond the room's geometry, lightmap and materials.
 pub(super) struct Extras {
     pub sh: OctahedralShVolumeSection,
+    pub depth_tiles: ProbeDepthTilesSection,
     pub delta: Option<DeltaShVolumesSection>,
     pub weight_maps: Option<AnimatedLightWeightMapsSection>,
     pub animated_direct: Option<AnimatedDirectShDeltaVolumesSection>,
@@ -127,6 +129,7 @@ impl Default for Extras {
     fn default() -> Self {
         Self {
             sh: OctahedralShVolumeSection::placeholder(),
+            depth_tiles: ProbeDepthTilesSection::default(),
             delta: None,
             weight_maps: None,
             animated_direct: None,
@@ -224,6 +227,7 @@ pub(super) fn with_inputs<R>(
         exterior_leaves: &exterior,
         lightmap: &room.lightmap,
         sh_volume: &extras.sh,
+        depth_tiles: &extras.depth_tiles,
         delta_sh: extras.delta.as_ref(),
         animated_weight_maps: extras.weight_maps.as_ref(),
         animated_direct_sh: extras.animated_direct.as_ref(),
@@ -680,6 +684,14 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
     expect_miss(&room, &environment, "base SH");
     room.extras.sh = sh;
 
+    // A changed id 59 re-keys the capture, whose CPU mirror reads it.
+    room.extras.depth_tiles = ProbeDepthTilesSection {
+        probe_indices: vec![0],
+        texels: vec![[0, 0]; postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS],
+    };
+    expect_miss(&room, &environment, "probe depth tiles");
+    room.extras.depth_tiles = ProbeDepthTilesSection::default();
+
     let delta = room.extras.delta.clone();
     room.extras.delta = Some(uniform_delta(&room.extras.sh, 5, 1, [0.5, 0.25, 0.25]));
     expect_miss(&room, &environment, "delta SH");
@@ -789,7 +801,7 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
         room.extras.authored.clear();
         stage_key(&room, &environment)
     });
-    assert_eq!(misses, 12);
+    assert_eq!(misses, 13);
 }
 
 #[test]

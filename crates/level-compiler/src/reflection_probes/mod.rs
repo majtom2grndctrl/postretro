@@ -65,6 +65,7 @@ use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::{
     MAX_REFLECTION_PROBES, REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
     REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
@@ -124,7 +125,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// kept solid winning a tie, not the first excluded one in brush order.
 /// 13: kept solid passed over at an exit for a nearer excluded neighbour
 /// bounds every later read: past its depth the ray takes the leak guard.
-const STAGE_VERSION: u32 = 13;
+/// 14: a probe with a depth tile (id 59) weighs by the tile's moments toward
+/// the sample, as the runtime does; the key gains id 59.
+const STAGE_VERSION: u32 = 14;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -156,6 +159,9 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     /// cold, so the key hashes this output, not the SH bake's inputs. Its
     /// animation descriptors are the runtime's, by roster index.
     pub sh_volume: &'a OctahedralShVolumeSection,
+    /// Id 59 as the level ships it: the probes that weigh by per-direction
+    /// depth moments, and their tiles.
+    pub depth_tiles: &'a ProbeDepthTilesSection,
     /// Id 27 as the level ships it: each animated light's bounce.
     pub delta_sh: Option<&'a DeltaShVolumesSection>,
     /// Id 25 as the level ships it: each animated light's direct.
@@ -382,7 +388,8 @@ fn bake_or_load_with(
     log::info!("[cache] reflection_probes miss");
 
     check_roster(inputs, references.len())?;
-    let sh = ShVolumeSampler::new(inputs.sh_volume, PRODUCTION_PROBE_OCCLUSION)?;
+    let sh = ShVolumeSampler::new(inputs.sh_volume, PRODUCTION_PROBE_OCCLUSION)?
+        .with_depth_tiles(inputs.depth_tiles)?;
     let deltas = inputs
         .delta_sh
         .map(|delta| {

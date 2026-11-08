@@ -96,7 +96,9 @@ fn the_sh_base_bake_leaves_depth_moments_byte_identical_to_the_one_sample_bake()
             &NO_EMBEDDED_EMITTERS,
             cache,
             &control,
-        );
+            postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
+        )
+        .section;
         assert!(production.probes.iter().any(|probe| probe.validity != 0));
         assert_eq!(
             production.probes, one_sample.probes,
@@ -272,7 +274,9 @@ fn the_cold_sh_base_bake_is_byte_identical_at_one_worker_and_many() {
                 &NO_EMBEDDED_EMITTERS,
                 None,
                 &BakeControl::unrestricted(),
+                postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
             )
+            .section
         })
     };
     let one = bake(1);

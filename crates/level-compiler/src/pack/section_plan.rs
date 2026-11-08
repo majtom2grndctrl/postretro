@@ -3,6 +3,7 @@
 
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ShMandatoryBoundEntry};
 use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 
 use super::*;
 
@@ -26,6 +27,10 @@ const PUSH_FORCES_CONTAINER_VERSION: u16 = 1;
 /// (`REFLECTION_PROBES_VERSION`) is the epoch a loader checks.
 const REFLECTION_PROBES_CONTAINER_VERSION: u16 = 1;
 
+/// Id 59's PRL table entry version. The payload's own leading version
+/// (`PROBE_DEPTH_TILES_VERSION`) is the epoch a loader checks.
+const PROBE_DEPTH_TILES_CONTAINER_VERSION: u16 = 1;
+
 /// Borrowed inputs for the one-shot legacy PRL descriptor plan.
 ///
 /// This is deliberately assembled only after direct/scatter policy has settled,
@@ -43,6 +48,8 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) alpha_lights: &'a AlphaLightsSection,
     pub(super) light_influence: &'a LightInfluenceSection,
     pub(super) sh_volume: &'a OctahedralShVolumeSection,
+    /// Id 59, written whenever id 34 is: header only for no tiles.
+    pub(super) probe_depth_tiles: &'a ProbeDepthTilesSection,
     pub(super) lightmap: &'a LightmapSection,
     pub(super) direct_sh_volume: Option<&'a DirectShVolumeSection>,
     pub(super) entity_shadow_lights: Option<&'a EntityShadowLightsSection>,
@@ -96,6 +103,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         alpha_lights,
         light_influence,
         sh_volume,
+        probe_depth_tiles,
         lightmap,
         direct_sh_volume,
         entity_shadow_lights,
@@ -204,6 +212,26 @@ pub(super) fn build_finalized_section_plan<'a>(
                 anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
             })
         },
+    ));
+    // The loader refuses a tile naming a probe outside id 34's lattice or an
+    // invalid one, so refuse to write one.
+    probe_depth_tiles
+        .validate_against_lattice(sh_volume.grid_dimensions, |probe| {
+            sh_volume
+                .probes
+                .get(probe as usize)
+                .is_some_and(|record| record.validity != 0)
+        })
+        .map_err(|error| anyhow::anyhow!("ProbeDepthTiles does not fit id 34: {error}"))?;
+    // Header, one `u32` index per tile, then the tiles' `u32` texels
+    // (`ProbeDepthTilesSection::to_bytes`); read-back checks the length.
+    let probe_depth_tiles_len =
+        16 + 4 * probe_depth_tiles.probe_indices.len() + 4 * probe_depth_tiles.texels.len();
+    sections.push(PlannedSection::new(
+        SectionId::ProbeDepthTiles as u32,
+        PROBE_DEPTH_TILES_CONTAINER_VERSION,
+        probe_depth_tiles_len,
+        || Ok(probe_depth_tiles.to_bytes()),
     ));
     sections.push(PlannedSection::with_writer(
         SectionId::Lightmap as u32,

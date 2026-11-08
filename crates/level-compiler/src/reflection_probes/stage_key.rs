@@ -141,6 +141,7 @@ pub(super) fn cache_key(
             .try_to_bytes()
             .map_err(|e| anyhow::anyhow!("packed SH volume violates its wire contract: {e}"))?,
     );
+    section("probe depth tiles", &inputs.depth_tiles.to_bytes());
     // Only the materials a face of the static world can show.
     let used: BTreeSet<u32> = inputs
         .geometry

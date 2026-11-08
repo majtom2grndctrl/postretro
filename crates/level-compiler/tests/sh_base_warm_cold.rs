@@ -545,8 +545,15 @@ fn a_cold_build_ignores_a_populated_poisoned_cache_directory() {
         .collect();
     // Layers do not key on the fill, so the fill-0 build adds its volume and
     // whatever else it keys apart; exactly one of those is an SH volume.
+    // A volume entry's payload: `u64` id-34 length, id 34, then the dropped
+    // count and id 59 (`surface_radiance/volume.rs`).
     let volume_entry = |entries: &std::collections::BTreeMap<String, Vec<u8>>, name: &str| {
-        OctahedralShVolumeSection::from_bytes(&entries[name][ENTRY_HEADER_BYTES..]).is_ok()
+        let payload = &entries[name][ENTRY_HEADER_BYTES..];
+        payload
+            .get(..8)
+            .map(|len| u64::from_le_bytes(len.try_into().unwrap()) as usize)
+            .and_then(|len| payload.get(8..8usize.checked_add(len)?))
+            .is_some_and(|id_34| OctahedralShVolumeSection::from_bytes(id_34).is_ok())
     };
     let new_volumes: Vec<&String> = added
         .into_iter()

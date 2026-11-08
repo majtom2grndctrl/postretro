@@ -1,7 +1,10 @@
-// The SH base's gathered volume as one build-cache entry, keyed on every input the gather reads.
+// The SH base's gathered volume and depth tiles as one build-cache entry, keyed on its inputs.
 // See: context/lib/build_pipeline.md §Build Cache
 
+use std::io::Write;
+
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::bounce::{BOUNCE_RAYS_PER_PATCH, LATER_BOUNCE_COUNT};
@@ -9,13 +12,16 @@ use super::gather::PatchLookup;
 use super::layer::{LayerKeys, SH_PATCH_LAYER_STAGE_VERSION};
 use super::layer_set::LayerPlan;
 use crate::cache::{CacheKey, StageCache};
-use crate::sh_bake::{ProbeGridLayout, fold_gather_constants};
+use crate::sh_bake::{
+    ProbeDepthTiles, ProbeGridLayout, fold_depth_tile_constants, fold_gather_constants,
+};
 
 /// Build-cache stage id of the gathered id-34 volume.
 pub(crate) const SH_BASE_VOLUME_STAGE_ID: &str = "sh_base_volume";
 /// Epoch of the entry's payload and of everything the gather computes that
 /// its key does not fold; bump when either changes.
-pub(crate) const SH_BASE_VOLUME_STAGE_VERSION: u32 = 2;
+/// 3: the entry carries the probe depth tiles and their dropped count.
+pub(crate) const SH_BASE_VOLUME_STAGE_VERSION: u32 = 3;
 
 /// The key of the gathered volume: every input the sum, the later bounces
 /// and the probe gather read.
@@ -35,6 +41,9 @@ pub(crate) const SH_BASE_VOLUME_STAGE_VERSION: u32 = 2;
 /// - The fill, with −0.0 read as 0.0 so one fill has one key.
 /// - The later bounces' count and rays per patch, the patch lookup, and the
 ///   gather's own constants ([`fold_gather_constants`]).
+/// - The depth tiles' format, selection constants and `tile_cap`
+///   ([`fold_depth_tile_constants`]): the probe grid and the gather's hits
+///   decide the rest.
 /// - The tracer epoch (`ray_traversal::TRACER_EPOCH`): the bounces and the
 ///   gather take closest hits. The shared layer fingerprint folds it too;
 ///   folding it here keeps the dependency direct.
@@ -48,6 +57,7 @@ pub(crate) fn volume_key(
     probe_spacing: f32,
     bounce_fill: f32,
     tracer_epoch: u32,
+    tile_cap: u32,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sh base volume\0");
@@ -81,6 +91,7 @@ pub(crate) fn volume_key(
     hasher.update(&BOUNCE_RAYS_PER_PATCH.to_le_bytes());
     hasher.update(&[PatchLookup::PRODUCTION.key_tag()]);
     fold_gather_constants(&mut hasher);
+    fold_depth_tile_constants(&mut hasher, tile_cap);
     hasher.update(&tracer_epoch.to_le_bytes());
     CacheKey::new(
         SH_BASE_VOLUME_STAGE_ID,
@@ -96,56 +107,110 @@ pub(crate) struct VolumeCache<'a> {
 }
 
 impl VolumeCache<'_> {
-    /// The cached volume over `layout`, without its animation tables, or
-    /// `None` on a miss. An entry that does not decode, or decodes to
-    /// another grid, is a miss. Runs outside any permit.
-    pub(crate) fn load(&self, layout: &ProbeGridLayout) -> Option<OctahedralShVolumeSection> {
+    /// The cached volume over `layout`, without its animation tables, and
+    /// its depth tiles, or `None` on a miss. An entry that does not decode,
+    /// decodes to another grid, or names a tile no valid probe of `layout`
+    /// holds, is a miss. Runs outside any permit.
+    pub(crate) fn load(
+        &self,
+        layout: &ProbeGridLayout,
+    ) -> Option<(OctahedralShVolumeSection, ProbeDepthTiles)> {
         note_cache_io();
-        let section = self.cache.get(&self.key).and_then(|bytes| {
+        let loaded = self.cache.get(&self.key).and_then(|bytes| {
             #[cfg(test)]
             let _payload = crate::live_bytes::hold_vec("id-34 cache payload", &bytes);
-            let section = OctahedralShVolumeSection::from_bytes(&bytes)
-                .ok()
-                .filter(|section| fits(section, layout));
-            // The decoded copy beside the raw payload; the stage holds it
-            // once it returns.
+            let loaded = decode_entry(&bytes, layout);
+            // The decoded copies beside the raw payload; the stage holds
+            // them once it returns.
             #[cfg(test)]
-            let _decoded = section.as_ref().map(|section| {
-                crate::live_bytes::hold(
-                    "id-34 section",
-                    crate::sh_bake::section_heap_bytes(section),
-                )
+            let _decoded = loaded.as_ref().map(|(section, tiles)| {
+                [
+                    crate::live_bytes::hold(
+                        "id-34 section",
+                        crate::sh_bake::section_heap_bytes(section),
+                    ),
+                    crate::live_bytes::hold("probe depth tiles", tiles.heap_bytes()),
+                ]
             });
-            if section.is_none() {
+            if loaded.is_none() {
                 log::warn!("[cache] corrupt sh_base_volume entry, re-gathering");
             }
-            section
+            loaded
         });
         log::info!(
             "[cache] sh_base_volume {}",
-            if section.is_some() { "hit" } else { "miss" }
+            if loaded.is_some() { "hit" } else { "miss" }
         );
-        section
+        loaded
     }
 
     /// Write the gathered volume with its animation tables left out, so a
-    /// later build rebuilds them from its own light set. Runs outside any
-    /// permit.
-    pub(crate) fn store(&self, section: &mut OctahedralShVolumeSection) {
+    /// later build rebuilds them from its own light set, then its depth
+    /// tiles. Runs outside any permit.
+    pub(crate) fn store(&self, section: &mut OctahedralShVolumeSection, tiles: &ProbeDepthTiles) {
         note_cache_io();
         let descriptors = std::mem::take(&mut section.animation_descriptors);
         let slots = std::mem::take(&mut section.slot_for_map_light);
         match section.try_to_bytes() {
-            Ok(bytes) => {
+            Ok(volume) => {
+                let tile_bytes = tiles.section.to_bytes();
                 #[cfg(test)]
-                let _encoded = crate::live_bytes::hold_vec("id-34 encoded copy", &bytes);
-                self.cache.put(&self.key, &bytes);
+                let _encoded = [
+                    crate::live_bytes::hold_vec("id-34 encoded copy", &volume),
+                    crate::live_bytes::hold_vec("probe depth tiles", &tile_bytes),
+                ];
+                let len = 8 + volume.len() + 8 + tile_bytes.len();
+                self.cache.put_streamed(&self.key, len as u64, |writer| {
+                    write_entry(writer, &volume, tiles.dropped, &tile_bytes)
+                });
             }
             Err(error) => log::warn!("[cache] sh_base_volume not cached: {error}"),
         }
         section.animation_descriptors = descriptors;
         section.slot_for_map_light = slots;
     }
+}
+
+/// The entry: `u64` id-34 length, the id-34 bytes, `u64` dropped count,
+/// then the id-59 bytes to the end.
+fn write_entry(
+    writer: &mut dyn Write,
+    volume: &[u8],
+    dropped: u64,
+    tiles: &[u8],
+) -> std::io::Result<()> {
+    writer.write_all(&(volume.len() as u64).to_le_bytes())?;
+    writer.write_all(volume)?;
+    writer.write_all(&dropped.to_le_bytes())?;
+    writer.write_all(tiles)
+}
+
+fn decode_entry(
+    bytes: &[u8],
+    layout: &ProbeGridLayout,
+) -> Option<(OctahedralShVolumeSection, ProbeDepthTiles)> {
+    let read_u64 = |at: usize| {
+        bytes
+            .get(at..at + 8)
+            .map(|b| u64::from_le_bytes(b.try_into().expect("eight bytes")))
+    };
+    let volume_len = usize::try_from(read_u64(0)?).ok()?;
+    let volume_end = 8usize.checked_add(volume_len)?;
+    let section = OctahedralShVolumeSection::from_bytes(bytes.get(8..volume_end)?)
+        .ok()
+        .filter(|section| fits(section, layout))?;
+    let dropped = read_u64(volume_end)?;
+    let tiles = ProbeDepthTilesSection::from_bytes(bytes.get(volume_end + 8..)?).ok()?;
+    tiles
+        .validate_against_lattice(layout.dims, |probe| layout.validity[probe as usize] != 0)
+        .ok()?;
+    Some((
+        section,
+        ProbeDepthTiles {
+            section: tiles,
+            dropped,
+        },
+    ))
 }
 
 /// Whether a decoded entry is the pre-encode volume of `layout`'s grid, with

@@ -421,6 +421,8 @@
     close_sound(string) : "Sound key played when the mover reaches its closed terminus" : ""
     blocked_sound(string) : "Sound key played when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold" : ""
     crush_sound(string) : "Sound key played when a crusher deals damage" : ""
+    light_ramp_start(float) : "Travel fraction (0 to 1) where baked light starts changing as the mover leaves its first waypoint; below it the first waypoint's lighting holds" : "0"
+    light_ramp_end(float) : "Travel fraction (0 to 1, above light_ramp_start) where baked light reaches its last-waypoint state" : "1"
     move_mode(choices) : "Move mode" : "once" =
     [
         "once" : "Once"

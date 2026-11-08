@@ -67,13 +67,18 @@ fn occluder(brushes: Vec<BrushVolume>, rule: InsideBrushRule) -> PosedOccluder {
         start_on_spawn: false,
         brush_volumes: brushes,
         crush_damage_type: None,
+        light_ramp_start: 0.0,
+        light_ramp_end: 1.0,
     };
-    let waypoints = [("first", "last", DVec3::ZERO), ("last", "", DVec3::Y * 100.0)]
-        .map(|(name, next, origin)| MapKinematicWaypoint {
-            name: name.to_string(),
-            next: next.to_string(),
-            origin,
-        });
+    let waypoints = [
+        ("first", "last", DVec3::ZERO),
+        ("last", "", DVec3::Y * 100.0),
+    ]
+    .map(|(name, next, origin)| MapKinematicWaypoint {
+        name: name.to_string(),
+        next: next.to_string(),
+        origin,
+    });
     let poses = MoverPoses::resolve(&[mover], &waypoints);
     let pose = poses.mover(0).expect("posed").pose(Terminus::First).clone();
     PosedOccluder::new(pose, rule)
@@ -104,7 +109,17 @@ fn soft_light(origin: DVec3, light_size: f32) -> MapLight {
 }
 
 fn geometry_of(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
-    let vertex = |position| Vertex::new(position, [0.0; 2], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0; 2], 0);
+    let vertex = |position| {
+        Vertex::new(
+            position,
+            [0.0; 2],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0; 2],
+            0,
+        )
+    };
     GeometryResult {
         geometry: GeometrySection {
             vertices: triangles.iter().flatten().map(|&p| vertex(p)).collect(),
@@ -143,13 +158,12 @@ const GLOBAL_LIGHT_INDEX: u64 = 3;
 
 fn scene(slab_min: DVec3, slab_max: DVec3) -> Scene {
     Scene {
-        geometry: geometry_of(&[[
-            [-0.1, 2.0, -50.0],
-            [-0.1, 2.0, 50.0],
-            [-50.0, 2.0, 0.0],
-        ]]),
+        geometry: geometry_of(&[[[-0.1, 2.0, -50.0], [-0.1, 2.0, 50.0], [-50.0, 2.0, 0.0]]]),
         light: soft_light(DVec3::new(0.0, 3.0, 0.0), 0.6),
-        occluder: occluder(vec![box_brush(slab_min, slab_max)], InsideBrushRule::SkipContainingBrush),
+        occluder: occluder(
+            vec![box_brush(slab_min, slab_max)],
+            InsideBrushRule::SkipContainingBrush,
+        ),
     }
 }
 

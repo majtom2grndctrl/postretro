@@ -3996,6 +3996,130 @@ mod tests {
         );
     }
 
+    /// Mover state lighting derives each peer's travel fraction from the same
+    /// predicted phase the door occlusion reads, so host and client agree at a
+    /// terminus, mid-travel and after a reversal with no wire field.
+    #[test]
+    fn client_predicted_mover_phase_matches_host_mover_path_fraction() {
+        use crate::kinematic_mover::{
+            MoverPathArcLengths, apply_mover_command, mover_path_fraction,
+        };
+
+        let ComponentPayload::KinematicMoverState(closed_starting_phase) =
+            closed_starting_mover_payload(42)
+        else {
+            unreachable!("fixture creates a kinematic mover payload");
+        };
+        let mut host_phase = KinematicMoverComponent::new(
+            42,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        seed_kinematic_mover_phase(&mut host_phase, &closed_starting_phase)
+            .expect("host fixture phase is valid");
+        let arc_lengths = MoverPathArcLengths::from_waypoints(&host_phase.waypoints);
+        let client_fraction = |registry: &EntityRegistry, entity: EntityId| {
+            let phase = registry
+                .get_component::<KinematicMoverComponent>(entity)
+                .expect("predicted phase remains in the live registry");
+            assert!(
+                arc_lengths.describes(&phase.waypoints),
+                "both peers share the path"
+            );
+            mover_path_fraction(phase, &arc_lengths)
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mover_entity = spawn_loaded_mover(&mut registry, 42);
+        let mut client = ClientReplication::new();
+
+        // At the closed terminus.
+        client.apply_snapshot_with_mover_target_tick(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(0.0), closed_starting_mover_payload(42)],
+                )],
+            ),
+            100,
+            0.25,
+        );
+        let host_closed = mover_path_fraction(&host_phase, &arc_lengths);
+        assert_eq!(host_closed, 0.0);
+        assert_eq!(client_fraction(&registry, mover_entity), host_closed);
+
+        // Mid-travel: the client predicts two ticks past the snapshot.
+        let mut host_transform = Transform::default();
+        for _ in 0..2 {
+            advance_mover_phase_one_tick(&mut host_phase, &mut host_transform, 0.25);
+        }
+        client.apply_snapshot_with_mover_target_tick(
+            &mut registry,
+            &snapshot(
+                1,
+                100,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![transform_payload(0.0), closed_starting_mover_payload(42)],
+                )],
+            ),
+            102,
+            0.25,
+        );
+        let host_mid = mover_path_fraction(&host_phase, &arc_lengths);
+        assert!(
+            (host_mid - 0.5).abs() <= EPSILON,
+            "host mid-travel t = {host_mid}"
+        );
+        assert!((client_fraction(&registry, mover_entity) - host_mid).abs() <= EPSILON);
+
+        // After a reversal: the host reverses at mid-travel and replicates
+        // that phase; the client predicts one tick past it, as the host runs.
+        apply_mover_command(&mut host_phase, &postretro_entities::MoverCommand::Reverse);
+        let reversed_wire = crate::replication::kinematic_mover_state_to_wire(&host_phase);
+        advance_mover_phase_one_tick(&mut host_phase, &mut host_transform, 0.25);
+        client.apply_snapshot_with_mover_target_tick(
+            &mut registry,
+            &snapshot(
+                2,
+                102,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![
+                        transform_payload(0.5),
+                        ComponentPayload::KinematicMoverState(reversed_wire),
+                    ],
+                )],
+            ),
+            103,
+            0.25,
+        );
+        let host_reversed = mover_path_fraction(&host_phase, &arc_lengths);
+        assert!(
+            (host_reversed - 0.25).abs() <= EPSILON,
+            "host closes a quarter after reversing, t = {host_reversed}"
+        );
+        assert!((client_fraction(&registry, mover_entity) - host_reversed).abs() <= EPSILON);
+    }
+
     #[test]
     fn non_finite_mover_angular_payloads_do_not_reach_phase_seeding() {
         for (field, poison) in [

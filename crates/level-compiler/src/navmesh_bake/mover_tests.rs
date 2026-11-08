@@ -132,6 +132,8 @@ fn mover(mover_id: u32, path: &str, brushes: Vec<BrushVolume>) -> MapKinematicMo
         blocked_sound: None,
         crush_sound: None,
         crush_damage_type: None,
+        light_ramp_start: 0.0,
+        light_ramp_end: 1.0,
         move_mode: KinematicMoveMode::PingPong,
         start_on_spawn: false,
         brush_volumes: brushes,

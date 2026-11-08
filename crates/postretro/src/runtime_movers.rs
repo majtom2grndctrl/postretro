@@ -22,7 +22,11 @@ use postretro_visibility::VisibleCells;
 
 use crate::collision::moving::MoverCollider;
 use crate::content_hash::{hash_f32, hash_len, hash_str, hash_u32, hash_vec3};
-use crate::render::{KinematicMoverInstance, MoverOccluderAabb};
+use crate::render::{KinematicMoverInstance, MoverLightState, MoverOccluderAabb};
+
+mod light_state;
+#[cfg(test)]
+mod light_state_tests;
 
 /// Find a mover's entity by its level-stable mover id.
 pub(crate) fn mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
@@ -221,13 +225,16 @@ pub(crate) struct KinematicMoverRenderCollector {
     /// current-to-interpolated presentation sweep.
     sh_sample_regions: Vec<ShSampleRegion>,
     mover_bounds: HashMap<u32, postretro_render_data::cone_frustum::Aabb>,
-    mover_bounds_source: Option<MoverBoundsSource>,
+    mover_bounds_source: Option<MoverListSource>,
     /// The main view's visible-cell bounds: what [`Self::visible_at`] culls
     /// against, so a ghost never reads the mirror's cells.
     visible_cell_bounds: Vec<(u32, Vec3, Vec3)>,
     /// The drawn set's cell bounds (main and mirror) when it differs from
     /// the main view's; beauty admission reads them. Reused across frames.
     drawn_cell_bounds: Vec<(u32, Vec3, Vec3)>,
+    /// Every present mover's light state, collected apart from the draw
+    /// lists: culled and geometry-less movers included.
+    light_states: light_state::MoverLightStateCollector,
 }
 
 impl KinematicMoverRenderCollector {
@@ -241,6 +248,7 @@ impl KinematicMoverRenderCollector {
             mover_bounds_source: None,
             visible_cell_bounds: Vec::new(),
             drawn_cell_bounds: Vec::new(),
+            light_states: Default::default(),
         }
     }
 
@@ -253,6 +261,23 @@ impl KinematicMoverRenderCollector {
         self.mover_bounds_source = None;
         self.visible_cell_bounds.clear();
         self.drawn_cell_bounds.clear();
+        self.light_states.clear();
+    }
+
+    /// One frame's mover light states: every present mover's ramped travel
+    /// fraction from the final post-tick phase, read where the blocked
+    /// portals rebuild from that phase. Allocates nothing once warm.
+    pub(crate) fn collect_light_states(
+        &mut self,
+        registry: &EntityRegistry,
+        world: Option<&LevelWorld>,
+    ) {
+        self.light_states.collect(registry, world);
+    }
+
+    /// The states [`Self::collect_light_states`] last collected.
+    pub(crate) fn light_states(&self) -> &[MoverLightState] {
+        self.light_states.states()
     }
 
     /// Test entry, with no planar mirror: [`Self::collect_with_mirror`] with
@@ -409,7 +434,7 @@ impl KinematicMoverRenderCollector {
     }
 
     fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
-        let source = MoverBoundsSource::from_movers(&world.kinematic_geometry.movers);
+        let source = MoverListSource::from_movers(&world.kinematic_geometry.movers);
         if self.mover_bounds_source == Some(source) {
             return;
         }
@@ -445,13 +470,15 @@ fn rebuild_cell_bounds(
     }));
 }
 
+/// Which loaded mover list a per-level cache was built from. Teardown clears
+/// each cache too; this key backs that up within a frame loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MoverBoundsSource {
+struct MoverListSource {
     ptr: usize,
     len: usize,
 }
 
-impl MoverBoundsSource {
+impl MoverListSource {
     fn from_movers(movers: &[LoadedKinematicMover]) -> Self {
         Self {
             ptr: movers.as_ptr() as usize,
@@ -893,6 +920,7 @@ pub(crate) mod tests {
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
             crush_damage_type: None,
+            light_ramp: Default::default(),
         }
     }
 
@@ -1699,7 +1727,7 @@ pub(crate) mod tests {
                 max: Vec3::ONE,
             },
         );
-        collector.mover_bounds_source = Some(MoverBoundsSource { ptr: 1, len: 1 });
+        collector.mover_bounds_source = Some(MoverListSource { ptr: 1, len: 1 });
         collector
             .visible_cell_bounds
             .push((2, Vec3::ZERO, Vec3::ONE));

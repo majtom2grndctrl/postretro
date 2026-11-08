@@ -1813,6 +1813,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     {
         let registry = script_ctx.registry.borrow();
         rebuild_blocked_portals(&mut app.blocked_portals, app.level.as_ref(), &registry);
+        // Mover light state reads the same final post-tick phase.
+        app.kinematic_mover_render
+            .collect_light_states(&registry, app.level.as_ref());
+    }
+    if let Some(renderer) = app.renderer.as_mut() {
+        renderer.set_mover_light_states(app.kinematic_mover_render.light_states());
     }
 
     // Portal walk → cell IDs → renderer inputs. This stays after

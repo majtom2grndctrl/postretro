@@ -200,6 +200,7 @@ mod tests {
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
             crush_damage_type: None,
+            light_ramp: Default::default(),
         }
     }
 

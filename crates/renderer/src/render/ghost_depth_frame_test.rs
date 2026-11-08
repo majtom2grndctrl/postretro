@@ -284,6 +284,7 @@ fn mover(mover_id: u32, quads: &[[Vertex; 4]]) -> postretro_level_loader::Loaded
         sealed_portal_ids: Vec::new(),
         carried_lights: Vec::new(),
         crush_damage_type: None,
+        light_ramp: Default::default(),
     }
 }
 

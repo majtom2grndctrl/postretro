@@ -113,6 +113,9 @@ pub(in crate::render) struct FullRenderer {
     /// mover id. Static-light promotion and rigid shadow occluder recording
     /// read this renderer-owned state.
     pub(in crate::render) mover_occluder_aabbs: Vec<rigid_occluder_depth::MoverOccluderAabb>,
+    /// The latest frame's mover light states, one per present mover of the
+    /// active level; empty with no level and at every level boundary.
+    pub(in crate::render) mover_light_states: mover_light_state::MoverLightStateTable,
     pub(in crate::render) ambient_floor: f32,
     pub(in crate::render) indirect_scale: f32,
     /// DYNAMIC baked-static-direct SH scale (0..1). Debug instrument for the

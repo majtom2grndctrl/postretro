@@ -82,6 +82,8 @@ fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> Ma
         start_on_spawn: false,
         brush_volumes: brushes,
         crush_damage_type: None,
+        light_ramp_start: 0.0,
+        light_ramp_end: 1.0,
     }
 }
 

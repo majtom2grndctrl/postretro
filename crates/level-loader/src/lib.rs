@@ -62,7 +62,7 @@ pub use prl::{
 #[cfg(feature = "load-prl")]
 pub use prl::{
     CellDrawIndex, FaceMeta, KinematicGeometry, LightmapMode, LoadedKinematicMover,
-    LoadedKinematicWaypoint, LoadedMemberLight, PrlLoadError,
+    LoadedKinematicWaypoint, LoadedMemberLight, MoverLightRamp, PrlLoadError,
 };
 #[cfg(feature = "load-prl")]
 pub use prl_file::PrlReadCounters;

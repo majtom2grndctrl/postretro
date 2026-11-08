@@ -192,6 +192,7 @@ fn windowed_carrier_binding_reresolves_before_first_bridge_update_after_reload()
                     local_offset: Vec3::new(2.0, 0.0, 0.0),
                 }],
                 crush_damage_type: None,
+                light_ramp: Default::default(),
             }],
             waypoints: Vec::new(),
         }

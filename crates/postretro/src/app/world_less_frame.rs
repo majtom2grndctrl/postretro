@@ -156,6 +156,13 @@ impl App {
         {
             let registry = session.scripting.script_ctx.registry.borrow();
             crate::rebuild_blocked_portals(&mut self.blocked_portals, Some(world), &registry);
+            // Mover light state reads the same final post-tick phase, so a
+            // held level composes its seeded state before reveal.
+            self.kinematic_mover_render
+                .collect_light_states(&registry, Some(world));
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_mover_light_states(self.kinematic_mover_render.light_states());
         }
         let visible_render = VisibleRenderPreparation::for_level(
             world,

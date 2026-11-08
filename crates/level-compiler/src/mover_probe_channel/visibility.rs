@@ -9,7 +9,9 @@ use crate::lightmap_bake::{
     hard_ray_target,
 };
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::{Pose, point_touches_brush, segment_may_touch_box, segment_touches_brush};
+use crate::mover_light_gate::{
+    Pose, point_touches_brush, segment_may_touch_box, segment_touches_brush,
+};
 use crate::partition::Aabb;
 use crate::texel_footprint::ProbeEarlyOut;
 

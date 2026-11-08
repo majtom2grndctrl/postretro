@@ -505,6 +505,36 @@ pub struct LoadedKinematicMover {
     pub crush_sound: Option<String>,
     /// The crusher's damage-type name, resolved at level install.
     pub crush_damage_type: Option<String>,
+    /// The window of travel this mover's light state ramps across. Every mover
+    /// loads the identity ramp; a mover the probe channel records carries its
+    /// authored `light_ramp_start` and `light_ramp_end`.
+    pub light_ramp: MoverLightRamp,
+}
+
+/// A mover's author light ramp, as plain numbers: its light state reads
+/// `clamp((t - start) / (end - start), 0, 1)` for travel fraction `t`, so the
+/// state holds its closed value until `start` and its open value from `end`.
+/// Load validation keeps `0 <= start < end <= 1`; the identity ramp is (0, 1).
+#[cfg(feature = "load-prl")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoverLightRamp {
+    pub start: f32,
+    pub end: f32,
+}
+
+#[cfg(feature = "load-prl")]
+impl MoverLightRamp {
+    pub const IDENTITY: Self = Self {
+        start: 0.0,
+        end: 1.0,
+    };
+}
+
+#[cfg(feature = "load-prl")]
+impl Default for MoverLightRamp {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
 }
 
 /// Runtime copy of a KinematicGeometry member-light relation. Alpha-light
@@ -569,6 +599,7 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             blocked_sound: record.blocked_sound,
             crush_sound: record.crush_sound,
             crush_damage_type: record.crush_damage_type,
+            light_ramp: MoverLightRamp::IDENTITY,
         }
     }
 }

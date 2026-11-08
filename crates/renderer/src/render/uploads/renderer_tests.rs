@@ -416,6 +416,7 @@ fn mover_and_billboard_ghosts_record_through_their_pipelines_in_both_modes() {
         sealed_portal_ids: Vec::new(),
         carried_lights: Vec::new(),
         crush_damage_type: None,
+        light_ramp: Default::default(),
     };
     let geometry = postretro_level_loader::KinematicGeometry {
         movers: vec![mover],

@@ -144,6 +144,8 @@ struct PendingKinematicMover {
     blocked_sound: Option<String>,
     crush_sound: Option<String>,
     crush_damage_type: Option<String>,
+    light_ramp_start: f32,
+    light_ramp_end: f32,
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
@@ -505,6 +507,7 @@ fn parse_kinematic_mover(
     // A damage-type name; the engine resolves it against the mod's registered
     // types at level load and warns on an unknown one.
     let crush_damage_type = optional_event("crush_damage_type");
+    let (light_ramp_start, light_ramp_end) = parse_kinematic_light_ramp(props, &name)?;
 
     let move_mode = match props
         .get("move_mode")
@@ -561,10 +564,30 @@ fn parse_kinematic_mover(
         blocked_sound,
         crush_sound,
         crush_damage_type,
+        light_ramp_start,
+        light_ramp_end,
         move_mode,
         start_on_spawn,
         brush_ids,
     })
+}
+
+/// The mover's light ramp keys, `light_ramp_start` (default 0) and
+/// `light_ramp_end` (default 1): the travel window its light state ramps
+/// across. Each must be a finite number, with `0 <= start < end <= 1`.
+fn parse_kinematic_light_ramp(
+    props: &HashMap<String, String>,
+    name: &str,
+) -> anyhow::Result<(f32, f32)> {
+    let start = parse_optional_finite_f32(props, "light_ramp_start", 0.0, "kinematic_mover", name)?;
+    let end = parse_optional_finite_f32(props, "light_ramp_end", 1.0, "kinematic_mover", name)?;
+    if !(0.0..end).contains(&start) || end > 1.0 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` `light_ramp_start` and `light_ramp_end` must satisfy \
+             0 <= light_ramp_start < light_ramp_end <= 1, got {start} and {end}"
+        );
+    }
+    Ok((start, end))
 }
 
 fn parse_kinematic_spin_axis(
@@ -2416,6 +2439,8 @@ fn resolve_kinematic_movers(
             blocked_sound: pending.blocked_sound,
             crush_sound: pending.crush_sound,
             crush_damage_type: pending.crush_damage_type,
+            light_ramp_start: pending.light_ramp_start,
+            light_ramp_end: pending.light_ramp_end,
             move_mode: pending.move_mode,
             start_on_spawn: pending.start_on_spawn,
             brush_volumes,
@@ -4411,6 +4436,8 @@ mod tests {
             "close_sound(string) : \"Sound key played when the mover reaches its closed terminus\" : \"\"",
             "blocked_sound(string) : \"Sound key played when a blocking mover reacts to contact, or when any non-crush mover first holds or backs off for a pinned player; once per hold\" : \"\"",
             "crush_sound(string) : \"Sound key played when a crusher deals damage\" : \"\"",
+            "light_ramp_start(float) : \"Travel fraction (0 to 1) where baked light starts changing as the mover leaves its first waypoint; below it the first waypoint's lighting holds\" : \"0\"",
+            "light_ramp_end(float) : \"Travel fraction (0 to 1, above light_ramp_start) where baked light reaches its last-waypoint state\" : \"1\"",
         ] {
             assert!(
                 mover_class.contains(property),
@@ -5936,6 +5963,66 @@ mod tests {
             assert!(
                 parse_inline_map(&map_text).is_err(),
                 "{property}={value} must be rejected"
+            );
+        }
+    }
+
+    /// The fixture mover with `keys` (`(key, value)` pairs) added to its body.
+    fn kinematic_test_map_with_keys(keys: &[(&str, &str)]) -> String {
+        let added: String = keys
+            .iter()
+            .map(|(key, value)| format!("\"{key}\" \"{value}\"\n"))
+            .collect();
+        kinematic_test_map("wp_b").replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            &format!("\"start_on_spawn\" \"1\"\n{added}"),
+            1,
+        )
+    }
+
+    #[test]
+    fn kinematic_mover_light_ramp_keys_default_to_the_identity_ramp_and_parse_when_ordered() {
+        let absent = parse_inline_map(&kinematic_test_map("wp_b")).expect("no ramp keys");
+        assert_eq!(absent.kinematic_movers[0].light_ramp_start, 0.0);
+        assert_eq!(absent.kinematic_movers[0].light_ramp_end, 1.0);
+
+        for (start, end) in [("0", "1"), ("0.6", "0.9")] {
+            let map_text = kinematic_test_map_with_keys(&[
+                ("light_ramp_start", start),
+                ("light_ramp_end", end),
+            ]);
+            let map = parse_inline_map(&map_text)
+                .unwrap_or_else(|err| panic!("ramp ({start}, {end}) must parse: {err:#}"));
+            let mover = &map.kinematic_movers[0];
+            assert_eq!(mover.light_ramp_start, start.parse::<f32>().unwrap());
+            assert_eq!(mover.light_ramp_end, end.parse::<f32>().unwrap());
+        }
+    }
+
+    #[test]
+    fn kinematic_mover_rejects_light_ramps_outside_the_unit_order_naming_the_mover() {
+        let cases: &[(&str, &[(&str, &str)])] = &[
+            (
+                "start equals end",
+                &[("light_ramp_start", "0.5"), ("light_ramp_end", "0.5")],
+            ),
+            (
+                "start above end",
+                &[("light_ramp_start", "0.8"), ("light_ramp_end", "0.3")],
+            ),
+            ("start below zero", &[("light_ramp_start", "-0.1")]),
+            ("end above one", &[("light_ramp_end", "1.1")]),
+            ("start not a number", &[("light_ramp_start", "nan")]),
+            ("start non-numeric", &[("light_ramp_start", "half")]),
+            ("end zero with start defaulted", &[("light_ramp_end", "0")]),
+        ];
+        for (case, keys) in cases {
+            let err = parse_inline_map(&kinematic_test_map_with_keys(keys))
+                .expect_err(&format!("{case} must be rejected"));
+            let message = format!("{err:#}");
+            assert!(
+                message.contains("kinematic_mover `lift_a`") && message.contains("light_ramp_"),
+                "{case}: the error must name the mover and the ramp key, got: {message}"
             );
         }
     }

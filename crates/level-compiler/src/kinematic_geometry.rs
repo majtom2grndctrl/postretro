@@ -448,6 +448,8 @@ mod tests {
             start_on_spawn: false,
             brush_volumes,
             crush_damage_type: None,
+            light_ramp_start: 0.0,
+            light_ramp_end: 1.0,
         }
     }
 

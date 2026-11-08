@@ -62,6 +62,8 @@ pub trait AiHost {
 /// ownership transfer.
 pub struct AiTickInputs<'a> {
     pub nav_graph: Option<&'a NavGraph>,
+    /// Live mover state: gates for routes, poses for combat slot placement.
+    pub mover_nav: crate::nav::MoverNav<'a>,
     pub collision_world: Option<&'a CollisionWorld>,
     pub descriptors: &'a [EntityTypeDescriptor],
     pub descriptor_generation: u64,

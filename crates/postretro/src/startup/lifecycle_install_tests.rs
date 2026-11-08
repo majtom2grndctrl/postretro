@@ -575,6 +575,8 @@ fn install_range_rejection_precedes_all_level_state_mutations() {
             max_slope_deg: 45.0,
             regions: vec![],
             portals: vec![],
+            gates: Vec::new(),
+            links: Vec::new(),
         },
     ));
     let before_slots: BTreeMap<_, _> = slot_snapshot(&app)
@@ -639,6 +641,8 @@ fn install_range_rejection_precedes_all_level_state_mutations() {
             max_slope_deg: 45.0,
             regions: vec![],
             portals: vec![],
+            gates: Vec::new(),
+            links: Vec::new(),
         },
     ));
     let before_slots: BTreeMap<_, _> = slot_snapshot(&app)

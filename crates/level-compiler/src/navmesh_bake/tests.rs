@@ -1,6 +1,7 @@
 // Navmesh bake tests cover rasterization, erosion, region decomposition, and portals.
 // See: context/lib/build_pipeline.md §Navigation bake
 
+use super::mover_footprint::MoverFootprints;
 use super::*;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -10,7 +11,7 @@ use crate::geometry::FaceIndexRange;
 /// Build a `GeometryResult` from a flat list of world-space triangles.
 /// Every triangle gets a placeholder face/leaf — the bake reads only the
 /// vertex positions and the index triples.
-fn geo_from_triangles(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
+pub(super) fn geo_from_triangles(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for tri in triangles {
@@ -48,7 +49,7 @@ fn geo_from_triangles(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
 /// Two triangles forming an axis-aligned floor quad at height `y` over
 /// `[x0, x1] x [z0, z1]`, wound so `(b-a) x (c-a)` points up (+Y) — the bake
 /// only treats upward-facing surfaces as walkable.
-fn floor_quad(x0: f32, z0: f32, x1: f32, z1: f32, y: f32) -> [[[f32; 3]; 3]; 2] {
+pub(super) fn floor_quad(x0: f32, z0: f32, x1: f32, z1: f32, y: f32) -> [[[f32; 3]; 3]; 2] {
     [
         [[x0, y, z0], [x1, y, z1], [x1, y, z0]],
         [[x0, y, z0], [x0, y, z1], [x1, y, z1]],
@@ -112,7 +113,7 @@ fn region_claim_uses_locally_accepted_row_heights() {
         cells: heights,
     };
 
-    let regions = decompose_regions(&grid);
+    let regions = decompose_regions(&grid, &MoverFootprints::default());
 
     assert_eq!(regions.len(), 1);
     let region = regions[0];

@@ -1,7 +1,7 @@
 // Game: Postretro
 // Format: Standard
 // Mover set-piece: measurement and proof surface for LARGE theatrical movers.
-// See mover-setpiece.README.md for stations, waypoints and the measurement recipe.
+// See mover-setpiece.README.md for stations and waypoints.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/mover-setpiece.map -o content/dev/maps/mover-setpiece.prl
 // Layout, TrenchBroom units, 1 unit = 0.0254 m, floor top at z 0, ceiling at z 320.
 // Arena: x 0 to 1280, y 0 to 1024. Back room: x 0 to 1280, y 1088 to 1600.
@@ -214,7 +214,7 @@
 "name" "setpiece_wall"
 "path" "setpiece_wall_closed"
 "speed" "2"
-"wait_ms" "3000"
+"wait_ms" "8000"
 "move_mode" "ping_pong"
 "start_on_spawn" "1"
 "_tags" "dev mover_setpiece setpiece_wall"
@@ -411,35 +411,36 @@
 "name" "setpiece_room_lamp"
 "carrier" "setpiece_room"
 "origin" "992 320 -56"
-"light" "300"
+"light" "10"
 "_color" "255 170 90"
-"_falloff_range" "320"
+"_falloff_range" "4"
 "_tags" "dev mover_setpiece setpiece_room_lamp"
 }
 // Baked lights. Arena side, then back room. Falloffs reach across the wall and room.
+// Point lights are dim (75) with wide falloff; the spots below carry the drama.
 // entity 8
 {
 "classname" "light"
 "origin" "256 256 256"
-"light" "300"
+"light" "5"
 "_color" "255 244 230"
-"_falloff_range" "900"
+"_falloff_range" "1800"
 }
 // entity 9
 {
 "classname" "light"
 "origin" "640 320 192"
-"light" "300"
+"light" "5"
 "_color" "235 240 255"
-"_falloff_range" "900"
+"_falloff_range" "1800"
 }
 // entity 10
 {
 "classname" "light"
 "origin" "992 320 288"
-"light" "250"
+"light" "5"
 "_color" "255 255 255"
-"_falloff_range" "640"
+"_falloff_range" "1280"
 }
 // entity 11
 {
@@ -456,22 +457,112 @@
 {
 "classname" "light"
 "origin" "240 1376 256"
-"light" "300"
+"light" "5"
 "_color" "200 220 255"
-"_falloff_range" "900"
+"_falloff_range" "1800"
 }
 // entity 13
 {
 "classname" "light"
 "origin" "1000 1376 256"
-"light" "300"
+"light" "5"
 "_color" "200 220 255"
-"_falloff_range" "900"
+"_falloff_range" "1800"
 }
-// Station 1: the sliding wall fills the view. Yaw 90 faces +y.
+// Enemies. A chaser on the enemy spot behind the sliding wall, facing south
+// toward the wall. Two riders inside the rising room, authored at its lowered
+// pose: the room floor top is z -176, so their origins sit 16 above it.
 // entity 14
 {
+"classname" "reference_enemy"
+"origin" "368 1232 16"
+"angles" "0 270 0"
+"_tags" "enemy setpiece_chaser"
+}
+// entity 15
+{
+"classname" "reference_enemy"
+"origin" "912 280 -160"
+"angles" "0 180 0"
+"_tags" "enemy setpiece_rider"
+}
+// entity 16
+{
+"classname" "reference_enemy"
+"origin" "1040 376 -160"
+"angles" "0 180 0"
+"_tags" "enemy setpiece_rider"
+}
+// Spawn: the arena's south-west corner, more than 16 m from every enemy so none
+// wakes at spawn. Yaw 75 looks north-east through the opening at the enemy spot.
+// Station 1 (368, 720, 48), yaw 90, is the perf station; walk or noclip there.
+// entity 17
+{
 "classname" "player_spawn"
-"origin" "368 720 48"
-"angles" "0 90 0"
+"origin" "64 64 48"
+"angles" "0 75 0"
+}
+// Theatrical lighting. Angled spots; baked unless noted. The carried spot rides the
+// rising room and is authored at the lowered pose, aimed at the north-east inside corner.
+// entity 18
+{
+"classname" "light_dynamic_spot"
+"name" "setpiece_room_corner_spot"
+"carrier" "setpiece_room"
+"origin" "900 220 -40"
+"light" "150"
+"_color" "255 190 120"
+"_falloff_range" "600"
+"angles" "-22 46 0"
+"_cone" "20"
+"_cone2" "40"
+"_tags" "dev mover_setpiece setpiece_room_corner_spot"
+}
+// Rakes across the sliding wall's south face from the west at a shallow angle.
+// entity 19
+{
+"classname" "light_spot"
+"origin" "60 900 250"
+"light" "250"
+"_color" "255 225 190"
+"_falloff_range" "1000"
+"angles" "-23 19 0"
+"_cone" "20"
+"_cone2" "40"
+}
+// Pool on the enemy spot plinth, from high in the back room's north-west.
+// entity 20
+{
+"classname" "light_spot"
+"origin" "150 1420 290"
+"light" "300"
+"_color" "255 235 210"
+"_falloff_range" "650"
+"angles" "-44 319 0"
+"_cone" "12"
+"_cone2" "28"
+}
+// Cool shaft over the arena, tilted so the pool lands off the player's sightline.
+// entity 21
+{
+"classname" "light_spot"
+"origin" "560 760 305"
+"light" "300"
+"_color" "190 210 255"
+"_falloff_range" "700"
+"angles" "-59 319 0"
+"_cone" "14"
+"_cone2" "32"
+}
+// Rakes across the rising room's doorway wall from the south-west.
+// entity 22
+{
+"classname" "light_spot"
+"origin" "560 60 300"
+"light" "200"
+"_color" "255 200 150"
+"_falloff_range" "700"
+"angles" "-28 44 0"
+"_cone" "18"
+"_cone2" "38"
 }

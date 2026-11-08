@@ -3,7 +3,7 @@
 // never reachable through `worldQuery` (the `PlayerMovement` precedent).
 //
 // Carries the agent's collision capsule (radius / height / step_height), its
-// current velocity and grounded flag, the path it is following (an ordered list
+// current velocity and ground, the path it is following (an ordered list
 // of world-space waypoints plus a cursor into them), and a destination. The
 // capsule is seeded at attach time from the navmesh's baked `NavAgentParams`,
 // so each agent matches what the bake eroded the navmesh for; storing it per
@@ -18,13 +18,80 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
-use postretro_foundation::{KnockbackResponse, NavAgentParams};
+use postretro_foundation::{GroundRef, KnockbackResponse, NavAgentParams};
+
+/// A pinned agent's walk out of a mover's course. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PinEscape {
+    /// The mover that pinned it.
+    pub mover_id: u32,
+    /// The clear point it walks to, in world space. For a point on the pinning
+    /// mover's own top, re-derived each tick from `deck_offset`.
+    pub target: Vec3,
+    /// The clear point in the pinning mover's frame, when it stands on that
+    /// mover's top. The deck carries the agent while it walks, so a fixed world
+    /// point there drifts across the deck, or off it, as the mover moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deck_offset: Option<Vec3>,
+    /// Ticks left before it gives up and yields as a corpse.
+    pub ticks_left: u32,
+}
+
+/// A ride a planned path ends in: board `mover_id` where it docks now, get off
+/// at its other dock. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlannedRide {
+    pub mover_id: u32,
+    pub board_waypoint: u32,
+    pub exit_waypoint: u32,
+    /// A point on the mover's top, past the boarding edge.
+    pub board_point: Vec3,
+    /// A point on the landing, past the exit edge.
+    pub exit_point: Vec3,
+}
+
+/// What a [`PathCrossing`] crosses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CrossingKind {
+    /// A portal a mover's dock can close; `index` is the portal's.
+    Portal,
+    /// A step onto or off a mover; `index` is the link's. Closed unless the
+    /// mover docks at the link's waypoint.
+    Link,
+}
+
+/// One place a route depends on a mover's dock: a gated portal it walks
+/// through, or a link it walks over. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathCrossing {
+    pub kind: CrossingKind,
+    /// Index of the portal or link in the level's navigation graph.
+    pub index: u32,
+    /// Index into the agent's `path` of the waypoint it walks toward while
+    /// crossing. Once the body stands on this waypoint's side of the crossed
+    /// edge, or the cursor is two past it, the crossing is behind the agent,
+    /// and a mover closing it changes nothing about the route ahead.
+    pub waypoint: u32,
+}
+
+/// A ride under way: the agent stands on `mover_id` and does not steer. Host-only.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AgentRide {
+    pub mover_id: u32,
+    /// Where it got on, when it boarded by plan.
+    pub board_waypoint: Option<u32>,
+    /// Where it means to get off; `None` for a body a mover simply carried off.
+    pub exit_waypoint: Option<u32>,
+    pub exit_point: Vec3,
+    /// The mover has left the dock it boarded at.
+    pub departed: bool,
+}
 
 /// Live state for one movable navigation agent.
 ///
 /// The capsule geometry (`radius`, `height`, `step_height`) is fixed at attach
 /// time from the baked agent parameters and never mutated by the steering tick;
-/// `velocity`, `steer_velocity`, stuck-recovery counters, `is_grounded`, the
+/// `velocity`, `steer_velocity`, stuck-recovery counters, `ground`, the
 /// path/cursor, and `destination` are the live fields the steering system
 /// writes each tick.
 ///
@@ -41,15 +108,15 @@ pub struct AgentComponent {
     pub height: f32,
     /// Maximum vertical step the agent can climb in one tick, in world units.
     /// Seeded from `NavAgentParams::step_height` (NOT the radius as a
-    /// stand-in). The collide-and-slide harness's step-up / ground-stick logic
-    /// reads this; it is a stored field so downstream steering uses the baked
-    /// step the navmesh was eroded for.
+    /// stand-in). The agent controller's step-up / ground-stick logic reads
+    /// this; it is a stored field so downstream steering uses the baked step
+    /// the navmesh was eroded for.
     pub step_height: f32,
     /// Top horizontal speed the steering system drives the agent at, in
     /// world-units/sec. Passed to `attach_agent` at attach time.
     pub move_speed: f32,
-    /// Live velocity (world space) the collide-and-slide harness integrates and
-    /// resolves each tick.
+    /// Live velocity (world space) the agent controller integrates and resolves
+    /// each tick.
     pub velocity: Vec3,
     /// External velocity protected from path steering's horizontal replacement.
     #[serde(default)]
@@ -73,9 +140,11 @@ pub struct AgentComponent {
     /// lateral bias before collision resolution.
     #[serde(default)]
     pub unstick_window_remaining: u32,
-    /// Grounded flag resolved by the harness's ground-stick down-cast. `true`
-    /// when the agent's capsule rests on a walkable floor.
-    pub is_grounded: bool,
+    /// What the agent's capsule rests on, resolved by the agent controller. The single
+    /// source for mover carry, rider exemption, stuck suppression and link
+    /// resolution; [`Self::is_grounded`] is its projection.
+    #[serde(default)]
+    pub ground: GroundRef,
     /// Current path: ordered world-space waypoints from the agent toward its
     /// destination, produced by the pathfinding query. Empty when the agent has
     /// no active path.
@@ -123,6 +192,39 @@ pub struct AgentComponent {
     /// and drift/topology gates. Cleared on a successful plan or a cleared
     /// destination.
     pub blocked: bool,
+    /// The walk out of a pinning mover's course, while one runs. It overrides
+    /// path steering and any motion verb.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_escape: Option<PinEscape>,
+    /// The gated portals and links `path` crosses, in order, each with the
+    /// waypoint it is crossed toward. Lets a gate change find the agents whose
+    /// route ahead it closes without re-resolving their paths. Empty for a path
+    /// that depends on no mover, and for a manual path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_crossings: Vec<PathCrossing>,
+    /// The ride the current path ends in, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_ride: Option<PlannedRide>,
+    /// The ride under way, if any. While set the agent neither steers nor replans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ride: Option<AgentRide>,
+    /// Consecutive ticks a rider has spent airborne off its mover. A ride
+    /// survives a short hop, as the blocking pass's rider grace does.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub ride_airborne_ticks: u32,
+    /// The gate generation this agent last answered. Behind the live one while
+    /// a gate change still owes it a replan, so any number of flips before
+    /// admission cost one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gate_generation: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 impl AgentComponent {
@@ -130,8 +232,8 @@ impl AgentComponent {
     /// `step_height` and `move_speed`. Takes the geometry as plain arguments —
     /// it deliberately does NOT call `NavGraph::agent_params()`; the spawn call
     /// site reads the baked params and passes them down (see [`attach_agent`]).
-    /// Velocity starts at rest, ungrounded (the harness re-acquires the floor on
-    /// the first tick), with no path and no destination.
+    /// Velocity starts at rest, ungrounded (the agent controller re-acquires the
+    /// floor on the first tick), with no path and no destination.
     pub fn new(radius: f32, height: f32, step_height: f32, move_speed: f32) -> Self {
         Self {
             radius,
@@ -144,7 +246,13 @@ impl AgentComponent {
             steer_velocity: Vec3::ZERO,
             stuck_ticks: 0,
             unstick_window_remaining: 0,
-            is_grounded: false,
+            ground: GroundRef::Airborne,
+            pin_escape: None,
+            path_crossings: Vec::new(),
+            planned_ride: None,
+            ride: None,
+            ride_airborne_ticks: 0,
+            gate_generation: 0,
             path: Vec::new(),
             mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,
@@ -172,10 +280,18 @@ impl AgentComponent {
         }
         self.velocity = velocity;
         self.knockback_velocity = knockback_velocity;
-        if impulse.y > 0.0 && velocity.y > 0.0 {
-            self.is_grounded = false;
+        // A mover ground stays until the next tick carries the body once more
+        // and hands it the mover's release velocity; world contact has no
+        // release, so it clears at once. The player's knockback does the same.
+        if impulse.y > 0.0 && velocity.y > 0.0 && !matches!(self.ground, GroundRef::Mover(_)) {
+            self.ground = GroundRef::Airborne;
         }
         true
+    }
+
+    /// Whether the capsule rests on a walkable floor, static or mover.
+    pub fn is_grounded(&self) -> bool {
+        self.ground.is_grounded()
     }
 
     /// Construct an agent from baked navmesh agent parameters. Seeds the capsule
@@ -249,7 +365,7 @@ mod tests {
         assert_eq!(agent.steer_velocity, Vec3::ZERO);
         assert_eq!(agent.stuck_ticks, 0);
         assert_eq!(agent.unstick_window_remaining, 0);
-        assert!(!agent.is_grounded);
+        assert!(!agent.is_grounded());
         assert!(agent.path.is_empty());
         assert!(agent.mandatory_waypoints.is_empty());
         assert_eq!(agent.waypoint_cursor, 0);
@@ -289,6 +405,21 @@ mod tests {
         assert_eq!(agent.height, 1.8);
         assert_eq!(agent.step_height, 0.4, "step_height seeded from params");
         assert_eq!(agent.move_speed, 6.5);
+    }
+
+    // Regression: an upward shove dropped a mover ground at once, so the next
+    // tick neither carried the agent nor handed it the mover's release velocity.
+    #[test]
+    fn an_upward_shove_keeps_a_mover_ground_and_clears_a_world_one() {
+        let mut on_mover = AgentComponent::new(0.35, 1.8, 0.4, 5.0);
+        on_mover.ground = GroundRef::Mover(3);
+        assert!(on_mover.add_knockback(Vec3::Y * 4.0));
+        assert_eq!(on_mover.ground, GroundRef::Mover(3));
+
+        let mut on_floor = AgentComponent::new(0.35, 1.8, 0.4, 5.0);
+        on_floor.ground = GroundRef::World;
+        assert!(on_floor.add_knockback(Vec3::Y * 4.0));
+        assert_eq!(on_floor.ground, GroundRef::Airborne);
     }
 
     #[test]

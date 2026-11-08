@@ -7,11 +7,13 @@ use std::collections::BinaryHeap;
 use std::ops::Deref;
 
 use glam::Vec3;
-use postretro_level_format::navmesh::NavPortal;
+use postretro_entities::components::agent::{CrossingKind, PathCrossing, PlannedRide};
+use postretro_foundation::GroundRef;
+use postretro_level_format::navmesh::{NavMoverLink, NavPortal};
 
 use crate::collision::SKIN_DISTANCE;
 
-use super::{NavGraph, distance_xz};
+use super::{NavGate, NavGraph, distance_xz};
 
 mod clearance;
 
@@ -24,6 +26,11 @@ mod clearance;
 pub struct NavPath {
     points: Vec<Vec3>,
     mandatory_waypoints: Vec<bool>,
+    /// The gated portals and links the walk crosses, in order, each with the
+    /// waypoint it is crossed toward.
+    crossings: Vec<PathCrossing>,
+    /// The ride this path ends in. The route past it is planned after exit.
+    ride: Option<PlannedRide>,
 }
 
 impl NavPath {
@@ -31,7 +38,17 @@ impl NavPath {
         Self {
             points: vec![start, goal],
             mandatory_waypoints: vec![false, false],
+            crossings: Vec::new(),
+            ride: None,
         }
+    }
+
+    pub(crate) fn crossings(&self) -> &[PathCrossing] {
+        &self.crossings
+    }
+
+    pub(crate) fn ride(&self) -> Option<PlannedRide> {
+        self.ride
     }
 
     /// Split into the parallel `(points, mandatory_waypoints)` vectors. The two
@@ -81,6 +98,71 @@ impl Deref for NavPath {
 /// waypoints are `start`/`goal` (or their disk-boundary standoffs); a goal in the
 /// start region is a trivial two-point `[start, goal]`.
 pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
+    find_path_gated(graph, NavGate::OPEN, start, goal)
+}
+
+/// [`find_path`] refusing every portal `gate` holds closed. Regions are never
+/// gated, so an agent beside a closed door plans out on its own side.
+pub fn find_path_gated(
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    start: Vec3,
+    goal: Vec3,
+) -> Option<NavPath> {
+    let start = NavStart {
+        position: start,
+        ground: GroundRef::World,
+        height: graph.agent.height,
+    };
+    find_path_from(graph, gate, start, goal)
+}
+
+/// Where a route starts: a position, what the body stands on there, and how
+/// tall it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NavStart {
+    pub position: Vec3,
+    pub ground: GroundRef,
+    /// The body's full standing height; its feet sit half of it below
+    /// `position`. Read only on a lift, to find the surface it stands on.
+    pub height: f32,
+}
+
+impl NavStart {
+    /// The region a route from here searches out of, resolved as
+    /// [`find_path_from`] resolves it. `None` off the mesh, and for a body on a
+    /// lift it can ride: its search leaves through the lift's links, so the
+    /// floor under it in XZ says nothing about where it can go.
+    pub(crate) fn region(self, graph: &NavGraph, gate: NavGate<'_>) -> Option<usize> {
+        match search_start(graph, gate, self)? {
+            SearchStart::Region(region) => Some(region),
+            SearchStart::Mover { .. } => None,
+        }
+    }
+}
+
+/// Where the search begins.
+#[derive(Clone, Copy)]
+enum SearchStart {
+    Region(usize),
+    /// On a lift docked at `dock`, its feet at world height `foot`. The floor
+    /// under it in XZ says nothing about where it can go.
+    Mover {
+        mover_id: u32,
+        dock: u32,
+        foot: f32,
+    },
+}
+
+/// [`find_path_gated`] for a body whose ground matters: one standing on a mover
+/// resolves through its links, and a route may end in a ride.
+pub fn find_path_from(
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    from: NavStart,
+    goal: Vec3,
+) -> Option<NavPath> {
+    let start = from.position;
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
     // false, silently collapsing the result to a straight `[start, goal]` line
     // that may cross solid geometry. Reject it rather than emit a path through a
@@ -93,16 +175,25 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
         return None;
     }
 
-    let start_region = graph.resolve_region_at(start)?;
     let goal_region = graph.resolve_region_at(goal)?;
-
-    if start_region == goal_region {
+    let search_start = search_start(graph, gate, from)?;
+    if let SearchStart::Region(start_region) = search_start
+        && start_region == goal_region
+    {
         // Same region: no portal to cross, the straight segment is the path.
         return Some(NavPath::direct(start, goal));
     }
 
-    let corridor = astar_corridor(graph, start, goal, start_region, goal_region)?;
-    let portals = oriented_portals(graph, &corridor);
+    let corridor = astar_corridor(graph, gate, start, goal, search_start, goal_region)?;
+    let route = walked_route(graph, &corridor, start);
+    let goal = route.ride.map_or(goal, |ride| ride.board_point);
+    let ride = route.ride;
+    let portals = &route.edges;
+    if portals.is_empty() {
+        let mut path = NavPath::direct(start, goal);
+        path.ride = ride;
+        return Some(path);
+    }
     // The start/goal guard above does not cover the corridor's own geometry: a
     // corrupt baked portal endpoint (NaN/inf) makes the funnel's area tests false
     // and collapses the corridor to a straight `[start, goal]` line through walls,
@@ -121,16 +212,259 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
     // collision sweep's skin across that seam so a radius-clear corner does
     // not still consume the first steering ticks in `collide_and_slide`.
     let corner_clearance_radius = graph.agent.radius.max(0.0) + SKIN_DISTANCE;
-    let gates = inset_portals(&portals, corner_clearance_radius)?;
+    let gates = inset_portals(portals, corner_clearance_radius)?;
     let pulled_path = funnel(start, goal, &gates);
-    clearance::ensure_endpoint_clearance(&pulled_path, &gates, corner_clearance_radius)
+    let mut path =
+        clearance::ensure_endpoint_clearance(&pulled_path, &gates, corner_clearance_radius)?;
+    path.crossings = locate_crossings(
+        &path.points,
+        &route.edges,
+        &route.crossings,
+        corner_clearance_radius,
+    );
+    path.ride = ride;
+    Some(path)
 }
 
-/// One hop of the region corridor: which portal A* crossed and which direction
-/// (`from_region` is the region the agent leaves through this portal).
-struct CorridorHop {
-    portal_index: usize,
-    from_region: usize,
+/// The search start for a body: its lift's links, or the region under it. A
+/// mover that never rests at its stops is plain ground here, as for
+/// [`NavGraph::between_docks`], which reads the same [`NavGraph::route_mover`].
+fn search_start(graph: &NavGraph, gate: NavGate<'_>, from: NavStart) -> Option<SearchStart> {
+    if let Some(mover_id) = graph.route_mover(gate, from.ground) {
+        // Mid-travel there is nothing to plan from: the ride ends at a dock.
+        let dock = gate.docked_waypoint(mover_id)?;
+        return Some(SearchStart::Mover {
+            mover_id,
+            dock,
+            foot: from.position.y - from.height * 0.5 - SKIN_DISTANCE,
+        });
+    }
+    graph
+        .resolve_region_at(from.position)
+        .map(SearchStart::Region)
+}
+
+/// Standing cost of a ride, in metres of walking: a lift is the long way round
+/// unless it is the only way.
+const RIDE_COST: f32 = 8.0;
+
+/// How far past an edge a boarding or exit walk aims, in capsule radii: well onto
+/// the far surface, so standing there is no accident of the rim.
+const STEP_THROUGH_RADII: f32 = 3.0;
+
+/// The route as walked: funnel edges up to the first ride, the crossings a
+/// mover's dock can close, and that ride.
+struct WalkedRoute {
+    edges: Vec<(Vec3, Vec3)>,
+    crossings: Vec<RouteCrossing>,
+    ride: Option<PlannedRide>,
+}
+
+/// A crossing of the walked route, before the funnel fixes its waypoint.
+struct RouteCrossing {
+    kind: CrossingKind,
+    index: u32,
+    /// Which of the route's funnel edges it is.
+    edge: usize,
+}
+
+impl WalkedRoute {
+    /// Record a crossing over the edge pushed last.
+    fn cross(&mut self, kind: CrossingKind, index: usize) {
+        self.crossings.push(RouteCrossing {
+            kind,
+            index: index as u32,
+            edge: self.edges.len() - 1,
+        });
+    }
+}
+
+fn walked_route(graph: &NavGraph, corridor: &[CorridorHop], start: Vec3) -> WalkedRoute {
+    let portals = graph.portals();
+    let links = graph.links();
+    let reach = STEP_THROUGH_RADII * graph.agent.radius.max(0.1);
+    let mut route = WalkedRoute {
+        edges: Vec::with_capacity(corridor.len()),
+        crossings: Vec::new(),
+        ride: None,
+    };
+    for (index, hop) in corridor.iter().enumerate() {
+        match *hop {
+            CorridorHop::Portal {
+                portal_index,
+                from_region,
+            } => {
+                let portal = &portals[portal_index];
+                let left = Vec3::from_array(portal.left);
+                let right = Vec3::from_array(portal.right);
+                // Crossing region_a -> region_b keeps the bake orientation;
+                // crossing region_b -> region_a reverses it.
+                route
+                    .edges
+                    .push(if from_region == portal.region_a as usize {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    });
+                // An ungated portal never closes, so only a gated one can
+                // cut the route.
+                if !graph.portal_gates(portal_index).is_empty() {
+                    route.cross(CrossingKind::Portal, portal_index);
+                }
+            }
+            CorridorHop::Board { link } => {
+                let boarding = &links[link];
+                // Links run mover to region, so boarding walks them backwards.
+                route.edges.push((
+                    Vec3::from_array(boarding.right),
+                    Vec3::from_array(boarding.left),
+                ));
+                // Walking onto a mover depends on its dock, whether the route
+                // rides it or only walks across.
+                route.cross(CrossingKind::Link, link);
+                if let Some(CorridorHop::Exit {
+                    link: exit,
+                    ride_from: Some(_),
+                }) = corridor.get(index + 1)
+                {
+                    route.ride = Some(planned_ride(
+                        boarding.waypoint,
+                        link_midpoint(boarding) - link_outward(boarding) * reach,
+                        &links[*exit],
+                        reach,
+                    ));
+                    break;
+                }
+            }
+            CorridorHop::Exit { link, ride_from } => {
+                let exit = &links[link];
+                if let Some(dock) = ride_from {
+                    route.ride = Some(planned_ride(dock, start, exit, reach));
+                    break;
+                }
+                route
+                    .edges
+                    .push((Vec3::from_array(exit.left), Vec3::from_array(exit.right)));
+                route.cross(CrossingKind::Link, link);
+            }
+        }
+    }
+    route
+}
+
+/// Distance from an edge's line, in metres, within which a point counts as on
+/// it. Funnel corners are interpolated along portal segments, so they sit on
+/// the line only to rounding.
+const ON_EDGE_LINE: f32 = 1.0e-4;
+
+/// Signed XZ distance of `point` from the line through `edge`: positive on one
+/// side, negative on the other, and zero within [`ON_EDGE_LINE`] of it. `None`
+/// for a degenerate edge.
+pub(super) fn edge_side(edge: (Vec3, Vec3), point: Vec3) -> Option<f32> {
+    let (l, r) = edge;
+    let along = Vec3::new(r.x - l.x, 0.0, r.z - l.z);
+    let length = along.length();
+    if length <= f32::EPSILON || !length.is_finite() {
+        return None;
+    }
+    let side = (along.x * (point.z - l.z) - along.z * (point.x - l.x)) / length;
+    Some(if side.abs() <= ON_EDGE_LINE {
+        0.0
+    } else {
+        side
+    })
+}
+
+/// Pin each crossing to the waypoint the path walks toward as it crosses: the
+/// end of the first segment, at or after the previous crossing's, that leaves
+/// one side of the edge's line for the other within the edge's extent, give or
+/// take `tolerance`. A segment that only ends on the line has not crossed yet,
+/// so a corner on a portal keeps that portal ahead until the agent walks off
+/// the corner. A crossing no segment matches stays at the last waypoint, ahead
+/// until the agent arrives, which can cost a replan but never misses a closure.
+fn locate_crossings(
+    points: &[Vec3],
+    edges: &[(Vec3, Vec3)],
+    crossings: &[RouteCrossing],
+    tolerance: f32,
+) -> Vec<PathCrossing> {
+    let last = points.len().saturating_sub(1) as u32;
+    let segments = points.len().saturating_sub(1);
+    let mut from_segment = 0;
+    crossings
+        .iter()
+        .map(|crossing| {
+            let edge = edges[crossing.edge];
+            let found = (from_segment..segments).find(|&segment| {
+                segment_crosses_edge(points[segment], points[segment + 1], edge, tolerance)
+            });
+            if let Some(segment) = found {
+                from_segment = segment;
+            }
+            PathCrossing {
+                kind: crossing.kind,
+                index: crossing.index,
+                waypoint: found.map_or(last, |segment| segment as u32 + 1),
+            }
+        })
+        .collect()
+}
+
+fn segment_crosses_edge(a: Vec3, b: Vec3, edge: (Vec3, Vec3), tolerance: f32) -> bool {
+    let (Some(side_a), Some(side_b)) = (edge_side(edge, a), edge_side(edge, b)) else {
+        return false;
+    };
+    if side_b == 0.0 || (side_a != 0.0 && side_a.signum() == side_b.signum()) {
+        return false;
+    }
+    // Where the segment meets the line, measured along the edge.
+    let meet = a + (b - a) * (side_a / (side_a - side_b));
+    let (l, r) = edge;
+    let along = Vec3::new(r.x - l.x, 0.0, r.z - l.z);
+    let length = along.length();
+    let at = Vec3::new(meet.x - l.x, 0.0, meet.z - l.z).dot(along) / length;
+    (-tolerance..=length + tolerance).contains(&at)
+}
+
+fn planned_ride(
+    board_waypoint: u32,
+    board_point: Vec3,
+    exit: &NavMoverLink,
+    reach: f32,
+) -> PlannedRide {
+    PlannedRide {
+        mover_id: exit.mover_id,
+        board_waypoint,
+        exit_waypoint: exit.waypoint,
+        board_point,
+        exit_point: link_midpoint(exit) + link_outward(exit) * reach,
+    }
+}
+
+fn link_midpoint(link: &NavMoverLink) -> Vec3 {
+    (Vec3::from_array(link.left) + Vec3::from_array(link.right)) * 0.5
+}
+
+/// The horizontal direction from mover to landing. Links carry portal
+/// handedness, so `left` is on the left walking that way.
+fn link_outward(link: &NavMoverLink) -> Vec3 {
+    let along = Vec3::from_array(link.left) - Vec3::from_array(link.right);
+    Vec3::new(along.z, 0.0, -along.x).normalize_or_zero()
+}
+
+/// One hop of the corridor.
+#[derive(Clone, Copy)]
+enum CorridorHop {
+    /// A portal crossing; `from_region` is the region it leaves.
+    Portal {
+        portal_index: usize,
+        from_region: usize,
+    },
+    /// Stepping onto a docked mover over a link.
+    Board { link: usize },
+    /// Stepping off a mover over a link. `ride_from` is the dock the mover
+    /// carries the body from first, when the exit is not at the boarding dock.
+    Exit { link: usize, ride_from: Option<u32> },
 }
 
 /// Midpoint of a portal's segment as a world position.
@@ -186,21 +520,39 @@ impl Ord for Frontier {
 /// disconnected.
 fn astar_corridor(
     graph: &NavGraph,
+    gate: NavGate<'_>,
     start: Vec3,
     goal: Vec3,
-    start_region: usize,
+    search_start: SearchStart,
     goal_region: usize,
 ) -> Option<Vec<CorridorHop>> {
     let portals = graph.portals();
-    let mid = |portal_index: usize| portal_midpoint(&portals[portal_index]);
-    // The region a directed node arrives in, and the region it was left through.
-    let arrived_region = |node: usize| -> usize {
+    let links = graph.links();
+    // Node ids: `2 * portal + dir`, then per link `board` and `exit`.
+    let link_base = portals.len() * 2;
+    let board_node = |link: usize| link_base + 2 * link;
+    let exit_node = |link: usize| link_base + 2 * link + 1;
+    let link_of = |node: usize| (node - link_base) / 2;
+    let is_board = |node: usize| node >= link_base && (node - link_base).is_multiple_of(2);
+    let link_mid = |link: usize| link_midpoint(&links[link]);
+    let mid = |node: usize| {
+        if node < link_base {
+            portal_midpoint(&portals[node / 2])
+        } else {
+            link_mid(link_of(node))
+        }
+    };
+    // The region a node arrives in; a boarding node arrives on a mover.
+    let arrived_region = |node: usize| -> Option<usize> {
+        if node >= link_base {
+            return (!is_board(node)).then(|| links[link_of(node)].region as usize);
+        }
         let p = &portals[node / 2];
-        if node.is_multiple_of(2) {
+        Some(if node.is_multiple_of(2) {
             p.region_b as usize
         } else {
             p.region_a as usize
-        }
+        })
     };
     let from_region = |node: usize| -> usize {
         let p = &portals[node / 2];
@@ -222,50 +574,164 @@ fn astar_corridor(
             None
         }
     };
+    let surface_tolerance = graph.agent.step_height.max(0.01);
+    // A link of the mover a body stands on at `dock`, its feet at world height
+    // `foot`: its cost to reach from there, and the dock it rides from when it
+    // is not this one. A ride costs its standing price plus the climb, so a
+    // search that starts on the lift prices it as one that boards it does.
+    let leave_mover = |exit: usize, dock: u32, foot: f32| -> Option<(f32, Option<u32>)> {
+        let link = &links[exit];
+        let surface = graph.mover_surface(link.mover_id, dock, foot);
+        if (graph.link_surface(exit) - surface).abs() > surface_tolerance {
+            return None;
+        }
+        if link.waypoint == dock {
+            return Some((0.0, None));
+        }
+        let rides = gate.rests_at_stops(link.mover_id)
+            && gate.moves_on_its_own(link.mover_id)
+            && graph.is_terminus(link.mover_id, dock)
+            && graph.is_terminus(link.mover_id, link.waypoint);
+        let rise = (link.left[1] - foot).abs();
+        rides.then_some((RIDE_COST + rise, Some(dock)))
+    };
 
-    let node_count = portals.len() * 2;
+    let node_count = link_base + 2 * links.len();
     let mut g_score = vec![f32::INFINITY; node_count];
     // `came_from[node] = Some(previous_node)`, or `None` when reached from the
     // virtual start (the first crossing out of `start_region`).
     let mut came_from: Vec<Option<usize>> = vec![None; node_count];
+    // The dock a mover carries the body from before this exit node, if any.
+    let mut rode_from: Vec<Option<u32>> = vec![None; links.len()];
     let mut open = BinaryHeap::new();
 
-    // Seed: cross each portal of the start region, costed from the true start.
-    for &portal_index in graph.region_portal_indices(start_region) {
-        let Some(node) = directed_leaving(portal_index, start_region) else {
-            continue;
-        };
-        let g = distance_xz(start, mid(portal_index));
-        if g < g_score[node] {
-            g_score[node] = g;
-            came_from[node] = None;
-            open.push(Frontier {
-                node,
-                f: g + distance_xz(mid(portal_index), goal),
-            });
+    match search_start {
+        SearchStart::Region(start_region) => {
+            // Seed: cross each portal of the start region, costed from the true start.
+            for &portal_index in graph.region_portal_indices(start_region) {
+                if gate.portal_closed(graph, portal_index) {
+                    continue;
+                }
+                let Some(node) = directed_leaving(portal_index, start_region) else {
+                    continue;
+                };
+                let g = distance_xz(start, mid(node));
+                if g < g_score[node] {
+                    g_score[node] = g;
+                    came_from[node] = None;
+                    open.push(Frontier {
+                        node,
+                        f: g + distance_xz(mid(node), goal),
+                    });
+                }
+            }
+            for &link in graph.region_links(start_region) {
+                if !gate.docked_at(links[link].mover_id, links[link].waypoint) {
+                    continue;
+                }
+                let node = board_node(link);
+                let g = distance_xz(start, link_mid(link));
+                if g < g_score[node] {
+                    g_score[node] = g;
+                    open.push(Frontier {
+                        node,
+                        f: g + distance_xz(link_mid(link), goal),
+                    });
+                }
+            }
+        }
+        SearchStart::Mover {
+            mover_id,
+            dock,
+            foot,
+        } => {
+            for link in graph.mover_links(mover_id) {
+                let Some((cost, ride)) = leave_mover(link, dock, foot) else {
+                    continue;
+                };
+                let node = exit_node(link);
+                let g = distance_xz(start, link_mid(link)) + cost;
+                if g < g_score[node] {
+                    g_score[node] = g;
+                    rode_from[link] = ride;
+                    open.push(Frontier {
+                        node,
+                        f: g + distance_xz(link_mid(link), goal),
+                    });
+                }
+            }
         }
     }
 
     while let Some(Frontier { node, .. }) = open.pop() {
-        let region = arrived_region(node);
+        let Some(region) = arrived_region(node) else {
+            // Standing on a docked mover: every way off it is one step more.
+            let boarded = link_of(node);
+            let link = &links[boarded];
+            for next_link in graph.mover_links(link.mover_id) {
+                if next_link == boarded {
+                    continue;
+                }
+                // The boarding edge lies on the surface the body stands on.
+                let Some((cost, ride)) = leave_mover(next_link, link.waypoint, link.left[1]) else {
+                    continue;
+                };
+                let next = exit_node(next_link);
+                let tentative = g_score[node] + distance_xz(mid(node), link_mid(next_link)) + cost;
+                if tentative < g_score[next] {
+                    g_score[next] = tentative;
+                    came_from[next] = Some(node);
+                    rode_from[next_link] = ride;
+                    open.push(Frontier {
+                        node: next,
+                        f: tentative + distance_xz(link_mid(next_link), goal),
+                    });
+                }
+            }
+            continue;
+        };
         if region == goal_region {
-            return Some(reconstruct(&came_from, &from_region, node));
+            return Some(reconstruct(
+                &came_from,
+                &rode_from,
+                link_base,
+                &from_region,
+                node,
+            ));
         }
 
         for &portal_index in graph.region_portal_indices(region) {
-            if portal_index == node / 2 {
+            if node < link_base && portal_index == node / 2 {
                 continue; // don't immediately re-cross the portal just crossed
+            }
+            if gate.portal_closed(graph, portal_index) {
+                continue;
             }
             let Some(next) = directed_leaving(portal_index, region) else {
                 continue;
             };
-            let tentative = g_score[node] + distance_xz(mid(node / 2), mid(portal_index));
+            let tentative = g_score[node] + distance_xz(mid(node), mid(next));
             if tentative < g_score[next] {
                 g_score[next] = tentative;
                 came_from[next] = Some(node);
                 open.push(Frontier {
                     node: next,
-                    f: tentative + distance_xz(mid(portal_index), goal),
+                    f: tentative + distance_xz(mid(next), goal),
+                });
+            }
+        }
+        for &link in graph.region_links(region) {
+            if !gate.docked_at(links[link].mover_id, links[link].waypoint) {
+                continue;
+            }
+            let next = board_node(link);
+            let tentative = g_score[node] + distance_xz(mid(node), link_mid(link));
+            if tentative < g_score[next] {
+                g_score[next] = tentative;
+                came_from[next] = Some(node);
+                open.push(Frontier {
+                    node: next,
+                    f: tentative + distance_xz(link_mid(link), goal),
                 });
             }
         }
@@ -275,47 +741,37 @@ fn astar_corridor(
 }
 
 /// Walk `came_from` back from the closing crossing to build the forward-ordered
-/// corridor. Each directed node is one `CorridorHop` (its portal plus the region
-/// it was left through).
+/// corridor.
 fn reconstruct(
     came_from: &[Option<usize>],
+    rode_from: &[Option<u32>],
+    link_base: usize,
     from_region: &impl Fn(usize) -> usize,
     end_node: usize,
 ) -> Vec<CorridorHop> {
     let mut hops = Vec::new();
     let mut current = Some(end_node);
     while let Some(node) = current {
-        hops.push(CorridorHop {
-            portal_index: node / 2,
-            from_region: from_region(node),
+        hops.push(if node < link_base {
+            CorridorHop::Portal {
+                portal_index: node / 2,
+                from_region: from_region(node),
+            }
+        } else {
+            let link = (node - link_base) / 2;
+            if (node - link_base).is_multiple_of(2) {
+                CorridorHop::Board { link }
+            } else {
+                CorridorHop::Exit {
+                    link,
+                    ride_from: rode_from[link],
+                }
+            }
         });
         current = came_from[node];
     }
     hops.reverse();
     hops
-}
-
-/// Resolve each corridor hop to a traversal-oriented `(left, right)` portal
-/// segment. Stored `left`/`right` are bake-fixed relative to `region_a < region_b`;
-/// when the agent crosses from `region_b` to `region_a` the handedness flips, so
-/// swap them to keep "left" on the agent's left for the funnel.
-fn oriented_portals(graph: &NavGraph, corridor: &[CorridorHop]) -> Vec<(Vec3, Vec3)> {
-    let portals = graph.portals();
-    corridor
-        .iter()
-        .map(|hop| {
-            let portal = &portals[hop.portal_index];
-            let left = Vec3::from_array(portal.left);
-            let right = Vec3::from_array(portal.right);
-            // Crossing region_a -> region_b keeps the bake orientation; crossing
-            // region_b -> region_a reverses it.
-            if hop.from_region == portal.region_a as usize {
-                (left, right)
-            } else {
-                (right, left)
-            }
-        })
-        .collect()
 }
 
 /// Twice the signed area of triangle (a, b, c) on the XZ plane. The sign encodes
@@ -526,6 +982,8 @@ mod tests {
             max_slope_deg: 45.0,
             regions,
             portals,
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -719,6 +1177,50 @@ mod tests {
                 "segment {segment:?} cuts the corner disk: clearance={clearance}, path={path:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_route_records_each_gated_portal_at_the_waypoint_it_is_walked_toward() {
+        use postretro_level_format::navmesh::NavMoverGate;
+
+        let mut section = l_corridor_section();
+        section.gates = (0..2)
+            .map(|portal| NavMoverGate {
+                mover_id: 1,
+                waypoint: 0,
+                portal,
+            })
+            .collect();
+        let graph = NavGraph::from_section(&section);
+        let path = find_path(&graph, Vec3::new(1.0, 0.0, 1.0), Vec3::new(7.0, 0.0, 5.0))
+            .expect("L corridor connects");
+        // The bend sits on the second portal's line; reaching it does not cross.
+        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius + SKIN_DISTANCE);
+        let corner = path
+            .iter()
+            .position(|w| approx_xz(*w, inset_corner))
+            .expect("the route bends at the inset corner") as u32;
+
+        let crossings = path.crossings();
+        assert_eq!(crossings.len(), 2, "{crossings:?}");
+        assert_eq!(
+            (crossings[0].kind, crossings[0].index),
+            (CrossingKind::Portal, 0)
+        );
+        assert!(crossings[0].waypoint <= corner, "{crossings:?} {path:?}");
+        assert_eq!(
+            (crossings[1].kind, crossings[1].index, crossings[1].waypoint),
+            (CrossingKind::Portal, 1, corner + 1),
+            "{path:?}"
+        );
+    }
+
+    #[test]
+    fn an_ungated_portal_is_no_crossing() {
+        let graph = NavGraph::from_section(&l_corridor_section());
+        let path = find_path(&graph, Vec3::new(1.0, 0.0, 1.0), Vec3::new(7.0, 0.0, 5.0))
+            .expect("L corridor connects");
+        assert!(path.crossings().is_empty(), "no mover can close it");
     }
 
     // Raw wide-portal endpoints of `l_corridor_section`: the two ends of the z=4
@@ -1337,6 +1839,193 @@ mod tests {
         assert!(
             find_path(&graph, start, goal).is_none(),
             "an unthreadable sub-2*clearance pinch must drop to a clean None"
+        );
+    }
+
+    const LIFT: u32 = 3;
+    /// The lift's top dock: as high as the east floor.
+    const LIFT_TOP: f32 = 8.0;
+
+    /// A lift whose deck spans x 10..14, z 3..7, docked low between the west
+    /// floor (region 0) and, docked high, the east floor (region 2). A corridor
+    /// north of the shaft (region 1) walks round from west to east.
+    fn lift_and_walk_round() -> (NavGraph, crate::kinematic_mover::MoverDockTable) {
+        let region = |x0, z0, x1, z1, low, high| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1,
+            floor_y_min: low,
+            floor_y_max: high,
+        };
+        let mut section = section(
+            vec![
+                region(0, 0, 10, 10, 0.0, 0.0),
+                region(6, 10, 14, 12, 0.0, LIFT_TOP),
+                region(14, 0, 24, 12, LIFT_TOP, LIFT_TOP),
+            ],
+            vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [6.0, 0.0, 10.0],
+                    right: [10.0, 0.0, 10.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [14.0, LIFT_TOP, 12.0],
+                    right: [14.0, LIFT_TOP, 10.0],
+                },
+            ],
+        );
+        section.links = vec![
+            NavMoverLink {
+                mover_id: LIFT,
+                waypoint: 0,
+                region: 0,
+                left: [10.0, 0.0, 3.0],
+                right: [10.0, 0.0, 7.0],
+            },
+            NavMoverLink {
+                mover_id: LIFT,
+                waypoint: 1,
+                region: 2,
+                left: [14.0, LIFT_TOP, 7.0],
+                right: [14.0, LIFT_TOP, 3.0],
+            },
+        ];
+        let mut graph = NavGraph::from_section(&section);
+        graph.validate_mover_records(&[crate::nav::NavMoverBound {
+            mover_id: LIFT,
+            waypoint_heights: vec![0.0, LIFT_TOP],
+        }]);
+
+        let mut movers = crate::kinematic_mover::MoverTickStateTable::default();
+        movers.watch_mover_docks(&[], &[(LIFT, 0), (LIFT, 1)]);
+        let mut docks = movers.docks().clone();
+        // Started and waiting at its low dock: it rests there and will leave.
+        docks.update(&postretro_entities::KinematicMoverComponent::new(
+            LIFT,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::Y * LIFT_TOP],
+                waypoint_names: vec!["low".into(), "high".into()],
+                speed_mps: 2.0,
+                wait_ms: 500.0,
+                mode: postretro_entities::KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        ));
+        (graph, docks)
+    }
+
+    /// A body of `height` standing on the lift's deck at its low dock.
+    fn aboard(height: f32) -> NavStart {
+        NavStart {
+            position: Vec3::new(12.0, height * 0.5 + SKIN_DISTANCE, 5.0),
+            ground: GroundRef::Mover(LIFT),
+            height,
+        }
+    }
+
+    // A ride from the deck costs its climb, as one boarded from the floor does:
+    // here the walk round is shorter than the ride's standing price plus its
+    // 8 m rise, though not shorter than the standing price alone.
+    #[test]
+    fn a_ride_from_the_deck_costs_its_climb_like_one_boarded_from_the_floor() {
+        let (graph, docks) = lift_and_walk_round();
+        let gate = NavGate::new(&docks);
+        let goal = Vec3::new(20.0, LIFT_TOP + 0.9 + SKIN_DISTANCE, 5.0);
+
+        let path = find_path_from(&graph, gate, aboard(1.8), goal).expect("a route east");
+
+        assert!(path.ride().is_none(), "walked round: {path:?}");
+        assert!(
+            path.iter().any(|point| point.z > 10.0),
+            "through the north corridor: {path:?}"
+        );
+    }
+
+    // The deck surface a body stands on comes from its own height, not the
+    // baked agent's: a short body on the deck still leaves by the deck's links.
+    #[test]
+    fn a_body_on_a_lift_finds_its_deck_from_its_own_height() {
+        let (graph, docks) = lift_and_walk_round();
+        let gate = NavGate::new(&docks);
+        let west = Vec3::new(5.0, 0.9 + SKIN_DISTANCE, 5.0);
+
+        let short = aboard(0.8);
+        assert!(
+            find_path_from(&graph, gate, short, west).is_some(),
+            "it steps off onto the west floor"
+        );
+        let misread = NavStart {
+            height: graph.agent_params().height,
+            ..short
+        };
+        assert!(
+            find_path_from(&graph, gate, misread, west).is_none(),
+            "read at the baked height, its feet sit below the deck"
+        );
+    }
+
+    // Known failure, outside the E17 mover work: the mover-setpiece riders'
+    // route out of the risen room rounds this corner. The bake's rounded
+    // erosion at a floor hole leaves one-cell strips whose portal endpoints sit
+    // about 0.35 m apart; their clearance disks overlap, each bevel lands inside the
+    // next disk, and the repair spends its budget, so the route reads as none.
+    #[test]
+    #[ignore = "known failure: clearance repair livelocks on a stepped eroded corner"]
+    fn a_route_rounds_a_stepped_eroded_corner() {
+        // The regions and portals `mover-setpiece` bakes at the rising-room
+        // shaft's corner, re-indexed west to east.
+        let strip = |x0, z0, x1| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1: 127,
+            floor_y_min: 0.0,
+            floor_y_max: 0.0,
+        };
+        let step = |region_a: u32, x: f32, z: f32| NavPortal {
+            region_a,
+            region_b: region_a + 1,
+            left: [x, 0.0, -0.762],
+            right: [x, 0.0, z],
+        };
+        let section = NavMeshSection {
+            origin: [-40.64, -4.8768, -32.512],
+            cell_size: 0.25,
+            dim_x: 163,
+            dim_z: 131,
+            agent_radius: 0.4,
+            step_height: 0.5,
+            ..section(
+                vec![
+                    strip(113, 49, 147),
+                    strip(147, 48, 148),
+                    strip(148, 47, 149),
+                    strip(149, 12, 160),
+                ],
+                vec![
+                    step(0, -3.89, -20.262),
+                    step(1, -3.64, -20.512),
+                    step(2, -3.39, -20.762),
+                ],
+            )
+        };
+        let graph = NavGraph::from_section(&section);
+        let start = Vec3::new(-5.0, 0.0, -10.0);
+        let goal = Vec3::new(-2.0, 0.0, -27.0);
+        assert_eq!(graph.region_at(start), Some(0));
+        assert_eq!(graph.region_at(goal), Some(3));
+        assert!(
+            find_path(&graph, start, goal).is_some(),
+            "a corridor joins the two regions, so a route exists"
         );
     }
 }

@@ -1,0 +1,43 @@
+{
+ "map": "content/dev/maps/movement-feel.prl",
+ "ticks": 900,
+ "commands": [
+  {
+   "tick": 0,
+   "movement": {
+    "wish_dir": [
+     0.0,
+     1.0
+    ],
+    "running": true
+   }
+  },
+  {
+   "tick": 120,
+   "movement": {
+    "wish_dir": [
+     1.0,
+     0.3
+    ]
+   }
+  },
+  {
+   "tick": 260,
+   "movement": {
+    "wish_dir": [
+     -0.5,
+     -1.0
+    ],
+    "running": true
+   }
+  },
+  {
+   "tick": 500
+  }
+ ],
+ "dump": {
+  "component": "transform",
+  "cap": 100000,
+  "events": false
+ }
+}

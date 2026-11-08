@@ -1,12 +1,14 @@
-//! Host pin test: whether a mover's next course pins a player pawn against
-//! static geometry or another mover, and the yield every policy but `crush`
-//! answers a pin with.
+//! Host pin test: whether a mover's next course pins a player pawn or a living
+//! agent against static geometry or another mover, and the yield every policy
+//! but `crush` answers a pin with.
 //! See: context/lib/movement.md §6 · context/lib/networking.md §Current contract
 
 use std::collections::{HashMap, HashSet};
 
 use glam::Vec3;
 use parry3d::shape::Capsule;
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::health::is_quiescent;
 use postretro_entities::{
     BlockPolicy, ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     Transform,
@@ -14,17 +16,20 @@ use postretro_entities::{
 use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 use super::MoverEventKind;
-use super::blocking::{MoverBlockingState, effective_block_policy, pose_has_motion};
+use super::blocking::{
+    AgentMoverPair, MoverBlockingState, effective_block_policy, pose_has_motion,
+};
 use crate::collision::moving::{
     MoverCollider, MoverPose, MoverPoseSource, cast_capsule_against_movers,
-    deepest_mover_push_penetration,
+    deepest_mover_penetration, deepest_mover_push_penetration, point_inside_mover,
 };
 use crate::collision::{
     CollisionCapsule, CollisionWorld, MAP_UNIT_METRES, SKIN_DISTANCE, cast_capsule_parry_to,
 };
 use crate::movement::carry_ground_for;
 
-/// A player pawn as the pin test reads it.
+/// A body as the pin test reads it: a player pawn, a living agent or, for
+/// `crush` alone, a corpse.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PawnBody {
     pub(super) entity: EntityId,
@@ -34,38 +39,84 @@ pub(super) struct PawnBody {
     pub(super) ground: GroundRef,
     /// The ground the next movement tick carries this body with.
     pub(super) carry_ground: GroundRef,
+    /// An agent, not a player pawn: steering hears of its yields, and a
+    /// crusher that swallows it whole still counts as pinning it.
+    pub(super) agent: bool,
 }
 
-/// A pawn the mover's previewed course pins, and the direction the mover
+/// A body the mover's previewed course pins, and the direction the mover
 /// drives it: the carry for a rider, the push for any other body.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PinnedBody {
+    pub(super) entity: EntityId,
+    pub(super) agent: bool,
     pub(super) direction: Vec3,
     pub(super) rider: bool,
 }
 
-/// Every player pawn the pass and the pin test consider. Agents are never
-/// carried or displaced, so no mover pins one.
-pub(super) fn pawn_bodies(registry: &EntityRegistry) -> Vec<PawnBody> {
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .filter_map(|(entity, _)| {
-            if registry.is_inventory_owned(entity) {
-                return None;
-            }
-            let movement = registry
-                .get_component::<PlayerMovementComponent>(entity)
-                .ok()?;
-            let transform = registry.get_component::<Transform>(entity).ok()?;
-            Some(PawnBody {
-                entity,
-                position: transform.position,
-                capsule: Capsule::new_y(movement.capsule.half_height, movement.capsule.radius),
-                ground: movement.ground,
-                carry_ground: carry_ground_for(&movement.movement_state, movement.ground),
+/// Fill `bodies` with every body the pass and the pin test consider: player
+/// pawns, then living agents, then corpses. Returns how many precede the
+/// corpses: the slice that can stop, reverse or hold a mover, which liveness
+/// fixes here for the whole pass. A held agent is out of the world altogether,
+/// as steering treats it.
+pub(super) fn collect_bodies(registry: &EntityRegistry, bodies: &mut Vec<PawnBody>) -> usize {
+    bodies.clear();
+    bodies.extend(
+        registry
+            .iter_with_kind(ComponentKind::PlayerMovement)
+            .filter_map(|(entity, _)| {
+                if registry.is_inventory_owned(entity) {
+                    return None;
+                }
+                let movement = registry
+                    .get_component::<PlayerMovementComponent>(entity)
+                    .ok()?;
+                let transform = registry.get_component::<Transform>(entity).ok()?;
+                Some(PawnBody {
+                    entity,
+                    position: transform.position,
+                    capsule: Capsule::new_y(movement.capsule.half_height, movement.capsule.radius),
+                    ground: movement.ground,
+                    carry_ground: carry_ground_for(&movement.movement_state, movement.ground),
+                    agent: false,
+                })
+            }),
+    );
+    let agents = |quiescent: bool| {
+        registry
+            .iter_with_kind(ComponentKind::Agent)
+            .filter_map(move |(entity, value)| {
+                if registry.is_inventory_owned(entity)
+                    || is_quiescent(registry, entity) != quiescent
+                {
+                    return None;
+                }
+                let ComponentValue::Agent(agent) = value else {
+                    return None;
+                };
+                agent_body(registry, entity, agent)
             })
-        })
-        .collect()
+    };
+    bodies.extend(agents(false));
+    let living = bodies.len();
+    bodies.extend(agents(true));
+    living
+}
+
+fn agent_body(
+    registry: &EntityRegistry,
+    entity: EntityId,
+    agent: &AgentComponent,
+) -> Option<PawnBody> {
+    let transform = registry.get_component::<Transform>(entity).ok()?;
+    Some(PawnBody {
+        entity,
+        position: transform.position,
+        capsule: Capsule::new_y(agent.half_height(), agent.radius),
+        ground: agent.ground,
+        carry_ground: agent.ground,
+        agent: true,
+    })
 }
 
 /// One mover at one pose: a previewed course tested alone.
@@ -89,9 +140,17 @@ pub(super) struct PinWorld<'a> {
     /// Each nearby moving mover's previewed next-tick translation, by mover
     /// id; a mover absent here is parked.
     pub(super) next_travel: &'a HashMap<u32, Vec3>,
+    /// Agents that yield to one mover as a corpse does: that mover neither
+    /// pins them nor reacts to touching them.
+    pub(super) corpse_yields: &'a [AgentMoverPair],
 }
 
 impl PinWorld<'_> {
+    /// Whether `body` has given way to `mover_id`, which then passes through it.
+    pub(super) fn yields_as_corpse(&self, body: &PawnBody, mover_id: u32) -> bool {
+        self.corpse_yields.contains(&(body.entity, mover_id))
+    }
+
     /// Whether moving `capsule` from `position` by `motion` meets static
     /// geometry or a mover other than `mover_id`, stopping `target_distance`
     /// short of surfaces. Each other mover is swept against by the motion
@@ -160,20 +219,15 @@ impl PinWorld<'_> {
         body: &PawnBody,
     ) -> Option<PinnedBody> {
         let mover_id = collider.mover_id;
+        if self.yields_as_corpse(body, mover_id) {
+            return None;
+        }
         if body.carry_ground == GroundRef::Mover(mover_id) {
-            // The chord from `apply_mover_carry`'s start to its end stands in
-            // for the tick's arc.
-            let pivot = preview.transform.position - preview.tick_delta;
-            let carried =
-                pivot + preview.tick_rotation_delta * (body.position - pivot) + preview.tick_delta;
-            let carry = carried - body.position;
-            // One skin width short, as the push test: a contact-only sweep
-            // would leave the rider touching a ceiling mover, which then reads
-            // that contact as a push when it slides. A rider left under one
-            // skin of headroom holds one tick short of its stop, and warns.
             return self
-                .sweep_is_blocked(mover_id, body.position, &body.capsule, carry, SKIN_DISTANCE)
-                .then(|| PinnedBody {
+                .blocked_carry(mover_id, preview, body.position, &body.capsule)
+                .map(|carry| PinnedBody {
+                    entity: body.entity,
+                    agent: body.agent,
                     direction: carry.normalize_or_zero(),
                     rider: true,
                 });
@@ -190,9 +244,33 @@ impl PinWorld<'_> {
         )?;
         self.push_is_blocked(mover_id, body, push.normal, push.depth)
             .then_some(PinnedBody {
+                entity: body.entity,
+                agent: body.agent,
                 direction: push.normal,
                 rider: false,
             })
+    }
+
+    /// The carry `preview` gives a rider of `mover_id` standing at `position`,
+    /// when that carry would sweep into a blocker; `None` when it rides on clear.
+    pub(super) fn blocked_carry(
+        &self,
+        mover_id: u32,
+        preview: MoverPose,
+        position: Vec3,
+        capsule: &Capsule,
+    ) -> Option<Vec3> {
+        // The chord from `apply_mover_carry`'s start to its end stands in for
+        // the tick's arc.
+        let pivot = preview.transform.position - preview.tick_delta;
+        let carried = pivot + preview.tick_rotation_delta * (position - pivot) + preview.tick_delta;
+        let carry = carried - position;
+        // One skin width short, as the push test: a contact-only sweep would
+        // leave the rider touching a ceiling mover, which then reads that
+        // contact as a push when it slides. A rider left under one skin of
+        // headroom holds one tick short of its stop, and warns.
+        self.sweep_is_blocked(mover_id, position, capsule, carry, SKIN_DISTANCE)
+            .then_some(carry)
     }
 
     /// Whether `body` already overlaps static geometry: a crusher's rider it
@@ -204,9 +282,19 @@ impl PinWorld<'_> {
         )
     }
 
+    /// Whether the mover wholly contains `body`. Contact sees only triangles,
+    /// so a capsule inside a hull reads clear; with no triangle crossing it,
+    /// its whole axis lies on one side of the surface and its centre answers
+    /// for all of it.
+    pub(super) fn is_engulfed(&self, collider: &MoverCollider, body: &PawnBody) -> bool {
+        let mover = std::slice::from_ref(collider);
+        deepest_mover_penetration(mover, self.mover_poses, body.position, &body.capsule).is_none()
+            && point_inside_mover(mover, self.mover_poses, body.position)
+    }
+
     /// Whether a mover's push on `body` along `normal` for `depth` is blocked
-    /// by static geometry or another mover. The static half mirrors the
-    /// substrate's `mover_push_is_blocked_by_static` skin cast.
+    /// by static geometry or another mover. The static half mirrors the skin
+    /// cast of `mover_push_is_blocked_by_static` in `movement/mover_carry.rs`.
     pub(super) fn push_is_blocked(
         &self,
         mover_id: u32,
@@ -312,6 +400,7 @@ pub(super) fn hold_movers_pinned_by_held_neighbours(
     mover_colliders: &[MoverCollider],
     mover_poses: &dyn MoverPoseSource,
     bodies: &[PawnBody],
+    corpse_yields: &[AgentMoverPair],
     blocking_state: &mut MoverBlockingState,
     tick_dt: f32,
     events: &mut Vec<(MoverEventKind, u32)>,
@@ -362,6 +451,7 @@ pub(super) fn hold_movers_pinned_by_held_neighbours(
                 mover_colliders,
                 mover_poses,
                 next_travel: &travel,
+                corpse_yields,
             };
             pins.clear();
             pins.extend(
@@ -409,6 +499,41 @@ pub(super) fn reverse_course(mover: &mut KinematicMoverComponent) {
     mover.wait_remaining_ms = 0.0;
 }
 
+/// The pose `mover` would reach on its reversed course.
+fn reversed_preview(
+    mover: &KinematicMoverComponent,
+    transform: Transform,
+    tick_dt: f32,
+) -> MoverPose {
+    let mut reversed = mover.clone();
+    reverse_course(&mut reversed);
+    super::preview_next_mover_pose(&reversed, transform, tick_dt, false)
+}
+
+/// Record the agents whose pin on a mover's reversed course turned its reversal
+/// into a hold: they are what it yielded to, not the body it first touched.
+pub(super) fn note_agents_pinned_by_reversal(
+    world: &PinWorld<'_>,
+    collider: &MoverCollider,
+    mover: &KinematicMoverComponent,
+    transform: Transform,
+    tick_dt: f32,
+    bodies: &[PawnBody],
+    blocking_state: &mut MoverBlockingState,
+) {
+    let preview = reversed_preview(mover, transform, tick_dt);
+    if !pose_has_motion(preview) {
+        return;
+    }
+    for pin in bodies
+        .iter()
+        .filter(|body| body.agent)
+        .filter_map(|body| world.pin(collider, preview, body))
+    {
+        blocking_state.note_agent_yield(pin.entity, mover.mover_id);
+    }
+}
+
 /// Whether reversing `mover` gives a course that moves and pins none of
 /// `bodies`. A reversal never commits a course no test previewed, and one
 /// that goes nowhere (a mover still at its start) is no back-off: it holds.
@@ -420,9 +545,7 @@ pub(super) fn reversed_course_is_clear(
     tick_dt: f32,
     bodies: &[PawnBody],
 ) -> bool {
-    let mut reversed = mover.clone();
-    reverse_course(&mut reversed);
-    let preview = super::preview_next_mover_pose(&reversed, transform, tick_dt, false);
+    let preview = reversed_preview(mover, transform, tick_dt);
     pose_has_motion(preview)
         && bodies
             .iter()
@@ -458,8 +581,9 @@ pub(super) fn choose_yield(
     }
 }
 
-/// Apply a yield, fire the Blocked edge on a new pin (`onset`), and warn once
-/// per mover per level load when the pin is a rider's.
+/// Apply a yield, fire the Blocked edge on a new pin (`onset`), record each
+/// pinned agent for steering, and warn once per mover per level load when the
+/// pin is a rider's.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_yield(
     mover: &mut KinematicMoverComponent,
@@ -478,6 +602,9 @@ pub(super) fn apply_yield(
     if onset {
         events.push((MoverEventKind::Blocked, mover.mover_id));
     }
+    for pin in pins.iter().filter(|pin| pin.agent) {
+        blocking_state.note_agent_yield(pin.entity, mover.mover_id);
+    }
     if pins.iter().any(|pin| pin.rider) && blocking_state.claim_rider_yield_warning(entity) {
         let map = Vec3::new(-position.z, -position.x, position.y) / MAP_UNIT_METRES;
         log::warn!(
@@ -489,6 +616,120 @@ pub(super) fn apply_yield(
             map.z,
         );
     }
+}
+
+/// Drop every corpse yield whose agent has left its mover: no overlap, no hull
+/// around it, no course of the mover's about to reach it, and, for a rider, no
+/// carry of the mover's still blocked. A mover held short of a yielding agent
+/// touches it only by that course, and a rider a skin above its deck only by
+/// that carry; dropping the yield then would hold the mover forever. `bodies`
+/// is the pass's full body list; an agent missing from it has despawned or been
+/// picked up.
+pub(super) fn retain_corpse_yields_in_contact(
+    corpse_yields: &mut Vec<AgentMoverPair>,
+    registry: &EntityRegistry,
+    static_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    bodies: &[PawnBody],
+    tick_dt: f32,
+) {
+    // Other movers count as parked for the rider's carry here: the pass has
+    // not previewed their travel yet. An empty map allocates nothing.
+    let parked = HashMap::new();
+    let carry_world = PinWorld {
+        static_world,
+        mover_colliders,
+        mover_poses,
+        next_travel: &parked,
+        corpse_yields: &[],
+    };
+    corpse_yields.retain(|&(agent, mover_id)| {
+        let Some(body) = bodies.iter().find(|body| body.entity == agent) else {
+            return false;
+        };
+        let Some(collider) = mover_colliders
+            .iter()
+            .find(|collider| collider.mover_id == mover_id)
+        else {
+            return false;
+        };
+        let Some((entity, mover)) = registry
+            .iter_with_kind(ComponentKind::KinematicMover)
+            .find_map(|(entity, value)| match value {
+                ComponentValue::KinematicMover(mover) if mover.mover_id == mover_id => {
+                    Some((entity, mover))
+                }
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        // A crusher damages what it touches: nothing yields to one as a corpse.
+        if effective_block_policy(mover) == BlockPolicy::Crush {
+            return false;
+        }
+        let collider = std::slice::from_ref(collider);
+        if deepest_mover_penetration(collider, mover_poses, body.position, &body.capsule).is_some()
+            || point_inside_mover(collider, mover_poses, body.position)
+        {
+            return true;
+        }
+        if !mover.started || mover.completed {
+            return false;
+        }
+        let Ok(transform) = registry.get_component::<Transform>(entity) else {
+            return false;
+        };
+        let preview = super::preview_next_mover_pose(mover, *transform, tick_dt, true);
+        if rides_into_a_blocker(&carry_world, collider, mover_poses, preview, body) {
+            return true;
+        }
+        let course = OneMoverPose {
+            mover_id,
+            pose: preview,
+        };
+        deepest_mover_push_penetration(collider, &course, body.position, &body.capsule).is_some()
+    });
+}
+
+/// Whether `body` rides the one mover in `collider` into a blocker: the carry
+/// `preview` gives it is blocked, as `pin()` tests a rider, or the carry has
+/// already pressed it into static geometry.
+///
+/// A rider carried into a wall is a rider still: pressed against the wall, its
+/// ground can read the wall or nothing for a tick. Standing on the deck, a short
+/// cast down says so.
+fn rides_into_a_blocker(
+    world: &PinWorld<'_>,
+    collider: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    preview: MoverPose,
+    body: &PawnBody,
+) -> bool {
+    let Some(mover) = collider.first() else {
+        return false;
+    };
+    let mover_id = mover.mover_id;
+    let embedded = world.is_embedded(body);
+    let rides = body.carry_ground == GroundRef::Mover(mover_id)
+        || mover_poses.pose(mover_id).is_some_and(|pose| {
+            cast_capsule_against_movers(
+                collider,
+                &OneMoverPose { mover_id, pose },
+                body.position,
+                &body.capsule,
+                Vec3::NEG_Y,
+                2.0 * SKIN_DISTANCE,
+                SKIN_DISTANCE,
+            )
+            .is_some()
+        });
+    rides
+        && (embedded
+            || world
+                .blocked_carry(mover_id, preview, body.position, &body.capsule)
+                .is_some())
 }
 
 /// Re-test every started mover before the mover tick. Commands applied after
@@ -515,7 +756,6 @@ pub fn run_mover_pin_pretest(
     if movers.is_empty() {
         return;
     }
-    let bodies = pawn_bodies(registry);
     // A crusher never holds; a hold left from a policy switched to `crush`
     // after the pass releases before this tick moves it, and before its
     // travel is previewed.
@@ -527,10 +767,42 @@ pub fn run_mover_pin_pretest(
             mover.blocked = false;
         }
     }
+    let (mut bodies, corpse_yields) = blocking_state.take_pin_inputs();
+    let living = collect_bodies(registry, &mut bodies);
+    yield_to_pins(
+        registry,
+        static_world,
+        mover_colliders,
+        mover_poses,
+        &bodies[..living],
+        &corpse_yields,
+        &movers,
+        blocking_state,
+        tick_dt,
+        events,
+    );
+    blocking_state.restore_pin_inputs(bodies, corpse_yields);
+}
+
+/// The pre-tick test proper: yield every started mover whose course pins one of
+/// `bodies`.
+#[allow(clippy::too_many_arguments)]
+fn yield_to_pins(
+    registry: &mut EntityRegistry,
+    static_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    bodies: &[PawnBody],
+    corpse_yields: &[AgentMoverPair],
+    movers: &[EntityId],
+    blocking_state: &mut MoverBlockingState,
+    tick_dt: f32,
+    events: &mut Vec<(MoverEventKind, u32)>,
+) {
     if bodies.is_empty() {
         return;
     }
-    let mut travel = next_mover_travel(registry, mover_colliders, &bodies, tick_dt, false);
+    let mut travel = next_mover_travel(registry, mover_colliders, bodies, tick_dt, false);
     let mut held = HashSet::new();
     let mut reversed = HashSet::new();
     let mut pins = Vec::new();
@@ -540,7 +812,7 @@ pub fn run_mover_pin_pretest(
     // it holds.
     loop {
         let mut any_yield = false;
-        for &entity in &movers {
+        for &entity in movers {
             if held.contains(&entity) {
                 continue;
             }
@@ -564,7 +836,7 @@ pub fn run_mover_pin_pretest(
             else {
                 continue;
             };
-            if !any_body_in_reach(collider, mover, transform.position, tick_dt, &bodies) {
+            if !any_body_in_reach(collider, mover, transform.position, tick_dt, bodies) {
                 continue;
             }
             let preview = super::preview_next_mover_pose(mover, transform, tick_dt, true);
@@ -576,6 +848,7 @@ pub fn run_mover_pin_pretest(
                 mover_colliders,
                 mover_poses,
                 next_travel: &travel,
+                corpse_yields,
             };
             pins.clear();
             pins.extend(
@@ -589,7 +862,7 @@ pub fn run_mover_pin_pretest(
             let response = if reversed.contains(&entity) {
                 PinYield::Hold
             } else {
-                choose_yield(&world, collider, mover, transform, tick_dt, &pins, &bodies)
+                choose_yield(&world, collider, mover, transform, tick_dt, &pins, bodies)
             };
             // A mover already held, or already yielded here, has not been
             // released: no new onset.

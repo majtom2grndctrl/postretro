@@ -329,6 +329,9 @@ macro_rules! test_tick_runner {
             });
             let external_inputs = $crate::__postretro_sim::ai_host::AiTickInputs {
                 nav_graph: rebuilt_nav.as_ref(),
+                // The runner bridges two builds of `postretro_sim`, whose dock
+                // tables are different types; a gate test drives `ai` directly.
+                mover_nav: $crate::__postretro_sim::nav::MoverNav::none(),
                 collision_world: inputs.collision_world,
                 descriptors: inputs.descriptors,
                 descriptor_generation: inputs.descriptor_generation,
@@ -406,6 +409,7 @@ pub(crate) fn run_ai_tick_with_navigation(
         tick_dt,
         AiTickInputs {
             nav_graph,
+            mover_nav: crate::nav::MoverNav::none(),
             collision_world,
             descriptors: &[],
             descriptor_generation: 0,
@@ -444,6 +448,7 @@ where
 {
     let AiTickInputs {
         nav_graph,
+        mover_nav,
         collision_world,
         descriptors,
         descriptor_generation,
@@ -517,12 +522,19 @@ where
             tick_dt,
             dt_ms,
             nav_graph,
+            mover_nav.gate,
             collision_world,
             &live_factions,
         )
     };
 
-    resolve_combat_slots(&mut outcomes, nav_graph, collision_world);
+    resolve_combat_slots(
+        registry,
+        &mut outcomes,
+        nav_graph,
+        mover_nav,
+        collision_world,
+    );
 
     apply::apply_outcomes(
         registry,

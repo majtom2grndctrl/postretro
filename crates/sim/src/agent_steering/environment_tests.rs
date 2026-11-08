@@ -178,7 +178,7 @@ fn agent_pose(registry: &EntityRegistry, id: EntityId) -> (Vec3, bool) {
     let grounded = registry
         .get_component::<AgentComponent>(id)
         .unwrap()
-        .is_grounded;
+        .is_grounded();
     (position, grounded)
 }
 

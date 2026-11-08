@@ -1424,6 +1424,8 @@ fn open_floor_nav_graph() -> NavGraph {
             floor_y_max: 0.25,
         }],
         portals: vec![],
+        gates: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -1479,6 +1481,8 @@ fn test_tick_runner_nav_bridge_preserves_section_and_path_queries() {
                 right: [2.0, 0.4, -3.0],
             },
         ],
+        gates: Vec::new(),
+        links: Vec::new(),
     };
     let source = NavGraph::from_section(&section);
     let carried = source.to_section_for_test();

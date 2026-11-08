@@ -219,6 +219,7 @@ fn held_world_participation_rechecks_later_actor_and_target_after_contact_callba
             &mut AiRuntime::new(),
             0.016,
             AiTickInputs {
+                mover_nav: crate::nav::MoverNav::none(),
                 nav_graph: None,
                 collision_world: None,
                 descriptors: &[],

@@ -1,6 +1,6 @@
 # direction-aware-probe-visibility — research
 
-Read at 2968de0ad. Spike: branch `spike/per-direction-depth`, `context/research/per-direction-depth-spike/README.md` (Windows), plus the Mac sections on `measure/pdd-mac-timing` (dfcc67fd9).
+Read at 2968de0ad. Spike: branch `spike/per-direction-depth`, `context/research/per-direction-depth-spike/README.md` (Windows), §Windows and §Mac, with the Mac trace scripts under `kit/mac/`.
 
 ## Cause
 `sh_corner_depth_visibility` (`sh_sample.wgsl`) reads one `(E[d], E[d²])` pair per dense lattice probe from `sh_depth_moments` (`Rgba16Uint` 3D; R/G the f16 moments, B/A the indirection word). The bake (`bake_probe_with_source` → `bake_probe_rgb_along`, `sh_bake/probe.rs`) averages 256 fixed Fibonacci rays from the lattice point; sky misses count as `4·|cell_size|`. A probe 0.09 m from a closed door has a long average, because most rays cross the bright room, so closet points 0.8 m behind the door pass Chebyshev.
@@ -37,7 +37,7 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 - Today, no-tile-read and sparse rows are means of 3 runs; the rest single runs. Sparse over today: +1.13 / +1.19 / +1.16 ms (4.3–5.8%); the declared texture alone is +0.85 / +1.02 / +0.93. A paired in-process run on view a agrees for sparse (+0.28 over no tile read).
 - Ceiling: the worst sparse view, +1.19 ms, plus 25% gives +1.5 ms per view. Unpriced in that run: reading the tile reference from the moments texel (already fetched) and the 8×8 bordered stride (one multiply); tile size made no difference.
 - 720p, paired per frame because the clock swings between runs: sparse adds +0.01 / +0.06 / +0.04 ms over no tile read; every probe tiled adds +0.28 / +0.40 / +0.30. The declared-texture floor is not measurable at 720p this way. Reference only.
-- First lookup: the fetch was about 1.2 ms of +7.8 (measured). Attributing the rest to the per-corner `normalize`, texture-size query and runtime-width integer divide is inferred: the cheap-lookup binaries differ only by dropping those three (`measure/pdd-mac-timing` dfcc67fd9).
+- First lookup: the fetch was about 1.2 ms of +7.8 (measured). Attributing the rest to the per-corner `normalize`, texture-size query and runtime-width integer divide is inferred: the cheap-lookup binaries differ only by dropping those three.
 - About 1 ms of the sparse cost is the declared texture itself, paid with no tile read: naga's Metal writer declares globals as entry arguments and the AMD driver charges per declared argument (`rendering_pipeline.md` §7.3a, Two pipelines).
 - Hashed sparse selection scatters tiles; real tiles cluster at thin walls, so divergence should be no worse.
 - Run-to-run spread at 4K ≤ 0.32 ms; one run per cell suffices there.

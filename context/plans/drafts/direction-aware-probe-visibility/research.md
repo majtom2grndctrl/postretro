@@ -55,7 +55,7 @@ Static-door reference closet; station 3 mean, station 2 mean, then mean brightne
 - Existing dense moments texture: 8 B per lattice probe, whole-resident.
 
 ## Fixture
-- `mover-closet` map and README, with static-door and no-door variants (`kit/gen_closet.py`), live only on `spike/per-direction-depth`.
+- `mover-closet` map and README are on `main`; its static-door and no-door variants come from `kit/gen_closet.py` on `spike/per-direction-depth`.
 - Stations, map units: 2 at (320, 720, 64) yaw 270, inside the closet facing the door; 3 at (320, 610, 96) yaw 270 pitch −38, the closet floor at the door.
 - Capture: feature `capture`, `POSTRETRO_SH_STREAMING=sync-proof`, scene field `force_full_resident_sh_compose`, 960×540. Scene JSON as in `measurements/surface-radiance-cache/ab-captures/scenes/`.
 - Do not move the closet's north wall: y 760 is the worst measured lattice phase.

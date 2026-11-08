@@ -3,7 +3,7 @@
 Brief · compact · reads: `context/lib/rendering_pipeline.md` §Indirect, `context/lib/build_pipeline.md` §PRL section IDs, `context/lib/testing_guide.md` §Resource bounds · read at 2968de0ad
 
 ## Problem
-Owner-raised, from the probe channel's leak diagnosis (`in-progress/mover-light-flow--probe-channel/`): an observed defect. Each SH probe weights by one depth mean and variance averaged over every direction (`sh_corner_depth_visibility`), so a probe beside a surface thinner than the probe spacing trusts its long open-room average and lends light to points behind that surface. The static-door reference closet glows at 0.50 (0–255) where it should read dark; every thin static wall leaks the same way when its sides are lit differently. When done, visibility tests depth in the direction of the shaded point: static thin occluders stop leaking, open doorways read as before, and probe relocation and closed-door depth for movers can later add tiles without a storage redesign.
+Owner-raised, from the probe channel's leak diagnosis (`drafts/mover-light-flow--probe-channel/`): an observed defect. Each SH probe weights by one depth mean and variance averaged over every direction (`sh_corner_depth_visibility`), so a probe beside a surface thinner than the probe spacing trusts its long open-room average and lends light to points behind that surface. The static-door reference closet glows at 0.50 (0–255) where it should read dark; every thin static wall leaks the same way when its sides are lit differently. When done, visibility tests depth in the direction of the shaded point: static thin occluders stop leaking, open doorways read as before, and probe relocation and closed-door depth for movers can later add tiles without a storage redesign.
 
 ## Decisions
 - **Per-direction moments, continuous weights.** Selected probes carry an octahedral tile of `(E[d], E[d²])`; Chebyshev runs on the texel facing the shaded point (Majercik et al. 2019). IP rule, verbatim from `context/research/gi-rtx-lite/ip-check.md`: "Select diffuse probes by cell adjacency (own cell, then portal-adjacent) with continuous moment weights; store no per-probe zone or cell visibility mask and make no binary visible decision." Tile presence picks which moments a probe weighs with; it never removes a probe.
@@ -63,12 +63,11 @@ Stations, capture method, measure and spike figures: `research.md` §Fixture, §
 - Lookup: a power-of-two tile count per row lets the shader find a tile with shifts, masks and one multiply by the bordered stride.
 - Accounting: a new `ShAllocationKind` beside `DepthMoments`.
 - Reflection capture: the CPU mirror is `reflection_probes/sh_sample.rs`; its key is built in `reflection_probes/stage_key.rs`.
-- Fixture: port `mover-closet` and its static-door and no-door variants from `spike/per-direction-depth` into `content/dev/maps`.
+- Fixture: `content/dev/maps/mover-closet.map` and its README are on `main`; add its static-door and no-door variants from `spike/per-direction-depth` (`kit/gen_closet.py`).
 - Rivals: dense tiles streamed through the SH pool (125–346 MiB, and +2.7–3.2 ms at 4K on the Mac with every probe tiled); weighting by cell adjacency alone (a partial wall's ends are adjacent, and dropping a probe is a binary decision the IP rule bars); one occluder plane per probe (reads on '372's second independent claim); a 32-bit moments texel carrying the reference in its own channel (doubles the dense texture, which scales with lattice volume).
 - First slice: bake closet tiles, hook the lookup, capture station 3. It tests both the quality claim and the binding plan.
 
 ## Open questions
-- Record closed-pose depth tiles, and the switch-or-blend choice, in `mover-light-flow--probe-channel`'s Decisions; its paused plan expects this brief to fix its closet. — owner: drafter — **blocks build**
 - Pin the Mac ceiling and 720p reference from the finished timing report; current figures come from the interim run log. — owner: drafter — **blocks build**
 - Hallway Q2 view poses for the Windows ceiling run: reuse the spike's capture scenes. — **delegated**
 

@@ -54,6 +54,9 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 - Ring: `RING_DIRECTIONS` (8) × `RADIAL_MULTIPLIERS` around the target (`generated_positions`, `crates/sim/src/combat_positioning.rs`); score is `score_candidate` (`combat_positioning/scoring.rs`).
 - Flank routes out of sight need pathfinder cost hooks (`astar_corridor` takes none) and multiply A* work; deferred to the cover brief.
 
+## Attack pool rivals, rejected
+- Per-enemy overrides in one shared pool (the earlier draft): a budget-1 group at the head of the line held back every other enemy on its target. A script-only `startAttackPool` command: map-only authors could not build one. Trigger commands carrying the member tag and profile: an arena with two entries repeats the settings, and nothing named exists to stop. A brush volume selecting members: a second region doing the tag's job. Per-class limits inline in a map string: class names belong to code, so maps name a profile.
+
 ## Pin table
 
 | id | scenario | ordering | expected outcome |
@@ -74,3 +77,4 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 | P14 | Class limit at the head of the line | Profile `{ total: 3, heavy: 1 }`, cost 1. One heavy holds; a second heavy has waited longest; two unclassed enemies request after it. | Both unclassed enemies are granted past the waiting heavy. The heavy is granted the tick the holding heavy releases, ahead of any later heavy. |
 | P15 | Attack pool request timing | Tick N: a trigger command or trigger-bound step starts B while A is active; two triggers each start a different attack pool; a start and a stop of one pool land on one tick; a named, player-event or post-wait start is issued. | A trigger or trigger-bound request applies before tick N's arbitration. Every other request latches to tick N+1 and applies first there. Requests apply in issue order, so the later-issued start is active and a start then stop leaves none active. |
 | P16 | Target moves during a `reposition` | Tick N: entry records the bearing from target to enemy and the enemy's position; ticks N+1…: the target walks across the room. | The arc stays measured from the tick-N bearing, the minimum travel from the tick-N position; the slot is re-scored around the target's current position. Leaving and re-entering records a new bearing and position. |
+| P17 | Restore mid-reposition or mid-strafe | Tick N: a repositioner records its entry bearing and position, and a strafer its direction; serialize on tick N+k, then restore. | The first restored tick records a new bearing and position as a fresh entry, and the strafer re-picks its direction by the first-entry rule. No oscillation on that tick. |

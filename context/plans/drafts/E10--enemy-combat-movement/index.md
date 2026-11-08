@@ -138,9 +138,11 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] A `strafe` enemy moves around its target at standoff while facing it, and fires its action mid-move when facing, range and line of sight pass.
 - [ ] `strafe` reverses at a blocked, occupied or blind next slot. With neither neighbor usable it holds its slot, still facing the target, and does not flip direction on consecutive ticks. A strafer that loses its next slot to another on one tick reverses once (pin P9).
 - [ ] `reposition` arrives at least one spacing from both its position and its held slot at entry, including after a `hold` predecessor and with no slot held. Re-entering picks again. With no valid slot it holds rather than oscillating.
-- [ ] `arc: [60, 120]` picks only slots 60° to 120° around the target from the entry bearing, on either side, and `arc: [135, 180]` picks the far side. A slot just inside each bound qualifies and one just outside does not. With no slot in the arc it holds (pin P16).
+- [ ] `arc: [45, 135]` includes the 45° and 135° slots on both sides; `arc: [90, 90]` picks only the two lateral slots; `arc: [180, 180]` only the far slot. With no slot in the arc it holds.
 - [ ] The arc and the entry position stay fixed while the target moves during the move. Re-entering measures them again (pin P16).
-- [ ] `minTravel: 8` refuses a slot 7 m from the entry position and accepts one at 9 m.
+- [ ] `minTravel: 8` refuses a slot 7 m from the entry position and accepts one at 9 m. A `minTravel` beyond every candidate holds without error and without flipping its goal.
+- [ ] Two repositioners entering on one tick with the same bearing and arc claim distinct slots, and a replay assigns the same ones.
+- [ ] A serialize-and-restore mid-`reposition` or mid-`strafe` follows pin P17.
 - [ ] In both runtimes, an `arc` outside 0–180, with min above max or non-finite, a negative or non-finite `minTravel`, or `reposition` properties on an activity whose motion is not `reposition`, rejects with a pathed error.
 - [ ] `facing: "travel"` on `reposition` faces travel, and `facing: "target"` on `chaseTarget` faces the target while moving. With no knockback active, an activity without `facing` behaves as today on every existing verb.
 - [ ] Sideways travel under target facing selects `walk_left` or `walk_right`, and backward travel selects `walk_backward`. Under travel facing the same motion plays `walk`. A mesh without the variants plays `walk`.
@@ -157,6 +159,9 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] Under budget 2: cost 2 is granted alone and refused beside a cost-1 holder; cost 3 is granted when no counted holder remains. Cost 0 never counts or blocks (pin P8).
 - [ ] Under budget 2, a waiting cost-3 enemy among cost-1 enemies that keep a turn held is granted within a bounded wait. No cost-1 enemy is granted past it in the meantime (pin P12).
 - [ ] Under `{ total: 3, heavy: 1 }` with cost 1 throughout: a second heavy waits while one heavy holds, and unclassed enemies are granted past it up to the total. A heavy at the head of the line blocks only heavies (pin P14).
+- [ ] Two archetypes declaring `attackClass: "heavy"` under `heavy: 1` never hold two turns on one target at once.
+- [ ] A mod reload lowering `heavy` from 2 to 1 while two heavies hold revokes neither turn, and no heavy is granted until both release. A reload that removes the active pool's profile makes it use `default` from the next tick.
+- [ ] A hot reload that changes an archetype's `attackClass` or `attackCost` releases its holders' turns (pin P5, graph reseat); they re-request under the new class and cost.
 - [ ] An archetype whose class the profile does not limit is limited by `total` alone. A heavy of cost 2 under `heavy: 1` is granted when no heavy holds.
 - [ ] A refused attack commits nothing and fires on its first granted tick in the same activity (pin P2).
 - [ ] Under budget 1, three contact attackers ready together: at most one holds a turn on any tick. Each holds until its own cooldown ends, even after leaving its attacking activity. Each attacks within a bounded window.
@@ -174,6 +179,7 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 **Attack pools**
 - [ ] Starting an `ai_attack_pool` by trigger `start` and by script `start` each make its members draw from a pool with its profile's limits. An empty `budget_profile` uses `default`; an undeclared one warns at level load and uses `default`.
 - [ ] Separate pools: an attack pool under `{ total: 1 }` and the default pool under `{ total: 2 }` on one player give at most three counted holders. A head-of-line waiter in one pool never blocks a grant in the other.
+- [ ] `start` on the active pool changes nothing: held turns, wait clocks and members stand. A pool `start` on a connected client changes nothing.
 - [ ] Starting a second attack pool ends the first. Its members return to the default pool on that tick, and so does every member on `stop`. `stop` on an inactive pool changes nothing.
 - [ ] Membership: a tag holder present at start and a later spawn whose `spawned_tags` carry the tag are members; an enemy whose tag is gone is not.
 - [ ] An enemy leaving a pool while holding a turn keeps it. The turn counts against its new pool until it ends by its own rule, and no grant in that pool fits around it (pin P13).
@@ -201,10 +207,11 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
   - `trigger_direct_commands.rs` routes a trigger's `command` by member kind. Script `start` and `stop` steps run on the trigger's tick only through `CONSEQUENTIAL_PRIMITIVES` (`trigger_bindings/partition.rs`) and `command_binding.rs`. The build-time member table (`MapMemberKind`, `script_light_membership.rs`) needs the new kind too.
   - The spawner's `spawned_tags` path (`crates/sim/src/spawner.rs`), which carries tag membership to later spawns.
 - **Shape.** Turns live on `BrainComponent`, as the held target, the counted pool and the wait clock (all transient). The attack pool's state lives on its own serializable component; its profile resolves by name each tick, so a mod reload applies. Per-pool, per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
-- **Attack-pool rivals, rejected.** Per-enemy overrides in one shared pool (the earlier draft): a budget-1 group at the head of the line held back every other enemy on its target. A script-only `startAttackPool` command: map-only authors could not build one. Trigger commands carrying the member tag and profile: an arena with two entries repeats the settings, and nothing named exists to stop. A brush volume selecting members: a second region doing the tag's job. Per-class limits inline in a map string: class names belong to code, so maps name a profile.
+- **Attack-pool rivals** are argued in `research.md` (Attack pool precedent).
 - **Slice order.** The knockback facing split first: it touches the fewest seams and proves the velocity separation strafe needs. Then the verbs and the scorer's per-query constraints, turns and arbitration, profiles and classes, the attack pool entity, and last the shipped content that proves them together.
 - **Watch for.**
-  - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly.
+  - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly. The batch scans no challengers while an incumbent is retained (`scan_challengers` in `combat_slots.rs`), so on entry `reposition` forces the scan and drops its incumbent.
+  - Test the arc on the ring index's generated angle, not a measured angle, so a bound on a ring direction includes it.
   - `score_candidate` and the batch take per-query constraints (arc, minimum travel, exclusions) rather than fixed terms. `strafe` and `reposition` are the first consumers; the cover brief adds a mode. The shared ring is eight world-axis directions, so an arc narrower than 45° would hold or not depending on approach angle. `reposition` generates its candidates on a ring rotated to the entry bearing instead, which leaves the shared ring and the searches the perf brief measures unchanged.
   - `drafts/perf-ai-tick-cost` touches the same batch. Add a wave-scale stress row for arbitration against its baseline.
 - **Files past ~800 lines:** check `compute.rs` and `apply.rs` before extending them.

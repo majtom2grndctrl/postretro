@@ -135,6 +135,8 @@ struct ShGridInfo {
 @group(4) @binding(14) var sh_depth_moments: texture_3d<u32>;
 // Per-direction depth tiles (id 59); a tiled probe's moment G names its tile.
 @group(4) @binding(18) var sh_depth_tiles: texture_2d<f32>;
+// The promotion handoff direct SH atlas (mesh superset binding 15): promoted
+// lights subtracted, added back by the shadowed runtime loop.
 @group(4) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 struct DynamicDirectParams {

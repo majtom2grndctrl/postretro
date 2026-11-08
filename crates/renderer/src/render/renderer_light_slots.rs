@@ -230,7 +230,7 @@ impl Renderer {
         reachable_cell_aabbs: &[(Vec3, Vec3)],
         now_seconds: f64,
         promotion_mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
-        capture_animated_promotion_weights: &[(usize, f32)],
+        capture_promotion_weights: &[(CapturePromotionRow, f32)],
     ) -> Result<()> {
         // No runtime shadow candidates this frame. Clear both pools' occupancy:
         // a stale `Some` cone/face matrix carried over from a previous level
@@ -303,10 +303,10 @@ impl Renderer {
             level.mirror_lighting.report(now_seconds);
             full.mesh_pass.set_mirror_light_records(false);
             full.kinematic_brush.set_mirror_light_records(false);
-            apply_capture_animated_promotion_weights(
-                &mut level.promoted_animated_states,
-                &mut level.promoted_baked_records,
-                capture_animated_promotion_weights,
+            // No candidate holds a slot, so any pinned row fails here.
+            apply_capture_promotion_weights(
+                CapturePromotionTargets::of(level),
+                capture_promotion_weights,
             )?;
             return Ok(());
         }
@@ -613,20 +613,25 @@ impl Renderer {
         }
         {
             // Capture pins the already-assigned state before either arm is
-            // packed: Pass B reads `(1 - w)` from this state, while the light
+            // packed: Pass B reads `(1 - w)` and the handoff compose reads the
+            // selected-static weight buffer from this state, while the light
             // upload below writes forward `color * w` and the matching slot.
             // Ranking and cache/slot lifecycles retain their natural result;
             // windowed frames always supply an empty override slice.
-            let full = self.full_mut();
+            let Self { queue, full, .. } = self;
             let level = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run")
                 .level
                 .as_mut()
                 .expect("a level-gated renderer path requires an active level set");
-            apply_capture_animated_promotion_weights(
-                &mut level.promoted_animated_states,
-                &mut level.promoted_baked_records,
-                capture_animated_promotion_weights,
-            )?;
+            if apply_capture_promotion_weights(
+                CapturePromotionTargets::of(level),
+                capture_promotion_weights,
+            )? {
+                // The natural weights were uploaded with the records above.
+                upload_promoted_static_weights(queue, level);
+            }
         }
         if !cube_slot_assignment.is_empty()
             && let Some(pool) = self.full_mut().cube_shadow_pool.as_mut()
@@ -1541,79 +1546,154 @@ impl Renderer {
             full.promoted_entity_occluders_submitted = 0;
         }
 
-        level.promoted_static_weight_scratch.clear();
-        level
-            .promoted_static_weight_scratch
-            .reserve(level.promoted_static_weights.len().max(1).saturating_mul(4));
-        if level.promoted_static_weights.is_empty() {
-            level
-                .promoted_static_weight_scratch
-                .extend_from_slice(&0.0f32.to_ne_bytes());
-        } else {
-            for &weight in &level.promoted_static_weights {
-                level
-                    .promoted_static_weight_scratch
-                    .extend_from_slice(&weight.clamp(0.0, 1.0).to_ne_bytes());
-            }
-        }
-        queue.write_buffer(
-            &level.promoted_static_weight_buffer,
-            0,
-            &level.promoted_static_weight_scratch,
-        );
+        upload_promoted_static_weights(queue, level);
         level.total_light_count = forward_light_count(level)
             + selected_static_record_count(&level.promoted_baked_records) as u32;
     }
 }
 
-/// Pin already-assigned animated-baked promotion records for one frame. This
-/// runs after ranking/cache allocation but before forward-tail packing, so the
-/// state is the single source for both forward `w` and compose `(1 - w)`.
-fn apply_capture_animated_promotion_weights(
-    animated_states: &mut [PromotedBakedLightState],
-    promoted_records: &mut [PromotedBakedLightRecord],
-    overrides: &[(usize, f32)],
-) -> Result<()> {
+/// Write the selected-static promotion weights the direct-SH handoff compose
+/// reads. A one-float placeholder keeps the binding valid with no selection.
+fn upload_promoted_static_weights(queue: &mut uploads::UploadQueue, level: &mut LevelResourceSet) {
+    level.promoted_static_weight_scratch.clear();
+    level
+        .promoted_static_weight_scratch
+        .reserve(level.promoted_static_weights.len().max(1).saturating_mul(4));
+    if level.promoted_static_weights.is_empty() {
+        level
+            .promoted_static_weight_scratch
+            .extend_from_slice(&0.0f32.to_ne_bytes());
+    } else {
+        for &weight in &level.promoted_static_weights {
+            level
+                .promoted_static_weight_scratch
+                .extend_from_slice(&weight.clamp(0.0, 1.0).to_ne_bytes());
+        }
+    }
+    queue.write_buffer(
+        &level.promoted_static_weight_buffer,
+        0,
+        &level.promoted_static_weight_scratch,
+    );
+}
+
+/// The promotion state a capture override pins, one slice per raw namespace,
+/// plus the selected-static weights the handoff compose reads.
+struct CapturePromotionTargets<'a> {
+    static_states: &'a mut [PromotedBakedLightState],
+    static_weights: &'a mut [f32],
+    animated_states: &'a mut [PromotedBakedLightState],
+    records: &'a mut [PromotedBakedLightRecord],
+}
+
+impl<'a> CapturePromotionTargets<'a> {
+    fn of(level: &'a mut LevelResourceSet) -> Self {
+        Self {
+            static_states: &mut level.promoted_static_states,
+            static_weights: &mut level.promoted_static_weights,
+            animated_states: &mut level.promoted_animated_states,
+            records: &mut level.promoted_baked_records,
+        }
+    }
+}
+
+fn describe_capture_promotion_row(row: CapturePromotionRow) -> String {
+    match row {
+        CapturePromotionRow::SelectedStatic(index) => format!("selected-static row {index}"),
+        CapturePromotionRow::AnimatedBaked(index) => format!("animated-baked row {index}"),
+    }
+}
+
+fn record_is_capture_promotion_row(
+    record: &PromotedBakedLightRecord,
+    row: CapturePromotionRow,
+) -> bool {
+    match row {
+        CapturePromotionRow::SelectedStatic(index) => {
+            record.source.selected_static_index() == Some(index)
+        }
+        CapturePromotionRow::AnimatedBaked(index) => {
+            record.source.animated_baked_index() == Some(index)
+        }
+    }
+}
+
+/// Pin already-assigned promotion records for one frame. This runs after
+/// ranking/cache allocation but before forward-record packing, so the state is
+/// the single source for both the forward `w` and the compose weight. A row
+/// that holds no shadow-pool slot this frame fails the capture: a pinned `w`
+/// on an unpromoted light would change nothing and pass vacuously. Returns
+/// whether a selected-static weight was pinned, which the caller re-uploads.
+fn apply_capture_promotion_weights(
+    targets: CapturePromotionTargets<'_>,
+    overrides: &[(CapturePromotionRow, f32)],
+) -> Result<bool> {
+    let CapturePromotionTargets {
+        static_states,
+        static_weights,
+        animated_states,
+        records,
+    } = targets;
     // Validate the complete override batch first. A malformed later row must
     // not leave earlier compose/forward weights partially pinned.
-    for &(animated_baked_index, weight) in overrides {
-        let (pool_kind, slot) = animated_states
-            .get(animated_baked_index)
+    for &(row, weight) in overrides {
+        let describe = || describe_capture_promotion_row(row);
+        let state = match row {
+            CapturePromotionRow::SelectedStatic(index) => static_states.get(index),
+            CapturePromotionRow::AnimatedBaked(index) => animated_states.get(index),
+        };
+        let (pool_kind, slot) = state
             .and_then(|state| state.pool_kind.map(|pool_kind| (pool_kind, state.slot)))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "capture promotion row {animated_baked_index} did not win a shadow-pool slot"
+                    "capture promotion {} did not win a shadow-pool slot",
+                    describe()
                 )
             })?;
-        let record = promoted_records
+        let record = records
             .iter()
-            .find(|record| record.source.animated_baked_index() == Some(animated_baked_index))
+            .find(|record| record_is_capture_promotion_row(record, row))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "capture promotion row {animated_baked_index} has no promoted depth-cache record"
+                    "capture promotion {} has no promoted depth-cache record",
+                    describe()
                 )
             })?;
         if record.pool_kind != pool_kind || record.slot != slot {
             anyhow::bail!(
-                "capture promotion row {animated_baked_index} disagrees with its shadow-pool record"
+                "capture promotion {} disagrees with its shadow-pool record",
+                describe()
             );
         }
         if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
             anyhow::bail!(
-                "capture promotion row {animated_baked_index} has invalid weight {weight}"
+                "capture promotion {} has invalid weight {weight}",
+                describe()
             );
         }
     }
-    for &(animated_baked_index, weight) in overrides {
-        let record = promoted_records
-            .iter_mut()
-            .find(|record| record.source.animated_baked_index() == Some(animated_baked_index))
-            .expect("validated capture override record");
+    let mut static_weight_pinned = false;
+    for &(row, weight) in overrides {
         let weight = weight.clamp(0.0, 1.0);
-        record.weight = weight;
-        animated_states[animated_baked_index].weight = weight;
+        records
+            .iter_mut()
+            .find(|record| record_is_capture_promotion_row(record, row))
+            .expect("validated capture override record")
+            .weight = weight;
+        match row {
+            CapturePromotionRow::SelectedStatic(index) => {
+                static_states[index].weight = weight;
+                if let Some(pinned) = static_weights.get_mut(index) {
+                    *pinned = weight;
+                }
+                static_weight_pinned = true;
+            }
+            CapturePromotionRow::AnimatedBaked(index) => {
+                animated_states[index].weight = weight;
+            }
+        }
     }
-    Ok(())
+    Ok(static_weight_pinned)
 }
 
 /// Associate each promoted record with its static-depth cache layer before the
@@ -2974,10 +3054,14 @@ mod tests {
             )
         };
 
-        apply_capture_animated_promotion_weights(
-            &mut animated_states,
-            &mut promoted_records,
-            &[(0, 0.0)],
+        apply_capture_promotion_weights(
+            CapturePromotionTargets {
+                static_states: &mut [],
+                static_weights: &mut [],
+                animated_states: &mut animated_states,
+                records: &mut promoted_records,
+            },
+            &[(CapturePromotionRow::AnimatedBaked(0), 0.0)],
         )
         .expect("assigned animated promotion accepts capture override");
         let mut zero_weight_tail = postretro_lighting::pack_light(&source);
@@ -2991,10 +3075,14 @@ mod tests {
             "w=0 removes the forward radiance and disables its shadow slot",
         );
 
-        apply_capture_animated_promotion_weights(
-            &mut animated_states,
-            &mut promoted_records,
-            &[(0, 1.0)],
+        apply_capture_promotion_weights(
+            CapturePromotionTargets {
+                static_states: &mut [],
+                static_weights: &mut [],
+                animated_states: &mut animated_states,
+                records: &mut promoted_records,
+            },
+            &[(CapturePromotionRow::AnimatedBaked(0), 1.0)],
         )
         .expect("assigned animated promotion accepts capture override");
         let mut full_weight_tail = postretro_lighting::pack_light(&source);
@@ -3007,6 +3095,97 @@ mod tests {
             3,
             "w=1 keeps the authored forward radiance and assigned shadow slot",
         );
+    }
+
+    // A selected-static override pins the record, its state, and the weight
+    // the handoff compose reads, and reports that the buffer needs a re-upload.
+    #[test]
+    fn capture_promotion_override_pins_selected_static_record_state_and_weight() {
+        let mut static_states = [
+            PromotedBakedLightState::default(),
+            PromotedBakedLightState {
+                weight: 1.0,
+                pool_kind: Some(PromotedShadowPoolKind::Cube),
+                slot: 1,
+                ..PromotedBakedLightState::default()
+            },
+        ];
+        let mut static_weights = [0.0, 1.0];
+        let mut promoted_records = [PromotedBakedLightRecord {
+            global_light_index: 4,
+            pool_kind: PromotedShadowPoolKind::Cube,
+            slot: 1,
+            weight: 1.0,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index: 1 },
+        }];
+
+        let pinned = apply_capture_promotion_weights(
+            CapturePromotionTargets {
+                static_states: &mut static_states,
+                static_weights: &mut static_weights,
+                animated_states: &mut [],
+                records: &mut promoted_records,
+            },
+            &[(CapturePromotionRow::SelectedStatic(1), 0.0)],
+        )
+        .expect("an assigned selected-static promotion accepts a capture override");
+
+        assert!(pinned, "a pinned static weight must be re-uploaded");
+        assert_eq!(static_states[1].weight, 0.0);
+        assert_eq!(static_weights, [0.0, 0.0]);
+        assert_eq!(promoted_records[0].weight, 0.0);
+        assert_eq!(
+            (promoted_records[0].pool_kind, promoted_records[0].slot),
+            (PromotedShadowPoolKind::Cube, 1),
+            "a pinned w=0 keeps the natural slot assignment",
+        );
+    }
+
+    // A pinned row on a light that holds no slot would change nothing, so a
+    // capture asserting on it could pass vacuously. It must fail instead, and
+    // leave every earlier row in the batch unpinned.
+    #[test]
+    fn capture_promotion_override_rejects_selected_static_row_without_a_slot() {
+        let mut static_states = [
+            PromotedBakedLightState {
+                weight: 1.0,
+                pool_kind: Some(PromotedShadowPoolKind::Spot),
+                slot: 0,
+                ..PromotedBakedLightState::default()
+            },
+            PromotedBakedLightState::default(),
+        ];
+        let mut static_weights = [1.0, 0.0];
+        let mut promoted_records = [PromotedBakedLightRecord {
+            global_light_index: 2,
+            pool_kind: PromotedShadowPoolKind::Spot,
+            slot: 0,
+            weight: 1.0,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index: 0 },
+        }];
+
+        let error = apply_capture_promotion_weights(
+            CapturePromotionTargets {
+                static_states: &mut static_states,
+                static_weights: &mut static_weights,
+                animated_states: &mut [],
+                records: &mut promoted_records,
+            },
+            &[
+                (CapturePromotionRow::SelectedStatic(0), 0.0),
+                (CapturePromotionRow::SelectedStatic(1), 0.0),
+            ],
+        )
+        .expect_err("an unpromoted selected-static row must fail the capture");
+
+        assert!(
+            error
+                .to_string()
+                .contains("selected-static row 1 did not win a shadow-pool slot"),
+            "{error:#}",
+        );
+        assert_eq!(static_weights, [1.0, 0.0], "no row may be partially pinned");
+        assert_eq!(promoted_records[0].weight, 1.0);
     }
 
     // The pure score sort, promoted-baked cap, and tier-neutral eviction

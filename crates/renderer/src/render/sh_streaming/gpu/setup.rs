@@ -68,130 +68,9 @@ impl StreamingGpuPools {
         pipelines: &super::super::StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
     ) -> Result<Self, ShResidencyDrainError> {
-        let base_format = texture_format(base.irradiance_format)?;
         let extent = shape.extent();
-        let base_texture = device.new_texture(&wgpu::TextureDescriptor {
-            label: Some("Streamed SH Base Atlas Pool"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: base_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let total_texture = device.new_texture(&wgpu::TextureDescriptor {
-            label: Some("Streamed SH Total Atlas Pool"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let base_view = array_view(&base_texture, "Streamed SH Base Atlas View");
-        let total_storage_view = array_view(&total_texture, "Streamed SH Total Storage View");
-        let total_sampled_view = array_view(&total_texture, "Streamed SH Total Sampled View");
-
-        let (direct_base, direct_base_view, direct_format) = if let Some(direct) = &sources.direct {
-            let format = texture_format(direct.irradiance_format)?;
-            let texture = device.new_texture(&wgpu::TextureDescriptor {
-                label: Some("Streamed Direct SH Base Atlas Pool"),
-                size: extent,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let view = array_view(&texture, "Streamed Direct SH Base Atlas View");
-            sh.direct.enable_streamed_atlas(queue);
-            (Some(texture), Some(view), Some(format))
-        } else {
-            (None, None, None)
-        };
-        let direct_compose_required =
-            sources.direct_delta.is_some() || sources.animated_direct_delta.is_some();
-        let (
-            direct_intermediate,
-            direct_intermediate_storage_view,
-            direct_intermediate_sampled_view,
-            direct_total,
-            direct_total_storage_view,
-            direct_total_sampled_view,
-        ) = if direct_compose_required {
-            if direct_base.is_none() {
-                return Err(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed direct compose has no id-35 base atlas",
-                });
-            }
-            let total = device.new_texture(&wgpu::TextureDescriptor {
-                label: Some("Streamed Direct SH Total Atlas Pool"),
-                size: extent,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let total_storage = array_view(&total, "Streamed Direct SH Total Storage View");
-            let total_sampled = array_view(&total, "Streamed Direct SH Total Sampled View");
-            if sources.animated_direct_delta.is_some() {
-                let intermediate = device.new_texture(&wgpu::TextureDescriptor {
-                    label: Some("Streamed Direct SH Intermediate Atlas Pool"),
-                    size: extent,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::STORAGE_BINDING
-                        | wgpu::TextureUsages::COPY_DST
-                        | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                });
-                let storage = array_view(
-                    &intermediate,
-                    "Streamed Direct SH Intermediate Storage View",
-                );
-                let sampled = array_view(
-                    &intermediate,
-                    "Streamed Direct SH Intermediate Sampled View",
-                );
-                (
-                    Some(intermediate),
-                    Some(storage),
-                    Some(sampled),
-                    Some(total),
-                    Some(total_storage),
-                    Some(total_sampled),
-                )
-            } else {
-                (
-                    None,
-                    None,
-                    None,
-                    Some(total),
-                    Some(total_storage),
-                    Some(total_sampled),
-                )
-            }
-        } else {
-            (None, None, None, None, None, None)
-        };
+        let dense = DenseTextures::new(device, queue, base, sources, shape, sh)?;
+        let direct_compose_required = dense.direct_atlas.is_some();
 
         let depth_extent = wgpu::Extent3d {
             width: base.grid_dimensions[0].max(1),
@@ -218,11 +97,6 @@ impl StreamingGpuPools {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let depth_view = depth_moments.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Streamed SH Depth Moment View"),
-            dimension: Some(wgpu::TextureViewDimension::D3),
-            ..Default::default()
-        });
 
         let indirection_len = u64::try_from(base.probes.len())
             .ok()
@@ -246,156 +120,60 @@ impl StreamingGpuPools {
             mapped_at_creation: false,
         });
 
-        let grid_bytes = build_grid_info_bytes(ShGridInfoParams {
-            grid_origin: base.grid_origin,
-            cell_size: base.cell_size,
-            grid_dimensions: base.grid_dimensions,
-            atlas_dimensions: [extent.width, extent.height],
-            tile_dimension: base.tile_dimension,
-            tile_border: base.tile_border,
-            atlas_tiles_per_row: shape.tiles_per_row,
-            physical_tile_stride: STREAMED_SH_PHYSICAL_TILE_STRIDE,
-            tiles_per_layer: shape.tiles_per_layer,
-            atlas_layer_count: shape.layers,
-            present: true,
+        let grid_info = create_grid_info(
+            device,
+            base,
+            shape,
             probe_occlusion_enabled,
-            depth_tiles: sh.depth_tiles.grid_words(),
-        });
-        let grid_info = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Streamed SH Grid Info"),
-            contents: &grid_bytes,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+            sh.depth_tiles.grid_words(),
+        );
         let indirect_compose = StreamingIndirectCompose::new(
             device,
             limits,
             base,
             sources,
             shape,
-            &base_view,
-            &total_storage_view,
+            &dense.base_view,
+            &dense.total_storage_view,
             &compose_indirection,
             sh,
             pipelines,
             &sparse_compose.indirect,
             sparse_capacities.get(&27).copied(),
         )?;
-        let direct_compose = if direct_compose_required {
-            Some(StreamingDirectCompose::new(
-                device,
-                limits,
-                base,
-                sources,
-                shape,
-                StreamingDirectViews {
-                    base: direct_base_view
-                        .as_ref()
-                        .ok_or(ShResidencyDrainError::GpuCapacity {
-                            reason: "streamed direct compose lost its id-35 base view",
-                        })?,
-                    intermediate_storage: direct_intermediate_storage_view.as_ref(),
-                    intermediate_sampled: direct_intermediate_sampled_view.as_ref(),
-                    total_storage: direct_total_storage_view.as_ref().ok_or(
-                        ShResidencyDrainError::GpuCapacity {
-                            reason: "streamed direct compose lost its total storage view",
-                        },
-                    )?,
-                    selection_weights,
-                },
-                &compose_indirection,
-                sh,
-                pipelines,
-                &sparse_compose,
-                sparse_capacities,
-            )?)
-        } else {
-            None
-        };
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Streamed SH Atlas Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        let direct_view = direct_total_sampled_view
-            .as_ref()
-            .or(direct_base_view.as_ref())
-            .unwrap_or(&sh.direct.atlas_view);
-        let entries = vec![
-            wgpu::BindGroupEntry {
-                binding: BIND_SH_TOTAL_ATLAS,
-                resource: wgpu::BindingResource::TextureView(&total_sampled_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: BIND_SH_ATLAS_SAMPLER,
-                resource: wgpu::BindingResource::Sampler(&sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: BIND_SH_GRID_INFO,
-                resource: grid_info.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: BIND_ANIM_DESCRIPTORS,
-                resource: sh.animation.descriptors.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: BIND_ANIM_SAMPLES,
-                resource: sh.animation.anim_samples.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: BIND_SCRIPTED_LIGHT_DESCRIPTORS,
-                resource: sh.scripted_light_descriptors.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: BIND_SH_DEPTH_MOMENTS,
-                resource: wgpu::BindingResource::TextureView(&depth_view),
-            },
-            sh.depth_tiles.bind_group_entry(),
-            wgpu::BindGroupEntry {
-                binding: BIND_SH_DIRECT_ATLAS,
-                resource: wgpu::BindingResource::TextureView(direct_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: BIND_BILLBOARD_DIRECT_SCATTER,
-                resource: wgpu::BindingResource::TextureView(
-                    &sh.billboard_direct_scatter.sampled_view,
-                ),
-            },
-        ];
-        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Streamed SH Volume Bind Group"),
-            layout: &sh.bind_group_layout,
-            entries: &entries,
-        });
-        let mut mesh_entries = entries;
-        mesh_entries.push(wgpu::BindGroupEntry {
-            binding: BIND_DYNAMIC_DIRECT_PARAMS,
-            resource: sh.direct.dynamic_direct_params_binding(),
-        });
-        let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Streamed SH Mesh Bind Group"),
-            layout: &sh.mesh_bind_group_layout,
-            entries: &mesh_entries,
-        });
+        let direct_compose = dense
+            .direct_views(selection_weights)?
+            .map(|views| {
+                StreamingDirectCompose::new(
+                    device,
+                    limits,
+                    base,
+                    sources,
+                    shape,
+                    views,
+                    &compose_indirection,
+                    sh,
+                    pipelines,
+                    &sparse_compose,
+                    sparse_capacities,
+                )
+            })
+            .transpose()?;
+        let (bind_group, mesh_bind_group) =
+            create_sample_bind_groups(device, sh, &dense, &grid_info, &depth_moments);
+        if direct_compose_required {
+            log_streamed_direct_pool_bytes(extent, dense.direct_intermediate.is_some());
+        }
 
-        let active_capacity_bytes = texture_bytes(base_format, extent)
+        let active_capacity_bytes = texture_bytes(dense.base_format, extent)
             .checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
             .and_then(|bytes| {
-                direct_format.map_or(Some(bytes), |format| {
+                dense.direct_format.map_or(Some(bytes), |format| {
                     bytes.checked_add(texture_bytes(format, extent))
                 })
             })
             .and_then(|bytes| {
-                direct_total.as_ref().map_or(Some(bytes), |_| {
-                    bytes.checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
-                })
-            })
-            .and_then(|bytes| {
-                direct_intermediate.as_ref().map_or(Some(bytes), |_| {
+                dense.direct_composed_pools().try_fold(bytes, |bytes, _| {
                     bytes.checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
                 })
             })
@@ -455,21 +233,18 @@ impl StreamingGpuPools {
             pipelines: pipelines.clone(),
             shape,
             limits: limits.clone(),
-            base_format,
-            direct_format,
-            base: base_texture,
-            total: total_texture,
-            base_view,
-            total_storage_view,
-            total_sampled_view,
-            direct_base,
-            direct_base_view,
-            direct_intermediate,
-            direct_intermediate_storage_view,
-            direct_intermediate_sampled_view,
-            direct_total,
-            direct_total_storage_view,
-            direct_total_sampled_view,
+            base_format: dense.base_format,
+            direct_format: dense.direct_format,
+            base: dense.base,
+            total: dense.total,
+            base_view: dense.base_view,
+            total_storage_view: dense.total_storage_view,
+            total_sampled_view: dense.total_sampled_view,
+            direct_base: dense.direct_base,
+            direct_base_view: dense.direct_base_view,
+            direct_atlas: dense.direct_atlas,
+            direct_handoff: dense.direct_handoff,
+            direct_intermediate: dense.direct_intermediate,
             depth_moments,
             compose_indirection,
             sampled_indirection,
@@ -494,4 +269,17 @@ impl StreamingGpuPools {
             upload_scratch: Vec::new(),
         })
     }
+}
+
+/// Logs the streamed direct pool pair once per load, at its initial size: a
+/// growth reallocates every dense pool at the grown extent.
+fn log_streamed_direct_pool_bytes(extent: wgpu::Extent3d, has_intermediate: bool) {
+    let pool_bytes = texture_bytes(wgpu::TextureFormat::Rgba16Float, extent);
+    let intermediate_bytes = if has_intermediate { pool_bytes } else { 0 };
+    log::info!(
+        "[Renderer] streamed direct SH pools: direct (promotion-free) {pool_bytes} B, promotion handoff {pool_bytes} B, compose intermediate {intermediate_bytes} B ({}x{}x{} Rgba16Float)",
+        extent.width,
+        extent.height,
+        extent.depth_or_array_layers,
+    );
 }

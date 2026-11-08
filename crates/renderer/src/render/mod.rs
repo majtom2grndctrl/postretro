@@ -80,6 +80,8 @@ mod animated_atlas_parity_test;
 mod curve_eval_test;
 #[cfg(all(test, feature = "dev-tools"))]
 mod debug_ui_gpu_test;
+#[cfg(test)]
+mod direct_sh_promotion_split_test;
 #[cfg(all(test, windows))]
 mod dx12_fxc_test;
 /// Shared headless GPU harness for offscreen readback tests: the `pollster`
@@ -302,10 +304,10 @@ pub use renderer_types::AgentOverlayState;
 pub use renderer_types::{
     BvhOverlayBudget, BvhOverlayColorMode, BvhOverlayDepthMode, BvhOverlayState,
     CameraCullDiagnostics, CameraCullPath, CaptureAdapterIdentity, CaptureGpuTimingPass,
-    CaptureGpuTimingState, CaptureGpuTimingWindow, CellOverlayState, ClearColor,
-    DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry,
-    LevelGeometryLightmapStreaming, LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState,
-    PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
+    CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionRow, CellOverlayState,
+    ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE,
+    LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage, LocatorDiagnostics,
+    PortalOverlayState, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
     SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};

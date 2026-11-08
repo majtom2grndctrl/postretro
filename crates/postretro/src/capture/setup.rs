@@ -12,9 +12,9 @@ use postretro_entities::ComponentKind;
 use postretro_entities::EntityRegistry;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 
-use super::scene::{CameraPose, CaptureScene, ForcedAnimLight, ForcedAnimatedPromotion};
+use super::scene::{CameraPose, CaptureScene, ForcedAnimLight, ForcedPromotion};
 use crate::camera;
-use crate::render::{LevelGeometry, Renderer, level_world_to_geometry};
+use crate::render::{CapturePromotionRow, LevelGeometry, Renderer, level_world_to_geometry};
 use crate::scripting_systems::light_bridge::LightBridge;
 
 /// Seed capture-only authored active states after the level install has restored
@@ -211,45 +211,53 @@ pub(super) fn resolve_forced_active_animation_slots(
     Ok(slot_radiance.into_iter().collect())
 }
 
-/// Resolve capture promotion tags through the section-45 raw roster. A
+/// Resolve capture promotion tags into renderer promotion rows. A tag may name
+/// section-45 animated baked lights, compiler-selected static lights, or both;
+/// every non-dynamic light it matches must resolve, so no tagged light is
+/// silently left unpinned.
+///
+/// Animated lights resolve through the section-45 raw roster. A
 /// `MapLight::animated_slot` is only the compose-descriptor lookup key; the
 /// renderer's promotion state is keyed by the roster position, so never pass
 /// the slot itself to the capture override. Duplicate slots use the runtime
-/// bridge's first-static-light identity.
+/// bridge's first-static-light identity. Static lights resolve to their
+/// position in `EntityShadowLights`, the renderer's selection index.
 #[cfg(test)]
-pub(super) fn resolve_forced_animated_promotion_rows(
+pub(super) fn resolve_forced_promotion_rows(
     lights: &[postretro_level_loader::MapLight],
     section: Option<
         &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
     >,
-    forced_promotions: Option<&[ForcedAnimatedPromotion]>,
-) -> Result<Vec<(usize, f32)>> {
-    let Some(forced_promotions) = forced_promotions else {
-        return Ok(Vec::new());
-    };
-    if forced_promotions.is_empty() {
-        return Ok(Vec::new());
-    }
-    let section = section.ok_or_else(|| {
-        anyhow!("force_promotion requires an AnimatedDirectShDeltaVolumes section")
-    })?;
-    resolve_forced_animated_promotion_rows_from_metadata(
+    entity_shadow_lights: &[u32],
+    forced_promotions: Option<&[ForcedPromotion]>,
+) -> Result<Vec<(CapturePromotionRow, f32)>> {
+    let (descriptor_indices, affinity_lights) = section
+        .map(|section| {
+            (
+                section.animation_descriptor_indices.as_slice(),
+                section.affinity_lights.as_slice(),
+            )
+        })
+        .unwrap_or((&[], &[]));
+    resolve_forced_promotion_rows_from_metadata(
         lights,
-        &section.animation_descriptor_indices,
-        &section.affinity_lights,
-        Some(forced_promotions),
+        descriptor_indices,
+        affinity_lights,
+        entity_shadow_lights,
+        forced_promotions,
     )
 }
 
 /// Streaming-compatible promotion lookup. The id-45 descriptor roster and
 /// CSR light indices are retained metadata; its f16 tile payload is not needed
 /// to resolve a capture override row.
-pub(super) fn resolve_forced_animated_promotion_rows_from_metadata(
+pub(super) fn resolve_forced_promotion_rows_from_metadata(
     lights: &[postretro_level_loader::MapLight],
     animation_descriptor_indices: &[u32],
     affinity_lights: &[u32],
-    forced_promotions: Option<&[ForcedAnimatedPromotion]>,
-) -> Result<Vec<(usize, f32)>> {
+    entity_shadow_lights: &[u32],
+    forced_promotions: Option<&[ForcedPromotion]>,
+) -> Result<Vec<(CapturePromotionRow, f32)>> {
     let Some(forced_promotions) = forced_promotions else {
         return Ok(Vec::new());
     };
@@ -266,9 +274,26 @@ pub(super) fn resolve_forced_animated_promotion_rows_from_metadata(
     };
 
     let mut rows = BTreeMap::new();
+    let mut pin = |row: CapturePromotionRow, forced: &ForcedPromotion| -> Result<()> {
+        match rows.entry(row) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(forced.weight);
+            }
+            std::collections::btree_map::Entry::Occupied(entry)
+                if (*entry.get() - forced.weight).abs() <= 1.0e-6 => {}
+            std::collections::btree_map::Entry::Occupied(_) => {
+                bail!(
+                    "force_promotion tag `{}` resolves to a promotion row with conflicting weights",
+                    forced.tag
+                );
+            }
+        }
+        Ok(())
+    };
     for forced in forced_promotions {
         let mut tag_found = false;
         let mut animated_light_found = false;
+        let mut static_light_found = false;
         let mut roster_row_found = false;
         for (light_index, light) in lights.iter().enumerate() {
             if !light.tags.iter().any(|tag| tag == &forced.tag) {
@@ -279,6 +304,17 @@ pub(super) fn resolve_forced_animated_promotion_rows_from_metadata(
                 continue;
             }
             let Some(slot) = light.animated_slot else {
+                static_light_found = true;
+                let selection_index = entity_shadow_lights
+                    .iter()
+                    .position(|&selected| selected as usize == light_index)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "force_promotion tag `{}` matches static map light {light_index}, which the compiler did not select for entity shadows (no EntityShadowLights row), so it can never promote",
+                            forced.tag
+                        )
+                    })?;
+                pin(CapturePromotionRow::SelectedStatic(selection_index), forced)?;
                 continue;
             };
             animated_light_found = true;
@@ -298,11 +334,14 @@ pub(super) fn resolve_forced_animated_promotion_rows_from_metadata(
                 forced.tag
             );
         }
-        if !animated_light_found {
+        if !animated_light_found && !static_light_found {
             bail!(
-                "force_promotion tag `{}` does not match an animated baked map light",
+                "force_promotion tag `{}` does not match an animated baked or compiler-selected static map light",
                 forced.tag
             );
+        }
+        if !animated_light_found {
+            continue;
         }
 
         // Resolve each raw row through the same first-static descriptor-slot
@@ -323,19 +362,10 @@ pub(super) fn resolve_forced_animated_promotion_rows_from_metadata(
                     forced.tag
                 );
             }
-            match rows.entry(animated_baked_index) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(forced.weight);
-                }
-                std::collections::btree_map::Entry::Occupied(entry)
-                    if (*entry.get() - forced.weight).abs() <= 1.0e-6 => {}
-                std::collections::btree_map::Entry::Occupied(_) => {
-                    bail!(
-                        "force_promotion tag `{}` resolves to an animated-baked row with conflicting weights",
-                        forced.tag
-                    );
-                }
-            }
+            pin(
+                CapturePromotionRow::AnimatedBaked(animated_baked_index),
+                forced,
+            )?;
         }
         if !roster_row_found {
             bail!(

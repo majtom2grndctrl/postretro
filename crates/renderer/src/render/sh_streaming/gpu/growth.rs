@@ -69,29 +69,16 @@ impl StreamingGpuPools {
             .direct_compose
             .as_ref()
             .map(|_| {
-                if self.has_animated_direct_pass
-                    && (replacement.direct_intermediate_storage_view.is_none()
-                        || replacement.direct_intermediate_sampled_view.is_none())
-                {
+                if self.has_animated_direct_pass && replacement.direct_intermediate.is_none() {
                     return Err(ShResidencyDrainError::GpuCapacity {
                         reason: "streamed dense growth lost its animated direct intermediate atlas",
                     });
                 }
-                Ok(StreamingDirectViews {
-                    base: replacement.direct_base_view.as_ref().ok_or(
-                        ShResidencyDrainError::GpuCapacity {
-                            reason: "streamed dense growth lost its id-35 base atlas",
-                        },
-                    )?,
-                    intermediate_storage: replacement.direct_intermediate_storage_view.as_ref(),
-                    intermediate_sampled: replacement.direct_intermediate_sampled_view.as_ref(),
-                    total_storage: replacement.direct_total_storage_view.as_ref().ok_or(
-                        ShResidencyDrainError::GpuCapacity {
-                            reason: "streamed dense growth lost its direct compose output atlas",
-                        },
-                    )?,
-                    selection_weights,
-                })
+                replacement.direct_views(selection_weights)?.ok_or(
+                    ShResidencyDrainError::GpuCapacity {
+                        reason: "streamed dense growth lost its direct compose output atlases",
+                    },
+                )
             })
             .transpose()?;
 
@@ -104,13 +91,19 @@ impl StreamingGpuPools {
         if let (Some(source), Some(destination)) = (&self.direct_base, &replacement.direct_base) {
             copy_texture(&mut encoder, source, destination, old_extent);
         }
-        if let (Some(source), Some(destination)) =
-            (&self.direct_intermediate, &replacement.direct_intermediate)
-        {
-            copy_texture(&mut encoder, source, destination, old_extent);
-        }
-        if let (Some(source), Some(destination)) = (&self.direct_total, &replacement.direct_total) {
-            copy_texture(&mut encoder, source, destination, old_extent);
+        for (source, destination) in [
+            (&self.direct_atlas, &replacement.direct_atlas),
+            (&self.direct_handoff, &replacement.direct_handoff),
+            (&self.direct_intermediate, &replacement.direct_intermediate),
+        ] {
+            if let (Some(source), Some(destination)) = (source, destination) {
+                copy_texture(
+                    &mut encoder,
+                    &source.texture,
+                    &destination.texture,
+                    old_extent,
+                );
+            }
         }
 
         // Submitted command buffers retain their bindings. Drop the displaced
@@ -147,26 +140,11 @@ impl StreamingGpuPools {
                 &mut self.direct_base_view,
                 replacement.direct_base_view,
             ),
+            direct_atlas: std::mem::replace(&mut self.direct_atlas, replacement.direct_atlas),
+            direct_handoff: std::mem::replace(&mut self.direct_handoff, replacement.direct_handoff),
             direct_intermediate: std::mem::replace(
                 &mut self.direct_intermediate,
                 replacement.direct_intermediate,
-            ),
-            direct_intermediate_storage_view: std::mem::replace(
-                &mut self.direct_intermediate_storage_view,
-                replacement.direct_intermediate_storage_view,
-            ),
-            direct_intermediate_sampled_view: std::mem::replace(
-                &mut self.direct_intermediate_sampled_view,
-                replacement.direct_intermediate_sampled_view,
-            ),
-            direct_total: std::mem::replace(&mut self.direct_total, replacement.direct_total),
-            direct_total_storage_view: std::mem::replace(
-                &mut self.direct_total_storage_view,
-                replacement.direct_total_storage_view,
-            ),
-            direct_total_sampled_view: std::mem::replace(
-                &mut self.direct_total_sampled_view,
-                replacement.direct_total_sampled_view,
             ),
         };
         let old_grid_info = std::mem::replace(&mut self.grid_info, replacement_grid_info);
@@ -274,22 +252,7 @@ impl StreamingGpuPools {
                 DIRECT_DELTA_SECTION | ANIMATED_DIRECT_DELTA_SECTION
             )
         }) {
-            let views = StreamingDirectViews {
-                base: self
-                    .direct_base_view
-                    .as_ref()
-                    .ok_or(ShResidencyDrainError::GpuCapacity {
-                        reason: "streamed direct sparse growth lost its id-35 base view",
-                    })?,
-                intermediate_storage: self.direct_intermediate_storage_view.as_ref(),
-                intermediate_sampled: self.direct_intermediate_sampled_view.as_ref(),
-                total_storage: self.direct_total_storage_view.as_ref().ok_or(
-                    ShResidencyDrainError::GpuCapacity {
-                        reason: "streamed direct sparse growth lost its total view",
-                    },
-                )?,
-                selection_weights,
-            };
+            let views = self.direct_views(selection_weights)?;
             let direct =
                 self.direct_compose
                     .as_ref()
@@ -313,13 +276,7 @@ impl StreamingGpuPools {
                     base,
                     sources,
                     self.shape,
-                    StreamingDirectViews {
-                        base: views.base,
-                        intermediate_storage: views.intermediate_storage,
-                        intermediate_sampled: views.intermediate_sampled,
-                        total_storage: views.total_storage,
-                        selection_weights: views.selection_weights,
-                    },
+                    views,
                     &self.compose_indirection,
                     sh,
                     &pipelines,
@@ -537,21 +494,48 @@ impl StreamingGpuPools {
                 .checked_add(texture_bytes(format, extent))
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
         }
-        if self.direct_total.is_some() {
-            bytes = bytes
-                .checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        }
-        if self.direct_intermediate.is_some() {
-            bytes = bytes
-                .checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        for pool in [
+            &self.direct_atlas,
+            &self.direct_handoff,
+            &self.direct_intermediate,
+        ] {
+            if pool.is_some() {
+                bytes = bytes
+                    .checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
+                    .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            }
         }
         bytes = bytes
             .checked_add(indirect_active)
             .and_then(|bytes| bytes.checked_add(direct_active))
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
         Ok(bytes)
+    }
+
+    /// This generation's direct compose views: the live counterpart of
+    /// [`DenseTextures::direct_views`].
+    fn direct_views<'a>(
+        &'a self,
+        selection_weights: &'a wgpu::Buffer,
+    ) -> Result<StreamingDirectViews<'a>, ShResidencyDrainError> {
+        let (Some(promotion_free), Some(handoff)) = (&self.direct_atlas, &self.direct_handoff)
+        else {
+            return Err(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed direct sparse growth lost its direct compose output atlases",
+            });
+        };
+        Ok(StreamingDirectViews {
+            base: self
+                .direct_base_view
+                .as_ref()
+                .ok_or(ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed direct sparse growth lost its id-35 base view",
+                })?,
+            intermediate: self.direct_intermediate.as_ref(),
+            promotion_free,
+            handoff,
+            selection_weights,
+        })
     }
 
     pub(in crate::render::sh_streaming) const fn probe_occlusion_enabled(&self) -> bool {

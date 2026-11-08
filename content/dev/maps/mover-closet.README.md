@@ -97,12 +97,13 @@ Use dev-tools noclip, or walk: the closet is reachable while the door is open.
 
 ## Reference variants
 
-Three sibling maps share this map's layout, lights, pool, fog, stations and
+Four sibling maps share this map's layout, lights, pool, fog, stations and
 probe lattice, and differ from it only as below. They are checked in and
 hand-maintained: the static-door and no-door variants were generated once from
-this map's layout, and the kinematic-receiver map is hand-edited from the
-static-door one. An edit to the layout, lights, pool, fog, stations or the north
-wall at y 760 belongs in all four maps.
+this map's layout, the kinematic-receiver map is hand-edited from the
+static-door one, and the no-door kinematic-receiver map from the no-door one. An
+edit to the layout, lights, pool, fog, stations or the north wall at y 760
+belongs in all five maps.
 
 - **`mover-closet-static-door.map`** (`--static-door`): the `kinematic_mover` and
   its two waypoints are gone, and the door's brush sits in worldspawn at the
@@ -116,6 +117,17 @@ wall at y 760 belongs in all four maps.
   y 505–521, z 0–8) resting at its first waypoint on the closet floor just
   behind the door, where the averaged moments glow. Hand-edited from the
   static-door map, not generated.
+- **`mover-closet-no-door-kinematic-receiver.map`**: the no-door reference plus a
+  fourth light and a promoting receiver, for proving promotion never changes a
+  lit fluid. The `doorway_light` (320, 400, 64), light 400, falloff 900, sits
+  low behind the doorway, so unlike the other three it lights the pool's far
+  part directly; the closet is no longer bounce-only here. A `kinematic_mover`
+  slab (x 560–608, y 24–40, z 0–8) rests in the bright room's south-east
+  corner: in the doorway light's reach, so it promotes it, but outside every
+  line from station 2 through the doorway and south of the light, so it is
+  never seen from station 2 and never shadows the pool. The slab sits between
+  `// receiver_slab begin` and `end` comments; the capture proof cuts that
+  block for its slab-free reference, so keep the markers.
 
 Build any of them the same way as this map, with its own name. Each sits beside this
 map, so the compiler finds the same content root.

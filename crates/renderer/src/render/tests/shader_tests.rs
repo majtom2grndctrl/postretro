@@ -223,18 +223,21 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
         "forward world lighting must not evaluate promoted static records",
     );
 
-    let billboard_src = include_str!("../../shaders/billboard.wgsl");
-    assert!(
-        billboard_src.contains("for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u)")
-            && billboard_src.contains("if uniforms.has_scatter == 0u {")
-            && billboard_src.contains(
-                "for (var i: u32 = animated_tail_end; i < uniforms.total_light_count; i = i + 1u)"
-            )
-            && !billboard_src.contains(
-                "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
-            ),
-        "scatter billboards must consume only the dynamic prefix, while legacy direct-SH adds the promoted suffix after the raw animated tail",
-    );
+    // Billboards (both paths) and fluid read the promotion-free direct atlas,
+    // so a promoted record in their runtime loop would count its light twice.
+    for (label, src) in [
+        ("billboard", include_str!("../../shaders/billboard.wgsl")),
+        (
+            "fluid_surface",
+            include_str!("../../shaders/fluid_surface.wgsl"),
+        ),
+    ] {
+        assert!(
+            src.contains("for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u)")
+                && !src.contains("i < uniforms.total_light_count"),
+            "{label} must consume only the dynamic prefix and no promoted record",
+        );
+    }
 
     let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
     assert!(
@@ -285,17 +288,11 @@ fn billboard_light_term_mask_gates_vertex_and_shimmer_terms() {
             && fragment.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
             && vertex.contains("if use_dynamic_direct {")
             && vertex.contains("for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u)")
-            && vertex.contains("if uniforms.has_scatter == 0u {")
-            && vertex.contains(
-                "for (var i: u32 = animated_tail_end; i < uniforms.total_light_count; i = i + 1u)"
-            )
-            && !vertex.contains(
-                "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
-            )
+            && !vertex.contains("i < uniforms.total_light_count")
             && vertex.contains(
                 "let ambient_floor = select(0.0, uniforms.ambient_floor, use_ambient_floor);"
             ),
-        "billboard isotropic static specular, shimmer static specular, dynamic prefix and legacy promoted suffix diffuse, and ambient floor must remain independently gated in their shader stages",
+        "billboard isotropic static specular, shimmer static specular, dynamic prefix diffuse, and ambient floor must remain independently gated in their shader stages",
     );
     assert!(
         !src.contains("uniforms.dynamic_direct_isolation"),
@@ -327,15 +324,8 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
     assert!(
         src.contains("if uniforms.has_scatter != 0u && !spec_light_is_sdf(sl)")
             && src.contains("for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u)")
-            && src.contains("if uniforms.has_scatter == 0u {")
-            && src.contains("let animated_tail_begin = uniforms.light_count;")
-            && src.contains("animated_tail_begin + animated_baked_light_tail_count()")
-            && src.contains(
-                "for (var i: u32 = animated_tail_end; i < uniforms.total_light_count; i = i + 1u)"
-            )
-            && !src.contains("select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)")
-            && !src.contains("if i >= animated_tail_begin && i < animated_tail_end"),
-        "scatter must cover only the dynamic prefix, while legacy direct-SH adds the promoted-static suffix and both paths exclude the raw animated tail",
+            && !src.contains("i < uniforms.total_light_count"),
+        "scatter and legacy direct-SH must both cover only the dynamic prefix: their baked direct terms already carry every promoted light",
     );
 
     // Regression: section 47 bakes only static-light-map transport. Gating the
@@ -1029,8 +1019,8 @@ fn direct_sh_compose_debug_override_isolates_single_selection() {
 fn animated_direct_sh_compose_debug_override_isolates_one_animated_baked_light() {
     let src = include_str!("../../shaders/animated_direct_sh_compose.wgsl");
     let scale_start = src
-        .find("fn animated_light_scale(")
-        .expect("animated compose shader should declare animated_light_scale");
+        .find("fn animated_light_full_scale(")
+        .expect("animated compose shader should declare animated_light_full_scale");
     let scale = &src[scale_start..];
 
     assert!(
@@ -1046,8 +1036,12 @@ fn animated_direct_sh_compose_debug_override_isolates_one_animated_baked_light()
     assert!(
         src.contains("compose_weights: array<vec4<f32>, 64>")
             && src.contains("const MAX_ANIMATED_BAKED_LIGHTS: u32 = 256u;")
-            && scale.contains("return color * brightness * animated_compose_weight(light_index);"),
-        "Pass B must use the fixed raw-index `(1 - w)` array rather than one debug weight",
+            && scale.contains("return color * brightness;")
+            && src
+                .matches("let scale = full_scale * animated_compose_weight(light_index);")
+                .count()
+                == 2,
+        "Pass B must scale only the handoff output by the fixed raw-index `(1 - w)` array",
     );
 }
 

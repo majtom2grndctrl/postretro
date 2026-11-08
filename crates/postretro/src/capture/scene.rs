@@ -35,10 +35,11 @@ pub(crate) struct CaptureScene {
     pub(crate) resolution: [u32; 2],
     pub(crate) output: String,
     pub(crate) force_active: Option<Vec<ForcedAnimLight>>,
-    /// Capture-only fixed crossfade values for animated-baked promotion. A
+    /// Capture-only fixed crossfade values for animated-baked and
+    /// compiler-selected static promotion. A
     /// one-frame capture cannot advance the normal ramp, so these expose known
     /// `(1 - w)` / `w` splits for same-adapter golden comparisons.
-    pub(crate) force_promotion: Option<Vec<ForcedAnimatedPromotion>>,
+    pub(crate) force_promotion: Option<Vec<ForcedPromotion>>,
     /// Exactness oracle for streamed SH compose. This is capture-only and
     /// defaults off so ordinary scenes exercise the shipped sampled-row gate.
     #[serde(default)]
@@ -186,11 +187,13 @@ pub(crate) struct ForcedAnimLight {
     pub(crate) radiance: [f32; 3],
 }
 
-/// A capture-only requested promotion weight for each animated-baked light
-/// matching `tag`. It never changes gameplay state or normal pool ranking.
+/// A capture-only requested promotion weight for each light matching `tag`:
+/// a section-45 animated baked light or a compiler-selected static light
+/// (`EntityShadowLights`). It never changes gameplay state or normal pool
+/// ranking, and fails the capture when a matched light holds no slot.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) struct ForcedAnimatedPromotion {
+pub(crate) struct ForcedPromotion {
     pub(crate) tag: String,
     pub(crate) weight: f32,
 }
@@ -227,7 +230,7 @@ pub(crate) enum SceneError {
     #[error("invalid capture scene: force_active tag must not be empty")]
     EmptyForcedAnimLightTag,
     #[error("invalid capture scene: force_promotion tag must not be empty")]
-    EmptyForcedAnimatedPromotionTag,
+    EmptyForcedPromotionTag,
     #[error("invalid capture scene: force_active radiance must be finite")]
     NonFiniteForcedAnimLightRadiance,
     #[error(
@@ -235,9 +238,9 @@ pub(crate) enum SceneError {
     )]
     ForcedAnimLightRadianceOutOfRange { value: f32 },
     #[error("invalid capture scene: force_promotion weight must be finite")]
-    NonFiniteForcedAnimatedPromotionWeight,
+    NonFiniteForcedPromotionWeight,
     #[error("invalid capture scene: force_promotion weight must be in 0.0..=1.0, got {value}")]
-    ForcedAnimatedPromotionWeightOutOfRange { value: f32 },
+    ForcedPromotionWeightOutOfRange { value: f32 },
     #[error(
         "invalid capture scene: fov_deg must be between {MIN_FOV_DEG} and {MAX_FOV_DEG}, got {value}"
     )]
@@ -365,13 +368,13 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     if let Some(forced_promotions) = &scene.force_promotion {
         for promotion in forced_promotions {
             if promotion.tag.trim().is_empty() {
-                return Err(SceneError::EmptyForcedAnimatedPromotionTag);
+                return Err(SceneError::EmptyForcedPromotionTag);
             }
             if !promotion.weight.is_finite() {
-                return Err(SceneError::NonFiniteForcedAnimatedPromotionWeight);
+                return Err(SceneError::NonFiniteForcedPromotionWeight);
             }
             if !(0.0..=1.0).contains(&promotion.weight) {
-                return Err(SceneError::ForcedAnimatedPromotionWeightOutOfRange {
+                return Err(SceneError::ForcedPromotionWeightOutOfRange {
                     value: promotion.weight,
                 });
             }
@@ -710,7 +713,7 @@ mod tests {
         let scene = parse_scene(&json).expect("forced promotion scene must parse");
         assert_eq!(
             scene.force_promotion,
-            Some(vec![ForcedAnimatedPromotion {
+            Some(vec![ForcedPromotion {
                 tag: "alarm_light".into(),
                 weight: 0.5,
             }])

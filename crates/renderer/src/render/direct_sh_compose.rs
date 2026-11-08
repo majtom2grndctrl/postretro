@@ -1,5 +1,6 @@
-// Direct SH compose passes: promotion subtraction plus optional animated-direct addition.
-// See: context/lib/rendering_pipeline.md §7.1
+// Direct SH compose passes: the promotion-free direct atlas and the promotion
+// handoff atlas, plus optional animated-direct addition.
+// See: context/lib/rendering_pipeline.md §4 (Promoted static lights), §7.1
 
 use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
@@ -30,6 +31,9 @@ use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
+/// Both passes write the promotion handoff atlas (or Pass A's intermediate) at
+/// binding 1 and the promotion-free direct atlas here.
+pub(super) const BIND_DIRECT_ATLAS_OUTPUT: u32 = 4;
 pub(super) const BIND_DELTA_SUBBLOCKS: u32 = 20;
 pub(super) const BIND_AFFINITY_OFFSETS: u32 = 21;
 pub(super) const BIND_ANIMATION_DESCRIPTORS: u32 = 22;
@@ -46,7 +50,8 @@ const BIND_FRAME_LIGHT_TERM_MASK: u32 = 29;
 /// They gate reconstruction and select each pass's stored output slot.
 pub(super) const BIND_PROBE_INDIRECTION: u32 = 30;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
-/// WGSL `DirectComposeParams`: mask at byte 0, followed by three u32 pads.
+/// WGSL `DirectComposeParams`: mask at byte 0, the load-fixed
+/// `store_promotion_free` flag at byte 4, then two u32 pads.
 const DIRECT_COMPOSE_PARAMS_SIZE: usize = 16;
 const _: () = assert!(DIRECT_COMPOSE_PARAMS_SIZE == 16);
 
@@ -165,13 +170,16 @@ struct DirectShComposePipeline {
     /// Pass A has no shared group-0 binding, so this mirrors that group's
     /// frame snapshot in a private uniform.
     light_term_mask_buffer: wgpu::Buffer,
+    /// Case 1 writes the promotion-free atlas from Pass A; Case 2 leaves it to
+    /// Pass B.
+    stores_promotion_free: bool,
     pending_copy_through: bool,
     was_active: bool,
     /// The mask snapshot that produced the currently composed atlas.
     last_composed_mask: LightTermMask,
     last_debug_override_bytes: [u8; DEBUG_OVERRIDE_SIZE],
     /// Present only for section-45 maps. Case 1 retains exactly one pass and
-    /// writes the final sampled atlas directly.
+    /// writes both final atlases directly.
     animated_add: Option<AnimatedDirectShComposePipeline>,
 }
 
@@ -257,14 +265,25 @@ impl DirectShComposeResources {
         inputs.delta = inputs
             .delta
             .filter(|delta| !delta.affinity_lights.is_empty());
-        let Some(composed_storage_view) = inputs.direct.composed_storage_view.as_ref() else {
+        let Some(handoff_storage_view) = inputs.direct.handoff_storage_view.as_ref() else {
+            return Self::disabled();
+        };
+        let Some(atlas_storage_view) = inputs.direct.atlas_storage_view.as_ref() else {
             return Self::disabled();
         };
         let Some(layout) = inputs.direct.compose_layout else {
             return Self::disabled();
         };
         let selected_light_count = inputs.delta.map_or(0, |delta| delta.affinity_lights.len());
-        let pipeline = build_promotion_pass(layout, composed_storage_view, inputs);
+        let pipeline = build_promotion_pass(
+            layout,
+            PromotionPassOutputs {
+                handoff: handoff_storage_view,
+                promotion_free: atlas_storage_view,
+                stores_promotion_free: true,
+            },
+            inputs,
+        );
 
         log::info!(
             "[Renderer] Direct SH compose: {} selected-light CSR entr(y/ies), atlas {}×{}",
@@ -298,19 +317,27 @@ impl DirectShComposeResources {
         let Some(intermediate_sampled_view) = direct.intermediate_sampled_view.as_ref() else {
             return Self::disabled();
         };
-        let Some(composed_storage_view) = direct.composed_storage_view.as_ref() else {
+        let Some(handoff_storage_view) = direct.handoff_storage_view.as_ref() else {
+            return Self::disabled();
+        };
+        let Some(atlas_storage_view) = direct.atlas_storage_view.as_ref() else {
             return Self::disabled();
         };
         let Some(layout) = direct.compose_layout else {
             return Self::disabled();
         };
 
-        // Pass A keeps the existing shader unmodified. In Case 2, it accepts
-        // absent id35/id41 inputs through the existing dummy base and empty CSR
-        // buffers, then writes the intermediate that Pass B always consumes.
+        // In Case 2, Pass A accepts absent id35/id41 inputs through the
+        // existing dummy base and empty CSR buffers, then writes the
+        // intermediate that Pass B always consumes. Pass B writes both final
+        // atlases, so Pass A leaves the promotion-free output untouched.
         let mut pass_a = build_promotion_pass(
             layout,
-            intermediate_storage_view,
+            PromotionPassOutputs {
+                handoff: intermediate_storage_view,
+                promotion_free: atlas_storage_view,
+                stores_promotion_free: false,
+            },
             PromotionPassInputs {
                 device,
                 pipelines,
@@ -331,7 +358,9 @@ impl DirectShComposeResources {
             animated_delta,
             AnimatedDirectShPassViews {
                 intermediate_sampled: intermediate_sampled_view,
-                output_storage: composed_storage_view,
+                base_sampled: &direct.base_atlas_view,
+                handoff_storage: handoff_storage_view,
+                promotion_free_storage: atlas_storage_view,
             },
             &pipelines.animated,
             sh_section_present,
@@ -399,7 +428,8 @@ impl DirectShComposeResources {
         // Keep Pass A's private input coherent with Pass B's group-0 input.
         // This applies to the initial copy-through too, never relying on the
         // construction-time default mask.
-        let light_term_mask_bytes = direct_compose_params_bytes(frame_light_term_mask);
+        let light_term_mask_bytes =
+            direct_compose_params_bytes(frame_light_term_mask, pipeline.stores_promotion_free);
         queue.write_buffer(&pipeline.light_term_mask_buffer, 0, &light_term_mask_bytes);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -430,9 +460,17 @@ impl DirectShComposeResources {
     }
 }
 
+/// Pass A's two storage outputs. `handoff` is the final promotion handoff
+/// atlas in Case 1 and Pass B's intermediate in Case 2.
+struct PromotionPassOutputs<'a> {
+    handoff: &'a wgpu::TextureView,
+    promotion_free: &'a wgpu::TextureView,
+    stores_promotion_free: bool,
+}
+
 fn build_promotion_pass(
     layout: DirectAtlasLayout,
-    output_storage_view: &wgpu::TextureView,
+    outputs: PromotionPassOutputs<'_>,
     inputs: PromotionPassInputs<'_>,
 ) -> DirectShComposePipeline {
     let PromotionPassInputs {
@@ -601,7 +639,8 @@ fn build_promotion_pass(
         contents: &debug_override_bytes,
         usage: debug_override_allocation.usage,
     });
-    let initial_light_term_mask_bytes = direct_compose_params_bytes(LightTermMask::ALL);
+    let initial_light_term_mask_bytes =
+        direct_compose_params_bytes(LightTermMask::ALL, outputs.stores_promotion_free);
     let light_term_mask_allocation = buffer_allocation(
         ShAllocationKind::DirectComposeLightTermMask,
         &initial_light_term_mask_bytes,
@@ -635,7 +674,11 @@ fn build_promotion_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(output_storage_view),
+                resource: wgpu::BindingResource::TextureView(outputs.handoff),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_DIRECT_ATLAS_OUTPUT,
+                resource: wgpu::BindingResource::TextureView(outputs.promotion_free),
             },
             wgpu::BindGroupEntry {
                 binding: 18,
@@ -686,6 +729,7 @@ fn build_promotion_pass(
         dispatches: grid_upload.dispatches,
         debug_override_buffer,
         light_term_mask_buffer,
+        stores_promotion_free: outputs.stores_promotion_free,
         pending_copy_through: true,
         was_active: false,
         last_composed_mask: LightTermMask::ALL,
@@ -712,6 +756,7 @@ fn promotion_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),
         storage_texture_bgl_entry(1),
+        storage_texture_bgl_entry(BIND_DIRECT_ATLAS_OUTPUT),
         dynamic_compose_grid_bgl_entry(),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
         storage_bgl_entry(BIND_DELTA_COMPACTION_META),
@@ -819,9 +864,13 @@ fn debug_override_bytes(value: DirectShDebugOverride) -> [u8; DEBUG_OVERRIDE_SIZ
     bytes
 }
 
-fn direct_compose_params_bytes(mask: LightTermMask) -> [u8; DIRECT_COMPOSE_PARAMS_SIZE] {
+pub(super) fn direct_compose_params_bytes(
+    mask: LightTermMask,
+    stores_promotion_free: bool,
+) -> [u8; DIRECT_COMPOSE_PARAMS_SIZE] {
     let mut bytes = [0u8; DIRECT_COMPOSE_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&mask.bits().to_ne_bytes());
+    bytes[4..8].copy_from_slice(&u32::from(stores_promotion_free).to_ne_bytes());
     bytes
 }
 
@@ -1155,7 +1204,7 @@ mod tests {
 
         let mut static_direct_off = LightTermMask::ALL;
         static_direct_off.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
-        let params = direct_compose_params_bytes(static_direct_off);
+        let params = direct_compose_params_bytes(static_direct_off, true);
         assert_eq!(
             u32::from_ne_bytes(params[0..4].try_into().unwrap())
                 & LightTermMask::BAKED_DIRECT_STATIC.bits(),
@@ -1272,10 +1321,13 @@ mod tests {
             Some(DIRECT_COMPOSE_PARAMS_SIZE as u64),
         );
 
-        let bytes = direct_compose_params_bytes(LightTermMask::BAKED_DIRECT_STATIC);
+        let bytes = direct_compose_params_bytes(LightTermMask::BAKED_DIRECT_STATIC, false);
         assert_eq!(bytes.len(), DIRECT_COMPOSE_PARAMS_SIZE);
         assert_eq!(u32::from_ne_bytes(bytes[0..4].try_into().unwrap()), 0x08);
         assert!(bytes[4..].iter().all(|&byte| byte == 0));
+        let case_1 = direct_compose_params_bytes(LightTermMask::BAKED_DIRECT_STATIC, true);
+        assert_eq!(u32::from_ne_bytes(case_1[4..8].try_into().unwrap()), 1);
+        assert!(case_1[8..].iter().all(|&byte| byte == 0));
     }
 
     #[test]

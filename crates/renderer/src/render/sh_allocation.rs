@@ -25,7 +25,10 @@ pub(super) enum ShAllocationKind {
     ScriptedLightDescriptors,
     DirectBaseAtlas,
     DirectDynamicParams,
+    /// The promotion-free composed direct atlas every non-mesh consumer samples.
     DirectComposedAtlas,
+    /// The promotion-subtracted handoff atlas movers and skinned meshes sample.
+    DirectHandoffAtlas,
     DirectIntermediateAtlas,
     IndirectComposeDeltaSubblocks,
     IndirectComposeAffinityOffsets,
@@ -339,7 +342,9 @@ pub(super) fn direct_composed_atlas_allocation(
 ) -> TextureAllocation {
     debug_assert!(matches!(
         kind,
-        ShAllocationKind::DirectComposedAtlas | ShAllocationKind::DirectIntermediateAtlas
+        ShAllocationKind::DirectComposedAtlas
+            | ShAllocationKind::DirectHandoffAtlas
+            | ShAllocationKind::DirectIntermediateAtlas
     ));
     texture_allocation(
         kind,
@@ -350,8 +355,19 @@ pub(super) fn direct_composed_atlas_allocation(
             depth_or_array_layers: layer_count.max(1),
         },
         wgpu::TextureDimension::D2,
-        wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        direct_composed_atlas_usage(),
     )
+}
+
+/// Compose writes, consumers sample. Test and dev-tools builds may also read
+/// a direct atlas back, as the indirect total atlas allows.
+fn direct_composed_atlas_usage() -> wgpu::TextureUsages {
+    let usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
+    if cfg!(any(test, feature = "dev-tools")) {
+        usage | wgpu::TextureUsages::COPY_SRC
+    } else {
+        usage
+    }
 }
 
 pub(super) fn billboard_scatter_base_allocation(grid_dimensions: [u32; 3]) -> TextureAllocation {

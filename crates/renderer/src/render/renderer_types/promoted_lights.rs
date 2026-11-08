@@ -49,6 +49,17 @@ impl PromotedBakedLightSource {
     }
 }
 
+/// The promotion row a capture-pinned crossfade `w` addresses, in the same two
+/// raw namespaces as [`PromotedBakedLightSource`]. Capture only: windowed
+/// frames never pin a weight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum CapturePromotionRow {
+    /// Position in the level's `EntityShadowLights` selection.
+    SelectedStatic(usize),
+    /// Raw section-45 `AnimatedBakedLights` roster row.
+    AnimatedBaked(usize),
+}
+
 /// One baked light promoted into a shadow pool slot this frame. Selected-static
 /// records append a forward light record; animated-baked records instead point
 /// at their already-reserved section-45 forward tail. Both use the same static

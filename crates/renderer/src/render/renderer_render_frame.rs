@@ -180,7 +180,7 @@ impl Renderer {
         camera_cell: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
-        capture_animated_promotion_weights: &[(usize, f32)],
+        capture_promotion_weights: &[(CapturePromotionRow, f32)],
         now_seconds: f64,
         clear_color: ClearColor,
         scene: FrameScene,
@@ -298,7 +298,7 @@ impl Renderer {
                 reachable_cell_aabbs,
                 now_seconds,
                 promotion_mesh_frame_plan,
-                capture_animated_promotion_weights,
+                capture_promotion_weights,
             )?;
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No

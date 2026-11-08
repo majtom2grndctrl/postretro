@@ -7,8 +7,8 @@ use std::path::Path;
 use glam::{Mat4, Vec2, Vec3};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::cluster_sh_payloads::{
-    CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, ClusterShPayloadsSection,
-    ClusterShPayloadsSourceKind,
+    CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, CLUSTER_SH_SPARSE_ROW_RECORD_SIZE,
+    ClusterShPayloadsSection, ClusterShPayloadsSourceKind,
 };
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
 use postretro_level_format::{SectionBlob, SectionId};
@@ -194,11 +194,11 @@ fn zero_streamed_animated_direct_light(
             let body_offset = read_u64(chunk, record + 16) as usize;
             let body_len = read_u64(chunk, record + 24) as usize;
             let body = &mut chunk[body_offset..body_offset + body_len];
-            // Sparse rows: 16-byte header, 16-byte row records, 16-byte
+            // Sparse rows: 16-byte header, row records, 16-byte
             // `(light, first_f16, f16_count, 0)` entries, then f16 tiles.
             let row_count = read_u32(body, 0) as usize;
             let entry_count = read_u32(body, 4) as usize;
-            let entries = 16 + row_count * 16;
+            let entries = 16 + row_count * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
             let tiles = entries + entry_count * 16;
             for sparse_entry in 0..entry_count {
                 let record = entries + sparse_entry * 16;

@@ -25,13 +25,15 @@ use super::prepared::PreparedCapture;
 use super::report::measurement_report;
 use super::scene::parse_scene;
 #[cfg(test)]
-use super::scene::{CameraPose, ForcedAnimLight, ForcedAnimatedPromotion};
+use super::scene::{CameraPose, ForcedAnimLight, ForcedPromotion};
 #[cfg(test)]
 use super::setup::{
     capture_static_lights_and_shadow_selection, capture_view_projection,
     forced_active_animation_descriptor, resolve_forced_active_animation_slots,
-    resolve_forced_animated_promotion_rows, validate_forced_animation_slot_bounds,
+    resolve_forced_promotion_rows, validate_forced_animation_slot_bounds,
 };
+#[cfg(test)]
+use crate::render::CapturePromotionRow;
 
 #[cfg(test)]
 use super::receivers::{
@@ -632,15 +634,15 @@ mod tests {
             affinity_lights: vec![1],
             delta_subblocks: Vec::new(),
         };
-        let forced = [ForcedAnimatedPromotion {
+        let forced = [ForcedPromotion {
             tag: "alarm_light".into(),
             weight: 0.75,
         }];
 
         assert_eq!(
-            resolve_forced_animated_promotion_rows(&[alarm], Some(&section), Some(&forced))
+            resolve_forced_promotion_rows(&[alarm], Some(&section), &[], Some(&forced))
                 .expect("tagged animated light must resolve"),
-            vec![(1, 0.75)],
+            vec![(CapturePromotionRow::AnimatedBaked(1), 0.75)],
             "the renderer weight state is keyed by raw AnimatedBakedLights row, not descriptor slot 7"
         );
     }
@@ -667,14 +669,15 @@ mod tests {
             affinity_lights: vec![0],
             delta_subblocks: Vec::new(),
         };
-        let forced = [ForcedAnimatedPromotion {
+        let forced = [ForcedPromotion {
             tag: "alarm_light".into(),
             weight: 0.75,
         }];
 
-        let error = resolve_forced_animated_promotion_rows(
+        let error = resolve_forced_promotion_rows(
             &[runtime_owner, shadowed_duplicate],
             Some(&section),
+            &[],
             Some(&forced),
         )
         .expect_err("capture must not promote a different duplicate than runtime");
@@ -691,18 +694,19 @@ mod tests {
         let mut shadowed_duplicate = test_light(false, 2.0);
         shadowed_duplicate.tags = vec!["alarm_light".into()];
         shadowed_duplicate.animated_slot = Some(7);
-        let owner_forced = [ForcedAnimatedPromotion {
+        let owner_forced = [ForcedPromotion {
             tag: "first_light".into(),
             weight: 0.5,
         }];
         assert_eq!(
-            resolve_forced_animated_promotion_rows(
+            resolve_forced_promotion_rows(
                 &[runtime_owner, shadowed_duplicate],
                 Some(&section),
+                &[],
                 Some(&owner_forced),
             )
             .expect("the runtime-owned duplicate identity remains forceable"),
-            vec![(0, 0.5)],
+            vec![(CapturePromotionRow::AnimatedBaked(0), 0.5)],
         );
     }
 
@@ -723,12 +727,12 @@ mod tests {
             affinity_lights: Vec::new(),
             delta_subblocks: Vec::new(),
         };
-        let forced = [ForcedAnimatedPromotion {
+        let forced = [ForcedPromotion {
             tag: "alarm_light".into(),
             weight: 0.5,
         }];
 
-        let error = resolve_forced_animated_promotion_rows(&[alarm], Some(&section), Some(&forced))
+        let error = resolve_forced_promotion_rows(&[alarm], Some(&section), &[], Some(&forced))
             .expect_err("a descriptor without an AnimatedBakedLights row cannot promote");
         assert!(error.to_string().contains("section-45"));
     }
@@ -752,17 +756,87 @@ mod tests {
             affinity_lights: Vec::new(),
             delta_subblocks: Vec::new(),
         };
-        let forced = [ForcedAnimatedPromotion {
+        let forced = [ForcedPromotion {
             tag: "alarm_light".into(),
             weight: 0.5,
         }];
 
-        let error = resolve_forced_animated_promotion_rows(&[alarm], Some(&section), Some(&forced))
+        let error = resolve_forced_promotion_rows(&[alarm], Some(&section), &[], Some(&forced))
             .expect_err("a row without a direct delta cannot be promoted");
         assert!(
             error.to_string().contains("no affinity/direct delta")
                 && error.to_string().contains("not promotion-eligible"),
             "capture must reject the ineligible row at configuration time: {error:#}",
+        );
+    }
+
+    #[test]
+    fn force_promotion_resolves_a_selected_static_light_to_its_selection_index() {
+        let dynamic = test_light(true, 1.0);
+        let unselected = test_light(false, 1.0);
+        let mut doorway = test_light(false, 2.0);
+        doorway.tags = vec!["doorway_light".into()];
+        let forced = [ForcedPromotion {
+            tag: "doorway_light".into(),
+            weight: 0.0,
+        }];
+
+        // EntityShadowLights holds map-light indices; the renderer's selection
+        // index is the position in that list, not the map-light index.
+        assert_eq!(
+            resolve_forced_promotion_rows(
+                &[dynamic, unselected, doorway],
+                None,
+                &[2],
+                Some(&forced),
+            )
+            .expect("a selected static light must resolve without section 45"),
+            vec![(CapturePromotionRow::SelectedStatic(0), 0.0)],
+        );
+    }
+
+    // A static light the compiler never selected cannot hold a slot, so a
+    // pinned w on it would change nothing and a capture row would pass
+    // vacuously. Resolution must name it instead.
+    #[test]
+    fn force_promotion_rejects_a_static_light_the_compiler_did_not_select() {
+        let mut selected = test_light(false, 2.0);
+        selected.tags = vec!["bright_room".into()];
+        let mut unselected = test_light(false, 1.0);
+        unselected.tags = vec!["bright_room".into()];
+        let forced = [ForcedPromotion {
+            tag: "bright_room".into(),
+            weight: 1.0,
+        }];
+
+        let error =
+            resolve_forced_promotion_rows(&[selected, unselected], None, &[0], Some(&forced))
+                .expect_err("every non-dynamic tagged light must resolve");
+        assert!(
+            error.to_string().contains("static map light 1")
+                && error
+                    .to_string()
+                    .contains("did not select for entity shadows"),
+            "capture must name the unselected light: {error:#}",
+        );
+    }
+
+    #[test]
+    fn force_promotion_rejects_a_tag_matching_only_dynamic_lights() {
+        let mut dynamic = test_light(true, 1.0);
+        dynamic.tags = vec!["muzzle".into()];
+        let forced = [ForcedPromotion {
+            tag: "muzzle".into(),
+            weight: 1.0,
+        }];
+
+        let error = resolve_forced_promotion_rows(&[dynamic], None, &[], Some(&forced))
+            .expect_err("a dynamic-only tag has nothing to promote");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match an animated baked or compiler-selected static map light"),
+            "{error:#}",
         );
     }
 

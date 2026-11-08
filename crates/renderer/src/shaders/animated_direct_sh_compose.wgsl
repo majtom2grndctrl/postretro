@@ -1,4 +1,7 @@
 // Pass B of direct SH composition: adds animated baked direct transport.
+// It writes both direct outputs from one read of every id-45 delta: the
+// promotion handoff atlas (Pass A's intermediate plus `(1 - w)` deltas), and
+// the promotion-free direct atlas (the mask-gated base plus full deltas).
 // `curve_eval.wgsl` is concatenated after this source at pipeline build time.
 
 struct Uniforms {
@@ -57,8 +60,12 @@ struct AnimatedLightScale {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 @group(1) @binding(0) var direct_intermediate_atlas: texture_2d_array<f32>;
+// Non-filtering (nearest) sampler shared by both sampled atlases.
 @group(1) @binding(2) var intermediate_sampler: sampler;
-@group(1) @binding(1) var direct_composed_atlas: texture_storage_2d_array<rgba16float, write>;
+@group(1) @binding(1) var direct_handoff_atlas: texture_storage_2d_array<rgba16float, write>;
+// The id-35 base (BC6H at rest, so point-sampled), the promotion-free seed.
+@group(1) @binding(3) var direct_base_atlas: texture_2d_array<f32>;
+@group(1) @binding(4) var direct_atlas: texture_storage_2d_array<rgba16float, write>;
 @group(1) @binding(18) var<uniform> grid: GridDims;
 @group(1) @binding(20) var<storage, read> delta_subblocks: array<u32>;
 @group(1) @binding(21) var<storage, read> affinity_offsets: array<u32>;
@@ -82,6 +89,7 @@ struct AnimatedLightScale {
 const AFFINITY_FACTOR: u32 = 4u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
 const MAX_ANIMATED_BAKED_LIGHTS: u32 = 256u;
+const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;
 const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;
 // PRL validation pins the runtime tile dimension to 6. Keeping the shared
 // lattice fixed-size makes one brick workgroup fit well below the 16 KiB
@@ -322,7 +330,10 @@ fn animated_compose_weight(light_index: u32) -> f32 {
     return clamp(packed[light_index % 4u], 0.0, 1.0);
 }
 
-fn animated_light_scale(light_index: u32) -> vec3<f32> {
+// The light's full animated radiance, before any promotion handoff. The
+// handoff output scales it by `animated_compose_weight`; the promotion-free
+// output keeps it whole.
+fn animated_light_full_scale(light_index: u32) -> vec3<f32> {
     if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u) {
         return vec3<f32>(0.0);
     }
@@ -356,7 +367,7 @@ fn animated_light_scale(light_index: u32) -> vec3<f32> {
             vec3<f32>(0.0),
         ) * desc.base_color;
     }
-    return color * brightness * animated_compose_weight(light_index);
+    return color * brightness;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -433,11 +444,15 @@ fn animated_compose_main(
     );
     let output_is_stored = stored_slot.write;
     let tile_origin = slot_tile_origin(stored_slot.slot);
+    let use_baked_direct_static = (uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
 
-    // Keeping the accumulator private lets one shared kept lattice serve all
+    // Keeping the accumulators private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
-    // geometry is fixed at 6×6 by PRL validation.
+    // geometry is fixed at 6×6 by PRL validation. `accum` seeds from Pass A's
+    // promotion-subtracted intermediate; `accum_free` seeds from the base,
+    // clamped as Pass A clamps it, so the two agree exactly at zero weights.
     var accum: array<vec4<f32>, 36>;
+    var accum_free: array<vec3<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
         if (output_is_stored) {
             let tile_texel = vec2<u32>(
@@ -454,8 +469,22 @@ fn animated_compose_main(
                 i32(tile_origin.z),
                 0.0,
             );
+            var base = vec3<f32>(0.0);
+            if (use_baked_direct_static) {
+                let base_uv = (vec2<f32>(atlas_texel) + 0.5)
+                    / vec2<f32>(textureDimensions(direct_base_atlas));
+                base = textureSampleLevel(
+                    direct_base_atlas,
+                    intermediate_sampler,
+                    base_uv,
+                    i32(tile_origin.z),
+                    0.0,
+                ).rgb;
+            }
+            accum_free[texel_index] = max(base, vec3<f32>(0.0));
         } else {
             accum[texel_index] = vec4<f32>(0.0);
+            accum_free[texel_index] = vec3<f32>(0.0);
         }
     }
 
@@ -472,17 +501,18 @@ fn animated_compose_main(
         if (output_is_stored && local_probe_is_kept(cell_index, local_probe)) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
-                let scale = animated_light_scale(affinity_lights[entry]);
+                let light_index = affinity_lights[entry];
+                let full_scale = animated_light_full_scale(light_index);
+                let scale = full_scale * animated_compose_weight(light_index);
                 for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
                     let tile_texel = vec2<u32>(
                         texel_index % RUNTIME_TILE_DIMENSION,
                         texel_index / RUNTIME_TILE_DIMENSION,
                     );
+                    let delta = read_delta_texel(entry, probe_rank, tile_texel).rgb;
                     let prior = accum[texel_index];
-                    accum[texel_index] = vec4<f32>(
-                        prior.rgb + read_delta_texel(entry, probe_rank, tile_texel).rgb * scale,
-                        prior.a,
-                    );
+                    accum[texel_index] = vec4<f32>(prior.rgb + delta * scale, prior.a);
+                    accum_free[texel_index] = accum_free[texel_index] + delta * full_scale;
                 }
             }
         }
@@ -533,7 +563,9 @@ fn animated_compose_main(
             workgroupBarrier();
 
             if (output_is_stored) {
-                let scale = animated_light_scale(affinity_lights[entry]);
+                let light_index = affinity_lights[entry];
+                let full_scale = animated_light_full_scale(light_index);
+                let scale = full_scale * animated_compose_weight(light_index);
                 for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
                     var delta = vec3<f32>(0.0);
                     if (level == 2u) {
@@ -544,6 +576,7 @@ fn animated_compose_main(
                     }
                     let prior = accum[texel_index];
                     accum[texel_index] = vec4<f32>(prior.rgb + delta * scale, prior.a);
+                    accum_free[texel_index] = accum_free[texel_index] + delta * full_scale;
                 }
             }
             // No invocation may start loading the next entry until every
@@ -558,14 +591,18 @@ fn animated_compose_main(
                 texel_index % RUNTIME_TILE_DIMENSION,
                 texel_index / RUNTIME_TILE_DIMENSION,
             );
+            let alpha = select(0.0, 1.0, stored_slot.valid);
             textureStore(
-                direct_composed_atlas,
+                direct_handoff_atlas,
                 vec2<i32>(tile_origin.xy + tile_texel),
                 i32(tile_origin.z),
-                vec4<f32>(
-                    max(accum[texel_index].rgb, vec3<f32>(0.0)),
-                    select(0.0, 1.0, stored_slot.valid),
-                ),
+                vec4<f32>(max(accum[texel_index].rgb, vec3<f32>(0.0)), alpha),
+            );
+            textureStore(
+                direct_atlas,
+                vec2<i32>(tile_origin.xy + tile_texel),
+                i32(tile_origin.z),
+                vec4<f32>(max(accum_free[texel_index], vec3<f32>(0.0)), alpha),
             );
         }
     }

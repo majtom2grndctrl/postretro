@@ -1,15 +1,14 @@
 use super::*;
 
 impl StreamingAnimatedPass {
-    /// Rewire the two dense texture views without reallocating or copying the
+    /// Rewire the dense texture views without reallocating or copying the
     /// independent id-45 sparse backing generation.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::render::sh_streaming::direct_compose) fn rebind_dense(
         &mut self,
         device: &wgpu::Device,
         shape: AtlasShape,
-        intermediate_sampled: &wgpu::TextureView,
-        output_storage: &wgpu::TextureView,
+        views: AnimatedViews<'_>,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
     ) {
@@ -22,8 +21,7 @@ impl StreamingAnimatedPass {
         let replacement = Self::build_bind_group(
             device,
             &self.bind_group_layout,
-            intermediate_sampled,
-            output_storage,
+            &views,
             &self.sampler,
             &self.grid_buffer,
             &self.sparse,

@@ -1,6 +1,8 @@
 // GPU capture proofs for direction-aware probe visibility: closet fixtures
-// rendered with their baked id 59 against the same PRL without it.
-// See: context/lib/rendering_pipeline.md §4 (Probe depth moments)
+// rendered with their baked id 59 against the same PRL without it. The closet
+// pool rows also prove promotion never changes a fluid.
+// See: context/lib/rendering_pipeline.md §4 (Probe depth moments, Promoted
+// static lights)
 //
 // "Today" is the tiled bake with id 59 stripped, so every other section is
 // byte-identical and only the tiles differ. Means and pixel moves are Rec. 709
@@ -21,6 +23,8 @@ use capture_support::{capture_command, compile_dev_map, load_capture_rgba, works
 
 const CLOSET_WIDTH: u32 = 960;
 const CLOSET_HEIGHT: u32 = 540;
+/// Horizontal field of view of every capture here, in degrees.
+const FOV_DEG: f32 = 100.0;
 /// TrenchBroom unit in metres.
 const UNIT: f32 = 0.0254;
 
@@ -51,7 +55,7 @@ fn camera(pose: Pose) -> serde_json::Value {
         "position": [-y * UNIT, z * UNIT, -x * UNIT],
         "yaw_deg": pose.yaw,
         "pitch_deg": pose.pitch,
-        "fov_deg": 100.0
+        "fov_deg": FOV_DEG
     })
 }
 
@@ -133,17 +137,24 @@ fn tiled_pair(workspace: &Path, map_name: &str) -> TiledPair {
     }
 }
 
-/// Run one capture and return its image. Fails rather than skips without an
-/// adapter: this proof does not count unless it ran.
-fn capture(
+/// Capture-scene fields beyond the map, pose, and resolution.
+#[derive(Clone, Copy, Default)]
+struct SceneExtras {
+    light_term_mask: Option<u32>,
+    /// A `force_promotion` entry: tag and pinned `w`.
+    force_promotion: Option<(&'static str, f32)>,
+}
+
+/// Run one capture; `Err` carries the child's output when it fails.
+fn try_capture(
     workspace: &Path,
     scratch: &Path,
     map: &Path,
     label: &str,
     pose: Pose,
     resolution: [u32; 2],
-    light_term_mask: Option<u32>,
-) -> RgbaImage {
+    extras: SceneExtras,
+) -> Result<RgbaImage, String> {
     let scene_path = scratch.join(format!("{label}.scene.json"));
     let output_path = scratch.join(format!("{label}.png"));
     let mut scene = serde_json::json!({
@@ -153,21 +164,40 @@ fn capture(
         "output": output_path.display().to_string(),
         "force_full_resident_sh_compose": true
     });
-    if let Some(mask) = light_term_mask {
+    if let Some(mask) = extras.light_term_mask {
         scene["light_term_mask"] = mask.into();
+    }
+    if let Some((tag, weight)) = extras.force_promotion {
+        scene["force_promotion"] = serde_json::json!([{ "tag": tag, "weight": weight }]);
     }
     fs::write(&scene_path, serde_json::to_vec_pretty(&scene).unwrap()).unwrap();
     let result = capture_command(workspace, &scene_path)
         .env("RUST_LOG", "warn")
         .output()
         .expect("launch postretro capture");
-    assert!(
-        result.status.success(),
-        "capture `{label}` failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr),
-    );
-    load_capture_rgba(&output_path)
+    if !result.status.success() {
+        return Err(format!(
+            "capture `{label}` failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        ));
+    }
+    Ok(load_capture_rgba(&output_path))
+}
+
+/// Run one capture and return its image. Fails rather than skips without an
+/// adapter: this proof does not count unless it ran.
+fn capture(
+    workspace: &Path,
+    scratch: &Path,
+    map: &Path,
+    label: &str,
+    pose: Pose,
+    resolution: [u32; 2],
+    extras: SceneExtras,
+) -> RgbaImage {
+    try_capture(workspace, scratch, map, label, pose, resolution, extras)
+        .unwrap_or_else(|failure| panic!("{failure}"))
 }
 
 fn luma([r, g, b, _]: [u8; 4]) -> f64 {
@@ -217,7 +247,7 @@ fn closet_capture(
         label,
         pose,
         [CLOSET_WIDTH, CLOSET_HEIGHT],
-        None,
+        SceneExtras::default(),
     )
 }
 
@@ -467,7 +497,7 @@ fn hallway_tiles_darken_no_pixel_and_fit_the_memory_ceiling() {
             &format!("today-{name}"),
             pose,
             [1920, 1080],
-            None,
+            SceneExtras::default(),
         );
         let after = capture(
             &workspace,
@@ -476,7 +506,7 @@ fn hallway_tiles_darken_no_pixel_and_fit_the_memory_ceiling() {
             &format!("tiled-{name}"),
             pose,
             [1920, 1080],
-            None,
+            SceneExtras::default(),
         );
         let moves = pixel_moves(&before, &after);
         eprintln!("hallway {name}: {moves:?}");
@@ -518,6 +548,47 @@ fn project(point: [f32; 3], pose: Pose, fov_deg: f32, resolution: [u32; 2]) -> O
     ])
 }
 
+/// The kinematic receiver's slab box in map units,
+/// mover-closet.README.md §Reference variants.
+const RECEIVER_SLAB_MIN: [f32; 3] = [296.0, 505.0, 0.0];
+const RECEIVER_SLAB_MAX: [f32; 3] = [344.0, 521.0, 8.0];
+
+/// Screen bounding box of the receiver slab's projected corners at a pose.
+struct SlabScreenBox {
+    lo: [f32; 2],
+    hi: [f32; 2],
+}
+
+impl SlabScreenBox {
+    fn of(pose: Pose) -> Self {
+        let [x0, y0, z0] = RECEIVER_SLAB_MIN;
+        let [x1, y1, z1] = RECEIVER_SLAB_MAX;
+        let corners = [x0, x1].into_iter().flat_map(|x| {
+            [y0, y1]
+                .into_iter()
+                .flat_map(move |y| [[x, y, z0], [x, y, z1]])
+        });
+        let pixels: Vec<[f32; 2]> = corners
+            .map(|c| {
+                project(c, pose, FOV_DEG, [CLOSET_WIDTH, CLOSET_HEIGHT]).expect("slab in front")
+            })
+            .collect();
+        Self {
+            lo: pixels
+                .iter()
+                .fold([f32::MAX; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]),
+            hi: pixels
+                .iter()
+                .fold([f32::MIN; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]),
+        }
+    }
+
+    fn contains(&self, x: u32, y: u32) -> bool {
+        let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+        fx >= self.lo[0] && fx <= self.hi[0] && fy >= self.lo[1] && fy <= self.hi[1]
+    }
+}
+
 // Kinematic half: a resting kinematic slab on the closet floor just behind
 // the static door keeps at most a set share of its no-tile brightness. Its
 // pixels are those inside its projected box that it changes against the plain
@@ -552,27 +623,10 @@ fn kinematic_receiver_behind_the_static_door_darkens_with_tiles() {
         STATION_3,
     );
 
-    // The slab's box, mover-closet.README.md §Reference variants.
-    let corners = [296.0, 344.0].iter().flat_map(|&x| {
-        [505.0, 521.0]
-            .iter()
-            .flat_map(move |&y| [0.0, 8.0].map(move |z| [x, y, z]))
-    });
-    let pixels: Vec<[f32; 2]> = corners
-        .map(|c| {
-            project(c, STATION_3, 100.0, [CLOSET_WIDTH, CLOSET_HEIGHT]).expect("slab in front")
-        })
-        .collect();
-    let lo = pixels
-        .iter()
-        .fold([f32::MAX; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
-    let hi = pixels
-        .iter()
-        .fold([f32::MIN; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]);
+    let slab = SlabScreenBox::of(STATION_3);
     let (mut before, mut after, mut count) = (0.0f64, 0.0f64, 0usize);
     for (x, y, pixel) in today.enumerate_pixels() {
-        let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-        if fx < lo[0] || fx > hi[0] || fy < lo[1] || fy > hi[1] {
+        if !slab.contains(x, y) {
             continue;
         }
         if backdrop.get_pixel(x, y).0 == pixel.0 {
@@ -592,5 +646,266 @@ fn kinematic_receiver_behind_the_static_door_darkens_with_tiles() {
     assert!(
         fraction <= KINEMATIC_FRACTION_CEILING,
         "the slab keeps {fraction:.3} of its no-tile brightness"
+    );
+}
+
+/// The closet pool's `closet_water` surface in map units,
+/// mover-closet.README.md §Layout.
+const POOL_X: [f32; 2] = [224.0, 416.0];
+const POOL_Y: [f32; 2] = [544.0, 688.0];
+const POOL_SURFACE_Z: f32 = -8.0;
+/// Map units trimmed from each pool edge: the pit lip stands 8 units above the
+/// surface, so a near-edge view ray can meet the lip first, and edge pixels
+/// straddle the floor.
+const POOL_INSET: f32 = 8.0;
+/// Fewest pool pixels a row accepts, so a mean never rests on a sliver.
+const MIN_POOL_PIXELS: usize = 2_000;
+
+/// Pixels whose view ray meets the pool surface inside its inset rectangle,
+/// by the inverse of `project`. Nothing stands between either closet station
+/// and the inset surface.
+fn pool_pixels(pose: Pose) -> Vec<(u32, u32)> {
+    let (sy, cy) = pose.yaw.to_radians().sin_cos();
+    let (sp, cp) = pose.pitch.to_radians().sin_cos();
+    let forward = [cy * cp, sy * cp, sp];
+    let right = [sy, -cy, 0.0];
+    let up = [-cy * sp, -sy * sp, cp];
+    let [w, h] = [CLOSET_WIDTH, CLOSET_HEIGHT].map(|v| v as f32);
+    let half_x = (FOV_DEG.to_radians() / 2.0).tan();
+    let half_y = half_x * h / w;
+    let mut pixels = Vec::new();
+    for y in 0..CLOSET_HEIGHT {
+        for x in 0..CLOSET_WIDTH {
+            let nx = 2.0 * (x as f32 + 0.5) / w - 1.0;
+            let ny = 1.0 - 2.0 * (y as f32 + 0.5) / h;
+            let dir: [f32; 3] =
+                std::array::from_fn(|i| forward[i] + right[i] * nx * half_x + up[i] * ny * half_y);
+            if dir[2] >= 0.0 {
+                continue;
+            }
+            let t = (POOL_SURFACE_Z - pose.map[2]) / dir[2];
+            let hit = [pose.map[0] + t * dir[0], pose.map[1] + t * dir[1]];
+            if hit[0] >= POOL_X[0] + POOL_INSET
+                && hit[0] <= POOL_X[1] - POOL_INSET
+                && hit[1] >= POOL_Y[0] + POOL_INSET
+                && hit[1] <= POOL_Y[1] - POOL_INSET
+            {
+                pixels.push((x, y));
+            }
+        }
+    }
+    pixels
+}
+
+fn rgb_sum([r, g, b, _]: [u8; 4]) -> f64 {
+    f64::from(r) + f64::from(g) + f64::from(b)
+}
+
+fn region_mean(image: &RgbaImage, pixels: &[(u32, u32)], measure: fn([u8; 4]) -> f64) -> f64 {
+    pixels
+        .iter()
+        .map(|&(x, y)| measure(image.get_pixel(x, y).0))
+        .sum::<f64>()
+        / pixels.len() as f64
+}
+
+/// Ceiling on the static-door pool's mean luma at station 3: the closet's
+/// tiled station-3 frame-mean ceiling (`static_door_closet_glows_...`).
+const DARK_POOL_CEILING: f64 = 0.05;
+/// How far the kinematic-receiver pool may read above the static-door pool at
+/// station 3. Promotion must not change a fluid, so the only legitimate
+/// difference is the slab's own bake footprint (its mover light gate and probe
+/// channel), which ends short of the pit. Measured on a Radeon Pro 5300M: both
+/// pools 0.000 over 71,334 px. The leak this row guards read 6.48 in the same
+/// box before the promotion-free direct atlas; 0.25 is under 4% of that and
+/// leaves room for one-level rounding on a few percent of pixels.
+const RECEIVER_POOL_EPSILON: f64 = 0.25;
+
+// A promoted light never lights the closet pool through the static door. The
+// kinematic slab behind the door promotes the bright-room lights; before the
+// promotion-free direct atlas, the fluid added each promoted light back
+// unshadowed and the pool glowed where the static-door map reads black.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
+fn kinematic_receiver_leaves_the_closet_pool_as_dark_as_the_static_door() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let plain = compile_dev_map(&workspace, "mover-closet-static-door");
+    let receiver = compile_dev_map(&workspace, "mover-closet-kinematic-receiver");
+    let slab = SlabScreenBox::of(STATION_3);
+    let pool: Vec<_> = pool_pixels(STATION_3)
+        .into_iter()
+        .filter(|&(x, y)| !slab.contains(x, y))
+        .collect();
+    assert!(
+        pool.len() >= MIN_POOL_PIXELS,
+        "station 3 must see the pool: {} px",
+        pool.len()
+    );
+
+    let plain_image = closet_capture(
+        &workspace,
+        scratch.path(),
+        &plain,
+        "pool-static-door",
+        STATION_3,
+    );
+    let receiver_image = closet_capture(
+        &workspace,
+        scratch.path(),
+        &receiver,
+        "pool-receiver",
+        STATION_3,
+    );
+    let plain_pool = region_mean(&plain_image, &pool, luma);
+    let receiver_pool = region_mean(&receiver_image, &pool, luma);
+    eprintln!(
+        "closet pool st3 ({} px): static door {plain_pool:.3}, kinematic receiver {receiver_pool:.3}",
+        pool.len()
+    );
+    assert!(
+        plain_pool <= DARK_POOL_CEILING,
+        "the static-door pool must read dark: {plain_pool}"
+    );
+    assert!(
+        receiver_pool <= plain_pool + RECEIVER_POOL_EPSILON,
+        "promotion lit the closet pool: receiver {receiver_pool} against static door {plain_pool}"
+    );
+}
+
+/// The line-of-sight fixture: the open-doorway map plus a tagged doorway light
+/// that sees the pool and a slab, hidden from station 2, that promotes it.
+const LOS_MAP: &str = "mover-closet-no-door-kinematic-receiver";
+const DOORWAY_LIGHT_TAG: &str = "doorway_light";
+/// Mean summed-RGB drift allowed between a promoted lit endpoint and its
+/// unpromoted reference. Same value and units as `LIT_ENDPOINT_DRIFT` in
+/// `assert_promoted_door_red_shadow_crossfade` (capture_frame.rs), which
+/// another test target cannot share.
+const LIT_ENDPOINT_DRIFT: f64 = 12.0;
+/// Floor on the lit pool's mean luma at station 2: the doorway light's direct
+/// term on the water. Measured on a Radeon Pro 5300M: 56.5 over 84,542 px
+/// (the dark closet pool reads 0.000); the floor is under half of that.
+const LIT_POOL_FLOOR: f64 = 25.0;
+
+/// The LOS fixture with its `receiver_slab begin` .. `end` block cut, as a
+/// self-deleting sibling map: the same lights, pool and fog, no mover.
+fn slab_free_los_map(workspace: &Path) -> tempfile::TempPath {
+    let maps = workspace.join("content/dev/maps");
+    let source = fs::read_to_string(maps.join(format!("{LOS_MAP}.map"))).expect("read LOS map");
+    let begin = source
+        .find("// receiver_slab begin")
+        .expect("LOS map marks its slab block");
+    let end_marker = "// receiver_slab end\n";
+    let end = source
+        .find(end_marker)
+        .expect("LOS map closes its slab block")
+        + end_marker.len();
+    let stripped = format!("{}{}", &source[..begin], &source[end..]);
+    assert!(
+        !stripped.contains("kinematic_mover"),
+        "the slab-free reference must hold no mover"
+    );
+    let path = tempfile::Builder::new()
+        .prefix(&format!(".{LOS_MAP}-no-slab-"))
+        .suffix(".map")
+        .tempfile_in(&maps)
+        .expect("reserve slab-free map path")
+        .into_temp_path();
+    fs::write(&path, stripped).expect("write slab-free map");
+    path
+}
+
+// Promotion leaves a lit pool exactly as baked. The doorway light lights the
+// pool through the open doorway; the hidden slab promotes it. Pinning its w to
+// 0 and to 1 must leave every pool pixel byte-identical, and both must match
+// the same map without the slab. Forcing the light where it holds no slot
+// fails the capture, so the pinned rows cannot pass vacuously.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
+fn promoted_doorway_light_leaves_the_lit_pool_unchanged() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let fixture = compile_dev_map(&workspace, LOS_MAP);
+    let slab_free_source = slab_free_los_map(&workspace);
+    let slab_free_name = slab_free_source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("slab-free map stem")
+        .to_owned();
+    let reference = compile_dev_map(&workspace, &slab_free_name);
+    let pool = pool_pixels(STATION_2);
+    assert!(
+        pool.len() >= MIN_POOL_PIXELS,
+        "station 2 must see the pool: {} px",
+        pool.len()
+    );
+
+    let pinned = |weight: f32| {
+        capture(
+            &workspace,
+            scratch.path(),
+            &fixture,
+            &format!("los-w{weight}"),
+            STATION_2,
+            [CLOSET_WIDTH, CLOSET_HEIGHT],
+            SceneExtras {
+                force_promotion: Some((DOORWAY_LIGHT_TAG, weight)),
+                ..SceneExtras::default()
+            },
+        )
+    };
+    let unpromoted = pinned(0.0);
+    let promoted = pinned(1.0);
+    let baseline = closet_capture(
+        &workspace,
+        scratch.path(),
+        &reference,
+        "los-no-slab",
+        STATION_2,
+    );
+
+    let lit = region_mean(&baseline, &pool, luma);
+    let promoted_rgb = region_mean(&promoted, &pool, rgb_sum);
+    let baseline_rgb = region_mean(&baseline, &pool, rgb_sum);
+    let identical = pool
+        .iter()
+        .filter(|&&(x, y)| unpromoted.get_pixel(x, y) == promoted.get_pixel(x, y))
+        .count();
+    eprintln!(
+        "lit pool st2 ({} px): slab-free luma {lit:.3}; summed RGB w=1 {promoted_rgb:.3}, slab-free {baseline_rgb:.3}; w=0 and w=1 identical at {identical} px",
+        pool.len()
+    );
+    assert!(
+        lit >= LIT_POOL_FLOOR,
+        "the doorway light must light the pool: {lit}"
+    );
+    assert_eq!(
+        identical,
+        pool.len(),
+        "pinning the promoted light's w moved pool pixels"
+    );
+    assert!(
+        (promoted_rgb - baseline_rgb).abs() <= LIT_ENDPOINT_DRIFT,
+        "the promoted pool drifted from the slab-free pool: {promoted_rgb} against {baseline_rgb}"
+    );
+
+    // Without the slab, nothing promotes the doorway light: the pinned row
+    // must fail by name rather than render an unpromoted frame.
+    let failure = try_capture(
+        &workspace,
+        scratch.path(),
+        &reference,
+        "los-no-slab-forced",
+        STATION_2,
+        [CLOSET_WIDTH, CLOSET_HEIGHT],
+        SceneExtras {
+            force_promotion: Some((DOORWAY_LIGHT_TAG, 1.0)),
+            ..SceneExtras::default()
+        },
+    )
+    .expect_err("forcing an unpromoted light must fail the capture");
+    assert!(
+        failure.contains("did not win a shadow-pool slot"),
+        "the failure must name the missing slot:\n{failure}"
     );
 }

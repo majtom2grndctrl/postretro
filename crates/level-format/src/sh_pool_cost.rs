@@ -21,7 +21,8 @@ pub struct ShDenseSlotTextures {
     pub indirect_format: u32,
     /// Id-35 atlas format, when the level has one.
     pub direct_format: Option<u32>,
-    /// Id 41 or id 45 present: direct compose keeps a total atlas.
+    /// Id 41 or id 45 present: direct compose keeps two final atlases, the
+    /// promotion-free direct atlas and the promotion handoff atlas.
     pub direct_compose: bool,
     /// Id 45 present: animated direct compose also keeps an intermediate atlas.
     pub animated_direct_compose: bool,
@@ -35,7 +36,7 @@ pub fn sh_dense_slot_bytes(textures: ShDenseSlotTextures) -> Option<u64> {
         bytes += sh_atlas_cell_bytes(direct_format)?;
     }
     if textures.direct_compose {
-        bytes += SH_DENSE_COMPOSED_CELL_BYTES;
+        bytes += 2 * SH_DENSE_COMPOSED_CELL_BYTES;
     }
     if textures.animated_direct_compose {
         bytes += SH_DENSE_COMPOSED_CELL_BYTES;
@@ -63,8 +64,9 @@ mod tests {
     use super::*;
 
     // Every texture allocated, per slot: BC6H indirect atlas (64) + its
-    // composed atlas (512) + BC6H direct atlas (64) + direct total atlas (512)
-    // + direct intermediate atlas (512) = 1664.
+    // composed atlas (512) + BC6H direct atlas (64) + promotion-free direct
+    // atlas (512) + promotion handoff atlas (512) + direct intermediate atlas
+    // (512) = 2176.
     #[test]
     fn dense_slot_bytes_prices_every_texture_a_level_allocates() {
         let full = ShDenseSlotTextures {
@@ -73,7 +75,7 @@ mod tests {
             direct_compose: true,
             animated_direct_compose: true,
         };
-        assert_eq!(sh_dense_slot_bytes(full), Some(1664));
+        assert_eq!(sh_dense_slot_bytes(full), Some(2176));
     }
 
     #[test]
@@ -91,7 +93,7 @@ mod tests {
                 direct_compose: true,
                 ..indirect_only
             }),
-            Some(1024 + 64 + 512)
+            Some(1024 + 64 + 2 * 512)
         );
     }
 

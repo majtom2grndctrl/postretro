@@ -1,10 +1,10 @@
 # RTX-lite GI — IP and Cost Check
 
-**Date investigated:** 2026-10-22, repo at `473185e88`; claim-level re-chart 2026-10-23; Take-Two and Tencent WO claims 2026-10-30; Tencent US12293451B2 claims 2026-11-03
+**Date investigated:** 2026-10-22, repo at `473185e88`; claim-level re-chart 2026-10-23; Take-Two and Tencent WO claims 2026-10-30; Tencent US12293451B2 claims 2026-11-03; Square Enix US10137372B2 full claims 2026-11-07 ([companion](ip-372-direction-aware-visibility.md))
 **Status:** Engineering triage for counsel, not legal advice. Companion to [index.md](index.md). "Appears present", "appears absent", "reads on", "in", "out" and "arguable" are engineering readings of claim text, not opinions on infringement, validity or freedom to operate.
 
 > **Read this when:** designing probe selection, a runtime radiosity update, any probe that changes with lighting at runtime, door-driven lighting, or a bake-only artefact.
-> **Sources (read first):** full claim text was read for Disney US8558837, Microsoft US8451270, Bunnell US7408550 and Crytek US20140327673A1 (Google's legacy PDF path, `patentimages.storage.googleapis.com/pdfs/USnnnnnnn.pdf`); Take-Two '688 / '404 and Tencent WO2026113651A1 (Google Patents; WO from machine translation); and Tencent US12293451B2 (granted B2 PDF and USPTO ppubs full text). **Every other filing is charted from search-snippet paraphrase** (column *Source*); re-chart those against full claims before a design decision rests on them. Statuses and expiry projections are unverified except '451's. Not read: '451's US file wrapper; ppubs anonymous access ends 2026-11-07. Google Patents rate-limits (HTTP 503); Patentscope refuses automated queries (HTTP 403); Justia and Espacenet refused. Tencent WO2026113651A1 is also charted in [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md).
+> **Sources (read first):** full claim text was read for Disney US8558837, Microsoft US8451270, Bunnell US7408550 and Crytek US20140327673A1 (Google's legacy PDF path, `patentimages.storage.googleapis.com/pdfs/USnnnnnnn.pdf`); Take-Two '688 / '404 and Tencent WO2026113651A1 (Google Patents; WO from machine translation); Tencent US12293451B2 (granted B2 PDF and USPTO ppubs full text); and Square Enix US10137372B2 with its A1 publication, EP3306569B1 and CA2944435C (Google Patents, 2026-11-07; charted in [ip-372-direction-aware-visibility.md](ip-372-direction-aware-visibility.md)). Not read: '372's US file wrapper (15/377,913). **Every other filing is charted from search-snippet paraphrase** (column *Source*); re-chart those against full claims before a design decision rests on them. Statuses and expiry projections are unverified except '451's. Not read: '451's US file wrapper; ppubs anonymous access ends 2026-11-07. Google Patents rate-limits (HTTP 503); Patentscope refuses automated queries (HTTP 403); Justia and Espacenet refused. Tencent WO2026113651A1 is also charted in [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md).
 
 ---
 
@@ -24,7 +24,7 @@
 |---|---|---|---|---|---|
 | US20210012562A1 "Probe-based dynamic GI" | NVIDIA | 2019-07-11 | Reported abandoned 2023-08-23 (not re-confirmed); published 2021-01-14, citable art | Summary | 1, 2 |
 | WO2026113651A1 / CN122115679A | Tencent | 2024-11-28 | Pending (published 2026-06-04; PCT/CN2025/126544); US national phase ≈2027-05, EP ≈2027-06 | Machine translation, all 23 claims, Google Patents 2026-10-30 | 2, 4 |
-| US10137372B2 "Light probe culling based upon visibility" | Square Enix (Eidos Montréal) | filed 2016-12-14 | Granted 2018-11-27; ≈2036-12 + PTA | Abstract verbatim; claims snippet | 2, 4, 7 |
+| US10137372B2 "Light probe culling based upon visibility" | Square Enix Limited (UK), from Eidos Interactive | CA2944435 2016-10-04; US filed 2016-12-13 (EP filed 2016-12-14) | Granted 2018-11-27; ≈2037-02-01 (Google's PTA figure, unconfirmed); 4th- and 8th-year fees paid (2026-05-20); no US continuation; family CA, EP (granted 2024, every independent claim has planes), JP | Full claims, A1, EP and CA text, Google Patents 2026-11-07 | 2, 4, 7 |
 | US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 (CN112927341A/B → WO2022206380A1 → US20230076326A1) | Granted 2025-05-06; ≈2043-01-19 (PTA 309 days, USPTO record); no maintenance fee due until 2028-05-06; no EP/DE members | Granted B2 PDF and USPTO ppubs full text, all 20 claims, 2026-11-03 | 3, 4, 5, 7 |
 | US8558837B2 "Modular radiance transfer" | Disney | 2010-01-18 | PTA 835 days → ≈2032-06-30 if fees paid | Full PDF | 3 |
 | US10290148B2 / US10796479B2 | Suntracker (Ashdown) | CIP chain to 2012-04-13 | ≈2032-04, counsel to confirm CIP term | Snippet, claim 1 and dependents | 3, 5 |
@@ -67,12 +67,20 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | Tencent cl. 4–9 | Camera-placed or camera-moved probes | Bake-placed | Appears absent |
 | Tencent cl. 10, 19 | Update stored probe lighting on a light change | Post-sample share ratio; tiles never rewritten | As landed: closest element, counsel |
 | Tencent cl. 15–18 | Complete occluded lookups (move probe / lighting library) | No continuation; hard cell binding | Appears absent, provided a glossy fragment in capture shadow never falls back to the irradiance mip |
-| Square Enix US10137372B2 | Cl. 1 (abstract verbatim): "identifying a set of probes associated with the selected point… determining which of a plurality of zones for the selected probe contains the selected point and determining visibility of said determined zone from the selected probe"; combine visible probes' irradiance. Second independent claim: zones from per-probe occlusion planes. Dependents: probe lookup by grid region; cl. 20–21 distance-weighted "sighted" probes. Description: one bit per zone; occluders include walls and doors | Entities and fog blend nearby per-cell probes | **Near a live claim** on the zone-visibility element; continuous Chebyshev weighting arguably differs. Counsel |
+| Square Enix US10137372B2 | Nine independent claims. Cl. 1, 34–36, 42, 43 add "wherein the zones for each selected probe are defined by intersections of pre-defined occlusion planes for the selected probe" (in A1 that was dependent cl. 6, so likely a narrowing amendment; wrapper unread); cl. 38 operates on the planes; cl. 44 needs a visibility mask, a zone code and "a bit-wise AND". **Cl. 37** is the one plane-free claim: a region from "a grid of regions", "determining which of a plurality of zones for the selected probe contains the selected point and determining visibility of said determined zone", combine visible probes. Cl. 11: "the number of probes in the set is greater than the number of sighted probes". Description: one visibility bit per zone, sighted/blind, a blind probe "should NOT influence" the result | Entities and fog blend nearby per-cell probes; direction-aware visibility samples a per-probe octahedral tile of depth moments, bilinearly, toward the point | Plane and mask claims **appear absent** (no per-probe planes, zones or masks stored). Cl. 37 **arguable, leaning absent**: no zone index is produced, and the Chebyshev bound depends on the point's distance, so visibility is never a property of a zone. The 0.03 floor is evidence, not the escape: cl. 11 implies the claims cover every probe sighted. Counsel |
 | Imagination '879 family | Probes updated by runtime ray tracing; local probes per screen block | Bake only | Appears absent |
 
 **Verdict: needs counsel** (Square Enix '372 on the diffuse reader).
 
 **Free design-arounds.** Select diffuse probes by cell adjacency (own cell, then portal-adjacent) with continuous moment weights; store no per-probe zone or cell visibility mask and make no binary visible decision. Glossy capture shadow draws no probe term and is never filled.
+
+**'372 rules for any probe-weight change** (from [ip-372-direction-aware-visibility.md](ip-372-direction-aware-visibility.md) §Design levers):
+- Sample per-direction depth bilinearly through a linear sampler; never `textureLoad` or nearest, which picks one cell per point.
+- Keep the point's distance inside the visibility function. Store moments, never verdicts: no per-probe or per-texel blocked flag, visible bit or per-direction mask, even as an optimisation.
+- Keep the Chebyshev floor at 0.03 until counsel answers; never 0, where the L1 whole-cell path would drop the probe outright.
+- No per-probe planes, half-space tests or stored region-to-probe tables.
+- Tile selection is a representation choice: never let tile presence gate a probe's inclusion, never ship the score. Mover tiles switch or blend moment sets, never set an occluded flag or force a weight to zero.
+- The backface factor `max(dot, 0)` is the blend's one point-dependent hard zero; a smooth or floored form needs a capture A/B and the owner's call.
 
 **Costs (est.).**
 - Probe count: hallway 2,082 cells → 2.1k–6.2k probes; campaign 198 cells → 200–600.
@@ -144,7 +152,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | '451 (d), (e) | Direct under the same light; render both | `lm_anim` carries direct under the same curve | Present |
 | '451 cl. 2 | Transform matrix | Baked-tier lights never move | Absent |
 | Suntracker cl. 1 | Per-channel solutions × intensity, summed per vertex in a vertex shader | Per-light layers × curve, summed in compute, sampled per fragment | Shares the per-channel idea; vertex-shader element absent. Suntracker's 2017 publication is also art against '451 |
-| Square Enix '372 | Binary zone visibility | 8-probe blend with continuous Chebyshev weights; no probe ever excluded | Likely distinguishable |
+| Square Enix '372 | Binary zone visibility (cl. 37); plane-defined zones (cl. 1 and most others) | 8-probe blend with continuous Chebyshev weights; no probe ever excluded; no planes or masks stored | Plane claims appear absent; cl. 37 arguable, leaning absent |
 
 **Verdict: top counsel question.** id 27 is the risky '451 shape; id 25 and id 45 carry direct only and stay out while id 25 carries no bounce. Headline art: q3map2 `-bouncegrid` with the Jedi Academy grid runtime (2003). Also Quake lightstyles (1996), ericw-tools `_bouncestyled` (2017), Sloan PRT (2002) and Microsoft's PRT patents, D3DX neighbourhood transfer, Far Cry 3 DRTV (2012), Enlighten (2010), Suntracker (2017), NVIDIA's application. None is cited on '451's face.
 
@@ -171,7 +179,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 |---|---|---|---|
 | Take-Two '688 / '404 | Claims: '688 cl. 1–7, a per-location dynamic terrain type selecting a surface shader plus a trail map of character marks, stored while off-camera and applied near it (snow, mud). '404 cl. 1–4, a top-down rendered reflected-light texture map plus a same-resolution height map, sampled for ground bounce per pixel (box blur; bent normal to the ground plane). Doors appear only in the shared description: "a new baked ambient is placed over the area of the door as it opens" | Direct-light visibility masks per (door or mover rest pose, light), blended by mover state | **Granted claims absent.** No claim element touches doors, movers or state-swapped baked layers |
 | '451 | Light change → coefficient × transfer | Direct visibility blended by mover state; static lights' bounce stored absolute per mover state | Direct half absent: no light changes, no indirect. Bounce half out-leaning (medium) |
-| Square Enix '372 | Doors as zone occluders | Door factor on direct-SH entries; probes never dropped | Absent while no probe is excluded |
+| Square Enix '372 | Doors as zone occluders; visibility mask "pre-computed for each probe" (cl. 33) | Door factor on direct-SH entries; closed-pose depth tiles switch a probe's moment set through the tile reference; probes never dropped | Absent while no probe is excluded and no mask is stored; whether switching a tile by door state moves toward cl. 33 is counsel question 8 |
 
 **Verdict: appears clear on the granted claims.** The Take-Two family is application 16/373,514 ('688) and its continuation 18/056,862 ('404, issued 2025-04-01); Google Patents lists no further member. Residual risk: a later continuation could claim the description's door-ambient sentence, and filings from the last 18 months are invisible to search. Keep the design-around anyway, since it costs nothing: visibility masks per light, not a swapped ambient or AO layer. Contact AO swapped on mover state stays closest to the description. For '451, mover bounce follows the mover rules in §Tencent US12293451B2: absolute states, never base + delta, never a light that carries a curve.
 
@@ -242,6 +250,14 @@ Read 2026-11-03 from the granted B2 PDF (scanned page images) and USPTO ppubs fu
 ## Prior art
 
 Checked from primary sources where reachable; otherwise from search-result text, marked *(snippet)*. Verbatim means quoted from source code, docs or changelog.
+
+### Against Square Enix US10137372B2
+
+Priority CA 2016-10-04. Full table and quotes: [ip-372-direction-aware-visibility.md](ip-372-direction-aware-visibility.md) §Prior art.
+
+- **On the face:** Sugden, "Mega Meshes" (GDC 2011) stores per probe "a distance to the nearest occluder in every direction" and ignores probes that cannot see the object; Cupisz (GDC 2012) calls baked per-probe visibility what most games do. The claims were allowed over both with "zones" (**verified**, Mega Meshes from a transcription).
+- **Not on the face:** Greger et al., "The Irradiance Volume" (1998): grid lookup over the 8 corners. Donnelly & Lauritzen, variance shadow maps (I3D 2006): Chebyshev visibility from two depth moments. Far Cry 3 (2012): grid → probe lookup. Hooker, Treyarch volumetric GI (Advances 2016). Source engine per-leaf ambient sets (2006).
+- **Context only (after priority):** McGuire et al., light field probes (I3D 2017; PDF built 2016-12-21, no earlier preprint found); Majercik et al., DDGI (2019).
 
 ### Against Tencent WO2026113651A1
 
@@ -322,7 +338,7 @@ Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirme
 | 6 | Appears clear | ARM '177 gather; '451 cl. 3–4 if bounce is rescaled at runtime | Faster SH bake (*est.*) | Bake RAM ~24–100 MB | None new |
 | 7 | Appears clear (granted claims) | Take-Two continuations; '451: direct half absent, bounce half for static lights out-leaning | Masks per (door, light) | ≤ ~10% of lightmap mandatory set (gate) | Door events only |
 
-**Top IP risks.** (1) Tencent US12293451B2 claims 1, 5–6 against id 27 (per-light unit bounce × curve, per probe) and any feature that rescales baked bounce by a light's state. A scalar or RGB term is no design-around; follow §Tencent US12293451B2 design rules. (2) Square Enix US10137372B2 against any reader that excludes probes; keep continuous weights. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
+**Top IP risks.** (1) Tencent US12293451B2 claims 1, 5–6 against id 27 (per-light unit bounce × curve, per probe) and any feature that rescales baked bounce by a light's state. A scalar or RGB term is no design-around; follow §Tencent US12293451B2 design rules. (2) Square Enix US10137372B2 claim 37 against any reader that turns a probe's visibility into a per-zone verdict; keep continuous, point-distance-dependent weights and follow the '372 rules in §Piece 2. Its plane and mask claims appear absent while no per-probe plane, zone or mask is stored. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
 
 **Questions for counsel, ranked.**
 1. Pull '451's file wrapper (17/985,107) before ppubs needs sign-in on 2026-11-07: action grounds, response arguments, reasons for allowance. Also any PTAB or court proceeding, and any CNIPA invalidation of CN112927341B.
@@ -332,7 +348,7 @@ Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirme
 5. What weight does the narrower CN claim 1 carry for the US claim's scope?
 6. Does '451 (a) cover continuous curves?
 7. Equivalents for a lerp of absolute states with t from a light curve; inducement exposure from SDK modders authoring animated lights.
-8. Does a continuous Chebyshev weight escape '372's "determining visibility of said determined zone"?
+8. '372 claim 37: does bilinearly sampling a per-probe octahedral tile of depth moments toward the point "determine which zone contains the point", and does a point-distance-dependent Chebyshev bound "determine visibility of said determined zone"? Given claim 11, does the floor matter beyond evidence? Pull the wrapper (15/377,913) for why the planes entered claim 1 and why "grid of regions" made claim 37 allowable. Sharpened in nine parts: [ip-372-direction-aware-visibility.md](ip-372-direction-aware-visibility.md) §Questions for counsel.
 9. Status: Crytek '673 (granted?), Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.
 10. Take-Two: confirm no pending continuation of 18/056,862 claims the door-ambient description. The granted claims do not touch doors.
 11. Tencent WO claim 1 against water and glossy world reflections; claim 10 against runtime probe gathers.

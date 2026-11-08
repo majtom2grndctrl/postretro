@@ -12,6 +12,14 @@
 - Pathfinder: `astar_corridor` prices edges by XZ midpoint distance plus `RIDE_COST`; no hook. Paths are per agent; replans are capped at `REPLAN_BUDGET_PER_TICK`.
 - Splash: `splash::entities_in_sphere` casts one static ray to the nearest body point. Projectiles are swept spheres, so an eye ray slightly over-reports cover against them.
 
+## Movers (E17)
+- Bake side exists: `nav_poses` (`navmesh_bake/mover_poses.rs`) poses every non-spinning mover's convex brushes at each waypoint; the mover light gate's `Pose::segment_touches` tests segments against posed brushes. Runtime dock state: `MoverDockTable::docked_waypoint`, watched only for movers named by gate or link records.
+- Runtime side missing: no combined static + mover `line_of_sight`; it is task 1 of `drafts/E17--movers-block-shots-and-sight`. Owner chose static cover now and a mover-aware cover follow-up on Epic 17.
+
+## Co-op and naming
+- Player crouch states: `crouch_idle`, `crouch_forward`, `crouch_backward` (`entity_model.md`).
+- Display copies of zone-less enemies use the authored `health.hitbox`; host validation of a client's hit is static-world only (`networking.md`). Hence the replicated posture bit.
+
 ## Industry reference (owner conversation)
 - Shipped games mostly bake or author cover candidates and validate at runtime: F.E.A.R. and Gears authored nodes; Halo designer firing positions scored at runtime; Killzone baked waypoints with per-sector line-of-fire distances and runtime weighted scoring; The Last of Us a coarse exposure map refreshed about once a second.
 - Unreal EQS and CryEngine TPS: generate, filter cheap-first, then score.
@@ -23,5 +31,6 @@
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
 | P1 | Two enemies seek cover on one tick | Both qualify for one point in the same batch. | One claims it by the batch's deterministic order; the other takes its next best point or holds. A replay gives the same split. |
-| P2 | Clip resolution under crouch and direction | Activity animation `walk`, crouch, travel left under target facing; the mesh may lack any of the composed names. | Tries `walk_crouching_left`, then `walk_crouching`, then the stand chain (`walk_left`, `walk`). The host resolves the name; it replicates as ordinary animation state. |
+| P2 | Clip resolution under crouch and direction | Activity animation `walk`, crouch, travel left under target facing; the mesh may lack any of the composed names. | Tries `crouch_walk_left`, then `crouch_walk`, then the stand chain (`walk_left`, `walk`). The host resolves the name; it replicates as ordinary animation state. |
 | P3 | Posture on activity entry | Tick N: a transition enters a crouch activity; perception and the damage box are read later in tick N. | The new eye and box apply from tick N. Leaving the activity restores standing on the leave tick. |
+| P4 | Duck after a peek | Tick N: `peek` → `settle` changes posture to crouch while `targetVisible` is 1 and the grace window is open. | Tick N's perception reads the crouched eye with no grace carried over. Hidden → 0 that tick; visible → 1. Without a posture change, today's grace holds. |

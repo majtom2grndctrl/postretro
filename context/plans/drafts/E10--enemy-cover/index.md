@@ -18,7 +18,7 @@ When this is done:
   - They land in a new table of the navmesh section. The section version bumps; the previous version still decodes, with no cover and one warning, as v2 does today.
   - A sibling cache stage builds the table and folds the tracer epoch, so a navmesh-only change and a tracer change each rebake it.
   - `ai_cover` (`@PointClass`) adds a spot; its `height` is optional and measured at bake when omitted. `ai_cover_suppress` (`@SolidClass`) removes derived spots inside its brushes. Authored spots are never suppressed.
-  - Static world only, matching `line_of_sight`: a door or mover neither gives nor blocks cover.
+  - Static world only: a door or mover neither gives nor blocks cover. Mover-aware cover waits for `E17--movers-block-shots-and-sight`, whose combined sight check the host needs to confirm a spot behind a docked mover; the roadmap carries it as an Epic 17 follow-up.
 - **Cover folds into `reposition`.** `reposition.cover: "full" | "half" | "any"` draws candidates from cover points instead of the ring; absent, the ring applies as today.
   - A candidate qualifies when it is hidden from the target's eye at the eye height its class implies, standing for `full` and crouched for `half`, and the target is within the activity's attack range from it.
   - `arc` and `minTravel` still filter, so "take cover lateral to the player" is one activity. With no qualifying point, the enemy holds, as the ring does.
@@ -27,15 +27,17 @@ When this is done:
   - Crouch lowers the eye, which perception and exposure read, and the damage box of an enemy without hit zones. An enemy with hit zones already crouches through its posed zones.
   - The collision capsule stays full height, so standing up never sticks.
   - Posture is authored, never inferred from the cover point's class: a sniper may stand behind a crate.
-  - **Clips compose.** Under crouch, an animation `X` resolves to `X_crouching`, then takes the directional suffix (`X_crouching_left`). A missing name falls back through `X_crouching`, then the standing chain to `X`. Meshes declare the states, bound to library clips.
+  - **Clips compose, in the player's naming** (`entity_model.md`: `crouch_idle`, `crouch_forward`). Under crouch, an animation `X` resolves to `crouch_X`, then takes the directional suffix (`crouch_walk_left`). A missing name falls back through `crouch_X`, then the standing chain to `X`. Meshes bind these state names to library clips such as Mixamo's `idle_crouching`.
+  - **Posture replicates.** Enemy state carries a posture bit, so a client's copy of an enemy without hit zones lowers its hit volume too and half cover means the same against a remote shooter; the protocol version bumps. An enemy with hit zones already crouches on clients through its posed zones.
+  - **A posture change skips the sight grace.** On the tick posture changes, perception reads sight from the new eye with no grace window carried over, so ducking back into cover never reads as flanked.
 - **Exposure is the existing eye ray.** `brain.targetVisible` turning true while in cover means flanked; the author transitions out. No new brain fact.
 - **Routes avoid likely sight.** The pathfinder gains a non-negative per-crossing cost, which keeps its heuristic admissible.
-  - Cover and arc repositions add a penalty to a crossing whose cell is coupled with the target's cell in the baked cell-visibility relation (id 46). It is a table lookup, coarse by design: "could see", not "sees".
+  - Cover and arc repositions add a penalty to a crossing whose cell is coupled with the target's cell in the baked cell-visibility relation (id 46). It is a table lookup, coarse by design: "could see", not "sees". Cells split only at occluding brushes, so the penalty steers between rooms, never around a crate inside one.
   - Chase, strafe and plain repositions keep today's costs. A level without id 46 pays no penalty.
-- **Host-only, outside the compatibility digest.** Cover points, posture and route costs are host AI state; posture reaches clients only as animation state.
+- **Host-only, outside the compatibility digest.** Cover points and route costs are host AI state; posture reaches clients as animation state and the posture bit.
 - **Shipped content adopts it.** `content/dev` gains a cover fixture, and `sdk/behaviors/reference` a cover pattern; the rifle squad gains crouching states bound from the Mixamo library.
 - **Non-goals:**
-  - **Exposure to players other than the target.** Remote shooters' hits are client-declared, so host exposure to them would be an estimate anyway.
+  - **Exposure to players other than the target.** One target keeps exposure at one ray per enemy per tick; target selection already prefers the nearest visible player.
   - **Splash-proof cover.** Splash keeps its single occlusion ray to the nearest body point; low cover protects only when it blocks that ray.
   - **Engine anti-camping.** Pacing is taste, authored with `timeInActivityMs` and attack turns (`scripting.md` §1).
   - **Squad roles**, such as one suppressing while another flanks, beyond what attack-turn waiters already produce.
@@ -52,7 +54,7 @@ offense: {
   activities: {
     cover:  { motion: "reposition", animation: "run", facing: "travel",
               reposition: { cover: "half", arc: [45, 135] } },
-    settle: { motion: "hold", animation: "idle", posture: "crouch" },  // plays idle_crouching
+    settle: { motion: "hold", animation: "idle", posture: "crouch" },  // plays crouch_idle
     peek:   { motion: "hold", animation: "idle_aiming",
               action: { attack: "shoot" }, attackTurn: true },
   },
@@ -92,8 +94,10 @@ The Luau twin mirrors it with Luau call syntax.
 **Posture**
 - [ ] Crouch lowers the eye and an enemy-without-zones' damage box, never the capsule. Standing up beside a low ceiling does not stick.
 - [ ] A hitscan ray at standing chest height over half cover misses a crouched enemy without hit zones and hits it standing. The same holds through posed zones on an enemy with them.
-- [ ] `walk` under crouch moving left resolves to `walk_crouching_left`, falling back to `walk_crouching`, then `walk_left`'s chain, then `walk`, when names are missing (pin P2).
+- [ ] `walk` under crouch moving left resolves to `crouch_walk_left`, falling back to `crouch_walk`, then `walk_left`, then `walk`, when names are missing (pin P2).
 - [ ] Posture changes on the activity-entry tick, and perception that tick reads the new eye (pin P3).
+- [ ] Crouching back into cover after a peek leaves `targetVisible` at 0 on the posture-change tick when the crouched eye is hidden; a crouched eye still in sight reads 1 (pin P4).
+- [ ] Co-op loopback: a remote shot at standing chest height over half cover misses a crouched enemy without hit zones, and hits it standing.
 
 **Routes**
 - [ ] With two equal-length routes, a cover reposition takes the one whose cells are not coupled with the target's cell; a chase takes either as today. Without id 46, both cost as today.
@@ -120,6 +124,8 @@ The Luau twin mirrors it with Luau call syntax.
 - **Shape.** Cover points as a navmesh table read into `NavGraph`, queried by region near the enemy. Rival: a separate PRL section, which skips the version bump but splits one query surface in two.
 - **First slice.** The bake table and its decode, proven on the fixture. It falsifies the riskiest assumption: that the eroded rim and a few bake rays find usable spots and height classes.
 - **Watch for.** `drafts/perf-ai-tick-cost` touches the same batch; route penalties apply per replan, and replans are budgeted.
+- **Rival to baking, rejected:** runtime candidates from region rims tested by rays each search. AI already costs 5.8 ms against a 1.0 ms target, and baking matches the reserved record kind.
+- **Order.** The combat-movement brief lands first; its `reposition`, scorer constraints and clip resolution are this brief's base.
 
 ## Open questions
 - Cover point spacing and the rim search distance — **delegated**: report them.
@@ -134,7 +140,8 @@ The Luau twin mirrors it with Luau call syntax.
 | posture | `BehaviorActivityDescriptor::posture: Option<Posture>` | `"posture"`: `"stand"` \| `"crouch"` | `posture?` | `posture` | n/a |
 | cover hint | compiler-consumed entity | navmesh cover table | — | — | `ai_cover` (`@PointClass`): `origin`, `height` (`full`/`half`, optional) |
 | cover suppression | compiler-consumed entity | none | — | — | `ai_cover_suppress` (`@SolidClass`) |
-| crouch clips | host resolution | state names `X_crouching`, `X_crouching_left`, … | — | — | n/a |
+| crouch clips | host resolution | state names `crouch_X`, `crouch_X_left`, … | — | — | n/a |
+| replicated posture | enemy replicated state bit | one bit in the enemy state record; protocol version bumps | — | — | n/a |
 
 ## Wire format
 New table in the navmesh section (id 36), appended after mover links; mirrors the existing tables. Little-endian. A `u32` entry count, then per entry: position (`f32` × 3), wall normal (`f32` × 3, unit, horizontal), height class (`u8`: 0 full, 1 half), source (`u8`: 0 derived, 1 authored), region index (`u32`). Empty list: count 0. Entries sorted by region index, then position. The section version bumps by one; the previous version decodes with an empty table.

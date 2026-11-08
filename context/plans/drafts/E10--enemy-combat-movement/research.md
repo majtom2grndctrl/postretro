@@ -42,3 +42,24 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 ## Industry reference (owner conversation)
 - Doom 2016/Eternal grant a few attack tokens per player, and enemies without one reposition. The brief takes that shape.
 - "Longest waiting wins" keeps slot-index order from starving the same enemy every time.
+
+## Encounter-budget precedent
+- `AiEnemy.enabled_on_spawn` in `sdk/TrenchBroom/postretro.fgd` is the per-placed-enemy aggro key.
+- `entity_spawner.spawned_tags` passes tags to each spawn (`crates/sim/src/spawner.rs`).
+- `npcs({ tag }).update({ aggro })` lowers to `updateNpcState` (`UpdateNpcStateArgs`, a deny-unknown additive partial). It applies to members at fire time.
+
+## Pin table
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Turn arbitration within one tick | Every request and release on a target is known before any grant. Grants go by longest wait; equal waits go to the earlier slot. | The longest waiter wins even when a fresher requester is earlier in slot order. The grantee may start on the grant tick. |
+| P2 | Attack refused for want of a turn | Compute proposes an attack; arbitration refuses it the same tick. | Nothing commits: no cooldown, count, event or weapon request. The once-per-entry fire stays open. |
+| P3 | Unmarked grant with no attack | Turn granted; an earlier outcome in the pass kills the target, or the weapon is still executing. | The turn is released that tick. Nothing commits. |
+| P4 | Unmarked weapon attack ends | Turn granted, shots land over later ticks, the execution clears inside an apply walk. | The turn holds through the execution and the cooldown. The freed turn is grantable from the next tick. No other start lands between shots. |
+| P5 | Holder leaves the AI set | Quiescence, queued despawn, inventory ownership, killed earlier in the pass, aggro closing, graph reseat. | Stops counting from that tick. A waiter is granted no later than the next tick. A returning enemy re-requests. |
+| P6 | Holder switches target | Tick N: compute selects B while holding a turn on A. | A's turn frees on tick N. The enemy requests on B behind B's existing waiters. |
+| P7 | Guards read turn facts | Compute refreshes facts before arbitration. | Facts show the previous tick's turns. `hasAttackTurn` first reads 1 the tick after the grant. Several waiters may see `attackTurnFree`; exactly one is granted. |
+| P8 | Cost-0 enemy beside an oversized requester | Budget 2; a cost-0 enemy in a marked activity; a cost-3 requester waits. | Cost 0 attacks without counting and reads `hasAttackTurn` 1 in a marked activity. Cost 3 is granted when no counted holder remains. |
+| P9 | Strafe with no usable neighbor | Both neighbors unusable, or the batch gives the next slot to another strafer. | A batch loser reverses once. With neither neighbor usable it holds its slot, facing and firing, and does not flip again until a neighbor frees. |
+| P10 | Launch and landing | Upward push on tick N, landing on tick M; activity and steering unchanged. | `jump_loop` after the fall delay, or the current clip when none is declared. Tick M switches back to the resolved clip. |
+| P11 | Brain restored from serialized state | A holder and a waiter are serialized and restored. | No turn held, wait clocks at zero; the first tick arbitrates from scratch. |

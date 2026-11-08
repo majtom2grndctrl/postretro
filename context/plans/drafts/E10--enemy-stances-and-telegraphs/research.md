@@ -51,3 +51,25 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 - Tells use several channels: pose, a unique sound, VFX, barks.
 - For Honor's stances name the attack while the release timing varies. Doom Eternal's Marauder flashes before its axe.
 - Unreal, Unity and Godot all leave this to animation notifies. Postretro times it in logic, which suits determinism and co-op.
+
+## Review round 1 corrections
+- The host restarts nothing on same-name re-entry. `switch_animation_state` returns already-in-state, and `restart_animation_clip` has no production caller. So a replicated entry sequence would have made clients exceed the host, and it was dropped.
+- Luau has no object spread, and the SDK has no merge helper. So `merge()` is what makes the fragment approach mirror in Luau.
+- An `onEnter` `playSound` already reaches every peer. A host-only reaction with no audience resolves to Everyone (`system_commands.rs`). Only the descriptor `sound` field was host-only.
+- `drafts/E10--enemy-stagger` was deleted on this branch. Its accumulator design is superseded by `damageInActivity`.
+
+## Pin table
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Release row and `breakOn` row both pass | The hold timer reaches its threshold on the tick the damage sum reaches `breakOn.damage`. | Break wins; release is never entered. The builder emits the break row first. |
+| P2 | Damage around a transition tick | On tick N a hit lands before the AI pass, the brain leaves A for B, then a second hit lands after it. | The first counts toward A only. The second counts toward B and is read on B's first evaluation. |
+| P3 | Activity entered and left on one tick | A reseat seats the initial activity and its own row passes in the same pass. | Its rows read its own fresh roll. Only the final leaf announces; nobody plays the skipped sound. |
+| P4 | Nested levels entered by one descent | A composite and its nested initial seat on one tick; later the nested level transitions. | Independent rolls per level. A nested transition redraws and zeroes only the nested level. |
+| P5 | Selector guard reads a scope-relative fact | A move or offense selector row guards on the roll or damage sum. | It reads its own level's values, matching a transition guard there. |
+| P7 | A → B → A inside one snapshot interval | Activity A, with a sound, is entered, left and re-entered between two snapshots. | Each peer plays A's sound twice. The client's clip follows the latest replicated state. |
+| P9 | Cue without a live client entity | A cue reaches a client before the enemy's snapshot, or after it despawned. | Plays once at the host-captured position and never replays. |
+| P10 | Weapon attack sound | An enemy weapon attack carries a sound. | It rides `WeaponCue.additional_sound` and plays once. The enemy cue never duplicates it. |
+| P11 | Killed in the pass that enters a stance | An earlier outcome in the apply pass kills the enemy that compute moved into a stance. | No entry sound and no cue on any peer. |
+| P12 | Hold at zero or equal bounds | `holdMs: 0`, `[0, 0]`, `[x, x]`. | All load. Zero leaves on the first evaluation; `[x, x]` matches a fixed `x`. |
+| P13 | Initial activity at spawn | A fresh brain seats its initial activity before per-instance spawn state is set. | The first evaluation reads this enemy's own salted roll. Two same-tick spawns differ, and replay reproduces both. |

@@ -1,61 +1,67 @@
 # E10--enemy-combat-movement
 
-Brief · resumable · Epic 10 · reads: `context/lib/entity_model.md` §7c · `context/lib/scripting.md` §11 · `context/lib/networking.md` §Combat authority · read at 5932287f
+Brief · resumable · Epic 10 · reads: `context/lib/entity_model.md` §7c · `context/lib/scripting.md` §1, §11, §12 · `context/lib/networking.md` §Combat authority · read at 5932287f
 
 ## Problem
-The owner wants combat that is more fun to fight and easier to design encounters around. This is a requested capability, plus one observed defect. Today an engaged enemy can only chase, hold, or walk to a fixed point. It cannot strafe while shooting, fire a few shots and then relocate, or wait its turn while others attack. Every enemy in range attacks at once, so a group reads as noise rather than a pattern a player can learn. The defect: a rocket-launched enemy turns to face its flight path, because knockback is added into the same velocity that facing and locomotion read. When this is done, an author can give an enemy strafing and fire-then-relocate behavior that reads correctly on screen. A mod can cap how many enemies attack one target at a time, so idle enemies keep moving instead of piling on. A launched enemy keeps the yaw it had at impact.
+The owner wants combat that is fun to fight and that level designers can build encounters around. This is a requested capability plus one observed defect.
+
+Today an engaged enemy can only chase, hold, or walk to a fixed point. It cannot strafe while shooting, fire and then relocate, or wait its turn. Every enemy in range attacks at once, so a monster closet's payload reads as noise rather than a pattern a player can learn.
+
+The defect: a rocket-launched enemy turns to face its flight path, because knockback velocity feeds the facing and locomotion choice.
+
+When this is done:
+- An author gives enemies strafing and fire-then-relocate behavior that reads correctly on screen.
+- A per-target attack budget, seeded by the engine, tunable per mod and overridable per encounter, keeps idle enemies moving instead of piling on.
+- A launched enemy keeps the yaw it had at impact.
 
 ## Decisions
-- **Two new engaged motion verbs, `strafe` and `reposition`.** Both resolve their goals on the combat-slot ring (`plans/done/E10--enemy-combat-positioning`) at the standoff `chaseTarget` would use. Both hold the target and may carry an action, unlike position goals (`entity_model.md` §7c).
-  - **`strafe`** steps to the neighboring ring slot and keeps going in one direction. It reverses when the next slot is unreachable, occupied, or blind to the target.
-  - **`reposition`** claims the best slot outside the spacing radius of the one it held, picks a fresh slot on each entry, and holds there once it arrives.
-- Verbs stay closed and parameterless: an activity selects an engine behavior, it does not describe one. Back-off and kiting are a non-goal. `reposition` covers fire-then-move, and a third verb waits for a consumer.
-- **Per-activity `facing`: `"target"` or `"travel"`.**
-  - Leaving it out keeps the verb's default. The existing verbs keep today's `facing_direction` rule, and `strafe` and `reposition` face the target.
-  - Facing the target while moving is what lets strafe-fire pass the shipped facing gate. That gate is unchanged.
-- **Knockback never steers facing or picks a stride.** Facing and locomotion read steering velocity only, never the knockback part.
-  - A launched enemy holds its impact yaw.
-  - An enemy whose active activity faces the target re-aims at the normal slew rate while airborne.
-  - A launched enemy plays `jump_loop` when its mesh declares one. That mirrors the player's launch rule (`MeshDescriptor.animations` typedoc). Otherwise it keeps its current state rather than a travel cycle.
-- **Directional travel variants.** While an enemy moves under a target facing, its activity animation `X` resolves to `X_left`, `X_right` or `X_backward` from travel direction relative to facing. A missing variant plays `X`. This extends the player's `walk_backward` naming to the side, and matches the shipped Mixamo rifle clip library.
-- **Attack budget: the engine owns the mechanism, the mod owns the numbers.**
-  - **Budget and cost.** A mod-wide `attackBudget` per target goes in the `ModManifest`, as a top-level scalar beside `factionSentimentDecay`, and joins the compatibility digest. An archetype's `behavior.attackCost` defaults to 1.
-  - **Absent means unlimited.** With no budget authored, every request is granted and behavior is unchanged.
-  - **A literal for now.** A Number expression over store values, for difficulty scaling, can be added later without breaking anything. The defense-layer parameters are the precedent.
-  - **When a turn is granted.** The held cost plus the requester's cost must fit the budget, or nobody holds a turn on that target, so an oversized archetype is never locked out.
-- **Turns are scoped to activities.**
-  - An activity marked `attackTurn: true` requests a turn on entry and keeps requesting until granted.
-  - The turn is held while any marked activity is on the active path. A transition between marked siblings keeps it, so a windup → commit → recover chain holds one turn throughout.
-  - It is released when no marked activity remains on the path.
-- **An unmarked attack holds a turn for the attack itself.**
-  - With no marked activity on its path, an enemy requests a turn only on a tick its attack is otherwise ready to start: range, facing, line of sight and cooldown all pass.
-  - It holds the turn through that attack, including a weapon sequence, and releases it when the attack ends.
-  - That way an activity that chases and attacks for a whole fight still rotates turns. This is the idiom `sdk/behaviors/reference` and `positional-sound.ts` ship.
-- **Every turn is also released** on a target change and on quiescence or despawn.
-- **The budget is a hard gate, plus two facts.**
-  - With a budget authored, an attack starts only while its enemy holds a turn on its target. A weapon sequence that has already started keeps its shipped cancellation rules.
-  - Guards read `@brain.hasAttackTurn` and `@brain.attackTurnFree`. Both are appended to the tail of `BRAIN_INPUTS` (`scripting.md` §11, append-only).
-  - The gate enforces the budget the mod chose: pacing is taste (`scripting.md` §1). An archetype opts out with `attackCost: 0`.
-- **Shipped dev content adopts the new vocabulary in this brief.**
-  - The dev mod authors `attackBudget`.
-  - The limitator, and through it the rifle squads, gains strafe-while-waiting and fire-then-reposition.
-  - Tests pinned to the old pile-on behavior are updated rather than preserved.
-- **Arbitration is host-only and deterministic.** Requests resolve during the serial apply pass. The longest-waiting requester wins, measured since it last held a turn, and existing slot order breaks ties. Turns are derived host state and never replicated: clients see only the resulting activities.
+- **Two new engaged motion verbs, `strafe` and `reposition`.** Both resolve goals on the combat-slot ring (`plans/done/E10--enemy-combat-positioning`) at the standoff `chaseTarget` uses. Both hold the target and may carry an action, unlike position goals (`entity_model.md` §7c). They stay closed and parameterless.
+  - **`strafe`** steps to the neighboring ring slot and keeps going in one direction, reversing when the next slot is unreachable, occupied or blind.
+  - **`reposition`** claims the best slot at least one spacing from both its held slot and its position at entry. It picks again on each entry and holds on arrival.
+- **Per-activity `facing`: `"target"` or `"travel"`.** Omitted, the verb's default applies. Existing verbs keep today's rule, and `strafe` and `reposition` face the target. A target-facing mover passes the shipped facing gate unchanged.
+- **Knockback never steers facing or picks a stride.** "Launched" means knockback velocity remains.
+  - While launched, facing ignores both steering and knockback and holds the impact yaw, except that a target-facing activity re-aims at the normal slew rate.
+  - An airborne launch plays `jump_loop` when the mesh declares one, after the player's fall delay (`MeshDescriptor.animations` typedoc). Otherwise it keeps its current state.
+- **Directional travel variants.** Under target facing, an activity animation `X` resolves to `X_left`, `X_right` or `X_backward` by travel direction relative to facing, and plays `X` when a variant is missing. The host resolves the name, and it replicates as an ordinary animation state. This extends the player's `walk_backward` naming.
+- **The attack budget is an engine mechanism with authored values** (`scripting.md` §1: pacing is taste; the engine seeds a default).
+  - The budget is per target. An enemy is granted a turn when the target's held cost plus its own fits within **its own effective budget**, or when nobody holds a turn on that target, so an oversized archetype is never locked out.
+  - **Effective budget, most specific wins:** a script override, then a map or spawner value, then the mod's `attackBudget`, then the engine's seeded default of 3. The seeded value is tuning, not contract.
+  - **Valid values.** A budget must be at least 1. `attackCost` defaults to 1. Cost 0 never counts and is always granted: the lever for fodder that chips while heavies take turns.
+  - **Host-only, and outside the co-op compatibility digest.** Clients never read the budget.
+  - A literal for now. A store-derived expression can be added later without breaking anything; defense layers are the precedent.
+- **Encounter budgets reuse the aggro surfaces** (`AiEnemy.enabled_on_spawn`, `entity_spawner.spawned_tags`, `npcs({ tag }).update`):
+  - a placed enemy's `attack_budget` key;
+  - a spawner's `spawned_attack_budget` key, carried by each spawn;
+  - `npcs({ tag }).update({ attackBudget })` at runtime, which applies to the members at fire time, as `aggro` does.
+  - An invalid map value warns and falls back to the next level.
+- **Turn lifetime.**
+  - **Marked activities.** An activity marked `attackTurn: true` requests on entry and keeps requesting until granted. The turn holds while any marked activity is on the active path, so a windup → commit → recover chain holds one turn.
+  - **Unmarked attacks.** With no marked activity on its path, an attack requests only on a tick it is otherwise ready to fire. It holds the turn until that attack's cooldown ends, and a weapon until its execution clears and then its cooldown.
+  - **Every turn** also holds through an execution already started. It is released on a target change and when the holder leaves the AI set.
+- **The budget is a hard gate, plus two facts.** An attack starts only while its enemy holds a turn. A refused attack commits nothing.
+  - `@brain.hasAttackTurn`.
+  - `@brain.attackTurnFree`: "a request from me would be granted now". It reads 0 with no target.
+- **Arbitration is host-only and deterministic.** It runs as one batch step after compute and before apply fires. The longest wait wins, where a wait starts at the first request after last holding a turn. Slot order breaks ties. Turns are derived host state and never replicate.
+- **Shipped content adopts the vocabulary in this brief.**
+  - `content/dev` and `sdk/behaviors/reference`, the patterns every SDK bundle copies.
+  - The limitator and rifle squads gain strafe-while-waiting and fire-then-reposition, a three-shot `enemy_rifle_burst`, and `walk_left`, `walk_right` and `walk_backward` states bound from the Mixamo library.
+  - Tests pinned to pile-on behavior are updated, and the build report lists each one.
 - **Non-goals:**
-  - **Softening attacks from outside the target's view.** A follow-up item on the budget.
+  - **Back-off and kiting.** `reposition` covers fire-then-move. A third verb waits for a consumer.
+  - **Softening attacks from outside the target's view.** An additive follow-up on the budget.
+  - **Clearing a script override back to the map or mod value.** Set the number explicitly.
   - **Protective cover and squad tactics.** Their exclusion stands from the line-of-sight and positioning briefs.
-  - **Per-activity speed.** The statecharts brief keeps that additive.
+  - **Per-activity speed.** The statecharts brief keeps it additive, so a strafe and a run share `moveSpeed` until it lands.
 
 ### Scripting surface
 ```ts
 // Proposed design
-// start-script.ts
+// start-script.ts — mod-wide budget per target (engine seeds 3 when omitted)
 export default defineMod({ /* … */ attackBudget: 2 });
 
 // rifle trooper behavior (excerpt)
 behavior: {
   attackCost: 1,
-  // enemy_rifle_burst: a three-shot activation program
   attacks: { shoot: { weapon: "enemy_rifle_burst", standoffDistance: 6 } },
   activities: {
     engage: {
@@ -64,8 +70,8 @@ behavior: {
         offense: {
           initial: "wait",
           activities: {
-            wait:  { animation: "walk", motion: "strafe" },             // faces target, steps the ring
-            burst: { animation: "aim", motion: "hold", action: { attack: "shoot" }, attackTurn: true },
+            wait:  { animation: "walk", motion: "strafe" },
+            burst: { animation: "idle_aiming", motion: "hold", action: { attack: "shoot" }, attackTurn: true },
             move:  { animation: "run", motion: "reposition", facing: "travel" },
           },
           transitions: {
@@ -79,52 +85,87 @@ behavior: {
     },
   },
 }
+
+// level script — a boss arena allows one attacker at a time
+npcs({ tag: "arena_guard" }).update({ attackBudget: 1 });
 ```
-The Luau twin mirrors it field for field.
+The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`). In TrenchBroom, `attack_budget` sits on every `AiEnemy` class and `spawned_attack_budget` on `entity_spawner`.
 
 ## Acceptance
 ### Automated
-**Motion**
+**Motion and facing**
 - [ ] A `strafe` enemy moves around its target at standoff while facing it, and fires its action mid-move when facing, range and line of sight pass.
-- [ ] `strafe` reverses at a blocked, occupied or blind next slot. Two strafers on one target never claim the same slot on one tick.
-- [ ] `reposition` arrives at a slot outside the spacing radius of the slot held at entry. Re-entering picks again. With no other valid slot, it holds rather than oscillating.
-- [ ] `facing: "travel"` on `reposition` faces travel. `facing: "target"` on `chaseTarget` faces the target while moving. An activity without `facing` behaves exactly as today on every existing verb.
-- [ ] Sideways travel under target facing selects `walk_left` or `walk_right`, and backward travel selects `walk_backward`. A mesh without those states plays `walk`.
+- [ ] `strafe` reverses at a blocked, occupied or blind next slot. With neither neighbor usable it holds its slot, still facing the target, and does not flip direction on consecutive ticks. A strafer that loses its next slot to another on one tick reverses once (pin P9).
+- [ ] `reposition` arrives at least one spacing from both its position and its held slot at entry, including after a `hold` predecessor and with no slot held. Re-entering picks again. With no valid slot it holds rather than oscillating.
+- [ ] `facing: "travel"` on `reposition` faces travel, and `facing: "target"` on `chaseTarget` faces the target while moving. With no knockback active, an activity without `facing` behaves as today on every existing verb.
+- [ ] Sideways travel under target facing selects `walk_left` or `walk_right`, and backward travel selects `walk_backward`. Under travel facing the same motion plays `walk`. A mesh without the variants plays `walk`.
 
 **Knockback**
-- [ ] Yaw is unchanged on the impact tick and through the flight of an enemy launched under a non-target-facing activity.
-- [ ] Under a target-facing activity, the launched enemy slews toward the target by no more than the facing rate per tick.
-- [ ] A launched enemy plays `jump_loop` when declared, and never a travel cycle driven by knockback speed.
+- [ ] A launched enemy under a non-target-facing activity keeps its yaw from the impact tick until the knockback ends, with steering still running.
+- [ ] Under a target-facing activity it slews toward the target by no more than the facing rate per tick.
+- [ ] An airborne launch with unchanged activity and steering switches to `jump_loop` after the fall delay and back to the activity's resolved clip on landing. A horizontal shove keeps the ground clip (pin P10).
 
 **Budget**
-- [ ] A mod without `attackBudget` grants every request: an enemy's attack timing matches the same run with the budget machinery absent.
-- [ ] Under budget 2, three enemies camped in one chase-and-attack activity hand the turns on after each attack. Every one of them lands attacks within a bounded window, and none holds a turn between attacks.
-- [ ] An unmarked attack requests no turn while out of range or line of sight, and requests one on the first tick it could otherwise fire.
-- [ ] With budget 2 and cost 1, a third enemy in its turn activity never starts an attack until a holder leaves. On the tick a holder leaves, the longest-waiting requester is granted.
-- [ ] With three requesters on one tick and one turn free, exactly one is granted. Replaying the same run grants the same one.
-- [ ] Cost 2 under budget 2 is granted alone and refused beside a cost-1 holder. Cost 3 under budget 2 is granted when no one holds a turn.
-- [ ] A turn holds across a transition between two marked sibling activities, with no release-and-regrant gap on that tick. It is released on the tick a transition lands on an unmarked activity.
-- [ ] A turn is released on target death, target switch, the holder's death and leaving the activity. No turn leaks across any of these.
-- [ ] A three-shot enemy weapon fires all three shots inside one held turn. Releasing the turn mid-sequence follows the shipped cancellation rules and starts nothing new.
-- [ ] `hasAttackTurn` and `attackTurnFree` read 0 and 1 correctly for a holder, a waiter, and an enemy with no target.
-- [ ] `attackBudget` and `attackCost` reject a non-finite or negative value with a pathed error in both runtimes. The Scripting surface example parses identically in TypeScript and Luau.
+- [ ] With no `attackBudget` authored, budget 3 applies: a fourth cost-1 requester waits.
+- [ ] Under budget 2 and cost 1, a third requester never starts an attack until a holder releases. The longest waiter is granted even when a fresher requester is earlier in slot order, and equal waits go to the earlier slot (pin P1).
+- [ ] With three requesters on one tick and one turn free, exactly one is granted. Replaying the run grants the same one.
+- [ ] Under budget 2: cost 2 is granted alone and refused beside a cost-1 holder; cost 3 is granted when no counted holder remains. A cost-0 enemy attacks without counting and never blocks the cost-3 requester (pin P8).
+- [ ] An attack refused for want of a turn commits no cooldown, no `attacksFiredInActivity` count, no event and no weapon request. The enemy fires on its first granted tick in the same activity (pin P2).
+- [ ] Under budget 1, three contact attackers ready together: at most one holds a turn on any tick, each holds until its own cooldown ends, and each attacks within a bounded window.
+- [ ] Under budget 1, an unmarked three-shot weapon attack holds its turn until its execution clears and its cooldown ends. A second enemy ready the whole time starts only after that, never between shots (pin P4).
+- [ ] A granted unmarked attack that does not start that tick releases its turn that tick. Two cases are covered: the target was killed earlier in the pass, and the weapon is still executing (pin P3).
+- [ ] An unmarked attack requests no turn while out of range or line of sight, so a ready neighbor under budget 1 is granted at once.
+- [ ] A turn holds across a transition between marked siblings with no release-and-regrant gap. It holds after leaving a marked activity mid-burst until the execution clears, then releases.
+- [ ] Turns are released in each of these cases, and no turn leaks: target death, target switch, the holder's death, a queued despawn, aggro closing, a graph reseat, and becoming inventory-owned. A switcher frees its old turn that tick and requests on the new target behind existing waiters. A returning enemy re-requests (pins P5, P6).
+- [ ] `hasAttackTurn` first reads 1 on the tick after the grant. Three waiters that read `attackTurnFree` 1 together and enter their turn activity leave exactly one new holder under one free turn (pin P7).
+- [ ] A serialize-and-restore of a holder and a waiter leaves no turn held and both wait clocks at zero (pin P11).
+- [ ] Two manifests differing only in `attackBudget` produce the same compatibility digest.
+
+**Encounter budgets**
+- [ ] Precedence: a script `update({ attackBudget })` overrides a placed enemy's `attack_budget`, which overrides the mod value.
+- [ ] Each spawn of a spawner with `spawned_attack_budget` carries it.
+- [ ] Mixed budgets on one target: under one held turn, a budget-1 requester waits while a budget-3 requester is granted.
+- [ ] An `update` reaches only members present when it fires. A later spawn keeps its spawner's value.
+- [ ] An invalid map value warns and falls back. An invalid script value, a budget below 1, a negative `attackCost`, or a non-finite value rejects with a pathed error in both runtimes.
+
+**Surface**
+- [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content.
 
 ### Manual
-- [ ] On `movement-feel`, the dev mod's shipped rifle squad under its authored budget: two fire while the others strafe. The shooters relocate after a burst and the waiters take over. A rocket-launched knight keeps its facing in flight.
+- [ ] On `movement-feel`, the shipped rifle squad under its authored budget: shooters relocate after a burst while waiters strafe and take over. A closet reveal on `closet-reveal` releases its payload without a pile-on. A rocket-launched knight keeps its facing in flight.
 - [ ] Co-op loopback: a client sees the same strafing, directional clips and launch facing as the host.
 
 ## Path
 - **Seams to read first.**
-  - `facing_direction` and step 4 of `evaluate` in `crates/ai/src/compute.rs`.
-  - `apply_outcomes` in `crates/ai/src/apply.rs`, where serial arbitration already re-checks outcomes before `commit_attack_fire` and `AiWeaponControllers::advance_actor`.
-  - `resolve_combat_slots` and `select_combat_positions_batch`.
-  - `agent_steering::path_state`, which exports `velocity`. The knockback part is `AgentComponent::knockback_velocity`.
-  - `steering_for` and `position_goal_steering`.
-- **Shape.** Turns live on `BrainComponent` as the held target plus the wait clock. Per-target totals are recounted each tick in apply order. The rival is a per-target map on `AiRuntime`. Rejected: it adds a second source of truth that must be cleared on despawn.
-- **First slice.** The facing split and the knockback fix. They touch the fewest seams and prove the steering-velocity separation that strafe depends on.
-- **Watch for.** The combat-slot hysteresis never selects anything in this caller: the previous slot is not passed once the hold expires. `reposition`'s exclusion needs the held slot passed explicitly.
-- **Prior art.** `drafts/perf-ai-tick-cost` touches the same batch. Read it before widening the slot query.
+  - `facing_direction` and step 4 of `evaluate` (`crates/ai/src/compute.rs`).
+  - `apply_outcomes` (`crates/ai/src/apply.rs`): cooldown and the per-activity count commit with the effect.
+  - `resolve_combat_slots` / `select_combat_positions_batch`: the batch step precedent for arbitration.
+  - `tick_impl`, `path_state` and `AgentComponent::knockback_velocity` (`crates/sim/src/agent_steering.rs`).
+  - `UpdateNpcStateArgs` (`crates/sim/src/scripting/reactions/npc_state.rs`): the additive partial `attackBudget` joins.
+  - The spawner's `spawned_tags` path (`crates/sim/src/spawner.rs`).
+- **Shape.** Turns live on `BrainComponent` as the held target, the effective budget and the wait clock. Per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
+- **First slice.** The knockback facing split. It touches the fewest seams and proves the velocity separation strafe needs.
+- **Watch for.**
+  - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly.
+  - `drafts/perf-ai-tick-cost` touches the same batch. Add a wave-scale stress row for arbitration against its baseline.
+- **Files past ~800 lines:** check `compute.rs` and `apply.rs` before extending them.
 
 ## Open questions
 - The `strafe` direction on first entry — **delegated**: deterministic, from the better-scored neighbor. Report the rule.
-- Whether `reposition`'s exclusion radius is the slot spacing or a multiple of it — **delegated**: tune on `movement-feel` and report.
+
+## Boundary inventory
+
+| Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
+|---|---|---|---|---|---|
+| strafe verb | `MotionVerb::Strafe` | `"strafe"` | `"strafe"` | `"strafe"` | n/a |
+| reposition verb | `MotionVerb::Reposition` | `"reposition"` | `"reposition"` | `"reposition"` | n/a |
+| activity facing | `BehaviorActivityDescriptor::facing: Option<FacingPolicy>` | `"facing"`: `"target"` \| `"travel"` | `facing?` | `facing` | n/a |
+| turn marking | `BehaviorActivityDescriptor::attack_turn: bool` | `"attackTurn"` | `attackTurn?` | `attackTurn` | n/a |
+| archetype cost | `BehaviorGraphDescriptor::attack_cost` | `"attackCost"` | `attackCost?` | `attackCost` | n/a |
+| mod budget | `ModManifestResult` field | `"attackBudget"` | `attackBudget?` | `attackBudget` | n/a |
+| encounter budget (placed) | brain override | — | — | — | `attack_budget` (`AiEnemy`) |
+| encounter budget (spawned) | spawner field | — | — | — | `spawned_attack_budget` (`entity_spawner`) |
+| script override | `UpdateNpcStateArgs::attack_budget` | `"attackBudget"` | `update({ attackBudget })` | same | n/a |
+| turn held | `BRAIN_INPUTS` tail | `"@brain.hasAttackTurn"` | `brain.hasAttackTurn` | `brain.hasAttackTurn` | n/a |
+| turn free | `BRAIN_INPUTS` tail, after the above | `"@brain.attackTurnFree"` | `brain.attackTurnFree` | `brain.attackTurnFree` | n/a |
+| directional variants | host resolution | state names `X_left`, `X_right`, `X_backward` | — | — | n/a |

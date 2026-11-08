@@ -1,137 +1,189 @@
 # E10--enemy-stances-and-telegraphs
 
-Brief · resumable · Epic 10 · reads: `context/lib/entity_model.md` §7c · `context/lib/scripting.md` §11 · `context/lib/networking.md` §Version gates, randomness posture · `context/lib/audio.md` §4 · read at 5932287f
+Brief · resumable · Epic 10 · reads: `context/lib/entity_model.md` §7c · `context/lib/scripting.md` §1, §11 · `context/lib/networking.md` §Version gates, randomness posture · `context/lib/audio.md` §4 · read at 5932287f
 
 ## Problem
-The owner wants For Honor–style attacks, a requested capability. An enemy should telegraph *which* attack is coming by taking that attack's stance, while the player dreads not knowing *when* it lands. Today a windup is a hand-written activity with a fixed duration: once seen, it is perfectly predictable, because guards have no randomness. Every attack cycle is rebuilt by hand. On a co-op client the tell is weaker still: behavior-entry and melee attack sounds play only on the host, and re-entering a same-named state shows nothing. Damage cannot cancel a windup without fiddly workarounds: a mod clock in an impact policy, a two-hits-in-one-tick race, and nothing at all for `applyDamage`. When this is done:
-- An author declares a stance in one call, naming its pose, hold range, attack and recovery.
-- The hold length varies per entry within the author's bounds and replays deterministically on the host.
-- Every peer hears stance and melee sounds and sees each re-entry.
-- Enough damage during a stance, or during another short authored activity, can stagger the enemy.
+The owner wants For Honor–style attacks, a requested capability. An enemy should telegraph *which* attack is coming by taking that attack's stance, while the player dreads not knowing *when* it lands.
+
+Three things stand in the way today:
+- **Timing is predictable.** A windup is a hand-written activity with a fixed duration, so once seen it is perfectly predictable: guards have no randomness. Every attack cycle is also rebuilt by hand.
+- **Co-op clients lose the tell.** An activity's `sound` and a melee attack's `sound` play only on the host.
+- **Damage can't cancel a windup cleanly.** It takes workarounds: a mod clock in an impact policy, a two-hits-in-one-tick race, and nothing at all for `applyDamage`.
+
+When this is done:
+- An author declares a stance in one call, and gets a fair, readable cycle from a pose and an attack alone.
+- The hold length varies per entry within bounds the author sets, and replays deterministically on the host.
+- Every peer hears stance and melee sounds.
+- Enough damage during a stance or another short activity staggers the enemy.
 
 ## Decisions
-- **A stance is SDK vocabulary, not an engine noun.** `stance(name, options)` is an author-time builder, as `activation.shot()` is (`scripting.md` §11). It returns a graph fragment `{ entry, activities, transitions }` of plain activities: hold, then release, then recover. The engine sees only activities. This spends the `stance` word that `plans/done/E10--hierarchical-behavior-statecharts` reserved. The builder is the first SDK helper to emit graph structure, and ships in TypeScript and Luau with byte-equal output.
+- **A stance is SDK vocabulary, not an engine noun.** `stance(name, options)` is an author-time builder like `activation.shot()` (`scripting.md` §11). It returns a fragment `{ entry, activities, transitions }` of plain activities named `<name>`, `<name>_release` and `<name>_recover`. The engine sees only activities. This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
+- **`merge()` composes fragments.** It is an SDK helper, in TypeScript and Luau, that combines activity and transition maps. A duplicate key rejects load with the key named, so nothing overwrites silently. Extra exits from a stance go in that level's `"*"` rows.
 - **One stance names one attack.** The pose is the tell. A stance with several follow-ups is hand-authored from the same parts.
-- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` (`drafts/E10--enemy-combat-movement`), so one turn spans the cycle. Only this marking depends on that brief. The roll, the damage fact and the co-op slices land independently, and the builder adds the marking once the field exists.
+- **Defaults for novices.** `holdMs` and `recover` are optional, with seeded defaults above the co-op floor. Experts override them.
+- **A co-op floor on the tell.** A stance whose minimum hold falls below the worst-case interpolation delay plus a reaction budget warns at load. This is the closet-reveal rule from `plans/done/E17--doors-as-occluders` research. A tell a remote player cannot see is no tell, so the floor is engine-owned. The hold above it is taste.
+- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` (`drafts/E10--enemy-combat-movement`), so one turn spans the cycle. Only this marking depends on that brief. The roll, the damage fact and the co-op slices land independently.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
-  - It is scope-relative like `timeInActivityMs`, drawn when that level's activity is entered and fixed until it is left.
-  - The IR stays RNG-free: the roll is a fact the engine computes, not a node.
-  - Its reach is intended: any guard at that level reads it, including outgoing rows. So chance-based branching ("use the overhead stance half the time"), random patrol and chance-based pain are all authorable.
-  - A hold given as `[min, max]` compiles to `timeInActivityMs ≥ lerp(min, max, activityRoll)`. A single number is a fixed hold.
-- **The roll is a second carve-out from the randomness posture** (`networking.md`: host-only, load-time, consequences only), and the owner approved it.
-  - Brain activity entry rolls on the host only. Only the resulting activities replicate.
-  - The seed must survive the determinism gate's spawn-order reversal. Two enemies of one descriptor on the same entry count must not roll alike.
-  - `EntityId` fails the first requirement, and descriptor name alone fails the second.
-  - This lands in `networking.md` at promotion, described at that full reach.
-- **Per-activity damage fact: `@brain.damageInActivity`.**
-  - It is scope-relative: damage drained from layers and health since that level's activity was entered.
-  - It is fed at the damage chokepoint for every producer, `applyDamage` included.
-  - Hits that land after the AI pass count on the next evaluation, which is the shipped stage order.
-- **Stagger is authored on that fact, and only for short activities.**
-  - A stance's optional `breakOn` adds the row that leaves the hold for a sibling activity when the fact crosses a threshold. The same row works on any other short activity, such as a windup or an aim.
+  - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity is left.
+  - It is a fact the engine computes, not an IR node.
+  - Its reach is intended: any guard at that level reads it, including outgoing rows. So chance-based branching, random patrol and chance-based pain are authorable.
+- **The roll is a second exception to the randomness posture** (`networking.md`), and the owner approved it.
+  - Rolls are drawn on the host only. No roll or seed crosses the wire. Clients see only what follows from it: animation states and cues.
+  - The seed survives a reversed spawn order of same-descriptor enemies, and two such enemies on one entry roll differently.
+  - It lands in `networking.md` at promotion, described at its full reach.
+- **Per-activity damage fact: `@brain.damageInActivity`.** It is scope-relative: damage drained from layers and health since that level's activity was entered, for every producer, `applyDamage` included.
+- **Stagger is authored on that fact, for short activities.**
+  - A stance's optional `breakOn` adds a row leaving the hold for a sibling activity. The same guard works on any short activity, such as an aim.
   - Release is committed and has no break row.
-  - On a long activity (approach, chase, patrol) the sum grows without limit, so scattered chip damage would eventually stagger.
-  - This retires `drafts/E10--enemy-stagger`. Its tuning block, accumulator and pulse are superseded.
-  - Chain-stagger guarding is authored: the flinch activity resets the fact on entry.
-- **Shipped dev content adopts the new vocabulary in this brief.**
+  - On a long activity the sum grows without limit, so this brief does not offer stagger mid-chase.
+  - This supersedes the deleted `E10--enemy-stagger` draft.
+- **Telegraph sounds reach every peer.**
+  - An activity's `sound` field and a contact attack's `sound` play once on each participating client, anchored to the enemy like the observer weapon cue. The host plays its own as today.
+  - This takes the enemy slice of roadmap E12 step 4.
+  - `onEnter` reactions are unchanged: a reaction's `playSound` already reaches every peer.
+- **Clients match the host on clips.** The host restarts nothing when the next activity names the clip already playing, and neither does a client. No re-entry signal is replicated.
+- **Shipped content adopts the vocabulary in this brief.**
   - The reference knight's slam becomes two stances.
   - The limitator's aim gains a break into its unwired `hit_reaction` flinch.
-  - Tests and fixtures pinned to the old hand-written cycle are updated.
-- **Telegraph sounds reach every peer.**
-  - An activity's `sound` and a contact attack's `sound` play on each participating client, anchored to the enemy as the observer weapon cue is. The host plays its own as today.
-  - This takes the enemy slice of roadmap E12 step 4. Door, crusher and other world sounds stay there.
-  - `onEnter` reactions stay host-only. Light and emitter writes already replicate as state.
-  - A new wire message bumps `PROTOCOL_ID` (`networking.md` §Version gates).
-- **Re-entry is visible.** The replicated animation state carries an entry sequence, and a client restarts the clip whenever the sequence advances, even under the same name. This is a snapshot record change, so `SNAPSHOT_VERSION` is bumped.
+  - `sdk/behaviors/reference` shows a stance.
+  - `docs/` explains stances, the co-op floor, and that a client sees a stance late by about half the round trip plus one snapshot.
+  - Tests pinned to the old hand-written cycle are updated, and the build report lists each one.
 - **Non-goals:**
-  - **Compensating client latency.** A client sees a stance late by about half the round trip plus one snapshot. Author guidance in `docs/` covers it, and authors set hold minimums with it in mind.
-  - **Stagger mid-chase.** A recency-windowed damage fact ("damage in the last N ms") can be appended later. This brief ships only the since-entry sum.
+  - **Compensating client latency.** It would mean predicting enemy behavior on clients, and graph evaluation is host-only (`entity_model.md` §7c). The floor and `docs/` cover authors instead.
+  - **Stagger mid-chase.** A recency-windowed damage fact can be appended later.
+  - **Player guard and parry.** "For Honor–style" here means the enemy's tell, not a directional player defense.
   - **An engine-drawn release indicator.** The release activity's own sound and animation are the last-instant cue.
 
 ### Scripting surface
 ```ts
 // Proposed design
-import { brain, stance } from "postretro";
+import { brain, merge, stance } from "postretro";
 
 const overhead = stance("overhead", {
   animation: "stance_overhead",          // the held pose names the attack
   sound: "knight/stance_overhead",       // heard by every peer
-  holdMs: [400, 1200],                   // release moment re-rolled each entry
+  holdMs: [500, 1200],                   // optional; release moment re-rolled each entry
   release: { animation: "attack_overhead", attack: "slam", ms: 150 },
-  recover: { animation: "recover", ms: 900 },
+  recover: { animation: "recover", ms: 900 }, // optional
   breakOn: { damage: 25, to: "flinch" }, // optional; hold only
+  then: "approach",
+});
+const sweep = stance("sweep", {
+  animation: "stance_low",
+  release: { animation: "attack_sweep", attack: "jab", ms: 120 },
   then: "approach",
 });
 
 // behavior.activities.engage.layers.offense
 offense: {
   initial: "approach",
-  activities: {
-    approach: { animation: "walk" },
-    flinch: { animation: "pain", motion: "hold" },
-    ...overhead.activities,
-    ...sweep.activities,
-  },
-  transitions: {
-    // half the time overhead, otherwise the sweep stance (declared the same way)
-    approach: [
-      { to: overhead.entry, when: brain.targetDistance.le(3.5).and(brain.activityRoll.lt(0.5)) },
-      { to: sweep.entry, when: brain.targetDistance.le(3.5) },
-    ],
-    flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(450) }],
-    ...overhead.transitions,
-    ...sweep.transitions,
-  },
+  activities: merge(
+    { approach: { animation: "walk" }, flinch: { animation: "pain", motion: "hold" } },
+    overhead.activities,
+    sweep.activities,
+  ),
+  transitions: merge(
+    {
+      approach: [
+        { to: overhead.entry, when: brain.targetDistance.le(3.5).and(brain.activityRoll.lt(0.5)) },
+        { to: sweep.entry, when: brain.targetDistance.le(3.5) },
+      ],
+      flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(450) }],
+    },
+    overhead.transitions,
+    sweep.transitions,
+  ),
 },
 ```
-The Luau twin mirrors it field for field. `then` and `breakOn.to` name same-level siblings.
+The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le(3.5)`). `then` and `breakOn.to` name same-level siblings.
 
 ## Acceptance
 ### Automated
-**Stance builder**
-- [ ] `stance()` emits identical canonical descriptors in TypeScript and Luau.
-- [ ] Its output equals the hand-written hold, release and recover graph it replaces.
-- [ ] A `then` or `breakOn.to` naming no sibling rejects load with a pathed error.
-- [ ] Bad timings reject load: `holdMs` with min > max, a negative bound, or non-finite values.
+**Builder**
+- [ ] `stance()` and `merge()` emit identical canonical descriptors in TypeScript and Luau, and the Scripting surface example runs as `content/dev` content.
+- [ ] With a fixed `holdMs` and a `breakOn`, `stance()` output equals a checked-in hand-written fixture of the three activities and their rows, row order included.
+- [ ] `merge()` with a duplicate activity or transition key rejects load naming the key.
+- [ ] These reject load with a pathed error:
+  - a `then` or `breakOn.to` naming no sibling, or naming the stance's own hold;
+  - `holdMs` with min > max, or a negative bound;
+  - a `breakOn.damage` of zero or below;
+  - a negative `release.ms` or `recover.ms`;
+  - any non-finite value.
+- [ ] A stance whose minimum hold is below the co-op floor loads with one warning naming it. One at or above loads silently.
+- [ ] A stance given only `animation`, `release` and `then` gets the seeded hold and recovery, both above the floor.
+- [ ] Once `attackTurn` exists, all three emitted activities carry it.
 
 **Roll**
-- [ ] Across many entries of one enemy, the hold varies and stays within `[min, max]`.
-- [ ] A fixed `holdMs` never varies.
-- [ ] The roll stays fixed for the life of one entry, and a re-entry draws again.
-- [ ] Replaying a run reproduces every roll. The determinism gate's spawn-order reversal reproduces them by role.
-- [ ] Two same-descriptor enemies entering on one tick roll differently.
+- [ ] Across many entries, the hold's threshold varies within [min, max], and the hold ends on the first tick at or past it. A fixed `holdMs` never varies.
+- [ ] `holdMs: 0` leaves on the first evaluation after entry. `[x, x]` holds exactly as many ticks as `x` (pin P12).
+- [ ] The roll is fixed for one entry, and a re-entry draws again. An activity reseated and left on one tick reads its own fresh roll (pin P3).
+- [ ] Levels seated by one descent draw independent rolls. A nested transition redraws and zeroes only the nested level (pin P4).
+- [ ] Selector guards read their own level's roll and damage sum (pin P5).
+- [ ] On one entry of `approach`, both branches of the example read the same roll.
+- [ ] The determinism gate covers two same-descriptor enemies under role labels. It reverses their spawn order, and every roll matches by role.
+- [ ] Two same-descriptor enemies spawned on one tick read different rolls on their first evaluation (pin P13).
+- [ ] Grep gate: no wire record or message carries a roll or its seed.
 
-**Damage fact**
-- [ ] `damageInActivity` sums every hit since entry, from hitscan, projectile, melee, splash and `applyDamage`, across armor and health. It reads 0 on entry and after a re-entry.
-- [ ] Two hits on one tick are both counted.
-- [ ] A hit landing after the AI pass is read on the next evaluation, never lost.
-- [ ] `breakOn` leaves the hold on the first evaluation at or past the threshold, and never below it.
-- [ ] During release, the same damage does not break.
-- [ ] Damage taken during `flinch` does not carry into the activity it resumes, which starts at 0.
-- [ ] A guard on an outgoing row reads the active activity's roll. On one entry of `approach`, both branches of the example see the same value.
+**Damage fact and stagger**
+- [ ] `damageInActivity` sums every hit since entry, across armor and health. The covered sources are hitscan, projectile, melee, splash and `applyDamage`. Two hits on one tick both count.
+- [ ] A hit after the AI pass on the tick an activity is entered counts toward that activity on its first evaluation. A hit before the AI pass that tick counts only toward the activity left (pin P2).
+- [ ] `breakOn` leaves the hold on the first evaluation at or past the threshold, never below it. When the timer and threshold pass together, the break wins and the release never fires (pin P1).
+- [ ] During release, the same damage does not break. Damage taken in `flinch` does not carry into the activity it resumes.
+- [ ] Enough damage during the limitator's aim enters `hit_reaction`, and its flinch resumes on its timer.
+- [ ] A brain serialized before these fields deserializes. Its sums read 0, and its next entry draws a roll.
 
 **Co-op**
-- [ ] On a loopback client, an enemy's activity `sound` and a contact attack's `sound` each play exactly once per host event. The host plays each exactly once.
-- [ ] Re-entering a same-named stance restarts the clip on the client.
+- [ ] On a loopback client, an activity's `sound` and a contact attack's `sound` play exactly once per host event, and the host plays each exactly once.
+- [ ] An enemy weapon attack's sound still plays exactly once (pin P10).
+- [ ] An A → B → A sequence inside one snapshot interval plays A's sound twice on each peer (pin P7).
+- [ ] A cue for an entity the client lacks plays once at the host-captured position and never replays (pin P9).
+- [ ] An enemy killed in the apply pass that enters its stance plays no stance sound on any peer (pin P11).
+- [ ] A client receiving a cue runs no `onEnter` reaction.
 - [ ] A previous-protocol client is refused.
-- [ ] Without stances, every existing AI, replication and determinism test passes unchanged.
+- [ ] Entering an activity whose clip is already playing restarts nothing on host or client.
 
 ### Manual
-- [ ] On `movement-feel`, the reference knight with two stances: a player can name the coming attack from the pose, cannot predict the release moment across several cycles, and can break a stance with heavy fire.
-- [ ] Co-op loopback: the client hears the stance sound and sees each stance on screen before the hit lands.
+- [ ] On `movement-feel`, the reference knight with two stances: a player names the coming attack from the pose, cannot predict the release across several cycles, and breaks a stance with heavy fire.
+- [ ] Co-op loopback: the client hears each stance sound and sees the stance before the hit lands.
 
 ## Path
 - **Seams.**
-  - **Brain facts.** `ScopeRelativeValues` and `SCOPE_RELATIVE_SLOTS` (`crates/ai/src/brain_scope.rs`): a scope-relative fact appends one field and one registration. The per-depth arrays `time_in_activity_ms` and `attacks_fired_in_activity` on `BrainComponent` zero on re-entry. `BRAIN_INPUTS` in foundation `brain.rs` is append-only.
-  - **Damage.** The chokepoint is `apply_damage_with_context` (`crates/entities/src/components/health.rs`).
-  - **Seeding.** `pellet_rng_seed` and `SplitMix64` (`crates/sim/src/weapon/spread.rs`) avoid `EntityId` by salting with a per-instance counter. The brain needs a per-instance, replay-stable salt.
-  - **Observer cues.** `freeze_observer_weapon_cue` and `publish_observer_weapon_cues` skip emissions without a `shot_id`, which is why melee is silent on clients. `AiEmission` has `AiCue::Entered`.
-  - **Animation.** `WireMeshAnimationState` and `apply_mesh_animation_state` → `switch_animation_state`.
-- **Shape.** Chosen: a fragment builder spread into the author's maps. Rival: a composite activity with a nested graph. That needs an engine "nested graph finished" fact to exit, and it can't hold an attack turn across siblings.
-- **First slice.** The roll fact plus its seed. It is the one-way door, and the determinism gate falsifies it fastest.
-- **Verify the host first:** check whether a same-named re-entry restarts the clip there. The client must match the host, not exceed it.
-- **Limitator flinch.** Its file comments say the flinch waits on "stagger N ms then resume". A graph flinch activity left by a `timeInActivityMs` guard delivers that.
+  - **Brain facts.** `ScopeRelativeValues` / `SCOPE_RELATIVE_SLOTS` (`crates/ai/src/brain_scope.rs`): one field and one registration per fact, re-pointed at each level and selector.
+  - **Brain arrays.** The per-depth arrays on `BrainComponent` zero on re-entry. `BRAIN_INPUTS` is append-only.
+  - **Damage.** `apply_damage_with_context` already writes the brain for every producer.
+  - **Seeding.** `pellet_rng_seed` / `SplitMix64` salt with a per-instance counter rather than `EntityId`. The initial activity is seated before spawn state is set (pin P13).
+  - **Melee is silent on clients** because `publish_observer_weapon_cues` skips emissions without a `shot_id`.
+  - **The determinism gate's** single enemy spawns after both pawns, so today's reversal cannot catch an `EntityId` seed.
+- **Shape.** A fragment builder plus `merge()`. The rival, a composite activity with a nested graph, needs an engine "nested graph finished" fact to exit, and can't hold a turn across siblings.
+- **First slice.** The roll fact, its seed, and the extended determinism gate: the one-way door, falsified fastest.
 
 ## Open questions
-- Seed salt, a per-instance replay-stable identity — **delegated**: must meet both seed requirements in Decisions. Report the choice.
-- The new peer-cue message, whether it is a `WeaponCue` sibling or a broader enemy-cue message — **delegated**: one entity-anchored message for both sound kinds. Report it.
+- Seed salt, a per-instance replay-stable identity — **delegated**: meet both seed requirements in Decisions and report the choice.
+- The seeded hold and recovery defaults, and the floor's reaction budget — **delegated**: tune on `movement-feel` under the lag profile and report.
+
+## Boundary inventory
+
+| Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
+|---|---|---|---|---|---|
+| stance builder | none (SDK only) | — | `stance(name, options)` | `stance(name, options)` | n/a |
+| fragment keys | none | — | `entry`, `activities`, `transitions` | same | n/a |
+| stance options | none | — | `animation`, `sound`, `holdMs`, `release { animation, attack, ms }`, `recover { animation, ms }`, `breakOn { damage, to }`, `then` | same | n/a |
+| generated names | none | activity keys `<name>`, `<name>_release`, `<name>_recover` | same | same | n/a |
+| merge helper | none | — | `merge(...maps)` | `merge(...)` | n/a |
+| roll fact | `BRAIN_INPUTS` tail | `"@brain.activityRoll"` | `brain.activityRoll` | `brain.activityRoll` | n/a |
+| damage fact | `BRAIN_INPUTS` tail, after the roll | `"@brain.damageInActivity"` | `brain.damageInActivity` | `brain.damageInActivity` | n/a |
+
+If `E10--enemy-combat-movement` lands first, these facts append after its two.
+
+## Wire format
+**Enemy cue message, host to clients.** It follows `WeaponCuesMessage`:
+- the same codec and the same reliable-ordered channel;
+- a batch per tick, never sent empty;
+- sent to every participating client.
+
+Per cue, in order:
+- **anchor:** `WeaponCueAnchor`, the entity `NetworkId` with the captured origin, falling back to the origin alone;
+- **sound:** encoded as `WeaponCue.sound`;
+- **kind:** a `u8`, where 0 is an activity entry and 1 is a contact attack.
+
+Weapon attack sounds stay on `WeaponCue`. The new message is appended to the server message enum under an append-layout guard, and bumps `PROTOCOL_ID`. No snapshot record changes.

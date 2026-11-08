@@ -1234,7 +1234,7 @@ mod tests {
 
     // Regression: changing the NavMesh body epoch accidentally changed the PRL table epoch.
     #[test]
-    fn packed_navmesh_keeps_container_version_one_and_body_version_two() {
+    fn packed_navmesh_keeps_container_version_one_and_body_at_current_version() {
         let navmesh = NavMeshSection {
             version: postretro_level_format::navmesh::NAVMESH_VERSION,
             origin: [0.0, 0.0, 0.0],
@@ -1254,6 +1254,8 @@ mod tests {
                 floor_y_max: 0.0,
             }],
             portals: Vec::new(),
+            gates: Vec::new(),
+            links: Vec::new(),
         };
         let sections = vec![postretro_level_format::SectionBlob {
             section_id: SectionId::NavMesh as u32,
@@ -1275,8 +1277,12 @@ mod tests {
         let body = read_section_data(&mut cursor, &meta, SectionId::NavMesh as u32)
             .expect("navmesh body should be readable")
             .expect("navmesh body should exist");
-        let decoded = NavMeshSection::from_bytes(&body).expect("navmesh v2 body should decode");
-        assert_eq!(decoded.version, 2, "E10 must pin portal handedness at v2");
+        let decoded = NavMeshSection::from_bytes(&body).expect("navmesh body should decode");
+        assert_eq!(
+            decoded.version,
+            postretro_level_format::navmesh::NAVMESH_VERSION,
+            "the body carries its own version, apart from the table epoch"
+        );
     }
 
     #[test]

@@ -1,23 +1,31 @@
-// Movable navigation agent: collide-and-slide harness.
+// Movable navigation agent: collide-and-slide controller.
 //
-// A minimal capsule sweep-and-slide for navmesh agents — iterative slide,
-// step-up, ground-stick, and gravity — built on `collision::cast_capsule`. It
-// shares the swept step-up and snap-to-floor geometry with the player substrate
-// (`movement::swept`), passing its own step tuning, but keeps its own controller:
-// the player's `integrate_collision` is player-coupled. The agent is a
-// custom-kinematic capsule, not a simulated rigid body — collision queries only.
+// A minimal capsule sweep-and-slide for navmesh agents: mover carry and
+// displacement, iterative slide, step-up, ground-stick, gravity and mover
+// release. It shares geometry with the player substrate (`movement::swept`,
+// `movement::mover_carry`), passing its own step tuning, but keeps its own
+// controller: the player's `integrate_collision` is player-coupled. The agent is
+// a custom-kinematic capsule, not a simulated rigid body: collision queries only.
 //
-// See: context/lib/movement.md §1 (custom-kinematic capsule, collision-only)
+// See: context/lib/movement.md §1 (custom-kinematic capsule, collision-only), §6
 //      context/lib/entity_model.md §7 (collision)
 
 use glam::Vec3;
 
-use crate::collision::StaticOverlap;
-use crate::collision::moving::CombinedCollisionWorld;
-use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule};
+use crate::collision::moving::{
+    CollisionSource, CombinedCollisionWorld, MoverPose, MoverPoseSource, MoverTranslationLeg,
+    point_inside_mover,
+};
+use crate::collision::{CollisionCapsule, SKIN_DISTANCE, StaticOverlap};
+use crate::movement::mover_carry::{
+    apply_mover_carry, displace_from_movers, displace_out_of_hull, embedded_in_mover,
+    ground_ref_from_hit, mover_release_velocity,
+};
 use crate::movement::overlap_check::check_own_movement;
-use crate::movement::swept::{StepParams, snap_to_floor, step_up};
+use crate::movement::substrate::cast_capsule_query;
+use crate::movement::swept::{StepParams, floor_below, ground_stick_reach, snap_to_floor, step_up};
 use postretro_collision::{EnvironmentView, resolve_gravity};
+use postretro_foundation::GroundRef;
 
 /// Iteration cap for the slide loop — bounds work when a capsule wedges into a
 /// corner. Matches the player substrate's budget; four projections resolve any
@@ -26,7 +34,7 @@ const SLIDE_ITERATIONS: u32 = 4;
 
 /// A surface counts as walkable (floor, not wall) when its contact normal's Y
 /// component is at least this. cos(50°) ≈ 0.643; the navmesh bake's default
-/// `max_slope_deg` is in this neighborhood. A fixed threshold keeps the harness
+/// `max_slope_deg` is in this neighborhood. A fixed threshold keeps the controller
 /// self-contained — it does not read the per-agent slope budget (the navmesh
 /// already eroded unwalkable slopes out of the agent's corridor).
 const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
@@ -49,18 +57,18 @@ const NORMAL_NUDGE: f32 = 1.0e-4;
 /// the slide loop exits rather than spinning on sub-millimetre advances.
 const SLIDE_REMAINING_EPSILON_SQ: f32 = 1.0e-10;
 
-/// Capsule geometry the harness sweeps with. `step_height` is carried IN (not
+/// Capsule geometry the controller sweeps with. `step_height` is carried IN (not
 /// hardcoded) so the step-up / ground-stick logic uses the baked step the
 /// agent was seeded with — downstream steering builds this from the agent
 /// component's stored `radius` / `height` / `step_height`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AgentCapsule {
-    pub(crate) radius: f32,
+pub struct AgentCapsule {
+    pub radius: f32,
     /// Distance from the capsule center to one cylinder endpoint, EXCLUDING the
     /// hemispherical end cap. From the agent component: `height / 2.0 - radius`.
-    pub(crate) half_height: f32,
+    pub half_height: f32,
     /// Maximum vertical step the agent climbs in one tick.
-    pub(crate) step_height: f32,
+    pub step_height: f32,
 }
 
 impl AgentCapsule {
@@ -86,36 +94,182 @@ impl AgentCapsule {
 
 /// Result of one collide-and-slide step.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct SlideResult {
+pub struct SlideResult {
     /// Resolved capsule-center position after the slide + gravity + ground-stick.
-    pub(crate) position: Vec3,
-    /// `true` when the agent rests on (or re-acquired) a walkable floor this step.
-    pub(crate) grounded: bool,
+    pub position: Vec3,
+    /// What the agent rests on after this step: the walkable floor it reached or
+    /// re-acquired, or `Airborne`.
+    pub ground: GroundRef,
     /// Live velocity after the step (horizontal projected by wall contacts,
     /// vertical carrying gravity / ground state). The caller stores this back on
     /// the agent so momentum and fall speed persist across ticks.
-    pub(crate) velocity: Vec3,
+    pub velocity: Vec3,
     /// The step ended inside static geometry after starting clear; the caller
     /// logs it (`movement_overlap`).
-    pub(crate) overlap: Option<StaticOverlap>,
+    pub overlap: Option<StaticOverlap>,
+    /// The mover whose wall-like face first stopped the step, when that mover
+    /// moved or turned this tick. Steering decides whether it will clear the
+    /// way by itself (a door that rests at its stops) and the stall is a wait.
+    pub walled_by_moving_mover: Option<u32>,
 }
 
 /// Resolve one tick of agent motion: take a desired horizontal velocity, the
-/// current capsule-center position, the carried vertical velocity, and dt;
-/// integrate gravity, run the step-up probe, sweep-and-slide against the
-/// world, then ground-stick. Returns the resolved position, the
-/// grounded flag, and the post-step velocity.
+/// current capsule-center position, the ground it stood on, the carried vertical
+/// velocity, and dt. In the player substrate's order: mover carry, mover
+/// displacement, combined sweep (gravity, step-up, slide, ground-stick), ground
+/// reference, mover release. Returns the resolved position, the ground and the
+/// post-step velocity.
+///
+/// Release velocity lands in `knockback_velocity` and in the returned velocity,
+/// whose total includes knockback, so it survives steering's horizontal
+/// replacement and decays with knockback drag.
 ///
 /// `desired_horizontal` is the steering velocity (XZ; any Y is ignored). The
-/// vertical channel is owned by the harness: `vertical_velocity` carries the
+/// vertical channel is owned by the controller: `vertical_velocity` carries the
 /// fall speed in from the previous tick (0 when freshly grounded). Gravity is
 /// resolved from `environment` once, at the tick-start `position`
 /// ([`agent_gravity`]).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn collide_and_slide(
-    world: &CollisionWorld,
+pub fn collide_and_slide(
+    collision: &CombinedCollisionWorld<'_>,
     capsule: &AgentCapsule,
     position: Vec3,
+    previous_ground: GroundRef,
+    desired_horizontal: Vec3,
+    vertical_velocity: f32,
+    knockback_velocity: &mut Vec3,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> SlideResult {
+    let mut result = slide(
+        collision,
+        capsule,
+        position,
+        previous_ground,
+        desired_horizontal,
+        vertical_velocity,
+        knockback_velocity,
+        environment,
+        dt,
+    );
+    if let Some(release) =
+        mover_release_velocity(previous_ground, result.ground, collision, result.position)
+    {
+        result.velocity += release;
+        *knockback_velocity += release;
+    }
+    result
+}
+
+/// [`collide_and_slide`] for a body walking out of `mover_id`'s course. A body
+/// embedded in that mover walks as if it were not there: every sweep from inside
+/// it stops at once, so the walk would never start. A body merely touching it, or
+/// riding it, keeps it solid and keeps its floor.
+#[allow(clippy::too_many_arguments)]
+pub fn escape_slide(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    mover_id: u32,
+    desired_horizontal: Vec3,
+    vertical_velocity: f32,
+    knockback_velocity: &mut Vec3,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> SlideResult {
+    let embedded = previous_ground != GroundRef::Mover(mover_id)
+        && embedded_in_mover(
+            collision,
+            mover_id,
+            &capsule.collision_shape().parry(),
+            position,
+        );
+    if !embedded {
+        return collide_and_slide(
+            collision,
+            capsule,
+            position,
+            previous_ground,
+            desired_horizontal,
+            vertical_velocity,
+            knockback_velocity,
+            environment,
+            dt,
+        );
+    }
+    let poses = PosesWithout {
+        poses: collision.poses,
+        mover_id,
+    };
+    collide_and_slide(
+        &CombinedCollisionWorld::new(collision.static_world, collision.movers, &poses),
+        capsule,
+        position,
+        previous_ground,
+        desired_horizontal,
+        vertical_velocity,
+        knockback_velocity,
+        environment,
+        dt,
+    )
+}
+
+/// A pose source with one mover missing: queries skip a mover with no pose.
+struct PosesWithout<'a> {
+    poses: &'a dyn MoverPoseSource,
+    mover_id: u32,
+}
+
+impl MoverPoseSource for PosesWithout<'_> {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        (mover_id != self.mover_id)
+            .then(|| self.poses.pose(mover_id))
+            .flatten()
+    }
+
+    fn translation_legs(&self, mover_id: u32) -> Option<&[MoverTranslationLeg]> {
+        self.poses.translation_legs(mover_id)
+    }
+
+    fn had_endpoint_arrival(&self, mover_id: u32) -> bool {
+        self.poses.had_endpoint_arrival(mover_id)
+    }
+}
+
+/// One tick of corpse motion: gravity, mover carry and displacement, and no
+/// steering, knockback or release velocity. A corpse keeps the place it fell, so
+/// a killing blow or a lift it slides off starts no slide.
+pub fn settle_corpse(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    vertical_velocity: f32,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> SlideResult {
+    let mut knockback = Vec3::ZERO;
+    slide(
+        collision,
+        capsule,
+        position,
+        previous_ground,
+        Vec3::ZERO,
+        vertical_velocity,
+        &mut knockback,
+        environment,
+        dt,
+    )
+}
+
+/// Everything in [`collide_and_slide`] short of release velocity.
+#[allow(clippy::too_many_arguments)]
+fn slide(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
     desired_horizontal: Vec3,
     vertical_velocity: f32,
     knockback_velocity: &mut Vec3,
@@ -123,9 +277,7 @@ pub(crate) fn collide_and_slide(
     dt: f32,
 ) -> SlideResult {
     let collision_shape = capsule.collision_shape();
-    // Agents collide with static geometry only; the shared primitives take the
-    // combined query, so wrap it with no movers.
-    let query = CombinedCollisionWorld::static_only(world);
+    let parry_shape = collision_shape.parry();
     let step = capsule.step_params();
     let gravity = agent_gravity(environment, position);
 
@@ -137,9 +289,18 @@ pub(crate) fn collide_and_slide(
         desired_horizontal.z,
     );
 
-    let mut current_pos = position;
+    let mut current_pos = apply_mover_carry(position, previous_ground, collision);
+    current_pos = displace_out_of_hull(previous_ground, collision, &parry_shape, current_pos)
+        .unwrap_or_else(|| {
+            displace_from_movers(previous_ground, collision, &parry_shape, current_pos)
+        });
+    // Mover policy polices carry and displacement; the tick overlap check covers
+    // the agent's own movement from here.
+    let checked_start = current_pos;
     let mut remaining_dt = dt;
-    let mut hit_floor = false;
+    let mut ground = GroundRef::Airborne;
+    let mut walled_by_moving_mover = None;
+    let mut met_wall = false;
 
     // Step-up probe before the slide loop: lift only commits when a wall-like
     // obstacle blocks horizontal motion AND a walkable surface sits within the
@@ -147,7 +308,7 @@ pub(crate) fn collide_and_slide(
     let horiz = Vec3::new(velocity.x, 0.0, velocity.z);
     if velocity.y <= 0.0
         && let Some(lifted) = step_up(
-            &query,
+            collision,
             collision_shape,
             current_pos,
             horiz,
@@ -169,7 +330,7 @@ pub(crate) fn collide_and_slide(
         if max_toi * max_toi < SLIDE_REMAINING_EPSILON_SQ {
             break;
         }
-        let hit = cast_capsule(world, current_pos, collision_shape, dir, max_toi);
+        let hit = cast_capsule_query(collision, current_pos, &parry_shape, dir, max_toi);
         match hit {
             None => {
                 current_pos += velocity * remaining_dt;
@@ -185,7 +346,17 @@ pub(crate) fn collide_and_slide(
                 };
 
                 if normal.y >= COS_WALKABLE {
-                    hit_floor = true;
+                    ground = ground_ref_from_hit(h);
+                } else if !met_wall {
+                    // Only the first wall met: a later one is brushed in the
+                    // slide, not what stopped the agent. Floors come first,
+                    // since gravity aims every grounded step down.
+                    met_wall = true;
+                    if let CollisionSource::Mover(mover_id) = h.source
+                        && mover_in_motion(collision, mover_id)
+                    {
+                        walled_by_moving_mover = Some(mover_id);
+                    }
                 }
                 current_pos += dir * toi;
                 // Project velocity onto the contact plane (slide along surface).
@@ -208,28 +379,98 @@ pub(crate) fn collide_and_slide(
     // Ground-stick: snap the capsule down onto a walkable floor within the step
     // envelope so it does not float a tick after cresting a step or sliding off
     // a wall corner. Only when not climbing (vertical velocity non-positive).
-    let mut grounded = hit_floor;
     if velocity.y <= 1e-3
-        && let Some((snapped, _floor)) = snap_to_floor(&query, collision_shape, current_pos, step)
+        && let Some((snapped, floor)) = snap_to_floor(collision, collision_shape, current_pos, step)
     {
         current_pos = snapped;
-        grounded = true;
+        ground = floor.ground;
     }
+
+    ground = ground_outside_mover_hull(
+        collision,
+        collision_shape,
+        current_pos,
+        previous_ground,
+        ground,
+        step,
+    );
 
     // Once resting on the floor, stop accumulating downward speed so the next
     // tick's gravity integration starts from rest (no runaway fall while
     // grounded). Wall-projected residual +Y is also cleared when grounded.
-    if grounded {
+    if ground.is_grounded() {
         velocity.y = 0.0;
         knockback_velocity.y = 0.0;
     }
 
     SlideResult {
         position: current_pos,
-        grounded,
+        ground,
         velocity,
-        overlap: check_own_movement(world, position, current_pos, collision_shape),
+        overlap: check_own_movement(
+            collision.static_world,
+            checked_start,
+            current_pos,
+            collision_shape,
+        ),
+        walled_by_moving_mover,
     }
+}
+
+/// A body wholly inside a mover touches only the far side of its hull, which is
+/// no floor: standing on it would carry the body along, where an engulfed body
+/// stays put until the mover moves off it. Checked as ground changes, so a rider
+/// pays nothing.
+fn ground_outside_mover_hull(
+    collision: &CombinedCollisionWorld<'_>,
+    shape: CollisionCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    ground: GroundRef,
+    step: StepParams,
+) -> GroundRef {
+    let GroundRef::Mover(mover_id) = ground else {
+        return ground;
+    };
+    if previous_ground == ground {
+        return ground;
+    }
+    let Some(mover) = collision
+        .movers
+        .iter()
+        .find(|mover| mover.mover_id == mover_id)
+    else {
+        return ground;
+    };
+    if !point_inside_mover(std::slice::from_ref(mover), collision.poses, position) {
+        return ground;
+    }
+    let static_only = CombinedCollisionWorld::static_only(collision.static_world);
+    floor_below(
+        &static_only,
+        shape,
+        position,
+        ground_stick_reach(step),
+        step.cos_walkable,
+    )
+    .map_or(GroundRef::Airborne, |floor| floor.ground)
+}
+
+/// Whether `ground` is a mover that moved this tick. A carried body's world
+/// displacement is the mover's as well as its own, so it says nothing about
+/// whether the body is stuck.
+pub fn carried_by_mover(collision: &CombinedCollisionWorld<'_>, ground: GroundRef) -> bool {
+    let GroundRef::Mover(mover_id) = ground else {
+        return false;
+    };
+    mover_in_motion(collision, mover_id)
+}
+
+/// Whether `mover_id` moved or turned this tick.
+fn mover_in_motion(collision: &CombinedCollisionWorld<'_>, mover_id: u32) -> bool {
+    collision.poses.pose(mover_id).is_some_and(|pose| {
+        pose.tick_delta != Vec3::ZERO || pose.tick_rotation_delta != glam::Quat::IDENTITY
+    })
 }
 
 /// The gravity an agent integrates this tick: the environment's gravity at the
@@ -248,6 +489,7 @@ mod overlap_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collision::CollisionWorld;
     use glam::Vec3;
 
     /// Agent capsule fixture: 0.35 m radius, 1.8 m total height, 0.4 m step.
@@ -337,9 +579,10 @@ mod tests {
         for _ in 0..240 {
             let mut knockback = Vec3::ZERO;
             let result = collide_and_slide(
-                &world,
+                &CombinedCollisionWorld::static_only(&world),
                 &capsule,
                 pos,
+                GroundRef::World,
                 desired,
                 vertical,
                 &mut knockback,
@@ -393,9 +636,10 @@ mod tests {
         for _ in 0..120 {
             let mut knockback = Vec3::ZERO;
             let result = collide_and_slide(
-                &world,
+                &CombinedCollisionWorld::static_only(&world),
                 &capsule,
                 pos,
+                GroundRef::World,
                 Vec3::ZERO,
                 vertical,
                 &mut knockback,
@@ -404,7 +648,7 @@ mod tests {
             );
             pos = result.position;
             vertical = result.velocity.y;
-            grounded = result.grounded;
+            grounded = result.ground.is_grounded();
         }
 
         assert!(grounded, "agent should be grounded on the floor");

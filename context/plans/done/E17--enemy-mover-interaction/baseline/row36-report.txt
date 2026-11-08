@@ -1,0 +1,40 @@
+t-before-room: 92 windows
+  early sim_movers=0.027 sim_steer_agents=1.874 sim_steer_movers=0.064 combined=1.979 sim_tick=3.165 total=16.538
+  mid   sim_movers=0.026 sim_steer_agents=1.854 sim_steer_movers=0.059 combined=1.941 sim_tick=3.118 total=16.531
+  late  sim_movers=0.026 sim_steer_agents=1.854 sim_steer_movers=0.058 combined=1.935 sim_tick=3.114 total=16.529
+  all   sim_movers=0.026 sim_steer_agents=1.855 sim_steer_movers=0.061 combined=1.947 sim_tick=3.120 total=16.531
+t-before-room2: 93 windows
+  early sim_movers=0.027 sim_steer_agents=1.876 sim_steer_movers=0.069 combined=1.982 sim_tick=3.155 total=16.532
+  mid   sim_movers=0.027 sim_steer_agents=1.858 sim_steer_movers=0.058 combined=1.940 sim_tick=3.112 total=16.531
+  late  sim_movers=0.027 sim_steer_agents=1.861 sim_steer_movers=0.059 combined=1.947 sim_tick=3.116 total=16.530
+  all   sim_movers=0.027 sim_steer_agents=1.861 sim_steer_movers=0.060 combined=1.951 sim_tick=3.121 total=16.530
+t-final-room: 92 windows
+  early sim_movers=0.049 sim_steer_agents=1.979 sim_steer_movers=0.079 combined=2.125 sim_tick=3.438 total=16.546
+  mid   sim_movers=0.048 sim_steer_agents=1.918 sim_steer_movers=0.076 combined=2.040 sim_tick=3.198 total=16.532
+  late  sim_movers=0.048 sim_steer_agents=1.918 sim_steer_movers=0.074 combined=2.043 sim_tick=3.201 total=16.534
+  all   sim_movers=0.048 sim_steer_agents=1.925 sim_steer_movers=0.076 combined=2.056 sim_tick=3.213 total=16.535
+t-final-room2: 93 windows
+  early sim_movers=0.051 sim_steer_agents=1.966 sim_steer_movers=0.082 combined=2.080 sim_tick=3.244 total=16.538
+  mid   sim_movers=0.049 sim_steer_agents=1.923 sim_steer_movers=0.076 combined=2.044 sim_tick=3.203 total=16.533
+  late  sim_movers=0.049 sim_steer_agents=1.920 sim_steer_movers=0.074 combined=2.054 sim_tick=3.211 total=16.535
+  all   sim_movers=0.049 sim_steer_agents=1.929 sim_steer_movers=0.079 combined=2.061 sim_tick=3.225 total=16.535
+t-before-lift: 95 windows
+  early sim_movers=0.026 sim_steer_agents=1.840 sim_steer_movers=0.057 combined=1.922 sim_tick=3.086 total=16.535
+  mid   sim_movers=0.026 sim_steer_agents=1.840 sim_steer_movers=0.057 combined=1.930 sim_tick=3.088 total=16.532
+  late  sim_movers=0.026 sim_steer_agents=1.837 sim_steer_movers=0.058 combined=1.920 sim_tick=3.084 total=16.535
+  all   sim_movers=0.026 sim_steer_agents=1.839 sim_steer_movers=0.057 combined=1.922 sim_tick=3.086 total=16.535
+t-before-lift2: 95 windows
+  early sim_movers=0.027 sim_steer_agents=1.836 sim_steer_movers=0.058 combined=1.922 sim_tick=3.092 total=16.537
+  mid   sim_movers=0.027 sim_steer_agents=1.840 sim_steer_movers=0.058 combined=1.926 sim_tick=3.096 total=16.534
+  late  sim_movers=0.027 sim_steer_agents=1.841 sim_steer_movers=0.059 combined=1.925 sim_tick=3.094 total=16.535
+  all   sim_movers=0.027 sim_steer_agents=1.840 sim_steer_movers=0.058 combined=1.923 sim_tick=3.094 total=16.535
+t-final-lift: 95 windows
+  early sim_movers=0.052 sim_steer_agents=2.392 sim_steer_movers=0.093 combined=2.561 sim_tick=3.900 total=16.535
+  mid   sim_movers=0.044 sim_steer_agents=2.333 sim_steer_movers=0.079 combined=2.478 sim_tick=3.721 total=16.536
+  late  sim_movers=0.041 sim_steer_agents=2.118 sim_steer_movers=0.072 combined=2.226 sim_tick=3.373 total=16.537
+  all   sim_movers=0.044 sim_steer_agents=2.196 sim_steer_movers=0.080 combined=2.317 sim_tick=3.510 total=16.536
+t-final-lift2: 95 windows
+  early sim_movers=0.051 sim_steer_agents=1.913 sim_steer_movers=0.074 combined=2.042 sim_tick=3.203 total=16.536
+  mid   sim_movers=0.051 sim_steer_agents=1.910 sim_steer_movers=0.074 combined=2.034 sim_tick=3.195 total=16.533
+  late  sim_movers=0.050 sim_steer_agents=1.914 sim_steer_movers=0.075 combined=2.042 sim_tick=3.207 total=16.535
+  all   sim_movers=0.051 sim_steer_agents=1.912 sim_steer_movers=0.074 combined=2.040 sim_tick=3.202 total=16.535

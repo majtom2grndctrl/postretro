@@ -73,9 +73,11 @@ pub const BRAIN_TARGET_HOSTILE_INPUT: &str = "@brain.targetHostile";
 /// Whether the nav pathfinder can currently route from this enemy to its
 /// selected target. `false` without a target or when the map has no navmesh.
 ///
-/// This is the cached verdict from the same `find_path` query chase relies on,
-/// not a ground-truth reachability oracle: it inherits the pathfinder's current
-/// routing limitations.
+/// This is the cached verdict from the same gated, ground-aware route query
+/// (`nav::find_path_from`) chase relies on, not a ground-truth reachability
+/// oracle: it inherits the pathfinder's current routing limitations. It holds
+/// its last verdict while the agent rides a lift, or is carried between docks
+/// of a lift that rests at its stops.
 pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
 /// Successful attacks fired while the currently-evaluated activity has been
 /// active.

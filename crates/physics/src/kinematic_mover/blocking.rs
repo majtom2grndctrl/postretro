@@ -24,7 +24,7 @@ use crate::collision::moving::{
 // A rider leaves a moving base with jump plus inherited base velocity. 150 ms
 // covers the handful of fixed movement ticks needed to clear a mover travelling
 // at roughly twice jump velocity, without masking a later path re-entry.
-const RIDER_GRACE_MS: f32 = 150.0;
+pub const RIDER_GRACE_MS: f32 = 150.0;
 
 /// Host-local mover transition kinds. Task 6 resolves each entry through the
 /// mover's authored named-event address; connected clients never emit entries.
@@ -59,6 +59,9 @@ impl MoverEventKind {
     }
 }
 
+/// An agent and the mover id it is paired with.
+pub type AgentMoverPair = (EntityId, u32);
+
 /// Host-only blocking timers and pin memory, keyed by full generation-aware
 /// mover and actor identities. They are not component state: peers reconcile
 /// outcomes, never these decisions.
@@ -72,6 +75,15 @@ pub struct MoverBlockingState {
     pinned_movers: HashSet<EntityId>,
     /// Movers whose yield to a pinned rider has warned this level load.
     warned_rider_yields: HashSet<EntityId>,
+    /// Living agents a non-crush mover yielded to in the last blocking pass or
+    /// the pre-tick test after it, so steering between the two sees both. Each
+    /// pass starts it over, keeping its capacity.
+    agent_yields: Vec<AgentMoverPair>,
+    /// Agents that yield to one mover as a corpse does, held until out of
+    /// contact with it.
+    corpse_yields: Vec<AgentMoverPair>,
+    /// The body list, kept between tests so filling it reuses its capacity.
+    bodies: Vec<pin::PawnBody>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,6 +111,65 @@ impl MoverBlockingState {
         self.rider_grace_ms.clear();
         self.pinned_movers.clear();
         self.warned_rider_yields.clear();
+        self.agent_yields.clear();
+        self.corpse_yields.clear();
+    }
+
+    /// Drop everything keyed on a mover: the last one has gone. Unlike
+    /// [`Self::clear`] this is no new level, so the once-per-load warnings stay.
+    fn forget_movers(&mut self) {
+        self.crush_elapsed_ms.clear();
+        self.rider_grace_ms.clear();
+        self.pinned_movers.clear();
+        self.corpse_yields.clear();
+    }
+
+    /// Each living agent a non-crush mover yielded to in the last blocking pass
+    /// or the pre-tick test after it, as (agent, mover id). A pin that lasts
+    /// reappears every tick. A `stop` or `reverse` reaction to contact with no
+    /// pin is no yield.
+    pub fn agent_yields(&self) -> &[AgentMoverPair] {
+        &self.agent_yields
+    }
+
+    /// Have `agent` give way to `mover_id` as a corpse does: the pin test skips
+    /// the pair and contact with it stops nothing, so the mover proceeds and
+    /// leaves the agent embedded and unharmed. The blocking pass drops the
+    /// pair once the agent is out of contact with the mover.
+    pub fn yield_agent_as_corpse(&mut self, agent: EntityId, mover_id: u32) {
+        if !self.agent_yields_as_corpse(agent, mover_id) {
+            self.corpse_yields.push((agent, mover_id));
+        }
+    }
+
+    /// Whether `agent` currently gives way to `mover_id` as a corpse does.
+    pub fn agent_yields_as_corpse(&self, agent: EntityId, mover_id: u32) -> bool {
+        self.corpse_yields.contains(&(agent, mover_id))
+    }
+
+    pub(super) fn note_agent_yield(&mut self, agent: EntityId, mover_id: u32) {
+        if !self.agent_yields.contains(&(agent, mover_id)) {
+            self.agent_yields.push((agent, mover_id));
+        }
+    }
+
+    /// Lend the body buffer and the corpse yields to a pin test, whose pin
+    /// world reads them beside `&mut self`. Pair with
+    /// [`Self::restore_pin_inputs`].
+    pub(super) fn take_pin_inputs(&mut self) -> (Vec<pin::PawnBody>, Vec<AgentMoverPair>) {
+        (
+            std::mem::take(&mut self.bodies),
+            std::mem::take(&mut self.corpse_yields),
+        )
+    }
+
+    pub(super) fn restore_pin_inputs(
+        &mut self,
+        bodies: Vec<pin::PawnBody>,
+        corpse_yields: Vec<AgentMoverPair>,
+    ) {
+        self.bodies = bodies;
+        self.corpse_yields = corpse_yields;
     }
 
     /// Record `mover` as pinned at this test; true when it was not already.
@@ -121,9 +192,9 @@ impl MoverBlockingState {
         self.crush_elapsed_ms.contains_key(&(mover, victim))
     }
 
-    fn has_rider_grace(&self, mover: EntityId, player: EntityId) -> bool {
+    fn has_rider_grace(&self, mover: EntityId, rider: EntityId) -> bool {
         self.rider_grace_ms
-            .get(&(mover, player))
+            .get(&(mover, rider))
             .is_some_and(|remaining_ms| *remaining_ms > 0.0)
     }
 
@@ -137,6 +208,8 @@ impl MoverBlockingState {
         self.crush_elapsed_ms.is_empty()
             && self.rider_grace_ms.is_empty()
             && self.pinned_movers.is_empty()
+            && self.agent_yields.is_empty()
+            && self.corpse_yields.is_empty()
     }
 }
 
@@ -145,8 +218,10 @@ impl MoverBlockingState {
 /// prediction: a connected client only reconciles the resulting mover phase and
 /// health.
 ///
-/// Every policy but `crush` first yields to a pawn its next course pins
-/// (`pin.rs`); unpinned contacts keep their policy's reaction.
+/// Every policy but `crush` first yields to a pawn or living agent its next
+/// course pins (`pin.rs`); unpinned contacts keep their policy's reaction. A
+/// corpse answers to `crush` alone. Liveness is read once, at the start: an
+/// agent killed during the pass still holds the mover pinning it until the next.
 #[allow(clippy::too_many_arguments)]
 pub fn run_mover_blocking_pass(
     registry: &mut EntityRegistry,
@@ -154,6 +229,45 @@ pub fn run_mover_blocking_pass(
     mover_colliders: &[MoverCollider],
     mover_poses: &dyn MoverPoseSource,
     blocking_state: &mut MoverBlockingState,
+    tick_dt: f32,
+    events: &mut Vec<(MoverEventKind, u32)>,
+    on_impact: &mut impl FnMut(&mut EntityRegistry),
+) {
+    blocking_state.agent_yields.clear();
+    // A level with no movers pays nothing per agent here.
+    if registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .next()
+        .is_none()
+    {
+        blocking_state.forget_movers();
+        return;
+    }
+    let (mut bodies, mut corpse_yields) = blocking_state.take_pin_inputs();
+    resolve_blocking(
+        registry,
+        static_world,
+        mover_colliders,
+        mover_poses,
+        blocking_state,
+        &mut bodies,
+        &mut corpse_yields,
+        tick_dt,
+        events,
+        on_impact,
+    );
+    blocking_state.restore_pin_inputs(bodies, corpse_yields);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_blocking(
+    registry: &mut EntityRegistry,
+    static_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    blocking_state: &mut MoverBlockingState,
+    bodies: &mut Vec<pin::PawnBody>,
+    corpse_yields: &mut Vec<AgentMoverPair>,
     tick_dt: f32,
     events: &mut Vec<(MoverEventKind, u32)>,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
@@ -179,7 +293,18 @@ pub fn run_mover_blocking_pass(
         }
     }
 
-    let player_bodies = pin::pawn_bodies(registry);
+    let living_count = pin::collect_bodies(registry, bodies);
+    let (all_bodies, living_bodies) = (&bodies[..], &bodies[..living_count]);
+    pin::retain_corpse_yields_in_contact(
+        corpse_yields,
+        registry,
+        static_world,
+        mover_colliders,
+        mover_poses,
+        all_bodies,
+        tick_dt,
+    );
+    let corpse_yields = &corpse_yields[..];
     let held_at_start: HashSet<EntityId> = registry
         .iter_with_kind(ComponentKind::KinematicMover)
         .filter_map(|(entity, value)| match value {
@@ -211,7 +336,7 @@ pub fn run_mover_blocking_pass(
                                 mover,
                                 transform.position,
                                 tick_dt,
-                                &player_bodies,
+                                living_bodies,
                             )
                         }))
             {
@@ -239,27 +364,27 @@ pub fn run_mover_blocking_pass(
             })
         })
         .collect();
-    refresh_rider_grace(blocking_state, registry, &player_bodies, tick_dt);
+    refresh_rider_grace(blocking_state, registry, living_bodies, tick_dt);
     let previously_pinned = std::mem::take(&mut blocking_state.pinned_movers);
     if movers.is_empty() {
         blocking_state.crush_elapsed_ms.clear();
         return;
     }
 
-    let next_travel =
-        pin::next_mover_travel(registry, mover_colliders, &player_bodies, tick_dt, true);
+    let next_travel = pin::next_mover_travel(registry, mover_colliders, all_bodies, tick_dt, true);
     let pin_world = pin::PinWorld {
         static_world,
         mover_colliders,
         mover_poses,
         next_travel: &next_travel,
+        corpse_yields,
     };
-    let agent_capsules = agent_capsules(registry);
     let mut contacted_stop_movers = HashSet::new();
     let mut reverse_contacts: HashMap<EntityId, glam::Vec3> = HashMap::new();
-    let mut pinned_crush_contacts = HashSet::new();
+    // Sorted below: damage, events and impact callbacks follow this order.
+    let mut pinned_crush_contacts: Vec<(EntityId, EntityId)> = Vec::new();
     // Pins each mover's next course makes, by snapshot index.
-    let mut course_pins: Vec<(usize, EntityId, pin::PinnedBody)> = Vec::new();
+    let mut course_pins: Vec<(usize, pin::PinnedBody)> = Vec::new();
 
     for (index, mover) in movers.iter().enumerate() {
         let Some(collider) = mover_colliders
@@ -269,19 +394,25 @@ pub fn run_mover_blocking_pass(
             continue;
         };
 
+        // Only a crusher answers a corpse.
+        let reachable_bodies = if mover.policy == BlockPolicy::Crush {
+            all_bodies
+        } else {
+            living_bodies
+        };
         if let Some(preview) = mover.prospective_pose {
-            course_pins.extend(player_bodies.iter().filter_map(|body| {
+            course_pins.extend(reachable_bodies.iter().filter_map(|body| {
                 pin_world
                     .pin(collider, preview, body)
-                    .map(|pin| (index, body.entity, pin))
+                    .map(|pin| (index, pin))
             }));
         }
         if mover.policy == BlockPolicy::Displace {
             continue;
         }
 
-        for body in &player_bodies {
-            let (player_entity, position, capsule) = (body.entity, body.position, &body.capsule);
+        for body in reachable_bodies {
+            let (victim, position, capsule) = (body.entity, body.position, &body.capsule);
             let contact = leading_mover_contact_penetration(
                 collider,
                 mover_poses,
@@ -297,9 +428,10 @@ pub fn run_mover_blocking_pass(
                     };
                     // A free rider is no obstruction; a pinned one is
                     // answered by the yield below, not as a contact.
-                    if body.ground == GroundRef::Mover(mover.mover_id)
+                    if pin_world.yields_as_corpse(body, mover.mover_id)
+                        || body.ground == GroundRef::Mover(mover.mover_id)
                         || (body.ground == GroundRef::Airborne
-                            && blocking_state.has_rider_grace(mover.entity, player_entity))
+                            && blocking_state.has_rider_grace(mover.entity, victim))
                     {
                         continue;
                     }
@@ -317,119 +449,79 @@ pub fn run_mover_blocking_pass(
                     // whatever this tick's push did: a carry makes no push on
                     // its own rider. An embedded rider of a crusher that paused
                     // or arrived mid-cadence stays pinned too: nothing frees it.
-                    let maintains_cadence =
-                        blocking_state.has_crush_cadence(mover.entity, player_entity);
+                    let maintains_cadence = blocking_state.has_crush_cadence(mover.entity, victim);
                     let rides = body.carry_ground == GroundRef::Mover(mover.mover_id);
                     let carried = rides && mover.prospective_pose.is_some() && mover.policy_active;
                     if (carried
-                        && course_pins.iter().any(|(pinned_index, pawn, pin)| {
-                            *pinned_index == index && *pawn == player_entity && pin.rider
+                        && course_pins.iter().any(|(pinned_index, pin)| {
+                            *pinned_index == index && pin.entity == victim && pin.rider
                         }))
                         || ((carried || (rides && maintains_cadence))
                             && pin_world.is_embedded(body))
                     {
-                        pinned_crush_contacts.insert((mover.entity, player_entity));
+                        pinned_crush_contacts.push((mover.entity, victim));
                         continue;
                     }
                     // A body already being crushed stays pinned while the next
                     // course still drives it into a blocker, even on a tick
                     // displacement shuffled it off this crusher's face.
                     if maintains_cadence
-                        && course_pins.iter().any(|(pinned_index, pawn, _)| {
-                            *pinned_index == index && *pawn == player_entity
+                        && course_pins.iter().any(|(pinned_index, pin)| {
+                            *pinned_index == index && pin.entity == victim
                         })
                     {
-                        pinned_crush_contacts.insert((mover.entity, player_entity));
-                        continue;
-                    }
-                    if contact.is_none() && !maintains_cadence {
+                        pinned_crush_contacts.push((mover.entity, victim));
                         continue;
                     }
                     if !mover.policy_active && !maintains_cadence {
                         continue;
                     }
                     // Contact is conservative, but pinning must use the actual
-                    // player capsule and the same push predicate as local
-                    // mover displacement, widened to other movers. A held
-                    // cadence keeps sampling the actual overlap: its
-                    // stationary mesh contact has no swept push direction to
-                    // re-derive the original block.
-                    if let Some(actual_penetration) = deepest_mover_push_penetration(
-                        std::slice::from_ref(collider),
-                        mover_poses,
-                        position,
-                        capsule,
-                    ) && pin_world.push_is_blocked(
-                        mover.mover_id,
-                        body,
-                        actual_penetration.normal,
-                        actual_penetration.depth,
-                    ) {
-                        pinned_crush_contacts.insert((mover.entity, player_entity));
-                    } else if maintains_cadence
-                        && deepest_mover_penetration(
+                    // capsule and the same push predicate as local mover
+                    // displacement, widened to other movers. A held cadence
+                    // keeps sampling the actual overlap: its stationary mesh
+                    // contact has no swept push direction to re-derive the
+                    // original block.
+                    if contact.is_some() || maintains_cadence {
+                        if let Some(actual_penetration) = deepest_mover_push_penetration(
                             std::slice::from_ref(collider),
                             mover_poses,
                             position,
                             capsule,
-                        )
-                        .is_some()
-                    {
-                        pinned_crush_contacts.insert((mover.entity, player_entity));
+                        ) && pin_world.push_is_blocked(
+                            mover.mover_id,
+                            body,
+                            actual_penetration.normal,
+                            actual_penetration.depth,
+                        ) {
+                            pinned_crush_contacts.push((mover.entity, victim));
+                            continue;
+                        }
+                        if maintains_cadence
+                            && deepest_mover_penetration(
+                                std::slice::from_ref(collider),
+                                mover_poses,
+                                position,
+                                capsule,
+                            )
+                            .is_some()
+                        {
+                            pinned_crush_contacts.push((mover.entity, victim));
+                            continue;
+                        }
                     }
-                }
-                BlockPolicy::Displace => unreachable!("displace movers react only to pins"),
-            }
-        }
-
-        for (enemy_entity, position, capsule) in &agent_capsules {
-            let contact = leading_mover_contact_penetration(
-                collider,
-                mover_poses,
-                mover.prospective_pose,
-                *position,
-                capsule,
-            );
-
-            match mover.policy {
-                BlockPolicy::Stop | BlockPolicy::Reverse => {
-                    let Some(contact) = contact else {
-                        continue;
-                    };
-                    note_reactive_contact(
-                        mover.entity,
-                        mover,
-                        contact.normal,
-                        &mut contacted_stop_movers,
-                        &mut reverse_contacts,
-                    );
-                }
-                // Agents never take the player-only mover-displacement path, so
-                // an actual overlap is necessarily a pinned crusher contact.
-                BlockPolicy::Crush => {
-                    let maintains_cadence =
-                        blocking_state.has_crush_cadence(mover.entity, *enemy_entity);
-                    if contact.is_none() && !maintains_cadence {
-                        continue;
-                    }
-                    if !mover.policy_active && !maintains_cadence {
-                        continue;
-                    }
-                    if deepest_mover_push_penetration(
-                        std::slice::from_ref(collider),
-                        mover_poses,
-                        *position,
-                        capsule,
-                    )
-                    .is_some()
-                    {
-                        pinned_crush_contacts.insert((mover.entity, *enemy_entity));
+                    // Nothing pushes an agent out of a hull closed around it,
+                    // and no contact reports it there.
+                    if body.agent && pin_world.is_engulfed(collider, body) {
+                        pinned_crush_contacts.push((mover.entity, victim));
                     }
                 }
                 BlockPolicy::Displace => unreachable!("displace movers react only to pins"),
             }
         }
     }
+    pinned_crush_contacts.sort_unstable();
+    pinned_crush_contacts.dedup();
 
     let mut pins = Vec::new();
     let mut reversed_here = HashSet::new();
@@ -441,8 +533,8 @@ pub fn run_mover_blocking_pass(
         pins.extend(
             course_pins
                 .iter()
-                .filter(|(pinned_index, _, _)| *pinned_index == index)
-                .map(|(_, _, pin)| *pin),
+                .filter(|(pinned_index, _)| *pinned_index == index)
+                .map(|(_, pin)| *pin),
         );
 
         if snapshot.policy != BlockPolicy::Crush
@@ -460,7 +552,7 @@ pub fn run_mover_blocking_pass(
                 snapshot.transform,
                 tick_dt,
                 &pins,
-                &player_bodies,
+                living_bodies,
             );
             // A mover already held, for a pin or an unpinned contact, has
             // not been released, so a pin there is no new onset.
@@ -510,10 +602,25 @@ pub fn run_mover_blocking_pass(
                             mover,
                             snapshot.transform,
                             tick_dt,
-                            &player_bodies,
+                            living_bodies,
                         )
                     })
             });
+        if reversal
+            && !reversal_is_clear
+            && let Some(collider) = collider
+            && let Ok(mover) = registry.get_component::<KinematicMoverComponent>(snapshot.entity)
+        {
+            pin::note_agents_pinned_by_reversal(
+                &pin_world,
+                collider,
+                mover,
+                snapshot.transform,
+                tick_dt,
+                living_bodies,
+                blocking_state,
+            );
+        }
 
         if let Ok(ComponentValue::KinematicMover(mover)) =
             registry.get_component_value_mut(snapshot.entity, ComponentKind::KinematicMover)
@@ -570,7 +677,8 @@ pub fn run_mover_blocking_pass(
         static_world,
         mover_colliders,
         mover_poses,
-        &player_bodies,
+        living_bodies,
+        corpse_yields,
         blocking_state,
         tick_dt,
         events,
@@ -584,7 +692,9 @@ pub fn run_mover_blocking_pass(
     blocking_state
         .crush_elapsed_ms
         .retain(|(mover, victim), _| {
-            pinned_crush_contacts.contains(&(*mover, *victim))
+            pinned_crush_contacts
+                .binary_search(&(*mover, *victim))
+                .is_ok()
                 && registry
                     .get_component::<KinematicMoverComponent>(*mover)
                     .is_ok()
@@ -592,34 +702,45 @@ pub fn run_mover_blocking_pass(
         });
     blocking_state
         .rider_grace_ms
-        .retain(|(mover, player), remaining_ms| {
+        .retain(|(mover, rider), remaining_ms| {
             *remaining_ms > 0.0
                 && registry
                     .get_component::<KinematicMoverComponent>(*mover)
                     .is_ok()
-                && registry
-                    .get_component::<PlayerMovementComponent>(*player)
-                    .is_ok()
+                && live_ground(registry, *rider).is_some()
         });
+}
+
+/// What a player pawn or agent stands on; `None` for any other entity.
+fn live_ground(registry: &EntityRegistry, entity: EntityId) -> Option<GroundRef> {
+    registry
+        .get_component::<PlayerMovementComponent>(entity)
+        .map(|movement| movement.ground)
+        .or_else(|_| {
+            registry
+                .get_component::<AgentComponent>(entity)
+                .map(|agent| agent.ground)
+        })
+        .ok()
 }
 
 fn refresh_rider_grace(
     blocking_state: &mut MoverBlockingState,
     registry: &EntityRegistry,
-    players: &[pin::PawnBody],
+    bodies: &[pin::PawnBody],
     tick_dt: f32,
 ) {
     let tick_ms = (tick_dt * 1000.0).max(0.0);
     blocking_state
         .rider_grace_ms
-        .retain(|(mover, player), remaining_ms| {
+        .retain(|(mover, rider), remaining_ms| {
             let Ok(mover) = registry.get_component::<KinematicMoverComponent>(*mover) else {
                 return false;
             };
-            let Ok(player) = registry.get_component::<PlayerMovementComponent>(*player) else {
+            let Some(ground) = live_ground(registry, *rider) else {
                 return false;
             };
-            match player.ground {
+            match ground {
                 GroundRef::Mover(ground_mover_id) if ground_mover_id == mover.mover_id => {
                     *remaining_ms = RIDER_GRACE_MS;
                     true
@@ -632,8 +753,8 @@ fn refresh_rider_grace(
             }
         });
 
-    for body in players {
-        let (player, GroundRef::Mover(mover_id)) = (&body.entity, &body.ground) else {
+    for body in bodies {
+        let (rider, GroundRef::Mover(mover_id)) = (&body.entity, &body.ground) else {
             continue;
         };
         let Some(mover) = registry
@@ -650,7 +771,7 @@ fn refresh_rider_grace(
 
         blocking_state
             .rider_grace_ms
-            .entry((mover, *player))
+            .entry((mover, *rider))
             .or_insert(RIDER_GRACE_MS);
     }
 }
@@ -758,24 +879,6 @@ fn crush_hit_is_due(
     }
     *elapsed_ms -= interval_ms;
     true
-}
-
-fn agent_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Capsule)> {
-    registry
-        .iter_with_kind(ComponentKind::Agent)
-        .filter_map(|(entity, _)| {
-            if registry.is_inventory_owned(entity) {
-                return None;
-            }
-            let agent = registry.get_component::<AgentComponent>(entity).ok()?;
-            let transform = registry.get_component::<Transform>(entity).ok()?;
-            Some((
-                entity,
-                transform.position,
-                Capsule::new_y(agent.half_height(), agent.radius),
-            ))
-        })
-        .collect()
 }
 
 fn is_blocking_victim(registry: &EntityRegistry, entity: EntityId) -> bool {

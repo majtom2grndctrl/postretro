@@ -3,6 +3,7 @@
 
 use glam::{Vec2, Vec3};
 
+pub mod agent_motion;
 mod carry;
 pub mod teleport;
 pub use teleport::TeleportEvent;
@@ -533,6 +534,8 @@ pub fn tick_with_immersion_and_armed(
 mod environment_tests;
 #[cfg(test)]
 mod friction_tests;
+#[cfg(test)]
+mod mover_golden_trace_tests;
 #[cfg(test)]
 mod overlap_baseline_tests;
 #[cfg(test)]

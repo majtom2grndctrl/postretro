@@ -1,0 +1,449 @@
+// Game: Postretro
+// Format: Standard
+// Enemy-mover fixture. See enemy-movers.README.md for the checks and the build command.
+// Hand authored sealed hall, TrenchBroom units, 1 unit = 0.0254 m, floor top at z 0.
+// Hall x 0 to 2048, y 0 to 512, ceiling at z 320. Bays run west to east.
+// Lift pit x 704 to 896, y 192 to 384, bottom top at z -16. Ledge x 896 to 1152, top z 96.
+// Every brush is an axis aligned box on the 16 unit grid. Keep comments free of braces and quotes.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+"ambient_color" "40 40 48"
+"_lightmap_density" "0.08"
+// brush 0 ceiling
+{
+( -16 528 320 ) ( -16 -16 336 ) ( -16 -16 320 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 336 ) ( 2064 -16 320 ) ( -16 -16 320 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 320 ) ( 2064 528 320 ) ( -16 528 320 ) debug_ceiling_grey 0 0 0 1 1
+( -16 528 336 ) ( 2064 -16 336 ) ( -16 -16 336 ) debug_ceiling_grey 0 0 0 1 1
+( 2064 528 336 ) ( -16 528 336 ) ( -16 528 320 ) debug_ceiling_grey 0 0 0 1 1
+( 2064 -16 320 ) ( 2064 528 336 ) ( 2064 528 320 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 1 wall_west
+{
+( -16 528 -32 ) ( -16 -16 320 ) ( -16 -16 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -16 -16 320 ) ( 0 -16 -32 ) ( -16 -16 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -16 -16 -32 ) ( 0 528 -32 ) ( -16 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -16 528 320 ) ( 0 -16 320 ) ( -16 -16 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 528 320 ) ( -16 528 320 ) ( -16 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -16 -32 ) ( 0 528 320 ) ( 0 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 2 wall_east
+{
+( 2048 528 -32 ) ( 2048 -16 320 ) ( 2048 -16 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2048 -16 320 ) ( 2064 -16 -32 ) ( 2048 -16 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2048 -16 -32 ) ( 2064 528 -32 ) ( 2048 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2048 528 320 ) ( 2064 -16 320 ) ( 2048 -16 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2064 528 320 ) ( 2048 528 320 ) ( 2048 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2064 -16 -32 ) ( 2064 528 320 ) ( 2064 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 3 wall_south
+{
+( 0 0 -32 ) ( 0 -16 320 ) ( 0 -16 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -16 320 ) ( 2048 -16 -32 ) ( 0 -16 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -16 -32 ) ( 2048 0 -32 ) ( 0 0 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 320 ) ( 2048 -16 320 ) ( 0 -16 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2048 0 320 ) ( 0 0 320 ) ( 0 0 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2048 -16 -32 ) ( 2048 0 320 ) ( 2048 0 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 4 wall_north
+{
+( 0 528 -32 ) ( 0 512 320 ) ( 0 512 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 512 320 ) ( 2048 512 -32 ) ( 0 512 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 512 -32 ) ( 2048 528 -32 ) ( 0 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 528 320 ) ( 2048 512 320 ) ( 0 512 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2048 528 320 ) ( 0 528 320 ) ( 0 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 2048 512 -32 ) ( 2048 528 320 ) ( 2048 528 -32 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 5 floor_west
+{
+( 0 512 -32 ) ( 0 0 0 ) ( 0 0 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 704 0 -32 ) ( 0 0 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -32 ) ( 704 512 -32 ) ( 0 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 704 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 512 0 ) ( 0 512 0 ) ( 0 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 0 -32 ) ( 704 512 0 ) ( 704 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 6 floor_east
+{
+( 896 512 -32 ) ( 896 0 0 ) ( 896 0 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 0 0 ) ( 2048 0 -32 ) ( 896 0 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 0 -32 ) ( 2048 512 -32 ) ( 896 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 512 0 ) ( 2048 0 0 ) ( 896 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2048 512 0 ) ( 896 512 0 ) ( 896 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2048 0 -32 ) ( 2048 512 0 ) ( 2048 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 7 floor_pit_south
+{
+( 704 192 -32 ) ( 704 0 0 ) ( 704 0 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 0 0 ) ( 896 0 -32 ) ( 704 0 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 0 -32 ) ( 896 192 -32 ) ( 704 192 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 192 0 ) ( 896 0 0 ) ( 704 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 192 0 ) ( 704 192 0 ) ( 704 192 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 0 -32 ) ( 896 192 0 ) ( 896 192 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 8 floor_pit_north
+{
+( 704 512 -32 ) ( 704 384 0 ) ( 704 384 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 384 0 ) ( 896 384 -32 ) ( 704 384 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 384 -32 ) ( 896 512 -32 ) ( 704 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 704 512 0 ) ( 896 384 0 ) ( 704 384 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 512 0 ) ( 704 512 0 ) ( 704 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 384 -32 ) ( 896 512 0 ) ( 896 512 -32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 9 pit_bottom
+{
+( 704 384 -32 ) ( 704 192 -16 ) ( 704 192 -32 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 704 192 -16 ) ( 896 192 -32 ) ( 704 192 -32 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 704 192 -32 ) ( 896 384 -32 ) ( 704 384 -32 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 704 384 -16 ) ( 896 192 -16 ) ( 704 192 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 896 384 -16 ) ( 704 384 -16 ) ( 704 384 -32 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 896 192 -32 ) ( 896 384 -16 ) ( 896 384 -32 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 10 ledge
+{
+( 896 384 0 ) ( 896 192 96 ) ( 896 192 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 896 192 96 ) ( 1152 192 0 ) ( 896 192 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 896 192 0 ) ( 1152 384 0 ) ( 896 384 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 896 384 96 ) ( 1152 192 96 ) ( 896 192 96 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1152 384 96 ) ( 896 384 96 ) ( 896 384 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1152 192 0 ) ( 1152 384 96 ) ( 1152 384 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+}
+// Bay 1 lift: self driven ping_pong, flush with the floor at the bottom and with the ledge top (z 96) at the top. Rises 96 units.
+// entity 1
+{
+"classname" "kinematic_mover"
+"name" "em_lift"
+"path" "em_lift_low"
+"speed" "1.5"
+"wait_ms" "4000"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"block_policy" "displace"
+"_tags" "dev enemy_movers em_lift"
+// brush 0 em_lift_slab
+{
+( 704 384 -16 ) ( 704 192 0 ) ( 704 192 -16 ) metal/metal_rough_046a 0 0 0 1 1
+( 704 192 0 ) ( 896 192 -16 ) ( 704 192 -16 ) metal/metal_rough_046a 0 0 0 1 1
+( 704 192 -16 ) ( 896 384 -16 ) ( 704 384 -16 ) metal/metal_rough_046a 0 0 0 1 1
+( 704 384 0 ) ( 896 192 0 ) ( 704 192 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 896 384 0 ) ( 704 384 0 ) ( 704 384 -16 ) metal/metal_rough_046a 0 0 0 1 1
+( 896 192 -16 ) ( 896 384 0 ) ( 896 384 -16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 2
+{
+"classname" "kinematic_waypoint"
+"name" "em_lift_low"
+"next" "em_lift_high"
+"origin" "800 288 -8"
+}
+// entity 3
+{
+"classname" "kinematic_waypoint"
+"name" "em_lift_high"
+"origin" "800 288 88"
+}
+// Bay 2 sweeper: displace slab, 384 wide, sweeps east 256 units over open floor and back.
+// entity 4
+{
+"classname" "kinematic_mover"
+"name" "em_sweeper"
+"path" "em_sweeper_west"
+"speed" "4.5"
+"wait_ms" "1500"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"block_policy" "displace"
+"_tags" "dev enemy_movers em_sweeper"
+// brush 0 em_sweeper_slab
+{
+( 1280 448 0 ) ( 1280 64 96 ) ( 1280 64 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1280 64 96 ) ( 1312 64 0 ) ( 1280 64 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1280 64 0 ) ( 1312 448 0 ) ( 1280 448 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1280 448 96 ) ( 1312 64 96 ) ( 1280 64 96 ) metal/metal_brushed_012 0 0 0 1 1
+( 1312 448 96 ) ( 1280 448 96 ) ( 1280 448 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1312 64 0 ) ( 1312 448 96 ) ( 1312 448 0 ) metal/metal_brushed_012 0 0 0 1 1
+}
+}
+// entity 5
+{
+"classname" "kinematic_waypoint"
+"name" "em_sweeper_west"
+"next" "em_sweeper_east"
+"origin" "1296 256 48"
+}
+// entity 6
+{
+"classname" "kinematic_waypoint"
+"name" "em_sweeper_east"
+"origin" "1552 256 48"
+}
+// Bay 3 open crusher: crush slab travels 192 units east with open floor ahead. Pushes, does not damage.
+// entity 7
+{
+"classname" "kinematic_mover"
+"name" "em_crusher_open"
+"path" "em_crusher_open_start"
+"speed" "1"
+"wait_ms" "3000"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"block_policy" "crush"
+"crush_damage" "100"
+"crush_interval_ms" "400"
+"_tags" "dev enemy_movers em_crusher_open"
+// brush 0 em_crusher_open_slab
+{
+( 1728 208 0 ) ( 1728 48 96 ) ( 1728 48 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1728 48 96 ) ( 1760 48 0 ) ( 1728 48 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1728 48 0 ) ( 1760 208 0 ) ( 1728 208 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1728 208 96 ) ( 1760 48 96 ) ( 1728 48 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1760 208 96 ) ( 1728 208 96 ) ( 1728 208 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1760 48 0 ) ( 1760 208 96 ) ( 1760 208 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 8
+{
+"classname" "kinematic_waypoint"
+"name" "em_crusher_open_start"
+"next" "em_crusher_open_end"
+"origin" "1744 128 48"
+}
+// entity 9
+{
+"classname" "kinematic_waypoint"
+"name" "em_crusher_open_end"
+"origin" "1936 128 48"
+}
+// Bay 3 wall crusher: crush slab travels 288 units east and ends flush against the east wall. Kills what it presses there.
+// entity 10
+{
+"classname" "kinematic_mover"
+"name" "em_crusher_wall"
+"path" "em_crusher_wall_start"
+"speed" "1"
+"wait_ms" "3000"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"block_policy" "crush"
+"crush_damage" "100"
+"crush_interval_ms" "400"
+"_tags" "dev enemy_movers em_crusher_wall"
+// brush 0 em_crusher_wall_slab
+{
+( 1728 464 0 ) ( 1728 304 96 ) ( 1728 304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1728 304 96 ) ( 1760 304 0 ) ( 1728 304 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1728 304 0 ) ( 1760 464 0 ) ( 1728 464 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1728 464 96 ) ( 1760 304 96 ) ( 1728 304 96 ) metal/metal_rough_046a 0 0 0 1 1
+( 1760 464 96 ) ( 1728 464 96 ) ( 1728 464 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1760 304 0 ) ( 1760 464 96 ) ( 1760 464 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 11
+{
+"classname" "kinematic_waypoint"
+"name" "em_crusher_wall_start"
+"next" "em_crusher_wall_end"
+"origin" "1744 384 48"
+}
+// entity 12
+{
+"classname" "kinematic_waypoint"
+"name" "em_crusher_wall_end"
+"origin" "2032 384 48"
+}
+// Lights. Faint point lights are the ambient; one bright spot picks out each bay, and angled
+// accent spots throw pockets of brighter light.
+// entity 13
+{
+"classname" "light"
+"origin" "400 256 256"
+"light" "10"
+"_color" "255 244 230"
+"_falloff_range" "1600"
+}
+// entity 14
+{
+"classname" "light"
+"origin" "900 256 256"
+"light" "10"
+"_color" "235 240 255"
+"_falloff_range" "1600"
+}
+// entity 15
+{
+"classname" "light"
+"origin" "1300 256 256"
+"light" "10"
+"_color" "255 244 230"
+"_falloff_range" "1600"
+}
+// entity 16
+{
+"classname" "light"
+"origin" "1700 256 256"
+"light" "10"
+"_color" "235 240 255"
+"_falloff_range" "1600"
+}
+// entity 17
+{
+"classname" "light"
+"origin" "1980 256 256"
+"light" "10"
+"_color" "255 220 200"
+"_falloff_range" "1600"
+}
+// Bay spots: the lift and ledge, the sweeper's course, the open crusher lane, and the wall crusher's pin.
+// entity 18
+{
+"classname" "light_spot"
+"origin" "560 96 300"
+"light" "350"
+"_color" "255 240 220"
+"_falloff_range" "700"
+"angles" "-39 39 0"
+"_cone" "22"
+"_cone2" "42"
+}
+// entity 19
+{
+"classname" "light_spot"
+"origin" "1180 480 300"
+"light" "300"
+"_color" "230 240 255"
+"_falloff_range" "750"
+"angles" "-42 317 0"
+"_cone" "25"
+"_cone2" "48"
+}
+// entity 20
+{
+"classname" "light_spot"
+"origin" "1640 40 300"
+"light" "300"
+"_color" "210 225 255"
+"_falloff_range" "600"
+"angles" "-47 22 0"
+"_cone" "18"
+"_cone2" "36"
+}
+// entity 21
+{
+"classname" "light_spot"
+"origin" "1820 470 300"
+"light" "350"
+"_color" "255 140 100"
+"_falloff_range" "600"
+"angles" "-52 335 0"
+"_cone" "16"
+"_cone2" "34"
+}
+// Accent spots: a pool by the start, a rake up the north wall, a pool on the ledge top,
+// and an amber rake down the south wall between the sweeper and the crushers.
+// entity 22
+{
+"classname" "light_spot"
+"origin" "240 470 300"
+"light" "250"
+"_color" "255 225 180"
+"_falloff_range" "600"
+"angles" "-46 294 0"
+"_cone" "14"
+"_cone2" "30"
+}
+// entity 23
+{
+"classname" "light_spot"
+"origin" "600 40 290"
+"light" "250"
+"_color" "150 230 255"
+"_falloff_range" "700"
+"angles" "-18 105 0"
+"_cone" "14"
+"_cone2" "30"
+}
+// entity 24
+{
+"classname" "light_spot"
+"origin" "1000 490 300"
+"light" "250"
+"_color" "200 215 255"
+"_falloff_range" "500"
+"angles" "-46 288 0"
+"_cone" "16"
+"_cone2" "32"
+}
+// entity 25
+{
+"classname" "light_spot"
+"origin" "1500 440 300"
+"light" "300"
+"_color" "255 180 90"
+"_falloff_range" "700"
+"angles" "-22 288 0"
+"_cone" "12"
+"_cone2" "26"
+}
+// Enemies. Origins sit 16 units above the surface they stand on.
+// entity 26
+{
+"classname" "reference_enemy"
+"origin" "768 256 16"
+"angles" "0 0 0"
+"_tags" "enemy em_lift_rider"
+}
+// entity 27
+{
+"classname" "reference_enemy"
+"origin" "832 320 16"
+"angles" "0 0 0"
+"_tags" "enemy em_lift_rider"
+}
+// entity 28
+{
+"classname" "reference_enemy"
+"origin" "1024 448 16"
+"angles" "0 270 0"
+"_tags" "enemy em_lift_chaser"
+}
+// entity 29
+{
+"classname" "reference_enemy"
+"origin" "1344 144 16"
+"angles" "0 180 0"
+"_tags" "enemy em_sweeper_victim"
+}
+// entity 30
+{
+"classname" "reference_enemy"
+"origin" "1344 368 16"
+"angles" "0 180 0"
+"_tags" "enemy em_sweeper_victim"
+}
+// entity 31
+{
+"classname" "reference_enemy"
+"origin" "1824 128 16"
+"angles" "0 180 0"
+"_tags" "enemy em_crusher_open_victim"
+}
+// entity 32
+{
+"classname" "reference_enemy"
+"origin" "2000 384 16"
+"angles" "0 0 0"
+"_tags" "enemy em_crusher_wall_victim"
+}
+// Player start: west end, facing east down the hall.
+// entity 33
+{
+"classname" "player_spawn"
+"origin" "64 256 48"
+"angles" "0 0 0"
+}

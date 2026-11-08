@@ -189,6 +189,13 @@ impl App {
             &mut self.collision_world.teleporters,
             &script_ctx.registry.borrow(),
         );
+        if let Some(graph) = self.nav_graph.as_mut() {
+            postretro_sim::nav::install_mover_records(
+                graph,
+                &script_ctx.registry.borrow(),
+                &mut self.kinematic_mover_tick_states,
+            );
+        }
         self.ghost_links = crate::ghost_links::GhostLinks::install(
             self.level
                 .as_ref()

@@ -19,7 +19,7 @@ A closed door, a sliding wall or a rising room stops bullets, projectiles, blast
 ### Out of scope
 
 - **Host hit validation stays static-only.** `networking.md` §World-LOS-only validation keeps its rule; see Direction.
-- Enemy movement against movers (carry, block, crush, nav gating, lifts): `ready/E17--enemy-mover-interaction/`.
+- Enemy movement against movers (carry, block, crush, nav gating, lifts): `done/E17--enemy-mover-interaction/`.
 - Placement checks that ignore movers: spawner placement, dropped-item placement, trap launch clearance, combat-slot capsule placement. Each places an entity; none is a shot or sight test. A spawner or trap authored inside a mover's swept path is a content error today and stays one.
 - Mover-specific impact presentation (material, sparks per surface). A mover hit presents as a world contact, which is what any static hit presents today.
 - Rewinding mover poses to a shooter's past tick (lag compensation). Non-goal per `index.md` §4.

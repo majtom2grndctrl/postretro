@@ -773,6 +773,8 @@ fn reachability_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
         max_slope_deg: 45.0,
         regions,
         portals: Vec::new(),
+        gates: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -873,6 +875,326 @@ fn target_reachability_uses_the_nav_pathfinder_verdict() {
         assert_eq!(brain.target_reachable, expected_reachable);
         assert_eq!(brain.state_name(), Some(expected_state));
     }
+}
+
+#[test]
+fn target_reachability_reads_the_door_that_cuts_the_only_route() {
+    use postretro_entities::{
+        KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand, Transform,
+    };
+    use postretro_level_format::navmesh::{NavMoverGate, NavPortal};
+    use postretro_physics::kinematic_mover::{
+        MoverTickStateTable, apply_mover_command, run_kinematic_mover_tick,
+    };
+
+    const DOOR: u32 = 3;
+    let region = |x0, x1| NavRegion {
+        x0,
+        z0: 0,
+        x1,
+        z1: 4,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    };
+    let mut nav_graph = NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [0.0, 0.0, 0.0],
+        cell_size: 1.0,
+        dim_x: 8,
+        dim_z: 4,
+        agent_radius: 0.35,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions: vec![region(0, 4), region(4, 8)],
+        portals: vec![NavPortal {
+            region_a: 0,
+            region_b: 1,
+            left: [4.0, 0.0, 4.0],
+            right: [4.0, 0.0, 0.0],
+        }],
+        gates: vec![NavMoverGate {
+            mover_id: DOOR,
+            waypoint: 0,
+            portal: 0,
+        }],
+        links: Vec::new(),
+    });
+
+    let graph = reachability_graph();
+    let mut registry = EntityRegistry::new();
+    spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::new(1.0, 0.0, 1.0),
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let door = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            door,
+            KinematicMoverComponent::new(
+                DOOR,
+                KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::Y * 4.0],
+                    waypoint_names: vec!["closed".into(), "open".into()],
+                    speed_mps: 4.0,
+                    wait_ms: 0.0,
+                    mode: KinematicMoverMode::Once,
+                    started: false,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            ),
+        )
+        .unwrap();
+    let mut movers = MoverTickStateTable::default();
+    crate::nav::install_mover_records(&mut nav_graph, &registry, &mut movers);
+    let factions = FactionRegistry::default();
+    let sentiment = RefCell::new(FactionSentimentState::default());
+    let mut runtime = AiRuntime::new();
+    let mut tick = |registry: &mut EntityRegistry, movers: &mut MoverTickStateTable| {
+        run_kinematic_mover_tick(registry, movers, 0.016);
+        run_ai_tick_with_navigation_and_impact(
+            registry,
+            &mut runtime,
+            0.016,
+            AiTickInputs {
+                mover_nav: crate::nav::MoverNav {
+                    gate: crate::nav::NavGate::new(movers.docks()),
+                    movers: &[],
+                    poses: &*movers,
+                },
+                nav_graph: Some(&nav_graph),
+                collision_world: None,
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &factions,
+                faction_sentiment: &sentiment,
+            },
+            |_| {},
+        );
+    };
+    let reachable = |registry: &EntityRegistry| {
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable
+    };
+
+    for _ in 0..16 {
+        tick(&mut registry, &mut movers);
+    }
+    assert!(!reachable(&registry), "the docked door cuts the only route");
+
+    let mut mover = registry
+        .get_component::<KinematicMoverComponent>(door)
+        .unwrap()
+        .clone();
+    apply_mover_command(&mut mover, &MoverCommand::Start);
+    registry.set_component(door, mover).unwrap();
+    for _ in 0..16 {
+        tick(&mut registry, &mut movers);
+    }
+    assert!(reachable(&registry), "true once the door leaves");
+}
+
+#[test]
+fn a_riders_target_reachability_holds_its_boarding_value_and_recomputes_after_exit() {
+    use postretro_entities::components::agent::{AgentComponent, AgentRide};
+
+    let graph = reachability_graph();
+    let nav_graph = reachability_nav_graph(vec![NavRegion {
+        x0: 0,
+        z0: 0,
+        x1: 8,
+        z1: 4,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    }]);
+    let mut registry = EntityRegistry::new();
+    spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    // The boarding value: it read false when it got on.
+    brain.target_reachable = false;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    agent.ride = Some(AgentRide {
+        mover_id: 1,
+        board_waypoint: Some(0),
+        exit_waypoint: Some(1),
+        exit_point: Vec3::ZERO,
+        departed: true,
+    });
+    registry.set_component(enemy, agent.clone()).unwrap();
+    let mut runtime = AiRuntime::new();
+    let reachable = |registry: &EntityRegistry| {
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable
+    };
+
+    for _ in 0..24 {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+        assert!(!reachable(&registry), "held on every tick of the ride");
+    }
+    agent.ride = None;
+    registry.set_component(enemy, agent).unwrap();
+    for _ in 0..24 {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, Some(&nav_graph), None);
+    }
+    assert!(reachable(&registry), "recomputed after exit");
+}
+
+// Ai runs before steering starts a ride, so a body a lift carries off before it
+// boards has no ride yet. Its route has no start until the lift docks, which
+// must not read as unreachable for the whole trip.
+#[test]
+fn a_body_carried_between_docks_before_its_ride_starts_holds_its_target_reachability() {
+    let (held, after_exit) = reachability_carried_between_docks(500.0);
+    assert!(held, "held while carried between docks");
+    assert!(!after_exit, "recomputed once off the lift");
+}
+
+// A lift that never rests at its stops is plain ground: a body on it routes
+// from the floor under it, so its verdict recomputes rather than freezing.
+#[test]
+fn a_body_on_a_lift_that_never_rests_recomputes_its_target_reachability() {
+    let (held, _) = reachability_carried_between_docks(0.0);
+    assert!(!held, "recomputed from the floor under it while aboard");
+}
+
+/// Carry an enemy on a linked lift waiting `wait_ms` at its stops, between
+/// docks for 24 ticks, its target in a region nothing joins and its cached
+/// verdict reachable. Returns whether the verdict held every tick aboard, and
+/// the verdict 24 ticks after it steps onto world ground.
+fn reachability_carried_between_docks(wait_ms: f32) -> (bool, bool) {
+    use postretro_entities::components::agent::AgentComponent;
+    use postretro_entities::{
+        KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, Transform,
+    };
+    use postretro_foundation::GroundRef;
+    use postretro_level_format::navmesh::NavMoverLink;
+    use postretro_physics::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
+
+    const LIFT: u32 = 4;
+    let region = |x0, x1| NavRegion {
+        x0,
+        z0: 0,
+        x1,
+        z1: 4,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    };
+    let link = |waypoint| NavMoverLink {
+        mover_id: LIFT,
+        waypoint,
+        region: 0,
+        left: [2.0, 0.0, 4.0],
+        right: [2.0, 0.0, 0.0],
+    };
+    // The target stands in a region nothing joins, so a recompute reads false.
+    let mut nav_graph = NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [0.0, 0.0, 0.0],
+        cell_size: 1.0,
+        dim_x: 8,
+        dim_z: 4,
+        agent_radius: 0.35,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions: vec![region(0, 4), region(5, 8)],
+        portals: Vec::new(),
+        gates: Vec::new(),
+        links: vec![link(0), link(1)],
+    });
+
+    let graph = reachability_graph();
+    let mut registry = EntityRegistry::new();
+    spawn_player(&mut registry, Vec3::new(6.0, 0.0, 1.0));
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.target_reachable = true;
+    let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    agent.ground = GroundRef::Mover(LIFT);
+    agent.ride = None;
+    registry.set_component(enemy, agent.clone()).unwrap();
+    let lift = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            lift,
+            KinematicMoverComponent::new(
+                LIFT,
+                KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::Y * 8.0],
+                    waypoint_names: vec!["low".into(), "high".into()],
+                    speed_mps: 1.0,
+                    wait_ms,
+                    mode: KinematicMoverMode::PingPong,
+                    started: true,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            ),
+        )
+        .unwrap();
+    let mut movers = MoverTickStateTable::default();
+    crate::nav::install_mover_records(&mut nav_graph, &registry, &mut movers);
+    let factions = FactionRegistry::default();
+    let sentiment = RefCell::new(FactionSentimentState::default());
+    let mut runtime = AiRuntime::new();
+    let mut tick = |registry: &mut EntityRegistry, movers: &mut MoverTickStateTable| {
+        run_kinematic_mover_tick(registry, movers, 0.016);
+        run_ai_tick_with_navigation_and_impact(
+            registry,
+            &mut runtime,
+            0.016,
+            AiTickInputs {
+                mover_nav: crate::nav::MoverNav {
+                    gate: crate::nav::NavGate::new(movers.docks()),
+                    movers: &[],
+                    poses: &*movers,
+                },
+                nav_graph: Some(&nav_graph),
+                collision_world: None,
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &factions,
+                faction_sentiment: &sentiment,
+            },
+            |_| {},
+        );
+    };
+    let reachable = |registry: &EntityRegistry| {
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy keeps its brain")
+            .target_reachable
+    };
+
+    let mut held = true;
+    for _ in 0..24 {
+        tick(&mut registry, &mut movers);
+        assert_eq!(
+            movers.docks().docked_waypoint(LIFT),
+            None,
+            "the lift is between docks"
+        );
+        held &= reachable(&registry);
+    }
+    agent.ground = GroundRef::World;
+    registry.set_component(enemy, agent).unwrap();
+    for _ in 0..24 {
+        tick(&mut registry, &mut movers);
+    }
+    (held, reachable(&registry))
 }
 
 #[test]
@@ -1722,6 +2044,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
             &mut runtime,
             0.016,
             AiTickInputs {
+                mover_nav: crate::nav::MoverNav::none(),
                 nav_graph: None,
                 collision_world: None,
                 descriptors: &[],
@@ -1746,6 +2069,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
             &mut runtime,
             0.016,
             AiTickInputs {
+                mover_nav: crate::nav::MoverNav::none(),
                 nav_graph: None,
                 collision_world: None,
                 descriptors: &[],
@@ -1777,6 +2101,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
             &mut runtime,
             0.016,
             AiTickInputs {
+                mover_nav: crate::nav::MoverNav::none(),
                 nav_graph: None,
                 collision_world: None,
                 descriptors: &[],
@@ -1925,6 +2250,7 @@ fn run_crossfire_tick(
         runtime,
         dt,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: None,
             descriptors: &[],
@@ -2978,6 +3304,7 @@ fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
         &mut AiRuntime::new(),
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -3044,6 +3371,7 @@ fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
         &mut AiRuntime::new(),
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &[],
@@ -3115,6 +3443,7 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
         &mut AiRuntime::new(),
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -3188,6 +3517,7 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
         &mut AiRuntime::new(),
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &[],
@@ -3266,6 +3596,7 @@ fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_pol
         &mut AiRuntime::new(),
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -3365,6 +3696,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -3404,6 +3736,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -3465,6 +3798,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: None,
             descriptors: &[],
@@ -5027,6 +5361,8 @@ impl OpenFloor {
                 floor_y_max: 0.25,
             }],
             portals: vec![],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -5125,6 +5461,8 @@ impl JumpableCorral {
                 },
             ],
             portals: vec![],
+            gates: Vec::new(),
+            links: Vec::new(),
         })
     }
 }
@@ -5269,6 +5607,8 @@ fn small_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
         max_slope_deg: 45.0,
         regions,
         portals: vec![],
+        gates: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -6544,6 +6884,8 @@ impl CornerArena {
                 left: [0.0, 0.0, 5.5],
                 right: [4.5, 0.0, 5.5],
             }],
+            gates: Vec::new(),
+            links: Vec::new(),
         })
     }
 }
@@ -7811,6 +8153,7 @@ fn entering_an_activity_without_on_enter_emits_its_path_and_no_address() {
             runtime,
             0.016,
             AiTickInputs {
+                mover_nav: crate::nav::MoverNav::none(),
                 nav_graph: None,
                 collision_world: None,
                 descriptors: &[],
@@ -10769,6 +11112,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -10802,6 +11146,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -10923,6 +11268,7 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -10995,6 +11341,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
@@ -11038,6 +11385,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         // though this fixture cleared the separate brain attack latch.
         0.5,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
@@ -11113,6 +11461,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
@@ -11139,6 +11488,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
@@ -11171,6 +11521,7 @@ fn tick_persistent_enemy_weapon(
         runtime,
         1.0 / 60.0,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors,
@@ -11469,6 +11820,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -11515,6 +11867,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -11565,6 +11918,7 @@ fn enemy_projectile_attack_emits_its_attack_cue_and_records_its_weapon() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
@@ -11654,6 +12008,7 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
         &mut runtime,
         0.016,
         AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
             nav_graph: None,
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,

@@ -258,8 +258,8 @@ pub(crate) fn within_limit(time_of_impact: f32, max_toi: f32) -> bool {
 }
 
 /// A surface counts as walkable when its contact normal points mostly upward.
-/// Mirrors the small agent harness's floor test so placement queries and agent
-/// movement agree about walls vs. floors. Exposed so the fixed-tick
+/// Mirrors the agent controller's floor test (`movement::agent_motion`) so
+/// placement queries and agent movement agree about walls vs. floors. Exposed so the fixed-tick
 /// foot ground-probe step applies the same floor-vs-wall threshold movement uses.
 pub const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
 

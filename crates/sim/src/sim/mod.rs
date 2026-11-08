@@ -947,6 +947,11 @@ where
             tick_dt,
             AiTickInputs {
                 nav_graph,
+                mover_nav: crate::nav::MoverNav {
+                    gate: crate::nav::NavGate::new(mover_tick_states.docks()),
+                    movers: mover_colliders,
+                    poses: &*mover_tick_states,
+                },
                 collision_world: Some(collision_world),
                 descriptors,
                 descriptor_generation,
@@ -977,13 +982,24 @@ where
         let mut registry = registry.borrow_mut();
         let substage = cpu.scope(SimStage::SteerAgents);
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
-        let _ = agent_steering::tick(
+        let mut corpse_yields = Vec::new();
+        let agent_collision =
+            CombinedCollisionWorld::new(collision_world, mover_colliders, &*mover_tick_states);
+        let _ = agent_steering::tick_with_mover_pins(
             &mut registry,
-            collision_world,
+            &agent_collision,
             nav_graph,
+            agent_steering::MoverPins {
+                yields: mover_tick_states.agent_yields(),
+                gate: crate::nav::NavGate::new(mover_tick_states.docks()),
+            },
+            &mut corpse_yields,
             environment,
             tick_dt,
         );
+        for (agent, mover_id) in corpse_yields {
+            mover_tick_states.yield_agent_as_corpse(agent, mover_id);
+        }
         drop(substage);
         let substage = cpu.scope(SimStage::SteerPose);
         update_player_animation_locomotion(&mut registry, hit_zone_store, anim_time);
@@ -2028,6 +2044,8 @@ fn foot_probe_inverse(
 
 mod host_movement;
 mod movement_overlap;
+#[cfg(test)]
+mod movement_overlap_tests;
 mod reload;
 pub(crate) mod weapon_stage;
 
@@ -4463,7 +4481,8 @@ mod tests {
     }
 
     // Regression: the AI brain skipped a queued despawn, but the later
-    // fixed-tick steering stage still followed its retained path.
+    // fixed-tick steering stage still followed its retained path. A queued
+    // despawn makes the agent a corpse: it keeps falling, and takes no steering.
     #[test]
     fn fixed_tick_queued_despawn_quiesces_brain_agent_steering() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -4518,13 +4537,15 @@ mod tests {
 
         assert!(events.ai.is_empty(), "queued despawn must suppress attacks");
         let registry = registry.borrow();
+        let position = registry.get_component::<Transform>(enemy).unwrap().position;
         assert_eq!(
-            registry.get_component::<Transform>(enemy).unwrap().position,
-            start.position,
-            "the real fixed-tick steering stage must not move a queued-despawn brain",
+            (position.x, position.z),
+            (start.position.x, start.position.z),
+            "the real fixed-tick steering stage must not steer a queued-despawn brain",
         );
         let agent = registry.get_component::<AgentComponent>(enemy).unwrap();
-        assert_eq!(agent.velocity, Vec3::ZERO);
+        assert_eq!(agent.steer_velocity, Vec3::ZERO);
+        assert_eq!((agent.velocity.x, agent.velocity.z), (0.0, 0.0));
         assert_eq!(agent.destination, Some(Vec3::new(12.0, 1.0, 2.0)));
         let effects = registry
             .get_component::<postretro_entities::DeferredEffectComponent>(enemy)

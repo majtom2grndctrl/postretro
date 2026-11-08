@@ -214,6 +214,8 @@ pub(super) fn ensure_endpoint_clearance(
     Some(NavPath {
         points: repaired.iter().map(|waypoint| waypoint.point).collect(),
         mandatory_waypoints: repaired.iter().map(|waypoint| waypoint.mandatory).collect(),
+        crossings: Vec::new(),
+        ride: None,
     })
 }
 
@@ -282,6 +284,8 @@ mod tests {
                     right: [3.0, 0.0, 7.3],
                 },
             ],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -317,6 +321,8 @@ mod tests {
                     right: [7.0, 0.0, 2.45],
                 },
             ],
+            gates: Vec::new(),
+            links: Vec::new(),
         }
     }
 

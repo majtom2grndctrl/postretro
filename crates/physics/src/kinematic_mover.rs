@@ -16,16 +16,22 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 mod auto_close;
 mod blocking;
 mod command;
+mod dock;
 mod pin;
+mod pin_escape;
 #[cfg(test)]
 mod pin_test_fixtures;
 #[cfg(test)]
 mod pin_tests;
 
 pub use auto_close::MoverAutoCloseTimers;
-pub use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
+pub use blocking::{
+    AgentMoverPair, MoverBlockingState, MoverEventKind, RIDER_GRACE_MS, run_mover_blocking_pass,
+};
 pub use command::apply_mover_command;
+pub use dock::{MoverDockTable, mover_docked_waypoint, mover_moves_on_its_own};
 pub use pin::run_mover_pin_pretest;
+pub use pin_escape::find_mover_clear_point;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoverTickState {
@@ -52,6 +58,7 @@ pub struct MoverTickStateTable {
     endpoint_arrivals: Vec<(u32, MoverEndpointArrivals)>,
     blocking_state: MoverBlockingState,
     mover_entities: Vec<EntityId>,
+    docks: MoverDockTable,
 }
 
 impl MoverTickStateTable {
@@ -61,6 +68,19 @@ impl MoverTickStateTable {
         self.endpoint_arrivals.clear();
         self.blocking_state.clear();
         self.mover_entities.clear();
+        self.docks.clear();
+    }
+
+    /// Dock state of the movers navigation records name.
+    pub fn docks(&self) -> &MoverDockTable {
+        &self.docks
+    }
+
+    /// Track the docks of every mover a navigation record names from the next
+    /// mover tick on: `gated` and `linked` are the (mover id, waypoint) docks
+    /// that close a portal and that open a link. See [`MoverDockTable`].
+    pub fn watch_mover_docks(&mut self, gated: &[(u32, u32)], linked: &[(u32, u32)]) {
+        self.docks.watch(gated, linked);
     }
 
     fn begin_tick(&mut self) {
@@ -68,6 +88,7 @@ impl MoverTickStateTable {
         self.translation_legs.clear();
         self.endpoint_arrivals.clear();
         self.mover_entities.clear();
+        self.docks.begin_tick();
     }
 
     pub fn publish(&mut self, mover_id: u32, state: MoverTickState) {
@@ -93,6 +114,21 @@ impl MoverTickStateTable {
                 .into_iter()
                 .flatten()
             })
+    }
+
+    /// See [`MoverBlockingState::agent_yields`].
+    pub fn agent_yields(&self) -> &[AgentMoverPair] {
+        self.blocking_state.agent_yields()
+    }
+
+    /// See [`MoverBlockingState::yield_agent_as_corpse`].
+    pub fn yield_agent_as_corpse(&mut self, agent: EntityId, mover_id: u32) {
+        self.blocking_state.yield_agent_as_corpse(agent, mover_id);
+    }
+
+    /// See [`MoverBlockingState::agent_yields_as_corpse`].
+    pub fn agent_yields_as_corpse(&self, agent: EntityId, mover_id: u32) -> bool {
+        self.blocking_state.agent_yields_as_corpse(agent, mover_id)
     }
 
     /// Split the tick-local pose view from the host-only policy timers. The
@@ -188,6 +224,7 @@ pub fn run_kinematic_mover_tick(
             };
             let (pose, endpoint_arrivals, translation_legs) =
                 advance_mover_phase_one_tick_with_arrivals(mover, &mut transform, tick_dt);
+            side_table.docks.update(mover);
             (
                 mover.mover_id,
                 mover.carry_yaw,
@@ -222,6 +259,7 @@ pub fn run_kinematic_mover_tick(
                 .push((mover_id, endpoint_arrivals));
         }
     }
+    side_table.docks.undock_unseen();
 }
 
 pub fn mover_pose_for_current_phase(
@@ -1455,6 +1493,8 @@ mod tests {
         let mover = registry.spawn(Transform::default());
         let victim = registry.spawn(Transform::default());
         table.blocking_state.seed_test_cadence(mover, victim);
+        table.blocking_state.note_agent_yield(victim, 7);
+        table.yield_agent_as_corpse(victim, 7);
 
         table.clear();
 

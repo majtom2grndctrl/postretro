@@ -5,7 +5,6 @@
 
 #![deny(unsafe_code)]
 
-mod agent;
 pub mod agent_steering;
 pub mod ai_host;
 #[cfg(any(test, feature = "test-support"))]

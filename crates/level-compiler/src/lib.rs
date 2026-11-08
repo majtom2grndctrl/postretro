@@ -17,6 +17,7 @@ pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;
 pub mod map_format;
+pub(crate) mod mover_pose;
 pub mod navmesh_bake;
 pub mod partition;
 pub mod texture_mips;

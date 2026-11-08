@@ -212,6 +212,14 @@ fn run_headless_inner(
     );
     let mover_colliders = products.mover_colliders;
     let mut mover_tick_states = products.mover_tick_states;
+    let mut nav_graph = nav_graph;
+    if let Some(graph) = nav_graph.as_mut() {
+        postretro_sim::nav::install_mover_records(
+            graph,
+            &script_ctx.registry.borrow(),
+            &mut mover_tick_states,
+        );
+    }
 
     // 6. Tick loop. Persistent per-run state: the registry handle, the progress
     //    tracker (above), the AI-warning set, the mover tick states, and the
@@ -284,6 +292,7 @@ fn run_headless_inner(
             // No "use" verb in the runspec yet; headless drives no trigger stage.
             use_pressed: false,
             drop_pressed: false,
+            assist_held: false,
         };
 
         // The post-movement closure returns the runspec's aim (origin + a

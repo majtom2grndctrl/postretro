@@ -130,7 +130,7 @@ Why the bounce half alone leaves the closet glowing: closet probes get closed-po
 
 Notes for the executor from the achievability audit; none changes a row.
 
-- q is stored as a byte, so "equals" in Bake 1 holds within 1/510; the denominator is the joint-sample static count (plan of record, owner ruling 2026-11-03).
+- q is stored as a byte, so "equals" in Bake 1 holds within 1/510; the denominator is the joint-sample static count (Bake row 1).
 - No knob lowers the tile cap today: production passes the full constant into `bake_sh_base`. Rows under "a lowered test cap" need a test seam. The 1 << 15 load case needs a synthetic PRL.
 - `bake_counters` cannot tell id-34 gather rays from the mover re-gather's; prove "traces no id-34 ray" with id 34's `[cache] … hit` line.
 - The full re-bake domain check runs about four whole id-34 bakes on `mover-setpiece`: `#[ignore]`.
@@ -145,3 +145,56 @@ Notes for the executor from the achievability audit; none changes a row.
 - `mover-setpiece`'s chaser patrols off the enemy spot: capture and the manual A/B hold a receiver there.
 - Live-tile uploads share the per-frame upload copy batch; their cost is travelling minus docked.
 - `mover-setpiece` was relit 2026-11-07 (49e03a39c); the foundation's `mover_light_gate_setpiece.rs` holds the current light sets.
+
+## Build notes (first plan, read at 44881f797)
+
+From the first build attempt, 2026-11-03. Source facts and proposals, not findings: re-verify each against current source.
+
+**Direct bake.**
+- Denominator: the baked trace can agree all-clear at 4 samples while the posed trace splits and escalates. Bake row 1's joint-sample count keeps static blocking out of q, so two movers on one light never count a hidden static occluder twice. A fully sealed mover stores q = 0. `soft_visibility_with` takes one trace, so a two-trace function is new.
+- Direct memo key: `mover_light_probes`' key folds `geometry_content_hash`, which serializes texture names, so a retexture moves it. The q key folds an occlusion-only geometry hash (positions, indices, solidity, as the SDF key does) plus the light's seed axis.
+- `probe_gate` is a centre-segment prefilter and misses penumbra probes; the q bake uses its own sample-level reach test.
+- Posed occlusion: `segment_clear(static) && !segment_touches_brush(posed)`. Proposal.
+
+**Bounce bake and cache.**
+- `PatchCache` is built only on an id-34 miss and the gate's `PatchSet` always; neither survives `bake_sh_base`'s return, so its handoff changes. `stage_events::PATCH_CACHE_DROPPED` proves the drop.
+- For the posed gather, closest hit = min(static hit, analytic entry distance into the posed convex brushes), with no BVH per pose. Patches for posed faces need triangles from `extract_kinematic_mover_geometry`. Proposal.
+- Placement: after the q bake per the Path. Directly after the id-34 gather also meets P21 and frees the patch cache sooner, but may overlap the volume store; measure the peak before moving it.
+- The SH gate is two gates in `admit_sh_working_sets`. The bounce bake is priced in the base gate, which runs before the material stage, so `MoverPoses::resolve` hoists ahead of it (it depends only on map data). The error text "before patch shading" generalizes.
+- `DeltaSectionsRef` gaining the section reaches `delta_pin_counts` and `apply_forced_scale_constraints`, but `has_delta_entry` lists its views by hand. The id-41 cap goes in at `classify_direct_levels` and must survive `apply_runtime_safe_envelope`.
+- Id 34's dense tile carries alpha; bounce tiles drop it. The BC6H encoder needs dimensions in multiples of 4, so a 6×6 tile pads to 8×8; decode with `decode_bc6h_block`.
+- Direct seeds use position in `static_lights`, so the cache row's duplicated light is appended.
+- Section plumbing follows `ghost_links`: `PostBakeDeltaSections`, `pack/section_plan.rs`, `finalized_publication.rs`, loader `staged.rs`, `entities.rs`, `prl.rs`.
+
+**Runtime.**
+- Compose binding walls: 8 storage buffers per stage by default; Pass A uses 6, Pass B and `sh_compose` 8 (re-read at 9382e3c23; Passes A and B now also write two storage-texture outputs). Proposal: one renderer-owned channel storage buffer per pass, holding entries, q bytes, tiles and a per-mover t block; freeing a slot in Pass B and `sh_compose` means merging two read-only `u32` arrays with matching lifetimes. `GridDims` was read as exactly 64 KiB; unverified since. The engine limit is not raised.
+- The GPU layout need not match the wire layout: the loader re-sorts entries light-major per cell, so the multi-mover product is one linear walk.
+- Per-mover membership is new: a per-mover row bitset plus a t-changed input to `ComposePlannerFrame`, not an extension of `PassMembership`. A shared row reads every mover's current t, so no per-mover epochs (P16).
+- `use_promotion_subtraction` needs the dynamic mask bit; channel terms gate on `BAKED_DIRECT_STATIC` alone.
+- The `sh_compose` clamp applies at channel-touched probes only, so an absent section equals today's. Legacy `should_dispatch` needs a t-changed term committed with the dispatch, as `last_composed_mask` is (P12).
+- Hand-over at the `rebuild_blocked_portals` sites covers held world-less frames, which never call `set_kinematic_mover_draws`. `collect_with_mirror` skips movers with no `Transform` or bounds, so t reads the registry. The renderer's t state resets at level install (P13).
+- `path_coordinate` is in waypoint-index units and ignores the minimum segment length; a new arc-length function matches `position_for_phase`'s degenerate rule (P23).
+- `LIT_ENDPOINT_DRIFT` is function-local in `capture_frame.rs`; hoist it. The streamed analogue of commit-after-encode is in `compose_plan.rs`.
+
+**Slice method.** Format work waits on the bounce gate, so the slices bake a pose straight into the existing sections. A dev-only compiler switch poses one named mover at one terminus: ids 35/41/45 trace with it as an occluder, or id 34 is replaced by S^b. Capture draws the mover at that pose. That PRL is the composed t = 1 atlas, so it tests the premise with no format or compose code. The switch is deleted before review.
+
+**Risks.**
+- Later-bounce drift (highest): later bounces carry a mover's effect across every connected surface, and a flat or dark tile's round-trip error can be near zero, so the affected domain could spread far past the mover and inflate bytes. The bounce slice measures it; if the bar admits far probes, stop and report, since a perceptual floor would change a Decision.
+- Gate prediction before the domain is known: an all-valid-probes bound could refuse maps that fit (the hallway has 11 movers). The bounce slice reports the bound against the measured peak.
+- The reference build changes faces, patches and cells, not only occlusion. Closet probes should agree since both are near dark; if they miss the BC6H bar, stop and report without relaxing it.
+
+## Leak diagnosis history (2026-11-04)
+
+The first build stopped here. With today's compiler at 7af769fba, the static-door reference closet glowed in a narrow band at the door, so direction-aware probe visibility (id 59) went first; its tiled reference is now the bar (brief, Reference closet). Captures are in `captures/`; `verdict-sheet.png` holds the six panels that matter. Values are post-tonemap sRGB, 0–255.
+
+| Build | Station 3 frame mean | Station 2 frame mean | Floor 0.04 m past the door plane | 0.26 m | 0.48 m |
+|---|---|---|---|---|---|
+| Today, mover door | 6.60 | 6.83 | 23 | 19 | 17 |
+| Reference, door 8 units back (the fixture) | 0.50 | 0.15 | 13 | 2 | 0 |
+| Reference, door flush with the closet wall | 0.26 | 0.14 | 17 | 10 | 1 |
+| Reference, no plane straddles the door | 0.00 | 0.00 | not profiled | not profiled | not profiled |
+
+- Most of the mover door's glow is the bake's: it fills the room, where the reference's stays within about 0.5 m of the door.
+- The rest depended on the lattice phase: about 59% of placements of a 16-unit door are exposed. The fixture sits at y 760, the worst phase measured, so the closet rows cannot pass by luck.
+- Door recognition seals the doorway, and static-direct-only captures read black in the closet in every build, so no bright-room light reaches it directly.
+- The door's closet face read 1.7 at slab centre in today's build against the reference's 0, from mover-absent data.

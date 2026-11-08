@@ -21,9 +21,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::dense::{ComposedPool, DenseTextures};
+use super::dense::{ComposedPool, DenseTextures, DirectPools};
 use super::direct_compose::{
-    DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose, StreamingDirectViews,
+    DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose,
 };
 use super::pool_size::{InitialPool, WholeMapCap};
 use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacities};
@@ -313,7 +313,7 @@ pub(super) fn array_view(texture: &wgpu::Texture, label: &str) -> wgpu::TextureV
     })
 }
 
-fn texture_bytes(format: wgpu::TextureFormat, extent: wgpu::Extent3d) -> u64 {
+pub(super) fn texture_bytes(format: wgpu::TextureFormat, extent: wgpu::Extent3d) -> u64 {
     match format {
         wgpu::TextureFormat::Bc6hRgbUfloat => {
             u64::from(extent.width.div_ceil(4))

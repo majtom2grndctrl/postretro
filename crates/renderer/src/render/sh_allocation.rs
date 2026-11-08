@@ -25,9 +25,11 @@ pub(super) enum ShAllocationKind {
     ScriptedLightDescriptors,
     DirectBaseAtlas,
     DirectDynamicParams,
-    /// The promotion-free composed direct atlas every non-mesh consumer samples.
+    /// The promotion-free composed direct atlas. Fluid surfaces and legacy (no-scatter)
+    /// billboards sample it; world geometry and fog bind it (group 3, binding 15) but do not.
     DirectComposedAtlas,
-    /// The promotion-subtracted handoff atlas movers and skinned meshes sample.
+    /// The promotion handoff atlas: the promotion-free term with each promoted light's
+    /// baked share crossfaded out by `w`. Only movers and skinned meshes sample it.
     DirectHandoffAtlas,
     DirectIntermediateAtlas,
     IndirectComposeDeltaSubblocks,

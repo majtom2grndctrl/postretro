@@ -180,7 +180,7 @@ impl Renderer {
         camera_cell: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
-        capture_promotion_weights: &[(CapturePromotionRow, f32)],
+        capture_promotion_weights: &[CapturePromotionPin],
         now_seconds: f64,
         clear_color: ClearColor,
         scene: FrameScene,

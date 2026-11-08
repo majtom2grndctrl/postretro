@@ -6,8 +6,9 @@ use glam::{Mat4, Vec3};
 use postretro_level_loader::requested_streaming_mode;
 
 use crate::render::{
-    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionRow,
-    ClearColor, LightmapResidencyReport, Renderer, ShResidencyReport, ShSampleRegion,
+    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin,
+    CapturePromotionRow, ClearColor, LightmapResidencyReport, Renderer, ShResidencyReport,
+    ShSampleRegion,
 };
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::scripting_systems::ghost_render::GhostRenderCollector;
@@ -78,7 +79,7 @@ pub(super) struct PreparedCapture {
     planar: CapturePlanar,
     view_proj: Mat4,
     eye: Vec3,
-    forced_promotion_weights: Vec<(CapturePromotionRow, f32)>,
+    forced_promotion_weights: Vec<CapturePromotionPin>,
     mover_sample_regions: Vec<ShSampleRegion>,
     measurement_animation: CaptureMeasurementAnimationClock,
     resolution: [u32; 2],
@@ -217,7 +218,7 @@ impl PreparedCapture {
         // appended by the renderer from the selection itself.
         if forced_promotion_weights
             .iter()
-            .any(|(row, _)| matches!(row, CapturePromotionRow::AnimatedBaked(_)))
+            .any(|pin| matches!(pin.row, CapturePromotionRow::AnimatedBaked(_)))
         {
             install_capture_animated_promotion_bridge(
                 &mut renderer,
@@ -453,7 +454,7 @@ impl PreparedCapture {
     ) -> Result<Option<CaptureGpuTimingWindow>> {
         let sh_drain_batch = self.take_sh_drain_batch()?;
         self.set_mirror_light_reach();
-        let forced_promotion_weights: &[(CapturePromotionRow, f32)] = if pin_promotion {
+        let forced_promotion_weights: &[CapturePromotionPin] = if pin_promotion {
             &self.forced_promotion_weights
         } else {
             &[]

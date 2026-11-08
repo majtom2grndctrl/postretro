@@ -1,17 +1,17 @@
-//! Coupled id-34/id-35 atlas allocations.
-//!
-//! Dense SH base/compose textures share a slot geometry and therefore grow as
-//! one family. Sparse compose buffers deliberately live elsewhere: expanding
-//! this family must not duplicate ids 27, 41, or 45.
+//! Streamed dense atlas pools: id-34/id-35 allocations, composed direct pools, binding-15 views.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use crate::render::gpu_create::GpuCreate;
 use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSourceMetadata};
 
 use super::ShResidencyDrainError;
 use super::direct_compose::StreamingDirectViews;
-use super::gpu::{AtlasShape, array_view, texture_format};
+use super::gpu::{AtlasShape, array_view, texture_bytes, texture_format};
 use crate::render::sh_volume::ShVolumeResources;
 
+/// Dense SH base/compose textures share a slot geometry and therefore grow as
+/// one family. Sparse compose buffers deliberately live elsewhere: expanding
+/// this family must not duplicate ids 27, 41, or 45.
 pub(super) struct DenseTextures {
     pub(super) base_format: wgpu::TextureFormat,
     pub(super) direct_format: Option<wgpu::TextureFormat>,
@@ -154,38 +154,56 @@ impl DenseTextures {
         (shared, mesh)
     }
 
-    /// The direct compose views for this generation, `None` when the level
+    /// This generation's direct pools.
+    pub(super) fn direct_pools(&self) -> DirectPools<'_> {
+        DirectPools {
+            base_view: self.direct_base_view.as_ref(),
+            promotion_free: self.direct_atlas.as_ref(),
+            handoff: self.direct_handoff.as_ref(),
+            intermediate: self.direct_intermediate.as_ref(),
+        }
+    }
+}
+
+/// One generation's direct pools, borrowed from the dense textures being
+/// built or from the live streamed pools they became.
+pub(super) struct DirectPools<'a> {
+    pub(super) base_view: Option<&'a wgpu::TextureView>,
+    pub(super) promotion_free: Option<&'a ComposedPool>,
+    pub(super) handoff: Option<&'a ComposedPool>,
+    pub(super) intermediate: Option<&'a ComposedPool>,
+}
+
+impl<'a> DirectPools<'a> {
+    /// The direct compose views over these pools, `None` when the generation
     /// composes no direct SH.
-    pub(super) fn direct_views<'a>(
-        &'a self,
+    pub(super) fn views(
+        self,
         selection_weights: &'a wgpu::Buffer,
     ) -> Result<Option<StreamingDirectViews<'a>>, ShResidencyDrainError> {
-        let (Some(atlas), Some(handoff)) = (&self.direct_atlas, &self.direct_handoff) else {
+        let (Some(promotion_free), Some(handoff)) = (self.promotion_free, self.handoff) else {
             return Ok(None);
         };
         Ok(Some(StreamingDirectViews {
-            base: self
-                .direct_base_view
-                .as_ref()
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed direct compose lost its id-35 base view",
-                })?,
-            intermediate: self.direct_intermediate.as_ref(),
-            promotion_free: atlas,
+            base: self.base_view.ok_or(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed direct compose lost its id-35 base view",
+            })?,
+            intermediate: self.intermediate,
+            promotion_free,
             handoff,
             selection_weights,
         }))
     }
 
-    /// Every Rgba16Float direct pool this generation allocates.
-    pub(super) fn direct_composed_pools(&self) -> impl Iterator<Item = &ComposedPool> {
-        [
-            &self.direct_atlas,
-            &self.direct_handoff,
-            &self.direct_intermediate,
-        ]
-        .into_iter()
-        .flatten()
+    /// Bytes of the Rgba16Float composed pools allocated at `extent`, `None`
+    /// on overflow.
+    pub(super) fn composed_bytes(&self, extent: wgpu::Extent3d) -> Option<u64> {
+        let pools = [self.promotion_free, self.handoff, self.intermediate]
+            .into_iter()
+            .flatten()
+            .count();
+        texture_bytes(wgpu::TextureFormat::Rgba16Float, extent)
+            .checked_mul(u64::try_from(pools).ok()?)
     }
 }
 

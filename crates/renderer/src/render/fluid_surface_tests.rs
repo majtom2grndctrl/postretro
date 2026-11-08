@@ -1701,8 +1701,15 @@ fn fluid_shade_fogs_from_the_outward_normal_and_the_reflecting_entry_returns_the
         ",V,n)",
         "dot(V,n)",
     ] {
-        // The runtime lights rightly shade the viewer side.
-        let fog_reads = fragment.replace("fluid_light(i,in.world_position,n)", "");
+        // The runtime lights rightly shade the viewer side, so their call is
+        // exempt. Assert the needle still matches, or a rename in the WGSL would
+        // make the replace a silent no-op and fail this test for the wrong reason.
+        const RUNTIME_LIGHT_CALL: &str = "fluid_light(i,in.world_position,n)";
+        assert!(
+            fragment.contains(RUNTIME_LIGHT_CALL),
+            "`{RUNTIME_LIGHT_CALL}` must match the whitespace-stripped runtime-light call in fluid_surface.wgsl"
+        );
+        let fog_reads = fragment.replace(RUNTIME_LIGHT_CALL, "");
         assert!(!fog_reads.contains(flipped), "fog reads `{flipped}`");
     }
 

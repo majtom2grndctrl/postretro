@@ -19,8 +19,8 @@ pub use diagnostics::{
 pub(super) use full_renderer::FullRenderer;
 pub(super) use full_renderer::sh_sampler_lattice;
 pub use level_geometry::{LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage};
-pub use promoted_lights::CapturePromotionRow;
 pub(super) use promoted_lights::animated_baked_promotion_weight;
+pub use promoted_lights::{CapturePromotionPin, CapturePromotionRow};
 pub(crate) use promoted_lights::{
     MAX_ANIMATED_BAKED_LIGHTS, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedBakedLightRecord,
     PromotedBakedLightSource, PromotedBakedLightState, PromotedShadowPoolKind,

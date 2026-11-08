@@ -36,9 +36,9 @@ pub(crate) struct CaptureScene {
     pub(crate) output: String,
     pub(crate) force_active: Option<Vec<ForcedAnimLight>>,
     /// Capture-only fixed crossfade values for animated-baked and
-    /// compiler-selected static promotion. A
-    /// one-frame capture cannot advance the normal ramp, so these expose known
-    /// `(1 - w)` / `w` splits for same-adapter golden comparisons.
+    /// compiler-selected static promotion. A one-frame capture cannot advance
+    /// the normal ramp, so these expose known `(1 - w)` / `w` splits for
+    /// same-adapter golden comparisons.
     pub(crate) force_promotion: Option<Vec<ForcedPromotion>>,
     /// Exactness oracle for streamed SH compose. This is capture-only and
     /// defaults off so ordinary scenes exercise the shipped sampled-row gate.

@@ -304,11 +304,11 @@ pub use renderer_types::AgentOverlayState;
 pub use renderer_types::{
     BvhOverlayBudget, BvhOverlayColorMode, BvhOverlayDepthMode, BvhOverlayState,
     CameraCullDiagnostics, CameraCullPath, CaptureAdapterIdentity, CaptureGpuTimingPass,
-    CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionRow, CellOverlayState,
-    ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE,
-    LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage, LocatorDiagnostics,
-    PortalOverlayState, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR,
-    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
+    CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin, CapturePromotionRow,
+    CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
+    DEFAULT_INDIRECT_SCALE, LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage,
+    LocatorDiagnostics, PortalOverlayState, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer,
+    SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;

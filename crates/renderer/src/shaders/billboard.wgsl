@@ -33,6 +33,8 @@ struct Uniforms {
     // raw section-45 AnimatedBakedLights tail count.
     has_direct: u32,
     // Dynamic tier, then mover-only animated-baked tail, then promoted static.
+    // Billboards read only the dynamic prefix (`light_count`); promoted lights
+    // reach them through the promotion-free baked direct term or scatter.
     total_light_count: u32,
     // `spec_shadowmask_flags` in forward.wgsl (offset 124..128), inert
     // here so the shared group-0 Uniforms layout remains 128 bytes.

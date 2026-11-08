@@ -8,10 +8,11 @@
 use super::*;
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
+use crate::render::fluid_surface_frame_test::f16_rgb;
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use crate::render::renderer_types::{PromotedBakedLightState, PromotedShadowPoolKind};
 use crate::render::{ShSampleRegion, ShSampleRegionSets};
-use postretro_render_cpu::frame_uniforms::LightTermMask;
+use postretro_render_cpu::frame_uniforms::{LightTermMask, UNIFORM_SIZE};
 use postretro_render_cpu::sh_volume::BIND_SH_DIRECT_ATLAS;
 
 /// f16 0.25 base radiance and 0.125 per-light delta.
@@ -19,6 +20,10 @@ const FILL: PayloadFill = PayloadFill {
     atlas: 0x3400,
     sparse_tile: 0x3000,
 };
+/// [`FILL`]'s per-light delta, decoded.
+const LIGHT_DELTA: f32 = 0.125;
+/// Slack on radiance f16 holds exactly (0.25 minus multiples of 0.0625).
+const TOLERANCE: f32 = 1.0e-3;
 
 /// The view a binding-15 entry names.
 fn binding_15_view<'a>(entries: &'a [wgpu::BindGroupEntry<'a>]) -> &'a wgpu::TextureView {
@@ -86,6 +91,15 @@ fn streamed_group_3_binds_the_promotion_free_pool_and_the_mesh_superset_the_hand
         assert_ne!(shared.texture(), mesh.texture(), "two distinct pools");
         (shared, mesh)
     });
+}
+
+#[test]
+fn streamed_base_only_level_binds_the_direct_base_to_both_groups() {
+    let Some(GpuCtx { device, queue }) =
+        bc_gpu_or_skip("streamed_base_only_level_binds_the_direct_base_to_both_groups")
+    else {
+        return;
+    };
     // Id 35 without id 41/45 composes nothing: both groups sample the base.
     let mut base_only = UploadOrderSh::new(&device, &queue, 128);
     assert_binding_15(&device, &queue, &mut base_only, |dense| {
@@ -188,7 +202,8 @@ fn compose_at(
             &animated_states,
         )
         .expect("streamed compose plan");
-    let mut uniform_bytes = [0u8; 96];
+    // Bytes 88..92 are `FrameUniforms::light_term_mask` (`build_uniform_data`).
+    let mut uniform_bytes = [0u8; UNIFORM_SIZE];
     uniform_bytes[88..92].copy_from_slice(&mask.bits().to_ne_bytes());
     let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("streamed direct split uniforms"),
@@ -231,19 +246,30 @@ fn compose_at(
     )
 }
 
-#[test]
-fn streamed_promotion_free_pool_ignores_promotion_weights() {
-    let Some(GpuCtx { device, queue: raw }) =
-        bc_gpu_or_skip("streamed_promotion_free_pool_ignores_promotion_weights")
-    else {
-        return;
-    };
-    let mut fixture = UploadOrderSh::with_direct_compose(&device, &raw);
-    fixture.payload_fill = FILL;
-    let queue = UploadQueue::new(&device, raw, true);
-    fixture.drain(&device, &queue, 0);
+/// Every texel's decoded RGB; alpha is slot validity, not light.
+fn texel_rgb(pool: &[u8]) -> Vec<f32> {
+    pool.as_chunks::<8>()
+        .0
+        .iter()
+        .flat_map(|texel| {
+            let half = |at: usize| u16::from_le_bytes([texel[at], texel[at + 1]]);
+            f16_rgb([half(0), half(2), half(4)]).to_array()
+        })
+        .collect()
+}
 
-    let (free_at_zero, handoff_at_zero) = compose_at(&mut fixture, &device, &queue, 0.0);
+/// Drains one cluster of `fixture`, composes it at promotion weights 0, 0.5
+/// and 1, and proves the split: the promotion-free pool is written and never
+/// moves, equals the handoff pool at weight zero, and the handoff pool loses
+/// exactly `weight` times the promoted light's delta wherever it reaches.
+/// The fixture's id-45 light has no animation descriptor, so its full scale
+/// is zero and id 41's delta is the only one in play.
+fn assert_streamed_split(device: &wgpu::Device, raw: wgpu::Queue, mut fixture: UploadOrderSh) {
+    fixture.payload_fill = FILL;
+    let queue = UploadQueue::new(device, raw, true);
+    fixture.drain(device, &queue, 0);
+
+    let (free_at_zero, handoff_at_zero) = compose_at(&mut fixture, device, &queue, 0.0);
     assert!(
         free_at_zero.iter().any(|&byte| byte != 0),
         "the drained cluster composes nonzero direct light",
@@ -252,15 +278,61 @@ fn streamed_promotion_free_pool_ignores_promotion_weights() {
         free_at_zero, handoff_at_zero,
         "with every promotion weight zero the two pools agree byte for byte",
     );
+    let free_rgb = texel_rgb(&free_at_zero);
     for weight in [0.5, 1.0] {
-        let (free, handoff) = compose_at(&mut fixture, &device, &queue, weight);
+        let (free, handoff) = compose_at(&mut fixture, device, &queue, weight);
         assert_eq!(
             free, free_at_zero,
             "the promotion-free pool must not move at weight {weight}",
         );
-        assert_ne!(
-            handoff, handoff_at_zero,
-            "the handoff pool must subtract the promoted light at weight {weight}",
+        let expected = weight * LIGHT_DELTA;
+        let removed: Vec<f32> = free_rgb
+            .iter()
+            .zip(texel_rgb(&handoff))
+            .map(|(free, handoff)| free - handoff)
+            .collect();
+        if let Some(stray) = removed
+            .iter()
+            .find(|&&lost| lost.abs() > TOLERANCE && (lost - expected).abs() > TOLERANCE)
+        {
+            panic!(
+                "at weight {weight} a handoff channel lost {stray}; each must keep its \
+                 promotion-free radiance or lose exactly {expected}",
+            );
+        }
+        assert!(
+            removed
+                .iter()
+                .any(|&lost| (lost - expected).abs() <= TOLERANCE),
+            "the handoff pool must subtract {expected} of the promoted light at weight {weight}",
         );
     }
+}
+
+#[test]
+fn streamed_promotion_free_pool_ignores_promotion_weights() {
+    let Some(GpuCtx { device, queue: raw }) =
+        bc_gpu_or_skip("streamed_promotion_free_pool_ignores_promotion_weights")
+    else {
+        return;
+    };
+    let fixture = UploadOrderSh::with_direct_compose(&device, &raw);
+    assert_streamed_split(&device, raw, fixture);
+}
+
+/// Id 41 without id 45: the promotion pass alone stores both pools.
+#[test]
+fn streamed_static_only_promotion_pass_stores_both_pools() {
+    let Some(GpuCtx { device, queue: raw }) =
+        bc_gpu_or_skip("streamed_static_only_promotion_pass_stores_both_pools")
+    else {
+        return;
+    };
+    let fixture = UploadOrderSh::with_static_direct_compose(&device, &raw);
+    let gpu = fixture.state.gpu.as_ref().unwrap();
+    assert!(
+        gpu.direct_intermediate.is_none(),
+        "a level without id 45 allocates no Pass B intermediate",
+    );
+    assert_streamed_split(&device, raw, fixture);
 }

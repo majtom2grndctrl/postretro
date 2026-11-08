@@ -74,7 +74,7 @@ impl StreamingGpuPools {
                         reason: "streamed dense growth lost its animated direct intermediate atlas",
                     });
                 }
-                replacement.direct_views(selection_weights)?.ok_or(
+                replacement.direct_pools().views(selection_weights)?.ok_or(
                     ShResidencyDrainError::GpuCapacity {
                         reason: "streamed dense growth lost its direct compose output atlases",
                     },
@@ -252,7 +252,11 @@ impl StreamingGpuPools {
                 DIRECT_DELTA_SECTION | ANIMATED_DIRECT_DELTA_SECTION
             )
         }) {
-            let views = self.direct_views(selection_weights)?;
+            let views = self.direct_pools().views(selection_weights)?.ok_or(
+                ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed direct sparse growth lost its direct compose output atlases",
+                },
+            )?;
             let direct =
                 self.direct_compose
                     .as_ref()
@@ -494,17 +498,11 @@ impl StreamingGpuPools {
                 .checked_add(texture_bytes(format, extent))
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
         }
-        for pool in [
-            &self.direct_atlas,
-            &self.direct_handoff,
-            &self.direct_intermediate,
-        ] {
-            if pool.is_some() {
-                bytes = bytes
-                    .checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
-                    .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            }
-        }
+        bytes = self
+            .direct_pools()
+            .composed_bytes(extent)
+            .and_then(|pools| bytes.checked_add(pools))
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
         bytes = bytes
             .checked_add(indirect_active)
             .and_then(|bytes| bytes.checked_add(direct_active))
@@ -512,30 +510,15 @@ impl StreamingGpuPools {
         Ok(bytes)
     }
 
-    /// This generation's direct compose views: the live counterpart of
-    /// [`DenseTextures::direct_views`].
-    fn direct_views<'a>(
-        &'a self,
-        selection_weights: &'a wgpu::Buffer,
-    ) -> Result<StreamingDirectViews<'a>, ShResidencyDrainError> {
-        let (Some(promotion_free), Some(handoff)) = (&self.direct_atlas, &self.direct_handoff)
-        else {
-            return Err(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed direct sparse growth lost its direct compose output atlases",
-            });
-        };
-        Ok(StreamingDirectViews {
-            base: self
-                .direct_base_view
-                .as_ref()
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed direct sparse growth lost its id-35 base view",
-                })?,
+    /// This generation's direct pools: the live counterpart of
+    /// [`DenseTextures::direct_pools`].
+    fn direct_pools(&self) -> DirectPools<'_> {
+        DirectPools {
+            base_view: self.direct_base_view.as_ref(),
+            promotion_free: self.direct_atlas.as_ref(),
+            handoff: self.direct_handoff.as_ref(),
             intermediate: self.direct_intermediate.as_ref(),
-            promotion_free,
-            handoff,
-            selection_weights,
-        })
+        }
     }
 
     pub(in crate::render::sh_streaming) const fn probe_occlusion_enabled(&self) -> bool {

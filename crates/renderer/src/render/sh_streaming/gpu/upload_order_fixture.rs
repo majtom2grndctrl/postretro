@@ -53,6 +53,19 @@ impl UploadOrderSh {
         Self::with_map(device, queue, 128, SyntheticMap::new([8, 4, 4], [1, 1, 1]))
     }
 
+    /// Id 41 without id 45: the promotion pass stores both direct outputs.
+    pub(in crate::render::sh_streaming) fn with_static_direct_compose(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Self {
+        Self::with_map(
+            device,
+            queue,
+            128,
+            SyntheticMap::new([8, 4, 4], [1, 1, 1]).without_animated_direct(),
+        )
+    }
+
     fn with_map(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -333,7 +346,8 @@ impl UploadOrderSh {
                 &[],
             )
             .expect("real streamed compose plan");
-        let mut uniform_bytes = [0u8; 96];
+        // Bytes 88..92 are `FrameUniforms::light_term_mask` (`build_uniform_data`).
+        let mut uniform_bytes = [0u8; postretro_render_cpu::frame_uniforms::UNIFORM_SIZE];
         uniform_bytes[88..92].copy_from_slice(&mask.bits().to_ne_bytes());
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("streamed compose inventory uniforms"),

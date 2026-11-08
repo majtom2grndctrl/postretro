@@ -23,7 +23,7 @@ pub use postretro_renderer::{
     BloomRenderProfile, BloomResolution, BvhOverlayBudget, BvhOverlayColorMode,
     BvhOverlayDepthMode, BvhOverlayState, CachedModel, CameraCullDiagnostics, CameraCullPath,
     CaptureAdapterIdentity, CaptureGpuTimingPass, CaptureGpuTimingState, CaptureGpuTimingWindow,
-    CapturePromotionRow, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
+    CapturePromotionPin, CapturePromotionRow, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
     DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, FrameScene, KinematicMoverInstance,
     LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometry,
     LevelGeometryParts, LevelGeometryRangeError, LevelInstallError, LevelSetBuilder,

@@ -420,6 +420,46 @@ fn promotion_free_direct_atlas_ignores_promotion_weights_with_section_45() {
     assert_split(&ctx, Fixture::WithAnimated);
 }
 
+#[test]
+fn promotion_free_direct_atlas_drops_the_animated_delta_when_baked_direct_animated_is_cleared() {
+    let Some(ctx) = gpu_or_skip(
+        "promotion_free_direct_atlas_drops_the_animated_delta_when_baked_direct_animated_is_cleared",
+    ) else {
+        return;
+    };
+    let mut scene = build_scene(&ctx, Fixture::WithAnimated);
+    let (x, y) = (0, 0);
+
+    // Static bit on, animated bit off: the animated delta contributes nothing,
+    // so the promotion-free atlas is the base alone (red 0.25 at this texel),
+    // and no promotion weight moves it.
+    let mut animated_off = LightTermMask::ALL;
+    animated_off.set_enabled(LightTermMask::BAKED_DIRECT_ANIMATED, false);
+    for &weight in &WEIGHTS {
+        let (free, _) = compose_at(&ctx, &mut scene, weight, animated_off);
+        assert_eq!(
+            red(&free, x, y),
+            0.25,
+            "clearing baked-direct-animated leaves the base alone at weight {weight}",
+        );
+    }
+
+    // With dynamic direct off nothing is added back, so the handoff atlas must
+    // not subtract: at positive weight it keeps the full static base.
+    let mut dynamic_off = animated_off;
+    dynamic_off.set_enabled(LightTermMask::DYNAMIC_DIRECT, false);
+    let (free, handoff) = compose_at(&ctx, &mut scene, 1.0, dynamic_off);
+    assert_eq!(
+        red(&handoff, x, y),
+        0.25,
+        "the handoff atlas keeps the full static base with dynamic direct off",
+    );
+    assert_eq!(
+        handoff, free,
+        "the handoff atlas matches the promotion-free atlas with dynamic direct off",
+    );
+}
+
 /// The view a binding-15 entry names.
 fn binding_15_view<'a>(entries: &'a [wgpu::BindGroupEntry<'a>]) -> &'a wgpu::TextureView {
     let mut matches = entries

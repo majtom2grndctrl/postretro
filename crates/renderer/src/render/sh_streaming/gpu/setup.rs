@@ -142,7 +142,8 @@ impl StreamingGpuPools {
             sparse_capacities.get(&27).copied(),
         )?;
         let direct_compose = dense
-            .direct_views(selection_weights)?
+            .direct_pools()
+            .views(selection_weights)?
             .map(|views| {
                 StreamingDirectCompose::new(
                     device,
@@ -172,11 +173,7 @@ impl StreamingGpuPools {
                     bytes.checked_add(texture_bytes(format, extent))
                 })
             })
-            .and_then(|bytes| {
-                dense.direct_composed_pools().try_fold(bytes, |bytes, _| {
-                    bytes.checked_add(texture_bytes(wgpu::TextureFormat::Rgba16Float, extent))
-                })
-            })
+            .and_then(|bytes| bytes.checked_add(dense.direct_pools().composed_bytes(extent)?))
             .and_then(|bytes| bytes.checked_add(indirect_compose.active_pool_bytes()))
             .and_then(|bytes| {
                 bytes.checked_add(

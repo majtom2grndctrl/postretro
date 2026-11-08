@@ -14,7 +14,9 @@ use postretro_entities::components::light::{FalloffKind, LightComponent, LightKi
 
 use super::scene::{CameraPose, CaptureScene, ForcedAnimLight, ForcedPromotion};
 use crate::camera;
-use crate::render::{CapturePromotionRow, LevelGeometry, Renderer, level_world_to_geometry};
+use crate::render::{
+    CapturePromotionPin, CapturePromotionRow, LevelGeometry, Renderer, level_world_to_geometry,
+};
 use crate::scripting_systems::light_bridge::LightBridge;
 
 /// Seed capture-only authored active states after the level install has restored
@@ -221,7 +223,8 @@ pub(super) fn resolve_forced_active_animation_slots(
 /// renderer's promotion state is keyed by the roster position, so never pass
 /// the slot itself to the capture override. Duplicate slots use the runtime
 /// bridge's first-static-light identity. Static lights resolve to their
-/// position in `EntityShadowLights`, the renderer's selection index.
+/// position in `EntityShadowLights`, the renderer's selection index. Each row
+/// carries the first tag that named it, so a renderer failure names the tag.
 #[cfg(test)]
 pub(super) fn resolve_forced_promotion_rows(
     lights: &[postretro_level_loader::MapLight],
@@ -230,7 +233,7 @@ pub(super) fn resolve_forced_promotion_rows(
     >,
     entity_shadow_lights: &[u32],
     forced_promotions: Option<&[ForcedPromotion]>,
-) -> Result<Vec<(CapturePromotionRow, f32)>> {
+) -> Result<Vec<CapturePromotionPin>> {
     let (descriptor_indices, affinity_lights) = section
         .map(|section| {
             (
@@ -257,7 +260,7 @@ pub(super) fn resolve_forced_promotion_rows_from_metadata(
     affinity_lights: &[u32],
     entity_shadow_lights: &[u32],
     forced_promotions: Option<&[ForcedPromotion]>,
-) -> Result<Vec<(CapturePromotionRow, f32)>> {
+) -> Result<Vec<CapturePromotionPin>> {
     let Some(forced_promotions) = forced_promotions else {
         return Ok(Vec::new());
     };
@@ -277,14 +280,16 @@ pub(super) fn resolve_forced_promotion_rows_from_metadata(
     let mut pin = |row: CapturePromotionRow, forced: &ForcedPromotion| -> Result<()> {
         match rows.entry(row) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(forced.weight);
+                entry.insert((forced.weight, forced.tag.clone()));
             }
             std::collections::btree_map::Entry::Occupied(entry)
-                if (*entry.get() - forced.weight).abs() <= 1.0e-6 => {}
-            std::collections::btree_map::Entry::Occupied(_) => {
+                if (entry.get().0 - forced.weight).abs() <= 1.0e-6 => {}
+            std::collections::btree_map::Entry::Occupied(entry) => {
                 bail!(
-                    "force_promotion tag `{}` resolves to a promotion row with conflicting weights",
-                    forced.tag
+                    "force_promotion tag `{}` resolves to a promotion row with conflicting weights (tag `{}` already pins it to {})",
+                    forced.tag,
+                    entry.get().1,
+                    entry.get().0
                 );
             }
         }
@@ -374,7 +379,10 @@ pub(super) fn resolve_forced_promotion_rows_from_metadata(
             );
         }
     }
-    Ok(rows.into_iter().collect())
+    Ok(rows
+        .into_iter()
+        .map(|(row, (weight, tag))| CapturePromotionPin { row, weight, tag })
+        .collect())
 }
 
 /// Build the active/no-curve compose descriptor through the shared descriptor

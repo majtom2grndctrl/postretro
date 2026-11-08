@@ -116,7 +116,12 @@ belongs in all five maps.
   dynamic receiver in station 3's view: a `kinematic_mover` slab (x 296–344,
   y 505–521, z 0–8) resting at its first waypoint on the closet floor just
   behind the door, where the averaged moments glow. Hand-edited from the
-  static-door map, not generated.
+  static-door map, not generated. Its centre light (320, 392, 288) carries the
+  tag `centre_light` and is otherwise unchanged. The slab promotes the
+  bright-room lights, and the centre one is nearest station 3, so it ranks
+  first for the cube slots. The closet pool capture pins it fully promoted
+  (`force_promotion` `w` 1) and still expects the pool dark. A tag is not a
+  bake input, so it changes no lighting. Keep it on the centre light.
 - **`mover-closet-no-door-kinematic-receiver.map`**: the no-door reference plus a
   fourth light and a promoting receiver, for proving promotion never changes a
   lit fluid. The `doorway_light` (320, 400, 64), light 400, falloff 900, sits
@@ -125,9 +130,11 @@ belongs in all five maps.
   slab (x 560–608, y 24–40, z 0–8) rests in the bright room's south-east
   corner: in the doorway light's reach, so it promotes it, but outside every
   line from station 2 through the doorway and south of the light, so it is
-  never seen from station 2 and never shadows the pool. The slab sits between
-  `// receiver_slab begin` and `end` comments; the capture proof cuts that
-  block for its slab-free reference, so keep the markers.
+  never seen from station 2 and never shadows the pool. The capture proof also
+  views it from (480, 140, 56), yaw 314, pitch −19, where the doorway light
+  lights every slab face in view, to show a pinned `w` reaches the slab. The
+  slab sits between `// receiver_slab begin` and `end` comments; the capture
+  proof cuts that block for its slab-free reference, so keep the markers.
 
 Build any of them the same way as this map, with its own name. Each sits beside this
 map, so the compiler finds the same content root.

@@ -560,9 +560,15 @@ struct SlabScreenBox {
 }
 
 impl SlabScreenBox {
+    /// The receiver map's slab at `pose`.
     fn of(pose: Pose) -> Self {
-        let [x0, y0, z0] = RECEIVER_SLAB_MIN;
-        let [x1, y1, z1] = RECEIVER_SLAB_MAX;
+        Self::of_box(RECEIVER_SLAB_MIN, RECEIVER_SLAB_MAX, pose)
+    }
+
+    /// Any map-unit box at `pose`; every corner must be in front.
+    fn of_box(min: [f32; 3], max: [f32; 3], pose: Pose) -> Self {
+        let [x0, y0, z0] = min;
+        let [x1, y1, z1] = max;
         let corners = [x0, x1].into_iter().flat_map(|x| {
             [y0, y1]
                 .into_iter()
@@ -716,15 +722,23 @@ const DARK_POOL_CEILING: f64 = 0.05;
 /// station 3. Promotion must not change a fluid, so the only legitimate
 /// difference is the slab's own bake footprint (its mover light gate and probe
 /// channel), which ends short of the pit. Measured on a Radeon Pro 5300M: both
-/// pools 0.000 over 71,334 px. The leak this row guards read 6.48 in the same
-/// box before the promotion-free direct atlas; 0.25 is under 4% of that and
-/// leaves room for one-level rounding on a few percent of pixels.
+/// pools 0.000 over 71,334 px, unpinned. A fluid that adds the promoted lights
+/// back unshadowed reads 6.48 in the same box at the unpinned capture's w of
+/// about 0.06; 0.25 is under 4% of that and leaves room for one-level rounding
+/// on a few percent of pixels.
 const RECEIVER_POOL_EPSILON: f64 = 0.25;
+/// The receiver map's tagged centre bright-room light: of the three, the one
+/// nearest station 3, so it ranks first for the two cube slots the slab's
+/// point lights compete for. mover-closet.README.md §Reference variants.
+const CENTRE_LIGHT_TAG: &str = "centre_light";
 
 // A promoted light never lights the closet pool through the static door. The
-// kinematic slab behind the door promotes the bright-room lights; before the
-// promotion-free direct atlas, the fluid added each promoted light back
-// unshadowed and the pool glowed where the static-door map reads black.
+// kinematic slab behind the door promotes the bright-room lights, and the
+// capture pins the centre one fully promoted (w=1). A promoted light reaches a
+// fluid only through its promotion-free baked direct term; adding its runtime
+// term back unshadowed would light the pool through the wall, where the
+// static-door map reads black. The pin fails the capture if the centre light
+// holds no slot, so the row cannot pass on an unpromoted light.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
 fn kinematic_receiver_leaves_the_closet_pool_as_dark_as_the_static_door() {
@@ -750,12 +764,17 @@ fn kinematic_receiver_leaves_the_closet_pool_as_dark_as_the_static_door() {
         "pool-static-door",
         STATION_3,
     );
-    let receiver_image = closet_capture(
+    let receiver_image = capture(
         &workspace,
         scratch.path(),
         &receiver,
         "pool-receiver",
         STATION_3,
+        [CLOSET_WIDTH, CLOSET_HEIGHT],
+        SceneExtras {
+            force_promotion: Some((CENTRE_LIGHT_TAG, 1.0)),
+            ..SceneExtras::default()
+        },
     );
     let plain_pool = region_mean(&plain_image, &pool, luma);
     let receiver_pool = region_mean(&receiver_image, &pool, luma);
@@ -777,11 +796,37 @@ fn kinematic_receiver_leaves_the_closet_pool_as_dark_as_the_static_door() {
 /// that sees the pool and a slab, hidden from station 2, that promotes it.
 const LOS_MAP: &str = "mover-closet-no-door-kinematic-receiver";
 const DOORWAY_LIGHT_TAG: &str = "doorway_light";
-/// Mean summed-RGB drift allowed between a promoted lit endpoint and its
-/// unpromoted reference. Same value and units as `LIT_ENDPOINT_DRIFT` in
+/// Drift allowed between the promoted pool's mean summed RGB and the slab-free
+/// pool's. The same tolerance (12, summed RGB) as `LIT_ENDPOINT_DRIFT` in
 /// `assert_promoted_door_red_shadow_crossfade` (capture_frame.rs), which
-/// another test target cannot share.
+/// bounds each pixel's difference; this one bounds the difference of the two
+/// region means. Another test target cannot share the constant.
 const LIT_ENDPOINT_DRIFT: f64 = 12.0;
+/// The LOS fixture's receiver slab in map units, mover-closet.README.md
+/// §Reference variants.
+const LOS_SLAB_MIN: [f32; 3] = [560.0, 24.0, 0.0];
+const LOS_SLAB_MAX: [f32; 3] = [608.0, 40.0, 8.0];
+/// A bright-room view of the LOS slab from the doorway light's side. The
+/// doorway light (320, 400, 64) stands west, north and above the slab, so it
+/// lights the slab's west (x 560), north (y 40) and top (z 8) faces, which
+/// face it with nothing between; the camera, also west, north and above, sees
+/// exactly those three faces. The slab's centre is 457 map units from the
+/// light, inside its 900-unit falloff. The doorway light is also the point
+/// light nearest this pose (305 units; the nearest bright-room light is 344),
+/// so it ranks first for the two cube slots, and the pin fails the capture if
+/// it does not hold one.
+const SLAB_VIEW: Pose = Pose {
+    map: [480.0, 140.0, 56.0],
+    yaw: 314.0,
+    pitch: -19.0,
+};
+/// Fewest slab-box pixels that must differ between the w=0 and w=1 captures.
+/// A mover reads a promoted light as `(1 - w)` × its baked direct SH (the
+/// handoff atlas) plus `w` × the forward runtime term, so the two endpoints
+/// shade the lit faces differently; a pin that never reached the GPU would
+/// leave them byte-identical. Measured on a Radeon Pro 5300M: 4,197 of 6,669
+/// slab-box px differ between w=0 and w=1; the floor is half that.
+const MIN_SLAB_PIN_DIFFERENCES: usize = 2098;
 /// Floor on the lit pool's mean luma at station 2: the doorway light's direct
 /// term on the water. Measured on a Radeon Pro 5300M: 56.5 over 84,542 px
 /// (the dark closet pool reads 0.000); the floor is under half of that.
@@ -818,8 +863,9 @@ fn slab_free_los_map(workspace: &Path) -> tempfile::TempPath {
 // Promotion leaves a lit pool exactly as baked. The doorway light lights the
 // pool through the open doorway; the hidden slab promotes it. Pinning its w to
 // 0 and to 1 must leave every pool pixel byte-identical, and both must match
-// the same map without the slab. Forcing the light where it holds no slot
-// fails the capture, so the pinned rows cannot pass vacuously.
+// the same map without the slab, while the same pins visibly change the lit
+// slab from a view that sees it. Forcing the light where it holds no slot
+// fails the capture by its tag, so the pinned rows cannot pass vacuously.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
 fn promoted_doorway_light_leaves_the_lit_pool_unchanged() {
@@ -889,6 +935,47 @@ fn promoted_doorway_light_leaves_the_lit_pool_unchanged() {
         "the promoted pool drifted from the slab-free pool: {promoted_rgb} against {baseline_rgb}"
     );
 
+    // Positive control: the pin reaches the GPU. Station 2 sees no reader of
+    // the pinned w (the slab is hidden and shadows nothing in view), so the
+    // byte-identical pool above would also pass if the pin were dropped. The
+    // slab is the reader: seen lit by the doorway light, it must shade
+    // differently at w=0 and w=1.
+    let slab_view = |weight: f32| {
+        capture(
+            &workspace,
+            scratch.path(),
+            &fixture,
+            &format!("los-slab-w{weight}"),
+            SLAB_VIEW,
+            [CLOSET_WIDTH, CLOSET_HEIGHT],
+            SceneExtras {
+                force_promotion: Some((DOORWAY_LIGHT_TAG, weight)),
+                ..SceneExtras::default()
+            },
+        )
+    };
+    let slab_unpromoted = slab_view(0.0);
+    let slab_promoted = slab_view(1.0);
+    let slab = SlabScreenBox::of_box(LOS_SLAB_MIN, LOS_SLAB_MAX, SLAB_VIEW);
+    let (mut slab_pixels, mut slab_differences) = (0usize, 0usize);
+    for (x, y, pixel) in slab_unpromoted.enumerate_pixels() {
+        if !slab.contains(x, y) {
+            continue;
+        }
+        slab_pixels += 1;
+        if slab_promoted.get_pixel(x, y) != pixel {
+            slab_differences += 1;
+        }
+    }
+    eprintln!(
+        "LOS slab view: {slab_differences} of {slab_pixels} slab-box px differ between w=0 and w=1"
+    );
+    assert!(slab_pixels > 0, "the slab view must see the slab");
+    assert!(
+        slab_differences >= MIN_SLAB_PIN_DIFFERENCES,
+        "pinning the doorway light's w left the lit slab unchanged: {slab_differences} of {slab_pixels} px differ"
+    );
+
     // Without the slab, nothing promotes the doorway light: the pinned row
     // must fail by name rather than render an unpromoted frame.
     let failure = try_capture(
@@ -905,7 +992,8 @@ fn promoted_doorway_light_leaves_the_lit_pool_unchanged() {
     )
     .expect_err("forcing an unpromoted light must fail the capture");
     assert!(
-        failure.contains("did not win a shadow-pool slot"),
-        "the failure must name the missing slot:\n{failure}"
+        failure.contains(&format!("force_promotion tag `{DOORWAY_LIGHT_TAG}`"))
+            && failure.contains("did not win a shadow-pool slot"),
+        "the failure must name the tag and the missing slot:\n{failure}"
     );
 }

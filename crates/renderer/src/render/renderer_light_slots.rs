@@ -3235,8 +3235,8 @@ mod tests {
         assert_eq!(static_states[0].capture_natural_weight, None);
     }
 
-    // Regression: a pinned w=0 failed measurement's output frame, rendered at
-    // the last timed frame's instant, with "has no promoted depth-cache record".
+    // A pinned w=0 must keep its record on a frame rendered at the previous
+    // frame's instant (dt 0), as measurement's output frame is.
     #[test]
     fn capture_pin_at_zero_keeps_its_record_on_a_same_instant_frame() {
         for row in [

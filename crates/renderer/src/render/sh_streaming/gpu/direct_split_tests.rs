@@ -22,7 +22,7 @@ const FILL: PayloadFill = PayloadFill {
 };
 /// [`FILL`]'s per-light delta, decoded.
 const LIGHT_DELTA: f32 = 0.125;
-/// Slack on radiance f16 holds exactly (0.25 minus multiples of 0.0625).
+/// Slack for f16 rounding on the fixture's radiances.
 const TOLERANCE: f32 = 1.0e-3;
 
 /// The view a binding-15 entry names.

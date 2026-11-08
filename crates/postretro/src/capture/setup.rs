@@ -19,6 +19,10 @@ use crate::render::{
 };
 use crate::scripting_systems::light_bridge::LightBridge;
 
+/// Two tags pinning one promotion row agree when their authored decimal weights
+/// match after f32 parsing; anything wider is a conflicting pin.
+const SAME_PIN_WEIGHT_EPSILON: f32 = 1.0e-6;
+
 /// Seed capture-only authored active states after the level install has restored
 /// the baked descriptor mirror. `capture_frame_indirect` flushes these writes
 /// in its first `update_per_frame_uniforms` call.
@@ -283,7 +287,7 @@ pub(super) fn resolve_forced_promotion_rows_from_metadata(
                 entry.insert((forced.weight, forced.tag.clone()));
             }
             std::collections::btree_map::Entry::Occupied(entry)
-                if (entry.get().0 - forced.weight).abs() <= 1.0e-6 => {}
+                if (entry.get().0 - forced.weight).abs() <= SAME_PIN_WEIGHT_EPSILON => {}
             std::collections::btree_map::Entry::Occupied(entry) => {
                 bail!(
                     "force_promotion tag `{}` resolves to a promotion row with conflicting weights (tag `{}` already pins it to {})",

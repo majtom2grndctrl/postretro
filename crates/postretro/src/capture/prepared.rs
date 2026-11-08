@@ -355,10 +355,9 @@ impl PreparedCapture {
                 .expect("streaming capture was initialized")
                 .read_one_sync()?
             {}
-            // Preload only warms SH residency. Pinning here would feed each
-            // forced `w` back into the promotion ramp, which cannot advance at
-            // capture's frozen instant, so a pinned zero would drop the row's
-            // record before the captured frame could pin it.
+            // Preload only warms SH residency, so it leaves every promotion on
+            // its natural lifecycle; pins and their slot checks start at the
+            // first captured or measured frame.
             let _ = self.submit_frame_without_readback(false, 0.0)?;
         }
         bail!("SH capture preload did not make its settle set sampleable")

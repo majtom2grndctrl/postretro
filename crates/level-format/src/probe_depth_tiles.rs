@@ -103,14 +103,20 @@ impl ProbeDepthTilesSection {
         ProbeDepthTileTextureLayout::for_tile_count(self.tile_count() as u32)
     }
 
+    /// Bytes [`Self::to_bytes`] writes: the header, one `u32` index per tile,
+    /// then every texel.
+    pub fn encoded_len(&self) -> usize {
+        HEADER_BYTES
+            + self.probe_indices.len() * 4
+            + self.texels.len() * PROBE_DEPTH_TILE_TEXEL_BYTES as usize
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let count = self.tile_count();
         debug_assert!(count as u32 <= MAX_PROBE_DEPTH_TILES);
         debug_assert_eq!(self.texels.len(), count * PROBE_DEPTH_TILE_TEXELS);
         debug_assert!(self.probe_indices.windows(2).all(|w| w[0] < w[1]));
-        let mut out = Vec::with_capacity(
-            HEADER_BYTES + count * 4 + self.texels.len() * PROBE_DEPTH_TILE_TEXEL_BYTES as usize,
-        );
+        let mut out = Vec::with_capacity(self.encoded_len());
         for word in [
             PROBE_DEPTH_TILES_VERSION,
             PROBE_DEPTH_TILE_EDGE,
@@ -303,7 +309,7 @@ pub fn probe_depth_tile_texture_bytes(tile_count: u32) -> u64 {
 /// SH tiles use: interior texel `i` spans `[i/8, (i+1)/8)` of the unfolded
 /// square. `dir` need not be normalized.
 pub fn interior_texel_of_direction(dir: [f32; 3]) -> usize {
-    let [u, v] = encode_unquantized_uv(dir[0], dir[1], dir[2]);
+    let [u, v] = tile_uv(dir);
     let edge = PROBE_DEPTH_TILE_EDGE as f32;
     let cell = |c: f32| ((c * edge) as u32).min(PROBE_DEPTH_TILE_EDGE - 1) as usize;
     cell(v) * PROBE_DEPTH_TILE_EDGE as usize + cell(u)
@@ -327,10 +333,11 @@ pub fn bordered_tile(interior: &[[u16; 2]]) -> Vec<[u16; 2]> {
 /// `(E[d], E[d²])` of a bordered tile toward `dir`, filtered as the runtime's
 /// bilinear sampler reads it: coordinate `border + uv · edge` within the tile,
 /// taps on the texel centres either side. The CPU mirror for the bake's tile
-/// selection and the reflection capture. `dir` need not be normalized.
+/// selection and the reflection capture. `dir` need not be normalized; zero
+/// reads the tile centre.
 pub fn sample_tile_moments(tile: &[[u16; 2]], dir: [f32; 3]) -> [f32; 2] {
     debug_assert_eq!(tile.len(), PROBE_DEPTH_TILE_TEXELS);
-    let [u, v] = encode_unquantized_uv(dir[0], dir[1], dir[2]);
+    let [u, v] = tile_uv(dir);
     let border = PROBE_DEPTH_TILE_BORDER as f32;
     let edge = PROBE_DEPTH_TILE_EDGE as f32;
     let fx = border + u * edge - 0.5;
@@ -354,6 +361,27 @@ pub fn sample_tile_moments(tile: &[[u16; 2]], dir: [f32; 3]) -> [f32; 2] {
         out[1] += w * f16_bits_to_f32(mean_sq);
     }
     out
+}
+
+/// Smallest L1 length the tile lookup divides by, as `sh_sample.wgsl`'s
+/// `oct_encode_l1` floors it.
+const TILE_UV_MIN_L1: f32 = 1.0e-6;
+
+/// Octahedral uv of `dir` as the shader's `oct_encode_l1` finds it: the L1
+/// divide floored at [`TILE_UV_MIN_L1`], so a zero direction (a shaded point
+/// at the probe) reads the tile centre instead of NaN.
+fn tile_uv(dir: [f32; 3]) -> [f32; 2] {
+    let [x, y, z] = dir;
+    let l1 = x.abs() + y.abs() + z.abs();
+    if l1 >= TILE_UV_MIN_L1 {
+        return encode_unquantized_uv(x, y, z);
+    }
+    let (mut ox, mut oy) = (x / TILE_UV_MIN_L1, y / TILE_UV_MIN_L1);
+    if z < 0.0 {
+        let sign = |c: f32| if c >= 0.0 { 1.0f32 } else { -1.0 };
+        (ox, oy) = ((1.0 - oy.abs()) * sign(ox), (1.0 - ox.abs()) * sign(oy));
+    }
+    [ox * 0.5 + 0.5, oy * 0.5 + 0.5]
 }
 
 /// IEEE 754 binary16 bits → f32, exact.

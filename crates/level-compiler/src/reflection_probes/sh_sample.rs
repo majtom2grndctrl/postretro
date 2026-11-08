@@ -6,8 +6,8 @@ use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::octahedral::{encode_unquantized_uv, irradiance_array_tile_location};
 use postretro_level_format::probe_depth_tiles::{
-    MomentSecondChannel, ProbeDepthTilesSection, decode_moment_second_channel, sample_tile_moments,
-    tile_reference_bits,
+    MomentSecondChannel, ProbeDepthTilesSection, decode_moment_second_channel, moment_sign_bit_set,
+    sample_tile_moments, tile_reference_bits,
 };
 use postretro_level_format::sh_reconstruct::{Level, stored_node_prefix_sum};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
@@ -21,8 +21,8 @@ use crate::sh_bake::{chebyshev_visibility, probe_depth_bias};
 /// runtime, a diagnostic the capture does not follow.
 pub(crate) const PRODUCTION_PROBE_OCCLUSION: bool = true;
 
-// `sh_sample.wgsl` / `forward.wgsl` constants, mirrored. The depth
-// visibility's own live with the bake's mirror (`sh_bake::chebyshev_visibility`).
+// `sh_sample.wgsl` / `forward.wgsl` constants, mirrored. The depth-visibility
+// constants live with the bake's mirror, `sh_bake::chebyshev_visibility`.
 const SH_NORMAL_OFFSET_M: f32 = 0.1;
 const SH_WEIGHT_EPSILON: f32 = 1.0e-5;
 
@@ -42,6 +42,8 @@ pub(crate) struct SlotRead {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Receiver {
     Surface,
+    /// Mirrors `billboard.wgsl` `sample_sh_indirect` so a test can read a
+    /// sprite's indirect: capture draws no billboards.
     #[cfg_attr(not(test), allow(dead_code))]
     Billboard,
 }
@@ -104,8 +106,9 @@ impl<'a> ShVolumeSampler<'a> {
 
     /// This sampler weighing each tiled probe by its tile's moments toward
     /// the sample, as the runtime does; an untiled probe weighs as before,
-    /// bit for bit. Fails when a tile names a probe outside the lattice or
-    /// an invalid one, as the loader refuses it.
+    /// bit for bit. Fails, as the loader does, when a tile names a probe
+    /// outside the lattice or an invalid one, or a valid probe's averaged
+    /// moment has its sign bit set, which would decode as a tile reference.
     pub(crate) fn with_depth_tiles(
         mut self,
         tiles: &'a ProbeDepthTilesSection,
@@ -121,6 +124,15 @@ impl<'a> ShVolumeSampler<'a> {
                     .is_some_and(|record| record.validity != 0)
             })
             .map_err(|e| anyhow::anyhow!("ProbeDepthTiles does not fit id 34: {e}"))?;
+        if let Some(index) = probes.iter().position(|record| {
+            record.validity != 0
+                && moment_sign_bit_set(record.mean_distance, record.mean_sq_distance)
+        }) {
+            anyhow::bail!(
+                "OctahedralShVolume valid probe {index} carries a negative depth moment; \
+                 its moment texel would read as a tile reference"
+            );
+        }
         let mut second_channel: Vec<u16> = probes
             .iter()
             .map(|record| record.mean_sq_distance)

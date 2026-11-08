@@ -387,9 +387,10 @@ pub(crate) fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntr
 /// includes FRAGMENT. wgpu charges the limit against the BGL *entry* set of a
 /// pipeline layout per stage, not against how many textures a shader actually
 /// samples — so a fragment-visible texture entry counts even if no fragment
-/// shader reads it. Example: billboard samples the SH direct atlas in the
-/// VERTEX stage, but its BGL entry carries `VERTEX | FRAGMENT` visibility, so
-/// it still counts against the fragment texture budget here.
+/// shader reads it. Example: the mesh-superset SH layout's direct atlas is
+/// `VERTEX | FRAGMENT` because movers and skinned meshes sample it in
+/// `fs_main`, so it counts against the fragment texture budget here; the shared
+/// SH layout's direct atlas is VERTEX-only and does not.
 pub(crate) fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
         .iter()

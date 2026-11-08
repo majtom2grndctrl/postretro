@@ -2148,7 +2148,10 @@ fn run_after_parsing(
         footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
     let mut details = mover_light_summary.lines(lightmap_family_bytes);
     details.extend(footprint.sh_mandatory.lines());
-    details.push(probe_depth_tiles.summary_line());
+    details.push(
+        probe_depth_tiles
+            .summary_line(postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES),
+    );
     details.extend(footprint.lightmap_pool.lines());
     reporter.finalize(BuildSummary {
         timings,

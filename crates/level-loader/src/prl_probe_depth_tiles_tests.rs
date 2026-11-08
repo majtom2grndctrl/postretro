@@ -137,7 +137,10 @@ fn a_malformed_id59_refuses_the_level_by_name_on_every_id34_path() {
     }
 }
 
-/// Every malformed shape the brief names, through the loader's decode.
+/// Every malformed shape of the id-59 wire contract, through the loader's
+/// decode: wrong version, tile edge not 8, border not 1, more than 32,768
+/// tiles, an index outside the lattice or naming an invalid probe, unsorted or
+/// duplicate indices, truncated or trailing bytes.
 #[test]
 fn malformed_id59_shapes_each_refuse_as_probe_depth_tiles() {
     let grid = [4, 4, 2];

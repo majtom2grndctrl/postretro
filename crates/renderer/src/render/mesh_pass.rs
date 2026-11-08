@@ -28,10 +28,10 @@
 //               matrix and palette base index, addressed by
 //               `@builtin(instance_index)` (binding 1)
 //   * group 4 = SH irradiance volume (`ShVolumeResources.mesh_bind_group` —
-//               the SUPERSET bind group that extends the shared SH entries with
-//               the direct-atlas texture at binding 15 and the
-//               `DynamicDirectParams` uniform at binding 16; forward/billboard/
-//               fog passes use the smaller base `bind_group` and its layout)
+//               the SUPERSET bind group that adds the `DynamicDirectParams`
+//               uniform at binding 16 and widens the direct atlas (binding 15,
+//               VERTEX-only in the shared layout) to VERTEX | FRAGMENT;
+//               forward/billboard/fog passes use the smaller base `bind_group` and its layout)
 //
 // Per-instance addressing: the palette base index lives in the per-instance SSBO
 // entry, NOT in `first_instance`/`base_instance` — DX12 reads that as 0

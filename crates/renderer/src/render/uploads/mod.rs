@@ -125,6 +125,10 @@ impl UploadQueue {
 
     /// A texture region of `rows_per_image` tightly packed rows per layer,
     /// staged like [`Self::write_buffer`]; direct while staging is disabled.
+    ///
+    /// `bytes_per_row` is the tight row size and needs no 256-byte alignment:
+    /// the staged path pads rows itself, and the direct path is a queue
+    /// write, not a buffer-to-texture copy.
     #[track_caller]
     pub(crate) fn write_texture(
         &self,

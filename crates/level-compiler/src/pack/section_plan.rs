@@ -3,7 +3,7 @@
 
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ShMandatoryBoundEntry};
 use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
-use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
+use postretro_level_format::probe_depth_tiles::{ProbeDepthTilesSection, moment_sign_bit_set};
 
 use super::*;
 
@@ -86,6 +86,34 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     /// Id 58, present when id 22 has blocks and id 51 is emitted.
     pub(super) lightmap_pool_bound: Option<LightmapPoolBoundSection>,
     pub(super) cluster_payload: Option<super::cluster_sh_payloads::ClusterPayloadSpool>,
+}
+
+/// Fail the build on the id-34 and id-59 contents the loader refuses: a valid
+/// probe whose averaged depth moment has its sign bit set, which the moment
+/// texel would read as a tile reference, and a tile naming a probe outside
+/// id 34's lattice or an invalid one.
+fn refuse_what_the_loader_refuses(
+    sh_volume: &OctahedralShVolumeSection,
+    probe_depth_tiles: &ProbeDepthTilesSection,
+) -> anyhow::Result<()> {
+    if let Some((index, probe)) = sh_volume.probes.iter().enumerate().find(|(_, probe)| {
+        probe.validity != 0 && moment_sign_bit_set(probe.mean_distance, probe.mean_sq_distance)
+    }) {
+        anyhow::bail!(
+            "OctahedralShVolume valid probe {index} carries a negative depth moment \
+             (E[d] bits {:#06x}, E[d²] bits {:#06x}), which the loader refuses",
+            probe.mean_distance,
+            probe.mean_sq_distance
+        );
+    }
+    probe_depth_tiles
+        .validate_against_lattice(sh_volume.grid_dimensions, |probe| {
+            sh_volume
+                .probes
+                .get(probe as usize)
+                .is_some_and(|record| record.validity != 0)
+        })
+        .map_err(|error| anyhow::anyhow!("ProbeDepthTiles does not fit id 34: {error}"))
 }
 
 /// Build the legacy PRL descriptor plan in its established on-disk order.
@@ -213,24 +241,11 @@ pub(super) fn build_finalized_section_plan<'a>(
             })
         },
     ));
-    // The loader refuses a tile naming a probe outside id 34's lattice or an
-    // invalid one, so refuse to write one.
-    probe_depth_tiles
-        .validate_against_lattice(sh_volume.grid_dimensions, |probe| {
-            sh_volume
-                .probes
-                .get(probe as usize)
-                .is_some_and(|record| record.validity != 0)
-        })
-        .map_err(|error| anyhow::anyhow!("ProbeDepthTiles does not fit id 34: {error}"))?;
-    // Header, one `u32` index per tile, then the tiles' `u32` texels
-    // (`ProbeDepthTilesSection::to_bytes`); read-back checks the length.
-    let probe_depth_tiles_len =
-        16 + 4 * probe_depth_tiles.probe_indices.len() + 4 * probe_depth_tiles.texels.len();
+    refuse_what_the_loader_refuses(sh_volume, probe_depth_tiles)?;
     sections.push(PlannedSection::new(
         SectionId::ProbeDepthTiles as u32,
         PROBE_DEPTH_TILES_CONTAINER_VERSION,
-        probe_depth_tiles_len,
+        probe_depth_tiles.encoded_len(),
         || Ok(probe_depth_tiles.to_bytes()),
     ));
     sections.push(PlannedSection::with_writer(
@@ -574,3 +589,7 @@ pub(super) fn build_finalized_section_plan<'a>(
 
     Ok(sections)
 }
+
+#[cfg(test)]
+#[path = "section_plan_tests.rs"]
+mod tests;

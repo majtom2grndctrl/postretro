@@ -117,7 +117,7 @@ fn depth_tiles_are_deterministic_across_builds_and_thread_counts() {
     assert_eq!(on(8), one);
 }
 
-// O1: a cold build, then two warm builds of the same inputs. The first warm
+// A cold build, then two warm builds of the same inputs. The first warm
 // build writes the volume entry, the second hits it; each returns the cold
 // tiles and logs the kept and dropped counts once.
 #[test]
@@ -155,7 +155,7 @@ fn a_warm_hit_returns_the_cold_tiles_and_logs_the_dropped_count_again() {
     }
 }
 
-// O9 on a real map: with the cap at half the closet's tiles, the bake keeps
+// On a real map, with the cap at half the closet's tiles, the bake keeps
 // the half whose visibility the tile changes most, the lower index on a tie,
 // in ascending order, each tile as the uncapped bake made it, and logs the
 // dropped count.

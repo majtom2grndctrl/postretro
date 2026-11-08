@@ -59,6 +59,7 @@ use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::shadowmask_atlas::{FaceOwners, ShadowmaskBlockIndex};

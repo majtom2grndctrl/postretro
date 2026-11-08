@@ -19,7 +19,7 @@ use crate::render::gpu_test_harness::{GpuCtx, wgsl_const_line, wgsl_function, wg
 const SH_SAMPLE_WGSL: &str = include_str!("../shaders/sh_sample.wgsl");
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
 
-/// `sh_corner_depth_visibility` as it stood before id 59 (read at 2968de0ad):
+/// `sh_corner_depth_visibility` as it stood before id 59 (the pre-id-59 body):
 /// the bit-for-bit reference an untiled probe must still match.
 const TODAY_CORNER_DEPTH_VISIBILITY: &str = r#"
 fn today_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid: bool) -> f32 {

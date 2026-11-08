@@ -106,7 +106,9 @@ fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
 }
 
 // Regression: the forward "Textured Pipeline Layout" grew a fragment-stage
-// sampled-texture binding (the SH direct atlas, group-3 binding 15) but the
+// sampled-texture binding (originally the SH direct atlas, group-3 binding 15;
+// that slot now holds the id-59 depth tiles at binding 18, and binding 15 is
+// VERTEX-only in the shared layout) but the
 // hand-maintained device-limit constant was not bumped, so
 // create_pipeline_layout panicked at launch — uncatchable in CI, which has no
 // GPU. This re-derives the requested limit from the same GPU-free BGL builders

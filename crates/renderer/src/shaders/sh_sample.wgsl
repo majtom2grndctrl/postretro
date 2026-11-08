@@ -21,6 +21,8 @@ fn sh_probe_depth_bias() -> f32 {
     return max(cell_min, 0.0) * SH_DEPTH_BIAS_CELL_FRACTION;
 }
 
+// Valid only for an untiled probe (G sign bit clear); a tiled probe's G holds a
+// tile reference, not E[d^2].
 fn sh_depth_moment_pair(packed: vec4<u32>) -> vec2<f32> {
     return unpack2x16float(packed.r | (packed.g << 16u));
 }

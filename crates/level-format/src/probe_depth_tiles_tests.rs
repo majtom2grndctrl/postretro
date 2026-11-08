@@ -35,6 +35,7 @@ fn tiles_round_trip_with_the_header_indices_then_texels_in_index_order() {
     );
     assert_eq!(&bytes[16..24], &[4, 0, 0, 0, 9, 0, 0, 0]);
     assert_eq!(bytes.len(), 16 + 8 + 2 * 100 * 4);
+    assert_eq!(section.encoded_len(), bytes.len());
     let first = f32_to_f16_bits(1.0).to_le_bytes();
     assert_eq!(
         &bytes[24..26],
@@ -48,6 +49,7 @@ fn tiles_round_trip_with_the_header_indices_then_texels_in_index_order() {
 fn zero_tiles_is_the_header_alone() {
     let bytes = ProbeDepthTilesSection::default().to_bytes();
     assert_eq!(bytes.len(), 16);
+    assert_eq!(ProbeDepthTilesSection::default().encoded_len(), 16);
     let section = ProbeDepthTilesSection::from_bytes(&bytes).unwrap();
     assert_eq!(section.tile_count(), 0);
     assert_eq!(section.texture_layout(), None);
@@ -189,7 +191,7 @@ fn texture_layout_rows_are_a_power_of_two_wide_and_only_as_tall_as_needed() {
     assert_eq!(layout(5).tiles_per_row(), 4);
     assert_eq!(layout(5).rows, 2);
     assert_eq!(layout(16).extent(), [40, 40]);
-    // The hallway spike's tile count: 128 per row, 106 rows.
+    // The hallway bake's 13,451 tiles at 8×8: 128 per row, 106 rows.
     let hallway = layout(13_451);
     assert_eq!((hallway.tiles_per_row(), hallway.rows), (128, 106));
     assert_eq!(hallway.texture_bytes(), 1280 * 1060 * 4);
@@ -224,6 +226,23 @@ fn bordered_tile_wraps_like_irradiance_tiles_and_sampling_reads_its_interior() {
         let [mean, mean_sq] = sample_tile_moments(&tile, dir);
         assert!((mean - i as f32).abs() < 1e-3, "{mean} vs {i}");
         assert!((mean_sq - 2.0 * i as f32).abs() < 2e-3);
+    }
+}
+
+// A shaded point at the probe hands the lookup a zero direction. The shader
+// floors its L1 divide, so it reads the tile centre; the mirror must too.
+#[test]
+fn a_zero_direction_samples_the_tile_centre_without_nan() {
+    let interior: Vec<[u16; 2]> = (0..PROBE_DEPTH_TILE_INTERIOR_TEXELS)
+        .map(|i| [f32_to_f16_bits(i as f32), f32_to_f16_bits(2.0 * i as f32)])
+        .collect();
+    let tile = bordered_tile(&interior);
+    for dir in [[0.0f32; 3], [-0.0; 3], [0.0, 0.0, -0.0]] {
+        let [mean, mean_sq] = sample_tile_moments(&tile, dir);
+        assert!(mean.is_finite() && mean_sq.is_finite(), "{dir:?}");
+        // The centre sits between interior texels 27, 28, 35 and 36.
+        assert_eq!((mean, mean_sq), (31.5, 63.0), "{dir:?}");
+        assert_eq!(interior_texel_of_direction(dir), 36, "{dir:?}");
     }
 }
 

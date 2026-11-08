@@ -20,8 +20,15 @@ use postretro_level_format::sh_volume::OctahedralShProbe;
 use super::grid::{ProbeGridLayout, probe_index_to_xyz};
 
 /// A valid probe gets a tile when its tile moves its visibility toward some
-/// valid lattice neighbour by more than this (spike Q3, `research.md`).
+/// valid lattice neighbour by more than this. At 8×8 tiles, 0.1 flagged 1.40%
+/// of the hallway's valid probes and every closet probe with a blocked valid
+/// neighbour.
 pub(crate) const TILE_SELECTION_THRESHOLD: f32 = 0.1;
+
+/// Largest finite f16. A tile moment past it would encode +inf, and a
+/// bilinear tap weighing +inf by zero reads NaN, which escapes the visibility
+/// floor; tile texels saturate here instead.
+const F16_MAX: f32 = 65504.0;
 
 // `sh_sample.wgsl`'s Chebyshev constants, mirrored.
 const SH_DEPTH_MIN_VARIANCE_M2: f32 = 1.0e-4;
@@ -47,20 +54,27 @@ pub(crate) fn chebyshev_visibility([mean, mean2]: [f32; 2], distance: f32, bias:
     visibility.clamp(SH_DEPTH_MIN_VISIBILITY, 1.0)
 }
 
+/// The cap a bake keeps: the one asked for, at most the reference's
+/// [`MAX_PROBE_DEPTH_TILES`].
+pub(crate) fn effective_tile_cap(tile_cap: u32) -> u32 {
+    tile_cap.min(MAX_PROBE_DEPTH_TILES)
+}
+
 /// Fold what decides the tiles beyond the gather's own constants: the tile
-/// format, the selection threshold, the Chebyshev constants it mirrors and
-/// the cap.
+/// format and its saturation, the selection threshold, the Chebyshev
+/// constants it mirrors and the cap the bake keeps.
 pub(crate) fn fold_depth_tile_constants(hasher: &mut blake3::Hasher, tile_cap: u32) {
     hasher.update(b"probe depth tiles\0");
     for word in [
         PROBE_DEPTH_TILES_VERSION,
         PROBE_DEPTH_TILE_EDGE,
         PROBE_DEPTH_TILE_BORDER,
-        tile_cap,
+        effective_tile_cap(tile_cap),
     ] {
         hasher.update(&word.to_le_bytes());
     }
     for value in [
+        F16_MAX,
         TILE_SELECTION_THRESHOLD,
         SH_DEPTH_MIN_VARIANCE_M2,
         SH_DEPTH_BIAS_CELL_FRACTION,
@@ -99,23 +113,26 @@ impl ProbeDepthTiles {
         probe_depth_tile_texture_bytes(self.section.tile_count() as u32)
     }
 
-    /// The once-per-build info line, warm or cold.
+    /// The once-per-build info line, warm or cold, for a bake asked to keep
+    /// `tile_cap`.
     pub(crate) fn log(&self, tile_cap: u32) {
         log::info!(
-            "[Compiler] Probe depth tiles: {} kept, {} dropped past the {tile_cap}-tile cap",
+            "[Compiler] Probe depth tiles: {} kept, {} dropped past the {}-tile cap",
             self.section.tile_count(),
             self.dropped,
+            effective_tile_cap(tile_cap),
         );
     }
 
-    /// The Build Summary line.
-    pub(crate) fn summary_line(&self) -> String {
+    /// The Build Summary line for a bake asked to keep `tile_cap`.
+    pub(crate) fn summary_line(&self, tile_cap: u32) -> String {
         let bytes = self.texture_bytes();
         format!(
-            "Probe depth tiles: {} tiles, {} dropped past the {MAX_PROBE_DEPTH_TILES}-tile cap; \
+            "Probe depth tiles: {} tiles, {} dropped past the {}-tile cap; \
              tile texture {bytes} bytes ({:.2} MiB)",
             self.section.tile_count(),
             self.dropped,
+            effective_tile_cap(tile_cap),
             bytes as f64 / (1024.0 * 1024.0),
         )
     }
@@ -162,7 +179,9 @@ impl TileRayTable {
 
     /// One probe's interior tile from its per-ray hit distances (a miss
     /// already reads the far sentinel): each texel's mean distance and mean
-    /// squared distance over its rays, summed in ray order, as f16 bits.
+    /// squared distance over its rays, summed in ray order, as f16 bits
+    /// saturated at [`F16_MAX`]: hits are unbounded, so `E[d²]` overflows
+    /// past ~256 m.
     pub(super) fn interior(
         &self,
         distances: &[f32],
@@ -176,7 +195,10 @@ impl TileRayTable {
                 sum_d2 += d * d;
             }
             let n = rays.len() as f32;
-            *texel = [f32_to_f16_bits(sum_d / n), f32_to_f16_bits(sum_d2 / n)];
+            *texel = [
+                f32_to_f16_bits((sum_d / n).min(F16_MAX)),
+                f32_to_f16_bits((sum_d2 / n).min(F16_MAX)),
+            ];
         }
         out
     }
@@ -239,7 +261,7 @@ pub(super) struct DepthTileSelector<'a> {
 
 impl<'a> DepthTileSelector<'a> {
     pub(super) fn new(layout: &'a ProbeGridLayout, directions: &[Vec3], cap: u32) -> Self {
-        let cap = cap.min(MAX_PROBE_DEPTH_TILES) as usize;
+        let cap = effective_tile_cap(cap) as usize;
         let valid = layout.validity.iter().filter(|&&v| v != 0).count();
         Self {
             layout,

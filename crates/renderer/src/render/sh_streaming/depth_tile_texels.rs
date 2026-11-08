@@ -33,8 +33,9 @@ impl ShResidencyState {
 
     /// Repack every queued probe that is still sampleable into `uploads`, the
     /// drain's promotion and eviction batch. R and `E[d²]` come from the
-    /// retained id-34 base metadata (the loader refuses an id-50 patch whose
-    /// moments disagree with it, so promotion wrote the same bits), B/A from
+    /// retained id-34 base metadata (the id-50 decode in
+    /// `level-format` refuses a patch whose moments disagree with id 34, so
+    /// promotion wrote the same bits), B/A from
     /// the sampled word, G from `references`.
     pub(super) fn flush_depth_tile_texels(
         &mut self,

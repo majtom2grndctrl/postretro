@@ -426,7 +426,7 @@ fn a_volume_hit_marks_every_layer_it_sums_used_so_eviction_spares_them() {
     assert!(dir.join(scene.volume_key(&lights).as_filename()).exists());
 }
 
-// O2: the compiler before probe depth tiles wrote id 34 alone into this
+// The compiler before probe depth tiles wrote id 34 alone into this
 // entry, under stage version 2. Neither its key nor its payload satisfies a
 // tiled build: the version moved, and that payload read at the current key
 // is corrupt, so the build re-gathers and stores the tiles.

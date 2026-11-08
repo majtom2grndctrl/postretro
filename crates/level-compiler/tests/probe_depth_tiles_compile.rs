@@ -89,7 +89,7 @@ fn line_with<'a>(output: &'a str, needle: &str) -> &'a str {
     line
 }
 
-// O1 through the binary: a cold build, then a warm build that fills the cache
+// Through the binary: a cold build, then a warm build that fills the cache
 // and one that hits it. Each emits id 59 beside id 34 with the cold bytes,
 // logs the kept and dropped counts once, and reports tile bytes priced by the
 // function the renderer's allocation ledger uses.

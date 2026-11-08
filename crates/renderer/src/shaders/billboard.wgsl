@@ -141,7 +141,8 @@ struct AnimationDescriptor {
 @group(3) @binding(18) var sh_depth_tiles: texture_2d<f32>;
 // Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
 // `BIND_SH_DIRECT_ATLAS` (binding 15) on the SHARED `ShVolumeResources` bind
-// group layout — declared here at group 3, the same group billboard binds
+// group layout, where it is VERTEX-only; billboard reads it from `vs_main` —
+// declared here at group 3, the same group billboard binds
 // `sh_total_atlas` in. Same octahedral tile geometry as `sh_total_atlas`, so it
 // samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
 @group(3) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;

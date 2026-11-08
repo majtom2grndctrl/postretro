@@ -16,8 +16,8 @@ use super::uploads::UploadQueue;
 pub enum ProbeDepthTileRewriteError {
     /// No level set is published.
     NoLevel,
-    /// The dense index is past the level's probe lattice (or the level has
-    /// no usable SH, so no lattice).
+    /// The dense index is past the level's probe lattice. `probe_count` 0
+    /// means the level has no usable SH, so no lattice and no tiles.
     ProbeOutsideLattice { probe: u32, probe_count: u32 },
     /// The probe sits in solid or off-grid; no sampler weighs it.
     InvalidProbe { probe: u32 },
@@ -52,12 +52,18 @@ impl Renderer {
     /// `tile`, or clear its reference with `None` so it weighs with its id-34
     /// averaged moments again, bit for bit as if it never had a tile.
     ///
-    /// The seam for the mover probe channel
-    /// (`context/plans/drafts/mover-light-flow--probe-channel/`): a mover
-    /// state redirects a probe to another tile in the level's texture, or
-    /// clears it. The next frame samples the change through the same texel
-    /// and bindings. Only the published load's table changes, so another
-    /// load, of the same map or not, starts from its own id 59.
+    /// The seam for the planned mover probe channel, which redirects or
+    /// clears a probe's reference when a mover's state changes: a probe
+    /// points at another tile in the level's texture, or at none. The next
+    /// frame samples the change through the same texel and bindings. Only the
+    /// published load's table changes, so another load, of the same map or
+    /// not, starts from its own id 59.
+    ///
+    /// Call between frames: after the previous submit, before the level is
+    /// unloaded or replaced. A whole-loaded level stages one texel copy on the
+    /// current frame's upload batch, so a call outside that window lands on a
+    /// batch that is already submitted or about to be dropped. A streamed
+    /// level queues the texel and flushes it at the next drain.
     pub fn set_probe_depth_tile_reference(
         &mut self,
         probe: u32,
@@ -109,6 +115,14 @@ pub(in crate::render) fn set_depth_tile_reference(
         return Ok(());
     }
     let words = &sh.probe_indirection_words;
+    // No usable SH builds a 1-entry invalid table, not a lattice; no tiles can
+    // exist then, so report an empty lattice rather than a 1-probe one.
+    if words.len() == 1 && words[0] & SH_INDIRECTION_VALID_BIT == 0 {
+        return Err(ProbeDepthTileRewriteError::ProbeOutsideLattice {
+            probe,
+            probe_count: 0,
+        });
+    }
     let word =
         *words
             .get(probe as usize)
@@ -123,7 +137,9 @@ pub(in crate::render) fn set_depth_tile_reference(
         return Ok(());
     }
     // A change needs a level with tiles, and a whole-loaded level with tiles
-    // keeps its id-34 moments for exactly this repack.
+    // keeps its id-34 moments for exactly this repack. The expect cannot fire:
+    // a changed reference requires `tile_count > 0`, which only a usable
+    // whole-loaded id 34 provides.
     let texel = sh
         .depth_tiles
         .whole_load_texel(probe, word)

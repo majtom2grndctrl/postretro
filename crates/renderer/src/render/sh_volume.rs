@@ -912,16 +912,16 @@ impl ShVolumeResources {
         }
     }
 
-    /// Mint a fresh sampled view over the per-probe depth-moment texture for
-    /// the SDF shadow pass (Task 4). Consumed during pass construction and on
-    /// each level reload — the moment texture is recreated whenever the SH
-    /// section changes, so the pass needs a new handle.
     /// The whole-load moments texture a depth-tile reference rewrite writes
     /// one texel of (`sh_depth_tile_rewrite`); a dummy on a streamed level.
     pub(super) fn depth_moment_texture(&self) -> &wgpu::Texture {
         &self.depth_moment_texture
     }
 
+    /// Mint a fresh sampled view over the per-probe depth-moment texture for
+    /// the SDF shadow pass. Consumed during pass construction and on
+    /// each level reload — the moment texture is recreated whenever the SH
+    /// section changes, so the pass needs a new handle.
     pub fn make_depth_moment_view(&self) -> wgpu::TextureView {
         self.depth_moment_texture
             .create_view(&wgpu::TextureViewDescriptor {

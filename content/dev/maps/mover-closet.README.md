@@ -97,10 +97,12 @@ Use dev-tools noclip, or walk: the closet is reachable while the door is open.
 
 ## Reference variants
 
-Three sibling maps share this layout, lights, pool, fog, stations and probe
-lattice, and differ from this map only as below; an edit here belongs in all
-four, with the north wall at y 760 in each. They were generated with this map
-by the spike's `kit/gen_closet.py` (`spike/per-direction-depth`).
+Three sibling maps share this map's layout, lights, pool, fog, stations and
+probe lattice, and differ from it only as below. They are checked in and
+hand-maintained: the static-door and no-door variants were generated once from
+this map's layout, and the kinematic-receiver map is hand-edited from the
+static-door one. An edit to the layout, lights, pool, fog, stations or the north
+wall at y 760 belongs in all four maps.
 
 - **`mover-closet-static-door.map`** (`--static-door`): the `kinematic_mover` and
   its two waypoints are gone, and the door's brush sits in worldspawn at the
@@ -115,7 +117,7 @@ by the spike's `kit/gen_closet.py` (`spike/per-direction-depth`).
   behind the door, where the averaged moments glow. Hand-edited from the
   static-door map, not generated.
 
-Build either the same way as this map, with its own name. Each sits beside this
+Build any of them the same way as this map, with its own name. Each sits beside this
 map, so the compiler finds the same content root.
 
 These are manual, in-engine checks. Compiling the map validates only the

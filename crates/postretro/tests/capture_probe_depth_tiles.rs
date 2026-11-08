@@ -4,7 +4,7 @@
 //
 // "Today" is the tiled bake with id 59 stripped, so every other section is
 // byte-identical and only the tiles differ. Means and pixel moves are Rec. 709
-// luma of the post-tonemap sRGB capture (0–255), as the spike measured them;
+// luma of the post-tonemap sRGB capture (0–255), as the pilot measured them;
 // a "move" is |Δluma| > 2. Captures compare on one adapter; no golden images.
 
 use std::fs;
@@ -221,8 +221,8 @@ fn closet_capture(
     )
 }
 
-// A1, A2: the static-door reference reproduces the leak without tiles, and
-// tiles take it out.
+// The static-door reference reproduces the leak without tiles, and tiles take
+// it out.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
 fn static_door_closet_glows_without_tiles_and_reads_dark_with_them() {
@@ -273,7 +273,7 @@ fn static_door_closet_glows_without_tiles_and_reads_dark_with_them() {
     assert!(tiled_st2 <= 0.02, "tiles must darken st2: {tiled_st2}");
 }
 
-// A8: an absent id 59 and a zero-tile id 59 render identically.
+// An absent id 59 and a zero-tile id 59 render identically.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
 fn absent_and_zero_tile_id59_render_byte_identical() {
@@ -321,7 +321,7 @@ fn station_means(
     })
 }
 
-// A5: an open doorway reads as it did; tiles touch only probes that need them.
+// An open doorway reads as it did; tiles touch only probes that need them.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
 fn open_doorway_reads_as_today() {
@@ -348,7 +348,7 @@ fn open_doorway_reads_as_today() {
     }
 }
 
-// A7: the mover-door closet still glows by design (probe depth bakes with
+// The mover-door closet still glows by design (probe depth bakes with
 // movers absent); only a darkening would flag a dropped probe.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
@@ -369,11 +369,11 @@ fn mover_door_closet_does_not_darken() {
     }
 }
 
-// A17b (owner restatement, 2026-11-07): the convex room's wall-hugging probes
-// take tiles, and those tiles change no pixel visibly.
+// The convex room's wall-hugging probes take tiles, and the tiled build moves
+// no pixel by more than 2 levels against the same PRL without id 59.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
-fn convex_room_tiles_darken_nothing_visible() {
+fn convex_room_tiles_move_no_pixel() {
     let workspace = workspace_root();
     let scratch = tempfile::tempdir().expect("scratch dir");
     let pair = tiled_pair(&workspace, "probe-tiles-convex-room");
@@ -417,18 +417,22 @@ fn convex_room_tiles_darken_nothing_visible() {
         let moves = pixel_moves(&before, &after);
         eprintln!("convex room {name}: {moves:?}");
         assert_eq!(
-            moves.darker, 0,
-            "{name}: tiles darkened pixels by more than 2 levels: {moves:?}"
+            (moves.darker, moves.brighter),
+            (0, 0),
+            "{name}: tiles moved pixels by more than 2 levels: {moves:?}"
         );
     }
 }
 
-/// Hallway Q2 views (spike `kit/win/q2.py`), engine coordinates.
+/// Three hallway views at one position, engine coordinates.
 const HALLWAY_POSITION: [f32; 3] = [32.1056, 22.86, 53.2384];
 const HALLWAY_VIEWS: [(&str, f32); 3] = [("a", -135.0), ("b", 45.0), ("c", -45.0)];
 
-// A6, A25: the hallway's tiles darken no pixel at the Q2 views, and its tile
-// texture stays within the memory ceiling (spike count at 8×8 plus 25%).
+// The hallway's tiles darken no pixel at the three views, and its tile texture
+// stays within the memory ceiling (the per-direction depth spike's count at
+// 8×8 plus 25%). The byte count recomputes `probe_depth_tile_texture_bytes`;
+// the renderer's ledger test proves the ledger records exactly these bytes, so
+// the formula stands for the ledger.
 #[test]
 #[ignore = "bakes stress-warren-hallway-inspection (slow) and needs a GPU adapter; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles hallway -- --ignored`"]
 fn hallway_tiles_darken_no_pixel_and_fit_the_memory_ceiling() {
@@ -484,8 +488,11 @@ fn hallway_tiles_darken_no_pixel_and_fit_the_memory_ceiling() {
 }
 
 /// Largest share of its no-tile brightness the kinematic receiver behind the
-/// static door may keep with tiles (A3). The first-slice pilot measured it;
-/// see the plan of record.
+/// static door may keep with tiles Measured in a pilot on a
+/// Radeon Pro 5300M: the kinematic slab kept 0.006 of its no-tile brightness
+/// (3.434 -> 0.020 luma over 7,644 px), and a sprite on the closet floor at the
+/// door kept 0.033-0.049 (billboard sampler mirror, compiler test). 0.10 is the
+/// worst measured share with about 2x margin.
 const KINEMATIC_FRACTION_CEILING: f64 = 0.10;
 
 /// Pixel of a map-unit point seen from `pose` at `resolution`, with the
@@ -511,7 +518,7 @@ fn project(point: [f32; 3], pose: Pose, fov_deg: f32, resolution: [u32; 2]) -> O
     ])
 }
 
-// A3, kinematic half: a resting kinematic slab on the closet floor just behind
+// Kinematic half: a resting kinematic slab on the closet floor just behind
 // the static door keeps at most a set share of its no-tile brightness. Its
 // pixels are those inside its projected box that it changes against the plain
 // static-door map, both without tiles. (The sprite half reads through the

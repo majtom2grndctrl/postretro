@@ -446,9 +446,9 @@ fn fluid_shader_bindings_are_present_in_the_pipeline_layout() {
             assert!(bound >= 1, "{variant:?} {entry_point} binds nothing");
         }
     }
-    // The whole module, every stage's bindings at once, is fragment-visible.
-    let bound =
-        assert_bindings_in_layout(&validated_module(), &groups, wgpu::ShaderStages::FRAGMENT);
+    // The whole module, every stage's bindings at once, is in the layout.
+    // Visibility is per stage above: the direct atlas (3, 15) is vertex-only.
+    let bound = assert_bindings_in_layout(&validated_module(), &groups, wgpu::ShaderStages::NONE);
     assert!(bound >= 14, "expected the full binding set, saw {bound}");
 }
 
@@ -3672,6 +3672,7 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         (3, 13, "scripted_light_descriptors"),
         (3, 14, "sh_depth_moments"),
         (3, 15, "sh_direct_atlas"),
+        (3, 18, "sh_depth_tiles"),
         (4, 0, "fluid_volumes"),
         (4, 1, "fluid_probe_array"),
         (4, 2, "fluid_probes"),

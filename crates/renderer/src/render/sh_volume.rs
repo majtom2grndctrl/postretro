@@ -9,18 +9,21 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 #[cfg(test)]
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_volume::{
     AnimationDescriptor, OctahedralShProbe, OctahedralShVolumeSection,
 };
+use postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences;
 #[allow(unused_imports)]
 pub use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
     BIND_ANIM_SAMPLES, BIND_BILLBOARD_DIRECT_SCATTER, BIND_DYNAMIC_DIRECT_PARAMS,
     BIND_SCRIPTED_LIGHT_DESCRIPTORS, BIND_SH_ATLAS_SAMPLER, BIND_SH_DEPTH_MOMENTS,
-    BIND_SH_DIRECT_ATLAS, BIND_SH_GRID_INFO, BIND_SH_TOTAL_ATLAS, DEFAULT_PROBE_OCCLUSION,
-    DUMMY_SH_PHYSICAL_TILE_STRIDE, DYNAMIC_DIRECT_PARAMS_SIZE, LEGACY_SH_PHYSICAL_TILE_STRIDE,
-    SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32, SCRIPTED_FLOATS_PER_LIGHT,
-    SH_GRID_INFO_SIZE, STREAMED_SH_PHYSICAL_TILE_STRIDE, ShGridInfoParams, build_animation_buffers,
+    BIND_SH_DEPTH_TILES, BIND_SH_DIRECT_ATLAS, BIND_SH_GRID_INFO, BIND_SH_TOTAL_ATLAS,
+    DEFAULT_PROBE_OCCLUSION, DUMMY_SH_PHYSICAL_TILE_STRIDE, DYNAMIC_DIRECT_PARAMS_SIZE,
+    DepthTileGridWords, LEGACY_SH_PHYSICAL_TILE_STRIDE, SCRIPTED_BRIGHTNESS_SLOT,
+    SCRIPTED_COLOR_SLOT_F32, SCRIPTED_FLOATS_PER_LIGHT, SH_GRID_INFO_SIZE,
+    STREAMED_SH_PHYSICAL_TILE_STRIDE, ShGridInfoParams, build_animation_buffers,
     build_animation_buffers_from_descriptors, build_grid_info_bytes, f32_to_f16_bits,
     probe_occlusion_seed_from_fast_env,
 };
@@ -47,6 +50,7 @@ use super::sh_atlas::{
     create_total_atlas_texture, upload_compact_base_atlas_dummy, upload_compact_base_atlas_texture,
     upload_depth_moment_texture,
 };
+use super::sh_depth_tiles::{ShDepthTiles, depth_tiles_layout_entry};
 use super::sh_indirection::build_probe_indirection_words;
 use super::sh_residency::ShAllocationLedger;
 
@@ -109,13 +113,17 @@ pub struct ShVolumeResources {
     pub base_atlas_view: wgpu::TextureView,
     /// Storage-writeable view over the total octahedral atlas; consumed by the compose pass.
     pub total_atlas_storage_view: wgpu::TextureView,
-    /// Per-probe depth-moment texture (`Rgba16Uint` — R/G carry the f16 bits
-    /// for E[d]/E[d²], B/A carry the raw halves of the load-derived word).
+    /// Per-probe depth-moment texture (`Rgba16Uint` — R carries the f16 E[d]
+    /// bits, G the E[d²] bits or a tiled probe's sign-flagged tile reference,
+    /// B/A the raw halves of the load-derived word).
     /// Already bound on group 3 binding 14 for the forward/billboard/fog
     /// passes; held here so the SDF shadow pass can mint its own
     /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
     /// and the SDF shadow pass rebuilds its bind group on resize / level reload).
     depth_moment_texture: wgpu::Texture,
+    /// Id 59's tile texture (binding 18), grid words and this load's probe →
+    /// tile reference table. Streamed installs bind the same texture.
+    pub(super) depth_tiles: ShDepthTiles,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
@@ -185,6 +193,9 @@ pub(super) struct ShVolumeSections<'a> {
     pub billboard_direct_scatter: Option<&'a BillboardDirectScatterVolumeSection>,
     pub animated_billboard_direct_scatter_delta:
         Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    /// Id 59, validated by the loader against id 34. Installed only while the
+    /// level has usable SH (whole or streamed); otherwise the dummy binds.
+    pub depth_tiles: Option<&'a ProbeDepthTilesSection>,
 }
 
 /// Per-animated-light delta volume placement, mirrored on CPU for diagnostics.
@@ -393,6 +404,7 @@ impl ShVolumeResources {
             animated_direct_delta: animated_direct_delta_section,
             billboard_direct_scatter: billboard_direct_scatter_section,
             animated_billboard_direct_scatter_delta: animated_billboard_direct_scatter_delta_section,
+            depth_tiles: depth_tiles_section,
         } = sections;
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Volume Bind Group Layout"),
@@ -430,6 +442,16 @@ impl ShVolumeResources {
         let total_atlas_texture: wgpu::Texture;
         let depth_moment_texture: wgpu::Texture;
         let probe_indirection_words = build_probe_indirection_words(usable);
+        // Tiles ride only a level whose moments texture is real: a whole
+        // usable id 34 or a streamed base. Built before the moments, which
+        // pack G from its references.
+        let depth_tiles = ShDepthTiles::new(
+            device,
+            queue,
+            depth_tiles_section.filter(|_| usable.is_some() || stream_base_present),
+            usable.map(|sec| sec.probes.as_slice()),
+            ledger,
+        );
 
         #[cfg(feature = "dev-tools")]
         let validity: Vec<u8> = usable
@@ -500,6 +522,7 @@ impl ShVolumeResources {
                 &sec.probes,
                 sec.grid_dimensions,
                 &probe_indirection_words,
+                depth_tiles.references(),
             );
             let depth_allocation = depth_moment_allocation(sec.grid_dimensions);
             ledger.record_texture(
@@ -688,6 +711,7 @@ impl ShVolumeResources {
             atlas_layer_count,
             present,
             probe_occlusion_enabled,
+            depth_tiles: depth_tiles.grid_words(),
         });
         let grid_info_allocation = buffer_allocation(
             ShAllocationKind::GridInfo,
@@ -794,6 +818,7 @@ impl ShVolumeResources {
                 binding: BIND_SH_DEPTH_MOMENTS,
                 resource: wgpu::BindingResource::TextureView(&depth_moment_view),
             },
+            depth_tiles.bind_group_entry(),
             wgpu::BindGroupEntry {
                 binding: postretro_render_cpu::sh_volume::BIND_SH_DIRECT_ATLAS,
                 resource: wgpu::BindingResource::TextureView(&direct.atlas_view),
@@ -865,6 +890,7 @@ impl ShVolumeResources {
             base_atlas_view,
             total_atlas_storage_view,
             depth_moment_texture,
+            depth_tiles,
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: scripted_light_capacity as u32,
@@ -886,8 +912,14 @@ impl ShVolumeResources {
         }
     }
 
+    /// The whole-load moments texture a depth-tile reference rewrite writes
+    /// one texel of (`sh_depth_tile_rewrite`); a dummy on a streamed level.
+    pub(super) fn depth_moment_texture(&self) -> &wgpu::Texture {
+        &self.depth_moment_texture
+    }
+
     /// Mint a fresh sampled view over the per-probe depth-moment texture for
-    /// the SDF shadow pass (Task 4). Consumed during pass construction and on
+    /// the SDF shadow pass. Consumed during pass construction and on
     /// each level reload — the moment texture is recreated whenever the SH
     /// section changes, so the pass needs a new handle.
     pub fn make_depth_moment_view(&self) -> wgpu::TextureView {
@@ -924,6 +956,7 @@ impl ShVolumeResources {
             atlas_layer_count: self.atlas_layer_count,
             present: self.present,
             probe_occlusion_enabled: enabled,
+            depth_tiles: self.depth_tiles.grid_words(),
         });
         queue.write_buffer(&self.grid_info_buffer, 0, &bytes);
     }
@@ -934,9 +967,16 @@ impl ShVolumeResources {
 /// Mesh group-4 SUPERSET layout: the shared SH entries plus the mesh-only
 /// dynamic-direct params uniform (binding 16, FRAGMENT). The mesh shader binds
 /// every entry by lexical name; the shared entries it does not read are legal
-/// to carry in the layout.
+/// to carry in the layout. Movers and skinned meshes sample the direct atlas
+/// (binding 15) in `fs_main`, so the superset gives it back the FRAGMENT
+/// visibility the shared layout drops.
 pub(super) fn mesh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut entries = sh_bind_group_layout_entries();
+    for entry in &mut entries {
+        if entry.binding == BIND_SH_DIRECT_ATLAS {
+            entry.visibility |= wgpu::ShaderStages::FRAGMENT;
+        }
+    }
     entries.push(mesh_dynamic_direct_params_layout_entry());
     entries
 }
@@ -1023,6 +1063,7 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
         },
         count: None,
     });
+    entries.push(depth_tiles_layout_entry());
     append_shared_bind_group_layout_entries(&mut entries);
     append_billboard_scatter_layout_entries(&mut entries);
     entries
@@ -1031,12 +1072,15 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
 /// Pack per-probe depth moments into one `Rgba16Uint` 3D texture payload.
 /// Probes are already ordered z-major/y/x by the PRL section; keeping the same
 /// linear order as the SH band textures makes the moment texture index-aligned
-/// with every band. Valid probes copy baked f16 bits directly into RG. B/A
-/// carry the raw low/high halves of the load-derived indirection word.
+/// with every band. Valid probes copy their baked `E[d]` bits into R and take
+/// G from the load's tile references: a tiled probe's flagged tile index, an
+/// untiled probe's `E[d²]` bits. B/A carry the raw low/high halves of the
+/// load-derived indirection word.
 pub(super) fn pack_probe_depth_moments(
     probes: &[OctahedralShProbe],
     grid: [u32; 3],
     probe_indirection_words: &[u32],
+    depth_tiles: &ProbeDepthTileReferences,
 ) -> Vec<u16> {
     let total = (grid[0] as usize) * (grid[1] as usize) * (grid[2] as usize);
     debug_assert_eq!(probes.len(), total);
@@ -1048,7 +1092,7 @@ pub(super) fn pack_probe_depth_moments(
         let word = probe_indirection_words[probe_idx];
         if probe.validity != 0 {
             moments[off] = probe.mean_distance;
-            moments[off + 1] = probe.mean_sq_distance;
+            moments[off + 1] = depth_tiles.second_channel(probe_idx as u32, probe.mean_sq_distance);
         } else {
             debug_assert_eq!(word, 0, "invalid metadata probes must have an invalid word");
         }
@@ -1156,7 +1200,12 @@ mod tests {
         };
 
         let words = [0x1234_5674, 0xabcd_efc4];
-        let moments = pack_probe_depth_moments(&[probe_a, probe_b], [2, 1, 1], &words);
+        let moments = pack_probe_depth_moments(
+            &[probe_a, probe_b],
+            [2, 1, 1],
+            &words,
+            &ProbeDepthTileReferences::default(),
+        );
 
         assert_eq!(
             moments,
@@ -1184,8 +1233,12 @@ mod tests {
             node_scale: 0,
         };
 
-        let moments =
-            pack_probe_depth_moments(&[probe_valid, probe_invalid], [2, 1, 1], &[0x0000_0004, 0]);
+        let moments = pack_probe_depth_moments(
+            &[probe_valid, probe_invalid],
+            [2, 1, 1],
+            &[0x0000_0004, 0],
+            &ProbeDepthTileReferences::default(),
+        );
 
         assert_eq!(
             moments,
@@ -1214,6 +1267,7 @@ mod tests {
             atlas_layer_count: 1,
             present: false,
             probe_occlusion_enabled: true,
+            depth_tiles: DepthTileGridWords::NONE,
         });
         let flag = u32::from_ne_bytes(grid_info[12..16].try_into().unwrap());
         assert_eq!(
@@ -1332,6 +1386,23 @@ mod tests {
                 "{label} must keep its existing moments binding and declare it as texture_3d<u32>",
             );
         }
+        // Every reader that weighs depth through `sh_sample.wgsl` also
+        // declares the tile texture its G decode may sample; the SDF pass
+        // reads R raw and never decodes G.
+        for (label, source, binding) in &READERS[..5] {
+            let group = &binding[..binding.find(" @binding").unwrap()];
+            let declaration = format!(
+                "{group} @binding({BIND_SH_DEPTH_TILES}) var sh_depth_tiles: texture_2d<f32>;"
+            );
+            assert!(
+                source.contains(&declaration),
+                "{label} must declare `{declaration}`",
+            );
+        }
+        assert!(
+            !READERS[5].1.contains("sh_depth_tiles"),
+            "the SDF pass reads E[d] from R and never the tile reference"
+        );
         assert!(
             SH_SAMPLE.contains("decode_sh_probe_indirection(")
                 && SH_SAMPLE.contains("packed.b | (packed.a << 16u)")
@@ -1551,6 +1622,57 @@ mod tests {
         assert_eq!(mesh.len(), sh_bind_group_layout_entries().len() + 1);
     }
 
+    /// The shared layout's direct atlas is VERTEX-only, freeing forward's
+    /// fragment slot for the depth tiles; movers and skinned meshes sample it
+    /// in `fs_main`, so their superset keeps it fragment-visible. Every other
+    /// shared entry is identical in both layouts.
+    #[test]
+    fn mesh_superset_keeps_direct_atlas_fragment_visible_and_shared_drops_it() {
+        let shared = sh_bind_group_layout_entries();
+        let mesh = mesh_bind_group_layout_entries();
+        let direct = |entries: &[wgpu::BindGroupLayoutEntry]| {
+            entries
+                .iter()
+                .find(|entry| entry.binding == BIND_SH_DIRECT_ATLAS)
+                .expect("direct atlas entry")
+                .visibility
+        };
+        assert_eq!(direct(&shared), wgpu::ShaderStages::VERTEX);
+        assert_eq!(
+            direct(&mesh),
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+        );
+        for entry in &shared {
+            if entry.binding == BIND_SH_DIRECT_ATLAS {
+                continue;
+            }
+            assert_eq!(
+                mesh.iter()
+                    .find(|mesh_entry| mesh_entry.binding == entry.binding),
+                Some(entry),
+                "binding {} must match between the shared and mesh layouts",
+                entry.binding
+            );
+        }
+        let tiles = shared
+            .iter()
+            .find(|entry| entry.binding == BIND_SH_DEPTH_TILES)
+            .expect("shared layout declares the depth tiles");
+        let moments = shared
+            .iter()
+            .find(|entry| entry.binding == BIND_SH_DEPTH_MOMENTS)
+            .unwrap();
+        assert_eq!(tiles.visibility, moments.visibility);
+        assert!(matches!(
+            tiles.ty,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            }
+        ));
+    }
+
     #[test]
     fn group3_shader_bindings_are_represented_by_rust_layout() {
         use std::collections::BTreeSet;
@@ -1632,6 +1754,8 @@ mod tests {
             // VERTEX-only, leaving forward's full fragment texture budget
             // untouched.
             BIND_BILLBOARD_DIRECT_SCATTER,
+            // Id-59 depth tiles: every SH sampler declares it, fog included.
+            BIND_SH_DEPTH_TILES,
         ]
         .into_iter()
         .collect();
@@ -1649,6 +1773,10 @@ mod tests {
             assert!(
                 shader_bindings.contains(&BIND_SH_DEPTH_MOMENTS),
                 "{label} shader must declare sh_depth_moments at group 3 binding {BIND_SH_DEPTH_MOMENTS}",
+            );
+            assert!(
+                shader_bindings.contains(&BIND_SH_DEPTH_TILES),
+                "{label} shader must declare sh_depth_tiles at group 3 binding {BIND_SH_DEPTH_TILES}",
             );
             for binding in &shader_bindings {
                 assert!(

@@ -156,6 +156,7 @@ impl World {
                     light_influences: &[],
                     sh_volume: None,
                     sh_storage: LevelGeometryShStorage::Legacy,
+                    probe_depth_tiles: None,
                     lightmap: None,
                     lightmap_streaming: None,
                     chunk_light_list: None,

@@ -15,8 +15,8 @@ use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
 use crate::light_namespaces::StaticBakedLights;
 use crate::sh_bake::{
-    RadianceSource, ShBakeCtx, ShConfig, animation_tables, bake_sh_volume_over, probe_grid_layout,
-    static_light_refs,
+    GatheredVolume, ProbeDepthTiles, RadianceSource, ShBakeCtx, ShConfig, animation_tables,
+    bake_sh_volume_over, probe_grid_layout, static_light_refs,
 };
 use crate::texel_footprint::EmbeddedEmitters;
 
@@ -38,6 +38,14 @@ impl Drop for PatchCache {
     }
 }
 
+/// What the SH base stage hands on: id 34 and, from the same gather, the
+/// probe depth tiles (id 59).
+#[derive(Debug, PartialEq)]
+pub(crate) struct ShBase {
+    pub(crate) section: OctahedralShVolumeSection,
+    pub(crate) depth_tiles: ProbeDepthTiles,
+}
+
 /// Bake id 34 through the surface radiance cache. Each distinct static
 /// light content shades one layer over the patches in its reach, seeded by
 /// its content digest ([`LayerPlan`]). The layers sum in content order into
@@ -57,6 +65,11 @@ impl Drop for PatchCache {
 /// and warm bake the same bytes. Progress counts one unit per patch chunk
 /// of each layer's reach, then one per patch chunk of each later bounce,
 /// then one per probe; a hit advances them all at once.
+///
+/// The gather's hits also bin into each valid probe's depth tile, kept when
+/// it changes the probe's visibility, at most `tile_cap` per level
+/// (production passes `MAX_PROBE_DEPTH_TILES`). The tiles ride the volume
+/// entry, and the kept and dropped counts log once, hit or miss.
 pub(crate) fn bake_sh_base(
     ctx: &ShBakeCtx<'_>,
     config: &ShConfig,
@@ -64,7 +77,8 @@ pub(crate) fn bake_sh_base(
     embedded: &EmbeddedEmitters,
     cache: Option<&StageCache>,
     control: &BakeControl,
-) -> OctahedralShVolumeSection {
+    tile_cap: u32,
+) -> ShBase {
     let ShBaseHandoff {
         patches,
         light_reach,
@@ -100,12 +114,13 @@ pub(crate) fn bake_sh_base(
                 config.probe_spacing,
                 bounce_fill,
                 tracer_epoch,
+                tile_cap,
             ),
         };
         (LayerCache { cache, keys }, volume)
     });
     if let Some((layers, volume)) = &caches
-        && let Some(mut section) = volume.load(&layout)
+        && let Some((mut section, depth_tiles)) = volume.load(&layout)
     {
         for planned in &plan.layers {
             layers
@@ -114,14 +129,21 @@ pub(crate) fn bake_sh_base(
         }
         (section.animation_descriptors, section.slot_for_map_light) = animation_tables(ctx);
         #[cfg(test)]
-        let _section = crate::live_bytes::hold(
-            "id-34 section",
-            crate::sh_bake::section_heap_bytes(&section),
-        );
+        let _section = [
+            crate::live_bytes::hold(
+                "id-34 section",
+                crate::sh_bake::section_heap_bytes(&section),
+            ),
+            crate::live_bytes::hold("probe depth tiles", depth_tiles.heap_bytes()),
+        ];
         #[cfg(test)]
         crate::live_bytes::phase("volume load");
         control.advance(total_units);
-        return section;
+        depth_tiles.log(tile_cap);
+        return ShBase {
+            section,
+            depth_tiles,
+        };
     }
 
     let layers = resolve_layers(
@@ -148,28 +170,44 @@ pub(crate) fn bake_sh_base(
     #[cfg(test)]
     crate::live_bytes::phase("later bounces");
     let patch_cache = PatchCache { patches, radiance };
-    let mut section = {
+    let GatheredVolume {
+        mut section,
+        depth_tiles,
+    } = {
         let gather = PatchGather::new(
             &patch_cache.patches,
             &patch_cache.radiance,
             PatchLookup::PRODUCTION,
         );
-        bake_sh_volume_over(ctx, &layout, control, RadianceSource::Patches(&gather))
+        bake_sh_volume_over(
+            ctx,
+            &layout,
+            control,
+            RadianceSource::Patches(&gather),
+            tile_cap,
+        )
     };
     #[cfg(test)]
-    let _section = crate::live_bytes::hold(
-        "id-34 section",
-        crate::sh_bake::section_heap_bytes(&section),
-    );
+    let _section = [
+        crate::live_bytes::hold(
+            "id-34 section",
+            crate::sh_bake::section_heap_bytes(&section),
+        ),
+        crate::live_bytes::hold("probe depth tiles", depth_tiles.heap_bytes()),
+    ];
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
     drop(patch_cache);
     if let Some((_, volume)) = &caches {
-        volume.store(&mut section);
+        volume.store(&mut section, &depth_tiles);
     }
     #[cfg(test)]
     crate::live_bytes::phase("volume store");
-    section
+    depth_tiles.log(tile_cap);
+    ShBase {
+        section,
+        depth_tiles,
+    }
 }
 
 /// Warn once for each static light only the bounce family's test flags:

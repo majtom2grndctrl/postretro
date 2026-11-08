@@ -16,6 +16,7 @@ use postretro_level_format::lightmap::{
 use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, cache_filename_for_key,
 };
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_reconstruct::Level;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
@@ -386,6 +387,7 @@ impl CaptureFixture {
             exterior_leaves: &world.exterior,
             lightmap: &self.lightmap,
             sh_volume: &self.sh,
+            depth_tiles: &ProbeDepthTilesSection::default(),
             delta_sh: None,
             animated_weight_maps: self.weight_maps.as_ref(),
             animated_direct_sh: None,

@@ -59,6 +59,8 @@ pub(super) fn create_sample_bind_groups(
             binding: BIND_SH_DEPTH_MOMENTS,
             resource: wgpu::BindingResource::TextureView(&depth_view),
         },
+        // Whole-resident, so growth rebinds the level's one tile texture.
+        sh.depth_tiles.bind_group_entry(),
         wgpu::BindGroupEntry {
             binding: BIND_SH_DIRECT_ATLAS,
             resource: wgpu::BindingResource::TextureView(direct_view),
@@ -91,6 +93,7 @@ pub(super) fn create_grid_info(
     base: &ShStreamBaseMetadata,
     shape: AtlasShape,
     probe_occlusion_enabled: bool,
+    depth_tiles: DepthTileGridWords,
 ) -> wgpu::Buffer {
     let extent = shape.extent();
     let grid_bytes = build_grid_info_bytes(ShGridInfoParams {
@@ -106,6 +109,7 @@ pub(super) fn create_grid_info(
         atlas_layer_count: shape.layers,
         present: true,
         probe_occlusion_enabled,
+        depth_tiles,
     });
     device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Streamed SH Grid Info"),

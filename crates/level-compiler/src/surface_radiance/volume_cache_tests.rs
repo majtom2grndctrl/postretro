@@ -425,3 +425,52 @@ fn a_volume_hit_marks_every_layer_it_sums_used_so_eviction_spares_them() {
     }
     assert!(dir.join(scene.volume_key(&lights).as_filename()).exists());
 }
+
+// The compiler before probe depth tiles wrote id 34 alone into this
+// entry, under stage version 2. Neither its key nor its payload satisfies a
+// tiled build: the version moved, and that payload read at the current key
+// is corrupt, so the build re-gathers and stores the tiles.
+#[test]
+fn an_entry_from_before_depth_tiles_does_not_satisfy_a_tiled_build() {
+    use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
+
+    use crate::bake_control::BakeControl;
+    use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
+
+    assert_eq!(super::SH_BASE_VOLUME_STAGE_VERSION, 3);
+    let scene = Scene::new();
+    let lights = room_lights();
+    let bake = |cache: Option<&StageCache>| {
+        scene.bake_base(
+            &lights,
+            1.0,
+            super::DEFAULT_BOUNCE_FILL,
+            &NO_EMBEDDED_EMITTERS,
+            cache,
+            &BakeControl::unrestricted(),
+            MAX_PROBE_DEPTH_TILES,
+        )
+    };
+    let cold = bake(None);
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut old = cold.section.clone();
+    old.animation_descriptors.clear();
+    old.slot_for_map_light.clear();
+    open(dir.path()).put(&scene.volume_key(&lights), &old.try_to_bytes().unwrap());
+
+    let cache = open(dir.path());
+    let warm = bake(Some(&cache));
+    // The read finds the file, which does not decode as a tiled entry, so
+    // the bake re-gathers and writes it.
+    let access = volume(&cache);
+    assert_eq!(
+        (access.read_attempts, access.read_hits, access.writes),
+        (1, 1, 1),
+        "an id-34-only entry is read, refused and rewritten: {access:?}"
+    );
+    assert_eq!(warm, cold);
+    let cache = open(dir.path());
+    assert_eq!(bake(Some(&cache)), cold);
+    assert_volume_hit(volume(&cache), "the rewritten entry");
+}

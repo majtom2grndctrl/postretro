@@ -698,6 +698,13 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         {
             Some("guarded chokepoint")
         }
+        // The texture twin of `write_buffer`: direct only while staging is
+        // disabled (boot and installs), staged otherwise.
+        ("render/uploads/mod.rs", "UploadQueue", "write_texture")
+            if site.receiver == Receiver::RawQueue && site.method == "write_texture" =>
+        {
+            Some("guarded chokepoint")
+        }
         // The upload thread's own queue timeline: it submits each job's staged
         // writes before handing the job's result back.
         ("render/upload_thread.rs", "", "flush_staged_writes")
@@ -735,6 +742,7 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
             "upload_texture_data" | "upload_texture_array_data",
         ) => Some("load"),
         ("render/sh_atlas.rs", "", "upload_depth_moment_texture") => Some("load"),
+        ("render/sh_depth_tiles.rs", "ShDepthTiles", "new") => Some("load"),
         ("render/sdf_atlas.rs", "SdfAtlasResources", "new") => Some("load"),
         ("render/smoke.rs", "", "create_sprite_placeholder_array") => Some("load"),
         ("render/smoke.rs", "SmokePass", "upload_sprite_asset") => Some("install"),

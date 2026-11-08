@@ -235,6 +235,7 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
         ShAllocationKind::IndirectBaseAtlas => "indirect_base_atlas",
         ShAllocationKind::IndirectTotalAtlas => "indirect_total_atlas",
         ShAllocationKind::DepthMoments => "depth_moments",
+        ShAllocationKind::DepthTiles => "depth_tiles",
         ShAllocationKind::GridInfo => "grid_info",
         ShAllocationKind::AnimatedLightDescriptors => "animated_light_descriptors",
         ShAllocationKind::AnimatedLightSamples => "animated_light_samples",

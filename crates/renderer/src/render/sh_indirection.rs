@@ -383,6 +383,7 @@ mod tests {
             &section.probes,
             section.grid_dimensions,
             &words,
+            &postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences::default(),
         );
         for texel in packed.as_chunks::<4>().0 {
             assert_eq!(&texel[..2], &[0x1234, 0xabcd]);
@@ -471,6 +472,7 @@ mod tests {
             &section.probes,
             section.grid_dimensions,
             &words,
+            &postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences::default(),
         );
         for (probe, &word) in words.iter().enumerate() {
             let packed_word =

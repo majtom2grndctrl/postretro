@@ -43,6 +43,7 @@ pub mod octahedral;
 pub mod portals;
 pub mod prm;
 pub mod prm_accounting;
+pub mod probe_depth_tiles;
 pub mod push_forces;
 pub mod reflection_probes;
 pub mod sdf_atlas;

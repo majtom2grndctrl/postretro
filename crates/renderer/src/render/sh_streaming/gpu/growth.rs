@@ -49,7 +49,13 @@ impl StreamingGpuPools {
             .and_then(|bytes| bytes.checked_add(self.grid_info.size()))
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
         let replacement = DenseTextures::new(device, queue.raw(), base, sources, shape, sh)?;
-        let replacement_grid_info = create_grid_info(device, base, shape, probe_occlusion_enabled);
+        let replacement_grid_info = create_grid_info(
+            device,
+            base,
+            shape,
+            probe_occlusion_enabled,
+            sh.depth_tiles.grid_words(),
+        );
         let (replacement_bind_group, replacement_mesh_bind_group) = create_sample_bind_groups(
             device,
             sh,

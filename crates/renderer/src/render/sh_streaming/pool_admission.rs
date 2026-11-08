@@ -98,7 +98,8 @@ impl ShResidencyState {
         outcome: &mut ShDrainOutcome,
     ) -> Result<bool, ShResidencyDrainError> {
         let mut uploads = self.begin_uploads(0);
-        let walked = self.walk_victims(&mut uploads, demand, admission, outcome);
+        let references = gpu.sh.depth_tiles.references();
+        let walked = self.walk_victims(&mut uploads, references, demand, admission, outcome);
         self.submit_uploads(uploads, gpu.device, gpu.queue);
         walked
     }
@@ -106,6 +107,7 @@ impl ShResidencyState {
     fn walk_victims(
         &mut self,
         uploads: &mut StagedUploads,
+        references: &ProbeDepthTileReferences,
         demand: &PoolDemand,
         admission: &mut PoolAdmission,
         outcome: &mut ShDrainOutcome,
@@ -120,7 +122,7 @@ impl ShResidencyState {
             }
             // A victim sharing everything it names frees nothing, yet it goes
             // all the same: it is what keeps the next victim's storage live.
-            let freed = self.evict(uploads, victim)?;
+            let freed = self.evict(uploads, references, victim)?;
             outcome.evicted.push(victim);
             if freed {
                 placed = self.holds(&self.place(demand)?);

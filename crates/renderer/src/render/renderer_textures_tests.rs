@@ -171,6 +171,7 @@ pub(in crate::render) fn with_one_triangle<R>(
         light_influences: &[],
         sh_volume,
         sh_storage: LevelGeometryShStorage::Legacy,
+        probe_depth_tiles: None,
         lightmap: None,
         lightmap_streaming: None,
         chunk_light_list: None,

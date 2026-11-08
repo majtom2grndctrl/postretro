@@ -6,12 +6,23 @@ const SH_DEPTH_BIAS_CELL_FRACTION: f32 = 0.05;
 const SH_DEPTH_MIN_VISIBILITY: f32 = 0.03;
 const SH_WEIGHT_EPSILON: f32 = 1.0e-5;
 const SH_AFFINITY_FACTOR: u32 = 4u;
+// Moment texel G (id 59 reference): the raw sign bit flags a tile, whose index
+// is the low 15 bits; clear, G is the probe's averaged E[d²] f16 bits. Tiles
+// are 8×8 octahedral interiors with a one-texel border, laid out a power of two
+// tiles per row (`depth_tile_row_shift`) in `sh_depth_tiles`.
+const SH_DEPTH_TILE_REFERENCE_FLAG: u32 = 0x8000u;
+const SH_DEPTH_TILE_INDEX_MASK: u32 = 0x7fffu;
+const SH_DEPTH_TILE_EDGE: f32 = 8.0;
+const SH_DEPTH_TILE_BORDER: f32 = 1.0;
+const SH_DEPTH_TILE_BORDERED_EDGE: u32 = 10u;
 
 fn sh_probe_depth_bias() -> f32 {
     let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
     return max(cell_min, 0.0) * SH_DEPTH_BIAS_CELL_FRACTION;
 }
 
+// Valid only for an untiled probe (G sign bit clear); a tiled probe's G holds a
+// tile reference, not E[d^2].
 fn sh_depth_moment_pair(packed: vec4<u32>) -> vec2<f32> {
     return unpack2x16float(packed.r | (packed.g << 16u));
 }
@@ -24,20 +35,48 @@ fn sh_probe_indirection(idx: vec3<i32>) -> ShProbeIndirection {
     return sh_indirection_from_moment_texel(textureLoad(sh_depth_moments, idx, 0));
 }
 
+// The one Chebyshev weight every depth-aware path applies, from either moment
+// source: continuous, floored at the minimum visibility, never a binary cut.
+fn sh_chebyshev_visibility(moments: vec2<f32>, distance: f32) -> f32 {
+    let mean = moments.x;
+    let mean2 = moments.y;
+    let variance = max(mean2 - mean * mean, SH_DEPTH_MIN_VARIANCE_M2);
+    let delta = max(distance - mean - sh_probe_depth_bias(), 0.0);
+    let visibility = select(1.0, variance / (variance + delta * delta), delta > 0.0);
+    return clamp(visibility, SH_DEPTH_MIN_VISIBILITY, 1.0);
+}
+
+// `(E[d], E[d²])` of depth tile `tile` toward `to_sample` (probe → shaded
+// point, unnormalized). Shift, mask and one multiply find the tile; the
+// uniform's reciprocal extent replaces a texture-size query.
+fn sh_depth_tile_moments(tile: u32, to_sample: vec3<f32>) -> vec2<f32> {
+    let shift = sh_grid.depth_tile_row_shift;
+    let column = tile & ((1u << shift) - 1u);
+    let row = tile >> shift;
+    let origin = vec2<f32>(vec2<u32>(column, row) * SH_DEPTH_TILE_BORDERED_EDGE);
+    let texel = origin
+        + vec2<f32>(SH_DEPTH_TILE_BORDER)
+        + oct_encode_l1(to_sample) * SH_DEPTH_TILE_EDGE;
+    let uv = texel * vec2<f32>(sh_grid.depth_tile_inv_width, sh_grid.depth_tile_inv_height);
+    return textureSampleLevel(sh_depth_tiles, sh_atlas_sampler, uv, 0.0).xy;
+}
+
+// Tile presence only picks which moments a probe weighs with; every probe
+// keeps its continuous weight.
 fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid: bool) -> f32 {
     if (!is_valid) {
         return 0.0;
     }
 
-    let moments = sh_depth_moment_pair(textureLoad(sh_depth_moments, idx, 0));
-    let mean = moments.x;
-    let mean2 = moments.y;
-    let variance = max(mean2 - mean * mean, SH_DEPTH_MIN_VARIANCE_M2);
+    let packed = textureLoad(sh_depth_moments, idx, 0);
     let probe_world = sh_grid.grid_origin + vec3<f32>(idx) * sh_grid.cell_size;
-    let distance = length(sample_world - probe_world);
-    let delta = max(distance - mean - sh_probe_depth_bias(), 0.0);
-    let visibility = select(1.0, variance / (variance + delta * delta), delta > 0.0);
-    return clamp(visibility, SH_DEPTH_MIN_VISIBILITY, 1.0);
+    let to_sample = sample_world - probe_world;
+    let distance = length(to_sample);
+    var moments = sh_depth_moment_pair(packed);
+    if ((packed.g & SH_DEPTH_TILE_REFERENCE_FLAG) != 0u) {
+        moments = sh_depth_tile_moments(packed.g & SH_DEPTH_TILE_INDEX_MASK, to_sample);
+    }
+    return sh_chebyshev_visibility(moments, distance);
 }
 
 struct ShDirPair {
@@ -52,6 +91,21 @@ struct ShDirPair {
 // reference UVs to match, or the two sides will silently drift.
 fn oct_encode_unquantized(dir_in: vec3<f32>) -> vec2<f32> {
     let dir = normalize(dir_in);
+    var p = dir.xy / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1.0e-6);
+    if (dir.z < 0.0) {
+        let old = p;
+        p = vec2<f32>(
+            (1.0 - abs(old.y)) * select(-1.0, 1.0, old.x >= 0.0),
+            (1.0 - abs(old.x)) * select(-1.0, 1.0, old.y >= 0.0),
+        );
+    }
+    return p * 0.5 + vec2<f32>(0.5);
+}
+
+// `oct_encode_unquantized` without the normalize: the L1 divide already
+// projects any nonzero direction onto the octahedron. Depth tiles call it per
+// corner, where the normalize was measurable on the Mac.
+fn oct_encode_l1(dir: vec3<f32>) -> vec2<f32> {
     var p = dir.xy / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1.0e-6);
     if (dir.z < 0.0) {
         let old = p;

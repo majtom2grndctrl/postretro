@@ -550,6 +550,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             sh_storage: postretro_level_loader::ShStorage::Legacy,
+            probe_depth_tiles: None,
             lightmap: None,
             lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,

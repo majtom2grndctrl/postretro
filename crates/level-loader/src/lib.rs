@@ -26,6 +26,8 @@ mod prl_load_progress_tests;
 mod prl_load_test_fixtures;
 #[cfg(feature = "load-prl")]
 mod prl_loader;
+#[cfg(feature = "load-prl")]
+mod prl_probe_depth_tiles;
 mod prl_queries;
 #[cfg(all(test, feature = "load-prl"))]
 mod prl_residency_set_tests;

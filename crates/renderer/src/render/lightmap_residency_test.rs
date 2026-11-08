@@ -235,6 +235,7 @@ fn offscreen_renderer_meter_is_empty_with_no_active_set() {
             light_influences: &[],
             sh_volume: None,
             sh_storage: crate::render::LevelGeometryShStorage::Legacy,
+            probe_depth_tiles: None,
             lightmap: index,
             lightmap_streaming: None,
             chunk_light_list: None,

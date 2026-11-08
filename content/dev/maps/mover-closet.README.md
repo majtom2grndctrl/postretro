@@ -95,12 +95,30 @@ Use dev-tools noclip, or walk: the closet is reachable while the door is open.
 - **Station 3 — closet floor at the door.** (320, 610, 96), yaw 270, pitch −38.
   The pool's near edge, the strip of floor before the door, and the door's foot.
 
-## Static-door reference
+## Reference variants
 
-The reference is this map with one change: the `kinematic_mover` and its two
-`kinematic_waypoint` entities are removed, and the door's brush moves into
-worldspawn at the same place. To build one by hand, make that edit in a copy
-beside this map, so the compiler finds the same content root.
+Three sibling maps share this map's layout, lights, pool, fog, stations and
+probe lattice, and differ from it only as below. They are checked in and
+hand-maintained: the static-door and no-door variants were generated once from
+this map's layout, and the kinematic-receiver map is hand-edited from the
+static-door one. An edit to the layout, lights, pool, fog, stations or the north
+wall at y 760 belongs in all four maps.
+
+- **`mover-closet-static-door.map`** (`--static-door`): the `kinematic_mover` and
+  its two waypoints are gone, and the door's brush sits in worldspawn at the
+  same place. A glow behind it is the sampler's, and exists for every thin
+  static wall. Direction-aware probe visibility tiles every closet probe with a
+  blocked lattice neighbour here.
+- **`mover-closet-no-door.map`** (`--no-door`): the doorway stays open. The
+  open-doorway baseline: per-direction depth must leave it reading as before.
+- **`mover-closet-kinematic-receiver.map`**: the static-door reference plus a
+  dynamic receiver in station 3's view: a `kinematic_mover` slab (x 296–344,
+  y 505–521, z 0–8) resting at its first waypoint on the closet floor just
+  behind the door, where the averaged moments glow. Hand-edited from the
+  static-door map, not generated.
+
+Build any of them the same way as this map, with its own name. Each sits beside this
+map, so the compiler finds the same content root.
 
 These are manual, in-engine checks. Compiling the map validates only the
 authored content.

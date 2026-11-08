@@ -29,7 +29,7 @@ pub(crate) use layer_set::LayerPlan;
 pub(crate) use patches::{PATCH_SIZE_M, Patch, PatchSet, Side, patch_seed_id};
 #[cfg(test)]
 pub(crate) use reach::PatchReachIndex;
-pub(crate) use stage::{bake_sh_base, warn_bounce_only_emitters};
+pub(crate) use stage::{ShBase, bake_sh_base, warn_bounce_only_emitters};
 #[cfg(test)]
 pub(crate) use sum::PatchRadiance;
 #[cfg(test)]

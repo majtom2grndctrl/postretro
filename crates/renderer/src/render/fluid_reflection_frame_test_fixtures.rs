@@ -319,6 +319,7 @@ pub(super) fn with_world_quads<R>(
         light_influences: &[],
         sh_volume: None,
         sh_storage: super::LevelGeometryShStorage::Legacy,
+        probe_depth_tiles: None,
         lightmap: None,
         lightmap_streaming: None,
         chunk_light_list: None,

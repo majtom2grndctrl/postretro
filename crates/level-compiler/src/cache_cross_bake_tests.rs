@@ -805,6 +805,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
             &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
             Some(cache),
             &control(),
+            postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
         );
 
         let indirect_inputs = DeltaBakeInputs {
@@ -1422,7 +1423,7 @@ fn lighting_scale_cache_versions_pin_current_epochs() {
     assert_eq!(ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
     assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 5);
     assert_eq!(SH_PATCH_LAYER_STAGE_VERSION, 2);
-    assert_eq!(SH_BASE_VOLUME_STAGE_VERSION, 2);
+    assert_eq!(SH_BASE_VOLUME_STAGE_VERSION, 3);
 
     let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
     let current = CacheKey::new(

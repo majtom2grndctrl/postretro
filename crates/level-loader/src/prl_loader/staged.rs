@@ -26,6 +26,7 @@ use postretro_level_format::ghost_links::GhostLinksSection;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::map_entity::MapEntityRecord;
 use postretro_level_format::navmesh::NavMeshSection;
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
@@ -277,6 +278,7 @@ pub struct FinalLighting {
     pub light_influences: Vec<LightInfluence>,
     pub sh_volume: Option<OctahedralShVolumeSection>,
     pub sh_storage: ShStorage,
+    pub probe_depth_tiles: Option<ProbeDepthTilesSection>,
     pub lightmap: Option<LightmapBlockIndex>,
     pub lightmap_mode: LightmapMode,
     pub sdf_atlas: Option<SdfAtlasSection>,
@@ -600,6 +602,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         light_influences,
         sh_volume,
         sh_storage,
+        probe_depth_tiles,
         lightmap,
         lightmap_mode,
         sdf_atlas,
@@ -652,6 +655,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         light_influences,
         sh_volume,
         sh_storage,
+        probe_depth_tiles,
         lightmap,
         lightmap_mode,
         sdf_atlas,

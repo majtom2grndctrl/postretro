@@ -6,6 +6,7 @@ use std::path::Path;
 
 use bvh::bvh::Bvh;
 use glam::{DVec3, Vec3};
+use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::bounce::DEFAULT_BOUNCE_FILL;
@@ -225,6 +226,31 @@ impl Scene {
         cache: Option<&StageCache>,
         control: &BakeControl,
     ) -> OctahedralShVolumeSection {
+        self.bake_base(
+            lights,
+            spacing,
+            fill,
+            embedded,
+            cache,
+            control,
+            MAX_PROBE_DEPTH_TILES,
+        )
+        .section
+    }
+
+    /// [`Self::bake_with`] keeping at most `tile_cap` depth tiles, and the
+    /// whole stage output: id 34 and the tiles.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn bake_base(
+        &self,
+        lights: &[MapLight],
+        spacing: f32,
+        fill: f32,
+        embedded: &EmbeddedEmitters,
+        cache: Option<&StageCache>,
+        control: &BakeControl,
+        tile_cap: u32,
+    ) -> super::ShBase {
         self.with_ctx(lights, |ctx| {
             let refs = static_light_refs(ctx);
             let (handoff, _) = super::plan_sh_base(
@@ -245,6 +271,7 @@ impl Scene {
                 embedded,
                 cache,
                 control,
+                tile_cap,
             )
         })
     }
@@ -373,7 +400,15 @@ impl Scene {
                     probe_spacing: spacing,
                 },
             );
-            volume_key(&self.keys(), &plan, &layout, spacing, fill, tracer_epoch)
+            volume_key(
+                &self.keys(),
+                &plan,
+                &layout,
+                spacing,
+                fill,
+                tracer_epoch,
+                MAX_PROBE_DEPTH_TILES,
+            )
         })
     }
 

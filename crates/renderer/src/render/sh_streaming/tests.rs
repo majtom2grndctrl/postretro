@@ -393,6 +393,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         installed: BTreeMap::new(),
         sampleable: BTreeSet::new(),
         pending_promotion: BTreeSet::new(),
+        pending_depth_tile_texels: BTreeSet::new(),
         dirty_rows: BTreeSet::new(),
         indirect_dirty_rows: BTreeSet::new(),
         indirect_resident_rows: RowBitSet::with_row_capacity(ROW_SPACE),

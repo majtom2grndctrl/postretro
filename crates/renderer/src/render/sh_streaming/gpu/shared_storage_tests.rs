@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
+use postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences;
 
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 
@@ -155,13 +156,17 @@ fn eviction_with_a_live_reference_stages_nothing_and_the_last_reference_clears()
     let before = gpu_compose_words(&f, &device, &queue);
 
     let mut uploads = f.state.begin_uploads(0);
-    f.state.evict(&mut uploads, 0).unwrap();
+    f.state
+        .evict(&mut uploads, &ProbeDepthTileReferences::default(), 0)
+        .unwrap();
     assert_eq!(uploads.copy_count(), 0, "a live reference clears nothing");
     f.state.submit_uploads(uploads, &device, &queue);
     assert_eq!(gpu_compose_words(&f, &device, &queue), before);
 
     let mut uploads = f.state.begin_uploads(0);
-    f.state.evict(&mut uploads, 1).unwrap();
+    f.state
+        .evict(&mut uploads, &ProbeDepthTileReferences::default(), 1)
+        .unwrap();
     assert!(uploads.copy_count() > 0, "the last reference clears");
     f.state.submit_uploads(uploads, &device, &queue);
     let words = gpu_compose_words(&f, &device, &queue);

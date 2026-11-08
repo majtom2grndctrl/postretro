@@ -3,6 +3,7 @@
 
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ShMandatoryBoundEntry};
 use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
+use postretro_level_format::probe_depth_tiles::{ProbeDepthTilesSection, moment_sign_bit_set};
 
 use super::*;
 
@@ -26,6 +27,10 @@ const PUSH_FORCES_CONTAINER_VERSION: u16 = 1;
 /// (`REFLECTION_PROBES_VERSION`) is the epoch a loader checks.
 const REFLECTION_PROBES_CONTAINER_VERSION: u16 = 1;
 
+/// Id 59's PRL table entry version. The payload's own leading version
+/// (`PROBE_DEPTH_TILES_VERSION`) is the epoch a loader checks.
+const PROBE_DEPTH_TILES_CONTAINER_VERSION: u16 = 1;
+
 /// Borrowed inputs for the one-shot legacy PRL descriptor plan.
 ///
 /// This is deliberately assembled only after direct/scatter policy has settled,
@@ -43,6 +48,8 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) alpha_lights: &'a AlphaLightsSection,
     pub(super) light_influence: &'a LightInfluenceSection,
     pub(super) sh_volume: &'a OctahedralShVolumeSection,
+    /// Id 59, written whenever id 34 is: header only for no tiles.
+    pub(super) probe_depth_tiles: &'a ProbeDepthTilesSection,
     pub(super) lightmap: &'a LightmapSection,
     pub(super) direct_sh_volume: Option<&'a DirectShVolumeSection>,
     pub(super) entity_shadow_lights: Option<&'a EntityShadowLightsSection>,
@@ -81,6 +88,34 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) cluster_payload: Option<super::cluster_sh_payloads::ClusterPayloadSpool>,
 }
 
+/// Fail the build on the id-34 and id-59 contents the loader refuses: a valid
+/// probe whose averaged depth moment has its sign bit set, which the moment
+/// texel would read as a tile reference, and a tile naming a probe outside
+/// id 34's lattice or an invalid one.
+fn refuse_what_the_loader_refuses(
+    sh_volume: &OctahedralShVolumeSection,
+    probe_depth_tiles: &ProbeDepthTilesSection,
+) -> anyhow::Result<()> {
+    if let Some((index, probe)) = sh_volume.probes.iter().enumerate().find(|(_, probe)| {
+        probe.validity != 0 && moment_sign_bit_set(probe.mean_distance, probe.mean_sq_distance)
+    }) {
+        anyhow::bail!(
+            "OctahedralShVolume valid probe {index} carries a negative depth moment \
+             (E[d] bits {:#06x}, E[d²] bits {:#06x}), which the loader refuses",
+            probe.mean_distance,
+            probe.mean_sq_distance
+        );
+    }
+    probe_depth_tiles
+        .validate_against_lattice(sh_volume.grid_dimensions, |probe| {
+            sh_volume
+                .probes
+                .get(probe as usize)
+                .is_some_and(|record| record.validity != 0)
+        })
+        .map_err(|error| anyhow::anyhow!("ProbeDepthTiles does not fit id 34: {error}"))
+}
+
 /// Build the legacy PRL descriptor plan in its established on-disk order.
 pub(super) fn build_finalized_section_plan<'a>(
     inputs: FinalizedSectionPlanInputs<'a>,
@@ -96,6 +131,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         alpha_lights,
         light_influence,
         sh_volume,
+        probe_depth_tiles,
         lightmap,
         direct_sh_volume,
         entity_shadow_lights,
@@ -204,6 +240,13 @@ pub(super) fn build_finalized_section_plan<'a>(
                 anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
             })
         },
+    ));
+    refuse_what_the_loader_refuses(sh_volume, probe_depth_tiles)?;
+    sections.push(PlannedSection::new(
+        SectionId::ProbeDepthTiles as u32,
+        PROBE_DEPTH_TILES_CONTAINER_VERSION,
+        probe_depth_tiles.encoded_len(),
+        || Ok(probe_depth_tiles.to_bytes()),
     ));
     sections.push(PlannedSection::with_writer(
         SectionId::Lightmap as u32,
@@ -546,3 +589,7 @@ pub(super) fn build_finalized_section_plan<'a>(
 
     Ok(sections)
 }
+
+#[cfg(test)]
+#[path = "section_plan_tests.rs"]
+mod tests;

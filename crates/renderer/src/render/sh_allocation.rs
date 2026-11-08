@@ -17,6 +17,8 @@ pub(super) enum ShAllocationKind {
     IndirectBaseAtlas,
     IndirectTotalAtlas,
     DepthMoments,
+    /// Id 59's per-direction depth tiles, priced from their texture layout.
+    DepthTiles,
     GridInfo,
     AnimatedLightDescriptors,
     AnimatedLightSamples,
@@ -145,6 +147,12 @@ pub(super) fn texture_allocation_bytes(allocation: TextureAllocation) -> u64 {
                 * u64::from(extent.depth_or_array_layers)
                 * 8
         }
+        wgpu::TextureFormat::Rg16Float => {
+            u64::from(extent.width)
+                * u64::from(extent.height)
+                * u64::from(extent.depth_or_array_layers)
+                * 4
+        }
         format => panic!("unexpected SH allocation format {format:?}"),
     }
 }
@@ -251,6 +259,8 @@ pub(super) fn indirect_total_atlas_allocation(
     )
 }
 
+/// The whole-load moments texture. `COPY_SRC`, as the streamed one carries,
+/// lets a readback see what each texel writer left.
 pub(super) fn depth_moment_allocation(grid_dimensions: [u32; 3]) -> TextureAllocation {
     texture_allocation(
         ShAllocationKind::DepthMoments,
@@ -261,6 +271,22 @@ pub(super) fn depth_moment_allocation(grid_dimensions: [u32; 3]) -> TextureAlloc
             depth_or_array_layers: grid_dimensions[2].max(1),
         },
         wgpu::TextureDimension::D3,
+        sampled_upload_usage() | wgpu::TextureUsages::COPY_SRC,
+    )
+}
+
+/// The id-59 tile texture: one `Rg16Float` 2D texture at `extent`, the 1×1
+/// dummy when a level has no tiles.
+pub(super) fn depth_tile_allocation(extent: [u32; 2]) -> TextureAllocation {
+    texture_allocation(
+        ShAllocationKind::DepthTiles,
+        wgpu::TextureFormat::Rg16Float,
+        wgpu::Extent3d {
+            width: extent[0],
+            height: extent[1],
+            depth_or_array_layers: 1,
+        },
+        wgpu::TextureDimension::D2,
         sampled_upload_usage(),
     )
 }

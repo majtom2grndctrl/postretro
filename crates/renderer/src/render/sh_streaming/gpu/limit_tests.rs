@@ -958,12 +958,8 @@ fn loader_validated_chunk(f: &UploadOrderSh) -> postretro_level_loader::Prepared
     blocks.sort_by_key(|block| (block.section_id, block.kind));
     let mut bodies = Vec::new();
     for block in &blocks {
+        // Probe patches already carry the base metadata's id-34 moments.
         let mut body = prepared.chunk.block_bytes(block).to_vec();
-        if block.kind == 0 {
-            for patch in body.as_chunks_mut::<16>().0 {
-                patch[8..12].fill(0);
-            }
-        }
         if block.kind == 1 {
             let layout = cluster_sh_isolated_atlas_array_layout(block.element_count).unwrap();
             body[8..12].copy_from_slice(&layout.atlas_width.to_le_bytes());

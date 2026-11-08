@@ -170,10 +170,10 @@ impl MeshPass {
         // lighting + shadow receipt — the group-2 BGL above),
         // 3 (skinned instance data), 4 (SH irradiance volume —
         // `ShVolumeResources.mesh_bind_group_layout`, the SUPERSET layout that
-        // extends the shared SH entries with the direct-atlas texture at binding
-        // 15 and the `DynamicDirectParams` uniform at binding 16; forward/
-        // billboard/fog passes use the smaller `bind_group_layout` without those
-        // two extra bindings, so mesh binds `mesh_bind_group`, not the shared
+        // adds the `DynamicDirectParams` uniform at binding 16 and widens the
+        // direct atlas (binding 15, VERTEX-only in the shared layout) to
+        // VERTEX | FRAGMENT; forward/billboard/fog passes use the smaller
+        // `bind_group_layout` without that uniform and with the atlas VERTEX-only, so mesh binds `mesh_bind_group`, not the shared
         // `ShVolumeResources` bind group).
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Skinned Mesh Pipeline Layout"),

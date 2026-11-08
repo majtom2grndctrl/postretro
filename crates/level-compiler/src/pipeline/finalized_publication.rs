@@ -34,6 +34,7 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::MapEntitySection;
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
@@ -134,6 +135,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) alpha_lights: &'a AlphaLightsSection,
     pub(super) light_influence: &'a LightInfluenceSection,
     pub(super) sh_volume: &'a OctahedralShVolumeSection,
+    /// ProbeDepthTiles (id 59), written with id 34; header only for no tiles.
+    pub(super) probe_depth_tiles: &'a ProbeDepthTilesSection,
     pub(super) direct_sh_volume: Option<&'a DirectShVolumeSection>,
     pub(super) entity_shadow_lights: Option<&'a EntityShadowLightsSection>,
     pub(super) direct_sh_delta_volumes: Option<&'a DirectShDeltaVolumesSection>,
@@ -187,6 +190,7 @@ pub(super) fn write_finalized_prl(
         alpha_lights,
         light_influence,
         sh_volume,
+        probe_depth_tiles,
         direct_sh_volume,
         entity_shadow_lights,
         direct_sh_delta_volumes,
@@ -237,6 +241,7 @@ pub(super) fn write_finalized_prl(
         alpha_lights,
         light_influence,
         sh_volume,
+        probe_depth_tiles,
         direct_sh_volume,
         entity_shadow_lights,
         direct_sh_delta_volumes,

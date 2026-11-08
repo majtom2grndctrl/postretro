@@ -259,6 +259,7 @@ impl StreamingGpuPools {
             atlas_layer_count: shape.layers,
             present: true,
             probe_occlusion_enabled,
+            depth_tiles: sh.depth_tiles.grid_words(),
         });
         let grid_info = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed SH Grid Info"),
@@ -353,6 +354,7 @@ impl StreamingGpuPools {
                 binding: BIND_SH_DEPTH_MOMENTS,
                 resource: wgpu::BindingResource::TextureView(&depth_view),
             },
+            sh.depth_tiles.bind_group_entry(),
             wgpu::BindGroupEntry {
                 binding: BIND_SH_DIRECT_ATLAS,
                 resource: wgpu::BindingResource::TextureView(direct_view),

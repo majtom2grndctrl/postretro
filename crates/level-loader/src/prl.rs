@@ -54,6 +54,8 @@ use postretro_level_format::map_entity::MapEntityRecord;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::navmesh::NavMeshSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
@@ -629,6 +631,11 @@ pub struct LevelWorld {
     /// ids 27/34/35/41/45.
     #[cfg(feature = "load-prl")]
     pub sh_storage: ShStorage,
+    /// Optional id 59: per-direction depth tiles for probes beside thin
+    /// occluders, validated against id 34's lattice. Whole-resident in both
+    /// SH storage modes. `None` and a zero-tile section render alike.
+    #[cfg(feature = "load-prl")]
+    pub probe_depth_tiles: Option<ProbeDepthTilesSection>,
     /// Id-22 cell-block index: header plus one record per block. `None` or
     /// zero blocks is placeholder mode (no static baked light). The texels
     /// live in `gpu_lighting_payloads` until install.
@@ -864,6 +871,8 @@ impl LevelWorld {
             sh_volume: lighting.sh_volume,
             #[cfg(feature = "load-prl")]
             sh_storage: ShStorage::Legacy,
+            #[cfg(feature = "load-prl")]
+            probe_depth_tiles: None,
             #[cfg(feature = "load-prl")]
             lightmap: None,
             #[cfg(feature = "load-prl")]
@@ -1995,6 +2004,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
+            probe_depth_tiles: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -2105,6 +2115,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
+            probe_depth_tiles: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -2169,6 +2180,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
+            probe_depth_tiles: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,

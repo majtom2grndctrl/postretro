@@ -15,13 +15,18 @@ impl ShResidencyState {
         // Validate the complete public handoff before target transitions,
         // retirement, promotion, eviction, or installation can mutate state.
         self.validate_batch_contract(&batch)?;
-        self.apply_targets(device, queue, &batch)?;
+        // The load's one tile-reference table: every texel this drain writes
+        // packs G from it (`pack_moment_upload_spans`).
+        let references = sh.depth_tiles.references();
+        self.apply_targets(device, queue, &batch, references)?;
         self.release_retired_generations();
-        // Promotion and eviction share one upload batch, submitted before any
-        // install can reuse a released range.
+        // Promotion, eviction and queued tile-reference texels share one
+        // upload batch, submitted before any install can reuse a released
+        // range.
         let mut uploads = self.begin_uploads(0);
         let mut outcome = ShDrainOutcome::default();
-        let released = self.promote_and_evict(&mut uploads, batch.evictions, &mut outcome);
+        let released =
+            self.promote_and_evict(&mut uploads, references, batch.evictions, &mut outcome);
         self.submit_uploads(uploads, device, queue);
         released?;
         let mut gpu = InstallGpu {
@@ -42,10 +47,11 @@ impl ShResidencyState {
     pub(super) fn promote_and_evict(
         &mut self,
         uploads: &mut StagedUploads,
+        references: &ProbeDepthTileReferences,
         evictions: Vec<u32>,
         outcome: &mut ShDrainOutcome,
     ) -> Result<(), ShResidencyDrainError> {
-        self.promote_completed(uploads)?;
+        self.promote_completed(uploads, references)?;
         // Clusters are independent, so requests release in any order. Sorting
         // keeps the confirmed list ascending. A cluster re-targeted since the
         // request stays; the app learns that from its absence here.
@@ -54,10 +60,12 @@ impl ShResidencyState {
             if self.targets.contains(&cluster_id) || !self.installed.contains_key(&cluster_id) {
                 continue;
             }
-            self.evict(uploads, cluster_id)?;
+            self.evict(uploads, references, cluster_id)?;
             outcome.evicted.push(cluster_id);
         }
-        Ok(())
+        // After promotion and eviction, so each queued texel carries the word
+        // this drain leaves it with; G is the table's either way.
+        self.flush_depth_tile_texels(uploads, references)
     }
 
     /// Install every admissible ready cluster, timing the whole per-drain
@@ -136,10 +144,11 @@ impl ShResidencyState {
         device: &wgpu::Device,
         queue: &crate::render::uploads::UploadQueue,
         batch: &ShDrainBatch,
+        references: &ProbeDepthTileReferences,
     ) -> Result<(), ShResidencyDrainError> {
         let (new_generation, next_targets) = self.plan_target_transition(batch)?;
         if new_generation {
-            self.clear_session(device, queue)?;
+            self.clear_session(device, queue, references)?;
             self.generation = batch.generation;
             self.generation_has_reset = false;
         }
@@ -213,10 +222,15 @@ impl ShResidencyState {
         Ok(())
     }
 
+    /// Every texel goes back to zero moments under the invalid word. G still
+    /// packs through the table, so a tiled probe's cleared texel carries its
+    /// reference; no reader looks past the invalid word, and the table (not
+    /// the session) owns the reference, so it survives the clear.
     fn clear_session(
         &mut self,
         device: &wgpu::Device,
         queue: &crate::render::uploads::UploadQueue,
+        references: &ProbeDepthTileReferences,
     ) -> Result<(), ShResidencyDrainError> {
         self.clear_session_mirrors();
         let grid = self.grid_dimensions();
@@ -237,6 +251,7 @@ impl ShResidencyState {
                 &self.sampled_words,
                 &updates,
                 grid,
+                references,
             );
             gpu.submit_uploads(uploads, device, queue);
             staged?;
@@ -258,6 +273,9 @@ impl ShResidencyState {
         self.installed.clear();
         self.sampleable.clear();
         self.pending_promotion.clear();
+        // Nothing is sampleable after a clear; a later promotion packs the
+        // table's reference anyway.
+        self.pending_depth_tile_texels.clear();
         self.dirty_rows.clear();
         self.indirect_dirty_rows.clear();
         self.indirect_resident_rows.clear();

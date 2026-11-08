@@ -50,6 +50,7 @@ pub(super) fn install_sh_volume(
         writes,
         ShVolumeSections {
             sh: geometry.sh_volume,
+            depth_tiles: geometry.probe_depth_tiles,
             stream_base_present: matches!(
                 &geometry.sh_storage,
                 LevelGeometryShStorage::Streaming { .. }

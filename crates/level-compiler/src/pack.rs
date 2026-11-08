@@ -46,6 +46,7 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
+use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
@@ -476,6 +477,8 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         alpha_lights,
         light_influence,
         sh_volume,
+        // No bake here, so no tiles: id 59 rides id 34 header-only.
+        &ProbeDepthTilesSection::default(),
         direct_sh_volume,
         entity_shadow_lights,
         direct_sh_delta_volumes,
@@ -525,6 +528,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     alpha_lights: &AlphaLightsSection,
     light_influence: &LightInfluenceSection,
     sh_volume: &OctahedralShVolumeSection,
+    // ProbeDepthTiles (id 59), written with id 34; header only for no tiles.
+    probe_depth_tiles: &ProbeDepthTilesSection,
     direct_sh_volume: Option<&DirectShVolumeSection>,
     entity_shadow_lights: Option<&EntityShadowLightsSection>,
     direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
@@ -684,6 +689,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         alpha_lights,
         light_influence,
         sh_volume,
+        probe_depth_tiles,
         lightmap,
         direct_sh_volume,
         entity_shadow_lights,
@@ -1430,9 +1436,9 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
         // Baseline modern sections plus CellVisibility, section 45,
-        // always-emitted FogVolumes and EnvironmentVolumes, and the required
-        // CellDrawIndex.
-        assert_eq!(meta.header.section_count, 18);
+        // always-emitted FogVolumes and EnvironmentVolumes, the required
+        // CellDrawIndex, and ProbeDepthTiles beside id 34.
+        assert_eq!(meta.header.section_count, 19);
         assert!(
             meta.find_section(SectionId::EnvironmentVolumes as u32)
                 .is_some()
@@ -2402,8 +2408,9 @@ mod tests {
         let meta = read_container(&mut cursor).expect("should read container");
 
         // Baseline modern sections plus always-emitted FogVolumes and
-        // EnvironmentVolumes, and required CellDrawIndex.
-        assert_eq!(meta.header.section_count, 16);
+        // EnvironmentVolumes, required CellDrawIndex, and ProbeDepthTiles
+        // beside id 34.
+        assert_eq!(meta.header.section_count, 17);
         assert!(
             meta.find_section(SectionId::EnvironmentVolumes as u32)
                 .is_some()

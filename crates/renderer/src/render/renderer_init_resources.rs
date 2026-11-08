@@ -72,10 +72,9 @@ pub(crate) fn request_renderer_device(
     //                           Surface Depth map when a material has an
     //                           `_h.png` sibling), normal
     //   Group 3 — SH volume (3): octahedral atlas + depth-moments
-    //                            + direct static-light atlas (billboard samples it in
-    //                              the VERTEX stage; entry is VERTEX | FRAGMENT so it
-    //                              counts against the fragment budget; forward/fog
-    //                              carry the entry but never sample it)
+    //                            + id-59 depth tiles (binding 18); the direct
+    //                              static-light atlas (binding 15) is VERTEX-only in
+    //                              this layout and takes no fragment slot
     //   Group 4 — lightmap (5): static irradiance, static dominant-direction,
     //                           animated-contribution atlas, animated dominant-direction,
     //                           shadowmask atlas

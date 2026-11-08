@@ -45,9 +45,9 @@ struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
     cell_size: vec3<f32>,
-    _pad0: u32,
+    depth_tile_row_shift: u32,
     grid_dimensions: vec3<u32>,
-    _pad1: u32,
+    depth_tile_inv_width: f32,
     atlas_dimensions: vec2<u32>,
     tile_dimension: u32,
     tile_border: u32,
@@ -58,7 +58,7 @@ struct ShGridInfo {
     probe_occlusion: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,
-    _pad3: u32,
+    depth_tile_inv_height: f32,
 }
 
 @group(3) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
@@ -86,6 +86,8 @@ struct AnimationDescriptor {
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
+// Declared for the shared SH layout; fog weighs no depth visibility, so never reads it.
+@group(3) @binding(18) var sh_depth_tiles: texture_2d<f32>;
 
 // --- Group 5: Spot shadow maps ---
 

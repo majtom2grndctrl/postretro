@@ -3,6 +3,7 @@
 
 mod animation;
 mod bounce;
+mod depth_tiles;
 mod grid;
 mod light_eval;
 mod probe;
@@ -14,6 +15,10 @@ pub use animation::validate_light_animations;
 #[cfg(test)]
 pub(crate) use bounce::bounce_sample_index;
 pub(crate) use bounce::{reflected_radiance, soft_visibility_seed};
+pub(crate) use depth_tiles::{
+    ProbeDepthTiles, chebyshev_visibility, depth_tile_bytes, fold_depth_tile_constants,
+    probe_depth_bias,
+};
 pub(crate) use grid::{
     ProbeGridLayout, probe_grid_dims, probe_grid_layout, probe_is_valid_pub, vec3_from,
 };
@@ -34,6 +39,7 @@ pub(crate) use sh_math::pack_octahedral_irradiance_tile;
 pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 
 pub(crate) use animation::animation_descriptor_for_light;
+use depth_tiles::DepthTileSelector;
 use probe::{bake_probe_with_source, probe_gather_directions};
 use sh_math::pack_octahedral_irradiance_atlas;
 
@@ -243,20 +249,38 @@ pub(crate) fn bake_sh_volume_with_source(
     if !layout.is_empty() {
         control.publish_total(layout.total_probes());
     }
-    bake_sh_volume_over(inputs, &layout, control, source)
+    bake_sh_volume_over(
+        inputs,
+        &layout,
+        control,
+        source,
+        postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
+    )
+    .section
+}
+
+/// One whole-volume gather: id 34 and, from the same gather rays, the probe
+/// depth tiles (id 59).
+pub(crate) struct GatheredVolume {
+    pub(crate) section: OctahedralShVolumeSection,
+    pub(crate) depth_tiles: ProbeDepthTiles,
 }
 
 /// The whole-volume bake over a resolved probe `layout`, advancing
-/// `control` one unit per probe; the caller publishes the total. Returns an
-/// empty section (`grid_dimensions == [0,0,0]`) for an empty layout.
+/// `control` one unit per probe; the caller publishes the total. Each valid
+/// probe's gather distances also bin into its depth tile, kept when it
+/// changes the probe's visibility, at most `tile_cap` of them. Returns an
+/// empty section (`grid_dimensions == [0,0,0]`) and no tiles for an empty
+/// layout.
 pub(crate) fn bake_sh_volume_over(
     inputs: &ShBakeCtx<'_>,
     layout: &ProbeGridLayout,
     control: &BakeControl,
     source: RadianceSource<'_>,
-) -> OctahedralShVolumeSection {
+    tile_cap: u32,
+) -> GatheredVolume {
     if layout.is_empty() {
-        return OctahedralShVolumeSection {
+        let section = OctahedralShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
             cell_size: layout.cell_size,
             grid_dimensions: [0, 0, 0],
@@ -272,6 +296,10 @@ pub(crate) fn bake_sh_volume_over(
             compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: vec![ANIMATED_SLOT_NONE; inputs.total_light_count],
+        };
+        return GatheredVolume {
+            section,
+            depth_tiles: ProbeDepthTiles::default(),
         };
     }
 
@@ -296,11 +324,16 @@ pub(crate) fn bake_sh_volume_over(
         ),
         crate::live_bytes::hold("dense SH volume", (total * size_of::<BakedProbe>()) as u64),
     ];
+    let selector = DepthTileSelector::new(layout, &directions, tile_cap);
+    #[cfg(test)]
+    let heap_held = crate::live_bytes::hold("probe depth tiles", selector.reserved_bytes());
 
     let baked_probes: Vec<BakedProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
             let _permit = control.governor().enter();
+            let valid = layout.validity[i] != 0;
+            let mut distances = [0.0f32; RAYS_PER_PROBE as usize];
             let probe = bake_probe_with_source(
                 &directions,
                 inputs,
@@ -309,14 +342,23 @@ pub(crate) fn bake_sh_volume_over(
                 // Whole-volume bake: the slice IS the global set, so identity.
                 None,
                 far_sentinel,
-                layout.validity[i] != 0,
+                valid,
                 i as u64,
                 source,
+                &mut distances,
             );
+            if valid {
+                selector.consider(i, &probe.metadata, &distances);
+            }
             control.advance(1);
             probe
         })
         .collect();
+    let depth_tiles = selector.finish();
+    #[cfg(test)]
+    let _tiles_held = crate::live_bytes::hold("probe depth tiles", depth_tiles.heap_bytes());
+    #[cfg(test)]
+    drop(heap_held);
     let base_probes: Vec<OctahedralShProbe> = baked_probes.iter().map(|p| p.metadata).collect();
     #[cfg(test)]
     let _probes_held = crate::live_bytes::hold_vec("id-34 section", &base_probes);
@@ -349,7 +391,10 @@ pub(crate) fn bake_sh_volume_over(
         animation_descriptors,
         slot_for_map_light,
     };
-    compact_section_from_dense_atlas(section, &atlas_texels)
+    GatheredVolume {
+        section: compact_section_from_dense_atlas(section, &atlas_texels),
+        depth_tiles,
+    }
 }
 
 /// The id-34 section's animation tables: one runtime descriptor per animated
@@ -497,6 +542,10 @@ mod bounce_estimator_tests;
 mod bounce_tests;
 #[cfg(test)]
 mod colour_tests;
+#[cfg(test)]
+mod depth_tiles_fixture_tests;
+#[cfg(test)]
+pub(crate) mod depth_tiles_test_fixtures;
 #[cfg(test)]
 mod empty_material_tests;
 #[cfg(test)]

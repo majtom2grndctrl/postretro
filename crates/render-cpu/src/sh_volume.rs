@@ -3,6 +3,8 @@
 
 use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
 
+pub use crate::sh_depth_tiles::DepthTileGridWords;
+
 mod usable;
 
 pub use usable::{
@@ -24,6 +26,9 @@ pub const BIND_DYNAMIC_DIRECT_PARAMS: u32 = BIND_SH_DIRECT_ATLAS + 1;
 /// layout can expose it to the billboard vertex stage without changing mesh
 /// bindings.
 pub const BIND_BILLBOARD_DIRECT_SCATTER: u32 = BIND_DYNAMIC_DIRECT_PARAMS + 1;
+/// Per-direction depth tiles (id 59), `texture_2d<f32>` `Rg16Float`, beside
+/// the depth moments in the shared layout. A dummy 1×1 binds without tiles.
+pub const BIND_SH_DEPTH_TILES: u32 = BIND_BILLBOARD_DIRECT_SCATTER + 1;
 pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 
 /// Byte size of `ShGridInfo` — six `vec4` slots to satisfy std140 alignment
@@ -33,9 +38,9 @@ pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 ///   0..12   grid_origin       (vec3<f32>)
 ///   12..16  has_sh_volume     (u32, 0 or 1)
 ///   16..28  cell_size         (vec3<f32>)
-///   28..32  _pad0             (u32)
+///   28..32  depth_tile_row_shift (u32, tiles-per-row shift; 0 without tiles)
 ///   32..44  grid_dimensions   (vec3<u32>)
-///   44..48  _pad1             (u32)
+///   44..48  depth_tile_inv_width (f32, 1 / tile texture width; 0 without tiles)
 ///   48..56  stored_atlas_dimensions  (vec2<u32>)
 ///   56..60  tile_dimension    (u32)
 ///   60..64  tile_border       (u32)
@@ -46,7 +51,7 @@ pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 ///   80..84  probe_occlusion   (u32, 0 or 1)
 ///   84..88  tiles_per_layer   (u32)
 ///   88..92  atlas_layer_count (u32)
-///   92..96  _pad3             (u32)
+///   92..96  depth_tile_inv_height (f32, 1 / tile texture height; 0 without tiles)
 pub const SH_GRID_INFO_SIZE: usize = 96;
 /// Physical tile side used by existing whole-atlas SH data. The logical tile
 /// still has a 6x6 texel footprint and its existing one-texel border.
@@ -90,6 +95,9 @@ pub struct ShGridInfoParams {
     pub atlas_layer_count: u32,
     pub present: bool,
     pub probe_occlusion_enabled: bool,
+    /// Where the shader finds depth tiles; [`DepthTileGridWords::NONE`]
+    /// without them.
+    pub depth_tiles: DepthTileGridWords,
 }
 
 pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE] {
@@ -99,15 +107,16 @@ pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE
     bytes[4..8].copy_from_slice(&params.grid_origin[1].to_ne_bytes());
     bytes[8..12].copy_from_slice(&params.grid_origin[2].to_ne_bytes());
     bytes[12..16].copy_from_slice(&(params.present as u32).to_ne_bytes());
-    // cell_size vec3 at 16..28, _pad0 at 28..32.
+    // cell_size vec3 at 16..28, depth_tile_row_shift at 28..32.
     bytes[16..20].copy_from_slice(&params.cell_size[0].to_ne_bytes());
     bytes[20..24].copy_from_slice(&params.cell_size[1].to_ne_bytes());
     bytes[24..28].copy_from_slice(&params.cell_size[2].to_ne_bytes());
-    // grid_dimensions vec3<u32> at 32..44, _pad1 at 44..48.
+    bytes[28..32].copy_from_slice(&params.depth_tiles.row_shift.to_ne_bytes());
+    // grid_dimensions vec3<u32> at 32..44, depth_tile_inv_width at 44..48.
     bytes[32..36].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());
     bytes[36..40].copy_from_slice(&params.grid_dimensions[1].to_ne_bytes());
     bytes[40..44].copy_from_slice(&params.grid_dimensions[2].to_ne_bytes());
-    // bytes[44..48] is _pad1, already zero.
+    bytes[44..48].copy_from_slice(&params.depth_tiles.inv_width.to_ne_bytes());
     bytes[48..52].copy_from_slice(&params.atlas_dimensions[0].to_ne_bytes());
     bytes[52..56].copy_from_slice(&params.atlas_dimensions[1].to_ne_bytes());
     bytes[56..60].copy_from_slice(&params.tile_dimension.to_ne_bytes());
@@ -127,6 +136,7 @@ pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE
     bytes[80..84].copy_from_slice(&(params.probe_occlusion_enabled as u32).to_ne_bytes());
     bytes[84..88].copy_from_slice(&params.tiles_per_layer.to_ne_bytes());
     bytes[88..92].copy_from_slice(&params.atlas_layer_count.to_ne_bytes());
+    bytes[92..96].copy_from_slice(&params.depth_tiles.inv_height.to_ne_bytes());
     bytes
 }
 
@@ -432,6 +442,7 @@ mod tests {
             atlas_layer_count: 3,
             present: true,
             probe_occlusion_enabled: true,
+            depth_tiles: DepthTileGridWords::NONE,
         });
         assert_eq!(bytes.len(), SH_GRID_INFO_SIZE);
 
@@ -470,6 +481,7 @@ mod tests {
             atlas_layer_count: 1,
             present: false,
             probe_occlusion_enabled: true,
+            depth_tiles: DepthTileGridWords::NONE,
         });
         assert_eq!(u32::from_ne_bytes(bytes[12..16].try_into().unwrap()), 0);
     }
@@ -498,6 +510,7 @@ mod tests {
                 atlas_layer_count: 1,
                 present: true,
                 probe_occlusion_enabled: enabled,
+                depth_tiles: DepthTileGridWords::NONE,
             });
             assert_eq!(
                 u32::from_ne_bytes(bytes[80..84].try_into().unwrap()),
@@ -525,6 +538,7 @@ mod tests {
                 atlas_layer_count: 1,
                 present: true,
                 probe_occlusion_enabled: true,
+                depth_tiles: DepthTileGridWords::NONE,
             });
             u32::from_ne_bytes(bytes[76..80].try_into().unwrap())
         };

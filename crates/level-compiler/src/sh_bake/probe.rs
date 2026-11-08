@@ -148,6 +148,7 @@ pub(super) fn bake_probe_rgb_with_moments(
         far_sentinel,
         probe_index,
         source,
+        &mut [0.0; RAYS_PER_PROBE as usize],
     )
 }
 
@@ -161,7 +162,8 @@ pub(super) fn bake_probe_rgb_with_moments(
 /// over the fixed direction list so the bake stays byte-identical across runs.
 /// `source` picks only where a hit's radiance comes from; the directions and
 /// the hits, so the moments, are the same either way. `directions` is
-/// [`probe_gather_directions`], made once per volume bake.
+/// [`probe_gather_directions`], made once per volume bake. Each ray's
+/// distance lands in `distances` at its index, for the probe's depth tile.
 // The probe's inputs plus its shared direction set; see `sample_radiance_rgb`.
 #[allow(clippy::too_many_arguments)]
 fn bake_probe_rgb_along(
@@ -173,8 +175,10 @@ fn bake_probe_rgb_along(
     far_sentinel: f32,
     probe_index: u64,
     source: RadianceSource<'_>,
+    distances: &mut [f32],
 ) -> ([f32; 27], f32, f32) {
     debug_assert_eq!(directions.len(), RAYS_PER_PROBE as usize);
+    debug_assert_eq!(distances.len(), directions.len());
     let ctx = inputs.ray_ctx();
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 27];
@@ -205,6 +209,7 @@ fn bake_probe_rgb_along(
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
         sum_d += distance;
         sum_d2 += distance * distance;
+        distances[ray_index] = distance;
     }
     apply_cosine_lobe_rgb(&mut acc);
     (acc, sum_d, sum_d2)
@@ -241,13 +246,16 @@ pub(crate) fn bake_probe(
         valid,
         probe_index,
         RadianceSource::Lights(BounceVisibility::OneSample),
+        &mut [0.0; RAYS_PER_PROBE as usize],
     )
 }
 
 /// [`bake_probe`] from either `RadianceSource`: the surface radiance cache's
 /// patches (production id 34) or the per-hit estimator (the test-only parity
 /// reference), with the gather hits' radiance source chosen, along
-/// `directions` ([`probe_gather_directions`]).
+/// `directions` ([`probe_gather_directions`]). A valid probe leaves each
+/// ray's hit distance in `distances`; an invalid one traces nothing and
+/// leaves it untouched.
 // `bake_probe`'s inputs plus the radiance source; see `sample_radiance_rgb`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn bake_probe_with_source(
@@ -260,6 +268,7 @@ pub(super) fn bake_probe_with_source(
     valid: bool,
     probe_index: u64,
     source: RadianceSource<'_>,
+    distances: &mut [f32],
 ) -> BakedProbe {
     if !valid {
         return BakedProbe::default();
@@ -273,6 +282,7 @@ pub(super) fn bake_probe_with_source(
         far_sentinel,
         probe_index,
         source,
+        distances,
     );
     // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel), so these
     // are exact divisions by the constant.

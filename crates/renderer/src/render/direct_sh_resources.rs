@@ -211,12 +211,18 @@ impl DirectShResources {
 /// Append direct receiver entries to the shared group-3 layout. Keeping the
 /// extension here makes the direct-resource seam the sole owner of future
 /// billboard direct textures while preserving the shared builder's callers.
+///
+/// VERTEX only here: billboard and fluid read the direct atlas from `vs_main`,
+/// and forward and fog never declare it, so no fragment stage sharing this
+/// layout samples it. That frees forward's fragment slot for the depth tiles
+/// (binding 18). Movers and skinned meshes sample it in `fs_main`, and their
+/// mesh superset layout restores FRAGMENT.
 pub(super) fn append_shared_bind_group_layout_entries(
     entries: &mut Vec<wgpu::BindGroupLayoutEntry>,
 ) {
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: BIND_SH_DIRECT_ATLAS,
-        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2Array,
@@ -476,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_shared_binding_preserves_billboard_vertex_and_mesh_fragment_visibility() {
+    fn direct_shared_binding_is_vertex_only_for_billboard_and_fluid() {
         let mut entries = Vec::new();
         append_shared_bind_group_layout_entries(&mut entries);
         let entry = entries
@@ -485,10 +491,9 @@ mod tests {
             .expect("direct resources must append the shared direct atlas binding");
 
         assert_eq!(BIND_SH_DIRECT_ATLAS, 15);
-        assert_eq!(
-            entry.visibility,
-            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
-        );
+        // The mesh superset restores FRAGMENT for movers and skinned meshes
+        // (`mesh_superset_keeps_direct_atlas_fragment_visible_and_shared_drops_it`).
+        assert_eq!(entry.visibility, wgpu::ShaderStages::VERTEX);
         assert!(matches!(
             entry.ty,
             wgpu::BindingType::Texture {

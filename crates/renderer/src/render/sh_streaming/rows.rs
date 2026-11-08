@@ -40,6 +40,7 @@ impl ShResidencyState {
     pub(super) fn promote_completed(
         &mut self,
         uploads: &mut StagedUploads,
+        references: &ProbeDepthTileReferences,
     ) -> Result<(), ShResidencyDrainError> {
         let ready = promotion_sweep_candidates(&self.pending_promotion);
         for cluster_id in ready {
@@ -72,6 +73,7 @@ impl ShResidencyState {
                         &self.sampled_words,
                         &updates,
                         self.grid_dimensions(),
+                        references,
                     )?;
                 }
                 self.pending_promotion.remove(&cluster_id);
@@ -104,6 +106,7 @@ impl ShResidencyState {
     pub(super) fn evict(
         &mut self,
         uploads: &mut StagedUploads,
+        references: &ProbeDepthTileReferences,
         cluster_id: u32,
     ) -> Result<bool, ShResidencyDrainError> {
         self.validate_cluster_id(cluster_id)?;
@@ -207,6 +210,7 @@ impl ShResidencyState {
                 &self.sampled_words,
                 &sample_updates,
                 self.grid_dimensions(),
+                references,
             )?;
         }
         Ok(freed)

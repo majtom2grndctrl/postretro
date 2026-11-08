@@ -303,7 +303,8 @@ impl SyntheticMap {
                             .copied()
                             .unwrap_or(0),
                         node_scale: 0,
-                        ..Default::default()
+                        mean_distance: synthetic_moments(dense)[0],
+                        mean_sq_distance: synthetic_moments(dense)[1],
                     }
                 })
                 .collect(),
@@ -427,8 +428,15 @@ impl SyntheticMap {
                 | u32::from(node.level)
                 | (u32::from(node.scale) << PROBE_INDIRECTION_SCALE_SHIFT)
                 | (rank << PROBE_INDIRECTION_SLOT_SHIFT);
-            // Mean distance and mean-square distance share the third word.
-            patch_words.extend_from_slice(&[dense, word, 0x3c00_3c00, 0]);
+            // Mean distance and mean-square distance share the third word,
+            // the base metadata's id-34 bits as the compiler copies them.
+            let [mean, mean_sq] = synthetic_moments(dense);
+            patch_words.extend_from_slice(&[
+                dense,
+                word,
+                u32::from(mean) | (u32::from(mean_sq) << 16),
+                0,
+            ]);
         }
         push_block(
             INDIRECT_BASE_ID,
@@ -473,6 +481,13 @@ impl SyntheticMap {
             },
         }
     }
+}
+
+/// Probe `dense`'s id-34 `(E[d], E[d²])` f16 bits: distinct per probe, both
+/// non-negative, so a texel shows which probe's moments it carries.
+pub(super) fn synthetic_moments(dense: u32) -> [u16; 2] {
+    let low = (dense & 0x3ff) as u16;
+    [0x3c00 | low, 0x4400 | low]
 }
 
 /// `(start, count)` runs of consecutive values in an ascending list.
@@ -687,7 +702,13 @@ fn eviction_releases_rows_incrementally_to_what_a_full_rebuild_produces() {
     // Regression: eviction rebuilt every resident union once per evicted
     // sparse row. It now releases per touched row and must still land on the
     // rebuilt unions.
-    state.evict(&mut StagedUploads::default(), 1).unwrap();
+    state
+        .evict(
+            &mut StagedUploads::default(),
+            &ProbeDepthTileReferences::default(),
+            1,
+        )
+        .unwrap();
     assert_eq!(state.resident_rows(), state.rebuilt_resident_rows());
     let after = mirror(&state);
     assert_eq!(
@@ -739,7 +760,13 @@ fn eviction_releases_rows_incrementally_to_what_a_full_rebuild_produces() {
         assert!(state.direct_animated_dirty_rows.contains(&row));
     }
 
-    state.evict(&mut StagedUploads::default(), 0).unwrap();
+    state
+        .evict(
+            &mut StagedUploads::default(),
+            &ProbeDepthTileReferences::default(),
+            0,
+        )
+        .unwrap();
     assert_eq!(
         state.resident_rows(),
         [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()]
@@ -848,10 +875,22 @@ fn touched_rows_cover_membership_changes_on(map: SyntheticMap) {
         },
         &|state| state.install(None, &map.prepared(state, 1)).unwrap(),
         &|state| {
-            state.evict(&mut StagedUploads::default(), 1).unwrap();
+            state
+                .evict(
+                    &mut StagedUploads::default(),
+                    &ProbeDepthTileReferences::default(),
+                    1,
+                )
+                .unwrap();
         },
         &|state| {
-            state.evict(&mut StagedUploads::default(), 0).unwrap();
+            state
+                .evict(
+                    &mut StagedUploads::default(),
+                    &ProbeDepthTileReferences::default(),
+                    0,
+                )
+                .unwrap();
         },
         &|state| state.install(None, &map.prepared(state, 0)).unwrap(),
         // A new generation clears the session and installs in one drain.
@@ -895,7 +934,13 @@ fn direct_base_without_direct_deltas_leaves_direct_passes_idle() {
     assert!(!state.direct_compose_required);
     state.install(None, &map.prepared(&state, 0)).unwrap();
     state.install(None, &map.prepared(&state, 1)).unwrap();
-    state.evict(&mut StagedUploads::default(), 1).unwrap();
+    state
+        .evict(
+            &mut StagedUploads::default(),
+            &ProbeDepthTileReferences::default(),
+            1,
+        )
+        .unwrap();
 
     // The id-35 refs still follow the installed base.
     assert_eq!(state.direct_promotion_resident_rows, BTreeSet::from([0, 1]));

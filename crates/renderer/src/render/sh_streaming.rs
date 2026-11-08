@@ -13,6 +13,7 @@ use postretro_level_format::cluster_directory::{ClusterDirectorySection, Cluster
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest};
 use postretro_render_cpu::frame_uniforms::LightTermMask;
+use postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences;
 
 use super::Renderer;
 use super::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
@@ -32,6 +33,7 @@ mod compose_staleness;
 #[cfg(test)]
 mod contributing_rows_tests;
 mod dense;
+mod depth_tile_texels;
 mod diagnostics;
 mod direct_compose;
 mod frame;
@@ -254,6 +256,9 @@ pub(super) struct ShResidencyState {
     installed: BTreeMap<u32, InstalledCluster>,
     sampleable: BTreeSet<u32>,
     pending_promotion: BTreeSet<u32>,
+    /// Probes whose tile reference was rewritten since the last drain; that
+    /// drain repacks each one still sampleable (`depth_tile_texels`).
+    pending_depth_tile_texels: BTreeSet<u32>,
     dirty_rows: BTreeSet<(u32, u32)>,
     indirect_dirty_rows: BTreeSet<u32>,
     indirect_resident_rows: RowBitSet,

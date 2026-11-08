@@ -14,6 +14,9 @@ use super::working_set::ShBaseHandoff;
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
 use crate::light_namespaces::StaticBakedLights;
+use crate::mover_probe_channel::{
+    MoverBounceRequest, PosedBounce, StaticBounce, bake_mover_bounce,
+};
 use crate::sh_bake::{
     GatheredVolume, ProbeDepthTiles, RadianceSource, ShBakeCtx, ShConfig, animation_tables,
     bake_sh_volume_over, probe_grid_layout, static_light_refs,
@@ -46,6 +49,30 @@ pub(crate) struct ShBase {
     pub(crate) depth_tiles: ProbeDepthTiles,
 }
 
+/// [`bake_sh_base_with_movers`] with no mover poses: id 34 and id 59 alone.
+#[cfg(test)]
+pub(crate) fn bake_sh_base(
+    ctx: &ShBakeCtx<'_>,
+    config: &ShConfig,
+    handoff: ShBaseHandoff,
+    embedded: &EmbeddedEmitters,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+    tile_cap: u32,
+) -> ShBase {
+    bake_sh_base_with_movers(
+        ctx,
+        config,
+        handoff,
+        embedded,
+        cache,
+        control,
+        tile_cap,
+        &MoverBounceRequest::default(),
+    )
+    .0
+}
+
 /// Bake id 34 through the surface radiance cache. Each distinct static
 /// light content shades one layer over the patches in its reach, seeded by
 /// its content digest ([`LayerPlan`]). The layers sum in content order into
@@ -70,7 +97,16 @@ pub(crate) struct ShBase {
 /// it changes the probe's visibility, at most `tile_cap` per level
 /// (production passes `MAX_PROBE_DEPTH_TILES`). The tiles ride the volume
 /// entry, and the kept and dropped counts log once, hit or miss.
-pub(crate) fn bake_sh_base(
+///
+/// Then the mover probe channel's bounce and depth bake runs for every pose
+/// `movers` names, over the same patches while they live, before the patch
+/// cache drops. On a volume miss it reads the bounce one this bake summed,
+/// kept before the later bounces add to it; on a hit no patch radiance
+/// exists, so it sums the cached layers over the gate's patch set. An empty
+/// request keeps nothing extra and bakes today's bytes.
+// `bake_sh_base`'s inputs plus the request.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_sh_base_with_movers(
     ctx: &ShBakeCtx<'_>,
     config: &ShConfig,
     handoff: ShBaseHandoff,
@@ -78,7 +114,8 @@ pub(crate) fn bake_sh_base(
     cache: Option<&StageCache>,
     control: &BakeControl,
     tile_cap: u32,
-) -> ShBase {
+    movers: &MoverBounceRequest,
+) -> (ShBase, Vec<PosedBounce>) {
     let ShBaseHandoff {
         patches,
         light_reach,
@@ -140,10 +177,42 @@ pub(crate) fn bake_sh_base(
         crate::live_bytes::phase("volume load");
         control.advance(total_units);
         depth_tiles.log(tile_cap);
-        return ShBase {
-            section,
-            depth_tiles,
+        let posed = if movers.is_empty() {
+            Vec::new()
+        } else {
+            let layer_cache = caches.as_ref().map(|(layers, _)| layers);
+            let resolved = resolve_layers(
+                &ctx.ray_ctx(),
+                &patches,
+                &lights,
+                &plan,
+                layer_cache,
+                control,
+            );
+            let bounce_one = PatchRadiance::sum(patches.len(), &plan, &resolved);
+            drop(resolved);
+            bake_mover_bounce(
+                ctx,
+                &StaticBounce {
+                    patches: &patches,
+                    bounce_one: &bounce_one,
+                    lights: &lights,
+                    plan: &plan,
+                    bounce_fill,
+                    layout: &layout,
+                    base: &section,
+                },
+                movers,
+                control,
+            )
         };
+        return (
+            ShBase {
+                section,
+                depth_tiles,
+            },
+            posed,
+        );
     }
 
     let layers = resolve_layers(
@@ -160,6 +229,7 @@ pub(crate) fn bake_sh_base(
     #[cfg(test)]
     crate::live_bytes::phase("sum");
     drop(layers);
+    let bounce_one = (!movers.is_empty()).then(|| radiance.clone());
     add_later_bounces(
         &ctx.ray_ctx(),
         &patches,
@@ -197,6 +267,24 @@ pub(crate) fn bake_sh_base(
     ];
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
+    let posed = match &bounce_one {
+        None => Vec::new(),
+        Some(bounce_one) => bake_mover_bounce(
+            ctx,
+            &StaticBounce {
+                patches: &patch_cache.patches,
+                bounce_one,
+                lights: &lights,
+                plan: &plan,
+                bounce_fill,
+                layout: &layout,
+                base: &section,
+            },
+            movers,
+            control,
+        ),
+    };
+    drop(bounce_one);
     drop(patch_cache);
     if let Some((_, volume)) = &caches {
         volume.store(&mut section, &depth_tiles);
@@ -204,10 +292,13 @@ pub(crate) fn bake_sh_base(
     #[cfg(test)]
     crate::live_bytes::phase("volume store");
     depth_tiles.log(tile_cap);
-    ShBase {
-        section,
-        depth_tiles,
-    }
+    (
+        ShBase {
+            section,
+            depth_tiles,
+        },
+        posed,
+    )
 }
 
 /// Warn once for each static light only the bounce family's test flags:

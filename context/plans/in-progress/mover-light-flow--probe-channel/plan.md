@@ -1,7 +1,7 @@
 # mover-light-flow--probe-channel — plan of record
 
 mode: resumable
-status: approved
+status: blocked
 read at: c4a3d980c (no source change since the brief's 9382e3c23; every cited symbol re-read this session)
 
 ## Corrections
@@ -24,6 +24,16 @@ Path and wording only. No Decision premise was found false.
 - The direct slice is not purely direct: posing id 35 re-levels id-34 cells through the shared stored-set classifier, so ids 34, 49 and 50 move. A `_sh_coarsen 0` control kept id 34 byte-identical with near-equal luma. → Task 6's id-35 caps through `storage_level_ceilings` must keep id 34's levels independent of the channel, and B9 checks it.
 
 - `cargo clippy --workspace` fails today on 2 `type_complexity` errors in `postretro-model` (`clip_library.rs:1148`, `gltf_loader.rs:2648`), from main's 8e4b3d7c1. This branch doesn't touch them. → Preflight fixes them in a separate mechanical commit, or reports them as pre-existing.
+
+## Block (2026-11-08, Task 2)
+
+Three Decision premises failed when measured (`research.md` §Bounce slice measurements):
+
+1. **The bounce domain is map-wide for big movers.** The BC6H round-trip bar admits 11,420 of 11,942 setpiece probes with the wall closed, up to 30 m away, and up to 34 m for the raised room. The far changes are real: 7–20% in dim tiles, and 10–20× closer to the static reference than today. The bounce block is 6.5 MB vs id 34's 531 KB, and a travelling wall would recompose nearly every row. Narrowing the domain needs a perceptual floor, which changes the "Bounce half" Decision.
+2. **The depth domain overflows.** On setpiece, "every probe whose gather rays the posed mover changes" is 39,990 closed-pose tiles and 11,566 live tiles; with id 59 that is 159% of 1 << 15, and the depth block is 16.2 MB. If the CPU holds the closed-pose tiles (the delegated CPU-write answer), the GPU count is about 37%. Each travelling-wall frame would still upload about 11k tiles. Bounding it changes the "Closed-pose depth" Decision.
+3. **The B7 reference misses its bar.** 14 of 232 raised-room interior probes miss the BC6H bar, by at most 0.0034, mostly at floor height. Re-seeding the patches moves the count between 9 and 14. The reference build changes faces, patches and cells, as research §Risks warned.
+
+These held: B3 and B4 pass on the closet (only closet probes affected, none in the bright room; S^b₁ is bit-exact). One pose costs about 1.5 s against setpiece's 1.4 s SH Bake.
 
 ## Delegated answers
 
@@ -100,7 +110,7 @@ The integrating executor owns `plan.md`, the id-57 types, the stage order in `pi
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | **Direct slice.** Add the two-trace soft visibility (static and static-plus-posed on one joint sample set). Add a dev-only compiler switch that poses `setpiece_room` raised as an occluder in the id-35/41/45 bakes. Capture draws the mover at that pose. Bin unit test for B1's ratio. Decide the inside-brush rule. **Owner stop 1** (station 2, own faces). | worker on main checkout (moved from executor to keep its context for decisions) | — | **done; Stop 1 passed** (owner, 2026-11-08: proceed with skip, re-judge at Stop 2). Temporary switch `POSTRETRO_DEV_POSE_MOVER=<mover>:<first\|last>[:dark\|:skip]`; joint visibility in `mover_probe_channel/visibility.rs`; B1 bin unit test plus 3 more passing. Skip rule: interior baked direct 28.2→6.8 luma, own faces within 0.3 levels of today. Dark rule: west face 38.7→25.7, which fails M5. Captures `captures/t1-*`. |
-| 2 | **Bounce and depth slice.** The same switch, for the closet door closed and the room raised: a posed re-gather (closest hit = min(static, entry distance into the posed brushes)), S^b replacing id 34, and closed-pose tiles from the same rays. Prototype reference-build checks B3, B4 and B7. Measure later-bounce drift over the affected domain. Settle the patch question. Measure M1 on the hallway and write M7 into `research.md`. **Owner stop 2.** | integrating executor | 1 | |
+| 2 | **Bounce and depth slice.** The same switch, for the closet door closed and the room raised: a posed re-gather (closest hit = min(static, entry distance into the posed brushes)), S^b replacing id 34, and closed-pose tiles from the same rays. Prototype reference-build checks B3, B4 and B7. Measure later-bounce drift over the affected domain. Settle the patch question. Measure M1 on the hallway and write M7 into `research.md`. **Owner stop 2.** | integrating executor | 1 | **stopped for owner** (2026-11-08). Built: posed bounce, gather and depth, BC6H bar, dev switches. See Block. |
 | 3 | **Promotion pop.** Root-cause `drafts/animated-promotion-direct-sh-pop.md` with a discriminating experiment (§6.3), check whether the id-41 arm shares the gap, and fix it within this brief or stop. | worker (worktree), GPU | — (parallel with 1–2) | **done, diagnosis only** (2026-11-08). The owner restated K3 to a measured bar; the fragment-reconstructed baked arm becomes its own brief: no convention bug. The baked arm's representation (6×6 octahedral tile with a 4×4 interior, L2 truncation, probe interpolation) reads 0.81–0.86× the runtime term facing the light and ~2.3× at grazing; the id-41 arm shares it. A CPU model matches the GPU within a few percent. The fix that meets the absolute row is a new format and sampler path, larger than this brief. Diagnosis is in the draft's "Diagnosis (2026-11-08)" section. |
 | 4 | **Blend scalar.** In physics: arc-length t, matching `position_for_phase`'s degenerate rule, with terminus t for no-segment states (P9). In the compiler: parse `light_ramp_start` and `light_ramp_end`, plus FGD keys. In the game: collect (mover id, t′) from the registry, culled movers included, and hand it over at both `rebuild_blocked_portals` sites. Add a renderer setter that stores state only, with a no-level guard and a reset at install. Add the grep gate. Covers S1–S15. | worker (worktree) | — (parallel with 1–2) | **done** (2026-11-08). Written in a worktree, compiled and tested on main. Passing: physics `path_fraction` 8 and `kinematic_mover` 165; prl-build `light_ramp` 2 and FGD 1; netcode S6 plus the door test, 2; app `runtime_movers` 49 (grep gate, positive control, alloc probe); renderer `mover_light_state` 2 on GPU. Renderer halves of S10, S12, S13, S14 and P15 land with task 8. The ramp reaches `LoadedKinematicMover.light_ramp`, which task 5 fills from id 57. |
 | 5 | **Format and load.** Add `MoverProbeChannel` id 57 to level-format, following the Wire format table, and register it. Loader validation goes beside `validate_direct_sh_delta`. The ramp record reaches mover runtime data. Covers B18. | integrating executor | stop 2 | |

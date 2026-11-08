@@ -1,22 +1,64 @@
-// TEMPORARY dev-only switch for the mover probe channel's direct slice: poses
-// one named mover at one terminus as an occluder in the id-35, id-41 and id-45
-// direct-SH bakes, so the PRL holds that terminus's composed atlas with no
+// TEMPORARY dev-only switch for the mover probe channel's slices: poses one
+// named mover at one terminus as an occluder in the id-35, id-41 and id-45
+// direct-SH bakes (task 1) and in the SH base's bounce and depth (task 2,
+// `dev_bounce`), so the PRL holds that terminus's composed state with no
 // format or compose code. Plan task 12 deletes this file and its call sites.
-// See: context/plans/in-progress/mover-light-flow--probe-channel/plan.md (task 1)
+// See: context/plans/in-progress/mover-light-flow--probe-channel/plan.md (tasks 1, 2)
 
 use std::sync::OnceLock;
 
 use anyhow::{Context, bail};
 
-use super::{INSIDE_BRUSH_RULE, InsideBrushRule, PosedOccluder};
+use super::{INSIDE_BRUSH_RULE, InsideBrushRule, PosedOccluder, PosedSurfaces};
 use crate::map_data::{MapKinematicMover, MapKinematicWaypoint};
 use crate::mover_light_gate::{MoverPoses, Terminus};
 
-/// `<mover name>:<first|last>[:dark|:skip]`. The third field overrides
-/// [`INSIDE_BRUSH_RULE`] for the inside-brush A/B. Unset, nothing changes.
+/// `<mover name>:<first|last>[:dark|:skip][:black]`. The rule field
+/// overrides [`INSIDE_BRUSH_RULE`] for the inside-brush A/B; `black` keeps
+/// the posed sides out of the bounce bake's patches, for the patch A/B.
+/// Unset, nothing changes.
 pub(crate) const ENV_VAR: &str = "POSTRETRO_DEV_POSE_MOVER";
 
 static POSED: OnceLock<PosedOccluder> = OnceLock::new();
+
+/// The parsed switch.
+pub(crate) struct DevPose {
+    pub(crate) name: String,
+    pub(crate) terminus: Terminus,
+    pub(crate) rule: InsideBrushRule,
+    pub(crate) surfaces: PosedSurfaces,
+}
+
+/// [`ENV_VAR`] parsed, or `None` when unset.
+pub(crate) fn parse() -> anyhow::Result<Option<DevPose>> {
+    let Ok(value) = std::env::var(ENV_VAR) else {
+        return Ok(None);
+    };
+    let mut fields = value.split(':');
+    let (Some(name), Some(terminus)) = (fields.next(), fields.next()) else {
+        bail!("{ENV_VAR}={value}: expected `<mover name>:<first|last>[:dark|:skip][:black]`");
+    };
+    let terminus = match terminus {
+        "first" => Terminus::First,
+        "last" => Terminus::Last,
+        other => bail!("{ENV_VAR}: terminus `{other}` is not `first` or `last`"),
+    };
+    let (mut rule, mut surfaces) = (INSIDE_BRUSH_RULE, PosedSurfaces::Patches);
+    for field in fields {
+        match field {
+            "dark" => rule = InsideBrushRule::Dark,
+            "skip" => rule = InsideBrushRule::SkipContainingBrush,
+            "black" => surfaces = PosedSurfaces::Black,
+            other => bail!("{ENV_VAR}: field `{other}` is not `dark`, `skip` or `black`"),
+        }
+    }
+    Ok(Some(DevPose {
+        name: name.to_string(),
+        terminus,
+        rule,
+        surfaces,
+    }))
+}
 
 /// The posed mover the direct bakes trace against, when the switch is set.
 pub(crate) fn posed_occluder() -> Option<&'static PosedOccluder> {
@@ -36,23 +78,14 @@ pub(crate) fn install(
     movers: &[MapKinematicMover],
     waypoints: &[MapKinematicWaypoint],
 ) -> anyhow::Result<()> {
-    let Ok(value) = std::env::var(ENV_VAR) else {
+    let Some(DevPose {
+        name,
+        terminus,
+        rule,
+        ..
+    }) = parse()?
+    else {
         return Ok(());
-    };
-    let mut fields = value.split(':');
-    let (Some(name), Some(terminus)) = (fields.next(), fields.next()) else {
-        bail!("{ENV_VAR}={value}: expected `<mover name>:<first|last>[:dark|:skip]`");
-    };
-    let terminus = match terminus {
-        "first" => Terminus::First,
-        "last" => Terminus::Last,
-        other => bail!("{ENV_VAR}: terminus `{other}` is not `first` or `last`"),
-    };
-    let rule = match fields.next() {
-        None => INSIDE_BRUSH_RULE,
-        Some("dark") => InsideBrushRule::Dark,
-        Some("skip") => InsideBrushRule::SkipContainingBrush,
-        Some(other) => bail!("{ENV_VAR}: inside-brush rule `{other}` is not `dark` or `skip`"),
     };
     let mover_id = movers
         .iter()
@@ -65,8 +98,9 @@ pub(crate) fn install(
         .with_context(|| format!("{ENV_VAR}: mover `{name}` has no analysable termini"))?;
     let pose = mover.pose(terminus).clone();
     log::warn!(
-        "[MoverLight] DEV {ENV_VAR}: direct SH (ids 35, 41, 45) bakes `{name}` posed at its {} \
-         waypoint `{}` ({rule:?}); direct-SH cache bypassed. Not a shippable PRL.",
+        "[MoverLight] DEV {ENV_VAR}: SH base (id 34, id 59) and direct SH (ids 35, 41, 45) \
+         bake `{name}` posed at its {} waypoint `{}` ({rule:?}); direct-SH cache bypassed. \
+         Not a shippable PRL.",
         terminus.label(),
         pose.waypoint,
     );

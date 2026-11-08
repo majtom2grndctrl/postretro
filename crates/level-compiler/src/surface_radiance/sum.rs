@@ -91,6 +91,15 @@ impl PatchRadiance {
         }
     }
 
+    /// Add `value` to one side of one patch: the mover probe channel's
+    /// posed bake swapping a light's static term for its posed one.
+    pub(crate) fn add_side(&mut self, patch: u32, side: Side, value: Vec3) {
+        let sum = &mut self.sides[patch as usize][side as usize];
+        for (s, v) in sum.iter_mut().zip(value.to_array()) {
+            *s += v;
+        }
+    }
+
     /// Whether every side of every patch is black.
     pub(crate) fn is_zero(&self) -> bool {
         self.sides.iter().flatten().flatten().all(|&v| v == 0.0)

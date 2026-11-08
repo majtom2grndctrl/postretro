@@ -191,7 +191,7 @@ pub(crate) fn probe_direct_joint_visibility(
 /// The probe gather's fixed direction set: one Fibonacci sphere of
 /// `RAYS_PER_PROBE` rotated by a constant, the same for every probe, light
 /// set, fill and radiance source. Nothing but those two constants enters it.
-pub(super) fn probe_gather_directions() -> Vec<Vec3> {
+pub(crate) fn probe_gather_directions() -> Vec<Vec3> {
     sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET)
 }
 
@@ -272,6 +272,7 @@ fn bake_probe_rgb_along(
                 visibility,
             ),
             RadianceSource::Patches(patches) => patches.sample(&ctx, probe_pos, *dir, far_sentinel),
+            RadianceSource::Posed(posed) => posed.sample(&ctx, probe_pos, *dir, far_sentinel),
         };
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
         sum_d += distance;
@@ -325,7 +326,7 @@ pub(crate) fn bake_probe(
 /// leaves it untouched.
 // `bake_probe`'s inputs plus the radiance source; see `sample_radiance_rgb`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn bake_probe_with_source(
+pub(crate) fn bake_probe_with_source(
     directions: &[Vec3],
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,

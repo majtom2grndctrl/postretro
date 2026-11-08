@@ -198,3 +198,38 @@ The first build stopped here. With today's compiler at 7af769fba, the static-doo
 - The rest depended on the lattice phase: about 59% of placements of a 16-unit door are exposed. The fixture sits at y 760, the worst phase measured, so the closet rows cannot pass by luck.
 - Door recognition seals the doorway, and static-direct-only captures read black in the closet in every build, so no bright-room light reaches it directly.
 - The door's closet face read 1.7 at slab centre in today's build against the reference's 0, from mover-absent data.
+
+## Bounce slice measurements (2026-11-08)
+
+Task 2 stopped at the drift check: the affected-probe bar admits probes far from the mover. Built on the main checkout at 51b4ea966 plus the uncommitted slice (`mover_probe_channel/{posed_scene,bounce,gather,domain,bake}.rs`, temporary `dev_bounce.rs`). Unswitched PRLs of `mover-closet` and `mover-setpiece` are byte-identical to HEAD's, cold.
+
+**Method.** Each pose re-bakes id 34 over the gate's patches: bounce one re-shaded only for (patch, light) pairs whose shadow segments can meet the pose, posed sides as patches cut by the mover's other brushes, four later bounces over both patch sets, then every valid probe's 256-ray gather. Closest hit is the nearer of the static BVH's and the analytic entry into the posed convex brushes; a posed face flush with a static one leaves the static hit. A probe whose rays meet nothing posed and whose hits read static radiance gathers id 34's bytes exactly.
+
+**Drift.** Every pose changes every valid probe's bounce by more than zero. The bar admits:
+
+| Pose | Valid probes | Past the bar | Distance from pose bounds, m (median / p95 / max) | Rays meet the pose |
+|---|---|---|---|---|
+| `closet_door` closed | 1,689 | 144 (all closet probes; no bright-room probe) | 3.5 / 5.8 / 6.1 | 1,040 |
+| `closet_door` open | 1,689 | 0 (S^b₁ equals id 34 bit for bit) | — | 0 |
+| `setpiece_wall` closed | 11,942 | 11,420 | 12.4 / 24.9 / 30.1 | 11,071 |
+| `setpiece_wall` open | 11,942 | 597 | 6.8 / 20.3 / 28.9 | 2,009 |
+| `setpiece_room` lowered | 11,942 | 3,090 | 6.1 / 13.2 / 32.4 | 6,062 |
+| `setpiece_room` raised | 11,942 | 3,154 | 3.1 / 13.7 / 34.3 | 8,916 |
+
+The far probes are real, not numerical drift. For the raised room, at the 228 admitted probes 12 m or more away, |S^b − id 34| is about 0.002–0.003 against bars of 0.001–0.002 (median ratio 1.3), on dim tiles (median tile max 0.029): a 7–20% change. At every one, S^b sits 10–20× nearer the static-room reference's id 34 than today's id 34 does. A perceptual floor would cut them, which changes the bounce Decision's domain: owner.
+
+**Reference checks** (scratch dumps, not yet tests).
+- B3 closet closed: 144 closet probes valid in both, 0 past the reference tile's own bar (both read black; today's id 34 differs from the reference by up to 0.32). Open: S^b₁ equals today's id 34 exactly.
+- B4: of the reference's 40 tiles, 28 sit on probes whose rays meet the closed door; all 28 match the closed-pose tile within f16 rounding (max 0.0005). The other 12 never meet the door and equal today's id-59 tiles.
+- B7 raised room: 232 interior probes valid in both; 14 miss the reference tile's bar, all but one at floor height, margins up to 0.0034 (|id 34 − reference| there is 0.013–0.026). Patch seed noise explains part: re-seeding the posed patches moves the miss count between 9 and 14 and the worst probe by 0.0016. One floor probe stays about 0.003 over a 0.001 bar at every seed: research's "reference changes faces, patches and cells".
+
+**Bytes and tiles, partial M7** (closet closed only; setpiece all four poses). Bounce block 216 B × 2 per affected probe plus 16 B per cell entry; depth 2 × 400 B per changed probe.
+
+| Map | id 34 | id 59 | Bounce block | Depth block | Live tiles | Closed-pose tiles | id 59 + live + closed-pose |
+|---|---|---|---|---|---|---|---|
+| `mover-closet` | 69 KB | 9 KB (23 tiles) | 62 KB | 840 KB | 1,040 | 2,080 | 9.6% of 1 << 15 |
+| `mover-setpiece` | 531 KB | 228 KB (565 tiles) | 6.5 MB | 16.2 MB | 11,566 | 39,990 | 159% of 1 << 15 |
+
+The depth domain the brief names ("every probe whose gather rays the posed mover changes") is most probes that see the mover: on `mover-setpiece` its closed-pose tiles alone pass the 15-bit tile reference. No id-59 tile would be trimmed for live tiles alone (37%).
+
+Not run, because of the stop: captures, M1 on the hallway, M7 for the other three maps, the direct-half byte column.

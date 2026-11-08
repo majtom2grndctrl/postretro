@@ -222,7 +222,7 @@ fn gather_patch(
 /// The fixed gather set in a +Z-up frame: a golden-angle spiral of equal
 /// area cells on the unit disk, lifted onto the hemisphere (Malley), so the
 /// directions are cosine-distributed. No RNG and no input but the count.
-fn cosine_directions(count: u32) -> Vec<Vec3> {
+pub(crate) fn cosine_directions(count: u32) -> Vec<Vec3> {
     let golden = PI * (3.0 - 5.0f32.sqrt());
     (0..count)
         .map(|i| {
@@ -237,7 +237,7 @@ fn cosine_directions(count: u32) -> Vec<Vec3> {
 /// The patch's gather frame: its front normal as +Z, and the tangent pair
 /// turned about it by an angle from the patch's geometric seed id alone, so
 /// neighbouring patches do not share ray directions. No radiance enters it.
-fn patch_frame(normal: Vec3, seed_id: u64) -> [Vec3; 3] {
+pub(crate) fn patch_frame(normal: Vec3, seed_id: u64) -> [Vec3; 3] {
     let (tangent, bitangent) = normal.any_orthonormal_pair();
     let angle = (seed_id >> 40) as f32 * (TAU / (1u32 << 24) as f32);
     let (sin, cos) = angle.sin_cos();

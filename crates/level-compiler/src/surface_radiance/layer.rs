@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use glam::Vec3;
 use rayon::prelude::*;
 
-use super::patches::{MIN_PATCH_AREA_M2, PATCH_SIZE_M, PatchSet, Side};
+use super::patches::{MIN_PATCH_AREA_M2, PATCH_SIZE_M, Patch, PatchSet, Side};
 use crate::bake_content_keys::{bounce_material_hash, fold_bounce_hash};
 use crate::bake_control::BakeControl;
 use crate::cache::CacheKey;
@@ -447,29 +447,11 @@ pub(crate) fn shade_light_layer(
                 crate::bake_counters::bump(|counts| counts.patch_light_evaluations += 1);
                 let patch = &patches.patches()[index as usize];
                 for side in Side::BOTH {
-                    let normal = side.normal(patch.normal);
-                    let Some(contribution) = bounce_contribution(light, patch.centroid, normal)
+                    let Some(radiance) =
+                        shade_patch_side(ctx, patch, side, light, light_axis, early_out, trace)
                     else {
                         continue;
                     };
-                    let seed = soft_visibility_seed(patch.seed_id(), side as u64, light_axis);
-                    let visibility = soft_visibility_early_out(
-                        patch.centroid,
-                        normal,
-                        light,
-                        seed,
-                        DEFAULT_AREA_SAMPLE_COUNT,
-                        early_out,
-                        trace,
-                    );
-                    if visibility <= 0.0 {
-                        continue;
-                    }
-                    let radiance: Vec3 = reflected_radiance(
-                        ctx.bounce_materials,
-                        patch.texture_index,
-                        contribution * visibility,
-                    );
                     entries.push(LayerEntry {
                         patch: index,
                         side,
@@ -497,6 +479,42 @@ pub(crate) fn shade_light_layer(
         #[cfg(test)]
         held,
     }
+}
+
+/// One side of one patch under one light, as its layer shades it: the
+/// bounce's Lambert term times soft visibility traced by `trace` times the
+/// patch's albedo over π; `None` where the light does not reach the side or
+/// every sample is blocked. The mover probe channel's posed bake shades
+/// through this too, with the posed brushes added to `trace`.
+pub(crate) fn shade_patch_side(
+    ctx: &RaytracingCtx<'_>,
+    patch: &Patch,
+    side: Side,
+    light: &MapLight,
+    light_axis: u64,
+    early_out: ProbeEarlyOut,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> Option<Vec3> {
+    let normal = side.normal(patch.normal);
+    let contribution = bounce_contribution(light, patch.centroid, normal)?;
+    let seed = soft_visibility_seed(patch.seed_id(), side as u64, light_axis);
+    let visibility = soft_visibility_early_out(
+        patch.centroid,
+        normal,
+        light,
+        seed,
+        DEFAULT_AREA_SAMPLE_COUNT,
+        early_out,
+        trace,
+    );
+    if visibility <= 0.0 {
+        return None;
+    }
+    Some(reflected_radiance(
+        ctx.bounce_materials,
+        patch.texture_index,
+        contribution * visibility,
+    ))
 }
 
 /// One work item's entries, waiting for the layer to take them.

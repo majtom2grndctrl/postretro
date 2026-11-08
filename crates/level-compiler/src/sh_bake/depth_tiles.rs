@@ -142,13 +142,13 @@ impl ProbeDepthTiles {
 /// Built once per volume from the one direction set every probe shares. A
 /// texel no direction lands in borrows the direction nearest its centre, so
 /// a tile has no holes.
-pub(super) struct TileRayTable {
+pub(crate) struct TileRayTable {
     /// Per interior texel (`x + y·8`), its ray indices, ascending.
     members: Vec<Vec<u16>>,
 }
 
 impl TileRayTable {
-    pub(super) fn new(directions: &[Vec3]) -> Self {
+    pub(crate) fn new(directions: &[Vec3]) -> Self {
         let mut members = vec![Vec::new(); PROBE_DEPTH_TILE_INTERIOR_TEXELS];
         for (ray, dir) in directions.iter().enumerate() {
             members[interior_texel_of_direction(dir.to_array())].push(ray as u16);
@@ -182,7 +182,7 @@ impl TileRayTable {
     /// squared distance over its rays, summed in ray order, as f16 bits
     /// saturated at [`F16_MAX`]: hits are unbounded, so `E[d²]` overflows
     /// past ~256 m.
-    pub(super) fn interior(
+    pub(crate) fn interior(
         &self,
         distances: &[f32],
     ) -> [[u16; 2]; PROBE_DEPTH_TILE_INTERIOR_TEXELS] {

@@ -851,10 +851,26 @@ fn run_after_parsing(
     // layer and a `_bounce_fill` edit re-shades none. The patch cache is
     // freed inside the bake; only id 34 and the probe depth tiles (id 59),
     // binned from the same gather rays, leave the stage.
-    let surface_radiance::ShBase {
-        section: mut sh_volume_section,
-        depth_tiles: probe_depth_tiles,
-    } = surface_radiance::bake_sh_base(
+    // TEMPORARY (mover-light-flow--probe-channel plan tasks 1 and 2): the dev
+    // pose switch for the direct-SH and SH base bakes, and the bounce slice's
+    // measurement mode and dump; no-ops unless their env vars are set.
+    crate::mover_probe_channel::dev_pose::install(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+    )?;
+    let dev_bounce = crate::mover_probe_channel::dev_bounce::plan(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+        &geo_result.texture_names,
+        args.uncompressed_irradiance,
+    )?;
+    let (
+        surface_radiance::ShBase {
+            section: mut sh_volume_section,
+            depth_tiles: mut probe_depth_tiles,
+        },
+        posed_bounce,
+    ) = surface_radiance::bake_sh_base_with_movers(
         &sh_ctx,
         &sh_config,
         sh_base_handoff,
@@ -862,7 +878,18 @@ fn run_after_parsing(
         stage_cache.as_ref(),
         &sh_control,
         postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
+        &dev_bounce.request,
     );
+    if dev_bounce.active() {
+        crate::mover_probe_channel::dev_bounce::finish(
+            &dev_bounce,
+            &posed_bounce,
+            &mut sh_volume_section,
+            &mut probe_depth_tiles,
+        )?;
+    }
+    drop(posed_bounce);
+    drop(dev_bounce);
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` and buried lights omitted), so remap the
@@ -951,12 +978,6 @@ fn run_after_parsing(
         }
     }
 
-    // TEMPORARY (mover-light-flow--probe-channel plan task 1): the dev pose
-    // switch for the direct-SH bakes; a no-op unless its env var is set.
-    crate::mover_probe_channel::dev_pose::install(
-        &map_data.kinematic_movers,
-        &map_data.kinematic_waypoints,
-    )?;
     let stage_start = begin_stage(reporter.as_ref(), StageId::DirectShBake);
     let direct_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DirectShBake, direct_sh_progress.clone());

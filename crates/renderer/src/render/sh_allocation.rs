@@ -259,6 +259,8 @@ pub(super) fn indirect_total_atlas_allocation(
     )
 }
 
+/// The whole-load moments texture. `COPY_SRC`, as the streamed one carries,
+/// lets a readback see what each texel writer left.
 pub(super) fn depth_moment_allocation(grid_dimensions: [u32; 3]) -> TextureAllocation {
     texture_allocation(
         ShAllocationKind::DepthMoments,
@@ -269,7 +271,7 @@ pub(super) fn depth_moment_allocation(grid_dimensions: [u32; 3]) -> TextureAlloc
             depth_or_array_layers: grid_dimensions[2].max(1),
         },
         wgpu::TextureDimension::D3,
-        sampled_upload_usage(),
+        sampled_upload_usage() | wgpu::TextureUsages::COPY_SRC,
     )
 }
 

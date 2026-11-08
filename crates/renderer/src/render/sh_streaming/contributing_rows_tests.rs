@@ -102,7 +102,11 @@ impl Harness {
 
     fn evict(&mut self, cluster_id: u32) {
         self.state
-            .evict(&mut StagedUploads::default(), cluster_id)
+            .evict(
+                &mut StagedUploads::default(),
+                &ProbeDepthTileReferences::default(),
+                cluster_id,
+            )
             .unwrap();
     }
 

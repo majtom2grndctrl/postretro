@@ -449,6 +449,7 @@ impl ShVolumeResources {
             device,
             queue,
             depth_tiles_section.filter(|_| usable.is_some() || stream_base_present),
+            usable.map(|sec| sec.probes.as_slice()),
             ledger,
         );
 
@@ -915,6 +916,12 @@ impl ShVolumeResources {
     /// the SDF shadow pass (Task 4). Consumed during pass construction and on
     /// each level reload — the moment texture is recreated whenever the SH
     /// section changes, so the pass needs a new handle.
+    /// The whole-load moments texture a depth-tile reference rewrite writes
+    /// one texel of (`sh_depth_tile_rewrite`); a dummy on a streamed level.
+    pub(super) fn depth_moment_texture(&self) -> &wgpu::Texture {
+        &self.depth_moment_texture
+    }
+
     pub fn make_depth_moment_view(&self) -> wgpu::TextureView {
         self.depth_moment_texture
             .create_view(&wgpu::TextureViewDescriptor {

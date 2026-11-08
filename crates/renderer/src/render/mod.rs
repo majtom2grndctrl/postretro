@@ -51,6 +51,7 @@ mod sh_allocation;
 mod sh_atlas;
 mod sh_compose;
 mod sh_compose_dispatch;
+mod sh_depth_tile_rewrite;
 mod sh_depth_tiles;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
@@ -251,6 +252,7 @@ use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
+pub use sh_depth_tile_rewrite::ProbeDepthTileRewriteError;
 pub use sh_residency::{
     ShResidencyReport, ShStreamingAllocationSummary, ShStreamingLifecycleSummary,
 };

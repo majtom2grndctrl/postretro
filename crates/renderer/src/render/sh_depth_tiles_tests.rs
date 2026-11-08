@@ -469,3 +469,313 @@ fn tile_texture_bytes_are_ledgered_while_installed_and_gone_after_unload() {
         assert_eq!(tile_bytes(&renderer), 0, "unload frees the tile texture");
     }
 }
+
+/// Probe `index`'s id-34 moments in the rewrite fixtures: distinct per probe,
+/// non-negative f16 bits.
+fn fixture_moments(index: usize) -> [u16; 2] {
+    let low = index as u16 & 0x3ff;
+    [0x3c00 | low, 0x4400 | low]
+}
+
+/// A 4×4×2 whole-load lattice with distinct moments and one invalid probe
+/// (7), and an id 59 tiling probes 3 and 17.
+fn rewrite_fixture() -> (
+    postretro_level_format::sh_volume::OctahedralShVolumeSection,
+    ProbeDepthTilesSection,
+) {
+    use crate::render::fluid_baked_frame_test_fixtures::sh_section;
+    let mut sh = sh_section([0.0; 3], [1.0; 3], [4, 4, 2], |_| Vec3::splat(0.5));
+    for (index, probe) in sh.probes.iter_mut().enumerate() {
+        [probe.mean_distance, probe.mean_sq_distance] = fixture_moments(index);
+    }
+    sh.probes[7].validity = 0;
+    let tiles = section(
+        vec![3, 17],
+        vec![uniform_tile(0.5, 0.5), directional_tile()],
+    );
+    (sh, tiles)
+}
+
+fn install_whole(
+    renderer: &mut crate::render::Renderer,
+    sh: &postretro_level_format::sh_volume::OctahedralShVolumeSection,
+    tiles: &ProbeDepthTilesSection,
+) {
+    use crate::render::renderer_textures::tests::with_one_triangle;
+    use postretro_render_data::material::Material;
+    with_one_triangle(&[Material::Default], Some(sh), None, &[], |geometry| {
+        renderer
+            .install_level_geometry(
+                &crate::render::LevelGeometry {
+                    probe_depth_tiles: Some(tiles),
+                    sh_storage: crate::render::LevelGeometryShStorage::Legacy,
+                    ..*geometry
+                },
+                Default::default(),
+            )
+            .expect("level resources install")
+    });
+}
+
+/// Every texel of `level`'s whole-load moments texture, x fastest. The
+/// readback's submit carries any staged frame write first.
+fn whole_texels(
+    renderer: &crate::render::Renderer,
+    level: &crate::render::level_resource_set::LevelResourceSet,
+) -> Vec<[u16; 4]> {
+    let device = &renderer.device;
+    let texture = level.sh_volume_resources.depth_moment_texture();
+    let extent = texture.size();
+    let row = extent.width * 8;
+    let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let rows = extent.height * extent.depth_or_array_layers;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("whole-load depth moments readback"),
+        size: u64::from(padded * rows),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(extent.height),
+            },
+        },
+        extent,
+    );
+    renderer.queue.submit([encoder.finish()]);
+    let (send, receive) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            send.send(result).unwrap()
+        });
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    receive.recv().unwrap().unwrap();
+    let bytes = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+    buffer.unmap();
+    bytes
+        .chunks(padded as usize)
+        .flat_map(|line| line[..row as usize].as_chunks::<8>().0.to_vec())
+        .map(|texel| {
+            let half = |at: usize| u16::from_le_bytes([texel[at], texel[at + 1]]);
+            [half(0), half(2), half(4), half(6)]
+        })
+        .collect()
+}
+
+fn second(texel: [u16; 4]) -> MomentSecondChannel {
+    decode_moment_second_channel(texel[1])
+}
+
+/// O5, O7 on a whole-loaded level: a rewrite switches the probe's texel by
+/// the next submit, on a probe with or without a tile, through the same
+/// texture and bindings; the switched texel weighs with the new tile, and
+/// clearing restores the never-tiled texel, so today's visibility, bit for
+/// bit. The seam refuses what the level does not have.
+#[test]
+fn a_whole_load_rewrite_switches_the_texel_next_frame_and_clearing_restores_it() {
+    use crate::render::ProbeDepthTileRewriteError as Error;
+    use postretro_render_cpu::sh_depth_tiles::DepthTileReferenceError;
+    let test = "a_whole_load_rewrite_switches_the_texel_next_frame_and_clearing_restores_it";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
+        return;
+    };
+    let Some(ctx) = gpu_or_skip(test) else {
+        return;
+    };
+    assert_eq!(
+        renderer.set_probe_depth_tile_reference(5, Some(0)),
+        Err(Error::NoLevel)
+    );
+    let (sh, tiles) = rewrite_fixture();
+    install_whole(&mut renderer, &sh, &tiles);
+    let before = whole_texels(&renderer, renderer.level());
+    assert_eq!(second(before[3]), MomentSecondChannel::Tile(0));
+    assert_eq!([before[5][0], before[5][1]], fixture_moments(5));
+
+    let layout_before = renderer.level().sh_bind_group() as *const wgpu::BindGroup;
+    renderer.set_probe_depth_tile_reference(5, Some(1)).unwrap();
+    let redirected = whole_texels(&renderer, renderer.level());
+    assert_eq!(
+        redirected[5][0],
+        fixture_moments(5)[0],
+        "R stays id-34 E[d]"
+    );
+    assert_eq!(second(redirected[5]), MomentSecondChannel::Tile(1));
+    assert_eq!(redirected[5][2..], before[5][2..], "B/A keep the word");
+    assert_eq!(
+        renderer.level().sh_bind_group() as *const wgpu::BindGroup,
+        layout_before,
+        "no new binding"
+    );
+
+    // The texels the GPU now holds weigh probe 5 with tile 1 toward the
+    // shaded point; cleared, they weigh it as the never-tiled probe did.
+    let rg = |texels: &[[u16; 4]]| -> Vec<[u16; 2]> {
+        texels.iter().map(|&[r, g, _, _]| [r, g]).collect()
+    };
+    let queries = [Query {
+        probe: [1, 1, 0],
+        valid: true,
+        sample_world: [1.8, 1.4, 0.3],
+    }];
+    let visibility = |texels: &[[u16; 4]]| {
+        run(
+            &ctx,
+            &Lattice {
+                grid: [4, 4, 2],
+                moments: &rg(texels),
+                tiles: Some(&tiles),
+            },
+            &queries,
+        )[0]
+    };
+    let today = visibility(&before);
+    assert_eq!(today.tile_moments, [-1.0, -1.0]);
+    let switched = visibility(&redirected);
+    assert_ne!(switched.tile_moments, [-1.0, -1.0], "reads tile 1");
+
+    renderer.set_probe_depth_tile_reference(5, None).unwrap();
+    let cleared = whole_texels(&renderer, renderer.level());
+    assert_eq!(cleared[5], before[5], "the never-tiled texel, bit for bit");
+    assert_eq!(visibility(&cleared).visibility_bits, today.visibility_bits);
+
+    renderer.set_probe_depth_tile_reference(3, None).unwrap();
+    let untiled = whole_texels(&renderer, renderer.level());
+    assert_eq!([untiled[3][0], untiled[3][1]], fixture_moments(3));
+    assert_eq!(untiled[3][2..], before[3][2..]);
+
+    let refused = [
+        (
+            renderer.set_probe_depth_tile_reference(32, Some(0)),
+            Err(Error::ProbeOutsideLattice {
+                probe: 32,
+                probe_count: 32,
+            }),
+        ),
+        (
+            renderer.set_probe_depth_tile_reference(7, Some(0)),
+            Err(Error::InvalidProbe { probe: 7 }),
+        ),
+        (
+            renderer.set_probe_depth_tile_reference(5, Some(2)),
+            Err(Error::Reference(DepthTileReferenceError::TileOutOfRange {
+                tile: 2,
+                tile_count: 2,
+            })),
+        ),
+    ];
+    for (result, expected) in refused {
+        assert_eq!(result, expected);
+    }
+    assert_eq!(whole_texels(&renderer, renderer.level()), untiled);
+    eprintln!("[DepthTileProof] whole-load rewrite, clear and refusals held; ran on GPU");
+}
+
+/// O10: a reference rewritten on the published load is absent from a set
+/// built off-main while it is published, from that set once published, and
+/// from a reload of the same map: each load's texels decode to its own id 59.
+#[test]
+fn a_rewritten_reference_stays_with_the_load_it_was_made_on() {
+    use crate::render::level_build::{GeometryExtras, GeometryRest};
+    use crate::render::level_resource_set::PreviousLevelSet;
+    use crate::render::renderer_textures::tests::with_one_triangle;
+    use postretro_render_data::material::Material;
+    let test = "a_rewritten_reference_stays_with_the_load_it_was_made_on";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
+        return;
+    };
+    let (sh, tiles) = rewrite_fixture();
+    install_whole(&mut renderer, &sh, &tiles);
+    renderer.set_probe_depth_tile_reference(3, Some(1)).unwrap();
+    assert_eq!(
+        second(whole_texels(&renderer, renderer.level())[3]),
+        MomentSecondChannel::Tile(1)
+    );
+
+    // The same map, built off-main beside the published, rewritten set.
+    let (builder, mut pending) = renderer.begin_level_set_build(renderer.level_build_tiers());
+    let (source_sh, source_tiles) = (sh.clone(), tiles.clone());
+    builder.geometry_from(
+        Box::new(move |visit| {
+            with_one_triangle(
+                &[Material::Default],
+                Some(&source_sh),
+                None,
+                &[],
+                |geometry| {
+                    visit(
+                        &crate::render::LevelGeometry {
+                            probe_depth_tiles: Some(&source_tiles),
+                            sh_storage: crate::render::LevelGeometryShStorage::Legacy,
+                            ..*geometry
+                        },
+                        GeometryExtras {
+                            volumes: &[],
+                            reflection_probes: None,
+                            fog_pixel_scale: 0,
+                            fog_cell_masks: None,
+                        },
+                    )
+                },
+            )
+        }),
+        GeometryRest {
+            gpu_lighting_payloads: Default::default(),
+            sh_plan: None,
+            lightmap_plan: None,
+            fluid: None,
+            planar_candidate: None,
+        },
+    );
+    builder.finish();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let id = loop {
+        if let Some(outcome) = pending.try_take(&mut renderer) {
+            break outcome.expect("the off-main build succeeds");
+        }
+        assert!(std::time::Instant::now() < deadline, "the build reports");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    let built = renderer
+        .full()
+        .resident_levels
+        .iter()
+        .find(|level| level.id == id)
+        .expect("the built set is resident");
+    let built_texels = whole_texels(&renderer, built);
+    assert_eq!(second(built_texels[3]), MomentSecondChannel::Tile(0));
+    assert_eq!(second(built_texels[17]), MomentSecondChannel::Tile(1));
+    assert_eq!(
+        second(whole_texels(&renderer, renderer.level())[3]),
+        MomentSecondChannel::Tile(1),
+        "the published set keeps its own rewrite"
+    );
+
+    renderer.publish_level_set(id, PreviousLevelSet::Retire);
+    assert_eq!(renderer.level().id, id);
+    assert_eq!(
+        second(whole_texels(&renderer, renderer.level())[3]),
+        MomentSecondChannel::Tile(0)
+    );
+
+    // Rewrite this load too, then reload the map from scratch.
+    renderer.set_probe_depth_tile_reference(3, None).unwrap();
+    // The readback's submit is the frame boundary unload expects.
+    assert_eq!(
+        second(whole_texels(&renderer, renderer.level())[3]),
+        MomentSecondChannel::Averaged(fixture_moments(3)[1])
+    );
+    renderer.release_level_resources();
+    install_whole(&mut renderer, &sh, &tiles);
+    let reloaded = whole_texels(&renderer, renderer.level());
+    assert_eq!(second(reloaded[3]), MomentSecondChannel::Tile(0));
+    assert_eq!(second(reloaded[17]), MomentSecondChannel::Tile(1));
+    eprintln!("[DepthTileProof] rewrites stayed with their load across build, publish, reload");
+}

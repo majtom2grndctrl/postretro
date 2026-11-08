@@ -34,7 +34,11 @@ fn install(state: &mut ShResidencyState, map: &SyntheticMap, cluster_id: u32) {
 
 fn evict(state: &mut ShResidencyState, cluster_id: u32) {
     state
-        .evict(&mut StagedUploads::default(), cluster_id)
+        .evict(
+            &mut StagedUploads::default(),
+            &ProbeDepthTileReferences::default(),
+            cluster_id,
+        )
         .unwrap();
 }
 
@@ -51,7 +55,12 @@ fn drain(
     state.targets = targets;
     let mut outcome = ShDrainOutcome::default();
     state
-        .promote_and_evict(&mut StagedUploads::default(), batch.evictions, &mut outcome)
+        .promote_and_evict(
+            &mut StagedUploads::default(),
+            &ProbeDepthTileReferences::default(),
+            batch.evictions,
+            &mut outcome,
+        )
         .unwrap();
     state
         .install_ready(None, batch.ready, PoolAdmission::default(), &mut outcome)
@@ -79,7 +88,10 @@ fn compose(state: &mut ShResidencyState) {
 
 fn promote(state: &mut ShResidencyState) {
     state
-        .promote_completed(&mut StagedUploads::default())
+        .promote_completed(
+            &mut StagedUploads::default(),
+            &ProbeDepthTileReferences::default(),
+        )
         .unwrap();
 }
 

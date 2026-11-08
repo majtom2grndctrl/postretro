@@ -698,6 +698,13 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         {
             Some("guarded chokepoint")
         }
+        // The texture twin of `write_buffer`: direct only while staging is
+        // disabled (boot and installs), staged otherwise.
+        ("render/uploads/mod.rs", "UploadQueue", "write_texture")
+            if site.receiver == Receiver::RawQueue && site.method == "write_texture" =>
+        {
+            Some("guarded chokepoint")
+        }
         // The upload thread's own queue timeline: it submits each job's staged
         // writes before handing the job's result back.
         ("render/upload_thread.rs", "", "flush_staged_writes")

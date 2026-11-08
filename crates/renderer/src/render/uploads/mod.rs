@@ -123,6 +123,44 @@ impl UploadQueue {
         }
     }
 
+    /// A texture region of `rows_per_image` tightly packed rows per layer,
+    /// staged like [`Self::write_buffer`]; direct while staging is disabled.
+    #[track_caller]
+    pub(crate) fn write_texture(
+        &self,
+        target: &wgpu::Texture,
+        origin: wgpu::Origin3d,
+        data: &[u8],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+        extent: wgpu::Extent3d,
+    ) {
+        if self.enabled.get() {
+            self.batch
+                .borrow_mut()
+                .write_texture(target, origin, data, bytes_per_row, rows_per_image, extent)
+                .unwrap_or_else(|error| panic!("{error}"));
+            self.count_write(Location::caller(), false, data.is_empty());
+        } else {
+            self.raw.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: target,
+                    mip_level: 0,
+                    origin,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(rows_per_image),
+                },
+                extent,
+            );
+            self.count_write(Location::caller(), true, data.is_empty());
+        }
+    }
+
     #[track_caller]
     pub(crate) fn direct_write_buffer(&self, target: &wgpu::Buffer, offset: u64, data: &[u8]) {
         #[cfg(debug_assertions)]

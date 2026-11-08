@@ -5,6 +5,7 @@ use super::*;
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::renderer_types::PromotedBakedLightState;
+use postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences;
 
 /// Largest upload scratch vector kept between batches. Budgeted drains stage
 /// well under this; an oversized cluster's scratch is released after use.
@@ -64,10 +65,16 @@ fn pack_word_upload_spans(
         .collect())
 }
 
+/// Every streamed moment texel packs here: R the update's id-34 `E[d]`, G
+/// from the load's tile references (a tiled probe's reference, otherwise the
+/// update's `E[d²]`), B/A the probe's word in `words`. Looking G up at pack
+/// time means a reference rewritten before the batch packs reaches every
+/// texel the batch writes, whatever order its writers ran in.
 fn pack_moment_upload_spans(
     words: &[u32],
     updates: &[(u32, u16, u16)],
     grid: [u32; 3],
+    references: &ProbeDepthTileReferences,
 ) -> Result<Vec<MomentUploadSpan>, ShResidencyDrainError> {
     let xy = grid[0]
         .checked_mul(grid[1])
@@ -111,7 +118,8 @@ fn pack_moment_upload_spans(
             });
         }
         let span = row_spans.last_mut().expect("the first probe starts a span");
-        for value in [mean, mean_sq, word as u16, (word >> 16) as u16] {
+        let second = references.second_channel(dense, mean_sq);
+        for value in [mean, second, word as u16, (word >> 16) as u16] {
             span.bytes.extend_from_slice(&value.to_le_bytes());
         }
         previous_dense = Some(dense);
@@ -531,8 +539,9 @@ impl StreamingGpuPools {
         words: &[u32],
         updates: &[(u32, u16, u16)],
         grid: [u32; 3],
+        references: &ProbeDepthTileReferences,
     ) -> Result<(), ShResidencyDrainError> {
-        let spans = pack_moment_upload_spans(words, updates, grid)?;
+        let spans = pack_moment_upload_spans(words, updates, grid, references)?;
         for span in pack_word_upload_spans(words, updates.iter().map(|&(dense, _, _)| dense))? {
             uploads.write_buffer(
                 &self.sampled_indirection,
@@ -540,6 +549,27 @@ impl StreamingGpuPools {
                 &span.bytes,
             )?;
         }
+        self.upload_moment_spans(uploads, spans)
+    }
+
+    /// Moment texels alone, for writers whose sampled words did not change.
+    pub(in crate::render::sh_streaming) fn upload_moments(
+        &self,
+        uploads: &mut StagedUploads,
+        words: &[u32],
+        updates: &[(u32, u16, u16)],
+        grid: [u32; 3],
+        references: &ProbeDepthTileReferences,
+    ) -> Result<(), ShResidencyDrainError> {
+        let spans = pack_moment_upload_spans(words, updates, grid, references)?;
+        self.upload_moment_spans(uploads, spans)
+    }
+
+    fn upload_moment_spans(
+        &self,
+        uploads: &mut StagedUploads,
+        spans: Vec<MomentUploadSpan>,
+    ) -> Result<(), ShResidencyDrainError> {
         for span in spans {
             let row_bytes =
                 u32::try_from(span.row_bytes()).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
@@ -605,6 +635,7 @@ mod upload_packing_tests {
                 (4, 50, 51),
             ],
             [4, 2, 1],
+            &ProbeDepthTileReferences::default(),
         )
         .unwrap();
         assert_eq!(spans.len(), 3);
@@ -623,6 +654,41 @@ mod upload_packing_tests {
     }
 
     #[test]
+    fn depth_moment_texels_take_g_from_the_tile_table_and_keep_r() {
+        use postretro_level_format::probe_depth_tiles::{
+            MomentSecondChannel, PROBE_DEPTH_TILE_TEXELS, ProbeDepthTilesSection,
+            decode_moment_second_channel,
+        };
+        let references = ProbeDepthTileReferences::from_section(Some(&ProbeDepthTilesSection {
+            probe_indices: vec![1],
+            texels: vec![[0, 0]; PROBE_DEPTH_TILE_TEXELS],
+        }));
+        let words = [0x24, 0x44, 0];
+        let spans = pack_moment_upload_spans(
+            &words,
+            &[(0, 0x3c00, 0x4000), (1, 0x3e00, 0x4200), (2, 0, 0)],
+            [3, 1, 1],
+            &references,
+        )
+        .unwrap();
+        let halves: Vec<u16> = spans[0]
+            .bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&half| u16::from_le_bytes(half))
+            .collect();
+        assert_eq!(halves[0..4], [0x3c00, 0x4000, 0x24, 0], "untiled");
+        assert_eq!(halves[4], 0x3e00, "a tiled probe's R stays E[d]");
+        assert_eq!(
+            decode_moment_second_channel(halves[5]),
+            MomentSecondChannel::Tile(0)
+        );
+        assert_eq!(halves[6..8], [0x44, 0]);
+        assert_eq!(halves[8..12], [0, 0, 0, 0], "an invalid untiled texel");
+    }
+
+    #[test]
     fn depth_moment_rows_of_equal_extent_stack_into_one_region() {
         // Regression: one copy per probe row made promotion cost scale with
         // a cluster's row count.
@@ -637,7 +703,9 @@ mod upload_packing_tests {
             }
         }
         updates.extend([(1 + 4 + 12, 3, 4), (2 + 4 + 12, 3, 4), (1 + 8 + 12, 5, 6)]);
-        let spans = pack_moment_upload_spans(&words, &updates, grid).unwrap();
+        let spans =
+            pack_moment_upload_spans(&words, &updates, grid, &ProbeDepthTileReferences::default())
+                .unwrap();
         assert_eq!(
             spans
                 .iter()

@@ -42,13 +42,25 @@ impl UploadOrderSh {
         dense_slots: u32,
         map: SyntheticMap,
     ) -> Self {
+        Self::with_map_and_tiles(device, queue, dense_slots, map, None)
+    }
+
+    /// `map` with id 59 `tiles`: the SH resources hold the load's tile
+    /// texture and reference table, as a streamed level install builds them.
+    fn with_map_and_tiles(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        dense_slots: u32,
+        map: SyntheticMap,
+        tiles: Option<&postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection>,
+    ) -> Self {
         let state = map.state();
         let mut ledger = crate::render::sh_residency::ShAllocationLedger::new();
         let sh = ShVolumeResources::new(
             device,
             queue,
             ShVolumeSections {
-                depth_tiles: None,
+                depth_tiles: tiles,
                 sh: None,
                 stream_base_present: true,
                 stream_animation_descriptors: Some(&[]),
@@ -235,7 +247,9 @@ impl UploadOrderSh {
         let ready = self.prepared(cluster);
         self.state.targets.remove(&cluster);
         let mut uploads = self.state.begin_uploads(0);
-        self.state.evict(&mut uploads, cluster).unwrap();
+        self.state
+            .evict(&mut uploads, self.sh.depth_tiles.references(), cluster)
+            .unwrap();
         self.state.submit_uploads(uploads, device, queue);
         self.state.targets.insert(cluster);
         let mut gpu = super::super::InstallGpu {
@@ -349,6 +363,8 @@ impl UploadOrderSh {
     }
 }
 
+#[path = "depth_tile_texel_tests.rs"]
+mod depth_tile_texel_tests;
 #[path = "limit_tests.rs"]
 mod limit_tests;
 #[path = "pool_admission_tests.rs"]

@@ -678,7 +678,10 @@ fn probe_overlay_composes_rounded_probe_positions_when_world_bounds_collapse() {
         .commit_indirect_compose(&plan.indirect, 1)
         .expect("commit initial repair");
     state
-        .promote_completed(&mut super::super::StagedUploads::default())
+        .promote_completed(
+            &mut super::super::StagedUploads::default(),
+            &postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences::default(),
+        )
         .expect("promote probes");
     prepare(&mut state, false);
     assert!(

@@ -16,7 +16,7 @@
 4. **Probe-to-patch links.** Probe diffuse SH = Σ weight × patch radiance; reflection tiles not re-shaded.
 5. **Shipped animated paths.** Animated SH deltas (id 27): runtime compose = base + Σ curve(t) × per-light baked unit delta. Animated lightmap compose: per-light weight maps × curve, in compute.
 6. **Bake-only artefacts.** Surface radiance cache and gather; summed static bounce layer; door influence graph; light → cell reach; distance-to-edge owner masks. Nothing derived from a light change at runtime.
-7. **Door and mover channels.** Per (door, baked light) closed and open visibility masks, blended by door state on door events. The probe channel (`plans/ready/mover-light-flow--probe-channel/`) adds per-probe direct visibility and static lights' bounce per mover state.
+7. **Door and mover channels.** Per (door, baked light) closed and open visibility masks, blended by door state on door events. The probe channel (`plans/drafts/mover-light-flow--probe-channel/`) adds per-probe direct visibility and static lights' bounce per mover state.
 
 ## Filings found
 

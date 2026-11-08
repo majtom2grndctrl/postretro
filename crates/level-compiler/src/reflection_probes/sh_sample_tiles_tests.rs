@@ -159,8 +159,13 @@ fn a_sprite_behind_the_static_door_darkens_with_tiles() {
         let without = plain.indirect_as_billboard(point, forward).max_element();
         let with = tiled.indirect_as_billboard(point, forward).max_element();
         let fraction = with / without;
-        eprintln!("sprite at map y {map_y} z {map_z}: without {without}, with {with}, fraction {fraction}");
-        assert!(without > 0.0, "y {map_y}: the averaged moments leak onto the sprite");
+        eprintln!(
+            "sprite at map y {map_y} z {map_z}: without {without}, with {with}, fraction {fraction}"
+        );
+        assert!(
+            without > 0.0,
+            "y {map_y}: the averaged moments leak onto the sprite"
+        );
         assert!(
             fraction <= SPRITE_FRACTION_CEILING,
             "y {map_y}: the sprite keeps {fraction} of its no-tile indirect"

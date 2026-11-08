@@ -42,6 +42,7 @@ pub mod navmesh;
 pub mod octahedral;
 pub mod portals;
 pub mod prm;
+pub mod probe_depth_tiles;
 pub mod prm_accounting;
 pub mod push_forces;
 pub mod reflection_probes;

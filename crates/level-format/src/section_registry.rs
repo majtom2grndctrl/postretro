@@ -257,6 +257,13 @@ pub enum SectionId {
     /// a section another plan claims.
     /// See `lightmap_pool_bound::LightmapPoolBoundSection`.
     LightmapPoolBound = 58,
+
+    /// Optional sparse per-direction depth moments: an octahedral tile of
+    /// `(E[d], E[d²])` for each probe the bake found beside a thin occluder,
+    /// capped per level. Absent means every probe weighs by its averaged id-34
+    /// moments.
+    /// See `probe_depth_tiles::ProbeDepthTilesSection`.
+    ProbeDepthTiles = 59,
 }
 
 impl SectionId {
@@ -307,6 +314,7 @@ impl SectionId {
             55 => Some(Self::Teleporters),
             56 => Some(Self::GhostLinks),
             58 => Some(Self::LightmapPoolBound),
+            59 => Some(Self::ProbeDepthTiles),
             _ => None,
         }
     }
@@ -364,6 +372,7 @@ mod tests {
             SectionId::Teleporters,
             SectionId::GhostLinks,
             SectionId::LightmapPoolBound,
+            SectionId::ProbeDepthTiles,
         ];
 
         for section_id in registered {
@@ -372,6 +381,6 @@ mod tests {
 
         assert_eq!(SectionId::from_u32(14), None);
         assert_eq!(SectionId::from_u32(57), None);
-        assert_eq!(SectionId::from_u32(59), None);
+        assert_eq!(SectionId::from_u32(60), None);
     }
 }

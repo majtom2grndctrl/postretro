@@ -1,0 +1,65 @@
+# direction-aware-probe-visibility — plan of record
+
+mode: compact
+status: active
+read at: 5932287f4
+
+Source since the brief's read-at (2968de0ad) changed only navmesh, mover and AI code; no SH bake, renderer, loader or format file the Decisions cite moved, so the grounded Decision reads stand.
+
+## Corrections
+- Path names no tile-texture shape → `level-format::probe_depth_tiles::ProbeDepthTileTextureLayout`: one `Rg16Float` 2D texture, a power of two tiles per row (smallest row ≥ √count), rows only as tall as needed. Build summary and allocation ledger both price from it, so they agree by construction. Hallway's 13,451 tiles → 1280×1060 texels, 5.18 MiB.
+- Path's "tile-row constant" has no uniform slot → `ShGridInfo` spare words carry it: `_pad0` (28) the tiles-per-row shift, `_pad1` (44) and `_pad3` (92) the texture's reciprocal width and height as f32, so the lookup needs no texture-size query. The 96-byte ABI is unchanged.
+- Path cites no tile binding number → group 3 binding 18 (`BIND_SH_DEPTH_TILES`), `sh_depth_tiles: texture_2d<f32>`.
+
+## Delegated answers
+- Hallway Q2 view poses for the Windows ceiling run — reuse the spike's capture scenes (`kit/mk_scenes.py` on `spike/per-direction-depth`), so the ceiling compares against the run that set it.
+
+## AC-to-proof
+
+Capture tests live in `crates/postretro/tests/capture_probe_depth_tiles.rs` (feature `capture`, GPU-gated; `POSTRETRO_REQUIRE_GPU` makes a missing adapter fail). "Today" is the same tiled PRL with id 59 stripped.
+
+| AC | Proof | Status |
+|---|---|---|
+| A1 no tiles: static-door st3 ≥ 0.4 | capture test, static-door variant, stripped PRL | achievable as stated |
+| A2 tiles: st3 ≤ 0.05, st2 ≤ 0.02 | capture test, static-door variant | achievable as stated |
+| A3 sprite + kinematic brush at st3 floor ≤ fraction of no-tile | capture test on a static-door variant carrying both; fraction from first-slice pilot (recorded below) | achievable as stated |
+| A4 reflection capture parity + id 59 re-keys stage | compiler test: CPU mirror samples tiles through the shared decode and darkens behind the door; stage key changes with id 59 bytes | achievable as stated |
+| A5 open doorway within 0.02, ≤ 0.1% px move > 2 | capture test, no-door variant | achievable as stated |
+| A6 hallway Q2 1080p: no px darkens > 2 | `#[ignore]` capture test, bakes stress-warren-hallway-inspection | achievable as stated |
+| A7 mover-door closet means ≥ today − 0.02 | capture test, `mover-closet` | achievable as stated |
+| A8 no id 59 ≡ zero-tile id 59 | capture test, byte compare | achievable as stated |
+| A9 untiled beside tiled: bit-for-bit today | GPU WGSL harness over `sh_corner_depth_visibility` vs today's body | achievable as stated |
+| A10 floor 0.03 on every depth-aware path | GPU WGSL harness (tile mean 0 → exactly 0.03) + shader test that per-corner, L1, L2 and pair paths all weigh depth through it | achievable as stated |
+| A11 every texel writer keeps R = id-34 `E[d]` | renderer unit tests over whole-load pack, promote, evict, session clear then promote | achievable as stated |
+| A12 raw-bit decode: tiles 0 and 32,767, untiled +0 | GPU WGSL harness | achievable as stated |
+| A13 rewrite: next frame, clear restores bit for bit, same-drain both orders, survives evict/reinstall (O5–O7) | renderer tests over the reference table and streamed upload packing | achievable as stated |
+| A14 both writers carry the reference (O3) | renderer unit tests | achievable as stated |
+| A15 pool growth keeps the tile (O4) | renderer streaming growth test | achievable as stated |
+| A16 rewrite absent from next load (O10) | renderer per-load state test | achievable as stated |
+| A17 bake determinism, warm ≡ cold, stale entry misses, convex room none, closet blocked-neighbour probes all tiled (O1, O2) | compiler tests (closet compiles in seconds) | achievable as stated |
+| A18 cap ties (O9) | compiler unit test, lowered cap | achievable as stated |
+| A19 set sign bit refuses by name | loader tests, whole-load and streamed metadata | achievable as stated |
+| A20 malformed id 59 refuses by name | `probe_depth_tiles_tests` + loader test naming the section | achievable as stated |
+| A21 forward 16/15; stage limits; offscreen full-init with GPU; FXC | existing layout tests updated; offscreen renderer test; `dx12_fxc_test` (compiles on Windows only; Mac skips) | achievable as stated |
+| A22 mesh superset keeps 15 fragment-visible; kinematic/skinned budgets from superset | renderer layout tests | achievable as stated |
+| A23 tile bytes in SH ledger, zero after unload | renderer allocation test | achievable as stated |
+| A24 build summary tile bytes = ledger | compiler summary test + renderer ledger test, both on `probe_depth_tile_texture_bytes` | achievable as stated |
+| A25 hallway tile memory ≤ 6.4 MiB | `#[ignore]` test, same hallway bake | achievable as stated |
+| M1 cross-build byte-identical to 2968de0ad | two-worktree capture `cmp` | manual |
+| M2 forward cost ceiling (Mac 4K MST, Windows 1080p timing) | owner/agent run per research §Mac and spike Q2 | manual |
+| M3 owner in-engine | owner | manual |
+| M4 fog bleed observation | owner | manual |
+
+A3 fraction: _set by task 4's pilot._
+
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | Id 59 format, reference encoding, texture layout, CPU tile sampler (`level-format::probe_depth_tiles`) | integrating executor | — | done |
+| 2 | Bake: bin gather hits into tiles, select by 26-neighbour change, cap and rank, ride the `sh_base_volume` entry (stage version 3), pack id 59, build summary tile bytes; closet static-door, no-door and convex-room fixtures | worker (compiler) | 1 | |
+| 3 | Runtime: load and validate id 59 and id-34 sign bits; reference table; tile texture and binding 18; direct atlas drops fragment visibility in the shared layout; WGSL decode and lookup; every texel writer; rewrite seam; ledger; growth rebind | worker (renderer + loader) | 1 | |
+| 4 | First slice: bake closet, capture st2/st3 with and without tiles, pilot the A3 fraction | integrating executor | 2, 3 | |
+| 5 | Reflection capture parity: CPU mirror decode + stage key | worker (compiler) | 2 | |
+| 6 | Capture acceptance tests A1–A8, A25 | integrating executor | 4 | |
+| 7 | Preflight, review panel, fixes | integrating executor | 5, 6 | |

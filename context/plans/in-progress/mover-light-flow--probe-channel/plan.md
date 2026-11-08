@@ -1,0 +1,111 @@
+# mover-light-flow--probe-channel — plan of record
+
+mode: resumable
+status: proposed
+read at: c4a3d980c (no source change since the brief's 9382e3c23; every cited symbol re-read this session)
+
+## Corrections
+
+Path and wording only. No Decision premise was found false.
+
+- `bordered_tile` is in `level-format/src/probe_depth_tiles.rs`, not `sh_bake/depth_tiles.rs`. `TileRayTable` and `DepthTileSelector` are `pub(super)` in `sh_bake` → widen them to `pub(crate)` for the posed re-gather in `surface_radiance`.
+- P31 re-trim: `DepthTileSelector::finish` drops each candidate's score, and cached id 59 keeps only `probe_indices` and texels → re-trim recomputes `visibility_change` for each kept tile from id 34's averaged moments and the layout. Rank is score descending, then probe index ascending. The id-34 cache shape stays as it is.
+- `ProbeDepthTileTextureLayout` (`for_tile_count`, `tile_origin`) and `probe_depth_tile_texture_bytes` live in `level-format`, not the renderer → the renderer sizes its texture by calling them with id 59's count plus live tiles plus any GPU-held closed-pose tiles.
+- `bake_counters` is a `#[cfg(test)]` module of the `prl-build` bin. `stage_events::PATCH_CACHE_DROPPED` and `Drop for PatchCache` are test-only → every row that counts rays or proves the patch-cache drop is a bin unit test. Integration tests prove "traces no id-34 ray" with the `[cache] sh_base_volume hit` line (research §Acceptance instruments).
+- `has_delta_entry` is three hand-written closures (`sh_density.rs:320`, `:664`, `sh_analyze.rs:1533`) plus a `BrickInput` field, and `delta_pin_counts` returns a fixed `[u64; 3]` → the section joins each closure by hand, and the pin count array widens to 4 along with its consumers.
+- Ghost links reaches pack and load as its own parameter, not through `PostBakeDeltaSections` → id 57 becomes a `PostBakeDeltaSections` field, because storage ceilings consume it like a delta section. Its pack and loader plumbing follow the ghost-links call sites.
+- Pass B's per-light curve scale is `animated_light_full_scale`. `fn animated_light_scale` is in `sh_compose.wgsl` and `billboard_direct_scatter_compose.wgsl`.
+- `LIT_ENDPOINT_DRIFT` has two copies: an `i32` local in `capture_frame.rs:662` and an `f64` constant at module level in `capture_probe_depth_tiles.rs:804`. The new capture rows use the `capture_probe_depth_tiles.rs` constant, or a `capture_support` copy if a second target needs it.
+- `mover_pose` exists only in the compiler. The Path's "posed brushes resolve through the shared `mover_pose` module" applies to compiler posing. The runtime poses movers through physics, as it does today.
+- Capture never calls `rebuild_blocked_portals`: `capture/prepared.rs:174` passes `&[]`. → A forced mover t also seals that mover's portals when the forced pose is docked at waypoint 0, matching the live frame. This clarifies the "Capture poses movers" Decision without changing its meaning.
+- `WireKinematicMoverState` has no single phase field. t derives from `segment_index`, `direction`, `segment_elapsed_ms`, `wait_remaining_ms`, `completed` and `target_segment`. There is still no wire change.
+- The renderer's headless GPU harness is `pub(crate)`. Game-side GPU rows use the app crate's own offscreen helper (`level_load/test_support.rs`, `gpu_gate_tests.rs`). Rows that mix a game half and a GPU half split by crate (research §Acceptance instruments).
+
+## Delegated answers
+
+- Exact field widths: as the Wire format table pins them. Nothing found while reading needs wider fields.
+- Live tiles written from the CPU or by a compute pass: from the CPU, through `UploadQueue::write_texture` into the kept texture at `tile_origin`. A compute pass would need `Rg16Float` storage writes, which require an adapter feature the device does not request (`request_renderer_device`). Staged writes also precede every command in the frame's first submission, which gives P24 and P25 their same-frame ordering for free.
+- What q a valid probe inside a posed brush takes: decided by task 1 against the own-face row (Manual 5). The owner's lean is the starting rule: test without the brush that contains the probe, with the mover's other brushes still occluding.
+- Whether posed mover brushes become patches with their albedo: decided by task 2 against the reference-bake rows (Bake 3, Bake 7). Starting rule: the owner's lean, yes.
+- The clamp rule for summed bounce: per-texel `max(0)` on the summed base tile at channel-touched probes only, before id-27 deltas add. This is the owner's lean. Task 9 proves it against the two-mover row (Compose 3). An absent section therefore still equals today's output.
+- Depth for a probe two movers change: decided by task 10 against a two-door test row added there. Lean: per texel, take the moment pair whose blended E[d] is smaller, meaning the nearer occluder. The choice is independent of hand-over order (P26) and stays a valid moment set.
+
+## Owner stops
+
+1. **After task 1:** owner A/B of station 2 and the room's own faces on the posed-switch PRL. This is the direct premise.
+2. **After task 2, the bounce-cost stop:** the owner sets the bounce cost gate and id 57's resident byte bar from Manual 1 and Manual 7, and judges the later-bounce drift report. Format work (task 5 onward) waits on this. If the cost gate fails, the brief's Rivals entry prefers a split.
+3. **Task 3:** if the pop's fix grows past this brief, stop and report.
+
+## AC-to-proof
+
+Rows are numbered by block, in brief order: Bake (B), Blend scalar (S), Compose (C), Depth (D), Capture (K), Manual (M).
+
+| AC | Proof | Task | Status |
+|---|---|---|---|
+| B1 q equals joint-sample ratio, same seed; no-reach light stores none | bin unit test against `bake_probe_direct_rgb` and the new two-trace visibility, within 1/510 | 1, 6 | achievable as stated |
+| B2 `mover-setpiece` q<1 / no-entry light sets | integration test over the compiled section, light sets from `mover_light_gate_setpiece.rs` | 6 | achievable as stated |
+| B3 closet S^b₀ vs static-door reference id 34 within BC6H round-trip; S^b₁ vs today | integration test, reference map generated in-test | 2, 7 | achievable as stated (stop if it misses: research §Risks) |
+| B4 closed-pose tiles vs reference id-59 tiles within f16; none where no ray meets the door; no depth block | integration test | 2, 7 | achievable as stated |
+| B5 tile-range overflow is a named error; lowered-cap trim; exactly-at-cap packs/loads; 1<<15 synthetic PRL loads; compiler count = loader count | bin unit tests with a test cap seam + loader test on a synthetic PRL | 7, 10 | achievable as stated |
+| B6 warm mover-only edit that changes tile count: no id-34 ray, PRL = cold, log/summary report trimmed vs shrunk cap | integration test (`sh_base_volume hit` line + byte compare) | 7 | achievable as stated |
+| B7 raised room composed base vs static reference within BC6H; S₁ within T/255 per blocked light | integration test (base) + bin unit test (direct) | 2, 7 | achievable as stated |
+| B8 full re-bake domain check | `#[ignore]` integration test | 7 | achievable as stated |
+| B9 storage-level caps under entries; other cells unchanged save smoothing | bin unit test over `storage_level_ceilings` with and without the section | 6 | achievable as stated |
+| B10 directional light q<1; spinner no entry | bin unit test | 6 | achievable as stated |
+| B11 animated light added leaves bounce bytes unchanged; id-27 composes unchanged | integration test (bytes) + GPU compose test | 7, 9 | achievable as stated |
+| B12 section bytes identical `-j 1`/`-j 4` and two cold builds | integration test | 6, 7 | achievable as stated |
+| B13 section GPU buffers in ledger, zero after unload | renderer GPU test | 8, 9, 10 | achievable as stated |
+| B14 SH gate covers measured peak; patch cache drops once; over-budget named error before any bounce ray | bin unit tests on the `live_bytes` ledger, fixtures named | 7 | achievable as stated |
+| B15 last-waypoint move: warm traces nothing for 34/35/41/45, scoped re-bakes, one `[MoverLight]` miss, PRL = cold; static edits re-bake every bounce | integration tests (cache lines + byte compare) | 6, 7 | achievable as stated |
+| B16 edit order over one cache, revert hits every memo | integration test | 7 | achievable as stated |
+| B17 no movers / no-change movers: no section, byte-identical to parent | opt-in `#[ignore]` test against a baseline, after the foundation's parity test | 6, 7 | achievable as stated |
+| B18 malformed-section load errors, each named | loader unit tests | 5 | achievable as stated |
+| B19 grep gate on the game-side collector and setter; bounce-only and direct-only sections load and compose | grep test + GPU compose test | 4, 8, 9 | achievable as stated |
+| S1–S15 blend scalar rows (P1, P4, P9–P11, P13–P15, P23, ramp parse, reversal, two movers, host/client, allocation) | physics unit tests, compiler parse tests, app-crate frame tests, netcode test beside `client_predicted_mover_phase_matches_host_door_occlusion_phase`, alloc probe | 4 | achievable as stated |
+| C1 single-terminus gate: S₀, ungated, exact mix; other light unchanged | renderer GPU test (`POSTRETRO_REQUIRE_GPU`) | 8 | achievable as stated |
+| C2 stripped section = no state = today, direct and indirect | renderer GPU test | 8, 9 | achievable as stated |
+| C3 indirect blend, two movers add, clamp, unaffected probe | renderer GPU test (q bytes 0/255 and f16-exact fixtures) | 9 | achievable as stated |
+| C4 two movers' product, never brighter, never negative | renderer GPU test | 8 | achievable as stated |
+| C5 animated gated light × curve; SDF light no entry | renderer GPU test | 8 | achievable as stated |
+| C6 handoff (1 − w) × gated / promotion-free full gated | renderer GPU test | 8 | achievable as stated |
+| C7 recompose only on t change, covered rows; lagging rows compose before sampling | renderer planner unit tests + GPU test | 8, 9 | achievable as stated |
+| C8 curve/w changes raise no mover trigger | planner unit test | 8 | achievable as stated |
+| C9 tick-driven closet door ramp, reversal, ramp keys from map | split by crate: app test for the t′ sequence from ticks + renderer GPU test at those t′ (research §Acceptance instruments) | 11 | achievable as stated |
+| C10 streaming `off` = `sync-proof` | renderer GPU test | 8, 9 | achievable as stated |
+| C11 t change on a non-recording frame recomposes next recording frame, streamed and legacy (P12) | renderer tests | 8, 9 | achievable as stated |
+| C12 held + travelling: only traveller's rows; shared row reads held t (P16) | planner unit test + GPU test | 8 | achievable as stated |
+| C13 slot re-tenanted mid-travel (P17) | planner/GPU test | 8 | achievable as stated |
+| C14 pass routing by entry kind (P18) | planner unit test | 8, 9 | achievable as stated |
+| C15 own-tile gated light composes S₀ (P22) | bin unit test (flag) + GPU test | 6, 8 | achievable as stated |
+| D1–D14 depth rows (blend, strip, write-on-change, P24–P30, reference texel R/G, alloc, eviction/growth, ledger) | renderer GPU tests (reuse `sh_depth_tiles_harness.rs`; readback adds `COPY_SRC`), shader byte-identity via a pinned hash test, frame-pair rows in an app offscreen test | 10, 11 | achievable as stated |
+| K1 closet forced closed vs tiled static reference; forced open vs stripped; replaces `mover_door_closet_does_not_darken` | capture test, `--features capture --ignored`, GPU | 11 | achievable as stated |
+| K2 setpiece wall closed, held receiver vs static reference | capture test | 11 | achievable as stated |
+| K3 no promotion pop at forced termini (includes the draft's 145/186 case) | capture test | 3, 11 | achievable as stated |
+| M1 bounce-slice cost on full hallway | owner/executor measurement, idle machine, reported at stop 2 | 2 | manual |
+| M2 dark closet judged against reference | owner, in-engine | 12 | manual |
+| M3 setpiece station 2 raised-room A/B | owner, in-engine | 12 | manual |
+| M4 skinned mesh on enemy spot darkens/relights | owner, in-engine | 12 | manual |
+| M5 mover's own faces no darker than today | owner, in-engine (first judged at stop 1) | 1, 12 | manual |
+| M6 5300M Metal System Trace ≤ 0.2 ms per travelling mover | owner/executor on the 5300M | 12 | manual |
+| M7 byte and tile-count table in `research.md` for the five maps | executor, at stop 2 | 2 | manual |
+
+## Tasks
+
+The integrating executor owns `plan.md`, the id-57 types, the stage order in `pipeline.rs`, the renderer setter signature, and every commit and Cargo gate. Workers get the full brief, `research.md`, this plan, the routed docs and the whole Acceptance list. They never edit `plan.md` or commit.
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | **Direct slice.** Add the two-trace soft visibility (static and static-plus-posed on one joint sample set). Add a dev-only compiler switch that poses `setpiece_room` raised as an occluder in the id-35/41/45 bakes. Capture draws the mover at that pose. Bin unit test for B1's ratio. Decide the inside-brush rule. **Owner stop 1** (station 2, own faces). | integrating executor | — | |
+| 2 | **Bounce and depth slice.** The same switch, for the closet door closed and the room raised: a posed re-gather (closest hit = min(static, entry distance into the posed brushes)), S^b replacing id 34, and closed-pose tiles from the same rays. Prototype reference-build checks B3, B4 and B7. Measure later-bounce drift over the affected domain. Settle the patch question. Measure M1 on the hallway and write M7 into `research.md`. **Owner stop 2.** | integrating executor | 1 | |
+| 3 | **Promotion pop.** Root-cause `drafts/animated-promotion-direct-sh-pop.md` with a discriminating experiment (§6.3), check whether the id-41 arm shares the gap, and fix it within this brief or stop. | worker (worktree), GPU | — (parallel with 1–2) | |
+| 4 | **Blend scalar.** In physics: arc-length t, matching `position_for_phase`'s degenerate rule, with terminus t for no-segment states (P9). In the compiler: parse `light_ramp_start` and `light_ramp_end`, plus FGD keys. In the game: collect (mover id, t′) from the registry, culled movers included, and hand it over at both `rebuild_blocked_portals` sites. Add a renderer setter that stores state only, with a no-level guard and a reset at install. Add the grep gate. Covers S1–S15. | worker (worktree) | — (parallel with 1–2) | |
+| 5 | **Format and load.** Add `MoverProbeChannel` id 57 to level-format, following the Wire format table, and register it. Loader validation goes beside `validate_direct_sh_delta`. The ramp record reaches mover runtime data. Covers B18. | integrating executor | stop 2 | |
+| 6 | **Compiler direct, production.** Hoist `MoverPoses::resolve` ahead of the SH gates (P21). Add the q bake with a per-light memo on an occlusion-only geometry hash. Decide the own-tile flag against ids 41 and 45 as emitted (P22). Cap storage levels and id 41 through `DeltaSectionsRef`, and widen the pin count array. Emit the direct block. Covers B1, B2, B9, B10, B12, B15, B17 and the C15 flag. | integrating executor (may split the memo to a worker) | 5 | |
+| 7 | **Compiler bounce and depth, production.** Bounce bake per mover, with a memo on id 34's volume key plus posed brushes. Add the affected-probe bar, the patch-cache lifetime (P20, P21) and SH-gate pricing. Add closed-pose tiles, the id-59 re-trim (P31), the named tile-range error and summary/log lines. Covers B3–B8, B11, B14–B16 and the bounce side of B17. | integrating executor | 6 | |
+| 8 | **Renderer direct compose.** Add the channel storage for Passes A and B within the 8-buffer wall, either by merging matched read-only arrays or by keeping one channel buffer per pass. Add the per-mover t block, per-mover row membership and the t′-changed planner trigger, plus a legacy `should_dispatch` term committed after encode. The gated term goes in both atlases. Covers C1, C2, C4–C8, C10–C15, B13 and B19. | worker, then integrate | 4, 5 | |
+| 9 | **Renderer indirect compose.** In `sh_compose.wgsl`, apply the bounce override at affected probes, then the clamp, then id-27 deltas. Covers C3, B11 (GPU), C7, C10, C11 and C14 for the indirect pass. | worker, then integrate | 4, 5 | |
+| 10 | **Depth live tiles.** Size `ShDepthTiles` for every tile and keep the texture. Write live tiles from the CPU and point references at them (P24–P30). Live tiles must survive eviction and growth, and appear in the ledger. Add the two-door depth row. Covers D1–D14, B5 (loader side) and B13. | worker, then integrate | 4, 5 | |
+| 11 | **Wiring and capture.** World-less frame hand-over. Capture forced mover t covering pose, casters, occluder bounds and portal seal. Add the C9 tick-driven test, K1–K3, and retire `mover_door_closet_does_not_darken`. | integrating executor | 3, 6–10 | |
+| 12 | **Close-out.** Delete the dev switches. Update `context/lib` drafts so "not built yet" becomes the contract. Run `/preflight`, then `/review-panel` → `/fix-review-findings` until no new findings, then the full gate. Hand M2–M6 to the owner. | integrating executor | 11 | |
+
+Tasks 8, 9 and 10 run concurrently in worktrees only if free disk stays above 15 GB plus about 30 GB per worktree. Otherwise they run in order on the main checkout. Disk had 76 GB free at planning. While the owner is at the machine, builds stay capped at 6 jobs under `nice`.

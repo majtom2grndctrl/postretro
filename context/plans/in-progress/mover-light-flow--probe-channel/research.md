@@ -1065,3 +1065,59 @@ Code close-out, 2026-11-09. Only code changed; docs are task 12b's.
 - Capture, `--ignored`: C10 and D2 frames, K1, K2, K3 static and animated pass.
 - `cargo test --workspace` with `POSTRETRO_REQUIRE_GPU=1`: 15,423 passed, 0 failed, 120 ignored. With `--features postretro/capture`: 15,515 passed, 0 failed, 148 ignored.
 - `cargo clippy --workspace --all-targets -D warnings`, with and without capture: clean. `cargo fmt --check`: clean.
+
+### Rising-room probe blobs
+
+Diagnosis, 2026-11-09, at bc7537a86 (AMD Radeon Pro 5300M, Metal). `mover-setpiece` built by the release `prl-build` (BC6H, every block resident). Captures force `setpiece_room` to t, reflections off, 960×540. The camera rides the room at map (860, 320, floor + 64), facing east, pitched −28° at the floor or +30° at the ceiling. Stills: `captures/blobs-*.png`.
+
+**Metric.** Mean luma of 8×8-pixel blocks over the room's floor crop. Each block's excess is measured over the median of the blocks within 6 blocks of it. Reported as max excess (luma levels), then the count of local-max blocks more than 3 levels above that median. Large-scale lighting, such as the doorway's shadow, scores about 6–7 with no lattice pattern.
+
+| t | (a) as built | (b) id 57 stripped | (c) depth block stripped | (d) bounce block stripped | (e) direct only |
+|---|---|---|---|---|---|
+| 0.50 | 7.2 / 10 | 4.8 / 9 | 7.2 / 10 | 6.2 / 5 | 6.2 / 5 |
+| 0.80 | 8.2 / 19 | 2.8 / 0 | **15.8 / 24** (dots) | 6.3 / 12 | **14.0 / 21** (dots) |
+| 0.86 | **14.6 / 35** | 2.6 / 0 | 6.5 / 15 | 11.7 / 24 | 5.9 / 16 |
+| 0.88 | **14.6 / 64** | 2.5 / 0 | 6.4 / 18 | 12.7 / 44 | 5.7 / 15 |
+| 0.90 | **11.3 / 58** | 2.6 / 0 | 6.7 / 16 | 10.5 / 48 | 6.0 / 15 |
+| 0.92 | **13.8 / 55** | 2.5 / 0 | 7.0 / 15 | 13.1 / 50 | 6.0 / 15 |
+| 0.95 | **15.1 / 44** | 2.7 / 0 | 7.2 / 16 | 14.6 / 36 | 6.1 / 16 |
+| 0.96 | 8.3 / 31 | 2.8 / 0 | 7.4 / 16 | 7.9 / 26 | 6.0 / 16 |
+| 0.97 | 7.2 / 17 | 2.8 / 0 | 7.3 / 15 | 6.0 / 17 | 6.0 / 14 |
+| 1.00 | 6.9 / 22 | 2.6 / 0 | 6.9 / 22 | 5.6 / 18 | 5.6 / 18 |
+
+- The interior ceiling scores at most 2 at every t and variant, with no pattern.
+- The roof's top, seen from the arena, shows faint lattice dots at t = 0.95 (10 against 4.9 stripped). Variants a, c and e score alike there, so those dots come from the values, not from depth.
+- With light-term masks at t = 0.9 and 0.95, the floor's diamonds are all in baked static direct (mask 8: 12–16, the same as the full frame). Indirect alone (mask 2) stays under 2.
+
+**What removes the blobs.** Stripping the depth block, variants (c) and (e), removes the diamonds over t ≈ 0.85–0.965. Stripping bounce (d) does not. A second, narrower pattern shows when depth is stripped: bright dots at t ≈ 0.80, the moment the floor passes the z −34.5 probe layer. In the shipped frame, depth masks those dots.
+
+**Probes.** The grid is 1 m (39.37 u), with layers at map z …, −34.5, 4.9, 44.2, …, 162.3. The interior columns run x 886.3–1122.5 and y 182.7–458.3. No probe lies in the floor slab, which spans z −16 to 0 when raised. Every probe below is valid, untiled in id 59, and carries a room depth record storing both termini. None carries a wall record.
+
+| Layer | e.g. probe (map) | Depth toward the floor | S^b₀ / S^b₁ (tile mean) | q₀ / q₁ (gated lights 1, 2, 3, 5, 11) | Composed handoff direct, floor-facing, t = 0.9 |
+|---|---|---|---|---|---|
+| z 4.9, interior side of the floor | 5913 (925.7, 300.8) | D₀ = D₁ downward (0.1248, 0.01558), σ 1.9 mm. Base: averaged (8.6, 111), σ 6 m | ≈ 0.05 / ≈ 0.004 | 255 / 0 | 0.0000–0.039 across the layer (5284: 0; 5913: 0.039) |
+| z −34.5, under the floor | 5871 | D₀ = D₁ upward (0.4795, 0.2299), σ 2.6 mm. Base: averaged (7.2, 79) | 0 / 0 | 0 / 0 | 0–0.023 (5872: 0; 5873: 0.023, ungated lights) |
+| z 162.3, in the roof slab at t = 1 | 6083 | D₁ ≡ 0 | ≈ 0.027 / 0 | 255 / 0 | — |
+
+**Mechanism A: depth, the diamonds.** At both termini a mover surface sits 0.1248 m below the z 4.9 layer: the roof's top at the bottom (flush with the arena floor) and the floor's top at the top. So D₀ equals D₁ in the down hemisphere, and the live tile holds "a surface 12 cm below" at every t′. Mid-travel the floor is 0.25–0.9 m below. The fragment is farther than the stored mean, and the texel variance is about 2 mm², so the Chebyshev weight floors at 0.03 in a cone around the probe's foot.
+
+| t | d to the foot (m) | live E[d] | Chebyshev at r = 0 / 8 u / 16 u |
+|---|---|---|---|
+| 0.90 | 0.470 | 0.1248 | 0.03 / 0.03 / 0.03 |
+| 0.95 | 0.247 | 0.1248 | 0.03 / 0.13 / 0.04 |
+| 0.96 | 0.202 | 0.1248 | 0.12 / 0.38 / 0.76 |
+| 0.97 | 0.157 | 0.1248 | 1 / 0.93 / 1 |
+
+- The cone opens out as the floor drops away and closes to a dot as the floor nears the baked plane at t ≈ 0.967. This is the growing and shrinking the owner saw.
+- The lower layer's up-tile holds the same coincident pair: the roof's underside when lowered and the floor slab's underside when raised, both at z −16. It floors from t ≈ 0.93.
+- The weight therefore moves, in a pattern locked to the lattice, onto grazing neighbours and onto the probes behind the surface. Mover fragments give those the smooth backface weight, 0.03 at the floor to about 0.4. Baked direct varies 0 to 0.039 between neighbouring probes.
+- The rejected region is bounded by the octahedral tile's texel footprint, which projects as a diamond on the floor.
+- A CPU mirror of the mover sampler, fed the GPU-composed tiles, reproduces the pattern under the live tiles and none under base moments (`captures/blobs-sim-t0.90-*.png`).
+- This is not hypothesis 1's in-slab case. The floor has no in-slab probe, and the z 162.3 roof-slab probes show nothing on the interior ceiling. It is not the two-mover rule or an unstored terminus either: every probe involved stores both termini, and no wall record touches them.
+
+**Mechanism B: values, the dots at t ≈ 0.80.** Both terminus states are black for the z −34.5 layer: inside the sealed room when lowered, in the sealed shaft when raised. At t ≈ 0.8 that layer sits in the moving room, just above its floor. The floor's sample is 3 u above the layer, so these black probes take most of the trilinear weight. The smooth backface weight dips to 0.03 only right above each probe, and there the lit z 4.9 layer wins. The result is a lattice of bright dots. With base moments, a sharper smooth form ((dot + 1) / 2)⁸ + 0.03 nearly removes it in the CPU mirror; ⁴ halves it. The hard form removes it.
+
+**Candidate fixes.**
+1. *Depth blends through the base mid-travel.* The live tile goes D₀ → base → D₁ (base at t′ = 0.5, held at an unstored terminus as today). Any base share above about 1% makes the variance large, so mid-travel depth goes permissive and termini stay exact. The CPU mirror removes mechanism A at every t. For a door, D₁ is about the base already, so a door's ramp barely moves. IP: moment sets blend; nothing is flagged, zeroed or excluded; the 0.03 floor and masks are unchanged; bounce is untouched. It changes the "Closed-pose depth blends with travel" Decision and depth row 1 ("their linear mix at t′ = 0.5"), so it goes to the owner. Cost: one CPU base tile per depth probe (991 × 400 B on setpiece), no GPU change. On its own it uncovers mechanism B at t ≈ 0.80.
+2. *A sharper smooth backface for movers*, ((dot + 1) / 2)^k + 0.03 with k = 4–8. It stays smooth and floored (ip-372 lever 5) and is never zero, so it fits the IP rules. It changes the owner's form choice (Delegated answers, the DDGI square), not a Decision. Task 8's west-face and upper-wall captures need a re-run. It fixes mechanism B, not mechanism A. The hard form fixes B too, but it reverses the owner's IP ruling.
+3. *Values for a mover that sweeps through the probe lattice.* Terminus states cannot describe a probe the room passes through, so the lower layer is black mid-travel when it should be lit. Blending bounce through id 34 and direct q through 1 mid-travel is the same shape as fix 1. It changes the Bounce and Direct Decisions, and it lights the room's interior mid-travel as if the shaft were open. Only if fixes 1 and 2 leave visible residue.

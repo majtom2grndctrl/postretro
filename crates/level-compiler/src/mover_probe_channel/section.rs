@@ -1,6 +1,6 @@
 // Assembling id 57 from the channel's bakes: the direct block in wire order,
-// each entry's own-tile flag against ids 41 and 45 as emitted, and the
-// per-mover ramp records.
+// each entry's own-tile flag against ids 41 and 45 as emitted, the bake-only
+// roster, and the per-mover ramp records.
 // See: context/lib/build_pipeline.md §PRL section IDs, §Compiler pipeline step 12
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
@@ -57,7 +57,7 @@ impl EmittedDirectEntries<'_> {
     /// Whether the light's term at `cell` is stored per probe: an id-41
     /// entry at a dense cell for a static light (id 41's selection slots
     /// name AlphaLights indices), an id-45 entry for an animated one (id 45
-    /// stays dense).
+    /// stays dense). Never for a bake-only light, which neither holds.
     pub(crate) fn holds_per_probe(
         &self,
         cell: usize,
@@ -96,35 +96,40 @@ impl EmittedDirectEntries<'_> {
                         light_index,
                     )
             }),
+            MoverLightNamespace::BakeOnlyStaticLight => false,
         }
     }
 }
 
 /// Id 57 holding `direct`'s entries, or `None` when there are none: the
 /// section is never written empty. `own_tile(cell, namespace, light)` says
-/// whether an entry carries its light's tile. The bounce block is empty and
-/// resident and there is no depth block, until those halves bake.
+/// whether an entry carries its light's tile; a namespace that requires one
+/// always does. Bake-only lights, which `direct` names by static-baked
+/// index, are written by rank among the bake-only lights it holds. The
+/// bounce block is empty and resident and there is no depth block, until
+/// those halves bake.
 pub(crate) fn channel_section(
     direct: &MoverDirectBake,
     cells: &ProbeCells,
     ramps: &MoverRamps,
     own_tile: impl Fn(usize, MoverLightNamespace, u32) -> bool,
 ) -> anyhow::Result<Option<MoverProbeChannelSection>> {
+    let bake_only_roster = BakeOnlyRoster::new(direct);
+    let own_tile = &own_tile;
     let mut entries: Vec<(MoverDirectEntry, &DirectEntry)> = direct
         .lights
         .iter()
+        .filter(|light| !light.entries.is_empty())
         .flat_map(|light| {
-            light.entries.iter().map(|entry| {
+            let light_index = bake_only_roster.wire_index(light.namespace, light.light_index);
+            light.entries.iter().map(move |entry| {
                 (
                     MoverDirectEntry {
                         mover_id: entry.mover_id,
                         namespace: light.namespace,
-                        carries_own_tile: own_tile(
-                            entry.cell as usize,
-                            light.namespace,
-                            light.light_index,
-                        ),
-                        light_index: light.light_index,
+                        carries_own_tile: light.namespace.requires_own_tile()
+                            || own_tile(entry.cell as usize, light.namespace, light.light_index),
+                        light_index,
                     },
                     entry,
                 )
@@ -176,4 +181,39 @@ pub(crate) fn channel_section(
         depth_tiles: Vec::new(),
         ramps,
     }))
+}
+
+/// The bake-only lights a bake holds, by static-baked index ascending: the
+/// section's namespace-2 roster, whose rank is each light's wire index. A
+/// light with no entry is absent, so the indices the section names run
+/// densely from 0, as the loader requires.
+struct BakeOnlyRoster(Vec<u32>);
+
+impl BakeOnlyRoster {
+    fn new(direct: &MoverDirectBake) -> Self {
+        let mut lights: Vec<u32> = direct
+            .lights
+            .iter()
+            .filter(|light| {
+                light.namespace == MoverLightNamespace::BakeOnlyStaticLight
+                    && !light.entries.is_empty()
+            })
+            .map(|light| light.light_index)
+            .collect();
+        lights.sort_unstable();
+        lights.dedup();
+        Self(lights)
+    }
+
+    /// `light_index` as the section writes it.
+    fn wire_index(&self, namespace: MoverLightNamespace, light_index: u32) -> u32 {
+        if namespace != MoverLightNamespace::BakeOnlyStaticLight {
+            return light_index;
+        }
+        let rank = self
+            .0
+            .binary_search(&light_index)
+            .expect("every bake-only light with entries is on the roster");
+        rank as u32
+    }
 }

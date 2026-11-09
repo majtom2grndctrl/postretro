@@ -82,6 +82,13 @@ pub enum MoverProbeChannelError {
     )]
     UnknownLightNamespace { entry: usize, value: u8 },
     #[error(
+        "MoverProbeChannelOwnTileRequired: direct entry {entry} names a {namespace:?} light without its own tile; no other section holds that light's term"
+    )]
+    OwnTileRequired {
+        entry: usize,
+        namespace: MoverLightNamespace,
+    },
+    #[error(
         "MoverProbeChannelEntryOrder: {block} entry {entry} in cell {cell} does not follow its predecessor; entries ascend with no repeats"
     )]
     EntryOrder {

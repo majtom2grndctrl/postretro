@@ -32,7 +32,9 @@ pub const MOVER_IRRADIANCE_TILE_F16_COUNT: usize = DEFAULT_DELTA_PROBE_F16_STRID
 /// cells instead and records [`MoverBouncePlacement::Streamed`].
 pub const MOVER_BOUNCE_RESIDENT_BYTE_BAR: u64 = 8 * 1024 * 1024;
 
-/// What a direct entry's `u32` light index counts in.
+/// What a direct entry's `u32` light index counts in. Each gated light has
+/// exactly one name: a static lightmap light with an AlphaLights record is
+/// named in [`Self::StaticLight`], one without in [`Self::BakeOnlyStaticLight`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum MoverLightNamespace {
@@ -41,6 +43,16 @@ pub enum MoverLightNamespace {
     /// An animated-baked light's roster index: id 45's light numbering, which
     /// is id 34's animation descriptor order.
     AnimatedBaked = 1,
+    /// A static lightmap light of id 35 with no AlphaLights record (a
+    /// `_bake_only` light), by its rank in this section's own roster: the
+    /// namespace-2 lights the section names, in the compiler's static-baked
+    /// order (id 35's soft-visibility seed axis). Indices run densely from 0
+    /// to the number of distinct namespace-2 lights the section names
+    /// ([`MoverProbeChannelSection::bake_only_light_count`]): such a light
+    /// leaves no record in any other section, so the section's own roster is
+    /// the only bound load data can verify. Every entry carries its own tile,
+    /// since no id-41 or id-45 entry holds the light's term.
+    BakeOnlyStaticLight = 2,
 }
 
 impl MoverLightNamespace {
@@ -48,8 +60,16 @@ impl MoverLightNamespace {
         match value {
             0 => Some(Self::StaticLight),
             1 => Some(Self::AnimatedBaked),
+            2 => Some(Self::BakeOnlyStaticLight),
             _ => None,
         }
+    }
+
+    /// Whether every entry in this namespace must set
+    /// [`MOVER_ENTRY_FLAG_OWN_TILE`]: no per-probe entry of another section
+    /// can hold the light's term.
+    pub fn requires_own_tile(self) -> bool {
+        matches!(self, Self::BakeOnlyStaticLight)
     }
 }
 
@@ -132,8 +152,10 @@ pub struct MoverLightRampRecord {
 ///   u8        bounce_placement            (0 resident, 1 streamed with id 50)
 ///   u64 × cells                           valid_probe_masks (id 34's validity)
 ///   u32 × (cells + 1)                     direct_offsets (CSR; last = entries)
-///   per direct entry, 12 bytes:           u32 mover_id, u8 namespace,
-///                                         u8 flags, u16 reserved 0, u32 light
+///   per direct entry, 12 bytes:           u32 mover_id, u8 namespace (0
+///                                         AlphaLights, 1 animated roster, 2
+///                                         bake-only roster), u8 flags,
+///                                         u16 reserved 0, u32 light
 ///   u8 × Σ entries 2 × popcount(mask)     visibility (q₀, q₁ per valid probe)
 ///   f16 × Σ flagged popcount(mask) × 108  own_tiles (one RGB tile per probe)
 ///   u32 × (cells + 1)                     bounce_offsets (CSR)
@@ -147,9 +169,10 @@ pub struct MoverLightRampRecord {
 ///   per mover with any entry, 12 bytes:   u32 mover_id, f32 start, f32 end
 /// ```
 ///
-/// Direct entries ascend by (mover, namespace, light) within a cell, bounce
-/// entries by mover, depth records by (mover, probe), ramp records by mover;
-/// none repeats. Ramp records cover exactly the movers named anywhere else.
+/// Namespace-2 entries always set the own-tile flag. Direct entries ascend
+/// by (mover, namespace, light) within a cell, bounce entries by mover,
+/// depth records by (mover, probe), ramp records by mover; none repeats.
+/// Ramp records cover exactly the movers named anywhere else.
 /// No sentinels: every reserved field is zero and every byte is accounted for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MoverProbeChannelSection {
@@ -288,6 +311,20 @@ impl MoverProbeChannelSection {
         ids.sort_unstable();
         ids.dedup();
         ids
+    }
+
+    /// Distinct [`MoverLightNamespace::BakeOnlyStaticLight`] lights the
+    /// direct block names: the roster size that bounds namespace 2's indices.
+    pub fn bake_only_light_count(&self) -> usize {
+        let mut lights: Vec<u32> = self
+            .direct_entries
+            .iter()
+            .filter(|entry| entry.namespace == MoverLightNamespace::BakeOnlyStaticLight)
+            .map(|entry| entry.light_index)
+            .collect();
+        lights.sort_unstable();
+        lights.dedup();
+        lights.len()
     }
 
     /// Probes carrying mover depth: one renderer-owned live tile each, however

@@ -107,8 +107,9 @@ impl Level {
             .expect_err("the section must be refused")
     }
 
-    /// Mover 3 gates static light 0 in cell 0 with its own tile and animated
-    /// light 0 in cell 1; mover 9 gates static light 0 in cell 0. Mover 3
+    /// Mover 3 gates static light 0 in cell 0 with its own tile, and animated
+    /// light 0 and bake-only light 0 (with its own tile) in cell 1; mover 9
+    /// gates static light 0 in cell 0. Mover 3
     /// changes bounce at two probes of cell 1; mover 9 carries depth at
     /// probes 4 and 70. Mover 9 ramps over (0.6, 0.9).
     fn sample(&self) -> MoverProbeChannelSection {
@@ -124,6 +125,10 @@ impl Level {
                 (0, entry(3, MoverLightNamespace::StaticLight, true, 0)),
                 (0, entry(9, MoverLightNamespace::StaticLight, false, 0)),
                 (1, entry(3, MoverLightNamespace::AnimatedBaked, false, 0)),
+                (
+                    1,
+                    entry(3, MoverLightNamespace::BakeOnlyStaticLight, true, 0),
+                ),
             ],
             vec![(
                 1,
@@ -356,16 +361,16 @@ fn bad_csr_offsets_are_refused_by_name() {
         })
     );
 
-    // Offsets [0, 2, 3] become [0, 4, 3].
+    // Offsets [0, 2, 4] become [0, 5, 4].
     let mut decreasing = bytes;
-    decreasing[DIRECT_OFFSETS_AT + 4..DIRECT_OFFSETS_AT + 8].copy_from_slice(&4u32.to_le_bytes());
+    decreasing[DIRECT_OFFSETS_AT + 4..DIRECT_OFFSETS_AT + 8].copy_from_slice(&5u32.to_le_bytes());
     assert_eq!(
         level.decode(&decreasing),
         Err(Error::CsrOffsets {
             block: "direct",
             index: 2,
-            offset: 3,
-            previous: 4,
+            offset: 4,
+            previous: 5,
         })
     );
 }
@@ -419,10 +424,10 @@ fn a_set_reserved_bit_is_refused_by_name() {
 fn an_unknown_light_namespace_is_refused_by_name() {
     let level = Level::new();
     let mut bytes = level.sample().to_bytes();
-    bytes[FIRST_DIRECT_ENTRY_AT + 4] = 2;
+    bytes[FIRST_DIRECT_ENTRY_AT + 4] = 3;
     assert_eq!(
         level.decode(&bytes),
-        Err(Error::UnknownLightNamespace { entry: 0, value: 2 })
+        Err(Error::UnknownLightNamespace { entry: 0, value: 3 })
     );
 }
 
@@ -574,6 +579,71 @@ fn a_light_outside_its_namespace_is_refused_by_name() {
             ..
         }
     ));
+    // The section names one bake-only light, so its roster index must be 0.
+    let mut section = level.sample();
+    section.direct_entries[3].light_index = 1;
+    assert!(matches!(
+        level.refusal(&section),
+        Error::LightOutOfNamespace {
+            entry: 3,
+            namespace: MoverLightNamespace::BakeOnlyStaticLight,
+            light_index: 1,
+            ..
+        }
+    ));
+}
+
+// A bake-only roster is dense: two lights load as indices 0 and 1, and a
+// gap (0 and 2) refuses the level.
+#[test]
+fn a_bake_only_roster_with_a_gap_is_refused_by_name() {
+    let level = Level::new();
+    let mut section = level.sample();
+    let mut second = section.direct_entries[3];
+    second.light_index = 1;
+    section.direct_entries.push(second);
+    section.direct_offsets[2] += 1;
+    section.visibility.extend(std::iter::repeat_n(
+        255,
+        64 * MOVER_VISIBILITY_BYTES_PER_PROBE,
+    ));
+    section.own_tiles.extend(std::iter::repeat_n(
+        0x3c00,
+        64 * MOVER_IRRADIANCE_TILE_F16_COUNT,
+    ));
+    level
+        .decode(&section.to_bytes())
+        .expect("a dense roster loads");
+
+    section.direct_entries[4].light_index = 2;
+    assert!(matches!(
+        level.refusal(&section),
+        Error::LightOutOfNamespace {
+            entry: 4,
+            namespace: MoverLightNamespace::BakeOnlyStaticLight,
+            light_index: 2,
+            ..
+        }
+    ));
+}
+
+// Namespace 2 has no id-41 or id-45 entry to borrow a tile from, so an
+// entry without its own refuses the level.
+#[test]
+fn a_bake_only_entry_without_its_own_tile_is_refused_by_name() {
+    let level = Level::new();
+    let mut section = level.sample();
+    section.direct_entries[3].carries_own_tile = false;
+    section
+        .own_tiles
+        .truncate(section.own_tiles.len() - 64 * MOVER_IRRADIANCE_TILE_F16_COUNT);
+    assert_eq!(
+        level.refusal(&section),
+        Error::OwnTileRequired {
+            entry: 3,
+            namespace: MoverLightNamespace::BakeOnlyStaticLight,
+        }
+    );
 }
 
 #[test]

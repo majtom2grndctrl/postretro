@@ -39,8 +39,10 @@ use crate::texel_footprint::ProbeEarlyOut;
 #[derive(Debug, Clone)]
 pub(crate) struct ChannelLight<'a> {
     pub(crate) namespace: MoverLightNamespace,
-    /// Its id-57 light index: AlphaLights for a static light, the animated
-    /// roster for an animated one.
+    /// Its light index in `namespace`: AlphaLights for a static light with a
+    /// record, the animated roster for an animated one, and the static-baked
+    /// index (id 35's seed axis) for a bake-only light, which section
+    /// assembly ranks into the section's bake-only roster.
     pub(crate) light_index: u32,
     /// The light as its section bakes it: authored for id 35, at unit
     /// radiance for id 45.
@@ -113,6 +115,7 @@ pub(crate) struct DirectEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct LightEntries {
     pub(crate) namespace: MoverLightNamespace,
+    /// As [`ChannelLight::light_index`].
     pub(crate) light_index: u32,
     pub(crate) entries: Vec<DirectEntry>,
 }

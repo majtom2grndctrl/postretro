@@ -5,10 +5,10 @@ use crate::delta_sh_volumes::AFFINITY_FACTOR;
 const ALL_VALID: u64 = u64::MAX;
 
 /// Two cells along x. Cell 0 is all valid; cell 1 holds three valid probes.
-/// Mover 3 gates a static light in cell 0 with its own tile and an animated
-/// light in cell 1; mover 9 gates the same static light in cell 0. Mover 3
-/// changes bounce at two probes of cell 1; mover 9 carries depth at two
-/// probes.
+/// Mover 3 gates a static light in cell 0 with its own tile, and an animated
+/// light and a bake-only light (with its own tile) in cell 1; mover 9 gates
+/// the same static light in cell 0. Mover 3 changes bounce at two probes of
+/// cell 1; mover 9 carries depth at two probes.
 fn sample() -> MoverProbeChannelSection {
     let cell1_mask = (1u64 << 1) | (1 << 5) | (1 << 40);
     let direct_entries = vec![
@@ -30,18 +30,24 @@ fn sample() -> MoverProbeChannelSection {
             carries_own_tile: false,
             light_index: 0,
         },
+        MoverDirectEntry {
+            mover_id: 3,
+            namespace: MoverLightNamespace::BakeOnlyStaticLight,
+            carries_own_tile: true,
+            light_index: 0,
+        },
     ];
-    let visibility_len = (64 + 64 + 3) * MOVER_VISIBILITY_BYTES_PER_PROBE;
+    let visibility_len = (64 + 64 + 3 + 3) * MOVER_VISIBILITY_BYTES_PER_PROBE;
     let affected = (1u64 << 1) | (1 << 40);
     MoverProbeChannelSection {
         affinity_factor: AFFINITY_FACTOR,
         affinity_dims: [2, 1, 1],
         bounce_placement: MoverBouncePlacement::Resident,
         valid_probe_masks: vec![ALL_VALID, cell1_mask],
-        direct_offsets: vec![0, 2, 3],
+        direct_offsets: vec![0, 2, 4],
         direct_entries,
         visibility: (0..visibility_len).map(|i| i as u8).collect(),
-        own_tiles: (0..64 * MOVER_IRRADIANCE_TILE_F16_COUNT)
+        own_tiles: (0..(64 + 3) * MOVER_IRRADIANCE_TILE_F16_COUNT)
             .map(|i| i as u16)
             .collect(),
         bounce_offsets: vec![0, 0, 1],
@@ -95,10 +101,10 @@ fn every_block_round_trips_with_its_payload_reachable_by_entry() {
     assert_eq!(restored, section);
 
     let direct: Vec<_> = restored.direct_entry_views().collect();
-    assert_eq!(direct.len(), 3);
+    assert_eq!(direct.len(), 4);
     assert_eq!(
         direct.iter().map(|view| view.cell).collect::<Vec<_>>(),
-        [0, 0, 1]
+        [0, 0, 1, 1]
     );
     assert_eq!(direct[0].visibility.len(), 128);
     assert_eq!(direct[0].visibility[0], 0, "entry 0 starts the payload");
@@ -116,6 +122,16 @@ fn every_block_round_trips_with_its_payload_reachable_by_entry() {
         Some(64 * MOVER_IRRADIANCE_TILE_F16_COUNT)
     );
     assert!(direct[1].own_tiles.is_none() && direct[2].own_tiles.is_none());
+    let bake_only_tiles = direct[3]
+        .own_tiles
+        .expect("a bake-only entry carries its tile");
+    assert_eq!(bake_only_tiles.len(), 3 * MOVER_IRRADIANCE_TILE_F16_COUNT);
+    assert_eq!(
+        bake_only_tiles[0],
+        (64 * MOVER_IRRADIANCE_TILE_F16_COUNT) as u16,
+        "its tiles follow entry 0's"
+    );
+    assert_eq!(restored.bake_only_light_count(), 1);
 
     let bounce: Vec<_> = restored.bounce_entry_views().collect();
     assert_eq!(bounce.len(), 1);
@@ -150,6 +166,27 @@ fn header_and_first_direct_entry_sit_at_their_pinned_offsets() {
     assert_eq!(
         &bytes[entry..entry + 12],
         &[3, 0, 0, 0, 0, MOVER_ENTRY_FLAG_OWN_TILE, 0, 0, 2, 0, 0, 0]
+    );
+}
+
+// Namespace 2 names lights no other section holds, so its entries always
+// carry their own tile: the decoder refuses one with the flag clear.
+#[test]
+fn a_bake_only_entry_without_its_own_tile_is_refused_by_name() {
+    let mut bytes = sample().to_bytes();
+    // Header, two masks, three offsets, then entry 3's flags byte.
+    let flags = 15 + 2 * 8 + 3 * 4 + 3 * 12 + 5;
+    assert_eq!(
+        bytes[flags - 1],
+        MoverLightNamespace::BakeOnlyStaticLight as u8
+    );
+    bytes[flags] = 0;
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&bytes),
+        Err(MoverProbeChannelError::OwnTileRequired {
+            entry: 3,
+            namespace: MoverLightNamespace::BakeOnlyStaticLight,
+        })
     );
 }
 

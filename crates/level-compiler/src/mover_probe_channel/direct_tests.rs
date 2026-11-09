@@ -1,7 +1,7 @@
 // The direct half's production bake: q against the joint sample set (B1),
-// the dark inside-brush rule, suns and spinners (B10), the own-tile flag
-// against ids 41 and 45 as emitted (C15), the per-light memo and worker-count
-// determinism.
+// the dark inside-brush rule, suns and spinners (B10), bake-only lights in
+// namespace 2, the own-tile flag against ids 41 and 45 as emitted (C15), the
+// per-light memo and worker-count determinism.
 
 use std::collections::HashSet;
 
@@ -19,6 +19,7 @@ use super::direct::{
     light_movers,
 };
 use super::direct_memo::{DirectMemo, MemoPrefix, decode, encode};
+use super::lights::{ChannelLightSources, channel_lights};
 use super::section::{EmittedDirectEntries, MoverRamps, channel_section};
 use super::visibility::{InsideBrushRule, PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{AffinityReachInputs, AffinityReachPolicy};
@@ -596,6 +597,218 @@ fn an_animated_lights_own_tile_equals_its_id_45_tile() {
         tile,
         &id45.delta_subblocks[start..start + DEFAULT_DELTA_PROBE_F16_STRIDE]
     );
+}
+
+/// Two static lightmap lights: a runtime light in the grid's far corner
+/// that lights nothing near the slab, then a `_bake_only` light above it,
+/// static-baked index 1.
+fn bake_only_lights() -> [MapLight; 2] {
+    let mut bake_only = point_light(DVec3::new(0.0, 3.5, 0.0), 10.0, 0.6);
+    bake_only.bake_only = true;
+    [
+        point_light(DVec3::new(-3.5, -3.5, -3.5), 1.0, 0.1),
+        bake_only,
+    ]
+}
+
+/// `lights` as id 35 and the channel see them.
+struct LightWorld<'w> {
+    static_lights: crate::light_namespaces::StaticBakedLights<'w>,
+    animated_lights: crate::light_namespaces::AnimatedBakedLights<'w>,
+    alpha_lights: crate::light_namespaces::AlphaLightsNs<'w>,
+    mutable: crate::delta_drop_policy::ScriptMutableDescriptorSlots,
+}
+
+impl<'w> LightWorld<'w> {
+    fn new(lights: &'w [MapLight]) -> Self {
+        Self {
+            static_lights: crate::light_namespaces::StaticBakedLights::from_lights(lights),
+            animated_lights: crate::light_namespaces::AnimatedBakedLights::from_lights(lights),
+            alpha_lights: crate::light_namespaces::AlphaLightsNs::from_lights(lights),
+            mutable: crate::delta_drop_policy::ScriptMutableDescriptorSlots::empty(
+                crate::light_namespaces::AnimatedBakedLights::from_lights(lights).len(),
+            ),
+        }
+    }
+
+    fn sh_ctx<'a>(&'a self, world: &'a World) -> ShBakeCtx<'a> {
+        ShBakeCtx {
+            bounce_materials: None,
+            bvh: &world.bvh,
+            primitives: &world.primitives,
+            geometry: &world.geometry,
+            tree: &world.tree,
+            exterior_leaves: &world.exterior,
+            static_lights: &self.static_lights,
+            animated_lights: &self.animated_lights,
+            total_light_count: self.static_lights.len() + self.animated_lights.len(),
+        }
+    }
+
+    /// The production gated set: [`channel_lights`].
+    fn channel_lights<'a>(&'a self, sh_ctx: &'a ShBakeCtx<'a>) -> Vec<ChannelLight<'a>> {
+        channel_lights(&ChannelLightSources {
+            sh_ctx,
+            alpha_lights: &self.alpha_lights,
+            animated_lights: &self.animated_lights,
+            static_embedded: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            animated_embedded: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            mutable_descriptors: &self.mutable,
+        })
+    }
+}
+
+// Lights in scope: a static lightmap light with an AlphaLights record keeps
+// its AlphaLights name, and a `_bake_only` one, which has none, takes its
+// static-baked index in namespace 2, so each light has exactly one name.
+#[test]
+fn the_gated_set_names_bake_only_lights_by_static_baked_index_and_no_light_twice() {
+    let world = world();
+    let lights = bake_only_lights();
+    let light_world = LightWorld::new(&lights);
+    let sh_ctx = light_world.sh_ctx(&world);
+    let names: Vec<(MoverLightNamespace, u32, u64)> = light_world
+        .channel_lights(&sh_ctx)
+        .iter()
+        .map(|light| (light.namespace, light.light_index, light.seed_axis))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            (MoverLightNamespace::StaticLight, 0, 0),
+            (MoverLightNamespace::BakeOnlyStaticLight, 1, 1),
+        ]
+    );
+}
+
+// Lights in scope (task 6b): a bake-only light the posed slab blocks stores
+// q < 1 under it, and its entry carries its own tile even where the caller
+// would flag none, ranked to index 0 of the section's bake-only roster.
+#[test]
+fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_tile() {
+    let world = world();
+    let lights = bake_only_lights();
+    let light_world = LightWorld::new(&lights);
+    let sh_ctx = light_world.sh_ctx(&world);
+    let channel = light_world.channel_lights(&sh_ctx);
+    let movers = [slab_mover()];
+    let bake = world.bake(&poses_of(&movers), &channel);
+    assert_eq!(
+        bake.lights
+            .iter()
+            .map(|light| (light.namespace, light.light_index))
+            .collect::<Vec<_>>(),
+        [(MoverLightNamespace::BakeOnlyStaticLight, 1)],
+        "only the bake-only light reaches the slab"
+    );
+
+    let section = channel_section(&bake, &world.cells, &MoverRamps::new(&movers), |_, _, _| {
+        false
+    })
+    .unwrap()
+    .expect("the gated bake-only light makes a section");
+    assert!(section.direct_entries.iter().all(|entry| {
+        entry.namespace == MoverLightNamespace::BakeOnlyStaticLight
+            && entry.light_index == 0
+            && entry.carries_own_tile
+    }));
+    assert_eq!(section.bake_only_light_count(), 1);
+
+    let under = world.probe_at([1.0, 0.0, 1.0]);
+    let ([first, last], tile) =
+        probe_payload(&world, &bake.lights[0], 0, under).expect("the probe under the slab");
+    assert!(first < 255, "the slab hides the light: q₀ byte {first}");
+    assert_eq!(last, 255, "the last pose is 100 m up");
+    let view = section
+        .direct_entry_views()
+        .find(|view| world.cells.valid_probes(view.cell).contains(&under))
+        .expect("the probe's cell has an entry");
+    let slot = world
+        .cells
+        .valid_probes(view.cell)
+        .iter()
+        .position(|&probe| probe == under)
+        .unwrap();
+    assert_eq!(view.visibility[2 * slot], first);
+    assert_eq!(
+        &view.own_tiles.expect("its own tile")
+            [slot * DEFAULT_DELTA_PROBE_F16_STRIDE..(slot + 1) * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        tile
+    );
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
+        section
+    );
+}
+
+// A bake-only light's carried tile is its own term in id 35: at every probe
+// its entries cover, it equals id 35's tile in a bake where no other light
+// reaches that probe, texel for texel (id 35's lossless form).
+#[test]
+fn a_bake_only_lights_own_tile_equals_its_own_id_35_term() {
+    let world = world();
+    let lights = bake_only_lights();
+    let light_world = LightWorld::new(&lights);
+    let sh_ctx = light_world.sh_ctx(&world);
+    let channel = light_world.channel_lights(&sh_ctx);
+    let bake = world.bake(&poses_of(&[slab_mover()]), &channel);
+    let id35 = crate::direct_sh_bake::bake_direct_sh_volume(
+        &crate::direct_sh_bake::DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+        },
+        &ShConfig { probe_spacing: 1.0 },
+    );
+    assert_eq!(id35.grid_dimensions, world.layout.dims);
+    let dimension = id35.tile_dimension as usize;
+    let width = id35.atlas_dimensions[0] as usize;
+    let layer_texels = width * id35.atlas_dimensions[1] as usize;
+    let id35_tile = |probe: usize| -> Vec<u16> {
+        let [layer, tile_x, tile_y] =
+            postretro_level_format::octahedral::irradiance_array_tile_location(
+                probe,
+                id35.tiles_per_layer,
+                id35.atlas_tiles_per_row,
+            )
+            .map(|coordinate| coordinate as usize);
+        let mut tile = Vec::with_capacity(DEFAULT_DELTA_PROBE_F16_STRIDE);
+        for y in 0..dimension {
+            for x in 0..dimension {
+                let texel = layer * layer_texels
+                    + (tile_y * dimension + y) * width
+                    + tile_x * dimension
+                    + x;
+                let rgba = &id35.atlas[texel * 8..texel * 8 + 8];
+                tile.extend((0..3).map(|c| u16::from_le_bytes([rgba[2 * c], rgba[2 * c + 1]])));
+            }
+        }
+        tile
+    };
+
+    let [runtime_light, _] = &lights;
+    let (mut compared, mut lit) = (0, 0);
+    for entry in &bake.lights[0].entries {
+        for (slot, probe) in world
+            .cells
+            .valid_probes(entry.cell as usize)
+            .into_iter()
+            .enumerate()
+        {
+            let point = vec3_from(world.layout.probe_positions[probe]);
+            assert!(
+                incident_radiance_at_point(runtime_light, point)
+                    .is_none_or(|(radiance, _)| radiance == Vec3::ZERO),
+                "probe {probe}: the runtime light adds nothing to id 35 here"
+            );
+            let own = &entry.tiles[slot * DEFAULT_DELTA_PROBE_F16_STRIDE
+                ..(slot + 1) * DEFAULT_DELTA_PROBE_F16_STRIDE];
+            assert_eq!(own, id35_tile(probe), "probe {probe}");
+            compared += 1;
+            lit += usize::from(own.iter().any(|&half| half != 0));
+        }
+    }
+    assert!(compared > 0 && lit > 0, "{compared} probes, {lit} lit");
 }
 
 fn id41(levels: Vec<u8>, offsets: Vec<u32>, lights: Vec<u32>) -> DirectShDeltaVolumesSection {

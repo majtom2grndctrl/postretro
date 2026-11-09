@@ -84,9 +84,9 @@ fn waypoint(name: &str, next: &str, origin: [i32; 3]) -> String {
 const FIRST_POSE_LIGHT: [i32; 3] = [0, -160, 104];
 
 /// A sealed 512 u room, interior z 0 to 256: three static lights, one of
-/// them coloured by the scene, and an animated one; a plate sliding under the
-/// lights and a shutter rising beside them. One static light reaches only
-/// the plate's first pose.
+/// them coloured by the scene, an animated one and a bake-only one; a plate
+/// sliding under the lights and a shutter rising beside them. One static
+/// light reaches only the plate's first pose.
 fn map(scene: &Scene) -> String {
     let world = [
         box_brush([-272, -272, -16], [272, 272, 0], scene.floor_top_scale),
@@ -107,6 +107,7 @@ fn map(scene: &Scene) -> String {
         ),
         light(FIRST_POSE_LIGHT, 128, ""),
         light([96, 128, 208], 256, "\"style\" \"1\"\n"),
+        light([0, 64, 200], 256, "\"_bake_only\" \"1\"\n"),
     ];
     if scene.movers {
         entities.extend([
@@ -280,7 +281,8 @@ fn base_probed() -> usize {
 }
 
 // Bake row B12, direct half: id 57 is byte-identical across two cold builds
-// and across one and four workers; both namespaces carry entries.
+// and across one and four workers; every namespace carries entries, and the
+// runtime loader accepts the section.
 #[test]
 fn the_section_is_identical_across_cold_builds_and_worker_counts() {
     let scene = Scene::default();
@@ -300,6 +302,7 @@ fn the_section_is_identical_across_cold_builds_and_worker_counts() {
     for namespace in [
         MoverLightNamespace::StaticLight,
         MoverLightNamespace::AnimatedBaked,
+        MoverLightNamespace::BakeOnlyStaticLight,
     ] {
         assert!(
             channel
@@ -309,6 +312,17 @@ fn the_section_is_identical_across_cold_builds_and_worker_counts() {
             "an entry in {namespace:?}"
         );
     }
+    assert!(
+        channel
+            .direct_entries
+            .iter()
+            .filter(|entry| entry.namespace == MoverLightNamespace::BakeOnlyStaticLight)
+            .all(|entry| entry.light_index == 0 && entry.carries_own_tile),
+        "the one bake-only light is roster index 0 and carries its own tile"
+    );
+    let world = postretro_level_loader::load_prl(first.prl.to_str().expect("UTF-8 path"))
+        .expect("the runtime loads the packed channel");
+    assert_eq!(world.mover_probe_channel(), Some(&channel));
 }
 
 // Bake row B17, direct half: a map with no mover packs no id 57.

@@ -15,6 +15,7 @@ mod direct;
 mod direct_memo;
 mod domain;
 mod gather;
+mod lights;
 mod posed_scene;
 mod section;
 mod visibility;
@@ -25,8 +26,9 @@ mod direct_tests;
 mod tests;
 
 pub(crate) use bake::{MoverBounceRequest, PosedBounce, StaticBounce, bake_mover_bounce};
-pub(crate) use direct::{ChannelLight, DirectScene, MoverDirectBake, ProbeCells, bake_direct};
+pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 pub(crate) use gather::PosedGather;
+pub(crate) use lights::{ChannelLightSources, channel_lights};
 pub(crate) use posed_scene::{PosedScene, PosedSurfaces};
 pub(crate) use section::{EmittedDirectEntries, MoverRamps, channel_section};
 pub(crate) use visibility::{

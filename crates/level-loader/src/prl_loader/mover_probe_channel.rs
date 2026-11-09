@@ -194,8 +194,15 @@ fn validate_mover_probe_channel(
         });
     }
 
+    let bake_only_roster_len = section.bake_only_light_count();
     for (entry, record) in section.direct_entries.iter().enumerate() {
-        check_light(entry, record.namespace, record.light_index, inputs)?;
+        check_light(
+            entry,
+            record.namespace,
+            record.light_index,
+            inputs,
+            bake_only_roster_len,
+        )?;
     }
 
     let lattice: u64 = inputs
@@ -238,12 +245,15 @@ fn validate_mover_probe_channel(
 }
 
 /// A direct entry's light must exist in its namespace: a static lightmap
-/// light of id 18 (id 35's set), or an animated-baked light of the roster.
+/// light of id 18 (id 35's set), an animated-baked light of the roster, or a
+/// bake-only light of the section's own roster, whose indices run densely
+/// below `bake_only_roster_len`.
 fn check_light(
     entry: usize,
     namespace: MoverLightNamespace,
     light_index: u32,
     inputs: &MoverProbeChannelInputs<'_>,
+    bake_only_roster_len: usize,
 ) -> Result<(), Error> {
     let refusal = |detail: String| Error::LightOutOfNamespace {
         entry,
@@ -273,6 +283,14 @@ fn check_light(
                 return Err(refusal(format!(
                     "past the {}-light animated-baked roster",
                     inputs.animated_roster_len
+                )));
+            }
+        }
+        MoverLightNamespace::BakeOnlyStaticLight => {
+            if light_index as usize >= bake_only_roster_len {
+                return Err(refusal(format!(
+                    "past the section's {bake_only_roster_len}-light bake-only roster, whose \
+                     indices run densely from 0"
                 )));
             }
         }

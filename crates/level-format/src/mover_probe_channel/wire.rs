@@ -174,6 +174,12 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
                 value: u32::from(flags),
             });
         }
+        if namespace.requires_own_tile() && flags & MOVER_ENTRY_FLAG_OWN_TILE == 0 {
+            return Err(Error::OwnTileRequired {
+                entry: index,
+                namespace,
+            });
+        }
         let reserved = u16::from_le_bytes([bytes[6], bytes[7]]);
         if reserved != 0 {
             return Err(Error::ReservedBits {

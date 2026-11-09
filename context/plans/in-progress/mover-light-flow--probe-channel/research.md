@@ -386,3 +386,15 @@ These are cold `--no-cache` builds at `-j 6` under nice, with the production q b
 - On big maps, id 57's size is mostly the dense cell index.
 - The direct bake took 0.7–312 ms wall time on every map.
 - Setpiece's base bricks go from 351/42/3 to 380/13/3 (L0/L1/L2) under the channel caps.
+
+After task 6b (bake-only lights gated through namespace 2), same method:
+
+| Map | Gated lights with entries (bake-only) | Entries (own tile) | Direct block | ÷ id 35 | ÷ (id 41 + id 45) | id 57 total |
+|---|---|---|---|---|---|---|
+| `mover-setpiece` | 10 of 10 (0 of 0) | 519 (393) | 4,086,210 B | 9.97× | 1.29× | 4,092,597 B |
+| `kinematic-platform` | 9 of 21 (3 of 4) | 30 (19) | 200,232 B | 6.6% | 4.1% | 251,079 B |
+| `campaign-test` | 2 of 16 (0 of 0) | 50 (0) | 4,496 B | 0.30% | 0.057% | 110,339 B |
+| `stress-warren-showcase` | 20 of 85 (6 of 36) | 295 (72) | 600,052 B | 5.1% | 0.76% | 815,215 B |
+| `stress-warren-hallway-inspection` | 49 of 763 (43 of 419) | 1,745 (1,725) | 19,589,126 B | 73.9% | 25.8% | 20,165,285 B |
+
+On the hallway, 19.39 MB of the direct block is own tiles. Task 6c revises the format.

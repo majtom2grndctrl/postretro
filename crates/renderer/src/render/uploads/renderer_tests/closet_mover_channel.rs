@@ -1,19 +1,22 @@
 //! Renderer half, on the compiled `mover-closet`, whole-loaded: the door's
-//! t′ sequence the game half hands over (rising, a reversal at mid-travel,
-//! closing, held), each frame composing the indirect atlas and writing the
-//! door's live depth tiles. At every t′ the composed atlas and the tile
-//! texture equal, texel by texel, the linear mix of the frames at t′ = 0 and
-//! t′ = 1: the affected probes compose lerp(S^b₀, S^b₁, t′), their live tiles
-//! hold lerp(D₀, D₁, t′), and every other texel holds still. The closet gates
+//! t′ sequence the game half hands over (rising, a reversal just past
+//! mid-travel, closing, held), each frame composing the indirect atlas and
+//! writing the door's live depth tiles. At every t′ the composed atlas
+//! equals, texel by texel, the linear mix of the frames at t′ = 0 and t′ = 1:
+//! the affected probes compose lerp(S^b₀, S^b₁, t′). The tile texture blends
+//! through the frame at t′ = 0.5, where each live tile holds its probe's base
+//! (the D-rows prove that bit for bit): lerp(D₀, base, 2t′) up to 0.5, then
+//! lerp(base, D₁, 2t′ − 1). Every other texel holds still. The closet gates
 //! no direct light (its id 57 has no direct block), so no direct atlas moves.
 //! See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 use super::*;
 use crate::render::MoverTravel;
 use crate::render::composed_tiles::{f16_to_f32, read_halves};
 
-/// The door's t′ per frame: first hand-over at 0, rising, held across two
-/// frames, reversed at mid-travel, closing, then held at 0.
-const SEQUENCE: [f32; 9] = [0.0, 0.25, 0.5, 0.5, 0.375, 0.25, 0.125, 0.0, 0.0];
+/// The door's t′ per frame: first hand-over at 0, rising through the
+/// midpoint, held across two frames, reversed just past mid-travel, closing
+/// through the midpoint, then held at 0.
+const SEQUENCE: [f32; 10] = [0.0, 0.25, 0.5, 0.625, 0.625, 0.5, 0.375, 0.125, 0.0, 0.0];
 
 struct Closet {
     renderer: Renderer,
@@ -103,23 +106,38 @@ fn read_values(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<f32> {
         .collect()
 }
 
-/// Texels that differ between the termini, and the worst miss of `found`
-/// against the mix at `t` in units of the texel's f16 spacing.
-fn check_mix(found: &[f32], at0: &[f32], at1: &[f32], t: f32, what: &str) -> usize {
+/// Texels that move with t′, each checked against its mix at `t` within the
+/// texel's f16 spacing: the linear mix of `at0` and `at1`, or with `mid`,
+/// the blend through it (`at0` → `mid` over the first half, `mid` → `at1`
+/// over the second). A texel every reference holds alike must hold still.
+fn check_mix(
+    found: &[f32],
+    at0: &[f32],
+    mid: Option<&[f32]>,
+    at1: &[f32],
+    t: f32,
+    what: &str,
+) -> usize {
     assert_eq!(found.len(), at0.len(), "{what}: same layout");
     let mut moving = 0;
-    for (index, ((&got, &a), &b)) in found.iter().zip(at0).zip(at1).enumerate() {
-        if a != b {
+    for (index, ((&got, &a0), &b1)) in found.iter().zip(at0).zip(at1).enumerate() {
+        let (a, b, s) = match mid.map(|mid| mid[index]) {
+            Some(m) if t <= 0.5 => (a0, m, 2.0 * t),
+            Some(m) => (m, b1, 2.0 * t - 1.0),
+            None => (a0, b1, t),
+        };
+        let still = a0 == b1 && mid.is_none_or(|mid| mid[index] == a0);
+        if !still {
             moving += 1;
         } else {
             assert_eq!(
                 got.to_bits(),
-                a.to_bits(),
-                "{what} t′ {t}: half {index} no terminus moves changed"
+                a0.to_bits(),
+                "{what} t′ {t}: half {index} no reference moves changed"
             );
             continue;
         }
-        let expected = a + (b - a) * t;
+        let expected = a + (b - a) * s;
         // One f16 step at the larger magnitude, for the store's rounding,
         // plus the mix's own f32 rounding.
         let step = a.abs().max(b.abs()).max(6.1e-5) * 2f32.powi(-10);
@@ -140,13 +158,28 @@ fn c9_the_closet_composes_and_writes_the_mix_at_every_handed_t() {
         return;
     };
     let (atlas_open, tiles_open) = closet.frame(1.0);
+    let (_, tiles_base) = closet.frame(0.5);
     let (atlas_closed, tiles_closed) = closet.frame(0.0);
     let mut moving = (0, 0);
     for t in SEQUENCE {
         let (atlas, tiles) = closet.frame(t);
         moving = (
-            check_mix(&atlas, &atlas_closed, &atlas_open, t, "indirect atlas"),
-            check_mix(&tiles, &tiles_closed, &tiles_open, t, "depth tiles"),
+            check_mix(
+                &atlas,
+                &atlas_closed,
+                None,
+                &atlas_open,
+                t,
+                "indirect atlas",
+            ),
+            check_mix(
+                &tiles,
+                &tiles_closed,
+                Some(&tiles_base),
+                &tiles_open,
+                t,
+                "depth tiles",
+            ),
         );
     }
     eprintln!(

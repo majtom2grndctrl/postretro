@@ -17,7 +17,9 @@ use postretro_level_format::probe_depth_tiles::{
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::render::gpu_test_harness::offscreen_renderer_or_skip;
-use crate::render::mover_channel::depth_test_support::{depth_section, ramp_tile, uniform_tile};
+use crate::render::mover_channel::depth_test_support::{
+    depth_section, ramp_tile, through_base, uniform_tile,
+};
 use crate::render::sh_depth_tiles::tests::{fixture_moments, second, whole_texels};
 use crate::render::{MoverTravel, Renderer};
 use postretro_level_loader::ShDrainBatch;
@@ -174,12 +176,26 @@ fn tile_of(
         .collect()
 }
 
-/// Within one f16 ulp of `(1 − t)·D₀ + t·D₁`, per channel.
-fn assert_blend(found: &[[u16; 2]], d0: &[[u16; 2]], d1: &[[u16; 2]], t: f32) {
+/// Probe `probe`'s base moment set as a tile: its id-59 tile, else its
+/// averaged moments in every texel.
+fn base_of(probe: u32) -> Vec<[u16; 2]> {
+    match ID59_PROBES.iter().position(|&tiled| tiled == probe) {
+        Some(tile) => id59().tile(tile).to_vec(),
+        None => vec![fixture_moments(probe as usize); PROBE_DEPTH_TILE_TEXELS],
+    }
+}
+
+/// Within one f16 ulp of the blend through the base: D₀ → base → D₁,
+/// per channel.
+fn assert_blend(found: &[[u16; 2]], d0: &[[u16; 2]], base: &[[u16; 2]], d1: &[[u16; 2]], t: f32) {
     for (at, texel) in found.iter().enumerate() {
         for channel in 0..2 {
-            let exact =
-                (1.0 - t) * f16_bits_to_f32(d0[at][channel]) + t * f16_bits_to_f32(d1[at][channel]);
+            let exact = through_base(
+                f16_bits_to_f32(d0[at][channel]),
+                f16_bits_to_f32(base[at][channel]),
+                f16_bits_to_f32(d1[at][channel]),
+                t,
+            );
             assert!(
                 texel[channel].abs_diff(f32_to_f16_bits(exact)) <= 1,
                 "texel {at} channel {channel} at t′ {t}"
@@ -192,7 +208,9 @@ fn assert_blend(found: &[[u16; 2]], d0: &[[u16; 2]], d1: &[[u16; 2]], t: f32) {
 /// probe keeps its id-59 tile or averaged moments bit for bit; the first
 /// hand-over at the seeded terminus points each changed probe at its live
 /// tile, which already holds that terminus's tile; a live tile then reads
-/// D₀, D₁ and their mix within one f16 ulp, rising and after a reversal.
+/// D₀, D₁ and the probe's base at t′ = 0, 1 and 0.5 bit for bit, and the
+/// blend through the base between them within one f16 ulp, rising and
+/// after a reversal.
 /// Only G moves: R keeps id-34 E[d] and B/A the word, and the probe stays
 /// valid; a probe no mover changes keeps its texel and tile bit for bit.
 #[test]
@@ -245,19 +263,20 @@ fn a_live_tile_holds_the_blend_and_only_g_moves_to_it() {
         );
     }
 
-    for t in [0.5, 0.0, 0.5, 1.0, 0.25] {
+    for t in [0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 0.6] {
         frame(&mut renderer, &[state(4, t)]);
         let texture = tile_texture(&renderer);
+        // Probe 3's base is its id-59 tile, probe 5's its averaged moments.
         for probe in [3, 5] {
             let live = LIVE.iter().find(|(p, _)| *p == probe).unwrap().1;
-            assert_blend(
-                &tile_of(&texture, live),
-                &d(4, probe, 0),
-                &d(4, probe, 1),
-                t,
-            );
-            if t == 0.0 {
-                assert_eq!(tile_of(&texture, live), d(4, probe, 0));
+            let found = tile_of(&texture, live);
+            let (d0, base, d1) = (d(4, probe, 0), base_of(probe), d(4, probe, 1));
+            assert_blend(&found, &d0, &base, &d1, t);
+            match t {
+                0.0 => assert_eq!(found, d0, "probe {probe}: D₀"),
+                0.5 => assert_eq!(found, base, "probe {probe}: the base"),
+                1.0 => assert_eq!(found, d1, "probe {probe}: D₁"),
+                _ => {}
             }
         }
         let texels = whole_texels(&renderer, renderer.level());
@@ -321,7 +340,7 @@ fn tiles_are_written_only_on_change_and_no_state_keeps_todays_texels() {
         );
     }
     // Mover 6 holds at 1; mover 4 travels. Probe 20 (mover 6 alone) stays.
-    frame(&mut renderer, &[state(4, 0.5), state(6, 1.0)]);
+    frame(&mut renderer, &[state(4, 0.25), state(6, 1.0)]);
     assert_eq!(tiles_written(&renderer), 3);
     let texture = tile_texture(&renderer);
     assert_eq!(
@@ -330,16 +349,20 @@ fn tiles_are_written_only_on_change_and_no_state_keeps_todays_texels() {
         "probe 20 untouched"
     );
     // Probe 9 (shared, untiled): per texel and moment its averaged moments
-    // plus mover 4's blend at 0.5 and mover 6's held D₁, each less the base,
-    // clamped to a valid moment set.
+    // plus mover 4's blend through the base at 0.25 and mover 6's held D₁,
+    // each less the base, clamped to a valid moment set.
     let shared = tile_of(&texture, 4);
     let d4 = (d(4, 9, 0), d(4, 9, 1));
     let d6 = d(6, 9, 1);
     let base = fixture_moments(9).map(f16_bits_to_f32);
     for (at, texel) in shared.iter().enumerate() {
         let [mean, mean_sq] = [0, 1].map(|channel| {
-            let mover_4 =
-                0.5 * f16_bits_to_f32(d4.0[at][channel]) + 0.5 * f16_bits_to_f32(d4.1[at][channel]);
+            let mover_4 = through_base(
+                f16_bits_to_f32(d4.0[at][channel]),
+                base[channel],
+                f16_bits_to_f32(d4.1[at][channel]),
+                0.25,
+            );
             let mover_6 = f16_bits_to_f32(d6[at][channel]);
             base[channel] + (mover_4 - base[channel]) + (mover_6 - base[channel])
         });
@@ -352,8 +375,8 @@ fn tiles_are_written_only_on_change_and_no_state_keeps_todays_texels() {
             );
         }
     }
-    // Mover 6 now travels with mover 4 held: the shared tile reads 4's held 0.5.
-    frame(&mut renderer, &[state(4, 0.5), state(6, 0.0)]);
+    // Mover 6 now travels with mover 4 held: the shared tile reads 4's held 0.25.
+    frame(&mut renderer, &[state(4, 0.25), state(6, 0.0)]);
     assert_eq!(tiles_written(&renderer), 2, "probes 9 and 20");
     eprintln!("[MoverDepthProof] write-on-change and no-state texels held; ran on GPU");
 }
@@ -529,8 +552,8 @@ fn tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level()
     assert_eq!(host.sources, [ResidencySource::Section(57)]);
     assert_eq!(
         host.bytes,
-        (5 * 2 + 1) * PROBE_DEPTH_TILE_TEXELS as u64 * 8,
-        "decoded f32 pairs: ten closed-pose tiles, and the base tile of probe 9, which two movers change"
+        (5 * 2 + 4) * PROBE_DEPTH_TILE_TEXELS as u64 * 8,
+        "decoded f32 pairs: ten closed-pose tiles, and one base tile per probe carrying mover depth"
     );
     renderer.release_level_resources();
     assert!(

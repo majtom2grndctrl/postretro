@@ -1121,3 +1121,78 @@ Diagnosis, 2026-11-09, at bc7537a86 (AMD Radeon Pro 5300M, Metal). `mover-setpie
 1. *Depth blends through the base mid-travel.* The live tile goes D₀ → base → D₁ (base at t′ = 0.5, held at an unstored terminus as today). Any base share above about 1% makes the variance large, so mid-travel depth goes permissive and termini stay exact. The CPU mirror removes mechanism A at every t. For a door, D₁ is about the base already, so a door's ramp barely moves. IP: moment sets blend; nothing is flagged, zeroed or excluded; the 0.03 floor and masks are unchanged; bounce is untouched. It changes the "Closed-pose depth blends with travel" Decision and depth row 1 ("their linear mix at t′ = 0.5"), so it goes to the owner. Cost: one CPU base tile per depth probe (991 × 400 B on setpiece), no GPU change. On its own it uncovers mechanism B at t ≈ 0.80.
 2. *A sharper smooth backface for movers*, ((dot + 1) / 2)^k + 0.03 with k = 4–8. It stays smooth and floored (ip-372 lever 5) and is never zero, so it fits the IP rules. It changes the owner's form choice (Delegated answers, the DDGI square), not a Decision. Task 8's west-face and upper-wall captures need a re-run. It fixes mechanism B, not mechanism A. The hard form fixes B too, but it reverses the owner's IP ruling.
 3. *Values for a mover that sweeps through the probe lattice.* Terminus states cannot describe a probe the room passes through, so the lower layer is black mid-travel when it should be lit. Blending bounce through id 34 and direct q through 1 mid-travel is the same shape as fix 1. It changes the Bounce and Direct Decisions, and it lights the room's interior mid-travel as if the shaft were open. Only if fixes 1 and 2 leave visible residue.
+
+### Task 12c
+
+Measured 2026-11-09 on the main checkout at c70066d55 plus this task's diff, AMD Radeon Pro 5300M under Metal. Owner rulings (plan.md, Rising-room probe blobs): live depth blends D₀ → base → D₁, and the mover backface sharpens to ((dot + 1) / 2)^k + 0.03, with k picked by capture from 4 and 8.
+
+**Live depth through the base.**
+- `blend_probe` (`mover_channel/depth.rs`) blends each stated mover as `D₀ + 2t′·(B − D₀)` up to t′ = 0.5 and `B + (2t′ − 1)·(D₁ − B)` above it. B is the probe's id-59 tile, else its averaged moments.
+- t′ = 0, 0.5 and 1 copy D₀, B and D₁ bit for bit. The lerp is `a + s·(b − a)`, so a half whose ends hold the same texel is exactly that texel.
+- An unstored terminus is B. A mover with one stored terminus therefore blends between that tile and B over its half of travel and holds B bit for bit over the other half. This is sensible: the unstored terminus is the one the mover leaves unchanged, so the probe reads its mover-absent depth from the midpoint on. Every closet record stores D₀ only (28 records, 28 stored tiles), so the closet door's depth reaches the open state at half-open. Its bounce still blends over the whole travel. Research §Rising-room probe blobs found that any base share above about 1% already made the variance large, so the visible change on the closet is small. K1 still passes (below).
+- Several movers keep the add-differences rule, applied to each mover's through-base blend. A mover on its unstored half, or at t′ = 0.5, adds exactly zero.
+- `bind` now builds a base tile for every depth probe, not only for probes with an unstored terminus or several movers.
+- Ledger: the host row `mover_closed_pose_depth_tiles` grows by one decoded tile (100 texels × 8 B = 800 B) per depth probe that lacked one. On the setpiece it grows from 1,599,200 B (93 base tiles) to 2,317,600 B (991). The closet's is unchanged, since every closet probe already read an unstored terminus.
+- Live-tile CPU cost on the setpiece (`a_travelling_movers_live_tile_plan_cost_on_a_real_map`, dev profile, three runs each, A/B on this machine): the wall 0.20–0.22 → 0.24–0.26 ms per frame, the room 0.28–0.33 → 0.34–0.35 ms. The same tiles and bytes are written. Inlining the single-mover lerp bought nothing, so it stays.
+- No GPU change. The sampler depth path hash still matches the parent's.
+
+**Blob metric.** The method is §Rising-room probe blobs', rebuilt in scratch (`blobs.py`, a capture driver and pure-Python PNG reader). Captures are 960×540, reflections off, `force_full_resident_sh_compose`, `sync-proof`, every light term, with `setpiece_room` forced to t. The camera is at map (860, 320, floor + 64), yaw 0, pitch −28, fov 90. The crop is the 8×8 blocks wholly inside the interior floor, inset 8 u (5,310 blocks). Each block's excess is over the median of the blocks within 6 blocks of it. Cells give max excess (luma levels) / local-max blocks more than 3 levels above that median. The roof view is from (680, 320, 300), pitch −30, fov 90, cropped to the roof top. PRL: `mover-setpiece` built by this tree's release `prl-build` (warm, BC6H, every block resident); id 57 stripped by rewriting the container. "Before" is the capture binary built at bc7537a86 (no code change since), kept in scratch. It reproduces the diagnosis table within about 1 level.
+
+| t | before, as built | before, id 57 stripped | depth fix only (k = 2) | fix + k = 4 | fix + k = 8 (ships) | fix + k = 8, stripped | fix + hard (reference) |
+|---|---|---|---|---|---|---|---|
+| 0.50 | 7.2 / 8 | 3.2 / 0 | 7.2 / 8 | 7.1 / 8 | 7.1 / 8 | 3.8 / 0 | 7.1 / 9 |
+| 0.80 | 7.5 / 7 | 2.1 / 0 | **14.7 / 22** | **7.7 / 12** | 6.5 / 3 | 2.6 / 0 | 4.9 / 2 |
+| 0.86 | **13.9 / 23** | 2.2 / 0 | 6.9 / 4 | 6.7 / 3 | 7.7 / 3 | 3.1 / 0 | 5.8 / 2 |
+| 0.90 | **10.4 / 40** | 2.4 / 0 | 6.9 / 3 | 7.2 / 3 | 8.9 / 3 | 3.6 / 0 | 6.0 / 3 |
+| 0.95 | **15.9 / 33** | 2.6 / 0 | 7.0 / 3 | 7.7 / 4 | 8.7 / 4 | 3.2 / 0 | 6.4 / 3 |
+| 1.00 | 6.8 / 2 | 2.2 / 0 | 6.8 / 2 | 6.9 / 2 | 6.8 / 2 | 2.2 / 0 | 6.5 / 2 |
+| Roof, 0.95 | **12.7 / 24** | 4.9 / 2 | **12.8 / 24** | 6.9 / 3 | 7.0 / 5 | 4.3 / 2 | 4.9 / 1 |
+
+- **The depth fix removes the diamonds.** On its own (k = 2) it takes t = 0.86–0.95 from 10–16 levels and 23–40 peaks to 7 levels and 3–4 peaks. As predicted, it uncovers mechanism B at t = 0.80 (14.7 / 22) and leaves the roof dots (12.8 / 24).
+- **k = 4 halves mechanism B but leaves it visible**: 7.7 / 12 at t = 0.80, a clear lattice of dots in the excess map (`captures/t12c-excess-sheet.png`).
+- **k = 8 removes it**: 6.5 / 3 at t = 0.80. The 6.5 is block (77, 24) at the foot of the east wall, which hard (4.9) and every t also show. The only lattice dot left over the 3-level bar is block (30, 37) at 3.7 levels.
+- **Residue at t = 0.86–0.95 is not lattice-locked.** Under k = 8, the peaks are blocks (77, 24), (80, 24) and (65, 21), along the far edge where the floor meets the east wall. They are present at t = 1.00 (6.8 and 4.8, identical before and after, terminus data exact) and under the hard form (6.0, 5.1, 3.5 at t = 0.9). k = 8 brightens them by about 1.5–2 levels mid-travel over hard. The excess map shows no diamond lattice at any t.
+- **t = 0.50 is unchanged** from before (7.1–7.2 / 8 in every build). Its peaks are a wedge of light near the camera and the same far-edge band, large-scale and present before and under hard. With id 57 stripped it reads 3.2–3.8 / 0. This is the values residue the diagnosis called fix 3 (terminus states cannot light a room passing through the probe lattice). It is out of scope here and was not built.
+- **Roof top at 0.95**: 12.7 / 24 before → 7.0 / 5 at k = 8 (4.5–5.3 levels at the local maxima; k = 4: 6.9 / 3). Stripped reads 4.3–4.9 / 2, hard 4.9 / 1. The roof dots came from the backface weight, not depth (depth-only leaves 12.8 / 24).
+- Stills: `captures/t12c-floor-t0.80-{before,after}.png` and `t12c-floor-t0.90-{before,after}.png` (as built, 480×270 box-downscaled; after is k = 8). `captures/t12c-excess-sheet.png` has the excess map (black 0, white +8 levels) at t = 0.80, 0.90 and 0.95 (rows), with columns before | depth fix only | k = 4 | k = 8 | hard.
+
+**k = 8 ships.** It is the smaller k that removes the t ≈ 0.80 dots: k = 4 leaves 12 lattice peaks above the bar. The form stays smooth, floored at 0.03 and never zero (ip-372 lever 5). It shows no harshness on the setpiece walls at rest (below), and the excess maps show no new edge or discontinuity mid-travel.
+
+**Backface comparison** (task 8's views at t = 1, 1280×720, every light term unless masked, frame-mean Rec. 709 luma 0–255). Interior and upper walls from (860, 320, 72): yaw 0 pitch −8 fov 100, and yaw 20 pitch +28 fov 100. West face (620, 320, 90), yaw 0, fov 60. Station 2 (560, 320, 48), yaw 0, fov 100. Hard and none are temporary shader edits to the mover branch, built and reverted.
+
+| View | k = 2 (before) | k = 4 | k = 8 (ships) | Hard | None |
+|---|---|---|---|---|---|
+| Interior | 8.90 | 8.89 | 8.89 | 8.91 | 8.85 |
+| Upper walls | 5.04 | 5.10 | 5.10 | 5.14 | 4.63 |
+| Upper, direct only (mask 24) | 0.566 | 0.561 | 0.558 | 0.564 | 0.593 |
+| Upper, indirect only (mask 6) | 4.415 | 4.478 | 4.483 | 4.515 | 3.973 |
+| West face | 28.72 | 28.73 | 28.69 | 28.80 | 28.05 |
+| Station 2 | 34.80 | 34.80 | 34.79 | 34.82 | 34.62 |
+
+- Every smooth k reads within 0.15 luma of the hard form, on every view.
+- Task 8's leak (smooth +23% direct over hard on the upper walls) does not reproduce on this bake: k = 2 reads 0.566 against hard's 0.564, and k = 8 reads 0.558. The bake changed since task 8 (the production 7c bake then, tasks 11b–12a since). The absolute values differ from §Task 8's for the same reason. Compare columns, not tables.
+- No backface weight at all now reads darker on the upper walls (4.63), not brighter (task 8: 8.06).
+
+**Proof.**
+PRLs were built by this tree's release `prl-build` (warm): closet, setpiece, and setpiece at `--mover-payload-resident-bar 0`. `POSTRETRO_REQUIRE_GPU=1` throughout.
+- **Depth rows (renderer).**
+  - CPU: `a_live_tile_blends_through_its_probes_base_exact_at_termini_and_midpoint` (the live-tile row). A tiled and an untiled probe each read D₀ / base / D₁ bit for bit at t′ 0 / 0.5 / 1, and the through-base blend within one f16 ulp at 0.25, 0.4, 0.6 and 0.75, rising and after a reversal.
+  - CPU: `an_unstored_terminus_blends_toward_the_probes_base_moments`. The stored half blends, and the unstored half holds the base bit for bit. Two movers add their through-base differences, (3.5, 13.25) and (1.75, 5.25) about the base (3, 9.5), giving (2.25, 9) exactly.
+  - GPU: `a_live_tile_holds_the_blend_and_only_g_moves_to_it`, through the readback at t′ 0.75, 0.5, 0.25, 0, 0.25, 0.5, 0.75, 1, 0.6.
+  - GPU: `tiles_are_written_only_on_change…`, the shared probe at mover 4's 0.25 plus mover 6's held D₁. GPU: the ledger row now expects 10 closed-pose plus 4 base tiles.
+  - The streamed three pass. All 21 depth and live-tile tests pass, plus the sampler depth-path hash.
+- **C9 renderer half** (`MOVER_CLOSET_PRL`, `POSTRETRO_SH_STREAMING=off`). The sequence is now 0, 0.25, 0.5, 0.625 ×2, 0.5, 0.375, 0.125, 0 ×2. Tiles are checked against the through-base blend, with the t′ = 0.5 frame as the base reference, and the atlas against the linear mix. Pass: 15,504 atlas halves and 3,890 depth-tile halves move, every one at its mix.
+- **C10** (`MOVER_C10_PRLS`, three PRLs): pass. Depth tiles differ at 0 halves between modes at every t′ on every map. The channel moves the closet 5,600 / 5,600 / 5,600 halves at t′ 0 / 0.5 / 1, the setpiece 175,648 / 198,200 / 163,632, and the setpiece at bar 0 the same.
+- **C7** (`MOVER_C7_PRLS`, closet and setpiece at bar 0): pass. Gate and residency rows are off by 0 halves on every atlas.
+- **Capture, `--features capture --ignored`.**
+  - K1, sync-proof: station 2 closed, outside the door, 0.0056 against the reference's 0.0059; station 3 0.0160 against 0.0171. Open equals stripped, with 0 px differing. Under off: 0.0057 / 0.0060 and 0.0160 / 0.0178, open 0 px.
+  - K2: receiver wall closed 27.556, static reference 29.041, open 31.164, open stripped 31.158.
+  - K3, static: setpiece pop 5.025 at t 0 and 5.495 at t 1, against ungated 5.496 + 12; closet 0. K3, animated: 0.000 and 1.062 against 1.063 + 12.
+  - C10 frames and D2 pass. D2: stripped and no-state deltas 0 at every view.
+  - D4/D5 (bin, `MOVER_CLOSET_PRL`): 0 against the next frame under off and sync-proof.
+- **Gates.**
+  - `cargo test`: renderer 1,348 passed (15 ignored), level-format 742, level-loader 388 (1 ignored). The postretro bin passes 2,515 (18 ignored), and 2,601 (19 ignored) with capture.
+  - `cargo clippy --workspace --all-targets -D warnings`, with and without `postretro/capture`: clean.
+  - `cargo fmt --check`: clean.
+
+**Files.** `crates/renderer/src/render/mover_channel/depth.rs` (blend, bind, docs), `mover_channel/depth_test_support.rs` (`through_base`), `mover_channel/depth_tests.rs`, `mover_depth_tiles_tests.rs`, `uploads/renderer_tests/closet_mover_channel.rs` (C9), `shaders/sh_sample.wgsl` (k = 8), `kinematic_brush.rs` (its test), `sh_residency.rs` (host-row doc); `context/lib/rendering_pipeline.md` §4 (Depth live tiles, Mover backface), `context/lib/resource_management.md` §8.2 (host row); captures `t12c-*.png`. Scratch harness (not in git): `blobs.py`, `excess_sheet.py`, the five capture binaries.

@@ -1396,8 +1396,9 @@ mod tests {
     }
 
     // Mover fragments weigh probes behind them with the smooth, floored
-    // backface form on both SH reads, and that form never weighs a probe 0
-    // (ip-372 lever 5; owner ruling, mover-light-flow--probe-channel).
+    // backface form ((dot + 1) / 2)⁸ + floor on both SH reads, and that form
+    // never weighs a probe 0 (ip-372 lever 5; owner rulings,
+    // mover-light-flow--probe-channel).
     #[test]
     fn mover_sh_reads_take_the_smooth_floored_backface_weight() {
         let source = composed_shader_source();
@@ -1414,7 +1415,18 @@ mod tests {
             .and_then(|rest| rest.trim_end_matches(';').parse::<f32>().ok())
             .expect("smooth backface floor constant");
         assert!(floor > 0.0, "the smooth form's floor stays non-zero");
-        assert!(source.contains("return wrap * wrap + SH_BACKFACE_SMOOTH_FLOOR;"));
+        assert_eq!(floor, 0.03, "the floor is the depth weight's 0.03");
+        for line in [
+            "let wrap = (cosine + 1.0) * 0.5;",
+            "let wrap_2 = wrap * wrap;",
+            "let wrap_4 = wrap_2 * wrap_2;",
+            "return wrap_4 * wrap_4 + SH_BACKFACE_SMOOTH_FLOOR;",
+        ] {
+            assert!(
+                source.contains(line),
+                "the smooth form's eighth power: {line}"
+            );
+        }
     }
 
     #[test]

@@ -1,12 +1,15 @@
 // Mover probe channel depth (id 57): each probe a mover's pose changes gets a
 // renderer-owned live tile after id 59's in the depth tile texture, holding
-// the linear blend of that mover's closed-pose tiles D₀ and D₁ at its t′. A
-// terminus the record stores no tile for is one the mover leaves unchanged:
-// the blend runs toward the probe's base moment set there, its id-59 tile or
-// its averaged id-34 moments (owner, 2026-11-09), so at that terminus the
-// live tile holds exactly what the probe reads with no section. Several
-// movers at one probe add their blended differences from that base, per
-// moment, clamped to a valid moment set (owner, 2026-11-09).
+// that mover's closed-pose tiles D₀ and D₁ blended through the probe's base
+// moment set, its id-59 tile or its averaged id-34 moments: D₀ → base over
+// the first half of t′, base → D₁ over the second, the base exactly at t′ =
+// 0.5 (owner, 2026-11-09). Closed-pose depth describes a surface only where
+// the mover rests, so mid-travel the probe passes through its mover-absent
+// depth. A terminus the record stores no tile for is one the mover leaves
+// unchanged: it is the base, so at that terminus the live tile holds exactly
+// what the probe reads with no section. Several movers at one probe add
+// their blended differences from that base, per moment, clamped to a valid
+// moment set (owner, 2026-11-09).
 // This side is wgpu-free: it holds the closed-pose tiles on the CPU, decides
 // which live tiles a frame rewrites and which probe references move, and
 // blends the texels. `crate::render::mover_depth_tiles` stages the writes.
@@ -72,9 +75,8 @@ pub(in crate::render) struct MoverDepthTiles {
     probe_offsets: Vec<u32>,
     /// Each record's mover slot, in probe order.
     record_slots: Vec<u32>,
-    /// Each probe's base tile as a texel offset into `tiles`, once bound:
-    /// set where a record reads an unstored terminus or several movers
-    /// change the probe, [`UNBOUND_BASE`] elsewhere.
+    /// Each probe's base tile as a texel offset into `tiles` once bound,
+    /// [`UNBOUND_BASE`] before: every blend passes through it.
     base_tiles: Vec<u32>,
     /// Each record's `D₀` and `D₁` as a texel offset into `tiles`, in
     /// `record_slots` order. A terminus the record stores no tile for points
@@ -82,7 +84,7 @@ pub(in crate::render) struct MoverDepthTiles {
     record_tiles: Vec<[u32; 2]>,
     /// The CPU-held tiles, decoded once from f16 (exactly) so a frame's blend
     /// converts only its result: every stored closed-pose tile, then, from
-    /// [`Self::bind`], one base tile per probe that reads it.
+    /// [`Self::bind`], one base tile per probe.
     tiles: Vec<[f32; 2]>,
     /// Probes per mover slot (CSR over `slot_probes`), as indices into
     /// `probes`, ascending.
@@ -213,7 +215,7 @@ impl MoverDepthTiles {
     }
 
     /// Bytes of tiles held on the CPU, the ledger's host row: the stored
-    /// closed-pose tiles, and once bound the base tiles records read.
+    /// closed-pose tiles, and once bound one base tile per probe.
     pub(in crate::render) fn host_bytes(&self) -> u64 {
         (self.tiles.len() * size_of::<[f32; 2]>()) as u64
     }
@@ -221,10 +223,10 @@ impl MoverDepthTiles {
     /// Bind the live tiles to the installed tile texture: they follow id
     /// 59's `first_live_tile` tiles in `layout`, and `references` (the load's
     /// table, before any rewrite) gives each probe's reference without mover
-    /// state. Each probe a record stores no tile for at some terminus, or
-    /// that several movers change, gets one base tile from `bases`: the
-    /// id-59 tile its reference names, else its averaged id-34 moments in
-    /// every texel, exactly what the probe reads with no section. A level
+    /// state. Every probe carrying mover depth gets one base tile from
+    /// `bases`, which its blends pass through and its unstored termini read:
+    /// the id-59 tile its reference names, else its averaged id-34 moments
+    /// in every texel, exactly what the probe reads with no section. A level
     /// whose SH is unusable never binds, and plans nothing.
     pub(in crate::render) fn bind(
         &mut self,
@@ -238,15 +240,6 @@ impl MoverDepthTiles {
         }
         for (k, &probe) in self.probes.iter().enumerate() {
             let records = self.probe_offsets[k] as usize..self.probe_offsets[k + 1] as usize;
-            let shared = records.len() > 1;
-            if !shared
-                && !self.record_tiles[records.clone()]
-                    .iter()
-                    .flatten()
-                    .any(|&at| at == UNBOUND_BASE)
-            {
-                continue;
-            }
             let at = self.tiles.len() as u32;
             self.base_tiles[k] = at;
             match (references.tile_of(probe), bases.id59) {
@@ -425,15 +418,18 @@ impl MoverDepthTiles {
     }
 }
 
-/// Append one probe's live tile to `out` as texel bytes. One stated mover
-/// writes its `(1 − t′)·D₀ + t′·D₁` itself (exact at both termini; an
-/// unstored terminus reads the probe's base tile). Several stated movers
-/// write, per texel and per moment, the base plus each mover's blended
-/// difference from the base, then clamp to a valid moment set: `E[d] ≥ 0`,
-/// `E[d²] ≥ E[d]²` (owner, 2026-11-09). Differences add, never select, so
-/// the result is independent of hand-over order. The sum runs in f64, where
-/// every difference of two f32 moments is exact: a mover whose blend equals
-/// the base adds exactly zero, and a single non-zero difference returns that
+/// Append one probe's live tile to `out` as texel bytes. Each stated mover's
+/// blend runs through the probe's base B: `D₀ + 2t′·(B − D₀)` up to t′ =
+/// 0.5, `B + (2t′ − 1)·(D₁ − B)` above, exact at t′ = 0, 0.5 and 1, and
+/// exactly B over any half whose ends hold the same texel, so an unstored
+/// terminus (which is B) holds the base over its half of travel (owner,
+/// 2026-11-09). One stated mover writes its blend itself. Several write,
+/// per texel and per moment, the base plus each mover's blended difference
+/// from the base, then clamp to a valid moment set: `E[d] ≥ 0`, `E[d²] ≥
+/// E[d]²` (owner, 2026-11-09). Differences add, never select, so the result
+/// is independent of hand-over order. The sum runs in f64, where every
+/// difference of two f32 moments is exact: a mover whose blend equals the
+/// base adds exactly zero, and a single non-zero difference returns that
 /// mover's blend bit for bit wherever the blend is itself a valid moment set.
 fn blend_probe(
     tiles: &[[f32; 2]],
@@ -444,12 +440,20 @@ fn blend_probe(
     t: &[f32],
     out: &mut Vec<u8>,
 ) {
-    let terminus = |record: usize| {
+    debug_assert_ne!(base_tile, UNBOUND_BASE, "a bound level binds every base");
+    let base = &tiles[base_tile as usize..base_tile as usize + PROBE_DEPTH_TILE_TEXELS];
+    // The half of travel t′ is on: its two end tiles and the weight of the
+    // far end, `s ∈ [0, 1]` (exact: doubling, and 2t′ − 1 over [0.5, 1]).
+    let segment = |record: usize, t: f32| {
         let [d0, d1] = record_tiles[record].map(|at| {
             debug_assert_ne!(at, UNBOUND_BASE, "a bound level points every terminus");
             &tiles[at as usize..at as usize + PROBE_DEPTH_TILE_TEXELS]
         });
-        (d0, d1)
+        if t <= 0.5 {
+            (d0, base, 2.0 * t)
+        } else {
+            (base, d1, 2.0 * t - 1.0)
+        }
     };
     let mut stated = records
         .clone()
@@ -459,31 +463,27 @@ fn blend_probe(
     out.resize(at + TILE_BYTES, 0);
     let (tile, _) = out[at..].as_chunks_mut::<TEXEL_BYTES>();
     let Some(second) = stated.next() else {
-        // One mover: blend straight into bytes; a terminus copies its tile.
-        let t = t[record_slots[first] as usize];
-        let (d0, d1) = terminus(first);
-        if t <= 0.0 || t >= 1.0 {
-            let source = if t <= 0.0 { d0 } else { d1 };
+        // One mover: blend straight into bytes; t′ = 0, 0.5 and 1 copy a
+        // tile, as does a half whose ends are the same tile.
+        let (a, b, s) = segment(first, t[record_slots[first] as usize]);
+        if s <= 0.0 || s >= 1.0 || std::ptr::eq(a, b) {
+            let source = if s >= 1.0 { b } else { a };
             for (texel, &moments) in tile.iter_mut().zip(source) {
                 *texel = texel_bytes(moments);
             }
         } else {
-            let s = 1.0 - t;
-            for ((texel, a), b) in tile.iter_mut().zip(d0).zip(d1) {
-                *texel = texel_bytes([s * a[0] + t * b[0], s * a[1] + t * b[1]]);
+            for ((texel, a), b) in tile.iter_mut().zip(a).zip(b) {
+                *texel = texel_bytes([lerp(a[0], b[0], s), lerp(a[1], b[1], s)]);
             }
         }
         return;
     };
-    debug_assert_ne!(base_tile, UNBOUND_BASE, "a shared probe binds its base");
-    let base = &tiles[base_tile as usize..base_tile as usize + PROBE_DEPTH_TILE_TEXELS];
     let mut sum = [[0.0f64; 2]; PROBE_DEPTH_TILE_TEXELS];
     for record in [first, second].into_iter().chain(stated) {
-        let t = t[record_slots[record] as usize];
-        let (d0, d1) = terminus(record);
-        for (((texel, a), b), base) in sum.iter_mut().zip(d0).zip(d1).zip(base) {
+        let (a, b, s) = segment(record, t[record_slots[record] as usize]);
+        for (((texel, a), b), base) in sum.iter_mut().zip(a).zip(b).zip(base) {
             for moment in 0..2 {
-                texel[moment] += f64::from(lerp(a[moment], b[moment], t)) - f64::from(base[moment]);
+                texel[moment] += f64::from(lerp(a[moment], b[moment], s)) - f64::from(base[moment]);
             }
         }
     }
@@ -499,14 +499,15 @@ fn texel_bytes([mean, mean_sq]: [f32; 2]) -> [u8; TEXEL_BYTES] {
     (u32::from(f32_to_f16(mean)) | (u32::from(f32_to_f16(mean_sq)) << 16)).to_le_bytes()
 }
 
-/// Exact at both termini, whatever the moments hold.
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    if t <= 0.0 {
+/// `a + s·(b − a)`: exact at both ends whatever the moments hold, and
+/// exactly `a` wherever `b == a`.
+fn lerp(a: f32, b: f32, s: f32) -> f32 {
+    if s <= 0.0 {
         a
-    } else if t >= 1.0 {
+    } else if s >= 1.0 {
         b
     } else {
-        (1.0 - t) * a + t * b
+        a + s * (b - a)
     }
 }
 

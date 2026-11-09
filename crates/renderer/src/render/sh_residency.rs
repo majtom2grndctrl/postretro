@@ -19,7 +19,8 @@ pub struct ShResidencyReport {
     pub allocations: Vec<ResidencyAllocation>,
     pub total_bytes: u64,
     /// Host memory the install holds beside its GPU rows (id 57's CPU-held
-    /// closed-pose depth tiles). Reported, never part of `total_bytes`.
+    /// closed-pose depth tiles and one base tile per probe carrying mover
+    /// depth). Reported, never part of `total_bytes`.
     pub host_rows: Vec<ShHostAllocation>,
     /// Streaming-only live pool accounting. It intentionally remains separate
     /// from descriptor rows: logical occupancy is not another GPU allocation,

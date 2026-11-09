@@ -253,10 +253,13 @@ fn sh_trilinear_weight(corner_offset: vec3<u32>, gfrac: vec3<f32>) -> f32 {
 const SH_BACKFACE_NONE: u32 = 0u;
 // Static world receivers: a probe behind the plane weighs 0 (`max(dot, 0)`).
 const SH_BACKFACE_HARD: u32 = 1u;
-// Mover receivers: DDGI's smooth wrap ((dot + 1) / 2)² over the unit
-// direction, plus a floor, so no probe ever weighs 0 (ip-372 lever 5; owner
-// ruling, mover-light-flow--probe-channel). Static geometry, never mover or
-// light state, decides it.
+// Mover receivers: DDGI's smooth wrap over the unit direction, sharpened to
+// ((dot + 1) / 2)⁸, plus a floor, so no probe ever weighs 0 (ip-372 lever 5;
+// owner rulings, mover-light-flow--probe-channel). The eighth power, chosen
+// by capture over the fourth, keeps dark probes behind a mover surface from
+// mottling it: the square lit a rising room's floor in a lattice of dots as
+// it passed a probe layer. Static geometry, never mover or light state,
+// decides it.
 const SH_BACKFACE_SMOOTH: u32 = 2u;
 // The smooth form's floor: the same 0.03 every valid probe keeps under depth
 // visibility, so a probe behind the receiver still contributes.
@@ -281,7 +284,9 @@ fn sh_backface_weight(
             cosine = clamp(dot(dir_to_probe / distance, geo_normal), -1.0, 1.0);
         }
         let wrap = (cosine + 1.0) * 0.5;
-        return wrap * wrap + SH_BACKFACE_SMOOTH_FLOOR;
+        let wrap_2 = wrap * wrap;
+        let wrap_4 = wrap_2 * wrap_2;
+        return wrap_4 * wrap_4 + SH_BACKFACE_SMOOTH_FLOOR;
     }
     return max(dot(dir_to_probe, geo_normal), 0.0);
 }

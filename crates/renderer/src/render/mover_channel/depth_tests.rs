@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::render::mover_channel::depth_test_support::{
-    depth_section, ramp_tile, stored_depth_section, uniform_tile,
+    depth_section, ramp_tile, stored_depth_section, through_base, uniform_tile,
 };
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_volume::OctahedralShProbe;
@@ -143,39 +143,62 @@ fn assert_within_ulp(texels: &[[u16; 2]], expected: impl Fn(usize, usize) -> f32
     }
 }
 
-/// A live tile reads D₀ at t′ = 0, D₁ at t′ = 1 and
-/// their linear mix at 0.5 within one f16 ulp, rising and after a reversal;
-/// the first write points the probe at it, and later ones leave the
-/// reference alone.
+/// A live tile reads D₀ at t′ = 0, D₁ at t′ = 1 and the probe's base (its
+/// id-59 tile, else its averaged moments) at t′ = 0.5, each bit for bit, and
+/// the blend through the base between them within one f16 ulp, rising and
+/// after a reversal; the first write points the probe at it, and later ones
+/// leave the reference alone.
 #[test]
-fn a_live_tile_blends_its_movers_closed_pose_tiles_exact_at_both_termini() {
+fn a_live_tile_blends_through_its_probes_base_exact_at_termini_and_midpoint() {
     let (d0, d1) = (ramp_tile(0.25), ramp_tile(3.0));
-    let section = depth_section(vec![(4, 9, d0.clone(), d1.clone())]);
-    let mut plan = Plan::new(&section, &[2, 9]);
-    let live = 2;
-    let exact = |t: f32| {
-        let (d0, d1) = (d0.clone(), d1.clone());
-        move |at: usize, channel: usize| (1.0 - t) * f16(d0[at][channel]) + t * f16(d1[at][channel])
+    let tiled = ramp_tile(1.5);
+    // Probe 9 is tiled by id 59; probe 12 is untiled.
+    let section = depth_section(vec![
+        (4, 9, d0.clone(), d1.clone()),
+        (4, 12, d1.clone(), d0.clone()),
+    ]);
+    let id59 = ProbeDepthTilesSection {
+        probe_indices: vec![2, 9],
+        texels: [ramp_tile(7.0), tiled.clone()].concat(),
     };
+    let mut probes = vec![averaged(0.0, 0.0); 13];
+    probes[12] = averaged(2.0, 4.5);
+    let averaged_12 = uniform_tile(2.0, 4.5);
+    let mut plan = Plan::with_bases(&section, &id59, &probes);
+    let cases = [
+        (2, d0.clone(), tiled.clone(), d1.clone()),
+        (3, d1.clone(), averaged_12.clone(), d0.clone()),
+    ];
     plan.frame(&[(0, 0.0)], &[0]);
-    assert_eq!(plan.tile(live), &d0[..], "t′ = 0 holds D₀ bit for bit");
-    assert_eq!(plan.references, [(9, Some(live as u16))]);
-    for t in [0.5, 1.0, 0.5, 0.0, 0.3] {
+    assert_eq!(plan.tile(2), &d0[..], "t′ = 0 holds D₀ bit for bit");
+    assert_eq!(plan.references, [(9, Some(2)), (12, Some(3))]);
+    for t in [0.25, 0.5, 0.75, 1.0, 0.6, 0.5, 0.4, 0.0, 0.3] {
         plan.frame(&[(0, t)], &[0]);
         assert!(plan.references.is_empty(), "the reference already points");
-        match t {
-            0.0 => assert_eq!(plan.tile(live), &d0[..]),
-            1.0 => assert_eq!(plan.tile(live), &d1[..]),
-            _ => assert_within_ulp(plan.tile(live), exact(t)),
+        for (live, d0, base, d1) in &cases {
+            match t {
+                0.0 => assert_eq!(plan.tile(*live), &d0[..], "D₀ at 0"),
+                0.5 => assert_eq!(plan.tile(*live), &base[..], "the base at 0.5"),
+                1.0 => assert_eq!(plan.tile(*live), &d1[..], "D₁ at 1"),
+                _ => assert_within_ulp(plan.tile(*live), |at, channel| {
+                    through_base(
+                        f16(d0[at][channel]),
+                        f16(base[at][channel]),
+                        f16(d1[at][channel]),
+                        t,
+                    )
+                }),
+            }
         }
     }
 }
 
-/// A terminus a record stores no tile for blends toward the
-/// probe's base moment set: its id-59 tile where it has one, else its
-/// averaged id-34 moments in every texel. At that terminus the live tile
-/// holds the base bit for bit; elsewhere it is the exact linear mix. With
-/// two movers, a mover parked at its unstored terminus adds nothing.
+/// A terminus a record stores no tile for is the probe's base moment set:
+/// its id-59 tile where it has one, else its averaged id-34 moments in every
+/// texel. So the live tile blends between the stored terminus and the base
+/// over that terminus's half of travel, and holds the base bit for bit over
+/// the other half. With two movers, a mover at its unstored half adds
+/// nothing.
 #[test]
 fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
     let (d0, d1) = (ramp_tile(0.25), ramp_tile(3.0));
@@ -220,10 +243,23 @@ fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
         "probe 9 reads its id-59 tile"
     );
     assert_eq!(plan.tile(live_12), &d1[..], "probe 12 at its stored D₁");
-    plan.frame(&[(0, 0.5)], &[0]);
+    for t in [0.5, 0.75, 0.6] {
+        plan.frame(&[(0, t)], &[0]);
+        assert_eq!(plan.tile(live_9), &tiled[..], "probe 9 holds its base");
+    }
+    for t in [0.25, 0.4] {
+        plan.frame(&[(0, t)], &[0]);
+        assert_eq!(
+            plan.tile(live_12),
+            &averaged_12[..],
+            "probe 12 holds its base"
+        );
+    }
+    plan.frame(&[(0, 0.25)], &[0]);
     assert_within_ulp(plan.tile(live_9), |at, channel| {
         0.5 * f16(d0[at][channel]) + 0.5 * f16(tiled[at][channel])
     });
+    plan.frame(&[(0, 0.75)], &[0]);
     assert_within_ulp(plan.tile(live_12), |at, channel| {
         0.5 * f16(averaged_12[at][channel]) + 0.5 * f16(d1[at][channel])
     });
@@ -243,11 +279,22 @@ fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
     // (−2.5, −8.5): base + both = (1.5, 8.5).
     plan.frame(&[(0, 0.0)], &[0]);
     assert_eq!(plan.tile(live_20), &uniform_tile(1.5, 8.5)[..]);
+    // Mover 4 anywhere on its unstored half adds nothing; mover 6 at 0.5
+    // is the base and adds nothing either.
+    plan.frame(&[(0, 0.7), (1, 0.0)], &[0, 1]);
+    assert_eq!(plan.tile(live_20), &uniform_tile(6.0, 37.0)[..]);
+    plan.frame(&[(1, 0.5)], &[1]);
+    assert_eq!(plan.tile(live_20), &averaged_20[..]);
+    // Both mid-half add their through-base differences: mover 4 at 0.25
+    // is (3.5, 13.25), mover 6 at 0.75 is (1.75, 5.25), so the base (3,
+    // 9.5) plus both is (2.25, 9).
+    plan.frame(&[(0, 0.25), (1, 0.75)], &[0, 1]);
+    assert_eq!(plan.tile(live_20), &uniform_tile(2.25, 9.0)[..]);
     // With mover 6's state gone, mover 4 at its unstored D₁ is the base.
     plan.frame(&[(0, 1.0), (1, -1.0)], &[0, 1]);
     assert_eq!(plan.tile(live_20), &averaged_20[..]);
 
-    // The CPU holds five stored tiles and three base tiles (probes 9, 12, 20).
+    // The CPU holds five stored tiles and one base tile per probe (9, 12, 20).
     assert_eq!(
         plan.depth.host_bytes(),
         (8 * PROBE_DEPTH_TILE_TEXELS * size_of::<[f32; 2]>()) as u64

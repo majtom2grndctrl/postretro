@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.8
 
 use super::residency::{
-    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState,
+    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
     allocation_total_bytes, sources, texture_dimension_name, texture_format_name,
 };
 use super::sh_allocation::{
@@ -18,6 +18,9 @@ use super::sh_allocation::{
 pub struct ShResidencyReport {
     pub allocations: Vec<ResidencyAllocation>,
     pub total_bytes: u64,
+    /// Host memory the install holds beside its GPU rows (id 57's CPU-held
+    /// closed-pose depth tiles). Reported, never part of `total_bytes`.
+    pub host_rows: Vec<ShHostAllocation>,
     /// Streaming-only live pool accounting. It intentionally remains separate
     /// from descriptor rows: logical occupancy is not another GPU allocation,
     /// and a temporary retiring generation is not fixed metadata.
@@ -26,6 +29,15 @@ pub struct ShResidencyReport {
     /// frame as `streaming`. The renderer leaves this absent because workers
     /// and permits intentionally live above the renderer boundary.
     pub streaming_lifecycle: Option<ShStreamingLifecycleSummary>,
+}
+
+/// One host allocation an SH install holds for its lifetime: outside the
+/// GPU physical total, so the ledger's GPU rows still sum to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShHostAllocation {
+    pub name: &'static str,
+    pub sources: Vec<ResidencySource>,
+    pub bytes: u64,
 }
 
 /// Live streamed-SH accounting captured after renderer pool initialization.
@@ -147,6 +159,7 @@ impl ShResidencyReport {
 /// Mutable collector passed only through level-owned SH constructors.
 pub(super) struct ShAllocationLedger {
     allocations: Vec<ResidencyAllocation>,
+    host_rows: Vec<ShHostAllocation>,
     streaming: Option<ShStreamingAllocationSummary>,
 }
 
@@ -154,8 +167,18 @@ impl ShAllocationLedger {
     pub(super) fn new() -> Self {
         Self {
             allocations: Vec::new(),
+            host_rows: Vec::new(),
             streaming: None,
         }
+    }
+
+    /// Record host memory the install holds; it never joins the GPU total.
+    pub(super) fn record_host(&mut self, name: &'static str, bytes: u64, section_ids: &[u16]) {
+        self.host_rows.push(ShHostAllocation {
+            name,
+            sources: sources(section_ids, false),
+            bytes,
+        });
     }
 
     pub(super) fn record_texture(
@@ -220,6 +243,7 @@ impl ShAllocationLedger {
         let report = ShResidencyReport {
             allocations: self.allocations,
             total_bytes: allocation_total_bytes,
+            host_rows: self.host_rows,
             streaming: self.streaming,
             streaming_lifecycle: None,
         };
@@ -502,6 +526,7 @@ mod tests {
         let report = ShResidencyReport {
             allocations: Vec::new(),
             total_bytes: 0,
+            host_rows: Vec::new(),
             streaming: None,
             streaming_lifecycle: None,
         }
@@ -548,6 +573,7 @@ mod tests {
         let report = ShResidencyReport {
             allocations: vec![test_allocation(u64::MAX)],
             total_bytes: u64::MAX,
+            host_rows: Vec::new(),
             streaming: None,
             streaming_lifecycle: None,
         };

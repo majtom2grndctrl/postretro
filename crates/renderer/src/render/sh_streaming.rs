@@ -392,7 +392,20 @@ impl Renderer {
     /// Drain the loader-owned batch at the single pre-compose boundary.  The
     /// application/controller remains responsible for applying the returned
     /// permit and ready-byte outcome; it never observes renderer pool slots.
+    ///
+    /// Then, on any level, bring the mover depth live tiles to this frame's
+    /// mover state: every frame entry drains once before it records, so the
+    /// tiles, their references and the compose passes share one t′.
     pub fn drain_sh_residency(
+        &mut self,
+        batch: ShDrainBatch,
+    ) -> Result<ShDrainOutcome, ShResidencyDrainError> {
+        let outcome = self.drain_streamed_sh(batch)?;
+        self.write_mover_depth_tiles()?;
+        Ok(outcome)
+    }
+
+    fn drain_streamed_sh(
         &mut self,
         batch: ShDrainBatch,
     ) -> Result<ShDrainOutcome, ShResidencyDrainError> {

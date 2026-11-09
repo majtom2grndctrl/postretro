@@ -6,6 +6,7 @@ use postretro_render_cpu::sh_depth_tiles::{DepthTileReferenceError, ProbeDepthTi
 
 use super::Renderer;
 use super::level_resource_set::LevelResourceSet;
+use super::sh_depth_tiles::ShDepthTiles;
 use super::sh_indirection::SH_INDIRECTION_VALID_BIT;
 use super::sh_streaming::ShResidencyState;
 use super::sh_volume::ShVolumeResources;
@@ -107,62 +108,105 @@ pub(in crate::render) fn set_depth_tile_reference(
     probe: u32,
     tile: Option<u16>,
 ) -> Result<(), ProbeDepthTileRewriteError> {
-    if let Some(state) = streaming {
-        state.check_depth_tile_probe(probe)?;
-        if rewrite(sh.depth_tiles.references_mut(), probe, tile)? {
-            state.queue_depth_tile_texel(probe);
+    DepthTexels::of(sh).set_reference(streaming, queue, probe, tile)
+}
+
+/// What a reference rewrite touches in one load's SH volume, borrowed apart
+/// from the rest of it (the mover channel plans its rewrites beside these).
+pub(in crate::render) struct DepthTexels<'a> {
+    pub(in crate::render) depth_tiles: &'a mut ShDepthTiles,
+    pub(in crate::render) probe_indirection_words: &'a [u32],
+    pub(in crate::render) grid_dimensions: [u32; 3],
+    pub(in crate::render) depth_moment_texture: &'a wgpu::Texture,
+}
+
+impl<'a> DepthTexels<'a> {
+    fn of(sh: &'a mut ShVolumeResources) -> Self {
+        Self {
+            depth_tiles: &mut sh.depth_tiles,
+            probe_indirection_words: &sh.probe_indirection_words,
+            grid_dimensions: sh.grid_dimensions,
+            depth_moment_texture: &sh.depth_moment_texture,
         }
-        return Ok(());
     }
-    let words = &sh.probe_indirection_words;
-    // No usable SH builds a 1-entry invalid table, not a lattice; no tiles can
-    // exist then, so report an empty lattice rather than a 1-probe one.
-    if words.len() == 1 && words[0] & SH_INDIRECTION_VALID_BIT == 0 {
-        return Err(ProbeDepthTileRewriteError::ProbeOutsideLattice {
-            probe,
-            probe_count: 0,
-        });
+
+    /// [`set_depth_tile_reference`] on these parts.
+    pub(in crate::render) fn set_reference(
+        &mut self,
+        streaming: Option<&mut ShResidencyState>,
+        queue: &UploadQueue,
+        probe: u32,
+        tile: Option<u16>,
+    ) -> Result<(), ProbeDepthTileRewriteError> {
+        if let Some(state) = streaming {
+            state.check_depth_tile_probe(probe)?;
+            if rewrite(self.depth_tiles.references_mut(), probe, tile)? {
+                state.queue_depth_tile_texel(probe);
+            }
+            return Ok(());
+        }
+        self.set_whole_load_reference(queue, probe, tile)
     }
-    let word =
-        *words
-            .get(probe as usize)
-            .ok_or(ProbeDepthTileRewriteError::ProbeOutsideLattice {
+
+    fn set_whole_load_reference(
+        &mut self,
+        queue: &UploadQueue,
+        probe: u32,
+        tile: Option<u16>,
+    ) -> Result<(), ProbeDepthTileRewriteError> {
+        let words = self.probe_indirection_words;
+        // No usable SH builds a 1-entry invalid table, not a lattice; no tiles can
+        // exist then, so report an empty lattice rather than a 1-probe one.
+        if words.len() == 1 && words[0] & SH_INDIRECTION_VALID_BIT == 0 {
+            return Err(ProbeDepthTileRewriteError::ProbeOutsideLattice {
                 probe,
-                probe_count: words.len() as u32,
-            })?;
-    if word & SH_INDIRECTION_VALID_BIT == 0 {
-        return Err(ProbeDepthTileRewriteError::InvalidProbe { probe });
+                probe_count: 0,
+            });
+        }
+        let word =
+            *words
+                .get(probe as usize)
+                .ok_or(ProbeDepthTileRewriteError::ProbeOutsideLattice {
+                    probe,
+                    probe_count: words.len() as u32,
+                })?;
+        if word & SH_INDIRECTION_VALID_BIT == 0 {
+            return Err(ProbeDepthTileRewriteError::InvalidProbe { probe });
+        }
+        if !rewrite(self.depth_tiles.references_mut(), probe, tile)? {
+            return Ok(());
+        }
+        // A change needs a level with tiles, and a whole-loaded level with tiles
+        // keeps its id-34 moments for exactly this repack. The expect cannot fire:
+        // a changed reference requires `tile_count > 0`, which only a usable
+        // whole-loaded id 34 provides.
+        let texel = self
+            .depth_tiles
+            .whole_load_texel(probe, word)
+            .expect("a whole-loaded level with tiles keeps its id-34 moments");
+        let [width, height, _] = self.grid_dimensions;
+        let mut bytes = [0u8; 8];
+        for (at, value) in texel.iter().enumerate() {
+            bytes[at * 2..at * 2 + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        queue.write_texture(
+            self.depth_moment_texture,
+            wgpu::Origin3d {
+                x: probe % width,
+                y: probe / width % height,
+                z: probe / (width * height),
+            },
+            &bytes,
+            bytes.len() as u32,
+            1,
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
     }
-    if !rewrite(sh.depth_tiles.references_mut(), probe, tile)? {
-        return Ok(());
-    }
-    // A change needs a level with tiles, and a whole-loaded level with tiles
-    // keeps its id-34 moments for exactly this repack. The expect cannot fire:
-    // a changed reference requires `tile_count > 0`, which only a usable
-    // whole-loaded id 34 provides.
-    let texel = sh
-        .depth_tiles
-        .whole_load_texel(probe, word)
-        .expect("a whole-loaded level with tiles keeps its id-34 moments");
-    let [width, height, _] = sh.grid_dimensions;
-    let bytes: Vec<u8> = texel.iter().flat_map(|value| value.to_le_bytes()).collect();
-    queue.write_texture(
-        sh.depth_moment_texture(),
-        wgpu::Origin3d {
-            x: probe % width,
-            y: probe / width % height,
-            z: probe / (width * height),
-        },
-        &bytes,
-        bytes.len() as u32,
-        1,
-        wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
-    Ok(())
 }
 
 /// Apply the rewrite to the table; whether the probe's reference changed.

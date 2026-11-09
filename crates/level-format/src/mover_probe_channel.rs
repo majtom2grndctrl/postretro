@@ -23,6 +23,17 @@ pub use views::{
 use crate::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE;
 use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
+/// Tiles a level's probe depth tile texture holds: id 59's `id59_tiles`,
+/// then one live tile per probe `channel` carries mover depth at. The
+/// compiler reserves, the loader bounds and the renderer sizes against this
+/// one count; closed-pose tiles stay on the CPU and never count.
+pub fn depth_tile_texture_count(
+    id59_tiles: usize,
+    channel: Option<&MoverProbeChannelSection>,
+) -> usize {
+    id59_tiles + channel.map_or(0, MoverProbeChannelSection::live_tile_count)
+}
+
 /// Section-internal epoch, the first byte of the payload. Exact match.
 /// Epoch 2: sparse cell list, per-(cell, light) term records with a probe
 /// mask and one own tile, per-(record, mover) visibility. Epoch 3: a

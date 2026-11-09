@@ -40,6 +40,7 @@ mod mesh_depth;
 mod mesh_ghost;
 mod mesh_pass;
 mod mover_channel;
+mod mover_depth_tiles;
 mod mover_light_state;
 mod planar_reflection;
 mod promoted_depth_cache;
@@ -258,7 +259,7 @@ use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
 pub use sh_depth_tile_rewrite::ProbeDepthTileRewriteError;
 pub use sh_residency::{
-    ShResidencyReport, ShStreamingAllocationSummary, ShStreamingLifecycleSummary,
+    ShHostAllocation, ShResidencyReport, ShStreamingAllocationSummary, ShStreamingLifecycleSummary,
 };
 pub use sh_sample_regions::{ShSampleRegion, ShSampleRegionSets};
 pub use sh_streaming::{

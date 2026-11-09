@@ -342,6 +342,9 @@ struct GpuTimingPassReport {
 struct ShResidencyReportJson {
     rows: Vec<ResidencyAllocationJson>,
     total_bytes: u64,
+    /// Host memory beside the GPU rows, outside `total_bytes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    host_rows: Vec<ShHostRowJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     streaming: Option<ShStreamingAllocationSummaryJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -353,6 +356,7 @@ impl From<ShResidencyReport> for ShResidencyReportJson {
         let ShResidencyReport {
             allocations,
             total_bytes,
+            host_rows,
             streaming,
             streaming_lifecycle,
         } = report;
@@ -362,6 +366,18 @@ impl From<ShResidencyReport> for ShResidencyReportJson {
                 .map(ResidencyAllocationJson::from)
                 .collect(),
             total_bytes,
+            host_rows: host_rows
+                .into_iter()
+                .map(|row| ShHostRowJson {
+                    name: row.name.into(),
+                    sources: row
+                        .sources
+                        .into_iter()
+                        .map(ResidencySourceJson::from)
+                        .collect(),
+                    bytes: row.bytes,
+                })
+                .collect(),
             streaming: streaming.map(|summary| ShStreamingAllocationSummaryJson {
                 fixed_metadata_bytes: summary.fixed_metadata_bytes,
                 whole_resident_scatter_bytes: summary.whole_resident_scatter_bytes,
@@ -656,6 +672,13 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             compose_planning_cpu_micros: summary.compose_planning_cpu_micros,
         }
     }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct ShHostRowJson {
+    name: Cow<'static, str>,
+    sources: Vec<ResidencySourceJson>,
+    bytes: u64,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -1072,6 +1095,7 @@ mod tests {
                 shape: ResidencyAllocationShape::Buffer { binding_bytes: 0 },
             }],
             total_bytes: 0,
+            host_rows: Vec::new(),
             streaming: None,
             streaming_lifecycle: None,
         };
@@ -1116,6 +1140,7 @@ mod tests {
         let accounting = ShResidencyReport {
             allocations: Vec::new(),
             total_bytes: 0,
+            host_rows: Vec::new(),
             streaming: None,
             streaming_lifecycle: None,
         }
@@ -1159,6 +1184,7 @@ mod tests {
         let accounting = ShResidencyReport {
             allocations: Vec::new(),
             total_bytes: 0,
+            host_rows: Vec::new(),
             streaming: None,
             streaming_lifecycle: None,
         }

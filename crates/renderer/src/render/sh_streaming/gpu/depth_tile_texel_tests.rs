@@ -18,11 +18,11 @@ use crate::render::sh_streaming::PROBE_INDIRECTION_VALID_BIT;
 use crate::render::sh_streaming::install_tests::synthetic_moments;
 
 /// Cluster 0 holds probes with x < 4, cluster 1 the rest (8×4×4 lattice).
-const TILED: u32 = 9; // (1, 1, 0), cluster 0, id-59 tile 0
-const TILED_IN_ONE: u32 = 22; // (6, 2, 0), cluster 1, id-59 tile 1
-const UNTILED: u32 = 10; // (2, 1, 0), cluster 0
+pub(super) const TILED: u32 = 9; // (1, 1, 0), cluster 0, id-59 tile 0
+pub(super) const TILED_IN_ONE: u32 = 22; // (6, 2, 0), cluster 1, id-59 tile 1
+pub(super) const UNTILED: u32 = 10; // (2, 1, 0), cluster 0
 
-fn tiles() -> ProbeDepthTilesSection {
+pub(super) fn tiles() -> ProbeDepthTilesSection {
     ProbeDepthTilesSection {
         probe_indices: vec![TILED, TILED_IN_ONE],
         texels: vec![[0x3800, 0x3400]; 2 * PROBE_DEPTH_TILE_TEXELS],
@@ -40,7 +40,11 @@ fn fixture(device: &wgpu::Device, raw: &wgpu::Queue) -> UploadOrderSh {
 }
 
 /// Every texel of the streamed moments texture, x fastest.
-fn texels(f: &UploadOrderSh, device: &wgpu::Device, queue: &UploadQueue) -> Vec<[u16; 4]> {
+pub(super) fn texels(
+    f: &UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+) -> Vec<[u16; 4]> {
     let texture = &f.state.gpu.as_ref().unwrap().depth_moments;
     let extent = texture.size();
     let row = extent.width * 8;
@@ -77,7 +81,7 @@ fn texels(f: &UploadOrderSh, device: &wgpu::Device, queue: &UploadQueue) -> Vec<
         .collect()
 }
 
-fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
+pub(super) fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
     let (send, receive) = std::sync::mpsc::channel();
     buffer
         .slice(..)
@@ -150,7 +154,13 @@ fn word(texel: [u16; 4]) -> u32 {
 
 /// `dense`'s texel: R its id-34 `E[d]`, G a reference to `tile`, B/A the
 /// sampled word (valid exactly when `sampleable`).
-fn assert_tiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32, tile: u16, sampleable: bool) {
+pub(super) fn assert_tiled(
+    f: &UploadOrderSh,
+    texels: &[[u16; 4]],
+    dense: u32,
+    tile: u16,
+    sampleable: bool,
+) {
     let texel = texels[dense as usize];
     assert_eq!(
         texel[0],
@@ -167,7 +177,7 @@ fn assert_tiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32, tile: u16, s
 }
 
 /// `dense`'s texel packs as an untiled probe: id-34 `E[d]` and `E[d²]`.
-fn assert_untiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32) {
+pub(super) fn assert_untiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32) {
     let texel = texels[dense as usize];
     assert_eq!(
         [texel[0], texel[1]],
@@ -177,7 +187,7 @@ fn assert_untiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32) {
     assert_eq!(word(texel), f.state.sampled_words[dense as usize]);
 }
 
-fn install_and_promote(
+pub(super) fn install_and_promote(
     f: &mut UploadOrderSh,
     device: &wgpu::Device,
     queue: &UploadQueue,

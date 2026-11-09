@@ -459,6 +459,8 @@ mod depth_tile_texel_tests;
 mod direct_split_tests;
 #[path = "limit_tests.rs"]
 mod limit_tests;
+#[path = "mover_depth_tile_tests.rs"]
+mod mover_depth_tile_tests;
 #[path = "pool_admission_tests.rs"]
 mod pool_admission_tests;
 #[path = "shared_storage_tests.rs"]

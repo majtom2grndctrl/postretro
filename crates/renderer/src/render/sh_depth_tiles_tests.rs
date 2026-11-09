@@ -40,7 +40,7 @@ fn packed_rg(
         probes,
         grid,
         &words,
-        &ProbeDepthTileReferences::from_section(tiles),
+        &ProbeDepthTileReferences::from_section(tiles, 0),
     )
     .as_chunks::<4>()
     .0
@@ -120,14 +120,14 @@ fn absent_and_zero_tile_id59_produce_identical_gpu_inputs() {
             present: true,
             probe_occlusion_enabled: true,
             depth_tiles: DepthTileGridWords::for_layout(
-                ProbeDepthTileReferences::from_section(tiles).texture_layout(),
+                ProbeDepthTileReferences::from_section(tiles, 0).texture_layout(),
             ),
         })
     };
     assert_eq!(grid_bytes(None), grid_bytes(Some(&zero)));
     let (absent, zero_plan) = (
-        depth_tile_texture_plan(None),
-        depth_tile_texture_plan(Some(&zero)),
+        depth_tile_texture_plan(None, 0),
+        depth_tile_texture_plan(Some(&zero), 0),
     );
     assert_eq!(
         (absent.extent, &absent.texels),
@@ -473,7 +473,7 @@ fn tile_texture_bytes_are_ledgered_while_installed_and_gone_after_unload() {
 
 /// Probe `index`'s id-34 moments in the rewrite fixtures: distinct per probe,
 /// non-negative f16 bits.
-fn fixture_moments(index: usize) -> [u16; 2] {
+pub(in crate::render) fn fixture_moments(index: usize) -> [u16; 2] {
     let low = index as u16 & 0x3ff;
     [0x3c00 | low, 0x4400 | low]
 }
@@ -520,12 +520,12 @@ fn install_whole(
 
 /// Every texel of `level`'s whole-load moments texture, x fastest. The
 /// readback's submit carries any staged frame write first.
-fn whole_texels(
+pub(in crate::render) fn whole_texels(
     renderer: &crate::render::Renderer,
     level: &crate::render::level_resource_set::LevelResourceSet,
 ) -> Vec<[u16; 4]> {
     let device = &renderer.device;
-    let texture = level.sh_volume_resources.depth_moment_texture();
+    let texture = &level.sh_volume_resources.depth_moment_texture;
     let extent = texture.size();
     let row = extent.width * 8;
     let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -570,7 +570,7 @@ fn whole_texels(
         .collect()
 }
 
-fn second(texel: [u16; 4]) -> MomentSecondChannel {
+pub(in crate::render) fn second(texel: [u16; 4]) -> MomentSecondChannel {
     decode_moment_second_channel(texel[1])
 }
 

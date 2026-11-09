@@ -29,11 +29,15 @@ pub(super) struct MoverTBlock {
     observed: Vec<u32>,
     /// Bits each legacy compose pass last encoded, by [`LegacyPass`].
     composed: [Vec<u32>; 2],
+    /// Bits the depth live tiles were last written from.
+    depth_written: Vec<u32>,
     /// Slots whose entries feed each legacy pass: a mover with no entry in
     /// a pass never recomposes it.
     feeds: [Vec<bool>; 2],
     /// Scratch: slots whose bits moved since `observed`.
     changed: Vec<u32>,
+    /// Scratch: slots whose bits moved since `depth_written`.
+    depth_changed: Vec<u32>,
 }
 
 impl MoverTBlock {
@@ -45,9 +49,11 @@ impl MoverTBlock {
             bytes: none.iter().flat_map(|bits| bits.to_le_bytes()).collect(),
             uploaded: none.clone(),
             observed: none.clone(),
-            composed: [none.clone(), none],
+            composed: [none.clone(), none.clone()],
+            depth_written: none,
             feeds: [vec![true; ids.len()], vec![true; ids.len()]],
             changed: Vec::with_capacity(ids.len()),
+            depth_changed: Vec::with_capacity(ids.len()),
         }
     }
 
@@ -106,6 +112,29 @@ impl MoverTBlock {
         &self.changed
     }
 
+    /// This frame's t′ per slot (`NO_STATE` where the game handed over
+    /// none), and the slots whose t′ moved since the depth live tiles were
+    /// last written, marking them written: the live tiles' mover-state
+    /// trigger. The caller stages every write it implies on the frame's
+    /// upload batch, which is always submitted, so a change is never
+    /// consumed unwritten (P28).
+    pub(super) fn take_depth_changes(&mut self) -> (&[f32], &[u32]) {
+        self.depth_changed.clear();
+        for slot in 0..self.values.len() {
+            let bits = self.bits(slot);
+            if self.depth_written[slot] != bits {
+                self.depth_written[slot] = bits;
+                self.depth_changed.push(slot as u32);
+            }
+        }
+        (&self.values, &self.depth_changed)
+    }
+
+    #[cfg(test)]
+    pub(super) fn values(&self) -> &[f32] {
+        &self.values
+    }
+
     /// Whether a slot feeding `pass` moved since that legacy pass last
     /// encoded.
     pub(super) fn changed_since_composed(&self, pass: LegacyPass) -> bool {
@@ -118,11 +147,6 @@ impl MoverTBlock {
         for slot in 0..self.values.len() {
             self.composed[pass as usize][slot] = self.bits(slot);
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn values(&self) -> &[f32] {
-        &self.values
     }
 }
 
@@ -201,6 +225,28 @@ mod tests {
         assert!(!block.changed_since_composed(LegacyPass::Indirect));
     }
 
+    /// The live tiles' trigger is its own: each change reaches it once,
+    /// whatever the planner and legacy passes observed, and a t′ the game
+    /// hands over unchanged (a ramp holding it at 0 or 1) is no change.
+    #[test]
+    fn depth_changes_report_each_t_change_once_on_their_own_trigger() {
+        let mut block = MoverTBlock::new(&[1, 2]);
+        assert!(block.take_depth_changes().1.is_empty(), "no state yet");
+        block.set_states(&[state(1, 0.0), state(2, 1.0)]);
+        let _ = block.observe_changes();
+        assert_eq!(block.take_depth_changes().1, &[0, 1], "the first hand-over");
+        block.set_states(&[state(1, 0.0), state(2, 1.0)]);
+        assert!(block.take_depth_changes().1.is_empty());
+        block.set_states(&[state(2, 0.5), state(1, 0.0)]);
+        assert_eq!(block.take_depth_changes(), (&[0.0, 0.5][..], &[1][..]));
+        block.set_states(&[state(2, 0.5)]);
+        assert_eq!(
+            block.take_depth_changes().1,
+            &[0],
+            "losing a state is a change"
+        );
+    }
+
     /// C14 on the legacy compose: a mover whose entries feed only one pass
     /// never recomposes the other.
     #[test]
@@ -224,6 +270,7 @@ mod tests {
                 block.values.capacity(),
                 block.bytes.capacity(),
                 block.changed.capacity(),
+                block.depth_changed.capacity(),
             )
         };
         let before = capacities(&block);
@@ -234,6 +281,7 @@ mod tests {
             let _ = block.observe_changes();
             let _ = block.changed_since_composed(LegacyPass::Indirect);
             block.commit_composed(LegacyPass::Indirect);
+            let _ = block.take_depth_changes();
         }
         assert_eq!(capacities(&block), before);
     }

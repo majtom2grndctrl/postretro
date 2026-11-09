@@ -9,6 +9,8 @@ mod mover_bounce_support;
 mod prl_build_support;
 
 use mover_bounce_support::{Built, Cache, build, channel, depth_tiles, dev_map, try_build};
+use postretro_level_format::mover_probe_channel::depth_tile_texture_count;
+use postretro_level_format::probe_depth_tiles::probe_depth_tile_texture_bytes;
 
 /// The closet's door as authored: its open pose in the lintel.
 const LINTEL: &str = "320 496 168";
@@ -100,7 +102,8 @@ fn a_lowered_range_trims_id_59_for_mover_tiles_and_a_mover_edit_retrims_warm() {
 
 // Bake row B5: a range the door's live tiles alone exceed fails the build by
 // name before packing; one exactly at id 59 plus the live tiles packs, drops
-// nothing, and loads.
+// nothing, and loads; and the summary's counted total and texture bytes are
+// the loaded level's tile count and the renderer's texture price.
 #[test]
 fn live_tiles_past_the_range_fail_by_name_and_a_range_exactly_full_packs_and_loads() {
     let full = build(&closet(LINTEL), "mover-closet", Cache::Cold, &[]);
@@ -117,8 +120,29 @@ fn live_tiles_past_the_range_fail_by_name_and_a_range_exactly_full_packs_and_loa
         (live, id59),
         "exactly at the range, nothing drops"
     );
-    postretro_level_loader::load_prl(at_cap.prl.to_str().expect("UTF-8 path"))
+    let world = postretro_level_loader::load_prl(at_cap.prl.to_str().expect("UTF-8 path"))
         .expect("a PRL exactly at the range loads");
+    // The compiler's counted total is the tile count the loader bounds and
+    // the renderer sizes its texture for, on the same PRL.
+    let loaded = depth_tile_texture_count(
+        world
+            .probe_depth_tiles()
+            .map_or(0, |tiles| tiles.tile_count()),
+        world.mover_probe_channel(),
+    );
+    assert_eq!(loaded, live + id59);
+    let summary = at_cap
+        .logs
+        .lines()
+        .find(|line| line.contains(&format!("Probe depth tiles: {id59} tiles, ")))
+        .expect("the summary line");
+    assert!(
+        summary.contains(&format!(
+            "tile texture {} bytes",
+            probe_depth_tile_texture_bytes(loaded as u32)
+        )) && summary.contains(&format!("for {loaded} tile(s) with {live} live")),
+        "{summary}"
+    );
 
     let short = (live - 1).to_string();
     let logs = try_build(

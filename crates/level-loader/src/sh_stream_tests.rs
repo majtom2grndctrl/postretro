@@ -664,6 +664,65 @@ fn write_stream_fixture_variant(
     }
 }
 
+/// A whole-load level with no ids 49/50 and no lighting besides `base`
+/// (id 34) and `extra_sections`: the smallest PRL that loads its SH whole.
+pub(crate) fn write_minimal_whole_load_fixture(
+    base: &OctahedralShVolumeSection,
+    extra_sections: Vec<SectionBlob>,
+) -> StreamFixture {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("minimal-whole-load.prl");
+    let mut sections = vec![
+        blob(
+            SectionId::Geometry,
+            GEOMETRY_CONTAINER_VERSION,
+            GeometrySection {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                faces: Vec::new(),
+            }
+            .to_bytes(),
+        ),
+        blob(
+            SectionId::Bvh,
+            1,
+            BvhSection {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+                root_node_index: 0,
+            }
+            .to_bytes(),
+        ),
+        blob(SectionId::Cells, 1, fixture_cells().to_bytes()),
+        blob(SectionId::CellLocator, 1, fixture_locator().to_bytes()),
+        blob(SectionId::OctahedralShVolume, 1, base.to_bytes()),
+        blob(
+            SectionId::TextureCacheKeys,
+            1,
+            TextureCacheKeysSection::default().to_bytes(),
+        ),
+        blob(
+            SectionId::FogVolumes,
+            1,
+            FogVolumesSection::default().to_bytes(),
+        ),
+        blob(
+            SectionId::EnvironmentVolumes,
+            1,
+            EnvironmentVolumesSection::default().to_bytes(),
+        ),
+    ];
+    sections.extend(extra_sections);
+    let mut file = std::fs::File::create(&path).unwrap();
+    write_prl(&mut file, &sections).unwrap();
+    StreamFixture {
+        _directory: directory,
+        path,
+        large_atlas_bytes: base.compact_atlas.len(),
+        id50_metadata_len: 0,
+    }
+}
+
 fn blob(section_id: SectionId, version: u16, data: Vec<u8>) -> SectionBlob {
     SectionBlob {
         section_id: section_id as u32,
@@ -731,8 +790,15 @@ fn fixture_alpha_lights() -> AlphaLightsSection {
 }
 
 fn large_base_section() -> OctahedralShVolumeSection {
+    base_section_with_grid(GRID_DIMENSIONS)
+}
+
+/// A whole id 34 over `grid`: every probe valid at L0 with E[d] 1 and
+/// E[d²] 2, one stored tile each.
+pub(crate) fn base_section_with_grid(grid: [u32; 3]) -> OctahedralShVolumeSection {
+    let probe_count = grid[0] * grid[1] * grid[2];
     let layout =
-        irradiance_atlas_array_layout([STORED_TILES, 1, 1], 6, MAX_SH_ATLAS_DIMENSION).unwrap();
+        irradiance_atlas_array_layout([probe_count, 1, 1], 6, MAX_SH_ATLAS_DIMENSION).unwrap();
     let atlas_len = layout.layer_count as usize
         * layout.atlas_width as usize
         * layout.atlas_height as usize
@@ -740,7 +806,7 @@ fn large_base_section() -> OctahedralShVolumeSection {
     OctahedralShVolumeSection {
         grid_origin: [0.5, 0.5, 0.5],
         cell_size: [1.0, 1.0, 1.0],
-        grid_dimensions: GRID_DIMENSIONS,
+        grid_dimensions: grid,
         probe_stride: OCTAHEDRAL_PROBE_STRIDE,
         tile_dimension: 6,
         tile_border: 1,
@@ -756,7 +822,7 @@ fn large_base_section() -> OctahedralShVolumeSection {
                 density_level: 0,
                 node_scale: 0,
             };
-            PROBE_COUNT as usize
+            probe_count as usize
         ],
         irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
         compact_atlas: vec![0xa5; atlas_len],

@@ -1234,3 +1234,92 @@ fn a_streamed_payload_loads_whole_under_off_equal_to_the_resident_load() {
         }
     }
 }
+
+/// Bake row B5, loader side, on a real PRL: id 59's tiles plus id 57's
+/// live tiles exactly at the tile reference's 1 << 15 range load, and the
+/// loaded count the renderer sizes its texture for is that range; one live
+/// tile more is refused by name. The 32×32×17 lattice holds enough valid
+/// probes for 16,384 id-59 tiles and 16,384 (or 16,385) live ones.
+#[test]
+fn a_prl_whose_id_59_and_live_tiles_fill_the_range_exactly_loads_and_one_more_is_refused() {
+    use crate::sh_stream_tests::{base_section_with_grid, write_minimal_whole_load_fixture};
+    use postretro_level_format::mover_probe_channel::depth_tile_texture_count;
+    use postretro_level_format::probe_depth_tiles::{
+        MAX_PROBE_DEPTH_TILES, ProbeDepthTilesSection,
+    };
+    let grid = [32, 32, 17];
+    let base = base_section_with_grid(grid);
+    let id59_tiles = 1 << 14;
+    let id59 = ProbeDepthTilesSection {
+        probe_indices: (0..id59_tiles).collect(),
+        texels: vec![[0x3c00, 0x3c00]; id59_tiles as usize * PROBE_DEPTH_TILE_TEXELS],
+    };
+    let channel = |live: u32| {
+        MoverProbeChannelSection::assemble(
+            MoverProbeChannelParts {
+                affinity_dims: expected_affinity_dims(grid, AFFINITY_FACTOR),
+                direct: Vec::new(),
+                bounce: Vec::new(),
+                depth: (0..live)
+                    .map(|probe_index| DepthRecordParts {
+                        record: MoverDepthRecord {
+                            mover_id: 7,
+                            probe_index,
+                        },
+                        tiles: vec![[0x3c00, 0x4000]; 2 * PROBE_DEPTH_TILE_TEXELS],
+                    })
+                    .collect(),
+            },
+            |_| u64::MAX,
+            |mover_id| {
+                Ok::<_, ()>(MoverLightRampRecord {
+                    mover_id,
+                    start: 0.0,
+                    end: 1.0,
+                })
+            },
+        )
+        .unwrap()
+        .expect("depth records make a section")
+    };
+    let load = |live: u32| {
+        let fixture = write_minimal_whole_load_fixture(
+            &base,
+            vec![
+                blob(
+                    SectionId::KinematicGeometry,
+                    sample_kinematic_section().to_bytes(),
+                ),
+                blob(SectionId::ProbeDepthTiles, id59.to_bytes()),
+                blob(SectionId::MoverProbeChannel, channel(live).to_bytes()),
+            ],
+        );
+        load_prl_with_streaming_mode_for_test(
+            fixture.path.to_str().unwrap(),
+            ShStreamingMode::Async,
+        )
+    };
+
+    let exact = MAX_PROBE_DEPTH_TILES - id59_tiles;
+    let world = load(exact).expect("exactly the range loads");
+    let id59_loaded = world.probe_depth_tiles().expect("id 59 loads").tile_count();
+    assert_eq!(id59_loaded, id59_tiles as usize);
+    assert_eq!(
+        depth_tile_texture_count(id59_loaded, world.mover_probe_channel()),
+        MAX_PROBE_DEPTH_TILES as usize
+    );
+
+    match load(exact + 1) {
+        Err(PrlLoadError::MoverProbeChannel(Error::TileRange { id59, live, max })) => {
+            assert_eq!(
+                (id59, live, max),
+                (
+                    id59_tiles as usize,
+                    exact as usize + 1,
+                    MAX_PROBE_DEPTH_TILES
+                )
+            );
+        }
+        other => panic!("expected the tile-range refusal, got {other:?}"),
+    }
+}

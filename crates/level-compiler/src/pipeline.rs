@@ -2279,7 +2279,10 @@ fn run_after_parsing(
         footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
     let mut details = mover_light_summary.lines(lightmap_family_bytes);
     details.extend(footprint.sh_mandatory.lines());
-    details.push(probe_depth_tiles.summary_line(mover_depth_reservation.shrunk_cap));
+    details.push(probe_depth_tiles.summary_line(
+        mover_depth_reservation.shrunk_cap,
+        mover_depth_reservation.live,
+    ));
     details.extend(mover_bounce_summary);
     details.extend(mover_placement_summary);
     details.extend(footprint.lightmap_pool.lines());

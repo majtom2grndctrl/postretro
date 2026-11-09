@@ -31,6 +31,24 @@ impl ShResidencyState {
         self.pending_depth_tile_texels.insert(probe);
     }
 
+    /// Flush the queued texels now, on their own upload batch submitted
+    /// ahead of the frame's commands: the mover live tiles move references
+    /// after this frame's drain, and the frame must sample them (P24, P25).
+    pub(in crate::render) fn flush_depth_tile_texels_now(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &crate::render::uploads::UploadQueue,
+        references: &ProbeDepthTileReferences,
+    ) -> Result<(), ShResidencyDrainError> {
+        if self.pending_depth_tile_texels.is_empty() {
+            return Ok(());
+        }
+        let mut uploads = self.begin_uploads(0);
+        let flushed = self.flush_depth_tile_texels(&mut uploads, references);
+        self.submit_uploads(uploads, device, queue);
+        flushed
+    }
+
     /// Repack every queued probe that is still sampleable into `uploads`, the
     /// drain's promotion and eviction batch. R and `E[d²]` come from the
     /// retained id-34 base metadata (the id-50 decode in

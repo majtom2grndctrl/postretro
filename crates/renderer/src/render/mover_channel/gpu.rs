@@ -19,6 +19,7 @@ use postretro_level_format::mover_probe_channel::{
 };
 
 use super::bounce::BounceLayout;
+use super::depth::{MoverDepthTiles, ReferenceChange};
 use super::layout::{
     CellWrite, MoverChannelError, MoverChannelInputs, MoverChannelLayout, MoverChannelRows,
     NO_BASE, TermRow,
@@ -203,6 +204,7 @@ pub(in crate::render) struct MoverChannelResources {
     rows: MoverChannelRows,
     streamed: Option<StreamedCells>,
     t: MoverTBlock,
+    depth: MoverDepthTiles,
 }
 
 impl MoverChannelResources {
@@ -315,6 +317,7 @@ impl MoverChannelResources {
                 None,
             ],
         );
+        let depth = MoverDepthTiles::new(inputs.section, layout.mover_ids());
         let mut t = MoverTBlock::new(layout.mover_ids());
         let mut rows = layout.rows().clone();
         rows.bounce_by_mover = bounce_layout.rows_by_mover().clone();
@@ -346,6 +349,7 @@ impl MoverChannelResources {
             rows,
             streamed,
             t,
+            depth,
         })
     }
 
@@ -374,6 +378,7 @@ impl MoverChannelResources {
             rows: MoverChannelRows::default(),
             streamed: None,
             t: MoverTBlock::new(&[]),
+            depth: MoverDepthTiles::default(),
         }
     }
 
@@ -414,6 +419,50 @@ impl MoverChannelResources {
                 bytes,
             );
         }
+    }
+
+    /// Live tiles the depth block needs after id 59's.
+    pub(in crate::render) fn depth_live_tile_count(&self) -> u32 {
+        self.depth.live_tile_count()
+    }
+
+    /// Closed-pose tile bytes held on the CPU.
+    pub(in crate::render) fn depth_host_bytes(&self) -> u64 {
+        self.depth.host_bytes()
+    }
+
+    /// Drop the depth block on a level with no usable SH: nothing samples
+    /// depth, so no closed-pose tile is held and no frame plans a write.
+    pub(in crate::render) fn discard_depth(&mut self) {
+        self.depth = MoverDepthTiles::default();
+    }
+
+    /// Bind the depth block's live tiles to the installed tile texture.
+    pub(in crate::render) fn bind_depth(
+        &mut self,
+        first_live_tile: u32,
+        layout: postretro_level_format::probe_depth_tiles::ProbeDepthTileTextureLayout,
+        references: &postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences,
+    ) {
+        self.depth.bind(first_live_tile, layout, references);
+    }
+
+    /// Plan this frame's live tiles from the held t′: every tile a mover
+    /// whose t′ moved since the last write covers reaches `write_run`, and
+    /// the probe references to move return. Call once per frame, after
+    /// [`Self::set_states`]; a frame allocates nothing.
+    pub(in crate::render) fn plan_depth(
+        &mut self,
+        write_run: impl FnMut(u32, u32, &[u8]),
+    ) -> &[ReferenceChange] {
+        let (values, changed) = self.t.take_depth_changes();
+        self.depth.plan(values, changed, write_run)
+    }
+
+    /// Live tiles the last planned frame wrote.
+    #[cfg(test)]
+    pub(in crate::render) fn depth_tiles_written(&self) -> u32 {
+        self.depth.tiles_written()
     }
 
     /// Slots whose t′ moved since the streamed planner last looked.

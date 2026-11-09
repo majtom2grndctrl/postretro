@@ -180,8 +180,8 @@ fn the_summary_reports_the_tile_texture_bytes_the_runtime_allocates() {
             dropped: 7,
         };
         let bytes = probe_depth_tile_texture_bytes(count);
-        assert_eq!(tiles.texture_bytes(), bytes);
-        let line = tiles.summary_line(MAX_PROBE_DEPTH_TILES);
+        assert_eq!(tiles.texture_bytes(0), bytes);
+        let line = tiles.summary_line(MAX_PROBE_DEPTH_TILES, 0);
         assert!(
             line.starts_with(&format!(
                 "Probe depth tiles: {count} tiles, 7 dropped past the 32768-tile cap"
@@ -190,6 +190,18 @@ fn the_summary_reports_the_tile_texture_bytes_the_runtime_allocates() {
         );
         assert!(
             line.contains(&format!("tile texture {bytes} bytes")),
+            "{line}"
+        );
+        // Mover live tiles share the texture: the summary prices both.
+        let with_live = probe_depth_tile_texture_bytes(count + 3);
+        assert_eq!(tiles.texture_bytes(3), with_live);
+        let line = tiles.summary_line(MAX_PROBE_DEPTH_TILES, 3);
+        assert!(
+            line.contains(&format!(
+                "tile texture {with_live} bytes ({:.2} MiB) for {} tile(s) with 3 live",
+                with_live as f64 / (1024.0 * 1024.0),
+                count + 3
+            )),
             "{line}"
         );
     }
@@ -202,16 +214,16 @@ fn the_summary_reports_the_tile_texture_bytes_the_runtime_allocates() {
 fn the_summary_and_cache_key_carry_the_clamped_cap() {
     let tiles = ProbeDepthTiles::default();
     assert!(
-        tiles.summary_line(3).contains("past the 3-tile cap"),
+        tiles.summary_line(3, 0).contains("past the 3-tile cap"),
         "{}",
-        tiles.summary_line(3)
+        tiles.summary_line(3, 0)
     );
     assert!(
         tiles
-            .summary_line(u32::MAX)
+            .summary_line(u32::MAX, 0)
             .contains("past the 32768-tile cap"),
         "{}",
-        tiles.summary_line(u32::MAX)
+        tiles.summary_line(u32::MAX, 0)
     );
     let key = |cap| {
         let mut hasher = blake3::Hasher::new();

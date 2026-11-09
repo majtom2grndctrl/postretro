@@ -646,3 +646,104 @@ Built 2026-11-09 on the main checkout, AMD Radeon Pro 5300M under Metal, on top 
 - The total atlas carries `COPY_SRC` under `cfg(test)` as well as dev-tools, for the compose GPU tests.
 - `clear_pools` is classified drain-internal in the upload drift guard.
 - The planner harness now plans the indirect pass (`PlannedRows`).
+
+### Task 10
+
+Built 2026-11-09 on the main checkout (AMD Radeon Pro 5300M, Metal), on top of task 9 (24b4ba91c), uncommitted.
+
+**Texture and references.** The tile texture holds id 59's tiles, then one live tile per probe carrying mover depth. `ProbeDepthTileReferences::from_section` and `depth_tile_texture_plan` take the live count, and the layout is sized from the sum. `ShDepthTiles` keeps its texture, its layout and id 59's count, which is the first live tile's index. Live slots start zero, and no probe references one until it is written.
+- One count serves all three sides: `level_format::mover_probe_channel::depth_tile_texture_count(id59, id57)`. The loader's range check uses it, the renderer sizes from it, and the compiler summary prints the same total.
+- Format, binding, texture format and sampler are unchanged. The depth path of `sh_sample.wgsl` hashes to main's (`the_sampler_depth_path_is_byte_identical_to_the_parents`).
+- A level whose SH is unusable binds no live tiles and drops the CPU-held tiles (`discard_depth`).
+
+**CPU side (`mover_channel/depth.rs`).**
+- `MoverDepthTiles` holds the closed-pose tiles D₀ and D₁, decoded once to f32 (exact from f16).
+- It also holds each probe's records in mover-slot order, each mover slot's probes, and each probe's base reference: its id-59 tile, or none.
+- Live tiles are numbered in order of first appearance in the wire's (mover, probe) order. A mover's own probes therefore sit together, and a probe shared with a lower mover sits with that mover's.
+- On setpiece, one travelling mover takes 8 copies (mover 0) or 19 (mover 1), against 73 and 83 with plain probe order.
+
+**Trigger.** `MoverTBlock` gains its own observer, `take_depth_changes`, beside task 8's streamed-planner and legacy-pass observers, over the same t′ values. A slot whose t′ bits moved since the last write marks its probes dirty. Each dirty probe is then handled one of two ways:
+- If no mover changing it has state, its reference returns to its id-59 tile or averaged moments, bit for bit.
+- Otherwise it is re-blended from every stated mover's current t′, so a shared tile reads a held mover's t′.
+
+Runs of consecutive dirty tiles on one tile row become one `UploadQueue::write_texture` copy at `tile_origin`. A frame allocates nothing.
+
+**Two movers at one probe (delegated, adopted as the plan leaned).** Each texel takes the pair whose blended E[d] is smaller, i.e. the nearer occluder. Ties go to the lower mover slot.
+- The pair is always one mover's lerp(D₀, D₁, t′), so the tile stays a valid moment set.
+- The choice depends on t′ alone, never on hand-over order.
+- No flag, zero weight or exclusion is involved. The 0.03 floor and the bilinear tap are untouched.
+
+**When the write happens (`mover_depth_tiles.rs`).** `Renderer::drain_sh_residency` now runs the live-tile step after the streamed drain (a no-op on a whole load). Every frame entry calls it once before recording: windowed, skipped and capture frames alike. It does the following:
+- Takes this frame's handed-over states and plans the frame.
+- Stages the tile runs on the frame's upload batch, then moves references through the existing rewrite seam, now split into `DepthTexels` so the mover channel can borrow beside it.
+- On a whole load, the reference texel is staged on the same batch. On a streamed level, the queued texels are flushed right away on their own batch (`flush_depth_tile_texels_now`); the batch submission carries the frame batch first. Without that flush, a reference moved after the drain would wait one frame, which breaks P24/P25.
+
+Some properties follow from the structure:
+- The upload batch is always submitted: by the frame, or by `flush_skipped_frame`. So the trigger commits at staging time. A frame that never reaches the drain leaves the change pending (P28).
+- Compose re-reads the same state table later in the frame, so the live tiles and the direct and bounce compose share one t′ (P25).
+- Install and release clear the state table and rebuild the t block. A hand-over before install, or on an unload frame, writes nothing, and no upload is pending at either boundary (P27, P30).
+
+**Eviction and growth.** Live tiles never enter the pool. The load's reference table owns each live reference, and every streamed texel writer packs G from that table. Promote, evict, reinstall and dense-pool growth therefore all keep it. A probe whose cluster arrives later promotes straight onto its live tile.
+
+**Ledger.**
+- The `depth_tiles` row prices the layout for id 59 plus the live tiles, sourced to ids 59 and 57.
+- `ShResidencyReport` gains `host_rows`, which are outside `total_bytes`. Its `mover_closed_pose_depth_tiles` row holds the CPU-held D₀/D₁ (f32 pairs, 8 B per texel), sourced to 57. Capture's JSON writes `host_rows` only when non-empty.
+- The compiler's Probe depth tiles summary line now prices the texture for id 59 plus the live tiles, ending "… for N tile(s) with L live".
+
+**Cost, setpiece** (`mover-setpiece` built by task 9, resident; dev profile, opt-level 2 with debug assertions; `a_travelling_movers_live_tile_plan_cost_on_a_real_map`, ignored, env `MOVER_DEPTH_TIMING_PRL`).
+
+| mover | live tiles it writes per frame | copies per frame | bytes per frame | CPU blend and run assembly per frame |
+|---|---|---|---|---|
+| 0 (wall) | 414 | 8 | 165,600 | 0.18 ms |
+| 1 (room) | 586 | 19 | 234,400 | 0.25 ms |
+
+- Setpiece has 991 live tiles over 2 movers and holds 1.6 MB of closed-pose tiles on the CPU (f32).
+- The first cut ran at 1.0 and 1.3 ms per frame. The f32 decode at load, a single-mover fast path, an integer-rounded f32→f16 conversion and row-segment copies brought it down to the figures above.
+- The GPU side is the staged upload copies above. This Mac's Metal adapter has no timestamp queries, so their cost is unmeasured; M6's Metal System Trace covers it.
+- Staging copies the run bytes once more into the 256-aligned staging buffer.
+
+**Proof.**
+
+| Row | Test | Result |
+|---|---|---|
+| D1 | `mover_depth_tiles::tests::a_live_tile_holds_the_blend_and_only_g_moves_to_it` (GPU, whole load: D₁ at the first hand-over, then 0.5, 0, 0.5, 1, 0.25 within one f16 ulp, D₀ and D₁ exact; untouched probes and id-59 tiles bit for bit); `mover_channel::depth::tests::a_live_tile_blends_its_movers_closed_pose_tiles_exact_at_both_termini` (CPU, rising and after reversal) | pass |
+| D2 | Texel clauses: `tiles_are_written_only_on_change_and_no_state_keeps_todays_texels` (stripped id 57 installs id 59's texture alone and today's texels; with id 57 and no state, every texel equals the stripped install's bit for bit); `a_probe_keeps_its_id_59_reference_without_state_and_returns_to_it` (CPU). Frame clauses ("renders byte-identical", "within 2 levels of the same PRL with no depth block"): **deferred to task 11**, because they need an offscreen frame of a compiled map, which is the capture harness | texels pass; frames deferred |
+| D3 | `tiles_are_written_only_on_change_and_no_state_keeps_todays_texels` (GPU: repeated t′ writes 0 tiles; the traveller writes its 3; probe 20, held mover only, is untouched; the shared tile reads the held t′); `only_a_travelling_movers_tiles_are_written_and_shared_ones_read_the_held_t` (CPU); `state::tests::depth_changes_report_each_t_change_once_on_their_own_trigger` | pass |
+| D4 (P24) | Whole load: `a_live_tile_holds_the_blend_and_only_g_moves_to_it` (no state: every texel id 59's; first hand-over at terminus 1: references and D₁ on that frame). Streamed: `…::mover_depth_tile_tests::a_streamed_first_hand_over_points_resident_texels_at_written_tiles_that_frame` (resident texels on the live tile with no further drain; a non-resident probe's tile is written, and its texel waits for promotion). "Within 2 levels of the frame after": **deferred to task 11** (frame pair) | pass; frame clause deferred |
+| D5 (P25) | Streamed 1 → 0 step in `a_streamed_first_hand_over…` (tiles hold D₀ and texels point at them); whole-load 1 → 0 in `a_change_no_frame_wrote_lands_on_the_next_recording_frame`. Compose and tiles share one t′ by structure (the drain boundary precedes compose, from one state table). Frame clauses: **deferred to task 11** | pass; frame clauses deferred |
+| D6 (P26) | `two_movers_at_one_probe_write_it_once_with_the_nearer_blend_per_texel` (CPU: one copy, order-independent bytes, nearer pair); shared probe 9 in the D3 GPU test (held mover's t′) | pass |
+| D7 (P27) | `a_relevel_writes_its_own_tiles_and_an_unload_frame_writes_nothing` (a pre-install hand-over is dropped; a relevel reusing mover 4 at A's last t′ writes B's own D₁; B's probe 3 stays on its id-59 tile); task 4's `mover_light_states_store_only_while_a_level_is_installed…`. The app-level restart re-seed is the C9-style app test in task 11 | pass |
+| D8 (P28) | `a_change_no_frame_wrote_lands_on_the_next_recording_frame` (whole load: a change on a frame with no drain is written on the next frame; a skipped frame's staged write lands with its flush). The streamed path uses the same trigger and boundary | pass |
+| D9 (P30) | `a_relevel_writes_its_own_tiles_and_an_unload_frame_writes_nothing` (t′ handed over, then unload: `assert_empty` after unload and after install, and no write in either level) | pass |
+| D10 (P29) | `live_tiles_without_id_59_size_the_texture_alone` (whole load, id 59 absent and zero-tile: texture for 4 live tiles, probes reference live tiles holding D₀; id 57 stripped too: 1×1 dummy, 0 tile bytes); `a_streamed_level_without_id_59_points_at_live_tiles_alone` | pass |
+| D11 | `a_live_tile_holds_the_blend_and_only_g_moves_to_it` (at 0, 0.5 and 1: R = id-34 E[d], B/A keep the valid word, G = the live reference); `the_sampler_depth_path_is_byte_identical_to_the_parents` (FNV-1a pin of the depth constants and functions, equal to main's) | pass |
+| D12 | `a_frame_writing_two_travelling_movers_tiles_allocates_nothing` (alloc probe over the whole live-tile step, staging included); `a_frame_keeps_every_depth_buffer_at_its_capacity` (CPU plan, alloc probe) | pass |
+| D13 | `live_references_survive_eviction_reinstall_and_pool_growth` (streamed: evict keeps G under the invalid word; reinstall; dense-pool growth; a later cluster promotes onto its live tile; tile bytes unchanged). The whole load has no residency writer. The next load has no live tile: the D7 test and the existing `a_rewritten_reference_stays_with_the_load_it_was_made_on` | pass |
+| D14 | `tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level` (row = layout bytes for 2 + 4 tiles, sources 59 and 57; host row outside the total; gone after unload). Summary equality: `mover_probe_channel_depth_cap::live_tiles_past_the_range…` (summary bytes = `probe_depth_tile_texture_bytes(loaded count)`) and `depth_tiles_tests::the_summary_reports_the_tile_texture_bytes_the_runtime_allocates` | pass |
+| B5 (loader) | `prl_loader::mover_probe_channel::tests::a_prl_whose_id_59_and_live_tiles_fill_the_range_exactly_loads_and_one_more_is_refused` (synthetic 32×32×17 PRL: 16,384 + 16,384 loads, and `depth_tile_texture_count` = 1 << 15; one more is `TileRange`); compiler count = loader count in `live_tiles_past_the_range_fail_by_name_and_a_range_exactly_full_packs_and_loads`; renderer side in render-cpu `id_59_and_live_tiles_exactly_at_the_range_lay_out_and_the_last_is_referenceable` | pass |
+| B13 (depth) | The D14 test | pass |
+
+**Carried from task 9, not built: Pass B for an own-tile animated record on a level without id 45.** Running Pass B there would compose wrong output:
+- Pass B gates an animated-baked light by subtracting (1 − Q)·T·curve from the term id 45 added.
+- Id 35 holds static lights only. With no id 45, nothing ever added that light's term.
+- So the pass would subtract a term no pass added, darkening every other light at those probes; the store clamps the result at zero.
+- When does id 45 go missing while a namespace-1 record keeps a non-zero T? The compiler omits an all-empty id 45. Id 45 bakes unit radiance wherever the light reaches, so an animated record with a T means id 45 has entries. That leaves the loader's over-floor disable, and any compiler withholding past its aggregate cap.
+- In that case the light has no direct-SH term at all. Composing nothing matches the existing rule that "a family the load disables composes ungated".
+- Making the record compose its gated term would mean adding Q·T·curve where no id-45 entry exists. That brings in light the disabled family otherwise lacks, at masked probes only.
+- Pass A's case, task 9's `gate_direct_compose` fix, differs: the static light is in id 35, so subtracting is right there.
+
+→ Executor or owner decision. Proposed: keep today's behaviour and pin it with a test, or have the loader refuse it.
+
+**Gates.**
+- `cargo test` with `POSTRETRO_REQUIRE_GPU=1`: renderer 1,331 passed (12 ignored), postretro 2,513 + 3 + 2, level-format 744, level-loader 388, render-cpu 794.
+- prl-build bin `depth_tiles` 14; integration tests `mover_probe_channel_depth_cap` 2 and `probe_depth_tiles_compile` 1.
+- Clippy `--all-targets -D warnings` is clean with and without `--features postretro/capture` on renderer, level-loader, level-format, render-cpu, postretro and level-compiler. `cargo fmt` applied.
+- No windowed run; nothing stalled.
+
+**For task 12 (docs).**
+- `rendering_pipeline.md` §4: live tiles are built; the depth-tile texture holds id 59's tiles and then the live tiles.
+- The live-tile step at the drain boundary, and the streamed immediate texel flush.
+- The two-mover rule.
+- The `host_rows` ledger.
+- The summary line's live count.
+- `drain_sh_residency`'s new second duty.

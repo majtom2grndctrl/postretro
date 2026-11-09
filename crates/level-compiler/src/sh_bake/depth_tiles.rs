@@ -108,9 +108,17 @@ impl ProbeDepthTiles {
             + self.section.texels.capacity() * size_of::<[u16; 2]>()) as u64
     }
 
-    /// The bytes the runtime's tile texture allocates for these tiles.
-    pub(crate) fn texture_bytes(&self) -> u64 {
-        probe_depth_tile_texture_bytes(self.section.tile_count() as u32)
+    /// Tiles the runtime's tile texture holds: these, then `live_tiles`
+    /// mover live tiles (id 57), the count the loader bounds and the
+    /// renderer sizes the texture for.
+    pub(crate) fn texture_tile_count(&self, live_tiles: usize) -> usize {
+        self.section.tile_count() + live_tiles
+    }
+
+    /// The bytes the runtime's tile texture allocates for these tiles and
+    /// `live_tiles` live tiles.
+    pub(crate) fn texture_bytes(&self, live_tiles: usize) -> u64 {
+        probe_depth_tile_texture_bytes(self.texture_tile_count(live_tiles) as u32)
     }
 
     /// The once-per-build info line, warm or cold, for a bake asked to keep
@@ -124,16 +132,19 @@ impl ProbeDepthTiles {
         );
     }
 
-    /// The Build Summary line for a bake asked to keep `tile_cap`.
-    pub(crate) fn summary_line(&self, tile_cap: u32) -> String {
-        let bytes = self.texture_bytes();
+    /// The Build Summary line for a bake asked to keep `tile_cap`, beside
+    /// `live_tiles` mover live tiles: the tile texture's bytes are the
+    /// runtime's, for id 59's tiles and the live ones together.
+    pub(crate) fn summary_line(&self, tile_cap: u32, live_tiles: usize) -> String {
+        let bytes = self.texture_bytes(live_tiles);
         format!(
             "Probe depth tiles: {} tiles, {} dropped past the {}-tile cap; \
-             tile texture {bytes} bytes ({:.2} MiB)",
+             tile texture {bytes} bytes ({:.2} MiB) for {} tile(s) with {live_tiles} live",
             self.section.tile_count(),
             self.dropped,
             effective_tile_cap(tile_cap),
             bytes as f64 / (1024.0 * 1024.0),
+            self.texture_tile_count(live_tiles),
         )
     }
 }

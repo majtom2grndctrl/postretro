@@ -1,12 +1,14 @@
 // Mover probe channel (PRL id 57): the renderer-owned direct table both
 // direct-SH compose passes read, the bounce table the indirect SH compose
 // reads, the per-frame mover t′ block inside each, each streamed block's
-// per-cell residency, and the per-mover rows the streamed planner recomposes
-// when a mover travels. Mover state and residency drive every write here; no
+// per-cell residency, the per-mover rows the streamed planner recomposes
+// when a mover travels, and the depth block's CPU-held closed-pose tiles with
+// the live-tile plan. Mover state and residency drive every write here; no
 // light change ever does.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
 mod bounce;
+mod depth;
 mod gpu;
 mod layout;
 mod pool;
@@ -16,6 +18,8 @@ mod state;
 mod bounce_compose_tests;
 #[cfg(test)]
 mod compose_tests;
+#[cfg(test)]
+pub(in crate::render) mod depth_test_support;
 #[cfg(test)]
 mod tests;
 

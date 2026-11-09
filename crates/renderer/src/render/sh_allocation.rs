@@ -287,9 +287,16 @@ pub(super) fn depth_moment_allocation(grid_dimensions: [u32; 3]) -> TextureAlloc
     )
 }
 
-/// The id-59 tile texture: one `Rg16Float` 2D texture at `extent`, the 1×1
-/// dummy when a level has no tiles.
+/// The probe depth tile texture: id 59's tiles and the mover live tiles in
+/// one `Rg16Float` 2D texture at `extent`, the 1×1 dummy when a level has
+/// no tiles. Live tiles are written by copy, never by storage writes; tests
+/// read the texture back.
 pub(super) fn depth_tile_allocation(extent: [u32; 2]) -> TextureAllocation {
+    let readback = if cfg!(test) {
+        wgpu::TextureUsages::COPY_SRC
+    } else {
+        wgpu::TextureUsages::empty()
+    };
     texture_allocation(
         ShAllocationKind::DepthTiles,
         wgpu::TextureFormat::Rg16Float,
@@ -299,7 +306,7 @@ pub(super) fn depth_tile_allocation(extent: [u32; 2]) -> TextureAllocation {
             depth_or_array_layers: 1,
         },
         wgpu::TextureDimension::D2,
-        sampled_upload_usage(),
+        sampled_upload_usage() | readback,
     )
 }
 

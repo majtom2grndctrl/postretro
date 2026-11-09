@@ -123,9 +123,10 @@ pub struct ShVolumeResources {
     /// passes; held here so the SDF shadow pass can mint its own
     /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
     /// and the SDF shadow pass rebuilds its bind group on resize / level reload).
-    depth_moment_texture: wgpu::Texture,
-    /// Id 59's tile texture (binding 18), grid words and this load's probe →
-    /// tile reference table. Streamed installs bind the same texture.
+    pub(super) depth_moment_texture: wgpu::Texture,
+    /// The tile texture (binding 18) with id 59's tiles and id 57's live
+    /// tiles, grid words and this load's probe → tile reference table.
+    /// Streamed installs bind the same texture.
     pub(super) depth_tiles: ShDepthTiles,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
@@ -448,14 +449,40 @@ impl ShVolumeResources {
         let probe_indirection_words = build_probe_indirection_words(usable);
         // Tiles ride only a level whose moments texture is real: a whole
         // usable id 34 or a streamed base. Built before the moments, which
-        // pack G from its references.
+        // pack G from its references. Id 57's live tiles follow id 59's in
+        // the same texture; its closed-pose tiles stay on the CPU.
+        let moments_real = usable.is_some() || stream_base_present;
+        let mut mover_channel = mover_channel;
+        let live_tiles = if moments_real {
+            mover_channel.depth_live_tile_count()
+        } else {
+            0
+        };
         let depth_tiles = ShDepthTiles::new(
             device,
             queue,
-            depth_tiles_section.filter(|_| usable.is_some() || stream_base_present),
+            depth_tiles_section.filter(|_| moments_real),
+            live_tiles,
             usable.map(|sec| sec.probes.as_slice()),
             ledger,
         );
+        if live_tiles > 0
+            && let Some(layout) = depth_tiles.layout()
+        {
+            mover_channel.bind_depth(
+                depth_tiles.first_live_tile(),
+                layout,
+                depth_tiles.references(),
+            );
+            ledger.record_host(
+                "mover_closed_pose_depth_tiles",
+                mover_channel.depth_host_bytes(),
+                &source_ids([Some(57)]),
+            );
+        } else {
+            // No usable SH: no tile texture to write, so hold no tiles.
+            mover_channel.discard_depth();
+        }
 
         #[cfg(feature = "dev-tools")]
         let validity: Vec<u8> = usable
@@ -910,12 +937,6 @@ impl ShVolumeResources {
             #[cfg(feature = "dev-tools")]
             total_atlas_texture,
         }
-    }
-
-    /// The whole-load moments texture a depth-tile reference rewrite writes
-    /// one texel of (`sh_depth_tile_rewrite`); a dummy on a streamed level.
-    pub(super) fn depth_moment_texture(&self) -> &wgpu::Texture {
-        &self.depth_moment_texture
     }
 
     /// Mint a fresh sampled view over the per-probe depth-moment texture for

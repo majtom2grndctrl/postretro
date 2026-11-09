@@ -659,10 +659,13 @@ mod upload_packing_tests {
             MomentSecondChannel, PROBE_DEPTH_TILE_TEXELS, ProbeDepthTilesSection,
             decode_moment_second_channel,
         };
-        let references = ProbeDepthTileReferences::from_section(Some(&ProbeDepthTilesSection {
-            probe_indices: vec![1],
-            texels: vec![[0, 0]; PROBE_DEPTH_TILE_TEXELS],
-        }));
+        let references = ProbeDepthTileReferences::from_section(
+            Some(&ProbeDepthTilesSection {
+                probe_indices: vec![1],
+                texels: vec![[0, 0]; PROBE_DEPTH_TILE_TEXELS],
+            }),
+            0,
+        );
         let words = [0x24, 0x44, 0];
         let spans = pack_moment_upload_spans(
             &words,

@@ -16,7 +16,7 @@ fn section(probe_indices: &[u32]) -> ProbeDepthTilesSection {
 
 #[test]
 fn references_pack_tiled_probes_as_flagged_tile_and_untiled_as_their_mean_square() {
-    let references = ProbeDepthTileReferences::from_section(Some(&section(&[3, 9, 40])));
+    let references = ProbeDepthTileReferences::from_section(Some(&section(&[3, 9, 40])), 0);
     assert_eq!(references.tile_count(), 3);
     assert_eq!(
         decode_moment_second_channel(references.second_channel(9, 0x4900)),
@@ -36,16 +36,16 @@ fn references_pack_tiled_probes_as_flagged_tile_and_untiled_as_their_mean_square
 
 #[test]
 fn absent_and_zero_tile_sections_give_identical_references_words_and_texture() {
-    let absent = ProbeDepthTileReferences::from_section(None);
-    let zero = ProbeDepthTileReferences::from_section(Some(&section(&[])));
+    let absent = ProbeDepthTileReferences::from_section(None, 0);
+    let zero = ProbeDepthTileReferences::from_section(Some(&section(&[])), 0);
     assert_eq!(absent, zero);
     assert_eq!(absent.texture_layout(), None);
     assert_eq!(
         DepthTileGridWords::for_layout(absent.texture_layout()),
         DepthTileGridWords::NONE
     );
-    let absent_plan = depth_tile_texture_plan(None);
-    let zero_plan = depth_tile_texture_plan(Some(&section(&[])));
+    let absent_plan = depth_tile_texture_plan(None, 0);
+    let zero_plan = depth_tile_texture_plan(Some(&section(&[])), 0);
     assert_eq!(absent_plan.extent, [1, 1]);
     assert_eq!(absent_plan.extent, zero_plan.extent);
     assert_eq!(absent_plan.texels, zero_plan.texels);
@@ -55,7 +55,7 @@ fn absent_and_zero_tile_sections_give_identical_references_words_and_texture() {
 fn texture_plan_places_each_bordered_tile_at_its_layout_origin() {
     let tiles = section(&[0, 5, 6, 7, 11]);
     let layout = tiles.texture_layout().unwrap();
-    let plan = depth_tile_texture_plan(Some(&tiles));
+    let plan = depth_tile_texture_plan(Some(&tiles), 0);
     assert_eq!(plan.extent, layout.extent());
     assert_eq!(
         plan.texels.len() as u64 * 4,
@@ -78,6 +78,92 @@ fn texture_plan_places_each_bordered_tile_at_its_layout_origin() {
     }
 }
 
+/// Mover live tiles (id 57) follow id 59's in one texture sized from their
+/// sum: id 59's tiles keep their origins, live slots start zero, and a
+/// reference may name any of them. Live tiles alone size the texture too.
+#[test]
+fn live_tiles_follow_id_59s_in_one_texture_sized_from_their_sum() {
+    let tiles = section(&[0, 5, 6]);
+    let plan = depth_tile_texture_plan(Some(&tiles), 4);
+    let layout = ProbeDepthTileTextureLayout::for_tile_count(7).unwrap();
+    assert_eq!(plan.extent, layout.extent());
+    assert_eq!(
+        plan.texels.len() as u64 * 4,
+        probe_depth_tile_texture_bytes(7)
+    );
+    let width = plan.extent[0] as usize;
+    let edge = PROBE_DEPTH_TILE_BORDERED_EDGE as usize;
+    let texel = |tile: u32, row: usize, column: usize| {
+        let [ox, oy] = layout.tile_origin(tile);
+        plan.texels[(oy as usize + row) * width + ox as usize + column]
+    };
+    for row in 0..edge {
+        for column in 0..edge {
+            assert_eq!(texel(2, row, column), tiles.tile(2)[row * edge + column]);
+            for live in 3..7 {
+                assert_eq!(texel(live, row, column), [0, 0], "live tile {live}");
+            }
+        }
+    }
+    let mut references = ProbeDepthTileReferences::from_section(Some(&tiles), 4);
+    assert_eq!(references.tile_count(), 7);
+    assert_eq!(references.tile_of(5), Some(1), "id 59's references stand");
+    assert_eq!(
+        references.tile_of(9),
+        None,
+        "no probe starts on a live tile"
+    );
+    references.set_reference(9, Some(6)).unwrap();
+    assert_eq!(
+        references.set_reference(9, Some(7)),
+        Err(DepthTileReferenceError::TileOutOfRange {
+            tile: 7,
+            tile_count: 7
+        })
+    );
+
+    let live_only = ProbeDepthTileReferences::from_section(None, 2);
+    assert_eq!(live_only.tile_count(), 2);
+    assert_eq!(
+        live_only.texture_layout(),
+        ProbeDepthTileTextureLayout::for_tile_count(2)
+    );
+    assert_eq!(
+        depth_tile_texture_plan(None, 2).extent,
+        ProbeDepthTileTextureLayout::for_tile_count(2)
+            .unwrap()
+            .extent()
+    );
+}
+
+/// Bake row B5, renderer side: id 59's tiles plus live tiles exactly at the
+/// reference's range lay out, and the last live tile is referenceable.
+#[test]
+fn id_59_and_live_tiles_exactly_at_the_range_lay_out_and_the_last_is_referenceable() {
+    let id59 = MAX_PROBE_DEPTH_TILES - 3;
+    let tiles = ProbeDepthTilesSection {
+        probe_indices: (0..id59).collect(),
+        texels: vec![[0, 0]; id59 as usize * PROBE_DEPTH_TILE_TEXELS],
+    };
+    let mut references = ProbeDepthTileReferences::from_section(Some(&tiles), 3);
+    assert_eq!(references.tile_count(), MAX_PROBE_DEPTH_TILES);
+    assert_eq!(
+        references.texture_layout(),
+        ProbeDepthTileTextureLayout::for_tile_count(MAX_PROBE_DEPTH_TILES)
+    );
+    let last = (MAX_PROBE_DEPTH_TILES - 1) as u16;
+    references.set_reference(id59 + 7, Some(last)).unwrap();
+    assert_eq!(
+        decode_moment_second_channel(references.second_channel(id59 + 7, 0x4000)),
+        MomentSecondChannel::Tile(last)
+    );
+    let plan = depth_tile_texture_plan(Some(&tiles), 3);
+    assert_eq!(
+        plan.texels.len() as u64 * 4,
+        probe_depth_tile_texture_bytes(MAX_PROBE_DEPTH_TILES)
+    );
+}
+
 #[test]
 fn grid_words_carry_row_shift_and_reciprocal_extent() {
     let layout = ProbeDepthTileTextureLayout::for_tile_count(MAX_PROBE_DEPTH_TILES).unwrap();
@@ -90,7 +176,7 @@ fn grid_words_carry_row_shift_and_reciprocal_extent() {
 
 #[test]
 fn rewrite_redirects_adds_and_clearing_restores_the_mean_square() {
-    let mut references = ProbeDepthTileReferences::from_section(Some(&section(&[3, 9])));
+    let mut references = ProbeDepthTileReferences::from_section(Some(&section(&[3, 9])), 0);
     references.set_reference(9, Some(0)).unwrap();
     assert_eq!(references.tile_of(9), Some(0));
     // A probe that had no tile takes one.

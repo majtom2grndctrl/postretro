@@ -9,7 +9,7 @@ use postretro_level_format::SectionId;
 use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
 use postretro_level_format::mover_probe_channel::{
     MoverChannelBlock, MoverLightNamespace, MoverPayloadPlacement, MoverProbeChannelError,
-    MoverProbeChannelSection, MoverStreamedRow, parse_streamed_rows,
+    MoverProbeChannelSection, MoverStreamedRow, depth_tile_texture_count, parse_streamed_rows,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -333,7 +333,9 @@ fn validate_mover_probe_channel(
     // Closed-pose tiles stay on the CPU; the tile texture holds id 59's tiles
     // and one live tile per probe carrying mover depth.
     let live = section.live_tile_count();
-    if inputs.id59_tile_count + live > MAX_PROBE_DEPTH_TILES as usize {
+    if depth_tile_texture_count(inputs.id59_tile_count, Some(section))
+        > MAX_PROBE_DEPTH_TILES as usize
+    {
         return Err(Error::TileRange {
             id59: inputs.id59_tile_count,
             live,

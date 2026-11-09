@@ -14,7 +14,7 @@ pub(super) const ATTACK_FACING_TOLERANCE_RADIANS: f32 = std::f32::consts::PI / 1
 const ATTACK_FACING_COMPARISON_EPSILON: f32 = 2.0 * f32::EPSILON;
 
 /// The reference enemy mesh's visual forward axis in model space. The skinned
-/// glTF characters (`content/dev/models/reference_enemy_kaykit_knight`) are
+/// glTF characters (`content/dev/models/mutant` and the rifle squad) are
 /// authored facing `+Z`; the renderer applies `Transform.rotation` directly to
 /// the model matrix, so aiming this axis at a target makes the mesh face it.
 ///

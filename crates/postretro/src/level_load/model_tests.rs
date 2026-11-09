@@ -273,7 +273,7 @@ fn prepared_models_match_the_oracle_sweep() {
         "models/does_not_exist/scene.gltf",
         "models/ar_4/model.gltf",
         "models/pose-modifier-fixture/joint_zones.gltf",
-        "models/reference_enemy_kaykit_knight/scene.gltf",
+        "models/mutant/model.gltf",
     ];
     let level = write_level_with_entities(
         handles

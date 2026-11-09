@@ -23,12 +23,14 @@ const SLAM_RANGE = 3.5;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// The committed slam cycle is 1,850 ms, longer than the slam's 1,800 ms
-// cooldown. A successful commit therefore leaves the counter-driven rotation
-// able to fire on its next visit instead of permanently observing cooldown.
-const SLAM_WINDUP_MS = 250;
+// The slam plays the brute's swipe, whose strike lands about 1.2 s in, so the
+// windup ends there and the cycle runs the clip's 2,700 ms. That is longer than
+// the slam's 1,800 ms cooldown, so a successful commit leaves the counter-driven
+// rotation able to fire on its next visit instead of permanently observing
+// cooldown.
+const SLAM_WINDUP_MS = 1200;
 const SLAM_COMMIT_MS = 150;
-const SLAM_RECOVER_MS = 1450;
+const SLAM_RECOVER_MS = 1350;
 
 /**
  * The reference enemy exercises the full recursive statechart path:
@@ -58,38 +60,39 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     },
     // A single normal hit is enough to redirect this playtest fixture.
     tolerance: 4,
+    // The Mixamo Mutant, on the `mixamo_brute` clip library.
     mesh: {
-      model: "models/reference_enemy_kaykit_knight/scene.gltf",
+      model: "models/mutant/model.gltf",
       animations: {
-        idle: { clip: "Idle", loop: true },
+        idle: { clip: "idle", loop: true },
+        // Every move runs at `moveSpeed`, so locomotion plays the run; its
+        // planted foot travels about 2.2 m/s.
         walk: {
-          clip: "Walking_A",
+          clip: "run",
           loop: true,
           crossfadeMs: 200,
-          travelSpeed: 3,
+          travelSpeed: 2.2,
         },
         attack_jab: {
-          clip: "1H_Melee_Attack_Slice_Horizontal",
+          clip: "punch",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",
         },
         attack_slam: {
-          clip: "1H_Melee_Attack_Slice_Horizontal",
+          clip: "swipe",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",
         },
-        // The reference model has no dedicated pain clip; this distinct state
-        // still makes the authored startle observable to replication clients.
         flinch: {
-          clip: "1H_Melee_Attack_Slice_Horizontal",
+          clip: "hit_reaction",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",
         },
         death: {
-          clip: "Death_A",
+          clip: "death",
           loop: false,
           crossfadeMs: 120,
           interrupt: "snap",

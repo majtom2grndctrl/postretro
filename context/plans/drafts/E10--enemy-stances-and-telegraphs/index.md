@@ -52,7 +52,7 @@ When this is done:
   - `onEnter` reactions are unchanged: a reaction's `playSound` already reaches every peer.
 - **Clients match the host on clips.** The host restarts nothing when the next activity names the clip already playing, and neither does a client. No re-entry signal is replicated.
 - **Shipped content adopts the vocabulary in this brief.**
-  - The reference enemy's slam becomes two stances, on a new body: a Mixamo brute with its own melee clip library replaces the KayKit knight, whose look breaks under textured, moody lighting. The `reference_enemy` classname stays; the knight model is deleted and the tests pinned to it are repointed.
+  - The reference enemy's slam becomes two stances on the brute (`models/mutant`, library `mixamo_brute`): an overhead stance that holds `smash_windup` and releases `smash`, and a sweep that holds `swipe_windup` and releases `swipe`.
   - The limitator's aim gains a break into its unwired `hit_reaction` flinch.
   - `sdk/behaviors/reference` shows a stance.
   - `docs/` explains stances and the co-op floor. It also says a client sees a stance late by about half the round trip plus one snapshot, which the floor does not cover.
@@ -163,7 +163,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 
 ## Path
 - **Body stance.** A crouching stance needs the cover brief's `crouchHeight` and `crouch_` states on the archetype, which load enforces. Under innermost-wins resolution the builder emits `stance: "stand"` on the recover when the option is set, so an outer crouch never leaks into it.
-- **Assets.** The brute lands before the content slice: the owner downloads its Mixamo FBX set, then `tools/mixamo_to_gltf.py` builds `clip_libraries/mixamo_brute` with the brute as `--base` and binds the model to it. Mixamo has no held windups, so each stance's hold clip is a copy of its attack trimmed at the windup peak; a non-looping clip clamps on its last frame (`resolve_time`, `crates/model/src/anim/types.rs`), so the pose holds with no engine change. Knight fixtures to repoint: `model_cache_tests.rs`, `model_tests.rs`, `gltf_loader.rs` (embedded clips — the brute's model carries none, so that test needs a crate fixture), `determinism_tests.rs`, `coop_fixture_tests.rs`, `presentation_conditioned_fixture.rs`, `ai/src/facing.rs` docs. An engine `untilMs`-style clip end is a follow-up, not this brief.
+- **Assets.** The brute already replaced the KayKit knight as the reference enemy; today its slam plays `swipe` on a hand-timed windup → commit → recover. Its library carries the stance clips: `smash` (a jump attack pinned in place), `swipe`, and their holds `smash_windup` (400 ms, the crouch before the leap) and `swipe_windup` (900 ms, the lean back before the lunge). They are cut by `mixamo_to_gltf.py --trim`, and a non-looping clip clamps on its last frame (`resolve_time`, `crates/model/src/anim/types.rs`), so the pose holds with no engine change. `roar` and `hit_reaction` are there for a stagger. Stance sounds have no assets yet; the dev fixture sounds stand in. An engine `untilMs`-style clip end is a follow-up, not this brief.
 - **Seams.**
   - **Brain facts.** `ScopeRelativeValues` / `SCOPE_RELATIVE_SLOTS` (`crates/ai/src/brain_scope.rs`): one field and one registration per fact, re-pointed at each level and selector.
   - **Brain arrays.** The per-depth arrays on `BrainComponent` zero on re-entry. `BRAIN_INPUTS` is append-only.

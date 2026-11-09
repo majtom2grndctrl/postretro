@@ -1,0 +1,25 @@
+Animation Information:
+* title:	Mixamo brute clip library
+* source:	https://www.mixamo.com/
+* author:	Adobe Mixamo (https://www.mixamo.com)
+
+License:
+* license type:	Mixamo Service Terms (https://www.adobe.com/legal/terms.html)
+* requirements:	Free to use in projects for Mixamo account holders.
+                	Mixamo characters and animations may be used in commercial and
+                	non-commercial projects. Redistribution of the raw assets
+                	outside of a project is not permitted.
+
+Packaging notes (PostRetro):
+* Mutant clips from Mixamo, on the Mutant rig, each file named for its clip:
+  idle, walk, run, punch, swipe, smash (a jump attack), roar, hit_reaction,
+  death, falling (Falling Idle). Built with:
+    mixamo_to_gltf.py --library --base Mutant.fbx --yaw 180 --in-place smash \
+      --trim smash_windup=smash:400 --trim swipe_windup=swipe:900
+* --yaw 180 turns the rig to face +Z, the front AI facing aims, matching
+  the bound Mutant model; root motion then runs the way the model faces.
+* smash is pinned in place: Mixamo's jump attack lands 1.6 m forward, and the
+  body would snap back when the clip ended.
+* smash_windup and swipe_windup are the attacks cut at their windup peak (the
+  crouch before the leap; the lean back before the lunge). Played without
+  looping they hold that pose, for enemy stances.

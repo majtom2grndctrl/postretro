@@ -3244,25 +3244,24 @@ mod tests {
     }
 
     fn reference_enemy_model_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/dev/models/reference_enemy_kaykit_knight/scene.gltf")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/models/mutant/model.gltf")
     }
 
     #[test]
-    fn reference_enemy_model_loads_four_clips_used_by_the_brain() {
-        // The CC0 KayKit Knight is packaged as the map-placeable reference enemy.
-        // It must load through the same external-glTF path the engine uses at
-        // level load, expose a skinned mesh + skeleton, and carry exactly the
-        // four animation clips the `mesh`/`ai` state maps name. Guards the asset
-        // and the GLB->glTF conversion (clip prune + body-part mesh merge)
-        // against regression. Gated on the asset existing so a stripped checkout
-        // skips rather than fails.
+    fn reference_enemy_model_binds_its_clip_library() {
+        // The Mixamo Mutant is the map-placeable reference enemy. It ships mesh
+        // and skeleton only and takes its clips from `mixamo_brute`. It must load
+        // through the same external-glTF path the engine uses at level load,
+        // expose a skinned mesh + skeleton, and bind every library clip the
+        // reference enemy and the stances brief name, the windup trims included.
+        // Gated on the asset existing so a stripped checkout skips rather than
+        // fails.
         let path = reference_enemy_model_path();
         if !path.exists() {
             eprintln!("skipping: model asset not present at {}", path.display());
             return;
         }
-        let model = load_model(&path).expect("reference enemy (KayKit Knight) model loads");
+        let model = load_model(&path).expect("reference enemy (Mutant) model loads");
 
         assert!(!model.mesh.vertices.is_empty(), "mesh has vertices");
         assert!(!model.mesh.indices.is_empty(), "mesh has indices");
@@ -3280,34 +3279,34 @@ mod tests {
         // Skinned skeleton, parent-before-child topo order.
         assert!(
             !model.skeleton.joints.is_empty(),
-            "Knight skin contributes joints"
+            "Mutant skin contributes joints"
         );
         for (i, joint) in model.skeleton.joints.iter().enumerate() {
             if let Some(parent) = joint.parent {
                 assert!(parent < i, "joint {i} parent {parent} precedes it");
             }
         }
+        assert_eq!(model.submeshes.len(), 1, "one material, one submesh");
 
-        // The six body-part primitives were merged into one mesh; each is a
-        // submesh of the single loaded mesh.
-        assert_eq!(
-            model.submeshes.len(),
-            6,
-            "six merged body-part primitives -> six submeshes"
-        );
-
-        // Exactly the four clips named by the reference enemy's mesh/ai maps.
         let mut clip_names: Vec<&str> = model.clips.iter().map(|c| c.name.as_str()).collect();
         clip_names.sort_unstable();
         assert_eq!(
             clip_names,
             vec![
-                "1H_Melee_Attack_Slice_Horizontal",
-                "Death_A",
-                "Idle",
-                "Walking_A",
+                "death",
+                "falling",
+                "hit_reaction",
+                "idle",
+                "punch",
+                "roar",
+                "run",
+                "smash",
+                "smash_windup",
+                "swipe",
+                "swipe_windup",
+                "walk",
             ],
-            "pruned to the four clips the brain/mesh state maps reference"
+            "the library's clips bind to the model"
         );
         for clip in &model.clips {
             assert!(clip.duration > 0.0, "clip `{}` has duration", clip.name);
@@ -3318,6 +3317,19 @@ mod tests {
                 clip.name
             );
         }
+        let duration = |name: &str| {
+            model
+                .clips
+                .iter()
+                .find(|clip| clip.name == name)
+                .unwrap()
+                .duration
+        };
+        // Trims end at their windup peak, on a 30 fps key.
+        assert!((duration("smash_windup") - 0.4).abs() < 1e-3);
+        assert!((duration("swipe_windup") - 0.9).abs() < 1e-3);
+        assert!(duration("smash_windup") < duration("smash"));
+        assert!(duration("swipe_windup") < duration("swipe"));
     }
 
     // --- Submesh range partition (multi-primitive split bookkeeping) -------

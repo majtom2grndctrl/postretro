@@ -26,6 +26,23 @@ the rig has facial bones that no character uses, which keeps the library smaller
 Keep the clip folder. To add a clip, place its FBX there and rerun the command.
 A library rebuilds from its sources; it cannot be appended to without them.
 
+Two options edit clips as the library is written, so a rebuild repeats them:
+
+- `--in-place smash` holds the named clips' hips at their first position across
+  the ground, keeping up and down motion. Use it on an attack that lunges or
+  leaps forward: the enemy itself does not move with the clip, so it would snap
+  back when the clip ended.
+- `--trim smash_windup=smash:400` adds a clip named `smash_windup`: the first
+  400 ms of `smash`, ending on the nearest earlier key. A state that plays it
+  with `loop: false` holds its last pose. Mixamo attacks rarely hold a windup,
+  so this is how an enemy holds one before it strikes. Repeat `--trim` for
+  each clip. Trims are cut after `--in-place`.
+
+Both apply to a library or to a character that keeps its own clips, never with
+`--clip-library`. When the characters on a library all need the same `--yaw`,
+build the library with it too, so root motion such as a lunge runs the way they
+face.
+
 ## Bind a character
 
 ```bash

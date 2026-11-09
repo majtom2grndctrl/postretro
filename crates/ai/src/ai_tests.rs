@@ -9095,9 +9095,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const SLAM_RANGE: f32 = 3.5;
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
-    const SLAM_WINDUP_MS: f32 = 250.0;
+    const SLAM_WINDUP_MS: f32 = 1200.0;
     const SLAM_COMMIT_MS: f32 = 150.0;
-    const SLAM_RECOVER_MS: f32 = 1450.0;
+    const SLAM_RECOVER_MS: f32 = 1350.0;
 
     let leaf = |animation: &str, action: Option<ActionVerb>| BehaviorActivityDescriptor {
         sound: None,

@@ -739,7 +739,7 @@ fn conditioned_overrides_late_join_sample_finite_loop_fog_spin_and_display_copy_
             .unwrap()
             .clip_index
             .is_some(),
-        "shipped Walking_A clip resolved"
+        "shipped walk clip resolved"
     );
     drop(registry);
     let start = h.clock;

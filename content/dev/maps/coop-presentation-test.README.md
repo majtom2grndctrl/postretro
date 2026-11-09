@@ -32,8 +32,8 @@ Coordinates below are TrenchBroom editor units, with Z up.
 - **Green atmosphere plate** `(192..320,416..544)` fires once. PRL lights fade for five
   seconds, fog density and every scalar fog family change and a typed fog fade
   runs, map smoke stops and its spin tween advances, descriptor-only smoke
-  stops, both descriptor light kinds pulse, the mesh-only knight switches from
-  `Idle` to `Walking_A`, and the door opens. Join another client after firing;
+  stops, both descriptor light kinds pulse, the mesh-only brute switches from
+  `idle` to `walk`, and the door opens. Join another client after firing;
   it should see the current state and animation age, including finished fades.
 - The **door** at `(968,368)` rises vertically. Its `open_event` is `door.open`,
   using the dev positioned-sound reaction `playSound(..., { at: on.emitter })`.
@@ -42,7 +42,7 @@ Coordinates below are TrenchBroom editor units, with Z up.
   singleton progress threshold fires a PRL pulse and a global red flash on
   death. Compare the looping pulse on both screens at the same moment.
 - Ten **target dummies** stand in rows `Y=576` and `Y=688`, `X=512..1024`.
-  Pistol torso kills award 10 XP only to the killer, play `Death_A`, then
+  Pistol torso kills award 10 XP only to the killer, play `death`, then
   disappear after 1.8 seconds on both peers. Ten kills reach 100 XP for one
   player. The **invisible target** above the purple floor marker at `(1152,448)` has a 0.8 m wide, 1.8 m tall
   authored hitbox; aim at torso height there. It has no visual body by design.

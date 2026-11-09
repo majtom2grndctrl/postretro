@@ -18,10 +18,11 @@ local JAB_RANGE = 2
 local SLAM_RANGE = 3.5
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
-local SLAM_WINDUP_MS = 250
+-- The slam plays the brute's swipe, whose strike lands about 1.2 s in. The
+-- 2,700 ms phase cycle runs the clip and is longer than slam's 1,800 ms cooldown.
+local SLAM_WINDUP_MS = 1200
 local SLAM_COMMIT_MS = 150
--- The 1,850 ms phase cycle is longer than slam's 1,800 ms cooldown.
-local SLAM_RECOVER_MS = 1450
+local SLAM_RECOVER_MS = 1350
 
 M.referenceEnemyEntity = defineEntity({
   canonicalName = M.REFERENCE_ENEMY_CLASSNAME,
@@ -42,38 +43,39 @@ M.referenceEnemyEntity = defineEntity({
     },
     -- A single normal hit is enough to redirect this playtest fixture.
     tolerance = 4,
+    -- The Mixamo Mutant, on the `mixamo_brute` clip library.
     mesh = {
-      model = "models/reference_enemy_kaykit_knight/scene.gltf",
+      model = "models/mutant/model.gltf",
       animations = {
-        idle = { clip = "Idle", loop = true },
+        idle = { clip = "idle", loop = true },
+        -- Every move runs at `moveSpeed`, so locomotion plays the run; its
+        -- planted foot travels about 2.2 m/s.
         walk = {
-          clip = "Walking_A",
+          clip = "run",
           loop = true,
           crossfadeMs = 200,
-          travelSpeed = 3,
+          travelSpeed = 2.2,
         },
         attack_jab = {
-          clip = "1H_Melee_Attack_Slice_Horizontal",
+          clip = "punch",
           loop = false,
           crossfadeMs = 80,
           interrupt = "snap",
         },
         attack_slam = {
-          clip = "1H_Melee_Attack_Slice_Horizontal",
+          clip = "swipe",
           loop = false,
           crossfadeMs = 80,
           interrupt = "snap",
         },
-        -- The reference model has no dedicated pain clip; this distinct state
-        -- still makes the authored startle observable to replication clients.
         flinch = {
-          clip = "1H_Melee_Attack_Slice_Horizontal",
+          clip = "hit_reaction",
           loop = false,
           crossfadeMs = 80,
           interrupt = "snap",
         },
         death = {
-          clip = "Death_A",
+          clip = "death",
           loop = false,
           crossfadeMs = 120,
           interrupt = "snap",

@@ -1,0 +1,1124 @@
+{
+	"asset": {
+		"generator": "Khronos glTF Blender I/O v5.2.41",
+		"version": "2.0"
+	},
+	"scene": 0,
+	"scenes": [
+		{
+			"name": "Scene",
+			"nodes": [
+				38
+			]
+		}
+	],
+	"nodes": [
+		{
+			"name": "mixamorig:LeftToe_End",
+			"rotation": [
+				7.946809432723967e-09,
+				4.8689307116265776e-14,
+				4.4128576348612114e-08,
+				1
+			],
+			"translation": [
+				1.0807806205548331e-08,
+				0.16883818805217743,
+				7.869513929392724e-09
+			],
+			"extras": {
+				"poseMask": "lowerBody"
+			}
+		},
+		{
+			"children": [
+				0
+			],
+			"name": "mixamorig:LeftToeBase",
+			"rotation": [
+				0.38699543476104736,
+				-2.5748699172822853e-08,
+				6.155066216706473e-07,
+				0.9220815896987915
+			],
+			"scale": [
+				1,
+				1.0000001192092896,
+				0.9999999403953552
+			],
+			"translation": [
+				2.1472885691764532e-08,
+				0.21288001537322998,
+				-5.0731387091218494e-08
+			],
+			"extras": {
+				"poseMask": "lowerBody"
+			}
+		},
+		{
+			"children": [
+				1
+			],
+			"name": "mixamorig:LeftFoot",
+			"rotation": [
+				0.41370952129364014,
+				6.919065640431654e-07,
+				4.012007650544547e-07,
+				0.9104089140892029
+			],
+			"scale": [
+				1,
+				0.9999999403953552,
+				1
+			],
+			"translation": [
+				2.05535126696077e-08,
+				0.34409332275390625,
+				-9.436398329398799e-10
+			],
+			"extras": {
+				"poseMask": [
+					"lowerBody",
+					"legL",
+					"footL"
+				]
+			}
+		},
+		{
+			"children": [
+				2
+			],
+			"name": "mixamorig:LeftLeg",
+			"rotation": [
+				-0.05907346308231354,
+				1.3983638247339059e-08,
+				-3.795769600856147e-07,
+				0.9982536435127258
+			],
+			"translation": [
+				3.289794392458134e-08,
+				0.35949668288230896,
+				5.503682842800117e-09
+			],
+			"extras": {
+				"poseMask": [
+					"lowerBody",
+					"legL"
+				],
+				"hitZone": "leg"
+			}
+		},
+		{
+			"children": [
+				3
+			],
+			"name": "mixamorig:LeftUpLeg",
+			"rotation": [
+				3.729667130691894e-10,
+				0.020608749240636826,
+				0.9997876286506653,
+				4.560549200505193e-07
+			],
+			"scale": [
+				1,
+				1,
+				1.0000005960464478
+			],
+			"translation": [
+				0.1365596055984497,
+				-0.07135259360074997,
+				0.0012969456147402525
+			],
+			"extras": {
+				"poseMask": [
+					"lowerBody",
+					"legL"
+				],
+				"hitZone": "leg"
+			}
+		},
+		{
+			"name": "mixamorig:RightToe_End",
+			"rotation": [
+				1.551184780623771e-08,
+				5.1006155679308995e-14,
+				4.412851950519325e-08,
+				1
+			],
+			"translation": [
+				-4.0933616496374725e-09,
+				0.16883818805217743,
+				5.2340189959920735e-09
+			],
+			"extras": {
+				"poseMask": "lowerBody"
+			}
+		},
+		{
+			"children": [
+				5
+			],
+			"name": "mixamorig:RightToeBase",
+			"rotation": [
+				0.3869953751564026,
+				5.336920683163271e-09,
+				5.99319321281655e-07,
+				0.922081708908081
+			],
+			"scale": [
+				1,
+				1,
+				1.0000001192092896
+			],
+			"translation": [
+				-1.329527243854045e-08,
+				0.2128800004720688,
+				-4.544872922451759e-08
+			],
+			"extras": {
+				"poseMask": "lowerBody"
+			}
+		},
+		{
+			"children": [
+				6
+			],
+			"name": "mixamorig:RightFoot",
+			"rotation": [
+				0.4137095510959625,
+				5.379437766350748e-07,
+				4.399132365051628e-07,
+				0.9104089140892029
+			],
+			"scale": [
+				1,
+				1.0000001192092896,
+				1
+			],
+			"translation": [
+				-4.887814597509532e-10,
+				0.34409329295158386,
+				3.2947156114460086e-09
+			],
+			"extras": {
+				"poseMask": [
+					"lowerBody",
+					"legR",
+					"footR"
+				]
+			}
+		},
+		{
+			"children": [
+				7
+			],
+			"name": "mixamorig:RightLeg",
+			"rotation": [
+				-0.05907348170876503,
+				2.6128260444124862e-08,
+				3.53030202404625e-07,
+				0.9982536435127258
+			],
+			"scale": [
+				1,
+				0.9999999403953552,
+				1
+			],
+			"translation": [
+				-5.133152569669619e-09,
+				0.35949674248695374,
+				-3.6328913211036706e-09
+			],
+			"extras": {
+				"poseMask": [
+					"lowerBody",
+					"legR"
+				],
+				"hitZone": "leg"
+			}
+		},
+		{
+			"children": [
+				8
+			],
+			"name": "mixamorig:RightUpLeg",
+			"rotation": [
+				-9.002452827644447e-08,
+				0.020608747377991676,
+				0.9997876286506653,
+				1.2004508107565925e-06
+			],
+			"scale": [
+				1,
+				1,
+				1.0000005960464478
+			],
+			"translation": [
+				-0.1365598440170288,
+				-0.07135214656591415,
+				0.0012969811214134097
+			],
+			"extras": {
+				"poseMask": [
+					"lowerBody",
+					"legR"
+				],
+				"hitZone": "leg"
+			}
+		},
+		{
+			"name": "mixamorig:LeftHand",
+			"rotation": [
+				-6.68375378154451e-07,
+				-8.911594129301648e-09,
+				-3.796865488681078e-09,
+				1
+			],
+			"translation": [
+				-2.652029706950998e-09,
+				0.2675342261791229,
+				-8.829324826820084e-08
+			],
+			"extras": {
+				"poseMask": "upperBody",
+				"socket": "hand_l"
+			}
+		},
+		{
+			"children": [
+				10
+			],
+			"name": "mixamorig:LeftForeArm",
+			"rotation": [
+				-8.482049452140927e-06,
+				-8.505769244493422e-08,
+				0.027628881856799126,
+				0.9996182322502136
+			],
+			"translation": [
+				3.809645932051353e-10,
+				0.26415106654167175,
+				-1.5832999622489297e-07
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				11
+			],
+			"name": "mixamorig:LeftArm",
+			"rotation": [
+				0.05737442895770073,
+				0.00010699321137508377,
+				-0.0018615637673065066,
+				0.998350977897644
+			],
+			"scale": [
+				1,
+				1.0000001192092896,
+				1
+			],
+			"translation": [
+				1.0550138540565968e-10,
+				0.18035508692264557,
+				-8.263305062428117e-08
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				12
+			],
+			"name": "mixamorig:LeftShoulder",
+			"rotation": [
+				0.4582120180130005,
+				0.5412875413894653,
+				-0.4824560284614563,
+				0.5140873789787292
+			],
+			"translation": [
+				0.09553567320108414,
+				0.1606537103652954,
+				-0.0522783026099205
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"name": "mixamorig:HeadTop_End",
+			"rotation": [
+				7.3839174774548155e-09,
+				-5.081596426618053e-19,
+				-9.237953080992213e-20,
+				1
+			],
+			"translation": [
+				1.0975858000250582e-09,
+				0.20493946969509125,
+				-0.0028250394389033318
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				14
+			],
+			"name": "mixamorig:Head",
+			"rotation": [
+				-9.087894881076863e-09,
+				-4.156333131425491e-19,
+				2.341066793545843e-13,
+				1
+			],
+			"translation": [
+				2.4411824992021103e-11,
+				0.08817313611507416,
+				0.061026155948638916
+			],
+			"extras": {
+				"poseMask": "upperBody",
+				"hitZone": "head"
+			}
+		},
+		{
+			"children": [
+				15
+			],
+			"name": "mixamorig:Neck",
+			"rotation": [
+				1.7370242133551983e-08,
+				1.27329327637149e-11,
+				-1.6963126736602163e-10,
+				1
+			],
+			"translation": [
+				-0.00011927108425879851,
+				0.24670635163784027,
+				0.020281031727790833
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"name": "mixamorig:RightHandIndex4",
+			"rotation": [
+				1.5306795830838382e-08,
+				-1.888830425400556e-08,
+				-5.579740047778614e-08,
+				1
+			],
+			"translation": [
+				4.850012835788675e-09,
+				0.06769711524248123,
+				1.2863893061876297e-07
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				17
+			],
+			"name": "mixamorig:RightHandIndex3",
+			"rotation": [
+				0.04527659714221954,
+				-0.0006926300120539963,
+				-0.015276591293513775,
+				0.9988574385643005
+			],
+			"scale": [
+				1,
+				0.9999999403953552,
+				0.9999999403953552
+			],
+			"translation": [
+				2.306819624209311e-09,
+				0.07489367574453354,
+				2.2574996094704147e-08
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				18
+			],
+			"name": "mixamorig:RightHandIndex2",
+			"rotation": [
+				-5.415211390413788e-09,
+				1.0727040944402688e-07,
+				3.0882196710990684e-07,
+				1
+			],
+			"translation": [
+				9.420801916348864e-10,
+				0.07514379918575287,
+				-2.155931433378555e-09
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				19
+			],
+			"name": "mixamorig:RightHandIndex1",
+			"rotation": [
+				6.996340744080953e-06,
+				-4.014424348497414e-09,
+				1.487264285060519e-07,
+				1
+			],
+			"translation": [
+				0.08654239773750305,
+				0.1844777911901474,
+				-0.014796474017202854
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"name": "mixamorig:RightHandPinky4",
+			"rotation": [
+				1.0504221137352943e-07,
+				-1.253273654526607e-16,
+				-1.0763740972748875e-13,
+				1
+			],
+			"translation": [
+				-8.9318756835155e-09,
+				0.07092957943677902,
+				-1.23350787362142e-08
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				21
+			],
+			"name": "mixamorig:RightHandPinky3",
+			"rotation": [
+				-1.048334894448999e-07,
+				-6.278811716023793e-17,
+				1.0737108901634485e-13,
+				1
+			],
+			"translation": [
+				-8.932104833547783e-09,
+				0.07078900188207626,
+				-9.089660579775227e-09
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				22
+			],
+			"name": "mixamorig:RightHandPinky2",
+			"rotation": [
+				-2.480228644685667e-08,
+				-1.8368439214100363e-08,
+				2.919727515315884e-10,
+				1
+			],
+			"translation": [
+				-4.951403731467963e-09,
+				0.07044239342212677,
+				-7.205741781035613e-09
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				23
+			],
+			"name": "mixamorig:RightHandPinky1",
+			"rotation": [
+				4.756152975460282e-06,
+				0.707106351852417,
+				5.130095360073028e-06,
+				0.7071071863174438
+			],
+			"translation": [
+				-0.10003090649843216,
+				0.17507749795913696,
+				0.004779675509780645
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"name": "mixamorig:RightHandThumb4",
+			"rotation": [
+				6.295740604400635e-07,
+				-8.586794137954712e-07,
+				-4.922039806842804e-07,
+				1
+			],
+			"translation": [
+				1.4901161193847656e-08,
+				0.08025272935628891,
+				-1.3224780559539795e-07
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				25
+			],
+			"name": "mixamorig:RightHandThumb3",
+			"rotation": [
+				-0.047229524701833725,
+				-0.010479227639734745,
+				0.07085322588682175,
+				0.9963129162788391
+			],
+			"scale": [
+				0.9999999403953552,
+				1,
+				0.9999998807907104
+			],
+			"translation": [
+				-1.862645149230957e-09,
+				0.08498750627040863,
+				-7.078051567077637e-08
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				26
+			],
+			"name": "mixamorig:RightHandThumb2",
+			"rotation": [
+				-0.03930949047207832,
+				-0.006960747763514519,
+				0.11608856916427612,
+				0.9924362897872925
+			],
+			"scale": [
+				0.9999998807907104,
+				0.9999998211860657,
+				0.9999998807907104
+			],
+			"translation": [
+				7.450580596923828e-08,
+				0.10473008453845978,
+				1.601874828338623e-07
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				27
+			],
+			"name": "mixamorig:RightHandThumb1",
+			"rotation": [
+				0.21345745027065277,
+				-0.035873860120773315,
+				-0.3731173276901245,
+				0.9021820425987244
+			],
+			"scale": [
+				1,
+				0.9999999403953552,
+				1
+			],
+			"translation": [
+				0.06163475662469864,
+				0.024922775104641914,
+				0.044463686645030975
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				20,
+				24,
+				28
+			],
+			"name": "mixamorig:RightHand",
+			"rotation": [
+				-5.299425538396463e-07,
+				-3.1716469450771e-09,
+				-5.1662167876997955e-09,
+				1
+			],
+			"translation": [
+				-8.405578455494833e-10,
+				0.2675342261791229,
+				3.1217147977713466e-08
+			],
+			"extras": {
+				"poseMask": "upperBody",
+				"socket": "hand_r"
+			}
+		},
+		{
+			"children": [
+				29
+			],
+			"name": "mixamorig:RightForeArm",
+			"rotation": [
+				-1.187269026559079e-05,
+				4.8857703660587504e-08,
+				-0.02762887254357338,
+				0.9996182918548584
+			],
+			"scale": [
+				0.9999999403953552,
+				1,
+				0.9999999403953552
+			],
+			"translation": [
+				-8.544986940250965e-10,
+				0.2641509771347046,
+				5.609805953099567e-09
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				30
+			],
+			"name": "mixamorig:RightArm",
+			"rotation": [
+				0.05764073505997658,
+				-0.00010076965554617345,
+				0.001744652516208589,
+				0.9983358979225159
+			],
+			"scale": [
+				0.9999999403953552,
+				1,
+				0.9999999403953552
+			],
+			"translation": [
+				-8.034533038880909e-10,
+				0.17955060303211212,
+				8.34552338346839e-09
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				31
+			],
+			"name": "mixamorig:RightShoulder",
+			"rotation": [
+				0.4580201208591461,
+				-0.5414748191833496,
+				0.4823670983314514,
+				0.5141445994377136
+			],
+			"scale": [
+				0.9999998807907104,
+				0.9999998807907104,
+				0.9999999403953552
+			],
+			"translation": [
+				-0.09553568065166473,
+				0.1606537103652954,
+				-0.0522783026099205
+			],
+			"extras": {
+				"poseMask": "upperBody"
+			}
+		},
+		{
+			"children": [
+				13,
+				16,
+				32
+			],
+			"name": "mixamorig:Spine2",
+			"rotation": [
+				0.03522345796227455,
+				-7.730134529992938e-05,
+				-0.0008284168434329331,
+				0.9993790984153748
+			],
+			"scale": [
+				1,
+				1.0000001192092896,
+				1
+			],
+			"translation": [
+				-9.731593308970332e-11,
+				0.13020546734333038,
+				-9.096805086983295e-09
+			],
+			"extras": {
+				"aimBendWeight": 1.0,
+				"poseMask": [
+					"upperBody",
+					"aimSpine"
+				]
+			}
+		},
+		{
+			"children": [
+				33
+			],
+			"name": "mixamorig:Spine1",
+			"rotation": [
+				-0.043923862278461456,
+				1.0141473467228934e-05,
+				9.932569082593545e-05,
+				0.9990348815917969
+			],
+			"scale": [
+				1,
+				1.0000001192092896,
+				1
+			],
+			"translation": [
+				5.4569682106375694e-11,
+				0.13063324987888336,
+				7.854339401092147e-10
+			],
+			"extras": {
+				"aimBendWeight": 0.7,
+				"poseMask": [
+					"upperBody",
+					"aimSpine"
+				]
+			}
+		},
+		{
+			"children": [
+				34
+			],
+			"name": "mixamorig:Spine",
+			"rotation": [
+				0.008707121014595032,
+				0.00010003482748288661,
+				0.0007244942826218903,
+				0.9999618530273438
+			],
+			"scale": [
+				1,
+				0.9999999403953552,
+				1
+			],
+			"translation": [
+				1.781756679974933e-07,
+				0.1076386496424675,
+				0.012435165233910084
+			],
+			"extras": {
+				"aimBendWeight": 0.4,
+				"poseMask": [
+					"upperBody",
+					"aimSpine"
+				]
+			}
+		},
+		{
+			"children": [
+				4,
+				9,
+				35
+			],
+			"name": "mixamorig:Hips",
+			"rotation": [
+				-4.992518398694301e-08,
+				-1.8101059140462894e-07,
+				8.205173571695923e-07,
+				1
+			],
+			"translation": [
+				-1.0853979048874862e-08,
+				0.9255486130714417,
+				0.045524924993515015
+			],
+			"extras": {
+				"poseMask": "lowerBody"
+			}
+		},
+		{
+			"mesh": 0,
+			"name": "MutantMesh",
+			"skin": 0
+		},
+		{
+			"children": [
+				37,
+				36
+			],
+			"name": "Armature"
+		}
+	],
+	"materials": [
+		{
+			"doubleSided": true,
+			"name": "mutant_M",
+			"pbrMetallicRoughness": {
+				"baseColorTexture": {
+					"index": 0
+				},
+				"metallicFactor": 0,
+				"roughnessFactor": 0.5527864098548889
+			}
+		}
+	],
+	"meshes": [
+		{
+			"name": "MutantMesh",
+			"primitives": [
+				{
+					"attributes": {
+						"POSITION": 0,
+						"NORMAL": 1,
+						"TEXCOORD_0": 2,
+						"TEXCOORD_1": 3,
+						"TEXCOORD_2": 4,
+						"TEXCOORD_3": 5,
+						"JOINTS_0": 6,
+						"WEIGHTS_0": 7
+					},
+					"indices": 8,
+					"material": 0
+				}
+			]
+		}
+	],
+	"textures": [
+		{
+			"sampler": 0,
+			"source": 0
+		}
+	],
+	"images": [
+		{
+			"mimeType": "image/png",
+			"name": "Mutant_diffuse",
+			"uri": "Mutant_diffuse.png"
+		}
+	],
+	"skins": [
+		{
+			"inverseBindMatrices": 9,
+			"joints": [
+				36,
+				4,
+				3,
+				2,
+				1,
+				0,
+				9,
+				8,
+				7,
+				6,
+				5,
+				35,
+				34,
+				33,
+				13,
+				12,
+				11,
+				10,
+				16,
+				15,
+				14,
+				32,
+				31,
+				30,
+				29,
+				20,
+				19,
+				18,
+				17,
+				24,
+				23,
+				22,
+				21,
+				28,
+				27,
+				26,
+				25
+			],
+			"name": "Armature",
+			"skeleton": 36
+		}
+	],
+	"accessors": [
+		{
+			"bufferView": 0,
+			"componentType": 5126,
+			"count": 6928,
+			"max": [
+				1.4910131692886353,
+				1.8554022312164307,
+				0.363048791885376
+			],
+			"min": [
+				-1.2515182495117188,
+				-0.0059410324320197105,
+				-0.3420339524745941
+			],
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 1,
+			"componentType": 5126,
+			"count": 6928,
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 2,
+			"componentType": 5126,
+			"count": 6928,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 3,
+			"componentType": 5126,
+			"count": 6928,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 4,
+			"componentType": 5126,
+			"count": 6928,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 5,
+			"componentType": 5126,
+			"count": 6928,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 6,
+			"componentType": 5121,
+			"count": 6928,
+			"type": "VEC4"
+		},
+		{
+			"bufferView": 7,
+			"componentType": 5126,
+			"count": 6928,
+			"type": "VEC4"
+		},
+		{
+			"bufferView": 8,
+			"componentType": 5123,
+			"count": 33813,
+			"type": "SCALAR"
+		},
+		{
+			"bufferView": 9,
+			"componentType": 5126,
+			"count": 37,
+			"type": "MAT4"
+		}
+	],
+	"bufferViews": [
+		{
+			"buffer": 0,
+			"byteLength": 83136,
+			"byteOffset": 0,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 83136,
+			"byteOffset": 83136,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 55424,
+			"byteOffset": 166272,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 55424,
+			"byteOffset": 221696,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 55424,
+			"byteOffset": 277120,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 55424,
+			"byteOffset": 332544,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 27712,
+			"byteOffset": 387968,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 110848,
+			"byteOffset": 415680,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 67626,
+			"byteOffset": 526528,
+			"target": 34963
+		},
+		{
+			"buffer": 0,
+			"byteLength": 2368,
+			"byteOffset": 594156
+		}
+	],
+	"samplers": [
+		{
+			"magFilter": 9729,
+			"minFilter": 9987
+		}
+	],
+	"buffers": [
+		{
+			"byteLength": 596524,
+			"uri": "model.bin"
+		}
+	],
+	"extras": {
+		"clipLibrary": "../clip_libraries/mixamo_brute/library.gltf"
+	}
+}

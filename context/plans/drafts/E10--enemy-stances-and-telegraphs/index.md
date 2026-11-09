@@ -52,7 +52,7 @@ When this is done:
   - `onEnter` reactions are unchanged: a reaction's `playSound` already reaches every peer.
 - **Clients match the host on clips.** The host restarts nothing when the next activity names the clip already playing, and neither does a client. No re-entry signal is replicated.
 - **Shipped content adopts the vocabulary in this brief.**
-  - The reference knight's slam becomes two stances.
+  - The reference enemy's slam becomes two stances, on a new body: a Mixamo brute with its own melee clip library replaces the KayKit knight, whose look breaks under textured, moody lighting. The `reference_enemy` classname stays; the knight model is deleted and the tests pinned to it are repointed.
   - The limitator's aim gains a break into its unwired `hit_reaction` flinch.
   - `sdk/behaviors/reference` shows a stance.
   - `docs/` explains stances and the co-op floor. It also says a client sees a stance late by about half the round trip plus one snapshot, which the floor does not cover.
@@ -70,7 +70,7 @@ import { brain, merge, stance } from "postretro";
 
 const overhead = stance("overhead", {
   animation: "stance_overhead",          // the held pose names the attack
-  sound: "knight/stance_overhead",       // heard by every peer
+  sound: "brute/stance_overhead",        // heard by every peer
   holdMs: [500, 1200],                   // optional; release moment re-rolled each entry
   release: { animation: "attack_overhead", attack: "slam", ms: 150 },
   recover: { animation: "recover", ms: 900 }, // optional
@@ -158,11 +158,12 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - [ ] Entering an activity whose clip is already playing restarts nothing on host or client.
 
 ### Manual
-- [ ] On `movement-feel`, the reference knight with two stances: a player names the coming attack from the pose, cannot predict the release across several cycles, and breaks a stance with heavy fire.
+- [ ] On `movement-feel`, the reference brute with two stances: a player names the coming attack from the pose, cannot predict the release across several cycles, and breaks a stance with heavy fire.
 - [ ] Co-op loopback: the client hears each stance sound and sees the stance before the hit lands.
 
 ## Path
 - **Body stance.** A crouching stance needs the cover brief's `crouchHeight` and `crouch_` states on the archetype, which load enforces. Under innermost-wins resolution the builder emits `stance: "stand"` on the recover when the option is set, so an outer crouch never leaks into it.
+- **Assets.** The brute lands before the content slice: the owner downloads its Mixamo FBX set, then `tools/mixamo_to_gltf.py` builds `clip_libraries/mixamo_brute` with the brute as `--base` and binds the model to it. Mixamo has no held windups, so each stance's hold clip is a copy of its attack trimmed at the windup peak; a non-looping clip clamps on its last frame (`resolve_time`, `crates/model/src/anim/types.rs`), so the pose holds with no engine change. Knight fixtures to repoint: `model_cache_tests.rs`, `model_tests.rs`, `gltf_loader.rs` (embedded clips — the brute's model carries none, so that test needs a crate fixture), `determinism_tests.rs`, `coop_fixture_tests.rs`, `presentation_conditioned_fixture.rs`, `ai/src/facing.rs` docs. An engine `untilMs`-style clip end is a follow-up, not this brief.
 - **Seams.**
   - **Brain facts.** `ScopeRelativeValues` / `SCOPE_RELATIVE_SLOTS` (`crates/ai/src/brain_scope.rs`): one field and one registration per fact, re-pointed at each level and selector.
   - **Brain arrays.** The per-depth arrays on `BrainComponent` zero on re-entry. `BRAIN_INPUTS` is append-only.

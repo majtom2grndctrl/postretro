@@ -5,8 +5,8 @@
 
 use postretro_level_format::mover_probe_channel::{
     BounceEntryParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry,
-    MoverBouncePlacement, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
-    MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord, MoverProbeChannelParts,
+    MoverProbeChannelSection,
 };
 
 use super::*;
@@ -20,7 +20,6 @@ fn channel(
 ) -> MoverProbeChannelSection {
     let parts = MoverProbeChannelParts {
         affinity_dims,
-        bounce_placement: MoverBouncePlacement::Resident,
         direct: direct
             .iter()
             .map(|&cell| DirectRecordParts {

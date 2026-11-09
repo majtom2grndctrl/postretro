@@ -50,6 +50,9 @@ pub(crate) struct FinalizedShEmissionView<'a> {
     pub(crate) billboard: Option<&'a BillboardDirectScatterVolumeSection>,
     pub(crate) animated_billboard_delta:
         Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    /// Id 57, only when a block's payload streams with id 50's cells: then
+    /// ids 49 and 50 list it. A resident id 57 leaves them unchanged.
+    pub(crate) mover_channel: Option<&'a MoverProbeChannelSection>,
 }
 
 /// Final SH publication handoff shared by post-bake metadata and pack planning.
@@ -114,6 +117,7 @@ impl<'a> FinalizedShEmissionView<'a> {
         animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
         billboard: Option<&'a BillboardDirectScatterVolumeSection>,
         animated_billboard_delta: Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+        mover_channel: Option<&'a MoverProbeChannelSection>,
     ) -> anyhow::Result<Self> {
         let scatter_pair_required = billboard.is_some() && animated_direct_delta.is_some();
         anyhow::ensure!(
@@ -160,6 +164,7 @@ impl<'a> FinalizedShEmissionView<'a> {
             animated_billboard_delta: scatter_pair_fits
                 .then_some(animated_billboard_delta)
                 .flatten(),
+            mover_channel: mover_channel.filter(|section| section.streams()),
         })
     }
 
@@ -175,6 +180,7 @@ impl<'a> FinalizedShEmissionView<'a> {
             animated_direct_delta: self.animated_direct_delta,
             billboard: self.billboard,
             animated_billboard_delta: self.animated_billboard_delta,
+            mover_channel: self.mover_channel,
         }
     }
 }
@@ -293,7 +299,7 @@ mod tests {
         octahedral: &'a OctahedralShVolumeSection,
         direct: Option<&'a DirectShVolumeSection>,
     ) -> FinalizedShEmissionView<'a> {
-        FinalizedShEmissionView::new(octahedral, direct, None, None, None, None, None, None)
+        FinalizedShEmissionView::new(octahedral, direct, None, None, None, None, None, None, None)
             .expect("test SH sections should have a valid legacy emission view")
     }
 

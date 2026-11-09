@@ -26,6 +26,8 @@ use super::{FinalizedShEmissionView, FinalizedShPackSources, PlannedSection};
 mod atlas;
 #[path = "cluster_sh_payloads/dense.rs"]
 mod dense;
+#[path = "cluster_sh_payloads/mover_rows.rs"]
+mod mover_rows;
 #[path = "cluster_sh_payloads/shared_bytes.rs"]
 mod shared_bytes;
 #[path = "cluster_sh_payloads/sparse.rs"]
@@ -35,6 +37,7 @@ mod wire;
 
 use dense::ChunkPlan;
 use dense::DenseNode;
+use mover_rows::MoverRows;
 use shared_bytes::SharedBytesCheck;
 use sparse::SparseSources;
 use wire::{
@@ -93,6 +96,7 @@ pub(super) fn build_cluster_payload_spool(
         emission.delta,
         emission.direct_delta,
         emission.animated_direct_delta,
+        emission.mover_channel,
     );
     let validation_inputs = ClusterShPayloadsValidationInputs {
         directory,
@@ -104,7 +108,11 @@ pub(super) fn build_cluster_payload_spool(
         emission.direct_delta,
         emission.animated_direct_delta,
     )?;
-    let plan = ChunkPlan::new(validation_inputs, sparse_sources)?;
+    let plan = ChunkPlan::new(
+        validation_inputs,
+        sparse_sources,
+        MoverRows::of(emission.mover_channel),
+    )?;
     let storage_demand = plan.storage_demand()?;
     let mut spool = create_spool(output)?;
     let mut index = Vec::with_capacity(directory.clusters.len());
@@ -723,9 +731,18 @@ mod tests {
 
         let base = raw_octahedral_source();
         let direct = raw_direct_source(&base);
-        let emission =
-            FinalizedShEmissionView::new(&base, Some(&direct), None, None, None, None, None, None)
-                .unwrap();
+        let emission = FinalizedShEmissionView::new(
+            &base,
+            Some(&direct),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let sources = FinalizedShPackSources::new(&base, Some(&direct)).unwrap();
         let locator = CellLocatorSection {
             root: CellLocatorChild::Cell(0),
@@ -778,6 +795,7 @@ mod tests {
             Some(&animated_delta),
             None,
             None,
+            None,
         )
         .unwrap();
         let sources = FinalizedShPackSources::new(&base, Some(&direct)).unwrap();
@@ -800,7 +818,8 @@ mod tests {
         let base = raw_octahedral_source();
         let directory = directory(false, false);
         let emission =
-            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None, None)
+                .unwrap();
         let sources = FinalizedShPackSources::new(&base, None).unwrap();
         let first_dir = tempfile::tempdir().unwrap();
         let second_dir = tempfile::tempdir().unwrap();
@@ -846,6 +865,7 @@ mod tests {
             &base,
             Some(&direct),
             Some(&delta),
+            None,
             None,
             None,
             None,
@@ -904,6 +924,7 @@ mod tests {
             Some(&animated_delta),
             None,
             None,
+            None,
         )
         .unwrap();
         let sources = FinalizedShPackSources::new(&base, Some(&direct)).unwrap();
@@ -921,6 +942,7 @@ mod tests {
             Some(&delta),
             Some(&direct_delta),
             Some(&animated_delta),
+            None,
         );
         let inputs = ClusterShPayloadsValidationInputs {
             directory: &directory,
@@ -1003,7 +1025,8 @@ mod tests {
         let base = raw_scaled_l1_source();
         let directory = scaled_l1_directory();
         let emission =
-            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None, None)
+                .unwrap();
         let sources = FinalizedShPackSources::new(&base, None).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let spool = build_cluster_payload_spool(
@@ -1013,7 +1036,7 @@ mod tests {
             sources,
         )
         .unwrap();
-        let metadata_sources = source_metadata_from_sections(&base, None, None, None, None);
+        let metadata_sources = source_metadata_from_sections(&base, None, None, None, None, None);
         let inputs = ClusterShPayloadsValidationInputs {
             directory: &directory,
             base: ClusterShPayloadsBaseMetadata::from(&base),
@@ -1072,7 +1095,8 @@ mod tests {
         malformed_source.compact_atlas.clear();
         let directory = directory(false, false);
         let emission =
-            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None, None)
+                .unwrap();
         let sources = FinalizedShPackSources::new(&malformed_source, None).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let output = tempdir.path().join("fixture.prl");
@@ -1087,7 +1111,8 @@ mod tests {
         let base = raw_octahedral_source();
         let directory = directory(false, false);
         let emission =
-            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None, None)
+                .unwrap();
         let sources = FinalizedShPackSources::new(&base, None).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let output = tempdir.path().join("fixture.prl");
@@ -1133,9 +1158,18 @@ mod tests {
             u32::from_le_bytes(direct_body[0..4].try_into().unwrap()),
             DIRECT_SH_VOLUME_VERSION,
         );
-        let emission =
-            FinalizedShEmissionView::new(&base, Some(&direct), None, None, None, None, None, None)
-                .unwrap();
+        let emission = FinalizedShEmissionView::new(
+            &base,
+            Some(&direct),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let sources = FinalizedShPackSources::new(&raw_base, Some(&raw_direct)).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let output = tempdir.path().join("fixture.prl");
@@ -1232,6 +1266,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let sources = FinalizedShPackSources::new(&raw_base, Some(&raw_direct)).unwrap();
@@ -1243,8 +1278,14 @@ mod tests {
             sources,
         )
         .unwrap();
-        let metadata_sources =
-            source_metadata_from_sections(&emitted_base, Some(&emitted_direct), None, None, None);
+        let metadata_sources = source_metadata_from_sections(
+            &emitted_base,
+            Some(&emitted_direct),
+            None,
+            None,
+            None,
+            None,
+        );
         let inputs = ClusterShPayloadsValidationInputs {
             directory: &directory,
             base: ClusterShPayloadsBaseMetadata::from(&emitted_base),
@@ -1286,7 +1327,8 @@ mod tests {
         let base = raw_octahedral_source();
         let directory = directory(false, false);
         let emission =
-            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&base, None, None, None, None, None, None, None, None)
+                .unwrap();
         let sources = FinalizedShPackSources::new(&base, None).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let spool = build_cluster_payload_spool(
@@ -1296,7 +1338,7 @@ mod tests {
             sources,
         )
         .unwrap();
-        let metadata_sources = source_metadata_from_sections(&base, None, None, None, None);
+        let metadata_sources = source_metadata_from_sections(&base, None, None, None, None, None);
         let inputs = ClusterShPayloadsValidationInputs {
             directory: &directory,
             base: ClusterShPayloadsBaseMetadata::from(&base),

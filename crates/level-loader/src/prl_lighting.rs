@@ -153,7 +153,9 @@ impl LevelWorld {
         self.probe_depth_tiles.as_ref()
     }
 
-    /// Id 57, in either SH storage mode: whole-resident outside id 50.
+    /// Id 57. Its cells, records, masks and mover entries are always held; a
+    /// streamed block's payload is held too under `off`, and otherwise stays
+    /// with id 50's cells (`MoverProbeChannelSection::payload_held`).
     pub fn mover_probe_channel(
         &self,
     ) -> Option<&postretro_level_format::mover_probe_channel::MoverProbeChannelSection> {

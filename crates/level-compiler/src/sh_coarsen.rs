@@ -1032,8 +1032,7 @@ mod tests {
     fn provider_caps_id41_at_l0_under_a_channel_direct_entry_only() {
         use postretro_level_format::mover_probe_channel::{
             BounceEntryParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry,
-            MoverBouncePlacement, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
-            MoverProbeChannelParts,
+            MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord, MoverProbeChannelParts,
         };
         let dims = [4, 4, 4];
         let validity = all_valid(dims);
@@ -1042,7 +1041,6 @@ mod tests {
         let channel = |direct: bool| {
             let parts = MoverProbeChannelParts {
                 affinity_dims: [1, 1, 1],
-                bounce_placement: MoverBouncePlacement::Resident,
                 direct: direct
                     .then(|| DirectRecordParts {
                         cell: 0,

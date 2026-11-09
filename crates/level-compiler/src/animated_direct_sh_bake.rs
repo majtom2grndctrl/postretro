@@ -34,11 +34,12 @@ const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
 
 /// The animated direct deltas' (id 45) per-light memo: one entry per
-/// animated light holding its raw unit-radiance sub-blocks. Bump the version
-/// when the sub-block bake or the memo payload changes.
+/// animated light holding its raw unit-radiance sub-blocks at their valid
+/// probes. Bump the version when the sub-block bake or the memo payload
+/// changes. Version 2: the payload keeps valid probes only.
 pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE: DirectDeltaStage = DirectDeltaStage {
     id: "animated_direct_sh_delta_light",
-    version: 1,
+    version: 2,
 };
 
 /// Inputs for the animated direct-SH delta bake. The probe grid comes from the

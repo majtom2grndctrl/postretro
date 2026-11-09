@@ -2,7 +2,8 @@
 // ray: the inputs the SH working-set gate folds into its phases.
 // See: context/lib/build_pipeline.md §Compiler pipeline (working-set gate)
 
-use glam::DVec3;
+use std::collections::HashSet;
+
 use postretro_level_format::mover_probe_channel::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
 };
@@ -10,12 +11,12 @@ use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 
 use super::bake::MoverBounceJob;
-use super::direct::{DirectEntry, light_movers};
+use super::direct::{DirectEntry, ProbeCells, light_movers};
 use super::gather::PosedProbe;
 use super::states::{BounceProbe, DepthProbe};
 use crate::map_data::{LightType, MapLight};
 use crate::mover_light_gate::MoverPoses;
-use crate::sh_bake::ProbeGridLayout;
+use crate::sh_bake::{ProbeGridLayout, vec3_from};
 
 /// One gathered tile, border included, as the posed gather holds it.
 const GATHERED_TILE_BYTES: u64 = 36 * size_of::<OctahedralAtlasTexel>() as u64;
@@ -142,10 +143,17 @@ pub(crate) fn kept_later_bounces<'j>(
     })
 }
 
-/// The direct half's entries at their bound: for each light that may meet a
-/// mover, one entry per mover it may meet at each cell holding a valid probe
-/// inside the light's reach, each carrying a visibility pair and the light's
-/// tile per valid probe of its cell. A sun reaches every cell.
+/// The direct half's entries at their bound, priced with the bake's own
+/// prefilter and no ray. The bake writes an entry for a (light, mover, cell)
+/// only where a valid probe of the cell lies inside the light's reach and
+/// some pose of the mover may meet a sample segment from it
+/// ([`super::visibility::PosedOccluder::may_meet`]); the entry then carries a
+/// visibility pair and the light's tile for every valid probe of the cell.
+/// So this sums, over exactly those (light, mover, cell) triples, the cell's
+/// valid probes at their payload plus one entry header. A point or spot light
+/// reaches no probe past its falloff range (taken a metre wider); a sun
+/// reaches every probe. Never below what the bake holds; the movers a light
+/// cannot meet, and the cells no pose shadows, cost nothing.
 pub(crate) fn direct_entry_bound(
     lights: &[&MapLight],
     poses: &MoverPoses,
@@ -154,66 +162,82 @@ pub(crate) fn direct_entry_bound(
     if poses.analysed.is_empty() || layout.is_empty() {
         return 0;
     }
+    let cells = ProbeCells::of_layout(layout);
     let per_probe = (MOVER_VISIBILITY_BYTES_PER_PROBE + MOVER_IRRADIANCE_TILE_F16_COUNT * 2) as u64;
+    let entry_bytes = |cell: usize| {
+        u64::from(cells.valid_masks[cell].count_ones()) * per_probe
+            + size_of::<DirectEntry>() as u64
+    };
     let mut total = 0u64;
+    let mut met: HashSet<(usize, usize)> = HashSet::new();
     for light in lights {
-        let movers = light_movers(light, poses).len() as u64;
-        if movers == 0 {
+        let movers = light_movers(light, poses);
+        if movers.is_empty() {
             continue;
         }
-        let reached_cells = match light.light_type {
-            LightType::Directional => cells_of(layout, |_| true),
-            LightType::Point | LightType::Spot => {
-                let radius = f64::from(light.falloff_range.max(0.0)) + 1.0;
-                cells_in_ball(layout, light.origin, radius)
+        met.clear();
+        for_each_probe_in_reach(layout, light, |probe| {
+            let cell = cell_of_probe(layout, probe);
+            let point = vec3_from(layout.probe_positions[probe]);
+            for (slot, mover) in movers.iter().enumerate() {
+                if !met.contains(&(cell, slot))
+                    && mover
+                        .poses
+                        .iter()
+                        .flatten()
+                        .any(|pose| pose.may_meet(point, light))
+                {
+                    met.insert((cell, slot));
+                }
             }
-        };
-        // An entry carries its cell's whole valid set: at most a full cell.
-        total += movers
-            * reached_cells
-            * (PROBES_PER_CELL * per_probe + size_of::<DirectEntry>() as u64);
+        });
+        total += met.iter().map(|&(cell, _)| entry_bytes(cell)).sum::<u64>();
     }
     total
 }
 
-/// Probes per affinity cell.
-const PROBES_PER_CELL: u64 = 64;
-
-/// Affinity cells holding a valid probe `inside` admits.
-fn cells_of(layout: &ProbeGridLayout, inside: impl Fn(usize) -> bool) -> u64 {
-    let [nx, ny, _] = layout.dims.map(|dim| dim as usize);
-    let [ax, ay, _] = layout.dims.map(|dim| dim.div_ceil(4) as usize);
-    let cells: std::collections::BTreeSet<usize> = (0..layout.total_probes())
-        .filter(|&probe| layout.validity[probe] != 0 && inside(probe))
-        .map(|probe| {
-            let (x, y, z) = (probe % nx, probe / nx % ny, probe / (nx * ny));
-            x / 4 + y / 4 * ax + z / 4 * ax * ay
-        })
-        .collect();
-    cells.len() as u64
-}
-
-/// Affinity cells holding a valid probe within `radius` of `centre`.
-fn cells_in_ball(layout: &ProbeGridLayout, centre: DVec3, radius: f64) -> u64 {
+/// Every valid probe a light can reach: within a metre past a point or spot
+/// light's falloff range, or anywhere for a sun.
+fn for_each_probe_in_reach(
+    layout: &ProbeGridLayout,
+    light: &MapLight,
+    mut visit: impl FnMut(usize),
+) {
+    let ball = match light.light_type {
+        LightType::Directional => None,
+        LightType::Point | LightType::Spot => {
+            Some((light.origin, f64::from(light.falloff_range.max(0.0)) + 1.0))
+        }
+    };
+    let Some((centre, radius)) = ball else {
+        (0..layout.total_probes())
+            .filter(|&probe| layout.validity[probe] != 0)
+            .for_each(visit);
+        return;
+    };
     let spacing = f64::from(layout.cell_size[0]).max(1.0e-6);
     let lo = ((centre - radius - layout.world_min) / spacing).floor();
     let hi = ((centre + radius - layout.world_min) / spacing).ceil();
     let clamp = |value: f64, dim: u32| value.clamp(0.0, f64::from(dim) - 1.0) as usize;
     let [nx, ny, nz] = layout.dims;
-    let (nx, ny) = (nx as usize, ny as usize);
-    let [ax, ay, _] = layout.dims.map(|dim| dim.div_ceil(4) as usize);
-    let mut cells = std::collections::BTreeSet::new();
     for z in clamp(lo.z, nz)..=clamp(hi.z, nz) {
-        for y in clamp(lo.y, ny as u32)..=clamp(hi.y, ny as u32) {
-            for x in clamp(lo.x, nx as u32)..=clamp(hi.x, nx as u32) {
-                let probe = x + y * nx + z * nx * ny;
+        for y in clamp(lo.y, ny)..=clamp(hi.y, ny) {
+            for x in clamp(lo.x, nx)..=clamp(hi.x, nx) {
+                let probe = x + y * nx as usize + z * nx as usize * ny as usize;
                 if layout.validity[probe] != 0
                     && layout.probe_positions[probe].distance(centre) <= radius
                 {
-                    cells.insert(x / 4 + y / 4 * ax + z / 4 * ax * ay);
+                    visit(probe);
                 }
             }
         }
     }
-    cells.len() as u64
+}
+
+/// The dense affinity cell holding dense probe `probe`.
+fn cell_of_probe(layout: &ProbeGridLayout, probe: usize) -> usize {
+    let [nx, ny, _] = layout.dims.map(|dim| dim as usize);
+    let [ax, ay, _] = layout.dims.map(|dim| dim.div_ceil(4) as usize);
+    let (x, y, z) = (probe % nx, probe / nx % ny, probe / (nx * ny));
+    x / 4 + y / 4 * ax + z / 4 * ax * ay
 }

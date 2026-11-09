@@ -40,8 +40,9 @@ use postretro_render_data::influence::LightInfluence;
 
 use super::spatial::SpatialDecode;
 use super::{
-    cell_draw_index, cluster_directory, entities, finalize_lighting, geometry, lighting,
-    lighting_sh, log_loaded, mover_probe_channel, spatial, validate_reflection_probes, validation,
+    LoadManifests, cell_draw_index, cluster_directory, entities, finalize_lighting, geometry,
+    lighting, lighting_sh, log_loaded, mover_probe_channel, spatial, validate_reflection_probes,
+    validation,
 };
 use crate::lightmap_stream::{LightmapStorage, LightmapStreamingMode};
 use crate::prl_container::PrlContainer;
@@ -339,11 +340,15 @@ pub(crate) fn load_prl_staged_from_container(
     container: PrlContainer,
     max_delta_section_binding_bytes: u64,
     max_scatter_section_bytes: u64,
-    stream_manifest: Option<Arc<ShStreamManifest>>,
+    manifests: LoadManifests,
     lightmap_requested: LightmapStreamingMode,
     cancel: &(impl LoadCancel + ?Sized),
     sink: &mut dyn FnMut(HandOut),
 ) -> Result<StagedParseOutcome, PrlLoadError> {
+    let LoadManifests {
+        streaming: stream_manifest,
+        id50,
+    } = manifests;
     macro_rules! stage_boundary {
         () => {
             if cancel.is_cancelled() {
@@ -408,6 +413,7 @@ pub(crate) fn load_prl_staged_from_container(
     let mover_probe_channel = mover_probe_channel::read_mover_probe_channel(
         &container,
         streaming,
+        id50.as_deref(),
         &lighting,
         &mut entity_decode.kinematic_geometry,
     )?;
@@ -458,6 +464,7 @@ pub(crate) fn load_prl_staged_from_container(
         &validation_inputs,
         &lighting.sh_volume,
         &sh,
+        mover_probe_channel.as_ref(),
     )?;
     let sh = validation::finalize_sh_companions(sh);
     stage_boundary!();

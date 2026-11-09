@@ -1,11 +1,15 @@
 // MoverProbeChannel (id 57) load: structural decode, the checks against ids
-// 34/35, 43, 45 and 59, and the ramp hand-off into mover runtime data.
+// 34/35, 43, 45 and 59, a streamed payload resolved against id 50 (and read
+// whole for a whole-load), and the ramp hand-off into mover runtime data.
 // See: context/lib/build_pipeline.md §PRL section IDs, §Compiler pipeline step 12
+
+use std::collections::BTreeMap;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
 use postretro_level_format::mover_probe_channel::{
-    MoverBouncePlacement, MoverLightNamespace, MoverProbeChannelError, MoverProbeChannelSection,
+    MoverChannelBlock, MoverLightNamespace, MoverPayloadPlacement, MoverProbeChannelError,
+    MoverProbeChannelSection, MoverStreamedRow, parse_streamed_rows,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -37,16 +41,23 @@ pub(super) struct MoverProbeChannelInputs<'a> {
     pub(super) id59_tile_count: usize,
     /// Id 43's movers.
     pub(super) mover_ids: &'a [u32],
-    /// Whether this load holds an id-50 source for a streamed bounce payload.
-    pub(super) id50_carries_bounce: bool,
+    /// Whether this load's id 50 lists this section as a source: where a
+    /// streamed payload is placed.
+    pub(super) id50_carries_payload: bool,
 }
 
 /// Read optional id 57, check it, and hand each mover it names its author
 /// ramp. Absent is `None` and leaves every mover on the identity ramp;
-/// malformed or unresolved refuses the level by name.
+/// malformed or unresolved refuses the level by name. A streamed payload
+/// must resolve against id 50 (`id50`, validated whatever the SH mode).
+/// When SH streams it stays with id 50's cells, read as they become
+/// resident; a whole-load (`streaming` is `None`, as under
+/// `POSTRETRO_SH_STREAMING=off`) reads it whole now, so the section holds
+/// the same payload a resident placement would.
 pub(super) fn read_mover_probe_channel(
     container: &PrlContainer,
     streaming: Option<&ShStreamManifest>,
+    id50: Option<&ShStreamManifest>,
     lighting: &LightingDecode,
     kinematic_geometry: &mut KinematicGeometry,
 ) -> Result<Option<MoverProbeChannelSection>, PrlLoadError> {
@@ -80,14 +91,9 @@ pub(super) fn read_mover_probe_channel(
         .iter()
         .map(|mover| mover.mover_id)
         .collect();
-    let id50_carries_bounce = streaming.is_some_and(|manifest| {
-        manifest
-            .payloads()
-            .sources
-            .iter()
-            .any(|source| source.section_id == SectionId::MoverProbeChannel as u32)
-    });
-    let section = decode_mover_probe_channel(
+    let id50_carries_payload =
+        id50.is_some_and(|manifest| manifest.carries_source(SectionId::MoverProbeChannel));
+    let mut section = decode_mover_probe_channel(
         &data,
         &MoverProbeChannelInputs {
             grid_dimensions,
@@ -101,16 +107,24 @@ pub(super) fn read_mover_probe_channel(
                 .as_ref()
                 .map_or(0, |tiles| tiles.tile_count()),
             mover_ids: &mover_ids,
-            id50_carries_bounce,
+            id50_carries_payload,
         },
     )?;
+    if streaming.is_none()
+        && section.streams()
+        && let Some(manifest) = id50
+    {
+        read_streamed_payload_whole(manifest, &mut section)?;
+    }
     apply_light_ramps(&section, kinematic_geometry);
     log::info!(
-        "[PRL] MoverProbeChannel: {} mover(s) over {} cell(s), {} direct record(s) with {} mover entr(y/ies), {} bounce entr(y/ies) ({:?}, {} B), {} depth record(s) ({} live tile(s))",
+        "[PRL] MoverProbeChannel: {} mover(s) over {} cell(s), {} direct record(s) with {} mover entr(y/ies) ({:?}, {} B), {} bounce entr(y/ies) ({:?}, {} B), {} depth record(s) ({} live tile(s))",
         section.ramps.len(),
         section.cells.len(),
         section.direct_records.len(),
         section.direct_movers.len(),
+        section.direct_placement,
+        section.direct_payload_bytes(),
         section.bounce_entries.len(),
         section.bounce_placement,
         section.bounce_payload_bytes(),
@@ -118,6 +132,51 @@ pub(super) fn read_mover_probe_channel(
         section.live_tile_count(),
     );
     Ok(Some(section))
+}
+
+/// A whole-load's read of a streamed payload: every id-50 chunk decoded and
+/// verified through the manifest, and its id-57 rows gathered into the
+/// section. A cell several clusters cover is carried by each, and the
+/// copies must agree. Only the rows' bytes are held, never every chunk.
+fn read_streamed_payload_whole(
+    manifest: &ShStreamManifest,
+    section: &mut MoverProbeChannelSection,
+) -> Result<(), PrlLoadError> {
+    let mut rows: BTreeMap<u32, (Vec<u8>, Vec<u8>)> = BTreeMap::new();
+    for cluster_id in 0..manifest.cluster_count() {
+        let chunk = manifest.read_and_decode_cluster(cluster_id)?;
+        let Some(block) = chunk.mover_channel_rows() else {
+            continue;
+        };
+        for row in parse_streamed_rows(block)? {
+            match rows.get(&row.cell) {
+                Some((direct, bounce)) if *direct != row.direct || *bounce != row.bounce => {
+                    return Err(Error::StreamedPayloadMismatch {
+                        block: if *direct != row.direct {
+                            MoverChannelBlock::Direct
+                        } else {
+                            MoverChannelBlock::Bounce
+                        },
+                        cell: row.cell,
+                        detail: "differs between two clusters that carry it".into(),
+                    }
+                    .into());
+                }
+                Some(_) => {}
+                None => {
+                    rows.insert(row.cell, (row.direct.to_vec(), row.bounce.to_vec()));
+                }
+            }
+        }
+    }
+    section.attach_streamed_payload(rows.iter().map(|(&cell, (direct, bounce))| {
+        MoverStreamedRow {
+            cell,
+            direct,
+            bounce,
+        }
+    }))?;
+    Ok(())
 }
 
 /// Decode id 57's bytes and check them against the rest of the level.
@@ -248,8 +307,14 @@ fn validate_mover_probe_channel(
         });
     }
 
-    if section.bounce_placement == MoverBouncePlacement::Streamed && !inputs.id50_carries_bounce {
-        return Err(Error::StreamedBounceUnresolved);
+    // A streamed payload is placed with id 50's cells: id 50 must list this
+    // section, or the payload is nowhere this load can read.
+    if let Some(block) = MoverChannelBlock::BOTH
+        .into_iter()
+        .find(|&block| section.placement(block) == MoverPayloadPlacement::Streamed)
+        && !inputs.id50_carries_payload
+    {
+        return Err(Error::StreamedPayloadUnresolved { block });
     }
     Ok(())
 }

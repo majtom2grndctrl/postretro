@@ -98,6 +98,15 @@ pub(crate) fn section_validation_from_error(
     section_validation(section, err.to_string())
 }
 
+/// A load's id-50 manifests: the one SH streams through (`None` when SH loads
+/// resident), and the validated one whatever the SH mode, through which a
+/// whole-load reads a streamed id-57 payload.
+#[derive(Default)]
+pub(crate) struct LoadManifests {
+    pub(crate) streaming: Option<std::sync::Arc<ShStreamManifest>>,
+    pub(crate) id50: Option<std::sync::Arc<ShStreamManifest>>,
+}
+
 /// Decodes every section in file-read order, then runs the parse-end checks.
 /// Each section read credits load progress, so the call order here is the
 /// progress order; the late checks can still reject after every read.
@@ -108,9 +117,13 @@ pub(crate) fn load_prl_from_container(
     container: PrlContainer,
     max_delta_section_binding_bytes: u64,
     max_scatter_section_bytes: u64,
-    stream_manifest: Option<std::sync::Arc<ShStreamManifest>>,
+    manifests: LoadManifests,
     lightmap_requested: LightmapStreamingMode,
 ) -> Result<LevelWorld, PrlLoadError> {
+    let LoadManifests {
+        streaming: stream_manifest,
+        id50,
+    } = manifests;
     let streaming = stream_manifest.as_deref();
 
     let parsed_cluster_directory =
@@ -145,6 +158,7 @@ pub(crate) fn load_prl_from_container(
     let mover_probe_channel = mover_probe_channel::read_mover_probe_channel(
         &container,
         streaming,
+        id50.as_deref(),
         &lighting,
         &mut entities.kinematic_geometry,
     )?;
@@ -172,6 +186,7 @@ pub(crate) fn load_prl_from_container(
         &validation_inputs,
         &lighting.sh_volume,
         &sh,
+        mover_probe_channel.as_ref(),
     )?;
     let sh = validation::finalize_sh_companions(sh);
     let (portals, has_portals) =

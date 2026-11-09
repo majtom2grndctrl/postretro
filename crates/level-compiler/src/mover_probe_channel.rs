@@ -28,6 +28,12 @@ mod visibility;
 #[cfg(test)]
 mod direct_tests;
 #[cfg(test)]
+mod fixture_cost_tests;
+#[cfg(test)]
+mod fixture_scene;
+#[cfg(test)]
+mod raised_room_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use bake::{
@@ -48,7 +54,7 @@ pub(crate) use gather::PosedGather;
 pub(crate) use gather::compact_slots;
 pub(crate) use lights::{ChannelLightSources, channel_lights};
 pub(crate) use posed_scene::{PosedScene, PosedSurfaces};
-pub(crate) use section::{EmittedDirectEntries, MoverRamps, channel_section};
+pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRamps, channel_section};
 pub(crate) use states::MoverBounceStates;
 pub(crate) use visibility::{
     INSIDE_BRUSH_RULE, InsideBrushRule, JointVisibility, PosedOccluder, joint_soft_visibility,

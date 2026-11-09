@@ -4,18 +4,18 @@
 
 use super::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_PROBE_CHANNEL_EPOCH, MOVER_RECORD_FLAG_OWN_TILE,
-    MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry, MoverBouncePlacement, MoverChannelBytes,
+    MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry, MoverChannelBlock, MoverChannelBytes,
     MoverChannelCell, MoverDepthRecord, MoverDirectRecord, MoverLightNamespace,
-    MoverLightRampRecord, MoverProbeChannelError, MoverProbeChannelSection, bounce_entry_f16_count,
-    entry_positions,
+    MoverLightRampRecord, MoverPayloadPlacement, MoverProbeChannelError, MoverProbeChannelSection,
+    bounce_entry_f16_count, entry_positions,
 };
 use crate::delta_sh_volumes::AFFINITY_FACTOR;
 use crate::probe_depth_tiles::{PROBE_DEPTH_TILE_TEXEL_BYTES, PROBE_DEPTH_TILE_TEXELS};
 
 type Error = MoverProbeChannelError;
 
-/// epoch, affinity factor, affinity dims, bounce placement.
-const HEADER_BYTES: usize = 1 + 1 + 12 + 1;
+/// epoch, affinity factor, affinity dims, direct placement, bounce placement.
+const HEADER_BYTES: usize = 1 + 1 + 12 + 1 + 1;
 /// u32 cell, u64 valid-probe mask.
 const CELL_RECORD_BYTES: usize = 12;
 /// u8 namespace, u8 flags, u16 reserved, u32 light, u64 probe mask.
@@ -28,23 +28,39 @@ const DEPTH_TILE_PAIR_BYTES: usize =
     2 * PROBE_DEPTH_TILE_TEXELS * PROBE_DEPTH_TILE_TEXEL_BYTES as usize;
 
 impl MoverProbeChannelSection {
-    /// [`Self::to_bytes`]'s bytes, part by part.
+    /// [`Self::to_bytes`]'s bytes, part by part, from the section's
+    /// structure, so a streamed payload counts the same whether or not it is
+    /// held: a resident payload in its own parts, a streamed one in
+    /// `streamed` and outside the total.
     pub fn byte_breakdown(&self) -> MoverChannelBytes {
+        let counts = self.direct_counts();
+        let visibility = counts.visibility_pairs * MOVER_VISIBILITY_BYTES_PER_PROBE;
+        let own_tiles = counts.own_tile_probes * MOVER_IRRADIANCE_TILE_F16_COUNT * 2;
+        let bounce_payload = self.bounce_payload_bytes() as usize;
+        let resident = |block| self.placement(block) == MoverPayloadPlacement::Resident;
+        let direct_resident = resident(MoverChannelBlock::Direct);
+        let bounce_resident = resident(MoverChannelBlock::Bounce);
         MoverChannelBytes {
             header: HEADER_BYTES,
             cell_index: 4 + self.cells.len() * CELL_RECORD_BYTES,
             direct_index: (self.direct_offsets.len() + self.mover_offsets.len()) * 4,
             direct_records: self.direct_records.len() * DIRECT_RECORD_BYTES
                 + self.direct_movers.len() * MOVER_ID_BYTES,
-            visibility: self.visibility.len(),
-            own_tiles: self.own_tiles.len() * 2,
+            visibility: if direct_resident { visibility } else { 0 },
+            own_tiles: if direct_resident { own_tiles } else { 0 },
             bounce_index: self.bounce_offsets.len() * 4
                 + self.bounce_entries.len() * BOUNCE_ENTRY_BYTES,
-            bounce_payload: self.bounce_tiles.len() * 2,
+            bounce_payload: if bounce_resident { bounce_payload } else { 0 },
             depth: 4
                 + self.depth_records.len() * DEPTH_RECORD_BYTES
                 + self.depth_tiles.len() * PROBE_DEPTH_TILE_TEXEL_BYTES as usize,
             ramps: self.ramps.len() * RAMP_RECORD_BYTES,
+            streamed_direct: if direct_resident {
+                0
+            } else {
+                visibility + own_tiles
+            },
+            streamed_bounce: if bounce_resident { 0 } else { bounce_payload },
         }
     }
 }
@@ -74,6 +90,13 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
         section.depth_records.len() * 2 * PROBE_DEPTH_TILE_TEXELS
     );
     debug_assert_eq!(section.ramps.len(), section.mover_ids().len());
+    let direct_resident = section.direct_placement == MoverPayloadPlacement::Resident;
+    let bounce_resident = section.bounce_placement == MoverPayloadPlacement::Resident;
+    debug_assert!(
+        section.payload_held(MoverChannelBlock::Direct)
+            && section.payload_held(MoverChannelBlock::Bounce),
+        "a resident payload is held; a streamed one need not be, and is not written"
+    );
 
     let mut out = Vec::with_capacity(section.encoded_len());
     out.push(MOVER_PROBE_CHANNEL_EPOCH);
@@ -81,6 +104,7 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     for dim in section.affinity_dims {
         out.extend_from_slice(&dim.to_le_bytes());
     }
+    out.push(section.direct_placement as u8);
     out.push(section.bounce_placement as u8);
 
     out.extend_from_slice(&(listed as u32).to_le_bytes());
@@ -103,8 +127,10 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     }
     put_u32s(&mut out, &section.mover_offsets);
     put_u32s(&mut out, &section.direct_movers);
-    out.extend_from_slice(&section.visibility);
-    put_halves(&mut out, &section.own_tiles);
+    if direct_resident {
+        out.extend_from_slice(&section.visibility);
+        put_halves(&mut out, &section.own_tiles);
+    }
 
     put_u32s(&mut out, &section.bounce_offsets);
     for entry in &section.bounce_entries {
@@ -112,7 +138,9 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&entry.affected_probe_mask.to_le_bytes());
     }
-    put_halves(&mut out, &section.bounce_tiles);
+    if bounce_resident {
+        put_halves(&mut out, &section.bounce_tiles);
+    }
 
     out.extend_from_slice(&(section.depth_records.len() as u32).to_le_bytes());
     for record in &section.depth_records {
@@ -138,7 +166,7 @@ fn put_u32s(out: &mut Vec<u8>, values: &[u32]) {
     }
 }
 
-fn put_halves(out: &mut Vec<u8>, halves: &[u16]) {
+pub(super) fn put_halves(out: &mut Vec<u8>, halves: &[u16]) {
     for half in halves {
         out.extend_from_slice(&half.to_le_bytes());
     }
@@ -171,11 +199,12 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
             what: "affinity cell count",
         })
     })?;
-    let placement_byte = reader.u8("bounce placement")?;
-    let bounce_placement =
-        MoverBouncePlacement::from_u8(placement_byte).ok_or(Error::UnknownBouncePlacement {
-            value: placement_byte,
-        })?;
+    let mut placement = |block: MoverChannelBlock| {
+        let value = reader.u8("payload placement")?;
+        MoverPayloadPlacement::from_u8(value).ok_or(Error::UnknownPlacement { block, value })
+    };
+    let direct_placement = placement(MoverChannelBlock::Direct)?;
+    let bounce_placement = placement(MoverChannelBlock::Bounce)?;
 
     let cells = read_cells(&mut reader, grid_cells)?;
     let listed = cells.len();
@@ -240,16 +269,28 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
             )?;
         }
     }
-    let visibility = reader.take(visibility_len, "visibility payload")?.to_vec();
-    check_masks_are_tight(
-        &cells,
-        &direct_offsets,
-        &direct_records,
-        &mover_offsets,
-        &direct_movers,
-        &visibility,
-    )?;
-    let own_tiles = reader.halves(own_tile_halves, "own-tile payload")?;
+    let (visibility, own_tiles) = match direct_placement {
+        MoverPayloadPlacement::Resident => {
+            let visibility = reader.take(visibility_len, "visibility payload")?.to_vec();
+            check_masks_are_tight(
+                &cells,
+                &direct_offsets,
+                &direct_records,
+                &mover_offsets,
+                &direct_movers,
+                &visibility,
+            )?;
+            let own_tiles = reader.halves(own_tile_halves, "own-tile payload")?;
+            (visibility, own_tiles)
+        }
+        MoverPayloadPlacement::Streamed if direct_records.is_empty() => {
+            return Err(Error::StreamedBlockWithoutEntries {
+                block: MoverChannelBlock::Direct,
+            });
+        }
+        // Mask tightness reads q, so it is checked when the payload attaches.
+        MoverPayloadPlacement::Streamed => (Vec::new(), Vec::new()),
+    };
 
     // Bounce block.
     let bounce_offsets = reader.offsets(listed, "bounce", "bounce offsets")?;
@@ -286,16 +327,18 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         check_mask("bounce", cells[position], index, entry.affected_probe_mask)?;
     }
     let bounce_tiles = match bounce_placement {
-        MoverBouncePlacement::Resident => {
+        MoverPayloadPlacement::Resident => {
             let halves = bounce_entries.iter().try_fold(0usize, |total, entry| {
                 checked_add(total, bounce_entry_f16_count(entry), "bounce payload")
             })?;
             reader.halves(halves, "bounce payload")?
         }
-        MoverBouncePlacement::Streamed if bounce_entries.is_empty() => {
-            return Err(Error::StreamedBounceWithoutEntries);
+        MoverPayloadPlacement::Streamed if bounce_entries.is_empty() => {
+            return Err(Error::StreamedBlockWithoutEntries {
+                block: MoverChannelBlock::Bounce,
+            });
         }
-        MoverBouncePlacement::Streamed => Vec::new(),
+        MoverPayloadPlacement::Streamed => Vec::new(),
     };
 
     // Every listed cell holds a direct record or a bounce entry.
@@ -337,6 +380,7 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
     let mut section = MoverProbeChannelSection {
         affinity_factor,
         affinity_dims,
+        direct_placement,
         bounce_placement,
         cells,
         direct_offsets,
@@ -503,7 +547,7 @@ fn check_mask(
 /// Each record's mask is exactly its movers' `q < 255` probes: every masked
 /// probe has a mover below 255 at either terminus, and every mover is below
 /// 255 somewhere.
-fn check_masks_are_tight(
+pub(super) fn check_masks_are_tight(
     cells: &[MoverChannelCell],
     direct_offsets: &[u32],
     records: &[MoverDirectRecord],

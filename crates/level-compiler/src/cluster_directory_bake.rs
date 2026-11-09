@@ -391,7 +391,8 @@ mod tests {
         };
         let sh = OctahedralShVolumeSection::placeholder();
         let view =
-            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None, None)
+                .unwrap();
         bake_cluster_directory_with_limits(
             &cells,
             &portals,
@@ -466,7 +467,8 @@ mod tests {
         };
         let sh = OctahedralShVolumeSection::placeholder();
         let view =
-            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None, None)
+                .unwrap();
         let baked =
             bake_cluster_directory_with_limits(&cells, &portals, &bvh, &locator, view, 2, 3)
                 .unwrap();
@@ -506,7 +508,8 @@ mod tests {
         };
         let sh = OctahedralShVolumeSection::placeholder();
         let view =
-            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None).unwrap();
+            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None, None)
+                .unwrap();
         let hints = ResolvedStreamingHints {
             seam_portal_ids: vec![0],
             pinned_cell_ids: vec![0],
@@ -672,6 +675,7 @@ mod tests {
             animated.as_ref(),
             billboard.as_ref(),
             animated_billboard.as_ref(),
+            None,
         )
         .unwrap();
         for &(primitive_limit, cell_limit) in &[(32, 16), (64, 32), (128, 64)] {

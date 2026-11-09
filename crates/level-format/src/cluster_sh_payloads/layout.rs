@@ -10,7 +10,8 @@ pub(super) fn dense_format(
         ClusterShPayloadsSourceMetadata::Dense {
             irradiance_format, ..
         } => Ok(irradiance_format),
-        ClusterShPayloadsSourceMetadata::Sparse { section_id, .. } => {
+        ClusterShPayloadsSourceMetadata::Sparse { section_id, .. }
+        | ClusterShPayloadsSourceMetadata::MoverChannel { section_id, .. } => {
             source_mismatch(format!("source {section_id} is not dense"))
         }
     }
@@ -425,6 +426,7 @@ pub(super) fn expected_internal_version(section_id: u32) -> Result<u32, ClusterS
         id if id == SectionId::AnimatedDirectShDeltaVolumes as u32 => {
             Ok(u32::from(ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION))
         }
+        id if id == SectionId::MoverProbeChannel as u32 => Ok(u32::from(MOVER_PROBE_CHANNEL_EPOCH)),
         _ => source_mismatch(format!("section {section_id} is not an id-50 source")),
     }
 }
@@ -447,5 +449,6 @@ pub(super) fn is_streamed_section(section_id: u32) -> bool {
             || id == SectionId::DirectShVolume as u32
             || id == SectionId::DirectShDeltaVolumes as u32
             || id == SectionId::AnimatedDirectShDeltaVolumes as u32
+            || id == SectionId::MoverProbeChannel as u32
     )
 }

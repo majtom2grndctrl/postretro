@@ -1,13 +1,101 @@
 // MoverProbeChannel (id 57) read views: the direct block walked cell → term
-// record → mover visibility, bounce entries with their payload, and the
-// counts a renderer sizes its buffers by.
+// record → mover visibility, bounce entries with their payload, a listed
+// cell's payload whichever placement holds it, and the counts a renderer
+// sizes its buffers by.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry,
-    MoverBouncePlacement, MoverDirectRecord, MoverProbeChannelSection, bounce_entry_f16_count,
-    entry_positions,
+    MoverCellSlices, MoverChannelBlock, MoverDirectRecord, MoverProbeChannelError,
+    MoverProbeChannelSection, MoverStreamedRow, bounce_entry_f16_count, entry_positions,
 };
+
+/// A run of f16 halves, as the section holds them or as id 50 carries them
+/// (little-endian bytes). Equal runs compare equal whichever form holds them.
+#[derive(Debug, Clone, Copy)]
+pub enum MoverHalves<'a> {
+    Decoded(&'a [u16]),
+    /// Little-endian, two bytes per half.
+    Encoded(&'a [u8]),
+}
+
+impl<'a> MoverHalves<'a> {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Decoded(halves) => halves.len(),
+            Self::Encoded(bytes) => bytes.len() / 2,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Half `index`, if in range.
+    pub fn get(&self, index: usize) -> Option<u16> {
+        match self {
+            Self::Decoded(halves) => halves.get(index).copied(),
+            Self::Encoded(bytes) => bytes
+                .get(index * 2..index * 2 + 2)
+                .map(|half| u16::from_le_bytes([half[0], half[1]])),
+        }
+    }
+
+    /// Halves `range` of the run.
+    pub fn slice(&self, range: std::ops::Range<usize>) -> Option<MoverHalves<'a>> {
+        match *self {
+            Self::Decoded(halves) => halves.get(range).map(Self::Decoded),
+            Self::Encoded(bytes) => bytes.get(range.start * 2..range.end * 2).map(Self::Encoded),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u16> + 'a {
+        let this = *self;
+        (0..this.len()).map(move |index| this.get(index).expect("index below len"))
+    }
+
+    pub fn to_vec(&self) -> Vec<u16> {
+        self.iter().collect()
+    }
+}
+
+impl PartialEq for MoverHalves<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl PartialEq<[u16]> for MoverHalves<'_> {
+    fn eq(&self, other: &[u16]) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter().copied())
+    }
+}
+
+impl PartialEq<&[u16]> for MoverHalves<'_> {
+    fn eq(&self, other: &&[u16]) -> bool {
+        *self == **other
+    }
+}
+
+impl PartialEq<Vec<u16>> for MoverHalves<'_> {
+    fn eq(&self, other: &Vec<u16>) -> bool {
+        *self == other[..]
+    }
+}
+
+/// One listed cell's payload, whichever placement holds each block: the
+/// section's own vectors for a held block, the cell's id-50 row for a
+/// streamed one. A renderer reads a cell through this and the
+/// `*_at` views below, so it never asks where the payload lives.
+#[derive(Debug, Clone, Copy)]
+pub struct MoverCellPayload<'a> {
+    /// `q₀, q₁` per masked probe, record after record, mover after mover.
+    pub visibility: &'a [u8],
+    /// One tile per masked probe, flagged record after flagged record.
+    pub own_tiles: MoverHalves<'a>,
+    /// `S^b₀, S^b₁` per affected probe, entry after entry.
+    pub bounce_tiles: MoverHalves<'a>,
+}
 
 /// One listed cell's term records.
 #[derive(Debug, Clone, Copy)]
@@ -15,9 +103,7 @@ pub struct DirectCellView<'a> {
     section: &'a MoverProbeChannelSection,
     /// Position in [`MoverProbeChannelSection::cells`].
     position: usize,
-    /// Payload cursors at the cell's first record.
-    visibility_at: usize,
-    tile_at: usize,
+    payload: MoverCellPayload<'a>,
 }
 
 impl<'a> DirectCellView<'a> {
@@ -36,18 +122,26 @@ impl<'a> DirectCellView<'a> {
         let (cell, valid_probe_mask) = (self.cell(), self.valid_probe_mask());
         let start = section.direct_offsets[self.position] as usize;
         let end = section.direct_offsets[self.position + 1] as usize;
-        let (mut visibility_at, mut tile_at) = (self.visibility_at, self.tile_at);
+        let payload = self.payload;
+        let (mut visibility_at, mut tile_at) = (0usize, 0usize);
         (start..end).map(move |index| {
-            let view = record_view(
-                section,
-                index,
+            let (visibility_len, tile_len) = record_payload_len(section, index);
+            let record = &section.direct_records[index];
+            let view = DirectRecordView {
                 cell,
                 valid_probe_mask,
-                visibility_at,
-                tile_at,
-            );
-            visibility_at += view.visibility.len();
-            tile_at += view.own_tiles.map_or(0, <[u16]>::len);
+                record,
+                mover_ids: section.record_movers(index),
+                visibility: &payload.visibility[visibility_at..visibility_at + visibility_len],
+                own_tiles: record.carries_own_tile.then(|| {
+                    payload
+                        .own_tiles
+                        .slice(tile_at..tile_at + tile_len)
+                        .expect("a cell's payload covers its records")
+                }),
+            };
+            visibility_at += visibility_len;
+            tile_at += tile_len;
             view
         })
     }
@@ -66,7 +160,7 @@ pub struct DirectRecordView<'a> {
     pub visibility: &'a [u8],
     /// One tile per masked probe, x-fastest; `None` unless the record
     /// carries its own (else id 41 or id 45 holds the term per probe).
-    pub own_tiles: Option<&'a [u16]>,
+    pub own_tiles: Option<MoverHalves<'a>>,
 }
 
 impl<'a> DirectRecordView<'a> {
@@ -85,9 +179,8 @@ impl<'a> DirectRecordView<'a> {
 
     /// The own tile at masked slot `slot` (x-fastest rank among the mask's
     /// bits), if the record carries tiles.
-    pub fn own_tile(&self, slot: usize) -> Option<&'a [u16]> {
-        let tiles = self.own_tiles?;
-        tiles.get(
+    pub fn own_tile(&self, slot: usize) -> Option<MoverHalves<'a>> {
+        self.own_tiles?.slice(
             slot * MOVER_IRRADIANCE_TILE_F16_COUNT..(slot + 1) * MOVER_IRRADIANCE_TILE_F16_COUNT,
         )
     }
@@ -116,8 +209,8 @@ pub struct BounceEntryView<'a> {
     pub cell: u32,
     pub entry: &'a MoverBounceEntry,
     /// `S^b₀, S^b₁` per affected probe, x-fastest; `None` when the payload
-    /// streams with id 50.
-    pub tiles: Option<&'a [u16]>,
+    /// streams with id 50 and is not held.
+    pub tiles: Option<MoverHalves<'a>>,
 }
 
 /// What the direct block holds, for GPU buffer sizing.
@@ -136,10 +229,11 @@ pub struct MoverDirectCounts {
     pub visibility_pairs: usize,
 }
 
-/// [`MoverProbeChannelSection::to_bytes`]'s bytes, part by part.
+/// [`MoverProbeChannelSection::to_bytes`]'s bytes, part by part, and the
+/// payload placed with id 50 instead.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MoverChannelBytes {
-    /// Epoch, affinity grid, bounce placement.
+    /// Epoch, affinity grid, payload placements.
     pub header: usize,
     /// Listed cell count and the listed cell records (index and valid mask).
     pub cell_index: usize,
@@ -147,17 +241,25 @@ pub struct MoverChannelBytes {
     pub direct_index: usize,
     /// Term records and mover ids.
     pub direct_records: usize,
+    /// Resident visibility; 0 when the direct payload streams.
     pub visibility: usize,
+    /// Resident own tiles; 0 when the direct payload streams.
     pub own_tiles: usize,
     /// Bounce offsets per listed cell and bounce entries.
     pub bounce_index: usize,
+    /// Resident bounce tiles; 0 when the bounce payload streams.
     pub bounce_payload: usize,
     /// Depth count, records and tiles.
     pub depth: usize,
     pub ramps: usize,
+    /// The direct payload placed with id 50's cells, outside [`Self::total`].
+    pub streamed_direct: usize,
+    /// The bounce payload placed with id 50's cells, outside [`Self::total`].
+    pub streamed_bounce: usize,
 }
 
 impl MoverChannelBytes {
+    /// Bytes the section itself writes.
     pub fn total(&self) -> usize {
         self.header
             + self.cell_index
@@ -171,53 +273,91 @@ impl MoverChannelBytes {
             + self.ramps
     }
 
-    /// The direct block's own bytes: its index, records, visibility and
-    /// tiles; the shared cell index is apart.
+    /// The direct block's own bytes in the section: its index, records and
+    /// resident payload; the shared cell index is apart.
     pub fn direct_block(&self) -> usize {
         self.direct_index + self.direct_records + self.visibility + self.own_tiles
     }
 }
 
 impl MoverProbeChannelSection {
-    /// The direct block walked cell → term record → mover, in wire order.
-    /// Listed cells holding only bounce entries are skipped.
+    /// The direct block walked cell → term record → mover, in wire order,
+    /// over the payload the section holds. Listed cells holding only bounce
+    /// entries are skipped. When the direct payload streams and is not held,
+    /// this yields nothing: read each cell through [`Self::cell_payload`]
+    /// with its id-50 row and [`Self::direct_cell_at`].
     pub fn direct_cells(&self) -> impl Iterator<Item = DirectCellView<'_>> {
-        let (mut visibility_at, mut tile_at) = (0usize, 0usize);
-        (0..self.cells.len()).filter_map(move |position| {
-            let view = DirectCellView {
-                section: self,
-                position,
-                visibility_at,
-                tile_at,
-            };
-            let start = self.direct_offsets[position] as usize;
-            let end = self.direct_offsets[position + 1] as usize;
-            for index in start..end {
-                let (visibility, tiles) = record_payload_len(self, index);
-                visibility_at += visibility;
-                tile_at += tiles;
-            }
-            (start != end).then_some(view)
-        })
+        let held = self.payload_held(MoverChannelBlock::Direct);
+        let slices = if held { self.cell_slices() } else { Vec::new() };
+        slices
+            .into_iter()
+            .enumerate()
+            .filter_map(move |(position, slices)| {
+                let payload = self.held_payload(&slices);
+                self.direct_cell_at(position, payload)
+            })
     }
 
-    /// Every term record with its cell and payload, in wire order.
+    /// Every term record with its cell and payload, in wire order, over the
+    /// payload the section holds ([`Self::direct_cells`]).
     pub fn direct_record_views(&self) -> impl Iterator<Item = DirectRecordView<'_>> {
         self.direct_cells().flat_map(|cell| cell.records())
     }
 
-    /// Every bounce entry with its cell and payload, in wire order.
+    /// Listed cell `position`'s term records over `payload`, or `None` when
+    /// the cell holds none.
+    pub fn direct_cell_at<'a>(
+        &'a self,
+        position: usize,
+        payload: MoverCellPayload<'a>,
+    ) -> Option<DirectCellView<'a>> {
+        let start = self.direct_offsets[position];
+        let end = self.direct_offsets[position + 1];
+        (start != end).then_some(DirectCellView {
+            section: self,
+            position,
+            payload,
+        })
+    }
+
+    /// Listed cell `position`'s bounce entries over `payload`, in wire order.
+    pub fn bounce_entries_at<'a>(
+        &'a self,
+        position: usize,
+        payload: MoverCellPayload<'a>,
+    ) -> impl Iterator<Item = BounceEntryView<'a>> + 'a {
+        let cell = self.cells[position].cell;
+        let start = self.bounce_offsets[position] as usize;
+        let end = self.bounce_offsets[position + 1] as usize;
+        let mut tile_at = 0;
+        self.bounce_entries[start..end].iter().map(move |entry| {
+            let len = bounce_entry_f16_count(entry);
+            let tiles = payload
+                .bounce_tiles
+                .slice(tile_at..tile_at + len)
+                .expect("a cell's payload covers its bounce entries");
+            tile_at += len;
+            BounceEntryView {
+                cell,
+                entry,
+                tiles: Some(tiles),
+            }
+        })
+    }
+
+    /// Every bounce entry with its cell, in wire order, with the payload the
+    /// section holds (`None` while a streamed payload is not held).
     pub fn bounce_entry_views(&self) -> impl Iterator<Item = BounceEntryView<'_>> {
-        let resident = self.bounce_placement == MoverBouncePlacement::Resident;
+        let held = self.payload_held(MoverChannelBlock::Bounce);
         let mut tile_at = 0;
         entry_positions(&self.bounce_offsets)
             .zip(&self.bounce_entries)
             .map(move |(position, entry)| {
-                let tiles = resident.then(|| {
+                let tiles = held.then(|| {
                     let len = bounce_entry_f16_count(entry);
                     let tiles = &self.bounce_tiles[tile_at..tile_at + len];
                     tile_at += len;
-                    tiles
+                    MoverHalves::Decoded(tiles)
                 });
                 BounceEntryView {
                     cell: self.cells[position].cell,
@@ -225,6 +365,86 @@ impl MoverProbeChannelSection {
                     tiles,
                 }
             })
+    }
+
+    /// Listed cell `position`'s payload: each held block from the section,
+    /// each streamed block not held from `streamed`, the cell's id-50 row.
+    /// `slices` is the cell's entry of [`Self::cell_slices`]. A streamed
+    /// block that is neither held nor in a row of the right length is the
+    /// named error, so no reader samples a payload that is not there.
+    pub fn cell_payload<'a>(
+        &'a self,
+        position: usize,
+        slices: &MoverCellSlices,
+        streamed: Option<MoverStreamedRow<'a>>,
+    ) -> Result<MoverCellPayload<'a>, MoverProbeChannelError> {
+        let mut payload = self.held_payload(slices);
+        let lens = slices.row_lens(self);
+        let cell = self.cells[position].cell;
+        for block in MoverChannelBlock::BOTH {
+            let expected = match block {
+                MoverChannelBlock::Direct => lens.direct,
+                MoverChannelBlock::Bounce => lens.bounce,
+            } as usize;
+            // A cell holding nothing of a streamed block has no bytes of it
+            // in its row, or no row at all.
+            if self.payload_held(block) || expected == 0 {
+                continue;
+            }
+            let row =
+                streamed.ok_or(MoverProbeChannelError::StreamedPayloadUnresolved { block })?;
+            if row.cell != cell {
+                return Err(MoverProbeChannelError::StreamedPayloadMismatch {
+                    block,
+                    cell,
+                    detail: format!("is read from the row of affinity cell {}", row.cell),
+                });
+            }
+            let bytes = match block {
+                MoverChannelBlock::Direct => row.direct,
+                MoverChannelBlock::Bounce => row.bounce,
+            };
+            if bytes.len() != expected {
+                return Err(MoverProbeChannelError::StreamedPayloadMismatch {
+                    block,
+                    cell,
+                    detail: format!("holds {} byte(s), expected {expected}", bytes.len()),
+                });
+            }
+            match block {
+                MoverChannelBlock::Direct => {
+                    let (visibility, tiles) = bytes.split_at(slices.visibility.len());
+                    payload.visibility = visibility;
+                    payload.own_tiles = MoverHalves::Encoded(tiles);
+                }
+                MoverChannelBlock::Bounce => payload.bounce_tiles = MoverHalves::Encoded(bytes),
+            }
+        }
+        Ok(payload)
+    }
+
+    /// The cell's payload from the section's own vectors; a block not held
+    /// reads empty.
+    fn held_payload(&self, slices: &MoverCellSlices) -> MoverCellPayload<'_> {
+        let direct = self.payload_held(MoverChannelBlock::Direct);
+        let bounce = self.payload_held(MoverChannelBlock::Bounce);
+        MoverCellPayload {
+            visibility: if direct {
+                &self.visibility[slices.visibility.clone()]
+            } else {
+                &[]
+            },
+            own_tiles: MoverHalves::Decoded(if direct {
+                &self.own_tiles[slices.own_tiles.clone()]
+            } else {
+                &[]
+            }),
+            bounce_tiles: MoverHalves::Decoded(if bounce {
+                &self.bounce_tiles[slices.bounce_tiles.clone()]
+            } else {
+                &[]
+            }),
+        }
     }
 
     /// What the direct block holds, for sizing GPU buffers.
@@ -251,30 +471,11 @@ impl MoverProbeChannelSection {
     }
 }
 
-fn record_view<'a>(
-    section: &'a MoverProbeChannelSection,
-    index: usize,
-    cell: u32,
-    valid_probe_mask: u64,
-    visibility_at: usize,
-    tile_at: usize,
-) -> DirectRecordView<'a> {
-    let record = &section.direct_records[index];
-    let (visibility_len, tile_len) = record_payload_len(section, index);
-    DirectRecordView {
-        cell,
-        valid_probe_mask,
-        record,
-        mover_ids: section.record_movers(index),
-        visibility: &section.visibility[visibility_at..visibility_at + visibility_len],
-        own_tiles: record
-            .carries_own_tile
-            .then(|| &section.own_tiles[tile_at..tile_at + tile_len]),
-    }
-}
-
 /// Visibility bytes and own-tile halves record `index` holds.
-fn record_payload_len(section: &MoverProbeChannelSection, index: usize) -> (usize, usize) {
+pub(super) fn record_payload_len(
+    section: &MoverProbeChannelSection,
+    index: usize,
+) -> (usize, usize) {
     let record = &section.direct_records[index];
     let probes = record.masked_probe_count();
     let visibility = probes * MOVER_VISIBILITY_BYTES_PER_PROBE * section.record_movers(index).len();

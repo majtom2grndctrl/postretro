@@ -17,6 +17,7 @@ use crate::{
     direct_sh_delta_volumes::DirectShDeltaVolumesSection,
     direct_sh_volume::DirectShVolumeSection,
     entity_shadow_lights::EntityShadowLightsSection,
+    mover_probe_channel::MoverProbeChannelSection,
     portals::PortalsSection,
     sh_volume::OctahedralShVolumeSection,
 };
@@ -253,6 +254,10 @@ pub struct ClusterDirectoryShInventory<'a> {
     pub animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
     pub billboard: Option<&'a BillboardDirectScatterVolumeSection>,
     pub animated_billboard_delta: Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    /// Id 57, present here only when a block's payload streams with id 50's
+    /// cells. A resident id 57 is not a streamed resource, so it leaves ids
+    /// 49 and 50 unchanged.
+    pub mover_channel: Option<&'a MoverProbeChannelSection>,
 }
 
 /// Borrowed cross-section evidence for the shared semantic validator.
@@ -321,6 +326,12 @@ pub fn canonical_resource_records(
         (
             SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
             inventory.animated_billboard_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::MoverProbeChannel,
+            inventory.mover_channel.is_some(),
             ClusterResourceDomain::AffinityCell,
             affinity_dims,
         ),
@@ -742,7 +753,8 @@ fn validate_resources(
             || inventory.direct_delta.is_some()
             || inventory.animated_direct_delta.is_some()
             || inventory.billboard.is_some()
-            || inventory.animated_billboard_delta.is_some())
+            || inventory.animated_billboard_delta.is_some()
+            || inventory.mover_channel.is_some())
     {
         return Err(ClusterDirectoryError::ResourceMismatch(
             "SH companion is present without id 34".into(),
@@ -793,6 +805,12 @@ fn validate_resources(
         (
             SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
             inventory.animated_billboard_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::MoverProbeChannel,
+            inventory.mover_channel.is_some(),
             ClusterResourceDomain::AffinityCell,
             affinity_dims,
         ),
@@ -996,6 +1014,19 @@ fn validate_companions(
             &delta.cell_levels,
             &delta.affinity_offsets,
         )?;
+    }
+    if let Some(channel) = inventory.mover_channel {
+        if channel.affinity_dims != affinity_dims {
+            return resource_mismatch(format!(
+                "id 57 affinity dimensions {:?} disagree with {affinity_dims:?}",
+                channel.affinity_dims
+            ));
+        }
+        if !channel.streams() {
+            return resource_mismatch(
+                "id 57 is a streamed resource but places no payload with id 50",
+            );
+        }
     }
     if let Some(delta) = inventory.animated_billboard_delta {
         let source = inventory.animated_direct_delta.ok_or_else(|| {
@@ -1245,9 +1276,8 @@ fn resource_domain(section_id: u32) -> Option<ClusterResourceDomain> {
         SectionId::DeltaShVolumes
         | SectionId::DirectShDeltaVolumes
         | SectionId::AnimatedDirectShDeltaVolumes
-        | SectionId::AnimatedBillboardDirectScatterDeltaVolumes => {
-            Some(ClusterResourceDomain::AffinityCell)
-        }
+        | SectionId::AnimatedBillboardDirectScatterDeltaVolumes
+        | SectionId::MoverProbeChannel => Some(ClusterResourceDomain::AffinityCell),
         _ => None,
     }
 }

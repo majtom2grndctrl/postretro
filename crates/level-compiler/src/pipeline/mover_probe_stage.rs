@@ -6,7 +6,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use postretro_level_format::mover_probe_channel::{MoverLightNamespace, MoverProbeChannelSection};
+use postretro_level_format::mover_probe_channel::{
+    MoverChannelBlock, MoverLightNamespace, MoverPayloadPlacement, MoverProbeChannelSection,
+};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::affinity_grid::AffinityReachInputs;
@@ -20,7 +22,7 @@ use crate::map_data::MapKinematicMover;
 use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
     BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
-    MoverRamps, ProbeCells, bake_direct, channel_lights, channel_section,
+    MoverPayloadBars, MoverRamps, ProbeCells, bake_direct, channel_lights, channel_section,
 };
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
@@ -45,6 +47,8 @@ pub(super) struct DirectHalfInputs<'a> {
     pub(super) governor: &'a Arc<Governor>,
     /// The bounce half's blocks, which id 57 carries beside the direct block.
     pub(super) bounce: BounceBlocks,
+    /// Each payload block's resident byte bar.
+    pub(super) payload_bars: MoverPayloadBars,
 }
 
 /// The direct half's bake, the bounce half's blocks and the grid the section
@@ -54,6 +58,7 @@ pub(super) struct DirectHalf {
     bounce: BounceBlocks,
     cells: ProbeCells,
     ramps: MoverRamps,
+    payload_bars: MoverPayloadBars,
 }
 
 /// Bake the direct half: per gated light, the entries of every analysed
@@ -128,6 +133,7 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
         bounce: inputs.bounce,
         cells,
         ramps: MoverRamps::new(inputs.movers),
+        payload_bars: inputs.payload_bars,
     }))
 }
 
@@ -146,6 +152,7 @@ impl DirectHalf {
             &self.bounce,
             &self.cells,
             &self.ramps,
+            &self.payload_bars,
             |_, _, _| false,
         )
     }
@@ -167,6 +174,7 @@ impl DirectHalf {
             &self.bounce,
             &self.cells,
             &self.ramps,
+            &self.payload_bars,
             |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
         )?;
         if let Some(section) = &section {
@@ -207,9 +215,18 @@ impl DirectHalf {
                 bytes.depth,
                 bytes.total(),
             );
+            log::info!(
+                "[MoverLight] {}",
+                placement_line(section, &self.payload_bars)
+            );
         }
         sections.mover_channel = section;
         Ok(())
+    }
+
+    /// The Build Summary line for id 57's payload placement, once final.
+    pub(super) fn summary_line(&self, section: &MoverProbeChannelSection) -> String {
+        placement_line(section, &self.payload_bars)
     }
 
     fn check_grid(&self, base: &OctahedralShVolumeSection) -> anyhow::Result<()> {
@@ -222,4 +239,24 @@ impl DirectHalf {
         );
         Ok(())
     }
+}
+
+/// Where each of id 57's payload blocks lives, against its bar. Placement is
+/// residency: a streamed payload is the same bytes, read with id 50's cells.
+fn placement_line(section: &MoverProbeChannelSection, bars: &MoverPayloadBars) -> String {
+    let placed = |block: MoverChannelBlock, bar: u64| {
+        let where_ = match section.placement(block) {
+            MoverPayloadPlacement::Resident => "resident in id 57",
+            MoverPayloadPlacement::Streamed => "streams with id 50's cells",
+        };
+        format!(
+            "{block} payload {} B {where_} (bar {bar} B)",
+            section.payload_bytes(block)
+        )
+    };
+    format!(
+        "Mover probe channel payload: {}; {}",
+        placed(MoverChannelBlock::Direct, bars.direct),
+        placed(MoverChannelBlock::Bounce, bars.bounce),
+    )
 }

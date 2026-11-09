@@ -5,7 +5,7 @@
 //! entries but every mover's bounce states; an animated-light edit only its id-45 entries; a
 //! retexture no direct entry but every bounce state; and every warm PRL equals the edited map's
 //! cold PRL. Over one cache, edits and their revert build warm equal to cold, and the revert
-//! hits every memo.
+//! hits every memo, with id 57's payloads resident or streamed with id 50's cells.
 //! See: context/lib/build_pipeline.md §Build Cache, §Compiler pipeline step 12 (Mover probe channel)
 
 mod prl_build_support;
@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::OnceLock;
 
-use postretro_level_format::mover_probe_channel::{MoverLightNamespace, MoverProbeChannelSection};
+use postretro_level_format::mover_probe_channel::{
+    MoverChannelBlock, MoverLightNamespace, MoverPayloadPlacement, MoverProbeChannelSection,
+};
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use prl_build_support::{REACH_VERIFY_ENV, prl_build};
 
@@ -170,6 +172,11 @@ struct Built {
 }
 
 fn build(scene: &Scene, mode: CacheMode<'_>, jobs: u32) -> Built {
+    build_with(scene, mode, jobs, &[])
+}
+
+/// [`build`] with extra `prl-build` flags.
+fn build_with(scene: &Scene, mode: CacheMode<'_>, jobs: u32, flags: &[&str]) -> Built {
     let dir = tempfile::tempdir().expect("create build directory");
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
@@ -190,7 +197,8 @@ fn build(scene: &Scene, mode: CacheMode<'_>, jobs: u32) -> Built {
         .arg("-o")
         .arg(&prl)
         .args(["--no-tui", "--jobs", &jobs.to_string()])
-        .args(["--sh-probe-spacing", "1", "--lightmap-density", "0.25"]);
+        .args(["--sh-probe-spacing", "1", "--lightmap-density", "0.25"])
+        .args(flags);
     match mode {
         CacheMode::Cold => {
             command.arg("--no-cache");
@@ -262,8 +270,13 @@ fn warm_equals_cold(scene: &Scene) -> String {
 /// Warm-build `scene` over `cache`, then cold-build it; assert the PRLs are
 /// byte-identical. The warm log.
 fn warm_over(scene: &Scene, cache: &Path) -> String {
-    let warm = build(scene, CacheMode::Warm(cache), JOBS);
-    let cold = build(scene, CacheMode::Cold, JOBS);
+    warm_over_with(scene, cache, &[])
+}
+
+/// [`warm_over`] with extra `prl-build` flags on both builds.
+fn warm_over_with(scene: &Scene, cache: &Path, flags: &[&str]) -> String {
+    let warm = build_with(scene, CacheMode::Warm(cache), JOBS, flags);
+    let cold = build_with(scene, CacheMode::Cold, JOBS, flags);
     let (warm_bytes, cold_bytes) = (
         std::fs::read(&warm.prl).expect("read warm PRL"),
         std::fs::read(&cold.prl).expect("read cold PRL"),
@@ -585,4 +598,42 @@ fn edits_and_their_revert_over_one_cache_build_warm_equal_to_cold() {
         (0, MOVERS),
         "the revert hits every bounce memo\n{warm}"
     );
+}
+
+// Bake row B16 with streamed payloads (task 7b): with the resident bar at zero
+// both of id 57's payloads stream with id 50's cells; over a cache that build
+// filled, a mover edit, then its revert, each build warm equal to cold, and the
+// revert hits every direct and bounce memo.
+#[test]
+fn a_streamed_channel_builds_warm_equal_to_cold() {
+    const STREAM_BOTH: &[&str] = &["--mover-payload-resident-bar", "0"];
+    let cache = tempfile::tempdir().expect("create streamed cache");
+    let filled = build_with(
+        &Scene::default(),
+        CacheMode::Fill(cache.path()),
+        JOBS,
+        STREAM_BOTH,
+    );
+    let channel = MoverProbeChannelSection::from_bytes(
+        &section(&filled.prl, SectionId::MoverProbeChannel).expect("id 57"),
+    )
+    .expect("id 57 decodes");
+    for block in MoverChannelBlock::BOTH {
+        assert_eq!(
+            channel.placement(block),
+            MoverPayloadPlacement::Streamed,
+            "{block}"
+        );
+    }
+    let moved = Scene {
+        plate_last: [0, 128, 104],
+        ..Scene::default()
+    };
+    let warm = warm_over_with(&moved, cache.path(), STREAM_BOTH);
+    assert_eq!(bounce_share(&warm), (1, MOVERS), "{warm}");
+    let warm = warm_over_with(&Scene::default(), cache.path(), STREAM_BOTH);
+    for stage in [MOVER_DIRECT, ENTITY_SHADOW_DIRECT, ANIMATED_DIRECT] {
+        assert_all_hit(&warm, stage);
+    }
+    assert_eq!(bounce_share(&warm), (0, MOVERS), "{warm}");
 }

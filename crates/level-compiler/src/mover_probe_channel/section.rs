@@ -9,14 +9,66 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::mover_probe_channel::{
     DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-    MoverBouncePlacement, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
-    MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverChannelBlock, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
+    MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection,
 };
 use postretro_level_format::sh_reconstruct::Level;
 
 use super::blocks::BounceBlocks;
 use super::direct::{DirectEntry, MoverDirectBake, ProbeCells};
 use crate::map_data::MapKinematicMover;
+
+/// The resident byte bar each payload block is held against: level-format's
+/// bars by default, or one lowered bar for both (the
+/// `--mover-payload-resident-bar` test seam).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MoverPayloadBars {
+    pub(crate) direct: u64,
+    pub(crate) bounce: u64,
+}
+
+impl Default for MoverPayloadBars {
+    fn default() -> Self {
+        Self {
+            direct: MoverChannelBlock::Direct.resident_byte_bar(),
+            bounce: MoverChannelBlock::Bounce.resident_byte_bar(),
+        }
+    }
+}
+
+impl MoverPayloadBars {
+    /// Level-format's bars, or `bar` for both blocks.
+    pub(crate) fn with_override(bar: Option<u64>) -> Self {
+        bar.map_or_else(Self::default, |bar| Self {
+            direct: bar,
+            bounce: bar,
+        })
+    }
+
+    fn of(&self, block: MoverChannelBlock) -> u64 {
+        match block {
+            MoverChannelBlock::Direct => self.direct,
+            MoverChannelBlock::Bounce => self.bounce,
+        }
+    }
+
+    /// Place each of `section`'s payloads: one past its bar streams with id
+    /// 50's cells, the rest stay resident. Residency only: the payload's
+    /// bytes are the same wherever they are placed.
+    pub(crate) fn place(&self, section: &mut MoverProbeChannelSection) {
+        for block in MoverChannelBlock::BOTH {
+            let placement = if section.payload_bytes(block) > self.of(block) {
+                MoverPayloadPlacement::Streamed
+            } else {
+                MoverPayloadPlacement::Resident
+            };
+            match block {
+                MoverChannelBlock::Direct => section.direct_placement = placement,
+                MoverChannelBlock::Bounce => section.bounce_placement = placement,
+            }
+        }
+    }
+}
 
 /// Every mover's author ramp, ascending by id.
 pub(crate) struct MoverRamps(Vec<MoverLightRampRecord>);
@@ -111,12 +163,14 @@ impl EmittedDirectEntries<'_> {
 /// namespace that requires one always does. Bake-only lights, which `direct`
 /// names by static-baked index, are written by rank among the bake-only
 /// lights it holds. The listed cells are the union of the direct and bounce
-/// blocks' cells. The bounce payload stays resident.
+/// blocks' cells. Each payload past its bar in `bars` streams with id 50's
+/// cells; the section still holds it, for id 50 to carry.
 pub(crate) fn channel_section(
     direct: &MoverDirectBake,
     bounce: &BounceBlocks,
     cells: &ProbeCells,
     ramps: &MoverRamps,
+    bars: &MoverPayloadBars,
     own_tile: impl Fn(usize, MoverLightNamespace, u32) -> bool,
 ) -> anyhow::Result<Option<MoverProbeChannelSection>> {
     let mut records = Vec::new();
@@ -143,17 +197,20 @@ pub(crate) fn channel_section(
         part.record.light_index =
             bake_only_roster.wire_index(part.record.namespace, part.record.light_index);
     }
-    MoverProbeChannelSection::assemble(
+    let mut section = MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
             affinity_dims: cells.affinity_dims,
-            bounce_placement: MoverBouncePlacement::Resident,
             direct: records,
             bounce: bounce.bounce.clone(),
             depth: bounce.depth.clone(),
         },
         |cell| cells.valid_masks[cell as usize],
         |mover_id| ramps.of(mover_id),
-    )
+    )?;
+    if let Some(section) = &mut section {
+        bars.place(section);
+    }
+    Ok(section)
 }
 
 /// One light's term record at one cell from its movers' entries there, each

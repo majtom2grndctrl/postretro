@@ -22,7 +22,8 @@ use crate::partition::Aabb;
 /// assembly or the payload changes; the gate epoch, tracer epoch, soft-
 /// visibility constants and id 35's stage version fold on their own.
 const STAGE_ID: &str = "mover_probe_direct";
-const STAGE_VERSION: u32 = 1;
+/// 2: posed shadow segments meet a face within the static tracer's τ.
+const STAGE_VERSION: u32 = 2;
 
 /// What every light's key shares: the occluding world, the probe grid and
 /// the reach decomposition's inputs. Only occlusion enters: vertex

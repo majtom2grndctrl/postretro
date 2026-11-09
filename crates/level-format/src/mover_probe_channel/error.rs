@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use super::MoverLightNamespace;
+use super::{MoverChannelBlock, MoverLightNamespace};
 
 /// Every way id 57 refuses a level. Each message names the section.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -52,16 +52,26 @@ pub enum MoverProbeChannelError {
         found: u64,
         expected: u64,
     },
-    #[error("MoverProbeChannelBouncePlacement: placement byte {value} is unknown")]
-    UnknownBouncePlacement { value: u8 },
+    #[error("MoverProbeChannelPlacement: {block} placement byte {value} is unknown")]
+    UnknownPlacement { block: MoverChannelBlock, value: u8 },
     #[error(
-        "MoverProbeChannelStreamedBounceWithoutEntries: the bounce payload is placed with id 50 but there is no bounce entry"
+        "MoverProbeChannelStreamedBlockWithoutEntries: the {block} payload is placed with id 50 but the {block} block has no entry"
     )]
-    StreamedBounceWithoutEntries,
+    StreamedBlockWithoutEntries { block: MoverChannelBlock },
     #[error(
-        "MoverProbeChannelStreamedBounceUnresolved: the bounce payload streams with ClusterShPayloads (id 50), but this load holds no id-50 source for it"
+        "MoverProbeChannelStreamedPayloadUnresolved: the {block} payload streams with ClusterShPayloads (id 50), but this load holds no id-50 source for it"
     )]
-    StreamedBounceUnresolved,
+    StreamedPayloadUnresolved { block: MoverChannelBlock },
+    #[error(
+        "MoverProbeChannelStreamedPayloadMismatch: the {block} payload of affinity cell {cell} as placed with ClusterShPayloads (id 50) {detail}"
+    )]
+    StreamedPayloadMismatch {
+        block: MoverChannelBlock,
+        cell: u32,
+        detail: String,
+    },
+    #[error("MoverProbeChannelStreamedRows: an id-50 row block {detail}")]
+    StreamedRows { detail: String },
     #[error(
         "MoverProbeChannelCsrOffsets: {block} offsets[{index}] is {offset} after {previous}; offsets start at 0 and never decrease"
     )]

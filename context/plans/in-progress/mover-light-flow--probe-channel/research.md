@@ -431,3 +431,61 @@ Cold builds, pre-7a compiler (9b5d4d241) → 7a. The pre-7a timings for campaign
 - Floors: setpiece stores 95% of valid probes (mover 0: 11,313 of 11,942).
 - Sections changed against 9b5d4d241: closet 34, 35, 49, 50, 54, 57; setpiece, platform and showcase 34, 35, 49, 50, 57; campaign-test 57 only. Ids 34, 35, 49 and 50 move because bounce cells cap base storage at L0. Id 54 moves only on the closet, whose reflection probes shade from id 34. Id 59 is unchanged everywhere, since no map's live tiles reach its cap.
 - The hallway was not measured in 7a.
+
+### Task 7b
+
+Measured 2026-11-09. Each map was cold-built with the pre-7b compiler (7bb4be94c) and then the 7b compiler. Both ran `--no-cache -j 12`, except the four small 7b builds, which filled an empty cache so the memo line would print. Other builds and test suites ran alongside most of these, so read the timings as rough.
+
+**Step 0, hallway pilot (pre-7b compiler).**
+- The default 16 GiB budget refused the hallway at a predicted 39.51 GB. Of that, the direct-entry bound was about 27.25 GB, on top of the 12.26 GB mover-bounce phase.
+- Under `--working-set-max-size 64GiB` it built in 6,283 s, with 8.95 GB max RSS and a 4.98 GB peak footprint, about 4.4× under the prediction.
+- Id 57 was 34,668,329 B: a direct block of 11,220,426 B (payload 11,158,710 B) and a bounce block of 19,099,904 B (payload 19,074,960 B). Both payloads exceed the 8 MB bar.
+- `cost.rs` now prices each (light, mover, cell) that the bake's own prefilter admits: `light_movers`, then `may_meet` at each valid probe within the light's reach. Each one is costed at that cell's valid-probe count.
+- The 7b compiler admits the hallway at the default budget, predicting 13.71 GB against 7.17 GB max RSS and a 4.47 GB footprint. That is 1.9× RSS and 3.1× footprint; both are whole-process figures, while the gate prices only the SH-base phase.
+- Showcase drops from 9.87 GB to 5.10 GB.
+- The bound still covers what the bake holds on all six maps (`fixture_cost_tests`). The stress maps run on demand.
+
+| map | bound | held |
+|---|---|---|
+| closet | 97,034 B | 0 B |
+| setpiece | 14.1 MB | 5.6 MB |
+| platform | 1.41 MB | 0.40 MB |
+| campaign-test | 12.8 MB | 0.80 MB |
+| showcase | 176 MB | 3.6 MB |
+| hallway | 530 MB | 21.8 MB |
+
+**Placement, pre-7b → 7b.**
+
+| map | id 57 bytes | streams | id 50 bytes added | cold |
+|---|---|---|---|---|
+| mover-closet | 85,095 → 85,096 | neither | 0 | 14 → 3 s |
+| setpiece | 8,963,433 → 8,963,434 | neither (direct 2,339,826, bounce 5,790,960) | 0 | 40 → 28 s |
+| kinematic-platform | 8,450,017 → 8,450,236 | neither (bounce 8,259,840) | 0 | 188 → 172 s |
+| campaign-test | 196,999 → 197,000 | neither | 0 | 183 → 102 s |
+| showcase | 8,305,807 → 8,305,816 | neither (bounce 6,037,200) | 0 | 3,158 → 2,450 s |
+| hallway | 34,668,329 → 4,434,660 | both (direct 11,158,928, bounce 19,074,960) | 44,233,712 | 6,283 → 5,245 s |
+
+- Under both bars, only id 57 changes, and ids 49 and 50 stay byte-identical to pre-7b.
+  - Every map gains 1 B of header for the direct placement byte (epoch 3).
+  - The τ fix below adds the rest. Setpiece changes 19 q bytes and campaign-test 14 (one area sample each, 8 to 48 levels).
+  - Platform gains one masked probe: +2 B of visibility and +216 B of own tile.
+  - Showcase gains four masked probes: +8 B of visibility.
+  - Closet's id-57 body is identical, since it has no direct payload.
+- The hallway streams both blocks. Id 57 keeps its cell index, records, masks, mover ids and the depth block.
+  - Id 50 grows from 362,223,360 B to 406,457,072 B. That is 30.2 MB of payload plus 14 MB of overhead: the row tables, plus every cell carried by each cluster that covers it, as sparse rows already are.
+  - Id 49 grows from 6,296,320 B to 6,413,080 B, from the id-57 resource rows and affinity ranges.
+
+**Memo, task 6d's dense payload → valid probes only** (`direct_sh_delta_light` + `animated_direct_sh_delta_light`, per cache generation):
+
+| map | dense | valid probes only |
+|---|---|---|
+| campaign-test | 46.4 MB (26.7 + 19.7) | 14.9 MB (9.3 + 5.6) |
+| setpiece | 8.29 MB | 4.37 MB |
+| platform | 9.23 MB | 7.28 MB |
+| closet | 3.73 MB | 1.09 MB |
+
+**B7 direct clause.**
+- The first run missed by one pair. Of 1,025 blocked (probe, light) pairs across 224 interior probes and 7 lights, one was 8.4 q steps off: probe 3433, light 2, q₁ 120 against the reference's 111.6.
+- Exactly one of 32 area samples passed 0.1–0.5 mm outside the raised room's doorway jamb. The static tracer's τ = 0.5 mm blocks it; the direct half's 0.1 mm contact band did not.
+- Fix: the direct half's posed shadow segments now meet a face within τ (`SHADOW_SEGMENT_BAND_M`), and `mover_probe_direct` is now v2. Worst case is now 0.50 q steps, which is quantization.
+- The bounce half's patch-direct segments keep the gate's band.

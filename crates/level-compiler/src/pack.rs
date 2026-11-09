@@ -610,6 +610,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
             animated_direct_sh_delta_volumes,
             billboard_direct_scatter_volume,
             animated_billboard_direct_scatter_delta_volumes,
+            mover_probe_channel,
         )?,
     };
     // Keep the pre-BC6H packed sources borrowed through descriptor planning and

@@ -1283,6 +1283,9 @@ fn run_after_parsing(
             cache: stage_cache.as_ref(),
             governor: &governor,
             bounce: mover_bounce_blocks,
+            payload_bars: crate::mover_probe_channel::MoverPayloadBars::with_override(
+                args.mover_payload_resident_bar,
+            ),
         })?;
     let provisional_mover_channel = mover_direct_half
         .as_ref()
@@ -1441,8 +1444,13 @@ fn run_after_parsing(
             "DirectShDeltaVolumes lost coverage for an EntityShadowLights selection after delta dropping"
         );
     }
+    let mut mover_placement_summary = None;
     if let Some(half) = mover_direct_half.as_ref() {
         half.finish_section(&mut delta_sections)?;
+        mover_placement_summary = delta_sections
+            .mover_channel
+            .as_ref()
+            .map(|section| half.summary_line(section));
     }
     drop(mover_direct_half);
 
@@ -2196,6 +2204,7 @@ fn run_after_parsing(
             billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
             animated_billboard_direct_scatter_delta_volumes:
                 animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+            mover_probe_channel: delta_sections.mover_channel.as_ref(),
         })?;
     finish_stage(
         &mut timings,
@@ -2272,6 +2281,7 @@ fn run_after_parsing(
     details.extend(footprint.sh_mandatory.lines());
     details.push(probe_depth_tiles.summary_line(mover_depth_reservation.shrunk_cap));
     details.extend(mover_bounce_summary);
+    details.extend(mover_placement_summary);
     details.extend(footprint.lightmap_pool.lines());
     reporter.finalize(BuildSummary {
         timings,

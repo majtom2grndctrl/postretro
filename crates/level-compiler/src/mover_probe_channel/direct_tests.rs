@@ -18,6 +18,7 @@ use postretro_level_format::mover_probe_channel::{
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::blocks::BounceBlocks;
+use super::cost::direct_entry_bound;
 use super::direct::{
     ChannelLight, DirectEntry, DirectScene, LightEntries, MoverDirectBake, ProbeCells, bake_direct,
     light_movers,
@@ -712,6 +713,7 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         &BounceBlocks::default(),
         &world.cells,
         &MoverRamps::new(&movers),
+        &super::section::MoverPayloadBars::default(),
         |_, _, _| false,
     )
     .unwrap()
@@ -779,6 +781,7 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
         &BounceBlocks::default(),
         &world.cells,
         &MoverRamps::new(&movers),
+        &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
     )
     .unwrap()
@@ -792,7 +795,7 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
     for view in &shared {
         let masked = view.record.masked_probe_count();
         assert_eq!(
-            view.own_tiles.map(<[u16]>::len),
+            view.own_tiles.map(|tiles| tiles.len()),
             Some(masked * DEFAULT_DELTA_PROBE_F16_STRIDE),
             "one tile per masked probe, not one per mover"
         );
@@ -809,7 +812,11 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
                     "mover {} probe {probe}",
                     mover.mover_id
                 );
-                assert_eq!(view.own_tile(slot), Some(tile), "probe {probe}");
+                assert_eq!(
+                    view.own_tile(slot).map(|tile| tile.to_vec()),
+                    Some(tile.to_vec()),
+                    "probe {probe}"
+                );
             }
         }
     }
@@ -843,6 +850,7 @@ fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
         &BounceBlocks::default(),
         &world.cells,
         &MoverRamps::new(&movers),
+        &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
     )
     .unwrap()
@@ -1041,6 +1049,7 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
         &BounceBlocks::default(),
         &two_cells(),
         &ramps,
+        &super::section::MoverPayloadBars::default(),
         |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
     )
     .unwrap()
@@ -1098,6 +1107,7 @@ fn a_bake_with_no_entry_makes_no_section() {
         &BounceBlocks::default(),
         &two_cells(),
         &MoverRamps::new(&[]),
+        &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
     )
     .unwrap();
@@ -1236,4 +1246,65 @@ fn the_direct_bake_is_identical_across_worker_counts() {
     let (four, _) = counted(4, || world.bake(&poses, &lights));
     assert!(one.entry_count() > 0);
     assert_eq!(format!("{:?}", one.lights), format!("{:?}", four.lights));
+}
+
+/// Bytes a bake's entries hold, by capacity, as the SH gate prices them.
+fn held_entry_bytes(bake: &MoverDirectBake) -> u64 {
+    bake.lights
+        .iter()
+        .flat_map(|light| &light.entries)
+        .map(|entry| {
+            (entry.visibility.capacity() + entry.tiles.capacity() * 2) as u64
+                + size_of::<DirectEntry>() as u64
+        })
+        .sum()
+}
+
+// SH gate (B14, task 7b): the direct half's bound, priced with no ray from
+// the bake's own prefilter, covers what the bake holds for a lit point light
+// and a sun, and is tighter than charging every cell in the light's reach a
+// full cell's payload for every mover it may meet (what it charged before,
+// which refused the full hallway at 39.5 GB).
+#[test]
+fn the_direct_entry_bound_covers_the_bake_within_the_lights_reach() {
+    let world = world();
+    let poses = poses_of(&[slab_mover()]);
+    let full_cell =
+        (64 * (2 + DEFAULT_DELTA_PROBE_F16_STRIDE * 2) + size_of::<DirectEntry>()) as u64;
+    for light in [
+        point_light(DVec3::new(0.0, 3.5, 0.0), 10.0, 0.6),
+        point_light(DVec3::new(0.0, -3.0, -3.0), 4.6, 0.1),
+        sun(),
+    ] {
+        let bake = world.bake(&poses, &[static_light(&light, 0)]);
+        let held = held_entry_bytes(&bake);
+        let bound = direct_entry_bound(&[&light], &poses, &world.layout);
+        assert!(
+            bound >= held,
+            "{:?} light: bound {bound} B under the {held} B the bake holds",
+            light.light_type
+        );
+        // Every valid probe in reach, every mover it may meet, a full cell.
+        let reached_cells: HashSet<usize> = (0..world.layout.total_probes())
+            .filter(|&probe| world.layout.validity[probe] != 0)
+            .filter(|&probe| {
+                light.light_type == LightType::Directional
+                    || world.layout.probe_positions[probe].distance(light.origin)
+                        <= f64::from(light.falloff_range) + 1.0
+            })
+            .map(|probe| {
+                let [nx, ny, _] = world.layout.dims.map(|dim| dim as usize);
+                let [ax, ay, _] = world.cells.affinity_dims.map(|dim| dim as usize);
+                let (x, y, z) = (probe % nx, probe / nx % ny, probe / (nx * ny));
+                x / 4 + y / 4 * ax + z / 4 * ax * ay
+            })
+            .collect();
+        let whole_reach =
+            light_movers(&light, &poses).len() as u64 * reached_cells.len() as u64 * full_cell;
+        assert!(
+            bound < whole_reach,
+            "{:?} light: bound {bound} B is no tighter than the whole reach's {whole_reach} B",
+            light.light_type
+        );
+    }
 }

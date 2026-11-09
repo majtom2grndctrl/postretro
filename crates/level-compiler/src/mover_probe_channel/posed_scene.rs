@@ -144,7 +144,9 @@ impl PosedScene {
     }
 
     /// Whether the closed segment touches a posed brush: the posed half of
-    /// a shadow ray, contact included, as the direct bake tests it.
+    /// a patch's shadow ray, contact within the gate's band. The direct
+    /// half's q grows the band to the static tracer's τ
+    /// (`visibility.rs`, `SHADOW_SEGMENT_BAND_M`).
     pub(crate) fn segment_blocked(&self, from: Vec3, to: Vec3) -> bool {
         self.pose.segment_touches(from.as_dvec3(), to.as_dvec3())
     }

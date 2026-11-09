@@ -4,8 +4,8 @@
 
 use super::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry,
-    MoverBouncePlacement, MoverChannelCell, MoverDepthRecord, MoverDirectRecord,
-    MoverLightRampRecord, MoverProbeChannelSection, bounce_entry_f16_count,
+    MoverChannelCell, MoverDepthRecord, MoverDirectRecord, MoverLightRampRecord,
+    MoverPayloadPlacement, MoverProbeChannelSection, bounce_entry_f16_count,
 };
 use crate::delta_sh_volumes::AFFINITY_FACTOR;
 use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
@@ -22,7 +22,7 @@ pub struct DirectRecordParts {
     pub own_tiles: Vec<u16>,
 }
 
-/// One bounce entry and its payload (empty when the payload streams).
+/// One bounce entry and its payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BounceEntryParts {
     pub cell: u32,
@@ -37,11 +37,12 @@ pub struct DepthRecordParts {
     pub tiles: Vec<[u16; 2]>,
 }
 
-/// Everything id 57 holds before layout.
+/// Everything id 57 holds before layout, every payload included: the
+/// assembled section holds both payloads resident, and the producer places a
+/// block with id 50 afterwards by setting its placement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MoverProbeChannelParts {
     pub affinity_dims: [u32; 3],
-    pub bounce_placement: MoverBouncePlacement,
     pub direct: Vec<DirectRecordParts>,
     pub bounce: Vec<BounceEntryParts>,
     pub depth: Vec<DepthRecordParts>,
@@ -65,7 +66,6 @@ impl MoverProbeChannelSection {
     ) -> Result<Option<Self>, E> {
         let MoverProbeChannelParts {
             affinity_dims,
-            bounce_placement,
             mut direct,
             mut bounce,
             mut depth,
@@ -95,7 +95,8 @@ impl MoverProbeChannelSection {
         let mut section = MoverProbeChannelSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims,
-            bounce_placement,
+            direct_placement: MoverPayloadPlacement::Resident,
+            bounce_placement: MoverPayloadPlacement::Resident,
             direct_offsets: csr(&listed, direct.iter().map(|part| part.cell)),
             bounce_offsets: csr(&listed, bounce.iter().map(|part| part.cell)),
             cells,
@@ -134,10 +135,7 @@ impl MoverProbeChannelSection {
             section.direct_records.push(part.record);
         }
         for part in bounce {
-            debug_assert!(
-                bounce_placement == MoverBouncePlacement::Streamed
-                    || part.tiles.len() == bounce_entry_f16_count(&part.entry)
-            );
+            debug_assert_eq!(part.tiles.len(), bounce_entry_f16_count(&part.entry));
             section.bounce_tiles.extend_from_slice(&part.tiles);
             section.bounce_entries.push(part.entry);
         }

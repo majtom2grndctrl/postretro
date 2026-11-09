@@ -1,9 +1,11 @@
 //! The direct delta bakes' per-light memo (ids 41 and 45): one cache entry
-//! per light holding every CSR sub-block it reaches, keyed on the occluding
-//! world, the probe grid and the light as its section bakes it.
+//! per light holding every CSR sub-block it reaches, at its valid probes
+//! only, keyed on the occluding world, the probe grid and the light as its
+//! section bakes it.
 //! See: context/lib/build_pipeline.md §Build Cache
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use postretro_level_format::delta_sh_volumes::PROBES_PER_CELL;
 use postretro_level_format::octahedral::{
@@ -55,6 +57,15 @@ pub(crate) struct DirectDeltaMemo<'c> {
     cache: &'c StageCache,
     stage: DirectDeltaStage,
     prefix: blake3::Hasher,
+    /// Each affinity cell's valid probes, one bit per sub-block slot. The
+    /// payload stores only these slots' tiles: every other slot (an invalid
+    /// probe, or one past the grid's edge) bakes the all-zero tile, which the
+    /// grid's validity, folded into the key, restores exactly.
+    valid_slots: Vec<u64>,
+    /// Payload bytes this build stored, and what the lights' dense
+    /// sub-blocks would have weighed: the miss line reports both.
+    stored_bytes: AtomicU64,
+    dense_bytes: AtomicU64,
 }
 
 impl<'c> DirectDeltaMemo<'c> {
@@ -82,7 +93,15 @@ impl<'c> DirectDeltaMemo<'c> {
             cache,
             stage,
             prefix,
+            valid_slots: valid_slots(layout, affinity_dims),
+            stored_bytes: AtomicU64::new(0),
+            dense_bytes: AtomicU64::new(0),
         }
+    }
+
+    /// Slot mask of `cell`: none for a cell past the affinity grid.
+    fn slots(&self, cell: u32) -> u64 {
+        self.valid_slots.get(cell as usize).copied().unwrap_or(0)
     }
 
     /// The prefix, then the light's seed axis, early-out and encoded light,
@@ -107,13 +126,62 @@ impl<'c> DirectDeltaMemo<'c> {
         )
     }
 
-    /// Store a light's sub-blocks as little-endian halves, streamed so no
-    /// second copy of the payload is held. Runs outside any governor permit.
-    fn put(&self, key: &CacheKey, halves: &[u16]) {
-        self.cache
-            .put_streamed(key, (halves.len() * 2) as u64, |writer| {
-                write_halves(writer, halves)
+    /// Store a light's sub-blocks over `cells` (one per cell, `len` halves
+    /// each) as little-endian halves at their valid slots only, streamed so
+    /// no second copy of the payload is held. A sub-block holding a non-zero
+    /// half at a slot outside the grid's validity could not be restored, so
+    /// that light is not memoized (and re-bakes warm). Runs outside any
+    /// governor permit.
+    fn put(&self, key: &CacheKey, cells: &[u32], len: usize, halves: &[u16]) {
+        let stride = len / SLOTS;
+        let restorable = cells
+            .iter()
+            .zip(halves.chunks_exact(len))
+            .all(|(&cell, block)| {
+                let slots = self.slots(cell);
+                block.chunks_exact(stride).enumerate().all(|(slot, tile)| {
+                    slots & (1 << slot) != 0 || tile.iter().all(|&half| half == 0)
+                })
             });
+        if !restorable {
+            log::warn!(
+                "[cache] {} light holds a non-zero tile at an invalid probe; not memoized",
+                self.stage.id
+            );
+            return;
+        }
+        let kept: u64 = cells
+            .iter()
+            .map(|&cell| u64::from(self.slots(cell).count_ones()))
+            .sum();
+        self.stored_bytes
+            .fetch_add(kept * stride as u64 * 2, Ordering::Relaxed);
+        self.dense_bytes
+            .fetch_add(halves.len() as u64 * 2, Ordering::Relaxed);
+        self.cache
+            .put_streamed(key, kept * stride as u64 * 2, |writer| {
+                for (&cell, block) in cells.iter().zip(halves.chunks_exact(len)) {
+                    let slots = self.slots(cell);
+                    for (slot, tile) in block.chunks_exact(stride).enumerate() {
+                        if slots & (1 << slot) != 0 {
+                            write_halves(writer, tile)?;
+                        }
+                    }
+                }
+                Ok(())
+            });
+    }
+
+    /// A cached payload's sub-block starts, in halves, over `cells`; `None`
+    /// when its length is not exactly their valid slots' tiles.
+    fn cached_starts(&self, cells: &[u32], stride: usize, bytes: &[u8]) -> Option<Vec<usize>> {
+        let mut starts = Vec::with_capacity(cells.len());
+        let mut at = 0usize;
+        for &cell in cells {
+            starts.push(at);
+            at += self.slots(cell).count_ones() as usize * stride;
+        }
+        (at * 2 == bytes.len()).then_some(starts)
     }
 
     /// One line per build: `hit` when every light hit, else `miss` with the
@@ -126,9 +194,12 @@ impl<'c> DirectDeltaMemo<'c> {
             log::info!("[cache] {} hit ({probed} light(s))", self.stage.id);
         } else {
             log::info!(
-                "[cache] {} miss ({} of {probed} light(s) re-bake)",
+                "[cache] {} miss ({} of {probed} light(s) re-bake); stored {} B at valid \
+                 probes of {} B dense",
                 self.stage.id,
-                probed - hits
+                probed - hits,
+                self.stored_bytes.load(Ordering::Relaxed),
+                self.dense_bytes.load(Ordering::Relaxed),
             );
         }
     }
@@ -146,26 +217,74 @@ fn write_halves(writer: &mut dyn Write, halves: &[u16]) -> io::Result<()> {
     Ok(())
 }
 
+/// Probe slots per sub-block: one affinity cell, x-fastest.
+const SLOTS: usize = PROBES_PER_CELL;
+
+/// Each affinity cell's valid probes as sub-block slot bits: local x-fastest,
+/// as the direct delta bakes lay a cell's tiles out.
+fn valid_slots(layout: &ProbeGridLayout, affinity_dims: [u32; 3]) -> Vec<u64> {
+    let [ax, ay, az] = affinity_dims.map(|dim| dim as usize);
+    let mut slots = vec![0u64; ax * ay * az];
+    let [nx, ny, _] = layout.dims.map(|dim| dim as usize);
+    for (probe, _) in layout
+        .validity
+        .iter()
+        .enumerate()
+        .filter(|(_, valid)| **valid != 0)
+    {
+        let (x, y, z) = (probe % nx, probe / nx % ny, probe / (nx * ny));
+        let cell = x / 4 + y / 4 * ax + z / 4 * ax * ay;
+        let slot = x % 4 + y % 4 * 4 + z % 4 * 16;
+        if let Some(mask) = slots.get_mut(cell) {
+            *mask |= 1 << slot;
+        }
+    }
+    slots
+}
+
 /// One light's sub-blocks, in its cells' CSR order.
 enum LightPayload {
-    /// Read from the cache: little-endian halves, decoded as they are
-    /// copied out, so a hit holds one copy.
-    Cached(Vec<u8>),
+    /// Read from the cache: little-endian halves at each cell's valid slots,
+    /// decoded and spread back to the dense layout as they are copied out,
+    /// so a hit holds one compact copy.
+    Cached {
+        bytes: Vec<u8>,
+        /// Each sub-block's valid slots and its first half in `bytes`.
+        slots: Vec<u64>,
+        starts: Vec<usize>,
+    },
     Baked(Vec<u16>),
 }
 
 impl LightPayload {
     fn copy_subblock(&self, subblock: usize, len: usize, out: &mut Vec<u16>) {
-        let start = subblock * len;
         match self {
-            Self::Baked(halves) => out.extend_from_slice(&halves[start..start + len]),
-            Self::Cached(bytes) => out.extend(
-                bytes[start * 2..(start + len) * 2]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|&half| u16::from_le_bytes(half)),
-            ),
+            Self::Baked(halves) => {
+                let start = subblock * len;
+                out.extend_from_slice(&halves[start..start + len]);
+            }
+            Self::Cached {
+                bytes,
+                slots,
+                starts,
+            } => {
+                let stride = len / SLOTS;
+                let mut at = starts[subblock];
+                for slot in 0..SLOTS {
+                    if slots[subblock] & (1 << slot) == 0 {
+                        out.extend(std::iter::repeat_n(0u16, stride));
+                        continue;
+                    }
+                    out.extend(
+                        bytes[at * 2..(at + stride) * 2]
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|&half| u16::from_le_bytes(half)),
+                    );
+                    at += stride;
+                }
+            }
         }
     }
 }
@@ -219,6 +338,11 @@ where
     }
 
     let len = expected_subblock_f16_len;
+    assert_eq!(
+        len % SLOTS,
+        0,
+        "a direct delta sub-block holds one tile per probe of its affinity cell"
+    );
     let payloads: Vec<Option<(LightPayload, bool)>> = light_cells
         .par_iter()
         .enumerate()
@@ -228,11 +352,19 @@ where
             }
             let key = memo.key(&lights[light_index], cells);
             if let Some(bytes) = memo.cache.get(&key) {
-                if bytes.len() == cells.len() * len * 2 {
+                if let Some(starts) = memo.cached_starts(cells, len / SLOTS, &bytes) {
                     // A whole-light hit checkpoints without a bake permit.
                     control.governor().checkpoint();
                     control.advance(cells.len());
-                    return Some((LightPayload::Cached(bytes), true));
+                    let slots = cells.iter().map(|&cell| memo.slots(cell)).collect();
+                    return Some((
+                        LightPayload::Cached {
+                            bytes,
+                            slots,
+                            starts,
+                        },
+                        true,
+                    ));
                 }
                 log::warn!("[cache] corrupt {} entry, re-baking", memo.stage.id);
             }
@@ -254,7 +386,7 @@ where
                     slot.copy_from_slice(&subblock);
                     control.advance(1);
                 });
-            memo.put(&key, &halves);
+            memo.put(&key, cells, len, &halves);
             Some((LightPayload::Baked(halves), false))
         })
         .collect();

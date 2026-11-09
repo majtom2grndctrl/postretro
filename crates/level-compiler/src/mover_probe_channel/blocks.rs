@@ -119,8 +119,8 @@ impl BounceBlocks {
             .len()
     }
 
-    /// Log the blocks once per build, and warn when the bounce payload
-    /// passes the resident byte bar.
+    /// Log the blocks once per build. Where each payload is placed is
+    /// decided with the direct block, when id 57 assembles.
     pub(crate) fn log(&self) {
         let counts = self.counts();
         log::info!(
@@ -137,16 +137,6 @@ impl BounceBlocks {
             counts.live_tiles,
             counts.closed_pose_tiles,
         );
-        if counts.bounce_payload_bytes > MOVER_BOUNCE_RESIDENT_BYTE_BAR {
-            // TODO(mover-light-flow--probe-channel task 7b): stream the bounce
-            // payload with id 50's cells past the resident bar.
-            log::warn!(
-                "[MoverLight] MoverProbeChannel (id 57) bounce payload {} B passes the {} B \
-                 resident bar; it stays resident until streamed placement lands (task 7b)",
-                counts.bounce_payload_bytes,
-                MOVER_BOUNCE_RESIDENT_BYTE_BAR,
-            );
-        }
     }
 }
 

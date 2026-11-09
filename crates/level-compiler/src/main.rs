@@ -812,6 +812,10 @@ pub struct Args {
     /// tiles share: the 15-bit tile reference's, or less to test the trim
     /// and the range error on a small map.
     probe_depth_tile_cap: u32,
+    /// The resident byte bar both of id 57's payload blocks are held
+    /// against, when lowered from level-format's 8 MiB bars: a test seam
+    /// for streamed placement on a small map.
+    mover_payload_resident_bar: Option<u64>,
     /// Per-axis reduction for the static dominant-direction atlas. Must be a
     /// positive power of two no larger than the minimum atlas dimension.
     direction_texel_scale: u32,
@@ -880,6 +884,7 @@ fn help_text() -> String {
          --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache). The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          --probe-depth-tile-cap <N> Probe depth tiles (id 59's and the movers' live tiles together) a level may hold, at most {probe_depth_tile_max}; lower only to test the tile trim and range error (default: {probe_depth_tile_max})\n    \
+         --mover-payload-resident-bar <SIZE> Bytes of each mover probe channel payload block kept resident in id 57 before it streams with id 50's cells; lower only to test streamed placement (default: {mover_payload_bar})\n    \
          --direction-texel-scale <N> Per-axis static-direction atlas reduction, power of two in 1..={direction_texel_scale_max} (default: {direction_texel_scale})\n    \
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
@@ -900,6 +905,9 @@ fn help_text() -> String {
         direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE,
         direction_texel_scale_max = lightmap_bake::MIN_ATLAS_DIMENSION,
         probe_depth_tile_max = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
+        mover_payload_bar = size_options::format_size_for_help(
+            postretro_level_format::mover_probe_channel::MOVER_BOUNCE_RESIDENT_BYTE_BAR
+        ),
     )
 }
 
@@ -954,6 +962,7 @@ where
     let mut quality_flag_supplied = false;
     let mut uncompressed_irradiance = false;
     let mut probe_depth_tile_cap = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
+    let mut mover_payload_resident_bar: Option<u64> = None;
     let mut direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE;
     let mut jobs = default_jobs();
     let mut tui = TuiPreference::Auto;
@@ -1116,6 +1125,13 @@ where
                         )
                     })?;
             }
+            "--mover-payload-resident-bar" => {
+                let size_str = flag_value(&mut args, "--mover-payload-resident-bar")?;
+                mover_payload_resident_bar = Some(size_options::parse_size(
+                    "--mover-payload-resident-bar",
+                    &size_str,
+                )?);
+            }
             "--direction-texel-scale" => {
                 quality_flag_supplied = true;
                 let scale_str = flag_value(&mut args, "--direction-texel-scale")?;
@@ -1210,6 +1226,7 @@ where
         quality_flag_supplied,
         uncompressed_irradiance,
         probe_depth_tile_cap,
+        mover_payload_resident_bar,
         direction_texel_scale,
         jobs,
         tui,

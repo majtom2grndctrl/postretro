@@ -5,14 +5,19 @@
 
 mod assemble;
 mod error;
+mod streamed;
 mod views;
 mod wire;
 
 pub use assemble::{BounceEntryParts, DepthRecordParts, DirectRecordParts, MoverProbeChannelParts};
 pub use error::MoverProbeChannelError;
+pub use streamed::{
+    MOVER_STREAMED_BLOCK_HEADER_BYTES, MOVER_STREAMED_ROW_BYTES, MoverCellSlices, MoverStreamedRow,
+    MoverStreamedRowLens, parse_streamed_rows,
+};
 pub use views::{
-    BounceEntryView, DirectCellView, DirectRecordView, MoverChannelBytes, MoverDirectCounts,
-    MoverVisibilityView,
+    BounceEntryView, DirectCellView, DirectRecordView, MoverCellPayload, MoverChannelBytes,
+    MoverDirectCounts, MoverHalves, MoverVisibilityView,
 };
 
 use crate::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE;
@@ -20,8 +25,9 @@ use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
 /// Section-internal epoch, the first byte of the payload. Exact match.
 /// Epoch 2: sparse cell list, per-(cell, light) term records with a probe
-/// mask and one own tile, per-(record, mover) visibility.
-pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 2;
+/// mask and one own tile, per-(record, mover) visibility. Epoch 3: a
+/// placement byte for the direct payload beside the bounce payload's.
+pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 3;
 
 /// Term-record flag bit 0: the record carries its light's own tile per
 /// masked probe, because no per-probe id-41 or id-45 entry holds the light's
@@ -37,9 +43,15 @@ pub const MOVER_VISIBILITY_BYTES_PER_PROBE: usize = 2;
 pub const MOVER_IRRADIANCE_TILE_F16_COUNT: usize = DEFAULT_DELTA_PROBE_F16_STRIDE;
 
 /// Most bounce payload bytes a level keeps resident in this section (owner,
-/// 2026-11-08). The compiler places a heavier bounce payload with id 50's
-/// cells instead and records [`MoverBouncePlacement::Streamed`].
+/// Stop 2, 2026-11-08). The compiler places a heavier bounce payload with id
+/// 50's cells instead and records [`MoverPayloadPlacement::Streamed`].
 pub const MOVER_BOUNCE_RESIDENT_BYTE_BAR: u64 = 8 * 1024 * 1024;
+
+/// Most direct payload bytes (visibility and own tiles) a level keeps
+/// resident in this section: the bounce bar's sibling, at the same value
+/// (owner, 2026-11-08). A heavier direct payload is placed with id 50's
+/// cells instead.
+pub const MOVER_DIRECT_RESIDENT_BYTE_BAR: u64 = 8 * 1024 * 1024;
 
 /// What a term record's `u32` light index counts in. Each gated light has
 /// exactly one name: a static lightmap light with an AlphaLights record is
@@ -82,19 +94,51 @@ impl MoverLightNamespace {
     }
 }
 
-/// Where the bounce payload lives. The bounce index stays in this section
-/// either way, so mover membership never needs id 50.
+/// One of the two blocks whose payload has a placement: the direct block's
+/// visibility and own tiles, or the bounce block's tiles. Their indexes,
+/// records, masks and mover entries always stay in this section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MoverChannelBlock {
+    Direct,
+    Bounce,
+}
+
+impl MoverChannelBlock {
+    pub const BOTH: [Self; 2] = [Self::Direct, Self::Bounce];
+
+    /// The block's resident byte bar.
+    pub fn resident_byte_bar(self) -> u64 {
+        match self {
+            Self::Direct => MOVER_DIRECT_RESIDENT_BYTE_BAR,
+            Self::Bounce => MOVER_BOUNCE_RESIDENT_BYTE_BAR,
+        }
+    }
+}
+
+impl std::fmt::Display for MoverChannelBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Direct => "direct",
+            Self::Bounce => "bounce",
+        })
+    }
+}
+
+/// Where a block's payload lives. Placement is residency only: a streamed
+/// payload is the same bytes, placed with id 50's cells and read with them,
+/// never a switch driven by a light or a mover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum MoverBouncePlacement {
-    /// The payload follows the bounce index in this section.
+pub enum MoverPayloadPlacement {
+    /// The payload follows its block's index in this section.
     Resident = 0,
     /// The payload is absent here and streams with id 50's cells, whose
-    /// source list names this section. Needs at least one bounce entry.
+    /// source list names this section. Needs at least one entry in its
+    /// block.
     Streamed = 1,
 }
 
-impl MoverBouncePlacement {
+impl MoverPayloadPlacement {
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Resident),
@@ -171,16 +215,17 @@ pub struct MoverLightRampRecord {
     pub end: f32,
 }
 
-/// MoverProbeChannel section (ID 57), epoch 2. Optional: written only when
+/// MoverProbeChannel section (ID 57), epoch 3. Optional: written only when
 /// the direct, bounce or depth block has an entry; never written empty.
 ///
 /// On-disk layout (all little-endian, f16 as raw `u16` bits). N is the
 /// listed cell count, R the term record count, M the mover entry count:
 ///
 /// ```text
-///   u8        epoch                       (= MOVER_PROBE_CHANNEL_EPOCH = 2)
+///   u8        epoch                       (= MOVER_PROBE_CHANNEL_EPOCH = 3)
 ///   u8        affinity_factor             (= AFFINITY_FACTOR = 4)
 ///   u32 × 3   affinity_dims               (id 34's grid / 4, rounded up)
+///   u8        direct_placement            (0 resident, 1 streamed with id 50)
 ///   u8        bounce_placement            (0 resident, 1 streamed with id 50)
 /// cell index
 ///   u32                                   N
@@ -198,9 +243,11 @@ pub struct MoverLightRampRecord {
 ///                                         record, CSR; last = M)
 ///   u32 × M                               direct_movers (mover ids)
 ///   u8 × Σ entries 2 × popcount(mask)     visibility (q₀, q₁ per masked
-///                                         probe, entry after entry)
+///                                         probe, entry after entry; resident
+///                                         only)
 ///   f16 × Σ flagged popcount(mask) × 108  own_tiles (one RGB tile per masked
-///                                         probe, flagged record after record)
+///                                         probe, flagged record after record;
+///                                         resident only)
 /// bounce block
 ///   u32 × (N + 1)                         bounce_offsets (CSR; last = entries)
 ///   per bounce entry, 16 bytes:           u32 mover_id, u32 reserved 0,
@@ -225,11 +272,18 @@ pub struct MoverLightRampRecord {
 /// records by mover; none repeats. Ramp records cover exactly the movers
 /// named anywhere else. No sentinels: every reserved field is zero and every
 /// byte is accounted for.
+///
+/// A streamed block's payload is placed with id 50's cells, one row per
+/// listed cell ([`streamed`]). In memory, a block's payload vectors are held
+/// when it is resident, when the compiler built the section (the wire omits
+/// a streamed payload), or once a load attaches it from id 50
+/// ([`Self::attach_streamed_payload`]); otherwise they are empty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MoverProbeChannelSection {
     pub affinity_factor: u8,
     pub affinity_dims: [u32; 3],
-    pub bounce_placement: MoverBouncePlacement,
+    pub direct_placement: MoverPayloadPlacement,
+    pub bounce_placement: MoverPayloadPlacement,
     /// Cells holding a direct record or bounce entry, ascending.
     pub cells: Vec<MoverChannelCell>,
     /// Term records per listed cell (CSR, `cells.len() + 1`).
@@ -240,14 +294,16 @@ pub struct MoverProbeChannelSection {
     /// Each mover entry's id 43 `mover_id`.
     pub direct_movers: Vec<u32>,
     /// Mover entry after mover entry: `q₀, q₁` per masked probe of its record.
+    /// Empty while a streamed direct payload is not held.
     pub visibility: Vec<u8>,
     /// Flagged records only, in record order: one tile per masked probe.
+    /// Empty while a streamed direct payload is not held.
     pub own_tiles: Vec<u16>,
     /// Bounce entries per listed cell (CSR, `cells.len() + 1`).
     pub bounce_offsets: Vec<u32>,
     pub bounce_entries: Vec<MoverBounceEntry>,
-    /// Entry after entry: per affected probe, `S^b₀` then `S^b₁`. Empty when
-    /// the payload streams.
+    /// Entry after entry: per affected probe, `S^b₀` then `S^b₁`. Empty while
+    /// a streamed bounce payload is not held.
     pub bounce_tiles: Vec<u16>,
     pub depth_records: Vec<MoverDepthRecord>,
     /// Record after record: `D₀` then `D₁`, each id 59's bordered tile.
@@ -358,6 +414,55 @@ impl MoverProbeChannelSection {
             .iter()
             .map(|entry| bounce_entry_f16_count(entry) as u64 * 2)
             .sum()
+    }
+
+    /// Bytes the direct payload (visibility and own tiles) weighs wherever it
+    /// is placed: what the compiler holds against
+    /// [`MOVER_DIRECT_RESIDENT_BYTE_BAR`].
+    pub fn direct_payload_bytes(&self) -> u64 {
+        let counts = self.direct_counts();
+        (counts.visibility_pairs * MOVER_VISIBILITY_BYTES_PER_PROBE
+            + counts.own_tile_probes * MOVER_IRRADIANCE_TILE_F16_COUNT * 2) as u64
+    }
+
+    /// `block`'s payload bytes wherever it is placed.
+    pub fn payload_bytes(&self, block: MoverChannelBlock) -> u64 {
+        match block {
+            MoverChannelBlock::Direct => self.direct_payload_bytes(),
+            MoverChannelBlock::Bounce => self.bounce_payload_bytes(),
+        }
+    }
+
+    pub fn placement(&self, block: MoverChannelBlock) -> MoverPayloadPlacement {
+        match block {
+            MoverChannelBlock::Direct => self.direct_placement,
+            MoverChannelBlock::Bounce => self.bounce_placement,
+        }
+    }
+
+    /// Whether either block's payload streams with id 50: then id 50 lists
+    /// this section as a source and id 49 as a resource.
+    pub fn streams(&self) -> bool {
+        MoverChannelBlock::BOTH
+            .iter()
+            .any(|&block| self.placement(block) == MoverPayloadPlacement::Streamed)
+    }
+
+    /// Whether `block`'s payload is held in memory: resident, built by the
+    /// compiler, or attached from id 50. A block with no entry holds an
+    /// empty payload, which counts as held.
+    pub fn payload_held(&self, block: MoverChannelBlock) -> bool {
+        if self.placement(block) == MoverPayloadPlacement::Resident {
+            return true;
+        }
+        match block {
+            MoverChannelBlock::Direct => {
+                self.direct_records.is_empty() || !self.visibility.is_empty()
+            }
+            MoverChannelBlock::Bounce => {
+                self.bounce_entries.is_empty() || !self.bounce_tiles.is_empty()
+            }
+        }
     }
 
     /// Bytes [`Self::to_bytes`] writes.

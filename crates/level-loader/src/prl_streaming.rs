@@ -15,7 +15,7 @@ use crate::prl::{LevelWorld, PrlLoadError};
 use crate::prl_container::PrlContainer;
 use crate::prl_file::PrlFile;
 use crate::prl_loader::{
-    HandOut, LoadCancel, MAX_DELTA_SECTION_BINDING_BYTES, StagedParseOutcome,
+    HandOut, LoadCancel, LoadManifests, MAX_DELTA_SECTION_BINDING_BYTES, StagedParseOutcome,
     load_prl_from_container, load_prl_staged_from_container,
 };
 use crate::sh_stream::{
@@ -45,8 +45,7 @@ pub(crate) enum ModeSource {
 /// The container one load decodes, with the modes it runs under.
 struct OpenedLoad {
     container: PrlContainer,
-    /// The SH manifest when SH streams; `None` when SH loads resident.
-    sh_manifest: Option<Arc<ShStreamManifest>>,
+    manifests: LoadManifests,
     lightmap: LightmapStreamingMode,
 }
 
@@ -130,7 +129,7 @@ pub(crate) fn load_prl_with_modes(
         opened.container,
         max_delta_section_binding_bytes,
         max_scatter_section_bytes,
-        opened.sh_manifest,
+        opened.manifests,
         opened.lightmap,
     )?;
     progress.finish();
@@ -157,7 +156,7 @@ pub(crate) fn load_prl_staged_with_modes(
         opened.container,
         max_delta_section_binding_bytes,
         max_scatter_section_bytes,
-        opened.sh_manifest,
+        opened.manifests,
         opened.lightmap,
         cancel,
         sink,
@@ -237,7 +236,7 @@ fn open_load(
     let lightmap = lightmap_mode?;
 
     let sh_manifest = match sh_mode {
-        Some(ShStreamingMode::SyncProof | ShStreamingMode::Async) => manifest,
+        Some(ShStreamingMode::SyncProof | ShStreamingMode::Async) => manifest.clone(),
         Some(ShStreamingMode::Off) | None => None,
     };
     debug_assert_eq!(
@@ -265,7 +264,10 @@ fn open_load(
     };
     Ok(OpenedLoad {
         container: container.with_progress(progress.clone(), planned),
-        sh_manifest,
+        manifests: LoadManifests {
+            streaming: sh_manifest,
+            id50: manifest,
+        },
         lightmap,
     })
 }
@@ -283,6 +285,7 @@ fn manifest_read_bound(metadata: &prl_format::ContainerMeta) -> u64 {
         SectionId::DirectShVolume,
         SectionId::DirectShDeltaVolumes,
         SectionId::AnimatedDirectShDeltaVolumes,
+        SectionId::MoverProbeChannel,
     ]
     .into_iter()
     .filter_map(|section| metadata.find_section(section as u32))
@@ -449,7 +452,7 @@ fn load_prl_with_section_limits(
             container,
             max_delta_section_binding_bytes,
             max_scatter_section_bytes,
-            None,
+            LoadManifests::default(),
             LightmapStreamingMode::AllResident,
         )
     });
@@ -458,7 +461,7 @@ fn load_prl_with_section_limits(
             PrlContainer::open(path)?,
             max_delta_section_binding_bytes,
             max_scatter_section_bytes,
-            None,
+            LoadManifests::default(),
             LightmapStreamingMode::AllResident,
             &std::sync::atomic::AtomicBool::new(false),
             sink,

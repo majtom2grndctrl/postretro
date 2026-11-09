@@ -433,7 +433,7 @@ pub fn bounce_states_in(
         if view.entry.mover_id != mover {
             continue;
         }
-        let tiles = view.tiles.expect("a resident bounce payload");
+        let tiles = view.tiles.expect("a resident bounce payload").to_vec();
         let cell = view.cell as usize;
         let (cx, cy, cz) = (cell % ax, cell / ax % ay, cell / (ax * ay));
         let mut at = 0;

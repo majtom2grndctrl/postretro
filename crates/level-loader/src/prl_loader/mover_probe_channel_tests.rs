@@ -1,4 +1,5 @@
 use super::*;
+use postretro_level_format::mover_probe_channel::MoverPayloadPlacement::{Resident, Streamed};
 use postretro_level_format::mover_probe_channel::{
     BounceEntryParts, DepthRecordParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT,
     MoverBounceEntry, MoverChannelCell, MoverDepthRecord, MoverDirectRecord, MoverLightRampRecord,
@@ -10,7 +11,10 @@ use postretro_level_format::{SectionBlob, SectionId};
 use crate::prl_loader::load_prl_with_streaming_mode_for_test;
 use crate::prl_loader::tests::sample_kinematic_section;
 use crate::sh_stream::ShStreamingMode;
-use crate::sh_stream_tests::{write_stream_fixture_with_base, write_whole_load_fixture_with_base};
+use crate::sh_stream_tests::{
+    write_stream_fixture_with_base, write_stream_fixture_with_mover_channel,
+    write_whole_load_fixture_with_base,
+};
 use crate::{FalloffModel, LightType, LoadedKinematicMover};
 
 // --- Unit fixture: two affinity cells along x, decoded against plain inputs.
@@ -18,8 +22,8 @@ use crate::{FalloffModel, LightType, LoadedKinematicMover};
 const GRID: [u32; 3] = [8, 4, 4];
 const AFFINITY: [u32; 3] = [2, 1, 1];
 const LATTICE: u32 = 8 * 4 * 4;
-/// Header (15 B), then the listed cell count and two 12-byte cell records.
-const CELLS_AT: usize = 15 + 4;
+/// Header (16 B), then the listed cell count and two 12-byte cell records.
+const CELLS_AT: usize = 16 + 4;
 /// Then the three direct offsets, then the first 16-byte term record.
 const DIRECT_OFFSETS_AT: usize = CELLS_AT + 2 * 12;
 const FIRST_RECORD_AT: usize = DIRECT_OFFSETS_AT + 3 * 4;
@@ -113,13 +117,13 @@ fn ramp(mover_id: u32) -> Result<MoverLightRampRecord, ()> {
 
 /// The rest of the level id 57 is checked against: every probe valid at L0;
 /// lights 0 static lightmap, 1 dynamic, 2 SDF, 3 animated; a one-light
-/// animated roster; movers 3 and 9; no id-59 tiles; no id-50 bounce source.
+/// animated roster; movers 3 and 9; no id-59 tiles; no id-50 source for id 57.
 struct Level {
     probes: Vec<OctahedralShProbe>,
     lights: Vec<MapLight>,
     mover_ids: Vec<u32>,
     id59_tile_count: usize,
-    id50_carries_bounce: bool,
+    id50_carries_payload: bool,
     tile_dimension: u32,
     grid_dimensions: [u32; 3],
 }
@@ -145,7 +149,7 @@ impl Level {
             ],
             mover_ids: vec![3, 9],
             id59_tile_count: 0,
-            id50_carries_bounce: false,
+            id50_carries_payload: false,
             tile_dimension: 6,
             grid_dimensions: GRID,
         }
@@ -167,7 +171,7 @@ impl Level {
                 animated_roster_len: 1,
                 id59_tile_count: self.id59_tile_count,
                 mover_ids: &self.mover_ids,
-                id50_carries_bounce: self.id50_carries_bounce,
+                id50_carries_payload: self.id50_carries_payload,
             },
         )
     }
@@ -187,7 +191,6 @@ impl Level {
         use MoverLightNamespace::{AnimatedBaked, BakeOnlyStaticLight, StaticLight};
         MoverProbeChannelParts {
             affinity_dims: AFFINITY,
-            bounce_placement: MoverBouncePlacement::Resident,
             direct: vec![
                 direct(
                     0,
@@ -236,8 +239,8 @@ fn a_wrong_epoch_is_refused_by_name() {
     assert_eq!(
         level.decode(&bytes),
         Err(Error::EpochMismatch {
-            found: 3,
-            expected: 2
+            found: 4,
+            expected: 3
         })
     );
 }
@@ -329,37 +332,74 @@ fn a_valid_probe_mask_unlike_id_34s_validity_is_refused_by_name() {
 }
 
 #[test]
-fn an_unknown_bounce_placement_is_refused_by_name() {
+fn an_unknown_placement_is_refused_by_name_for_its_block() {
     let level = Level::new();
-    let mut bytes = level.sample().to_bytes();
-    bytes[14] = 2;
-    assert_eq!(
-        level.decode(&bytes),
-        Err(Error::UnknownBouncePlacement { value: 2 })
-    );
+    for (at, block) in [
+        (14, MoverChannelBlock::Direct),
+        (15, MoverChannelBlock::Bounce),
+    ] {
+        let mut bytes = level.sample().to_bytes();
+        bytes[at] = 2;
+        assert_eq!(
+            level.decode(&bytes),
+            Err(Error::UnknownPlacement { block, value: 2 })
+        );
+    }
 }
 
 #[test]
-fn a_streamed_bounce_placement_with_no_bounce_entry_is_refused_by_name() {
+fn a_streamed_placement_with_no_entry_in_its_block_is_refused_by_name() {
     let level = Level::new();
     let mut parts = level.parts();
     parts.bounce.clear();
     let mut section = level.assemble(parts);
-    section.bounce_placement = MoverBouncePlacement::Streamed;
-    assert_eq!(level.refusal(&section), Error::StreamedBounceWithoutEntries);
+    section.bounce_placement = Streamed;
+    assert_eq!(
+        level.refusal(&section),
+        Error::StreamedBlockWithoutEntries {
+            block: MoverChannelBlock::Bounce
+        }
+    );
+    let mut parts = level.parts();
+    parts.direct.clear();
+    let mut section = level.assemble(parts);
+    section.direct_placement = Streamed;
+    assert_eq!(
+        level.refusal(&section),
+        Error::StreamedBlockWithoutEntries {
+            block: MoverChannelBlock::Direct
+        }
+    );
 }
 
+// A streamed payload resolves only when id 50 lists id 57 as a source; the
+// refusal names the block.
 #[test]
-fn a_streamed_bounce_payload_resolves_only_against_an_id_50_source() {
-    let mut level = Level::new();
-    let mut section = level.sample();
-    section.bounce_placement = MoverBouncePlacement::Streamed;
-    section.bounce_tiles.clear();
-    assert_eq!(level.refusal(&section), Error::StreamedBounceUnresolved);
-
-    level.id50_carries_bounce = true;
-    let decoded = level.decode(&section.to_bytes()).unwrap();
-    assert_eq!(decoded.bounce_entry_views().next().unwrap().tiles, None);
+fn a_streamed_payload_resolves_only_against_an_id_50_source() {
+    for (direct, bounce, block) in [
+        (Resident, Streamed, MoverChannelBlock::Bounce),
+        (Streamed, Resident, MoverChannelBlock::Direct),
+        (Streamed, Streamed, MoverChannelBlock::Direct),
+    ] {
+        let mut level = Level::new();
+        let mut section = level.sample();
+        section.direct_placement = direct;
+        section.bounce_placement = bounce;
+        assert_eq!(
+            level.refusal(&section),
+            Error::StreamedPayloadUnresolved { block }
+        );
+        level.id50_carries_payload = true;
+        let decoded = level.decode(&section.to_bytes()).unwrap();
+        assert_eq!(
+            decoded.payload_held(MoverChannelBlock::Bounce),
+            bounce == Resident
+        );
+        assert_eq!(
+            decoded.payload_held(MoverChannelBlock::Direct),
+            direct == Resident
+        );
+    }
 }
 
 #[test]
@@ -966,7 +1006,6 @@ fn fixture_section() -> MoverProbeChannelSection {
     MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
             affinity_dims: [4, 4, 1],
-            bounce_placement: MoverBouncePlacement::Resident,
             direct: vec![direct(
                 0,
                 record(MoverLightNamespace::StaticLight, 0, false, 1),
@@ -1061,15 +1100,102 @@ fn an_unresolved_section_fails_the_load_by_name_on_every_id_34_path() {
         }
     }
 
-    // No id 50 in this build carries a bounce source, so a streamed payload
-    // cannot resolve on any path.
+    // No id 50 in this build lists id 57 as a source, so a streamed payload
+    // cannot resolve on any path, streamed or whole.
     let mut streamed = fixture_section();
-    streamed.bounce_placement = MoverBouncePlacement::Streamed;
-    streamed.bounce_tiles.clear();
+    streamed.bounce_placement = Streamed;
     for result in load_every_way(Some(streamed.to_bytes())) {
         match result {
-            Err(PrlLoadError::MoverProbeChannel(Error::StreamedBounceUnresolved)) => {}
+            Err(PrlLoadError::MoverProbeChannel(Error::StreamedPayloadUnresolved {
+                block: MoverChannelBlock::Bounce,
+            })) => {}
             other => panic!("expected the streamed-bounce refusal, got {other:?}"),
+        }
+    }
+}
+
+/// `section` with each block's payload placed as given, payload held (as
+/// the compiler holds it).
+fn placed(
+    section: &MoverProbeChannelSection,
+    direct: MoverPayloadPlacement,
+    bounce: MoverPayloadPlacement,
+) -> MoverProbeChannelSection {
+    let mut placed = section.clone();
+    placed.direct_placement = direct;
+    placed.bounce_placement = bounce;
+    placed
+}
+
+// Task 7b: a payload placed with id 50's cells loads whole under `off`
+// (monolithic and staged parse alike, through the load's cross-check) into
+// exactly the payload a resident placement holds, placements kept. Under
+// streaming it stays with id 50: the section holds no streamed payload, and
+// each listed cell read through the chunk's rows gives the resident cell's
+// records, q, own tiles and bounce tiles.
+#[test]
+fn a_streamed_payload_loads_whole_under_off_equal_to_the_resident_load() {
+    let resident = fixture_section();
+    let resident_slices = resident.cell_slices();
+    for (direct, bounce) in [
+        (Streamed, Resident),
+        (Resident, Streamed),
+        (Streamed, Streamed),
+    ] {
+        let placed = placed(&resident, direct, bounce);
+        let fixture = write_stream_fixture_with_mover_channel(
+            &placed,
+            vec![
+                blob(
+                    SectionId::KinematicGeometry,
+                    sample_kinematic_section().to_bytes(),
+                ),
+                blob(SectionId::MoverProbeChannel, placed.to_bytes()),
+            ],
+        );
+        let path = fixture.path.to_str().unwrap();
+
+        let off = load_prl_with_streaming_mode_for_test(path, ShStreamingMode::Off).unwrap();
+        let loaded = off.mover_probe_channel().expect("id 57 loads");
+        assert_eq!(
+            loaded, &placed,
+            "{direct:?}/{bounce:?}: whole, placements kept"
+        );
+        assert_eq!(
+            &self::placed(loaded, Resident, Resident),
+            &resident,
+            "{direct:?}/{bounce:?}: the same payload a resident placement holds"
+        );
+
+        let streamed = load_prl_with_streaming_mode_for_test(path, ShStreamingMode::Async).unwrap();
+        let section = streamed.mover_probe_channel().expect("id 57 loads");
+        for block in MoverChannelBlock::BOTH {
+            assert_eq!(
+                section.payload_held(block),
+                section.placement(block) == Resident,
+                "{block}: a streamed payload stays with id 50 while SH streams"
+            );
+        }
+        let crate::ShStorage::Streaming(manifest) = streamed.sh_storage() else {
+            panic!("the fixture streams");
+        };
+        let chunk = manifest.read_and_decode_cluster(0).unwrap();
+        let rows =
+            parse_streamed_rows(chunk.mover_channel_rows().expect("cluster 0 carries id 57"))
+                .unwrap();
+        let slices = section.cell_slices();
+        assert_eq!(slices, resident_slices);
+        for (position, cell) in section.listed_cells().enumerate() {
+            let row = rows.iter().copied().find(|row| row.cell as usize == cell);
+            let payload = section
+                .cell_payload(position, &slices[position], row)
+                .unwrap();
+            let expected = resident
+                .cell_payload(position, &slices[position], None)
+                .unwrap();
+            assert_eq!(payload.visibility, expected.visibility);
+            assert_eq!(payload.own_tiles, expected.own_tiles);
+            assert_eq!(payload.bounce_tiles, expected.bounce_tiles);
         }
     }
 }

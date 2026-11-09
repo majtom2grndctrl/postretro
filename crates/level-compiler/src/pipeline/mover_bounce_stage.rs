@@ -159,7 +159,7 @@ pub(super) fn summary_line(blocks: &BounceBlocks, reservation: &DepthReservation
     let counts = blocks.counts();
     format!(
         "Mover probe channel bounce: {} entr(y/ies) from {} mover(s), {} affected probe(s), \
-         payload {} B (resident); depth: {} record(s) from {} mover(s), {} live tile(s) of the \
+         payload {} B; depth: {} record(s) from {} mover(s), {} live tile(s) of the \
          {}-tile range, {} CPU-held closed-pose tile(s)",
         counts.bounce_entries,
         counts.bounce_movers,

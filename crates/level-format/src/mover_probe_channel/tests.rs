@@ -35,7 +35,6 @@ fn parts() -> MoverProbeChannelParts {
     use MoverLightNamespace::{AnimatedBaked, BakeOnlyStaticLight, StaticLight};
     MoverProbeChannelParts {
         affinity_dims: [2, 1, 1],
-        bounce_placement: MoverBouncePlacement::Resident,
         direct: vec![
             DirectRecordParts {
                 cell: 1,
@@ -192,12 +191,12 @@ fn every_block_round_trips_with_its_payload_reachable_by_record_and_mover() {
     let shared = &records[0];
     assert_eq!(shared.mover_ids, [3, 9]);
     assert_eq!(
-        shared.own_tiles.map(<[u16]>::len),
+        shared.own_tiles.map(|tiles| tiles.len()),
         Some(2 * MOVER_IRRADIANCE_TILE_F16_COUNT)
     );
     assert_eq!(
-        shared.own_tile(1).unwrap()[0],
-        MOVER_IRRADIANCE_TILE_F16_COUNT as u16
+        shared.own_tile(1).unwrap().get(0),
+        Some(MOVER_IRRADIANCE_TILE_F16_COUNT as u16)
     );
     let movers: Vec<_> = shared.movers().collect();
     assert_eq!(movers[0].mover_id, 3);
@@ -208,8 +207,8 @@ fn every_block_round_trips_with_its_payload_reachable_by_record_and_mover() {
     assert!(records[1].own_tiles.is_none());
     assert_eq!(records[1].movers().next().unwrap().visibility, [0, 128]);
     assert_eq!(
-        records[2].own_tiles.unwrap()[0],
-        1000,
+        records[2].own_tiles.unwrap().get(0),
+        Some(1000),
         "the bake-only record's tiles follow record 0's"
     );
     assert_eq!(restored.bake_only_light_count(), 1);
@@ -228,7 +227,10 @@ fn every_block_round_trips_with_its_payload_reachable_by_record_and_mover() {
     let bounce: Vec<_> = restored.bounce_entry_views().collect();
     assert_eq!(bounce.len(), 1);
     assert_eq!(bounce[0].cell, 1);
-    assert_eq!(bounce[0].tiles, Some(&section.bounce_tiles[..]));
+    assert_eq!(
+        bounce[0].tiles,
+        Some(MoverHalves::Decoded(&section.bounce_tiles))
+    );
     assert_eq!(
         restored.bounce_payload_bytes(),
         (section.bounce_tiles.len() * 2) as u64
@@ -253,13 +255,14 @@ fn header_cell_index_and_first_record_sit_at_their_pinned_offsets() {
     assert_eq!(bytes[0], MOVER_PROBE_CHANNEL_EPOCH);
     assert_eq!(bytes[1], AFFINITY_FACTOR);
     assert_eq!(&bytes[2..14], &[2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
-    assert_eq!(bytes[14], MoverBouncePlacement::Resident as u8);
-    assert_eq!(&bytes[15..19], &2u32.to_le_bytes(), "two listed cells");
-    assert_eq!(&bytes[19..23], &0u32.to_le_bytes());
-    assert_eq!(&bytes[23..31], &ALL_VALID.to_le_bytes());
-    assert_eq!(&bytes[31..35], &1u32.to_le_bytes());
+    assert_eq!(bytes[14], MoverPayloadPlacement::Resident as u8, "direct");
+    assert_eq!(bytes[15], MoverPayloadPlacement::Resident as u8, "bounce");
+    assert_eq!(&bytes[16..20], &2u32.to_le_bytes(), "two listed cells");
+    assert_eq!(&bytes[20..24], &0u32.to_le_bytes());
+    assert_eq!(&bytes[24..32], &ALL_VALID.to_le_bytes());
+    assert_eq!(&bytes[32..36], &1u32.to_le_bytes());
     // Two cell records, then three direct offsets, then the first record.
-    let record = 15 + 4 + 2 * 12 + 3 * 4;
+    let record = 16 + 4 + 2 * 12 + 3 * 4;
     assert_eq!(
         &bytes[record..record + 16],
         &[
@@ -289,7 +292,7 @@ fn header_cell_index_and_first_record_sit_at_their_pinned_offsets() {
 fn a_bake_only_record_without_its_own_tile_is_refused_by_name() {
     let mut bytes = sample().to_bytes();
     // Header, cell index, three direct offsets, then record 2's flags byte.
-    let flags = 15 + 4 + 2 * 12 + 3 * 4 + 2 * 16 + 1;
+    let flags = 16 + 4 + 2 * 12 + 3 * 4 + 2 * 16 + 1;
     assert_eq!(
         bytes[flags - 1],
         MoverLightNamespace::BakeOnlyStaticLight as u8
@@ -304,26 +307,331 @@ fn a_bake_only_record_without_its_own_tile_is_refused_by_name() {
     );
 }
 
-#[test]
-fn a_streamed_bounce_payload_keeps_its_index_and_leaves_its_tiles_out() {
-    let resident = sample();
-    let mut streamed = resident.clone();
-    streamed.bounce_placement = MoverBouncePlacement::Streamed;
-    streamed.bounce_tiles.clear();
+/// `section` with each block placed as given.
+fn placed(
+    mut section: MoverProbeChannelSection,
+    direct: MoverPayloadPlacement,
+    bounce: MoverPayloadPlacement,
+) -> MoverProbeChannelSection {
+    section.direct_placement = direct;
+    section.bounce_placement = bounce;
+    section
+}
 
-    let bytes = streamed.to_bytes();
+/// `section` as a load decodes it: a streamed block's payload not held.
+fn unheld(mut section: MoverProbeChannelSection) -> MoverProbeChannelSection {
+    if section.direct_placement == MoverPayloadPlacement::Streamed {
+        section.visibility.clear();
+        section.own_tiles.clear();
+    }
+    if section.bounce_placement == MoverPayloadPlacement::Streamed {
+        section.bounce_tiles.clear();
+    }
+    section
+}
+
+/// Every id-50 chunk's rows for `section`: one chunk per listed cell, plus
+/// a second chunk covering every cell, as a cell two clusters share repeats.
+fn chunk_rows(section: &MoverProbeChannelSection) -> Vec<Vec<u8>> {
+    let slices = section.cell_slices();
+    let listed: Vec<u32> = section.listed_cells().map(|cell| cell as u32).collect();
+    let mut chunks: Vec<Vec<u8>> = listed
+        .iter()
+        .map(|&cell| {
+            section.encode_streamed_rows(&slices, &section.streamed_rows_for(&slices, [cell]))
+        })
+        .collect();
+    chunks.push(section.encode_streamed_rows(&slices, &section.streamed_rows_for(&slices, listed)));
+    chunks
+}
+
+const ALL_PLACEMENTS: [(MoverPayloadPlacement, MoverPayloadPlacement); 4] = {
+    use MoverPayloadPlacement::{Resident, Streamed};
+    [
+        (Resident, Resident),
+        (Streamed, Resident),
+        (Resident, Streamed),
+        (Streamed, Streamed),
+    ]
+};
+
+// Task 7b: each block's payload round-trips resident or streamed, in every
+// combination. A streamed payload leaves the section, which keeps its
+// cells, records, masks and mover entries; the payload's weight does not
+// change; and the rows id 50 carries attach back to the resident section's
+// bytes exactly.
+#[test]
+fn both_placements_of_both_blocks_round_trip_and_attach_back_to_the_resident_payload() {
+    let resident = sample();
+    for (direct, bounce) in ALL_PLACEMENTS {
+        let section = placed(resident.clone(), direct, bounce);
+        let bytes = section.to_bytes();
+        assert_eq!(section.encoded_len(), bytes.len());
+        let breakdown = section.byte_breakdown();
+        let streamed = |placement| placement == MoverPayloadPlacement::Streamed;
+        assert_eq!(
+            resident.to_bytes().len() - bytes.len(),
+            breakdown.streamed_direct + breakdown.streamed_bounce,
+            "{direct:?}/{bounce:?}: only the streamed payload leaves the section"
+        );
+        assert_eq!(
+            breakdown.streamed_direct as u64,
+            if streamed(direct) {
+                resident.direct_payload_bytes()
+            } else {
+                0
+            }
+        );
+        assert_eq!(
+            breakdown.streamed_bounce as u64,
+            if streamed(bounce) {
+                resident.bounce_payload_bytes()
+            } else {
+                0
+            }
+        );
+
+        let mut restored = MoverProbeChannelSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored, unheld(section.clone()));
+        assert_eq!(restored.direct_placement, direct);
+        assert_eq!(restored.bounce_placement, bounce);
+        assert_eq!(
+            restored.direct_payload_bytes(),
+            resident.direct_payload_bytes()
+        );
+        assert_eq!(
+            restored.bounce_payload_bytes(),
+            resident.bounce_payload_bytes()
+        );
+        assert_eq!(restored.streams(), streamed(direct) || streamed(bounce));
+        if streamed(bounce) {
+            assert_eq!(restored.bounce_entry_views().next().unwrap().tiles, None);
+        }
+        if streamed(direct) {
+            assert_eq!(
+                restored.direct_cells().count(),
+                0,
+                "no held payload, no view"
+            );
+        }
+
+        let chunks = chunk_rows(&section);
+        let rows = chunks
+            .iter()
+            .flat_map(|chunk| parse_streamed_rows(chunk).unwrap())
+            .collect::<Vec<_>>();
+        if !restored.streams() {
+            assert!(
+                rows.is_empty(),
+                "a resident section places no row with id 50"
+            );
+        }
+        restored.attach_streamed_payload(rows).unwrap();
+        assert_eq!(
+            restored, section,
+            "{direct:?}/{bounce:?}: attached equals resident"
+        );
+    }
+}
+
+// Task 7b: a renderer reads a cell through one view whatever holds each
+// block: a streamed block from its id-50 row, a resident one from the
+// section. Both give the resident section's records, movers, q, own tiles
+// and bounce tiles.
+#[test]
+fn a_cells_payload_reads_the_same_whichever_placement_holds_it() {
+    let resident = sample();
+    let slices = resident.cell_slices();
+    for (direct, bounce) in ALL_PLACEMENTS {
+        let section = placed(resident.clone(), direct, bounce);
+        let loaded = MoverProbeChannelSection::from_bytes(&section.to_bytes()).unwrap();
+        for (position, cell) in resident.listed_cells().enumerate() {
+            let cell = cell as u32;
+            let chunk =
+                section.encode_streamed_rows(&slices, &section.streamed_rows_for(&slices, [cell]));
+            let rows = parse_streamed_rows(&chunk).unwrap();
+            let row = rows.first().copied();
+            let expected = resident
+                .cell_payload(position, &slices[position], None)
+                .unwrap();
+            let payload = loaded
+                .cell_payload(position, &slices[position], row)
+                .unwrap();
+            let records = |section: &MoverProbeChannelSection, payload| {
+                section
+                    .direct_cell_at(position, payload)
+                    .map(|cell| {
+                        cell.records()
+                            .map(|view| {
+                                (
+                                    *view.record,
+                                    view.movers()
+                                        .map(|mover| (mover.mover_id, mover.visibility.to_vec()))
+                                        .collect::<Vec<_>>(),
+                                    view.own_tiles.map(|tiles| tiles.to_vec()),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            assert_eq!(records(&loaded, payload), records(&resident, expected));
+            let bounce = |section: &MoverProbeChannelSection, payload| {
+                section
+                    .bounce_entries_at(position, payload)
+                    .map(|view| (*view.entry, view.tiles.map(|tiles| tiles.to_vec())))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(bounce(&loaded, payload), bounce(&resident, expected));
+        }
+    }
+}
+
+// Task 7b: a streamed block's payload with no id-50 row is the named error,
+// never an empty read; so is a row of the wrong length, a row two chunks
+// disagree on, and a cell no chunk carries when the payload attaches.
+#[test]
+fn an_unresolved_or_malformed_streamed_payload_is_refused_by_name() {
+    use MoverPayloadPlacement::{Resident, Streamed};
+    let resident = sample();
+    let slices = resident.cell_slices();
+    let section = placed(resident.clone(), Streamed, Streamed);
+    let loaded = MoverProbeChannelSection::from_bytes(&section.to_bytes()).unwrap();
     assert_eq!(
-        resident.to_bytes().len() - bytes.len(),
-        resident.bounce_tiles.len() * 2,
-        "only the payload leaves the section"
+        loaded.cell_payload(0, &slices[0], None).unwrap_err(),
+        MoverProbeChannelError::StreamedPayloadUnresolved {
+            block: MoverChannelBlock::Direct
+        }
     );
-    let restored = MoverProbeChannelSection::from_bytes(&bytes).unwrap();
-    assert_eq!(restored, streamed);
-    assert_eq!(restored.bounce_entry_views().next().unwrap().tiles, None);
+    let bounce_only = placed(resident.clone(), Resident, Streamed);
+    let loaded_bounce = MoverProbeChannelSection::from_bytes(&bounce_only.to_bytes()).unwrap();
     assert_eq!(
-        restored.bounce_payload_bytes(),
-        resident.bounce_payload_bytes(),
-        "the payload's weight does not depend on where it lives"
+        loaded_bounce.cell_payload(1, &slices[1], None).unwrap_err(),
+        MoverProbeChannelError::StreamedPayloadUnresolved {
+            block: MoverChannelBlock::Bounce
+        }
+    );
+
+    let chunk = section.encode_streamed_rows(&slices, &section.streamed_rows_for(&slices, [0, 1]));
+    let rows = parse_streamed_rows(&chunk).unwrap();
+    let short = MoverStreamedRow {
+        direct: &rows[0].direct[1..],
+        ..rows[0]
+    };
+    assert!(matches!(
+        loaded.cell_payload(0, &slices[0], Some(short)),
+        Err(MoverProbeChannelError::StreamedPayloadMismatch {
+            block: MoverChannelBlock::Direct,
+            cell: 0,
+            ..
+        })
+    ));
+    assert!(matches!(
+        loaded.clone().attach_streamed_payload([rows[1]]),
+        Err(MoverProbeChannelError::StreamedPayloadMismatch { cell: 0, .. })
+    ));
+    let mut altered = rows[1].bounce.to_vec();
+    altered[0] ^= 1;
+    let disagreeing = MoverStreamedRow {
+        bounce: &altered,
+        ..rows[1]
+    };
+    assert!(matches!(
+        loaded
+            .clone()
+            .attach_streamed_payload([rows[0], rows[1], disagreeing]),
+        Err(MoverProbeChannelError::StreamedPayloadMismatch {
+            block: MoverChannelBlock::Bounce,
+            cell: 1,
+            ..
+        })
+    ));
+    let mut stray = chunk.clone();
+    // Row 0's cell becomes 7, which the section does not list.
+    stray[8..12].copy_from_slice(&7u32.to_le_bytes());
+    let stray_rows = parse_streamed_rows(&stray);
+    assert!(
+        matches!(stray_rows, Err(MoverProbeChannelError::StreamedRows { .. })),
+        "rows must ascend: {stray_rows:?}"
+    );
+    let mut trailing = chunk;
+    trailing.push(0);
+    assert!(matches!(
+        parse_streamed_rows(&trailing),
+        Err(MoverProbeChannelError::StreamedRows { .. })
+    ));
+}
+
+// Task 7b: epoch 3 reads its two placement bytes; an epoch-2 section is a
+// named re-bake, an unknown placement names its block, and a streamed block
+// with no entry is refused for that block.
+#[test]
+fn epoch_three_placements_are_read_per_block_and_refused_by_name() {
+    use MoverPayloadPlacement::{Resident, Streamed};
+    let bytes = sample().to_bytes();
+    let mut stale = bytes.clone();
+    stale[0] = 2;
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&stale),
+        Err(MoverProbeChannelError::EpochMismatch {
+            found: 2,
+            expected: 3
+        })
+    );
+    for (at, block) in [
+        (14, MoverChannelBlock::Direct),
+        (15, MoverChannelBlock::Bounce),
+    ] {
+        let mut unknown = bytes.clone();
+        unknown[at] = 2;
+        assert_eq!(
+            MoverProbeChannelSection::from_bytes(&unknown),
+            Err(MoverProbeChannelError::UnknownPlacement { block, value: 2 })
+        );
+    }
+    let mut bounce_only = parts();
+    bounce_only.direct.clear();
+    let bounce_only = assemble(bounce_only).unwrap();
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&placed(bounce_only, Streamed, Resident).to_bytes()),
+        Err(MoverProbeChannelError::StreamedBlockWithoutEntries {
+            block: MoverChannelBlock::Direct
+        })
+    );
+    let mut direct_only = parts();
+    direct_only.bounce.clear();
+    let direct_only = assemble(direct_only).unwrap();
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&placed(direct_only, Resident, Streamed).to_bytes()),
+        Err(MoverProbeChannelError::StreamedBlockWithoutEntries {
+            block: MoverChannelBlock::Bounce
+        })
+    );
+}
+
+// The direct payload's masks are checked tight when it attaches from id 50,
+// as a resident one's are at decode: a masked probe every mover leaves at
+// 255 is refused.
+#[test]
+fn an_attached_direct_payload_is_checked_tight() {
+    use MoverPayloadPlacement::{Resident, Streamed};
+    let mut section = placed(sample(), Streamed, Resident);
+    // Record 1 (animated, one masked probe, mover 3): q₀ 0 → 255 leaves
+    // its one probe ungated at both termini once q₁ is 255 too.
+    let slices = section.cell_slices();
+    let at = slices[1].visibility.start;
+    section.visibility[at] = 255;
+    section.visibility[at + 1] = 255;
+    let mut loaded = MoverProbeChannelSection::from_bytes(&section.to_bytes()).unwrap();
+    let chunk = section.encode_streamed_rows(&slices, &section.streamed_rows_for(&slices, [0, 1]));
+    let refused = loaded.attach_streamed_payload(parse_streamed_rows(&chunk).unwrap());
+    assert!(
+        matches!(
+            refused,
+            Err(MoverProbeChannelError::MoverGatesNothing { .. }
+                | MoverProbeChannelError::ProbeMaskNotTight { .. })
+        ),
+        "{refused:?}"
     );
 }
 

@@ -40,6 +40,7 @@ use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::octahedral::{MAX_SH_ATLAS_DIMENSION, irradiance_atlas_array_layout};
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::{
@@ -450,7 +451,7 @@ pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
 }
 
 fn write_stream_fixture_with(id50_body: Id50Body, shape: DirectoryShape) -> StreamFixture {
-    write_stream_fixture_variant(id50_body, shape, |_| {}, Vec::new())
+    write_stream_fixture_variant(id50_body, shape, |_| {}, Vec::new(), None)
 }
 
 /// A valid stream fixture whose id-34 base `edit_base` changes before every
@@ -464,6 +465,25 @@ pub(crate) fn write_stream_fixture_with_base(
         DirectoryShape::default(),
         edit_base,
         extra_sections,
+        None,
+    )
+}
+
+/// [`write_stream_fixture_with_base`] whose ids 49 and 50 also list id 57
+/// (`mover_channel`, as the compiler holds it, payload included) when a
+/// payload of it streams: id 49 as an affinity-cell resource, id 50 as a
+/// source whose one chunk carries its rows. The caller adds id 57's own
+/// bytes through `extra_sections`.
+pub(crate) fn write_stream_fixture_with_mover_channel(
+    mover_channel: &MoverProbeChannelSection,
+    extra_sections: Vec<SectionBlob>,
+) -> StreamFixture {
+    write_stream_fixture_variant(
+        Id50Body::Valid,
+        DirectoryShape::default(),
+        |_| {},
+        extra_sections,
+        Some(mover_channel),
     )
 }
 
@@ -501,7 +521,9 @@ fn write_stream_fixture_variant(
     shape: DirectoryShape,
     edit_base: impl FnOnce(&mut OctahedralShVolumeSection),
     extra_sections: Vec<SectionBlob>,
+    mover_channel: Option<&MoverProbeChannelSection>,
 ) -> StreamFixture {
+    let mover_channel = mover_channel.filter(|section| section.streams());
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("cluster-stream.prl");
     let cells = fixture_cells();
@@ -540,6 +562,7 @@ fn write_stream_fixture_variant(
         &animated_direct_delta,
         &billboard,
         &animated_billboard,
+        mover_channel,
     );
     cluster_directory.mandatory_bound = shape.mandatory_bound;
     let valid_body = || {
@@ -550,6 +573,7 @@ fn write_stream_fixture_variant(
             &indirect_delta,
             &direct_delta,
             &animated_direct_delta,
+            mover_channel,
         )
     };
     let id50 = match id50_body {
@@ -839,6 +863,7 @@ fn cluster_directory(
     animated_direct_delta: &AnimatedDirectShDeltaVolumesSection,
     billboard: &BillboardDirectScatterVolumeSection,
     animated_billboard: &AnimatedBillboardDirectScatterDeltaVolumesSection,
+    mover_channel: Option<&MoverProbeChannelSection>,
 ) -> ClusterDirectorySection {
     let mut directory = ClusterDirectorySection {
         runtime_cell_count: 2,
@@ -887,11 +912,15 @@ fn cluster_directory(
             animated_direct_delta: Some(animated_direct_delta),
             billboard: Some(billboard),
             animated_billboard_delta: Some(animated_billboard),
+            mover_channel,
         },
     };
     populate_canonical_resource_ranges(&mut directory, inputs).unwrap();
     directory.validate_semantics(inputs).unwrap();
-    assert_eq!(directory.clusters[0].range_count, 7);
+    assert_eq!(
+        directory.clusters[0].range_count,
+        7 + u32::from(mover_channel.is_some())
+    );
     assert_eq!(directory.clusters[1].range_count, 0);
     directory
 }
@@ -903,6 +932,7 @@ fn valid_id50(
     indirect_delta: &DeltaShVolumesSection,
     direct_delta: &DirectShDeltaVolumesSection,
     animated_direct_delta: &AnimatedDirectShDeltaVolumesSection,
+    mover_channel: Option<&MoverProbeChannelSection>,
 ) -> Vec<u8> {
     let sources = source_metadata_from_sections(
         base,
@@ -910,8 +940,32 @@ fn valid_id50(
         Some(indirect_delta),
         Some(direct_delta),
         Some(animated_direct_delta),
+        mover_channel,
     );
-    let chunk = dense_and_empty_sparse_chunk();
+    // Id 57's rows for cluster 0's covered cells, as the compiler lays them.
+    let mover_block = mover_channel.map(|section| {
+        let resource = directory
+            .resources
+            .iter()
+            .position(|resource| resource.section_id == SectionId::MoverProbeChannel as u32)
+            .expect("id 49 lists id 57") as u32;
+        let cluster = &directory.clusters[0];
+        let cells = directory.ranges[cluster.range_start as usize..]
+            [..cluster.range_count as usize]
+            .iter()
+            .filter(|range| range.resource_index == resource)
+            .flat_map(|range| range.start..range.start + range.count);
+        let slices = section.cell_slices();
+        let rows = section.streamed_rows_for(&slices, cells);
+        (
+            rows.len() as u32,
+            section.encode_streamed_rows(&slices, &rows),
+        )
+    });
+    let mover_bytes = mover_block
+        .as_ref()
+        .map_or(0, |(_, body)| body.len() as u64);
+    let chunk = dense_and_empty_sparse_chunk(mover_block);
     let payload = chunk.clone();
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
@@ -933,9 +987,10 @@ fn valid_id50(
             ClusterShPayloadsIndexRecord {
                 payload_offset: 0,
                 payload_len: chunk.len() as u64,
-                decoded_bytes: decoded_chunk_bytes(),
+                decoded_bytes: decoded_chunk_bytes() + mover_bytes,
                 requested_resident_bytes: u64::from(STORED_TILES) * 2 * 8 * 8 * 8
-                    + 2 * (16 + sparse_tile_f16_count() as u64 * 2),
+                    + 2 * (16 + sparse_tile_f16_count() as u64 * 2)
+                    + mover_bytes,
                 stored_tile_count: STORED_TILES,
                 dense_patch_count: PROBE_COUNT,
                 affinity_patch_count: AFFINITY_COUNT * 3,
@@ -963,7 +1018,9 @@ fn valid_id50(
     section.try_to_bytes(&payload).unwrap()
 }
 
-fn dense_and_empty_sparse_chunk() -> Vec<u8> {
+/// The fixture's one chunk, with id 57's row block (row count, body) last
+/// when given.
+fn dense_and_empty_sparse_chunk(mover_block: Option<(u32, Vec<u8>)>) -> Vec<u8> {
     let isolated_layout = cluster_sh_isolated_atlas_array_layout(STORED_TILES).unwrap();
     let isolated_atlas_len = isolated_layout.layer_count as usize
         * isolated_layout.atlas_width as usize
@@ -1007,6 +1064,15 @@ fn dense_and_empty_sparse_chunk() -> Vec<u8> {
             one_entry_sparse_rows(),
         ),
     ];
+    let mut blocks = blocks;
+    blocks.extend(mover_block.map(|(rows, body)| {
+        (
+            SectionId::MoverProbeChannel,
+            postretro_level_format::cluster_sh_payloads::CLUSTER_SH_MOVER_ROWS_BLOCK_KIND,
+            rows,
+            body,
+        )
+    }));
     let table_len = 16 + blocks.len() * 32;
     let body_len: usize = blocks.iter().map(|(_, _, _, body)| body.len()).sum();
     let mut bytes = Vec::with_capacity(table_len + body_len);

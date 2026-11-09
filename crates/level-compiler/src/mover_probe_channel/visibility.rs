@@ -10,10 +10,18 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{LightType, MapLight};
 use crate::mover_light_gate::{
-    BOX_SLACK_M, Pose, point_touches_brush, segment_may_touch_box, segment_touches_brush,
+    BOX_SLACK_M, Pose, point_touches_brush, segment_may_touch_box, segment_touches_brush_within,
 };
 use crate::partition::Aabb;
+use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 use crate::texel_footprint::ProbeEarlyOut;
+
+/// How far outside a posed face a shadow segment still meets it: the static
+/// tracer's hit tolerance τ, so a posed side catches the samples a static
+/// wall at the pose catches (bake row B7's direct clause). The gate's 0.1 mm
+/// contact band let a sample 0.4 mm outside the raised room's doorway jamb
+/// through where the static-room reference blocks it.
+const SHADOW_SEGMENT_BAND_M: f64 = TRACER_TOLERANCE_METERS as f64;
 
 /// Angular slack on the sun cone test, far above the `f32` rounding of a
 /// jittered sample direction.
@@ -105,14 +113,15 @@ impl PosedOccluder {
     }
 
     /// Whether the segment `from..=to`, traced for a receiver at `probe`,
-    /// touches an occluding posed brush. Contact counts, as in the gate.
+    /// touches an occluding posed brush. Contact counts within
+    /// [`SHADOW_SEGMENT_BAND_M`], the static tracer's τ.
     pub(crate) fn blocks(&self, probe: Vec3, from: Vec3, to: Vec3) -> bool {
         let (probe, from, to) = (probe.as_dvec3(), from.as_dvec3(), to.as_dvec3());
         segment_may_touch_box(from, to, &self.pose.bounds)
             && self.pose.brushes.iter().any(|brush| {
                 let skipped = self.rule == InsideBrushRule::SkipContainingBrush
                     && point_touches_brush(probe, brush);
-                !skipped && segment_touches_brush(from, to, brush)
+                !skipped && segment_touches_brush_within(from, to, brush, SHADOW_SEGMENT_BAND_M)
             })
     }
 }

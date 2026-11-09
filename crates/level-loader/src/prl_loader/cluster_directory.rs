@@ -12,6 +12,7 @@ use postretro_level_format::cluster_directory::{
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
@@ -285,7 +286,10 @@ pub(super) fn validate_cluster_directory(
     spatial: &SpatialValidationInputs,
     sh_volume: &Option<OctahedralShVolumeSection>,
     sh: &ShCompanions,
+    mover_channel: Option<&MoverProbeChannelSection>,
 ) -> Result<Option<ClusterDirectorySection>, PrlLoadError> {
+    // Id 57 is an id-49 resource only while a payload streams.
+    let mover_channel = mover_channel.filter(|section| section.streams());
     let SpatialValidationInputs {
         bvh_section,
         portals_section,
@@ -393,6 +397,7 @@ pub(super) fn validate_cluster_directory(
                 billboard: parsed_billboard_direct_scatter_volume.as_ref(),
                 animated_billboard_delta: parsed_animated_billboard_direct_scatter_delta_volumes
                     .as_ref(),
+                mover_channel,
             },
         })?;
         let (adjacency, seam_portals) = cluster_portal_topology_from_portals(
@@ -431,6 +436,7 @@ pub(super) fn validate_cluster_directory(
                         billboard: parsed_billboard_direct_scatter_volume.as_ref(),
                         animated_billboard_delta:
                             parsed_animated_billboard_direct_scatter_delta_volumes.as_ref(),
+                        mover_channel,
                     },
                 })?;
                 Some(directory)

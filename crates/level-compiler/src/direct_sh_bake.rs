@@ -89,12 +89,13 @@ pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 pub const DIRECT_SH_STAGE_VERSION: u32 = 6;
 
 /// The entity-shadow direct deltas' (id 41) per-light memo: one entry per
-/// selected light holding its raw pre-drop sub-blocks. Bump the version when
-/// the sub-block bake or the memo payload changes; independent of the base
-/// direct-SH cache and the on-disk section format.
+/// selected light holding its raw pre-drop sub-blocks at their valid probes.
+/// Bump the version when the sub-block bake or the memo payload changes;
+/// independent of the base direct-SH cache and the on-disk section format.
+/// Version 2: the payload keeps valid probes only.
 pub(crate) const DIRECT_SH_DELTA_STAGE: DirectDeltaStage = DirectDeltaStage {
     id: "direct_sh_delta_light",
-    version: 1,
+    version: 2,
 };
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;

@@ -18,6 +18,7 @@ use postretro_level_format::sh_volume::{
 
 use super::super::sh_mandatory_bound::{ClusterLists, ClusterStorageDemand, SparseFamilyDemand};
 use super::atlas::DenseAtlasGeometry;
+use super::mover_rows::MoverRows;
 use super::shared_bytes::SharedBytesCheck;
 use super::sparse::{SparseSources, affinity_indices, encode_sparse_block};
 use super::{BLOCK_KIND_PROBE_PATCHES, EncodedBlock, EncodedSparse, encode_chunk_wire, push_u32};
@@ -50,12 +51,15 @@ pub(super) struct ChunkPlan<'a> {
     pub(super) affinity_dimensions: [u32; 3],
     dense_nodes: Vec<BTreeSet<usize>>,
     sparse_sources: SparseSources<'a>,
+    /// Id 57's streamed payload, when it streams.
+    mover_rows: Option<MoverRows<'a>>,
 }
 
 impl<'a> ChunkPlan<'a> {
     pub(super) fn new(
         inputs: ClusterShPayloadsValidationInputs<'a>,
         sparse_sources: SparseSources<'a>,
+        mover_rows: Option<MoverRows<'a>>,
     ) -> anyhow::Result<Self> {
         let affinity_dimensions = inputs
             .base
@@ -86,6 +90,7 @@ impl<'a> ChunkPlan<'a> {
             affinity_dimensions,
             dense_nodes,
             sparse_sources,
+            mover_rows,
         })
     }
 
@@ -159,13 +164,24 @@ impl<'a> ChunkPlan<'a> {
             shared_bytes.record_nodes(cluster_id, &dense_nodes, &blocks)?;
         }
         blocks.extend(sparse_chunks.into_iter().map(EncodedSparse::into_block));
+        let mover_block = match &self.mover_rows {
+            Some(rows) => rows.block(self.inputs.directory, cluster_id)?,
+            None => None,
+        };
+        let mover_bytes = mover_block
+            .as_ref()
+            .map_or(0, |block| block.body.len() as u64);
+        blocks.extend(mover_block);
         blocks.sort_by_key(|block| (block.section_id, block.kind));
         let decoded_bytes = blocks.iter().try_fold(0u64, |total, block| {
             total
                 .checked_add(u64::try_from(block.body.len())?)
                 .ok_or_else(|| anyhow::anyhow!("id-50 decoded block byte count overflow"))
         })?;
-        let requested_resident_bytes = self.requested_resident_bytes(cluster_id, nodes)?;
+        let requested_resident_bytes = self
+            .requested_resident_bytes(cluster_id, nodes)?
+            .checked_add(mover_bytes)
+            .ok_or_else(|| anyhow::anyhow!("id-50 resident bytes overflow"))?;
         let bytes = encode_chunk_wire(cluster_id, &blocks)?;
         Ok(EncodedChunk {
             bytes,
@@ -273,6 +289,8 @@ impl<'a> ChunkPlan<'a> {
                         )
                         .ok_or_else(|| anyhow::anyhow!("id-50 resident bytes overflow"))?;
                 }
+                // Priced with its row block in `encode_chunk`.
+                ClusterShPayloadsSourceMetadata::MoverChannel { .. } => {}
                 ClusterShPayloadsSourceMetadata::Sparse { section_id, .. } => {
                     let source = self.sparse_sources.find(*section_id)?;
                     for row in affinity_indices(self.inputs.directory, cluster_id, *section_id)? {
@@ -469,7 +487,8 @@ fn dense_format(
         ClusterShPayloadsSourceMetadata::Dense {
             irradiance_format, ..
         } => Ok(*irradiance_format),
-        ClusterShPayloadsSourceMetadata::Sparse { .. } => {
+        ClusterShPayloadsSourceMetadata::Sparse { .. }
+        | ClusterShPayloadsSourceMetadata::MoverChannel { .. } => {
             anyhow::bail!("id-50 source {section_id} is not dense")
         }
     }

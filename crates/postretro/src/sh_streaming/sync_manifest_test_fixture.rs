@@ -152,7 +152,7 @@ pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf)
     }
     chunk.resize(chunk.len() + atlas_bytes, 0);
 
-    let sources = source_metadata_from_sections(&base, None, None, None, None);
+    let sources = source_metadata_from_sections(&base, None, None, None, None, None);
     let payloads = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
             cluster_count: 1,

@@ -466,4 +466,16 @@ impl DecodedClusterShPayload {
     pub fn block_bytes(&self, block: &DecodedClusterShBlock) -> &[u8] {
         &self.bytes[block.body.clone()]
     }
+
+    /// The chunk's id-57 row block body, if the chunk carries one:
+    /// [`crate::mover_probe_channel::parse_streamed_rows`] reads it.
+    pub fn mover_channel_rows(&self) -> Option<&[u8]> {
+        self.blocks
+            .iter()
+            .find(|block| {
+                block.section_id == SectionId::MoverProbeChannel as u32
+                    && block.kind == CLUSTER_SH_MOVER_ROWS_BLOCK_KIND
+            })
+            .map(|block| self.block_bytes(block))
+    }
 }

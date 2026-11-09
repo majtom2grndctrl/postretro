@@ -79,6 +79,9 @@ pub(super) struct FinalizedClusterMetadataInputs<'a> {
     pub(super) billboard_direct_scatter_volume: Option<&'a BillboardDirectScatterVolumeSection>,
     pub(super) animated_billboard_direct_scatter_delta_volumes:
         Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    /// MoverProbeChannel (id 57): ids 49 and 50 list it when its payload
+    /// streams.
+    pub(super) mover_probe_channel: Option<&'a MoverProbeChannelSection>,
 }
 
 /// Build the finalized SH inventory, derived cell metadata, and cluster
@@ -104,6 +107,7 @@ pub(super) fn build_finalized_cluster_metadata<'a>(
         inputs.animated_direct_sh_delta_volumes,
         inputs.billboard_direct_scatter_volume,
         inputs.animated_billboard_direct_scatter_delta_volumes,
+        inputs.mover_probe_channel,
     )?;
     let sh_pack = pack::FinalizedShPack::new(emission, sources)?;
     let cluster_directory = crate::cluster_directory_bake::bake_cluster_directory_from_partition(

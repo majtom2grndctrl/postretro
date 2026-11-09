@@ -162,6 +162,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - [ ] Co-op loopback: the client hears each stance sound and sees the stance before the hit lands.
 
 ## Path
+- **Body stance.** A crouching stance needs the cover brief's `crouchHeight` and `crouch_` states on the archetype, which load enforces. Under innermost-wins resolution the builder emits `stance: "stand"` on the recover when the option is set, so an outer crouch never leaks into it.
 - **Seams.**
   - **Brain facts.** `ScopeRelativeValues` / `SCOPE_RELATIVE_SLOTS` (`crates/ai/src/brain_scope.rs`): one field and one registration per fact, re-pointed at each level and selector.
   - **Brain arrays.** The per-depth arrays on `BrainComponent` zero on re-entry. `BRAIN_INPUTS` is append-only.

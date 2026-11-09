@@ -77,7 +77,9 @@ pub use prl_loader::{
     SpatialHandOut, StagedParseOutcome, assemble,
 };
 #[cfg(feature = "load-prl")]
-pub use prl_streaming::{load_prl, load_prl_staged, load_prl_with_progress};
+pub use prl_streaming::{
+    load_prl, load_prl_staged, load_prl_with_progress, load_prl_with_sh_streaming,
+};
 #[cfg(feature = "load-prl")]
 pub use sh_stream::{
     PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage, ShStreamBaseMetadata,

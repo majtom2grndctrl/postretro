@@ -80,6 +80,8 @@ pub(crate) mod uploads;
 #[cfg(test)]
 mod animated_atlas_parity_test;
 #[cfg(test)]
+pub(crate) mod composed_tiles;
+#[cfg(test)]
 mod curve_eval_test;
 #[cfg(all(test, feature = "dev-tools"))]
 mod debug_ui_gpu_test;

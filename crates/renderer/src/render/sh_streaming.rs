@@ -33,6 +33,8 @@ mod compose_plan_oracle;
 pub(in crate::render) mod compose_plan_test_support;
 mod compose_staleness;
 #[cfg(test)]
+mod composed_tiles;
+#[cfg(test)]
 mod contributing_rows_tests;
 mod dense;
 mod depth_tile_texels;

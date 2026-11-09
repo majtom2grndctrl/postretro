@@ -33,6 +33,9 @@ const WHOLE_IMAGE_READ_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) enum ModeSource {
     /// The environment gates, as production reads them.
     Environment,
+    /// SH's mode named by the caller; the lightmap's from the environment.
+    /// Lets one process load a level under two SH modes and compare them.
+    ShMode(ShStreamingMode),
     /// Test-only injection that keeps the production ordering without
     /// process-global environment mutation, so tests stay parallel-safe.
     #[cfg(test)]
@@ -51,6 +54,22 @@ struct OpenedLoad {
 
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     load_prl_with_progress(path, &Arc::new(LoadProgress::new()))
+}
+
+/// [`load_prl`] under SH mode `sh` instead of `POSTRETRO_SH_STREAMING`, so one
+/// process can load a level whole and streamed and compare the two. A PRL
+/// without id 50 loads whole whatever `sh` names, as under the environment.
+pub fn load_prl_with_sh_streaming(
+    path: &str,
+    sh: ShStreamingMode,
+) -> Result<LevelWorld, PrlLoadError> {
+    load_prl_with_modes(
+        path,
+        ModeSource::ShMode(sh),
+        MAX_DELTA_SECTION_BINDING_BYTES,
+        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+        &Arc::new(LoadProgress::new()),
+    )
 }
 
 /// [`load_prl`], reporting to `progress` as the load consumes the file.
@@ -194,6 +213,10 @@ fn open_load(
     let (sh_mode, lightmap_mode) = match modes {
         ModeSource::Environment => (
             has_id50.then(requested_streaming_mode),
+            lightmap_mode_for_table(&metadata, requested_lightmap_streaming_mode),
+        ),
+        ModeSource::ShMode(sh) => (
+            has_id50.then_some(Ok(sh)),
             lightmap_mode_for_table(&metadata, requested_lightmap_streaming_mode),
         ),
         #[cfg(test)]

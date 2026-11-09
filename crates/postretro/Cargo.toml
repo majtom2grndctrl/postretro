@@ -200,6 +200,11 @@ path = "tests/capture_mover_probe_channel.rs"
 required-features = ["capture"]
 
 [[test]]
+name = "capture_mover_promotion_pop"
+path = "tests/capture_mover_promotion_pop.rs"
+required-features = ["capture"]
+
+[[test]]
 name = "headless_byte_identity"
 path = "tests/headless_byte_identity.rs"
 required-features = ["observability"]

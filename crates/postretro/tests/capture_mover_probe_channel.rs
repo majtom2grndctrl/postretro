@@ -14,12 +14,14 @@ use std::path::Path;
 use image::RgbaImage;
 
 mod capture_support;
+// Shared by two targets, each using part of it.
+#[allow(dead_code)]
 mod mover_capture_support;
 
-use capture_support::{compile_dev_map, workspace_root};
+use capture_support::compile_dev_map;
 use mover_capture_support::{
-    Pose, Scene, ScreenBox, capture, frame_mean, luma, masked_mean, max_channel_delta, read_map,
-    rgb_sum, sibling_map, staticize, with_entity, without_channel,
+    Pose, Run, Scene, ScreenBox, frame_mean, luma, masked_mean, max_channel_delta, read_map,
+    sibling_map, staticize, with_entity, without_channel,
 };
 
 const RESOLUTION: [u32; 2] = [960, 540];
@@ -29,10 +31,6 @@ const RESOLUTION: [u32; 2] = [960, 540];
 type MidTravel<'a> = (&'a Path, &'static str, Pose, Vec<(&'static str, f32)>, u32);
 /// The brief's capture bar: no brighter than the reference plus 0.02 mean luma.
 const BAR: f64 = 0.02;
-/// Allowed summed-RGB drift between promotion endpoints, as
-/// `capture_probe_depth_tiles.rs`'s constant of the same name; another test
-/// target cannot share it.
-const LIT_ENDPOINT_DRIFT: f64 = 12.0;
 
 const CLOSET_DOOR: &str = "closet_door";
 /// The closet door's brush at its closed pose, mover-closet.README.md §Door.
@@ -107,31 +105,6 @@ fn scene(force_movers: Vec<(&'static str, f32)>) -> Scene {
         force_movers,
         reflections_off: true,
         ..Scene::default()
-    }
-}
-
-struct Run {
-    workspace: std::path::PathBuf,
-    scratch: tempfile::TempDir,
-}
-
-impl Run {
-    fn new() -> Self {
-        Self {
-            workspace: workspace_root(),
-            scratch: tempfile::tempdir().expect("scratch dir"),
-        }
-    }
-
-    fn capture(&self, map: &Path, label: &str, pose: Pose, scene: &Scene) -> RgbaImage {
-        capture(
-            &self.workspace,
-            self.scratch.path(),
-            map,
-            label,
-            pose,
-            scene,
-        )
     }
 }
 
@@ -526,219 +499,4 @@ fn d2_no_section_is_byte_identical_and_no_state_is_within_two_levels_of_no_depth
             "{name}: no state moved a channel by {delta} levels against no depth block"
         );
     }
-}
-
-/// A `kinematic_mover` slab named `name`, box `min`–`max` in map units,
-/// resting at its first waypoint and never started: a kinematic receiver.
-fn slab_mover(name: &str, min: [f32; 3], max: [f32; 3]) -> String {
-    let ([x0, y0, z0], [x1, y1, z1]) = (min, max);
-    let texture = "metal/metal_rough_046a 0 0 0 1 1";
-    let planes = [
-        [[x0, y1, z0], [x0, y0, z1], [x0, y0, z0]],
-        [[x0, y0, z1], [x1, y0, z0], [x0, y0, z0]],
-        [[x0, y0, z0], [x1, y1, z0], [x0, y1, z0]],
-        [[x0, y1, z1], [x1, y0, z1], [x0, y0, z1]],
-        [[x1, y1, z1], [x0, y1, z1], [x0, y1, z0]],
-        [[x1, y0, z0], [x1, y1, z1], [x1, y1, z0]],
-    ]
-    .map(|points| {
-        let [a, b, c] = points.map(|[x, y, z]| format!("( {x} {y} {z} )"));
-        format!("{a} {b} {c} {texture}")
-    })
-    .join("\n");
-    let centre = [(x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0];
-    format!(
-        "{{\n\"classname\" \"kinematic_mover\"\n\"name\" \"{name}\"\n\"path\" \"{name}_rest\"\n\
-         \"speed\" \"1\"\n{{\n{planes}\n}}\n}}\n\
-         {{\n\"classname\" \"kinematic_waypoint\"\n\"name\" \"{name}_rest\"\n\"next\" \"{name}_up\"\n\
-         \"origin\" \"{} {} {}\"\n}}\n\
-         {{\n\"classname\" \"kinematic_waypoint\"\n\"name\" \"{name}_up\"\n\
-         \"origin\" \"{} {} {}\"\n}}",
-        centre[0],
-        centre[1],
-        centre[2],
-        centre[0],
-        centre[1],
-        centre[2] + 32.0
-    )
-}
-
-/// `map` with `"_tags" "<tag>"` added to the light at `origin`.
-fn with_light_tag(map: &str, origin: &str, tag: &str) -> String {
-    let marker = format!("\"origin\" \"{origin}\"");
-    let at = map
-        .find(&marker)
-        .unwrap_or_else(|| panic!("no entity at origin {origin}"))
-        + marker.len();
-    format!("{}\n\"_tags\" \"{tag}\"{}", &map[..at], &map[at..])
-}
-
-/// One K3 case: a map with a kinematic receiver and a tagged gated light,
-/// its mover, the camera on the receiver, and the receiver's box.
-struct PopCase {
-    name: &'static str,
-    source: String,
-    mover: &'static str,
-    tag: &'static str,
-    pose: Pose,
-    receiver: ([f32; 3], [f32; 3]),
-}
-
-/// Mean summed RGB over `pixels` of `image`.
-fn rgb_mean(image: &RgbaImage, pixels: &[(u32, u32)]) -> f64 {
-    pixels
-        .iter()
-        .map(|&(x, y)| rgb_sum(image.get_pixel(x, y).0))
-        .sum::<f64>()
-        / pixels.len() as f64
-}
-
-// K3. With the mover forced to each terminus and the gated light's static
-// promotion pinned at w = 0 and w = 1, the mean summed-RGB change over the
-// kinematic receiver's lit texels is no larger than the same light's change
-// on the same receiver with the mover forced open and id 57 stripped, plus
-// `LIT_ENDPOINT_DRIFT`. The open terminus also proves the promoted arm's
-// casters follow the forced pose: casters left at the closed rest pose would
-// shadow the runtime arm while the baked arm reads open, a pop far past the
-// bar. Neither fixture carries an animated-baked light, so only static
-// promotion is pinned. The closet gates no direct light (its id 57 has no
-// direct block), so its case holds the bar with nothing gated.
-#[test]
-#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
-fn k3_promotion_pops_no_more_at_a_forced_terminus_than_the_ungated_arms() {
-    let run = Run::new();
-    // Set-piece: a slab on the back-room floor in the beam of the arena spot
-    // (368, 560, 288), which reaches the back room through the opening and
-    // which the wall gates at back-room probes. The set-piece's point lights
-    // are too dim for the entity-shadow selection; its spots are not.
-    let setpiece_slab = ([432.0, 1240.0, 0.0], [496.0, 1304.0, 16.0]);
-    let setpiece = with_entity(
-        &with_light_tag(
-            &read_map(&run.workspace, "mover-setpiece"),
-            "368 560 288",
-            "k3_light",
-        ),
-        &slab_mover("k3_slab", setpiece_slab.0, setpiece_slab.1),
-    );
-    // Closet: the kinematic-receiver slab behind the door, and the centre
-    // bright-room light it promotes (mover-closet.README.md §Reference variants).
-    let closet_slab = ([296.0, 505.0, 0.0], [344.0, 521.0, 8.0]);
-    let closet = with_entity(
-        &with_light_tag(
-            &read_map(&run.workspace, "mover-closet"),
-            "320 392 288",
-            "centre_light",
-        ),
-        &slab_mover("k3_slab", closet_slab.0, closet_slab.1),
-    );
-    let cases = [
-        PopCase {
-            name: "setpiece",
-            source: setpiece,
-            mover: SETPIECE_WALL,
-            tag: "k3_light",
-            pose: Pose {
-                map: [464.0, 1440.0, 112.0],
-                yaw: 270.0,
-                pitch: -30.0,
-                fov: 100.0,
-            },
-            receiver: setpiece_slab,
-        },
-        PopCase {
-            name: "closet",
-            source: closet,
-            mover: CLOSET_DOOR,
-            tag: "centre_light",
-            pose: STATION_3,
-            receiver: closet_slab,
-        },
-    ];
-    let mut misses = Vec::new();
-    for case in cases {
-        let source = sibling_map(&run.workspace, &format!("k3-{}", case.name), &case.source);
-        let stem = source
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("generated map stem")
-            .to_owned();
-        let map = compile_dev_map(&run.workspace, &stem);
-        let stripped = without_channel(
-            &run.workspace,
-            &map,
-            &format!("k3-{}-no-id57", case.name),
-            false,
-        );
-        let shot = |prl: &Path, t: f32, w: f32, label: &str| {
-            run.capture(
-                prl,
-                &format!("t11-k3-{}-{label}-t{t}-w{w}", case.name),
-                case.pose,
-                &Scene {
-                    reflections_off: false,
-                    force_promotion: vec![(case.tag, w)],
-                    ..scene(vec![(case.mover, t)])
-                },
-            )
-        };
-        let reference = [
-            shot(&stripped, 1.0, 0.0, "stripped"),
-            shot(&stripped, 1.0, 1.0, "stripped"),
-        ];
-        let region = ScreenBox::of(case.receiver.0, case.receiver.1, case.pose, RESOLUTION);
-        let in_box: Vec<(u32, u32)> = reference[0]
-            .enumerate_pixels()
-            .filter(|(x, y, _)| region.contains(*x, *y))
-            .map(|(x, y, _)| (x, y))
-            .collect();
-        assert!(
-            !in_box.is_empty(),
-            "{}: the receiver must be in view",
-            case.name
-        );
-        // Lit texels: lit by either arm in the ungated reference.
-        let lit: Vec<(u32, u32)> = in_box
-            .iter()
-            .copied()
-            .filter(|&(x, y)| {
-                reference
-                    .iter()
-                    .any(|image| rgb_sum(image.get_pixel(x, y).0) >= 30.0)
-            })
-            .collect();
-        let pixels = if lit.len() >= 32 { &lit } else { &in_box };
-        let pop =
-            |pair: &[RgbaImage; 2]| (rgb_mean(&pair[1], pixels) - rgb_mean(&pair[0], pixels)).abs();
-        let reference_pop = pop(&reference);
-        for t in [0.0, 1.0] {
-            let gated = [shot(&map, t, 0.0, "channel"), shot(&map, t, 1.0, "channel")];
-            let gated_pop = pop(&gated);
-            eprintln!(
-                "K3 {} t {t}: pop {gated_pop:.3} (w=0 {:.3}, w=1 {:.3}) against ungated {reference_pop:.3} \
-                 (w=0 {:.3}, w=1 {:.3}) + {LIT_ENDPOINT_DRIFT}, over {} {} px",
-                case.name,
-                rgb_mean(&gated[0], pixels),
-                rgb_mean(&gated[1], pixels),
-                rgb_mean(&reference[0], pixels),
-                rgb_mean(&reference[1], pixels),
-                pixels.len(),
-                if lit.len() >= 32 {
-                    "lit"
-                } else {
-                    "receiver (none lit)"
-                },
-            );
-            if gated_pop > reference_pop + LIT_ENDPOINT_DRIFT {
-                misses.push(format!(
-                    "{} t {t}: pop {gated_pop} against {reference_pop} + {LIT_ENDPOINT_DRIFT}",
-                    case.name
-                ));
-            }
-        }
-    }
-    assert!(
-        misses.is_empty(),
-        "K3 misses its bar:\n{}",
-        misses.join("\n")
-    );
 }

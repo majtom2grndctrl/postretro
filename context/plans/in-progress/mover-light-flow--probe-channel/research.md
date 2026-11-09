@@ -827,3 +827,121 @@ Frame means: closed 0.0086 and 0.0314, reference 0.0089 and 0.0327.
 **Captures** (`captures/t11-*.png`): K1 at stations 2 and 3, closed and reference, open and open-stripped, and the door face; K2 closed, reference, open and open-stripped; K3 set-piece channel at t = 0 and 1 × w = 0 and 1, and stripped at w = 0 and 1.
 
 **GPU steps.** No windowed run; nothing stalled.
+
+### K1 open investigation
+
+Investigation only, 2026-11-09. Nothing landed. The compiler ran in a throwaway worktree at 2d5a90d16 with env-gated experiment code. Captures used task 11's capture binary and K1's scene, stations, masks and measures. The default mode is `sync-proof`, which decodes id 34 from id 50's cells. All builds used `--no-cache`.
+
+**Numbers** (luma 0–255; open = frame mean against id 57 stripped, bar 0.02; closed = outside the door box against the static-door reference + 0.02):
+
+| Build | St2 open gap | St3 open gap | Open px > 2 levels (st2 / st3), max | St2 closed (ref) | St3 closed (ref) | B3 | B7 base |
+|---|---|---|---|---|---|---|---|
+| Today (BC6H) | 0.0934 | 0.1319 | 656 / 2,235, max 4 | 0.0056 (0.0059) | 0.0160 (0.0171) | pass | pass, max 2.78 levels, ratio 0.284 |
+| `--uncompressed-irradiance`, reference built the same way | 0.0043 | 0.0172 | 22 / 76, max 4 | 0.0059 (0.0060) | 0.0166 (0.0167) | — | — |
+| Bounce snap | 0.0043 | 0.0175 | 26 / 81, max 3 | 0.0056 (0.0059) | 0.0160 (0.0171) | pass, same figures | pass, same figures |
+| Bounce snap + depth snap | 0.0000 | 0.0000 | 0 / 0, max 0 | 0.0056 (0.0059) | 0.0160 (0.0171) | — | — |
+| Today, `POSTRETRO_SH_STREAMING=off` | 0.2130 | 0.2594 | 23,515 / 28,297, max 9 / 7 | — | — | — | — |
+| Bounce snap, `off` | 0.1239 | 0.1449 | 16,719 / 16,121, max 9 / 6 | — | — | — | — |
+
+- Closet interior pose (the door out of view): the open gap is 0.0497 today and 0.0000 with the snap or uncompressed.
+- Contributions. With the depth block stripped, the uncompressed open frame equals stripped exactly: 0 px move. So in today's gap, bounce gives 0.089 (st2) and 0.115 (st3), and depth gives 0.0043 and 0.0173.
+- Nothing else contributes: the seal, the promoted arm (the closet gates no direct light) and the drawn door are the same in both frames.
+
+**Probe counts** (dev probe table, measure mode):
+- All 144 BC6H-affected probes are affected only at the closed terminus. None is affected at the open terminus.
+- The open door rests inside the lintel (z 112–224). No probe ray meets it there.
+  - 40 valid probes change at all at the open pose: by at most 1.2e-4, or 0.02 display levels. All 40 are within the round-trip bar, and 34 of them are among the 144.
+- Under `--uncompressed-irradiance` the bar is 0, so the floor alone admits 158 probes, again all closed-only.
+- Today a probe's unaffected open terminus stores id 34's f16 tile before encoding. The frame shows exactly that tile's round-trip error, not a bounce change.
+
+**Snap** (an unaffected terminus stores id 34 as BC6H decodes it):
+- Implementation: the tile padded to 8×8 by repeating edges, encoded alone and decoded. This is the domain's own round trip, and it is exactly what id 50's isolated block-aligned tiles decode to.
+- Bytes on the closet:
+  - All 144 S^b₀ tiles are byte-identical.
+  - All 144 S^b₁ tiles change, by at most 0.041.
+  - Only id 57 differs. Bounce payload size and affected count are unchanged.
+- The snap is exact only on the id-50 path (`async`, `sync-proof`). Id 34's whole-load atlas packs 6×6 tiles contiguously, so its 4×4 blocks straddle tiles and decode differently. Under `off` the gap only shrinks.
+- The modes' stripped frames already differ: today 13.889 vs 14.007 at st2. This is C10's pre-existing mode difference.
+
+**Depth residual.** 17 of the closet's 28 depth probes have no id-59 tile. At t′ = 1 their live tile holds D₁, the full static-gather tile, where the stripped frame reads averaged moments. The 11 id-59 probes' D₁ equals their id-59 tile exactly. Storing averaged moments as a flat D₁ at a terminus no ray meets removes the rest of the gap. That changes what D_k stores, so it is the owner's call.
+
+### Task 11b
+
+Built 2026-11-09 on the main checkout (AMD Radeon Pro 5300M, Metal), on top of task 11 (2d5a90d16), uncommitted. Maps: task 11's `mover-closet.prl` and `mover-setpiece.prl` (release `prl-build`, BC6H). The scratch builds are `mover-setpiece` with `--mover-payload-resident-bar 0` (both blocks stream, 55,362,439 B), and `mover-closet` and `mover-setpiece` with `--uncompressed-irradiance`.
+
+**Instrument.** Both C10 and C7 read the composed atlases back probe by probe, in renderer tests on compiled maps (`uploads/renderer_tests/`).
+- `render/composed_tiles.rs` reads every composed atlas whole: the indirect total, the promotion-free direct atlas and the handoff direct atlas. It cuts a probe's logical 6×6 tile out through that load's own indirection word.
+  - On a whole load, the word is `probe_indirection_words`, at stride 6.
+  - On a streamed load, it is the residency state's `compose_words`, at stride 8 in the dense pools (`sh_streaming/composed_tiles.rs`).
+- `real_level.rs` installs a compiled PRL under a named SH mode. It installs or evicts every cluster on demand, and records frames with the gate open to every row or closed to all.
+  - The closed gate passes no visible cell, and passes a fog reach that names only an absent cell. An empty fog reach would gate every row, and `record_scene_passes` takes the fog reach as its own argument.
+- To load one PRL under both modes in one process, the loader gains `load_prl_with_sh_streaming(path, mode)`, which takes the SH mode as an argument instead of reading `POSTRETRO_SH_STREAMING`. The lightmap mode still comes from the environment. It is a public API, not test-only.
+
+**Baseline finding (pre-existing, not fixed): the modes compose different bases.** In the no-state frame, every stored tile of both loads was compared:
+
+| Map (BC6H) | Indirect halves differing | Worst | Direct halves differing (both atlases) | Worst |
+|---|---|---|---|---|
+| `mover-closet` | 85,902 of 156,816 | 0.228 | 48,071 of 156,816 | 1.12 |
+| `mover-setpiece` (and bar 0) | 899,740 of 1,719,648 | 0.038 | 683,319 of 1,719,648 | 0.47 |
+
+- **Cause.** The whole load decodes ids 34 and 35 from their compact atlases. Those pack 6×6 tiles contiguously, so each 4×4 BC6H block straddles tiles. Id 50 re-encodes every tile alone in a block-aligned 8×8 cell (`pack/cluster_sh_payloads/atlas.rs`). The same source therefore decodes to different texels in each mode.
+- **Discriminating experiment: `--uncompressed-irradiance`.** On both maps, every stored tile is bit-identical across the modes.
+  - Captured frames with the movers forced to 0.5 and id 57 in place: closet stations 2 and 3, full frame and indirect-only (mask 2); set-piece stations 2 and 3, full frame, mask 2 and baked direct (mask 8).
+  - The f16 frames are byte-identical between `off` and `sync-proof`, 0 px differing.
+  - The BC6H frames differ by up to 5 levels on the closet and up to 16 on the set-piece.
+- **So the difference is in the composed tiles, not added at sampling.** The two sampler paths (stride 6 against stride 8) read the same composed values to the same pixels. The f16 PRLs sat in the scratchpad, so capture used placeholder materials for them. That affects both modes alike.
+- Follow-up: make one encoding serve both modes, for example by having the whole-load atlas use id 50's block-aligned tiles. It is not this brief's.
+
+**C10.** Every mover is handed no state, then t′ = 0, 0.5 and 1, with every row in the gate. On a streamed load every cluster is resident. Each probe the channel touches is compared: direct masks, bounce masks and depth records. The base each mode composes is taken out as follows:
+- **Indirect.** At a probe that n movers carry bounce at, compose writes Σ lerp(S^b₀, S^b₁, t′) − (n − 1) × base, plus id 27's deltas, which the no-state frame also carries. So (with state) + (n − 1) × (no state) is mode-independent.
+  - n = 1: it is the composed tile itself, held bit for bit.
+  - n = 0: the indirect must not move.
+  - n = 2: within 1 f16 step at the largest magnitude involved. The outputs differ because each composed half rounds once to f16, and the (n − 1)-weighted base is a second rounded half.
+- **Direct atlases.** The gated term replaces the light's mover-absent term, so (with state − no state) is mode-independent up to the two stores' rounding: 1 step.
+- **Clamps.** A half that either mode composes as zero (a clamped two-mover bounce sum, a gated direct term past its BC6H base, or an unlit texel) is held to the clamp's 1-Lipschitz bound: |a − b| ≤ w × |a₀ − b₀| + 1 step.
+- **Uncompressed builds.** Where the baselines agree, every comparison above is held bit for bit.
+- **Depth.** The depth-tile texture is compared whole, bit for bit.
+
+Test: `uploads::renderer_tests::mover_channel_modes::c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe`. It is ignored and reads `MOVER_C10_PRLS`, a `:`-separated list of PRLs. **It passes** on all five PRLs.
+
+| Map | Channel probes (direct / bounce, of which 2 movers / depth) | Indirect, n = 0 / n = 1 | Indirect, n = 2 (worst, steps) | Direct output (worst, steps) | Clamp excess | Depth tiles |
+|---|---|---|---|---|---|---|
+| closet | 157 (0 / 144, 0 / 28) | 0 / 0 differing | — | 0 differing | ≤ 0 | identical |
+| set-piece | 11,401 (5,889 / 11,285, 2,120 / 991) | 0 / 0 differing (1,319,760 halves) | 0.94 (up to 52,978 halves, ≤ 5.7e-5 abs) | 0.99 (up to 41,270 halves, ≤ 4.9e-4 abs) | ≤ 0 | identical |
+| set-piece, bar 0 | same as set-piece, figure for figure | | | | | identical |
+| closet, f16 | 159 | 0 / 0 | — | 0 | ≤ 0 | identical |
+| set-piece, f16 | 11,442 | 0 / 0 | 0 differing | 0 differing | ≤ 0 | identical |
+
+- The channel moves 1.21 M indirect halves and 0.12–0.46 M direct halves per atlas at each t′ on the set-piece, and 15.5 k indirect halves on the closet. It moves 5,600 depth halves on the closet and 164–198 k on the set-piece.
+- Streaming placement changes nothing: the bar-0 build's numbers equal the resident build's.
+- The closet's direct atlases are compared too. It has no direct block, and they hold still.
+- The moved-half counts differ between modes by a few hundred on BC6H builds, where a lerp lands on one mode's base and not the other's. They are equal on f16.
+
+**C7, GPU half.** Test: `uploads::renderer_tests::mover_channel_lag::c7_a_lagging_channel_row_composes_the_frame_it_is_first_sampled`. It is ignored and reads `MOVER_C7_PRLS`. It runs under `sync-proof` with no forced full compose, and **it passes** on the closet and on the set-piece at bar 0.
+- **Gate lag.** t′ steps 0 → 1 on a frame whose gate admits no row. Every channel tile still holds the t′ = 0 compose, so the rows lag. The next frame admits every row with t′ held at 1, so no t′ trigger fires on it. On that frame, every channel tile equals the t′ = 1 compose bit for bit.
+  - Closet: 144 probes, 15,487 indirect halves moving.
+  - Set-piece at bar 0: 11,353 probes; 1,188,250 indirect halves and 430,300 per direct atlas moving.
+- **Residency lag.** Every cluster is evicted, so no channel probe is resident. t′ then steps 1 → 0, and the clusters return with t′ held at 0. On the install frame, every resident channel tile equals the t′ = 0 compose bit for bit: 144 and 11,353 probes, all on one install frame.
+- The readback runs after the frame's submit. Compose precedes every consumer in the frame's encoder, and nothing writes the atlases after it, so the readback is what that frame sampled. Outside the gate, no consumer samples a row by contract (`rendering_pipeline.md` §4, Sampled-row compose).
+
+**K3, animated half.** K3 moved to its own target, `tests/capture_mover_promotion_pop.rs`. `Run` moved to `mover_capture_support`.
+- The fixture is generated in-test, as task 11's K3 generates its own. The set-piece's arena spot (368, 560, 288) gets `"_animated" "1"` and a tag, and task 11's slab is added. The test asserts that the compiled id 57 gates a namespace-1 (animated-baked) light; the set-piece has no other animated light.
+- The light's animated promotion is pinned at w = 0 and w = 1, with `setpiece_wall` forced to each terminus. That is held against the same light forced open with id 57 stripped, plus `LIT_ENDPOINT_DRIFT`. The capture fails if the pinned light holds no slot.
+- `k3_animated_promotion_pops_no_more_at_a_forced_terminus_than_the_ungated_arms`: **passes**.
+
+| Case | Pop with channel (w = 0 / w = 1) | Ungated (forced open, id 57 stripped) |
+|---|---|---|
+| Animated, wall t = 0 | 0.000 (116.254 / 116.254) | 1.050 (160.408 / 159.359), + 12 |
+| Animated, wall t = 1 | 1.047 (160.403 / 159.356) | 1.050, + 12 |
+
+Over 15,288 lit px, in summed RGB.
+- At t = 0 the wall blocks both arms: the gated baked term and the runtime arm behind the posed caster. So w moves nothing.
+- The static K3 re-run after the move reads task 11's figures: set-piece 5.025 / 5.498 against 5.495; closet 0.000.
+
+**Gates.**
+- `cargo test` with `POSTRETRO_REQUIRE_GPU=1`: renderer 1,331 (15 ignored), level-loader 388, postretro 2,515 + 3 + 2. With `--features postretro/capture`: postretro 2,601 (19 ignored) + 3 + 2, renderer 1,331, and the capture targets compile, all ignored. The ignored C10, C7 and K3 rows were run as above.
+- Clippy `--all-targets -D warnings` is clean on renderer, level-loader and postretro, with and without `--features postretro/capture`.
+- `cargo fmt` applied.
+- No windowed run; nothing stalled.
+
+**Also.** `closet_mover_channel` now reads through `composed_tiles::read_halves`, replacing its own copy.

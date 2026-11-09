@@ -9,6 +9,7 @@
 //! See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 use super::*;
 use crate::render::MoverLightState;
+use crate::render::composed_tiles::{f16_to_f32, read_halves};
 
 /// The door's t′ per frame: first hand-over at 0, rising, held across two
 /// frames, reversed at mid-travel, closing, then held at 0.
@@ -82,74 +83,24 @@ impl Closet {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         let level = self.renderer.level();
-        let atlas = read_halves(
+        let atlas = read_values(
             &self.renderer,
             &level.sh_volume_resources.total_atlas_texture,
-            8,
         );
-        let tiles = read_halves(
+        let tiles = read_values(
             &self.renderer,
             level.sh_volume_resources.depth_tiles.texture(),
-            4,
         );
         (atlas, tiles)
     }
 }
 
 /// Every half of a 16-bit-float texture, all layers, de-padded, as f32.
-fn read_halves(renderer: &Renderer, texture: &wgpu::Texture, texel_bytes: u32) -> Vec<f32> {
-    let device = &renderer.device;
-    let extent = texture.size();
-    let row = extent.width * texel_bytes;
-    let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("closet channel readback"),
-        size: u64::from(padded * extent.height * extent.depth_or_array_layers),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&Default::default());
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(extent.height),
-            },
-        },
-        extent,
-    );
-    renderer
-        .queue
-        .submit_unbatched([encoder.finish()], "closet channel readback");
-    let (send, receive) = std::sync::mpsc::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            send.send(result).unwrap()
-        });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    receive.recv().unwrap().unwrap();
-    let bytes = buffer.slice(..).get_mapped_range().unwrap().to_vec();
-    buffer.unmap();
-    bytes
-        .chunks(padded as usize)
-        .flat_map(|line| line[..row as usize].as_chunks::<2>().0.iter().copied())
-        .map(|half| f16_to_f32(u16::from_le_bytes(half)))
+fn read_values(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<f32> {
+    read_halves(renderer, texture)
+        .into_iter()
+        .map(f16_to_f32)
         .collect()
-}
-
-fn f16_to_f32(bits: u16) -> f32 {
-    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
-    let exponent = i32::from((bits >> 10) & 0x1f);
-    let mantissa = f32::from(bits & 0x3ff);
-    sign * match exponent {
-        0 => mantissa * 2f32.powi(-24),
-        31 => f32::INFINITY,
-        _ => (1.0 + mantissa / 1024.0) * 2f32.powi(exponent - 15),
-    }
 }
 
 /// Texels that differ between the termini, and the worst miss of `found`

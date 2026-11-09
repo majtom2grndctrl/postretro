@@ -685,3 +685,12 @@ mod closet_mover_channel;
 
 #[path = "renderer_tests/indirect_scale.rs"]
 mod indirect_scale;
+
+#[path = "renderer_tests/real_level.rs"]
+mod real_level;
+
+#[path = "renderer_tests/mover_channel_modes.rs"]
+mod mover_channel_modes;
+
+#[path = "renderer_tests/mover_channel_lag.rs"]
+mod mover_channel_lag;

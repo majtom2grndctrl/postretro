@@ -12,7 +12,7 @@ use postretro_level_format as prl_format;
 use postretro_level_format::SectionId;
 use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 
-use super::capture_support::{capture_command, load_capture_rgba};
+use super::capture_support::{capture_command, load_capture_rgba, workspace_root};
 
 /// TrenchBroom unit in metres.
 pub const UNIT: f32 = 0.0254;
@@ -42,10 +42,37 @@ pub struct Scene {
     pub streaming: Option<&'static str>,
 }
 
+/// One test's captures: the workspace and a scratch directory for scenes
+/// and stills.
+pub struct Run {
+    pub workspace: std::path::PathBuf,
+    scratch: tempfile::TempDir,
+}
+
+impl Run {
+    pub fn new() -> Self {
+        Self {
+            workspace: workspace_root(),
+            scratch: tempfile::tempdir().expect("scratch dir"),
+        }
+    }
+
+    pub fn capture(&self, map: &Path, label: &str, pose: Pose, scene: &Scene) -> RgbaImage {
+        capture(
+            &self.workspace,
+            self.scratch.path(),
+            map,
+            label,
+            pose,
+            scene,
+        )
+    }
+}
+
 /// Run one capture of `map` at `pose`, panicking with the child's output on
 /// failure. Copies the PNG into `MOVER_CHANNEL_CAPTURE_DIR` as `<label>.png`
 /// when that variable is set, so a run can keep its stills.
-pub fn capture(
+fn capture(
     workspace: &Path,
     scratch: &Path,
     map: &Path,

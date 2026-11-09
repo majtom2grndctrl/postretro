@@ -17,7 +17,8 @@ use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::domain::{compact_tile, round_trip_error, write_compact_rgb};
 use super::{
-    INSIDE_BRUSH_RULE, MoverBounceRequest, PosedBounce, PosedScene, PosedSurfaces, dev_pose,
+    INSIDE_BRUSH_RULE, MoverBounceJob, MoverBounceRequest, PosedBounce, PosedScene, PosedSurfaces,
+    dev_pose,
 };
 use crate::map_data::{MapKinematicMover, MapKinematicWaypoint};
 use crate::mover_light_gate::{MoverPoses, Terminus};
@@ -67,7 +68,7 @@ pub(crate) fn plan(
         bail!("{} and {MEASURE_VAR} are exclusive", dev_pose::ENV_VAR);
     }
     let poses = MoverPoses::resolve(movers, waypoints);
-    let mut scenes = Vec::new();
+    let mut jobs = Vec::new();
     if let Some(pose) = &pose {
         let mover = movers
             .iter()
@@ -76,14 +77,19 @@ pub(crate) fn plan(
         let analysed = poses
             .mover(mover.mover_id)
             .with_context(|| format!("mover `{}` has no analysable termini", pose.name))?;
-        scenes.push(PosedScene::new(
-            mover,
-            analysed,
-            pose.terminus,
-            texture_names,
-            pose.rule,
-            pose.surfaces,
-        )?);
+        jobs.push(MoverBounceJob {
+            mover_id: mover.mover_id,
+            label: analysed.label.clone(),
+            bounces: u32::MAX,
+            scenes: vec![PosedScene::new(
+                mover,
+                analysed,
+                pose.terminus,
+                texture_names,
+                pose.rule,
+                pose.surfaces,
+            )?],
+        });
     }
     if let Some(which) = &measure {
         for analysed in &poses.analysed {
@@ -99,6 +105,7 @@ pub(crate) fn plan(
             if !picked {
                 continue;
             }
+            let mut scenes = Vec::new();
             for terminus in Terminus::BOTH {
                 scenes.push(PosedScene::new(
                     mover,
@@ -109,22 +116,32 @@ pub(crate) fn plan(
                     PosedSurfaces::Patches,
                 )?);
             }
+            jobs.push(MoverBounceJob {
+                mover_id: mover.mover_id,
+                label: analysed.label.clone(),
+                bounces: u32::MAX,
+                scenes,
+            });
         }
-        if scenes.is_empty() {
+        if jobs.is_empty() {
             bail!("{MEASURE_VAR}={which}: no analysed mover matches");
         }
         log::warn!(
             "[MoverLight] DEV {MEASURE_VAR}={which}: re-baking bounce and depth for {} poses; \
              results are reported and discarded",
-            scenes.len()
+            jobs.iter()
+                .map(|job: &MoverBounceJob| job.scenes.len())
+                .sum::<usize>()
         );
     }
     Ok(DevBounce {
         substitute: pose.is_some(),
         request: MoverBounceRequest {
-            scenes,
+            jobs,
             uncompressed,
             keep_every_tile: dump.is_some(),
+            keep_poses: true,
+            depth_cap: MAX_PROBE_DEPTH_TILES,
         },
         dump,
     })

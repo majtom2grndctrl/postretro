@@ -30,6 +30,7 @@ pub mod geometry;
 pub mod ghost_links;
 #[cfg(feature = "gltf-resolve")]
 pub mod gltf_resolve;
+pub mod indirect_display;
 pub mod kinematic_geometry;
 pub mod light_influence;
 pub mod light_membership;

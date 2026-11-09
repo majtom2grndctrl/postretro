@@ -412,3 +412,22 @@ After task 6c (epoch 2: sparse cells, shared per-(cell, light) tiles, probe mask
 - On setpiece, 519 entries became 493 records over 179 cells, with 13,762 masked probes.
 - On the hallway, each of the 1,725 records has a single mover, so the masks do all the work: 51,267 probes are masked.
 - Ids 34, 35, 41, 45, 49 and 50 are byte-identical before and after on every map.
+
+### Task 7a: bounce and depth bake, measured (2026-11-09)
+
+Cold builds, pre-7a compiler (9b5d4d241) → 7a. The pre-7a timings for campaign-test and showcase ran beside other work, so read them as rough.
+
+| map | cold total | id 57 bytes | bounce block (payload) | depth block | live tiles / CPU-held tiles |
+|---|---|---|---|---|---|
+| mover-closet | 3.5 → 2.5 s | 0 → 85,095 | 62,332 (62,208) | 22,628 | 28 / 56 |
+| setpiece | 16.1 → 20.9 s | 2,355,401 → 8,963,433 | 5,798,768 (5,790,960) | 808,004 | 991 / 2,000 |
+| kinematic-platform | 45.5 → 124.8 s | 19,749 → 8,450,017 | 8,299,788 (8,259,840) | 111,508 | 125 / 276 |
+| campaign-test | 45.7 → 109.7 s | 3,531 → 196,999 | 4,572 (4,320) | 189,076 | 229 / 468 |
+| showcase | 809 → 1,656 s | 217,707 → 8,305,807 | 6,048,728 (6,037,200) | 2,033,740 | 2,483 / 5,034 |
+
+- Warm builds after moving one waypoint up 8 units hit `sh_base_volume` and re-bake one mover's bounce: setpiece 4.4 s (1 of 2 movers), showcase 168 s (1 of 8).
+- Each showcase mover's bounce costs about 120 s whatever its affected count (SH Bake 66 s → 1,032 s). Posed later bounces gather over all 829k static patches, 4 bounces × 2 poses.
+- SH gate: the closet predicts 13.0 MB cold against 3.1 MB measured (4.2×); other modes measure 1.4–2.4 MB. Showcase is admitted at 9.87 GB predicted (pre-7a: 935 MB), driven by the direct-entry bound ×2 plus the states.
+- Floors: setpiece stores 95% of valid probes (mover 0: 11,313 of 11,942).
+- Sections changed against 9b5d4d241: closet 34, 35, 49, 50, 54, 57; setpiece, platform and showcase 34, 35, 49, 50, 57; campaign-test 57 only. Ids 34, 35, 49 and 50 move because bounce cells cap base storage at L0. Id 54 moves only on the closet, whose reflection probes shade from id 34. Id 59 is unchanged everywhere, since no map's live tiles reach its cap.
+- The hallway was not measured in 7a.

@@ -146,6 +146,7 @@ struct PendingKinematicMover {
     crush_damage_type: Option<String>,
     light_ramp_start: f32,
     light_ramp_end: f32,
+    light_bounces: Option<u32>,
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
@@ -508,6 +509,7 @@ fn parse_kinematic_mover(
     // types at level load and warns on an unknown one.
     let crush_damage_type = optional_event("crush_damage_type");
     let (light_ramp_start, light_ramp_end) = parse_kinematic_light_ramp(props, &name)?;
+    let light_bounces = parse_kinematic_light_bounces(props, &name)?;
 
     let move_mode = match props
         .get("move_mode")
@@ -566,6 +568,7 @@ fn parse_kinematic_mover(
         crush_damage_type,
         light_ramp_start,
         light_ramp_end,
+        light_bounces,
         move_mode,
         start_on_spawn,
         brush_ids,
@@ -588,6 +591,25 @@ fn parse_kinematic_light_ramp(
         );
     }
     Ok((start, end))
+}
+
+/// The mover's `light_bounces` key: how many static bounces its poses
+/// re-bake, an integer of at least 0. Absent re-bakes every bounce the SH
+/// base bakes. A negative, fractional or non-numeric value fails the build,
+/// naming the mover.
+fn parse_kinematic_light_bounces(
+    props: &HashMap<String, String>,
+    name: &str,
+) -> anyhow::Result<Option<u32>> {
+    let Some(raw) = props.get("light_bounces") else {
+        return Ok(None);
+    };
+    raw.trim().parse::<u32>().map(Some).map_err(|_| {
+        anyhow::anyhow!(
+            "kinematic_mover `{name}` `light_bounces` must be an integer of at least 0, \
+             got `{raw}`"
+        )
+    })
 }
 
 fn parse_kinematic_spin_axis(
@@ -2441,6 +2463,7 @@ fn resolve_kinematic_movers(
             crush_damage_type: pending.crush_damage_type,
             light_ramp_start: pending.light_ramp_start,
             light_ramp_end: pending.light_ramp_end,
+            light_bounces: pending.light_bounces,
             move_mode: pending.move_mode,
             start_on_spawn: pending.start_on_spawn,
             brush_volumes,
@@ -4438,6 +4461,7 @@ mod tests {
             "crush_sound(string) : \"Sound key played when a crusher deals damage\" : \"\"",
             "light_ramp_start(float) : \"Travel fraction (0 to 1) where baked light starts changing as the mover leaves its first waypoint; below it the first waypoint's lighting holds\" : \"0\"",
             "light_ramp_end(float) : \"Travel fraction (0 to 1, above light_ramp_start) where baked light reaches its last-waypoint state\" : \"1\"",
+            "light_bounces(integer) : \"Static light bounces this mover's poses re-bake (0 or more); blank re-bakes every bounce, 0 keeps the static bounce and bakes only its shadowing of probe depth\"",
         ] {
             assert!(
                 mover_class.contains(property),
@@ -6023,6 +6047,30 @@ mod tests {
             assert!(
                 message.contains("kinematic_mover `lift_a`") && message.contains("light_ramp_"),
                 "{case}: the error must name the mover and the ramp key, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn kinematic_mover_light_bounces_is_absent_by_default_and_parses_integers() {
+        let absent = parse_inline_map(&kinematic_test_map("wp_b")).expect("no bounce key");
+        assert_eq!(absent.kinematic_movers[0].light_bounces, None);
+        for (value, expected) in [("0", 0), ("2", 2), ("9", 9)] {
+            let map = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", value)]))
+                .unwrap_or_else(|err| panic!("light_bounces {value} must parse: {err:#}"));
+            assert_eq!(map.kinematic_movers[0].light_bounces, Some(expected));
+        }
+    }
+
+    #[test]
+    fn kinematic_mover_rejects_negative_or_fractional_light_bounces_naming_the_mover() {
+        for value in ["-1", "1.5", "two", ""] {
+            let err = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", value)]))
+                .expect_err(&format!("light_bounces `{value}` must be rejected"));
+            let message = format!("{err:#}");
+            assert!(
+                message.contains("kinematic_mover `lift_a`") && message.contains("light_bounces"),
+                "`{value}`: the error must name the mover and the key, got: {message}"
             );
         }
     }

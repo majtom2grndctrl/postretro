@@ -69,6 +69,7 @@ fn occluder(brushes: Vec<BrushVolume>, rule: InsideBrushRule) -> PosedOccluder {
         crush_damage_type: None,
         light_ramp_start: 0.0,
         light_ramp_end: 1.0,
+        light_bounces: None,
     };
     let waypoints = [
         ("first", "last", DVec3::ZERO),

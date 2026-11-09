@@ -17,6 +17,7 @@ use postretro_level_format::mover_probe_channel::{
 };
 use postretro_level_format::texture_names::TextureNamesSection;
 
+use super::blocks::BounceBlocks;
 use super::direct::{
     ChannelLight, DirectEntry, DirectScene, LightEntries, MoverDirectBake, ProbeCells, bake_direct,
     light_movers,
@@ -97,6 +98,7 @@ fn mover(id: u32, brushes: Vec<BrushVolume>, spin: bool) -> MapKinematicMover {
         crush_damage_type: None,
         light_ramp_start: 0.25,
         light_ramp_end: 0.75,
+        light_bounces: None,
     }
 }
 
@@ -705,9 +707,13 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         "only the bake-only light reaches the slab"
     );
 
-    let section = channel_section(&bake, &world.cells, &MoverRamps::new(&movers), |_, _, _| {
-        false
-    })
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &MoverRamps::new(&movers),
+        |_, _, _| false,
+    )
     .unwrap()
     .expect("the gated bake-only light makes a section");
     assert!(section.direct_records.iter().all(|record| {
@@ -768,9 +774,13 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
     let movers = twin_slab_movers();
     let bake = world.bake(&poses_of(&movers), &[static_light(&light, 4)]);
     let gated = &bake.lights[0];
-    let section = channel_section(&bake, &world.cells, &MoverRamps::new(&movers), |_, _, _| {
-        true
-    })
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &MoverRamps::new(&movers),
+        |_, _, _| true,
+    )
     .unwrap()
     .expect("the slabs gate the light");
 
@@ -828,9 +838,13 @@ fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
     let movers = twin_slab_movers();
     let bake = world.bake(&poses_of(&movers), &[static_light(&light, 4)]);
     let gated = &bake.lights[0];
-    let section = channel_section(&bake, &world.cells, &MoverRamps::new(&movers), |_, _, _| {
-        true
-    })
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &MoverRamps::new(&movers),
+        |_, _, _| true,
+    )
     .unwrap()
     .expect("the slabs gate the light");
 
@@ -1022,9 +1036,13 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
         ],
     };
     let ramps = MoverRamps::new(&[mover(4, Vec::new(), false), mover(2, Vec::new(), false)]);
-    let section = channel_section(&bake, &two_cells(), &ramps, |cell, ns, light| {
-        !emitted.holds_per_probe(cell, ns, light)
-    })
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &two_cells(),
+        &ramps,
+        |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
+    )
     .unwrap()
     .expect("entries make a section");
     let flags: Vec<(MoverLightNamespace, bool, &[u32])> = section
@@ -1077,6 +1095,7 @@ fn emitted_with<'a>(
 fn a_bake_with_no_entry_makes_no_section() {
     let section = channel_section(
         &MoverDirectBake::default(),
+        &BounceBlocks::default(),
         &two_cells(),
         &MoverRamps::new(&[]),
         |_, _, _| true,

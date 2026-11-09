@@ -12,6 +12,7 @@ use super::patches::{PatchCountExceeded, PatchSet, Side};
 use super::reach::{PatchReachIndex, REACH_INDEX_BYTES_PER_PATCH};
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
+use crate::mover_probe_channel::MoverChannelCost;
 use crate::sh_bake::{depth_tile_bytes, probe_grid_dims, sh_volume_bytes};
 
 /// The SH base stage's predicted host working set: the peak of each phase
@@ -54,11 +55,78 @@ pub(crate) struct ShBaseWorkingSetProjection {
     /// written on a miss (the patch cache already freed), read and decoded
     /// on a hit.
     pub(crate) volume_entry_phase_bytes: u64,
+    /// The mover probe channel's bounce bake ([`Self::price_movers`]): the
+    /// patch cache and id 34 beside one pose's shading, the movers'
+    /// accumulated states and the posed scenes; zero with no mover.
+    pub(crate) mover_bounce_phase_bytes: u64,
+    /// The direct half after the patch cache drops: id 34, the movers'
+    /// states and blocks, and the direct entries with the sections built
+    /// from them.
+    pub(crate) mover_direct_phase_bytes: u64,
     pub(crate) estimated_peak_bytes: u64,
     pub(crate) budget_bytes: u64,
+    /// Terms [`Self::price_movers`] reads.
+    resident_bytes: u64,
+    reach_index_bytes: u64,
+    /// Id 34's section, animation tables and depth tiles.
+    section_bytes: u64,
+    light_reach_total: u64,
 }
 
 impl ShBaseWorkingSetProjection {
+    /// Price the mover probe channel into every phase it outlives: the posed
+    /// scenes from the gate on; the summed bounce one kept for the posed
+    /// bakes and id 34's later bounces kept past the movers' posed ones from
+    /// the sum on; the movers' accumulated states (memo hits included) from
+    /// the later bounces on; and its own two phases. The peak is re-taken.
+    pub(crate) fn price_movers(&mut self, cost: &MoverChannelCost) {
+        if *cost == MoverChannelCost::default() {
+            return;
+        }
+        let patch_count = self.patch_count;
+        let scenes = cost.scene_bytes;
+        let states = cost.accumulated_states_bytes();
+        let kept = cost.kept_later_bytes(patch_count);
+        let bounce_one = if cost.radiance_movers > 0 {
+            self.sum_bytes
+        } else {
+            0
+        };
+        let held = scenes + bounce_one + kept + states;
+        self.gate_phase_bytes += scenes;
+        self.layer_phase_bytes += scenes;
+        self.sum_phase_bytes += scenes + bounce_one;
+        self.bounce_phase_bytes += held;
+        self.gather_phase_bytes += held;
+        self.volume_entry_phase_bytes += scenes + states;
+        let patch_cache = self.patch_set_bytes + self.resident_bytes;
+        let resident = patch_cache + self.reach_index_bytes + self.section_bytes + scenes + states;
+        // Cold: the patch cache's radiance beside one pose. Warm on an id-34
+        // hit: the layers resolving, then id 34's later bounces gathered for
+        // the kept ones, then one pose.
+        let pose =
+            resident + bounce_one + kept + cost.pose_bytes(patch_count, self.light_reach_total);
+        let cold = pose + self.sum_bytes;
+        let resolve = self.layer_phase_bytes + self.section_bytes + states;
+        let warm_tail = resident + bounce_one + kept + self.bounce_buffer_bytes;
+        self.mover_bounce_phase_bytes = cold.max(resolve).max(warm_tail).max(pose);
+        self.mover_direct_phase_bytes =
+            self.resident_bytes + self.section_bytes + 2 * states + 2 * cost.direct_entry_bytes;
+        self.estimated_peak_bytes = [
+            self.gate_phase_bytes,
+            self.layer_phase_bytes,
+            self.sum_phase_bytes,
+            self.bounce_phase_bytes,
+            self.gather_phase_bytes,
+            self.volume_entry_phase_bytes,
+            self.mover_bounce_phase_bytes,
+            self.mover_direct_phase_bytes,
+        ]
+        .into_iter()
+        .max()
+        .expect("eight phases");
+    }
+
     /// Admit the projection, or refuse it by name when it exceeds the budget.
     pub(crate) fn admit(&self) -> Result<(), ShBaseWorkingSetGateError> {
         if self.estimated_peak_bytes > self.budget_bytes {
@@ -76,7 +144,7 @@ impl fmt::Display for ShBaseWorkingSetProjection {
         write!(
             f,
             "{} patches, {} static lights: peak of gate {}, layers {}, sum {}, later bounces {}, \
-             probe gather {}, id-34 entry {} bytes",
+             probe gather {}, id-34 entry {}, mover bounce {}, mover direct {} bytes",
             self.patch_count,
             self.static_light_count,
             self.gate_phase_bytes,
@@ -85,6 +153,8 @@ impl fmt::Display for ShBaseWorkingSetProjection {
             self.bounce_phase_bytes,
             self.gather_phase_bytes,
             self.volume_entry_phase_bytes,
+            self.mover_bounce_phase_bytes,
+            self.mover_direct_phase_bytes,
         )
     }
 }
@@ -306,8 +376,14 @@ fn project(
         bounce_phase_bytes,
         gather_phase_bytes,
         volume_entry_phase_bytes,
+        mover_bounce_phase_bytes: 0,
+        mover_direct_phase_bytes: 0,
         estimated_peak_bytes,
         budget_bytes,
+        resident_bytes: resident,
+        reach_index_bytes: reach_index,
+        section_bytes: volume.section + tables + tiles,
+        light_reach_total: inputs.light_reach.iter().sum(),
     })
 }
 

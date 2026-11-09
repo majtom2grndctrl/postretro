@@ -1,6 +1,6 @@
 //! The mover probe channel at its pipeline seam: the direct half's q bake
 //! over the gated light set, behind its per-light memo, and id 57's assembly
-//! once ids 41 and 45 are final.
+//! with the bounce half's blocks once ids 41 and 45 are final.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 use std::sync::Arc;
@@ -19,8 +19,8 @@ use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights};
 use crate::map_data::MapKinematicMover;
 use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
-    ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake, MoverRamps,
-    ProbeCells, bake_direct, channel_lights, channel_section,
+    BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
+    MoverRamps, ProbeCells, bake_direct, channel_lights, channel_section,
 };
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
@@ -43,11 +43,15 @@ pub(super) struct DirectHalfInputs<'a> {
     pub(super) mutable_descriptors: &'a ScriptMutableDescriptorSlots,
     pub(super) cache: Option<&'a StageCache>,
     pub(super) governor: &'a Arc<Governor>,
+    /// The bounce half's blocks, which id 57 carries beside the direct block.
+    pub(super) bounce: BounceBlocks,
 }
 
-/// The direct half's bake and the grid its section is laid on.
+/// The direct half's bake, the bounce half's blocks and the grid the section
+/// is laid on.
 pub(super) struct DirectHalf {
     bake: MoverDirectBake,
+    bounce: BounceBlocks,
     cells: ProbeCells,
     ramps: MoverRamps,
 }
@@ -121,6 +125,7 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
     );
     Ok(Some(DirectHalf {
         bake,
+        bounce: inputs.bounce,
         cells,
         ramps: MoverRamps::new(inputs.movers),
     }))
@@ -136,7 +141,13 @@ impl DirectHalf {
         base: &OctahedralShVolumeSection,
     ) -> anyhow::Result<Option<MoverProbeChannelSection>> {
         self.check_grid(base)?;
-        channel_section(&self.bake, &self.cells, &self.ramps, |_, _, _| false)
+        channel_section(
+            &self.bake,
+            &self.bounce,
+            &self.cells,
+            &self.ramps,
+            |_, _, _| false,
+        )
     }
 
     /// Settle id 57's own-tile flags against ids 41 and 45 as emitted:
@@ -151,9 +162,13 @@ impl DirectHalf {
             direct: sections.direct.as_ref(),
             animated: sections.animated_direct.as_ref(),
         };
-        let section = channel_section(&self.bake, &self.cells, &self.ramps, |cell, ns, light| {
-            !emitted.holds_per_probe(cell, ns, light)
-        })?;
+        let section = channel_section(
+            &self.bake,
+            &self.bounce,
+            &self.cells,
+            &self.ramps,
+            |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
+        )?;
         if let Some(section) = &section {
             let counts = section.direct_counts();
             let own = section
@@ -172,7 +187,8 @@ impl DirectHalf {
                  carrying their own tile, {bake_only} naming {} bake-only light(s); {} mover \
                  entr(y/ies) over {} mover(s); {} masked probe(s); direct block {} B: {} B of \
                  cell index, {} B of direct index, {} B of records and mover ids, {} B of \
-                 visibility, {} B of own tiles; section {} B",
+                 visibility, {} B of own tiles; bounce block {} B: {} B of index, {} B of \
+                 payload; depth block {} B; section {} B",
                 counts.records,
                 counts.cells,
                 section.bake_only_light_count(),
@@ -185,6 +201,10 @@ impl DirectHalf {
                 bytes.direct_records,
                 bytes.visibility,
                 bytes.own_tiles,
+                bytes.bounce_index + bytes.bounce_payload,
+                bytes.bounce_index,
+                bytes.bounce_payload,
+                bytes.depth,
                 bytes.total(),
             );
         }

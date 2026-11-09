@@ -14,6 +14,7 @@ use postretro_level_format::mover_probe_channel::{
 };
 use postretro_level_format::sh_reconstruct::Level;
 
+use super::blocks::BounceBlocks;
 use super::direct::{DirectEntry, MoverDirectBake, ProbeCells};
 use crate::map_data::MapKinematicMover;
 
@@ -102,17 +103,18 @@ impl EmittedDirectEntries<'_> {
     }
 }
 
-/// Id 57 holding `direct`'s entries, or `None` when there are none: the
-/// section is never written empty. Each light's entries at one cell become
-/// one term record, masked to the probes where some mover's `q₀` or `q₁` is
-/// below 255. `own_tile(cell, namespace, light)` says whether the record
-/// carries its light's tile at those probes; a namespace that requires one
-/// always does. Bake-only lights, which `direct` names by static-baked index,
-/// are written by rank among the bake-only lights it holds. The bounce block
-/// is empty and resident and there is no depth block, until those halves
-/// bake.
+/// Id 57 holding `direct`'s entries and `bounce`'s blocks, or `None` when
+/// there are none: the section is never written empty. Each light's entries
+/// at one cell become one term record, masked to the probes where some
+/// mover's `q₀` or `q₁` is below 255. `own_tile(cell, namespace, light)`
+/// says whether the record carries its light's tile at those probes; a
+/// namespace that requires one always does. Bake-only lights, which `direct`
+/// names by static-baked index, are written by rank among the bake-only
+/// lights it holds. The listed cells are the union of the direct and bounce
+/// blocks' cells. The bounce payload stays resident.
 pub(crate) fn channel_section(
     direct: &MoverDirectBake,
+    bounce: &BounceBlocks,
     cells: &ProbeCells,
     ramps: &MoverRamps,
     own_tile: impl Fn(usize, MoverLightNamespace, u32) -> bool,
@@ -146,8 +148,8 @@ pub(crate) fn channel_section(
             affinity_dims: cells.affinity_dims,
             bounce_placement: MoverBouncePlacement::Resident,
             direct: records,
-            bounce: Vec::new(),
-            depth: Vec::new(),
+            bounce: bounce.bounce.clone(),
+            depth: bounce.depth.clone(),
         },
         |cell| cells.valid_masks[cell as usize],
         |mover_id| ramps.of(mover_id),

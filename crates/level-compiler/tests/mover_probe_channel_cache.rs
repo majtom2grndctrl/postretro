@@ -1,8 +1,11 @@
-//! Mover probe channel, direct half, through the binary: id 57's bytes across cold builds and
-//! worker counts (B12), and warm builds over the per-light memos (B15): a mover edit re-bakes only
-//! the lights reaching its old or new pose and no id-41 or id-45 entry, a static-light edit only
-//! that light, an animated-light edit only its id-45 entries, a retexture none, and every warm PRL
-//! equals the edited map's cold PRL.
+//! Mover probe channel through the binary: id 57's bytes across cold builds and worker counts
+//! (B12), and warm builds over the per-light direct memos and the per-mover bounce memo (B15,
+//! B16): a mover edit re-bakes only the lights reaching its old or new pose, no id-41 or id-45
+//! entry, and only that mover's bounce states; a static-light edit only that light's direct
+//! entries but every mover's bounce states; an animated-light edit only its id-45 entries; a
+//! retexture no direct entry but every bounce state; and every warm PRL equals the edited map's
+//! cold PRL. Over one cache, edits and their revert build warm equal to cold, and the revert
+//! hits every memo.
 //! See: context/lib/build_pipeline.md §Build Cache, §Compiler pipeline step 12 (Mover probe channel)
 
 mod prl_build_support;
@@ -17,9 +20,16 @@ use postretro_level_format::{SectionId, read_container, read_section_data};
 use prl_build_support::{REACH_VERIFY_ENV, prl_build};
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
+/// The floor top's texture after a retexture: another albedo.
+const RETEXTURE: &str = "50-free-textures/concrete_pavement_036";
 
 /// A box whose top face's texture scale is `top_scale`.
 fn box_brush(min: [i32; 3], max: [i32; 3], top_scale: u32) -> String {
+    box_brush_textured(min, max, top_scale, TEXTURE)
+}
+
+/// [`box_brush`] with `top` on its top face.
+fn box_brush_textured(min: [i32; 3], max: [i32; 3], top_scale: u32, top: &str) -> String {
     let ([x0, y0, z0], [x1, y1, z1]) = (min, max);
     format!(
         "{{\n\
@@ -28,7 +38,7 @@ fn box_brush(min: [i32; 3], max: [i32; 3], top_scale: u32) -> String {
          ( 0 {y0} 0 ) ( 0 {y0} 1 ) ( 1 {y0} 0 ) {TEXTURE} 0 0 0 1 1\n\
          ( 0 {y1} 0 ) ( 1 {y1} 0 ) ( 0 {y1} 1 ) {TEXTURE} 0 0 0 1 1\n\
          ( 0 0 {z0} ) ( 1 0 {z0} ) ( 0 1 {z0} ) {TEXTURE} 0 0 0 1 1\n\
-         ( 0 0 {z1} ) ( 0 1 {z1} ) ( 1 0 {z1} ) {TEXTURE} 0 0 0 {top_scale} {top_scale}\n\
+         ( 0 0 {z1} ) ( 0 1 {z1} ) ( 1 0 {z1} ) {top} 0 0 0 {top_scale} {top_scale}\n\
          }}"
     )
 }
@@ -39,6 +49,8 @@ struct Scene {
     plate_last: [i32; 3],
     lit_color: &'static str,
     floor_top_scale: u32,
+    /// The floor top's texture, as the bounce reads its albedo.
+    floor_top: &'static str,
     animated_range: u32,
     /// A copy of the first static light appended after every other entity,
     /// so no other light's seed or record index shifts.
@@ -52,6 +64,7 @@ impl Default for Scene {
             plate_last: [0, 192, 104],
             lit_color: "255 255 255",
             floor_top_scale: 1,
+            floor_top: TEXTURE,
             animated_range: 256,
             appended_light: false,
             movers: true,
@@ -92,7 +105,12 @@ const FIRST_POSE_LIGHT: [i32; 3] = [0, -160, 104];
 /// light reaches only the plate's first pose.
 fn map(scene: &Scene) -> String {
     let world = [
-        box_brush([-272, -272, -16], [272, 272, 0], scene.floor_top_scale),
+        box_brush_textured(
+            [-272, -272, -16],
+            [272, 272, 0],
+            scene.floor_top_scale,
+            scene.floor_top,
+        ),
         box_brush([-272, -272, 256], [272, 272, 272], 1),
         box_brush([-272, -272, 0], [-256, 272, 256], 1),
         box_brush([256, -272, 0], [272, 272, 256], 1),
@@ -155,6 +173,13 @@ fn build(scene: &Scene, mode: CacheMode<'_>, jobs: u32) -> Built {
     let dir = tempfile::tempdir().expect("create build directory");
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
+    // The dev textures, so a retexture changes the floor's bounce albedo.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/textures"),
+        dir.path().join("textures"),
+    )
+    .expect("link the dev textures");
     let input = maps.join("mover-probe-channel-cache.map");
     std::fs::write(&input, map(scene)).expect("write fixture map");
     let prl = dir.path().join("mover-probe-channel-cache.prl");
@@ -231,7 +256,13 @@ fn copy_dir(from: &Path, to: &Path) {
 fn warm_equals_cold(scene: &Scene) -> String {
     let cache = tempfile::tempdir().expect("create warm cache");
     copy_dir(base().0.path(), cache.path());
-    let warm = build(scene, CacheMode::Warm(cache.path()), JOBS);
+    warm_over(scene, cache.path())
+}
+
+/// Warm-build `scene` over `cache`, then cold-build it; assert the PRLs are
+/// byte-identical. The warm log.
+fn warm_over(scene: &Scene, cache: &Path) -> String {
+    let warm = build(scene, CacheMode::Warm(cache), JOBS);
     let cold = build(scene, CacheMode::Cold, JOBS);
     let (warm_bytes, cold_bytes) = (
         std::fs::read(&warm.prl).expect("read warm PRL"),
@@ -266,6 +297,43 @@ fn miss_share(logs: &str) -> (usize, usize) {
 
 /// The per-light memos: the mover direct half, then ids 41 and 45.
 const MOVER_DIRECT: &str = "mover_probe_direct";
+/// The per-mover bounce memo, and its two movers.
+const MOVER_BOUNCE: &str = "mover_probe_bounce";
+const MOVERS: usize = 2;
+
+/// The bounce memo's `(re-baked, probed)` movers from its line: a hit line
+/// re-bakes none.
+fn bounce_share(logs: &str) -> (usize, usize) {
+    if logs
+        .lines()
+        .any(|line| line.contains(&format!("[cache] {MOVER_BOUNCE} hit ({MOVERS} mover(s))")))
+    {
+        return (0, MOVERS);
+    }
+    let marker = format!("[cache] {MOVER_BOUNCE} miss (");
+    let line = logs
+        .lines()
+        .find(|line| line.contains(&marker))
+        .unwrap_or_else(|| panic!("a {MOVER_BOUNCE} line\n{logs}"));
+    let share = &line[line.find(&marker).unwrap() + marker.len()..];
+    let mut words = share.split(' ');
+    match (
+        words.next().and_then(|count| count.parse().ok()),
+        words.nth(1).and_then(|count| count.parse().ok()),
+    ) {
+        (Some(rebaked), Some(probed)) => (rebaked, probed),
+        _ => panic!("a miss share in {line}"),
+    }
+}
+
+/// Whether the per-mover bounce memo line for `mover` reads `outcome`.
+fn bounce_memo_line(logs: &str, mover: &str, outcome: &str) -> bool {
+    logs.lines().any(|line| {
+        line.contains("probe channel bounce memo: mover")
+            && line.contains(&format!("'{mover}'"))
+            && line.ends_with(outcome)
+    })
+}
 const ENTITY_SHADOW_DIRECT: &str = "direct_sh_delta_light";
 const ANIMATED_DIRECT: &str = "animated_direct_sh_delta_light";
 
@@ -325,6 +393,10 @@ fn the_section_is_identical_across_cold_builds_and_worker_counts() {
         Some(&bytes)
     );
     let channel = MoverProbeChannelSection::from_bytes(&bytes).expect("decodes");
+    assert!(
+        !channel.bounce_entries.is_empty() && !channel.depth_records.is_empty(),
+        "the section carries bounce and depth blocks too"
+    );
     for namespace in [
         MoverLightNamespace::StaticLight,
         MoverLightNamespace::AnimatedBaked,
@@ -383,6 +455,10 @@ fn moving_a_movers_last_waypoint_rebakes_only_the_lights_reaching_its_poses() {
         (base_probed() - 1, base_probed()),
         "every light but the first-pose one re-bakes\n{warm}"
     );
+    // Bounce half: only the plate's states re-bake, from the cached layers.
+    assert_eq!(bounce_share(&warm), (1, MOVERS), "{warm}");
+    assert!(bounce_memo_line(&warm, "plate", "miss"), "{warm}");
+    assert!(bounce_memo_line(&warm, "shutter", "hit"), "{warm}");
 }
 
 // Bake row B15, direct half: editing one static light's colour re-bakes no
@@ -394,6 +470,11 @@ fn editing_one_static_lights_colour_rebakes_only_its_entries() {
         ..Scene::default()
     });
     assert_eq!(miss_share(&warm), (1, base_probed()), "{warm}");
+    assert_eq!(
+        bounce_share(&warm),
+        (MOVERS, MOVERS),
+        "every mover's bounce re-bakes"
+    );
     assert!(
         base_probed_by(ENTITY_SHADOW_DIRECT) > 1,
         "the fixture selects more than one entity-shadow light"
@@ -451,4 +532,57 @@ fn duplicating_a_static_light_rebakes_only_the_duplicate() {
         "{warm}"
     );
     assert_all_hit(&warm, ANIMATED_DIRECT);
+    assert_eq!(
+        bounce_share(&warm),
+        (MOVERS, MOVERS),
+        "every mover's bounce re-bakes"
+    );
+}
+
+// Bake row B15, bounce half: retexturing a static surface changes the
+// bounce albedo id 34 reads, so every mover's bounce states re-bake, while
+// no direct entry does.
+#[test]
+fn retexturing_a_static_surface_rebakes_every_movers_bounce() {
+    let warm = warm_equals_cold(&Scene {
+        floor_top: RETEXTURE,
+        ..Scene::default()
+    });
+    assert_logged(&warm, "[cache] sh_base_volume miss");
+    assert_eq!(bounce_share(&warm), (MOVERS, MOVERS), "{warm}");
+    for stage in [MOVER_DIRECT, ENTITY_SHADOW_DIRECT, ANIMATED_DIRECT] {
+        assert_all_hit(&warm, stage);
+    }
+}
+
+// Bake row B16 (P19): over one cache, a mover edit, then a static-light edit
+// on top of it, then reverting both, each build warm equal to cold; the
+// revert hits every direct, bounce and id-34 memo.
+#[test]
+fn edits_and_their_revert_over_one_cache_build_warm_equal_to_cold() {
+    let cache = tempfile::tempdir().expect("create edit-order cache");
+    copy_dir(base().0.path(), cache.path());
+    let moved = Scene {
+        plate_last: [0, 128, 104],
+        ..Scene::default()
+    };
+    let warm = warm_over(&moved, cache.path());
+    assert_eq!(bounce_share(&warm), (1, MOVERS), "{warm}");
+    let relit = Scene {
+        lit_color: "255 128 64",
+        ..moved
+    };
+    let warm = warm_over(&relit, cache.path());
+    assert_eq!(bounce_share(&warm), (MOVERS, MOVERS), "{warm}");
+    let warm = warm_over(&Scene::default(), cache.path());
+    assert_logged(&warm, "[cache] sh_base_volume hit");
+    assert_logged(&warm, "[cache] direct_sh_volume hit");
+    for stage in [MOVER_DIRECT, ENTITY_SHADOW_DIRECT, ANIMATED_DIRECT] {
+        assert_all_hit(&warm, stage);
+    }
+    assert_eq!(
+        bounce_share(&warm),
+        (0, MOVERS),
+        "the revert hits every bounce memo\n{warm}"
+    );
 }

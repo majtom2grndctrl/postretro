@@ -32,6 +32,7 @@ mod finalized_publication;
 use delta_working_set::*;
 mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
+mod mover_bounce_stage;
 mod mover_light_stage;
 mod mover_probe_stage;
 pub(crate) mod runtime_cells;
@@ -740,11 +741,42 @@ fn run_after_parsing(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
     );
+    // The probe channel's bounce half poses every analysed mover at both
+    // termini now, so the SH base gate prices its scenes, its states and the
+    // direct half's entries before any SH ray.
+    let probe_depth_tile_cap = args.probe_depth_tile_cap;
+    let bounce_plan = {
+        let direct_lights: Vec<&crate::map_data::MapLight> = static_baked_lights
+            .entries()
+            .iter()
+            .map(|entry| entry.light)
+            .chain(
+                animated_baked_lights
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.light),
+            )
+            .collect();
+        mover_bounce_stage::plan_bounce_half(mover_bounce_stage::BouncePlanInputs {
+            poses: &mover_poses,
+            movers: &map_data.kinematic_movers,
+            texture_names: &geo_result.texture_names,
+            geometry: &geo_result,
+            tree: &runtime.cells.tree,
+            exterior_leaves: &runtime.cells.exterior_cells,
+            probe_spacing: sh_config.probe_spacing,
+            bounce_fill: map_data.bounce_fill,
+            direct_lights: &direct_lights,
+            uncompressed: args.uncompressed_irradiance,
+            tile_cap: probe_depth_tile_cap,
+        })?
+    };
     // The SH base gate prices the patch cache, the later bounces at the
     // map's `_bounce_fill` and the id-34 volume from the patch set, the
-    // static lights' ranges and the probe grid's dimensions. Its patch set
-    // and fill move whole into the SH base bake.
-    let (sh_base_handoff, sh_base_projection) = surface_radiance::plan_sh_base(
+    // static lights' ranges and the probe grid's dimensions, and the mover
+    // probe channel beside them. Its patch set and fill move whole into the
+    // SH base bake.
+    let (sh_base_handoff, mut sh_base_projection) = surface_radiance::plan_sh_base(
         &geo_result,
         &static_baked_lights
             .entries()
@@ -756,6 +788,7 @@ fn run_after_parsing(
         map_data.bounce_fill,
         args.working_set_max_bytes,
     )?;
+    sh_base_projection.price_movers(&bounce_plan.cost);
     sh_working_set_gates::admit_sh_working_sets(
         delta_working_set_projection,
         &sh_base_projection,
@@ -872,12 +905,20 @@ fn run_after_parsing(
         &geo_result.texture_names,
         args.uncompressed_irradiance,
     )?;
+    // The production bounce half, unless a dev bounce switch takes its place
+    // (its results are reported, and with the pose switch substituted into
+    // ids 34 and 59; id 57 then carries no bounce or depth block).
+    let mover_request = if dev_bounce.active() {
+        &dev_bounce.request
+    } else {
+        &bounce_plan.request
+    };
     let (
         surface_radiance::ShBase {
             section: mut sh_volume_section,
             depth_tiles: mut probe_depth_tiles,
         },
-        posed_bounce,
+        mover_bounce,
     ) = surface_radiance::bake_sh_base_with_movers(
         &sh_ctx,
         &sh_config,
@@ -885,19 +926,29 @@ fn run_after_parsing(
         &bounce_embedded_emitters,
         stage_cache.as_ref(),
         &sh_control,
-        postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
-        &dev_bounce.request,
+        probe_depth_tile_cap,
+        mover_request,
     );
     if dev_bounce.active() {
         crate::mover_probe_channel::dev_bounce::finish(
             &dev_bounce,
-            &posed_bounce,
+            &mover_bounce.poses,
             &mut sh_volume_section,
             &mut probe_depth_tiles,
         )?;
     }
-    drop(posed_bounce);
+    let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
+        &mover_bounce.movers,
+        &sh_volume_section,
+        &mut probe_depth_tiles,
+        probe_depth_tile_cap,
+    )?;
+    let mover_bounce_summary = (mover_bounce_blocks
+        != crate::mover_probe_channel::BounceBlocks::default())
+    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation));
+    drop(mover_bounce);
     drop(dev_bounce);
+    drop(bounce_plan);
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` and buried lights omitted), so remap the
@@ -1231,6 +1282,7 @@ fn run_after_parsing(
             mutable_descriptors: &script_mutable_descriptor_slots,
             cache: stage_cache.as_ref(),
             governor: &governor,
+            bounce: mover_bounce_blocks,
         })?;
     let provisional_mover_channel = mover_direct_half
         .as_ref()
@@ -2218,10 +2270,8 @@ fn run_after_parsing(
         footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
     let mut details = mover_light_summary.lines(lightmap_family_bytes);
     details.extend(footprint.sh_mandatory.lines());
-    details.push(
-        probe_depth_tiles
-            .summary_line(postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES),
-    );
+    details.push(probe_depth_tiles.summary_line(mover_depth_reservation.shrunk_cap));
+    details.extend(mover_bounce_summary);
     details.extend(footprint.lightmap_pool.lines());
     reporter.finalize(BuildSummary {
         timings,

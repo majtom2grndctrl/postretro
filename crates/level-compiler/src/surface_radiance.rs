@@ -31,7 +31,13 @@ pub(crate) use patches::{PATCH_SIZE_M, patch_seed_id};
 pub(crate) use patches::{Patch, PatchCountExceeded, PatchSet, Side};
 pub(crate) use reach::PatchReachIndex;
 #[cfg(test)]
+pub(crate) use reach::REACH_INDEX_BYTES_PER_PATCH;
+#[cfg(test)]
+pub(crate) use stage::MoverBounceOutcome;
+#[cfg(test)]
 pub(crate) use stage::bake_sh_base;
+#[cfg(test)]
+pub(crate) use stage::stage_events;
 pub(crate) use stage::{ShBase, bake_sh_base_with_movers, warn_bounce_only_emitters};
 pub(crate) use sum::PatchRadiance;
 #[cfg(test)]

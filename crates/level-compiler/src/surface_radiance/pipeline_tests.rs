@@ -159,8 +159,8 @@ fn the_cold_sh_base_bake_frees_its_patch_cache_before_the_delta_stage_begins() {
 
 // On the hit path, a warm build whose gathered volume
 // hits builds no patch cache, yet still holds the gate's patch set and its
-// layer plan. Both drop inside the SH base stage, before the delta SH
-// stage begins.
+// layer plan, and the mover probe channel's posed patch sets. All drop
+// inside the SH base stage, before the delta SH stage begins.
 #[test]
 fn a_warm_volume_hit_frees_the_gates_patch_set_before_the_delta_stage_begins() {
     let root = tempfile::tempdir().unwrap();
@@ -192,9 +192,13 @@ fn a_warm_volume_hit_frees_the_gates_patch_set_before_the_delta_stage_begins() {
             .filter(|(_, e)| *e == marker)
             .map(|(position, _)| position)
             .collect();
-        assert_eq!(drops.len(), 1, "{marker}: {events:?}");
+        // The gate's patch set, and one per pose of the room's mover.
+        let expected = if marker == PATCH_SET_DROPPED { 3 } else { 1 };
+        assert_eq!(drops.len(), expected, "{marker}: {events:?}");
         assert!(
-            sh_begins < drops[0] && drops[0] < delta_begins,
+            drops
+                .iter()
+                .all(|&drop| sh_begins < drop && drop < delta_begins),
             "{marker}: {events:?}"
         );
     }

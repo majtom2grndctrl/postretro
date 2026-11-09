@@ -16,11 +16,12 @@ pub use animation::validate_light_animations;
 pub(crate) use bounce::bounce_sample_index;
 pub(crate) use bounce::{reflected_radiance, soft_visibility_seed};
 pub(crate) use depth_tiles::{
-    ProbeDepthTiles, TileRayTable, chebyshev_visibility, depth_tile_bytes,
+    ProbeDepthTiles, TileRayTable, chebyshev_visibility, depth_tile_bytes, effective_tile_cap,
     fold_depth_tile_constants, probe_depth_bias, visibility_change,
 };
 pub(crate) use grid::{
-    ProbeGridLayout, probe_grid_dims, probe_grid_layout, probe_is_valid_pub, vec3_from,
+    ProbeGridLayout, probe_grid_dims, probe_grid_layout, probe_grid_layout_of, probe_is_valid_pub,
+    vec3_from,
 };
 pub(crate) use light_eval::{
     bounce_contribution, incident_radiance_at_point, light_reaches_point, spot_cone_parameters,

@@ -1,7 +1,8 @@
-// The affected-probe bar: a posed probe's bounce counts as changed only past
-// its own id-34 tile's BC6H round-trip error.
+// The affected-probe rule: a posed probe's bounce counts as changed only past
+// its own id-34 tile's BC6H round-trip error and the perceptual floor.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
+use postretro_level_format::indirect_display::{DEFAULT_INDIRECT_SCALE, soft_knee_tonemap};
 use postretro_level_format::octahedral::irradiance_array_tile_location;
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 
@@ -74,15 +75,16 @@ pub(crate) fn max_abs_difference(a: &[OctahedralAtlasTexel], b: &[OctahedralAtla
         .fold(0.0, f32::max)
 }
 
-/// The renderer's default indirect scale (`renderer_types.rs`
-/// `DEFAULT_INDIRECT_SCALE`); the compiler cannot depend on the renderer.
-const DISPLAY_INDIRECT_SCALE: f32 = 0.33;
+/// The perceptual floor (owner, Stop 2, 2026-11-08): a probe's bounce is
+/// affected only when its change also exceeds this many display levels
+/// ([`display_levels`]). The largest floor that keeps every `mover-closet`
+/// probe the closed door darkens, whose smallest change is 2.30 levels.
+pub(crate) const BOUNCE_FLOOR_LEVELS: f32 = 2.0;
+
 /// The receiver the perceptual measure lights: mid-grey.
 const DISPLAY_ALBEDO: f32 = 0.5;
 
-/// Linear to sRGB-encoded, 0..=1, as the capture's `Rgba8UnormSrgb` target
-/// writes it. The soft-knee tonemap is the identity below 0.98, far above
-/// any bounce-only receiver here.
+/// Linear to sRGB-encoded, 0..=1, as an `Rgba8UnormSrgb` target writes it.
 fn srgb_encode(linear: f32) -> f32 {
     let x = linear.clamp(0.0, 1.0);
     if x <= 0.003_130_8 {
@@ -92,20 +94,26 @@ fn srgb_encode(linear: f32) -> f32 {
     }
 }
 
+/// One texel as the display shows it: a mid-grey receiver lit by its RGB
+/// alone through the renderer's indirect scale and soft-knee tonemap, in
+/// 8-bit sRGB levels.
+fn display_rgb(texel: &OctahedralAtlasTexel) -> [f32; 3] {
+    let scale = DISPLAY_ALBEDO * DEFAULT_INDIRECT_SCALE;
+    let lit = [0, 1, 2].map(|c| scale * f16_bits_to_f32(texel.rgba[c]));
+    soft_knee_tonemap(lit).map(|channel| 255.0 * srgb_encode(channel))
+}
+
 /// How far apart two irradiance tiles read on a display: the largest change,
 /// over texels and RGB channels, in 8-bit sRGB levels of a mid-grey receiver
-/// lit by each tile's texel alone through the default indirect scale and the
-/// tonemap. Indirect only, so it never hides a change behind direct light;
-/// local and deterministic like the round-trip bar.
+/// lit by each tile's texel alone through the renderer's indirect scale and
+/// tonemap (`indirect_display`). Indirect only, so it never hides a change
+/// behind direct light; local and deterministic like the round-trip bar.
 pub(crate) fn display_levels(a: &[OctahedralAtlasTexel], b: &[OctahedralAtlasTexel]) -> f32 {
-    let k = DISPLAY_ALBEDO * DISPLAY_INDIRECT_SCALE;
     a.iter()
         .zip(b)
         .flat_map(|(a, b)| {
-            (0..3).map(move |c| {
-                let (x, y) = (f16_bits_to_f32(a.rgba[c]), f16_bits_to_f32(b.rgba[c]));
-                255.0 * (srgb_encode(k * x) - srgb_encode(k * y)).abs()
-            })
+            let (a, b) = (display_rgb(a), display_rgb(b));
+            (0..3).map(move |c| (a[c] - b[c]).abs())
         })
         .fold(0.0, f32::max)
 }
@@ -195,6 +203,34 @@ mod tests {
         let dark = display_levels(&tile(|_| 0.02), &tile(|_| 0.03));
         let bright = display_levels(&tile(|_| 1.0), &tile(|_| 1.01));
         assert!(dark > bright && bright > 0.0, "dark {dark} bright {bright}");
+    }
+
+    // The measure reads the renderer's own display constants: its indirect
+    // weight from the shared constant, and the shader's knee literal pinned
+    // to the shared knee.
+    #[test]
+    fn the_display_measure_reads_the_renderers_constants() {
+        let types = include_str!("../../../renderer/src/render/renderer_types.rs");
+        let definition = types
+            .split("pub const DEFAULT_INDIRECT_SCALE: f32 =")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("renderer_types.rs defines DEFAULT_INDIRECT_SCALE");
+        assert_eq!(
+            definition.trim(),
+            "postretro_level_format::indirect_display::DEFAULT_INDIRECT_SCALE",
+            "the renderer's indirect weight is the shared constant"
+        );
+        let shader = include_str!("../../../renderer/src/shaders/screen_effects.wgsl");
+        let knee: f32 = shader
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("let knee_start = "))
+            .and_then(|rhs| rhs.trim_end_matches(';').trim().parse().ok())
+            .expect("screen_effects.wgsl's soft knee names its start");
+        assert_eq!(
+            knee,
+            postretro_level_format::indirect_display::TONEMAP_KNEE_START
+        );
     }
 
     #[test]

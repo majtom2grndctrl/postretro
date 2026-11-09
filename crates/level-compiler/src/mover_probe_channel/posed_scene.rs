@@ -1,5 +1,6 @@
 // One mover posed at one terminus as solid geometry for the SH base's rays:
-// analytic entry into each convex brush, and patches on its sides.
+// its sides traced through the static tracer's own hit test, the brushes'
+// half-spaces for origins inside them, and patches on its sides.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 use glam::{DVec3, Vec3};
@@ -15,10 +16,8 @@ use crate::mover_light_gate::{
 };
 use crate::mover_pose::PosedBrush;
 use crate::partition::Aabb;
+use crate::ray_traversal::{TraceRay, triangle_points};
 use crate::surface_radiance::{PatchCountExceeded, PatchSet};
-
-/// How far a plane and a brush side may disagree and still be one face.
-const SIDE_MATCH_EPSILON: f64 = 1.0e-6;
 
 /// Whether posed sides become patches that reflect their albedo, or read
 /// black: the owner's lean (patches) and its A/B alternative.
@@ -28,22 +27,32 @@ pub(crate) enum PosedSurfaces {
     Black,
 }
 
-/// Where a ray first meets a posed brush.
+/// Where a ray first meets the pose.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PosedHit {
-    /// Distance from the ray's origin.
+    /// Distance from the ray's lifted origin, as the static tracer measures
+    /// its own hits.
     pub(crate) distance: f32,
     pub(crate) point: Vec3,
-    /// The side the ray enters through, as a face of [`PosedScene`]'s
-    /// geometry; `None` when the origin lies inside the brush or the
-    /// entered side is degenerate. Either reads black.
-    pub(crate) face: Option<u32>,
+    /// The posed triangle hit, as its index-buffer offset in
+    /// [`PosedScene`]'s geometry; `None` when the lifted origin lies inside
+    /// a posed brush, which reads black at distance 0.
+    pub(crate) triangle: Option<u32>,
+}
+
+/// One posed side's triangles and their bounds, for the ray prefilter.
+struct PosedFace {
+    bounds: Aabb,
+    /// Index-buffer offsets of its triangles' first indices.
+    first: u32,
+    end: u32,
 }
 
 /// The posed mover: its brushes as half-space solids, and its sides as a
 /// small geometry of their own with a patch set over it. The static scene's
 /// BVH is never rebuilt; a ray's nearest hit is the nearer of the static
-/// tree's and this scene's analytic entry.
+/// tree's and this scene's own, which runs the static tracer's hit test,
+/// tolerance τ included, over the posed sides' triangles.
 pub(crate) struct PosedScene {
     pub(crate) mover_id: u32,
     pub(crate) terminus: Terminus,
@@ -51,8 +60,7 @@ pub(crate) struct PosedScene {
     pub(crate) rule: InsideBrushRule,
     pub(crate) surfaces: PosedSurfaces,
     pose: Pose,
-    /// Per posed brush, per plane: the face its side became.
-    plane_faces: Vec<Vec<Option<u32>>>,
+    faces: Vec<PosedFace>,
     pub(crate) geometry: GeometryResult,
     pub(crate) patches: PatchSet,
 }
@@ -83,10 +91,8 @@ impl PosedScene {
             faces: Vec::new(),
         };
         let mut face_index_ranges = Vec::new();
-        let mut plane_faces = Vec::with_capacity(authored.len());
         for (index, (brush, posed)) in authored.iter().zip(&pose.brushes).enumerate() {
             let offset = posed.bounds.min - brush.aabb.min;
-            let mut faces = vec![None; brush.planes.len()];
             for side in &brush.sides {
                 if side.vertices.len() < 3 {
                     continue;
@@ -102,7 +108,6 @@ impl PosedScene {
                             .collect();
                     }
                 }
-                let face = section.faces.len() as u32;
                 push_side(
                     &mut section,
                     &mut face_index_ranges,
@@ -110,17 +115,7 @@ impl PosedScene {
                     side.normal,
                     texture_index(texture_names, &side.texture),
                 );
-                if pieces.is_empty() {
-                    continue;
-                }
-                if let Some(plane) = brush.planes.iter().position(|plane| {
-                    plane.normal.dot(side.normal) > 1.0 - SIDE_MATCH_EPSILON
-                        && (plane.distance - side.distance).abs() < SIDE_MATCH_EPSILON.sqrt()
-                }) {
-                    faces[plane] = Some(face);
-                }
             }
-            plane_faces.push(faces);
         }
         let geometry = GeometryResult {
             geometry: section,
@@ -128,6 +123,7 @@ impl PosedScene {
             face_index_ranges,
         };
         let patches = PatchSet::try_build(&geometry)?;
+        let faces = face_bounds(&geometry);
         Ok(Self {
             mover_id: analysed.mover_id,
             terminus,
@@ -135,7 +131,7 @@ impl PosedScene {
             rule,
             surfaces,
             pose,
-            plane_faces,
+            faces,
             geometry,
             patches,
         })
@@ -214,85 +210,158 @@ impl PosedScene {
         }
     }
 
-    /// The nearest entry of the ray `origin + t·dir`, `0 ≤ t ≤ max`, into a
-    /// posed brush other than those in `skip`. An origin inside a brush
-    /// enters it at 0. `None` when no brush is met by `max`.
-    pub(crate) fn ray_entry(
-        &self,
-        origin: Vec3,
-        dir: Vec3,
-        max: f32,
-        skip: &[usize],
-        grow: f64,
-    ) -> Option<PosedHit> {
-        let (o, d) = (origin.as_dvec3(), dir.as_dvec3());
-        // The box tests run in f64 with a hair of slack; the distance test
-        // compares the `f32` distance a hit reports, so a caller passing a
-        // reported distance back as `max` finds the same hit.
-        let reach = f64::from(max) * (1.0 + 1.0e-6) + 1.0e-6;
-        if !ray_may_touch_box(o, d, reach, &self.pose.bounds) {
-            return None;
-        }
-        let mut best: Option<(f64, usize, Option<usize>)> = None;
-        for (index, brush) in self.pose.brushes.iter().enumerate() {
-            if skip.contains(&index) || !ray_may_touch_box(o, d, reach, &brush.bounds) {
-                continue;
-            }
-            let Some((t, plane)) = brush_entry(o, d, brush, grow) else {
-                continue;
-            };
-            if (t as f32) <= max && best.is_none_or(|(nearest, _, _)| t < nearest) {
-                best = Some((t, index, plane));
-            }
-        }
-        best.map(|(t, brush, plane)| PosedHit {
-            distance: t as f32,
-            point: (o + d * t).as_vec3(),
-            face: plane.and_then(|plane| self.plane_faces[brush][plane]),
+    /// Whether the unbounded ray from `origin` along `dir` can come near
+    /// the pose's bounds: a gather ray that cannot never meets the pose.
+    pub(crate) fn may_meet_ray(&self, origin: Vec3, dir: Vec3) -> bool {
+        let lifted = origin + dir * RAY_EPSILON;
+        ray_may_touch_box(
+            lifted.as_dvec3(),
+            dir.as_dvec3(),
+            f64::INFINITY,
+            &self.pose.bounds,
+        )
+    }
+
+    /// Whether `point` lies inside a posed brush or on its surface, by the
+    /// brushes' half-spaces alone: a ray lifted from there starts in solid.
+    pub(crate) fn contains(&self, point: Vec3) -> bool {
+        let point = point.as_dvec3();
+        self.pose.brushes.iter().any(|brush| {
+            brush
+                .planes
+                .iter()
+                .all(|&(normal, distance)| normal.dot(point) - distance <= 0.0)
         })
     }
 
-    /// A triangle of face `face`, as the patch set's lookups name a face.
-    pub(crate) fn face_triangle(&self, face: u32) -> u32 {
-        self.geometry.face_index_ranges[face as usize].index_offset
+    /// The pose's nearest hit along `dir` from `origin`, nearer than
+    /// `nearest` (the static tracer's hit there, or infinity), as the static
+    /// tracer finds its own: the origin lifted by [`RAY_EPSILON`], then the
+    /// watertight hit test with τ over each posed side's triangles past
+    /// `RAY_EPSILON`. A lifted origin inside a posed brush hits at distance 0
+    /// and reads black: the inside-brush rule. A posed face flush with a
+    /// static one ties and leaves the static hit.
+    pub(crate) fn trace(&self, origin: Vec3, dir: Vec3, nearest: f32) -> Option<PosedHit> {
+        let lifted = origin + dir * RAY_EPSILON;
+        let (o, d) = (lifted.as_dvec3(), dir.as_dvec3());
+        let reach = f64::from(nearest);
+        if !ray_may_touch_box(o, d, reach, &self.pose.bounds) {
+            return None;
+        }
+        if self.contains(lifted) {
+            return Some(PosedHit {
+                distance: 0.0,
+                point: lifted,
+                triangle: None,
+            });
+        }
+        let ray = TraceRay::new(lifted, dir);
+        let mut best: Option<(f32, u32)> = None;
+        for face in &self.faces {
+            let bound = best.map_or(nearest, |(distance, _)| distance);
+            if !ray_may_touch_box(o, d, f64::from(bound), &face.bounds) {
+                continue;
+            }
+            for triangle in (face.first..face.end).step_by(3) {
+                let bound = best.map_or(nearest, |(distance, _)| distance);
+                let points = triangle_points(&self.geometry, triangle as usize);
+                if let Some(hit) = ray.hit(points, RAY_EPSILON, bound) {
+                    let distance = hit.t as f32;
+                    if distance < bound {
+                        best = Some((distance, triangle));
+                    }
+                }
+            }
+        }
+        best.map(|(distance, triangle)| PosedHit {
+            distance,
+            point: lifted + dir * distance,
+            triangle: Some(triangle),
+        })
+    }
+
+    /// Fold what the pose bakes from: its bounds, each brush's bounds and
+    /// planes (the inside test and the shadow segments), and its sides'
+    /// geometry (the posed trace and the patches).
+    pub(crate) fn fold_key(&self, hasher: &mut blake3::Hasher) {
+        let fold_box = |hasher: &mut blake3::Hasher, bounds: &Aabb| {
+            for component in bounds
+                .min
+                .to_array()
+                .into_iter()
+                .chain(bounds.max.to_array())
+            {
+                hasher.update(&component.to_bits().to_le_bytes());
+            }
+        };
+        fold_box(hasher, &self.pose.bounds);
+        hasher.update(&(self.pose.brushes.len() as u32).to_le_bytes());
+        for brush in &self.pose.brushes {
+            fold_box(hasher, &brush.bounds);
+            hasher.update(&(brush.planes.len() as u32).to_le_bytes());
+            for &(normal, distance) in &brush.planes {
+                for component in normal.to_array() {
+                    hasher.update(&component.to_bits().to_le_bytes());
+                }
+                hasher.update(&distance.to_bits().to_le_bytes());
+            }
+        }
+        let geometry = &self.geometry.geometry;
+        hasher.update(&(geometry.vertices.len() as u64).to_le_bytes());
+        for vertex in &geometry.vertices {
+            for component in vertex.position {
+                hasher.update(&component.to_bits().to_le_bytes());
+            }
+        }
+        hasher.update(&(geometry.indices.len() as u64).to_le_bytes());
+        for index in &geometry.indices {
+            hasher.update(&index.to_le_bytes());
+        }
+        hasher.update(&(self.geometry.face_index_ranges.len() as u64).to_le_bytes());
+        for (range, face) in self.geometry.face_index_ranges.iter().zip(&geometry.faces) {
+            hasher.update(&range.index_offset.to_le_bytes());
+            hasher.update(&range.index_count.to_le_bytes());
+            hasher.update(&face.texture_index.to_le_bytes());
+        }
+    }
+
+    /// Heap bytes the scene holds: its geometry, patch set and face bounds.
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        let geometry = &self.geometry.geometry;
+        (geometry.vertices.capacity() * size_of::<Vertex>()
+            + geometry.indices.capacity() * size_of::<u32>()
+            + geometry.faces.capacity() * size_of::<FaceMeta>()
+            + self.geometry.face_index_ranges.capacity() * size_of::<FaceIndexRange>()
+            + self.faces.capacity() * size_of::<PosedFace>()) as u64
+            + self.patches.heap_bytes()
     }
 }
 
-/// The closed-form entry of a ray into one convex brush: the parameter
-/// where it crosses into the last half-space it starts outside, and that
-/// plane; `(0, None)` from inside. `None` when it never enters.
-// TEMPORARY `grow` (task 2, B7 τ experiment): every plane pushed out by
-// `grow` metres; 0 outside `POSTRETRO_DEV_POSED_TAU`.
-fn brush_entry(o: DVec3, d: DVec3, brush: &PosedBrush, grow: f64) -> Option<(f64, Option<usize>)> {
-    let (mut enter, mut exit) = (0.0_f64, f64::INFINITY);
-    let mut entered: Option<usize> = None;
-    for (index, &(normal, distance)) in brush.planes.iter().enumerate() {
-        let start = normal.dot(o) - distance - grow;
-        let along = normal.dot(d);
-        if along == 0.0 {
-            if start > 0.0 {
-                return None;
+/// Each posed side's triangle range and bounds, in face order.
+fn face_bounds(geometry: &GeometryResult) -> Vec<PosedFace> {
+    geometry
+        .face_index_ranges
+        .iter()
+        .map(|range| {
+            let (first, end) = (range.index_offset, range.index_offset + range.index_count);
+            let mut bounds = Aabb {
+                min: DVec3::splat(f64::INFINITY),
+                max: DVec3::splat(f64::NEG_INFINITY),
+            };
+            for &index in &geometry.geometry.indices[first as usize..end as usize] {
+                let point = Vec3::from(geometry.geometry.vertices[index as usize].position);
+                bounds.min = bounds.min.min(point.as_dvec3());
+                bounds.max = bounds.max.max(point.as_dvec3());
             }
-            continue;
-        }
-        let t = -start / along;
-        if along < 0.0 {
-            if start > 0.0 && t > enter {
-                enter = t;
-                entered = Some(index);
-            }
-        } else {
-            exit = exit.min(t);
-        }
-        if enter > exit {
-            return None;
-        }
-    }
-    Some((enter, entered))
+            PosedFace { bounds, first, end }
+        })
+        .filter(|face| face.first < face.end)
+        .collect()
 }
 
 /// Slab test of the ray `o + t·d`, `0 ≤ t ≤ max`, against `bounds` grown by
-/// the gate's box slack.
+/// the gate's box slack, which exceeds τ, so a triangle hit the tolerance
+/// accepts is never cut.
 fn ray_may_touch_box(o: DVec3, d: DVec3, max: f64, bounds: &Aabb) -> bool {
     let slack = DVec3::splat(crate::mover_light_gate::BOX_SLACK_M);
     let (min_b, max_b) = (bounds.min - slack, bounds.max + slack);

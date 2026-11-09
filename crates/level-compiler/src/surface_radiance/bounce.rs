@@ -91,6 +91,7 @@ impl BounceSource<'_> {
 /// At fill 0 nothing is traced or allocated, so the result is bounce one bit
 /// for bit. Each bounce gathers every patch, lit or not, so a room beyond
 /// every light's reach takes fill from its neighbours.
+#[cfg(test)]
 pub(crate) fn add_later_bounces(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
@@ -98,20 +99,70 @@ pub(crate) fn add_later_bounces(
     fill: f32,
     control: &BakeControl,
 ) {
+    add_later_bounces_keeping(ctx, patches, radiance, fill, None, control);
+}
+
+/// [`add_later_bounces`], also handing back each later bounce from index
+/// `keep_from` on (0 is bounce two), unscaled, one front side per patch: what
+/// the mover probe channel keeps of id 34 past a mover's posed bounces. The
+/// sum and its fill are bit for bit [`add_later_bounces`]'s. A bounce past a
+/// zero one is zero and is not kept.
+pub(crate) fn add_later_bounces_keeping(
+    ctx: &RaytracingCtx<'_>,
+    patches: &PatchSet,
+    radiance: &mut PatchRadiance,
+    fill: f32,
+    keep_from: Option<u32>,
+    control: &BakeControl,
+) -> Vec<Vec<[f32; 3]>> {
     if fill == 0.0 {
-        return;
+        return Vec::new();
     }
+    let (running, kept) = later_bounce_sum(ctx, patches, radiance, keep_from, control);
+    radiance.add_front_scaled(&running, fill);
+    kept
+}
+
+/// Id 34's later bounces from index `keep_from` on, gathered from bounce one
+/// in `first`, unscaled: the bounces [`add_later_bounces_keeping`] keeps,
+/// for a bake whose id 34 came from the cache. Empty at fill 0.
+pub(crate) fn later_bounce_layers(
+    ctx: &RaytracingCtx<'_>,
+    patches: &PatchSet,
+    first: &PatchRadiance,
+    fill: f32,
+    keep_from: u32,
+    control: &BakeControl,
+) -> Vec<Vec<[f32; 3]>> {
+    if fill == 0.0 {
+        return Vec::new();
+    }
+    later_bounce_sum(ctx, patches, first, Some(keep_from), control).1
+}
+
+/// The running sum of every later bounce from bounce one in `first`, and the
+/// bounces from `keep_from` on.
+fn later_bounce_sum(
+    ctx: &RaytracingCtx<'_>,
+    patches: &PatchSet,
+    first: &PatchRadiance,
+    keep_from: Option<u32>,
+    control: &BakeControl,
+) -> (Vec<[f32; 3]>, Vec<Vec<[f32; 3]>>) {
     let count = patches.len();
     let chunks = count.div_ceil(PATCHES_PER_CHUNK);
     let mut running = vec![[0.0f32; 3]; count];
     let mut previous = vec![[0.0f32; 3]; count];
     let mut next = vec![[0.0f32; 3]; count];
+    let mut kept = Vec::new();
     #[cfg(test)]
     let _held = [&running, &previous, &next]
         .map(|buffer| crate::live_bytes::hold_vec("later-bounce buffers", buffer));
+    #[cfg(test)]
+    let mut _kept_held = Vec::new();
     for bounce in 0..LATER_BOUNCE_COUNT {
         let source = if bounce == 0 {
-            BounceSource::First(radiance)
+            BounceSource::First(first)
         } else {
             BounceSource::Later(&previous)
         };
@@ -126,9 +177,17 @@ pub(crate) fn add_later_bounces(
                 *s += v;
             }
         }
+        if keep_from.is_some_and(|from| bounce >= from) {
+            kept.push(next.clone());
+            #[cfg(test)]
+            _kept_held.push(crate::live_bytes::hold_vec(
+                "mover static later bounces",
+                &next,
+            ));
+        }
         std::mem::swap(&mut previous, &mut next);
     }
-    radiance.add_front_scaled(&running, fill);
+    (running, kept)
 }
 
 /// Each later bounce in order, from bounce one in `first`: what

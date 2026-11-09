@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use super::posed_scene::{PosedScene, PosedSurfaces};
 use crate::bake_control::BakeControl;
 use crate::map_data::MapLight;
-use crate::sh_bake::{RAY_EPSILON, RaytracingCtx, bounce_hit, reflected_radiance, segment_clear};
+use crate::sh_bake::{RaytracingCtx, bounce_hit, reflected_radiance, segment_clear};
 use crate::surface_radiance::{
     BOUNCE_RAYS_PER_PATCH, LATER_BOUNCE_COUNT, LayerPlan, Patch, PatchRadiance, PatchReachIndex,
     PatchSet, Side, cosine_directions, patch_frame, shade_patch_side,
@@ -84,6 +84,8 @@ pub(crate) fn posed_bounce_one(
         }
     }
     pairs.sort_unstable();
+    #[cfg(test)]
+    let _pairs = crate::live_bytes::hold_vec("mover posed bounce one", &pairs);
     let deltas: Vec<[Vec3; 2]> = pairs
         .par_chunks(PATCHES_PER_CHUNK)
         .flat_map_iter(|chunk| {
@@ -114,6 +116,8 @@ pub(crate) fn posed_bounce_one(
                 .collect::<Vec<_>>()
         })
         .collect();
+    #[cfg(test)]
+    let _deltas = crate::live_bytes::hold_vec("mover posed bounce one", &deltas);
     let mut world = bounce_one.clone();
     for (&(patch, _), delta) in pairs.iter().zip(&deltas) {
         for side in Side::BOTH {
@@ -205,19 +209,39 @@ impl Source<'_> {
     }
 }
 
+/// Which later bounces one pose re-bakes, and what it keeps of id 34's.
+#[derive(Clone, Copy)]
+pub(crate) struct PosedLaterBounces<'t> {
+    /// Later bounces run posed: the mover's `light_bounces` less bounce one.
+    pub(crate) posed: u32,
+    /// The SH base's own later bounces past the posed ones, summed per
+    /// static patch. The mover's own patches take no tail: the static
+    /// bounces never saw them.
+    pub(crate) static_tail: Option<&'t [[f32; 3]]>,
+}
+
 /// [`crate::surface_radiance::add_later_bounces`] over both patch sets,
 /// with every gather ray's nearest hit the nearer of the static tree's and
-/// the pose's. A ray from inside a posed brush (a buried static patch)
-/// reads black. Where no ray of a patch meets the pose and every patch it
-/// reads holds its static value, its bounce is the static one bit for bit.
+/// the pose's ([`PosedScene::trace`]). A ray from inside a posed brush (a
+/// buried static patch) reads black. Where no ray of a patch meets the pose
+/// and every patch it reads holds its static value, its bounce is the
+/// static one bit for bit.
+///
+/// `later.posed` later bounces run posed; `later.static_tail`, when given,
+/// joins them before the fill scales the sum.
 pub(crate) fn add_posed_later_bounces(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
     scene: &PosedScene,
     radiance: &mut PosedRadiance,
     fill: f32,
+    later: PosedLaterBounces<'_>,
     control: &BakeControl,
 ) {
+    let PosedLaterBounces {
+        posed: posed_later,
+        static_tail,
+    } = later;
     if fill == 0.0 {
         return;
     }
@@ -228,8 +252,13 @@ pub(crate) fn add_posed_later_bounces(
     );
     let mut previous = running.clone();
     let mut next = running.clone();
+    #[cfg(test)]
+    let _held = [&running, &previous, &next].map(|(world, mover)| {
+        [world, mover]
+            .map(|buffer| crate::live_bytes::hold_vec("mover posed later bounces", buffer))
+    });
     let directions = cosine_directions(BOUNCE_RAYS_PER_PATCH);
-    for bounce in 0..LATER_BOUNCE_COUNT {
+    for bounce in 0..posed_later.min(LATER_BOUNCE_COUNT) {
         let source = if bounce == 0 {
             Source::First(radiance)
         } else {
@@ -262,12 +291,19 @@ pub(crate) fn add_posed_later_bounces(
         }
         std::mem::swap(&mut previous, &mut next);
     }
+    if let Some(tail) = static_tail {
+        for (sum, value) in running.0.iter_mut().zip(tail) {
+            for (s, v) in sum.iter_mut().zip(value) {
+                *s += v;
+            }
+        }
+    }
     radiance.world.add_front_scaled(&running.0, fill);
     radiance.mover.add_front_scaled(&running.1, fill);
 }
 
 /// One patch's front-side later bounce, as the SH base gathers it, with the
-/// pose's analytic entry tested against each static hit.
+/// pose's hit tested against each static hit.
 fn gather_patch(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
@@ -282,17 +318,11 @@ fn gather_patch(
         let dir = tangent * local.x + bitangent * local.y + normal * local.z;
         let hit = bounce_hit(ctx, patch.centroid, dir);
         let nearest = hit.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
-        // A posed face flush with a static one leaves the static hit.
-        if let Some(posed) = scene
-            .ray_entry(patch.centroid + dir * RAY_EPSILON, dir, nearest, &[], 0.0)
-            .filter(|posed| posed.distance < nearest)
-        {
+        if let Some(posed) = scene.trace(patch.centroid, dir, nearest) {
             if scene.surfaces == PosedSurfaces::Patches
-                && let Some(face) = posed.face
+                && let Some(triangle) = posed.triangle
                 && let Some((blend, side)) =
-                    scene
-                        .patches
-                        .lookup_bilinear(scene.face_triangle(face), posed.point, dir)
+                    scene.patches.lookup_bilinear(triangle, posed.point, dir)
             {
                 for &(hit_patch, weight) in blend.entries() {
                     incoming += source.mover(hit_patch, side) * weight;

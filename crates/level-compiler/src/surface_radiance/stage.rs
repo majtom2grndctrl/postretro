@@ -3,7 +3,7 @@
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
-use super::bounce::{add_later_bounces, later_bounce_progress_units};
+use super::bounce::{add_later_bounces_keeping, later_bounce_layers, later_bounce_progress_units};
 use super::gather::{PatchGather, PatchLookup};
 use super::layer::LayerKeys;
 use super::layer_set::{LayerCache, LayerPlan, resolve_layers};
@@ -15,11 +15,12 @@ use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
 use crate::light_namespaces::StaticBakedLights;
 use crate::mover_probe_channel::{
-    MoverBounceRequest, PosedBounce, StaticBounce, bake_mover_bounce,
+    BounceMemo, MoverBounceJob, MoverBounceRequest, MoverBounceStates, PosedBounce, StaticBounce,
+    StaticTail, bake_mover_bounce,
 };
 use crate::sh_bake::{
-    GatheredVolume, ProbeDepthTiles, RadianceSource, ShBakeCtx, ShConfig, animation_tables,
-    bake_sh_volume_over, probe_grid_layout, static_light_refs,
+    GatheredVolume, ProbeDepthTiles, ProbeGridLayout, RadianceSource, ShBakeCtx, ShConfig,
+    animation_tables, bake_sh_volume_over, probe_grid_layout, static_light_refs,
 };
 use crate::texel_footprint::EmbeddedEmitters;
 
@@ -49,7 +50,18 @@ pub(crate) struct ShBase {
     pub(crate) depth_tiles: ProbeDepthTiles,
 }
 
-/// [`bake_sh_base_with_movers`] with no mover poses: id 34 and id 59 alone.
+/// What the mover probe channel's bounce bake hands on beside id 34.
+#[derive(Default)]
+pub(crate) struct MoverBounceOutcome {
+    /// One per production job, ascending by mover id: from the memo or
+    /// baked.
+    pub(crate) movers: Vec<MoverBounceStates>,
+    /// The dev switches' per-pose view.
+    pub(crate) poses: Vec<PosedBounce>,
+}
+
+/// [`bake_sh_base_with_movers`] with no mover poses: id 34 and id 59 alone,
+/// with the depth tiles' once-per-build line.
 #[cfg(test)]
 pub(crate) fn bake_sh_base(
     ctx: &ShBakeCtx<'_>,
@@ -60,7 +72,7 @@ pub(crate) fn bake_sh_base(
     control: &BakeControl,
     tile_cap: u32,
 ) -> ShBase {
-    bake_sh_base_with_movers(
+    let base = bake_sh_base_with_movers(
         ctx,
         config,
         handoff,
@@ -70,7 +82,111 @@ pub(crate) fn bake_sh_base(
         tile_cap,
         &MoverBounceRequest::default(),
     )
-    .0
+    .0;
+    base.depth_tiles.log(tile_cap);
+    base
+}
+
+/// The jobs the memo holds, by job, and the jobs left to bake.
+struct MemoLookup<'r, 'c> {
+    memo: Option<BounceMemo<'c>>,
+    found: Vec<Option<MoverBounceStates>>,
+    keys: Vec<Option<crate::cache::CacheKey>>,
+    pending: Vec<&'r MoverBounceJob>,
+}
+
+impl<'r, 'c> MemoLookup<'r, 'c> {
+    /// Read every job's memo under id 34's volume key, when a cache is open
+    /// and the request is production's. Logs one `[cache]` line and one line
+    /// per mover.
+    fn new(
+        movers: &'r MoverBounceRequest,
+        volume: Option<&VolumeCache<'c>>,
+        ctx: &ShBakeCtx<'_>,
+        layout: &ProbeGridLayout,
+    ) -> Self {
+        let memo = volume
+            .filter(|_| !movers.keep_poses)
+            .map(|volume| BounceMemo::new(volume.cache, &volume.key, movers.uncompressed));
+        let mut lookup = Self {
+            memo,
+            found: Vec::with_capacity(movers.jobs.len()),
+            keys: Vec::with_capacity(movers.jobs.len()),
+            pending: Vec::new(),
+        };
+        for job in &movers.jobs {
+            let key = lookup
+                .memo
+                .as_ref()
+                .map(|memo| memo.key(job.bounces, &job.scenes, ctx.bounce_materials));
+            let found = lookup
+                .memo
+                .as_ref()
+                .zip(key.as_ref())
+                .and_then(|(memo, key)| memo.get(key, job.mover_id, layout));
+            if lookup.memo.is_some() {
+                log::info!(
+                    "[MoverLight] probe channel bounce memo: mover `{}` (#{}) {}",
+                    job.label,
+                    job.mover_id,
+                    if found.is_some() { "hit" } else { "miss" },
+                );
+            }
+            if found.is_none() {
+                lookup.pending.push(job);
+            }
+            lookup.found.push(found);
+            lookup.keys.push(key);
+        }
+        if lookup.memo.is_some() {
+            BounceMemo::log_outcome(movers.jobs.len(), movers.jobs.len() - lookup.pending.len());
+        }
+        lookup
+    }
+
+    /// Whether a pending job re-bakes radiance, which needs the patches'
+    /// bounce one; a job at `light_bounces` 0 traces depth alone.
+    fn needs_radiance(&self) -> bool {
+        self.pending.iter().any(|job| job.bounces > 0)
+    }
+
+    /// Store each baked job's states and merge them with the memo's, by
+    /// mover id.
+    fn finish(
+        mut self,
+        movers: &MoverBounceRequest,
+        baked: Vec<MoverBounceStates>,
+    ) -> Vec<MoverBounceStates> {
+        for states in baked {
+            let Some(at) = movers
+                .jobs
+                .iter()
+                .position(|job| job.mover_id == states.mover_id)
+            else {
+                continue;
+            };
+            if let (Some(memo), Some(key)) = (self.memo.as_ref(), self.keys[at].as_ref()) {
+                memo.put(key, &states);
+            }
+            self.found[at] = Some(states);
+        }
+        let mut states: Vec<MoverBounceStates> = self.found.into_iter().flatten().collect();
+        states.sort_by_key(|states| states.mover_id);
+        states
+    }
+}
+
+/// Id 34's later bounces the pending jobs keep past their posed ones, from
+/// the first any job keeps, held apart from `kept`.
+fn static_tail(
+    jobs: &[&MoverBounceJob],
+    fill: f32,
+    kept: Vec<Vec<[f32; 3]>>,
+) -> Option<StaticTail> {
+    MoverBounceRequest::static_tail_from(jobs.iter().copied(), fill).map(|first| StaticTail {
+        first,
+        layers: kept,
+    })
 }
 
 /// Bake id 34 through the surface radiance cache. Each distinct static
@@ -96,14 +212,19 @@ pub(crate) fn bake_sh_base(
 /// The gather's hits also bin into each valid probe's depth tile, kept when
 /// it changes the probe's visibility, at most `tile_cap` per level
 /// (production passes `MAX_PROBE_DEPTH_TILES`). The tiles ride the volume
-/// entry, and the kept and dropped counts log once, hit or miss.
+/// entry; the caller logs their kept and dropped counts once, after mover
+/// depth reserves its share of the range.
 ///
-/// Then the mover probe channel's bounce and depth bake runs for every pose
-/// `movers` names, over the same patches while they live, before the patch
-/// cache drops. On a volume miss it reads the bounce one this bake summed,
-/// kept before the later bounces add to it; on a hit no patch radiance
-/// exists, so it sums the cached layers over the gate's patch set. An empty
-/// request keeps nothing extra and bakes today's bytes.
+/// Then the mover probe channel's bounce and depth bake runs for every
+/// mover `movers` names whose memo, keyed on this volume's key, misses:
+/// over the same patches while they live, before the patch cache drops, so
+/// a cold build drops it once, after the mover bake. On a volume miss it
+/// reads the bounce one this bake summed, kept before the later bounces add
+/// to it, and the later bounces its movers keep past their posed ones; on a
+/// hit no patch cache exists, so it sums the cached layers over the gate's
+/// patch set and gathers those later bounces afresh. A mover at
+/// `light_bounces` 0 needs neither. An empty request keeps nothing extra
+/// and bakes today's bytes.
 // `bake_sh_base`'s inputs plus the request.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_sh_base_with_movers(
@@ -115,7 +236,7 @@ pub(crate) fn bake_sh_base_with_movers(
     control: &BakeControl,
     tile_cap: u32,
     movers: &MoverBounceRequest,
-) -> (ShBase, Vec<PosedBounce>) {
+) -> (ShBase, MoverBounceOutcome) {
     let ShBaseHandoff {
         patches,
         light_reach,
@@ -176,21 +297,44 @@ pub(crate) fn bake_sh_base_with_movers(
         #[cfg(test)]
         crate::live_bytes::phase("volume load");
         control.advance(total_units);
-        depth_tiles.log(tile_cap);
-        let posed = if movers.is_empty() {
-            Vec::new()
+        let lookup = MemoLookup::new(movers, Some(volume), ctx, &layout);
+        let (baked, poses) = if lookup.pending.is_empty() {
+            (Vec::new(), Vec::new())
         } else {
-            let layer_cache = caches.as_ref().map(|(layers, _)| layers);
-            let resolved = resolve_layers(
-                &ctx.ray_ctx(),
-                &patches,
-                &lights,
-                &plan,
-                layer_cache,
-                control,
-            );
-            let bounce_one = PatchRadiance::sum(patches.len(), &plan, &resolved);
-            drop(resolved);
+            let bounce_one = lookup.needs_radiance().then(|| {
+                let layer_cache = caches.as_ref().map(|(layers, _)| layers);
+                let resolved = resolve_layers(
+                    &ctx.ray_ctx(),
+                    &patches,
+                    &lights,
+                    &plan,
+                    layer_cache,
+                    control,
+                );
+                PatchRadiance::sum(patches.len(), &plan, &resolved)
+            });
+            let bounce_one = bounce_one.unwrap_or_else(|| PatchRadiance::zeroed(0));
+            let tail =
+                MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)
+                    .filter(|_| lookup.needs_radiance())
+                    .map(|from| {
+                        later_bounce_layers(
+                            &ctx.ray_ctx(),
+                            &patches,
+                            &bounce_one,
+                            bounce_fill,
+                            from,
+                            control,
+                        )
+                    });
+            let tail = tail.and_then(|kept| static_tail(&lookup.pending, bounce_fill, kept));
+            #[cfg(test)]
+            let _tail = tail.as_ref().map(|tail| {
+                tail.layers
+                    .iter()
+                    .map(|layer| crate::live_bytes::hold_vec("mover static later bounces", layer))
+                    .collect::<Vec<_>>()
+            });
             bake_mover_bounce(
                 ctx,
                 &StaticBounce {
@@ -201,17 +345,28 @@ pub(crate) fn bake_sh_base_with_movers(
                     bounce_fill,
                     layout: &layout,
                     base: &section,
+                    depth_tiles: &depth_tiles,
+                    static_tail: tail.as_ref(),
                 },
+                &lookup.pending,
                 movers,
                 control,
             )
         };
+        #[cfg(test)]
+        if !movers.is_empty() {
+            stage_events::record(stage_events::MOVER_BOUNCE_DONE);
+        }
+        let states = lookup.finish(movers, baked);
         return (
             ShBase {
                 section,
                 depth_tiles,
             },
-            posed,
+            MoverBounceOutcome {
+                movers: states,
+                poses,
+            },
         );
     }
 
@@ -229,17 +384,35 @@ pub(crate) fn bake_sh_base_with_movers(
     #[cfg(test)]
     crate::live_bytes::phase("sum");
     drop(layers);
-    let bounce_one = (!movers.is_empty()).then(|| radiance.clone());
+    let lookup = MemoLookup::new(
+        movers,
+        caches.as_ref().map(|(_, volume)| volume),
+        ctx,
+        &layout,
+    );
+    let bounce_one = lookup.needs_radiance().then(|| radiance.clone());
     // TEMPORARY (mover-light-flow--probe-channel task 2, B7 patch trace):
     // no-ops unless `POSTRETRO_DEV_PATCH_DUMP` is set.
     crate::mover_probe_channel::dev_trace::dump_patches("static-one", patches.patches(), &radiance);
-    add_later_bounces(
+    let keep_from =
+        MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)
+            .filter(|_| lookup.needs_radiance());
+    let kept = add_later_bounces_keeping(
         &ctx.ray_ctx(),
         &patches,
         &mut radiance,
         bounce_fill,
+        keep_from,
         control,
     );
+    let tail = keep_from.and_then(|_| static_tail(&lookup.pending, bounce_fill, kept));
+    #[cfg(test)]
+    let _tail = tail.as_ref().map(|tail| {
+        tail.layers
+            .iter()
+            .map(|layer| crate::live_bytes::hold_vec("mover static later bounces", layer))
+            .collect::<Vec<_>>()
+    });
     crate::mover_probe_channel::dev_trace::dump_patches(
         "static-final",
         patches.patches(),
@@ -275,37 +448,52 @@ pub(crate) fn bake_sh_base_with_movers(
     ];
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
-    let posed = match &bounce_one {
-        None => Vec::new(),
-        Some(bounce_one) => bake_mover_bounce(
+    let (baked, poses) = if lookup.pending.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        let empty = PatchRadiance::zeroed(0);
+        bake_mover_bounce(
             ctx,
             &StaticBounce {
                 patches: &patch_cache.patches,
-                bounce_one,
+                bounce_one: bounce_one.as_ref().unwrap_or(&empty),
                 lights: &lights,
                 plan: &plan,
                 bounce_fill,
                 layout: &layout,
                 base: &section,
+                depth_tiles: &depth_tiles,
+                static_tail: tail.as_ref(),
             },
+            &lookup.pending,
             movers,
             control,
-        ),
+        )
     };
+    #[cfg(test)]
+    if !movers.is_empty() {
+        stage_events::record(stage_events::MOVER_BOUNCE_DONE);
+    }
+    #[cfg(test)]
+    drop(_tail);
+    drop(tail);
     drop(bounce_one);
     drop(patch_cache);
     if let Some((_, volume)) = &caches {
         volume.store(&mut section, &depth_tiles);
     }
+    let states = lookup.finish(movers, baked);
     #[cfg(test)]
     crate::live_bytes::phase("volume store");
-    depth_tiles.log(tile_cap);
     (
         ShBase {
             section,
             depth_tiles,
         },
-        posed,
+        MoverBounceOutcome {
+            movers: states,
+            poses,
+        },
     )
 }
 
@@ -344,6 +532,7 @@ pub(crate) mod stage_events {
     use std::cell::RefCell;
 
     pub(crate) const PATCH_CACHE_DROPPED: &str = "surface radiance patch cache dropped";
+    pub(crate) const MOVER_BOUNCE_DONE: &str = "mover probe channel bounce done";
 
     thread_local! {
         static EVENTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };

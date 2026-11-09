@@ -126,7 +126,9 @@ impl PresentHandle {
 pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.0;
 
 /// Full SH contribution weight — production default. Default value seeded into the Diagnostics panel slider on first open.
-pub const DEFAULT_INDIRECT_SCALE: f32 = 0.33;
+/// Shared with the compiler, which prices bake changes in display terms by it.
+pub const DEFAULT_INDIRECT_SCALE: f32 =
+    postretro_level_format::indirect_display::DEFAULT_INDIRECT_SCALE;
 
 /// Full dynamic baked-static-direct SH weight — production default. Seeded into
 /// the Diagnostics panel slider on first open.

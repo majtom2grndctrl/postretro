@@ -13,13 +13,14 @@ use super::sdf_lights::SdfLights;
 use super::sh_sample::{ShVolumeSampler, SlotRead};
 use crate::surface_materials::SurfaceMaterials;
 
-/// The renderer's production SH indirect weight, `DEFAULT_INDIRECT_SCALE`
-/// (`renderer_types.rs`), which all five SH surface consumers (forward, fluid,
-/// billboard, mesh and mover passes) multiply into SH indirect, base and delta
-/// alike. A capture at full weight would reflect
+/// The renderer's production SH indirect weight, shared with the renderer
+/// (`indirect_display::DEFAULT_INDIRECT_SCALE`), which all five SH surface
+/// consumers (forward, fluid, billboard, mesh and mover passes) multiply into
+/// SH indirect, base and delta alike. A capture at full weight would reflect
 /// bounce about 3× brighter than the room it mirrors; the diagnostics slider
 /// cannot reach a bake.
-pub(crate) const PRODUCTION_INDIRECT_WEIGHT: f32 = 0.33;
+pub(crate) const PRODUCTION_INDIRECT_WEIGHT: f32 =
+    postretro_level_format::indirect_display::DEFAULT_INDIRECT_SCALE;
 
 /// Shadow-ray start above a hit, along its face normal, so the receiving face
 /// never occludes its own sdf light; the chunk light list's receiver offset.
@@ -213,23 +214,6 @@ pub(crate) fn shade(albedo: Vec3, direct: Vec3, indirect: Vec3, emissive: Vec3) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The renderer constant is not reachable from a compiler dev-dependency,
-    /// so the parity test reads its definition from the renderer source.
-    #[test]
-    fn indirect_weight_matches_the_renderer_production_default() {
-        let source = include_str!("../../../renderer/src/render/renderer_types.rs");
-        let line = source
-            .lines()
-            .find(|line| line.contains("pub const DEFAULT_INDIRECT_SCALE: f32"))
-            .expect("renderer_types.rs defines DEFAULT_INDIRECT_SCALE");
-        let value: f32 = line
-            .split('=')
-            .nth(1)
-            .and_then(|rhs| rhs.trim().trim_end_matches(';').trim().parse().ok())
-            .expect("DEFAULT_INDIRECT_SCALE is a float literal");
-        assert_eq!(PRODUCTION_INDIRECT_WEIGHT, value);
-    }
 
     /// The forward pass adds no ambient term in production: its floor's
     /// default is 0. A non-zero default would add a term the capture lacks.

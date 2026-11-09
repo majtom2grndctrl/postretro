@@ -1,8 +1,8 @@
 // TEMPORARY dev-only diagnostics for B7 (mover-light-flow--probe-channel task
-// 2): a patch-seed salt for seed-spread runs, per-ray and per-patch dumps for
-// the data-path trace, and the posed gather's τ experiment. Every knob is a
-// no-op unless its env var is set. Plan task 12 deletes this file and its call
-// sites.
+// 2): a patch-seed salt for seed-spread runs and per-ray and per-patch dumps
+// for the data-path trace (the τ experiment became production in task 7).
+// Every knob is a no-op unless its env var is set. Plan task 12 deletes this
+// file and its call sites.
 // See: context/plans/in-progress/mover-light-flow--probe-channel/research.md (B7 investigation)
 
 use std::io::Write;
@@ -133,20 +133,4 @@ pub(crate) fn dump_patches(
     if let Ok(mut file) = file.lock() {
         let _ = file.write_all(out.as_bytes());
     }
-}
-
-/// Set (any value): the posed probe gather grows each posed brush by the
-/// tracer's τ, as the static tracer grows each triangle. B7's τ experiment.
-pub(crate) const POSED_TAU_VAR: &str = "POSTRETRO_DEV_POSED_TAU";
-
-/// τ in metres under [`POSED_TAU_VAR`], else 0.
-pub(crate) fn posed_tau() -> f64 {
-    static TAU: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *TAU.get_or_init(|| {
-        if std::env::var_os(POSED_TAU_VAR).is_some() {
-            f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS)
-        } else {
-            0.0
-        }
-    })
 }

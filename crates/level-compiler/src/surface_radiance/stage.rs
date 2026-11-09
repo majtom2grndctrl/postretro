@@ -14,9 +14,11 @@ use super::working_set::ShBaseHandoff;
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
 use crate::light_namespaces::StaticBakedLights;
+#[cfg(test)]
+use crate::mover_probe_channel::PosedBounce;
 use crate::mover_probe_channel::{
-    BounceMemo, MoverBounceJob, MoverBounceRequest, MoverBounceStates, PosedBounce, StaticBounce,
-    StaticTail, bake_mover_bounce,
+    BounceMemo, MoverBounceJob, MoverBounceRequest, MoverBounceStates, StaticBounce, StaticTail,
+    bake_mover_bounce,
 };
 use crate::sh_bake::{
     GatheredVolume, ProbeDepthTiles, ProbeGridLayout, RadianceSource, ShBakeCtx, ShConfig,
@@ -56,7 +58,9 @@ pub(crate) struct MoverBounceOutcome {
     /// One per production job, ascending by mover id: from the memo or
     /// baked.
     pub(crate) movers: Vec<MoverBounceStates>,
-    /// The dev switches' per-pose view.
+    /// Each pose's re-bake, when the request keeps them: bake row B8's
+    /// full re-bake.
+    #[cfg(test)]
     pub(crate) poses: Vec<PosedBounce>,
 }
 
@@ -298,7 +302,7 @@ pub(crate) fn bake_sh_base_with_movers(
         crate::live_bytes::phase("volume load");
         control.advance(total_units);
         let lookup = MemoLookup::new(movers, Some(volume), ctx, &layout);
-        let (baked, poses) = if lookup.pending.is_empty() {
+        let (baked, _kept_poses) = if lookup.pending.is_empty() {
             (Vec::new(), Vec::new())
         } else {
             let bounce_one = lookup.needs_radiance().then(|| {
@@ -365,7 +369,8 @@ pub(crate) fn bake_sh_base_with_movers(
             },
             MoverBounceOutcome {
                 movers: states,
-                poses,
+                #[cfg(test)]
+                poses: _kept_poses,
             },
         );
     }
@@ -391,9 +396,6 @@ pub(crate) fn bake_sh_base_with_movers(
         &layout,
     );
     let bounce_one = lookup.needs_radiance().then(|| radiance.clone());
-    // TEMPORARY (mover-light-flow--probe-channel task 2, B7 patch trace):
-    // no-ops unless `POSTRETRO_DEV_PATCH_DUMP` is set.
-    crate::mover_probe_channel::dev_trace::dump_patches("static-one", patches.patches(), &radiance);
     let keep_from =
         MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)
             .filter(|_| lookup.needs_radiance());
@@ -413,11 +415,6 @@ pub(crate) fn bake_sh_base_with_movers(
             .map(|layer| crate::live_bytes::hold_vec("mover static later bounces", layer))
             .collect::<Vec<_>>()
     });
-    crate::mover_probe_channel::dev_trace::dump_patches(
-        "static-final",
-        patches.patches(),
-        &radiance,
-    );
     #[cfg(test)]
     crate::live_bytes::phase("later bounces");
     let patch_cache = PatchCache { patches, radiance };
@@ -448,7 +445,7 @@ pub(crate) fn bake_sh_base_with_movers(
     ];
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
-    let (baked, poses) = if lookup.pending.is_empty() {
+    let (baked, _kept_poses) = if lookup.pending.is_empty() {
         (Vec::new(), Vec::new())
     } else {
         let empty = PatchRadiance::zeroed(0);
@@ -492,7 +489,8 @@ pub(crate) fn bake_sh_base_with_movers(
         },
         MoverBounceOutcome {
             movers: states,
-            poses,
+            #[cfg(test)]
+            poses: _kept_poses,
         },
     )
 }

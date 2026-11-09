@@ -577,13 +577,19 @@ fn parse_kinematic_mover(
 
 /// The mover's light ramp keys, `light_ramp_start` (default 0) and
 /// `light_ramp_end` (default 1): the travel window its light state ramps
-/// across. Each must be a finite number, with `0 <= start < end <= 1`.
+/// across. Each must be a finite number, with `0 <= start < end <= 1`; a
+/// blank key is absent.
 fn parse_kinematic_light_ramp(
     props: &HashMap<String, String>,
     name: &str,
 ) -> anyhow::Result<(f32, f32)> {
-    let start = parse_optional_finite_f32(props, "light_ramp_start", 0.0, "kinematic_mover", name)?;
-    let end = parse_optional_finite_f32(props, "light_ramp_end", 1.0, "kinematic_mover", name)?;
+    let key = |key: &str, default: f32| {
+        non_blank(props, key).map_or(Ok(default), |raw| {
+            parse_finite_f32(raw, key, "kinematic_mover", name)
+        })
+    };
+    let start = key("light_ramp_start", 0.0)?;
+    let end = key("light_ramp_end", 1.0)?;
     if !(0.0..end).contains(&start) || end > 1.0 {
         anyhow::bail!(
             "kinematic_mover `{name}` `light_ramp_start` and `light_ramp_end` must satisfy \
@@ -594,17 +600,17 @@ fn parse_kinematic_light_ramp(
 }
 
 /// The mover's `light_bounces` key: how many static bounces its poses
-/// re-bake, an integer of at least 0. Absent re-bakes every bounce the SH
-/// base bakes. A negative, fractional or non-numeric value fails the build,
-/// naming the mover.
+/// re-bake, an integer of at least 0. Absent or blank re-bakes every bounce
+/// the SH base bakes. A negative, fractional or non-numeric value fails the
+/// build, naming the mover.
 fn parse_kinematic_light_bounces(
     props: &HashMap<String, String>,
     name: &str,
 ) -> anyhow::Result<Option<u32>> {
-    let Some(raw) = props.get("light_bounces") else {
+    let Some(raw) = non_blank(props, "light_bounces") else {
         return Ok(None);
     };
-    raw.trim().parse::<u32>().map(Some).map_err(|_| {
+    raw.parse::<u32>().map(Some).map_err(|_| {
         anyhow::anyhow!(
             "kinematic_mover `{name}` `light_bounces` must be an integer of at least 0, \
              got `{raw}`"
@@ -676,6 +682,10 @@ fn parse_optional_finite_f32(
     let Some(raw) = props.get(key) else {
         return Ok(default);
     };
+    parse_finite_f32(raw, key, classname, name)
+}
+
+fn parse_finite_f32(raw: &str, key: &str, classname: &str, name: &str) -> anyhow::Result<f32> {
     let parsed: f32 = raw.trim().parse().map_err(|e| {
         anyhow::anyhow!("{classname} `{name}` `{key}` value `{raw}` is not a valid float: {e}")
     })?;
@@ -683,6 +693,15 @@ fn parse_optional_finite_f32(
         anyhow::bail!("{classname} `{name}` `{key}` value `{raw}` is not finite");
     }
     Ok(parsed)
+}
+
+/// `key`'s trimmed value, `None` when absent or blank: a blank key is
+/// absent, so it takes the automatic default.
+fn non_blank<'a>(props: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    props
+        .get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 /// Default `switch` `use_reach` margin, in map units (~0.61 m at 1 unit = 1 inch).
@@ -6009,6 +6028,17 @@ mod tests {
         let absent = parse_inline_map(&kinematic_test_map("wp_b")).expect("no ramp keys");
         assert_eq!(absent.kinematic_movers[0].light_ramp_start, 0.0);
         assert_eq!(absent.kinematic_movers[0].light_ramp_end, 1.0);
+        // A blank key is absent: the identity ramp, or the other key's pair.
+        for keys in [
+            &[("light_ramp_start", ""), ("light_ramp_end", " ")][..],
+            &[("light_ramp_start", "0.6"), ("light_ramp_end", "")][..],
+        ] {
+            let map = parse_inline_map(&kinematic_test_map_with_keys(keys))
+                .unwrap_or_else(|err| panic!("blank ramp keys {keys:?} must parse: {err:#}"));
+            let mover = &map.kinematic_movers[0];
+            let start = keys[0].1.trim().parse::<f32>().unwrap_or(0.0);
+            assert_eq!((mover.light_ramp_start, mover.light_ramp_end), (start, 1.0));
+        }
 
         for (start, end) in [("0", "1"), ("0.6", "0.9")] {
             let map_text = kinematic_test_map_with_keys(&[
@@ -6055,6 +6085,14 @@ mod tests {
     fn kinematic_mover_light_bounces_is_absent_by_default_and_parses_integers() {
         let absent = parse_inline_map(&kinematic_test_map("wp_b")).expect("no bounce key");
         assert_eq!(absent.kinematic_movers[0].light_bounces, None);
+        for blank in ["", "  "] {
+            let map = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", blank)]))
+                .unwrap_or_else(|err| panic!("blank light_bounces must parse: {err:#}"));
+            assert_eq!(
+                map.kinematic_movers[0].light_bounces, None,
+                "a blank key is absent: every bounce"
+            );
+        }
         for (value, expected) in [("0", 0), ("2", 2), ("9", 9)] {
             let map = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", value)]))
                 .unwrap_or_else(|err| panic!("light_bounces {value} must parse: {err:#}"));
@@ -6064,7 +6102,7 @@ mod tests {
 
     #[test]
     fn kinematic_mover_rejects_negative_or_fractional_light_bounces_naming_the_mover() {
-        for value in ["-1", "1.5", "two", ""] {
+        for value in ["-1", "1.5", "two"] {
             let err = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", value)]))
                 .expect_err(&format!("light_bounces `{value}` must be rejected"));
             let message = format!("{err:#}");

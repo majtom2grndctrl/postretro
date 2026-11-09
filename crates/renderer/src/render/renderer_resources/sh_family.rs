@@ -258,9 +258,12 @@ pub(super) fn install_compose_family(
     let compose_delta_sh_volumes = geometry
         .delta_sh_volumes
         .filter(|_| sh_volume_resources.present);
+    let [mover_direct_table, mover_bounce_table] =
+        sh_volume_resources.mover_channel.whole_load_tables(device);
     let sh_compose = ShComposeResources::new(
         device,
         sh_volume_resources,
+        &mover_bounce_table,
         compose_sh_volume,
         compose_delta_sh_volumes,
         geometry.sh_volume.is_some(),
@@ -276,7 +279,7 @@ pub(super) fn install_compose_family(
         geometry.direct_sh_delta_volumes,
         geometry.animated_direct_sh_delta_volumes,
         promoted_static_weight_buffer,
-        sh_volume_resources.mover_channel.buffer(),
+        &mover_direct_table,
         &pipelines.direct_sh_compose,
         geometry.sh_volume.is_some(),
         &mut sh_allocation_ledger,

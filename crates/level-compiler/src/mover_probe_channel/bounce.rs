@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 use glam::Vec3;
 use rayon::prelude::*;
 
-use super::posed_scene::{PosedScene, PosedSurfaces};
+use super::posed_scene::PosedScene;
 use crate::bake_control::BakeControl;
 use crate::map_data::MapLight;
 use crate::sh_bake::{RaytracingCtx, bounce_hit, reflected_radiance, segment_clear};
@@ -48,9 +48,6 @@ pub(crate) fn light_terms<'a>(lights: &[&'a MapLight], plan: &LayerPlan) -> Vec<
 pub(crate) struct PosedRadiance {
     pub(crate) world: PatchRadiance,
     pub(crate) mover: PatchRadiance,
-    /// (static patch, light) pairs whose shadow segments may meet the pose,
-    /// so re-shaded.
-    pub(crate) reshaded_pairs: u64,
 }
 
 /// Bounce one with `scene` posed, from the static bounce one. A static
@@ -127,48 +124,42 @@ pub(crate) fn posed_bounce_one(
         }
     }
     let mut mover = PatchRadiance::zeroed(scene.patches.len());
-    if scene.surfaces == PosedSurfaces::Patches {
-        let lit: Vec<Vec3> = scene
-            .patches
-            .patches()
-            .par_chunks(PATCHES_PER_CHUNK)
-            .flat_map_iter(|chunk| {
-                let _permit = control.governor().enter();
-                chunk
-                    .iter()
-                    .map(|patch| {
-                        // The SH base's sum order: each layer in content
-                        // order, once per light sharing it.
-                        let mut sum = Vec3::ZERO;
-                        for term in terms {
-                            let radiance = shade_patch_side(
-                                ctx,
-                                patch,
-                                Side::Front,
-                                term.light,
-                                term.axis,
-                                term.early_out,
-                                posed_trace,
-                            )
-                            .unwrap_or(Vec3::ZERO);
-                            for _ in 0..term.occurrences {
-                                sum += radiance;
-                            }
+    let lit: Vec<Vec3> = scene
+        .patches
+        .patches()
+        .par_chunks(PATCHES_PER_CHUNK)
+        .flat_map_iter(|chunk| {
+            let _permit = control.governor().enter();
+            chunk
+                .iter()
+                .map(|patch| {
+                    // The SH base's sum order: each layer in content
+                    // order, once per light sharing it.
+                    let mut sum = Vec3::ZERO;
+                    for term in terms {
+                        let radiance = shade_patch_side(
+                            ctx,
+                            patch,
+                            Side::Front,
+                            term.light,
+                            term.axis,
+                            term.early_out,
+                            posed_trace,
+                        )
+                        .unwrap_or(Vec3::ZERO);
+                        for _ in 0..term.occurrences {
+                            sum += radiance;
                         }
-                        sum
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        for (patch, radiance) in lit.into_iter().enumerate() {
-            mover.add_side(patch as u32, Side::Front, radiance);
-        }
+                    }
+                    sum
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (patch, radiance) in lit.into_iter().enumerate() {
+        mover.add_side(patch as u32, Side::Front, radiance);
     }
-    PosedRadiance {
-        world,
-        mover,
-        reshaded_pairs: pairs.len() as u64,
-    }
+    PosedRadiance { world, mover }
 }
 
 /// What a later-bounce gather ray reads where it hits, over both patch
@@ -319,8 +310,7 @@ fn gather_patch(
         let hit = bounce_hit(ctx, patch.centroid, dir);
         let nearest = hit.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
         if let Some(posed) = scene.trace(patch.centroid, dir, nearest) {
-            if scene.surfaces == PosedSurfaces::Patches
-                && let Some(triangle) = posed.triangle
+            if let Some(triangle) = posed.triangle
                 && let Some((blend, side)) =
                     scene.patches.lookup_bilinear(triangle, posed.point, dir)
             {

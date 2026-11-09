@@ -28,7 +28,7 @@ use super::direct_memo::{DirectMemo, MemoPrefix, decode, encode};
 use super::lights::{ChannelLightSources, channel_lights};
 use super::posed_solid::{PosedMovers, box_brush};
 use super::section::{EmittedDirectEntries, MoverRamps, channel_section};
-use super::visibility::{InsideBrushRule, PosedOccluder, joint_soft_visibility};
+use super::visibility::{PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{AffinityReachInputs, AffinityReachPolicy};
 use crate::bake_control::BakeControl;
 use crate::bake_counters::counted;
@@ -383,10 +383,9 @@ fn production_q_is_the_joint_sample_surviving_fraction_at_every_gated_probe() {
     let gated = &bake.lights[0];
     assert_eq!(gated.light_index, 4);
 
-    let first = PosedOccluder::new(
-        Arc::clone(&poses.movers()[0].solids[Terminus::First.index()]),
-        InsideBrushRule::Dark,
-    );
+    let first = PosedOccluder::new(Arc::clone(
+        &poses.movers()[0].solids[Terminus::First.index()],
+    ));
     let ctx = world.ctx();
     let (mut checked, mut partial) = (0, 0);
     for entry in &gated.entries {
@@ -414,7 +413,7 @@ fn production_q_is_the_joint_sample_surviving_fraction_at_every_gated_probe() {
                 DEFAULT_AREA_SAMPLE_COUNT,
                 ProbeEarlyOut::Agreed,
                 |from, to| segment_clear(&ctx, from, to),
-                |from, to| first.blocks(point, from, to),
+                |from, to| first.blocks(from, to),
             );
             let expected = if joint.meets_mover() {
                 joint.surviving_byte()

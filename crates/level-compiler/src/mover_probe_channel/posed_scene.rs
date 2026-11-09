@@ -7,52 +7,31 @@ use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 
-use super::InsideBrushRule;
 use super::posed_solid::{PosedHit, PosedSolid};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{RAY_EPSILON, emitter_radius, hard_ray_target};
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::{AnalysedMover, BOX_SLACK_M, Terminus, segment_may_touch_box};
+use crate::mover_light_gate::{BOX_SLACK_M, Terminus, segment_may_touch_box};
 use crate::partition::Aabb;
 use crate::surface_radiance::{PatchCountExceeded, PatchSet};
-
-/// Whether posed sides become patches that reflect their albedo, or read
-/// black: the owner's lean (patches) and its A/B alternative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PosedSurfaces {
-    Patches,
-    Black,
-}
 
 /// The posed mover for the SH base: its solid, which every posed ray and
 /// shadow segment meets ([`PosedSolid`]), and a patch set over its sides.
 pub(crate) struct PosedScene {
-    pub(crate) mover_id: u32,
     pub(crate) terminus: Terminus,
-    pub(crate) label: String,
-    pub(crate) rule: InsideBrushRule,
-    pub(crate) surfaces: PosedSurfaces,
     solid: Arc<PosedSolid>,
     pub(crate) patches: PatchSet,
 }
 
 impl PosedScene {
-    /// `analysed` posed at `terminus` as `solid`, with patches over its
-    /// sides.
+    /// A mover posed at `terminus` as `solid`, with patches over its sides.
     pub(crate) fn new(
         solid: Arc<PosedSolid>,
-        analysed: &AnalysedMover,
         terminus: Terminus,
-        rule: InsideBrushRule,
-        surfaces: PosedSurfaces,
     ) -> Result<Self, PatchCountExceeded> {
         let patches = PatchSet::try_build(solid.geometry())?;
         Ok(Self {
-            mover_id: analysed.mover_id,
             terminus,
-            label: analysed.label.clone(),
-            rule,
-            surfaces,
             solid,
             patches,
         })
@@ -63,17 +42,12 @@ impl PosedScene {
         self.solid.geometry()
     }
 
-    /// Distance from `point` to the pose's bounds, zero inside them.
-    pub(crate) fn distance_to_bounds(&self, point: Vec3) -> f64 {
-        self.solid.distance_to_bounds(point)
-    }
-
     /// Whether the shadow segment touches a posed brush: the posed half of
     /// a patch's shadow ray, met as the static tracer meets a static brush
     /// ([`PosedSolid::segment_blocked`]). A patch buried in a posed brush
     /// starts in solid and goes dark.
     pub(crate) fn segment_blocked(&self, from: Vec3, to: Vec3) -> bool {
-        self.solid.segment_blocked(from, to, |_| false)
+        self.solid.segment_blocked(from, to)
     }
 
     /// The posed brushes `point` lies in or on, by index.

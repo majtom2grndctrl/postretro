@@ -9,15 +9,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::geometry::GeometryResult;
 use crate::map_data::{MapKinematicMover, MapLight};
 use crate::mover_light_gate::{MoverPoses, Terminus};
 use crate::mover_probe_channel::{
-    BounceBlocks, DepthReservation, INSIDE_BRUSH_RULE, MoverBounceJob, MoverBounceRequest,
-    MoverBounceStates, MoverChannelCost, PosedMovers, PosedScene, PosedSurfaces, ProbeCells,
-    reserve_mover_tiles, sh_base_bounce_count,
+    BounceBlocks, DepthReservation, MoverBounceJob, MoverBounceRequest, MoverBounceStates,
+    MoverChannelCost, PosedMovers, PosedScene, ProbeCells, reserve_mover_tiles,
+    sh_base_bounce_count,
 };
 use crate::partition::BspTree;
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
@@ -25,8 +24,10 @@ use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
 /// What the bounce half reads before the SH gates.
 pub(super) struct BouncePlanInputs<'a> {
     pub(super) poses: &'a MoverPoses,
+    /// `poses`' analysed movers posed once for the whole compile: the
+    /// bounce scenes and the direct half's occluders share these solids.
+    pub(super) posed: &'a PosedMovers,
     pub(super) movers: &'a [MapKinematicMover],
-    pub(super) texture_names: &'a TextureNamesSection,
     pub(super) geometry: &'a GeometryResult,
     pub(super) tree: &'a BspTree,
     pub(super) exterior_leaves: &'a HashSet<usize>,
@@ -56,7 +57,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         inputs.exterior_leaves,
         inputs.probe_spacing,
     );
-    let posed = PosedMovers::resolve(inputs.poses, inputs.movers, inputs.texture_names)?;
+    let posed = inputs.posed;
     let mut jobs = Vec::new();
     if !layout.is_empty() {
         for (analysed, solids) in inputs.poses.analysed.iter().zip(posed.movers()) {
@@ -69,16 +70,11 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
             let scenes = Terminus::BOTH
                 .into_iter()
                 .map(|terminus| {
-                    PosedScene::new(
-                        Arc::clone(&solids.solids[terminus.index()]),
-                        analysed,
-                        terminus,
-                        INSIDE_BRUSH_RULE,
-                        PosedSurfaces::Patches,
+                    PosedScene::new(Arc::clone(&solids.solids[terminus.index()]), terminus).map_err(
+                        |error| {
+                            anyhow::anyhow!("kinematic_mover `{}` posed sides: {error}", mover.name)
+                        },
                     )
-                    .map_err(|error| {
-                        anyhow::anyhow!("kinematic_mover `{}` posed sides: {error}", mover.name)
-                    })
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             jobs.push(MoverBounceJob {
@@ -97,7 +93,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         inputs.bounce_fill,
         effective_tile_cap(inputs.tile_cap),
         inputs.direct_lights,
-        &posed,
+        posed,
     );
     if !jobs.is_empty() {
         log::info!(

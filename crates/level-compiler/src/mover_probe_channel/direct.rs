@@ -19,7 +19,7 @@ use rayon::prelude::*;
 
 use super::direct_memo::{DirectMemo, MemoPrefix};
 use super::posed_solid::PosedMovers;
-use super::visibility::{INSIDE_BRUSH_RULE, PosedOccluder, joint_soft_visibility};
+use super::visibility::{PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy,
     decompose_affinity_for_lights_with_policies,
@@ -89,7 +89,7 @@ pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightM
                 let bounds = solid.bounds();
                 let reached = bounds.is_valid()
                     && reach.is_none_or(|radius| sphere_touches_box(light.origin, radius, bounds));
-                reached.then(|| PosedOccluder::new(Arc::clone(solid), INSIDE_BRUSH_RULE))
+                reached.then(|| PosedOccluder::new(Arc::clone(solid)))
             });
             poses.iter().any(Option::is_some).then_some(LightMover {
                 mover_id: mover.mover_id,
@@ -382,7 +382,7 @@ pub(crate) fn bake_cell(
                     DEFAULT_AREA_SAMPLE_COUNT,
                     light.early_out,
                     |from, to| statics.clear(&scene.ctx, from, to),
-                    |from, to| occluder.blocks(point, from, to),
+                    |from, to| occluder.blocks(from, to),
                 );
                 if joint.meets_mover() {
                     visibility[mover][slot * MOVER_VISIBILITY_BYTES_PER_PROBE + terminus.index()] =

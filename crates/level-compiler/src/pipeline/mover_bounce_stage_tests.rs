@@ -14,7 +14,7 @@ use crate::fixture_pipeline::{FixturePipeline, fixture_path, load_map};
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::live_bytes::{Report, measured};
 use crate::mover_light_gate::MoverPoses;
-use crate::mover_probe_channel::MoverBounceRequest;
+use crate::mover_probe_channel::{MoverBounceRequest, PosedMovers};
 use crate::sh_bake::{ShBakeCtx, ShConfig, animation_table_bytes, static_light_refs};
 use crate::surface_radiance::{
     DEFAULT_BOUNCE_FILL, MoverBounceOutcome, ShBase, bake_sh_base_with_movers, plan_sh_base,
@@ -78,10 +78,16 @@ fn plan_half(
                 .map(|entry| entry.light),
         )
         .collect();
+    let posed = PosedMovers::resolve(
+        poses,
+        &fixture.kinematic_movers,
+        &fixture.geometry.texture_names,
+    )
+    .expect("the fixture's movers pose");
     plan_bounce_half(BouncePlanInputs {
         poses,
+        posed: &posed,
         movers: &fixture.kinematic_movers,
-        texture_names: &fixture.geometry.texture_names,
         geometry: &fixture.geometry,
         tree: &fixture.tree,
         exterior_leaves: &fixture.exterior_leaves,

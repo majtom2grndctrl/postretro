@@ -204,3 +204,43 @@ fn a_drained_cluster_composes_the_channel_gate_and_only_the_movers_row() {
         assert_eq!(changed, 36 * 3, "t′ {t}: one probe's 6×6 RGB tile moves");
     }
 }
+
+/// Every cluster covering a pooled channel cell carries its id-57 row. A
+/// cluster whose dense rows cover one without it would leave the cell's
+/// payload unplaced, composing it ungated with nothing said, so the cluster
+/// is refused as malformed and installs nothing, as a chunk omitting a
+/// required dense member is.
+#[test]
+fn a_dense_row_without_its_pooled_cells_channel_row_refuses_the_cluster() {
+    let Some(GpuCtx { device, queue: raw }) =
+        bc_gpu_or_skip("a_dense_row_without_its_pooled_cells_channel_row_refuses_the_cluster")
+    else {
+        return;
+    };
+    // The direct payload streams with id 50's cells; this fixture's clusters
+    // carry no id-57 rows.
+    let mut section = channel();
+    section.direct_placement = MoverPayloadPlacement::Streamed;
+    section.visibility.clear();
+    section.own_tiles.clear();
+    let mut fixture =
+        UploadOrderSh::with_static_direct_compose_and_channel(&device, &raw, &section);
+    assert!(fixture.sh.mover_channel.pools_cell(0));
+    fixture.payload_fill = FILL;
+    let queue = UploadQueue::new(&device, raw, true);
+    let error = fixture
+        .drain_many(&device, &queue, &[0])
+        .expect_err("a dense row without its channel row is refused");
+    assert!(
+        matches!(
+            error,
+            ShResidencyDrainError::MalformedChunk {
+                cluster_id: 0,
+                reason: "MoverProbeChannel (id 57) cell is malformed or incomplete",
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(fixture.state.installed.is_empty(), "nothing installs");
+    assert_eq!(fixture.sh.mover_channel.pool_bytes(), (0, 0));
+}

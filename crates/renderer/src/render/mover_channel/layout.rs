@@ -337,8 +337,10 @@ pub(in crate::render) struct MoverChannelLayout {
     cells: Vec<CellPlan>,
     records: Vec<RecordPlan>,
     rows: MoverChannelRows,
-    /// Records the table leaves ungated: their delta family is disabled at
-    /// load.
+    /// Records the table leaves ungated: their delta family is absent or
+    /// disabled at load. An animated-baked record is ungated without id 45
+    /// even when it carries its own tile: Pass B gates by subtracting from
+    /// the term id 45 added, and with no id 45 that term was never added.
     ungated_records: usize,
 }
 

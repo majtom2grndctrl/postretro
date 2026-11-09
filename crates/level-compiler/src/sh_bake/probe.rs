@@ -101,9 +101,7 @@ pub(crate) fn bake_probe_direct_rgb(
         light_global_indices,
         early_outs,
         probe_index,
-        // TEMPORARY (mover-light-flow--probe-channel plan task 1): the dev
-        // pose switch; unset, this is `None` and the bake is today's.
-        crate::mover_probe_channel::dev_pose::posed_occluder(),
+        None,
     )
 }
 
@@ -184,7 +182,7 @@ pub(crate) fn probe_direct_joint_visibility(
         crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         early_out,
         |from, to| segment_clear(ctx, from, to),
-        |from, to| occluder.blocks(probe_pos, from, to),
+        |from, to| occluder.blocks(from, to),
     )
 }
 
@@ -274,22 +272,6 @@ fn bake_probe_rgb_along(
             RadianceSource::Patches(patches) => patches.sample(&ctx, probe_pos, *dir, far_sentinel),
             RadianceSource::Posed(posed) => posed.sample(&ctx, probe_pos, *dir, far_sentinel),
         };
-        // TEMPORARY (mover-light-flow--probe-channel task 2, B7 per-ray
-        // trace): a no-op unless `POSTRETRO_DEV_PROBE_RAY_DUMP` is set.
-        if !matches!(source, RadianceSource::Lights(_)) {
-            crate::mover_probe_channel::dev_trace::dump_ray(
-                if matches!(source, RadianceSource::Posed(_)) {
-                    "posed"
-                } else {
-                    "base"
-                },
-                probe_index,
-                ray_index,
-                *dir,
-                distance,
-                radiance,
-            );
-        }
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
         sum_d += distance;
         sum_d2 += distance * distance;

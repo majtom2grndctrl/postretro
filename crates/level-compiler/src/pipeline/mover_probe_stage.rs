@@ -19,7 +19,6 @@ use crate::delta_sections::PostBakeDeltaSections;
 use crate::governor::Governor;
 use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights};
 use crate::map_data::MapKinematicMover;
-use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
     BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
     MoverPayloadBars, MoverRamps, PosedMovers, ProbeCells, bake_direct, channel_lights,
@@ -32,7 +31,9 @@ use crate::texel_footprint::EmbeddedEmitters;
 
 /// What the direct half reads from the pipeline.
 pub(super) struct DirectHalfInputs<'a> {
-    pub(super) poses: &'a MoverPoses,
+    /// Every analysed mover posed at both termini, as the bounce half
+    /// posed them.
+    pub(super) posed: &'a PosedMovers,
     pub(super) movers: &'a [MapKinematicMover],
     pub(super) sh_ctx: &'a ShBakeCtx<'a>,
     pub(super) sh_config: &'a ShConfig,
@@ -66,7 +67,7 @@ pub(super) struct DirectHalf {
 /// mover its samples meet. `None` when no mover is analysed or the probe
 /// grid is empty: then no light needs gating, and no memo is read.
 pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<Option<DirectHalf>> {
-    if inputs.poses.analysed.is_empty() {
+    if inputs.posed.is_empty() {
         return Ok(None);
     }
     let layout = sh_bake::probe_grid_layout(inputs.sh_ctx, inputs.sh_config);
@@ -109,13 +110,8 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
             probe_spacing: inputs.sh_config.probe_spacing,
         },
     };
-    let posed = PosedMovers::resolve(
-        inputs.poses,
-        inputs.movers,
-        &inputs.sh_ctx.geometry.texture_names,
-    )?;
     let control = BakeControl::new(Arc::clone(inputs.governor), &StageProgress::indeterminate());
-    let bake = bake_direct(&posed, &lights, &scene, inputs.cache, &control)?;
+    let bake = bake_direct(inputs.posed, &lights, &scene, inputs.cache, &control)?;
     let bake_only =
         |namespace: MoverLightNamespace| namespace == MoverLightNamespace::BakeOnlyStaticLight;
     log::info!(

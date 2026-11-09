@@ -11,10 +11,6 @@ mod bounce;
 mod bounce_memo;
 mod cost;
 mod depth;
-pub(crate) mod dev_bounce;
-pub(crate) mod dev_floor;
-pub(crate) mod dev_pose;
-pub(crate) mod dev_trace;
 mod direct;
 mod direct_memo;
 mod domain;
@@ -37,8 +33,10 @@ mod raised_room_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use bake::PosedBounce;
 pub(crate) use bake::{
-    MoverBounceJob, MoverBounceRequest, PosedBounce, StaticBounce, StaticTail, bake_mover_bounce,
+    MoverBounceJob, MoverBounceRequest, StaticBounce, StaticTail, bake_mover_bounce,
     sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
@@ -54,10 +52,8 @@ pub(crate) use gather::PosedGather;
 #[cfg(test)]
 pub(crate) use gather::compact_slots;
 pub(crate) use lights::{ChannelLightSources, channel_lights};
-pub(crate) use posed_scene::{PosedScene, PosedSurfaces};
-pub(crate) use posed_solid::{PosedMovers, PosedSolid};
+pub(crate) use posed_scene::PosedScene;
+pub(crate) use posed_solid::PosedMovers;
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRamps, channel_section};
 pub(crate) use states::MoverBounceStates;
-pub(crate) use visibility::{
-    INSIDE_BRUSH_RULE, InsideBrushRule, JointVisibility, PosedOccluder, joint_soft_visibility,
-};
+pub(crate) use visibility::{JointVisibility, PosedOccluder, joint_soft_visibility};

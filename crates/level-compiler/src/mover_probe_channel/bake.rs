@@ -3,7 +3,7 @@
 // bounces past them, and the posed gather, from the SH base's patches.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
@@ -14,7 +14,6 @@ use super::posed_scene::PosedScene;
 use super::states::{ChangedProbe, MoverBounceStates, PoseStates, reduce_poses};
 use crate::bake_control::BakeControl;
 use crate::map_data::MapLight;
-use crate::mover_light_gate::Terminus;
 use crate::sh_bake::{ProbeDepthTiles, ProbeGridLayout, ShBakeCtx};
 use crate::surface_radiance::{
     LATER_BOUNCE_COUNT, LayerPlan, PatchRadiance, PatchReachIndex, PatchSet,
@@ -34,8 +33,7 @@ pub(crate) struct MoverBounceJob {
     /// count: later bounces past them are id 34's own. 0 bakes no bounce
     /// and traces only the poses' probe depth.
     pub(crate) bounces: u32,
-    /// The mover posed at each terminus, in terminus order. Production
-    /// poses both; the dev pose switch poses one and reduces nothing.
+    /// The mover posed at each terminus, in terminus order.
     pub(crate) scenes: Vec<PosedScene>,
 }
 
@@ -54,8 +52,9 @@ pub(crate) struct MoverBounceRequest {
     pub(crate) jobs: Vec<MoverBounceJob>,
     /// The PRL stores id 34 as f16, so the bar is exact equality.
     pub(crate) uncompressed: bool,
-    /// Dev only: keep every valid probe's posed tile, hand each pose back,
-    /// and reduce no mover.
+    /// Bake row B8's full re-bake (test only; production leaves both off):
+    /// keep every valid probe's posed tile, hand each pose back, and reduce
+    /// no mover.
     pub(crate) keep_every_tile: bool,
     pub(crate) keep_poses: bool,
     /// The tile range mover depth may fill: once the movers baked so far
@@ -65,6 +64,7 @@ pub(crate) struct MoverBounceRequest {
 }
 
 impl MoverBounceRequest {
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.jobs.is_empty()
     }
@@ -81,31 +81,16 @@ impl MoverBounceRequest {
     }
 }
 
-/// One pose's bounce and depth state, and what it cost: the dev switches'
-/// per-pose view.
+/// One pose's bounce and depth state, before its mover's two poses reduce.
 pub(crate) struct PosedBounce {
+    /// Which pose this is, for bake row B8's full re-bake.
+    #[cfg(test)]
     pub(crate) mover_id: u32,
-    pub(crate) terminus: Terminus,
-    pub(crate) label: String,
+    #[cfg(test)]
+    pub(crate) terminus: crate::mover_light_gate::Terminus,
     /// Valid probes that differ from id 34 or whose rays meet the pose,
     /// ascending by probe index.
     pub(crate) probes: Vec<PosedProbe>,
-    pub(crate) posed_patches: usize,
-    pub(crate) reshaded_pairs: u64,
-    /// Bounce one, later bounces, probe gather.
-    pub(crate) timings: [Duration; 3],
-}
-
-impl PosedBounce {
-    pub(crate) fn affected(&self) -> impl Iterator<Item = &PosedProbe> {
-        self.probes.iter().filter(|probe| probe.affected())
-    }
-
-    pub(crate) fn depth(&self) -> impl Iterator<Item = (u32, &[[u16; 2]])> {
-        self.probes
-            .iter()
-            .filter_map(|probe| probe.depth.as_deref().map(|tile| (probe.probe, tile)))
-    }
 }
 
 /// Id 34's later bounces from some index on, one front side per static
@@ -270,7 +255,6 @@ fn bake_pose(
     request: &MoverBounceRequest,
     control: &BakeControl,
 ) -> PosedBounce {
-    let start = Instant::now();
     let mut radiance = posed_bounce_one(
         ctx,
         inputs.patches,
@@ -280,12 +264,6 @@ fn bake_pose(
         scene,
         control,
     );
-    let bounce_one = start.elapsed();
-    // TEMPORARY (task 2, B7 patch trace): no-op unless
-    // `POSTRETRO_DEV_PATCH_DUMP` is set.
-    super::dev_trace::dump_patches("mover-one", scene.patches.patches(), &radiance.mover);
-    super::dev_trace::dump_patches("world-one", inputs.patches.patches(), &radiance.world);
-    let start = Instant::now();
     let tail = job
         .static_tail_from(inputs.bounce_fill)
         .and_then(|from| inputs.static_tail?.sum_from(from, inputs.patches.len()));
@@ -306,29 +284,21 @@ fn bake_pose(
         control,
     );
     drop(tail);
-    let later = start.elapsed();
-    super::dev_trace::dump_patches("mover-final", scene.patches.patches(), &radiance.mover);
-    super::dev_trace::dump_patches("world-final", inputs.patches.patches(), &radiance.world);
-    let start = Instant::now();
     let gather = PosedGather::new(inputs.patches, &radiance, scene);
     let probes = gather_posed_probes(
         sh_ctx,
         inputs.layout,
         &gather,
-        scene,
         inputs.base,
         request.uncompressed,
         request.keep_every_tile,
         control,
     );
-    let gathered = start.elapsed();
     PosedBounce {
-        mover_id: scene.mover_id,
+        #[cfg(test)]
+        mover_id: job.mover_id,
+        #[cfg(test)]
         terminus: scene.terminus,
-        label: scene.label.clone(),
         probes,
-        posed_patches: scene.patches.len(),
-        reshaded_pairs: radiance.reshaded_pairs,
-        timings: [bounce_one, later, gathered],
     }
 }

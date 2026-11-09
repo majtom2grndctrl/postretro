@@ -45,25 +45,6 @@ pub(crate) fn compact_tile(
     tile
 }
 
-/// Write `tile`'s RGB over compact slot `slot`, keeping the stored alpha:
-/// bounce tiles carry none.
-pub(crate) fn write_compact_rgb(
-    section: &mut OctahedralShVolumeSection,
-    slot: usize,
-    tile: &[OctahedralAtlasTexel],
-) {
-    let dim = section.tile_dimension as usize;
-    for y in 0..dim {
-        for x in 0..dim {
-            let at = texel_offset(section, slot, x, y);
-            for (c, bits) in tile[y * dim + x].rgba[..3].iter().enumerate() {
-                section.compact_atlas[at + 2 * c..at + 2 * c + 2]
-                    .copy_from_slice(&bits.to_le_bytes());
-            }
-        }
-    }
-}
-
 /// The largest absolute difference between two tiles over every texel and
 /// RGB channel, as the f16 values they store.
 pub(crate) fn max_abs_difference(a: &[OctahedralAtlasTexel], b: &[OctahedralAtlasTexel]) -> f32 {

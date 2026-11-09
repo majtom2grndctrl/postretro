@@ -741,6 +741,13 @@ fn run_after_parsing(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
     );
+    // Every analysed mover posed at both termini, once: the bounce half's
+    // scenes and the direct half's occluders share these solids.
+    let posed_movers = crate::mover_probe_channel::PosedMovers::resolve(
+        &mover_poses,
+        &map_data.kinematic_movers,
+        &geo_result.texture_names,
+    )?;
     // The probe channel's bounce half poses every analysed mover at both
     // termini now, so the SH base gate prices its scenes, its states and the
     // direct half's entries before any SH ray.
@@ -759,8 +766,8 @@ fn run_after_parsing(
             .collect();
         mover_bounce_stage::plan_bounce_half(mover_bounce_stage::BouncePlanInputs {
             poses: &mover_poses,
+            posed: &posed_movers,
             movers: &map_data.kinematic_movers,
-            texture_names: &geo_result.texture_names,
             geometry: &geo_result,
             tree: &runtime.cells.tree,
             exterior_leaves: &runtime.cells.exterior_cells,
@@ -892,27 +899,6 @@ fn run_after_parsing(
     // layer and a `_bounce_fill` edit re-shades none. The patch cache is
     // freed inside the bake; only id 34 and the probe depth tiles (id 59),
     // binned from the same gather rays, leave the stage.
-    // TEMPORARY (mover-light-flow--probe-channel plan tasks 1 and 2): the dev
-    // pose switch for the direct-SH and SH base bakes, and the bounce slice's
-    // measurement mode and dump; no-ops unless their env vars are set.
-    crate::mover_probe_channel::dev_pose::install(
-        &map_data.kinematic_movers,
-        &map_data.kinematic_waypoints,
-    )?;
-    let dev_bounce = crate::mover_probe_channel::dev_bounce::plan(
-        &map_data.kinematic_movers,
-        &map_data.kinematic_waypoints,
-        &geo_result.texture_names,
-        args.uncompressed_irradiance,
-    )?;
-    // The production bounce half, unless a dev bounce switch takes its place
-    // (its results are reported, and with the pose switch substituted into
-    // ids 34 and 59; id 57 then carries no bounce or depth block).
-    let mover_request = if dev_bounce.active() {
-        &dev_bounce.request
-    } else {
-        &bounce_plan.request
-    };
     let (
         surface_radiance::ShBase {
             section: mut sh_volume_section,
@@ -927,16 +913,8 @@ fn run_after_parsing(
         stage_cache.as_ref(),
         &sh_control,
         probe_depth_tile_cap,
-        mover_request,
+        &bounce_plan.request,
     );
-    if dev_bounce.active() {
-        crate::mover_probe_channel::dev_bounce::finish(
-            &dev_bounce,
-            &mover_bounce.poses,
-            &mut sh_volume_section,
-            &mut probe_depth_tiles,
-        )?;
-    }
     let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
         &mover_bounce.movers,
         &sh_volume_section,
@@ -947,7 +925,6 @@ fn run_after_parsing(
         != crate::mover_probe_channel::BounceBlocks::default())
     .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation));
     drop(mover_bounce);
-    drop(dev_bounce);
     drop(bounce_plan);
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
@@ -1076,10 +1053,7 @@ fn run_after_parsing(
         let raw = direct_sh_bake::bake_direct_sh_volume_cached_controlled(
             &inputs,
             &sh_config,
-            // TEMPORARY (plan task 1): a posed bake keys nothing of the pose.
-            stage_cache
-                .as_ref()
-                .filter(|_| !crate::mover_probe_channel::dev_pose::active()),
+            stage_cache.as_ref(),
             &direct_sh_control,
         );
         if args.verbose {
@@ -1126,10 +1100,7 @@ fn run_after_parsing(
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
             &sh_config,
-            // TEMPORARY (plan task 1): a posed bake keys nothing of the pose.
-            stage_cache
-                .as_ref()
-                .filter(|_| !crate::mover_probe_channel::dev_pose::active()),
+            stage_cache.as_ref(),
             &animated_direct_sh_control,
         )
     };
@@ -1194,11 +1165,7 @@ fn run_after_parsing(
                     &sh_config,
                     &alpha_lights_ns,
                     section,
-                    // TEMPORARY (plan task 1): a posed bake keys nothing of
-                    // the pose.
-                    stage_cache
-                        .as_ref()
-                        .filter(|_| !crate::mover_probe_channel::dev_pose::active()),
+                    stage_cache.as_ref(),
                     &direct_sh_delta_control,
                 )
             });
@@ -1270,7 +1237,7 @@ fn run_after_parsing(
     // of ids 34 and 35 as a grid-matched delta entry's do.
     let mover_direct_half =
         mover_probe_stage::bake_direct_half(mover_probe_stage::DirectHalfInputs {
-            poses: &mover_poses,
+            posed: &posed_movers,
             movers: &map_data.kinematic_movers,
             sh_ctx: &sh_ctx,
             sh_config: &sh_config,
@@ -1287,6 +1254,7 @@ fn run_after_parsing(
                 args.mover_payload_resident_bar,
             ),
         })?;
+    drop(posed_movers);
     let provisional_mover_channel = mover_direct_half
         .as_ref()
         .map(|half| half.provisional_section(&sh_volume_section))

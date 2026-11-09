@@ -12,12 +12,11 @@ use postretro_level_format::probe_depth_tiles::bordered_tile;
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 use rayon::prelude::*;
 
-use super::InsideBrushRule;
 use super::bounce::PosedRadiance;
 use super::domain::{
     BOUNCE_FLOOR_LEVELS, compact_tile, display_levels, max_abs_difference, round_trip_error,
 };
-use super::posed_scene::{PosedScene, PosedSurfaces};
+use super::posed_scene::PosedScene;
 use super::posed_solid::PosedHit;
 use crate::bake_control::BakeControl;
 use crate::sh_bake::{
@@ -96,8 +95,7 @@ impl<'a> PosedGather<'a> {
 
     /// One gather ray from the probe at `origin`: the nearer of the static
     /// hit and the pose's, and its radiance. A probe inside a posed brush
-    /// reads every ray at distance 0, and black under the dark rule, as its
-    /// direct does; under the skip rule it reads past the brushes holding it.
+    /// reads every ray at distance 0 and black, as its direct does.
     pub(crate) fn sample(
         &self,
         ctx: &RaytracingCtx<'_>,
@@ -110,17 +108,9 @@ impl<'a> PosedGather<'a> {
             MET.set(true);
         }
         let radiance = match &ray {
-            PosedRay::Inside => match self.scene.rule {
-                InsideBrushRule::Dark => Vec3::ZERO,
-                // The dev A/B only: the static world alone past the brush.
-                InsideBrushRule::SkipContainingBrush => match gather_hit(ctx, origin, dir) {
-                    None => Vec3::from(SKY_COLOR),
-                    Some(hit) => self.world.radiance_at(&hit, dir),
-                },
-            },
-            PosedRay::Posed(posed) => match (self.scene.surfaces, posed.triangle) {
-                (PosedSurfaces::Patches, Some(triangle)) => self
-                    .scene
+            PosedRay::Inside => Vec3::ZERO,
+            PosedRay::Posed(posed) => posed.triangle.map_or(Vec3::ZERO, |triangle| {
+                self.scene
                     .patches
                     .lookup_bilinear(triangle, posed.point, dir)
                     .map_or(Vec3::ZERO, |(blend, side)| {
@@ -129,9 +119,8 @@ impl<'a> PosedGather<'a> {
                             .iter()
                             .map(|&(patch, w)| self.radiance.mover.get(patch, side) * w)
                             .sum()
-                    }),
-                _ => Vec3::ZERO,
-            },
+                    })
+            }),
             PosedRay::Static(hit) => self.world.radiance_at(hit, dir),
             PosedRay::Sky => Vec3::from(SKY_COLOR),
         };
@@ -143,10 +132,6 @@ impl<'a> PosedGather<'a> {
 pub(crate) struct PosedProbe {
     /// Dense probe index.
     pub(crate) probe: u32,
-    /// Compact slot in id 34's valid-probe order.
-    pub(crate) slot: u32,
-    /// Distance from the pose's bounds, m.
-    pub(crate) distance_m: f32,
     /// Largest |S^b − id 34| over the tile, and the id-34 tile's own
     /// round-trip error: the bar.
     pub(crate) difference: f32,
@@ -204,13 +189,10 @@ pub(crate) fn compact_slots(layout: &ProbeGridLayout) -> Vec<u32> {
 /// RGBA16F intermediate) or whose rays meet the pose. A probe whose rays
 /// meet nothing posed and whose hits read their static radiance gathers
 /// id 34's bytes exactly, so it differs by zero.
-// The gather's inputs plus the comparison's.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn gather_posed_probes(
     sh_ctx: &ShBakeCtx<'_>,
     layout: &ProbeGridLayout,
     gather: &PosedGather<'_>,
-    scene: &PosedScene,
     base: &OctahedralShVolumeSection,
     uncompressed: bool,
     keep_every_tile: bool,
@@ -265,8 +247,6 @@ pub(crate) fn gather_posed_probes(
             };
             let mut probe = PosedProbe {
                 probe: i as u32,
-                slot: slots[i],
-                distance_m: scene.distance_to_bounds(position) as f32,
                 difference,
                 bar,
                 levels,

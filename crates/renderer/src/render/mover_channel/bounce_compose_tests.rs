@@ -249,6 +249,7 @@ fn build_scene(ctx: &GpuCtx, section: Option<&MoverProbeChannelSection>, streame
     let compose = ShComposeResources::new(
         device,
         &sh,
+        sh.mover_channel.bounce_buffer(),
         Some(&base),
         Some(&delta),
         true,
@@ -686,4 +687,87 @@ fn arrive(ctx: &GpuCtx, scene: &mut Scene, tile_bytes: &[u8]) {
         .expect("the cell writes");
     submit(ctx, &uploads, batch);
     scene.sh.mover_channel.commit_cluster(&writes);
+}
+
+/// A pooled table grows by replacement, and only the streamed passes rebind
+/// to the new one (`rebind_mover_channel`). The whole-load composes, which a
+/// streamed level never dispatches, bind an empty table in a pooled table's
+/// place, so once the pool grows nothing but in-flight work holds its old
+/// buffer. A table that never pools is the one they bind.
+#[test]
+fn the_whole_load_composes_never_bind_a_pooled_table_that_grows() {
+    let Some(ctx) = bc_gpu_or_skip("the_whole_load_composes_never_bind_a_pooled_table_that_grows")
+    else {
+        return;
+    };
+    let device = &ctx.device;
+    let bounces = [Bounce {
+        mover_id: 7,
+        masks: [0b101, 0b001],
+        s0: 0.5,
+        s1: 0.125,
+    }];
+    let resident = channel_section(&bounces, false);
+    let streamed = channel_section(&bounces, true);
+    let delta = indirect_delta();
+    let mut ledger = ShAllocationLedger::new();
+    let mut channel = |section, streaming| {
+        MoverChannelResources::new(
+            device,
+            &MoverChannelInputs {
+                section: Some(section),
+                entity_shadow_lights: &[],
+                static_terms: None,
+                animated_terms: None,
+                animation_descriptor_indices: &[],
+                indirect_descriptor_indices: &delta.animation_descriptor_indices,
+            },
+            streaming,
+            |_, _| None,
+            &mut ledger,
+        )
+        .expect("the fixture channel lays out")
+    };
+
+    let whole = channel(&resident, false);
+    let [direct, bounce] = whole.whole_load_tables(device);
+    assert!(direct == *whole.buffer() && bounce == *whole.bounce_buffer());
+
+    let mut pooled = channel(&streamed, true);
+    // An empty pool, so the first resident cell grows it.
+    pooled.size_streamed_pools(device, 0.0);
+    assert_eq!(pooled.pool_bytes(), (0, 0));
+    let first = pooled.bounce_buffer().clone();
+    let [direct, bounce] = pooled.whole_load_tables(device);
+    assert!(
+        direct == *pooled.buffer(),
+        "the resident direct block keeps its table"
+    );
+    assert!(bounce != first, "the pooled bounce table is not bound");
+
+    let tile_bytes: Vec<u8> = resident
+        .bounce_tiles
+        .iter()
+        .flat_map(|half| half.to_le_bytes())
+        .collect();
+    let rows = ClusterTermRows {
+        channel_rows: vec![MoverStreamedRow {
+            cell: 0,
+            direct: &[],
+            bounce: &tile_bytes,
+        }],
+        ..ClusterTermRows::default()
+    };
+    let uploads = UploadQueue::new(device, ctx.queue.clone(), true);
+    let writes = pooled
+        .stage_cluster(device, &uploads, &rows, &[0])
+        .expect("the row places");
+    assert!(writes.grew, "the empty pool grows for the cell");
+    let grown = pooled.bounce_buffer().clone();
+    assert!(grown != first, "growth replaces the table");
+    assert!(
+        bounce != first && bounce != grown,
+        "the whole-load composes hold neither the old table nor the grown one"
+    );
+    assert!(pooled.pool_bytes().0 >= tile_bytes.len() as u64);
 }

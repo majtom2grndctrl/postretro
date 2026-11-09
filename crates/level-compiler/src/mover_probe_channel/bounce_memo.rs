@@ -4,16 +4,15 @@
 
 use super::depth::DEPTH_SIGNIFICANCE_FLOOR;
 use super::domain::BOUNCE_FLOOR_LEVELS;
-use super::posed_scene::{PosedScene, PosedSurfaces};
+use super::posed_scene::PosedScene;
 use super::states::{self, MoverBounceStates};
-use super::visibility::InsideBrushRule;
 use crate::cache::{CacheKey, StageCache};
 use crate::sh_bake::ProbeGridLayout;
 use crate::surface_materials::stats::BounceMaterials;
 
 /// The memo's cache stage. Bump the version when the posed bake, the
 /// affected-probe rule, the depth selection or the payload changes; the
-/// floors, the inside-brush rule and the tracer epoch (through id 34's
+/// floors and the tracer epoch (through id 34's
 /// volume key) fold on their own.
 const STAGE_ID: &str = "mover_probe_bounce";
 /// 2: posed patch-direct segments meet the posed sides through the static
@@ -58,14 +57,6 @@ impl<'c> BounceMemo<'c> {
         hasher.update(&(scenes.len() as u32).to_le_bytes());
         for scene in scenes {
             hasher.update(&[scene.terminus.index() as u8]);
-            hasher.update(&[match scene.rule {
-                InsideBrushRule::SkipContainingBrush => 0,
-                InsideBrushRule::Dark => 1,
-            }]);
-            hasher.update(&[match scene.surfaces {
-                PosedSurfaces::Patches => 0,
-                PosedSurfaces::Black => 1,
-            }]);
             scene.fold_key(&mut hasher);
             match materials {
                 Some(materials) => {

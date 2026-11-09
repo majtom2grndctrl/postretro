@@ -485,6 +485,63 @@ fn an_own_tile_light_composes_as_an_id_41_backed_one() {
     }
 }
 
+/// An animated-baked record on a level with no id 45 (absent from the PRL,
+/// or disabled at load: either way the renderer has no animated family)
+/// composes ungated with a warning, whether it borrows its term or carries
+/// its own tile. Pass B gates an animated light by subtracting from the term
+/// id 45 added; with no id 45 that term was never added, so gating it would
+/// darken the other lights at the probe. The static light beside it still
+/// gates exactly as it does alone.
+#[test]
+fn an_animated_record_without_id_45_composes_ungated_and_subtracts_nothing() {
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+
+    let Some(ctx) = gpu("an_animated_record_without_id_45_composes_ungated_and_subtracts_nothing")
+    else {
+        return;
+    };
+    let animated = |light, own_tile| {
+        record(
+            0,
+            MoverLightNamespace::AnimatedBaked,
+            light,
+            own_tile,
+            0b1,
+            vec![(7, 0, 255)],
+        )
+    };
+    let with_animated = fixture_section(
+        [1, 1, 1],
+        &[
+            selected_light(&[7], false),
+            animated(0, None),
+            animated(1, Some(F16_QUARTER)),
+        ],
+    );
+    let static_only = fixture_section([1, 1, 1], &[selected_light(&[7], false)]);
+    let capture = LogCapture::start();
+    let mut scene = build_scene(&ctx, Some(&with_animated), false);
+    capture.assert_logged_once(
+        Level::Warn,
+        "2 gated term record(s) compose ungated: their DirectShDeltaVolumes (id 41) or \
+         AnimatedDirectShDeltaVolumes (id 45) is absent or disabled at load",
+    );
+    assert_eq!(scene.channel.layout().ungated_records(), 2);
+    assert_eq!(scene.channel.layout().record_count(), 1, "the static light");
+    let mut reference = build_scene(&ctx, Some(&static_only), false);
+    for t in [0.0, 0.5, 1.0] {
+        let states = [state(7, t)];
+        let (free, handoff) = compose(&ctx, &mut scene, frame(&states));
+        assert_eq!(
+            (free.clone(), handoff),
+            compose(&ctx, &mut reference, frame(&states)),
+            "t′ {t}: both atlases equal the static light gated alone"
+        );
+        assert_near(probe_0(&free), 0.25 * t, &format!("free at t′ {t}"));
+    }
+}
+
 /// B19's compose half: a direct-only section composes (every row above); a
 /// bounce-only one lays out no direct record and composes today's atlases.
 #[test]

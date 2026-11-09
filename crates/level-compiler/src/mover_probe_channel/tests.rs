@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 
+use super::posed_solid::PosedSolid;
 use super::posed_solid::box_brush;
-use super::{InsideBrushRule, JointVisibility, PosedOccluder, PosedSolid};
+use super::{JointVisibility, PosedOccluder};
 use crate::bvh_build::build_bvh;
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, RAY_EPSILON, area_sample_target};
@@ -20,8 +21,8 @@ use postretro_level_format::texture_names::TextureNamesSection;
 
 /// A mover holding `brushes` at its first waypoint, which sits at the
 /// origin; its last waypoint is 100 m up, out of every test's way.
-fn occluder(brushes: Vec<BrushVolume>, rule: InsideBrushRule) -> PosedOccluder {
-    PosedOccluder::new(Arc::new(solid(brushes)), rule)
+fn occluder(brushes: Vec<BrushVolume>) -> PosedOccluder {
+    PosedOccluder::new(Arc::new(solid(brushes)))
 }
 
 /// [`occluder`]'s mover posed at its first waypoint, as a solid.
@@ -149,10 +150,7 @@ fn scene(slab_min: DVec3, slab_max: DVec3) -> Scene {
     Scene {
         geometry: geometry_of(&[[[-0.1, 2.0, -50.0], [-0.1, 2.0, 50.0], [-50.0, 2.0, 0.0]]]),
         light: soft_light(DVec3::new(0.0, 3.0, 0.0), 0.6),
-        occluder: occluder(
-            vec![box_brush(slab_min, slab_max)],
-            InsideBrushRule::SkipContainingBrush,
-        ),
+        occluder: occluder(vec![box_brush(slab_min, slab_max)]),
     }
 }
 
@@ -212,7 +210,7 @@ fn brute_force_counts(scene: &Scene) -> (u32, u32) {
         let target = area_sample_target(PROBE, &scene.light, seed, i, DEFAULT_AREA_SAMPLE_COUNT);
         if crate::ray_traversal::segment_clear(&bvh, &primitives, &scene.geometry, origin, target) {
             static_clear += 1;
-            if !scene.occluder.blocks(PROBE, origin, target) {
+            if !scene.occluder.blocks(origin, target) {
                 posed_clear += 1;
             }
         }
@@ -280,24 +278,22 @@ fn a_sealing_pose_stores_zero_and_a_hard_light_stores_zero_or_one() {
     assert_eq!(hard_joint.surviving_byte(), 255);
 }
 
-// The inside-brush rule: a probe inside one of the mover's brushes is tested
-// without that brush, and the mover's other brush still occludes; under the
-// dark rule every segment starts in contact.
+// The inside-brush rule (owner, Stop 2): a probe inside one of the mover's
+// brushes reads dark. Every segment from it starts in solid, so even a light
+// no other brush hides is blocked.
 #[test]
-fn a_probe_inside_a_posed_brush_skips_only_the_brush_that_contains_it() {
+fn a_probe_inside_a_posed_brush_reads_dark_toward_every_light() {
     let containing = box_brush(DVec3::splat(-0.5), DVec3::splat(0.5));
     let beside = box_brush(DVec3::new(2.0, -1.0, -1.0), DVec3::new(2.2, 1.0, 1.0));
     let up = soft_light(DVec3::new(0.0, 3.0, 0.0), 0.0);
     let east = soft_light(DVec3::new(4.0, 0.0, 0.0), 0.0);
-    let blocked = |rule, light: &MapLight| {
-        let occluder = occluder(vec![containing.clone(), beside.clone()], rule);
+    let occluder = occluder(vec![containing, beside]);
+    let blocked = |light: &MapLight| {
         let from = PROBE + (light.origin.as_vec3() - PROBE).normalize() * RAY_EPSILON;
-        occluder.blocks(PROBE, from, light.origin.as_vec3())
+        occluder.blocks(from, light.origin.as_vec3())
     };
-    assert!(!blocked(InsideBrushRule::SkipContainingBrush, &up));
-    assert!(blocked(InsideBrushRule::SkipContainingBrush, &east));
-    assert!(blocked(InsideBrushRule::Dark, &up));
-    assert!(blocked(InsideBrushRule::Dark, &east));
+    assert!(blocked(&up), "no other brush hides the light above");
+    assert!(blocked(&east));
 }
 
 /// The unit box's six faces, two triangles each, built from its corners
@@ -370,7 +366,7 @@ fn a_posed_brush_meets_grazing_segments_and_rays_as_the_static_tracer_does() {
     let segment = |from: Vec3, to: Vec3| {
         let static_blocked =
             !crate::ray_traversal::segment_clear(&bvh, &primitives, &geometry, from, to);
-        let posed_blocked = posed.segment_blocked(from, to, |_| false);
+        let posed_blocked = posed.segment_blocked(from, to);
         assert_eq!(
             posed_blocked, static_blocked,
             "segment {from} → {to}: posed {posed_blocked}, static {static_blocked}"

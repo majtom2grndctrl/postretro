@@ -1034,3 +1034,34 @@ Before, every pair and record stored both termini. Each bounce entry grows 8 B a
 - No windowed run; nothing stalled.
 
 **For task 12 (docs).** `build_pipeline.md` §PRL section IDs and the brief's Wire format table need epoch 4: the bounce entry and depth record rows, their payload rows, and the new refusal. `rendering_pipeline.md` §4 needs the unchanged-terminus compose and live-tile base. `build_pipeline.md` §Build Cache needs `mover_probe_bounce` v3. K1 now runs `sync-proof` and `off` in one test.
+
+### Task 12a
+
+Code close-out, 2026-11-09. Only code changed; docs are task 12b's.
+
+**Dev switches removed.**
+- Compiler: `mover_probe_channel/dev_pose.rs` (`POSTRETRO_DEV_POSE_MOVER`), `dev_bounce.rs` (`POSTRETRO_DEV_MOVER_BOUNCE_MEASURE`, `_DUMP`), `dev_floor.rs` (`POSTRETRO_DEV_BOUNCE_FLOOR`, `_DEPTH_FLOOR`, `_PROBE_TABLE`) and `dev_trace.rs` (`POSTRETRO_DEV_PATCH_SEED_SALT`, `_PROBE_RAY_DUMP`, `_PATCH_DUMP`), and their call sites in `pipeline.rs` (pose install, bounce substitution, three cache bypasses), `sh_bake/probe.rs`, `surface_radiance/{patches,stage}.rs` and `mover_probe_channel/bake.rs`.
+- The A/B alternatives only the switches could select: `InsideBrushRule::SkipContainingBrush` (the enum is gone; `PosedOccluder` always takes the dark rule) and `PosedSurfaces::Black` (the enum is gone; posed sides are always patches). `PosedSolid::segment_blocked` lost its brush-skip parameter. The dev report's fields went too: `PosedBounce`'s label, patch count, re-shaded pairs and timings, `PosedProbe`'s distance and slot, `PosedScene`'s mover id and label, `PosedRadiance::reshaded_pairs`, `write_compact_rgb`.
+- The two memo keys no longer fold an inside-brush or surfaces byte. Old cache entries miss once; no PRL byte moves.
+- `keep_every_tile`, `keep_poses` and `PosedBounce` stay as bake row B8's test seam; `MoverBounceOutcome::poses` and `PosedBounce`'s mover and terminus are `#[cfg(test)]`.
+- Renderer: `POSTRETRO_DEV_MOVER_BACKFACE` in `kinematic_brush.rs`. `sh_sample.wgsl`'s three backface modes stay: none (billboards, skinned meshes), hard (forward, fluids) and smooth (movers) are all production. A new shader-contract test pins the mover pass to the smooth form on both SH reads with a non-zero floor.
+- `dev_pose_mover` and `park_dev_pose_mover` have no reference left. The FGD had no dev keys.
+
+**Task 10's rule pinned.** `compose_tests::an_animated_record_without_id_45_composes_ungated_and_subtracts_nothing`: with no animated family (absent or disabled at load), a borrowing and an own-tile animated-baked record both lay out ungated, the load warns once, and both atlases equal the static light gated alone at t′ 0, 0.5 and 1. The warning now reads "absent or disabled at load".
+
+**Task 9 leftovers.**
+- (a) The whole-load composes bind `MoverChannelResources::whole_load_tables`: the live table when it never pools, an empty table in a pooled one's place. A pooled table means a streamed level, whose whole-load composes never dispatch, so nothing but the streamed passes (which rebind) and in-flight work holds a grown pool's old buffer. `bounce_compose_tests::the_whole_load_composes_never_bind_a_pooled_table_that_grows` grows a pool from empty and checks buffer identity. No buffer counter exists on this wgpu configuration (wgpu's `counters` feature is off, and Metal has no allocator report), so the proof is identity, not a count. The SH ledger records only each table's fixed part at install; pool bytes reach the snapshot through `pool_bytes`, which reports the grown capacity alone.
+- (b) Precedent: a chunk omitting a required dense member is refused as malformed (`validate_isolated_atlases`). `stage_mover_channel` now refuses a cluster whose dense rows cover a pooled channel cell it carries no id-57 row for. `mover_channel_tests::a_dense_row_without_its_pooled_cells_channel_row_refuses_the_cluster`. The setpiece at bar 0 (`streamed_mover_channel`, C7, C10) installs every cluster under the guard.
+
+**One resolve.** `pipeline.rs` resolves `PosedMovers` once after `MoverPoses` and hands it to the bounce plan and the direct half; it drops after the direct half. The solids now live through the delta bakes, so `MoverChannelCost::solid_bytes` prices them into the SH gate's direct phase.
+
+**Blank light keys** (coordinator, 2026-11-09). A blank `light_bounces`, `light_ramp_start` or `light_ramp_end` now reads as absent, as other `kinematic_mover` keys do; negative, fractional, non-numeric and out-of-order values still fail naming the mover. Parse tests cover blank and whitespace values. `docs/level_design.md` lines 539 and 841 still say an empty value is an error (the coordinator's fix).
+
+**Clippy debt.** `postretro-model`'s two `type_complexity` errors (`clip_library.rs`, `gltf_loader.rs`, test code) take a local `Patch` type alias.
+
+**Proof** (PRLs built by this tree's release `prl-build`, `--no-cache`: closet, setpiece, setpiece at bar 0).
+- B8 passes with task 11c's numbers: closet 191 probes, setpiece 11,313 and 3,154. B17 passes against `t6/prl-build-parent`.
+- C10 (three PRLs), C7 (closet, setpiece bar 0) and the streamed residency row (setpiece default and bar 0) pass.
+- Capture, `--ignored`: C10 and D2 frames, K1, K2, K3 static and animated pass.
+- `cargo test --workspace` with `POSTRETRO_REQUIRE_GPU=1`: 15,423 passed, 0 failed, 120 ignored. With `--features postretro/capture`: 15,515 passed, 0 failed, 148 ignored.
+- `cargo clippy --workspace --all-targets -D warnings`, with and without capture: clean. `cargo fmt --check`: clean.

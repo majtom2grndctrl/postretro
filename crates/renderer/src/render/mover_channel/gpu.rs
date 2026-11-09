@@ -280,7 +280,7 @@ impl MoverChannelResources {
             }
             if layout.ungated_records() > 0 {
                 log::warn!(
-                    "[Renderer] MoverProbeChannel: {} gated term record(s) compose ungated: their DirectShDeltaVolumes (id 41) or AnimatedDirectShDeltaVolumes (id 45) is disabled at load",
+                    "[Renderer] MoverProbeChannel: {} gated term record(s) compose ungated: their DirectShDeltaVolumes (id 41) or AnimatedDirectShDeltaVolumes (id 45) is absent or disabled at load",
                     layout.ungated_records()
                 );
             }
@@ -390,6 +390,35 @@ impl MoverChannelResources {
     /// The bounce table the indirect compose binds at binding 25.
     pub(in crate::render) fn bounce_buffer(&self) -> &wgpu::Buffer {
         &self.bounce.buffer
+    }
+
+    /// The direct and bounce tables the whole-load composes bind. A pooled
+    /// table grows by replacement and only the streamed passes rebind to the
+    /// new one. A pooled table means a streamed level, whose whole-load
+    /// composes never dispatch, so they bind an empty table in its place
+    /// and never hold a grown pool's old buffer until unload.
+    pub(in crate::render) fn whole_load_tables(&self, device: &wgpu::Device) -> [wgpu::Buffer; 2] {
+        let direct = match self.direct.pool {
+            None => self.direct.buffer.clone(),
+            Some(_) => table_buffer(
+                device,
+                "Mover Probe Channel Table (whole-load, streamed level)",
+                MoverChannelLayout::empty(&[]).initial_words(),
+                0,
+            ),
+        };
+        let bounce = match self.bounce.pool {
+            None => self.bounce.buffer.clone(),
+            Some(_) => table_buffer(
+                device,
+                "Mover Probe Channel Bounce Table (whole-load, streamed level)",
+                BounceLayout::build(None, &[], &[], false)
+                    .expect("an empty bounce table lays out")
+                    .initial_words(),
+                0,
+            ),
+        };
+        [direct, bounce]
     }
 
     pub(in crate::render) fn rows(&self) -> &MoverChannelRows {

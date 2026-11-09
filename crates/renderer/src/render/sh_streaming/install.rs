@@ -30,6 +30,11 @@ pub(super) struct StagedInstall {
 }
 
 impl StagedInstall {
+    /// Dense index of every probe the chunk names.
+    pub(super) fn dense_probes(&self) -> impl Iterator<Item = u32> + '_ {
+        self.patches.probes.iter().map(|probe| probe.dense)
+    }
+
     /// Hold one more storage reference with the installed record.
     pub(super) fn push_sparse_reference(&mut self, key: (u32, u32)) {
         self.sparse_rows.push(key);

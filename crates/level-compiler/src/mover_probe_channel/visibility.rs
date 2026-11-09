@@ -20,44 +20,28 @@ use crate::texel_footprint::ProbeEarlyOut;
 /// jittered sample direction.
 const SUN_CONE_SLACK_RAD: f64 = 1.0e-3;
 
-/// What a valid probe inside a posed brush is tested against. Nothing lives
-/// inside a brush, so such a probe feeds only that mover's own faces, which
-/// sample with backface rejection off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InsideBrushRule {
-    /// Without the brushes that contain the probe; the mover's other
-    /// brushes still occlude.
-    SkipContainingBrush,
-    /// Every brush, so each segment starts in solid and the probe reads
-    /// dark.
-    Dark,
-}
-
-/// The rule the channel bakes take (owner, Stop 2): dark, so a valid probe
-/// inside a posed brush stores q = 0 for that pose. Skipping the containing
-/// brush leaks exterior direct light onto the mover's inner faces, since a
-/// probe inside a wall serves both of its faces.
-pub(crate) const INSIDE_BRUSH_RULE: InsideBrushRule = InsideBrushRule::Dark;
-
 /// One mover posed at one terminus as an occluder of probe-point shadow rays.
+/// A valid probe inside a posed brush reads dark (owner, Stop 2): every
+/// brush occludes, so each of its segments starts in solid and it stores
+/// q = 0 for that pose. Skipping the containing brush instead leaks exterior
+/// direct light onto the mover's inner faces, since a probe inside a wall
+/// serves both of its faces.
 #[derive(Clone)]
 pub(crate) struct PosedOccluder {
     solid: Arc<PosedSolid>,
-    rule: InsideBrushRule,
 }
 
 impl std::fmt::Debug for PosedOccluder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PosedOccluder")
             .field("pose", self.pose())
-            .field("rule", &self.rule)
             .finish_non_exhaustive()
     }
 }
 
 impl PosedOccluder {
-    pub(crate) fn new(solid: Arc<PosedSolid>, rule: InsideBrushRule) -> Self {
-        Self { solid, rule }
+    pub(crate) fn new(solid: Arc<PosedSolid>) -> Self {
+        Self { solid }
     }
 
     pub(crate) fn pose(&self) -> &Pose {
@@ -119,19 +103,11 @@ impl PosedOccluder {
         angle <= half_angle + (radius / distance).asin() + SUN_CONE_SLACK_RAD
     }
 
-    /// Whether the sample segment `from → to`, traced for a receiver at
-    /// `probe`, meets the pose: as the static tracer meets the same brushes
-    /// placed statically ([`PosedSolid::segment_blocked`]). Under the skip
-    /// rule the brushes holding `probe` are left out.
-    pub(crate) fn blocks(&self, probe: Vec3, from: Vec3, to: Vec3) -> bool {
-        match self.rule {
-            InsideBrushRule::Dark => self.solid.segment_blocked(from, to, |_| false),
-            InsideBrushRule::SkipContainingBrush => {
-                let containing = self.solid.containing(probe);
-                self.solid
-                    .segment_blocked(from, to, |brush| containing.contains(&brush))
-            }
-        }
+    /// Whether the sample segment `from → to` meets the pose: as the static
+    /// tracer meets the same brushes placed statically
+    /// ([`PosedSolid::segment_blocked`]).
+    pub(crate) fn blocks(&self, from: Vec3, to: Vec3) -> bool {
+        self.solid.segment_blocked(from, to)
     }
 }
 

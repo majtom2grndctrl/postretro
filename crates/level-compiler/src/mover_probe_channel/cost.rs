@@ -34,6 +34,9 @@ pub(crate) struct MoverChannelCost {
     /// Every posed scene's heap, held from the gate to the end of the SH
     /// base stage.
     pub(crate) scene_bytes: u64,
+    /// The posed solids' share of the scenes: resolved once for the
+    /// compile, they stay held through the direct half.
+    pub(crate) solid_bytes: u64,
     /// The most patches any one pose's sides carry.
     pub(crate) max_mover_patches: u64,
     /// Id 34's later bounces the bake keeps apart for movers whose
@@ -67,6 +70,7 @@ impl MoverChannelCost {
             movers: jobs.len() as u64,
             radiance_movers: jobs.iter().filter(|job| job.bounces > 0).count() as u64,
             scene_bytes: scenes().map(super::PosedScene::heap_bytes).sum(),
+            solid_bytes: movers.heap_bytes(),
             max_mover_patches: scenes()
                 .map(|scene| scene.patches.len() as u64)
                 .max()

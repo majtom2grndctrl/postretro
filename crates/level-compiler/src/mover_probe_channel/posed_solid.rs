@@ -32,15 +32,12 @@ pub(crate) struct PosedHit {
     pub(crate) triangle: Option<u32>,
 }
 
-/// One posed side's triangles, their bounds for the ray prefilter, and the
-/// brush they came from.
+/// One posed side's triangles and their bounds for the ray prefilter.
 struct PosedFace {
     bounds: Aabb,
     /// Index-buffer offsets of its triangles' first indices.
     first: u32,
     end: u32,
-    /// Index into the pose's brushes.
-    brush: usize,
 }
 
 /// The posed mover as the static tracer would see it placed: its brushes as
@@ -76,7 +73,6 @@ impl PosedSolid {
             faces: Vec::new(),
         };
         let mut face_index_ranges = Vec::new();
-        let mut face_brushes = Vec::new();
         for (index, (brush, posed)) in authored.iter().zip(&pose.brushes).enumerate() {
             let offset = posed.bounds.min - brush.aabb.min;
             for side in &brush.sides {
@@ -101,7 +97,6 @@ impl PosedSolid {
                     side.normal,
                     texture_index(texture_names, &side.texture),
                 );
-                face_brushes.push(index);
             }
         }
         let geometry = GeometryResult {
@@ -109,7 +104,7 @@ impl PosedSolid {
             texture_names: TextureNamesSection { names: Vec::new() },
             face_index_ranges,
         };
-        let faces = face_bounds(&geometry, &face_brushes);
+        let faces = face_bounds(&geometry);
         Self {
             pose,
             faces,
@@ -128,12 +123,6 @@ impl PosedSolid {
     /// The posed sides as geometry: what the bounce half's patches cover.
     pub(crate) fn geometry(&self) -> &GeometryResult {
         &self.geometry
-    }
-
-    /// Distance from `point` to the pose's bounds, zero inside them.
-    pub(crate) fn distance_to_bounds(&self, point: Vec3) -> f64 {
-        let point = point.as_dvec3();
-        point.distance(point.clamp(self.pose.bounds.min, self.pose.bounds.max))
     }
 
     /// The posed brushes `point` lies in or on, within the contact band, by
@@ -158,15 +147,14 @@ impl PosedSolid {
     /// Whether `point` lies inside a posed brush or on its surface, by the
     /// brushes' half-spaces alone: a ray lifted from there starts in solid.
     pub(crate) fn contains(&self, point: Vec3) -> bool {
-        self.contains_except(point.as_dvec3(), |_| false)
+        self.contains_point(point.as_dvec3())
     }
 
-    fn contains_except(&self, point: DVec3, skip: impl Fn(usize) -> bool) -> bool {
+    fn contains_point(&self, point: DVec3) -> bool {
         self.pose
             .brushes
             .iter()
-            .enumerate()
-            .any(|(index, brush)| !skip(index) && in_half_spaces(point, brush))
+            .any(|brush| in_half_spaces(point, brush))
     }
 
     /// Whether the unbounded ray from `origin` along `dir` can come near
@@ -233,14 +221,8 @@ impl PosedSolid {
     /// triangles, so the same lift, far bound, hit test, τ and grazing-ray
     /// rule. A segment whose lifted start lies inside a posed brush starts
     /// in solid and is blocked: the inside-brush rule, as
-    /// [`Self::nearest_hit`] reads such a ray at distance 0. `skip(brush)`
-    /// leaves that brush out, its half-spaces and its sides.
-    pub(crate) fn segment_blocked(
-        &self,
-        from: Vec3,
-        to: Vec3,
-        skip: impl Fn(usize) -> bool,
-    ) -> bool {
+    /// [`Self::nearest_hit`] reads such a ray at distance 0.
+    pub(crate) fn segment_blocked(&self, from: Vec3, to: Vec3) -> bool {
         let Some(segment) = ShadowSegment::new(from, to) else {
             return false;
         };
@@ -250,12 +232,11 @@ impl PosedSolid {
         if !ray_may_touch_box(o, d, reach, &self.pose.bounds) {
             return false;
         }
-        if self.contains_except(o, &skip) {
+        if self.contains_point(o) {
             return true;
         }
         self.faces.iter().any(|face| {
-            !skip(face.brush)
-                && ray_may_touch_box(o, d, reach, &face.bounds)
+            ray_may_touch_box(o, d, reach, &face.bounds)
                 && (face.first..face.end).step_by(3).any(|triangle| {
                     segment.meets(triangle_points(&self.geometry, triangle as usize))
                 })
@@ -357,6 +338,15 @@ impl PosedMovers {
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Heap bytes every posed solid holds.
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        self.0
+            .iter()
+            .flat_map(|mover| &mover.solids)
+            .map(|solid| solid.heap_bytes())
+            .sum()
+    }
 }
 
 /// Whether `point` lies inside `brush` or on its surface, with no band.
@@ -379,12 +369,11 @@ fn fold_aabb(hasher: &mut blake3::Hasher, bounds: &Aabb) {
 }
 
 /// Each posed side's triangle range, bounds and brush, in face order.
-fn face_bounds(geometry: &GeometryResult, brushes: &[usize]) -> Vec<PosedFace> {
+fn face_bounds(geometry: &GeometryResult) -> Vec<PosedFace> {
     geometry
         .face_index_ranges
         .iter()
-        .zip(brushes)
-        .map(|(range, &brush)| {
+        .map(|range| {
             let (first, end) = (range.index_offset, range.index_offset + range.index_count);
             let mut bounds = Aabb {
                 min: DVec3::splat(f64::INFINITY),
@@ -395,12 +384,7 @@ fn face_bounds(geometry: &GeometryResult, brushes: &[usize]) -> Vec<PosedFace> {
                 bounds.min = bounds.min.min(point.as_dvec3());
                 bounds.max = bounds.max.max(point.as_dvec3());
             }
-            PosedFace {
-                bounds,
-                first,
-                end,
-                brush,
-            }
+            PosedFace { bounds, first, end }
         })
         .filter(|face| face.first < face.end)
         .collect()

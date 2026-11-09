@@ -76,9 +76,6 @@ pub(crate) fn patch_seed_id(face: u32, cell: [i32; 2]) -> u64 {
     let mut z = u64::from(face).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ u64::from(cell[0] as u32).wrapping_mul(0xBF58_476D_1CE4_E5B9)
         ^ u64::from(cell[1] as u32).wrapping_mul(0x94D0_49BB_1331_11EB);
-    // TEMPORARY (mover-light-flow--probe-channel task 2, B7 seed spread):
-    // 0 unless `POSTRETRO_DEV_PATCH_SEED_SALT` is set. Task 12 deletes it.
-    z ^= crate::mover_probe_channel::dev_trace::patch_seed_salt();
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)

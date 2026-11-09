@@ -174,6 +174,7 @@ impl ShComposeResources {
     pub fn new(
         device: &wgpu::Device,
         sh: &ShVolumeResources,
+        mover_bounce: &wgpu::Buffer,
         sh_section: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
         delta: Option<&DeltaShVolumesSection>,
         sh_section_present: bool,
@@ -301,7 +302,7 @@ impl ShComposeResources {
             delta_compaction_meta_bytes: storage.compaction_metadata.allocation.byte_len,
             affinity_offsets_bytes: storage.affinity_offsets.allocation.byte_len,
             affinity_lights_bytes: storage.affinity_lights.allocation.byte_len,
-            animation_descriptor_indices_bytes: sh.mover_channel.bounce_buffer().size() as usize,
+            animation_descriptor_indices_bytes: mover_bounce.size() as usize,
         };
         #[cfg(feature = "dev-tools")]
         footprint.log("SH compose @group(1)");
@@ -433,7 +434,7 @@ impl ShComposeResources {
             },
             wgpu::BindGroupEntry {
                 binding: BIND_MOVER_BOUNCE,
-                resource: sh.mover_channel.bounce_buffer().as_entire_binding(),
+                resource: mover_bounce.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_PROBE_INDIRECTION,

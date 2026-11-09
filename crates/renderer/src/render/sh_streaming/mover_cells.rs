@@ -46,6 +46,24 @@ impl ShResidencyState {
                 .map_err(|error| refuse(&error))?,
             None => Vec::new(),
         };
+        // Every cluster covering a pooled cell carries its id-57 row. A dense
+        // row without it would leave the cell's payload unplaced, and the
+        // cell would compose ungated with nothing said; refuse the cluster,
+        // as a chunk omitting a required dense member is refused.
+        let mut dense_cells = staged
+            .dense_probes()
+            .map(|dense| self.affinity_row_for_dense(dense))
+            .collect::<Result<Vec<_>, _>>()?;
+        dense_cells.sort_unstable();
+        dense_cells.dedup();
+        if let Some(cell) = dense_cells.into_iter().find(|&cell| {
+            gpu.sh.mover_channel.pools_cell(cell)
+                && !channel_rows.iter().any(|row| row.cell == cell)
+        }) {
+            return Err(refuse(&format!(
+                "dense row of affinity cell {cell} arrives without its MoverProbeChannel (id 57) row"
+            )));
+        }
         let mut first_cells = Vec::new();
         for row in &channel_rows {
             if !gpu.sh.mover_channel.pools_cell(row.cell) {

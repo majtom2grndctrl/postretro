@@ -10,7 +10,6 @@ use postretro_level_format::octahedral::{
 };
 
 use super::direct::{ChannelLight, DirectEntry, DirectScene, LightMover, ProbeCells};
-use super::visibility::{INSIDE_BRUSH_RULE, InsideBrushRule};
 use crate::bake_content_keys::{fold_occluding_geometry, fold_probe_grid_layout};
 use crate::cache::{CacheKey, StageCache};
 use crate::direct_sh_bake::DIRECT_SH_STAGE_VERSION;
@@ -40,10 +39,6 @@ impl MemoPrefix {
         hasher.update(&DIRECT_SH_STAGE_VERSION.to_le_bytes());
         hasher.update(&DEFAULT_IRRADIANCE_TILE_DIMENSION.to_le_bytes());
         hasher.update(&DEFAULT_IRRADIANCE_TILE_BORDER.to_le_bytes());
-        hasher.update(&[match INSIDE_BRUSH_RULE {
-            InsideBrushRule::SkipContainingBrush => 0,
-            InsideBrushRule::Dark => 1,
-        }]);
 
         fold_occluding_geometry(&mut hasher, scene.ctx.geometry);
         hasher.update(&crate::sdf_bake::solidity_bytes(scene.reach.tree));

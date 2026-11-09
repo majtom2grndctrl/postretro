@@ -60,8 +60,8 @@ pub(crate) struct ShBaseWorkingSetProjection {
     /// accumulated states and the posed scenes; zero with no mover.
     pub(crate) mover_bounce_phase_bytes: u64,
     /// The direct half after the patch cache drops: id 34, the movers'
-    /// states and blocks, and the direct entries with the sections built
-    /// from them.
+    /// states and blocks, the posed solids, and the direct entries with the
+    /// sections built from them.
     pub(crate) mover_direct_phase_bytes: u64,
     pub(crate) estimated_peak_bytes: u64,
     pub(crate) budget_bytes: u64,
@@ -110,8 +110,11 @@ impl ShBaseWorkingSetProjection {
         let resolve = self.layer_phase_bytes + self.section_bytes + states;
         let warm_tail = resident + bounce_one + kept + self.bounce_buffer_bytes;
         self.mover_bounce_phase_bytes = cold.max(resolve).max(warm_tail).max(pose);
-        self.mover_direct_phase_bytes =
-            self.resident_bytes + self.section_bytes + 2 * states + 2 * cost.direct_entry_bytes;
+        self.mover_direct_phase_bytes = self.resident_bytes
+            + self.section_bytes
+            + 2 * states
+            + 2 * cost.direct_entry_bytes
+            + cost.solid_bytes;
         self.estimated_peak_bytes = [
             self.gate_phase_bytes,
             self.layer_phase_bytes,

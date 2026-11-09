@@ -147,28 +147,11 @@ pub(crate) fn composed_shader_source() -> &'static str {
 }
 
 fn shader_source(cube_array_supported: bool) -> std::borrow::Cow<'static, str> {
-    let source = if cube_array_supported {
+    if cube_array_supported {
         std::borrow::Cow::Borrowed(SHADER_SOURCE)
     } else {
         std::borrow::Cow::Owned(crate::render::strip_point_shadow_cube(SHADER_SOURCE))
-    };
-    // TEMPORARY (mover-light-flow--probe-channel task 2, inside-brush A/B):
-    // `POSTRETRO_DEV_MOVER_BACKFACE` swaps the mover fragments' smooth,
-    // floored backface weight, direct and indirect, for A/B captures: `none`
-    // for no backface weight (the pre-Stop-2 contract), anything else for the
-    // hard `max(dot, 0)` form. Unset, the source is unchanged and the
-    // production smooth form ships. Task 12 deletes it.
-    if let Some(mode) = std::env::var_os("POSTRETRO_DEV_MOVER_BACKFACE") {
-        let replacement = if mode == "none" {
-            ", SH_BACKFACE_NONE, sh_grid.probe_occlusion"
-        } else {
-            ", SH_BACKFACE_HARD, sh_grid.probe_occlusion"
-        };
-        let flipped = source.replace(", SH_BACKFACE_SMOOTH, sh_grid.probe_occlusion", replacement);
-        debug_assert_ne!(flipped, *source, "both SH calls take the dev backface form");
-        return std::borrow::Cow::Owned(flipped);
     }
-    source
 }
 
 fn build_instance_entry(model: glam::Mat4) -> [u8; INSTANCE_ENTRY_SIZE] {
@@ -1410,6 +1393,28 @@ mod tests {
         assert_eq!(no_cube_groups, [0, 4, 2, 0, 4]);
         assert_eq!(no_cube_total, 10);
         assert!(no_cube_total <= 16);
+    }
+
+    // Mover fragments weigh probes behind them with the smooth, floored
+    // backface form on both SH reads, and that form never weighs a probe 0
+    // (ip-372 lever 5; owner ruling, mover-light-flow--probe-channel).
+    #[test]
+    fn mover_sh_reads_take_the_smooth_floored_backface_weight() {
+        let source = composed_shader_source();
+        let smooth_calls = source
+            .matches(", SH_BACKFACE_SMOOTH, sh_grid.probe_occlusion")
+            .count();
+        assert_eq!(smooth_calls, 2, "direct and indirect SH reads");
+        for other in ["SH_BACKFACE_HARD, sh_grid", "SH_BACKFACE_NONE, sh_grid"] {
+            assert!(!source.contains(other), "mover pass passes {other}");
+        }
+        let floor = source
+            .lines()
+            .find_map(|line| line.strip_prefix("const SH_BACKFACE_SMOOTH_FLOOR: f32 = "))
+            .and_then(|rest| rest.trim_end_matches(';').parse::<f32>().ok())
+            .expect("smooth backface floor constant");
+        assert!(floor > 0.0, "the smooth form's floor stays non-zero");
+        assert!(source.contains("return wrap * wrap + SH_BACKFACE_SMOOTH_FLOOR;"));
     }
 
     #[test]

@@ -18,3 +18,6 @@ Packaging notes (PostRetro):
 * Base color only: the normal map and the KHR_materials_specular factor were
   dropped (the engine reads the diffuse slot alone), and the diffuse map was
   downsized from 2048 to 1024 px.
+* Hit zones stripped: the converter zones only the head and legs, and a ray
+  that misses every capsule misses the model, so the torso would be
+  unhittable. Without zones, hits land on the descriptor's authored hitbox.

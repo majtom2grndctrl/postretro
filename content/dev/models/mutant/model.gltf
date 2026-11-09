@@ -104,8 +104,7 @@
 				"poseMask": [
 					"lowerBody",
 					"legL"
-				],
-				"hitZone": "leg"
+				]
 			}
 		},
 		{
@@ -133,8 +132,7 @@
 				"poseMask": [
 					"lowerBody",
 					"legL"
-				],
-				"hitZone": "leg"
+				]
 			}
 		},
 		{
@@ -233,8 +231,7 @@
 				"poseMask": [
 					"lowerBody",
 					"legR"
-				],
-				"hitZone": "leg"
+				]
 			}
 		},
 		{
@@ -262,8 +259,7 @@
 				"poseMask": [
 					"lowerBody",
 					"legR"
-				],
-				"hitZone": "leg"
+				]
 			}
 		},
 		{
@@ -383,8 +379,7 @@
 				0.061026155948638916
 			],
 			"extras": {
-				"poseMask": "upperBody",
-				"hitZone": "head"
+				"poseMask": "upperBody"
 			}
 		},
 		{

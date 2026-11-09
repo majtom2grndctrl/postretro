@@ -23,14 +23,12 @@ const SLAM_RANGE = 3.5;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// The slam plays the brute's swipe, whose strike lands about 1.2 s in, so the
-// windup ends there and the cycle runs the clip's 2,700 ms. That is longer than
-// the slam's 1,800 ms cooldown, so a successful commit leaves the counter-driven
-// rotation able to fire on its next visit instead of permanently observing
-// cooldown.
-const SLAM_WINDUP_MS = 1200;
+// The committed slam cycle is 1,850 ms, longer than the slam's 1,800 ms
+// cooldown. A successful commit therefore leaves the counter-driven rotation
+// able to fire on its next visit instead of permanently observing cooldown.
+const SLAM_WINDUP_MS = 250;
 const SLAM_COMMIT_MS = 150;
-const SLAM_RECOVER_MS = 1350;
+const SLAM_RECOVER_MS = 1450;
 
 /**
  * The reference enemy exercises the full recursive statechart path:
@@ -79,8 +77,10 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           crossfadeMs: 80,
           interrupt: "snap",
         },
+        // The punch's strike lands about 250 ms in, with the slam's commit.
+        // Stances replace this cycle with `smash` and `swipe`.
         attack_slam: {
-          clip: "swipe",
+          clip: "punch",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",

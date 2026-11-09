@@ -18,11 +18,10 @@ local JAB_RANGE = 2
 local SLAM_RANGE = 3.5
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
--- The slam plays the brute's swipe, whose strike lands about 1.2 s in. The
--- 2,700 ms phase cycle runs the clip and is longer than slam's 1,800 ms cooldown.
-local SLAM_WINDUP_MS = 1200
+local SLAM_WINDUP_MS = 250
 local SLAM_COMMIT_MS = 150
-local SLAM_RECOVER_MS = 1350
+-- The 1,850 ms phase cycle is longer than slam's 1,800 ms cooldown.
+local SLAM_RECOVER_MS = 1450
 
 M.referenceEnemyEntity = defineEntity({
   canonicalName = M.REFERENCE_ENEMY_CLASSNAME,
@@ -62,8 +61,10 @@ M.referenceEnemyEntity = defineEntity({
           crossfadeMs = 80,
           interrupt = "snap",
         },
+        -- The punch's strike lands about 250 ms in, with the slam's commit.
+        -- Stances replace this cycle with `smash` and `swipe`.
         attack_slam = {
-          clip = "swipe",
+          clip = "punch",
           loop = false,
           crossfadeMs = 80,
           interrupt = "snap",

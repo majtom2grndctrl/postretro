@@ -487,13 +487,13 @@ fn assert_fixture_targets_hittable(app: &crate::App) {
             if tag == "coop_dummy" {
                 let mesh = registry.get_component::<MeshComponent>(target).unwrap();
                 assert_eq!(mesh.model, "models/mutant/model.gltf");
-                store
+                let model = store
                     .get_by_name(&mesh.model)
                     .expect("the actual brute model must load during CPU installation");
+                assert!(model.joint_zones.iter().all(Option::is_none));
+                assert!(model.derived_bound.is_none());
             }
-            // Regression: a dummy with no authored hitbox let pistol torso rays
-            // miss. The brute zones its head and legs only, so the torso is
-            // still the authored box.
+            // Regression: the unzoned dummy had no authored hitbox, so pistol torso rays missed.
             let torso = registry
                 .get_component::<Transform>(target)
                 .unwrap()

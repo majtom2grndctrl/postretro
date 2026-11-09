@@ -2645,7 +2645,9 @@ mod tests {
             ]);
             json["meshes"][0]["primitives"][0]["material"] = serde_json::json!(0);
         }
-        let patches: [(&str, fn(&mut serde_json::Value)); 4] = [
+        /// A named edit that breaks the glTF document.
+        type Patch = (&'static str, fn(&mut serde_json::Value));
+        let patches: [Patch; 4] = [
             ("POSITION index past the accessors", |json| {
                 json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] =
                     serde_json::json!(99);

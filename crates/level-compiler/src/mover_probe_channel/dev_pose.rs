@@ -5,11 +5,12 @@
 // format or compose code. Plan task 12 deletes this file and its call sites.
 // See: context/plans/in-progress/mover-light-flow--probe-channel/plan.md (tasks 1, 2)
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, bail};
+use postretro_level_format::texture_names::TextureNamesSection;
 
-use super::{INSIDE_BRUSH_RULE, InsideBrushRule, PosedOccluder, PosedSurfaces};
+use super::{INSIDE_BRUSH_RULE, InsideBrushRule, PosedOccluder, PosedSolid, PosedSurfaces};
 use crate::map_data::{MapKinematicMover, MapKinematicWaypoint};
 use crate::mover_light_gate::{MoverPoses, Terminus};
 
@@ -96,7 +97,7 @@ pub(crate) fn install(
     let mover = poses
         .mover(mover_id)
         .with_context(|| format!("{ENV_VAR}: mover `{name}` has no analysable termini"))?;
-    let pose = mover.pose(terminus).clone();
+    let pose = mover.pose(terminus);
     log::warn!(
         "[MoverLight] DEV {ENV_VAR}: SH base (id 34, id 59) and direct SH (ids 35, 41, 45) \
          bake `{name}` posed at its {} waypoint `{}` ({rule:?}); direct-SH cache bypassed. \
@@ -104,7 +105,13 @@ pub(crate) fn install(
         terminus.label(),
         pose.waypoint,
     );
+    let map_mover = movers
+        .iter()
+        .find(|mover| mover.mover_id == mover_id)
+        .expect("found by name above");
+    // The direct bakes only occlude, so the sides need no texture index.
+    let solid = PosedSolid::new(map_mover, pose, &TextureNamesSection { names: Vec::new() });
     // One pipeline per prl-build process; a second install keeps the first.
-    let _ = POSED.set(PosedOccluder::new(pose, rule));
+    let _ = POSED.set(PosedOccluder::new(Arc::new(solid), rule));
     Ok(())
 }

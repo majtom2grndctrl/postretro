@@ -27,8 +27,7 @@ pub(crate) use probes::{ProbeScene, gate_probes};
 pub(crate) use report::{log_rows, log_side_counts};
 pub(crate) use rows::MoverTexels;
 pub(crate) use segment::{
-    BOX_SLACK_M, boxes_may_touch, point_touches_brush, segment_may_touch_box,
-    segment_touches_brush_within, sphere_touches_box,
+    BOX_SLACK_M, boxes_may_touch, point_touches_brush, segment_may_touch_box, sphere_touches_box,
 };
 pub(crate) use side_count::side_counts;
 pub(crate) use summary::{LIGHTMAP_FAMILY, MoverLightSummary};

@@ -1,43 +1,31 @@
+use std::sync::Arc;
+
 use glam::{DVec3, Vec3};
 
-use super::{InsideBrushRule, JointVisibility, PosedOccluder};
+use super::posed_solid::box_brush;
+use super::{InsideBrushRule, JointVisibility, PosedOccluder, PosedSolid};
 use crate::bvh_build::build_bvh;
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, RAY_EPSILON, area_sample_target};
 use crate::map_data::{
-    BrushPlane, BrushVolume, FalloffModel, KinematicMoveMode, LightType, MapKinematicMover,
+    BrushVolume, FalloffModel, KinematicMoveMode, LightType, MapKinematicMover,
     MapKinematicWaypoint, MapLight, ShadowType,
 };
 use crate::mover_light_gate::{MoverPoses, Terminus};
-use crate::partition::Aabb;
 use crate::sh_bake::{RaytracingCtx, soft_visibility_seed};
 use crate::sh_bake::{bake_probe_direct_rgb_posed, probe_direct_joint_visibility};
 use crate::texel_footprint::ProbeEarlyOut;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
-fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
-    let planes = [
-        (DVec3::X, max.x),
-        (DVec3::NEG_X, -min.x),
-        (DVec3::Y, max.y),
-        (DVec3::NEG_Y, -min.y),
-        (DVec3::Z, max.z),
-        (DVec3::NEG_Z, -min.z),
-    ];
-    BrushVolume {
-        planes: planes
-            .into_iter()
-            .map(|(normal, distance)| BrushPlane { normal, distance })
-            .collect(),
-        sides: Vec::new(),
-        aabb: Aabb { min, max },
-    }
-}
-
 /// A mover holding `brushes` at its first waypoint, which sits at the
 /// origin; its last waypoint is 100 m up, out of every test's way.
 fn occluder(brushes: Vec<BrushVolume>, rule: InsideBrushRule) -> PosedOccluder {
+    PosedOccluder::new(Arc::new(solid(brushes)), rule)
+}
+
+/// [`occluder`]'s mover posed at its first waypoint, as a solid.
+fn solid(brushes: Vec<BrushVolume>) -> PosedSolid {
     let mover = MapKinematicMover {
         mover_id: 0,
         name: "mover".to_string(),
@@ -80,9 +68,9 @@ fn occluder(brushes: Vec<BrushVolume>, rule: InsideBrushRule) -> PosedOccluder {
         next: next.to_string(),
         origin,
     });
-    let poses = MoverPoses::resolve(&[mover], &waypoints);
-    let pose = poses.mover(0).expect("posed").pose(Terminus::First).clone();
-    PosedOccluder::new(pose, rule)
+    let poses = MoverPoses::resolve(std::slice::from_ref(&mover), &waypoints);
+    let pose = poses.mover(0).expect("posed").pose(Terminus::First);
+    PosedSolid::new(&mover, pose, &TextureNamesSection { names: Vec::new() })
 }
 
 fn soft_light(origin: DVec3, light_size: f32) -> MapLight {
@@ -310,4 +298,134 @@ fn a_probe_inside_a_posed_brush_skips_only_the_brush_that_contains_it() {
     assert!(blocked(InsideBrushRule::SkipContainingBrush, &east));
     assert!(blocked(InsideBrushRule::Dark, &up));
     assert!(blocked(InsideBrushRule::Dark, &east));
+}
+
+/// The unit box's six faces, two triangles each, built from its corners
+/// rather than from brush sides: the box as a static brush the tracer meets.
+fn static_unit_box() -> GeometryResult {
+    let corner = |x: u8, y: u8, z: u8| [f32::from(x), f32::from(y), f32::from(z)];
+    let quads = [
+        [
+            corner(1, 0, 0),
+            corner(1, 1, 0),
+            corner(1, 1, 1),
+            corner(1, 0, 1),
+        ],
+        [
+            corner(0, 0, 0),
+            corner(0, 0, 1),
+            corner(0, 1, 1),
+            corner(0, 1, 0),
+        ],
+        [
+            corner(0, 1, 0),
+            corner(0, 1, 1),
+            corner(1, 1, 1),
+            corner(1, 1, 0),
+        ],
+        [
+            corner(0, 0, 0),
+            corner(1, 0, 0),
+            corner(1, 0, 1),
+            corner(0, 0, 1),
+        ],
+        [
+            corner(0, 0, 1),
+            corner(1, 0, 1),
+            corner(1, 1, 1),
+            corner(0, 1, 1),
+        ],
+        [
+            corner(0, 0, 0),
+            corner(0, 1, 0),
+            corner(1, 1, 0),
+            corner(1, 0, 0),
+        ],
+    ];
+    let triangles: Vec<[[f32; 3]; 3]> = quads
+        .iter()
+        .flat_map(|[a, b, c, d]| [[*a, *b, *c], [*a, *c, *d]])
+        .collect();
+    geometry_of(&triangles)
+}
+
+// The one posed-occluder predicate: a posed brush meets shadow segments and
+// gather rays exactly as the static tracer meets the same brush placed
+// statically, with τ = 0.5 mm and its grazing-ray rule. A segment or ray
+// passing 0.3 mm outside a face's edge is blocked, 0.7 mm outside is clear,
+// and one running parallel to a face 0.3 mm off it is blocked only where it
+// crosses another face's plane within τ. Growing the posed planes by τ would
+// block the parallel segment that crosses no such plane.
+#[test]
+fn a_posed_brush_meets_grazing_segments_and_rays_as_the_static_tracer_does() {
+    let posed = solid(vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    let geometry = static_unit_box();
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("bvh");
+    let ctx = RaytracingCtx {
+        bounce_materials: None,
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+    };
+    let segment = |from: Vec3, to: Vec3| {
+        let static_blocked =
+            !crate::ray_traversal::segment_clear(&bvh, &primitives, &geometry, from, to);
+        let posed_blocked = posed.segment_blocked(from, to, |_| false);
+        assert_eq!(
+            posed_blocked, static_blocked,
+            "segment {from} → {to}: posed {posed_blocked}, static {static_blocked}"
+        );
+        posed_blocked
+    };
+    let ray = |origin: Vec3, dir: Vec3| {
+        let static_hit = crate::sh_bake::gather_hit(&ctx, origin, dir).map(|hit| hit.distance);
+        let posed_hit = posed
+            .nearest_hit(origin, dir, f32::INFINITY)
+            .map(|hit| hit.distance);
+        match (static_hit, posed_hit) {
+            (None, None) => None,
+            (Some(a), Some(b)) => {
+                assert!(
+                    (a - b).abs() <= 1.0e-6,
+                    "ray {origin} along {dir}: posed hit {b}, static {a}"
+                );
+                Some(b)
+            }
+            _ => panic!("ray {origin} along {dir}: posed {posed_hit:?}, static {static_hit:?}"),
+        }
+    };
+    const GRAZE: f32 = 3.0e-4;
+    const MISS: f32 = 7.0e-4;
+
+    // Down past the +x face, crossing the top and bottom planes just
+    // outside their edges.
+    let down = |x: f32| (Vec3::new(x, 2.0, 0.5), Vec3::new(x, -1.0, 0.5));
+    let (from, to) = down(1.0 + GRAZE);
+    assert!(segment(from, to), "0.3 mm outside the edge is within τ");
+    assert!(ray(from, Vec3::NEG_Y).is_some());
+    let (from, to) = down(1.0 + MISS);
+    assert!(!segment(from, to), "0.7 mm outside the edge is past τ");
+    assert!(ray(from, Vec3::NEG_Y).is_none());
+
+    // Obliquely past the corner edge x = 1, z = 1, crossing each side's
+    // plane 0.3 mm outside the other side.
+    let corner = Vec3::new(1.0 + GRAZE * 0.5, 0.5, 1.0 + GRAZE * 0.5);
+    let across = Vec3::new(1.0, 0.0, -1.0).normalize();
+    assert!(segment(corner - across * 2.0, corner + across * 2.0));
+
+    // Parallel to the top face, 0.3 mm above it: inside the face's
+    // footprint it crosses no plane and is clear; across the whole box it
+    // crosses the ±x side planes within τ of their top edges.
+    let above = 1.0 + GRAZE;
+    assert!(!segment(
+        Vec3::new(0.2, above, 0.5),
+        Vec3::new(0.8, above, 0.5)
+    ));
+    assert!(segment(
+        Vec3::new(-1.0, above, 0.5),
+        Vec3::new(2.0, above, 0.5)
+    ));
+    let hit = ray(Vec3::new(-1.0, above, 0.5), Vec3::X).expect("the −x side within τ");
+    assert!((hit - (1.0 - RAY_EPSILON)).abs() <= 1.0e-5, "hit at {hit}");
+    assert!(ray(Vec3::new(0.2, above, 0.5), Vec3::Y).is_none());
 }

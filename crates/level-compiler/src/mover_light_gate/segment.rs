@@ -43,28 +43,14 @@ pub(crate) fn point_inside_brush(point: DVec3, brush: &PosedBrush) -> bool {
 /// grazing an edge, running flush along a face, or starting or ending inside
 /// or on it. Covered means dark, so every contact counts.
 pub(crate) fn segment_touches_brush(start: DVec3, end: DVec3, brush: &PosedBrush) -> bool {
-    segment_touches_brush_within(start, end, brush, CONTACT_TOLERANCE_M)
-}
-
-/// [`segment_touches_brush`] with each face grown by `band`, under
-/// [`BOX_SLACK_M`], in place of the contact band. The box prefilter still
-/// clamps first: at half the slack, past an edge sharper than 60° the grown
-/// reach stops at the slack.
-pub(crate) fn segment_touches_brush_within(
-    start: DVec3,
-    end: DVec3,
-    brush: &PosedBrush,
-    band: f64,
-) -> bool {
-    debug_assert!(band < BOX_SLACK_M);
     if !segment_may_touch_box(start, end, &brush.bounds) {
         return false;
     }
     // Clip the segment's parameter range to each grown half-space in turn.
     let (mut enter, mut exit) = (0.0_f64, 1.0_f64);
     for &(normal, distance) in &brush.planes {
-        let from = normal.dot(start) - distance - band;
-        let to = normal.dot(end) - distance - band;
+        let from = normal.dot(start) - distance - CONTACT_TOLERANCE_M;
+        let to = normal.dot(end) - distance - CONTACT_TOLERANCE_M;
         if from > 0.0 && to > 0.0 {
             return false;
         }

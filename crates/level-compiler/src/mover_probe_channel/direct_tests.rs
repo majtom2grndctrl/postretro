@@ -5,6 +5,7 @@
 // the per-light memo and worker-count determinism.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
@@ -25,6 +26,7 @@ use super::direct::{
 };
 use super::direct_memo::{DirectMemo, MemoPrefix, decode, encode};
 use super::lights::{ChannelLightSources, channel_lights};
+use super::posed_solid::{PosedMovers, box_brush};
 use super::section::{EmittedDirectEntries, MoverRamps, channel_section};
 use super::visibility::{InsideBrushRule, PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{AffinityReachInputs, AffinityReachPolicy};
@@ -35,7 +37,7 @@ use crate::cache::StageCache;
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
 use crate::map_data::{
-    BrushPlane, BrushVolume, FalloffModel, KinematicMoveMode, LightType, MapKinematicMover,
+    BrushVolume, FalloffModel, KinematicMoveMode, LightType, MapKinematicMover,
     MapKinematicWaypoint, MapLight, ShadowType,
 };
 use crate::mover_light_gate::{MoverPoses, Terminus};
@@ -45,25 +47,6 @@ use crate::sh_bake::{
     incident_radiance_at_point, probe_grid_layout, segment_clear, soft_visibility_seed, vec3_from,
 };
 use crate::texel_footprint::ProbeEarlyOut;
-
-fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
-    let planes = [
-        (DVec3::X, max.x),
-        (DVec3::NEG_X, -min.x),
-        (DVec3::Y, max.y),
-        (DVec3::NEG_Y, -min.y),
-        (DVec3::Z, max.z),
-        (DVec3::NEG_Z, -min.z),
-    ];
-    BrushVolume {
-        planes: planes
-            .into_iter()
-            .map(|(normal, distance)| BrushPlane { normal, distance })
-            .collect(),
-        sides: Vec::new(),
-        aabb: Aabb { min, max },
-    }
-}
 
 /// Mover `id`, holding `brushes` at its first waypoint, the origin; its path
 /// is [`waypoints`]'.
@@ -312,7 +295,7 @@ impl World {
             .expect("a probe at that point")
     }
 
-    fn bake(&self, poses: &MoverPoses, lights: &[ChannelLight<'_>]) -> MoverDirectBake {
+    fn bake(&self, poses: &PosedMovers, lights: &[ChannelLight<'_>]) -> MoverDirectBake {
         let vertices = self.vertices();
         bake_direct(
             poses,
@@ -337,7 +320,7 @@ fn static_light(light: &MapLight, index: u32) -> ChannelLight<'_> {
     }
 }
 
-fn poses_of(movers: &[MapKinematicMover]) -> MoverPoses {
+fn poses_of(movers: &[MapKinematicMover]) -> PosedMovers {
     let waypoints: Vec<MapKinematicWaypoint> = movers
         .iter()
         .flat_map(|mover| {
@@ -351,7 +334,14 @@ fn poses_of(movers: &[MapKinematicMover]) -> MoverPoses {
             )
         })
         .collect();
-    MoverPoses::resolve(movers, &waypoints)
+    posed(movers, &waypoints)
+}
+
+/// `movers` posed along `waypoints` as solids.
+fn posed(movers: &[MapKinematicMover], waypoints: &[MapKinematicWaypoint]) -> PosedMovers {
+    let poses = MoverPoses::resolve(movers, waypoints);
+    PosedMovers::resolve(&poses, movers, &TextureNamesSection { names: Vec::new() })
+        .expect("every analysed mover is a map mover")
 }
 
 /// The probe's entry payload for `mover`: `(q₀, q₁)` and the probe's own tile.
@@ -394,7 +384,7 @@ fn production_q_is_the_joint_sample_surviving_fraction_at_every_gated_probe() {
     assert_eq!(gated.light_index, 4);
 
     let first = PosedOccluder::new(
-        poses.mover(0).unwrap().pose(Terminus::First).clone(),
+        Arc::clone(&poses.movers()[0].solids[Terminus::First.index()]),
         InsideBrushRule::Dark,
     );
     let ctx = world.ctx();
@@ -516,7 +506,7 @@ fn a_blocked_sun_stores_q_below_one_and_a_spinner_stores_no_entry() {
         true,
     );
     let poses = poses_of(&[spinner]);
-    assert!(poses.analysed.is_empty());
+    assert!(poses.is_empty());
     let bake = world.bake(&poses, &[static_light(&sun, 0)]);
     assert!(bake.lights.is_empty());
 }
@@ -1180,7 +1170,7 @@ fn the_memo_serves_a_warm_bake_without_tracing_and_keys_on_occlusion_only() {
     }
 
     let memo = DirectMemo::new(&cache, MemoPrefix::new(&scene));
-    let key = |memo: &DirectMemo<'_>, light: &ChannelLight<'_>, poses: &MoverPoses| {
+    let key = |memo: &DirectMemo<'_>, light: &ChannelLight<'_>, poses: &PosedMovers| {
         memo.key(light, &light_movers(&light.baked, poses))
             .as_filename()
     };
@@ -1216,7 +1206,7 @@ fn the_memo_serves_a_warm_bake_without_tracing_and_keys_on_occlusion_only() {
     assert_eq!(key(&memo, &lights[0], &with_far), base);
     let mut moved_waypoints = waypoints(0, DVec3::new(0.0, 3.0, 0.0)).to_vec();
     moved_waypoints.extend(waypoints(7, DVec3::X * 40.0));
-    let moved = MoverPoses::resolve(&[slab_mover()], &moved_waypoints);
+    let moved = posed(&[slab_mover()], &moved_waypoints);
     assert_ne!(key(&memo, &lights[0], &moved), base);
     assert_eq!(
         key(&memo, &lights[1], &moved),

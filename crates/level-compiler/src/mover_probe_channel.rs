@@ -21,6 +21,7 @@ mod domain;
 mod gather;
 mod lights;
 mod posed_scene;
+mod posed_solid;
 mod section;
 mod states;
 mod visibility;
@@ -54,6 +55,7 @@ pub(crate) use gather::PosedGather;
 pub(crate) use gather::compact_slots;
 pub(crate) use lights::{ChannelLightSources, channel_lights};
 pub(crate) use posed_scene::{PosedScene, PosedSurfaces};
+pub(crate) use posed_solid::{PosedMovers, PosedSolid};
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRamps, channel_section};
 pub(crate) use states::MoverBounceStates;
 pub(crate) use visibility::{

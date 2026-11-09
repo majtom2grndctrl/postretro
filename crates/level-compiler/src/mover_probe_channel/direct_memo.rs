@@ -16,14 +16,14 @@ use crate::cache::{CacheKey, StageCache};
 use crate::direct_sh_bake::DIRECT_SH_STAGE_VERSION;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, fold_soft_visibility_constants};
 use crate::mover_light_gate::{Terminus, gate_key_hasher};
-use crate::partition::Aabb;
 
 /// The memo's cache stage. Bump the version when the q bake, its own-tile
 /// assembly or the payload changes; the gate epoch, tracer epoch, soft-
 /// visibility constants and id 35's stage version fold on their own.
 const STAGE_ID: &str = "mover_probe_direct";
-/// 2: posed shadow segments meet a face within the static tracer's τ.
-const STAGE_VERSION: u32 = 2;
+/// 3: posed shadow segments meet the posed sides through the static
+/// tracer's own segment test ([`super::posed_solid::PosedSolid`]).
+const STAGE_VERSION: u32 = 3;
 
 /// What every light's key shares: the occluding world, the probe grid and
 /// the reach decomposition's inputs. Only occlusion enters: vertex
@@ -78,7 +78,7 @@ impl<'c> DirectMemo<'c> {
     /// The prefix, then the light as its section bakes it (namespace, seed
     /// axis, early-out, reach policy, the whole light) and each mover it may
     /// meet: its id and, per terminus, whether the light's reach touches the
-    /// pose and the posed brushes where it does. A mover the light cannot
+    /// pose and its posed solid where it does. A mover the light cannot
     /// meet is absent, so moving one mover re-bakes only the lights reaching
     /// its old or new pose. The light index is not folded: the payload never
     /// names it.
@@ -103,19 +103,7 @@ impl<'c> DirectMemo<'c> {
                     continue;
                 };
                 hasher.update(&[1]);
-                let pose = occluder.pose();
-                fold_aabb(&mut hasher, &pose.bounds);
-                hasher.update(&(pose.brushes.len() as u32).to_le_bytes());
-                for brush in &pose.brushes {
-                    fold_aabb(&mut hasher, &brush.bounds);
-                    hasher.update(&(brush.planes.len() as u32).to_le_bytes());
-                    for &(normal, distance) in &brush.planes {
-                        for component in normal.to_array() {
-                            hasher.update(&component.to_bits().to_le_bytes());
-                        }
-                        hasher.update(&distance.to_bits().to_le_bytes());
-                    }
-                }
+                occluder.solid().fold_key(&mut hasher);
             }
         }
         CacheKey::new(STAGE_ID, STAGE_VERSION, hasher.finalize().as_bytes())
@@ -159,17 +147,6 @@ impl<'c> DirectMemo<'c> {
                 probed - hits
             );
         }
-    }
-}
-
-fn fold_aabb(hasher: &mut blake3::Hasher, bounds: &Aabb) {
-    for component in bounds
-        .min
-        .to_array()
-        .into_iter()
-        .chain(bounds.max.to_array())
-    {
-        hasher.update(&component.to_bits().to_le_bytes());
     }
 }
 

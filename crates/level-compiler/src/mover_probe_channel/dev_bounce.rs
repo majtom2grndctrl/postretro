@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use postretro_level_format::probe_depth_tiles::{
@@ -17,8 +18,8 @@ use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::domain::{compact_tile, round_trip_error, write_compact_rgb};
 use super::{
-    INSIDE_BRUSH_RULE, MoverBounceJob, MoverBounceRequest, PosedBounce, PosedScene, PosedSurfaces,
-    dev_pose,
+    INSIDE_BRUSH_RULE, MoverBounceJob, MoverBounceRequest, PosedBounce, PosedScene, PosedSolid,
+    PosedSurfaces, dev_pose,
 };
 use crate::map_data::{MapKinematicMover, MapKinematicWaypoint};
 use crate::mover_light_gate::{MoverPoses, Terminus};
@@ -82,10 +83,13 @@ pub(crate) fn plan(
             label: analysed.label.clone(),
             bounces: u32::MAX,
             scenes: vec![PosedScene::new(
-                mover,
+                Arc::new(PosedSolid::new(
+                    mover,
+                    analysed.pose(pose.terminus),
+                    texture_names,
+                )),
                 analysed,
                 pose.terminus,
-                texture_names,
                 pose.rule,
                 pose.surfaces,
             )?],
@@ -108,10 +112,13 @@ pub(crate) fn plan(
             let mut scenes = Vec::new();
             for terminus in Terminus::BOTH {
                 scenes.push(PosedScene::new(
-                    mover,
+                    Arc::new(PosedSolid::new(
+                        mover,
+                        analysed.pose(terminus),
+                        texture_names,
+                    )),
                     analysed,
                     terminus,
-                    texture_names,
                     INSIDE_BRUSH_RULE,
                     PosedSurfaces::Patches,
                 )?);

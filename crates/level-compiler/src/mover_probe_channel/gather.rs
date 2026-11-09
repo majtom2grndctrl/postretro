@@ -17,7 +17,8 @@ use super::bounce::PosedRadiance;
 use super::domain::{
     BOUNCE_FLOOR_LEVELS, compact_tile, display_levels, max_abs_difference, round_trip_error,
 };
-use super::posed_scene::{PosedHit, PosedScene, PosedSurfaces};
+use super::posed_scene::{PosedScene, PosedSurfaces};
+use super::posed_solid::PosedHit;
 use crate::bake_control::BakeControl;
 use crate::sh_bake::{
     Hit, ProbeGridLayout, RadianceSource, RaytracingCtx, SKY_COLOR, ShBakeCtx, TileRayTable,

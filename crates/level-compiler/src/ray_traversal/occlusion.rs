@@ -19,8 +19,7 @@ use crate::geometry::GeometryResult;
 pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 
 /// Whether nothing blocks the segment `from → to`, either face of a triangle
-/// counting. The trace starts [`RAY_EPSILON`] along the segment and tests to
-/// its end.
+/// counting: [`ShadowSegment`] over the tree's triangles.
 pub(crate) fn segment_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -79,14 +78,11 @@ pub(crate) fn segment_clear_remembering(
         crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
         crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
     }
-    let Some((ray, max_distance)) = segment_ray(from, to) else {
+    let Some(segment) = ShadowSegment::new(from, to) else {
         return true;
     };
-    let blocks = |tri: usize| {
-        ray.hit(triangle_points(geometry, tri), 0.0, max_distance)
-            .is_some()
-    };
-    let query = ray.query(max_distance);
+    let blocks = |tri: usize| segment.meets(triangle_points(geometry, tri));
+    let query = segment.ray.query(segment.max_distance);
     if let Some(occluder) = last_occluder.get()
         && (cache_gate_off() || query.intersects_aabb(&occluder.leaf_box))
         && blocks(occluder.triangle as usize)
@@ -151,28 +147,59 @@ pub(crate) fn without_cache_gate<R>(work: impl FnOnce() -> R) -> R {
     result
 }
 
-/// The ray [`segment_clear`] traces for `from → to` and its far bound, or
-/// `None` for a segment too short to hold one.
-#[inline]
-fn segment_ray(from: Vec3, to: Vec3) -> Option<(TraceRay, f32)> {
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
-        return None;
+/// One shadow segment `from → to` as every bake shadow test meets a
+/// triangle: the ray starts [`RAY_EPSILON`] along the segment and tests to
+/// its end, through the watertight hit test with τ, either face counting.
+/// [`segment_clear`] runs it over the tree's triangles; a posed mover's
+/// sides run it over their own (`mover_probe_channel::posed_solid`), so a
+/// posed brush blocks exactly the segments the same brush placed statically
+/// would.
+pub(crate) struct ShadowSegment {
+    ray: TraceRay,
+    max_distance: f32,
+}
+
+impl ShadowSegment {
+    /// `None` for a segment too short to hold a ray, which nothing blocks.
+    #[inline]
+    pub(crate) fn new(from: Vec3, to: Vec3) -> Option<Self> {
+        let delta = to - from;
+        let length = delta.length();
+        if length < RAY_EPSILON {
+            return None;
+        }
+        let dir = delta / length;
+        Some(Self {
+            ray: TraceRay::new(from + dir * RAY_EPSILON, dir),
+            max_distance: length - RAY_EPSILON,
+        })
     }
-    let dir = delta / length;
-    Some((
-        TraceRay::new(from + dir * RAY_EPSILON, dir),
-        length - RAY_EPSILON,
-    ))
+
+    /// The lifted ray the hit test reads.
+    pub(crate) fn ray(&self) -> &TraceRay {
+        &self.ray
+    }
+
+    /// The ray's far bound: the segment's end.
+    pub(crate) fn max_distance(&self) -> f32 {
+        self.max_distance
+    }
+
+    /// Whether triangle `corners` blocks the segment: a crossing strictly
+    /// between the lifted start and the end, within τ of the triangle.
+    #[inline(always)]
+    pub(crate) fn meets(&self, corners: [Vec3; 3]) -> bool {
+        self.ray.hit(corners, 0.0, self.max_distance).is_some()
+    }
 }
 
 /// The brute-force reference: [`segment_clear`]'s answer with every triangle
 /// of `geometry` tested by the shipped hit test, no BVH and no box test.
 #[cfg(test)]
 pub(crate) fn segment_clear_brute_force(geometry: &GeometryResult, from: Vec3, to: Vec3) -> bool {
-    segment_ray(from, to)
-        .is_none_or(|(ray, max_distance)| ray_clear_brute_force(geometry, &ray, 0.0, max_distance))
+    ShadowSegment::new(from, to).is_none_or(|segment| {
+        ray_clear_brute_force(geometry, &segment.ray, 0.0, segment.max_distance)
+    })
 }
 
 /// [`ray_clear`]'s brute-force reference, from `t_min` on.

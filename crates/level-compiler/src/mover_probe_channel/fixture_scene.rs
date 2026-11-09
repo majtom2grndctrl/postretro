@@ -3,6 +3,7 @@
 // production direct bake.
 
 use super::direct::{ChannelLight, DirectScene, MoverDirectBake, ProbeCells, bake_direct};
+use super::posed_solid::PosedMovers;
 use crate::affinity_grid::{AffinityReachInputs, AffinityReachPolicy};
 use crate::bake_control::BakeControl;
 use crate::fixture_pipeline::FixturePipeline;
@@ -64,11 +65,18 @@ impl Scene {
         )
     }
 
-    pub(super) fn poses(&self) -> MoverPoses {
-        MoverPoses::resolve(
+    /// The map's analysed movers posed as solids.
+    pub(super) fn poses(&self) -> PosedMovers {
+        let poses = MoverPoses::resolve(
             &self.fixture.kinematic_movers,
             &self.fixture.kinematic_waypoints,
+        );
+        PosedMovers::resolve(
+            &poses,
+            &self.fixture.kinematic_movers,
+            &self.fixture.geometry.texture_names,
         )
+        .expect("every analysed mover is a map mover")
     }
 
     /// Every light of the map gated as a static light, its index its seed

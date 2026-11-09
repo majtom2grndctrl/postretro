@@ -4,6 +4,7 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use glam::Vec3;
 use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
@@ -17,6 +18,7 @@ use postretro_level_format::sh_reconstruct::local_xyz;
 use rayon::prelude::*;
 
 use super::direct_memo::{DirectMemo, MemoPrefix};
+use super::posed_solid::PosedMovers;
 use super::visibility::{INSIDE_BRUSH_RULE, PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy,
@@ -26,7 +28,7 @@ use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, emitter_radius};
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::{BOX_SLACK_M, MoverPoses, Terminus, sphere_touches_box};
+use crate::mover_light_gate::{BOX_SLACK_M, Terminus, sphere_touches_box};
 use crate::ray_traversal::RAY_EPSILON;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, bake_probe_direct_rgb_posed, incident_radiance_at_point,
@@ -69,7 +71,7 @@ pub(crate) struct LightMover {
 /// lies within its falloff range of the origin, and a sample target within
 /// its emitter radius, so every segment lies in the larger ball; a sun's
 /// segments reach every pose.
-pub(crate) fn light_movers(light: &MapLight, poses: &MoverPoses) -> Vec<LightMover> {
+pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightMover> {
     let reach = match light.light_type {
         LightType::Directional => None,
         LightType::Point | LightType::Spot => Some(
@@ -78,17 +80,16 @@ pub(crate) fn light_movers(light: &MapLight, poses: &MoverPoses) -> Vec<LightMov
                 + f64::from(RAY_EPSILON),
         ),
     };
-    poses
-        .analysed
+    movers
+        .movers()
         .iter()
         .filter_map(|mover| {
             let poses = Terminus::BOTH.map(|terminus| {
-                let pose = mover.pose(terminus);
-                let reached = pose.bounds.is_valid()
-                    && reach.is_none_or(|radius| {
-                        sphere_touches_box(light.origin, radius, &pose.bounds)
-                    });
-                reached.then(|| PosedOccluder::new(pose.clone(), INSIDE_BRUSH_RULE))
+                let solid = &mover.solids[terminus.index()];
+                let bounds = solid.bounds();
+                let reached = bounds.is_valid()
+                    && reach.is_none_or(|radius| sphere_touches_box(light.origin, radius, bounds));
+                reached.then(|| PosedOccluder::new(Arc::clone(solid), INSIDE_BRUSH_RULE))
             });
             poses.iter().any(Option::is_some).then_some(LightMover {
                 mover_id: mover.mover_id,
@@ -208,7 +209,7 @@ pub(crate) struct DirectScene<'a> {
 /// Output follows `lights`' order, holding only lights with an entry, so the
 /// bytes never depend on the worker count.
 pub(crate) fn bake_direct(
-    poses: &MoverPoses,
+    movers: &PosedMovers,
     lights: &[ChannelLight<'_>],
     scene: &DirectScene<'_>,
     cache: Option<&StageCache>,
@@ -216,7 +217,7 @@ pub(crate) fn bake_direct(
 ) -> anyhow::Result<MoverDirectBake> {
     let movers: Vec<Vec<LightMover>> = lights
         .iter()
-        .map(|light| light_movers(&light.baked, poses))
+        .map(|light| light_movers(&light.baked, movers))
         .collect();
     let mut baked: Vec<Option<Vec<DirectEntry>>> = vec![None; lights.len()];
     let memo = cache.map(|cache| DirectMemo::new(cache, MemoPrefix::new(scene)));

@@ -22,7 +22,8 @@ use crate::map_data::MapKinematicMover;
 use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
     BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
-    MoverPayloadBars, MoverRamps, ProbeCells, bake_direct, channel_lights, channel_section,
+    MoverPayloadBars, MoverRamps, PosedMovers, ProbeCells, bake_direct, channel_lights,
+    channel_section,
 };
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
@@ -108,8 +109,13 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
             probe_spacing: inputs.sh_config.probe_spacing,
         },
     };
+    let posed = PosedMovers::resolve(
+        inputs.poses,
+        inputs.movers,
+        &inputs.sh_ctx.geometry.texture_names,
+    )?;
     let control = BakeControl::new(Arc::clone(inputs.governor), &StageProgress::indeterminate());
-    let bake = bake_direct(inputs.poses, &lights, &scene, inputs.cache, &control)?;
+    let bake = bake_direct(&posed, &lights, &scene, inputs.cache, &control)?;
     let bake_only =
         |namespace: MoverLightNamespace| namespace == MoverLightNamespace::BakeOnlyStaticLight;
     log::info!(

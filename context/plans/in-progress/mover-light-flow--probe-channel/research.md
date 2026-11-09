@@ -489,3 +489,33 @@ Measured 2026-11-09. Each map was cold-built with the pre-7b compiler (7bb4be94c
 - Exactly one of 32 area samples passed 0.1–0.5 mm outside the raised room's doorway jamb. The static tracer's τ = 0.5 mm blocks it; the direct half's 0.1 mm contact band did not.
 - Fix: the direct half's posed shadow segments now meet a face within τ (`SHADOW_SEGMENT_BAND_M`), and `mover_probe_direct` is now v2. Worst case is now 0.50 q steps, which is quantization.
 - The bounce half's patch-direct segments keep the gate's band.
+
+### Task 7c
+
+Measured 2026-11-09. Each map was cold-built (`--no-cache -j 12`) with the 7b compiler (HEAD 7d646f223) and then the 7c compiler, on the main checkout with tests running alongside, so timings are rough.
+
+**What the static reference uses.** The static-brush reference's direct bake (ids 35, 41, 45 and the probe bake behind them) traces each shadow segment with `ray_traversal::segment_clear`. That is the watertight triangle test with τ = 0.5 mm, from a start lifted `RAY_EPSILON` along the segment to its end. The SH base gather and the patch-direct shading use the same hit test, so the static side has one predicate for gather rays and shadow segments.
+
+**Change.**
+- `ray_traversal::ShadowSegment` is the static tracer's own segment test: lift, far bound and `TraceRay::hit` with τ. `segment_clear` runs it over the tree.
+- `mover_probe_channel::PosedSolid` owns every posed trace. It holds the pose's half-spaces and its sides cut where the mover's other brushes cover them, and it has two tests:
+  - `nearest_hit` for gather rays, moved from 7a's `PosedScene::trace`.
+  - `segment_blocked` for shadow segments: `ShadowSegment` over the posed triangles. A lifted start inside a posed brush is blocked, which is the dark inside-brush rule.
+- The direct half's `PosedOccluder` and the bounce half's patch-direct `PosedScene::segment_blocked` both call `segment_blocked`. `PosedMovers` builds each pose's solid once per half.
+- 7b's plane growth (`SHADOW_SEGMENT_BAND_M`, `segment_touches_brush_within`) is gone. The mover light gate keeps its own 0.1 mm contact rule; it is not a channel trace.
+- Memo stages: `mover_probe_direct` v3, keyed on the solid's triangles; `mover_probe_bounce` v2.
+- A unit test pins the predicate against a unit box built as static triangles: a segment and a ray 0.3 mm outside an edge block, 0.7 mm outside are clear, an oblique segment past a corner edge blocks, and a segment parallel to a face 0.3 mm off it is clear inside the face's footprint and blocked across the side planes. Plane growth blocks the in-footprint parallel segment that the static tracer passes.
+
+**Proof rows, 7b → 7c.** B3: worst |composed − reference| 0 against bar 0, 144 probes, before and after. B4: 28 of 40 reference tiles carried, before and after. B7 base: 224 interior probes, median 0.0747 and max 2.78 display levels (bar 3), max share of today's distance 0.284, unchanged to the printed digits. B7 direct: 1,025 blocked pairs over 7 lights, worst 0.500011 q steps, unchanged. B8 passes: closet 191, setpiece mover 0 11,313 and mover 1 3,154 probes past the rule, all stored. B16 (`mover_probe_channel_cache`, 10 tests) and B17 (against `t6/prl-build-parent`) pass.
+
+**Bytes.** Only id 57 changes, on every map.
+
+| map | id 57 | direct | bounce |
+|---|---|---|---|
+| mover-closet | identical | — | identical |
+| mover-setpiece | 8,963,434, same size | 8 q bytes, each +8 (one more of 32 samples clear), all at terminus 1 | 980 of 13,405 stored probes move, ≤ 6.9e-5 absolute, ≤ 0.09% of the tile's peak |
+| kinematic-platform | 8,450,236 → 8,450,466 | one masked probe dropped (q₀ 247 → 255, −2 B q, −216 B own tile) | 19,120 → 19,121 affected probes (3 enter, 2 leave at the floor), 5,386 shared probes move, ≤ 1.1% of the tile's peak; payload 8,260,272 B, still under the 8 MiB bar |
+| campaign-test | 197,000, same size | 4 q bytes, each +8 | identical |
+
+- Every direct change raises q by one sample: plane growth blocked samples the static tracer passes (corners, where a grown plane reaches past τ, and near-parallel samples). Platform's dropped probe undoes 7b's one added masked probe by size (2 B of q, 216 B of tile); its identity was not checked.
+- The bounce changes are the patch-direct segments moving from the 0.1 mm band to τ. No listed cell is added or dropped, so ids 34, 35, 49 and 50 stay byte-identical.

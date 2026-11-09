@@ -2,26 +2,19 @@
 // and with a posed mover added, for the mover probe channel's direct half.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
+use std::sync::Arc;
+
 use glam::{DVec3, Vec3};
 
+use super::posed_solid::PosedSolid;
 use crate::lightmap_bake::{
     RAY_EPSILON, SOFT_PROBE_SAMPLES, SoftProbes, area_sample_target, emitter_radius,
     hard_ray_target,
 };
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::{
-    BOX_SLACK_M, Pose, point_touches_brush, segment_may_touch_box, segment_touches_brush_within,
-};
+use crate::mover_light_gate::{BOX_SLACK_M, Pose};
 use crate::partition::Aabb;
-use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 use crate::texel_footprint::ProbeEarlyOut;
-
-/// How far outside a posed face a shadow segment still meets it: the static
-/// tracer's hit tolerance τ, so a posed side catches the samples a static
-/// wall at the pose catches (bake row B7's direct clause). The gate's 0.1 mm
-/// contact band let a sample 0.4 mm outside the raised room's doorway jamb
-/// through where the static-room reference blocks it.
-const SHADOW_SEGMENT_BAND_M: f64 = TRACER_TOLERANCE_METERS as f64;
 
 /// Angular slack on the sun cone test, far above the `f32` rounding of a
 /// jittered sample direction.
@@ -35,8 +28,8 @@ pub(crate) enum InsideBrushRule {
     /// Without the brushes that contain the probe; the mover's other
     /// brushes still occlude.
     SkipContainingBrush,
-    /// Every brush, so each segment starts in contact and the probe reads
-    /// dark, as the mover light gate counts it.
+    /// Every brush, so each segment starts in solid and the probe reads
+    /// dark.
     Dark,
 }
 
@@ -47,19 +40,33 @@ pub(crate) enum InsideBrushRule {
 pub(crate) const INSIDE_BRUSH_RULE: InsideBrushRule = InsideBrushRule::Dark;
 
 /// One mover posed at one terminus as an occluder of probe-point shadow rays.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct PosedOccluder {
-    pose: Pose,
+    solid: Arc<PosedSolid>,
     rule: InsideBrushRule,
 }
 
+impl std::fmt::Debug for PosedOccluder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PosedOccluder")
+            .field("pose", self.pose())
+            .field("rule", &self.rule)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PosedOccluder {
-    pub(crate) fn new(pose: Pose, rule: InsideBrushRule) -> Self {
-        Self { pose, rule }
+    pub(crate) fn new(solid: Arc<PosedSolid>, rule: InsideBrushRule) -> Self {
+        Self { solid, rule }
     }
 
     pub(crate) fn pose(&self) -> &Pose {
-        &self.pose
+        self.solid.pose()
+    }
+
+    /// The solid the shadow segments meet, for the memo key.
+    pub(crate) fn solid(&self) -> &PosedSolid {
+        &self.solid
     }
 
     /// Whether any sample segment from `probe` toward `light`'s emitter can
@@ -77,7 +84,7 @@ impl PosedOccluder {
                     min: probe.min(light.origin - reach),
                     max: probe.max(light.origin + reach),
                 };
-                crate::mover_light_gate::boxes_may_touch(&span, &self.pose.bounds)
+                crate::mover_light_gate::boxes_may_touch(&span, self.solid.bounds())
             }
         }
     }
@@ -97,9 +104,9 @@ impl PosedOccluder {
         if to_sun == DVec3::ZERO {
             return true;
         }
-        let bounds = &self.pose.bounds;
-        // The lift and the contact band move a segment's start and the
-        // brushes' faces; the slack covers both.
+        let bounds = self.solid.bounds();
+        // The lifts move a segment's start, and τ reaches past the posed
+        // faces; the slack covers both.
         let radius =
             (bounds.max - bounds.min).length() * 0.5 + BOX_SLACK_M + f64::from(RAY_EPSILON);
         let towards = bounds.centroid() - probe.as_dvec3();
@@ -112,17 +119,19 @@ impl PosedOccluder {
         angle <= half_angle + (radius / distance).asin() + SUN_CONE_SLACK_RAD
     }
 
-    /// Whether the segment `from..=to`, traced for a receiver at `probe`,
-    /// touches an occluding posed brush. Contact counts within
-    /// [`SHADOW_SEGMENT_BAND_M`], the static tracer's τ.
+    /// Whether the sample segment `from → to`, traced for a receiver at
+    /// `probe`, meets the pose: as the static tracer meets the same brushes
+    /// placed statically ([`PosedSolid::segment_blocked`]). Under the skip
+    /// rule the brushes holding `probe` are left out.
     pub(crate) fn blocks(&self, probe: Vec3, from: Vec3, to: Vec3) -> bool {
-        let (probe, from, to) = (probe.as_dvec3(), from.as_dvec3(), to.as_dvec3());
-        segment_may_touch_box(from, to, &self.pose.bounds)
-            && self.pose.brushes.iter().any(|brush| {
-                let skipped = self.rule == InsideBrushRule::SkipContainingBrush
-                    && point_touches_brush(probe, brush);
-                !skipped && segment_touches_brush_within(from, to, brush, SHADOW_SEGMENT_BAND_M)
-            })
+        match self.rule {
+            InsideBrushRule::Dark => self.solid.segment_blocked(from, to, |_| false),
+            InsideBrushRule::SkipContainingBrush => {
+                let containing = self.solid.containing(probe);
+                self.solid
+                    .segment_blocked(from, to, |brush| containing.contains(&brush))
+            }
+        }
     }
 }
 

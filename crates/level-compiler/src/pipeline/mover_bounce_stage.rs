@@ -6,6 +6,7 @@
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -15,7 +16,7 @@ use crate::map_data::{MapKinematicMover, MapLight};
 use crate::mover_light_gate::{MoverPoses, Terminus};
 use crate::mover_probe_channel::{
     BounceBlocks, DepthReservation, INSIDE_BRUSH_RULE, MoverBounceJob, MoverBounceRequest,
-    MoverBounceStates, MoverChannelCost, PosedScene, PosedSurfaces, ProbeCells,
+    MoverBounceStates, MoverChannelCost, PosedMovers, PosedScene, PosedSurfaces, ProbeCells,
     reserve_mover_tiles, sh_base_bounce_count,
 };
 use crate::partition::BspTree;
@@ -55,24 +56,23 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         inputs.exterior_leaves,
         inputs.probe_spacing,
     );
+    let posed = PosedMovers::resolve(inputs.poses, inputs.movers, inputs.texture_names)?;
     let mut jobs = Vec::new();
     if !layout.is_empty() {
-        for analysed in &inputs.poses.analysed {
+        for (analysed, solids) in inputs.poses.analysed.iter().zip(posed.movers()) {
+            debug_assert_eq!(analysed.mover_id, solids.mover_id);
             let mover = inputs
                 .movers
                 .iter()
                 .find(|mover| mover.mover_id == analysed.mover_id)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("analysed mover #{} is not a map mover", analysed.mover_id)
-                })?;
+                .expect("resolved movers are map movers");
             let scenes = Terminus::BOTH
                 .into_iter()
                 .map(|terminus| {
                     PosedScene::new(
-                        mover,
+                        Arc::clone(&solids.solids[terminus.index()]),
                         analysed,
                         terminus,
-                        inputs.texture_names,
                         INSIDE_BRUSH_RULE,
                         PosedSurfaces::Patches,
                     )
@@ -97,7 +97,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         inputs.bounce_fill,
         effective_tile_cap(inputs.tile_cap),
         inputs.direct_lights,
-        inputs.poses,
+        &posed,
     );
     if !jobs.is_empty() {
         log::info!(

@@ -16,7 +16,9 @@ use crate::surface_materials::stats::BounceMaterials;
 /// floors, the inside-brush rule and the tracer epoch (through id 34's
 /// volume key) fold on their own.
 const STAGE_ID: &str = "mover_probe_bounce";
-const STAGE_VERSION: u32 = 1;
+/// 2: posed patch-direct segments meet the posed sides through the static
+/// tracer's own segment test ([`super::posed_solid::PosedSolid`]).
+const STAGE_VERSION: u32 = 2;
 
 /// The per-mover memo over one stage cache, under one id-34 volume key: an
 /// edit that re-bakes id 34 re-keys every mover.
@@ -66,7 +68,7 @@ impl<'c> BounceMemo<'c> {
             match materials {
                 Some(materials) => {
                     hasher.update(&[1]);
-                    materials.fold_key(&mut hasher, &scene.geometry);
+                    materials.fold_key(&mut hasher, scene.geometry());
                 }
                 None => {
                     hasher.update(&[0]);

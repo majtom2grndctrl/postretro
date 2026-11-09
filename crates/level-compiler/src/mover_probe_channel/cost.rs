@@ -13,9 +13,9 @@ use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use super::bake::MoverBounceJob;
 use super::direct::{DirectEntry, ProbeCells, light_movers};
 use super::gather::PosedProbe;
+use super::posed_solid::PosedMovers;
 use super::states::{BounceProbe, DepthProbe};
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::MoverPoses;
 use crate::sh_bake::{ProbeGridLayout, vec3_from};
 
 /// One gathered tile, border included, as the posed gather holds it.
@@ -57,7 +57,7 @@ impl MoverChannelCost {
         fill: f32,
         depth_cap: u32,
         direct_lights: &[&MapLight],
-        poses: &MoverPoses,
+        movers: &PosedMovers,
     ) -> Self {
         if jobs.is_empty() {
             return Self::default();
@@ -75,7 +75,7 @@ impl MoverChannelCost {
             valid_probes: layout.validity.iter().filter(|&&valid| valid != 0).count() as u64,
             total_probes: layout.total_probes() as u64,
             depth_cap: u64::from(depth_cap),
-            direct_entry_bytes: direct_entry_bound(direct_lights, poses, layout),
+            direct_entry_bytes: direct_entry_bound(direct_lights, movers, layout),
         }
     }
 
@@ -156,10 +156,10 @@ pub(crate) fn kept_later_bounces<'j>(
 /// cannot meet, and the cells no pose shadows, cost nothing.
 pub(crate) fn direct_entry_bound(
     lights: &[&MapLight],
-    poses: &MoverPoses,
+    posed: &PosedMovers,
     layout: &ProbeGridLayout,
 ) -> u64 {
-    if poses.analysed.is_empty() || layout.is_empty() {
+    if posed.is_empty() || layout.is_empty() {
         return 0;
     }
     let cells = ProbeCells::of_layout(layout);
@@ -171,7 +171,7 @@ pub(crate) fn direct_entry_bound(
     let mut total = 0u64;
     let mut met: HashSet<(usize, usize)> = HashSet::new();
     for light in lights {
-        let movers = light_movers(light, poses);
+        let movers = light_movers(light, posed);
         if movers.is_empty() {
             continue;
         }

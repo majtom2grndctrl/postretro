@@ -153,7 +153,8 @@ pub(crate) struct PosedProbe {
     pub(crate) bar: f32,
     /// The same change in display levels ([`display_levels`]).
     pub(crate) levels: f32,
-    /// S^b's tile, kept when the probe is affected (or every probe, asked).
+    /// S^b's tile, kept when it leaves the round-trip bar ([`Self::changed`],
+    /// so every affected probe's) or for every probe, asked.
     pub(crate) tile: Option<Vec<OctahedralAtlasTexel>>,
     /// The closed-pose bordered depth tile, when a gather ray meets the pose.
     pub(crate) depth: Option<Vec<[u16; 2]>>,
@@ -163,7 +164,15 @@ impl PosedProbe {
     /// Past both the round-trip bar and the perceptual floor
     /// ([`BOUNCE_FLOOR_LEVELS`]): the affected-probe rule.
     pub(crate) fn affected(&self) -> bool {
-        self.difference > self.bar && self.levels > BOUNCE_FLOOR_LEVELS
+        self.changed() && self.levels > BOUNCE_FLOOR_LEVELS
+    }
+
+    /// Past the round-trip bar alone: at an affected probe, whether this
+    /// terminus stores its state. One within the bar is id 34 as the
+    /// encoding already holds it, so the terminus stores nothing and
+    /// composes id 34 (owner, 2026-11-09).
+    pub(crate) fn changed(&self) -> bool {
+        self.difference > self.bar
     }
 
     /// Heap bytes the probe holds beside its own size.
@@ -264,7 +273,7 @@ pub(crate) fn gather_posed_probes(
                 tile: None,
                 depth: met.then(|| bordered_tile(&rays.interior(&distances))),
             };
-            if probe.affected() || keep_every_tile {
+            if probe.changed() || keep_every_tile {
                 probe.tile = Some(tile);
             }
             Some(probe)
@@ -309,22 +318,4 @@ pub(crate) fn trace_posed_depth(
             met.then(|| (i as u32, bordered_tile(&rays.interior(&distances))))
         })
         .collect()
-}
-
-/// The mover-absent depth tile of valid probe `probe`: its gather rays
-/// against the static world alone, binned as id 59 bins them. What the
-/// posed gather bins at a terminus where no ray of the probe meets the pose.
-pub(crate) fn static_depth_tile(
-    ctx: &RaytracingCtx<'_>,
-    layout: &ProbeGridLayout,
-    rays: &TileRayTable,
-    directions: &[Vec3],
-    probe: u32,
-) -> Vec<[u16; 2]> {
-    let position = vec3_from(layout.probe_positions[probe as usize]);
-    let mut distances = [0.0f32; 256];
-    for (slot, &dir) in distances.iter_mut().zip(directions) {
-        *slot = gather_hit(ctx, position, dir).map_or(layout.far_sentinel, |hit| hit.distance);
-    }
-    bordered_tile(&rays.interior(&distances))
 }

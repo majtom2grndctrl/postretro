@@ -29,8 +29,9 @@ fn tiles(probes: usize, first: u16) -> Vec<u16> {
 /// Movers 3 and 9 gate static light 2 at two probes of cell 0, which carries
 /// its own tile once; mover 3 gates an animated light at one probe and a
 /// bake-only light (with its own tile) at two probes of cell 1. Mover 3
-/// changes bounce at two probes of cell 1; mover 9 carries depth at two
-/// probes. Parts arrive out of wire order.
+/// changes bounce at two probes of cell 1: probe 1 at both termini, probe 40
+/// only at terminus 0. Mover 9 carries depth at two probes: probe 4 at both
+/// termini, probe 70 only at terminus 0. Parts arrive out of wire order.
 fn parts() -> MoverProbeChannelParts {
     use MoverLightNamespace::{AnimatedBaked, BakeOnlyStaticLight, StaticLight};
     MoverProbeChannelParts {
@@ -59,23 +60,32 @@ fn parts() -> MoverProbeChannelParts {
             cell: 1,
             entry: MoverBounceEntry {
                 mover_id: 3,
-                affected_probe_mask: (1 << 1) | (1 << 40),
+                stored_probe_masks: [(1 << 1) | (1 << 40), 1 << 1],
             },
-            tiles: (0..2 * 2 * MOVER_IRRADIANCE_TILE_F16_COUNT)
+            tiles: (0..3 * MOVER_IRRADIANCE_TILE_F16_COUNT)
                 .map(|i| 0x3c00 + i as u16)
                 .collect(),
         }],
-        depth: [70, 4]
+        depth: [(70, [true, false]), (4, [true, true])]
             .into_iter()
-            .enumerate()
-            .map(|(at, probe_index)| DepthRecordParts {
-                record: MoverDepthRecord {
+            .map(|(probe_index, stored_termini)| {
+                // Probe 4's tiles count from 0, probe 70's from 2 tiles on.
+                let first = if probe_index == 4 {
+                    0
+                } else {
+                    2 * PROBE_DEPTH_TILE_TEXELS
+                };
+                let record = MoverDepthRecord {
                     mover_id: 9,
                     probe_index,
-                },
-                tiles: (0..2 * PROBE_DEPTH_TILE_TEXELS)
-                    .map(|i| [((1 - at) * 2 * PROBE_DEPTH_TILE_TEXELS + i) as u16, 0x4000])
-                    .collect(),
+                    stored_termini,
+                };
+                DepthRecordParts {
+                    record,
+                    tiles: (0..record.stored_tile_count() * PROBE_DEPTH_TILE_TEXELS)
+                        .map(|i| [(first + i) as u16, 0x4000])
+                        .collect(),
+                }
             })
             .collect(),
     }
@@ -236,9 +246,37 @@ fn every_block_round_trips_with_its_payload_reachable_by_record_and_mover() {
         (section.bounce_tiles.len() * 2) as u64
     );
 
-    let [d0, d1] = restored.depth_tile_pair(1);
-    assert_eq!(d0[0], [(2 * PROBE_DEPTH_TILE_TEXELS) as u16, 0x4000]);
-    assert_eq!(d1[0], [(3 * PROBE_DEPTH_TILE_TEXELS) as u16, 0x4000]);
+    // Probe 1 stores both states; probe 40 stores S^b₀ alone and composes
+    // id 34 at terminus 1. Tiles run probe after probe, S^b₀ first.
+    let tile_start = |halves: Option<MoverHalves<'_>>| halves.map(|tiles| tiles.get(0).unwrap());
+    let first = |tile: usize| Some(0x3c00 + (tile * MOVER_IRRADIANCE_TILE_F16_COUNT) as u16);
+    assert_eq!(
+        bounce[0].probe_tiles(1).map(|t| t.map(tile_start)),
+        Some([first(0), first(1)])
+    );
+    assert_eq!(
+        bounce[0].probe_tiles(40).map(|t| t.map(tile_start)),
+        Some([first(2), None])
+    );
+    assert_eq!(bounce[0].probe_tiles(5), None, "an unaffected valid probe");
+    assert_eq!(bounce[0].entry.affected_probe_mask(), (1 << 1) | (1 << 40));
+    assert_eq!(
+        restored.bounce_payload_bytes(),
+        (3 * MOVER_IRRADIANCE_TILE_F16_COUNT * 2) as u64
+    );
+
+    let depth: Vec<_> = restored.depth_record_tiles().collect();
+    assert_eq!(depth[0].0.probe_index, 4);
+    let [d0, d1] = depth[0].1;
+    assert_eq!(d0.unwrap()[0], [0, 0x4000]);
+    assert_eq!(d1.unwrap()[0], [PROBE_DEPTH_TILE_TEXELS as u16, 0x4000]);
+    let [d0, d1] = depth[1].1;
+    assert_eq!(
+        d0.unwrap()[0],
+        [(2 * PROBE_DEPTH_TILE_TEXELS) as u16, 0x4000]
+    );
+    assert!(d1.is_none(), "probe 70 reads its base at terminus 1");
+    assert_eq!(restored.depth_tiles.len(), 3 * PROBE_DEPTH_TILE_TEXELS);
     assert_eq!(restored.live_tile_count(), 2);
     assert_eq!(
         restored.ramp_of(9).map(|ramp| (ramp.start, ramp.end)),
@@ -562,20 +600,20 @@ fn an_unresolved_or_malformed_streamed_payload_is_refused_by_name() {
     ));
 }
 
-// Task 7b: epoch 3 reads its two placement bytes; an epoch-2 section is a
-// named re-bake, an unknown placement names its block, and a streamed block
-// with no entry is refused for that block.
+// Task 7b: the header's two placement bytes are read per block; an
+// earlier epoch is a named re-bake, an unknown placement names its block,
+// and a streamed block with no entry is refused for that block.
 #[test]
-fn epoch_three_placements_are_read_per_block_and_refused_by_name() {
+fn placements_are_read_per_block_and_an_earlier_epoch_is_refused_by_name() {
     use MoverPayloadPlacement::{Resident, Streamed};
     let bytes = sample().to_bytes();
     let mut stale = bytes.clone();
-    stale[0] = 2;
+    stale[0] = 3;
     assert_eq!(
         MoverProbeChannelSection::from_bytes(&stale),
         Err(MoverProbeChannelError::EpochMismatch {
-            found: 2,
-            expected: 3
+            found: 3,
+            expected: 4
         })
     );
     for (at, block) in [
@@ -674,4 +712,90 @@ fn only_nothing() -> MoverProbeChannelParts {
         depth: Vec::new(),
         ..parts()
     }
+}
+
+/// The byte offset of the depth block's record count in `section`'s bytes.
+fn depth_block_offset(section: &MoverProbeChannelSection) -> usize {
+    let parts = section.byte_breakdown();
+    parts.header
+        + parts.cell_index
+        + parts.direct_block()
+        + parts.bounce_index
+        + parts.bounce_payload
+}
+
+// Task 11c: epoch 4 stores per terminus. A bounce entry's two masks and a
+// depth record's stored-termini word sit where the layout pins them; a
+// record storing neither terminus, a reserved termini bit, and a bounce
+// entry storing nothing are each refused by name.
+#[test]
+fn per_terminus_storage_sits_at_its_pinned_offsets_and_is_refused_when_malformed() {
+    let section = sample();
+    let bytes = section.to_bytes();
+    let parts = section.byte_breakdown();
+    // The bounce block: three offsets, then mover 3's 24-byte entry.
+    let entry = parts.header + parts.cell_index + parts.direct_block() + 3 * 4;
+    assert_eq!(&bytes[entry..entry + 4], &3u32.to_le_bytes());
+    assert_eq!(&bytes[entry + 4..entry + 8], &0u32.to_le_bytes());
+    assert_eq!(
+        &bytes[entry + 8..entry + 16],
+        &((1u64 << 1) | (1 << 40)).to_le_bytes()
+    );
+    assert_eq!(&bytes[entry + 16..entry + 24], &(1u64 << 1).to_le_bytes());
+    // The depth block: count, then (mover 9, probe 4, both), (9, 70, D₀).
+    let depth = depth_block_offset(&section);
+    assert_eq!(&bytes[depth..depth + 4], &2u32.to_le_bytes());
+    assert_eq!(&bytes[depth + 4..depth + 8], &9u32.to_le_bytes());
+    assert_eq!(&bytes[depth + 8..depth + 12], &4u32.to_le_bytes());
+    assert_eq!(&bytes[depth + 12..depth + 16], &0b11u32.to_le_bytes());
+    assert_eq!(&bytes[depth + 20..depth + 24], &70u32.to_le_bytes());
+    assert_eq!(&bytes[depth + 24..depth + 28], &0b01u32.to_le_bytes());
+
+    let mut nothing = bytes.clone();
+    nothing[depth + 24..depth + 28].copy_from_slice(&0u32.to_le_bytes());
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&nothing),
+        Err(MoverProbeChannelError::DepthRecordStoresNothing { record: 1 })
+    );
+    let mut reserved = bytes.clone();
+    reserved[depth + 24..depth + 28].copy_from_slice(&0b101u32.to_le_bytes());
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&reserved),
+        Err(MoverProbeChannelError::ReservedBits {
+            what: "depth record stored-termini bits",
+            index: 1,
+            value: 0b101,
+        })
+    );
+    let mut empty = bytes;
+    empty[entry + 8..entry + 24].fill(0);
+    assert!(matches!(
+        MoverProbeChannelSection::from_bytes(&empty),
+        Err(MoverProbeChannelError::ProbeMaskEmpty {
+            block: "bounce",
+            ..
+        })
+    ));
+}
+
+// Task 11c: a bounce entry's tiles are indexed probe after probe, S^b₀
+// before S^b₁, counting only stored termini.
+#[test]
+fn a_bounce_entrys_probe_tiles_count_only_stored_termini() {
+    let entry = MoverBounceEntry {
+        mover_id: 1,
+        stored_probe_masks: [0b0101, 0b0110],
+    };
+    assert_eq!(entry.affected_probe_mask(), 0b0111);
+    assert_eq!(entry.stored_tile_count(), 4);
+    assert_eq!(entry.probe_tiles(0), Some([Some(0), None]));
+    assert_eq!(entry.probe_tiles(1), Some([None, Some(1)]));
+    assert_eq!(entry.probe_tiles(2), Some([Some(2), Some(3)]));
+    assert_eq!(entry.probe_tiles(3), None);
+    assert_eq!(entry.probe_tiles(64), None);
+    let high = MoverBounceEntry {
+        mover_id: 1,
+        stored_probe_masks: [1 << 63, 1 << 63],
+    };
+    assert_eq!(high.probe_tiles(63), Some([Some(0), Some(1)]));
 }

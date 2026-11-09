@@ -21,11 +21,14 @@ const CELL_RECORD_BYTES: usize = 12;
 /// u8 namespace, u8 flags, u16 reserved, u32 light, u64 probe mask.
 const DIRECT_RECORD_BYTES: usize = 16;
 const MOVER_ID_BYTES: usize = 4;
-const BOUNCE_ENTRY_BYTES: usize = 16;
-const DEPTH_RECORD_BYTES: usize = 8;
+/// u32 mover, u32 reserved, u64 terminus-0 mask, u64 terminus-1 mask.
+const BOUNCE_ENTRY_BYTES: usize = 24;
+/// u32 mover, u32 probe, u32 stored-termini bits.
+const DEPTH_RECORD_BYTES: usize = 12;
+/// A depth record's stored-termini bits: bit k stores `D_k`.
+const DEPTH_TERMINI_BITS: u32 = 0b11;
 const RAMP_RECORD_BYTES: usize = 12;
-const DEPTH_TILE_PAIR_BYTES: usize =
-    2 * PROBE_DEPTH_TILE_TEXELS * PROBE_DEPTH_TILE_TEXEL_BYTES as usize;
+const DEPTH_TILE_BYTES: usize = PROBE_DEPTH_TILE_TEXELS * PROBE_DEPTH_TILE_TEXEL_BYTES as usize;
 
 impl MoverProbeChannelSection {
     /// [`Self::to_bytes`]'s bytes, part by part, from the section's
@@ -87,7 +90,12 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     );
     debug_assert_eq!(
         section.depth_tiles.len(),
-        section.depth_records.len() * 2 * PROBE_DEPTH_TILE_TEXELS
+        section
+            .depth_records
+            .iter()
+            .map(MoverDepthRecord::stored_tile_count)
+            .sum::<usize>()
+            * PROBE_DEPTH_TILE_TEXELS
     );
     debug_assert_eq!(section.ramps.len(), section.mover_ids().len());
     let direct_resident = section.direct_placement == MoverPayloadPlacement::Resident;
@@ -136,7 +144,9 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     for entry in &section.bounce_entries {
         out.extend_from_slice(&entry.mover_id.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&entry.affected_probe_mask.to_le_bytes());
+        for mask in entry.stored_probe_masks {
+            out.extend_from_slice(&mask.to_le_bytes());
+        }
     }
     if bounce_resident {
         put_halves(&mut out, &section.bounce_tiles);
@@ -146,6 +156,7 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     for record in &section.depth_records {
         out.extend_from_slice(&record.mover_id.to_le_bytes());
         out.extend_from_slice(&record.probe_index.to_le_bytes());
+        out.extend_from_slice(&termini_bits(record.stored_termini).to_le_bytes());
     }
     for [mean, mean_sq] in &section.depth_tiles {
         out.extend_from_slice(&mean.to_le_bytes());
@@ -158,6 +169,11 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     }
     debug_assert_eq!(out.len(), section.encoded_len());
     out
+}
+
+/// A depth record's stored termini as wire bits: bit k stores `D_k`.
+fn termini_bits(stored: [bool; 2]) -> u32 {
+    u32::from(stored[0]) | u32::from(stored[1]) << 1
 }
 
 fn put_u32s(out: &mut Vec<u8>, values: &[u32]) {
@@ -310,7 +326,7 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         }
         bounce_entries.push(MoverBounceEntry {
             mover_id: le_u32(&bytes[0..4]),
-            affected_probe_mask: le_u64(&bytes[8..16]),
+            stored_probe_masks: [le_u64(&bytes[8..16]), le_u64(&bytes[16..24])],
         });
     }
     check_cell_order(
@@ -324,7 +340,12 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         .zip(&bounce_entries)
         .enumerate()
     {
-        check_mask("bounce", cells[position], index, entry.affected_probe_mask)?;
+        check_mask(
+            "bounce",
+            cells[position],
+            index,
+            entry.affected_probe_mask(),
+        )?;
     }
     let bounce_tiles = match bounce_placement {
         MoverPayloadPlacement::Resident => {
@@ -352,18 +373,40 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
 
     // Depth block.
     let depth_count = reader.u32("depth record count")? as usize;
-    let depth_records: Vec<MoverDepthRecord> = reader
+    let mut depth_records: Vec<MoverDepthRecord> = Vec::new();
+    for (record, bytes) in reader
         .records(depth_count, DEPTH_RECORD_BYTES, "depth records")?
-        .map(|bytes| MoverDepthRecord {
+        .enumerate()
+    {
+        let termini = le_u32(&bytes[8..12]);
+        if termini & !DEPTH_TERMINI_BITS != 0 {
+            return Err(Error::ReservedBits {
+                what: "depth record stored-termini bits",
+                index: record,
+                value: termini,
+            });
+        }
+        if termini == 0 {
+            return Err(Error::DepthRecordStoresNothing { record });
+        }
+        depth_records.push(MoverDepthRecord {
             mover_id: le_u32(&bytes[0..4]),
             probe_index: le_u32(&bytes[4..8]),
-        })
-        .collect();
-    if let Some(record) = depth_records.windows(2).position(|pair| pair[0] >= pair[1]) {
+            stored_termini: [termini & 1 != 0, termini & 2 != 0],
+        });
+    }
+    if let Some(record) = depth_records
+        .windows(2)
+        .position(|pair| pair[0].order_key() >= pair[1].order_key())
+    {
         return Err(Error::DepthRecordOrder { record: record + 1 });
     }
+    let depth_tile_count: usize = depth_records
+        .iter()
+        .map(MoverDepthRecord::stored_tile_count)
+        .sum();
     let depth_tiles: Vec<[u16; 2]> = reader
-        .records(depth_count, DEPTH_TILE_PAIR_BYTES, "depth tiles")?
+        .records(depth_tile_count, DEPTH_TILE_BYTES, "depth tiles")?
         .flat_map(|pair| pair.as_chunks::<4>().0)
         .map(|&[mean_lo, mean_hi, sq_lo, sq_hi]| {
             [

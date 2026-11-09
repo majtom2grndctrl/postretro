@@ -420,12 +420,13 @@ pub fn rgb_tile(halves: &[u16]) -> Tile {
 }
 
 /// Each bounce entry of `mover`: per affected dense probe of `volume`'s
-/// grid, `[S^b₀, S^b₁]`.
+/// grid, `[S^b₀, S^b₁]`, each `None` at a terminus that stores no state and
+/// composes id 34 there.
 pub fn bounce_states_in(
     channel: &MoverProbeChannelSection,
     volume: &Volume,
     mover: u32,
-) -> std::collections::BTreeMap<usize, [Tile; 2]> {
+) -> std::collections::BTreeMap<usize, [Option<Tile>; 2]> {
     let [nx, ny, _] = volume.section.grid_dimensions.map(|dim| dim as usize);
     let [ax, ay, _] = channel.affinity_dims.map(|dim| dim as usize);
     let mut out = std::collections::BTreeMap::new();
@@ -433,15 +434,13 @@ pub fn bounce_states_in(
         if view.entry.mover_id != mover {
             continue;
         }
-        let tiles = view.tiles.expect("a resident bounce payload").to_vec();
         let cell = view.cell as usize;
         let (cx, cy, cz) = (cell % ax, cell / ax % ay, cell / (ax * ay));
-        let mut at = 0;
-        let f16 = MOVER_IRRADIANCE_TILE_F16_COUNT;
-        for local in 0..64 {
-            if view.entry.affected_probe_mask & (1 << local) == 0 {
+        for local in 0..64u32 {
+            let Some(tiles) = view.probe_tiles(local) else {
                 continue;
-            }
+            };
+            let local = local as usize;
             let (x, y, z) = (
                 cx * 4 + local % 4,
                 cy * 4 + local / 4 % 4,
@@ -449,12 +448,8 @@ pub fn bounce_states_in(
             );
             out.insert(
                 x + y * nx + z * nx * ny,
-                [
-                    rgb_tile(&tiles[at..at + f16]),
-                    rgb_tile(&tiles[at + f16..at + 2 * f16]),
-                ],
+                tiles.map(|tile| tile.map(|halves| rgb_tile(&halves.to_vec()))),
             );
-            at += 2 * f16;
         }
     }
     out

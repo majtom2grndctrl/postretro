@@ -9,17 +9,13 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::bounce::{PosedLaterBounces, add_posed_later_bounces, light_terms, posed_bounce_one};
 use super::depth::MoverAbsentDepth;
-use super::gather::{
-    PosedGather, PosedProbe, compact_slots, gather_posed_probes, trace_posed_depth,
-};
+use super::gather::{PosedGather, PosedProbe, gather_posed_probes, trace_posed_depth};
 use super::posed_scene::PosedScene;
-use super::states::{MoverBounceStates, PoseStates, ReduceInputs, reduce_poses};
+use super::states::{ChangedProbe, MoverBounceStates, PoseStates, reduce_poses};
 use crate::bake_control::BakeControl;
 use crate::map_data::MapLight;
 use crate::mover_light_gate::Terminus;
-use crate::sh_bake::{
-    ProbeDepthTiles, ProbeGridLayout, ShBakeCtx, TileRayTable, probe_gather_directions,
-};
+use crate::sh_bake::{ProbeDepthTiles, ProbeGridLayout, ShBakeCtx};
 use crate::surface_radiance::{
     LATER_BOUNCE_COUNT, LayerPlan, PatchRadiance, PatchReachIndex, PatchSet,
 };
@@ -178,23 +174,6 @@ pub(crate) fn bake_mover_bounce(
     );
     let terms = light_terms(inputs.lights, inputs.plan);
     let absent = MoverAbsentDepth::new(inputs.base, inputs.depth_tiles);
-    let slots = compact_slots(inputs.layout);
-    let directions = probe_gather_directions();
-    let rays = TileRayTable::new(&directions);
-    #[cfg(test)]
-    let _tables = [
-        crate::live_bytes::hold_vec("mover bounce tables", &slots),
-        crate::live_bytes::hold_vec("mover bounce tables", &directions),
-    ];
-    let reduce = ReduceInputs {
-        ctx: &ctx,
-        layout: inputs.layout,
-        base: inputs.base,
-        slots: &slots,
-        absent: &absent,
-        rays: &rays,
-        directions: &directions,
-    };
     let mut movers: Vec<MoverBounceStates> = Vec::new();
     let mut kept_poses = Vec::new();
     let mut depth_probes = std::collections::BTreeSet::new();
@@ -210,7 +189,7 @@ pub(crate) fn bake_mover_bounce(
             if job.bounces == 0 {
                 let depth = trace_posed_depth(sh_ctx, inputs.layout, scene, control);
                 poses.push(PoseStates {
-                    affected: Vec::new(),
+                    changed: Vec::new(),
                     depth,
                 });
                 #[cfg(test)]
@@ -236,14 +215,18 @@ pub(crate) fn bake_mover_bounce(
             let mut states = PoseStates::default();
             for probe in posed.probes {
                 let affected = probe.affected();
-                if let (true, Some(tile)) = (affected, probe.tile) {
-                    states.affected.push((probe.probe, tile));
+                if let (true, Some(tile)) = (probe.changed(), probe.tile) {
+                    states.changed.push(ChangedProbe {
+                        probe: probe.probe,
+                        tile,
+                        affected,
+                    });
                 }
                 if let Some(depth) = probe.depth {
                     states.depth.push((probe.probe, depth));
                 }
             }
-            states.affected.sort_unstable_by_key(|(probe, _)| *probe);
+            states.changed.sort_unstable_by_key(|probe| probe.probe);
             states.depth.sort_unstable_by_key(|(probe, _)| *probe);
             #[cfg(test)]
             _held.push(crate::live_bytes::hold(
@@ -255,7 +238,7 @@ pub(crate) fn bake_mover_bounce(
         let Ok(poses) = <[PoseStates; 2]>::try_from(poses) else {
             continue;
         };
-        let states = reduce_poses(job.mover_id, &poses, &reduce);
+        let states = reduce_poses(job.mover_id, &poses, &absent);
         drop(poses);
         log::info!(
             "[MoverLight] probe channel bounce: mover `{}` (#{}) re-baked {} posed bounce(s): \

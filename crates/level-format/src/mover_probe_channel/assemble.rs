@@ -22,7 +22,8 @@ pub struct DirectRecordParts {
     pub own_tiles: Vec<u16>,
 }
 
-/// One bounce entry and its payload.
+/// One bounce entry and its payload: per affected probe, x-fastest, its
+/// stored `S^b₀` then its stored `S^b₁`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BounceEntryParts {
     pub cell: u32,
@@ -30,7 +31,7 @@ pub struct BounceEntryParts {
     pub tiles: Vec<u16>,
 }
 
-/// One depth record and its `D₀` then `D₁` tiles.
+/// One depth record and its stored `D₀` then its stored `D₁`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DepthRecordParts {
     pub record: MoverDepthRecord,
@@ -75,7 +76,7 @@ impl MoverProbeChannelSection {
         }
         direct.sort_by_key(|part| (part.cell, part.record.order_key()));
         bounce.sort_by_key(|part| (part.cell, part.entry.mover_id));
-        depth.sort_by_key(|part| part.record);
+        depth.sort_by_key(|part| part.record.order_key());
 
         let mut listed: Vec<u32> = direct
             .iter()
@@ -140,7 +141,10 @@ impl MoverProbeChannelSection {
             section.bounce_entries.push(part.entry);
         }
         for part in depth {
-            debug_assert_eq!(part.tiles.len(), 2 * PROBE_DEPTH_TILE_TEXELS);
+            debug_assert_eq!(
+                part.tiles.len(),
+                part.record.stored_tile_count() * PROBE_DEPTH_TILE_TEXELS
+            );
             section.depth_tiles.extend_from_slice(&part.tiles);
             section.depth_records.push(part.record);
         }

@@ -68,10 +68,11 @@ fn in_closet(quake: [f64; 3]) -> bool {
 }
 
 // Bake row B3: with the door closed, the composed base at every closet probe
-// valid in both bakes (S^b₀ where the probe stores an entry, today's id 34
-// where it does not) equals the static-door reference's id 34 within that
-// tile's BC6H round-trip error. With the door open, every stored S^b₁ equals
-// today's id 34 within the same bar.
+// valid in both bakes (S^b₀ where the probe stores it, today's id 34 where it
+// does not) equals the static-door reference's id 34 within that tile's BC6H
+// round-trip error. With the door open, every stored S^b₁ equals today's id
+// 34 within the same bar; an unstored one composes id 34 itself (owner,
+// 2026-11-09).
 #[test]
 fn closed_door_closet_bounce_matches_the_static_door_reference() {
     let closet = closet();
@@ -94,11 +95,11 @@ fn closed_door_closet_bounce_matches_the_static_door_reference() {
         }
         let reference_tile = reference.tile(probe);
         let composed = match states.get(&probe) {
-            Some([closed, _]) => {
+            Some([Some(closed), _]) => {
                 stored += 1;
                 closed.clone()
             }
-            None => today.tile(probe),
+            Some([None, _]) | None => today.tile(probe),
         };
         let (difference, bar) = (
             max_abs(&composed, &reference_tile),
@@ -126,7 +127,12 @@ fn closed_door_closet_bounce_matches_the_static_door_reference() {
         "the closed door stores the closet's bounce: {stored}"
     );
 
+    let mut open_stored = 0;
     for (probe, [_, open]) in &states {
+        let Some(open) = open else {
+            continue;
+        };
+        open_stored += 1;
         let today_tile = today.tile(*probe);
         let (difference, bar) = (max_abs(open, &today_tile), round_trip_error(&today_tile));
         assert!(
@@ -134,6 +140,10 @@ fn closed_door_closet_bounce_matches_the_static_door_reference() {
             "probe {probe}: |S^b₁ − today| {difference} past its round-trip error {bar}"
         );
     }
+    eprintln!(
+        "B3: {} affected probes, {open_stored} storing S^b₁ (the rest compose id 34 open)",
+        states.len()
+    );
 }
 
 // Bake row B4: every probe the static-door reference tiles either carries a
@@ -152,15 +162,14 @@ fn closed_door_depth_tiles_match_the_static_door_references_tiles() {
     for (index, &probe) in reference.probe_indices.iter().enumerate() {
         let expected = reference.tile(index);
         let record = channel
-            .depth_records
-            .iter()
-            .position(|record| record.mover_id == door && record.probe_index == probe);
+            .depth_record_tiles()
+            .find(|(record, _)| record.mover_id == door && record.probe_index == probe);
         let actual = match record {
-            Some(record) => {
+            Some((_, [Some(closed), _])) => {
                 met += 1;
-                channel.depth_tile_pair(record)[0]
+                closed
             }
-            None => {
+            Some((_, [None, _])) | None => {
                 let tile = today.tile_of_probe(probe).unwrap_or_else(|| {
                     panic!("reference-tiled probe {probe} carries neither mover depth nor id 59")
                 });
@@ -273,11 +282,11 @@ fn raised_room_bounce_is_nearer_the_static_room_reference_than_today() {
         }
         let (today_tile, reference_tile) = (today.tile(probe), reference.tile(probe));
         let composed = match states.get(&probe) {
-            Some([_, raised]) => {
+            Some([_, Some(raised)]) => {
                 stored += 1;
                 raised.clone()
             }
-            None => today_tile.clone(),
+            Some([_, None]) | None => today_tile.clone(),
         };
         let (composed_gap, today_gap) = (
             max_abs(&composed, &reference_tile),

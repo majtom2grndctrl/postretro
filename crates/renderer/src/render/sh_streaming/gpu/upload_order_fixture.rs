@@ -139,6 +139,7 @@ impl UploadOrderSh {
                 depth_tiles: tiles,
                 sh: None,
                 stream_base_present: true,
+                stream_base_probes: None,
                 stream_animation_descriptors: Some(&[]),
                 indirect_delta_present: true,
                 direct: None,

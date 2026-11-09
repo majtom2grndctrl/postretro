@@ -118,11 +118,13 @@ fn indirect_delta() -> DeltaShVolumesSection {
     }
 }
 
-/// One mover's bounce states at the probes of `mask`: S^b₀ = `s0`, S^b₁ =
-/// `s1` in every channel of every texel.
+/// One mover's bounce states: S^b₀ = `s0` at the probes of `masks[0]`, S^b₁
+/// = `s1` at the probes of `masks[1]`, in every channel of every texel. An
+/// affected probe outside one terminus's mask stores no state there and
+/// composes id 34.
 struct Bounce {
     mover_id: u32,
-    mask: u64,
+    masks: [u64; 2],
     s0: f32,
     s1: f32,
 }
@@ -137,13 +139,17 @@ fn channel_section(bounces: &[Bounce], streamed: bool) -> MoverProbeChannelSecti
                 cell: 0,
                 entry: MoverBounceEntry {
                     mover_id: bounce.mover_id,
-                    affected_probe_mask: bounce.mask,
+                    stored_probe_masks: bounce.masks,
                 },
-                tiles: (0..bounce.mask.count_ones())
-                    .flat_map(|_| {
-                        std::iter::repeat_n(f16(bounce.s0), MOVER_IRRADIANCE_TILE_F16_COUNT).chain(
-                            std::iter::repeat_n(f16(bounce.s1), MOVER_IRRADIANCE_TILE_F16_COUNT),
-                        )
+                // Probe after probe, x-fastest: S^b₀ where stored, then S^b₁.
+                tiles: (0..64u32)
+                    .flat_map(|local| {
+                        [(bounce.masks[0], bounce.s0), (bounce.masks[1], bounce.s1)]
+                            .into_iter()
+                            .filter(move |&(mask, _)| mask & (1 << local) != 0)
+                    })
+                    .flat_map(|(_, value)| {
+                        std::iter::repeat_n(f16(value), MOVER_IRRADIANCE_TILE_F16_COUNT)
                     })
                     .collect(),
             })
@@ -209,6 +215,7 @@ fn build_scene(ctx: &GpuCtx, section: Option<&MoverProbeChannelSection>, streame
             sh: Some(&base),
             depth_tiles: None,
             stream_base_present: false,
+            stream_base_probes: None,
             stream_animation_descriptors: None,
             indirect_delta_present: true,
             direct: None,
@@ -345,7 +352,7 @@ fn c3_bounce_replaces_id_34_with_the_lerp_of_its_states_and_deltas_still_add() {
     let section = channel_section(
         &[Bounce {
             mover_id: 7,
-            mask: 0b1,
+            masks: [0b1, 0b1],
             s0: 0.5,
             s1: 0.125,
         }],
@@ -389,13 +396,13 @@ fn two_movers_at_one_probe_add_their_lerped_differences_from_id_34() {
         &[
             Bounce {
                 mover_id: 7,
-                mask: 0b11,
+                masks: [0b11, 0b11],
                 s0: 0.5,
                 s1: 0.125,
             },
             Bounce {
                 mover_id: 9,
-                mask: 0b1,
+                masks: [0b1, 0b1],
                 s0: 0.25,
                 s1: 1.0,
             },
@@ -435,19 +442,19 @@ fn the_summed_base_clamps_per_texel_at_zero_before_deltas_add() {
         &[
             Bounce {
                 mover_id: 7,
-                mask: 0b1,
+                masks: [0b1, 0b1],
                 s0: -0.5,
                 s1: 0.5,
             },
             Bounce {
                 mover_id: 9,
-                mask: 0b10,
+                masks: [0b10, 0b10],
                 s0: 0.25,
                 s1: -1.0,
             },
             Bounce {
                 mover_id: 11,
-                mask: 0b10,
+                masks: [0b10, 0b10],
                 s0: 0.5,
                 s1: 0.5,
             },
@@ -472,6 +479,99 @@ fn the_summed_base_clamps_per_texel_at_zero_before_deltas_add() {
     assert_tile(&atlas, 1, 0.25 + 0.25 + DELTA_RED, "probe 1 positive");
 }
 
+/// Task 11c: a terminus an affected probe stores no state for composes id
+/// 34's own texel there. One-sided at terminus 0, the probe reads S^b₀ at
+/// t′ = 0, the exact mix toward id 34 at 0.5, and today's atlas byte for
+/// byte at 1; one-sided at terminus 1 likewise. A second mover at the probe
+/// adds a zero difference at its unstored terminus, so the first mover's
+/// lerp composes alone there.
+#[test]
+fn an_unstored_terminus_composes_id_34_and_adds_no_difference() {
+    let Some(ctx) = bc_gpu_or_skip("an_unstored_terminus_composes_id_34_and_adds_no_difference")
+    else {
+        return;
+    };
+    let today = compose(&ctx, &mut build_scene(&ctx, None, false), &[]);
+    let section = channel_section(
+        &[
+            Bounce {
+                mover_id: 7,
+                masks: [0b01, 0b10],
+                s0: 0.5,
+                s1: 0.125,
+            },
+            Bounce {
+                mover_id: 9,
+                masks: [0b10, 0b00],
+                s0: 1.0,
+                s1: 0.0,
+            },
+        ],
+        false,
+    );
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    // Mover 7 alone: probe 0 stores S^b₀ only, probe 1 S^b₁ only.
+    for (t, probe_0, probe_1) in [
+        (0.0, 0.5, BASE),
+        (0.5, 0.5 + (BASE - 0.5) * 0.5, BASE + (0.125 - BASE) * 0.5),
+        (1.0, BASE, 0.125),
+    ] {
+        let atlas = compose(&ctx, &mut scene, &[state(7, t)]);
+        assert_tile(
+            &atlas,
+            0,
+            probe_0 + DELTA_RED,
+            &format!("probe 0 at t′ = {t}"),
+        );
+        assert_tile(
+            &atlas,
+            1,
+            probe_1 + DELTA_RED,
+            &format!("probe 1 at t′ = {t}"),
+        );
+    }
+    let open = compose(&ctx, &mut scene, &[state(7, 1.0)]);
+    assert_eq!(
+        outside_probe_1(&open),
+        outside_probe_1(&today),
+        "at its unstored terminus probe 0 composes today's texels exactly"
+    );
+    // Mover 9 at probe 1 stores S^b₀ only: at t′ = 1 it adds nothing, so
+    // mover 7's lerp composes alone; at t′ = 0 it adds S^b₀ − id 34.
+    for t7 in [0.0, 0.5, 1.0] {
+        let lerp7 = BASE + (0.125 - BASE) * t7;
+        let atlas = compose(&ctx, &mut scene, &[state(7, t7), state(9, 1.0)]);
+        assert_tile(
+            &atlas,
+            1,
+            lerp7 + DELTA_RED,
+            &format!("probe 1, mover 9 at its unstored terminus, t7 = {t7}"),
+        );
+        let atlas = compose(&ctx, &mut scene, &[state(7, t7), state(9, 0.0)]);
+        assert_tile(
+            &atlas,
+            1,
+            lerp7 + (1.0 - BASE) + DELTA_RED,
+            &format!("probe 1, mover 9 at S^b₀, t7 = {t7}"),
+        );
+    }
+}
+
+/// Every texel outside probe 1's tile, byte for byte.
+fn outside_probe_1(atlas: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for y in 0..ATLAS[1] {
+        for x in 0..ATLAS[0] {
+            if (TILE..2 * TILE).contains(&x) && y < TILE {
+                continue;
+            }
+            let at = ((y * ATLAS[0] + x) * 8) as usize;
+            bytes.extend_from_slice(&atlas[at..at + 8]);
+        }
+    }
+    bytes
+}
+
 /// B11/C10 (GPU): a streamed bounce block composes nothing at a cell until
 /// its payload arrives, then exactly what the resident build composes; the
 /// eviction frees the payload and the cell composes id 34 again; the
@@ -483,9 +583,10 @@ fn a_streamed_bounce_cell_composes_the_resident_bytes_only_while_resident() {
     else {
         return;
     };
+    // Probe 2 stores S^b₀ only: the pooled payload holds stored tiles alone.
     let bounces = [Bounce {
         mover_id: 7,
-        mask: 0b101,
+        masks: [0b101, 0b001],
         s0: 0.5,
         s1: 0.125,
     }];

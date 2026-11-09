@@ -2,8 +2,8 @@ use super::*;
 use postretro_level_format::mover_probe_channel::MoverPayloadPlacement::{Resident, Streamed};
 use postretro_level_format::mover_probe_channel::{
     BounceEntryParts, DepthRecordParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT,
-    MoverBounceEntry, MoverChannelCell, MoverDepthRecord, MoverDirectRecord, MoverLightRampRecord,
-    MoverProbeChannelParts,
+    MOVER_PROBE_CHANNEL_EPOCH, MoverBounceEntry, MoverChannelCell, MoverDepthRecord,
+    MoverDirectRecord, MoverLightRampRecord, MoverProbeChannelParts,
 };
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_format::{SectionBlob, SectionId};
@@ -82,7 +82,7 @@ fn bounce(cell: u32, mover_id: u32, affected_probe_mask: u64) -> BounceEntryPart
         cell,
         entry: MoverBounceEntry {
             mover_id,
-            affected_probe_mask,
+            stored_probe_masks: [affected_probe_mask; 2],
         },
         tiles: vec![
             0x3800;
@@ -96,6 +96,7 @@ fn depth(mover_id: u32, probe_index: u32) -> DepthRecordParts {
         record: MoverDepthRecord {
             mover_id,
             probe_index,
+            stored_termini: [true; 2],
         },
         tiles: vec![[0x3c00, 0x4000]; 2 * PROBE_DEPTH_TILE_TEXELS],
     }
@@ -274,8 +275,8 @@ fn a_wrong_epoch_is_refused_by_name() {
     assert_eq!(
         level.decode(&bytes),
         Err(Error::EpochMismatch {
-            found: 4,
-            expected: 3
+            found: MOVER_PROBE_CHANNEL_EPOCH + 1,
+            expected: MOVER_PROBE_CHANNEL_EPOCH
         })
     );
 }
@@ -1262,11 +1263,14 @@ fn a_prl_whose_id_59_and_live_tiles_fill_the_range_exactly_loads_and_one_more_is
                 bounce: Vec::new(),
                 depth: (0..live)
                     .map(|probe_index| DepthRecordParts {
+                        // One stored terminus: the range counts live tiles,
+                        // one per probe, however many termini it stores.
                         record: MoverDepthRecord {
                             mover_id: 7,
                             probe_index,
+                            stored_termini: [true, false],
                         },
-                        tiles: vec![[0x3c00, 0x4000]; 2 * PROBE_DEPTH_TILE_TEXELS],
+                        tiles: vec![[0x3c00, 0x4000]; PROBE_DEPTH_TILE_TEXELS],
                     })
                     .collect(),
             },

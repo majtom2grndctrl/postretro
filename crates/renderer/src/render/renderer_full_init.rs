@@ -89,6 +89,7 @@ pub(crate) fn build_full_renderer(
             depth_tiles: None,
             sh: None,
             stream_base_present: false,
+            stream_base_probes: None,
             stream_animation_descriptors: None,
             indirect_delta_present: false,
             direct: None,

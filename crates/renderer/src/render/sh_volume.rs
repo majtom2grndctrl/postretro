@@ -183,6 +183,10 @@ pub(super) struct ShVolumeSections<'a> {
     /// Whole-resident billboard scatter must key its availability to that
     /// metadata seam rather than the legacy compact-atlas upload path.
     pub stream_base_present: bool,
+    /// The streamed base metadata's probes: their averaged moments are what
+    /// an id-57 depth record's unstored terminus blends toward. `None` on a
+    /// whole load, which reads them from `sh`.
+    pub stream_base_probes: Option<&'a [OctahedralShProbe]>,
     /// Streaming retains curve descriptors (including their samples) as fixed
     /// metadata while intentionally omitting id-34's compact atlas body.
     /// Keep the normal group-3 animation buffers live from that metadata.
@@ -402,6 +406,7 @@ impl ShVolumeResources {
         let ShVolumeSections {
             sh: section,
             stream_base_present,
+            stream_base_probes,
             stream_animation_descriptors,
             indirect_delta_present,
             direct: direct_section,
@@ -473,6 +478,13 @@ impl ShVolumeResources {
                 depth_tiles.first_live_tile(),
                 layout,
                 depth_tiles.references(),
+                super::mover_channel::DepthBases {
+                    id59: depth_tiles_section,
+                    probes: usable
+                        .map(|sec| sec.probes.as_slice())
+                        .or(stream_base_probes)
+                        .unwrap_or_default(),
+                },
             );
             ledger.record_host(
                 "mover_closed_pose_depth_tiles",

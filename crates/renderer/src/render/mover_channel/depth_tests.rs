@@ -4,8 +4,11 @@
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
 use super::*;
-use crate::render::mover_channel::depth_test_support::{depth_section, ramp_tile, uniform_tile};
+use crate::render::mover_channel::depth_test_support::{
+    depth_section, ramp_tile, stored_depth_section, uniform_tile,
+};
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
+use postretro_level_format::sh_volume::OctahedralShProbe;
 
 struct Plan {
     depth: MoverDepthTiles,
@@ -19,18 +22,32 @@ struct Plan {
 impl Plan {
     /// `section` bound after `id59` id-59 tiles, which tile `id59_probes`.
     fn new(section: &MoverProbeChannelSection, id59_probes: &[u32]) -> Self {
-        let ids = section.mover_ids();
-        let mut depth = MoverDepthTiles::new(Some(section), &ids);
         let id59 = ProbeDepthTilesSection {
             probe_indices: id59_probes.to_vec(),
             texels: vec![[0, 0]; id59_probes.len() * PROBE_DEPTH_TILE_TEXELS],
         };
+        Self::with_bases(section, &id59, &[])
+    }
+
+    /// `section` bound after `id59`'s tiles, over the id-34 `probes` an
+    /// untiled probe's averaged moments come from.
+    fn with_bases(
+        section: &MoverProbeChannelSection,
+        id59: &ProbeDepthTilesSection,
+        probes: &[OctahedralShProbe],
+    ) -> Self {
+        let ids = section.mover_ids();
+        let mut depth = MoverDepthTiles::new(Some(section), &ids);
         let live = depth.live_tile_count();
-        let references = ProbeDepthTileReferences::from_section(Some(&id59), live);
+        let references = ProbeDepthTileReferences::from_section(Some(id59), live);
         depth.bind(
-            id59_probes.len() as u32,
+            id59.tile_count() as u32,
             references.texture_layout().expect("tiles lay out"),
             &references,
+            DepthBases {
+                id59: Some(id59),
+                probes,
+            },
         );
         Self {
             depth,
@@ -132,6 +149,91 @@ fn a_live_tile_blends_its_movers_closed_pose_tiles_exact_at_both_termini() {
             _ => assert_within_ulp(plan.tile(live), exact(t)),
         }
     }
+}
+
+/// Task 11c: a terminus a record stores no tile for blends toward the
+/// probe's base moment set: its id-59 tile where it has one, else its
+/// averaged id-34 moments in every texel. At that terminus the live tile
+/// holds the base bit for bit; elsewhere it is the exact linear mix. With
+/// two movers, a mover at its unstored terminus offers the base as its pair
+/// in the nearer-occluder rule.
+#[test]
+fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
+    let (d0, d1) = (ramp_tile(0.25), ramp_tile(3.0));
+    let tiled = ramp_tile(1.5);
+    // Probe 9 is tiled by id 59 and stores D₀ only; probe 12 is untiled and
+    // stores D₁ only; probe 20 is untiled, mover 4 stores D₀ only and mover
+    // 6 both.
+    let section = stored_depth_section(vec![
+        (4, 9, [Some(d0.clone()), None]),
+        (4, 12, [None, Some(d1.clone())]),
+        (4, 20, [Some(uniform_tile(4.0, 17.0)), None]),
+        (
+            6,
+            20,
+            [Some(uniform_tile(6.0, 37.0)), Some(uniform_tile(0.5, 1.0))],
+        ),
+    ]);
+    let id59 = ProbeDepthTilesSection {
+        probe_indices: vec![9],
+        texels: tiled.clone(),
+    };
+    let moments = |mean: f32, mean_sq: f32| OctahedralShProbe {
+        validity: 1,
+        mean_distance: f32_to_f16_bits(mean),
+        mean_sq_distance: f32_to_f16_bits(mean_sq),
+        density_level: 0,
+        node_scale: 0,
+    };
+    let mut probes = vec![moments(0.0, 0.0); 21];
+    probes[12] = moments(2.0, 4.5);
+    probes[20] = moments(3.0, 9.5);
+    let mut plan = Plan::with_bases(&section, &id59, &probes);
+    let averaged_12 = uniform_tile(2.0, 4.5);
+    let averaged_20 = uniform_tile(3.0, 9.5);
+    // Live tiles follow id 59's one tile, in record order: 9, 12, 20.
+    let (live_9, live_12, live_20) = (1, 2, 3);
+
+    plan.frame(&[(0, 0.0)], &[0]);
+    assert_eq!(plan.tile(live_9), &d0[..], "probe 9 at its stored D₀");
+    assert_eq!(
+        plan.tile(live_12),
+        &averaged_12[..],
+        "probe 12 reads its averaged moments"
+    );
+    plan.frame(&[(0, 1.0)], &[0]);
+    assert_eq!(
+        plan.tile(live_9),
+        &tiled[..],
+        "probe 9 reads its id-59 tile"
+    );
+    assert_eq!(plan.tile(live_12), &d1[..], "probe 12 at its stored D₁");
+    plan.frame(&[(0, 0.5)], &[0]);
+    assert_within_ulp(plan.tile(live_9), |at, channel| {
+        0.5 * f16(d0[at][channel]) + 0.5 * f16(tiled[at][channel])
+    });
+    assert_within_ulp(plan.tile(live_12), |at, channel| {
+        0.5 * f16(averaged_12[at][channel]) + 0.5 * f16(d1[at][channel])
+    });
+
+    // Probe 20: mover 4 at its unstored D₁ offers the averaged moments (E[d]
+    // 3); mover 6 at D₁ offers 0.5, the nearer, then at D₀ offers 6.
+    plan.frame(&[(0, 1.0), (1, 1.0)], &[0, 1]);
+    assert_eq!(plan.tile(live_20), &uniform_tile(0.5, 1.0)[..]);
+    plan.frame(&[(1, 0.0)], &[1]);
+    assert_eq!(
+        plan.tile(live_20),
+        &averaged_20[..],
+        "the base is the nearer pair"
+    );
+    plan.frame(&[(0, 0.0)], &[0]);
+    assert_eq!(plan.tile(live_20), &uniform_tile(4.0, 17.0)[..]);
+
+    // The CPU holds five stored tiles and three base tiles (probes 9, 12, 20).
+    assert_eq!(
+        plan.depth.host_bytes(),
+        (8 * PROBE_DEPTH_TILE_TEXELS * size_of::<[f32; 2]>()) as u64
+    );
 }
 
 /// Depth rows D1 (bit-for-bit clause) and D2's no-state clause, CPU half: a
@@ -337,6 +439,12 @@ fn a_travelling_movers_live_tile_plan_cost_on_a_real_map() {
         id59.map_or(0, |tiles| tiles.tile_count() as u32),
         references.texture_layout().expect("tiles lay out"),
         &references,
+        DepthBases {
+            id59,
+            probes: world
+                .sh_volume()
+                .map_or(&[], |volume| volume.probes.as_slice()),
+        },
     );
     let mut t = vec![0.0f32; ids.len()];
     let all: Vec<u32> = (0..ids.len() as u32).collect();

@@ -184,6 +184,10 @@ pub enum MoverProbeChannelError {
     )]
     DepthRecordOrder { record: usize },
     #[error(
+        "MoverProbeChannelDepthRecordStoresNothing: depth record {record} stores neither terminus; a probe whose depth the mover changes at neither terminus carries no record"
+    )]
+    DepthRecordStoresNothing { record: usize },
+    #[error(
         "MoverProbeChannelRampMover: ramp record {record} names mover {found}, expected {expected}; ramp records cover exactly the movers with entries, ascending"
     )]
     RampMover {

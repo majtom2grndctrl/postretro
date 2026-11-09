@@ -3,19 +3,21 @@
 //
 // The including shader binds `mover_bounce: array<u32>`, the renderer-built
 // table of `render/mover_channel/bounce.rs`: id 27's light → descriptor map,
-// the listed cells, each cell's bounce entries (mover slot, affected-probe
-// mask, first tile half in the cell's payload), one t′ per mover (negative
-// while the game hands over no state), and each cell's payload run of
-// S^b₀/S^b₁ tiles its base word points at. A streamed level places that run
-// per resident cell; while it is not resident the base reads `MB_NONE` and the
-// cell composes id 34 as with no section. That is residency, not a
-// visibility switch: a row composes only with its cluster resident, and every
-// cluster covering a cell carries its payload.
+// the listed cells, each cell's bounce entries (mover slot, one stored-probe
+// mask per terminus, first tile half in the cell's payload), one t′ per mover
+// (negative while the game hands over no state), and each cell's payload run
+// of stored S^b₀/S^b₁ tiles its base word points at. A streamed level places
+// that run per resident cell; while it is not resident the base reads
+// `MB_NONE` and the cell composes id 34 as with no section. That is
+// residency, not a visibility switch: a row composes only with its cluster
+// resident, and every cluster covering a cell carries its payload.
 //
-// The affected mask is storage sparsity only: an unmasked probe composes id
-// 34 exactly as with no section. Mover state blends absolute static bounce
-// states; it never flags, zeroes or excludes a probe, and no light's state
-// drives any of it.
+// The masks are storage sparsity only: an unmasked probe composes id 34
+// exactly as with no section, and a terminus an affected probe stores no
+// state for composes id 34's texel there, so the lerp runs toward id 34 by
+// the mover's t′ alone. Mover state blends absolute static bounce states; it
+// never flags, zeroes or excludes a probe, and no light's state drives any
+// of it.
 
 const MB_HEADER_DESCRIPTOR_COUNT: u32 = 0u;
 const MB_HEADER_CELL_COUNT: u32 = 1u;
@@ -26,7 +28,7 @@ const MB_HEADER_ENTRIES: u32 = 5u;
 const MB_HEADER_MOVER_T: u32 = 6u;
 // Id 27's descriptor map starts right after the header.
 const MB_DESCRIPTORS: u32 = 8u;
-const MB_ENTRY_WORDS: u32 = 4u;
+const MB_ENTRY_WORDS: u32 = 6u;
 // One compact 6×6 RGB f16 tile: id 27's stride.
 const MB_TILE_HALVES: u32 = 108u;
 const MB_NONE: u32 = 0xffffffffu;
@@ -92,19 +94,37 @@ fn mb_entry_t(entry: u32) -> f32 {
     return bitcast<f32>(mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + mb_entry_word(entry, 0u)]);
 }
 
-/// The first half of the entry's S^b₀ tile at `local_probe`, or `MB_NONE`
-/// where its affected mask stores nothing; S^b₁ follows it.
-fn mb_entry_tile(cell: MbCellEntries, entry: u32, local_probe: u32) -> u32 {
-    let low = mb_entry_word(entry, 1u);
-    let high = mb_entry_word(entry, 2u);
+/// Whether `local_probe`'s bit is set in the 64-bit mask at entry words
+/// `field` (low) and `field + 1` (high), and how many set bits precede it.
+struct MbMaskBit {
+    stored: bool,
+    below: u32,
+}
+
+fn mb_mask_bit(entry: u32, field: u32, local_probe: u32) -> MbMaskBit {
+    let low = mb_entry_word(entry, field);
+    let high = mb_entry_word(entry, field + 1u);
     let word = select(low, high, local_probe >= 32u);
     let bit = local_probe % 32u;
-    if (((word >> bit) & 1u) == 0u) {
-        return MB_NONE;
-    }
     let below = countOneBits(word & ((1u << bit) - 1u));
-    let rank = select(below, countOneBits(low) + below, local_probe >= 32u);
-    return cell.base_half + mb_entry_word(entry, 3u) + rank * 2u * MB_TILE_HALVES;
+    return MbMaskBit(
+        ((word >> bit) & 1u) != 0u,
+        select(below, countOneBits(low) + below, local_probe >= 32u),
+    );
+}
+
+/// The first half of the entry's stored S^b₀ (`x`) and S^b₁ (`y`) tiles at
+/// `local_probe`, each `MB_NONE` where that terminus stores no state and the
+/// probe composes id 34 there. Both are `MB_NONE` where the probe is not
+/// affected. Tiles run probe after probe, S^b₀ before S^b₁.
+fn mb_entry_tiles(cell: MbCellEntries, entry: u32, local_probe: u32) -> vec2<u32> {
+    let s0 = mb_mask_bit(entry, 1u, local_probe);
+    let s1 = mb_mask_bit(entry, 3u, local_probe);
+    let first = cell.base_half + mb_entry_word(entry, 5u)
+        + (s0.below + s1.below) * MB_TILE_HALVES;
+    let tile0 = select(MB_NONE, first, s0.stored);
+    let tile1 = select(MB_NONE, first + select(0u, MB_TILE_HALVES, s0.stored), s1.stored);
+    return vec2<u32>(tile0, tile1);
 }
 
 /// Texel `texel_index` (RGB) of the tile whose first half is `tile_half`.

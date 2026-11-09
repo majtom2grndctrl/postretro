@@ -1060,7 +1060,7 @@ mod tests {
                         cell: 0,
                         entry: MoverBounceEntry {
                             mover_id: 0,
-                            affected_probe_mask: 1,
+                            stored_probe_masks: [1, 1],
                         },
                         tiles: vec![0; 2 * MOVER_IRRADIANCE_TILE_F16_COUNT],
                     })

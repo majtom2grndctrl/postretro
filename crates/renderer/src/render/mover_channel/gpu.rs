@@ -19,7 +19,7 @@ use postretro_level_format::mover_probe_channel::{
 };
 
 use super::bounce::BounceLayout;
-use super::depth::{MoverDepthTiles, ReferenceChange};
+use super::depth::{DepthBases, MoverDepthTiles, ReferenceChange};
 use super::layout::{
     CellWrite, MoverChannelError, MoverChannelInputs, MoverChannelLayout, MoverChannelRows,
     NO_BASE, TermRow,
@@ -437,14 +437,16 @@ impl MoverChannelResources {
         self.depth = MoverDepthTiles::default();
     }
 
-    /// Bind the depth block's live tiles to the installed tile texture.
+    /// Bind the depth block's live tiles to the installed tile texture;
+    /// `bases` gives the moment set an unstored terminus blends toward.
     pub(in crate::render) fn bind_depth(
         &mut self,
         first_live_tile: u32,
         layout: postretro_level_format::probe_depth_tiles::ProbeDepthTileTextureLayout,
         references: &postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences,
+        bases: DepthBases<'_>,
     ) {
-        self.depth.bind(first_live_tile, layout, references);
+        self.depth.bind(first_live_tile, layout, references, bases);
     }
 
     /// Plan this frame's live tiles from the held t′: every tile a mover

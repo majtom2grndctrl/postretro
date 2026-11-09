@@ -93,7 +93,8 @@ pub struct MoverCellPayload<'a> {
     pub visibility: &'a [u8],
     /// One tile per masked probe, flagged record after flagged record.
     pub own_tiles: MoverHalves<'a>,
-    /// `S^b₀, S^b₁` per affected probe, entry after entry.
+    /// Per affected probe, its stored `S^b₀` then its stored `S^b₁`, entry
+    /// after entry.
     pub bounce_tiles: MoverHalves<'a>,
 }
 
@@ -208,9 +209,29 @@ pub struct BounceEntryView<'a> {
     /// Dense affinity cell index.
     pub cell: u32,
     pub entry: &'a MoverBounceEntry,
-    /// `S^b₀, S^b₁` per affected probe, x-fastest; `None` when the payload
-    /// streams with id 50 and is not held.
+    /// Per affected probe, x-fastest: its stored `S^b₀` then its stored
+    /// `S^b₁`. `None` when the payload streams with id 50 and is not held.
     pub tiles: Option<MoverHalves<'a>>,
+}
+
+impl<'a> BounceEntryView<'a> {
+    /// Local probe `local`'s `[S^b₀, S^b₁]`: each stored tile, `None` at a
+    /// terminus that stores none (the probe composes id 34 there). `None`
+    /// overall when the probe is not affected or the payload is not held.
+    pub fn probe_tiles(&self, local: u32) -> Option<[Option<MoverHalves<'a>>; 2]> {
+        let tiles = self.tiles?;
+        let slots = self.entry.probe_tiles(local)?;
+        Some(slots.map(|slot| {
+            slot.map(|tile| {
+                tiles
+                    .slice(
+                        tile * MOVER_IRRADIANCE_TILE_F16_COUNT
+                            ..(tile + 1) * MOVER_IRRADIANCE_TILE_F16_COUNT,
+                    )
+                    .expect("an entry's payload covers its stored tiles")
+            })
+        }))
+    }
 }
 
 /// What the direct block holds, for GPU buffer sizing.

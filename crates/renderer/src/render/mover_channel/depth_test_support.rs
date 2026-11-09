@@ -27,9 +27,27 @@ pub(in crate::render) fn ramp_tile(base: f32) -> Vec<[u16; 2]> {
 /// One depth record: mover id, probe index, `D₀`, `D₁`.
 pub(in crate::render) type DepthFixtureRecord = (u32, u32, Vec<[u16; 2]>, Vec<[u16; 2]>);
 
-/// An id-57 section carrying only depth.
+/// One depth record storing only some termini: mover id, probe index, and
+/// `[D₀, D₁]`, `None` where the record stores no tile and the probe reads
+/// its base.
+pub(in crate::render) type StoredDepthRecord = (u32, u32, [Option<Vec<[u16; 2]>>; 2]);
+
+/// An id-57 section carrying only depth, every record storing both termini.
 pub(in crate::render) fn depth_section(
     records: Vec<DepthFixtureRecord>,
+) -> MoverProbeChannelSection {
+    stored_depth_section(
+        records
+            .into_iter()
+            .map(|(mover_id, probe, d0, d1)| (mover_id, probe, [Some(d0), Some(d1)]))
+            .collect(),
+    )
+}
+
+/// An id-57 section carrying only depth, each record storing the termini it
+/// names.
+pub(in crate::render) fn stored_depth_section(
+    records: Vec<StoredDepthRecord>,
 ) -> MoverProbeChannelSection {
     MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
@@ -38,12 +56,13 @@ pub(in crate::render) fn depth_section(
             bounce: Vec::new(),
             depth: records
                 .into_iter()
-                .map(|(mover_id, probe_index, d0, d1)| DepthRecordParts {
+                .map(|(mover_id, probe_index, tiles)| DepthRecordParts {
                     record: MoverDepthRecord {
                         mover_id,
                         probe_index,
+                        stored_termini: tiles.each_ref().map(Option::is_some),
                     },
-                    tiles: [d0, d1].concat(),
+                    tiles: tiles.into_iter().flatten().flatten().collect(),
                 })
                 .collect(),
         },

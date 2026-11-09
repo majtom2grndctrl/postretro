@@ -1,15 +1,17 @@
 // Mover probe channel bounce table: id 57's bounce block laid out for the
 // indirect SH compose, which binds it at binding 25 in place of a separate
 // light → descriptor map (id 27's map folds in, as id 45's folds into the
-// direct table). Per listed cell: its bounce entries (mover slot, affected
-// mask, first tile half), and one payload run of S^b₀/S^b₁ tiles its base
-// word points at: fixed in a whole table, placed per resident cell in a
-// pooled one. wgpu-free; `gpu.rs` owns the buffer.
+// direct table). Per listed cell: its bounce entries (mover slot, one stored
+// mask per terminus, first tile half), and one payload run of the stored
+// S^b₀/S^b₁ tiles its base word points at: fixed in a whole table, placed
+// per resident cell in a pooled one. wgpu-free; `gpu.rs` owns the buffer.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 //
-// The affected mask is storage sparsity only: an unmasked probe composes id
-// 34 exactly as with no section. Mover state blends absolute bounce states;
-// it never flags, zeroes or excludes a probe.
+// The masks are storage sparsity only: an unmasked probe composes id 34
+// exactly as with no section, and an affected probe's unstored terminus
+// composes id 34's texel there, so the lerp runs toward id 34 by the mover's
+// t′ alone. Mover state blends absolute bounce states; it never flags,
+// zeroes or excludes a probe.
 
 use postretro_level_format::mover_probe_channel::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MoverCellPayload, MoverProbeChannelSection,
@@ -21,11 +23,11 @@ use super::layout::{CellWrite, MoverChannelError, MoverRows, NO_BASE, NO_STATE};
 /// descriptor map starts right after it, so the compose reads a light's
 /// descriptor at a fixed offset.
 pub(super) const BOUNCE_HEADER_WORDS: usize = 8;
-/// Words per bounce entry: mover slot, affected mask (two words), first tile
-/// half within the cell's payload.
-const ENTRY_WORDS: usize = 4;
-/// f16 halves per affected probe: the S^b₀ tile, then the S^b₁ tile.
-const PROBE_HALVES: usize = 2 * MOVER_IRRADIANCE_TILE_F16_COUNT;
+/// Words per bounce entry: mover slot, the S^b₀ mask (two words), the S^b₁
+/// mask (two words), first tile half within the cell's payload.
+const ENTRY_WORDS: usize = 6;
+/// f16 halves per stored (probe, terminus): one tile.
+const TILE_HALVES: usize = MOVER_IRRADIANCE_TILE_F16_COUNT;
 /// An f16 whose exponent bits are all set is infinite or NaN.
 const F16_EXPONENT: u16 = 0x7c00;
 
@@ -34,7 +36,7 @@ struct BounceCellPlan {
     cell: u32,
     /// Position in the section's `cells`.
     position: usize,
-    /// f16 halves of the cell's tiles (a multiple of `PROBE_HALVES`, so even).
+    /// f16 halves of the cell's tiles (a multiple of `TILE_HALVES`, so even).
     halves: usize,
 }
 
@@ -72,7 +74,7 @@ impl BounceLayout {
                 entry_count += entries.len();
                 let halves = section.bounce_entries[entries]
                     .iter()
-                    .map(|entry| entry.affected_probe_mask.count_ones() as usize * PROBE_HALVES)
+                    .map(|entry| entry.stored_tile_count() * TILE_HALVES)
                     .sum();
                 cells.push(BounceCellPlan {
                     cell: listed.cell,
@@ -135,11 +137,14 @@ impl BounceLayout {
                         )));
                     };
                     let at = entries_word + entry * ENTRY_WORDS;
+                    let [m0, m1] = bounce.stored_probe_masks;
                     words[at] = slot as u32;
-                    words[at + 1] = bounce.affected_probe_mask as u32;
-                    words[at + 2] = (bounce.affected_probe_mask >> 32) as u32;
-                    words[at + 3] = half as u32;
-                    half += bounce.affected_probe_mask.count_ones() as usize * PROBE_HALVES;
+                    words[at + 1] = m0 as u32;
+                    words[at + 2] = (m0 >> 32) as u32;
+                    words[at + 3] = m1 as u32;
+                    words[at + 4] = (m1 >> 32) as u32;
+                    words[at + 5] = half as u32;
+                    half += bounce.stored_tile_count() * TILE_HALVES;
                     rows[slot].push(plan.cell);
                     entry += 1;
                 }

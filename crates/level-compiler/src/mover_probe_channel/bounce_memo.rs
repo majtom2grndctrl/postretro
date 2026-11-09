@@ -18,7 +18,9 @@ use crate::surface_materials::stats::BounceMaterials;
 const STAGE_ID: &str = "mover_probe_bounce";
 /// 2: posed patch-direct segments meet the posed sides through the static
 /// tracer's own segment test ([`super::posed_solid::PosedSolid`]).
-const STAGE_VERSION: u32 = 2;
+/// 3: per-terminus storage. A terminus within the round-trip bar of id 34,
+/// or a depth pose no gather ray meets, stores nothing.
+const STAGE_VERSION: u32 = 3;
 
 /// The per-mover memo over one stage cache, under one id-34 volume key: an
 /// edit that re-bakes id 34 re-keys every mover.

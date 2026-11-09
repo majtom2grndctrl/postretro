@@ -945,3 +945,92 @@ Over 15,288 lit px, in summed RGB.
 - No windowed run; nothing stalled.
 
 **Also.** `closet_mover_channel` now reads through `composed_tiles::read_halves`, replacing its own copy.
+
+### Task 11c
+
+Built 2026-11-09 on the main checkout (AMD Radeon Pro 5300M, Metal), on top of task 11b (ffc3a2dbc), uncommitted. Maps were built with the release `prl-build` into one scratch cache: before with ffc3a2dbc's compiler, after with 11c's.
+
+**What an unchanged terminus is.**
+- **Bounce.** The domain is unchanged: a probe is affected when its state at either terminus leaves both the round-trip bar and the 2-level floor. Each affected probe now stores `S^b_k` only at a terminus whose state leaves the round-trip bar (`PosedProbe::changed`). A state within the bar stores nothing; under `--uncompressed-irradiance` the bar is 0, so only an exact match stores nothing. The gather keeps a tile for every probe past the bar, not only for affected ones, so a terminus past the bar but under the floor is stored beside an affected one.
+- **Depth.** An exact test, at the ray level: terminus k stores `D_k` only if some gather ray of the probe meets the mover posed at k. A terminus no ray meets bins the mover-absent gather's tile bit for bit, so it stores nothing, and the live tile blends toward the probe's base there.
+  - The significance comparison was not used. It scores a tile against the probe's averaged moments, so at an untiled probe the static gather's own tile can clear 0.05 although nothing changed.
+  - The record rule is unchanged (some met terminus scores ≥ 0.05). So every record stores at least one tile, and the record and live-tile sets do not move.
+  - `static_depth_tile`, which filled the unmet terminus, is deleted.
+
+**Epoch 4.** Only id 57 changes, and id 50 shrinks where the bounce payload streams.
+- Header byte 0 is 4.
+- Bounce entry, 24 B: `u32 mover_id, u32 reserved 0, u64 m₀, u64 m₁`. `m_k` holds the probes storing `S^b_k`. The affected mask is `m₀ | m₁`, a non-empty subset of the valid mask; either `m_k` may be empty. Payload per entry, per affected probe x-fastest: `S^b₀` if stored, then `S^b₁` if stored.
+- Depth record, 12 B: `u32 mover_id, u32 probe_index, u32 stored termini` (bit 0 `D₀`, bit 1 `D₁`; non-zero; other bits reserved 0). Payload per record: `D₀` if stored, then `D₁` if stored.
+- New refusals: `MoverProbeChannelDepthRecordStoresNothing`; a reserved termini bit is `ReservedBits` ("depth record stored-termini bits"); a bounce entry storing nothing is `ProbeMaskEmpty` on the union.
+- Streamed rows keep their shape; a cell's bounce row holds its stored tiles only.
+- Views: `MoverBounceEntry::{affected_probe_mask, stored_tile_count, probe_tiles}`, `BounceEntryView::probe_tiles`, `MoverDepthRecord::{order_key, stored_tile_count}`, and `MoverProbeChannelSection::depth_record_tiles`, which replaces `depth_tile_pair`.
+- Memo `mover_probe_bounce` v3: each probe carries a stored-termini byte and only its stored tiles.
+
+**Renderer.**
+- Bounce table entries are 6 words: slot, `m₀` (2), `m₁` (2), first tile half. Whole and pooled tables hold stored tiles only.
+- `mover_bounce.wgsl` `mb_entry_tiles` gives each terminus's tile or `MB_NONE`. At an unstored terminus, `sh_compose.wgsl` reads `sample_compact_base_atlas`, the texel the pass composes with no section in that mode.
+- The lerp is exact at both termini, and a later mover adds `(state − base)`. So a mover resting at an unstored terminus adds exactly zero. The clamp and the id-27 deltas are unchanged.
+- Depth: `MoverDepthTiles` holds the stored tiles. At `bind` it adds one base tile per probe that a record reads at an unstored terminus: the id-59 tile the probe's reference names, else its averaged id-34 moments in every texel.
+  - `DepthBases` carries id 59 and the probes. On a streamed load the probes come from the base metadata (`ShVolumeSections::stream_base_probes`).
+  - The host ledger row counts stored and base tiles.
+
+**Measurements.** Before is ffc3a2dbc's compiler, after is 11c's, all resident at the default bar. "One / two" counts (probe, mover) bounce pairs and depth records by how many termini they store.
+- Only id 57 changes on all four maps; ids 34, 35, 49, 50 and 59 are byte-identical.
+- The affected-probe and depth-record sets are unchanged.
+
+| map | id 57 bytes | bounce payload | bounce pairs one / two (S^b₀ only, S^b₁ only) | depth records one / two (D₀ only, D₁ only) | depth tile bytes | live tiles |
+|---|---|---|---|---|---|---|
+| mover-closet | 85,096 → 42,952 | 62,208 → 31,104 | 144: 144 / 0 (144, 0) | 28: 28 / 0 (28, 0) | 22,400 → 11,200 | 28 |
+| mover-setpiece | 8,963,434 → 6,688,026 | 5,790,960 → 3,545,856 | 13,405: 10,394 / 3,011 (10,098, 296) | 1,000: 94 / 906 (83, 11) | 800,000 → 762,400 | 991 |
+| kinematic-platform | 8,450,466 → 4,353,858 | 8,260,272 → 4,170,744 | 19,121: 18,933 / 188 (11,478, 7,455) | 138: 63 / 75 (34, 29) | 110,400 → 85,200 | 125 |
+| campaign-test | 197,000 → 182,608 | 4,320 → 2,160 | 10: 10 / 0 (0, 10) | 234: 33 / 201 (30, 3) | 187,200 → 174,000 | 229 |
+
+Before, every pair and record stored both termini. Each bounce entry grows 8 B and each depth record 4 B. Scratch builds:
+- `mover-setpiece` at bar 0 (both blocks streamed): id 50 goes from 18,542,862 to 15,480,414 B and id 57 from 832,648 to 802,344 B; id 49 is unchanged. With every cell resident, its streamed pools hold 6,547,416 B live (was 8,792,520).
+- Under `--uncompressed-irradiance` the bar is 0, so nearly every pair stores both termini. The closet has 37 two-sided pairs of 158, because the open pose moves those probes by at most 1.2e-4. On the setpiece all 13,844 pairs are two-sided. Depth does not depend on the encoding.
+- Setpiece's live-tile CPU plan per travelling mover (dev profile, `a_travelling_movers_live_tile_plan_cost_on_a_real_map`) is 0.19 ms for the wall and 0.26 ms for the room, as in task 10. The host row holds 1,598,400 B: the stored tiles plus 94 base tiles.
+
+**Proof.**
+
+| Row | Test | Result |
+|---|---|---|
+| B3 | `closed_door_closet_bounce_matches_the_static_door_reference` | pass: 144 closet probes store S^b₀, worst \|composed − reference\| 0 against bar 0 (unchanged). None stores S^b₁, so the open door composes id 34 |
+| B4 | `closed_door_depth_tiles_match_the_static_door_references_tiles` | pass: 28 of 40 reference tiles carried, 28 records (unchanged) |
+| B7 base | `raised_room_bounce_is_nearer_the_static_room_reference_than_today` | pass: 224 interior probes, median 0.0747, max 2.78 levels, ratio 0.284 (unchanged) |
+| B7 direct | `raised_room_direct_composes_within_one_q_step_of_the_static_room_reference` | pass: 1,025 pairs, worst 0.500011 q steps (unchanged) |
+| B8 | `a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits` (ignored, on demand). Extended: each stored probe stores terminus k exactly where k's re-bake leaves the round-trip bar | pass: closet 191 probes (191 one-sided); setpiece mover 0 11,313 (10,540 one-sided), mover 1 3,154 (502) |
+| B16 | `mover_probe_channel_cache` (10 tests) | pass |
+| B17 | `mover_probe_channel_prl_parity` against `t6/prl-build-parent` | pass |
+| Memo | `states::tests::the_memo_round_trips_one_sided_states_and_refuses_a_probe_storing_nothing` | pass |
+| Format | level-format `per_terminus_storage_sits_at_its_pinned_offsets_and_is_refused_when_malformed`, `a_bounce_entrys_probe_tiles_count_only_stored_termini`, and the round-trip tests, whose sample now has a one-sided entry and record | pass |
+| C3, two movers, clamp, residency (synthetic) | `bounce_compose_tests`; the streamed fixture now has a one-sided probe | pass |
+| Unstored bounce terminus | `an_unstored_terminus_composes_id_34_and_adds_no_difference` | pass: a probe one-sided at either terminus reads S^b_k, the exact mix, then id 34. At its unstored terminus its texels equal today's byte for byte, and a second mover at its unstored terminus adds nothing |
+| Unstored depth terminus | `an_unstored_terminus_blends_toward_the_probes_base_moments` | pass: the base (id-59 tile, or flat averaged moments) is held bit for bit at that terminus, with the exact mix between. The two-mover nearer rule takes the base as that mover's pair |
+| D1–D14 | `mover_channel::depth` and `mover_depth_tiles` tests | pass |
+| Residency (real map) | `streamed_mover_channel::a_streamed_id_57_payload_places_the_resident_builds_words_per_resident_cell` (setpiece default and bar 0) | pass: 179 direct and 303 bounce cells place the resident words |
+| C9 renderer half | `closet_mover_channel::c9_…` (`off`) | pass: 15,504 indirect and 3,890 depth halves move, each at the mix |
+| C10 | `mover_channel_modes::c10_…` on the five PRLs. Its base-out formula now counts each lerp's weight w on an unstored terminus: with c = n − 1 − Σw, (with state) + c × (no state) is mode-independent. Outputs reading no base are held bit for bit; one mover reading id 34 is held within one f16 step | pass. Closet at t′ 1: no indirect half moves in either mode, so the open door composes today's atlas. Setpiece, one mover reading id 34: worst 1.0 step at t′ 0.5, 0 at t′ 1; two movers ≤ 0.94. The depth texture is bit-identical across modes at every t′ |
+| C7 | `mover_channel_lag::c7_…` (closet, setpiece bar 0) | pass |
+| K1 | `k1_…`, now running `sync-proof` and `off` in one test | pass, see below |
+| K2 | `k2_…` | pass: closed 27.556 against 29.041; open 31.164 against stripped 31.158 (was 31.174) |
+| K3 | static and animated | pass: set-piece 5.025 / 5.495 against 5.495; closet 0; animated 0.000 / 1.050 against 1.050 |
+| D2 frames, C10 frames | `d2_…`, `c10_…` captures | pass, figures as task 11 |
+
+**K1** (luma 0–255, reflections off):
+
+| mode | station | closed outside-door (reference) | open | open, id 57 stripped | pixels differing, open |
+|---|---|---|---|---|---|
+| sync-proof | 2 | 0.0056 (0.0059) | 13.8891 | 13.8891 | 0 |
+| sync-proof | 3 | 0.0160 (0.0171) | 29.7218 | 29.7218 | 0 |
+| off | 2 | 0.0057 (0.0060) | 14.0072 | 14.0072 | 0 |
+| off | 3 | 0.0160 (0.0178) | 29.8428 | 29.8428 | 0 |
+
+- The open door now renders today's frame exactly on both paths. It missed by 0.093 / 0.132 under `sync-proof` and by 0.213 / 0.259 under `off`.
+- Pools read 0.000, and the door's closet face reads 0.000 against the reference's 0.000.
+
+**Gates.**
+- `cargo test` with `POSTRETRO_REQUIRE_GPU=1` on level-compiler, level-format, level-loader, renderer and postretro: 7,747 passed, 0 failed, 101 ignored. With `--features postretro/capture`: 7,839 passed, 0 failed, 129 ignored. The ignored rows named above were run on demand.
+- Clippy `--all-targets -D warnings` is clean on the same set, with and without `--features postretro/capture`. `cargo fmt` applied.
+- No windowed run; nothing stalled.
+
+**For task 12 (docs).** `build_pipeline.md` §PRL section IDs and the brief's Wire format table need epoch 4: the bounce entry and depth record rows, their payload rows, and the new refusal. `rendering_pipeline.md` §4 needs the unchanged-terminus compose and live-tile base. `build_pipeline.md` §Build Cache needs `mover_probe_bounce` v3. K1 now runs `sync-proof` and `off` in one test.

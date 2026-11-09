@@ -12,7 +12,7 @@ use postretro_level_format::mover_probe_channel::{
 use postretro_level_format::sh_reconstruct::local_xyz;
 
 use super::direct::ProbeCells;
-use super::states::MoverBounceStates;
+use super::states::{BounceProbe, MoverBounceStates};
 use crate::affinity_grid::AFFINITY_FACTOR;
 
 /// The bounce and depth blocks of id 57, laid out for assembly.
@@ -29,13 +29,19 @@ pub(crate) struct BounceBlockCounts {
     pub(crate) bounce_movers: usize,
     pub(crate) depth_movers: usize,
     pub(crate) bounce_entries: usize,
-    /// Σ affected probes over bounce entries: two tiles each.
+    /// Σ affected probes over bounce entries.
     pub(crate) affected_probes: usize,
+    /// Affected probes storing a state at one terminus only: the other
+    /// composes id 34.
+    pub(crate) one_sided_probes: usize,
     pub(crate) bounce_payload_bytes: u64,
     pub(crate) depth_records: usize,
+    /// Depth records storing a tile at one terminus only: the other reads
+    /// the probe's base.
+    pub(crate) one_sided_records: usize,
     /// One renderer-owned live tile per distinct depth probe.
     pub(crate) live_tiles: usize,
-    /// Two CPU-held closed-pose tiles per depth record.
+    /// CPU-held closed-pose tiles: one per stored (record, terminus).
     pub(crate) closed_pose_tiles: usize,
 }
 
@@ -45,32 +51,33 @@ impl BounceBlocks {
         let mut blocks = Self::default();
         for states in movers {
             // Each cell's affected probes, x-fastest by local index as the
-            // mask reads them (dense probe order is not local order).
-            let mut by_cell: BTreeMap<u32, Vec<(usize, &[u16])>> = BTreeMap::new();
+            // masks read them (dense probe order is not local order).
+            let mut by_cell: BTreeMap<u32, Vec<(usize, &BounceProbe)>> = BTreeMap::new();
             for probe in &states.bounce {
                 let (cell, local) = cell_of(probe.probe, cells);
                 debug_assert!(
                     cells.valid_masks[cell as usize] & (1 << local) != 0,
                     "an affected probe is valid"
                 );
-                by_cell
-                    .entry(cell)
-                    .or_default()
-                    .push((local, probe.tiles.as_slice()));
+                by_cell.entry(cell).or_default().push((local, probe));
             }
             for (cell, mut probes) in by_cell {
                 probes.sort_unstable_by_key(|&(local, _)| local);
+                let mut stored_probe_masks = [0u64; 2];
+                for &(local, probe) in &probes {
+                    for (mask, stored) in stored_probe_masks.iter_mut().zip(probe.stored) {
+                        *mask |= u64::from(stored) << local;
+                    }
+                }
                 blocks.bounce.push(BounceEntryParts {
                     cell,
                     entry: MoverBounceEntry {
                         mover_id: states.mover_id,
-                        affected_probe_mask: probes
-                            .iter()
-                            .fold(0u64, |mask, &(local, _)| mask | 1 << local),
+                        stored_probe_masks,
                     },
                     tiles: probes
                         .into_iter()
-                        .flat_map(|(_, tiles)| tiles.iter().copied())
+                        .flat_map(|(_, probe)| probe.tiles.iter().copied())
                         .collect(),
                 });
             }
@@ -79,6 +86,7 @@ impl BounceBlocks {
                     record: MoverDepthRecord {
                         mover_id: states.mover_id,
                         probe_index: probe.probe,
+                        stored_termini: probe.stored,
                     },
                     tiles: probe.tiles.clone(),
                 });
@@ -96,7 +104,15 @@ impl BounceBlocks {
             affected_probes: self
                 .bounce
                 .iter()
-                .map(|part| part.entry.affected_probe_mask.count_ones() as usize)
+                .map(|part| part.entry.affected_probe_mask().count_ones() as usize)
+                .sum(),
+            one_sided_probes: self
+                .bounce
+                .iter()
+                .map(|part| {
+                    let [m0, m1] = part.entry.stored_probe_masks;
+                    (m0 ^ m1).count_ones() as usize
+                })
                 .sum(),
             bounce_payload_bytes: self
                 .bounce
@@ -104,8 +120,17 @@ impl BounceBlocks {
                 .map(|part| part.tiles.len() as u64 * 2)
                 .sum(),
             depth_records: self.depth.len(),
+            one_sided_records: self
+                .depth
+                .iter()
+                .filter(|part| part.record.stored_tile_count() == 1)
+                .count(),
             live_tiles: self.live_tile_count(),
-            closed_pose_tiles: 2 * self.depth.len(),
+            closed_pose_tiles: self
+                .depth
+                .iter()
+                .map(|part| part.record.stored_tile_count())
+                .sum(),
         }
     }
 
@@ -125,14 +150,17 @@ impl BounceBlocks {
         let counts = self.counts();
         log::info!(
             "[MoverLight] MoverProbeChannel (id 57) bounce block: {} entr(y/ies) from {} \
-             mover(s), {} affected probe(s), payload {} B (resident bar {} B); depth block: {} \
-             record(s) from {} mover(s), {} live tile(s), {} CPU-held closed-pose tile(s)",
+             mover(s), {} affected probe(s) ({} storing one terminus), payload {} B (resident \
+             bar {} B); depth block: {} record(s) ({} storing one terminus) from {} mover(s), {} \
+             live tile(s), {} CPU-held closed-pose tile(s)",
             counts.bounce_entries,
             counts.bounce_movers,
             counts.affected_probes,
+            counts.one_sided_probes,
             counts.bounce_payload_bytes,
             MOVER_BOUNCE_RESIDENT_BYTE_BAR,
             counts.depth_records,
+            counts.one_sided_records,
             counts.depth_movers,
             counts.live_tiles,
             counts.closed_pose_tiles,

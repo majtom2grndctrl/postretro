@@ -317,18 +317,22 @@ impl RealLevel {
         probes
     }
 
-    /// Probes id 57 carries a bounce state at, each with how many movers
-    /// carry one there.
-    pub(super) fn bounce_probes(&self) -> BTreeMap<u32, u32> {
-        let mut probes = BTreeMap::new();
+    /// Probes id 57 carries a bounce state at, each with the stored termini
+    /// of every mover that carries one there: `[S^b₀, S^b₁]` stored.
+    pub(super) fn bounce_probes(&self) -> BTreeMap<u32, Vec<[bool; 2]>> {
+        let mut probes: BTreeMap<u32, Vec<[bool; 2]>> = BTreeMap::new();
         for (listed, cell) in self.channel.cells.iter().enumerate() {
             let entries = &self.channel.bounce_entries[self.channel.bounce_offsets[listed] as usize
                 ..self.channel.bounce_offsets[listed + 1] as usize];
             for entry in entries {
-                let mut masked = BTreeSet::new();
-                self.masked_probes(cell.cell, entry.affected_probe_mask, &mut masked);
-                for probe in masked {
-                    *probes.entry(probe).or_insert(0) += 1;
+                for bit in 0..64 {
+                    let Some(tiles) = entry.probe_tiles(bit) else {
+                        continue;
+                    };
+                    probes
+                        .entry(self.cell_probe(cell.cell, bit))
+                        .or_default()
+                        .push(tiles.map(|tile| tile.is_some()));
                 }
             }
         }

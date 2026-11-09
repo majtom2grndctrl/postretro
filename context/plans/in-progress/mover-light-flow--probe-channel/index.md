@@ -181,11 +181,11 @@ Capture (`--features capture`, run `--ignored`, GPU-gated):
 
 ## Wire format
 
-`MoverProbeChannel`, id 57. Revised during the build (epoch 2, tasks 5, 6b and 6c, 2026-11-08; epoch 3, task 7b, 2026-11-09; `plan.md` Corrections): a sparse cell list, one term record per (cell, light) shared by its movers, and a probe mask. The depth block mirrors id 59's (`ProbeDepthTiles`) tile bytes.
+`MoverProbeChannel`, id 57. Revised during the build (epoch 2, tasks 5, 6b and 6c, 2026-11-08; epoch 3, task 7b, and epoch 4, task 11c, 2026-11-09; `plan.md` Corrections): a sparse cell list, one term record per (cell, light) shared by its movers, and a probe mask. The depth block mirrors id 59's (`ProbeDepthTiles`) tile bytes.
 
 | Item | Pin |
 |---|---|
-| Endianness, version | Little-endian. First byte is a `u8` section-internal epoch, 3, exact-match |
+| Endianness, version | Little-endian. First byte is a `u8` section-internal epoch, 4, exact-match |
 | Header | `affinity_factor` (`u8`, 4), `affinity_dims` (`u32` × 3), `direct_placement` then `bounce_placement` (`u8` each: 0 resident, 1 streamed with id 50); 16 bytes. The grid must equal id 34's, which id 35 shares |
 | Cell index | `u32` listed-cell count N, then per listed cell (12 B): `u32` dense affinity cell index, `u64` valid-probe mask (= id 34's validity). Lists exactly the cells holding a direct record or bounce entry, strictly ascending. No dense per-cell array. Every listed cell is L0 base storage |
 | Direct index | `u32` × (N + 1) CSR offsets of term records per listed cell; last = R |
@@ -196,10 +196,10 @@ Capture (`--features capture`, run `--ignored`, GPU-gated):
 | Visibility payload | Per mover entry in order, per masked probe x-fastest: `u8` q₀ then `u8` q₁, q = byte / 255; a mover stores 255 at a masked probe it leaves unchanged |
 | Own tiles | Flagged records only, in record order: one compact RGB f16 tile per masked probe, id 41's stride and dimension (6×6, 108 halves), once per record, never per mover. Namespace 2 is always flagged; namespaces 0 and 1 are flagged unless id 41 (L0, id-40 selection) or id 45 as emitted holds the term per probe at the cell (P22) |
 | Empty | The section is omitted when the direct, bounce and depth blocks all have no entries, never written empty; any one may be empty alone |
-| Bounce index | `u32` × (N + 1) CSR offsets of bounce entries per listed cell; each entry 16 B: `u32` mover id, `u32` reserved 0, `u64` affected-probe mask (non-empty subset of the valid mask); ordered by mover id, no duplicates |
-| Bounce payload | Per bounce entry, per affected probe in x-fastest order: the S^b_0 tile then the S^b_1 tile, id 27's compact RGB f16 octahedral tile stride and dimension |
-| Depth index | `u32` record count, then per record, ordered by mover id then probe index, no duplicates: `u32` mover id, `u32` dense probe index (a valid id-34 probe) |
-| Depth payload | Per depth record, in record order: the D₀ tile then the D₁ tile, each id 59's bordered tile (edge 8, border 1), `[f16 E[d], f16 E[d²]]` per texel, row-major |
+| Bounce index | `u32` × (N + 1) CSR offsets of bounce entries per listed cell; each entry 24 B: `u32` mover id, `u32` reserved 0, `u64` m₀, `u64` m₁, where m_k is the probes storing S^b_k (a terminus outside the probe's round-trip bar of id 34). The affected mask m₀ | m₁ is a non-empty subset of the valid mask; either m_k may be empty. Ordered by mover id, no duplicates |
+| Bounce payload | Per bounce entry, per affected probe in x-fastest order: the S^b_0 tile if stored, then the S^b_1 tile if stored (an unstored terminus composes id 34), id 27's compact RGB f16 octahedral tile stride and dimension |
+| Depth index | `u32` record count, then per record, ordered by mover id then probe index, no duplicates: `u32` mover id, `u32` dense probe index (a valid id-34 probe), `u32` stored termini (bit 0 = D₀, bit 1 = D₁, set where some gather ray of the probe meets the mover posed at k; non-zero, other bits 0) |
+| Depth payload | Per depth record, in record order: the D₀ tile if stored, then the D₁ tile if stored (an unstored terminus blends toward the probe's id-59 tile or averaged moments), each id 59's bordered tile (edge 8, border 1), `[f16 E[d], f16 E[d²]]` per texel, row-major |
 | Ramp record | Per mover with entries in any block, ordered by mover id: `u32` mover id, `f32` s, `f32` e; brief 2 extends the rule to its own entries |
 | Streamed payload | A block placed 1 omits its payload here: the direct block's visibility payload and own tiles, or the bounce block's tiles. Id 50 carries them per listed cell (source kind 2, row block kind 4: 16 B rows of cell, direct length, bounce length; direct bytes are q then own tiles), and id 49 lists the id-57 resource rows. Indexes, records, masks, mover entries, depth and ramps stay here. A streamed placement with no matching id-50 source is a load error |
 | Sentinels | None. An unresolved id, an index out of range, a reserved bit set, a listed cell with no entry, a mask that is not tight, or trailing bytes is a load error |

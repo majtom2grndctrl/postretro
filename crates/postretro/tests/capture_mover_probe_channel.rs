@@ -142,8 +142,10 @@ fn closet_pool_pixels(pose: Pose) -> impl Fn(u32, u32) -> bool {
 // reference plus 0.02, and the closet pool stays as dark as the reference's.
 // The door's closet face is recorded beside the reference's for the Manual
 // closet row. Forced open at its last waypoint, the closet reads within 0.02
-// of the same PRL with id 57 stripped. Replaces `mover_door_closet_does_not_darken`,
-// which asserted the old glow.
+// of the same PRL with id 57 stripped. Every clause runs under streaming
+// `sync-proof` and `off`: an unchanged terminus reads id 34 as each mode
+// composes it (task 11c), so the open door renders today's frame on both.
+// Replaces `mover_door_closet_does_not_darken`, which asserted the old glow.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
 fn k1_closet_closed_reads_as_dark_as_the_static_door_and_open_reads_as_stripped() {
@@ -151,65 +153,89 @@ fn k1_closet_closed_reads_as_dark_as_the_static_door_and_open_reads_as_stripped(
     let closet = compile_dev_map(&run.workspace, "mover-closet");
     let reference = compile_dev_map(&run.workspace, "mover-closet-static-door");
     let stripped = without_channel(&run.workspace, &closet, "mover-closet-no-id57", false);
-    let closed = scene(vec![(CLOSET_DOOR, 0.0)]);
-    let open = scene(vec![(CLOSET_DOOR, 1.0)]);
-    let plain = scene(Vec::new());
     let mut misses = Vec::new();
 
-    for (pose, name) in [(STATION_2, "st2"), (STATION_3, "st3")] {
-        let door = ScreenBox::of(DOOR_MIN, DOOR_MAX, pose, RESOLUTION);
-        let outside = |x, y| !door.contains(x, y);
-        let posed = run.capture(&closet, &format!("t11-k1-closed-{name}"), pose, &closed);
-        let tiled = run.capture(&reference, &format!("t11-k1-ref-{name}"), pose, &plain);
-        let posed_out = masked_mean(&posed, outside, luma).expect("pixels outside the door");
-        let tiled_out = masked_mean(&tiled, outside, luma).expect("pixels outside the door");
-        let pool = closet_pool_pixels(pose);
-        let posed_pool = masked_mean(&posed, &pool, luma).expect("the pool is in view");
-        let tiled_pool = masked_mean(&tiled, &pool, luma).expect("the pool is in view");
+    for mode in ["sync-proof", "off"] {
+        let in_mode = |scene: Scene| Scene {
+            streaming: Some(mode),
+            ..scene
+        };
+        let closed = in_mode(scene(vec![(CLOSET_DOOR, 0.0)]));
+        let open = in_mode(scene(vec![(CLOSET_DOOR, 1.0)]));
+        let plain = in_mode(scene(Vec::new()));
+        for (pose, name) in [(STATION_2, "st2"), (STATION_3, "st3")] {
+            let door = ScreenBox::of(DOOR_MIN, DOOR_MAX, pose, RESOLUTION);
+            let outside = |x, y| !door.contains(x, y);
+            let posed = run.capture(&closet, &format!("k1-{mode}-closed-{name}"), pose, &closed);
+            let tiled = run.capture(&reference, &format!("k1-{mode}-ref-{name}"), pose, &plain);
+            let posed_out = masked_mean(&posed, outside, luma).expect("pixels outside the door");
+            let tiled_out = masked_mean(&tiled, outside, luma).expect("pixels outside the door");
+            let pool = closet_pool_pixels(pose);
+            let posed_pool = masked_mean(&posed, &pool, luma).expect("the pool is in view");
+            let tiled_pool = masked_mean(&tiled, &pool, luma).expect("the pool is in view");
+            eprintln!(
+                "K1 {mode} {name} closed: frame {:.4} outside-door {posed_out:.4} pool \
+                 {posed_pool:.4}; static-door reference: frame {:.4} outside-door \
+                 {tiled_out:.4} pool {tiled_pool:.4}",
+                frame_mean(&posed),
+                frame_mean(&tiled),
+            );
+            if posed_out > tiled_out + BAR {
+                misses.push(format!(
+                    "{mode} {name}: closed closet {posed_out} against the reference's {tiled_out} + {BAR}"
+                ));
+            }
+            if posed_pool > tiled_pool + BAR {
+                misses.push(format!(
+                    "{mode} {name}: closed closet pool {posed_pool} against the reference's {tiled_pool} + {BAR}"
+                ));
+            }
+
+            let opened = run.capture(&closet, &format!("k1-{mode}-open-{name}"), pose, &open);
+            let opened_stripped = run.capture(
+                &stripped,
+                &format!("k1-{mode}-open-stripped-{name}"),
+                pose,
+                &open,
+            );
+            let (with, without) = (frame_mean(&opened), frame_mean(&opened_stripped));
+            let moved = opened
+                .pixels()
+                .zip(opened_stripped.pixels())
+                .filter(|(a, b)| a != b)
+                .count();
+            eprintln!(
+                "K1 {mode} {name} open: {with:.4}; id 57 stripped: {without:.4}; {moved} pixel(s) differ"
+            );
+            if (with - without).abs() > BAR {
+                misses.push(format!(
+                    "{mode} {name}: forced open {with} against stripped {without}"
+                ));
+            }
+        }
+
+        let door = ScreenBox::of(DOOR_MIN, DOOR_MAX, DOOR_FACE, RESOLUTION);
+        let face = |image: &RgbaImage| {
+            masked_mean(image, |x, y| door.contains(x, y), luma).expect("the door face is in view")
+        };
+        let posed = run.capture(
+            &closet,
+            &format!("k1-{mode}-closed-doorface"),
+            DOOR_FACE,
+            &closed,
+        );
+        let tiled = run.capture(
+            &reference,
+            &format!("k1-{mode}-ref-doorface"),
+            DOOR_FACE,
+            &plain,
+        );
         eprintln!(
-            "K1 {name} closed: frame {:.4} outside-door {posed_out:.4} pool {posed_pool:.4}; \
-             static-door reference: frame {:.4} outside-door {tiled_out:.4} pool {tiled_pool:.4}",
-            frame_mean(&posed),
-            frame_mean(&tiled),
+            "K1 {mode} door closet face (Manual closet row): closed {:.4}; static-door reference {:.4}",
+            face(&posed),
+            face(&tiled)
         );
-        if posed_out > tiled_out + BAR {
-            misses.push(format!(
-                "{name}: closed closet {posed_out} against the reference's {tiled_out} + {BAR}"
-            ));
-        }
-        if posed_pool > tiled_pool + BAR {
-            misses.push(format!(
-                "{name}: closed closet pool {posed_pool} against the reference's {tiled_pool} + {BAR}"
-            ));
-        }
-
-        let opened = run.capture(&closet, &format!("t11-k1-open-{name}"), pose, &open);
-        let opened_stripped = run.capture(
-            &stripped,
-            &format!("t11-k1-open-stripped-{name}"),
-            pose,
-            &open,
-        );
-        let (with, without) = (frame_mean(&opened), frame_mean(&opened_stripped));
-        eprintln!("K1 {name} open: {with:.4}; id 57 stripped: {without:.4}");
-        if (with - without).abs() > BAR {
-            misses.push(format!(
-                "{name}: forced open {with} against stripped {without}"
-            ));
-        }
     }
-
-    let door = ScreenBox::of(DOOR_MIN, DOOR_MAX, DOOR_FACE, RESOLUTION);
-    let face = |image: &RgbaImage| {
-        masked_mean(image, |x, y| door.contains(x, y), luma).expect("the door face is in view")
-    };
-    let posed = run.capture(&closet, "t11-k1-closed-doorface", DOOR_FACE, &closed);
-    let tiled = run.capture(&reference, "t11-k1-ref-doorface", DOOR_FACE, &plain);
-    eprintln!(
-        "K1 door closet face (Manual closet row): closed {:.4}; static-door reference {:.4}",
-        face(&posed),
-        face(&tiled)
-    );
     assert!(
         misses.is_empty(),
         "K1 misses its bars:\n{}",

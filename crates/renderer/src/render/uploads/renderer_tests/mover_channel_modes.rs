@@ -17,9 +17,14 @@
 //!   two f16 stores' rounding.
 //! - Indirect, at a probe n movers carry bounce at: compose writes
 //!   Σ lerp(S^b₀, S^b₁, t′) − (n − 1) × base, plus id 27's deltas, which the
-//!   no-state frame also carries; so (with state) + (n − 1) × (no state) is
-//!   Σ lerp + n × deltas, the same in both modes. At n = 1 that is the
-//!   composed tile itself, bit for bit; at n = 0 the indirect does not move.
+//!   no-state frame also carries. A terminus a mover stores no state for
+//!   reads the base there (task 11c), so its lerp puts weight w = (1 − t′)
+//!   or t′ on the base: the compose writes Σ stored parts + (Σ w − (n − 1))
+//!   × base + deltas. With c = n − 1 − Σ w, (with state) + c × (no state)
+//!   is Σ stored parts + (1 + c) × deltas, the same in both modes. Where c
+//!   is 0 (one mover reading no base) that is the composed tile itself, bit
+//!   for bit; at n = 0 the indirect does not move; elsewhere the two f16
+//!   stores' rounding bounds it.
 //!
 //! Under `--uncompressed-irradiance` both loads hold the same bases, and
 //! every comparison is bit for bit.
@@ -155,15 +160,42 @@ impl Clamped {
     }
 }
 
-/// Indirect channel classes by bounce movers at the probe: 0, 1, 2 or more.
-const CLASS_NAMES: [&str; 3] = ["no bounce", "one mover", "several movers"];
+/// Indirect channel classes: no bounce mover at the probe; one mover whose
+/// lerp reads no base at this t′; one mover reading the base at an unstored
+/// terminus; two or more movers.
+const CLASS_NAMES: [&str; 4] = [
+    "no bounce",
+    "one mover",
+    "one mover reading id 34",
+    "several movers",
+];
+
+/// The weight the no-state frame takes in the mode-independent indirect
+/// output at a probe whose movers store `stored` termini, all at `t`:
+/// c = n − 1 − Σ w, w being each lerp's weight on an unstored terminus.
+fn base_weight(stored: &[[bool; 2]], t: f32) -> f32 {
+    let reads_base: f32 = stored
+        .iter()
+        .map(|&[s0, s1]| {
+            let mut w = 0.0;
+            if !s0 {
+                w += 1.0 - t;
+            }
+            if !s1 {
+                w += t;
+            }
+            w
+        })
+        .sum();
+    stored.len() as f32 - 1.0 - reads_base
+}
 
 /// The per-map C10 numbers, printed and asserted by the caller.
 struct MapGaps {
     /// Every stored tile with no state, off against sync-proof.
     baseline: [Gap; 3],
     /// Per handed t: the indirect channel output per bounce class.
-    indirect: Vec<[Gap; 3]>,
+    indirect: Vec<[Gap; 4]>,
     /// Per handed t: halves either mode clamped at zero (a several-mover
     /// bounce sum, or a gated direct term past its base), which the output
     /// comparison leaves to [`Clamped`].
@@ -178,7 +210,7 @@ struct MapGaps {
     depth: Vec<(usize, usize)>,
 }
 
-fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, u32>) -> MapGaps {
+fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, Vec<[bool; 2]>>) -> MapGaps {
     let mut baseline: [Gap; 3] = Default::default();
     assert_eq!(
         off.stored.keys().collect::<Vec<_>>(),
@@ -210,8 +242,9 @@ fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, u32>) -> Ma
         moved: Vec::new(),
         depth: Vec::new(),
     };
-    for at in 1..TS.len() {
-        let mut indirect: [Gap; 3] = Default::default();
+    for (at, t) in TS.iter().enumerate().skip(1) {
+        let t = t.expect("a handed t");
+        let mut indirect: [Gap; 4] = Default::default();
         let mut direct: [Gap; 2] = Default::default();
         let mut clamped = Clamped::default();
         let mut moved = [(0, 0); 3];
@@ -221,7 +254,9 @@ fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, u32>) -> Ma
                 &sync.channel[at][probe],
                 &sync.channel[0][probe],
             );
-            let movers = bounce.get(probe).copied().unwrap_or(0);
+            let stored = bounce.get(probe).map_or(&[][..], Vec::as_slice);
+            let movers = stored.len();
+            let base = base_weight(stored, t);
             for atlas in 0..3 {
                 let (Some(a), Some(a0), Some(b), Some(b0)) = (
                     &off_now[atlas],
@@ -250,16 +285,20 @@ fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, u32>) -> Ma
                         direct[atlas - 1].add(a - a0, b - b0, scale);
                         continue;
                     }
-                    let class = movers.min(2) as usize;
+                    let class = match movers {
+                        0 => 0,
+                        1 if base == 0.0 => 1,
+                        1 => 2,
+                        _ => 3,
+                    };
                     if class == 0 {
                         // No bounce entry: the indirect holds in each mode.
                         indirect[0].add(a, a0, a.abs().max(a0.abs()));
                         indirect[0].add(b, b0, b.abs().max(b0.abs()));
                         continue;
                     }
-                    let base = movers as f32 - 1.0;
-                    if class == 2 && clamps {
-                        clamped.add([a, a0, b, b0], base);
+                    if class > 1 && clamps {
+                        clamped.add([a, a0, b, b0], base.abs());
                         continue;
                     }
                     let scale = a
@@ -302,8 +341,9 @@ fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, u32>) -> Ma
 /// The f16 stores' rounding, in steps at the largest magnitude involved:
 /// each composed half lies within half a step of the f32 the compose
 /// computed, and an output combines two halves per mode, one of them
-/// weighted (n − 1) at a probe n movers carry bounce at. One step covers
-/// the direct atlases and two movers, the most any fixture puts on a probe.
+/// weighted c (|c| ≤ 1 for at most two movers) at a probe movers carry
+/// bounce at. One step covers the direct atlases, one mover reading id 34
+/// and two movers, the most any fixture puts on a probe.
 const ROUNDING_STEPS: f32 = 1.0;
 
 /// C10 on each map named by `MOVER_C10_PRLS` (`:`-separated compiled PRLs,
@@ -344,13 +384,18 @@ fn c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe() {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or(path);
-        let several = bounce.values().filter(|&&movers| movers > 1).count();
+        let several = bounce.values().filter(|movers| movers.len() > 1).count();
+        let one_sided = bounce
+            .values()
+            .flatten()
+            .filter(|stored| **stored != [true, true])
+            .count();
         assert!(
-            bounce.values().all(|&movers| movers <= 2),
+            bounce.values().all(|movers| movers.len() <= 2),
             "{name}: ROUNDING_STEPS covers at most two movers at a probe"
         );
         eprintln!(
-            "[C10] {name}: {} channel probes (direct {}, bounce {} of which {several} under several movers, depth {})",
+            "[C10] {name}: {} channel probes (direct {}, bounce {} of which {several} under several movers, {one_sided} (probe, mover) pair(s) storing one terminus, depth {})",
             probes.len(),
             direct.len(),
             bounce.len(),
@@ -373,7 +418,7 @@ fn c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe() {
         for (at, t) in TS.iter().enumerate().skip(1) {
             let t = t.unwrap();
             for (class, gap) in gaps.indirect[at - 1].iter().enumerate() {
-                let steps = if class == 2 { ROUNDING_STEPS } else { 0.0 };
+                let steps = if class > 1 { ROUNDING_STEPS } else { 0.0 };
                 check(
                     &mut misses,
                     format!("t′ {t} indirect output, {}", CLASS_NAMES[class]),

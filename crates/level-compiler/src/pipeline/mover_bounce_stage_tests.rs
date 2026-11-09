@@ -348,7 +348,9 @@ fn light_bounces_zero_bakes_depth_alone_and_a_count_past_id_34s_bakes_id_34s() {
 // on the closet and the setpiece, differs from id 34 beyond the
 // affected-probe rule (each probe's own BC6H round-trip bar and the
 // perceptual floor), recomputed here from the kept tiles, exactly at the
-// probes each mover's bounce states store. Heavy: whole posed re-bakes.
+// probes each mover's bounce states store. Task 11c: each stored probe
+// stores a terminus's state exactly where that terminus's re-bake leaves the
+// round-trip bar alone. Heavy: whole posed re-bakes.
 #[test]
 #[ignore = "re-bakes every valid probe at both termini of every mover; run on demand"]
 fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits() {
@@ -381,6 +383,7 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
             let slots = compact_slots(&layout);
             let dim = base.section.tile_dimension as usize;
             let mut beyond: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+            let mut past_bar: BTreeMap<(u32, usize), BTreeSet<u32>> = BTreeMap::new();
             for pose in &outcome.poses {
                 assert_eq!(
                     pose.probes.len(),
@@ -388,14 +391,18 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                     "{name}: every valid probe re-baked"
                 );
                 let set = beyond.entry(pose.mover_id).or_default();
+                let bar_set = past_bar
+                    .entry((pose.mover_id, pose.terminus.index()))
+                    .or_default();
                 for probe in &pose.probes {
                     let tile = probe.tile.as_ref().expect("every tile kept");
                     let id34 = compact_tile(&base.section, slots[probe.probe as usize] as usize);
                     let difference = max_abs_difference(tile, &id34);
-                    if difference > round_trip_error(&id34, dim, false)
-                        && display_levels(tile, &id34) > BOUNCE_FLOOR_LEVELS
-                    {
-                        set.insert(probe.probe);
+                    if difference > round_trip_error(&id34, dim, false) {
+                        bar_set.insert(probe.probe);
+                        if display_levels(tile, &id34) > BOUNCE_FLOOR_LEVELS {
+                            set.insert(probe.probe);
+                        }
                     }
                 }
             }
@@ -413,6 +420,26 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                     stored, expected,
                     "{name} mover #{}: stored probes are the full re-bake's beyond the rule",
                     states.mover_id
+                );
+                let mut one_sided = 0;
+                for probe in &states.bounce {
+                    for terminus in 0..2 {
+                        let leaves_bar = past_bar
+                            .get(&(states.mover_id, terminus))
+                            .is_some_and(|set| set.contains(&probe.probe));
+                        assert_eq!(
+                            probe.stored[terminus], leaves_bar,
+                            "{name} mover #{} probe {} terminus {terminus}: a state is stored \
+                             exactly where it leaves the round-trip bar",
+                            states.mover_id, probe.probe
+                        );
+                    }
+                    one_sided += usize::from(probe.stored != [true, true]);
+                }
+                eprintln!(
+                    "{name} mover #{}: {one_sided} of {} stored probe(s) store one terminus",
+                    states.mover_id,
+                    states.bounce.len()
                 );
             }
             assert!(

@@ -101,6 +101,10 @@ pub(crate) fn bake_mover_bounce(
                 control,
             );
             let bounce_one = start.elapsed();
+            // TEMPORARY (task 2, B7 patch trace): no-op unless
+            // `POSTRETRO_DEV_PATCH_DUMP` is set.
+            super::dev_trace::dump_patches("mover-one", scene.patches.patches(), &radiance.mover);
+            super::dev_trace::dump_patches("world-one", inputs.patches.patches(), &radiance.world);
             let start = Instant::now();
             add_posed_later_bounces(
                 &ctx,
@@ -111,6 +115,12 @@ pub(crate) fn bake_mover_bounce(
                 control,
             );
             let later = start.elapsed();
+            super::dev_trace::dump_patches("mover-final", scene.patches.patches(), &radiance.mover);
+            super::dev_trace::dump_patches(
+                "world-final",
+                inputs.patches.patches(),
+                &radiance.world,
+            );
             let start = Instant::now();
             let gather = PosedGather::new(inputs.patches, &radiance, scene);
             let probes = gather_posed_probes(

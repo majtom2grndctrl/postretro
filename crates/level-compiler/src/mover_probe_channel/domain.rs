@@ -74,6 +74,42 @@ pub(crate) fn max_abs_difference(a: &[OctahedralAtlasTexel], b: &[OctahedralAtla
         .fold(0.0, f32::max)
 }
 
+/// The renderer's default indirect scale (`renderer_types.rs`
+/// `DEFAULT_INDIRECT_SCALE`); the compiler cannot depend on the renderer.
+const DISPLAY_INDIRECT_SCALE: f32 = 0.33;
+/// The receiver the perceptual measure lights: mid-grey.
+const DISPLAY_ALBEDO: f32 = 0.5;
+
+/// Linear to sRGB-encoded, 0..=1, as the capture's `Rgba8UnormSrgb` target
+/// writes it. The soft-knee tonemap is the identity below 0.98, far above
+/// any bounce-only receiver here.
+fn srgb_encode(linear: f32) -> f32 {
+    let x = linear.clamp(0.0, 1.0);
+    if x <= 0.003_130_8 {
+        12.92 * x
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// How far apart two irradiance tiles read on a display: the largest change,
+/// over texels and RGB channels, in 8-bit sRGB levels of a mid-grey receiver
+/// lit by each tile's texel alone through the default indirect scale and the
+/// tonemap. Indirect only, so it never hides a change behind direct light;
+/// local and deterministic like the round-trip bar.
+pub(crate) fn display_levels(a: &[OctahedralAtlasTexel], b: &[OctahedralAtlasTexel]) -> f32 {
+    let k = DISPLAY_ALBEDO * DISPLAY_INDIRECT_SCALE;
+    a.iter()
+        .zip(b)
+        .flat_map(|(a, b)| {
+            (0..3).map(move |c| {
+                let (x, y) = (f16_bits_to_f32(a.rgba[c]), f16_bits_to_f32(b.rgba[c]));
+                255.0 * (srgb_encode(k * x) - srgb_encode(k * y)).abs()
+            })
+        })
+        .fold(0.0, f32::max)
+}
+
 /// A tile's own round-trip error: BC6H-encoded alone and decoded, the
 /// largest absolute error over its texels and RGB channels. The tile pads
 /// to whole blocks by repeating its last row and column, so the padding
@@ -148,6 +184,17 @@ mod tests {
         let error = round_trip_error(&ramp, 6, false);
         assert!(error > 0.0 && error < 0.05, "ramp round-trip error {error}");
         assert_eq!(round_trip_error(&ramp, 6, true), 0.0);
+    }
+
+    #[test]
+    fn display_levels_are_zero_for_equal_tiles_and_larger_for_darker_ones() {
+        let a = tile(|_| 0.1);
+        assert_eq!(display_levels(&a, &a), 0.0);
+        // The same absolute change reads more levels on a darker tile, as
+        // sRGB is steeper near black.
+        let dark = display_levels(&tile(|_| 0.02), &tile(|_| 0.03));
+        let bright = display_levels(&tile(|_| 1.0), &tile(|_| 1.01));
+        assert!(dark > bright && bright > 0.0, "dark {dark} bright {bright}");
     }
 
     #[test]

@@ -230,12 +230,20 @@ pub(crate) fn bake_sh_base_with_movers(
     crate::live_bytes::phase("sum");
     drop(layers);
     let bounce_one = (!movers.is_empty()).then(|| radiance.clone());
+    // TEMPORARY (mover-light-flow--probe-channel task 2, B7 patch trace):
+    // no-ops unless `POSTRETRO_DEV_PATCH_DUMP` is set.
+    crate::mover_probe_channel::dev_trace::dump_patches("static-one", patches.patches(), &radiance);
     add_later_bounces(
         &ctx.ray_ctx(),
         &patches,
         &mut radiance,
         bounce_fill,
         control,
+    );
+    crate::mover_probe_channel::dev_trace::dump_patches(
+        "static-final",
+        patches.patches(),
+        &radiance,
     );
     #[cfg(test)]
     crate::live_bytes::phase("later bounces");

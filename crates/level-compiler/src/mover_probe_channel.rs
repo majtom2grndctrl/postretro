@@ -6,7 +6,9 @@
 mod bake;
 mod bounce;
 pub(crate) mod dev_bounce;
+pub(crate) mod dev_floor;
 pub(crate) mod dev_pose;
+pub(crate) mod dev_trace;
 mod domain;
 mod gather;
 mod posed_scene;

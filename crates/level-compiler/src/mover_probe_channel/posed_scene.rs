@@ -223,6 +223,7 @@ impl PosedScene {
         dir: Vec3,
         max: f32,
         skip: &[usize],
+        grow: f64,
     ) -> Option<PosedHit> {
         let (o, d) = (origin.as_dvec3(), dir.as_dvec3());
         // The box tests run in f64 with a hair of slack; the distance test
@@ -237,7 +238,7 @@ impl PosedScene {
             if skip.contains(&index) || !ray_may_touch_box(o, d, reach, &brush.bounds) {
                 continue;
             }
-            let Some((t, plane)) = brush_entry(o, d, brush) else {
+            let Some((t, plane)) = brush_entry(o, d, brush, grow) else {
                 continue;
             };
             if (t as f32) <= max && best.is_none_or(|(nearest, _, _)| t < nearest) {
@@ -260,11 +261,13 @@ impl PosedScene {
 /// The closed-form entry of a ray into one convex brush: the parameter
 /// where it crosses into the last half-space it starts outside, and that
 /// plane; `(0, None)` from inside. `None` when it never enters.
-fn brush_entry(o: DVec3, d: DVec3, brush: &PosedBrush) -> Option<(f64, Option<usize>)> {
+// TEMPORARY `grow` (task 2, B7 τ experiment): every plane pushed out by
+// `grow` metres; 0 outside `POSTRETRO_DEV_POSED_TAU`.
+fn brush_entry(o: DVec3, d: DVec3, brush: &PosedBrush, grow: f64) -> Option<(f64, Option<usize>)> {
     let (mut enter, mut exit) = (0.0_f64, f64::INFINITY);
     let mut entered: Option<usize> = None;
     for (index, &(normal, distance)) in brush.planes.iter().enumerate() {
-        let start = normal.dot(o) - distance;
+        let start = normal.dot(o) - distance - grow;
         let along = normal.dot(d);
         if along == 0.0 {
             if start > 0.0 {

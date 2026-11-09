@@ -14,7 +14,7 @@ use rayon::prelude::*;
 
 use super::InsideBrushRule;
 use super::bounce::PosedRadiance;
-use super::domain::{compact_tile, max_abs_difference, round_trip_error};
+use super::domain::{compact_tile, display_levels, max_abs_difference, round_trip_error};
 use super::posed_scene::{PosedScene, PosedSurfaces};
 use crate::bake_control::BakeControl;
 use crate::sh_bake::{
@@ -88,7 +88,13 @@ impl<'a> PosedGather<'a> {
         // A posed face flush with a static one leaves the static hit.
         if let Some(posed) = self
             .scene
-            .ray_entry(origin + dir * RAY_EPSILON, dir, nearest, skip)
+            .ray_entry(
+                origin + dir * RAY_EPSILON,
+                dir,
+                nearest,
+                skip,
+                super::dev_trace::posed_tau(),
+            )
             .filter(|posed| posed.distance < nearest)
         {
             MET.set(true);
@@ -127,6 +133,8 @@ pub(crate) struct PosedProbe {
     /// round-trip error: the bar.
     pub(crate) difference: f32,
     pub(crate) bar: f32,
+    /// The same change in display levels ([`display_levels`]).
+    pub(crate) levels: f32,
     /// S^b's tile, kept when the probe is affected (or every probe, asked).
     pub(crate) tile: Option<Vec<OctahedralAtlasTexel>>,
     /// The closed-pose bordered depth tile, when a gather ray meets the pose.
@@ -134,8 +142,10 @@ pub(crate) struct PosedProbe {
 }
 
 impl PosedProbe {
+    /// Past the round-trip bar and, when one is set, the perceptual floor.
     pub(crate) fn affected(&self) -> bool {
         self.difference > self.bar
+            && super::dev_floor::bounce_floor().is_none_or(|floor| self.levels > floor)
     }
 }
 
@@ -203,16 +213,25 @@ pub(crate) fn gather_posed_probes(
             } else {
                 0.0
             };
-            let affected = difference > bar;
-            Some(PosedProbe {
+            let levels = if difference > 0.0 {
+                display_levels(&tile, &base_tile)
+            } else {
+                0.0
+            };
+            let mut probe = PosedProbe {
                 probe: i as u32,
                 slot: slots[i],
                 distance_m: scene.distance_to_bounds(position) as f32,
                 difference,
                 bar,
-                tile: (affected || keep_every_tile).then_some(tile),
+                levels,
+                tile: None,
                 depth: met.then(|| bordered_tile(&rays.interior(&distances))),
-            })
+            };
+            if probe.affected() || keep_every_tile {
+                probe.tile = Some(tile);
+            }
+            Some(probe)
         })
         .collect()
 }

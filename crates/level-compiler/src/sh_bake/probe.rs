@@ -274,6 +274,22 @@ fn bake_probe_rgb_along(
             RadianceSource::Patches(patches) => patches.sample(&ctx, probe_pos, *dir, far_sentinel),
             RadianceSource::Posed(posed) => posed.sample(&ctx, probe_pos, *dir, far_sentinel),
         };
+        // TEMPORARY (mover-light-flow--probe-channel task 2, B7 per-ray
+        // trace): a no-op unless `POSTRETRO_DEV_PROBE_RAY_DUMP` is set.
+        if !matches!(source, RadianceSource::Lights(_)) {
+            crate::mover_probe_channel::dev_trace::dump_ray(
+                if matches!(source, RadianceSource::Posed(_)) {
+                    "posed"
+                } else {
+                    "base"
+                },
+                probe_index,
+                ray_index,
+                *dir,
+                distance,
+                radiance,
+            );
+        }
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
         sum_d += distance;
         sum_d2 += distance * distance;

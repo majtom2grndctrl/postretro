@@ -245,6 +245,57 @@ impl PartialEq for Candidate {
 
 impl Eq for Candidate {}
 
+/// The largest absolute change between `before`'s visibility and `tile`'s
+/// over `probe`'s valid in-grid lattice neighbours, each at its own distance.
+/// `before` maps the offset toward a neighbour to the moments the probe reads
+/// without `tile`: its averaged id-34 pair, or its own id-59 tile there.
+/// Id 59's selection score, and the mover probe channel's significance score.
+pub(crate) fn visibility_change(
+    dims: [u32; 3],
+    cell_size: [f32; 3],
+    validity: &[u8],
+    bias: f32,
+    probe: usize,
+    before: impl Fn(Vec3) -> [f32; 2],
+    tile: &[[u16; 2]],
+) -> f32 {
+    let (x, y, z) = probe_index_to_xyz(probe, dims);
+    let cell = Vec3::from(cell_size);
+    let mut largest = 0.0f32;
+    for oz in -1i64..=1 {
+        for oy in -1i64..=1 {
+            for ox in -1i64..=1 {
+                if (ox, oy, oz) == (0, 0, 0) {
+                    continue;
+                }
+                let n = [i64::from(x) + ox, i64::from(y) + oy, i64::from(z) + oz];
+                if n.iter()
+                    .zip(dims)
+                    .any(|(&c, d)| !(0..i64::from(d)).contains(&c))
+                {
+                    continue;
+                }
+                let neighbour = n[0] as usize
+                    + n[1] as usize * dims[0] as usize
+                    + n[2] as usize * dims[0] as usize * dims[1] as usize;
+                if validity[neighbour] == 0 {
+                    continue;
+                }
+                let offset = Vec3::new(ox as f32, oy as f32, oz as f32) * cell;
+                let distance = offset.length();
+                let previous = chebyshev_visibility(before(offset), distance, bias);
+                let after = chebyshev_visibility(
+                    sample_tile_moments(tile, offset.to_array()),
+                    distance,
+                    bias,
+                );
+                largest = largest.max((after - previous).abs());
+            }
+        }
+    }
+    largest
+}
+
 /// Ranks the bake's candidates into at most `cap` tiles while the gather
 /// runs. Each probe offers its own tile from inside the parallel gather, so
 /// no probe's ray distances outlive it; the kept heap is reserved up front at
@@ -313,42 +364,15 @@ impl<'a> DepthTileSelector<'a> {
         averaged: [f32; 2],
         tile: &[[u16; 2]],
     ) -> f32 {
-        let dims = self.layout.dims;
-        let (x, y, z) = probe_index_to_xyz(probe, dims);
-        let cell = Vec3::from(self.layout.cell_size);
-        let mut largest = 0.0f32;
-        for oz in -1i64..=1 {
-            for oy in -1i64..=1 {
-                for ox in -1i64..=1 {
-                    if (ox, oy, oz) == (0, 0, 0) {
-                        continue;
-                    }
-                    let n = [i64::from(x) + ox, i64::from(y) + oy, i64::from(z) + oz];
-                    if n.iter()
-                        .zip(dims)
-                        .any(|(&c, d)| !(0..i64::from(d)).contains(&c))
-                    {
-                        continue;
-                    }
-                    let neighbour = n[0] as usize
-                        + n[1] as usize * dims[0] as usize
-                        + n[2] as usize * dims[0] as usize * dims[1] as usize;
-                    if self.layout.validity[neighbour] == 0 {
-                        continue;
-                    }
-                    let offset = Vec3::new(ox as f32, oy as f32, oz as f32) * cell;
-                    let distance = offset.length();
-                    let before = chebyshev_visibility(averaged, distance, self.bias);
-                    let after = chebyshev_visibility(
-                        sample_tile_moments(tile, offset.to_array()),
-                        distance,
-                        self.bias,
-                    );
-                    largest = largest.max((after - before).abs());
-                }
-            }
-        }
-        largest
+        visibility_change(
+            self.layout.dims,
+            self.layout.cell_size,
+            &self.layout.validity,
+            self.bias,
+            probe,
+            |_| averaged,
+            tile,
+        )
     }
 
     fn offer(&self, candidate: Candidate) {

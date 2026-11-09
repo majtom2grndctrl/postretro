@@ -23,8 +23,9 @@ use crate::map_data::{MapKinematicMover, MapKinematicWaypoint};
 use crate::mover_light_gate::{MoverPoses, Terminus};
 use crate::sh_bake::ProbeDepthTiles;
 
-/// `all`, or one mover's name: re-bake those movers' bounce and depth at
-/// both termini and report them, leaving the PRL unchanged. M1's cost run.
+/// `all`, or a comma list of mover names or `#<mover id>`: re-bake those
+/// movers' bounce and depth at both termini and report them, leaving the PRL
+/// unchanged. M1's cost run.
 pub(crate) const MEASURE_VAR: &str = "POSTRETRO_DEV_MOVER_BOUNCE_MEASURE";
 /// A path: write the dense id-34 tiles, their round-trip errors, id 59 and
 /// (with the pose switch) every valid probe's posed tile and depth.
@@ -90,7 +91,12 @@ pub(crate) fn plan(
                 .iter()
                 .find(|mover| mover.mover_id == analysed.mover_id)
                 .expect("an analysed mover is a map mover");
-            if which != "all" && mover.name != *which {
+            // `all`, or a comma list of names or `#<mover id>` (unnamed movers).
+            let picked = which == "all"
+                || which
+                    .split(',')
+                    .any(|pick| pick == mover.name || pick == format!("#{}", mover.mover_id));
+            if !picked {
                 continue;
             }
             for terminus in Terminus::BOTH {
@@ -132,7 +138,17 @@ pub(crate) fn finish(
     section: &mut OctahedralShVolumeSection,
     tiles: &mut ProbeDepthTiles,
 ) -> anyhow::Result<()> {
-    report(results, section, tiles);
+    // Scores read id 34 and id 59 before the substitution below edits them.
+    let significance = super::dev_floor::Significance::new(section, tiles);
+    let scores = super::dev_floor::depth_scores(results, &significance);
+    let id59_scores = significance.id59_scores();
+    drop(significance);
+    report(results, &scores, &id59_scores, section, tiles);
+    if let Some(path) = std::env::var_os(super::dev_floor::PROBE_TABLE_VAR) {
+        let path = PathBuf::from(path);
+        super::dev_floor::write_table(&path, section, results, &scores, &id59_scores)
+            .with_context(|| format!("probe table: write {}", path.display()))?;
+    }
     if let Some(path) = &dev.dump {
         write_dump(
             path,
@@ -163,7 +179,9 @@ pub(crate) fn finish(
             .collect();
         let mut replaced = 0usize;
         for (probe, tile) in posed.depth() {
-            replaced += usize::from(merged.insert(probe, tile).is_some());
+            if super::dev_floor::keeps_depth(scores[0][&probe]) {
+                replaced += usize::from(merged.insert(probe, tile).is_some());
+            }
         }
         if merged.len() > MAX_PROBE_DEPTH_TILES as usize {
             bail!(
@@ -206,12 +224,36 @@ fn affinity_cell(probe: u32, dims: [u32; 3]) -> [u32; 3] {
     [x / AFFINITY, y / AFFINITY, z / AFFINITY]
 }
 
-fn report(results: &[PosedBounce], section: &OctahedralShVolumeSection, tiles: &ProbeDepthTiles) {
+fn report(
+    results: &[PosedBounce],
+    scores: &[BTreeMap<u32, f32>],
+    id59_scores: &[(u32, f32)],
+    section: &OctahedralShVolumeSection,
+    tiles: &ProbeDepthTiles,
+) {
     let dims = section.grid_dimensions;
-    for posed in results {
+    let kept_depth = |index: usize| {
+        scores[index]
+            .iter()
+            .filter(|&(_, &score)| super::dev_floor::keeps_depth(score))
+            .map(|(&probe, _)| probe)
+    };
+    let mut kept: Vec<f32> = id59_scores.iter().map(|&(_, score)| score).collect();
+    kept.sort_by(f32::total_cmp);
+    log::warn!(
+        "[MoverLight] DEV id 59 kept scores: {} tiles, min {:.4} median {:.4} max {:.4}; \
+         bounce floor {:?} levels, depth floor {:?}",
+        kept.len(),
+        percentile(&kept, 0.0),
+        percentile(&kept, 0.5),
+        percentile(&kept, 1.0),
+        super::dev_floor::bounce_floor(),
+        super::dev_floor::depth_floor(),
+    );
+    for (index, posed) in results.iter().enumerate() {
         let mut distances: Vec<f32> = posed.affected().map(|probe| probe.distance_m).collect();
         distances.sort_by(f32::total_cmp);
-        let depth = posed.depth().count();
+        let depth = kept_depth(index).count();
         let [one, later, gather] = posed.timings.map(|t| t.as_secs_f64());
         log::warn!(
             "[MoverLight] DEV bounce {} {}: {} posed patches, {} re-shaded (patch, light) pairs; \
@@ -254,10 +296,10 @@ fn report(results: &[PosedBounce], section: &OctahedralShVolumeSection, tiles: &
     }
     // Per mover, both termini: the section's bounce and depth blocks.
     let mut movers: BTreeMap<u32, (BTreeSet<u32>, BTreeSet<u32>)> = BTreeMap::new();
-    for posed in results {
+    for (index, posed) in results.iter().enumerate() {
         let (affected, depth) = movers.entry(posed.mover_id).or_default();
         affected.extend(posed.affected().map(|probe| probe.probe));
-        depth.extend(posed.depth().map(|(probe, _)| probe));
+        depth.extend(kept_depth(index));
     }
     let (mut bounce_total, mut depth_total) = (0u64, 0u64);
     let mut live: BTreeSet<u32> = BTreeSet::new();

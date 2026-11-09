@@ -284,7 +284,7 @@ fn gather_patch(
         let nearest = hit.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
         // A posed face flush with a static one leaves the static hit.
         if let Some(posed) = scene
-            .ray_entry(patch.centroid + dir * RAY_EPSILON, dir, nearest, &[])
+            .ray_entry(patch.centroid + dir * RAY_EPSILON, dir, nearest, &[], 0.0)
             .filter(|posed| posed.distance < nearest)
         {
             if scene.surfaces == PosedSurfaces::Patches

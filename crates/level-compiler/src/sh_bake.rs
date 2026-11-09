@@ -17,7 +17,7 @@ pub(crate) use bounce::bounce_sample_index;
 pub(crate) use bounce::{reflected_radiance, soft_visibility_seed};
 pub(crate) use depth_tiles::{
     ProbeDepthTiles, TileRayTable, chebyshev_visibility, depth_tile_bytes,
-    fold_depth_tile_constants, probe_depth_bias,
+    fold_depth_tile_constants, probe_depth_bias, visibility_change,
 };
 pub(crate) use grid::{
     ProbeGridLayout, probe_grid_dims, probe_grid_layout, probe_is_valid_pub, vec3_from,

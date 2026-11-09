@@ -233,3 +233,138 @@ The far probes are real, not numerical drift. For the raised room, at the 228 ad
 The depth domain the brief names ("every probe whose gather rays the posed mover changes") is most probes that see the mover: on `mover-setpiece` its closed-pose tiles alone pass the 15-bit tile reference. No id-59 tile would be trimmed for live tiles alone (37%).
 
 Not run, because of the stop: captures, M1 on the hallway, M7 for the other three maps, the direct-half byte column.
+
+### B7 investigation (2026-11-08, second worker)
+
+Built on 9dbf014d6 plus temporary switches in `mover_probe_channel/dev_trace.rs`: a patch-seed salt (`POSTRETRO_DEV_PATCH_SEED_SALT`, XORed into every patch seed, static and posed), per-ray and per-patch dumps of named probes and a box of patches, and a τ experiment (`POSTRETRO_DEV_POSED_TAU`). The reference and the posed bake (skip rule) were each baked at five patch seeds, and the missing probes were traced ray by ray and patch by patch.
+
+| Source | Verdict | Evidence |
+|---|---|---|
+| (a) Patch layout, face splitting | **Cause** of one systematic miss, (965, 379.5, 4.9) | The reference's floor under the room is three faces, cut along the jamb planes y 272 and y 368; 30 of its 246 floor cells hold two half-patches. The posed floor top is one face. In cell (−19, 48) a light edge runs between y 364 and y 371. The reference's half-patch at y 371 reads 0.030–0.037 summed RGB (bounce one), and its half at y 361 reads 0.0067. The posed whole patch, centroid y 364.2, reads 0.0067. Cells whose centroids agree read alike to four digits. A hit on the y > 368 face blends only that face's patches. Seed-averaged bias 0.0034 against a 0.0011 bar; seed spread 0.0009. |
+| (b) Mover-side patches against reference faces | Clean | Both builds hold the same 246 floor cells, none in only one. Posed sides cut by the mover's other brushes cover the reference's faces. |
+| (c) Static faces under the raised footprint | Clean | The raised footprint is the shaft hole. The shaft below the slab is sealed in both builds, and no interior probe ray reaches it: every ray distance matches but the τ ray below. |
+| (d) Probe validity and positions | Clean | Same grid. 232 interior probes are valid in both, and per-ray hit distances are identical. |
+| (e) Monte Carlo patch-seed noise | **Explains most misses** | The reference against itself re-seeded misses its own bar at 2–9 of 232 probes (mean 6.5 over 20 pairings). The posed bake against itself re-seeded misses at 7.0 on average. Posed against reference misses at 7–16 across 25 seed pairings. The first worker's worst miss, (886.3, 300.8, 4.9), margin 0.0034, has a seed spread of 0.0054 in both bakes. |
+| (f) Tracer tolerance τ (not on the list) | **Cause** of the systematic column at (886.3, 222.0), z 4.9, 44.2 and 83.6 | One gather ray per probe passes 0.4 mm outside the doorway jamb's corner edge (x 848, y 272). The static tracer counts a hit within τ = 0.5 mm of a triangle (`build_pipeline.md` §Ray traversal), and the posed analytic entry is exact. The reference reads the dark jamb at 1.66 m; the posed bake escapes to the arena at 26.7 m. Growing the posed brushes by τ in the probe gather removes all three probes from the seed-averaged miss list. |
+
+Seed-averaged over five seeds each, 5 probes stay past the bar: the τ column (3), the split-cell probe, and one probe whose bias, 0.00021 against a 0.00017 bar, is inside its own 0.00034 seed spread. With τ growth, 2 remain: the split-cell probe and that noise probe. At every seed the composed base is nearer the reference than today's id 34 at 232 of 232 probes, with |composed − ref| / |id 34 − ref| at median 0.006 and max 0.28. In display terms (the bounce floor's measure, below), composed against reference reads median 0.06–0.09 levels and max 1.8–2.8. The reference against itself re-seeded reaches 2.5, and today's id 34 against the reference reads median 9.8 and max 30.
+
+**Is the posed bake wrong?** Not in representation. Two discretization conventions differ:
+- **τ.** The posed brushes are thinner than static ones by τ at silhouette edges in the gather. The posed shadow test uses the 0.1 mm contact band, not τ. This is a real inconsistency, but measure-zero: one ray per affected probe. It is not fixed by default. Growing planes by τ breaks the tracer's "never across the ray" rule at grazing rays, so the switch stays an experiment. Proposed for task 7: trace posed sides through the static tracer's own triangle hit test, with τ, over the pose-bounds-prefiltered posed triangles. The analytic entry stays only for rays from inside a posed brush, the inside-brush rule.
+- **Patch partition.** Face extraction splits the static floor along BSP planes, and the posed sides are unsplit. Neither is more right. Matching it would mean reproducing face extraction's splits on posed sides.
+
+A B7 at the BC6H bar fails for an exact bake, since the reference fails it against itself re-seeded. **Proposed restatement (owner decides):** "`mover-setpiece`: with `setpiece_room` raised, at every interior probe valid in both, the composed base is nearer the static-room reference's id 34 than today's id 34 is, and within 3 display levels of it (the bounce floor's measure; the reference re-baked at another patch seed moves up to 2.5). At those probes, each light the reference's walls block…" The direct clause is unchanged.
+
+### Captures (2026-11-08)
+
+Captures run with `--features capture`, `POSTRETRO_SH_STREAMING=sync-proof`, full-resident compose, offscreen, on the unfloored domain. Means are frame means of post-tonemap sRGB luma, 0–255. Files are `captures/t2-{closet,room}-<build>-<view>.png`. A temporary renderer switch, `POSTRETRO_DEV_MOVER_BACKFACE`, passes `true` for backface rejection in both of `kinematic_brush.wgsl`'s SH calls, direct and indirect.
+
+**Closet, door closed** (960×540, every light term). The "outside door" column is the mean outside the door's projected box, the K1 measure. The floor profile is taken at station 3, 3×3 px, on the floor 0.04, 0.26 and 0.48 m past the door's closet face. The door-face column is the mean inside the door's box from (320, 600, 56), yaw 270, fov 60. Posed skip and posed dark are byte-identical PRLs: no lattice plane falls inside this door. Backface-on renders identically to skip, since only mover fragments change and the door face reads 0 in both.
+
+| Build | Station 2 | outside door | Station 3 | outside door | Floor 0.04 / 0.26 / 0.48 m | Door closet face |
+|---|---|---|---|---|---|---|
+| Today | 4.16 | 4.30 | 3.64 | 3.87 | 30.0 / 24.5 / 20.7 | 1.75 |
+| Posed (skip = dark) | 0.123 | 0.129 | 0.082 | 0.088 | 1.5 / 0.4 / 0.0 | 0.00 |
+| Tiled static-door reference | 0.009 | 0.006 | 0.033 | 0.017 | 2.0 / 0.6 / 0.0 | 0.00 |
+| Posed, reflections off | 0.009 | 0.006 | 0.032 | 0.016 | 1.5 / 0.4 / 0.0 | — |
+| Reference, reflections off | 0.009 | 0.006 | 0.033 | 0.017 | 2.0 / 0.6 / 0.0 | — |
+
+- **The probe channel holds the closet.** With fluid reflections off, the posed closet equals the tiled reference to 0.001 at both stations, and its floor profile is no brighter.
+- **The remaining glow is the pool's reflection, not the probe data.** At the default reflection tier the posed closet reads 0.12 at station 2 against the reference's 0.009, all of it in the pool, which mirrors the lit doorway (`t2-closet-sheet.png`, ×20 rows). At the probe-only tier (`low`) station 2 reads 0.845 against 0.009. The pool's reflection probe (id 54) is captured at compile time with movers absent, so it sees the bright room through the open doorway. K1 ("no brighter than the reference plus 0.02") fails at station 2 (0.129 against 0.026) and station 3 (0.088 against 0.037) for this reason alone. The brief's "Closet water and fog" Decision names promotion as the water's only other path; this is a third, outside the probe channel. It needs an owner ruling: pose movers in reflection captures, or scope K1 and M2 to reflections off.
+
+**Raised room** (`setpiece_room` posed raised, 1280×720, `light_term_mask` 351: every term but dynamic direct, so the room's carried lights are excluded). Views: interior, (860, 320, 72) yaw 0 pitch −8, as in Task 1. Upper walls, the same eye at yaw 20 pitch +28, toward the north-east upper walls and ceiling. West face, Task 1's. Station 2, README. "Ind." is `light_term_mask` 6 (indirect only); "dir." is 24 (baked direct only). The static-room reference is the room staticized at its raised pose (`staticize.py`), whose room faces are lightmapped world surfaces. Its own-face columns are therefore not like for like; its upper-wall columns are the bar for the leak question.
+
+| Build | Interior | Upper | Upper ind. | Upper dir. | Interior ind. | Interior dir. | West face | Station 2 |
+|---|---|---|---|---|---|---|---|---|
+| Today | 30.62 | 19.90 | 7.44 | 14.50 | 5.69 | 28.25 | 38.66 | 35.41 |
+| Skip | 7.22 | 5.55 | 4.48 | 1.135 | 1.66 | 5.85 | 38.88 | 34.67 |
+| Dark | 7.02 | 4.06 | 3.96 | 0.093 | 1.60 | 5.70 | 38.20 | 34.53 |
+| Skip, backface on | 7.19 | 4.88 | 4.51 | 0.355 | 1.66 | 5.82 | 38.95 | 34.77 |
+| Dark, backface on | 7.06 | 4.60 | 4.49 | 0.095 | 1.64 | 5.71 | 38.95 | 34.76 |
+| Static-room reference | 8.05 | 4.61 | 4.54 | 0.063 | 1.61 | 6.77 | 46.64 | 34.40 |
+
+- **Upper interior walls (the owner's question).** Skip leaks exterior direct light onto them: 1.135 against the reference's 0.063, because a probe inside a wall serves both faces. Closed-pose depth does not fix that. Backface rejection cuts it to 0.355. Dark removes it (0.093), but dark alone darkens their bounce 13% (3.96 against 4.54). Dark with backface on matches the reference in both terms (direct 0.095 against 0.063, indirect 4.49 against 4.54, full 4.60 against 4.61).
+- **Own faces (M5).** With depth in place, dark no longer costs the west face: 38.20 against today's 38.66, where Task 1 measured 25.7 without depth. With backface on, both rules read 38.95. So the Stop 1 objection to dark is gone.
+- **Read: dark plus backface rejection on mover fragments** is the best of the four. Backface off for movers is a renderer contract (`research.md` §Grounding), so turning it on is a renderer change for the owner. Without it, dark costs 13% of upper-wall bounce, and skip leaks direct light.
+
+`captures/t2-closet-sheet.png` has columns today | posed | reference. Its rows are stations 2 and 3 and the door face, then ×20 brightened stations 2 and 3 at the default reflection tier, then ×20 stations 2 and 3 with reflections off. `captures/t2-room-sheet.png` has columns today | skip | dark | skip + backface | dark + backface | static-room reference. Its rows are interior, upper walls, west face and station 2. Montage has no fonts, so neither sheet is labelled.
+
+### Floor sweep (2026-11-08)
+
+Both floors are slice parameters: `POSTRETRO_DEV_BOUNCE_FLOOR` (display levels) and `POSTRETRO_DEV_DEPTH_FLOOR` (score). They are local and deterministic, unset means no floor, and `POSTRETRO_DEV_PROBE_TABLE` writes every posed probe's measures for the sweep (`dev_floor.rs`).
+
+- **Bounce measure** (`domain.rs` `display_levels`): the largest change, over a tile's texels and RGB channels, in 8-bit sRGB levels of a mid-grey (albedo 0.5) receiver lit by that texel alone, through the renderer's default indirect scale of 0.33 (`DEFAULT_INDIRECT_SCALE`) and the capture's soft-knee tonemap, which is the identity below 0.98, into an sRGB target. No exposure stage exists. The measure counts indirect only, so direct light never hides a change. A probe is affected when its change passes both its BC6H bar and the floor.
+- **Depth score** (`sh_bake/depth_tiles.rs` `visibility_change`, extracted as a free function, bytes unchanged): id 59's own score of the closed-pose tile against the probe's mover-absent moments, which are its id-59 tile where id 59 keeps one, else its averaged id-34 pair. Id 59's kept scores are min 0.105 and median 0.970 on `mover-setpiece`, min 0.165 and median 0.970 on `mover-closet`. The median is the saturated maximum, 1 − 0.03, so a floor at it keeps nothing.
+
+Distribution of bar-passing probes' display change (p50 / p90 / max levels): closet door closed 17.1 / 42.4 / 65.4; wall closed 9.3 / 20.3 / 70.0; wall open 3.3 / 7.9 / 30.7; room lowered 4.6 / 11.2 / 37.5; room raised 4.1 / 10.1 / 30.0. Most closed-pose depth tiles score exactly 0: the rays the mover changes move no neighbour's visibility.
+
+**Bounce floor, `mover-setpiece`.** Affected probes per pose, then distance from the pose bounds in m (median / p95 / max). Bytes are per mover over the union of both termini: 2 × 216 B per probe plus 16 B per affinity cell.
+
+| Floor | Wall closed | Wall open | Wall bytes | Room lowered | Room raised | Room bytes | Bounce block |
+|---|---|---|---|---|---|---|---|
+| none | 11,420; 12.4 / 24.9 / 30.1 | 597; 6.8 / 20.3 / 28.9 | 4.94 MB | 3,090; 6.1 / 13.2 / 32.4 | 3,154; 3.1 / 13.7 / 34.3 | 1.57 MB | 6.51 MB |
+| 0.5 | 11,284; 12.4 / 24.9 / 30.1 | 571; 7.2 / 20.4 / 28.9 | 4.88 MB | 3,088 | 3,150 | 1.57 MB | 6.45 MB |
+| 1 | 11,061; 12.3 / 24.9 / 30.1 | 562; 7.4 / 20.4 / 28.9 | 4.78 MB | 3,013; 6.1 / 12.0 / 21.5 | 3,070; 3.0 / 12.9 / 34.3 | 1.53 MB | 6.32 MB |
+| 2 | 10,376; 11.8 / 24.8 / 30.0 | 545; 7.2 / 20.8 / 28.9 | 4.49 MB | 2,661; 5.3 / 9.7 / 13.7 | 2,572; 2.5 / 8.6 / 16.0 | 1.31 MB | 5.80 MB |
+| 4 | 9,419; 11.1 / 24.8 / 30.0 | 142; 2.5 / 5.3 / 8.1 | 4.07 MB | 1,846; 4.4 / 8.1 / 9.9 | 1,627; 1.7 / 4.6 / 8.2 | 0.89 MB | 4.97 MB |
+| 8 | 6,605; 8.8 / 22.0 / 28.3 | 58; 0.9 / 3.1 / 4.5 | 2.86 MB | 579; 3.1 / 6.1 / 7.1 | 602; 0.6 / 3.1 / 3.7 | 0.34 MB | 3.20 MB |
+
+On `mover-closet`, the door closed keeps all 144 closet probes affected through 2 levels; their smallest change is 2.30 levels. At 3 levels 140 remain, at 4 levels 134, and at 8 levels 118. B3's closet probes stay affected at every floor up to 2.3 levels and no higher.
+
+**Depth floor.** A probe carries mover depth when its score exceeds the floor. Live tiles are the union over movers. The CPU holds the closed-pose tiles, and the GPU holds id 59 plus live tiles. Depth bytes are (2 × 400 + 8) B per mover-probe record. Upload is per frame for that mover travelling alone: its live tiles × 400 B.
+
+| Floor | Setpiece: wall probes / room probes | Live | Closed-pose (CPU) | GPU share of 1 << 15 | Depth block | Upload/frame wall, room | Closet probes | Closet: reference door tiles kept |
+|---|---|---|---|---|---|---|---|---|
+| none | 11,079 / 8,916 | 11,566 | 39,990 | 37.0% | 16.2 MB | 4.4 MB, 3.6 MB | 1,040 | 28 / 28 |
+| > 0 | 573 / 731 | 1,197 | 2,608 | 5.38% | 1.05 MB | 229 KB, 292 KB | 31 | 28 / 28 |
+| 0.03 | 427 / 593 | 1,006 | 2,040 | 4.79% | 824 KB | 171 KB, 237 KB | 28 | 28 / 28 |
+| 0.05 (below id 59's min) | 414 / 586 | 991 | 2,000 | 4.75% | 808 KB | 166 KB, 234 KB | 28 | 28 / 28 |
+| 0.105 (id 59's min kept) | 364 / 571 | 935 | 1,870 | 4.58% | 755 KB | 146 KB, 228 KB | 24 | **24 / 28** |
+| 0.3 | 359 / 550 | 909 | 1,818 | 4.50% | 734 KB | 144 KB, 220 KB | 18 | **18 / 28** |
+| 0.97 (id 59's median) | 0 / 0 | 0 | 0 | 1.72% | 0 | 0 | 0 | **0 / 28** |
+
+**Closet hold.** The 28 reference-tiled door probes score 0.065–0.199 (10 probes) or 0.97 (18) against the mover-absent moments. Their reference scores, against the static door's own moments, all passed 0.1. A floor at id 59's minimum, 0.105, drops 4 of them, and the reference closet no longer holds by the brief's rule. Every floor below 0.065 keeps all 28.
+
+**Captures at the middle values** (bounce 1 level, depth 0.105) and at the recommended values (bounce 2 levels, depth 0.05), dark rule, backface on. On the room views both floors render identically to the unfloored dark + backface build: interior 7.06, upper 4.60, west face 38.95, station 2 34.76 / 34.76 against 34.76. On the closet they render identically to the unfloored posed closet: station 2 0.123 (0.009 with reflections off), station 3 0.082 (0.032), door face 0.00. The 4 door probes the 0.105 floor drops move no station mean, but they fail the reference rule. No variant differs in these views, so none were saved. What the bounce floor gives up lies past 13–16 m from the room, outside every station.
+
+**Recommendation.**
+- **Depth floor 0.05.** It is the largest round value that keeps every reference-tiled closet probe. It brings the setpiece's GPU tiles from 37% to 4.75% of the 15-bit range, its depth block from 16.2 MB to 0.81 MB, and a travelling room's live-tile upload from 3.6 MB to 234 KB a frame. Most of the cut comes from dropping zero-score tiles; 0.05 trims 17% more.
+- **Bounce floor 2 levels.** It is the largest floor that keeps B3's closet probes, and it cuts the raised room's reach from 34 m to 16 m. It does not localize the sliding wall. Closed, the wall splits the map in two rooms, and its change is genuinely visible map-wide: median 9.3 levels, 10,376 probes at 2 levels, 9,419 at 4. A bounce block for the wall stays at 4.5 MB under any floor that keeps the closet. If that is over the resident byte bar, the lever is not this floor but streaming the bounce payload with id 50, as the brief's "PRL section" Decision already provides.
+
+### M1: bounce-bake cost on the full hallway (2026-11-08)
+
+The setup: `stress-warren-hallway-inspection.map`, with 11 movers and 1,748,534 patches. The machine is a 16-thread i9-9980HK MacBook Pro with 32 GB, an Intel Mac. Runs were at `-j 6` under `nice -n 10` and `caffeinate -i`, with peak RSS from `/usr/bin/time -l`. The owner was at the machine, and load averaged 3–9 during the runs. The baseline is the parent compiler `bin/prl-build-head`. The slice's bounce bake is not priced in the SH gate yet (task 7), so both compilers log the same prediction.
+
+| Run | SH Bake | Total | Peak RSS | Footprint | SH gate |
+|---|---|---|---|---|---|
+| Parent, cold `--no-cache` | 213.6 s | 1,241 s (20.7 min) | 7.12 GB | 4.42 GB | est. peak 4.99 GB of 17.2 GB, admitted |
+| Slice, cold `--no-cache`, measurement over all 11 movers (22 poses) | — | **killed at 45 min, still in the mover bake** | — | — | same line |
+| Slice, cold `--no-cache`, 2 movers measured (`warren_door_0` = `#0`, `warren_lift_0` = `#9`, 4 poses) | 1,084.9 s | 2,150 s (35.8 min) | 7.06 GB | 4.44 GB | same line, admitted |
+| Parent, warm, one-mover edit (`warren_door_0`'s last waypoint 32 units down, cache primed by the parent on the unedited copy) | 0.84 s (`sh_base_volume hit`) | 108 s | 6.20 GB | 4.58 GB | same line |
+| Slice, warm, the same edit, re-baking only the edited mover (the per-mover memo's work) | 428.8 s (`sh_base_volume hit`) | 544 s | 5.84 GB | 4.38 GB | same line |
+
+- **One pose costs about one whole id-34 bake.** Six poses measured: bounce one 0.3–0.6 s, later bounces 128–131 s, gather 84–86 s, about 216 s a pose against id 34's 214 s. A door and a lift cost the same: the later bounces run over every static patch, and the gather over every valid probe, whatever the mover's size.
+- **Cold, all 11 movers (extrapolated, not run to the end).** 22 poses × 216 s ≈ 4,750 s on top of the parent's SH Bake: SH Bake ≈ 4,960 s, 23× the parent's. The build totals about 100 min against 20.7.
+- **Warm one-mover edit.** 429 s of SH Bake against 0.84 s. On an id-34 hit, resolving the cached layers and summing them is negligible; the two poses are the whole cost. The build totals 544 s against 108 s, 5.0×.
+- **Peak RSS does not grow.** 7.06 GB against 7.12 GB cold, and 5.84 GB against 6.20 GB warm, both within run-to-run noise. The process peak is set outside the SH stage, and the bounce bake holds one pose's patch radiance at a time (≈ 1.75 M patches × 2 sides × 12 B plus three later-bounce buffers, about 0.1 GB). The SH gate's prediction is unchanged, so it does not yet cover the bounce bake, as P21 requires.
+- **For the owner's cost gate.** The brief's fallback, "re-bake bounce one per pose and keep id 34's later bounces", removes the 130 s later-bounce term per pose. That leaves the ~85 s gather: about 60% off, but still ~1,900 s cold and ~170 s per warm mover edit. A gather restricted to probes the pose can affect would bound the rest. That needs a conservative reach domain, the open drift question, which the floors above do not answer before the gather.
+
+### M7: bytes and tiles at the middle floor values (2026-11-08)
+
+These are measurement-mode runs over every mover at both termini, at bounce floor 1 level and depth floor 0.105 (id 59's kept minimum). They are cold `--no-cache` at `-j 6`, and section sizes come from the same PRL. The bounce block is 2 × 216 B per affected probe plus 16 B per affinity cell, over each mover's union of termini. The depth block is (2 × 400 + 8) B per mover-probe record. The CPU holds the closed-pose tiles, and the GPU holds id 59 plus live tiles.
+
+| Map | Movers (poses) | id 34 | id 59 | Bounce block | Depth block | Live tiles | Closed-pose (CPU) | id 59 + live, share of 1 << 15 | SH Bake (measured, slice) |
+|---|---|---|---|---|---|---|---|---|---|
+| `mover-closet` | 1 (2) | 69 KB | 9 KB (23) | 62 KB | 19 KB | 24 | 48 | 0.14% | — |
+| `mover-setpiece` | 2 (4) | 531 KB | 228 KB (565) | 6.32 MB | 755 KB | 935 | 1,870 | 4.58% | — |
+| `kinematic-platform` | 5 analysed (10) | 4.47 MB | 11 KB (28) | **15.3 MB** | 111 KB | 124 | 274 | 0.46% | 127 s |
+| `campaign-test` | 3 (6) | 4.75 MB | 363 KB (898) | 14 KB | 166 KB | 206 | 412 | 3.37% | 66 s |
+| `stress-warren-showcase` | 8 (16) | 18.5 MB | 1.78 MB (4,410) | 6.99 MB | 1.82 MB | 2,237 | 4,508 | 20.3% | 1,452 s (total 2,089 s, peak RSS 5.42 GB) |
+| `stress-warren-hallway-inspection` | 11 (22) | 44.0 MB¹ | 5.4 MB (13,451) | **not run: over 45 min** (≈ 100 min extrapolated, M1). 2 of 11 movers: 8.5 MB | 2 of 11: 1.30 MB | 2 of 11: 1,615 | 2 of 11: 3,230 | 2 of 11: 46.0% | 4 poses: 1,085 s |
+
+¹ From the on-disk `stress-warren-hallway-inspection.prl` of 2026-11-06. It predates id 59, so the id-34 size is indicative only. Id 59's count is this session's cold bake.
+
+- **The bounce floor does not localize on open maps.** On `kinematic-platform`, `dev_platform` at 1 level still admits 8,492 of 138,886 valid probes, at a median 23 m and up to 95 m away. Its bar-passing changes sit at a median 2.0 levels, because the map is dim and sRGB is steepest near black. At 2 levels the reach is p95 50–80 m and the block 8.3 MB. At 4 levels it is p95 8–14 m (two movers' tails reach 45–50 m) and the block 1.9 MB. At 8 levels it is p95 ≤ 5 m and the block 0.44 MB. The closet's B3 caps the floor at 2.3 levels (above), so no single display floor both holds the closet and localizes these platforms.
+- **The depth floor localizes everywhere.** Live tiles stay under 2,300 a map wherever every mover was measured. The hallway is the exception. Its own id 59 already holds 41% of the range, and `warren_lift_0` alone adds 1,323 live tiles at 0.105. Eleven movers at that rate stay within the range (rough extrapolation: under 10,000 live tiles in all), with no id-59 trim.
+- **Direct-half byte column (q bytes and carried T): not derived.** Task 1's joint visibility runs only under the pose switch, for one mover and terminus, inside the id-35/41/45 bakes. A per-(mover, terminus, light, probe) count needs the q bake task 6 builds. It is not cheap from what exists.
+- **Bright-room probes on `mover-closet` storing a bounce entry: none** at any floor. All 144 affected probes are closet probes, 3.5 m median and 6.1 m max from the door's bounds.

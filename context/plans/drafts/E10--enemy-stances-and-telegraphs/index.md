@@ -112,7 +112,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 **Builder**
 - [ ] `stance()` and `merge()` emit identical canonical descriptors in TypeScript and Luau, and the Scripting surface example runs as `content/dev` content.
 - [ ] With a fixed `holdMs` and a `breakOn`, `stance()` output equals a checked-in hand-written fixture of the three activities and their rows, row order included.
-- [ ] `stance: "crouch"` sets `stance` on the hold and release only; a recover given its own `stance` keeps it.
+- [ ] `stance: "crouch"` sets `stance` on the hold and release only. The recover stands even under an outer crouch, and a recover given its own `stance` keeps it.
 - [ ] `merge()` with a duplicate activity or transition key rejects load naming the key.
 - [ ] These reject load with a pathed error:
   - a `then` or `breakOn.to` naming no sibling, or naming the stance's own `_release`;

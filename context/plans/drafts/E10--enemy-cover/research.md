@@ -1,5 +1,8 @@
 # E10--enemy-cover research
 
+## Id 46 meaning
+- A graded coupled pair: the nearest `FANOUT_K` cells by portal-path distance, with aperture. A cell around a corner is coupled; a far cell in plain view may not be. The penalty reads proximity, not sight.
+
 ## Seams (by symbol)
 - `bake_navmesh_with_movers` and `erode` (`crates/level-compiler/src/navmesh_bake.rs`): erosion drops its boundary cells, which also count drops and the grid edge, so rays must tell a wall from a ledge. Wall normals need the triangle list or a bake ray.
 - The bake BVH from `bvh_build::build_bvh` is in scope before the NavMesh stage but not passed in. Bake rays go through `ray_traversal::BoundedRay`.
@@ -14,7 +17,7 @@
 - Navmesh bake: `bake_navmesh_with_movers` holds static triangles, `WalkGrid` (walkable floor heights per column, post-erosion), regions and portals. `erode` drops its `boundary` list; cells within about the agent radius of a wall are removed. Walls add nothing to the grid; a wall normal needs triangles or a bake ray.
 - Obstruction height is partly recoverable from the grid: a crate's flat top reads as a neighbour floor above step height (half cover); a wall to the ceiling reads as an empty column (full). A sloped top or one failing the clearance filter also reads as empty, so a ray settles it.
 - Bake cost: NavMesh stage 0.06–2.39 s; lightmap 860 s on the same map. Roughly 5k candidates × 16 directions × 4 rays is about 320k BVH rays. The stage is sequential and byte-deterministic.
-- Cache: `"navmesh"` stage, `NAVMESH_STAGE_VERSION = 5`, does not fold `TRACER_EPOCH`. A sibling stage keyed on the navmesh inputs plus the epoch keeps tracer changes from rebaking regions.
+- Cache: `"navmesh"` stage, `NAVMESH_STAGE_VERSION = 5`, does not fold `TRACER_EPOCH`. Cover folds into this key with the tracer epoch and the cover entities; a tracer bump rebakes regions too, at most about 2.4 s.
 - Movers are absent from static geometry and the BVH. `collision::line_of_sight` is static only.
 - Runtime: `perceive_target` casts one static ray per enemy per tick, eye to eye, symmetric. LOS measures about 0% of AI cost. `sim_ai` is 5.8 ms at 64 agents against a 1.0 ms target; the cost is registry walks and `NavGraph::region_at`.
 - `perception::enemy_eye` derives from the hitbox top or `EYE_FACTOR` × agent height; `AgentComponent.height` and `HealthComponent.hitbox` are fixed at attach. Hit zones (`HitZoneStore`) re-sample the posed animation per ray.
@@ -49,6 +52,11 @@
 | P7 | Stage order in tick N | Projectiles → AI apply sets stance → Weapons → snapshot. | N's projectiles see the standing box; N's hitscan sees the crouched box. N's snapshot carries the stance component and the `crouch_` clip name together. Perception changes from N+1. |
 | P8 | Serialize-and-restore mid-crouch | Save during a crouch activity, then restore. | Stance is re-derived from the restored path. The box is lowered exactly once. Grace starts empty. |
 | P9 | Late joiner | A client joins while an enemy crouches. | The join baseline carries the stance component; the first display copy has the crouched volume. |
-| P10 | Target on a cover point | The target occupies a candidate. | Dynamic placement rejects it; it is never claimed. |
+| P10 | Target on a cover point | The target occupies a candidate. | Qualification refuses it: the target's eye sees the standing eye at its own position. It is never claimed. |
 | P11 | Level change or hot reload alters cover | An enemy holds a cover slot. | The claim drops on reload; the next entry re-picks from the new table. |
 | P12 | Cover point on a suppress boundary | A derived point lies exactly on an `cover_suppress` plane. | Counted inside and removed, identically across bakes. |
+| P13 | Cover goal moves after arrival | Tick N: `arrived` reads 1; ticks N+1…: the target moves and the cover pick re-scores to another point. | `arrived` is live: it reads 0 while the enemy travels to the new pick and 1 again on reaching it. |
+| P14 | Arrival and target switch on one tick | Tick N: the enemy reaches its goal while selection switches target. | Facts precede the batch, so tick N's `arrived` reads the previous tick's goal. A row firing on arrival at N acts against the old target's pick; the new target's pick applies from N+1. |
+| P15 | Pick given away | Tick N: the batch hands the enemy's cover pick to another enemy. | `arrived` reads 0 until the enemy reaches its next pick, or stays 0 while it holds with none. |
+| P16 | Stale arrival on entry | Tick N: an enemy enters `cover` while the previous activity's `arrived` read 1; its next refresh is up to 500 ms away. | `arrived` reads 0 from entry until a refresh finds the enemy at its new goal. The arrival row never fires on the entry tick. |
+

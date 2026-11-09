@@ -18,6 +18,8 @@ impl StreamingAnimatedPass {
         self.grid.atlas_layer_count = shape.layers;
         self.grid.compact_atlas_tiles_per_row = shape.tiles_per_row;
         self.grid.compact_atlas_tiles_per_layer = shape.tiles_per_layer;
+        // The mover channel's table may have grown since: bind the live one.
+        self.mover_channel = sh.mover_channel.buffer().clone();
         let replacement = Self::build_bind_group(
             device,
             &self.bind_group_layout,

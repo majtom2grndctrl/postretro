@@ -48,7 +48,15 @@ impl StreamingGpuPools {
             .and_then(|bytes| bytes.checked_sub(current_direct_active))
             .and_then(|bytes| bytes.checked_add(self.grid_info.size()))
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let replacement = DenseTextures::new(device, queue.raw(), base, sources, shape, sh)?;
+        let replacement = DenseTextures::new(
+            device,
+            queue.raw(),
+            base,
+            sources,
+            self.sparse_compose.direct.is_some(),
+            shape,
+            sh,
+        )?;
         let replacement_grid_info = create_grid_info(
             device,
             base,
@@ -508,6 +516,39 @@ impl StreamingGpuPools {
             .and_then(|bytes| bytes.checked_add(direct_active))
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
         Ok(bytes)
+    }
+
+    /// Rebind every compose pass to the mover channel's live tables after a
+    /// streamed id-57 pool grew. The dense atlases and sparse pools stay as
+    /// they are; submitted command buffers keep the old table alive until
+    /// they retire.
+    pub(in crate::render::sh_streaming) fn rebind_mover_channel(
+        &mut self,
+        device: &wgpu::Device,
+        sh: &ShVolumeResources,
+        selection_weights: &wgpu::Buffer,
+    ) -> Result<(), ShResidencyDrainError> {
+        let shape = self.shape;
+        self.indirect_compose.rebind_dense(
+            device,
+            shape,
+            &self.base_view,
+            &self.total_storage_view,
+            &self.compose_indirection,
+            sh,
+        );
+        // Field by field, so the views and the mutable pass borrow apart.
+        let views = DirectPools {
+            base_view: self.direct_base_view.as_ref(),
+            promotion_free: self.direct_atlas.as_ref(),
+            handoff: self.direct_handoff.as_ref(),
+            intermediate: self.direct_intermediate.as_ref(),
+        }
+        .views(selection_weights)?;
+        if let (Some(direct), Some(views)) = (self.direct_compose.as_mut(), views) {
+            direct.rebind_dense(device, shape, views, &self.compose_indirection, sh);
+        }
+        Ok(())
     }
 
     /// This generation's direct pools: the live counterpart of

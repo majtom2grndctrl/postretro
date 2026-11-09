@@ -3,9 +3,14 @@
 //
 // The including shader binds `mover_channel: array<u32>`, the renderer-built
 // table of `render/mover_channel/layout.rs`: listed affinity cells, one term
-// record per (cell, gated light) with its probe mask, its gating movers, each
-// mover's q₀/q₁ bytes per masked probe, the light's term T per masked probe,
-// and one t′ per mover (negative while the game hands over no state).
+// record per (cell, gated light) with its probe mask, its gating movers, and
+// one t′ per mover (negative while the game hands over no state). Each listed
+// cell's payload (the light's term T per masked probe, then each mover's
+// q₀/q₁ bytes) is one run its base word points at. A streamed level places
+// that run per resident cell; while it is not resident the base reads
+// `MC_NONE` and the cell composes as with no section. That is residency, not
+// a visibility switch: a row composes only with its cluster resident, and
+// every cluster covering a cell carries its payload.
 //
 // A record's probe mask is storage sparsity only: an unmasked probe composes
 // as with no section. Mover state blends visibility; it never flags, zeroes
@@ -19,20 +24,41 @@ const MC_HEADER_MOVER_ENTRIES: u32 = 4u;
 const MC_HEADER_MOVER_T: u32 = 5u;
 const MC_HEADER_DESCRIPTORS: u32 = 6u;
 const MC_HEADER_DESCRIPTOR_COUNT: u32 = 7u;
+const MC_HEADER_CELL_BASES: u32 = 8u;
 const MC_RECORD_WORDS: u32 = 8u;
 const MC_RECORD_MASK_LOW: u32 = 0u;
 const MC_RECORD_MASK_HIGH: u32 = 1u;
 const MC_RECORD_LIGHT: u32 = 2u;
 const MC_RECORD_MOVERS_START: u32 = 3u;
 const MC_RECORD_MOVERS_END: u32 = 4u;
+// First term half within the cell's payload run.
 const MC_RECORD_TILE_HALF: u32 = 5u;
+// The record's listed cell, whose base word locates its payload.
+const MC_RECORD_POSITION: u32 = 6u;
 const MC_MOVER_ENTRY_WORDS: u32 = 2u;
 // One compact 6×6 RGB f16 tile: id 41's stride.
 const MC_TILE_HALVES: u32 = 108u;
 const MC_NONE: u32 = 0xffffffffu;
 
-/// The listed position of affinity cell `cell`, or `MC_NONE`.
+/// The listed position of affinity cell `cell`, or `MC_NONE` when the table
+/// does not list it or its payload is not resident.
 fn mc_listed_position(cell: u32) -> u32 {
+    let position = mc_find_cell(cell);
+    if (position == MC_NONE) {
+        return MC_NONE;
+    }
+    if (mover_channel[mover_channel[MC_HEADER_CELL_BASES] + position] == MC_NONE) {
+        return MC_NONE;
+    }
+    return position;
+}
+
+/// The record's cell payload base, in words.
+fn mc_record_base(record: u32) -> u32 {
+    return mover_channel[mover_channel[MC_HEADER_CELL_BASES] + mc_record_word(record, MC_RECORD_POSITION)];
+}
+
+fn mc_find_cell(cell: u32) -> u32 {
     let cells = mover_channel[MC_HEADER_CELLS];
     var low = 0u;
     var high = mover_channel[MC_HEADER_CELL_COUNT];
@@ -95,6 +121,7 @@ fn mc_byte(index: u32) -> u32 {
 fn mc_record_visibility(record: u32, slot: u32) -> f32 {
     let entries = mover_channel[MC_HEADER_MOVER_ENTRIES];
     let mover_t = mover_channel[MC_HEADER_MOVER_T];
+    let base_byte = mc_record_base(record) * 4u;
     var visibility = 1.0;
     let end = mc_record_word(record, MC_RECORD_MOVERS_END);
     for (var entry = mc_record_word(record, MC_RECORD_MOVERS_START); entry < end; entry = entry + 1u) {
@@ -104,7 +131,7 @@ fn mc_record_visibility(record: u32, slot: u32) -> f32 {
         if (!(t >= 0.0)) {
             continue;
         }
-        let q_byte = mover_channel[at + 1u] + slot * 2u;
+        let q_byte = base_byte + mover_channel[at + 1u] + slot * 2u;
         let q0 = f32(mc_byte(q_byte)) / 255.0;
         let q1 = f32(mc_byte(q_byte + 1u)) / 255.0;
         visibility = visibility * mix(q0, q1, min(t, 1.0));
@@ -114,7 +141,8 @@ fn mc_record_visibility(record: u32, slot: u32) -> f32 {
 
 /// Texel `texel_index` of the light's term T at the record's masked `slot`.
 fn mc_tile_texel(record: u32, slot: u32, texel_index: u32) -> vec3<f32> {
-    let half_base = mc_record_word(record, MC_RECORD_TILE_HALF)
+    let half_base = mc_record_base(record) * 2u
+        + mc_record_word(record, MC_RECORD_TILE_HALF)
         + slot * MC_TILE_HALVES
         + texel_index * 3u;
     let word_base = half_base / 2u;

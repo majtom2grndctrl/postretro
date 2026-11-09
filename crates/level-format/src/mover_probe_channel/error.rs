@@ -63,6 +63,10 @@ pub enum MoverProbeChannelError {
     )]
     StreamedPayloadUnresolved { block: MoverChannelBlock },
     #[error(
+        "MoverProbeChannelBorrowedFamilyAbsent: direct record {record} borrows its term from {family}, which this PRL does not hold"
+    )]
+    BorrowedFamilyAbsent { record: usize, family: &'static str },
+    #[error(
         "MoverProbeChannelStreamedPayloadMismatch: the {block} payload of affinity cell {cell} as placed with ClusterShPayloads (id 50) {detail}"
     )]
     StreamedPayloadMismatch {

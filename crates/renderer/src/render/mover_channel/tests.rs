@@ -159,6 +159,7 @@ fn inputs<'a>(
         static_terms,
         animated_terms: None,
         animation_descriptor_indices: &[],
+        indirect_descriptor_indices: &[],
     }
 }
 
@@ -190,7 +191,7 @@ fn records_lay_out_static_lights_first_with_their_light_keys_and_mover_slots() {
             ),
         ],
     );
-    let layout = MoverChannelLayout::build(&inputs(&section, Some(family.family())))
+    let layout = MoverChannelLayout::build(&inputs(&section, Some(family.family())), false)
         .expect("the fixture lays out");
     let words = layout.initial_words();
     assert_eq!(words[0], 1, "one listed cell");
@@ -253,7 +254,8 @@ fn an_own_tile_and_a_borrowed_id_41_tile_write_the_same_term() {
     );
     let rows = WholeTermRows::new(family.family(), &family.tiles);
     let write = |section: &MoverProbeChannelSection| {
-        let layout = MoverChannelLayout::build(&inputs(section, Some(family.family()))).unwrap();
+        let layout =
+            MoverChannelLayout::build(&inputs(section, Some(family.family())), false).unwrap();
         let slices = section.cell_slices();
         layout
             .held_writes(section, &slices, |cell, _| rows.row(cell))
@@ -261,13 +263,12 @@ fn an_own_tile_and_a_borrowed_id_41_tile_write_the_same_term() {
     };
     let (borrowed, own) = (write(&borrowed), write(&own));
     assert_eq!(borrowed.len(), 1);
-    assert_eq!(borrowed[0].tile_halves, vec![F16_QUARTER; TILE]);
-    assert_eq!(borrowed[0].tile_halves, own[0].tile_halves);
-    assert_eq!(
-        borrowed[0].q_bytes,
-        vec![0, 255, 0, 0],
-        "q padded to a word"
-    );
+    // The cell's payload: its tiles, then its q bytes padded to a word.
+    let pair = u32::from(F16_QUARTER) | (u32::from(F16_QUARTER) << 16);
+    let mut expected = vec![pair; TILE / 2];
+    expected.push(u32::from_le_bytes([0, 255, 0, 0]));
+    assert_eq!(borrowed[0].words, expected);
+    assert_eq!(borrowed[0].words, own[0].words);
 }
 
 /// Task 5's open item: an unflagged record whose family is absent at load
@@ -285,19 +286,20 @@ fn a_missing_family_leaves_the_record_ungated_and_a_coarse_cell_is_refused() {
             vec![(7, 0, 255)],
         )],
     );
-    let layout = MoverChannelLayout::build(&inputs(&section, None)).unwrap();
+    let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
     assert_eq!(layout.record_count(), 0);
     assert_eq!(layout.ungated_records(), 1);
 
     let mut coarse = StaticFamily::new(1, F16_QUARTER);
     coarse.levels[0] = 1;
-    let error = MoverChannelLayout::build(&inputs(&section, Some(coarse.family()))).unwrap_err();
+    let error =
+        MoverChannelLayout::build(&inputs(&section, Some(coarse.family())), false).unwrap_err();
     assert!(error.to_string().contains("not L0"), "{error}");
 
     let mut other_light = StaticFamily::new(1, F16_QUARTER);
     other_light.lights[0] = 3;
-    let error =
-        MoverChannelLayout::build(&inputs(&section, Some(other_light.family()))).unwrap_err();
+    let error = MoverChannelLayout::build(&inputs(&section, Some(other_light.family())), false)
+        .unwrap_err();
     assert!(error.to_string().contains("holds no entry"), "{error}");
 }
 
@@ -319,7 +321,7 @@ fn a_cell_whose_mask_is_not_tight_is_refused_at_write() {
     // The second masked probe now stores 255 at both termini.
     section.visibility[2] = 255;
     section.visibility[3] = 255;
-    let layout = MoverChannelLayout::build(&inputs(&section, None)).unwrap();
+    let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
     let error = layout
         .held_writes(&section, &section.cell_slices(), |_, _| None)
         .unwrap_err();
@@ -351,7 +353,7 @@ fn records_resolve_by_affinity_row() {
             ),
         ],
     );
-    let layout = MoverChannelLayout::build(&inputs(&section, None)).unwrap();
+    let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
     assert_eq!(layout.plan_of_cell(0), Some(0));
     assert_eq!(layout.plan_of_cell(1), Some(1));
     assert_eq!(
@@ -377,7 +379,8 @@ fn no_section_lays_out_the_header_and_pass_b_descriptor_map_only() {
 }
 
 mod planner {
-    //! C7, C8, C11, C12 and C14 on the streamed planner.
+    //! C7, C8, C11, C12 and C14 on the streamed planner, for the direct
+    //! passes and the indirect pass.
     use super::super::layout::MoverChannelRows;
     use super::*;
     use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
@@ -424,15 +427,22 @@ mod planner {
             affinity_offsets: &[0, 0, 0, 0],
             affinity_lights: &[],
         };
-        let layout = MoverChannelLayout::build(&MoverChannelInputs {
-            section: Some(&section),
-            entity_shadow_lights: &[],
-            static_terms: None,
-            animated_terms: Some(animated),
-            animation_descriptor_indices: &[0],
-        })
+        let layout = MoverChannelLayout::build(
+            &MoverChannelInputs {
+                section: Some(&section),
+                entity_shadow_lights: &[],
+                static_terms: None,
+                animated_terms: Some(animated),
+                animation_descriptor_indices: &[0],
+                indirect_descriptor_indices: &[],
+            },
+            false,
+        )
         .unwrap();
-        layout.rows().clone()
+        let mut rows = layout.rows().clone();
+        // Mover B (slot 1) also changes bounce at row 2; A changes none.
+        rows.bounce_by_mover = super::super::layout::MoverRows::from_sets(vec![vec![], vec![2]]);
+        rows
     }
 
     fn harness() -> PlannerHarness {
@@ -496,6 +506,47 @@ mod planner {
             vec![0, 1],
             "the unrecorded change is kept"
         );
+    }
+
+    /// C7, C14 (indirect): a travelling mover recomposes in the indirect
+    /// pass only the rows its bounce entries name; a mover with no bounce
+    /// entry stales no indirect row, and a frame with no t′ change none.
+    #[test]
+    fn only_a_travelling_movers_bounce_rows_recompose_indirect() {
+        let rows = rows();
+        let mut harness = harness();
+        let plan = harness.frame(true, &[0, 1, 2], &[], &rows);
+        assert!(
+            plan.indirect_rows.is_empty(),
+            "no t′ change, no indirect row"
+        );
+        let plan = harness.frame(true, &[0, 1, 2], &[1], &rows);
+        assert_eq!(plan.indirect_rows, vec![2], "B's bounce row only");
+        assert_eq!(plan.static_rows, vec![0], "B's direct rows as before");
+        harness.commit_all();
+        let plan = harness.frame(true, &[0, 1, 2], &[0], &rows);
+        assert!(
+            plan.indirect_rows.is_empty(),
+            "A carries no bounce entry: the indirect pass composes nothing"
+        );
+    }
+
+    /// C11 (indirect): a bounce change outside the gate lags to the frame
+    /// the row re-enters; one on a frame recording no compose is kept.
+    #[test]
+    fn a_bounce_change_outside_the_gate_or_unrecorded_composes_later() {
+        let rows = rows();
+        let mut harness = harness();
+        let plan = harness.frame(true, &[0, 1], &[1], &rows);
+        assert!(plan.indirect_rows.is_empty(), "row 2 is outside the gate");
+        harness.commit_all();
+        let plan = harness.frame(true, &[0, 1, 2], &[], &rows);
+        assert_eq!(plan.indirect_rows, vec![2], "row 2 re-enters and composes");
+        harness.commit_all();
+
+        let _ = harness.frame(false, &[0, 1, 2], &[1], &rows);
+        let plan = harness.frame(true, &[0, 1, 2], &[], &rows);
+        assert_eq!(plan.indirect_rows, vec![2], "the unrecorded change is kept");
     }
 
     /// C8: a promotion weight or a curve changing raises no mover trigger:

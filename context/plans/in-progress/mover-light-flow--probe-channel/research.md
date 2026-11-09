@@ -565,3 +565,84 @@ Measured 2026-11-09 on the main checkout, AMD Radeon Pro 5300M under Metal.
   - Streamed path: only the travelling mover's rows recompose.
   - Each table probe costs one `q` read per mover and one T read per record. The binary search over listed cells runs once per workgroup.
 - The 5300M budget (M6) stays open.
+
+### Task 9
+
+Built 2026-11-09 on the main checkout, AMD Radeon Pro 5300M under Metal, on top of task 8 (4852b8e16), uncommitted.
+
+**Indirect compose.** `sh_compose.wgsl` applies the bounce half between the id-34 base sample and the id-27 deltas, at stored L0 probes with `INDIRECT_STATIC` on.
+- The first mover with a state and a tile at the probe replaces the base tile with lerp(S^b₀, S^b₁, t′).
+- Each later mover adds its lerp minus id 34, with id 34 re-sampled from the base atlas.
+- If any mover touched the probe, the summed tile clamps per texel at zero. Id-27 deltas then add as before, and every reader inherits the result.
+- **Clamp rule adopted as the owner leaned:** per-texel max(0) on the summed base tile, before the deltas. The sampler's octahedral taps and probe weights are convex, so non-negative texels evaluate non-negative irradiance in every direction. No fixture needed anything else.
+- A mover with no state (t′ negative) is skipped, so an unaffected probe or a stateless frame composes id 34 exactly. With no section, or no bounce block, the table lists no cells and every frame is byte-identical to today's.
+- Only mover state and residency reach the block, never a light's state. The states sum static lights only. The affected mask is storage sparsity, and an unmasked probe composes id 34.
+
+**Binding wall.** The SH compose's group 1 was at 8 of 8 storage buffers. The bounce table takes binding 25, and id 27's light → descriptor map (the old binding 25, the same read-only `u32` lifetime) folds into it at word 8. This is the same merge task 8 used for id 45 in Pass B. There is no new binding, bind group or texture format.
+- `ShAllocationKind::IndirectComposeDescriptorIndices` is gone. `MoverBounceTable` (`mover_bounce_table`) records the table and cites ids 57 and 27.
+- The unused descriptor plumbing in `compose_storage_payloads` is gone too.
+
+**Direct T.** The copy per masked probe stays. Pass B is still at 8 of 8 and has no id-41 bindings, so it cannot reference id 41/45 directly.
+
+**Residency (`mover_channel/pool.rs`, `sh_streaming/mover_cells.rs`).** A block placed Streamed gets a pooled table on a streamed level. A resident block keeps a whole table, ledgered as before.
+- **Reference counting.** Each cluster carrying a listed cell's id-57 row holds one `(57, cell)` storage reference under the install journal, as a sparse row does.
+  - The first reference places the cell's payload with first-fit (`FirstFitRanges`, shared with the SH pools). The payload is checked on arrival: run length, finiteness, and each record's mask tight against its q bytes.
+  - The payload is written, then the cell's base word is published in the same upload batch.
+  - The last release frees the range and writes `NO_BASE` in the eviction's batch, before any install can reuse it. A session reset clears both pools.
+- **Not resident.** While a cell's base reads `NO_BASE`, the shaders treat it as unlisted: the cell composes as with no section. That is residency, never a light- or mover-driven switch.
+- **Pricing.** Each pool starts at the dense SH pool's share of the map times the whole payload, plus 25% headroom, capped at the whole payload. A pool that runs out grows by 1.5×, capped at whole, with a warning. The live words are copied over, and every streamed compose pass rebinds (`rebind_mover_channel`).
+  - The pools' allocated and live bytes join the snapshot's active capacity and logical occupancy. Through `streaming_allocation_summary`, they reach the ledger.
+- **Membership and trigger.** A newly placed cell dirties its rows in both passes. Row membership and the t′ trigger reuse task 8's machinery. The streamed planner stales indirect rows from the movers' bounce rows (`bounce_by_mover`). The legacy pass fires on `bounce_t_changed_since_composed`, which only movers with bounce entries move, and commits after the encode (P12).
+- **Re-parsing.** A cluster re-parses its id-41/45 rows only when a direct cell can take them, meaning a whole cell still waiting for a borrowed term or a pooled direct cell it places first.
+
+**C.1, gated records without ids 41/45.** `gate_direct_compose` gives the streamed plan the base-only direct carrier an animated-only level already uses, whenever the channel gates direct terms and id 35 is present.
+- `direct_compose_required`, the dense direct atlases, their pool pricing (`plan_initial_pool`, `DenseTextures::new`) and the carrier preflight now follow the plan's carrier rather than `sources.direct_delta || animated_direct_delta`.
+- Not exercised on a real map: no fixture holds id-57 direct records without id 41 or 45. Covered by `gated_direct_records_plan_the_direct_passes_without_ids_41_and_45`.
+- Open: an animated-baked record with its own tile on a level without id 45 still has no Pass B.
+
+**C.2.** A record without its own tile, whose family is absent from the PRL's section table, refuses the load with `MoverProbeChannelBorrowedFamilyAbsent`, naming DirectShDeltaVolumes (id 41) or AnimatedDirectShDeltaVolumes (id 45). A family the load disables still composes ungated, with the renderer's existing warning.
+
+**Proof.**
+
+| Row | Test | Result |
+|---|---|---|
+| C3 | `mover_channel::bounce_compose_tests::c3_bounce_replaces_id_34_with_the_lerp_of_its_states_and_deltas_still_add` (t′ 0, 0.5 and 1; no state, or no section, equals today's bytes; nothing outside the probe moves) | pass |
+| C3, two movers | `two_movers_at_one_probe_add_their_lerped_differences_from_id_34` | pass |
+| C3, clamp | `the_summed_base_clamps_per_texel_at_zero_before_deltas_add` (negative state; negative sum of two movers; positive sums pass through). Fails with the max(0) removed, checked | pass |
+| B11 (GPU) | Id 27 composes unchanged on top, in the C3 test with `INDIRECT_ANIMATED` off and on. The table takes no light state. | pass |
+| C7, C14 (indirect) | `mover_channel::tests::planner::only_a_travelling_movers_bounce_rows_recompose_indirect`; legacy: `state.rs` `a_mover_recomposes_only_the_passes_its_entries_feed` | pass |
+| C11 (indirect) | `a_bounce_change_outside_the_gate_or_unrecorded_composes_later` (streamed); legacy commit-after-encode as task 8 | pass |
+| C10 (indirect) | **Deferred to task 11.** `off` composes the legacy atlas and `sync-proof` the slot-pooled one, so the comparison needs the captures' readback path. Streamed ≡ resident table words is proven below. | deferred |
+| C7 GPU half (lagging rows compose before sampling) | **Deferred to task 11**, with the captures | deferred |
+| Residency (GPU, synthetic) | `a_streamed_bounce_cell_composes_the_resident_bytes_only_while_resident`: not resident composes id 34; on arrival, equal to the resident build's atlas; on eviction, live 0 and id 34 again; on re-arrival, equal again | pass |
+| Residency (real map) | `uploads::renderer_tests::streamed_mover_channel::a_streamed_id_57_payload_places_the_resident_builds_words_per_resident_cell` (ignored; env `MOVER_CHANNEL_RESIDENT_PRL`, `MOVER_CHANNEL_STREAMED_PRL`) on `mover-setpiece` built default and with `--mover-payload-resident-bar 0` by the same compiler | pass |
+| C.1 | `sh_streaming::tests::gated_direct_records_plan_the_direct_passes_without_ids_41_and_45` | pass |
+| C.2 | `prl_loader::mover_probe_channel_tests::a_record_borrowing_from_an_absent_family_is_refused_naming_the_family` | pass |
+
+**Real-map residency (setpiece).**
+- The bar-0 PRL is 55,362,439 B against 51,850,511 B resident: cells repeat in every cluster that covers them.
+- All clusters resident: all 179 direct cells and 303 bounce cells place the resident build's words exactly. The pools hold 8,792,520 B live and allocated (direct 3,001,560 B, bounce 5,790,960 B). The dense pool started whole, so the pools did too.
+- Logical occupancy went 0 → 13,481,880 B.
+- After evicting every cluster, live is 0, every base reads not resident, and occupancy drops by at least the payload. On re-arrival, the words are identical.
+
+**Hallway bytes, estimated, not built.** From 7b's and task 6's figures:
+- Direct pool: 51,267 masked probes × 216 B of T is 11,073,672 B. Add about 0.10 MB of q, padded per cell, for ≈ 11.18 MB.
+- Bounce: 19,074,960 B.
+- **Resident (whole tables):** ≈ 30.3 MB, plus fixed parts of about 0.2 MB (1,725 records × 32 B, mover entries, cells, bounce entries).
+- **Streamed:** the same ≈ 0.2 MB fixed, plus two pools.
+  - They start at f × 30.3 MB × 1.25, where f is the dense pool's share of the map, capped at 30.3 MB.
+  - Live bytes are only the resident cells' share.
+  - Growth past the start is logged.
+- On the setpiece, pooled direct is 1.28× its file payload (borrowed T copies), and bounce is 1.00×.
+
+**GPU steps.** No windowed run; nothing stalled.
+
+**Gates.**
+- `cargo test` with `POSTRETRO_REQUIRE_GPU=1`: renderer 1,311 pass (11 ignored), level-loader 387, app (`postretro`) 2,513 + 3 + 2.
+- Clippy `--all-targets -D warnings` is clean with and without `--features postretro/capture` on renderer, level-loader, level-format and postretro.
+- `cargo fmt` applied.
+
+**Smaller changes.**
+- The total atlas carries `COPY_SRC` under `cfg(test)` as well as dev-tools, for the compose GPU tests.
+- `clear_pools` is classified drain-internal in the upload drift guard.
+- The planner harness now plans the indirect pass (`PlannedRows`).

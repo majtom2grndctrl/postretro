@@ -12,14 +12,15 @@ use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::mover_channel::MoverChannelRows;
 
-/// One planned frame's direct-pass rows, in encode order.
+/// One planned frame's rows per pass, in encode order.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(in crate::render) struct PlannedDirectRows {
+pub(in crate::render) struct PlannedRows {
+    pub(in crate::render) indirect_rows: Vec<u32>,
     pub(in crate::render) static_rows: Vec<u32>,
     pub(in crate::render) animated_rows: Vec<u32>,
 }
 
-/// Membership changes making `rows` resident in both direct passes, with no
+/// Membership changes making `rows` resident in every pass, with no id-27,
 /// id-41 or id-45 contribution.
 fn resident_rows(rows: &[u32]) -> Vec<(u32, RowMembership)> {
     let resident = PassMembership {
@@ -32,7 +33,7 @@ fn resident_rows(rows: &[u32]) -> Vec<(u32, RowMembership)> {
             (
                 row,
                 RowMembership {
-                    indirect: PassMembership::default(),
+                    indirect: resident,
                     static_direct: resident,
                     animated_direct: resident,
                 },
@@ -56,7 +57,7 @@ impl PlannerHarness {
         }
     }
 
-    /// The next planned frame observes `rows` resident in both direct passes.
+    /// The next planned frame observes `rows` resident in every pass.
     pub(in crate::render) fn observe_resident(&mut self, rows: &[u32]) {
         self.pending_membership.extend(resident_rows(rows));
     }
@@ -68,7 +69,7 @@ impl PlannerHarness {
         gated: &[u32],
         mover_changes: &[u32],
         mover_rows: &MoverChannelRows,
-    ) -> PlannedDirectRows {
+    ) -> PlannedRows {
         self.frame_with(
             records_compose,
             gated,
@@ -94,7 +95,7 @@ impl PlannerHarness {
         light_term_mask: LightTermMask,
         promotion_override: DirectShDebugOverride,
         animated_override: AnimatedDirectShDebugOverride,
-    ) -> PlannedDirectRows {
+    ) -> PlannedRows {
         let membership = std::mem::take(&mut self.pending_membership);
         let mut plan = ComposeFramePlan::default();
         self.planner.plan_frame_into(
@@ -117,7 +118,8 @@ impl PlannerHarness {
             },
             &mut plan,
         );
-        let rows = PlannedDirectRows {
+        let rows = PlannedRows {
+            indirect_rows: plan.indirect.rows().to_vec(),
             static_rows: plan.static_direct.rows().to_vec(),
             animated_rows: plan.animated_direct.rows().to_vec(),
         };

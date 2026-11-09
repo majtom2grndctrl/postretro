@@ -40,7 +40,8 @@ use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 //     22     animation descriptors        (storage, shared with the SH bind group)
 //     23     animation samples            (storage, shared with the SH bind group)
 //     24     affinity_lights  (storage)   `u32` flat light indices, CSR-parallel to delta subblocks
-//     25     animation descriptor indices `u32` delta-light index → descriptor slot
+//     25     mover bounce table (storage) id 57's bounce block, holding id 27's
+//            delta-light → descriptor map (`mover_channel::MoverChannelResources`)
 //     26     probe indirection (storage)  compact valid-probe slot, or invalid sentinel
 //     27     delta compaction metadata (storage)  cell masks + levels + post-drop entry offsets
 //
@@ -51,7 +52,7 @@ use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
 const BIND_AFFINITY_OFFSETS: u32 = 21;
 const BIND_AFFINITY_LIGHTS: u32 = 24;
-const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
+const BIND_MOVER_BOUNCE: u32 = 25;
 const BIND_PROBE_INDIRECTION: u32 = 26;
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 const BIND_BASE_ATLAS_SAMPLER: u32 = 2;
@@ -80,18 +81,9 @@ impl ShComposePipelines {
             immediate_size: 0,
         });
 
-        // curve_eval.wgsl provides `sample_curve_catmull_rom` used by the shader.
-        let shader_source = [
-            include_str!("../shaders/sh_compose.wgsl"),
-            "\n",
-            include_str!("../shaders/curve_eval.wgsl"),
-            "\n",
-            WGSL_DECODE_HELPER,
-        ]
-        .concat();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("SH Compose Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            source: wgpu::ShaderSource::Wgsl(sh_compose_shader_source().into()),
         });
 
         let pipeline = new_install_compute_pipeline(
@@ -115,6 +107,22 @@ impl ShComposePipelines {
     pub(crate) fn pipeline(&self) -> &wgpu::ComputePipeline {
         &self.pipeline
     }
+}
+
+/// The indirect compose's WGSL: `sh_compose.wgsl` with the helpers it reads
+/// by name (curves, the mover bounce table, the probe indirection decode).
+/// The whole-load and streamed pipelines build from this one source.
+pub(crate) fn sh_compose_shader_source() -> String {
+    [
+        include_str!("../shaders/sh_compose.wgsl"),
+        "\n",
+        include_str!("../shaders/curve_eval.wgsl"),
+        "\n",
+        super::mover_channel::MOVER_BOUNCE_WGSL,
+        "\n",
+        WGSL_DECODE_HELPER,
+    ]
+    .concat()
 }
 
 /// The compose pipeline bound to one level's buffers.
@@ -193,12 +201,10 @@ impl ShComposeResources {
             ShAllocationKind::IndirectComposeCompactionMetadata,
             ShAllocationKind::IndirectComposeAffinityOffsets,
             ShAllocationKind::IndirectComposeAffinityLights,
-            Some(ShAllocationKind::IndirectComposeDescriptorIndices),
             delta_subblocks,
             &buffers.compaction_meta_words(),
             &buffers.affinity_offsets,
             &buffers.affinity_lights,
-            Some(&buffers.animation_descriptor_indices),
         );
         // ShVolumeResources derives this once from id-34 metadata. The direct
         // compose carriers and B/A moment payload use the exact same words.
@@ -253,16 +259,6 @@ impl ShComposeResources {
             delta_state,
         );
         ledger.record_buffer(
-            storage
-                .descriptor_indices
-                .as_ref()
-                .expect("indirect compose always describes descriptor indices")
-                .allocation,
-            &delta_sources,
-            !delta_section_present,
-            delta_state,
-        );
-        ledger.record_buffer(
             probe_indirection.allocation,
             &source_ids([sh_section_present.then_some(34)]),
             !sh_section_present,
@@ -284,21 +280,6 @@ impl ShComposeResources {
             contents: &storage.affinity_lights.contents,
             usage: storage.affinity_lights.allocation.usage,
         });
-        let animation_descriptor_indices_buffer =
-            device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("SH Compose Animation Descriptor Indices"),
-                contents: &storage
-                    .descriptor_indices
-                    .as_ref()
-                    .expect("indirect compose always describes descriptor indices")
-                    .contents,
-                usage: storage
-                    .descriptor_indices
-                    .as_ref()
-                    .expect("indirect compose always describes descriptor indices")
-                    .allocation
-                    .usage,
-            });
         let probe_indirection_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Probe Indirection"),
             contents: &probe_indirection.contents,
@@ -320,12 +301,7 @@ impl ShComposeResources {
             delta_compaction_meta_bytes: storage.compaction_metadata.allocation.byte_len,
             affinity_offsets_bytes: storage.affinity_offsets.allocation.byte_len,
             affinity_lights_bytes: storage.affinity_lights.allocation.byte_len,
-            animation_descriptor_indices_bytes: storage
-                .descriptor_indices
-                .as_ref()
-                .expect("indirect compose always describes descriptor indices")
-                .allocation
-                .byte_len,
+            animation_descriptor_indices_bytes: sh.mover_channel.bounce_buffer().size() as usize,
         };
         #[cfg(feature = "dev-tools")]
         footprint.log("SH compose @group(1)");
@@ -456,8 +432,8 @@ impl ShComposeResources {
                 resource: affinity_lights_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
-                binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
-                resource: animation_descriptor_indices_buffer.as_entire_binding(),
+                binding: BIND_MOVER_BOUNCE,
+                resource: sh.mover_channel.bounce_buffer().as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_PROBE_INDIRECTION,
@@ -512,28 +488,35 @@ impl ShComposeResources {
     }
 
     /// Encode a compose dispatch only when the full composed atlas could have
-    /// changed. The accumulated animated delta is always added to the base at
-    /// full weight (the `delta_scale` knob was retired with the indirect-only
-    /// delta).
+    /// changed: animated activity, a mask change, the first copy-through, or
+    /// a mover with bounce entries whose t′ moved (`mover_state_changed`).
+    /// The accumulated animated delta is always added to the base at full
+    /// weight (the `delta_scale` knob was retired with the indirect-only
+    /// delta). Returns whether it encoded, so the caller commits the
+    /// mover-state trigger only after an encode (P12).
     pub fn dispatch_if_needed(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         active: bool,
+        mover_state_changed: bool,
         frame_light_term_mask: LightTermMask,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) {
+    ) -> bool {
         let Some(bound) = self.bound.as_ref() else {
-            return;
+            return false;
         };
+        // The whole atlas recomposes on a mover-state change; the streamed
+        // planner narrows that to the travelling mover's rows.
         if !should_dispatch(
             active,
             self.pending_copy_through,
             self.was_active,
             frame_light_term_mask,
             self.last_composed_mask,
-        ) {
-            return;
+        ) && !mover_state_changed
+        {
+            return false;
         }
 
         {
@@ -552,6 +535,7 @@ impl ShComposeResources {
         self.pending_copy_through = false;
         self.was_active = active;
         self.last_composed_mask = frame_light_term_mask;
+        true
     }
 }
 
@@ -640,9 +624,10 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             },
             count: None,
         },
-        // Binding 25: delta-light index → animation descriptor slot.
+        // Binding 25: id 57's bounce table, holding id 27's delta-light →
+        // animation descriptor map.
         wgpu::BindGroupLayoutEntry {
-            binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
+            binding: BIND_MOVER_BOUNCE,
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -716,15 +701,7 @@ mod tests {
 
     #[test]
     fn sh_compose_shader_parses_and_exports_compose_main() {
-        // curve_eval.wgsl must be appended to resolve Catmull-Rom helpers.
-        let src = [
-            include_str!("../shaders/sh_compose.wgsl"),
-            "\n",
-            include_str!("../shaders/curve_eval.wgsl"),
-            "\n",
-            super::WGSL_DECODE_HELPER,
-        ]
-        .concat();
+        let src = super::sh_compose_shader_source();
         let module =
             naga::front::wgsl::parse_str(&src).expect("sh_compose.wgsl should parse as WGSL");
         naga::valid::Validator::new(

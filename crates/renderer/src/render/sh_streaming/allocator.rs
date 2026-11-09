@@ -5,17 +5,17 @@ use std::collections::BTreeMap;
 use super::ShResidencyDrainError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct PoolRange {
-    pub(super) start: u32,
-    pub(super) len: u32,
+pub(in crate::render) struct PoolRange {
+    pub(in crate::render) start: u32,
+    pub(in crate::render) len: u32,
 }
 
 /// First-fit allocation is deliberately deterministic: residency policy never
 /// observes addresses, but deterministic reuse makes stale-address regressions
 /// reproducible in CPU tests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct FirstFitRanges {
-    pub(super) capacity: u32,
+pub(in crate::render) struct FirstFitRanges {
+    pub(in crate::render) capacity: u32,
     free: BTreeMap<u32, u32>,
     /// A range has come back since this pool was empty. Until then every
     /// allocation extended the high-water, so no hole exists. An undo is no
@@ -27,7 +27,7 @@ pub(super) struct FirstFitRanges {
 /// `release`, it also restores the address high-water, so a rolled-back
 /// allocation leaves no trailing free range behind.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct AllocationUndo {
+pub(in crate::render) struct AllocationUndo {
     previous_capacity: u32,
     consumed_free: Option<(u32, u32)>,
     remainder_start: Option<u32>,
@@ -39,7 +39,7 @@ impl FirstFitRanges {
         self.allocate_undoable(len).map(|(range, _)| range)
     }
 
-    pub(super) fn allocate_undoable(
+    pub(in crate::render) fn allocate_undoable(
         &mut self,
         len: u32,
     ) -> Result<(PoolRange, AllocationUndo), ShResidencyDrainError> {
@@ -98,7 +98,10 @@ impl FirstFitRanges {
         self.released
     }
 
-    pub(super) fn release(&mut self, range: PoolRange) -> Result<(), ShResidencyDrainError> {
+    pub(in crate::render) fn release(
+        &mut self,
+        range: PoolRange,
+    ) -> Result<(), ShResidencyDrainError> {
         if range.len == 0 {
             return Ok(());
         }

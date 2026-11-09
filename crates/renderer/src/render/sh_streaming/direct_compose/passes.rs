@@ -194,8 +194,9 @@ impl StreamingPromotionPass {
         })
     }
 
-    /// Rewire only the dense atlas side of this pass. The CSR backing and
-    /// dynamic-record buffers remain in their id-41 pool generation.
+    /// Rewire only the dense atlas side of this pass, and the mover
+    /// channel's live table. The CSR backing and dynamic-record buffers
+    /// remain in their id-41 pool generation.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn rebind_dense(
         &mut self,
@@ -205,7 +206,9 @@ impl StreamingPromotionPass {
         outputs: PromotionOutputs<'_>,
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
+        mover_channel: &wgpu::Buffer,
     ) {
+        self.mover_channel = mover_channel.clone();
         debug_assert_eq!(outputs.stores_promotion_free, self.stores_promotion_free);
         self.grid.atlas_dimensions = [shape.extent().width, shape.extent().height];
         self.grid.atlas_tiles_per_row = shape.tiles_per_row;

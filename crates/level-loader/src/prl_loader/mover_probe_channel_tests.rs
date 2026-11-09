@@ -124,6 +124,7 @@ struct Level {
     mover_ids: Vec<u32>,
     id59_tile_count: usize,
     id50_carries_payload: bool,
+    borrowed_families: BorrowedFamilies,
     tile_dimension: u32,
     grid_dimensions: [u32; 3],
 }
@@ -150,6 +151,10 @@ impl Level {
             mover_ids: vec![3, 9],
             id59_tile_count: 0,
             id50_carries_payload: false,
+            borrowed_families: BorrowedFamilies {
+                static_terms: true,
+                animated_terms: true,
+            },
             tile_dimension: 6,
             grid_dimensions: GRID,
         }
@@ -172,6 +177,7 @@ impl Level {
                 id59_tile_count: self.id59_tile_count,
                 mover_ids: &self.mover_ids,
                 id50_carries_payload: self.id50_carries_payload,
+                borrowed_families: self.borrowed_families,
             },
         )
     }
@@ -229,6 +235,35 @@ fn a_well_formed_section_decodes_against_its_level() {
     let level = Level::new();
     let section = level.sample();
     assert_eq!(level.decode(&section.to_bytes()), Ok(section));
+}
+
+/// A record without its own tile borrows its term: a PRL without that family
+/// is refused naming it. A record carrying its tile needs no family.
+#[test]
+fn a_record_borrowing_from_an_absent_family_is_refused_naming_the_family() {
+    let mut level = Level::new();
+    let section = level.sample();
+    // The static record carries its own tile.
+    level.borrowed_families.static_terms = false;
+    assert_eq!(level.decode(&section.to_bytes()), Ok(section.clone()));
+    // The animated record (record 1) borrows from id 45.
+    level.borrowed_families = BorrowedFamilies {
+        static_terms: true,
+        animated_terms: false,
+    };
+    let refusal = level.refusal(&section);
+    assert_eq!(
+        refusal,
+        Error::BorrowedFamilyAbsent {
+            record: 1,
+            family: "AnimatedDirectShDeltaVolumes (id 45)",
+        }
+    );
+    assert!(
+        refusal
+            .to_string()
+            .contains("AnimatedDirectShDeltaVolumes (id 45)")
+    );
 }
 
 #[test]

@@ -79,6 +79,7 @@ fn initial_pool_is_bound_plus_headroom_capped() {
         let plan = plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &ShStreamSourceMetadata::default(),
+            false,
             &dense_bound(bound),
             whole,
             &wgpu::Limits::default(),
@@ -98,6 +99,7 @@ fn sparse_takes_the_same_headroom_plus_its_sentinel() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
+        composes_direct(&sources),
         &sparse_bound(27, (10, 20)),
         100,
         &wgpu::Limits::default(),
@@ -118,6 +120,7 @@ fn a_dense_pool_holding_the_map_starts_every_family_whole() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
+        composes_direct(&sources),
         &ShPoolBound {
             dense_slots: 90,
             sparse: BTreeMap::from([(27, (10, 20))]),
@@ -145,6 +148,7 @@ fn a_family_past_the_device_stays_at_its_bound_when_dense_holds_the_map() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
+        composes_direct(&sources),
         &ShPoolBound {
             dense_slots: 1,
             sparse: BTreeMap::from([(27, (10, 20))]),
@@ -169,6 +173,7 @@ fn sparse_is_word_aligned_and_capped_at_its_whole_source() {
         plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &sources,
+            composes_direct(&sources),
             &sparse_bound(27, worst),
             100,
             &wgpu::Limits::default(),
@@ -209,6 +214,7 @@ fn a_zero_family_in_the_bound_starts_at_its_sentinel() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
+        composes_direct(&sources),
         &sparse_bound(27, (0, 0)),
         100,
         &wgpu::Limits::default(),
@@ -228,6 +234,7 @@ fn a_bound_omitting_a_streamed_family_is_refused_by_name() {
     let error = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &sources,
+        composes_direct(&sources),
         &dense_bound(1),
         100,
         &wgpu::Limits::default(),
@@ -247,6 +254,7 @@ fn a_bound_naming_an_absent_source_is_refused_by_name() {
     let error = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &ShStreamSourceMetadata::default(),
+        false,
         &sparse_bound(48, (1, 2)),
         1,
         &wgpu::Limits::default(),
@@ -276,6 +284,7 @@ fn headroom_clamps_to_a_sparse_device_limit_and_only_the_bound_can_fail_it() {
         plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &sources,
+            composes_direct(&sources),
             &sparse_bound(27, worst),
             100,
             &limits,
@@ -304,6 +313,7 @@ fn headroom_clamps_to_the_dense_device_limit_and_only_the_bound_can_fail_it() {
         plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &ShStreamSourceMetadata::default(),
+            false,
             &dense_bound(bound),
             1_000,
             &limits,
@@ -324,6 +334,7 @@ fn pool_bytes_charge_final_layer_padding_not_only_requested_dense_slots() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_BC6H),
         &ShStreamSourceMetadata::default(),
+        false,
         &dense_bound(9),
         9,
         &wgpu::Limits::default(),
@@ -347,6 +358,7 @@ fn pool_bytes_charge_every_coupled_direct_dense_texture() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_BC6H),
         &sources,
+        composes_direct(&sources),
         &ShPoolBound {
             dense_slots: u32::MAX,
             sparse: BTreeMap::from([(41, (0, 0)), (45, (0, 0))]),
@@ -372,6 +384,7 @@ fn all_invalid_dense_source_keeps_one_dummy_binding_slot() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &ShStreamSourceMetadata::default(),
+        false,
         &dense_bound(0),
         0,
         &wgpu::Limits::default(),
@@ -387,6 +400,7 @@ fn a_zero_bound_on_a_real_map_still_starts_with_capacity() {
     let plan = plan_initial_pool(
         &base(IRRADIANCE_FORMAT_RGBA16F),
         &ShStreamSourceMetadata::default(),
+        false,
         &dense_bound(0),
         64,
         &wgpu::Limits::default(),
@@ -405,6 +419,7 @@ fn pool_rejects_an_adapter_without_an_8x8_cell() {
         plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &ShStreamSourceMetadata::default(),
+            false,
             &dense_bound(1),
             1,
             &limits,
@@ -430,6 +445,7 @@ fn pool_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
         plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &sources,
+            composes_direct(&sources),
             &sparse_bound(27, (0, 0)),
             10,
             &limits,
@@ -451,6 +467,7 @@ fn pool_rejects_indirection_before_any_gpu_allocation() {
         plan_initial_pool(
             &base(IRRADIANCE_FORMAT_RGBA16F),
             &ShStreamSourceMetadata::default(),
+            false,
             &dense_bound(1),
             1,
             &limits,
@@ -474,6 +491,7 @@ fn pool_rejects_an_absent_indirect_carrier_above_adapter_limits() {
         plan_initial_pool(
             &base,
             &ShStreamSourceMetadata::default(),
+            false,
             &dense_bound(1),
             1,
             &limits,
@@ -500,7 +518,14 @@ fn pool_rejects_an_absent_direct_promotion_carrier_above_adapter_limits() {
         ..Default::default()
     };
     assert_eq!(
-        plan_initial_pool(&base, &sources, &dense_bound(1), 1, &limits),
+        plan_initial_pool(
+            &base,
+            &sources,
+            composes_direct(&sources),
+            &dense_bound(1),
+            1,
+            &limits
+        ),
         Err(ShResidencyDrainError::GpuCapacity {
             reason: "streamed sparse absent compaction table",
         })
@@ -519,4 +544,9 @@ fn impossible_streamed_pool_growth_is_a_named_gpu_capacity_error() {
             reason: "adapter cannot allocate an 8x8 streamed SH cell",
         })
     );
+}
+
+/// What the plan derives: a direct delta family means a direct compose.
+fn composes_direct(sources: &ShStreamSourceMetadata) -> bool {
+    sources.direct_delta.is_some() || sources.animated_direct_delta.is_some()
 }

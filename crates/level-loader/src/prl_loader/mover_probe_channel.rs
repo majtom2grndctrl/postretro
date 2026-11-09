@@ -44,6 +44,17 @@ pub(super) struct MoverProbeChannelInputs<'a> {
     /// Whether this load's id 50 lists this section as a source: where a
     /// streamed payload is placed.
     pub(super) id50_carries_payload: bool,
+    /// Whether the PRL holds DirectShDeltaVolumes (id 41) and
+    /// AnimatedDirectShDeltaVolumes (id 45): the families a record without
+    /// its own tile borrows its term from.
+    pub(super) borrowed_families: BorrowedFamilies,
+}
+
+/// Which delta families the PRL holds, whatever this load enables.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BorrowedFamilies {
+    pub(super) static_terms: bool,
+    pub(super) animated_terms: bool,
 }
 
 /// Read optional id 57, check it, and hand each mover it names its author
@@ -108,6 +119,11 @@ pub(super) fn read_mover_probe_channel(
                 .map_or(0, |tiles| tiles.tile_count()),
             mover_ids: &mover_ids,
             id50_carries_payload,
+            borrowed_families: BorrowedFamilies {
+                static_terms: container.has_section(SectionId::DirectShDeltaVolumes as u32),
+                animated_terms: container
+                    .has_section(SectionId::AnimatedDirectShDeltaVolumes as u32),
+            },
         },
     )?;
     if streaming.is_none()
@@ -272,6 +288,24 @@ fn validate_mover_probe_channel(
             inputs,
             bake_only_roster_len,
         )?;
+        // A record without its own tile borrows its term: the family must be
+        // in the PRL. One the load disables composes ungated, with a warning
+        // from the renderer.
+        if !record.carries_own_tile {
+            let family = match record.namespace {
+                MoverLightNamespace::StaticLight => (!inputs.borrowed_families.static_terms)
+                    .then_some("DirectShDeltaVolumes (id 41)"),
+                MoverLightNamespace::AnimatedBaked => (!inputs.borrowed_families.animated_terms)
+                    .then_some("AnimatedDirectShDeltaVolumes (id 45)"),
+                MoverLightNamespace::BakeOnlyStaticLight => None,
+            };
+            if let Some(family) = family {
+                return Err(Error::BorrowedFamilyAbsent {
+                    record: index,
+                    family,
+                });
+            }
+        }
     }
 
     let lattice: u64 = inputs

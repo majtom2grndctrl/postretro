@@ -202,9 +202,10 @@ impl StreamingDirectCompose {
         })
     }
 
-    /// Rebuild only the dense-atlas bindings. This never reallocates the
-    /// direct sparse pools: id-41/id-45 capacity has its own replacement
-    /// lifecycle and must not double during a 34/35 atlas layer append.
+    /// Rebuild only the dense-atlas bindings and the mover channel's live
+    /// table. This never reallocates the direct sparse pools: id-41/id-45
+    /// capacity has its own replacement lifecycle and must not double during
+    /// a 34/35 atlas layer append.
     pub(super) fn rebind_dense(
         &mut self,
         device: &wgpu::Device,
@@ -222,6 +223,7 @@ impl StreamingDirectCompose {
                 .expect("prevalidated animated direct growth has an intermediate storage view"),
             views.selection_weights,
             compose_indirection,
+            sh.mover_channel.buffer(),
         );
         if let Some(animated) = self.animated.as_mut() {
             animated.rebind_dense(

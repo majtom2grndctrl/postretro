@@ -248,7 +248,6 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
         ShAllocationKind::IndirectComposeDeltaSubblocks => "indirect_compose_delta_subblocks",
         ShAllocationKind::IndirectComposeAffinityOffsets => "indirect_compose_affinity_offsets",
         ShAllocationKind::IndirectComposeAffinityLights => "indirect_compose_affinity_lights",
-        ShAllocationKind::IndirectComposeDescriptorIndices => "indirect_compose_descriptor_indices",
         ShAllocationKind::IndirectComposeProbeIndirection => "indirect_compose_probe_indirection",
         ShAllocationKind::IndirectComposeCompactionMetadata => {
             "indirect_compose_compaction_metadata"
@@ -264,6 +263,7 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
         ShAllocationKind::DirectComposeDebugOverride => "direct_compose_debug_override",
         ShAllocationKind::DirectComposeLightTermMask => "direct_compose_light_term_mask",
         ShAllocationKind::MoverChannelTable => "mover_channel_table",
+        ShAllocationKind::MoverBounceTable => "mover_bounce_table",
         ShAllocationKind::AnimatedDirectComposeDeltaSubblocks => {
             "animated_direct_compose_delta_subblocks"
         }

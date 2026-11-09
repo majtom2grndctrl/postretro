@@ -203,13 +203,10 @@ pub(super) fn build_animated_direct_pass(
         ShAllocationKind::AnimatedDirectComposeCompactionMetadata,
         ShAllocationKind::AnimatedDirectComposeAffinityOffsets,
         ShAllocationKind::AnimatedDirectComposeAffinityLights,
-        // The descriptor map rides the mover channel table (binding 25).
-        None,
         delta_subblocks,
         &buffers.compaction_meta_words(),
         &buffers.affinity_offsets,
         &buffers.affinity_lights,
-        None,
     );
 
     #[cfg(feature = "dev-tools")]

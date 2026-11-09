@@ -134,6 +134,65 @@ fn state_with_clusters(cluster_count: u32) -> ShResidencyState {
     .expect("minimal dense directory is valid")
 }
 
+/// C.1: a level whose id 57 gates direct terms, with id 35 but neither id 41
+/// nor id 45, still plans the direct passes: the base-only direct carrier,
+/// so dirty rows reach Pass A. Without id 35 nothing changes.
+#[test]
+fn gated_direct_records_plan_the_direct_passes_without_ids_41_and_45() {
+    let directory = ClusterDirectorySection {
+        runtime_cell_count: 0,
+        primitive_limit: 0,
+        cell_limit: 0,
+        clusters: vec![cluster(0)],
+        resources: vec![ClusterResourceRecord {
+            section_id: INDIRECT_BASE_ID,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [4, 4, 4],
+        }],
+        members: Vec::new(),
+        ranges: vec![range(0, 0, 64)],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
+        mandatory_bound: crate::render::sh_streaming::whole_map_bound_for_test(),
+    };
+    let base = one_l0_brick();
+    let no_deltas = postretro_level_loader::ShStreamSourceMetadata::default();
+    let plan = || {
+        plan_sh_residency_parts([9; 32], &directory, &base, &no_deltas, &[], None)
+            .expect("minimal dense directory is valid")
+    };
+    let direct_only = postretro_level_loader::ShStreamSourceMetadata {
+        direct: Some(direct_metadata()),
+        ..Default::default()
+    };
+
+    let ungated = ShResidencyState::from_plan(plan(), &base, &direct_only);
+    assert!(
+        !ungated.direct_compose_required,
+        "no gated record, no delta: no pass"
+    );
+
+    let mut gated = plan();
+    gate_direct_compose(&mut gated, &base, &direct_only).unwrap();
+    let state = ShResidencyState::from_plan(gated, &base, &direct_only);
+    assert!(state.direct_compose_required);
+    assert!(
+        state
+            .sparse_compose
+            .direct
+            .as_ref()
+            .is_some_and(|layout| !layout.source_present),
+        "the base-only carrier: no id-41 rows"
+    );
+
+    let mut no_direct_base = plan();
+    gate_direct_compose(&mut no_direct_base, &base, &no_deltas).unwrap();
+    assert!(
+        no_direct_base.sparse_compose.direct.is_none(),
+        "no id 35, nothing to gate"
+    );
+}
+
 fn prepared(cluster_id: u32, generation: u64, content_tag: [u8; 32]) -> PreparedShCluster {
     PreparedShCluster {
         generation,
@@ -412,6 +471,8 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         direct_animation_descriptor_indices: Vec::new(),
         compose_planner: StreamedComposePlanner::with_row_capacity(ROW_SPACE),
         mover_channel_rows: Default::default(),
+        released_mover_cells: Vec::new(),
+        mover_pool_bytes: (0, 0),
         compose_frame_plan: None,
         sample_region_index: SampleRegionIndex::build(
             &sample_regions::SampleRegionGrid {

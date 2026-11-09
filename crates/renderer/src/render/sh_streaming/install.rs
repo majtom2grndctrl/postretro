@@ -29,6 +29,13 @@ pub(super) struct StagedInstall {
     required_direct_epoch: u64,
 }
 
+impl StagedInstall {
+    /// Hold one more storage reference with the installed record.
+    pub(super) fn push_sparse_reference(&mut self, key: (u32, u32)) {
+        self.sparse_rows.push(key);
+    }
+}
+
 impl ShResidencyState {
     pub(super) fn install(
         &mut self,
@@ -68,7 +75,7 @@ impl ShResidencyState {
         // or make a half cluster reachable on a later drain, and rollback
         // touches only what this cluster changed.
         let mut journal = InstallJournal::default();
-        let staged = match self.stage_install(&mut journal, prepared, has_dense_payload) {
+        let mut staged = match self.stage_install(&mut journal, prepared, has_dense_payload) {
             Ok(staged) => staged,
             Err(error) => {
                 self.roll_back(journal);
@@ -76,10 +83,10 @@ impl ShResidencyState {
             }
         };
         if let Some(gpu) = gpu {
-            // Mover channel cells this cluster completes, checked before any
-            // upload: a malformed id-57 row refuses the cluster.
+            // Mover channel cells this cluster places or completes, checked
+            // before any upload: a malformed id-57 row refuses the cluster.
             let channel_writes =
-                match mover_channel_writes(cluster_id, prepared, &staged, &gpu.sh.mover_channel) {
+                match self.stage_mover_channel(&mut journal, gpu, prepared, &mut staged) {
                     Ok(writes) => writes,
                     Err(error) => {
                         self.roll_back(journal);
@@ -102,12 +109,14 @@ impl ShResidencyState {
             if let Err(error) = staged_uploads {
                 // Discarding the batch keeps each GPU word equal to its
                 // mirror: a rolled-back install uploads nothing.
+                gpu.sh.mover_channel.undo_cluster(&channel_writes);
                 self.roll_back(journal);
                 return Err(error);
             }
             upload_copy_regions = uploads.copy_count();
             self.submit_uploads(uploads, gpu.device, gpu.queue);
-            gpu.sh.mover_channel.mark_written(&channel_writes);
+            gpu.sh.mover_channel.commit_cluster(&channel_writes);
+            self.observe_mover_pool(&gpu.sh.mover_channel);
         }
         self.commit_install(cluster_id, staged);
         if let Some(started) = trace_started {
@@ -464,48 +473,4 @@ fn isolated_atlas(
         .blocks
         .iter()
         .find(|block| block.kind == ISOLATED_ATLAS_BLOCK && block.section_id == section_id)
-}
-
-/// The mover channel cells `prepared` completes: id-57 rows it carries and
-/// the first-written id-41/id-45 rows a gated light borrows its term from.
-/// Under async a streamed direct payload's masks were never checked at load,
-/// so each cell is checked here, and a failure refuses the cluster as a
-/// malformed chunk.
-fn mover_channel_writes(
-    cluster_id: u32,
-    prepared: &PreparedShCluster,
-    staged: &StagedInstall,
-    channel: &crate::render::mover_channel::MoverChannelResources,
-) -> Result<Vec<crate::render::mover_channel::CellWrite>, ShResidencyDrainError> {
-    use crate::render::mover_channel::{ClusterSparseRow, ClusterTermRows};
-    if !channel.has_pending_cells() {
-        return Ok(Vec::new());
-    }
-    let mut rows = ClusterTermRows::default();
-    if let Some(block) = prepared.chunk.mover_channel_rows() {
-        rows.channel_rows = postretro_level_format::mover_probe_channel::parse_streamed_rows(block)
-            .map_err(|error| {
-                log::error!("[Renderer] streamed cluster {cluster_id}: {error}");
-                malformed(cluster_id, "MoverProbeChannel (id 57) rows are malformed")
-            })?;
-    }
-    for plan in &staged.sparse_plan {
-        let row = ClusterSparseRow {
-            cell: plan.payload.row,
-            entry_offsets: &plan.payload.entry_tile_f16_offsets,
-            tiles: &plan.payload.tile_f16,
-        };
-        match plan.section_id {
-            DIRECT_DELTA_ID => rows.static_rows.push(row),
-            ANIMATED_DIRECT_DELTA_ID => rows.animated_rows.push(row),
-            _ => {}
-        }
-    }
-    channel.stage_cluster(&rows).map_err(|error| {
-        log::error!("[Renderer] streamed cluster {cluster_id}: {error}");
-        malformed(
-            cluster_id,
-            "MoverProbeChannel (id 57) cell is malformed or incomplete",
-        )
-    })
 }

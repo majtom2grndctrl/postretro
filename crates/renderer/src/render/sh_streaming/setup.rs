@@ -2,6 +2,24 @@
 
 use super::*;
 
+/// A level whose MoverProbeChannel (id 57) gates direct terms runs the
+/// streamed direct passes even without id 41 or id 45: the plan gains the
+/// base-only direct carrier an animated-only level already uses, so the
+/// dense direct atlases, their pricing and Pass A follow. Without id 35
+/// there is no direct atlas to gate, and nothing changes.
+pub(in crate::render) fn gate_direct_compose(
+    plan: &mut ShResidencyPlan,
+    base: &postretro_level_loader::ShStreamBaseMetadata,
+    sources: &postretro_level_loader::ShStreamSourceMetadata,
+) -> Result<(), ShResidencyDrainError> {
+    if plan.sparse_compose.direct.is_none() && sources.direct.is_some() {
+        plan.sparse_compose.direct = Some(
+            postretro_render_cpu::sh_residency::sparse_compose_capacity(base, None)?,
+        );
+    }
+    Ok(())
+}
+
 impl ShResidencyState {
     /// `cells` are the level's runtime cells; the sampled-row gate indexes
     /// their bounds here once, and frames name cells by id.
@@ -98,8 +116,8 @@ impl ShResidencyState {
             direct_promotion_row_refs: BTreeMap::new(),
             direct_animated_row_refs: BTreeMap::new(),
             direct_required: sources.direct.is_some(),
-            direct_compose_required: sources.direct_delta.is_some()
-                || sources.animated_direct_delta.is_some(),
+            // Ids 41 or 45, or id 57's gated records (`gate_direct_compose`).
+            direct_compose_required: sparse_compose.direct.is_some(),
             animated_direct_compose_required: sources.animated_direct_delta.is_some(),
             direct_animation_descriptor_indices: sources
                 .animated_direct_delta
@@ -109,6 +127,8 @@ impl ShResidencyState {
                 }),
             compose_planner: StreamedComposePlanner::with_row_capacity(row_capacity),
             mover_channel_rows: Default::default(),
+            released_mover_cells: Vec::new(),
+            mover_pool_bytes: (0, 0),
             compose_frame_plan: None,
             sample_region_index: SampleRegionIndex::from_tables(sample_regions),
             compose_input_regions: Vec::new(),
@@ -212,6 +232,7 @@ impl ShResidencyState {
         let initial_pool = plan_initial_pool(
             base,
             sources,
+            self.direct_compose_required,
             &self.pool_bound,
             self.whole_dense_slots,
             limits,
@@ -220,6 +241,15 @@ impl ShResidencyState {
             "[Renderer] streamed SH pool from the mandatory bound: {} bytes",
             initial_pool.pool_bytes
         );
+        // A streamed id-57 payload's pools start at the dense pool's share of
+        // the map, before any compose pass binds a table.
+        let dense_fraction = if self.whole_dense_slots == 0 {
+            1.0
+        } else {
+            f64::from(initial_pool.dense_slots) / f64::from(self.whole_dense_slots)
+        };
+        sh.mover_channel.size_streamed_pools(device, dense_fraction);
+        self.observe_mover_pool(&sh.mover_channel);
         self.gpu = Some(StreamingGpuPools::new(
             device,
             limits,

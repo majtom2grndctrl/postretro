@@ -85,14 +85,7 @@ impl StreamingShPipelines {
                 shader_label: "Streamed SH Compose Shader",
                 entries: &super::gpu::compose_bgl_entries(),
                 uniform_bind_group_layout: Some(uniform_bind_group_layout),
-                source: [
-                    include_str!("../../shaders/sh_compose.wgsl"),
-                    "\n",
-                    include_str!("../../shaders/curve_eval.wgsl"),
-                    "\n",
-                    WGSL_DECODE_HELPER,
-                ]
-                .concat(),
+                source: crate::render::sh_compose::sh_compose_shader_source(),
                 entry_point: "compose_main",
             },
         );

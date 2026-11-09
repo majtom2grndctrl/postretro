@@ -193,6 +193,7 @@ fn build_scene(ctx: &GpuCtx, fixture: Fixture) -> Scene {
             animation_descriptor_indices: animated
                 .as_ref()
                 .map_or(&[][..], |section| &section.animation_descriptor_indices),
+            indirect_descriptor_indices: &[],
         },
         false,
         |_, _| None,

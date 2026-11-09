@@ -69,7 +69,15 @@ impl StreamingGpuPools {
         selection_weights: &wgpu::Buffer,
     ) -> Result<Self, ShResidencyDrainError> {
         let extent = shape.extent();
-        let dense = DenseTextures::new(device, queue, base, sources, shape, sh)?;
+        let dense = DenseTextures::new(
+            device,
+            queue,
+            base,
+            sources,
+            sparse_compose.direct.is_some(),
+            shape,
+            sh,
+        )?;
         let direct_compose_required = dense.direct_atlas.is_some();
 
         let depth_extent = wgpu::Extent3d {

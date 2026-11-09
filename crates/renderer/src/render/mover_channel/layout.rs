@@ -1,6 +1,8 @@
 // Mover probe channel table: id 57's direct block laid out for the two
 // direct-SH compose passes, each gated light's term T resolved once per
 // masked probe, and the per-mover row lists the streamed planner recomposes.
+// Each listed cell's payload is one run of words its base word points at:
+// fixed in a whole table, placed per resident cell in a pooled one.
 // wgpu-free; `gpu.rs` owns the buffer this lays out.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
@@ -15,11 +17,17 @@ use postretro_level_format::mover_probe_channel::{
 use postretro_level_format::sh_reconstruct::{Level, kept_mask, stored_delta_tiles};
 
 /// Header words, in `mover_channel.wgsl`'s `MC_HEADER_*` order.
-const HEADER_WORDS: usize = 8;
-/// Words per term record (`MC_RECORD_WORDS`).
+const HEADER_WORDS: usize = 9;
+/// Words per term record (`MC_RECORD_WORDS`): probe mask (two words), light
+/// key, mover entry range, first term half within the cell's payload, and
+/// the cell's listed position.
 const RECORD_WORDS: usize = 8;
-/// Words per (record, mover) entry: mover slot, then its first q byte.
+/// Words per (record, mover) entry: mover slot, then its first q byte
+/// within the cell's payload.
 const MOVER_ENTRY_WORDS: usize = 2;
+/// A cell base word while its payload is not resident: the cell composes as
+/// with no section.
+pub(super) const NO_BASE: u32 = u32::MAX;
 /// A record's light key when the light never promotes (no selection slot).
 pub(super) const NO_LIGHT: u32 = u32::MAX;
 /// A mover slot's t′ while the game hands over no state: ungated.
@@ -172,7 +180,9 @@ struct RecordPlan {
     probe_mask: u64,
 }
 
-/// One listed cell the table carries records for, with its payload span.
+/// One listed cell the table carries records for. Its payload is one run of
+/// words: its records' terms (f16 halves), then their q bytes, so the whole
+/// cell sits wherever its base word points.
 #[derive(Clone, Debug)]
 struct CellPlan {
     cell: u32,
@@ -180,16 +190,22 @@ struct CellPlan {
     position: usize,
     /// Its records in `MoverChannelLayout::records`: static lights first.
     records: Range<usize>,
-    /// f16 halves of the term region (even, so word aligned).
-    tile_halves: Range<usize>,
-    /// Bytes of the visibility region (start and length multiples of four).
-    q_bytes: Range<usize>,
+    /// f16 halves of the term run (even, so word aligned).
+    tile_halves: usize,
+    /// Bytes of the visibility run, padded to a word.
+    q_bytes: usize,
     needs_static_terms: bool,
     needs_animated_terms: bool,
     /// The cell's valid probes in ids 41 and 45, which an L0 cell keeps in
     /// order: a streamed row's tile rank.
     static_valid: u64,
     animated_valid: u64,
+}
+
+impl CellPlan {
+    fn payload_words(&self) -> usize {
+        self.tile_halves / 2 + self.q_bytes / 4
+    }
 }
 
 /// Rows per mover slot, CSR: which affinity rows carry a mover's entries in
@@ -201,7 +217,7 @@ pub(in crate::render) struct MoverRows {
 }
 
 impl MoverRows {
-    fn from_sets(sets: Vec<Vec<u32>>) -> Self {
+    pub(super) fn from_sets(sets: Vec<Vec<u32>>) -> Self {
         let mut offsets = Vec::with_capacity(sets.len() + 1);
         let mut rows = Vec::new();
         offsets.push(0);
@@ -222,10 +238,15 @@ impl MoverRows {
             None => &[],
         }
     }
+
+    /// Whether slot `slot` carries any entry in this pass.
+    pub(super) fn has_rows(&self, slot: u32) -> bool {
+        !self.rows(slot).is_empty()
+    }
 }
 
 /// What the streamed planner reads of the channel: per-mover row lists for
-/// each direct pass, and the rows whose membership the channel widens.
+/// each pass, and the rows whose membership the channel widens.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::render) struct MoverChannelRows {
     /// Pass A: rows carrying a mover's gated static lights. Pass B follows
@@ -233,6 +254,8 @@ pub(in crate::render) struct MoverChannelRows {
     pub(in crate::render) static_by_mover: MoverRows,
     /// Pass B: rows carrying a mover's gated animated-baked lights.
     pub(in crate::render) animated_by_mover: MoverRows,
+    /// The indirect pass: rows carrying a mover's bounce entries.
+    pub(in crate::render) bounce_by_mover: MoverRows,
     /// Rows with a gated static light that can promote: a promotion weight
     /// change moves their handoff even with no id-41 entry there.
     pub(in crate::render) promotable: Vec<u32>,
@@ -250,6 +273,10 @@ pub(in crate::render) static NO_MOVER_ROWS: MoverChannelRows = MoverChannelRows 
         rows: Vec::new(),
     },
     animated_by_mover: MoverRows {
+        offsets: Vec::new(),
+        rows: Vec::new(),
+    },
+    bounce_by_mover: MoverRows {
         offsets: Vec::new(),
         rows: Vec::new(),
     },
@@ -280,16 +307,17 @@ pub(in crate::render) struct MoverChannelInputs<'a> {
     pub(in crate::render) animated_terms: Option<TermFamily<'a>>,
     /// Pass B's AnimatedBakedLights → descriptor map (id 45's).
     pub(in crate::render) animation_descriptor_indices: &'a [u32],
+    /// The indirect compose's light → descriptor map (id 27's), folded into
+    /// the bounce table the way id 45's folds into this one.
+    pub(in crate::render) indirect_descriptor_indices: &'a [u32],
 }
 
-/// One listed cell's bytes, ready to write at their table offsets.
+/// One listed cell's payload words, ready to place: its records' terms, then
+/// their q bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::render) struct CellWrite {
     pub(in crate::render) plan: usize,
-    pub(in crate::render) tile_byte_offset: u64,
-    pub(in crate::render) tile_halves: Vec<u16>,
-    pub(in crate::render) q_byte_offset: u64,
-    pub(in crate::render) q_bytes: Vec<u8>,
+    pub(in crate::render) words: Vec<u32>,
 }
 
 /// The laid-out table and what writes and plans against it.
@@ -299,22 +327,29 @@ pub(in crate::render) struct MoverChannelLayout {
     /// Slot → id 43 `mover_id`, ascending.
     mover_ids: Vec<u32>,
     t_word: usize,
-    /// First word of the term region; the visibility region follows it.
-    tiles_word: usize,
-    q_word: usize,
+    /// First word of each cell's base word.
+    bases_word: usize,
+    /// First word of the payload region: every cell's payload in a whole
+    /// table, the pool in a pooled one.
+    payload_word: usize,
+    /// Each cell's payload at a fixed base (`None`: pooled per resident cell).
+    whole_bases: Option<Vec<u32>>,
     cells: Vec<CellPlan>,
     records: Vec<RecordPlan>,
     rows: MoverChannelRows,
-    /// Records the table leaves ungated: their delta family is absent.
+    /// Records the table leaves ungated: their delta family is disabled at
+    /// load.
     ungated_records: usize,
 }
 
 impl MoverChannelLayout {
-    /// Lay out `inputs`. A record whose term family is absent (id 41 or id
-    /// 45 missing or disabled at load) composes ungated; a family present
-    /// but holding no L0 entry for a record that borrows from it is refused.
+    /// Lay out `inputs`. A record whose term family is disabled at load
+    /// composes ungated; a family present but holding no L0 entry for a
+    /// record that borrows from it is refused. `pooled` places each cell's
+    /// payload per resident cell instead of at a fixed base.
     pub(in crate::render) fn build(
         inputs: &MoverChannelInputs<'_>,
+        pooled: bool,
     ) -> Result<Self, MoverChannelError> {
         let Some(section) = inputs.section else {
             return Ok(Self::empty(inputs.animation_descriptor_indices));
@@ -333,14 +368,13 @@ impl MoverChannelLayout {
         let mut static_ends = Vec::new();
         let mut cells = Vec::new();
         let mut ungated_records = 0usize;
-        let (mut tile_halves, mut q_bytes) = (0usize, 0usize);
         for (position, listed) in section.cells.iter().enumerate() {
             let cell = listed.cell as usize;
             let wire = section.direct_offsets[position] as usize
                 ..section.direct_offsets[position + 1] as usize;
             let start = records.len();
             let (mut needs_static, mut needs_animated) = (false, false);
-            let (cell_tiles, cell_q) = (tile_halves, q_bytes);
+            let (mut tile_halves, mut q_bytes) = (0usize, 0usize);
             // Static lights first, then animated-baked ones, each in wire order.
             for animated_pass in [false, true] {
                 for index in wire.clone() {
@@ -419,13 +453,12 @@ impl MoverChannelLayout {
                 static_ends.pop();
                 continue;
             }
-            q_bytes = q_bytes.next_multiple_of(4);
             cells.push(CellPlan {
                 cell: listed.cell,
                 position,
                 records: start..records.len(),
-                tile_halves: cell_tiles..tile_halves,
-                q_bytes: cell_q..q_bytes,
+                tile_halves,
+                q_bytes: q_bytes.next_multiple_of(4),
                 needs_static_terms: needs_static,
                 needs_animated_terms: needs_animated,
                 static_valid: inputs
@@ -445,20 +478,20 @@ impl MoverChannelLayout {
             .sum();
         let cells_word = HEADER_WORDS;
         let cell_records_word = cells_word + cells.len();
-        let records_word = cell_records_word + 2 * cells.len() + 1;
+        let bases_word = cell_records_word + 2 * cells.len() + 1;
+        let records_word = bases_word + cells.len();
         let entries_word = records_word + records.len() * RECORD_WORDS;
         let descriptors_word = entries_word + mover_entries * MOVER_ENTRY_WORDS;
         let t_word = descriptors_word + inputs.animation_descriptor_indices.len();
-        let tiles_word = t_word + mover_ids.len();
-        let q_word = tiles_word + tile_halves / 2;
-        let total_words = q_word + q_bytes / 4;
-        let as_u32 = |value: usize, what: &str| {
-            u32::try_from(value).map_err(|_| {
-                MoverChannelError(format!("the table's {what} ({value}) overflows u32"))
-            })
-        };
-        // The shader addresses q bytes and tile halves within the table.
-        as_u32(total_words * 4, "byte size")?;
+        let payload_word = t_word + mover_ids.len();
+        let whole_payload: usize = cells.iter().map(CellPlan::payload_words).sum();
+        let total_words = payload_word + if pooled { 0 } else { whole_payload };
+        // The shader addresses q bytes and tile halves within the table, a
+        // pool included: its words are bounded by the whole payload's.
+        as_u32(
+            (payload_word + whole_payload) * 4,
+            "byte size with every cell resident",
+        )?;
 
         let mut words = vec![0u32; total_words];
         words[0] = cells.len() as u32;
@@ -469,16 +502,29 @@ impl MoverChannelLayout {
         words[5] = t_word as u32;
         words[6] = descriptors_word as u32;
         words[7] = inputs.animation_descriptor_indices.len() as u32;
+        words[8] = bases_word as u32;
+        let mut whole_bases = (!pooled).then(|| Vec::with_capacity(cells.len()));
         let mut static_rows = vec![Vec::new(); mover_ids.len()];
         let mut animated_rows = vec![Vec::new(); mover_ids.len()];
         let mut promotable = Vec::new();
         let mut animated_cells = Vec::new();
         let mut entry = 0usize;
+        let mut next_base = payload_word;
         for (index, cell) in cells.iter().enumerate() {
             words[cells_word + index] = cell.cell;
             words[cell_records_word + 2 * index] = cell.records.start as u32;
             words[cell_records_word + 2 * index + 1] = static_ends[index] as u32;
-            let (mut tile_at, mut q_at) = (cell.tile_halves.start, cell.q_bytes.start);
+            words[bases_word + index] = match whole_bases.as_mut() {
+                Some(bases) => {
+                    let base = next_base as u32;
+                    bases.push(base);
+                    next_base += cell.payload_words();
+                    base
+                }
+                None => NO_BASE,
+            };
+            // Cell-local cursors: terms first, then q bytes after them.
+            let (mut tile_at, mut q_at) = (0usize, cell.tile_halves * 2);
             for at in cell.records.clone() {
                 let plan = &records[at];
                 let movers = section.record_movers(plan.section_record);
@@ -489,14 +535,15 @@ impl MoverChannelLayout {
                 words[base + 2] = keys[at];
                 words[base + 3] = entry as u32;
                 words[base + 4] = (entry + movers.len()) as u32;
-                words[base + 5] = as_u32(tiles_word * 2 + tile_at, "tile offset")?;
+                words[base + 5] = tile_at as u32;
+                words[base + 6] = index as u32;
                 for &mover in movers {
                     let Some(slot) = slot_of(mover) else {
                         return fail(format!("mover {mover} has no slot"));
                     };
                     let at_entry = entries_word + entry * MOVER_ENTRY_WORDS;
                     words[at_entry] = slot;
-                    words[at_entry + 1] = as_u32(q_word * 4 + q_at, "visibility offset")?;
+                    words[at_entry + 1] = q_at as u32;
                     q_at += probes * MOVER_VISIBILITY_BYTES_PER_PROBE;
                     entry += 1;
                     if at < static_ends[index] {
@@ -516,20 +563,22 @@ impl MoverChannelLayout {
         }
         words[cell_records_word + 2 * cells.len()] = records.len() as u32;
         words[descriptors_word..t_word].copy_from_slice(inputs.animation_descriptor_indices);
-        words[t_word..tiles_word].fill(NO_STATE.to_bits());
+        words[t_word..payload_word].fill(NO_STATE.to_bits());
         promotable.dedup();
         animated_cells.dedup();
         Ok(Self {
             initial_words: words,
             mover_ids,
             t_word,
-            tiles_word,
-            q_word,
+            bases_word,
+            payload_word,
+            whole_bases,
             cells,
             records,
             rows: MoverChannelRows {
                 static_by_mover: MoverRows::from_sets(static_rows),
                 animated_by_mover: MoverRows::from_sets(animated_rows),
+                bounce_by_mover: MoverRows::default(),
                 promotable,
                 animated: animated_cells,
             },
@@ -549,11 +598,13 @@ impl MoverChannelLayout {
         words[5] = words.len() as u32;
         words[6] = descriptors_word as u32;
         words[7] = animation_descriptor_indices.len() as u32;
+        words[8] = descriptors_word as u32;
         words[descriptors_word..].copy_from_slice(animation_descriptor_indices);
         Self {
             t_word: words.len(),
-            tiles_word: words.len(),
-            q_word: words.len(),
+            bases_word: descriptors_word,
+            payload_word: words.len(),
+            whole_bases: Some(Vec::new()),
             initial_words: words,
             mover_ids: Vec::new(),
             cells: Vec::new(),
@@ -563,7 +614,8 @@ impl MoverChannelLayout {
         }
     }
 
-    /// The table's words before any cell payload is written.
+    /// The table's words before any cell payload is written: a whole
+    /// table's payload region zeroed, a pooled table's fixed words only.
     pub(in crate::render) fn initial_words(&self) -> &[u32] {
         &self.initial_words
     }
@@ -600,6 +652,12 @@ impl MoverChannelLayout {
             .ok()
     }
 
+    /// Each plan's affinity cell, in plan order.
+    #[cfg(test)]
+    pub(super) fn cell_numbers(&self) -> Vec<u32> {
+        self.cells.iter().map(|cell| cell.cell).collect()
+    }
+
     /// Which delta families plan `plan`'s write needs: (id 41, id 45).
     pub(in crate::render) fn plan_needs(&self, plan: usize) -> (bool, bool) {
         let cell = &self.cells[plan];
@@ -612,11 +670,35 @@ impl MoverChannelLayout {
         (cell.static_valid, cell.animated_valid)
     }
 
-    /// Cell `plan`'s write: its records' q bytes and terms. `payload` is the
-    /// listed cell's payload (`MoverProbeChannelSection::cell_payload`); each
-    /// family's row is needed only when a record borrows from it. Every
-    /// record's probe mask is checked tight against its q bytes, so a
-    /// streamed payload that arrives malformed is refused here.
+    /// Each cell's payload words, in plan order: what a pool places.
+    pub(super) fn cell_payload_words(&self) -> Vec<u32> {
+        self.cells
+            .iter()
+            .map(|cell| cell.payload_words() as u32)
+            .collect()
+    }
+
+    /// First word of the payload region.
+    pub(super) fn payload_word(&self) -> usize {
+        self.payload_word
+    }
+
+    /// Byte offset of cell `plan`'s base word.
+    pub(super) fn base_byte_offset(&self, plan: usize) -> u64 {
+        (self.bases_word + plan) as u64 * 4
+    }
+
+    /// Cell `plan`'s fixed base word in a whole table.
+    pub(super) fn whole_base(&self, plan: usize) -> Option<u32> {
+        self.whole_bases.as_ref()?.get(plan).copied()
+    }
+
+    /// Cell `plan`'s write: its records' terms then their q bytes, as words.
+    /// `payload` is the listed cell's payload
+    /// (`MoverProbeChannelSection::cell_payload`); each family's row is
+    /// needed only when a record borrows from it. Every record's probe mask
+    /// is checked tight against its q bytes, so a streamed payload that
+    /// arrives malformed is refused here.
     pub(in crate::render) fn cell_write(
         &self,
         section: &MoverProbeChannelSection,
@@ -634,8 +716,8 @@ impl MoverChannelLayout {
         };
         let wire_start = section.direct_offsets[cell.position] as usize;
         let views: Vec<DirectRecordView<'_>> = view.records().collect();
-        let mut tile_halves = Vec::with_capacity(cell.tile_halves.len());
-        let mut q_bytes = Vec::with_capacity(cell.q_bytes.len());
+        let mut tile_halves = Vec::with_capacity(cell.tile_halves);
+        let mut q_bytes = Vec::with_capacity(cell.q_bytes);
         for record in &self.records[cell.records.clone()] {
             let view = &views[record.section_record - wire_start];
             check_tight(record.section_record, cell.cell, view)?;
@@ -664,15 +746,22 @@ impl MoverChannelLayout {
                 slot += 1;
             }
         }
-        q_bytes.resize(cell.q_bytes.len(), 0);
-        debug_assert_eq!(tile_halves.len(), cell.tile_halves.len());
-        Ok(CellWrite {
-            plan,
-            tile_byte_offset: (self.tiles_word as u64 * 2 + cell.tile_halves.start as u64) * 2,
-            tile_halves,
-            q_byte_offset: self.q_word as u64 * 4 + cell.q_bytes.start as u64,
-            q_bytes,
-        })
+        debug_assert_eq!(tile_halves.len(), cell.tile_halves);
+        q_bytes.resize(cell.q_bytes, 0);
+        let mut words = Vec::with_capacity(cell.payload_words());
+        words.extend(
+            tile_halves.chunks(2).map(|pair| {
+                u32::from(pair[0]) | (u32::from(pair.get(1).copied().unwrap_or(0)) << 16)
+            }),
+        );
+        words.extend(
+            q_bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|quad| u32::from_le_bytes(*quad)),
+        );
+        Ok(CellWrite { plan, words })
     }
 
     /// Every cell `section`'s held direct payload can write now, with the
@@ -727,6 +816,11 @@ impl MoverChannelLayout {
             .cell_payload(position, &slices[position], streamed)
             .map_err(|error| MoverChannelError(error.to_string()))
     }
+}
+
+fn as_u32(value: usize, what: &str) -> Result<u32, MoverChannelError> {
+    u32::try_from(value)
+        .map_err(|_| MoverChannelError(format!("the table's {what} ({value}) overflows u32")))
 }
 
 /// A record's probe mask must be exactly the probes where some gating mover

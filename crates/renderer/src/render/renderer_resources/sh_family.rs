@@ -92,12 +92,17 @@ pub(super) fn install_sh_volume(
     // here is the first pool generation against the device and the live
     // buffer sizes. Either way the error fails the load.
     let sh_streaming = match (streaming_manifest, sh_plan) {
-        (Some(manifest), Some(plan)) => {
+        (Some(manifest), Some(mut plan)) => {
             debug_assert_eq!(
                 plan.content_tag,
                 manifest.content_tag(),
                 "the residency plan was built from a different stream manifest"
             );
+            // Id 57's gated direct records compose in the direct passes even
+            // on a level with neither id 41 nor id 45.
+            if sh_volume_resources.mover_channel.gates_direct() {
+                sh_streaming::gate_direct_compose(&mut plan, manifest.base(), manifest.sources())?;
+            }
             let mut state = sh_streaming::ShResidencyState::from_plan(
                 plan,
                 manifest.base(),
@@ -129,7 +134,7 @@ pub(super) fn install_sh_volume(
     })
 }
 
-/// Id 57's direct table. Its term families are ids 41 and 45 as this load
+/// Id 57's direct and bounce tables. The direct table's term families are ids 41 and 45 as this load
 /// holds them: whole sections, or a streamed level's resident metadata with
 /// tiles arriving per cluster.
 fn build_mover_channel(
@@ -170,6 +175,10 @@ fn build_mover_channel(
                 .animated_direct_delta
                 .as_ref()
                 .map_or(&[][..], |meta| &meta.animation_descriptor_indices),
+            indirect_descriptor_indices: sources
+                .indirect_delta
+                .as_ref()
+                .map_or(&[][..], |meta| &meta.animation_descriptor_indices),
         };
         return mover_channel::MoverChannelResources::new(
             device,
@@ -207,6 +216,9 @@ fn build_mover_channel(
         static_terms,
         animated_terms,
         animation_descriptor_indices: animated_section
+            .map_or(&[][..], |section| &section.animation_descriptor_indices),
+        indirect_descriptor_indices: geometry
+            .delta_sh_volumes
             .map_or(&[][..], |section| &section.animation_descriptor_indices),
     };
     mover_channel::MoverChannelResources::new(

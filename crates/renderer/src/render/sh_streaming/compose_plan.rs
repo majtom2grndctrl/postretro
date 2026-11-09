@@ -307,10 +307,14 @@ impl StreamedComposePlanner {
 
         // A travelling mover stales only rows carrying its entries, in only
         // the passes those entries feed: static lights Pass A (and Pass B
-        // through Pass A's planned rows below), animated-baked lights Pass B.
-        // Staleness persists to the next commit, so a change on a frame that
-        // records no compose is never lost.
+        // through Pass A's planned rows below), animated-baked lights Pass B,
+        // its bounce entries the indirect pass. Staleness persists to the
+        // next commit, so a change on a frame that records no compose is
+        // never lost. No light's state stales a row here.
         for &slot in frame.mover_changes {
+            for &row in frame.mover_rows.bounce_by_mover.rows(slot) {
+                self.indirect.mark_stale(row);
+            }
             for &row in frame.mover_rows.static_by_mover.rows(slot) {
                 self.static_direct.mark_stale(row);
             }

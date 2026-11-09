@@ -1338,6 +1338,8 @@ fn sh_compose_grid_dims_shader_layouts_match_cpu_packer() {
         "\n",
         include_str!("../../shaders/curve_eval.wgsl"),
         "\n",
+        include_str!("../../shaders/mover_bounce.wgsl"),
+        "\n",
         include_str!("../../shaders/sh_indirection.wgsl"),
     );
     const DIRECT_SH_COMPOSE_SHADER_SOURCE: &str = concat!(

@@ -326,7 +326,11 @@ impl ShResidencyState {
             self.gpu.as_ref().map_or((0, 0, 0), |gpu| {
                 (
                     gpu.fixed_metadata_bytes,
-                    gpu.active_capacity_bytes,
+                    // A streamed id-57 payload's pooled tables are this
+                    // pool's residency too.
+                    gpu.active_capacity_bytes
+                        .checked_add(self.mover_pool_bytes.0)
+                        .expect("validated streamed GPU capacities must not overflow u64"),
                     gpu.retiring_capacity_bytes(),
                 )
             });

@@ -52,6 +52,7 @@ fn assert_binding_15(
         queue,
         &fixture.map.base(),
         &fixture.map.sources(),
+        fixture.state.direct_compose_required,
         shape,
         &mut fixture.sh,
     )

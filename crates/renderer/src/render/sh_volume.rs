@@ -514,10 +514,11 @@ impl ShVolumeResources {
             );
             base_atlas_texture =
                 upload_compact_base_atlas_texture(device, queue, sec, base_allocation);
+            // Copied back by the dev-tools readback and the compose GPU tests.
             let total_allocation = indirect_total_atlas_allocation(
                 sec.atlas_dimensions,
                 sec.layer_count,
-                cfg!(feature = "dev-tools"),
+                cfg!(any(test, feature = "dev-tools")),
             );
             ledger.record_texture(total_allocation, &indirect_sources, false, indirect_state);
             total_atlas_texture =

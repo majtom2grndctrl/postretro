@@ -95,6 +95,7 @@ fn build_scene(ctx: &GpuCtx, section: Option<&MoverProbeChannelSection>, animate
             animation_descriptor_indices: animated_section
                 .as_ref()
                 .map_or(&[][..], |section| &section.animation_descriptor_indices),
+            indirect_descriptor_indices: &[],
         },
         false,
         |cell, animated| {
@@ -593,13 +594,17 @@ fn the_channel_table_is_ledgered_while_installed_and_gone_after_unload() {
             vec![(7, 0, 255)],
         )],
     );
-    let expected = super::layout::MoverChannelLayout::build(&MoverChannelInputs {
-        section: Some(&section),
-        entity_shadow_lights: &[],
-        static_terms: None,
-        animated_terms: None,
-        animation_descriptor_indices: &[],
-    })
+    let expected = super::layout::MoverChannelLayout::build(
+        &MoverChannelInputs {
+            section: Some(&section),
+            entity_shadow_lights: &[],
+            static_terms: None,
+            animated_terms: None,
+            animation_descriptor_indices: &[],
+            indirect_descriptor_indices: &[],
+        },
+        false,
+    )
     .unwrap()
     .initial_words()
     .len() as u64

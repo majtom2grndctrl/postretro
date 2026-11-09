@@ -123,6 +123,7 @@ impl UploadOrderSh {
                     static_terms: None,
                     animated_terms: None,
                     animation_descriptor_indices: &[],
+                    indirect_descriptor_indices: &[],
                 },
                 true,
                 |_, _| None,
@@ -333,6 +334,9 @@ impl UploadOrderSh {
         let mut uploads = self.state.begin_uploads(0);
         self.state
             .evict(&mut uploads, self.sh.depth_tiles.references(), cluster)
+            .unwrap();
+        self.state
+            .flush_mover_releases(&mut uploads, &mut self.sh.mover_channel)
             .unwrap();
         self.state.submit_uploads(uploads, device, queue);
         self.state.targets.insert(cluster);

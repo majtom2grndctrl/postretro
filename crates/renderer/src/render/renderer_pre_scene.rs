@@ -617,6 +617,11 @@ impl Renderer {
             let streamed_indirect_active = level.sh_streaming.as_ref().is_some_and(|streaming| {
                 streaming.indirect_has_active_animation(&level.sh_volume_resources.animation)
             });
+            // Mover state lighting: this frame's t′ reaches the bounce table
+            // before the indirect compose records, on either path.
+            let mover_channel = &mut level.sh_volume_resources.mover_channel;
+            mover_channel.set_states(full.mover_light_states.states());
+            mover_channel.upload_t(queue);
             if let Some(streaming) = level.sh_streaming.as_mut() {
                 if let Err(error) = streaming.dispatch_indirect_compose(
                     queue,
@@ -633,13 +638,26 @@ impl Renderer {
                 let indirect_active = level
                     .sh_compose
                     .has_active_animated_descriptor(&level.sh_volume_resources.animation);
-                level.sh_compose.dispatch_if_needed(
+                let mover_state_changed = level
+                    .sh_volume_resources
+                    .mover_channel
+                    .bounce_t_changed_since_composed();
+                let encoded = level.sh_compose.dispatch_if_needed(
                     encoder,
                     &full.uniform_bind_group,
                     indirect_active,
+                    mover_state_changed,
                     frame_light_term_mask,
                     sh_compose_ts,
                 );
+                // Committed only after the encode, so a frame that records no
+                // compose leaves the change for the next recording frame (P12).
+                if encoded {
+                    level
+                        .sh_volume_resources
+                        .mover_channel
+                        .commit_composed_bounce_t();
+                }
             }
         }
         true

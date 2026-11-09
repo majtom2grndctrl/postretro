@@ -162,6 +162,15 @@ impl ShResidencyState {
             if !self.storage_refs.release_sparse_row(&(section_id, row))? {
                 continue;
             }
+            if section_id == MOVER_CHANNEL_ID {
+                // The last cluster carrying this channel cell left: its pooled
+                // payload frees in the same batch (`flush_mover_releases`),
+                // and the rows it fed are dirty with the cluster's own.
+                if self.gpu.is_some() {
+                    self.released_mover_cells.push(row);
+                }
+                continue;
+            }
             // A CPU-only state installed its rows without GPU pools, so it
             // has no CSR pair to clear.
             if let Some(gpu) = self.gpu.as_ref() {

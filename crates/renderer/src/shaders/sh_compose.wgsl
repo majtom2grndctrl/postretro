@@ -1,8 +1,9 @@
 // SH compose compute pass.
 //
 // Curve helpers (`sample_curve_catmull_rom`, `sample_color_catmull_rom`)
-// come from `curve_eval.wgsl`, concatenated after this source at
-// pipeline-build time. Both helpers read `anim_samples` by lexical name.
+// come from `curve_eval.wgsl`, and the mover bounce reads (`mb_*`) from
+// `mover_bounce.wgsl`, both concatenated after this source at pipeline-build
+// time. They read `anim_samples` and `mover_bounce` by lexical name.
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -77,9 +78,10 @@ struct GridFrame {
 // Flat CSR light indices, index-parallel to the delta sub-blocks: CSR entry
 // `i` (light `affinity_lights[i]`) owns sub-block `i`.
 @group(1) @binding(24) var<storage, read> affinity_lights: array<u32>;
-// Maps delta-light index to the SH animation descriptor slot. `0xffffffff`
-// means "no descriptor" and contributes nothing.
-@group(1) @binding(25) var<storage, read> animation_descriptor_indices: array<u32>;
+// Id 57's bounce table (`mover_bounce.wgsl`), which also holds id 27's
+// delta-light → animation descriptor map: `0xffffffff` means "no
+// descriptor" and contributes nothing.
+@group(1) @binding(25) var<storage, read> mover_bounce: array<u32>;
 // Dense-grid probe index -> compact id-34 tile slot. The sentinel means the
 // metadata record is invalid and no base-atlas fetch may occur.
 @group(1) @binding(26) var<storage, read> probe_indirection: array<u32>;
@@ -346,7 +348,7 @@ fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32>
 }
 
 fn animated_light_scale(light_index: u32) -> vec3<f32> {
-    let descriptor_index = animation_descriptor_indices[light_index];
+    let descriptor_index = mb_descriptor_index(light_index);
     if (descriptor_index == INVALID_DESCRIPTOR_INDEX || descriptor_index >= arrayLength(&descriptors)) {
         return vec3<f32>(0.0);
     }
@@ -466,6 +468,56 @@ fn compose_main(
             accum[texel_index] = sample_compact_base_atlas(stored_slot.slot, tile_texel).rgb;
         } else {
             accum[texel_index] = vec3<f32>(0.0);
+        }
+    }
+
+    // Mover state lighting, bounce half. At a probe a mover affects, the
+    // base is the lerp of that mover's two absolute static bounce states in
+    // place of id 34; several movers at one probe add their lerped
+    // differences from id 34. The summed tile then clamps per texel at zero,
+    // before id-27 deltas add: the sampler's octahedral taps and probe
+    // weights are convex, so non-negative texels evaluate non-negative
+    // irradiance in every direction. Only mover state and residency reach
+    // this; no light's state does, and the states sum static lights only.
+    if (output_is_stored && stored_slot.valid && use_indirect_static && brick_indirection.level == 0u) {
+        let position = mb_listed_position(cell_index);
+        if (position != MB_NONE) {
+            let cell_entries = mb_cell_entries(position);
+            var touched = false;
+            for (var entry = cell_entries.start; entry < cell_entries.end; entry = entry + 1u) {
+                let t = mb_entry_t(entry);
+                // Negative (or non-finite) t: no state handed over this frame.
+                if (!(t >= 0.0)) {
+                    continue;
+                }
+                let tile = mb_entry_tile(cell_entries, entry, local_probe);
+                if (tile == MB_NONE) {
+                    continue;
+                }
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    let state = mix(
+                        mb_tile_texel(tile, texel_index),
+                        mb_tile_texel(tile + MB_TILE_HALVES, texel_index),
+                        min(t, 1.0),
+                    );
+                    if (touched) {
+                        let tile_texel = vec2<u32>(
+                            texel_index % RUNTIME_TILE_DIMENSION,
+                            texel_index / RUNTIME_TILE_DIMENSION,
+                        );
+                        accum[texel_index] = accum[texel_index] + state
+                            - sample_compact_base_atlas(stored_slot.slot, tile_texel).rgb;
+                    } else {
+                        accum[texel_index] = state;
+                    }
+                }
+                touched = true;
+            }
+            if (touched) {
+                for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                    accum[texel_index] = max(accum[texel_index], vec3<f32>(0.0));
+                }
+            }
         }
     }
 

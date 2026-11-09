@@ -99,7 +99,12 @@ impl ShResidencyState {
     ) -> Result<bool, ShResidencyDrainError> {
         let mut uploads = self.begin_uploads(0);
         let references = gpu.sh.depth_tiles.references();
-        let walked = self.walk_victims(&mut uploads, references, demand, admission, outcome);
+        let walked = self
+            .walk_victims(&mut uploads, references, demand, admission, outcome)
+            .and_then(|placed| {
+                self.flush_mover_releases(&mut uploads, &mut gpu.sh.mover_channel)
+                    .map(|()| placed)
+            });
         self.submit_uploads(uploads, gpu.device, gpu.queue);
         walked
     }

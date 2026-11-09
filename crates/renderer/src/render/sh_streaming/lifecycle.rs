@@ -18,15 +18,16 @@ impl ShResidencyState {
         // The load's one tile-reference table: every texel this drain writes
         // packs G from it (`pack_moment_upload_spans`).
         let references = sh.depth_tiles.references();
-        self.apply_targets(device, queue, &batch, references)?;
+        self.apply_targets(device, queue, &batch, references, &mut sh.mover_channel)?;
         self.release_retired_generations();
         // Promotion, eviction and queued tile-reference texels share one
         // upload batch, submitted before any install can reuse a released
         // range.
         let mut uploads = self.begin_uploads(0);
         let mut outcome = ShDrainOutcome::default();
-        let released =
-            self.promote_and_evict(&mut uploads, references, batch.evictions, &mut outcome);
+        let released = self
+            .promote_and_evict(&mut uploads, references, batch.evictions, &mut outcome)
+            .and_then(|()| self.flush_mover_releases(&mut uploads, &mut sh.mover_channel));
         self.submit_uploads(uploads, device, queue);
         released?;
         let mut gpu = InstallGpu {
@@ -145,10 +146,15 @@ impl ShResidencyState {
         queue: &crate::render::uploads::UploadQueue,
         batch: &ShDrainBatch,
         references: &ProbeDepthTileReferences,
+        mover_channel: &mut crate::render::mover_channel::MoverChannelResources,
     ) -> Result<(), ShResidencyDrainError> {
         let (new_generation, next_targets) = self.plan_target_transition(batch)?;
         if new_generation {
             self.clear_session(device, queue, references)?;
+            if self.gpu.is_some() {
+                mover_channel.clear_pools(queue);
+                self.observe_mover_pool(mover_channel);
+            }
             self.generation = batch.generation;
             self.generation_has_reset = false;
         }
@@ -288,6 +294,7 @@ impl ShResidencyState {
         self.direct_base_row_refs.clear();
         self.direct_promotion_row_refs.clear();
         self.direct_animated_row_refs.clear();
+        self.released_mover_cells.clear();
         self.compose_planner.reset_generation();
         // The ref tables were cleared wholesale, not row by row.
         self.compose_planner.clear_membership();

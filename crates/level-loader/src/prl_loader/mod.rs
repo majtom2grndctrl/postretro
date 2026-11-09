@@ -7,12 +7,14 @@ mod entities;
 mod geometry;
 mod lighting;
 mod lighting_sh;
+mod mover_probe_channel;
 mod spatial;
 mod staged;
 mod validation;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 
 use super::{CellDrawIndex, LevelWorld, PortalData, PrlLoadError};
@@ -140,6 +142,12 @@ pub(crate) fn load_prl_from_container(
         &lighting.lights,
         portal_data.as_ref().map(Vec::len),
     )?;
+    let mover_probe_channel = mover_probe_channel::read_mover_probe_channel(
+        &container,
+        streaming,
+        &lighting,
+        &mut entities.kinematic_geometry,
+    )?;
     // Required when the BVH has leaves; omitted only for empty-BVH maps. Hold
     // the raw bytes until Cells and BVH are both available for cross-validation.
     let cell_draw_index_data = container.read_section(SectionId::CellDrawIndex as u32)?;
@@ -178,6 +186,7 @@ pub(crate) fn load_prl_from_container(
             cell_portal_refs,
             lighting,
             sh,
+            mover_probe_channel,
             entities,
             cell_draw_index,
             cluster_directory,
@@ -194,6 +203,7 @@ struct DecodedLevel {
     cell_portal_refs: Vec<u32>,
     lighting: LightingDecode,
     sh: RuntimeShCompanions,
+    mover_probe_channel: Option<MoverProbeChannelSection>,
     entities: EntityDecode,
     cell_draw_index: Option<CellDrawIndex>,
     cluster_directory: Option<ClusterDirectorySection>,
@@ -221,11 +231,13 @@ fn log_loaded(geometry: &GeometryDecode, spatial: &SpatialSections, portal_count
 /// payloads out of the decoded lighting (the shadowmask drop), finalizes
 /// lightmap storage (the lightmap stream manifest), and stamps the vertex
 /// owner stream. Fallible: lightmap storage can still reject the level.
+#[allow(clippy::too_many_arguments)]
 fn finalize_lighting(
     container: &PrlContainer,
     stream_manifest: Option<std::sync::Arc<ShStreamManifest>>,
     lighting: LightingDecode,
     sh: RuntimeShCompanions,
+    mover_probe_channel: Option<MoverProbeChannelSection>,
     cluster_directory: Option<ClusterDirectorySection>,
     geometry: &GeometryDecode,
     spatial: &SpatialSections,
@@ -280,6 +292,7 @@ fn finalize_lighting(
             None => ShStorage::Legacy,
         },
         probe_depth_tiles,
+        mover_probe_channel,
         lightmap,
         lightmap_mode,
         sdf_atlas,
@@ -331,6 +344,7 @@ fn assemble_world(
         cell_portal_refs,
         lighting,
         sh,
+        mover_probe_channel,
         entities,
         cell_draw_index,
         cluster_directory,
@@ -344,6 +358,7 @@ fn assemble_world(
         stream_manifest,
         lighting,
         sh,
+        mover_probe_channel,
         cluster_directory,
         &geometry,
         &spatial,
@@ -386,6 +401,7 @@ fn assemble_world(
         sh_volume,
         sh_storage,
         probe_depth_tiles,
+        mover_probe_channel,
         lightmap,
         lightmap_mode,
         sdf_atlas,
@@ -426,6 +442,7 @@ fn assemble_world(
         sh_volume,
         sh_storage,
         probe_depth_tiles,
+        mover_probe_channel,
         lightmap,
         lightmap_mode,
         sdf_atlas,

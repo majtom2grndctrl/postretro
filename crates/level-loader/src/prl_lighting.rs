@@ -20,7 +20,7 @@ use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::{
-    OctahedralShVolumeSection, validate_storage_levels_against_delta,
+    OctahedralShProbe, OctahedralShVolumeSection, validate_storage_levels_against_delta,
 };
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_render_data::influence::LightInfluence;
@@ -151,6 +151,13 @@ impl LevelWorld {
         &self,
     ) -> Option<&postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection> {
         self.probe_depth_tiles.as_ref()
+    }
+
+    /// Id 57, in either SH storage mode: whole-resident outside id 50.
+    pub fn mover_probe_channel(
+        &self,
+    ) -> Option<&postretro_level_format::mover_probe_channel::MoverProbeChannelSection> {
+        self.mover_probe_channel.as_ref()
     }
 
     pub fn sh_volume(&self) -> Option<&OctahedralShVolumeSection> {
@@ -1116,6 +1123,22 @@ pub(crate) fn valid_probe_mask_for_affinity_cell(
     affinity_dims: [u32; 3],
     cell_index: usize,
 ) -> u64 {
+    valid_probe_mask_for_grid_cell(
+        base.grid_dimensions,
+        &base.probes,
+        affinity_dims,
+        cell_index,
+    )
+}
+
+/// Id 34's valid-probe mask for one affinity cell, from the grid and probe
+/// metadata either SH storage mode holds.
+pub(crate) fn valid_probe_mask_for_grid_cell(
+    grid_dimensions: [u32; 3],
+    probes: &[OctahedralShProbe],
+    affinity_dims: [u32; 3],
+    cell_index: usize,
+) -> u64 {
     let cell_index = cell_index as u32;
     let cell_x = cell_index % affinity_dims[0];
     let cell_y = (cell_index / affinity_dims[0]) % affinity_dims[1];
@@ -1130,18 +1153,16 @@ pub(crate) fn valid_probe_mask_for_affinity_cell(
                     cell_y * factor + local_y,
                     cell_z * factor + local_z,
                 ];
-                if probe[0] >= base.grid_dimensions[0]
-                    || probe[1] >= base.grid_dimensions[1]
-                    || probe[2] >= base.grid_dimensions[2]
+                if probe[0] >= grid_dimensions[0]
+                    || probe[1] >= grid_dimensions[1]
+                    || probe[2] >= grid_dimensions[2]
                 {
                     continue;
                 }
                 let probe_index = probe[0] as usize
-                    + probe[1] as usize * base.grid_dimensions[0] as usize
-                    + probe[2] as usize
-                        * base.grid_dimensions[0] as usize
-                        * base.grid_dimensions[1] as usize;
-                if base.probes[probe_index].validity != 0 {
+                    + probe[1] as usize * grid_dimensions[0] as usize
+                    + probe[2] as usize * grid_dimensions[0] as usize * grid_dimensions[1] as usize;
+                if probes[probe_index].validity != 0 {
                     let local = local_x + local_y * factor + local_z * factor * factor;
                     mask |= 1u64 << local;
                 }

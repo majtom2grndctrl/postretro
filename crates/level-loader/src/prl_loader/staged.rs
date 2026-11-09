@@ -25,6 +25,7 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 use postretro_level_format::ghost_links::GhostLinksSection;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::map_entity::MapEntityRecord;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
@@ -40,7 +41,7 @@ use postretro_render_data::influence::LightInfluence;
 use super::spatial::SpatialDecode;
 use super::{
     cell_draw_index, cluster_directory, entities, finalize_lighting, geometry, lighting,
-    lighting_sh, log_loaded, spatial, validate_reflection_probes, validation,
+    lighting_sh, log_loaded, mover_probe_channel, spatial, validate_reflection_probes, validation,
 };
 use crate::lightmap_stream::{LightmapStorage, LightmapStreamingMode};
 use crate::prl_container::PrlContainer;
@@ -116,7 +117,8 @@ pub enum HandOutStage {
 /// - hand-out 4's cell draw index being validated against hand-out 3's BVH
 ///   and cells, its push forces and probe bindings against its environment
 ///   volumes, and its kinematic geometry being final (unaddressable sealed
-///   portal ids and invalid carried-light links already dropped).
+///   portal ids and invalid carried-light links already dropped, each mover's
+///   light ramp read from id 57, which has already been validated).
 ///
 /// A consumer must not rely on, and must not index or size by without a
 /// bounds check:
@@ -279,6 +281,7 @@ pub struct FinalLighting {
     pub sh_volume: Option<OctahedralShVolumeSection>,
     pub sh_storage: ShStorage,
     pub probe_depth_tiles: Option<ProbeDepthTilesSection>,
+    pub mover_probe_channel: Option<MoverProbeChannelSection>,
     pub lightmap: Option<LightmapBlockIndex>,
     pub lightmap_mode: LightmapMode,
     pub sdf_atlas: Option<SdfAtlasSection>,
@@ -400,6 +403,14 @@ pub(crate) fn load_prl_staged_from_container(
         &lighting.lights,
         portal_data.as_ref().map(Vec::len),
     )?;
+    // Id 57 settles each mover's light ramp, so it decodes before hand-out 4;
+    // the section itself rides hand-out 5 with the rest of the lighting.
+    let mover_probe_channel = mover_probe_channel::read_mover_probe_channel(
+        &container,
+        streaming,
+        &lighting,
+        &mut entity_decode.kinematic_geometry,
+    )?;
     stage_boundary!();
     let cell_draw_index_data = container.read_section(SectionId::CellDrawIndex as u32)?;
     let fog_cell_masks = entity_decode.fog_cell_masks.take();
@@ -459,6 +470,7 @@ pub(crate) fn load_prl_staged_from_container(
         stream_manifest,
         lighting,
         sh,
+        mover_probe_channel,
         cluster_directory,
         &geometry,
         &spatial,
@@ -603,6 +615,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         sh_volume,
         sh_storage,
         probe_depth_tiles,
+        mover_probe_channel,
         lightmap,
         lightmap_mode,
         sdf_atlas,
@@ -656,6 +669,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         sh_volume,
         sh_storage,
         probe_depth_tiles,
+        mover_probe_channel,
         lightmap,
         lightmap_mode,
         sdf_atlas,

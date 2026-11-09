@@ -52,6 +52,10 @@ use postretro_level_format::lightmap::LightmapBlockIndex;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::map_entity::MapEntityRecord;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::mover_probe_channel::{
+    MoverProbeChannelError, MoverProbeChannelSection,
+};
+#[cfg(feature = "load-prl")]
 use postretro_level_format::navmesh::NavMeshSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
@@ -163,6 +167,8 @@ pub enum PrlLoadError {
     ClusterDirectory(#[from] ClusterDirectoryError),
     #[error(transparent)]
     ClusterShPayloads(#[from] ClusterShPayloadsError),
+    #[error(transparent)]
+    MoverProbeChannel(#[from] MoverProbeChannelError),
     #[error("invalid POSTRETRO_SH_STREAMING mode `{value}` (expected off, sync-proof, or async)")]
     InvalidShStreamingMode { value: String },
     #[error(
@@ -667,6 +673,13 @@ pub struct LevelWorld {
     /// SH storage modes. `None` and a zero-tile section render alike.
     #[cfg(feature = "load-prl")]
     pub probe_depth_tiles: Option<ProbeDepthTilesSection>,
+    /// Optional id 57: what each analysed mover changes in the probe data at
+    /// its termini, validated against id 34's grid and validity, id 18's
+    /// lights, the animated-baked roster, id 43's movers and id 59's tile
+    /// count. Whole-resident in both SH storage modes; its ramp records
+    /// already rode into `kinematic_geometry`. `None` composes today's frame.
+    #[cfg(feature = "load-prl")]
+    pub mover_probe_channel: Option<MoverProbeChannelSection>,
     /// Id-22 cell-block index: header plus one record per block. `None` or
     /// zero blocks is placeholder mode (no static baked light). The texels
     /// live in `gpu_lighting_payloads` until install.
@@ -904,6 +917,8 @@ impl LevelWorld {
             sh_storage: ShStorage::Legacy,
             #[cfg(feature = "load-prl")]
             probe_depth_tiles: None,
+            #[cfg(feature = "load-prl")]
+            mover_probe_channel: None,
             #[cfg(feature = "load-prl")]
             lightmap: None,
             #[cfg(feature = "load-prl")]
@@ -2036,6 +2051,7 @@ mod tests {
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
             probe_depth_tiles: None,
+            mover_probe_channel: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -2147,6 +2163,7 @@ mod tests {
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
             probe_depth_tiles: None,
+            mover_probe_channel: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -2212,6 +2229,7 @@ mod tests {
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
             probe_depth_tiles: None,
+            mover_probe_channel: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,

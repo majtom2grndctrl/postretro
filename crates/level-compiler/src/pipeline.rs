@@ -1075,6 +1075,10 @@ fn run_after_parsing(
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
             &sh_config,
+            // TEMPORARY (plan task 1): a posed bake keys nothing of the pose.
+            stage_cache
+                .as_ref()
+                .filter(|_| !crate::mover_probe_channel::dev_pose::active()),
             &animated_direct_sh_control,
         )
     };
@@ -1139,6 +1143,11 @@ fn run_after_parsing(
                     &sh_config,
                     &alpha_lights_ns,
                     section,
+                    // TEMPORARY (plan task 1): a posed bake keys nothing of
+                    // the pose.
+                    stage_cache
+                        .as_ref()
+                        .filter(|_| !crate::mover_probe_channel::dev_pose::active()),
                     &direct_sh_delta_control,
                 )
             });

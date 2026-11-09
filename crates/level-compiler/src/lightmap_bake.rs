@@ -97,12 +97,12 @@ const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 /// Epoch of soft-visibility sampling: the emitter lattices, the probe set
 /// and its snap, the probe early-out and the escalation. It keys the SH base
 /// patch layers (`surface_radiance::layer`) and, through them, the id-34
-/// volume. Bump it whenever that sampling changes; the constants it reads
+/// volume, and the per-light probe-direct memos (the mover channel's direct
+/// half and the id-41 and id-45 deltas). Bump it whenever that sampling changes; the constants it reads
 /// fold on their own ([`fold_soft_visibility_constants`]). The other stages
 /// that depend on the same sampling key on their own versions, so a sampling
 /// change also bumps each of them: `LAYER_FORMAT_VERSION` (lightmap layer),
-/// `DIRECT_SH_STAGE_VERSION` (id 35), `DIRECT_SH_DELTA_STAGE_VERSION` (id 41),
-/// `BILLBOARD_DIRECT_SCATTER_STAGE_VERSION` and
+/// `DIRECT_SH_STAGE_VERSION` (id 35), `BILLBOARD_DIRECT_SCATTER_STAGE_VERSION` and
 /// `ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION` (ids 47/48), the
 /// animated-light weight maps' `STAGE_VERSION` and
 /// `INDIRECT_DELTA_SH_STAGE_VERSION` (id 27).
@@ -110,9 +110,9 @@ pub(crate) const SOFT_VISIBILITY_EPOCH: u32 = 1;
 
 /// Fold everything soft visibility reads that its caller does not pass into
 /// `hasher`: the shadow-ray lift, the lattice rotation, a sun's shadow-ray
-/// length, the probe count and [`SOFT_VISIBILITY_EPOCH`]. Only the SH base patch
-/// layer keys fold this (`surface_radiance::layer::LayerKeys::new`), so editing
-/// one misses them.
+/// length, the probe count and [`SOFT_VISIBILITY_EPOCH`]. The SH base patch
+/// layer keys (`surface_radiance::layer::LayerKeys::new`) and the per-light
+/// probe-direct memos fold this, so editing one misses them.
 pub(crate) fn fold_soft_visibility_constants(hasher: &mut blake3::Hasher) {
     hasher.update(b"soft visibility\0");
     hasher.update(&SOFT_VISIBILITY_EPOCH.to_le_bytes());

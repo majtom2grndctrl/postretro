@@ -18,17 +18,20 @@ use coloured_bounce_support::{
 const TALLY_LOG: &str = "info,prl_build::delta_sh_cache=debug";
 const LABEL: &str = "room";
 
-/// Every stage that caches an entry for the red-wall room. Each existed, and
-/// cached its entries, before coloured bounce, which added none; the SH
-/// base's patch layers and gathered volume have since replaced its grouped
-/// entries. The cell residency set is absent: the room is one cell with no
-/// portals, so that stage omits id 51 before it reads or writes the cache.
-const PRE_CHANGE_CACHED_STAGES: [&str; 14] = [
+/// Every stage that caches an entry for the red-wall room. Coloured bounce
+/// added none; the SH base's patch layers and gathered volume have since
+/// replaced its grouped entries, and the colour-blind direct delta bakes
+/// (ids 41 and 45) gained per-light memos. The cell residency set is absent:
+/// the room is one cell with no portals, so that stage omits id 51 before it
+/// reads or writes the cache.
+const CACHED_STAGES: [&str; 16] = [
     "animated_billboard_direct_scatter",
+    "animated_direct_sh_delta_light",
     "animated_lm_weight_maps",
     "billboard_direct_scatter",
     "cell_visibility",
     "chunk_light_list",
+    "direct_sh_delta_light",
     "direct_sh_volume",
     "indirect_delta_sh_subblock",
     "lightmap_layer",
@@ -323,8 +326,8 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
 }
 
 // The build writes no cache entry for means: every entry a cold build writes
-// belongs to one logged miss of a stage that cached before coloured bounce,
-// and a warm build reads them all and writes nothing new.
+// belongs to one logged miss of a known stage (`CACHED_STAGES`), and a warm
+// build reads them all and writes nothing new.
 #[test]
 #[ignore = "focused cold/warm stage-cache contents gate"]
 fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
@@ -336,8 +339,8 @@ fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
     let cold_tally = cache_tally(&cold.log);
     assert_eq!(
         cold_tally.keys().map(String::as_str).collect::<Vec<_>>(),
-        PRE_CHANGE_CACHED_STAGES,
-        "cold build caches exactly the pre-change stages:\n{}",
+        CACHED_STAGES,
+        "cold build caches exactly the known stages:\n{}",
         cold.log
     );
     for (stage, (hits, _)) in &cold_tally {
@@ -348,20 +351,20 @@ fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
     assert_eq!(
         cold_entries.len(),
         cold_misses,
-        "one entry per pre-change stage miss, and no other entry"
+        "one entry per known stage miss, and no other entry"
     );
 
     let warm = run(&fixture, true, 1, &["-v"]).into_bake();
     let warm_tally = cache_tally(&warm.log);
     for (stage, (hits, misses)) in &warm_tally {
         assert!(
-            PRE_CHANGE_CACHED_STAGES.contains(&stage.as_str()),
+            CACHED_STAGES.contains(&stage.as_str()),
             "warm build reads an unknown stage {stage}"
         );
         assert_eq!(*misses, 0, "{stage} must be warm:\n{}", warm.log);
         assert_eq!(*hits, cold_tally[stage].1, "{stage} reads every entry");
     }
-    for stage in PRE_CHANGE_CACHED_STAGES {
+    for stage in CACHED_STAGES {
         // A lightmap section hit serves the layer without reading partitions,
         // and a gathered-volume hit the SH base's patch layers.
         if !["lightmap_layer", "sh_patch_layer"].contains(&stage) {

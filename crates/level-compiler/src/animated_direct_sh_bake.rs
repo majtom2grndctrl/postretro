@@ -6,8 +6,12 @@ use crate::affinity_grid::{
     decompose_affinity_for_lights_with_policies,
 };
 use crate::bake_control::BakeControl;
+use crate::cache::StageCache;
 use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
-use crate::delta_sh_cache::{DeltaShCacheTally, bake_delta_subblocks_uncached};
+use crate::delta_sh_cache::DeltaShCacheTally;
+use crate::delta_sh_cache::direct_light_memo::{
+    DirectDeltaLight, DirectDeltaMemo, DirectDeltaStage, bake_or_load_direct_delta_subblocks,
+};
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::MapLight;
 use crate::portals::Portal;
@@ -29,17 +33,13 @@ use postretro_level_format::octahedral::{
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
 
-/// Dormant cache stage id for raw animated-direct `(affinity cell, light)`
-/// sub-blocks: the stage bakes uncached. Kept so its key fold stays distinct
-/// from the other delta stages, whose dense f16 payload shape it shares, and is
-/// pinned by tests.
-#[cfg(test)]
-pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_ID: &str = "animated_direct_delta_sh_subblock";
-
-/// Dormant epoch for [`ANIMATED_DIRECT_DELTA_SH_STAGE_ID`]: the stage bakes
-/// uncached. Kept so the key fold the tests pin stays distinct.
-#[cfg(test)]
-pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 4;
+/// The animated direct deltas' (id 45) per-light memo: one entry per
+/// animated light holding its raw unit-radiance sub-blocks. Bump the version
+/// when the sub-block bake or the memo payload changes.
+pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE: DirectDeltaStage = DirectDeltaStage {
+    id: "animated_direct_sh_delta_light",
+    version: 1,
+};
 
 /// Inputs for the animated direct-SH delta bake. The probe grid comes from the
 /// shared SH context, keeping section-45 sub-blocks coincident with base probes.
@@ -109,22 +109,31 @@ pub fn bake_animated_direct_sh_delta_volumes(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
 ) -> Option<AnimatedDirectShDeltaVolumesSection> {
-    bake_animated_direct_sh_delta_volumes_controlled(inputs, config, &BakeControl::unrestricted())
+    bake_animated_direct_sh_delta_volumes_controlled(
+        inputs,
+        config,
+        None,
+        &BakeControl::unrestricted(),
+    )
 }
 
+/// Warm builds pass the shared `StageCache`, cold builds `None`; both bake
+/// the same bytes.
 pub fn bake_animated_direct_sh_delta_volumes_controlled(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
+    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<AnimatedDirectShDeltaVolumesSection> {
-    bake_animated_direct_sh_delta_volumes_controlled_with_tally(inputs, config, control).0
+    bake_animated_direct_sh_delta_volumes_controlled_with_tally(inputs, config, cache, control).0
 }
 
-/// The stage bake plus its per-entry tally. The stage bakes uncached, so the
-/// tally reports every CSR entry as a miss.
+/// The stage bake plus its per-entry tally. With no cache the tally reports
+/// every CSR entry as a miss.
 pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     config: &ShConfig,
+    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> (
     Option<AnimatedDirectShDeltaVolumesSection>,
@@ -192,25 +201,50 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
 
     let entries = inputs.animated_lights.entries();
     let csr_cells = csr_entry_cells(&affinity_offsets);
-    // Uncached: these entries cost more to cache than to compute
-    // (`build_pipeline.md` §Build Cache).
-    let baked_subblocks = bake_delta_subblocks_uncached(
+    // Each light as the sub-block bake reads it: unit radiance (the runtime
+    // descriptor applies colour and intensity, so they never re-key), its
+    // source index (the seed) and its early-out.
+    let unit_lights: Vec<MapLight> = entries
+        .iter()
+        .map(|entry| unit_radiance_light(entry.light))
+        .collect();
+    let early_outs: Vec<ProbeEarlyOut> = (0..animated_light_count)
+        .map(|index| ProbeEarlyOut::for_probe_point(inputs.embedded_emitters.is_embedded(index)))
+        .collect();
+    let memo_lights: Vec<DirectDeltaLight<'_>> = entries
+        .iter()
+        .zip(&unit_lights)
+        .zip(&early_outs)
+        .map(|((entry, light), &early_out)| DirectDeltaLight {
+            light,
+            seed_axis: entry.source_index as u64,
+            early_out,
+        })
+        .collect();
+    let memo = cache.map(|cache| {
+        DirectDeltaMemo::new(
+            cache,
+            ANIMATED_DIRECT_DELTA_SH_STAGE,
+            inputs.sh_ctx.geometry,
+            &layout,
+            affinity_dims,
+        )
+    });
+    let baked_subblocks = bake_or_load_direct_delta_subblocks(
+        memo.as_ref(),
+        &memo_lights,
         &affinity_lights,
         &csr_cells,
         PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
         control,
         |animated_index, cell| {
-            let entry = &entries[animated_index as usize];
+            let index = animated_index as usize;
             bake_direct_subblock(
                 inputs,
                 &layout,
-                entry.light,
-                entry.source_index as u64,
-                ProbeEarlyOut::for_probe_point(
-                    inputs
-                        .embedded_emitters
-                        .is_embedded(animated_index as usize),
-                ),
+                &unit_lights[index],
+                entries[index].source_index as u64,
+                early_outs[index],
                 cell,
                 affinity_dims,
             )
@@ -239,10 +273,9 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
     )
 }
 
-/// Normalize a delta's single light to unit radiance, as the dormant cache key
-/// folds it: the stage bakes uncached, and the tests pin that fold. Runtime
-/// animation descriptors apply authored color and intensity.
-#[cfg(test)]
+/// Normalize a delta's single light to unit radiance: what the sub-block bake
+/// reads and the memo keys. Runtime animation descriptors apply authored
+/// color and intensity.
 fn unit_radiance_light(light: &MapLight) -> MapLight {
     let mut unit_light = light.clone();
     unit_light.intensity = 1.0;
@@ -250,10 +283,11 @@ fn unit_radiance_light(light: &MapLight) -> MapLight {
     unit_light
 }
 
+/// One sub-block from `unit_light`, already at unit radiance.
 fn bake_direct_subblock(
     inputs: &AnimatedDirectShBakeInputs<'_, '_>,
     layout: &ProbeGridLayout,
-    light: &MapLight,
+    unit_light: &MapLight,
     light_global_index: u64,
     early_out: ProbeEarlyOut,
     affinity_cell: u32,
@@ -272,10 +306,6 @@ fn bake_direct_subblock(
         geometry: inputs.sh_ctx.geometry,
     };
 
-    let mut unit_light = light.clone();
-    unit_light.intensity = 1.0;
-    unit_light.color = [1.0; 3];
-
     let mut out = Vec::with_capacity(PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE);
     for local_z in 0..AFFINITY_FACTOR {
         for local_y in 0..AFFINITY_FACTOR {
@@ -293,7 +323,7 @@ fn bake_direct_subblock(
                         let coefficients = bake_probe_direct_rgb(
                             &ray_ctx,
                             vec3_from(layout.probe_positions[probe_index]),
-                            &[&unit_light],
+                            &[unit_light],
                             &[light_global_index],
                             &[early_out],
                             probe_index as u64,
@@ -610,86 +640,6 @@ mod tests {
             first, second,
             "the per-light global seed must keep soft-visibility direct tiles deterministic"
         );
-    }
-
-    #[test]
-    fn animated_direct_cache_key_uses_unit_radiance_light_and_stage_version() {
-        let mut authored = animated_light(DVec3::ZERO);
-        authored.color = [0.25, 0.5, 0.75];
-        authored.intensity = 7.0;
-        let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
-                bounce_hash: None,
-                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-                geometry_hash: &[11; 32],
-                affinity_dims: [2, 3, 4],
-                cell: 5,
-                probe_spacing: 1.0,
-                valid_probe_mask: u64::MAX,
-                seed_axis: 42,
-                light: &unit_radiance_light(&authored),
-                tracer_epoch: 0,
-            },
-        );
-
-        let mut recolored = authored.clone();
-        recolored.color = [0.1, 0.2, 0.3];
-        recolored.intensity = 0.1;
-        let recolored_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
-                bounce_hash: None,
-                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-                geometry_hash: &[11; 32],
-                affinity_dims: [2, 3, 4],
-                cell: 5,
-                probe_spacing: 1.0,
-                valid_probe_mask: u64::MAX,
-                seed_axis: 42,
-                light: &unit_radiance_light(&recolored),
-                tracer_epoch: 0,
-            },
-        );
-        let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
-                bounce_hash: None,
-                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION + 1,
-                geometry_hash: &[11; 32],
-                affinity_dims: [2, 3, 4],
-                cell: 5,
-                probe_spacing: 1.0,
-                valid_probe_mask: u64::MAX,
-                seed_axis: 42,
-                light: &unit_radiance_light(&authored),
-                tracer_epoch: 0,
-            },
-        );
-        let different_source_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
-                bounce_hash: None,
-                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-                geometry_hash: &[11; 32],
-                affinity_dims: [2, 3, 4],
-                cell: 5,
-                probe_spacing: 1.0,
-                valid_probe_mask: u64::MAX,
-                seed_axis: 43,
-                light: &unit_radiance_light(&authored),
-                tracer_epoch: 0,
-            },
-        );
-
-        assert_ne!(
-            ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-            crate::delta_sh_bake::INDIRECT_DELTA_SH_STAGE_ID,
-            "animated-direct entries must not share the indirect-delta namespace"
-        );
-        assert_eq!(key.as_filename(), recolored_key.as_filename());
-        assert_ne!(key.as_filename(), bumped_version_key.as_filename());
-        assert_ne!(key.as_filename(), different_source_key.as_filename());
     }
 
     #[test]

@@ -292,8 +292,11 @@ pub fn byte_report(log: &str) -> Vec<String> {
         .collect()
 }
 
-/// `[cache] <stage> hit|miss` tallies per stage. Delta entries log at debug,
-/// so runs that read them set `prl_build::delta_sh_cache=debug`.
+/// `[cache] <stage> hit|miss` tallies per stage, in entries. Indirect delta
+/// entries log at debug, so runs that read them set
+/// `prl_build::delta_sh_cache=debug`. A per-light memo logs one summary line,
+/// `hit (N light(s))` or `miss (k of N light(s) …)`, for one entry per light:
+/// it counts N hits, or k misses and N − k hits.
 pub fn cache_tally(log: &str) -> BTreeMap<String, (usize, usize)> {
     let mut tally: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for line in log.lines() {
@@ -304,10 +307,21 @@ pub fn cache_tally(log: &str) -> BTreeMap<String, (usize, usize)> {
         let (Some(stage), Some(outcome)) = (words.next(), words.next()) else {
             continue;
         };
+        let count = |word: Option<&str>| {
+            word.and_then(|word| word.trim_start_matches('(').parse::<usize>().ok())
+        };
+        let share = words.next().filter(|word| word.starts_with('('));
         let entry = tally.entry(stage.to_owned()).or_default();
-        match outcome {
-            "hit" => entry.0 += 1,
-            "miss" => entry.1 += 1,
+        match (outcome, share) {
+            ("hit", None) => entry.0 += 1,
+            ("miss", None) => entry.1 += 1,
+            ("hit", lights) => entry.0 += count(lights).expect("a light count in a memo hit line"),
+            ("miss", rebaked) => {
+                let rebaked = count(rebaked).expect("a re-baked count in a memo miss line");
+                let probed = count(words.nth(1)).expect("a light count in a memo miss line");
+                entry.0 += probed - rebaked;
+                entry.1 += rebaked;
+            }
             _ => {}
         }
     }

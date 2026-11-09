@@ -1,7 +1,8 @@
 //! Mover probe channel, direct half, through the binary: id 57's bytes across cold builds and
-//! worker counts (B12), and warm builds over the per-light memo (B15): a mover edit re-bakes only
-//! the lights reaching its old or new pose, a static-light edit only that light, a retexture none,
-//! and every warm PRL equals the edited map's cold PRL.
+//! worker counts (B12), and warm builds over the per-light memos (B15): a mover edit re-bakes only
+//! the lights reaching its old or new pose and no id-41 or id-45 entry, a static-light edit only
+//! that light, an animated-light edit only its id-45 entries, a retexture none, and every warm PRL
+//! equals the edited map's cold PRL.
 //! See: context/lib/build_pipeline.md §Build Cache, §Compiler pipeline step 12 (Mover probe channel)
 
 mod prl_build_support;
@@ -38,6 +39,7 @@ struct Scene {
     plate_last: [i32; 3],
     lit_color: &'static str,
     floor_top_scale: u32,
+    animated_range: u32,
     /// A copy of the first static light appended after every other entity,
     /// so no other light's seed or record index shifts.
     appended_light: bool,
@@ -50,6 +52,7 @@ impl Default for Scene {
             plate_last: [0, 192, 104],
             lit_color: "255 255 255",
             floor_top_scale: 1,
+            animated_range: 256,
             appended_light: false,
             movers: true,
         }
@@ -106,7 +109,7 @@ fn map(scene: &Scene) -> String {
             &format!("\"_color\" \"{}\"\n", scene.lit_color),
         ),
         light(FIRST_POSE_LIGHT, 128, ""),
-        light([96, 128, 208], 256, "\"style\" \"1\"\n"),
+        light([96, 128, 208], scene.animated_range, "\"style\" \"1\"\n"),
         light([0, 64, 200], 256, "\"_bake_only\" \"1\"\n"),
     ];
     if scene.movers {
@@ -256,14 +259,24 @@ fn assert_logged(logs: &str, needle: &str) {
     );
 }
 
-/// The direct memo's `(re-baked, probed)` share from its miss line.
+/// The mover direct memo's `(re-baked, probed)` share from its miss line.
 fn miss_share(logs: &str) -> (usize, usize) {
-    let marker = "[cache] mover_probe_direct miss (";
+    memo_miss_share(logs, MOVER_DIRECT)
+}
+
+/// The per-light memos: the mover direct half, then ids 41 and 45.
+const MOVER_DIRECT: &str = "mover_probe_direct";
+const ENTITY_SHADOW_DIRECT: &str = "direct_sh_delta_light";
+const ANIMATED_DIRECT: &str = "animated_direct_sh_delta_light";
+
+/// A per-light memo's `(re-baked, probed)` share from its miss line.
+fn memo_miss_share(logs: &str, stage: &str) -> (usize, usize) {
+    let marker = format!("[cache] {stage} miss (");
     let line = logs
         .lines()
-        .find(|line| line.contains(marker))
-        .unwrap_or_else(|| panic!("a mover_probe_direct miss line\n{logs}"));
-    let share = &line[line.find(marker).unwrap() + marker.len()..];
+        .find(|line| line.contains(&marker))
+        .unwrap_or_else(|| panic!("a {stage} miss line\n{logs}"));
+    let share = &line[line.find(&marker).unwrap() + marker.len()..];
     let mut words = share.split(' ');
     let rebaked = words.next().and_then(|count| count.parse().ok());
     let probed = words.nth(1).and_then(|count| count.parse().ok());
@@ -275,9 +288,22 @@ fn miss_share(logs: &str) -> (usize, usize) {
 
 /// The base build's probed light count, from its fill line.
 fn base_probed() -> usize {
-    let (rebaked, probed) = miss_share(&base().1.logs);
-    assert_eq!(rebaked, probed, "the fill build misses every light");
+    base_probed_by(MOVER_DIRECT)
+}
+
+/// A memo's probed light count in the base build, from its fill line.
+fn base_probed_by(stage: &str) -> usize {
+    let (rebaked, probed) = memo_miss_share(&base().1.logs, stage);
+    assert_eq!(rebaked, probed, "the fill build misses every {stage} light");
     probed
+}
+
+/// Every light of `stage`'s memo hit: nothing behind that section traced.
+fn assert_all_hit(logs: &str, stage: &str) {
+    assert_logged(
+        logs,
+        &format!("[cache] {stage} hit ({} light(s))", base_probed_by(stage)),
+    );
 }
 
 // Bake row B12, direct half: id 57 is byte-identical across two cold builds
@@ -340,8 +366,8 @@ fn a_map_without_movers_packs_no_section() {
 }
 
 // Bake row B15, direct half: moving the plate's last waypoint traces nothing
-// for ids 34 and 35, re-bakes every light's entries but the one reaching only
-// the plate's first pose, and packs the edited map's cold bytes.
+// for ids 34, 35, 41 and 45, re-bakes every light's entries but the one
+// reaching only the plate's first pose, and packs the edited map's cold bytes.
 #[test]
 fn moving_a_movers_last_waypoint_rebakes_only_the_lights_reaching_its_poses() {
     let warm = warm_equals_cold(&Scene {
@@ -350,6 +376,8 @@ fn moving_a_movers_last_waypoint_rebakes_only_the_lights_reaching_its_poses() {
     });
     assert_logged(&warm, "[cache] sh_base_volume hit");
     assert_logged(&warm, "[cache] direct_sh_volume hit");
+    assert_all_hit(&warm, ENTITY_SHADOW_DIRECT);
+    assert_all_hit(&warm, ANIMATED_DIRECT);
     assert_eq!(
         miss_share(&warm),
         (base_probed() - 1, base_probed()),
@@ -358,7 +386,7 @@ fn moving_a_movers_last_waypoint_rebakes_only_the_lights_reaching_its_poses() {
 }
 
 // Bake row B15, direct half: editing one static light's colour re-bakes no
-// other light's entries.
+// other light's entries, in id 57 or id 41, and no id-45 entry.
 #[test]
 fn editing_one_static_lights_colour_rebakes_only_its_entries() {
     let warm = warm_equals_cold(&Scene {
@@ -366,27 +394,50 @@ fn editing_one_static_lights_colour_rebakes_only_its_entries() {
         ..Scene::default()
     });
     assert_eq!(miss_share(&warm), (1, base_probed()), "{warm}");
+    assert!(
+        base_probed_by(ENTITY_SHADOW_DIRECT) > 1,
+        "the fixture selects more than one entity-shadow light"
+    );
+    assert_eq!(
+        memo_miss_share(&warm, ENTITY_SHADOW_DIRECT),
+        (1, base_probed_by(ENTITY_SHADOW_DIRECT)),
+        "{warm}"
+    );
+    assert_all_hit(&warm, ANIMATED_DIRECT);
+}
+
+// Editing the animated light's reach re-bakes its id-45 entries and no id-41
+// entry.
+#[test]
+fn editing_the_animated_light_rebakes_only_its_animated_direct_entries() {
+    let warm = warm_equals_cold(&Scene {
+        animated_range: 240,
+        ..Scene::default()
+    });
+    assert_eq!(
+        memo_miss_share(&warm, ANIMATED_DIRECT),
+        (1, base_probed_by(ANIMATED_DIRECT)),
+        "{warm}"
+    );
+    assert_all_hit(&warm, ENTITY_SHADOW_DIRECT);
 }
 
 // Bake row B15, direct half: retexturing a static surface moves nothing the
-// direct half traces, so every light hits.
+// direct half, id 41 or id 45 traces, so every light hits.
 #[test]
 fn retexturing_a_static_surface_rebakes_no_direct_entry() {
     let warm = warm_equals_cold(&Scene {
         floor_top_scale: 2,
         ..Scene::default()
     });
-    assert_logged(
-        &warm,
-        &format!(
-            "[cache] mover_probe_direct hit ({} light(s))",
-            base_probed()
-        ),
-    );
+    for stage in [MOVER_DIRECT, ENTITY_SHADOW_DIRECT, ANIMATED_DIRECT] {
+        assert_all_hit(&warm, stage);
+    }
 }
 
 // Bake row B15, direct half: duplicating a static light, appended so no
-// other light's seed shifts, re-bakes only the duplicate's entries.
+// other light's seed shifts, re-bakes only the duplicate's entries, in id 57
+// and id 41.
 #[test]
 fn duplicating_a_static_light_rebakes_only_the_duplicate() {
     let warm = warm_equals_cold(&Scene {
@@ -394,4 +445,10 @@ fn duplicating_a_static_light_rebakes_only_the_duplicate() {
         ..Scene::default()
     });
     assert_eq!(miss_share(&warm), (1, base_probed() + 1), "{warm}");
+    assert_eq!(
+        memo_miss_share(&warm, ENTITY_SHADOW_DIRECT),
+        (1, base_probed_by(ENTITY_SHADOW_DIRECT) + 1),
+        "{warm}"
+    );
+    assert_all_hit(&warm, ANIMATED_DIRECT);
 }

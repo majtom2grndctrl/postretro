@@ -11,12 +11,12 @@ use postretro_level_format::octahedral::{
 
 use super::direct::{ChannelLight, DirectEntry, DirectScene, LightMover, ProbeCells};
 use super::visibility::{INSIDE_BRUSH_RULE, InsideBrushRule};
+use crate::bake_content_keys::{fold_occluding_geometry, fold_probe_grid_layout};
 use crate::cache::{CacheKey, StageCache};
 use crate::direct_sh_bake::DIRECT_SH_STAGE_VERSION;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, fold_soft_visibility_constants};
 use crate::mover_light_gate::{Terminus, gate_key_hasher};
 use crate::partition::Aabb;
-use crate::texel_footprint::ProbeEarlyOut;
 
 /// The memo's cache stage. Bump the version when the q bake, its own-tile
 /// assembly or the payload changes; the gate epoch, tracer epoch, soft-
@@ -44,17 +44,7 @@ impl MemoPrefix {
             InsideBrushRule::Dark => 1,
         }]);
 
-        let geometry = &scene.ctx.geometry.geometry;
-        hasher.update(&(geometry.vertices.len() as u64).to_le_bytes());
-        for vertex in &geometry.vertices {
-            for component in vertex.position {
-                hasher.update(&component.to_bits().to_le_bytes());
-            }
-        }
-        hasher.update(&(geometry.indices.len() as u64).to_le_bytes());
-        for index in &geometry.indices {
-            hasher.update(&index.to_le_bytes());
-        }
+        fold_occluding_geometry(&mut hasher, scene.ctx.geometry);
         hasher.update(&crate::sdf_bake::solidity_bytes(scene.reach.tree));
         let mut exterior: Vec<usize> = scene.reach.exterior_leaves.iter().copied().collect();
         exterior.sort_unstable();
@@ -68,22 +58,7 @@ impl MemoPrefix {
             hasher.update(&(portal.back_leaf as u64).to_le_bytes());
         }
         hasher.update(&scene.reach.probe_spacing.to_bits().to_le_bytes());
-
-        let layout = scene.layout;
-        for component in layout.world_min.to_array() {
-            hasher.update(&component.to_bits().to_le_bytes());
-        }
-        for (count, size) in layout.dims.iter().zip(&layout.cell_size) {
-            hasher.update(&count.to_le_bytes());
-            hasher.update(&size.to_bits().to_le_bytes());
-        }
-        hasher.update(&(layout.probe_positions.len() as u64).to_le_bytes());
-        for position in &layout.probe_positions {
-            for component in position.to_array() {
-                hasher.update(&component.to_bits().to_le_bytes());
-            }
-        }
-        hasher.update(&layout.validity);
+        fold_probe_grid_layout(&mut hasher, scene.layout);
         Self(hasher)
     }
 }
@@ -110,11 +85,7 @@ impl<'c> DirectMemo<'c> {
         let mut hasher = self.prefix.0.clone();
         hasher.update(&[light.namespace as u8]);
         hasher.update(&light.seed_axis.to_le_bytes());
-        hasher.update(&[match light.early_out {
-            ProbeEarlyOut::Agreed => 0,
-            ProbeEarlyOut::Blocked => 1,
-            ProbeEarlyOut::Off => 2,
-        }]);
+        hasher.update(&[light.early_out.key_byte()]);
         hasher.update(format!("{:?}", light.policy).as_bytes());
         for light in [&light.baked, light.authored] {
             let encoded =

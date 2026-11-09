@@ -64,7 +64,10 @@ use crate::bake_content_keys::geometry_content_hash;
 use crate::bc6h;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
-use crate::delta_sh_cache::{DeltaShCacheTally, bake_delta_subblocks_uncached};
+use crate::delta_sh_cache::DeltaShCacheTally;
+use crate::delta_sh_cache::direct_light_memo::{
+    DirectDeltaLight, DirectDeltaMemo, DirectDeltaStage, bake_or_load_direct_delta_subblocks,
+};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::map_data::{MapLight, ShadowType};
@@ -85,18 +88,14 @@ pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 /// section-internal `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
 pub const DIRECT_SH_STAGE_VERSION: u32 = 6;
 
-/// Dormant cache stage id for raw entity-shadow direct-delta
-/// `(affinity cell, light)` sub-blocks: the stage bakes uncached. Kept so its
-/// key fold stays distinct from the base direct-SH section and the other two
-/// delta stages, whose f16 payload shape it shares, and is pinned by tests.
-#[cfg(test)]
-pub(crate) const DIRECT_SH_DELTA_STAGE_ID: &str = "direct_sh_delta_subblock";
-
-/// Dormant epoch for [`DIRECT_SH_DELTA_STAGE_ID`]: the stage bakes uncached.
-/// Kept, independent of the base direct-SH cache and the on-disk direct-delta
-/// section format, so the key fold the tests pin stays distinct.
-#[cfg(test)]
-pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 4;
+/// The entity-shadow direct deltas' (id 41) per-light memo: one entry per
+/// selected light holding its raw pre-drop sub-blocks. Bump the version when
+/// the sub-block bake or the memo payload changes; independent of the base
+/// direct-SH cache and the on-disk section format.
+pub(crate) const DIRECT_SH_DELTA_STAGE: DirectDeltaStage = DirectDeltaStage {
+    id: "direct_sh_delta_light",
+    version: 1,
+};
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -424,15 +423,19 @@ pub fn bake_direct_sh_delta_volumes(
         config,
         alpha_lights,
         entity_shadow_lights,
+        None,
         &BakeControl::unrestricted(),
     )
 }
 
+/// Warm builds pass the shared `StageCache`, cold builds `None`; both bake
+/// the same bytes.
 pub fn bake_direct_sh_delta_volumes_controlled(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)> {
     bake_direct_sh_delta_volumes_controlled_with_tally(
@@ -440,19 +443,21 @@ pub fn bake_direct_sh_delta_volumes_controlled(
         config,
         alpha_lights,
         entity_shadow_lights,
+        cache,
         control,
     )
     .0
 }
 
 /// The stage bake plus its per-entry tally. The pipeline only consumes the
-/// reconstructed section and pre-drop stats. The stage bakes uncached, so the
-/// tally reports every CSR entry as a miss.
+/// reconstructed section and pre-drop stats. With no cache the tally reports
+/// every CSR entry as a miss.
 pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> (
     Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
@@ -463,6 +468,7 @@ pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
         config,
         alpha_lights,
         entity_shadow_lights,
+        cache,
         control,
         AffinityReachPolicy::SELECTED_DIRECT,
     )
@@ -473,6 +479,7 @@ fn bake_direct_sh_delta_volumes_with_reach_policy(
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
     control: &BakeControl,
     reach_policy: AffinityReachPolicy,
 ) -> (
@@ -523,9 +530,29 @@ fn bake_direct_sh_delta_volumes_with_reach_policy(
     control.publish_total(affinity_lights.len());
 
     let csr_cells = csr_entry_cells(&affinity_offsets);
-    // Uncached: these entries cost more to cache than to compute
-    // (`build_pipeline.md` §Build Cache).
-    let baked_subblocks = bake_delta_subblocks_uncached(
+    // The memo keys each selected light as the sub-block bake reads it: the
+    // authored light, its static index (the seed) and its early-out. The
+    // selection slot only orders the CSR, so it is not keyed.
+    let memo_lights: Vec<DirectDeltaLight<'_>> = selected
+        .iter()
+        .map(|entry| DirectDeltaLight {
+            light: entry.light,
+            seed_axis: entry.static_index,
+            early_out: direct_delta_early_out(inputs, entry.static_index),
+        })
+        .collect();
+    let memo = cache.map(|cache| {
+        DirectDeltaMemo::new(
+            cache,
+            DIRECT_SH_DELTA_STAGE,
+            inputs.sh_ctx.geometry,
+            &layout,
+            affinity_dims,
+        )
+    });
+    let baked_subblocks = bake_or_load_direct_delta_subblocks(
+        memo.as_ref(),
+        &memo_lights,
         &affinity_lights,
         &csr_cells,
         FORMAT_PROBES_PER_CELL * delta_probe_f16_stride(TILE_DIMENSION),
@@ -667,6 +694,12 @@ fn selected_direct_lights<'a>(
         .collect()
 }
 
+/// The early-out a selected light's sub-blocks bake with, from its static
+/// index's embedded-emitter flag.
+fn direct_delta_early_out(inputs: &DirectBakeInputs<'_, '_>, static_index: u64) -> ProbeEarlyOut {
+    ProbeEarlyOut::for_probe_point(inputs.embedded_emitters.is_embedded(static_index as usize))
+}
+
 fn bake_direct_delta_subblock(
     inputs: &DirectBakeInputs<'_, '_>,
     layout: &ProbeGridLayout,
@@ -689,8 +722,7 @@ fn bake_direct_delta_subblock(
         primitives: inputs.sh_ctx.primitives,
         geometry: inputs.sh_ctx.geometry,
     };
-    let early_out =
-        ProbeEarlyOut::for_probe_point(inputs.embedded_emitters.is_embedded(static_index as usize));
+    let early_out = direct_delta_early_out(inputs, static_index);
     let mut out =
         Vec::with_capacity(FORMAT_PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE);
 
@@ -1321,6 +1353,7 @@ mod tests {
             &ShConfig { probe_spacing: 0.5 },
             &alpha_lights,
             &selected,
+            None,
             &control,
             reach_policy,
         )
@@ -1859,6 +1892,7 @@ mod tests {
             &ShConfig { probe_spacing: 1.0 },
             &alpha_lights,
             &selected,
+            None,
             &control,
         )
         .expect("selected lights should produce direct deltas");
@@ -2001,6 +2035,7 @@ mod tests {
             &ShConfig { probe_spacing: 1.0 },
             &alpha_lights,
             &selected,
+            None,
             &control,
         );
 
@@ -2071,44 +2106,6 @@ mod tests {
             stats.total_bytes,
             "per-selection-slot histogram rows must sum to the total"
         );
-    }
-
-    #[test]
-    fn direct_sh_delta_cache_key_changes_when_stage_version_changes() {
-        let light = static_point_light(DVec3::new(1.0, 2.0, 3.0), 8.0, [0.25, 0.5, 0.75]);
-        let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
-                bounce_hash: None,
-                stage_id: DIRECT_SH_DELTA_STAGE_ID,
-                stage_version: DIRECT_SH_DELTA_STAGE_VERSION,
-                geometry_hash: &[17; 32],
-                affinity_dims: [2, 3, 4],
-                cell: 5,
-                probe_spacing: 1.0,
-                valid_probe_mask: u64::MAX,
-                seed_axis: 9,
-                light: &light,
-                tracer_epoch: 0,
-            },
-        );
-        let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
-                bounce_hash: None,
-                stage_id: DIRECT_SH_DELTA_STAGE_ID,
-                stage_version: DIRECT_SH_DELTA_STAGE_VERSION + 1,
-                geometry_hash: &[17; 32],
-                affinity_dims: [2, 3, 4],
-                cell: 5,
-                probe_spacing: 1.0,
-                valid_probe_mask: u64::MAX,
-                seed_axis: 9,
-                light: &light,
-                tracer_epoch: 0,
-            },
-        );
-
-        assert_ne!(DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_STAGE_ID);
-        assert_ne!(key.as_filename(), bumped_version_key.as_filename());
     }
 
     #[test]

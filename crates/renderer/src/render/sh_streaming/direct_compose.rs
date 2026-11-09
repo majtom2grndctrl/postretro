@@ -163,15 +163,15 @@ impl StreamingDirectCompose {
             views.promotion_outputs(sources.animated_direct_delta.is_some())?,
             views.selection_weights,
             compose_indirection,
+            sh.mover_channel.buffer(),
             pipelines,
             sparse_capacities.get(&41).copied(),
         )?;
         let animated = match sources.animated_direct_delta.as_ref() {
-            Some(source) => Some(StreamingAnimatedPass::new(
+            Some(_) => Some(StreamingAnimatedPass::new(
                 device,
                 limits,
                 base,
-                source,
                 shape,
                 views.animated_views()?,
                 compose_indirection,
@@ -267,6 +267,7 @@ impl StreamingDirectCompose {
                     views.promotion_outputs(self.animated.is_some())?,
                     views.selection_weights,
                     compose_indirection,
+                    sh.mover_channel.buffer(),
                     pipelines,
                     Some(sparse_capacity),
                 )?;
@@ -275,7 +276,7 @@ impl StreamingDirectCompose {
                 })
             }
             45 => {
-                let source = sources.animated_direct_delta.as_ref().ok_or(
+                sources.animated_direct_delta.as_ref().ok_or(
                     ShResidencyDrainError::MalformedChunk {
                         cluster_id: 0,
                         reason: "id-45 growth requested without streamed animated-direct metadata",
@@ -285,7 +286,6 @@ impl StreamingDirectCompose {
                     device,
                     limits,
                     base,
-                    source,
                     shape,
                     views.animated_views()?,
                     compose_indirection,

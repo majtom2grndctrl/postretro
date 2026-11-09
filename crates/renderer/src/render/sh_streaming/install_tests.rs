@@ -837,6 +837,8 @@ fn touched_rows_cover_membership_changes_on(map: SyntheticMap) {
             animated_direct_active: false,
             effective_static_weights: &[],
             effective_animated_weights: &[],
+            mover_changes: &[],
+            mover_rows: &crate::render::mover_channel::NO_MOVER_ROWS,
             controls: compose_plan::ComposeControlSnapshot {
                 light_term_mask: LightTermMask::ALL,
                 promotion_override: DirectShDebugOverride::default(),

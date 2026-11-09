@@ -52,7 +52,6 @@ pub(super) enum ShAllocationKind {
     AnimatedDirectComposeCompactionMetadata,
     AnimatedDirectComposeAffinityOffsets,
     AnimatedDirectComposeAffinityLights,
-    AnimatedDirectComposeDescriptorIndices,
     AnimatedDirectComposeProbeIndirection,
     AnimatedDirectComposeGrid,
     AnimatedDirectComposeLightScale,
@@ -63,6 +62,10 @@ pub(super) enum ShAllocationKind {
     BillboardComposeOffsets,
     BillboardComposeLights,
     BillboardComposeDescriptorIndices,
+    /// Id 57's direct table: records, masks, mover entries, q bytes and each
+    /// gated light's term per masked probe, Pass B's descriptor map, and the
+    /// per-frame mover t′ block. Both direct compose passes bind it.
+    MoverChannelTable,
 }
 
 /// The exact texture request sent to wgpu for one physical SH texture.

@@ -108,6 +108,7 @@ impl ShResidencyState {
                     source.animation_descriptor_indices.clone()
                 }),
             compose_planner: StreamedComposePlanner::with_row_capacity(row_capacity),
+            mover_channel_rows: Default::default(),
             compose_frame_plan: None,
             sample_region_index: SampleRegionIndex::from_tables(sample_regions),
             compose_input_regions: Vec::new(),
@@ -232,6 +233,7 @@ impl ShResidencyState {
             pipelines,
             selection_weights,
         )?);
+        self.mover_channel_rows = sh.mover_channel.rows().clone();
         Ok(())
     }
 

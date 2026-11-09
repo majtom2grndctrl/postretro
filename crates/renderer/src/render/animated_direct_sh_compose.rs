@@ -13,13 +13,14 @@ use postretro_render_cpu::sh_compose::{
 use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 
 use super::direct_sh_compose::{
-    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
-    BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
-    BIND_DIRECT_ATLAS_OUTPUT, dynamic_compose_grid_bgl_entry, nearest_sampler, sampler_bgl_entry,
-    storage_bgl_entry, storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
+    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTORS,
+    BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS, BIND_DIRECT_ATLAS_OUTPUT,
+    dynamic_compose_grid_bgl_entry, nearest_sampler, sampler_bgl_entry, storage_bgl_entry,
+    storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
 use super::install_pipelines::new_install_compute_pipeline;
+use super::mover_channel::{BIND_MOVER_CHANNEL, MOVER_CHANNEL_WGSL};
 #[cfg(test)]
 use super::renderer_types::PromotedShadowPoolKind;
 use super::renderer_types::{
@@ -135,6 +136,8 @@ impl AnimatedDirectShComposePipelines {
             "\n",
             include_str!("../shaders/curve_eval.wgsl"),
             "\n",
+            MOVER_CHANNEL_WGSL,
+            "\n",
             WGSL_DECODE_HELPER,
         ]
         .concat();
@@ -189,6 +192,7 @@ pub(super) fn build_animated_direct_pass(
     animated_delta: &AnimatedDirectShDeltaVolumesSection,
     views: AnimatedDirectShPassViews<'_>,
     pipelines: &AnimatedDirectShComposePipelines,
+    mover_channel: &wgpu::Buffer,
     sh_section_present: bool,
     ledger: &mut ShAllocationLedger,
 ) -> AnimatedDirectShComposePipeline {
@@ -199,12 +203,13 @@ pub(super) fn build_animated_direct_pass(
         ShAllocationKind::AnimatedDirectComposeCompactionMetadata,
         ShAllocationKind::AnimatedDirectComposeAffinityOffsets,
         ShAllocationKind::AnimatedDirectComposeAffinityLights,
-        Some(ShAllocationKind::AnimatedDirectComposeDescriptorIndices),
+        // The descriptor map rides the mover channel table (binding 25).
+        None,
         delta_subblocks,
         &buffers.compaction_meta_words(),
         &buffers.affinity_offsets,
         &buffers.affinity_lights,
-        Some(&buffers.animation_descriptor_indices),
+        None,
     );
 
     #[cfg(feature = "dev-tools")]
@@ -213,12 +218,8 @@ pub(super) fn build_animated_direct_pass(
         delta_compaction_meta_bytes: storage.compaction_metadata.allocation.byte_len,
         affinity_offsets_bytes: storage.affinity_offsets.allocation.byte_len,
         affinity_lights_bytes: storage.affinity_lights.allocation.byte_len,
-        animation_descriptor_indices_bytes: storage
-            .descriptor_indices
-            .as_ref()
-            .expect("animated direct compose owns descriptor indices")
-            .allocation
-            .byte_len,
+        // Folded into the mover channel table, which the ledger prices.
+        animation_descriptor_indices_bytes: 0,
     }
     .log(ANIMATED_DIRECT_FOOTPRINT_LABEL);
 
@@ -241,20 +242,6 @@ pub(super) fn build_animated_direct_pass(
         label: Some("Animated Direct SH Compose Affinity Lights"),
         contents: &storage.affinity_lights.contents,
         usage: storage.affinity_lights.allocation.usage,
-    });
-    let descriptor_indices_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Animated Direct SH Compose Descriptor Indices"),
-        contents: &storage
-            .descriptor_indices
-            .as_ref()
-            .expect("animated direct compose owns descriptor indices")
-            .contents,
-        usage: storage
-            .descriptor_indices
-            .as_ref()
-            .expect("animated direct compose owns descriptor indices")
-            .allocation
-            .usage,
     });
     let probe_indirection = probe_indirection_storage_payload(
         ShAllocationKind::AnimatedDirectComposeProbeIndirection,
@@ -281,16 +268,6 @@ pub(super) fn build_animated_direct_pass(
     );
     ledger.record_buffer(
         storage.affinity_lights.allocation,
-        &animated_sources,
-        false,
-        ResidencyAllocationState::Data,
-    );
-    ledger.record_buffer(
-        storage
-            .descriptor_indices
-            .as_ref()
-            .expect("animated direct compose owns descriptor indices")
-            .allocation,
         &animated_sources,
         false,
         ResidencyAllocationState::Data,
@@ -420,8 +397,8 @@ pub(super) fn build_animated_direct_pass(
                 resource: affinity_lights_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
-                binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
-                resource: descriptor_indices_buffer.as_entire_binding(),
+                binding: BIND_MOVER_CHANNEL,
+                resource: mover_channel.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_ANIMATED_LIGHT_SCALE,
@@ -457,7 +434,7 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_ANIMATION_DESCRIPTORS),
         storage_bgl_entry(BIND_ANIMATION_SAMPLES),
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
-        storage_bgl_entry(BIND_ANIMATION_DESCRIPTOR_INDICES),
+        storage_bgl_entry(BIND_MOVER_CHANNEL),
         uniform_bgl_entry(BIND_ANIMATED_LIGHT_SCALE),
         storage_bgl_entry(BIND_PROBE_INDIRECTION),
     ]
@@ -491,7 +468,7 @@ mod tests {
                 BIND_ANIMATION_DESCRIPTORS,
                 BIND_ANIMATION_SAMPLES,
                 BIND_AFFINITY_LIGHTS,
-                BIND_ANIMATION_DESCRIPTOR_INDICES,
+                BIND_MOVER_CHANNEL,
                 BIND_PROBE_INDIRECTION,
             ]
         );
@@ -631,6 +608,8 @@ mod tests {
             include_str!("../shaders/animated_direct_sh_compose.wgsl"),
             "\n",
             include_str!("../shaders/curve_eval.wgsl"),
+            "\n",
+            super::MOVER_CHANNEL_WGSL,
             "\n",
             super::WGSL_DECODE_HELPER,
         ]

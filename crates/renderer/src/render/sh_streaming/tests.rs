@@ -411,6 +411,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         animated_direct_compose_required: false,
         direct_animation_descriptor_indices: Vec::new(),
         compose_planner: StreamedComposePlanner::with_row_capacity(ROW_SPACE),
+        mover_channel_rows: Default::default(),
         compose_frame_plan: None,
         sample_region_index: SampleRegionIndex::build(
             &sample_regions::SampleRegionGrid {

@@ -263,6 +263,7 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
         ShAllocationKind::DirectComposeGrid => "direct_compose_grid",
         ShAllocationKind::DirectComposeDebugOverride => "direct_compose_debug_override",
         ShAllocationKind::DirectComposeLightTermMask => "direct_compose_light_term_mask",
+        ShAllocationKind::MoverChannelTable => "mover_channel_table",
         ShAllocationKind::AnimatedDirectComposeDeltaSubblocks => {
             "animated_direct_compose_delta_subblocks"
         }
@@ -274,9 +275,6 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
         }
         ShAllocationKind::AnimatedDirectComposeAffinityLights => {
             "animated_direct_compose_affinity_lights"
-        }
-        ShAllocationKind::AnimatedDirectComposeDescriptorIndices => {
-            "animated_direct_compose_descriptor_indices"
         }
         ShAllocationKind::AnimatedDirectComposeProbeIndirection => {
             "animated_direct_compose_probe_indirection"

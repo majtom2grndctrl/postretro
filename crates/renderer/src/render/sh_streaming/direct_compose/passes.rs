@@ -1,7 +1,7 @@
 //! Pipeline carriers for the streamed direct-SH promotion and animated passes.
 
 use crate::render::gpu_create::GpuCreate;
-use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSparseMetadata};
+use postretro_level_loader::ShStreamBaseMetadata;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::sh_compose::ComposeGridParams;
 use postretro_render_cpu::sh_volume::STREAMED_SH_PHYSICAL_TILE_STRIDE;
@@ -10,7 +10,7 @@ use super::super::gpu::StagedUploads;
 use super::super::{ShResidencyDrainError, SparseComposeLayout};
 use super::layout::{
     ANIMATED_LIGHT_SCALE_SIZE, DEBUG_OVERRIDE_SIZE, debug_override_bytes, dynamic_grid_entry,
-    sampler_entry, storage_entry, storage_texture_entry, texture_entry, u32_bytes, uniform_entry,
+    sampler_entry, storage_entry, storage_texture_entry, texture_entry, uniform_entry,
 };
 use super::sparse::{
     DirectSparseRowUpload, RetiredDirectSparseResources, StreamingSparseBuffers,
@@ -20,11 +20,12 @@ use super::{AnimatedViews, PromotionOutputs};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::animated_direct_sh_compose::BIND_ANIMATED_DIRECT_BASE;
 use crate::render::direct_sh_compose::{
-    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
-    BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER,
-    BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS, BIND_DIRECT_ATLAS_OUTPUT,
-    BIND_PROBE_INDIRECTION, DirectShDebugOverride, direct_compose_params_bytes, nearest_sampler,
+    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTORS,
+    BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS,
+    BIND_DIRECT_ATLAS_OUTPUT, BIND_PROBE_INDIRECTION, DirectShDebugOverride,
+    direct_compose_params_bytes, nearest_sampler,
 };
+use crate::render::mover_channel::BIND_MOVER_CHANNEL;
 use crate::render::renderer_types::PromotedBakedLightState;
 use crate::render::sh_compose_dispatch::{
     DynamicComposeGridUpload, build_dynamic_compose_grid_upload_for_rows_into,
@@ -64,6 +65,8 @@ pub(super) struct StreamingPromotionPass {
     debug_override: wgpu::Buffer,
     last_debug_override: [u8; DEBUG_OVERRIDE_SIZE],
     grid_upload: DynamicComposeGridUpload,
+    /// Id 57's table and the frame's mover t′ (`MoverChannelResources`).
+    mover_channel: wgpu::Buffer,
 }
 
 impl StreamingPromotionPass {
@@ -78,6 +81,7 @@ impl StreamingPromotionPass {
         outputs: PromotionOutputs<'_>,
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
+        mover_channel: &wgpu::Buffer,
         pipelines: &StreamingShPipelines,
         sparse_capacity: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
@@ -120,6 +124,7 @@ impl StreamingPromotionPass {
             &debug_override,
             &light_term_mask,
             compose_indirection,
+            mover_channel,
         );
         let fixed_metadata_bytes = checked_ledger_sum(&[
             grid_capacity,
@@ -148,6 +153,7 @@ impl StreamingPromotionPass {
             debug_override,
             last_debug_override: initial_debug_override,
             grid_upload: DynamicComposeGridUpload::default(),
+            mover_channel: mover_channel.clone(),
         })
     }
 
@@ -164,6 +170,7 @@ impl StreamingPromotionPass {
         debug_override: &wgpu::Buffer,
         light_term_mask: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
+        mover_channel: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed Direct SH Promotion Bind Group"),
@@ -182,6 +189,7 @@ impl StreamingPromotionPass {
                 storage_entry(BIND_DELTA_COMPACTION_META, sparse.compaction_metadata()),
                 uniform_entry(BIND_FRAME_LIGHT_TERM_MASK, light_term_mask),
                 storage_entry(BIND_PROBE_INDIRECTION, compose_indirection),
+                storage_entry(BIND_MOVER_CHANNEL, mover_channel),
             ],
         })
     }
@@ -217,6 +225,7 @@ impl StreamingPromotionPass {
             &self.debug_override,
             &self.light_term_mask,
             compose_indirection,
+            &self.mover_channel,
         );
         self.bind_group = replacement;
     }
@@ -336,7 +345,8 @@ pub(super) struct StreamingAnimatedPass {
     max_workgroups_x: u32,
     dynamic_alignment: u32,
     max_buffer_size: u64,
-    descriptor_indices: wgpu::Buffer,
+    /// Id 57's table, which also carries this pass's descriptor map.
+    mover_channel: wgpu::Buffer,
     light_scale: wgpu::Buffer,
     last_light_scale: [u8; ANIMATED_LIGHT_SCALE_SIZE],
     grid_upload: DynamicComposeGridUpload,
@@ -348,7 +358,6 @@ impl StreamingAnimatedPass {
         device: &wgpu::Device,
         limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
-        source: &ShStreamSparseMetadata,
         shape: AtlasShape,
         views: AnimatedViews<'_>,
         compose_indirection: &wgpu::Buffer,
@@ -366,16 +375,7 @@ impl StreamingAnimatedPass {
             "Streamed Animated Direct SH Grid Records",
             sparse_capacity,
         )?;
-        let descriptor_indices = if source.animation_descriptor_indices.is_empty() {
-            vec![u32::MAX]
-        } else {
-            source.animation_descriptor_indices.clone()
-        };
-        let descriptor_indices = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Streamed Animated Direct SH Descriptor Indices"),
-            contents: &u32_bytes(&descriptor_indices),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let mover_channel = sh.mover_channel.buffer().clone();
         // Default scale bytes are all compose weights == 1.0. This prevents a
         // first-frame id-45 compose from silently erasing every animation.
         let initial_light_scale = AnimatedDirectShDebugOverride::default().bytes(&[]);
@@ -396,14 +396,13 @@ impl StreamingAnimatedPass {
             &sparse,
             &sh.animation.descriptors,
             &sh.animation.anim_samples,
-            &descriptor_indices,
+            &mover_channel,
             &light_scale,
             compose_indirection,
         );
         let fixed_metadata_bytes = checked_ledger_sum(&[
             grid_capacity,
             sparse.fixed_metadata_bytes(),
-            descriptor_indices.size(),
             light_scale.size(),
         ])?;
         let active_capacity_bytes = sparse.active_capacity_bytes();
@@ -421,7 +420,7 @@ impl StreamingAnimatedPass {
             max_workgroups_x: limits.max_compute_workgroups_per_dimension,
             dynamic_alignment: limits.min_uniform_buffer_offset_alignment,
             max_buffer_size: limits.max_buffer_size,
-            descriptor_indices,
+            mover_channel,
             light_scale,
             last_light_scale: initial_light_scale,
             grid_upload: DynamicComposeGridUpload::default(),
@@ -438,7 +437,7 @@ impl StreamingAnimatedPass {
         sparse: &StreamingSparseBuffers,
         animation_descriptors: &wgpu::Buffer,
         animation_samples: &wgpu::Buffer,
-        descriptor_indices: &wgpu::Buffer,
+        mover_channel: &wgpu::Buffer,
         light_scale: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
@@ -457,7 +456,7 @@ impl StreamingAnimatedPass {
                 storage_entry(BIND_ANIMATION_DESCRIPTORS, animation_descriptors),
                 storage_entry(BIND_ANIMATION_SAMPLES, animation_samples),
                 storage_entry(BIND_AFFINITY_LIGHTS, sparse.lights()),
-                storage_entry(BIND_ANIMATION_DESCRIPTOR_INDICES, descriptor_indices),
+                storage_entry(BIND_MOVER_CHANNEL, mover_channel),
                 uniform_entry(BIND_ANIMATED_LIGHT_SCALE, light_scale),
                 storage_entry(BIND_ANIMATED_COMPACTION_META, sparse.compaction_metadata()),
                 storage_entry(BIND_ANIMATED_PROBE_INDIRECTION, compose_indirection),
@@ -541,6 +540,8 @@ mod tests {
             include_str!("../../../shaders/animated_direct_sh_compose.wgsl"),
             "\n",
             include_str!("../../../shaders/curve_eval.wgsl"),
+            "\n",
+            crate::render::mover_channel::MOVER_CHANNEL_WGSL,
             "\n",
             crate::render::sh_indirection::WGSL_DECODE_HELPER,
         ]

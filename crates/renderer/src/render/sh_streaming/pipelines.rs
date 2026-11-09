@@ -108,6 +108,8 @@ impl StreamingShPipelines {
                 source: [
                     include_str!("../../shaders/direct_sh_compose.wgsl"),
                     "\n",
+                    crate::render::mover_channel::MOVER_CHANNEL_WGSL,
+                    "\n",
                     WGSL_DECODE_HELPER,
                 ]
                 .concat(),
@@ -127,6 +129,8 @@ impl StreamingShPipelines {
                     include_str!("../../shaders/animated_direct_sh_compose.wgsl"),
                     "\n",
                     include_str!("../../shaders/curve_eval.wgsl"),
+                    "\n",
+                    crate::render::mover_channel::MOVER_CHANNEL_WGSL,
                     "\n",
                     WGSL_DECODE_HELPER,
                 ]

@@ -25,6 +25,7 @@ fn empty_geometry<'a>(
         animated_direct_sh_delta_volumes: None,
         billboard_direct_scatter_volume: None,
         animated_billboard_direct_scatter_delta_volumes: None,
+        mover_probe_channel: None,
         entity_shadow_lights: &[],
         shadowmask_atlas: None,
         sdf_atlas: None,

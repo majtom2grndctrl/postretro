@@ -45,6 +45,15 @@ pub(super) fn install_sh_volume(
     // constructor records the exact descriptor it sends to wgpu, and the
     // completed plain-Rust report stays with the renderer for capture.
     let mut sh_allocation_ledger = sh_residency::ShAllocationLedger::new();
+    // A section that disagrees with the delta family it borrows terms from
+    // fails the load, as the loader refuses a malformed section.
+    let mover_channel = build_mover_channel(
+        device,
+        geometry,
+        streaming_manifest,
+        &mut sh_allocation_ledger,
+    )
+    .map_err(|error| sh_streaming::ShResidencyDrainError::InvalidBatch(error.to_string()))?;
     let mut sh_volume_resources = ShVolumeResources::new(
         device,
         writes,
@@ -75,6 +84,7 @@ pub(super) fn install_sh_volume(
             animated_baked_descriptor_indices,
         ),
         probe_occlusion_enabled,
+        mover_channel,
         &mut sh_allocation_ledger,
     );
 
@@ -119,6 +129,101 @@ pub(super) fn install_sh_volume(
     })
 }
 
+/// Id 57's direct table. Its term families are ids 41 and 45 as this load
+/// holds them: whole sections, or a streamed level's resident metadata with
+/// tiles arriving per cluster.
+fn build_mover_channel(
+    device: &wgpu::Device,
+    geometry: &LevelGeometry<'_>,
+    streaming_manifest: Option<&postretro_level_loader::ShStreamManifest>,
+    ledger: &mut sh_residency::ShAllocationLedger,
+) -> Result<mover_channel::MoverChannelResources, mover_channel::MoverChannelError> {
+    use mover_channel::{MoverChannelInputs, TermFamily, WholeTermRows};
+    const STATIC: &str = "DirectShDeltaVolumes (id 41)";
+    const ANIMATED: &str = "AnimatedDirectShDeltaVolumes (id 45)";
+    fn sparse<'a>(
+        name: &'static str,
+        meta: &'a postretro_level_loader::ShStreamSparseMetadata,
+    ) -> TermFamily<'a> {
+        TermFamily {
+            name,
+            valid_probe_masks: &meta.valid_probe_masks,
+            cell_levels: &meta.cell_levels,
+            affinity_offsets: &meta.affinity_offsets,
+            affinity_lights: &meta.affinity_lights,
+        }
+    }
+    if let Some(manifest) = streaming_manifest {
+        let sources = manifest.sources();
+        let inputs = MoverChannelInputs {
+            section: geometry.mover_probe_channel,
+            entity_shadow_lights: geometry.entity_shadow_lights,
+            static_terms: sources
+                .direct_delta
+                .as_ref()
+                .map(|meta| sparse(STATIC, meta)),
+            animated_terms: sources
+                .animated_direct_delta
+                .as_ref()
+                .map(|meta| sparse(ANIMATED, meta)),
+            animation_descriptor_indices: sources
+                .animated_direct_delta
+                .as_ref()
+                .map_or(&[][..], |meta| &meta.animation_descriptor_indices),
+        };
+        return mover_channel::MoverChannelResources::new(
+            device,
+            &inputs,
+            true,
+            |_, _| None,
+            ledger,
+        );
+    }
+    let static_section = geometry.direct_sh_delta_volumes;
+    let animated_section = geometry.animated_direct_sh_delta_volumes;
+    let static_terms = static_section.map(|section| TermFamily {
+        name: STATIC,
+        valid_probe_masks: &section.valid_probe_masks,
+        cell_levels: &section.cell_levels,
+        affinity_offsets: &section.affinity_offsets,
+        affinity_lights: &section.affinity_lights,
+    });
+    let animated_terms = animated_section.map(|section| TermFamily {
+        name: ANIMATED,
+        valid_probe_masks: &section.valid_probe_masks,
+        cell_levels: &section.cell_levels,
+        affinity_offsets: &section.affinity_offsets,
+        affinity_lights: &section.affinity_lights,
+    });
+    let static_rows = static_section
+        .zip(static_terms)
+        .map(|(section, family)| WholeTermRows::new(family, &section.delta_subblocks));
+    let animated_rows = animated_section
+        .zip(animated_terms)
+        .map(|(section, family)| WholeTermRows::new(family, &section.delta_subblocks));
+    let inputs = MoverChannelInputs {
+        section: geometry.mover_probe_channel,
+        entity_shadow_lights: geometry.entity_shadow_lights,
+        static_terms,
+        animated_terms,
+        animation_descriptor_indices: animated_section
+            .map_or(&[][..], |section| &section.animation_descriptor_indices),
+    };
+    mover_channel::MoverChannelResources::new(
+        device,
+        &inputs,
+        false,
+        |cell, animated| {
+            if animated {
+                animated_rows.as_ref()?.row(cell)
+            } else {
+                static_rows.as_ref()?.row(cell)
+            }
+        },
+        ledger,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn install_compose_family(
     device: &wgpu::Device,
@@ -153,6 +258,7 @@ pub(super) fn install_compose_family(
         geometry.direct_sh_delta_volumes,
         geometry.animated_direct_sh_delta_volumes,
         promoted_static_weight_buffer,
+        sh_volume_resources.mover_channel.buffer(),
         &pipelines.direct_sh_compose,
         geometry.sh_volume.is_some(),
         &mut sh_allocation_ledger,

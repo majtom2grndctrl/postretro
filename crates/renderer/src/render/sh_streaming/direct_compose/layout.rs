@@ -6,13 +6,13 @@ use postretro_render_cpu::sh_compose::DYNAMIC_COMPOSE_GRID_DIMS_SIZE;
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::animated_direct_sh_compose::BIND_ANIMATED_DIRECT_BASE;
 use crate::render::direct_sh_compose::{
-    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
-    BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER,
-    BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS, BIND_DIRECT_ATLAS_OUTPUT,
-    BIND_PROBE_INDIRECTION, DirectShDebugOverride, dynamic_compose_grid_bgl_entry,
-    sampler_bgl_entry, storage_bgl_entry, storage_texture_bgl_entry, texture_bgl_entry,
-    uniform_bgl_entry,
+    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTORS,
+    BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_COMPACTION_META, BIND_DELTA_SUBBLOCKS,
+    BIND_DIRECT_ATLAS_OUTPUT, BIND_PROBE_INDIRECTION, DirectShDebugOverride,
+    dynamic_compose_grid_bgl_entry, sampler_bgl_entry, storage_bgl_entry,
+    storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
 };
+use crate::render::mover_channel::BIND_MOVER_CHANNEL;
 
 const BIND_SELECTION_WEIGHTS: u32 = 26;
 const BIND_DEBUG_OVERRIDE: u32 = 27;
@@ -42,6 +42,7 @@ pub(in crate::render::sh_streaming) fn promotion_bgl_entries() -> Vec<wgpu::Bind
             DIRECT_COMPOSE_PARAMS_SIZE as u64,
         ),
         storage_bgl_entry(BIND_PROBE_INDIRECTION),
+        storage_bgl_entry(BIND_MOVER_CHANNEL),
     ]
 }
 
@@ -58,7 +59,7 @@ pub(in crate::render::sh_streaming) fn animated_bgl_entries() -> Vec<wgpu::BindG
         storage_bgl_entry(BIND_ANIMATION_DESCRIPTORS),
         storage_bgl_entry(BIND_ANIMATION_SAMPLES),
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
-        storage_bgl_entry(BIND_ANIMATION_DESCRIPTOR_INDICES),
+        storage_bgl_entry(BIND_MOVER_CHANNEL),
         uniform_layout_entry(BIND_ANIMATED_LIGHT_SCALE, ANIMATED_LIGHT_SCALE_SIZE as u64),
         storage_bgl_entry(BIND_ANIMATED_COMPACTION_META),
         storage_bgl_entry(BIND_ANIMATED_PROBE_INDIRECTION),
@@ -129,13 +130,6 @@ pub(super) fn debug_override_bytes(value: DirectShDebugOverride) -> [u8; DEBUG_O
     bytes
 }
 
-pub(super) fn u32_bytes(values: &[u32]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_ne_bytes())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,7 +146,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.binding)
                 .collect::<Vec<_>>(),
-            vec![0, 2, 1, 4, 18, 20, 21, 24, 26, 27, 28, 29, 30]
+            vec![0, 2, 1, 4, 18, 20, 21, 24, 26, 27, 28, 29, 30, 25]
         );
         assert_eq!(
             animated
@@ -175,7 +169,7 @@ mod tests {
                 })
                 .count()
         };
-        assert_eq!(storage_count(&promotion), 6);
+        assert_eq!(storage_count(&promotion), 7);
         assert_eq!(storage_count(&animated), 8);
         assert!(
             DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64

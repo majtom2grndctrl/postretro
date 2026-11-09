@@ -31,7 +31,6 @@ impl MoverLightStateTable {
     }
 
     /// The held states; a mover absent here has no state and composes ungated.
-    #[cfg_attr(not(test), allow(dead_code))] // Read by the mover-state compose.
     pub(in crate::render) fn states(&self) -> &[MoverLightState] {
         &self.states
     }

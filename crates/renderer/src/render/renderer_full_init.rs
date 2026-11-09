@@ -100,6 +100,7 @@ pub(crate) fn build_full_renderer(
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
         probe_occlusion_enabled,
+        super::mover_channel::MoverChannelResources::empty(device),
         &mut sh_allocation_ledger,
     );
 

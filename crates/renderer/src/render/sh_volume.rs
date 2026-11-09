@@ -90,6 +90,9 @@ pub struct ShVolumeResources {
     /// Normal-free static/animated direct scatter sampled only by billboards.
     /// Its real/dummy binding selection is level-load fixed.
     pub(super) billboard_direct_scatter: BillboardDirectScatterResources,
+    /// Id 57's direct table and this frame's mover t′, bound by both direct
+    /// compose passes in either SH storage mode.
+    pub(super) mover_channel: super::mover_channel::MoverChannelResources,
     #[allow(dead_code)]
     pub present: bool,
     /// Probe grid dimensions (in cells, x/y/z).
@@ -392,6 +395,7 @@ impl ShVolumeResources {
         sections: ShVolumeSections<'_>,
         scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,
+        mover_channel: super::mover_channel::MoverChannelResources,
         ledger: &mut ShAllocationLedger,
     ) -> Self {
         let ShVolumeSections {
@@ -872,6 +876,7 @@ impl ShVolumeResources {
             mesh_bind_group_layout,
             direct,
             billboard_direct_scatter,
+            mover_channel,
             present,
             grid_dimensions,
             atlas_dimensions,

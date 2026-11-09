@@ -76,12 +76,30 @@ impl ShResidencyState {
             }
         };
         if let Some(gpu) = gpu {
+            // Mover channel cells this cluster completes, checked before any
+            // upload: a malformed id-57 row refuses the cluster.
+            let channel_writes =
+                match mover_channel_writes(cluster_id, prepared, &staged, &gpu.sh.mover_channel) {
+                    Ok(writes) => writes,
+                    Err(error) => {
+                        self.roll_back(journal);
+                        return Err(error);
+                    }
+                };
             // Nearly every decoded byte is uploaded; reserve for it once.
             let mut uploads =
                 self.begin_uploads(prepared.chunk.bytes.len() + prepared.chunk.bytes.len() / 8);
-            if let Err(error) =
-                self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged)
-            {
+            let staged_uploads = self
+                .stage_uploads(&mut uploads, prepared, has_dense_payload, &staged)
+                .and_then(|()| {
+                    gpu.sh
+                        .mover_channel
+                        .stage_writes(&mut uploads, &channel_writes)
+                        .map_err(|_| {
+                            malformed(cluster_id, "mover channel cell write is out of bounds")
+                        })
+                });
+            if let Err(error) = staged_uploads {
                 // Discarding the batch keeps each GPU word equal to its
                 // mirror: a rolled-back install uploads nothing.
                 self.roll_back(journal);
@@ -89,6 +107,7 @@ impl ShResidencyState {
             }
             upload_copy_regions = uploads.copy_count();
             self.submit_uploads(uploads, gpu.device, gpu.queue);
+            gpu.sh.mover_channel.mark_written(&channel_writes);
         }
         self.commit_install(cluster_id, staged);
         if let Some(started) = trace_started {
@@ -445,4 +464,48 @@ fn isolated_atlas(
         .blocks
         .iter()
         .find(|block| block.kind == ISOLATED_ATLAS_BLOCK && block.section_id == section_id)
+}
+
+/// The mover channel cells `prepared` completes: id-57 rows it carries and
+/// the first-written id-41/id-45 rows a gated light borrows its term from.
+/// Under async a streamed direct payload's masks were never checked at load,
+/// so each cell is checked here, and a failure refuses the cluster as a
+/// malformed chunk.
+fn mover_channel_writes(
+    cluster_id: u32,
+    prepared: &PreparedShCluster,
+    staged: &StagedInstall,
+    channel: &crate::render::mover_channel::MoverChannelResources,
+) -> Result<Vec<crate::render::mover_channel::CellWrite>, ShResidencyDrainError> {
+    use crate::render::mover_channel::{ClusterSparseRow, ClusterTermRows};
+    if !channel.has_pending_cells() {
+        return Ok(Vec::new());
+    }
+    let mut rows = ClusterTermRows::default();
+    if let Some(block) = prepared.chunk.mover_channel_rows() {
+        rows.channel_rows = postretro_level_format::mover_probe_channel::parse_streamed_rows(block)
+            .map_err(|error| {
+                log::error!("[Renderer] streamed cluster {cluster_id}: {error}");
+                malformed(cluster_id, "MoverProbeChannel (id 57) rows are malformed")
+            })?;
+    }
+    for plan in &staged.sparse_plan {
+        let row = ClusterSparseRow {
+            cell: plan.payload.row,
+            entry_offsets: &plan.payload.entry_tile_f16_offsets,
+            tiles: &plan.payload.tile_f16,
+        };
+        match plan.section_id {
+            DIRECT_DELTA_ID => rows.static_rows.push(row),
+            ANIMATED_DIRECT_DELTA_ID => rows.animated_rows.push(row),
+            _ => {}
+        }
+    }
+    channel.stage_cluster(&rows).map_err(|error| {
+        log::error!("[Renderer] streamed cluster {cluster_id}: {error}");
+        malformed(
+            cluster_id,
+            "MoverProbeChannel (id 57) cell is malformed or incomplete",
+        )
+    })
 }

@@ -303,11 +303,11 @@ fn fluid_sample_sh(world_pos: vec3<f32>, n: vec3<f32>, want_direct: bool) -> ShD
     let probe_occlusion = sh_grid.probe_occlusion != 0u;
     if want_direct {
         return sample_sh_indirect_direct_corners(
-            sh_direct_atlas, gi, gfrac, offset_world, n, n, true, probe_occlusion,
+            sh_direct_atlas, gi, gfrac, offset_world, n, n, SH_BACKFACE_HARD, probe_occlusion,
         );
     }
     result.a = sample_sh_indirect_corners_depth_aware(
-        gi, gfrac, offset_world, n, n, true, probe_occlusion,
+        gi, gfrac, offset_world, n, n, SH_BACKFACE_HARD, probe_occlusion,
     );
     return result;
 }

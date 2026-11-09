@@ -16,6 +16,7 @@ use super::animated_direct_sh_compose::{
 use super::direct_sh_compose_carrier::DirectPromotionStorage;
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
 use super::install_pipelines::new_install_compute_pipeline;
+use super::mover_channel::{BIND_MOVER_CHANNEL, MOVER_CHANNEL_WGSL};
 use super::renderer_types::PromotedBakedLightState;
 use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
@@ -39,7 +40,6 @@ pub(super) const BIND_AFFINITY_OFFSETS: u32 = 21;
 pub(super) const BIND_ANIMATION_DESCRIPTORS: u32 = 22;
 pub(super) const BIND_ANIMATION_SAMPLES: u32 = 23;
 pub(super) const BIND_AFFINITY_LIGHTS: u32 = 24;
-pub(super) const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_SELECTION_WEIGHTS: u32 = 26;
 const BIND_DEBUG_OVERRIDE: u32 = 27;
 pub(super) const BIND_DELTA_COMPACTION_META: u32 = 28;
@@ -100,6 +100,9 @@ pub(super) struct DirectShComposeFrameInputs<'a> {
     /// effective promotion factors without ever compacting the namespace;
     /// detached states retain the full baked delta.
     pub(super) animated_promotion_states: &'a [PromotedBakedLightState],
+    /// Some mover's t′ moved since the last encoded compose (mover state
+    /// lighting). Never a light change.
+    pub(super) mover_state_changed: bool,
     pub(super) timestamp_writes: DirectShComposeTimestampWrites<'a>,
 }
 
@@ -129,6 +132,8 @@ impl DirectShComposePipelines {
         });
         let shader_source = [
             include_str!("../shaders/direct_sh_compose.wgsl"),
+            "\n",
+            MOVER_CHANNEL_WGSL,
             "\n",
             WGSL_DECODE_HELPER,
         ]
@@ -193,6 +198,8 @@ struct PromotionPassInputs<'a> {
     probe_indirection_words: &'a [u32],
     delta: Option<&'a DirectShDeltaVolumesSection>,
     weights_buffer: &'a wgpu::Buffer,
+    /// Id 57's table and the frame's mover t′, shared by both passes.
+    mover_channel: &'a wgpu::Buffer,
     direct_delta_present: bool,
     sh_section_present: bool,
     ledger: &'a mut ShAllocationLedger,
@@ -222,6 +229,7 @@ impl DirectShComposeResources {
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: Option<&AnimatedDirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
+        mover_channel: &wgpu::Buffer,
         pipelines: &DirectShComposePipelines,
         sh_section_present: bool,
         ledger: &mut ShAllocationLedger,
@@ -237,6 +245,7 @@ impl DirectShComposeResources {
                 delta,
                 animated_delta,
                 weights_buffer,
+                mover_channel,
                 pipelines,
                 direct_delta_present,
                 sh_section_present,
@@ -251,6 +260,7 @@ impl DirectShComposeResources {
                 probe_indirection_words,
                 delta,
                 weights_buffer,
+                mover_channel,
                 direct_delta_present,
                 sh_section_present,
                 ledger,
@@ -306,6 +316,7 @@ impl DirectShComposeResources {
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: &AnimatedDirectShDeltaVolumesSection,
         weights_buffer: &wgpu::Buffer,
+        mover_channel: &wgpu::Buffer,
         pipelines: &DirectShComposePipelines,
         direct_delta_present: bool,
         sh_section_present: bool,
@@ -345,6 +356,7 @@ impl DirectShComposeResources {
                 probe_indirection_words,
                 delta,
                 weights_buffer,
+                mover_channel,
                 direct_delta_present,
                 sh_section_present,
                 ledger,
@@ -363,6 +375,7 @@ impl DirectShComposeResources {
                 promotion_free_storage: atlas_storage_view,
             },
             &pipelines.animated,
+            mover_channel,
             sh_section_present,
             ledger,
         ));
@@ -379,22 +392,25 @@ impl DirectShComposeResources {
         }
     }
 
+    /// Encode both passes when an input moved. Returns whether it encoded,
+    /// so the caller commits the mover-state trigger only after an encode.
     pub fn dispatch_if_needed(
         &mut self,
         queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         frame: DirectShComposeFrameInputs<'_>,
-    ) {
+    ) -> bool {
         let DirectShComposeFrameInputs {
             uniform_bind_group,
             active,
             light_term_mask: frame_light_term_mask,
             debug_overrides,
             animated_promotion_states,
+            mover_state_changed,
             timestamp_writes,
         } = frame;
         let Some(pipeline) = self.pipeline.as_mut() else {
-            return;
+            return false;
         };
 
         let debug_bytes = debug_override_bytes(debug_overrides.promotion);
@@ -415,14 +431,17 @@ impl DirectShComposeResources {
             }
         }
 
+        // The whole atlas recomposes on a mover-state change too; the
+        // streamed planner narrows that to the travelling mover's rows.
         if !should_dispatch(
             active,
             pipeline.pending_copy_through,
             pipeline.was_active,
             frame_light_term_mask,
             pipeline.last_composed_mask,
-        ) {
-            return;
+        ) && !mover_state_changed
+        {
+            return false;
         }
 
         // Keep Pass A's private input coherent with Pass B's group-0 input.
@@ -457,6 +476,7 @@ impl DirectShComposeResources {
         pipeline.pending_copy_through = false;
         pipeline.was_active = active;
         pipeline.last_composed_mask = frame_light_term_mask;
+        true
     }
 }
 
@@ -480,6 +500,7 @@ fn build_promotion_pass(
         probe_indirection_words,
         delta,
         weights_buffer,
+        mover_channel,
         direct_delta_present,
         sh_section_present,
         ledger,
@@ -720,6 +741,10 @@ fn build_promotion_pass(
                 binding: BIND_PROBE_INDIRECTION,
                 resource: probe_indirection_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_MOVER_CHANNEL,
+                resource: mover_channel.as_entire_binding(),
+            },
         ],
     });
 
@@ -766,6 +791,7 @@ fn promotion_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         uniform_bgl_entry(BIND_DEBUG_OVERRIDE),
         direct_compose_params_bgl_entry(),
         storage_bgl_entry(BIND_PROBE_INDIRECTION),
+        storage_bgl_entry(BIND_MOVER_CHANNEL),
     ]
 }
 
@@ -1221,6 +1247,8 @@ mod tests {
         let source = [
             include_str!("../shaders/direct_sh_compose.wgsl"),
             "\n",
+            super::MOVER_CHANNEL_WGSL,
+            "\n",
             super::WGSL_DECODE_HELPER,
         ]
         .concat();
@@ -1276,7 +1304,9 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(storage_count, 6);
+        // Six id-41/base inputs plus the mover channel table (binding 25),
+        // within the eight-buffer wall.
+        assert_eq!(storage_count, 7);
 
         let grid = entries
             .iter()

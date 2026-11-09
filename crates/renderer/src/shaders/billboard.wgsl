@@ -565,7 +565,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
         world_pos,
         normal,
         normal,
-        false,
+        SH_BACKFACE_NONE,
         sh_grid.probe_occlusion != 0u,
     );
 }
@@ -593,7 +593,7 @@ fn sample_sh_direct(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
         world_pos,
         normal,
         normal,
-        false,
+        SH_BACKFACE_NONE,
         sh_grid.probe_occlusion != 0u,
     );
 }
@@ -624,7 +624,7 @@ fn sample_billboard_direct_scatter(world_pos: vec3<f32>) -> vec3<f32> {
             world_pos,
             vec3<f32>(0.0),
             is_valid,
-            false,
+            SH_BACKFACE_NONE,
             true,
             sh_grid.probe_occlusion != 0u,
         );

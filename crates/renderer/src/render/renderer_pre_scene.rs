@@ -121,6 +121,12 @@ impl Renderer {
         let Some(streaming) = level.sh_streaming.as_mut() else {
             return Ok(());
         };
+        // Mover state lighting: slots whose t′ moved since the last planned
+        // frame stale the rows carrying them, whether or not this frame
+        // records compose.
+        let mover_channel = &mut level.sh_volume_resources.mover_channel;
+        mover_channel.set_states(full.mover_light_states.states());
+        let mover_changes = mover_channel.observe_t_changes();
         streaming.prepare_compose_frame(
             region_sets,
             mesh_frame_plans,
@@ -135,6 +141,7 @@ impl Renderer {
             animated_override,
             &level.promoted_static_weights,
             &level.promoted_animated_states,
+            mover_changes,
         )
     }
 
@@ -281,6 +288,12 @@ impl Renderer {
         let Some(level) = full.level.as_mut() else {
             return true;
         };
+        // Mover state lighting: this frame's t′ reaches the table before
+        // either direct pass records, on the streamed and legacy paths alike.
+        let mover_channel = &mut level.sh_volume_resources.mover_channel;
+        mover_channel.set_states(full.mover_light_states.states());
+        mover_channel.upload_t(queue);
+        let mover_state_changed = mover_channel.t_changed_since_composed();
         let direct_sh_ts = full
             .frame_timing
             .as_ref()
@@ -315,7 +328,7 @@ impl Renderer {
                 }
             }
         } else {
-            level.direct_sh_compose.dispatch_if_needed(
+            let encoded = level.direct_sh_compose.dispatch_if_needed(
                 queue,
                 encoder,
                 DirectShComposeFrameInputs {
@@ -327,12 +340,18 @@ impl Renderer {
                         animated: animated_direct_sh_debug_override,
                     },
                     animated_promotion_states: &level.promoted_animated_states,
+                    mover_state_changed,
                     timestamp_writes: DirectShComposeTimestampWrites {
                         promotion: direct_sh_ts,
                         animated: animated_direct_sh_ts,
                     },
                 },
             );
+            // Committed only after the encode, so a frame that records no
+            // compose leaves the change for the next recording frame (P12).
+            if encoded {
+                level.sh_volume_resources.mover_channel.commit_composed_t();
+            }
             true
         };
         // Shares the already-flushed descriptor/sample buffers with animated

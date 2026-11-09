@@ -29,6 +29,7 @@ use super::direct_sh_compose::{
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
 use super::gpu_test_harness::{GpuCtx, gpu_or_skip};
+use super::mover_channel::{MoverChannelInputs, MoverChannelResources};
 use super::pipeline_layout::uniform_bind_group_layout_entries;
 use super::renderer_types::{PromotedBakedLightState, PromotedShadowPoolKind};
 use super::sh_residency::ShAllocationLedger;
@@ -37,9 +38,9 @@ use super::uploads::UploadQueue;
 
 /// One L0 affinity brick: 64 probes, one stored 6×6 tile each, 8 tiles a row.
 const GRID: [u32; 3] = [4, 4, 4];
-const TILE: u32 = 6;
+pub(in crate::render) const TILE: u32 = 6;
 const TILES_PER_ROW: u32 = 8;
-const ATLAS: [u32; 2] = [TILE * TILES_PER_ROW, TILE * TILES_PER_ROW];
+pub(in crate::render) const ATLAS: [u32; 2] = [TILE * TILES_PER_ROW, TILE * TILES_PER_ROW];
 const TEXEL_BYTES: u32 = 8;
 const F16_QUARTER: u16 = 0x3400;
 const F16_EIGHTH: u16 = 0x3000;
@@ -57,7 +58,7 @@ enum Fixture {
 
 /// Per-texel base radiance from four exact f16 values, so every stored slot
 /// carries data and a misplaced write would show.
-fn base_section() -> DirectShVolumeSection {
+pub(in crate::render) fn base_section() -> DirectShVolumeSection {
     let quarters = [0x3400u16, 0x3800, 0x3A00, F16_ONE];
     let mut atlas = Vec::with_capacity((ATLAS[0] * ATLAS[1] * TEXEL_BYTES) as usize);
     for y in 0..ATLAS[1] {
@@ -84,7 +85,7 @@ fn base_section() -> DirectShVolumeSection {
 }
 
 /// One selected static light (selection index 0) over every probe.
-fn static_delta() -> DirectShDeltaVolumesSection {
+pub(in crate::render) fn static_delta() -> DirectShDeltaVolumesSection {
     DirectShDeltaVolumesSection {
         affinity_factor: AFFINITY_FACTOR,
         affinity_dims: [1, 1, 1],
@@ -99,7 +100,7 @@ fn static_delta() -> DirectShDeltaVolumesSection {
 }
 
 /// One animated-baked light (raw index 0, descriptor 0) over every probe.
-fn animated_delta() -> AnimatedDirectShDeltaVolumesSection {
+pub(in crate::render) fn animated_delta() -> AnimatedDirectShDeltaVolumesSection {
     AnimatedDirectShDeltaVolumesSection {
         affinity_factor: AFFINITY_FACTOR,
         affinity_dims: [1, 1, 1],
@@ -115,7 +116,7 @@ fn animated_delta() -> AnimatedDirectShDeltaVolumesSection {
 }
 
 /// An active descriptor with a constant curve (count 0 samples as 1.0).
-fn animation_descriptor() -> Vec<u8> {
+pub(in crate::render) fn animation_descriptor() -> Vec<u8> {
     let mut record = vec![0u8; ANIMATION_DESCRIPTOR_SIZE];
     let mut put = |at: usize, word: u32| record[at..at + 4].copy_from_slice(&word.to_ne_bytes());
     put(0, 1.0_f32.to_bits()); // period
@@ -127,7 +128,7 @@ fn animation_descriptor() -> Vec<u8> {
 }
 
 /// Level-0 indirection: probe `p` stores at slot `p`.
-fn probe_indirection_words() -> Vec<u32> {
+pub(in crate::render) fn probe_indirection_words() -> Vec<u32> {
     (0..GRID.iter().product::<u32>())
         .map(|probe| (probe << 5) | 0x4)
         .collect()
@@ -181,6 +182,23 @@ fn build_scene(ctx: &GpuCtx, fixture: Fixture) -> Scene {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
     let animation = AnimatedLightBuffers::for_test(device, animation_descriptor());
+    // No id 57: the table carries Pass B's descriptor map alone.
+    let mover_channel = MoverChannelResources::new(
+        device,
+        &MoverChannelInputs {
+            section: None,
+            entity_shadow_lights: &[],
+            static_terms: None,
+            animated_terms: None,
+            animation_descriptor_indices: animated
+                .as_ref()
+                .map_or(&[][..], |section| &section.animation_descriptor_indices),
+        },
+        false,
+        |_, _| None,
+        &mut ledger,
+    )
+    .expect("an empty channel lays out");
     let compose = DirectShComposeResources::new(
         device,
         &direct,
@@ -189,6 +207,7 @@ fn build_scene(ctx: &GpuCtx, fixture: Fixture) -> Scene {
         Some(&delta),
         animated.as_ref(),
         &weights,
+        mover_channel.buffer(),
         &DirectShComposePipelines::new(device, &uniform_layout),
         true,
         &mut ledger,
@@ -238,6 +257,7 @@ fn compose_at(
                 animated: AnimatedDirectShDebugOverride::default(),
             },
             animated_promotion_states: &animated_states,
+            mover_state_changed: false,
             timestamp_writes: DirectShComposeTimestampWrites {
                 promotion: None,
                 animated: None,
@@ -263,7 +283,7 @@ fn padded_row_bytes() -> u32 {
         * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
 }
 
-fn copy_out(
+pub(in crate::render) fn copy_out(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     texture: &wgpu::Texture,
@@ -294,7 +314,7 @@ fn copy_out(
 }
 
 /// De-padded atlas bytes.
-fn read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
+pub(in crate::render) fn read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
     let slice = buffer.slice(..);
     let (sender, receiver) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -321,7 +341,7 @@ fn read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
 }
 
 /// The red channel of texel `(x, y)`, decoded from f16.
-fn red(bytes: &[u8], x: u32, y: u32) -> f32 {
+pub(in crate::render) fn red(bytes: &[u8], x: u32, y: u32) -> f32 {
     let at = ((y * ATLAS[0] + x) * TEXEL_BYTES) as usize;
     f16_to_f32(u16::from_le_bytes([bytes[at], bytes[at + 1]]))
 }

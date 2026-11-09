@@ -29,6 +29,8 @@ mod cluster_demand_tests;
 mod compose_plan;
 #[cfg(test)]
 mod compose_plan_oracle;
+#[cfg(test)]
+pub(in crate::render) mod compose_plan_test_support;
 mod compose_staleness;
 #[cfg(test)]
 mod contributing_rows_tests;
@@ -276,6 +278,9 @@ pub(super) struct ShResidencyState {
     animated_direct_compose_required: bool,
     direct_animation_descriptor_indices: Vec<u32>,
     compose_planner: StreamedComposePlanner,
+    /// Id 57's per-mover rows and the rows whose membership the channel
+    /// widens, copied from the level's channel at GPU setup.
+    mover_channel_rows: crate::render::mover_channel::MoverChannelRows,
     compose_frame_plan: Option<ComposeFramePlan>,
     /// Load-time writer-row and per-cell row caches for the sampled-row gate.
     sample_region_index: SampleRegionIndex,

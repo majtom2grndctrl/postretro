@@ -310,7 +310,7 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
             && src.contains("let is_valid = sh_probe_indirection(idx).valid;")
             && src.contains("sh_probe_weight(")
             && src.contains(
-                "vec3<f32>(0.0),\n            is_valid,\n            false,\n            true,\n            sh_grid.probe_occlusion != 0u,"
+                "vec3<f32>(0.0),\n            is_valid,\n            SH_BACKFACE_NONE,\n            true,\n            sh_grid.probe_occlusion != 0u,"
             ),
         "scatter must use the depth-aware SH weighting convention without supplying a sprite normal",
     );
@@ -1040,7 +1040,9 @@ fn animated_direct_sh_compose_debug_override_isolates_one_animated_baked_light()
             && src
                 .matches("let scale = full_scale * animated_compose_weight(light_index);")
                 .count()
-                == 2,
+                // The id-45 L0 and coarsened loops, and the mover channel's
+                // gated loss.
+                == 3,
         "Pass B must scale only the handoff output by the fixed raw-index `(1 - w)` array",
     );
 }
@@ -1341,12 +1343,16 @@ fn sh_compose_grid_dims_shader_layouts_match_cpu_packer() {
     const DIRECT_SH_COMPOSE_SHADER_SOURCE: &str = concat!(
         include_str!("../../shaders/direct_sh_compose.wgsl"),
         "\n",
+        include_str!("../../shaders/mover_channel.wgsl"),
+        "\n",
         include_str!("../../shaders/sh_indirection.wgsl"),
     );
     const ANIMATED_DIRECT_SH_COMPOSE_SHADER_SOURCE: &str = concat!(
         include_str!("../../shaders/animated_direct_sh_compose.wgsl"),
         "\n",
         include_str!("../../shaders/curve_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/mover_channel.wgsl"),
         "\n",
         include_str!("../../shaders/sh_indirection.wgsl"),
     );

@@ -31,7 +31,7 @@ use super::receivers::{
 };
 use super::scene::CaptureScene;
 use super::setup::{
-    apply_scene_reflection, capture_camera, capture_level_geometry,
+    apply_scene_reflection, capture_camera, capture_level_geometry, capture_mover_probe_channel,
     capture_static_lights_and_shadow_selection, derive_texture_materials,
     install_capture_animated_promotion_bridge, install_forced_active_animation_descriptors,
     resolve_forced_promotion_rows_from_metadata,
@@ -138,6 +138,8 @@ impl PreparedCapture {
             );
         // Capture installs the way the game does: the payloads move into the
         // upload and the world keeps headers only.
+        let mover_probe_channel =
+            capture_mover_probe_channel(&world.lights, world.mover_probe_channel());
         let gpu_lighting_payloads = world.take_gpu_lighting_payloads();
         let mut geometry = capture_level_geometry(
             &world,
@@ -145,6 +147,7 @@ impl PreparedCapture {
             &static_lights,
             &static_light_influences,
             &static_entity_shadow_lights,
+            mover_probe_channel.as_ref(),
         );
         if let Some(streaming) = geometry.lightmap_streaming.as_mut() {
             streaming.pool_sizing.first_generation_override = scene.lightmap_first_generation();
@@ -215,9 +218,11 @@ impl PreparedCapture {
         // VM-free map-authored receiver state the windowed render frame collects.
         let mut registry = spawn_capture_receiver_registry(&world)?;
         // TEMPORARY (plan task 1): see `CaptureScene::dev_pose_mover`.
-        if let Some(pose) = scene.dev_pose_mover.as_ref() {
-            super::receivers::park_dev_pose_mover(&mut registry, &world, pose)?;
-        }
+        let dev_pose_state = scene
+            .dev_pose_mover
+            .as_ref()
+            .map(|pose| super::receivers::park_dev_pose_mover(&mut registry, &world, pose))
+            .transpose()?;
         // Selected-static promotion needs no bridge: its forward record is
         // appended by the renderer from the selection itself.
         if forced_promotion_weights
@@ -269,6 +274,10 @@ impl PreparedCapture {
         );
         renderer.set_kinematic_ghost_draws(mover_ghost_collector.instances());
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
+        // TEMPORARY (task 8 capture): see `park_dev_pose_mover`.
+        if let Some(state) = dev_pose_state {
+            renderer.set_mover_light_states(&[state]);
+        }
         // Capture loads no manifest, so every fluid volume draws at the fixed
         // capture opacity, with no fog or wave, reflecting at reflectivity 1
         // wherever a face binds a probe.

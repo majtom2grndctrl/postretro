@@ -97,6 +97,13 @@ pub struct LevelGeometry<'a> {
     pub animated_billboard_direct_scatter_delta_volumes: Option<
         &'a postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection,
     >,
+    /// Id 57: what each mover changes in the probe data at its two termini.
+    /// Its indexes, records, masks and mover entries are whole-resident in
+    /// either SH storage mode; a streamed payload arrives with id 50's cells.
+    /// Namespace-0 light indices name `lights`' order, as
+    /// `entity_shadow_lights` does, so a record finds its selection slot.
+    pub mover_probe_channel:
+        Option<&'a postretro_level_format::mover_probe_channel::MoverProbeChannelSection>,
     /// Selection-order list of global level-light indices eligible for runtime
     /// entity-shadow promotion.
     pub entity_shadow_lights: &'a [u32],

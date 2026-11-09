@@ -28,9 +28,10 @@ use super::scene::parse_scene;
 use super::scene::{CameraPose, ForcedAnimLight, ForcedPromotion};
 #[cfg(test)]
 use super::setup::{
-    capture_static_lights_and_shadow_selection, capture_view_projection,
-    forced_active_animation_descriptor, resolve_forced_active_animation_slots,
-    resolve_forced_promotion_rows, validate_forced_animation_slot_bounds,
+    capture_mover_probe_channel, capture_static_lights_and_shadow_selection,
+    capture_view_projection, forced_active_animation_descriptor,
+    resolve_forced_active_animation_slots, resolve_forced_promotion_rows,
+    validate_forced_animation_slot_bounds,
 };
 #[cfg(test)]
 use crate::render::{CapturePromotionPin, CapturePromotionRow};
@@ -552,6 +553,66 @@ mod tests {
             vec![1, u32::MAX, 0, u32::MAX],
             "selection order must stay channel-aligned while indices move into compact static space",
         );
+    }
+
+    /// Id 57's namespace-0 records name global lights; capture moves them
+    /// into the compact static space its selection uses, so the renderer
+    /// finds each record's selection slot. Other namespaces keep theirs.
+    #[test]
+    fn capture_moves_mover_channel_static_lights_into_the_selection_space() {
+        use postretro_level_format::mover_probe_channel::{
+            MoverDirectRecord, MoverLightNamespace, MoverPayloadPlacement, MoverProbeChannelSection,
+        };
+        let lights = [
+            test_light(true, 1.0),
+            test_light(false, 2.0),
+            test_light(true, 3.0),
+            test_light(false, 4.0),
+        ];
+        let record = |namespace, light_index| MoverDirectRecord {
+            namespace,
+            carries_own_tile: false,
+            light_index,
+            probe_mask: 1,
+        };
+        let section = MoverProbeChannelSection {
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            direct_placement: MoverPayloadPlacement::Resident,
+            bounce_placement: MoverPayloadPlacement::Resident,
+            cells: Vec::new(),
+            direct_offsets: Vec::new(),
+            direct_records: vec![
+                record(MoverLightNamespace::StaticLight, 1),
+                record(MoverLightNamespace::StaticLight, 3),
+                record(MoverLightNamespace::AnimatedBaked, 3),
+                record(MoverLightNamespace::BakeOnlyStaticLight, 0),
+            ],
+            mover_offsets: Vec::new(),
+            direct_movers: Vec::new(),
+            visibility: Vec::new(),
+            own_tiles: Vec::new(),
+            bounce_offsets: Vec::new(),
+            bounce_entries: Vec::new(),
+            bounce_tiles: Vec::new(),
+            depth_records: Vec::new(),
+            depth_tiles: Vec::new(),
+            ramps: Vec::new(),
+        };
+        let (_, _, selection) = capture_static_lights_and_shadow_selection(&lights, &[], &[1, 3]);
+        let moved = capture_mover_probe_channel(&lights, Some(&section)).expect("section");
+        let indices: Vec<u32> = moved
+            .direct_records
+            .iter()
+            .map(|record| record.light_index)
+            .collect();
+        assert_eq!(indices, vec![0, 1, 3, 0]);
+        assert_eq!(
+            &indices[..2],
+            &selection[..],
+            "the selection names the same lights"
+        );
+        assert!(capture_mover_probe_channel(&lights, None).is_none());
     }
 
     #[test]

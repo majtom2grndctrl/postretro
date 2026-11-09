@@ -252,7 +252,7 @@ fn sample_sh_indirect(
     let gi = vec3<u32>(floor(gf));
     let gfrac = fract(gf);
     return sample_sh_indirect_corners_depth_aware(
-        gi, gfrac, offset_world, shading_normal, geo_normal, false, sh_grid.probe_occlusion != 0u
+        gi, gfrac, offset_world, shading_normal, geo_normal, SH_BACKFACE_SMOOTH, sh_grid.probe_occlusion != 0u
     );
 }
 
@@ -274,7 +274,7 @@ fn sample_sh_direct(
     let gi = vec3<u32>(floor(gf));
     let gfrac = fract(gf);
     return sample_sh_direct_corners_depth_aware(
-        sh_direct_atlas, gi, gfrac, offset_world, shading_normal, geo_normal, false, sh_grid.probe_occlusion != 0u
+        sh_direct_atlas, gi, gfrac, offset_world, shading_normal, geo_normal, SH_BACKFACE_SMOOTH, sh_grid.probe_occlusion != 0u
     );
 }
 

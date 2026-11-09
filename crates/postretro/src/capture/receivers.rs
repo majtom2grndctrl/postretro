@@ -49,7 +49,7 @@ pub(super) fn park_dev_pose_mover(
     registry: &mut EntityRegistry,
     world: &postretro_level_loader::LevelWorld,
     pose: &super::scene::DevPoseMover,
-) -> Result<()> {
+) -> Result<crate::render::MoverLightState> {
     let mover_id = world
         .kinematic_geometry
         .movers
@@ -57,14 +57,17 @@ pub(super) fn park_dev_pose_mover(
         .find(|mover| mover.name == pose.name)
         .map(|mover| mover.mover_id)
         .with_context(|| format!("dev_pose_mover: no kinematic mover named `{}`", pose.name))?;
-    let (entity, position) = registry
+    let (entity, position, t) = registry
         .iter_with_kind(ComponentKind::KinematicMover)
         .find_map(|(id, value)| match value {
             ComponentValue::KinematicMover(mover) if mover.mover_id == mover_id => mover
                 .waypoint_names
                 .iter()
                 .position(|name| *name == pose.waypoint)
-                .map(|at| (id, mover.waypoints[at])),
+                .map(|at| {
+                    let last = mover.waypoints.len().saturating_sub(1).max(1);
+                    (id, mover.waypoints[at], at as f32 / last as f32)
+                }),
             _ => None,
         })
         .with_context(|| {
@@ -80,7 +83,9 @@ pub(super) fn park_dev_pose_mover(
     registry
         .set_component(entity, transform)
         .context("dev_pose_mover: set mover transform")?;
-    Ok(())
+    // TEMPORARY (task 8 capture): the parked waypoint's terminus t, so the
+    // mover probe channel composes gated at that pose.
+    Ok(crate::render::MoverLightState { mover_id, t })
 }
 
 /// Validate model handles placed by capture's built-in map dispatch. An empty

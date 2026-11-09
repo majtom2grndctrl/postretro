@@ -153,15 +153,19 @@ fn shader_source(cube_array_supported: bool) -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Owned(crate::render::strip_point_shadow_cube(SHADER_SOURCE))
     };
     // TEMPORARY (mover-light-flow--probe-channel task 2, inside-brush A/B):
-    // `POSTRETRO_DEV_MOVER_BACKFACE` turns SH backface rejection on for mover
-    // fragments, direct and indirect. Unset, the source is unchanged. Task 12
-    // deletes it.
-    if std::env::var_os("POSTRETRO_DEV_MOVER_BACKFACE").is_some() {
-        let flipped = source.replace(
-            ", false, sh_grid.probe_occlusion",
-            ", true, sh_grid.probe_occlusion",
-        );
-        debug_assert_ne!(flipped, *source, "both SH calls pass backface rejection");
+    // `POSTRETRO_DEV_MOVER_BACKFACE` swaps the mover fragments' smooth,
+    // floored backface weight, direct and indirect, for A/B captures: `none`
+    // for no backface weight (the pre-Stop-2 contract), anything else for the
+    // hard `max(dot, 0)` form. Unset, the source is unchanged and the
+    // production smooth form ships. Task 12 deletes it.
+    if let Some(mode) = std::env::var_os("POSTRETRO_DEV_MOVER_BACKFACE") {
+        let replacement = if mode == "none" {
+            ", SH_BACKFACE_NONE, sh_grid.probe_occlusion"
+        } else {
+            ", SH_BACKFACE_HARD, sh_grid.probe_occlusion"
+        };
+        let flipped = source.replace(", SH_BACKFACE_SMOOTH, sh_grid.probe_occlusion", replacement);
+        debug_assert_ne!(flipped, *source, "both SH calls take the dev backface form");
         return std::borrow::Cow::Owned(flipped);
     }
     source

@@ -152,6 +152,7 @@ impl Harness {
                 AnimatedDirectShDebugOverride::default(),
                 &[frame.static_weight],
                 &[],
+                &[],
             )
             .unwrap();
         let plan = self.state.compose_frame_plan.as_ref().unwrap();

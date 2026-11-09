@@ -7,6 +7,12 @@
 // `store_promotion_free` is set, the promotion-free direct atlas (the
 // mask-gated base) that every other consumer samples. On section-45 maps the
 // handoff output is Pass B's intermediate and Pass B writes both finals.
+//
+// Mover state lighting (`mover_channel.wgsl`, concatenated after this
+// source): at a probe an id-57 record masks, a gated static light's term T
+// becomes the lerp of its two terminus states, so each output loses
+// (1 − Q) × T, Q being the product of the gating movers' lerp(q₀, q₁, t′).
+// The handoff keeps that loss in the baked arm only: (1 − w) × (1 − Q) × T.
 
 struct GridDims {
     grid_dimensions: vec3<u32>,
@@ -73,6 +79,8 @@ struct DirectComposeParams {
 // Load-derived id-34 words are the sole source of base/direct stored-slot
 // geometry. The direct base shares that exact slot space with id 34.
 @group(0) @binding(30) var<storage, read> probe_indirection: array<u32>;
+// Renderer-built id-57 table plus this frame's mover t′ (`mover_channel.wgsl`).
+@group(0) @binding(25) var<storage, read> mover_channel: array<u32>;
 
 const AFFINITY_FACTOR: u32 = 4u;
 const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;
@@ -90,6 +98,7 @@ const MAX_KEPT_TILES: u32 = 8u;
 var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
 var<workgroup> shared_kept_present: array<u32, 8>;
 var<workgroup> shared_brick_indirection: u32;
+var<workgroup> shared_mover_channel_position: u32;
 
 fn compaction_meta_offset_base() -> u32 {
     return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u;
@@ -350,6 +359,7 @@ fn compose_main(
         local_indirection = decode_sh_probe_indirection(probe_indirection[probe_index]);
     }
     if (local_probe == 0u) {
+        shared_mover_channel_position = mc_listed_position(cell_index);
         shared_brick_indirection = 0u;
         for (var candidate_local = 0u; candidate_local < AFFINITY_FACTOR * AFFINITY_FACTOR * AFFINITY_FACTOR; candidate_local = candidate_local + 1u) {
             let candidate_probe = brick * AFFINITY_FACTOR + local_probe_coord(candidate_local);
@@ -399,10 +409,12 @@ fn compose_main(
     let use_promotion_subtraction = use_baked_direct_static && use_dynamic_direct;
     let store_promotion_free = output_is_stored && direct_compose_params.store_promotion_free != 0u;
 
-    // Keeping the accumulator private lets one shared kept lattice serve all
+    // Keeping the accumulators private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
-    // geometry is fixed at 6×6 by PRL validation.
+    // geometry is fixed at 6×6 by PRL validation. `accum` becomes the handoff
+    // output, `accum_free` the promotion-free one; both seed from the base.
     var accum: array<vec4<f32>, 36>;
+    var accum_free: array<vec3<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
         let tile_texel = vec2<u32>(
             texel_index % RUNTIME_TILE_DIMENSION,
@@ -422,15 +434,62 @@ fn compose_main(
         } else {
             accum[texel_index] = vec4<f32>(0.0);
         }
-        // The promotion-free atlas is the mask-gated base, never subtracted:
-        // with every weight zero it equals the handoff output exactly.
-        if (store_promotion_free) {
+        accum_free[texel_index] = accum[texel_index].rgb;
+    }
+
+    // Gated static lights. Channel cells are L0 base storage (the loader
+    // refuses otherwise), so each masked probe owns its stored slot.
+    let channel_position = shared_mover_channel_position;
+    if (
+        output_is_stored
+            && use_baked_direct_static
+            && channel_position != MC_NONE
+            && brick_indirection.level == 0u
+    ) {
+        let records = mc_cell_records(channel_position);
+        for (var record = records.start; record < records.static_end; record = record + 1u) {
+            let slot = mc_record_slot(record, local_probe);
+            if (slot == MC_NONE) {
+                continue;
+            }
+            let blocked = 1.0 - mc_record_visibility(record, slot);
+            if (blocked <= 0.0) {
+                continue;
+            }
+            // Selected lights hand off to promotion: the runtime arm (weight
+            // w) already draws the mover as a caster, so the baked arm keeps
+            // (1 − w) of the gated loss; `selection_weight` is zero unless
+            // dynamic direct is on. Other lights never promote.
+            let light = mc_record_word(record, MC_RECORD_LIGHT);
+            var w = 0.0;
+            if (light != MC_NONE) {
+                w = selection_weight(light);
+            }
+            let handoff_blocked = blocked * (1.0 - w);
+            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                let term = mc_tile_texel(record, slot, texel_index);
+                let prior = accum[texel_index];
+                accum[texel_index] = vec4<f32>(prior.rgb - term * handoff_blocked, prior.a);
+                accum_free[texel_index] = accum_free[texel_index] - term * blocked;
+            }
+        }
+    }
+
+    // The promotion-free atlas is the mask-gated base with the gated term
+    // in place, never promotion-subtracted: with every weight zero it equals
+    // the handoff output exactly.
+    if (store_promotion_free) {
+        for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+            let tile_texel = vec2<u32>(
+                texel_index % RUNTIME_TILE_DIMENSION,
+                texel_index / RUNTIME_TILE_DIMENSION,
+            );
             textureStore(
                 direct_atlas,
                 vec2<i32>(tile_origin.xy + tile_texel),
                 i32(tile_origin.z),
                 vec4<f32>(
-                    max(accum[texel_index].rgb, vec3<f32>(0.0)),
+                    max(accum_free[texel_index], vec3<f32>(0.0)),
                     select(0.0, 1.0, stored_slot.valid),
                 ),
             );

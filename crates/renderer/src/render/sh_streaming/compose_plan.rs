@@ -5,6 +5,7 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 
 use super::compose_staleness::{PassStaleness, PassTriggers};
 use super::{AnimatedDirectShDebugOverride, DirectShDebugOverride};
+use crate::render::mover_channel::MoverChannelRows;
 
 /// The three streamed passes in their required encode order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,11 @@ pub(super) struct ComposePlannerFrame<'a> {
     /// Exact complementary promotion scales uploaded by Pass B.
     pub(super) effective_animated_weights: &'a [f32],
     pub(super) controls: ComposeControlSnapshot,
+    /// Mover state lighting: slots whose t′ moved since the last planned
+    /// frame, and the rows each slot's entries sit in per direct pass. Only
+    /// mover state fires this trigger; a light or weight change never does.
+    pub(super) mover_changes: &'a [u32],
+    pub(super) mover_rows: &'a MoverChannelRows,
 }
 
 /// Work for one pass. State changes only when this plan is committed after a
@@ -299,6 +305,20 @@ impl StreamedComposePlanner {
         self.indirect_was_active = frame.indirect_active;
         self.animated_direct_was_active = frame.animated_direct_active;
 
+        // A travelling mover stales only rows carrying its entries, in only
+        // the passes those entries feed: static lights Pass A (and Pass B
+        // through Pass A's planned rows below), animated-baked lights Pass B.
+        // Staleness persists to the next commit, so a change on a frame that
+        // records no compose is never lost.
+        for &slot in frame.mover_changes {
+            for &row in frame.mover_rows.static_by_mover.rows(slot) {
+                self.static_direct.mark_stale(row);
+            }
+            for &row in frame.mover_rows.animated_by_mover.rows(slot) {
+                self.animated_direct.mark_stale(row);
+            }
+        }
+
         if !frame.records_compose {
             return;
         }
@@ -499,6 +519,8 @@ mod tests {
                 animated_direct_active: animated,
                 effective_static_weights: &self.static_weights,
                 effective_animated_weights: &self.animated_weights,
+                mover_changes: &[],
+                mover_rows: &crate::render::mover_channel::NO_MOVER_ROWS,
                 controls: controls(),
             }
         }

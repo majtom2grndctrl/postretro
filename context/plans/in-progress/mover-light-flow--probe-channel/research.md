@@ -519,3 +519,49 @@ Measured 2026-11-09. Each map was cold-built (`--no-cache -j 12`) with the 7b co
 
 - Every direct change raises q by one sample: plane growth blocked samples the static tracer passes (corners, where a grown plane reaches past τ, and near-parallel samples). Platform's dropped probe undoes 7b's one added masked probe by size (2 B of q, 216 B of tile); its identity was not checked.
 - The bounce changes are the patch-direct segments moving from the 0.1 mm band to τ. No listed cell is added or dropped, so ids 34, 35, 49 and 50 stay byte-identical.
+
+### Task 8
+
+Measured 2026-11-09 on the main checkout, AMD Radeon Pro 5300M under Metal.
+
+**Storage.** One level table at binding 25 serves both direct compose passes.
+- Pass A goes from 6 to 7 storage buffers. Pass B stays at 8 of 8 because the table also holds id 45's animation descriptor map, which was Pass B's own read-only `u32` array with the same lifetime. That is the "merge matched read-only arrays" route.
+- The table holds a header, the listed cells, per-cell record ranges (static records first, then animated-baked ones), 8-word records, mover entries, the t′ block, the descriptor map, one T per masked probe, and the q bytes.
+- T is copied per masked probe from the record's own tile, its id-41 entry or its id-45 entry. So Pass B can gate static lights in the promotion-free atlas (Case 2) without an extra intermediate texture or id-41 bindings.
+- The ledger kind is `mover_channel_table`. On the setpiece the table is 3,023,680 B: 13,762 masked probes × 216 B of T, plus 28,842 B of q.
+- A streamed direct payload gets a full-sized table at load. Each cell is written once, by the first drained cluster that carries it. The table is not priced per residency, so streaming does not shrink it. On the hallway it would be about the size of the 11.2 MB direct payload plus the borrowed T copies. Pricing it against the pool is still open.
+
+**Missing entries.** If id 41 or id 45 is absent or disabled at load, a record that borrows from it composes ungated, and the load logs a warning. If the family is present but the record's cell is coarser than L0 or holds no entry for its light, the load is refused. Bake-only records without their own tile are refused too.
+
+**Capture index-space bug (fixed).** Capture keeps static lights only, so it renumbers the selection into compact static-light indices. Id 57's namespace-0 indices stayed global AlphaLights indices. On the setpiece, 79 of 126 unflagged records named a global index that is not a value in capture's renumbered selection, so the channel refused the load ("light 11 holds no selection slot"). Capture now renumbers id 57's namespace-0 indices with the same table (`capture_mover_probe_channel`, unit-tested). The game path keeps both lists global, so it never hit this.
+
+**Captures: smooth against hard backface.** Method:
+- `--features capture`, `POSTRETRO_SH_STREAMING=sync-proof`, full-resident compose, 1280×720.
+- `setpiece_room` parked raised. A temporary hook in `park_dev_pose_mover` hands the renderer the parked waypoint's t (1), so the channel composes gated.
+- `POSTRETRO_DEV_MOVER_BACKFACE` now takes `none` (no backface weight, the pre-Stop-2 contract) or any other value (the hard form). Unset ships the smooth form.
+- Means are of 8-bit Rec.709 luma with alpha dropped, 0–255.
+- The map is the production 7c bake, so absolute values do not compare with §Captures, which used the slice bakes and alpha-included means. Compare columns, not tables.
+- Views: interior and upper walls as in §Captures (engine (−8.128, 1.829, −21.844)). West face is a new pose, (−8.128, 2.286, −15.748), yaw 0, fov 60, framing the doorway wall, because Task 1's pose is not recorded. Station 2 is the README's.
+
+| View | Smooth (ships) | Hard | None |
+|---|---|---|---|
+| Interior | 11.79 | 11.73 | 11.79 |
+| Upper walls | 7.69 | 7.22 | 8.06 |
+| Upper, direct only (mask 24) | 0.681 | 0.554 | 0.785 |
+| Upper, indirect only (mask 6) | 7.00 | 6.64 | 7.28 |
+| West face | 28.22 | 29.34 | 21.13 |
+| Station 2 | 34.44 | 34.73 | 32.41 |
+
+- **The smooth form leaks more than the hard form**, but less than no backface weight. On the upper walls, direct light reads +0.127 luma over hard (+23%) and bounce +0.35 (+5%), so the full frame reads +0.47 (+6.5%). It closes about 45% of the gap from none to hard, in both terms. The ×20 row of `captures/t8-backface-sheet.png` shows the extra direct light as soft patches on the ceiling and upper walls.
+- **Own faces.** The west face reads 28.2 smooth against 29.3 hard and 21.1 with none. Station 2 reads within 0.3 of hard.
+- Sheet: `captures/t8-backface-sheet.png`. Columns are smooth | hard | none. Rows are interior, upper walls, upper direct ×20, upper indirect, west face and station 2.
+
+**Per-frame cost: not measured.**
+- `POSTRETRO_GPU_TIMING=1` reports that this adapter lacks `TIMESTAMP_QUERY` and/or `TIMESTAMP_QUERY_INSIDE_ENCODERS`.
+- A windowed setpiece run stalled at "Window ready" for 45 s and was stopped.
+- What the structure bounds:
+  - CPU: one pass over the movers' states per frame, and an upload of 4 B × movers only when some t′ changed. A unit test pins it as allocation-free.
+  - Legacy path: every frame in which any gated mover's t′ moves re-dispatches all of Pass A and Pass B, so a travelling mover keeps the whole direct compose running.
+  - Streamed path: only the travelling mover's rows recompose.
+  - Each table probe costs one `q` read per mover and one T read per record. The binary search over listed cells runs once per workgroup.
+- The 5300M budget (M6) stays open.

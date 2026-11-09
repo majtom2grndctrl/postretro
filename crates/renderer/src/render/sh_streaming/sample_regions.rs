@@ -362,6 +362,8 @@ mod tests {
             animated_direct_active: false,
             effective_static_weights: &initial_static_weights,
             effective_animated_weights: &animated_weights,
+            mover_changes: &[],
+            mover_rows: &crate::render::mover_channel::NO_MOVER_ROWS,
             controls,
         };
         planner.plan_frame(initial);
@@ -376,6 +378,8 @@ mod tests {
             animated_direct_active: true,
             effective_static_weights: &changed_static_weights,
             effective_animated_weights: &animated_weights,
+            mover_changes: &[],
+            mover_rows: &crate::render::mover_channel::NO_MOVER_ROWS,
             controls,
         });
         assert_eq!(plan.static_direct.rows(), &[2]);

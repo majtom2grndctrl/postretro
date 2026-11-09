@@ -27,7 +27,7 @@ impl StreamingAnimatedPass {
             &self.sparse,
             &sh.animation.descriptors,
             &sh.animation.anim_samples,
-            &self.descriptor_indices,
+            &self.mover_channel,
             &self.light_scale,
             compose_indirection,
         );

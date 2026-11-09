@@ -2,7 +2,15 @@
 // It writes both direct outputs from one read of every id-45 delta: the
 // promotion handoff atlas (Pass A's intermediate plus `(1 - w)` deltas), and
 // the promotion-free direct atlas (the mask-gated base plus full deltas).
-// `curve_eval.wgsl` is concatenated after this source at pipeline build time.
+// `curve_eval.wgsl` and `mover_channel.wgsl` are concatenated after this
+// source at pipeline build time.
+//
+// Mover state lighting: at a probe an id-57 record masks, a gated light's
+// term T becomes the lerp of its two terminus states, so each output loses
+// (1 − Q) × T, Q being the product of the gating movers' lerp(q₀, q₁, t′).
+// Animated-baked lights lose it under their curve, the handoff only in its
+// (1 − w) arm. Gated static lights lose it here in the promotion-free output
+// only; Pass A already took the handoff's share from the intermediate.
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -72,7 +80,10 @@ struct AnimatedLightScale {
 @group(1) @binding(22) var<storage, read> descriptors: array<AnimationDescriptor>;
 @group(1) @binding(23) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(24) var<storage, read> affinity_lights: array<u32>;
-@group(1) @binding(25) var<storage, read> animation_descriptor_indices: array<u32>;
+// The renderer-built id-57 table, this frame's mover t′, and the
+// AnimatedBakedLights → descriptor map (`mover_channel.wgsl`). The map folds
+// in here so Pass B stays within eight storage buffers.
+@group(1) @binding(25) var<storage, read> mover_channel: array<u32>;
 // Pass-B-only uniform: `light_index` is an AnimatedBakedLights index, unlike
 // Pass A's binding-27 promotion-selection override. `compose_weights` carries
 // `(1 - w)` keyed by that same raw index.
@@ -104,6 +115,7 @@ const MAX_KEPT_TILES: u32 = 8u;
 var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
 var<workgroup> shared_kept_present: array<u32, 8>;
 var<workgroup> shared_brick_indirection: u32;
+var<workgroup> shared_mover_channel_position: u32;
 
 fn compaction_meta_offset_base() -> u32 {
     return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u;
@@ -343,7 +355,7 @@ fn animated_light_full_scale(light_index: u32) -> vec3<f32> {
     ) {
         return vec3<f32>(0.0);
     }
-    let descriptor_index = animation_descriptor_indices[light_index];
+    let descriptor_index = mc_descriptor_index(light_index);
     if (descriptor_index == INVALID_DESCRIPTOR_INDEX || descriptor_index >= arrayLength(&descriptors)) {
         return vec3<f32>(0.0);
     }
@@ -400,6 +412,7 @@ fn animated_compose_main(
         local_indirection = decode_sh_probe_indirection(probe_indirection[probe_index]);
     }
     if (local_probe == 0u) {
+        shared_mover_channel_position = mc_listed_position(cell_index);
         shared_brick_indirection = 0u;
         for (var candidate_local = 0u; candidate_local < AFFINITY_FACTOR * AFFINITY_FACTOR * AFFINITY_FACTOR; candidate_local = candidate_local + 1u) {
             let candidate_probe = brick * AFFINITY_FACTOR + local_probe_coord(candidate_local);
@@ -449,8 +462,9 @@ fn animated_compose_main(
     // Keeping the accumulators private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
     // geometry is fixed at 6×6 by PRL validation. `accum` seeds from Pass A's
-    // promotion-subtracted intermediate; `accum_free` seeds from the base,
-    // clamped as Pass A clamps it, so the two agree exactly at zero weights.
+    // promotion-subtracted intermediate; `accum_free` seeds from the base with
+    // its gated static terms in place, clamped as Pass A clamps it, so the two
+    // agree exactly at zero weights.
     var accum: array<vec4<f32>, 36>;
     var accum_free: array<vec3<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
@@ -481,10 +495,61 @@ fn animated_compose_main(
                     0.0,
                 ).rgb;
             }
-            accum_free[texel_index] = max(base, vec3<f32>(0.0));
+            accum_free[texel_index] = base;
         } else {
             accum[texel_index] = vec4<f32>(0.0);
             accum_free[texel_index] = vec3<f32>(0.0);
+        }
+    }
+
+    // Channel cells are L0 base storage (the loader refuses otherwise), so
+    // each masked probe owns its stored slot.
+    let channel_position = shared_mover_channel_position;
+    let channel_applies = output_is_stored
+        && channel_position != MC_NONE
+        && brick_indirection.level == 0u;
+    var channel_records = McCellRecords(0u, 0u, 0u);
+    if (channel_applies) {
+        channel_records = mc_cell_records(channel_position);
+    }
+    if (use_baked_direct_static) {
+        for (var record = channel_records.start; record < channel_records.static_end; record = record + 1u) {
+            let slot = mc_record_slot(record, local_probe);
+            if (slot == MC_NONE) {
+                continue;
+            }
+            let blocked = 1.0 - mc_record_visibility(record, slot);
+            if (blocked <= 0.0) {
+                continue;
+            }
+            for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+                accum_free[texel_index] = accum_free[texel_index]
+                    - mc_tile_texel(record, slot, texel_index) * blocked;
+            }
+        }
+    }
+    for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+        accum_free[texel_index] = max(accum_free[texel_index], vec3<f32>(0.0));
+    }
+    // Gated animated-baked lights: the loss carries the light's curve, and the
+    // handoff's also its (1 − w) compose weight.
+    for (var record = channel_records.static_end; record < channel_records.end; record = record + 1u) {
+        let slot = mc_record_slot(record, local_probe);
+        if (slot == MC_NONE) {
+            continue;
+        }
+        let blocked = 1.0 - mc_record_visibility(record, slot);
+        if (blocked <= 0.0) {
+            continue;
+        }
+        let light_index = mc_record_word(record, MC_RECORD_LIGHT);
+        let full_scale = animated_light_full_scale(light_index) * blocked;
+        let scale = full_scale * animated_compose_weight(light_index);
+        for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
+            let term = mc_tile_texel(record, slot, texel_index);
+            let prior = accum[texel_index];
+            accum[texel_index] = vec4<f32>(prior.rgb - term * scale, prior.a);
+            accum_free[texel_index] = accum_free[texel_index] - term * full_scale;
         }
     }
 

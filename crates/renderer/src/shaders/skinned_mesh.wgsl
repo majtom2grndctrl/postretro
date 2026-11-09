@@ -381,7 +381,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
         offset_world,
         shading_normal,
         geo_normal,
-        false,
+        SH_BACKFACE_NONE,
         sh_grid.probe_occlusion != 0u,
     );
 }
@@ -413,7 +413,7 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
         offset_world,
         shading_normal,
         geo_normal,
-        false,
+        SH_BACKFACE_NONE,
         sh_grid.probe_occlusion != 0u,
     );
 }

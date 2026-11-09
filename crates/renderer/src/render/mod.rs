@@ -39,6 +39,7 @@ mod loaded_texture;
 mod mesh_depth;
 mod mesh_ghost;
 mod mesh_pass;
+mod mover_channel;
 mod mover_light_state;
 mod planar_reflection;
 mod promoted_depth_cache;

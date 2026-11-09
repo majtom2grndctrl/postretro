@@ -248,17 +248,41 @@ fn sh_trilinear_weight(corner_offset: vec3<u32>, gfrac: vec3<f32>) -> f32 {
     return axis.x * axis.y * axis.z;
 }
 
+// How a receiver weighs a probe behind its own geometric plane.
+// None: no backface term (billboards, skinned meshes, fluid vertices' fog).
+const SH_BACKFACE_NONE: u32 = 0u;
+// Static world receivers: a probe behind the plane weighs 0 (`max(dot, 0)`).
+const SH_BACKFACE_HARD: u32 = 1u;
+// Mover receivers: DDGI's smooth wrap ((dot + 1) / 2)² over the unit
+// direction, plus a floor, so no probe ever weighs 0 (ip-372 lever 5; owner
+// ruling, mover-light-flow--probe-channel). Static geometry, never mover or
+// light state, decides it.
+const SH_BACKFACE_SMOOTH: u32 = 2u;
+// The smooth form's floor: the same 0.03 every valid probe keeps under depth
+// visibility, so a probe behind the receiver still contributes.
+const SH_BACKFACE_SMOOTH_FLOOR: f32 = 0.03;
+
 fn sh_backface_weight(
     corner_offset: vec3<u32>,
     gfrac: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
 ) -> f32 {
-    if (!reject_backface) {
+    if (backface_mode == SH_BACKFACE_NONE) {
         return 1.0;
     }
 
     let dir_to_probe = (vec3<f32>(corner_offset) - gfrac) * sh_grid.cell_size;
+    if (backface_mode == SH_BACKFACE_SMOOTH) {
+        let distance = length(dir_to_probe);
+        // A probe at the shaded point faces it.
+        var cosine = 1.0;
+        if (distance > 1e-6) {
+            cosine = clamp(dot(dir_to_probe / distance, geo_normal), -1.0, 1.0);
+        }
+        let wrap = (cosine + 1.0) * 0.5;
+        return wrap * wrap + SH_BACKFACE_SMOOTH_FLOOR;
+    }
     return max(dot(dir_to_probe, geo_normal), 0.0);
 }
 
@@ -269,13 +293,13 @@ fn sh_probe_weight(
     sample_world: vec3<f32>,
     geo_normal: vec3<f32>,
     is_valid: bool,
-    reject_backface: bool,
+    backface_mode: u32,
     use_depth_visibility: bool,
     probe_occlusion_enabled: bool,
 ) -> f32 {
     let validity = select(0.0, 1.0, is_valid);
     let trilinear = sh_trilinear_weight(corner_offset, gfrac);
-    let backface = sh_backface_weight(corner_offset, gfrac, geo_normal, reject_backface);
+    let backface = sh_backface_weight(corner_offset, gfrac, geo_normal, backface_mode);
     var depth_visibility = 1.0;
     if (use_depth_visibility && probe_occlusion_enabled) {
         depth_visibility = sh_corner_depth_visibility(idx, sample_world, is_valid);
@@ -342,7 +366,7 @@ fn sh_whole_cell_weight_sum(
     gfrac: vec3<f32>,
     sample_world: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
     use_depth_visibility: bool,
     probe_occlusion_enabled: bool,
 ) -> f32 {
@@ -353,7 +377,7 @@ fn sh_whole_cell_weight_sum(
         let indirection = sh_probe_indirection(idx);
         sum = sum + sh_probe_weight(
             idx, corner_offset, gfrac, sample_world, geo_normal, indirection.valid,
-            reject_backface, use_depth_visibility, probe_occlusion_enabled,
+            backface_mode, use_depth_visibility, probe_occlusion_enabled,
         );
     }
     return sum;
@@ -369,7 +393,7 @@ fn sample_l1_whole_cell_atlas(
     gfrac: vec3<f32>,
     sample_world: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
     use_depth_visibility: bool,
     probe_occlusion_enabled: bool,
     dir: vec3<f32>,
@@ -387,7 +411,7 @@ fn sample_l1_whole_cell_atlas(
         let indirection = sh_probe_indirection(idx);
         let outer_weight = sh_probe_weight(
             idx, corner_offset, gfrac, sample_world, geo_normal, indirection.valid,
-            reject_backface, use_depth_visibility, probe_occlusion_enabled,
+            backface_mode, use_depth_visibility, probe_occlusion_enabled,
         );
         if (outer_weight <= 0.0) {
             continue;
@@ -419,7 +443,7 @@ fn sample_sh_indirect_corners_pair(
     normal_a: vec3<f32>,
     normal_b: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
     use_depth_visibility: bool,
     probe_occlusion_enabled: bool,
     reconstruct_b: bool,
@@ -429,20 +453,20 @@ fn sample_sh_indirect_corners_pair(
         var result: ShDirPair;
         result.a = sample_l1_whole_cell_atlas(
             sh_total_atlas, whole, gi, gfrac, sample_world, geo_normal,
-            reject_backface, use_depth_visibility, probe_occlusion_enabled, normal_a,
+            backface_mode, use_depth_visibility, probe_occlusion_enabled, normal_a,
         );
         result.b = vec3<f32>(0.0);
         if (reconstruct_b) {
             result.b = sample_l1_whole_cell_atlas(
                 sh_total_atlas, whole, gi, gfrac, sample_world, geo_normal,
-                reject_backface, use_depth_visibility, probe_occlusion_enabled, normal_b,
+                backface_mode, use_depth_visibility, probe_occlusion_enabled, normal_b,
             );
         }
         return result;
     }
     if (whole.available && whole.level == 2u) {
         let weight_sum = sh_whole_cell_weight_sum(
-            gi, gfrac, sample_world, geo_normal, reject_backface,
+            gi, gfrac, sample_world, geo_normal, backface_mode,
             use_depth_visibility, probe_occlusion_enabled,
         );
         var result: ShDirPair;
@@ -474,7 +498,7 @@ fn sample_sh_indirect_corners_pair(
             sample_world,
             geo_normal,
             indirection.valid,
-            reject_backface,
+            backface_mode,
             use_depth_visibility,
             probe_occlusion_enabled,
         );
@@ -514,7 +538,7 @@ fn sample_sh_indirect_direct_corners(
     sample_world: vec3<f32>,
     shading_normal: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
     probe_occlusion_enabled: bool,
 ) -> ShDirPair {
     let whole = sh_whole_cell_resolution(gi);
@@ -522,17 +546,17 @@ fn sample_sh_indirect_direct_corners(
         var result: ShDirPair;
         result.a = sample_l1_whole_cell_atlas(
             sh_total_atlas, whole, gi, gfrac, sample_world, geo_normal,
-            reject_backface, true, probe_occlusion_enabled, shading_normal,
+            backface_mode, true, probe_occlusion_enabled, shading_normal,
         );
         result.b = sample_l1_whole_cell_atlas(
             direct_atlas, whole, gi, gfrac, sample_world, geo_normal,
-            reject_backface, true, probe_occlusion_enabled, shading_normal,
+            backface_mode, true, probe_occlusion_enabled, shading_normal,
         );
         return result;
     }
     if (whole.available && whole.level == 2u) {
         let weight_sum = sh_whole_cell_weight_sum(
-            gi, gfrac, sample_world, geo_normal, reject_backface, true, probe_occlusion_enabled,
+            gi, gfrac, sample_world, geo_normal, backface_mode, true, probe_occlusion_enabled,
         );
         var result: ShDirPair;
         result.a = vec3<f32>(0.0);
@@ -563,7 +587,7 @@ fn sample_sh_indirect_direct_corners(
             sample_world,
             geo_normal,
             indirection.valid,
-            reject_backface,
+            backface_mode,
             true,
             probe_occlusion_enabled,
         );
@@ -595,7 +619,7 @@ fn sample_sh_direct_corners_depth_aware(
     sample_world: vec3<f32>,
     shading_normal: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
     probe_occlusion_enabled: bool,
 ) -> vec3<f32> {
     return sample_sh_indirect_direct_corners(
@@ -605,7 +629,7 @@ fn sample_sh_direct_corners_depth_aware(
         sample_world,
         shading_normal,
         geo_normal,
-        reject_backface,
+        backface_mode,
         probe_occlusion_enabled,
     ).b;
 }
@@ -616,7 +640,7 @@ fn sample_sh_indirect_corners_depth_aware(
     sample_world: vec3<f32>,
     shading_normal: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
     probe_occlusion_enabled: bool,
 ) -> vec3<f32> {
     return sample_sh_indirect_corners_pair(
@@ -626,7 +650,7 @@ fn sample_sh_indirect_corners_depth_aware(
         shading_normal,
         shading_normal,
         geo_normal,
-        reject_backface,
+        backface_mode,
         true,
         probe_occlusion_enabled,
         false,
@@ -638,7 +662,7 @@ fn sample_sh_indirect_corners_without_depth(
     gfrac: vec3<f32>,
     shading_normal: vec3<f32>,
     geo_normal: vec3<f32>,
-    reject_backface: bool,
+    backface_mode: u32,
 ) -> vec3<f32> {
     let unused_sample_world = sh_grid.grid_origin + vec3<f32>(gi) * sh_grid.cell_size;
     return sample_sh_indirect_corners_pair(
@@ -648,7 +672,7 @@ fn sample_sh_indirect_corners_without_depth(
         shading_normal,
         shading_normal,
         geo_normal,
-        reject_backface,
+        backface_mode,
         false,
         false,
         false,
@@ -669,7 +693,7 @@ fn sample_sh_indirect_corners_two_without_depth(
         normal_a,
         normal_b,
         normal_a,
-        false,
+        SH_BACKFACE_NONE,
         false,
         false,
         true,

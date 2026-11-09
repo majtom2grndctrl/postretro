@@ -181,10 +181,11 @@ pub(crate) fn storage_level_ceilings(
                 channel.affinity_dims
             ));
         }
-        for (cell, ceiling) in ceilings.iter_mut().enumerate() {
-            if channel.cell_has_entries(cell) {
-                *ceiling = Level::L0;
-            }
+        for cell in channel.listed_cells() {
+            let ceiling = ceilings.get_mut(cell).ok_or_else(|| {
+                format!("id 57 lists affinity cell {cell}, outside the base affinity grid")
+            })?;
+            *ceiling = Level::L0;
         }
     }
 
@@ -807,13 +808,14 @@ pub(crate) fn delta_pin_counts(
                 )
             }),
         ),
-        // Every id-57 cell composes at L0.
+        // Every listed id-57 cell composes at L0.
         deltas.mover_channel.map_or(0, |channel| {
-            candidates
-                .iter()
-                .enumerate()
-                .filter(|&(cell, &candidate)| {
-                    candidate > Level::L0.to_u8() && channel.cell_has_entries(cell)
+            channel
+                .listed_cells()
+                .filter(|&cell| {
+                    candidates
+                        .get(cell)
+                        .is_some_and(|&candidate| candidate > Level::L0.to_u8())
                 })
                 .count() as u64
         }),

@@ -71,21 +71,23 @@ pub enum MoverProbeChannelError {
         offset: u32,
         previous: u32,
     },
-    #[error("MoverProbeChannelReservedBits: {what} of entry {index} is {value:#x}, expected 0")]
+    #[error(
+        "MoverProbeChannelReservedBits: {what} of entry or record {index} is {value:#x}, expected 0"
+    )]
     ReservedBits {
         what: &'static str,
         index: usize,
         value: u32,
     },
     #[error(
-        "MoverProbeChannelLightNamespace: direct entry {entry} names namespace {value}, which is unknown"
+        "MoverProbeChannelLightNamespace: direct record {record} names namespace {value}, which is unknown"
     )]
-    UnknownLightNamespace { entry: usize, value: u8 },
+    UnknownLightNamespace { record: usize, value: u8 },
     #[error(
-        "MoverProbeChannelOwnTileRequired: direct entry {entry} names a {namespace:?} light without its own tile; no other section holds that light's term"
+        "MoverProbeChannelOwnTileRequired: direct record {record} names a {namespace:?} light without its own tile; no other section holds that light's term"
     )]
     OwnTileRequired {
-        entry: usize,
+        record: usize,
         namespace: MoverLightNamespace,
     },
     #[error(
@@ -97,14 +99,72 @@ pub enum MoverProbeChannelError {
         entry: usize,
     },
     #[error(
-        "MoverProbeChannelBounceProbeNotValid: bounce entry {entry} in cell {cell} has affected mask {mask:#018x}, which is not a non-empty subset of the valid probes {valid:#018x}"
+        "MoverProbeChannelProbeMaskEmpty: {block} entry {entry} in cell {cell} has an empty probe mask"
     )]
-    BounceProbeNotValid {
+    ProbeMaskEmpty {
+        block: &'static str,
+        cell: usize,
+        entry: usize,
+    },
+    #[error(
+        "MoverProbeChannelProbeMaskNotValid: {block} entry {entry} in cell {cell} has probe mask {mask:#018x}, which is not a subset of the valid probes {valid:#018x}"
+    )]
+    ProbeMaskNotValid {
+        block: &'static str,
         cell: usize,
         entry: usize,
         mask: u64,
         valid: u64,
     },
+    #[error(
+        "MoverProbeChannelProbeMaskNotTight: direct record {record} in cell {cell} masks local probe {probe}, where every mover stores 255 at both termini; a record's mask is exactly its movers' q < 255 probes"
+    )]
+    ProbeMaskNotTight {
+        cell: usize,
+        record: usize,
+        probe: u32,
+    },
+    #[error(
+        "MoverProbeChannelRecordWithoutMovers: direct record {record} in cell {cell} has no mover entry"
+    )]
+    RecordWithoutMovers { cell: usize, record: usize },
+    #[error(
+        "MoverProbeChannelMoverOrder: mover entry {entry} of direct record {record} in cell {cell} does not follow its predecessor; a record's movers ascend by id with no repeats"
+    )]
+    MoverOrder {
+        cell: usize,
+        record: usize,
+        entry: usize,
+    },
+    #[error(
+        "MoverProbeChannelMoverGatesNothing: mover entry {entry} (mover {mover_id}) of direct record {record} in cell {cell} stores 255 at every masked probe"
+    )]
+    MoverGatesNothing {
+        cell: usize,
+        record: usize,
+        entry: usize,
+        mover_id: u32,
+    },
+    #[error(
+        "MoverProbeChannelCellOrder: listed cell {listed} is affinity cell {cell} after {previous}; listed cells ascend with no repeats"
+    )]
+    CellOrder {
+        listed: usize,
+        cell: u32,
+        previous: u32,
+    },
+    #[error(
+        "MoverProbeChannelCellOutOfRange: listed cell {listed} is affinity cell {cell}, outside the {cells}-cell affinity grid"
+    )]
+    CellOutOfRange {
+        listed: usize,
+        cell: u32,
+        cells: usize,
+    },
+    #[error(
+        "MoverProbeChannelCellWithoutEntries: affinity cell {cell} is listed but holds no direct record or bounce entry"
+    )]
+    CellWithoutEntries { cell: usize },
     #[error(
         "MoverProbeChannelDepthRecordOrder: depth record {record} does not follow its predecessor; records ascend by (mover, probe) with no repeats"
     )]
@@ -128,10 +188,10 @@ pub enum MoverProbeChannelError {
     )]
     UnresolvedMover { mover_id: u32 },
     #[error(
-        "MoverProbeChannelLightOutOfNamespace: direct entry {entry} names {namespace:?} light {light_index}, {detail}"
+        "MoverProbeChannelLightOutOfNamespace: direct record {record} names {namespace:?} light {light_index}, {detail}"
     )]
     LightOutOfNamespace {
-        entry: usize,
+        record: usize,
         namespace: MoverLightNamespace,
         light_index: u32,
         detail: String,

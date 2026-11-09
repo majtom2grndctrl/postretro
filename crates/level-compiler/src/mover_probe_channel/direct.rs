@@ -164,10 +164,6 @@ impl ProbeCells {
         Self::new(layout.dims, |probe| layout.validity[probe] != 0)
     }
 
-    pub(crate) fn cell_count(&self) -> usize {
-        self.valid_masks.len()
-    }
-
     /// The dense index of each valid probe in `cell`, x-fastest.
     pub(crate) fn valid_probes(&self, cell: usize) -> Vec<usize> {
         let mask = self.valid_masks[cell];

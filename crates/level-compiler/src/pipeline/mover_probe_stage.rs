@@ -155,27 +155,37 @@ impl DirectHalf {
             !emitted.holds_per_probe(cell, ns, light)
         })?;
         if let Some(section) = &section {
+            let counts = section.direct_counts();
             let own = section
-                .direct_entries
+                .direct_records
                 .iter()
-                .filter(|entry| entry.carries_own_tile)
+                .filter(|record| record.carries_own_tile)
                 .count();
             let bake_only = section
-                .direct_entries
+                .direct_records
                 .iter()
-                .filter(|entry| entry.namespace == MoverLightNamespace::BakeOnlyStaticLight)
+                .filter(|record| record.namespace == MoverLightNamespace::BakeOnlyStaticLight)
                 .count();
+            let bytes = section.byte_breakdown();
             log::info!(
-                "[MoverLight] MoverProbeChannel (id 57): {} direct entr(y/ies), {own} carrying \
-                 their own tile, {bake_only} naming {} bake-only light(s), over {} mover(s); \
-                 direct block {} B: {} B of entry records, {} B of visibility, {} B of own tiles",
-                section.direct_entries.len(),
+                "[MoverLight] MoverProbeChannel (id 57): {} term record(s) over {} cell(s), {own} \
+                 carrying their own tile, {bake_only} naming {} bake-only light(s); {} mover \
+                 entr(y/ies) over {} mover(s); {} masked probe(s); direct block {} B: {} B of \
+                 cell index, {} B of direct index, {} B of records and mover ids, {} B of \
+                 visibility, {} B of own tiles; section {} B",
+                counts.records,
+                counts.cells,
                 section.bake_only_light_count(),
+                counts.mover_entries,
                 section.ramps.len(),
-                direct_block_bytes(section),
-                section.direct_entries.len() * DIRECT_ENTRY_BYTES,
-                section.visibility.len(),
-                section.own_tiles.len() * 2,
+                counts.masked_probes,
+                bytes.cell_index + bytes.direct_block(),
+                bytes.cell_index,
+                bytes.direct_index,
+                bytes.direct_records,
+                bytes.visibility,
+                bytes.own_tiles,
+                bytes.total(),
             );
         }
         sections.mover_channel = section;
@@ -192,14 +202,4 @@ impl DirectHalf {
         );
         Ok(())
     }
-}
-
-/// One direct entry record's wire bytes (`level-format` pins the layout).
-const DIRECT_ENTRY_BYTES: usize = 12;
-
-/// The direct block's wire bytes: entry records, visibility and own tiles.
-fn direct_block_bytes(section: &MoverProbeChannelSection) -> usize {
-    section.direct_entries.len() * DIRECT_ENTRY_BYTES
-        + section.visibility.len()
-        + section.own_tiles.len() * 2
 }

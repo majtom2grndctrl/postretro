@@ -306,18 +306,18 @@ fn the_section_is_identical_across_cold_builds_and_worker_counts() {
     ] {
         assert!(
             channel
-                .direct_entries
+                .direct_records
                 .iter()
-                .any(|entry| entry.namespace == namespace),
-            "an entry in {namespace:?}"
+                .any(|record| record.namespace == namespace),
+            "a record in {namespace:?}"
         );
     }
     assert!(
         channel
-            .direct_entries
+            .direct_records
             .iter()
-            .filter(|entry| entry.namespace == MoverLightNamespace::BakeOnlyStaticLight)
-            .all(|entry| entry.light_index == 0 && entry.carries_own_tile),
+            .filter(|record| record.namespace == MoverLightNamespace::BakeOnlyStaticLight)
+            .all(|record| record.light_index == 0 && record.carries_own_tile),
         "the one bake-only light is roster index 0 and carries its own tile"
     );
     let world = postretro_level_loader::load_prl(first.prl.to_str().expect("UTF-8 path"))

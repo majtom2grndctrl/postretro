@@ -1,7 +1,8 @@
 use super::*;
 use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry,
-    MoverDepthRecord, MoverDirectEntry, MoverLightRampRecord,
+    BounceEntryParts, DepthRecordParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT,
+    MoverBounceEntry, MoverChannelCell, MoverDepthRecord, MoverDirectRecord, MoverLightRampRecord,
+    MoverProbeChannelParts,
 };
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_format::{SectionBlob, SectionId};
@@ -17,9 +18,11 @@ use crate::{FalloffModel, LightType, LoadedKinematicMover};
 const GRID: [u32; 3] = [8, 4, 4];
 const AFFINITY: [u32; 3] = [2, 1, 1];
 const LATTICE: u32 = 8 * 4 * 4;
-/// Header (15 B) and two cell masks, then the three direct offsets.
-const DIRECT_OFFSETS_AT: usize = 15 + 2 * 8;
-const FIRST_DIRECT_ENTRY_AT: usize = DIRECT_OFFSETS_AT + 3 * 4;
+/// Header (15 B), then the listed cell count and two 12-byte cell records.
+const CELLS_AT: usize = 15 + 4;
+/// Then the three direct offsets, then the first 16-byte term record.
+const DIRECT_OFFSETS_AT: usize = CELLS_AT + 2 * 12;
+const FIRST_RECORD_AT: usize = DIRECT_OFFSETS_AT + 3 * 4;
 
 fn light(is_dynamic: bool, shadow_type: ShadowType, animated_slot: Option<u32>) -> MapLight {
     MapLight {
@@ -39,6 +42,73 @@ fn light(is_dynamic: bool, shadow_type: ShadowType, animated_slot: Option<u32>) 
         cell_index: 0,
         shadow_type,
     }
+}
+
+fn record(
+    namespace: MoverLightNamespace,
+    light_index: u32,
+    carries_own_tile: bool,
+    probe_mask: u64,
+) -> MoverDirectRecord {
+    MoverDirectRecord {
+        namespace,
+        carries_own_tile,
+        light_index,
+        probe_mask,
+    }
+}
+
+/// A term record's parts: own tiles sized from the mask when flagged.
+fn direct(cell: u32, record: MoverDirectRecord, movers: Vec<(u32, Vec<u8>)>) -> DirectRecordParts {
+    let tiles = if record.carries_own_tile {
+        record.masked_probe_count() * MOVER_IRRADIANCE_TILE_F16_COUNT
+    } else {
+        0
+    };
+    DirectRecordParts {
+        cell,
+        record,
+        movers,
+        own_tiles: vec![0x3c00; tiles],
+    }
+}
+
+fn bounce(cell: u32, mover_id: u32, affected_probe_mask: u64) -> BounceEntryParts {
+    BounceEntryParts {
+        cell,
+        entry: MoverBounceEntry {
+            mover_id,
+            affected_probe_mask,
+        },
+        tiles: vec![
+            0x3800;
+            affected_probe_mask.count_ones() as usize * 2 * MOVER_IRRADIANCE_TILE_F16_COUNT
+        ],
+    }
+}
+
+fn depth(mover_id: u32, probe_index: u32) -> DepthRecordParts {
+    DepthRecordParts {
+        record: MoverDepthRecord {
+            mover_id,
+            probe_index,
+        },
+        tiles: vec![[0x3c00, 0x4000]; 2 * PROBE_DEPTH_TILE_TEXELS],
+    }
+}
+
+/// Ramps (0, 1) except mover 9's (0.6, 0.9).
+fn ramp(mover_id: u32) -> Result<MoverLightRampRecord, ()> {
+    let (start, end) = if mover_id == 9 {
+        (0.6, 0.9)
+    } else {
+        (0.0, 1.0)
+    };
+    Ok(MoverLightRampRecord {
+        mover_id,
+        start,
+        end,
+    })
 }
 
 /// The rest of the level id 57 is checked against: every probe valid at L0;
@@ -107,112 +177,48 @@ impl Level {
             .expect_err("the section must be refused")
     }
 
-    /// Mover 3 gates static light 0 in cell 0 with its own tile, and animated
-    /// light 0 and bake-only light 0 (with its own tile) in cell 1; mover 9
-    /// gates static light 0 in cell 0. Mover 3
-    /// changes bounce at two probes of cell 1; mover 9 carries depth at
-    /// probes 4 and 70. Mover 9 ramps over (0.6, 0.9).
-    fn sample(&self) -> MoverProbeChannelSection {
-        let entry = |mover_id, namespace, carries_own_tile, light_index| MoverDirectEntry {
-            mover_id,
-            namespace,
-            carries_own_tile,
-            light_index,
-        };
-        build(
-            [self.mask(0), self.mask(1)],
-            vec![
-                (0, entry(3, MoverLightNamespace::StaticLight, true, 0)),
-                (0, entry(9, MoverLightNamespace::StaticLight, false, 0)),
-                (1, entry(3, MoverLightNamespace::AnimatedBaked, false, 0)),
-                (
+    /// Movers 3 and 9 gate static light 0 at local probes 0 and 2 of cell 0,
+    /// which carries its own tile once; mover 3 gates animated light 0 at
+    /// local probe 0 and bake-only light 0 (with its own tile) at local
+    /// probes 1 and 2 of cell 1. Mover 3 changes bounce at two probes of
+    /// cell 1; mover 9 carries depth at probes 4 and 70. Mover 9 ramps over
+    /// (0.6, 0.9).
+    fn parts(&self) -> MoverProbeChannelParts {
+        use MoverLightNamespace::{AnimatedBaked, BakeOnlyStaticLight, StaticLight};
+        MoverProbeChannelParts {
+            affinity_dims: AFFINITY,
+            bounce_placement: MoverBouncePlacement::Resident,
+            direct: vec![
+                direct(
+                    0,
+                    record(StaticLight, 0, true, 0b101),
+                    vec![(3, vec![10, 255, 255, 255]), (9, vec![255, 255, 30, 255])],
+                ),
+                direct(
                     1,
-                    entry(3, MoverLightNamespace::BakeOnlyStaticLight, true, 0),
+                    record(AnimatedBaked, 0, false, 1),
+                    vec![(3, vec![0, 128])],
+                ),
+                direct(
+                    1,
+                    record(BakeOnlyStaticLight, 0, true, 0b110),
+                    vec![(3, vec![1, 2, 3, 4])],
                 ),
             ],
-            vec![(
-                1,
-                MoverBounceEntry {
-                    mover_id: 3,
-                    affected_probe_mask: 0b11,
-                },
-            )],
-            vec![
-                MoverDepthRecord {
-                    mover_id: 9,
-                    probe_index: 4,
-                },
-                MoverDepthRecord {
-                    mover_id: 9,
-                    probe_index: 70,
-                },
-            ],
-        )
+            bounce: vec![bounce(1, 3, 0b11)],
+            depth: vec![depth(9, 4), depth(9, 70)],
+        }
     }
-}
 
-/// A section with every payload sized from `masks`, ramps (0, 1) except
-/// mover 9's (0.6, 0.9), and the bounce payload resident.
-fn build(
-    masks: [u64; 2],
-    direct: Vec<(usize, MoverDirectEntry)>,
-    bounce: Vec<(usize, MoverBounceEntry)>,
-    depth_records: Vec<MoverDepthRecord>,
-) -> MoverProbeChannelSection {
-    let offsets = |cells: Vec<usize>| {
-        (0..=masks.len())
-            .map(|cell| cells.iter().filter(|&&c| c < cell).count() as u32)
-            .collect::<Vec<_>>()
-    };
-    let probes = |cell: usize| masks[cell].count_ones() as usize;
-    let visibility_len: usize = direct
-        .iter()
-        .map(|(cell, _)| probes(*cell) * MOVER_VISIBILITY_BYTES_PER_PROBE)
-        .sum();
-    let own_tile_len: usize = direct
-        .iter()
-        .filter(|(_, entry)| entry.carries_own_tile)
-        .map(|(cell, _)| probes(*cell) * MOVER_IRRADIANCE_TILE_F16_COUNT)
-        .sum();
-    let bounce_len: usize = bounce
-        .iter()
-        .map(|(_, entry)| {
-            entry.affected_probe_mask.count_ones() as usize * 2 * MOVER_IRRADIANCE_TILE_F16_COUNT
-        })
-        .sum();
-    let mut section = MoverProbeChannelSection {
-        affinity_factor: AFFINITY_FACTOR,
-        affinity_dims: AFFINITY,
-        bounce_placement: MoverBouncePlacement::Resident,
-        valid_probe_masks: masks.to_vec(),
-        direct_offsets: offsets(direct.iter().map(|(cell, _)| *cell).collect()),
-        direct_entries: direct.iter().map(|(_, entry)| *entry).collect(),
-        visibility: (0..visibility_len).map(|i| i as u8).collect(),
-        own_tiles: vec![0x3c00; own_tile_len],
-        bounce_offsets: offsets(bounce.iter().map(|(cell, _)| *cell).collect()),
-        bounce_entries: bounce.iter().map(|(_, entry)| *entry).collect(),
-        bounce_tiles: vec![0x3800; bounce_len],
-        depth_tiles: vec![[0x3c00, 0x4000]; depth_records.len() * 2 * PROBE_DEPTH_TILE_TEXELS],
-        depth_records,
-        ramps: Vec::new(),
-    };
-    section.ramps = section
-        .mover_ids()
-        .into_iter()
-        .map(|mover_id| {
-            let (start, end) = if mover_id == 9 {
-                (0.6, 0.9)
-            } else {
-                (0.0, 1.0)
-            };
-            MoverLightRampRecord {
-                mover_id,
-                start,
-                end,
-            }
-        })
-        .collect();
-    section
+    fn assemble(&self, parts: MoverProbeChannelParts) -> MoverProbeChannelSection {
+        MoverProbeChannelSection::assemble(parts, |cell| self.mask(cell as usize), ramp)
+            .unwrap()
+            .expect("the parts hold entries")
+    }
+
+    fn sample(&self) -> MoverProbeChannelSection {
+        self.assemble(self.parts())
+    }
 }
 
 #[test]
@@ -230,8 +236,8 @@ fn a_wrong_epoch_is_refused_by_name() {
     assert_eq!(
         level.decode(&bytes),
         Err(Error::EpochMismatch {
-            found: 2,
-            expected: 1
+            found: 3,
+            expected: 2
         })
     );
 }
@@ -265,7 +271,20 @@ fn trailing_bytes_are_refused_by_name() {
 #[test]
 fn a_section_with_no_entry_is_refused_as_empty() {
     let level = Level::new();
-    let empty = build([level.mask(0), level.mask(1)], vec![], vec![], vec![]);
+    let mut empty = level.sample();
+    empty.depth_records.clear();
+    empty.depth_tiles.clear();
+    empty.cells.clear();
+    empty.direct_offsets = vec![0];
+    empty.direct_records.clear();
+    empty.mover_offsets = vec![0];
+    empty.direct_movers.clear();
+    empty.visibility.clear();
+    empty.own_tiles.clear();
+    empty.bounce_offsets = vec![0];
+    empty.bounce_entries.clear();
+    empty.bounce_tiles.clear();
+    empty.ramps.clear();
     assert_eq!(level.refusal(&empty), Error::Empty);
 }
 
@@ -323,10 +342,9 @@ fn an_unknown_bounce_placement_is_refused_by_name() {
 #[test]
 fn a_streamed_bounce_placement_with_no_bounce_entry_is_refused_by_name() {
     let level = Level::new();
-    let mut section = level.sample();
-    section.bounce_offsets = vec![0; 3];
-    section.bounce_entries.clear();
-    section.bounce_tiles.clear();
+    let mut parts = level.parts();
+    parts.bounce.clear();
+    let mut section = level.assemble(parts);
     section.bounce_placement = MoverBouncePlacement::Streamed;
     assert_eq!(level.refusal(&section), Error::StreamedBounceWithoutEntries);
 }
@@ -361,16 +379,30 @@ fn bad_csr_offsets_are_refused_by_name() {
         })
     );
 
-    // Offsets [0, 2, 4] become [0, 5, 4].
-    let mut decreasing = bytes;
+    // Offsets [0, 1, 3] become [0, 5, 3].
+    let mut decreasing = bytes.clone();
     decreasing[DIRECT_OFFSETS_AT + 4..DIRECT_OFFSETS_AT + 8].copy_from_slice(&5u32.to_le_bytes());
     assert_eq!(
         level.decode(&decreasing),
         Err(Error::CsrOffsets {
             block: "direct",
             index: 2,
-            offset: 4,
+            offset: 3,
             previous: 5,
+        })
+    );
+
+    // Mover offsets [0, 2, 3, 4] become [0, 2, 1, 4].
+    let movers_at = FIRST_RECORD_AT + 3 * 16;
+    let mut movers = bytes;
+    movers[movers_at + 8..movers_at + 12].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(
+        level.decode(&movers),
+        Err(Error::CsrOffsets {
+            block: "direct movers",
+            index: 2,
+            offset: 1,
+            previous: 2,
         })
     );
 }
@@ -382,32 +414,29 @@ fn a_set_reserved_bit_is_refused_by_name() {
     let bytes = section.to_bytes();
 
     let mut flag = bytes.clone();
-    flag[FIRST_DIRECT_ENTRY_AT + 5] |= 0b10;
+    flag[FIRST_RECORD_AT + 1] |= 0b10;
     assert_eq!(
         level.decode(&flag),
         Err(Error::ReservedBits {
-            what: "direct entry flags",
+            what: "direct record flags",
             index: 0,
             value: 0b11,
         })
     );
 
     let mut reserved_u16 = bytes.clone();
-    reserved_u16[FIRST_DIRECT_ENTRY_AT + 7] = 1;
+    reserved_u16[FIRST_RECORD_AT + 3] = 1;
     assert_eq!(
         level.decode(&reserved_u16),
         Err(Error::ReservedBits {
-            what: "direct entry reserved u16",
+            what: "direct record reserved u16",
             index: 0,
             value: 0x100,
         })
     );
 
-    let bounce_entry_at = FIRST_DIRECT_ENTRY_AT
-        + section.direct_entries.len() * 12
-        + section.visibility.len()
-        + section.own_tiles.len() * 2
-        + 3 * 4;
+    let parts = section.byte_breakdown();
+    let bounce_entry_at = parts.header + parts.cell_index + parts.direct_block() + 3 * 4;
     let mut reserved_u32 = bytes;
     reserved_u32[bounce_entry_at + 4] = 1;
     assert_eq!(
@@ -424,10 +453,72 @@ fn a_set_reserved_bit_is_refused_by_name() {
 fn an_unknown_light_namespace_is_refused_by_name() {
     let level = Level::new();
     let mut bytes = level.sample().to_bytes();
-    bytes[FIRST_DIRECT_ENTRY_AT + 4] = 3;
+    bytes[FIRST_RECORD_AT] = 3;
     assert_eq!(
         level.decode(&bytes),
-        Err(Error::UnknownLightNamespace { entry: 0, value: 3 })
+        Err(Error::UnknownLightNamespace {
+            record: 0,
+            value: 3
+        })
+    );
+}
+
+#[test]
+fn an_unsorted_or_duplicate_cell_list_is_refused_by_name() {
+    let level = Level::new();
+    let mut unsorted = level.sample();
+    unsorted.cells.swap(0, 1);
+    assert_eq!(
+        level.refusal(&unsorted),
+        Error::CellOrder {
+            listed: 1,
+            cell: 0,
+            previous: 1,
+        }
+    );
+    let mut duplicate = level.sample();
+    duplicate.cells[1].cell = 0;
+    assert_eq!(
+        level.refusal(&duplicate),
+        Error::CellOrder {
+            listed: 1,
+            cell: 0,
+            previous: 0,
+        }
+    );
+}
+
+#[test]
+fn a_listed_cell_outside_the_affinity_grid_is_refused_by_name() {
+    let level = Level::new();
+    let mut section = level.sample();
+    section.cells[1].cell = 2;
+    assert_eq!(
+        level.refusal(&section),
+        Error::CellOutOfRange {
+            listed: 1,
+            cell: 2,
+            cells: 2,
+        }
+    );
+}
+
+#[test]
+fn a_listed_cell_with_no_entry_is_refused_by_name() {
+    let level = Level::new();
+    let mut parts = level.parts();
+    parts.direct.truncate(1);
+    parts.bounce.clear();
+    let mut section = level.assemble(parts);
+    section.cells.push(MoverChannelCell {
+        cell: 1,
+        valid_probe_mask: level.mask(1),
+    });
+    section.direct_offsets.push(1);
+    section.bounce_offsets.push(0);
+    assert_eq!(
+        level.refusal(&section),
+        Error::CellWithoutEntries { cell: 1 }
     );
 }
 
@@ -435,29 +526,26 @@ fn an_unknown_light_namespace_is_refused_by_name() {
 fn unordered_or_duplicate_entries_are_refused_by_name() {
     let level = Level::new();
 
+    // Cell 1 holds (animated 0) then (bake-only 0).
     let mut unordered = level.sample();
-    unordered.direct_entries.swap(0, 1);
+    unordered.direct_records.swap(1, 2);
     let mut duplicate = level.sample();
-    duplicate.direct_entries[1].mover_id = 3;
+    duplicate.direct_records[2].namespace = MoverLightNamespace::AnimatedBaked;
     for section in [unordered, duplicate] {
         assert_eq!(
             level.refusal(&section),
             Error::EntryOrder {
                 block: "direct",
-                cell: 0,
-                entry: 1,
+                cell: 1,
+                entry: 2,
             }
         );
     }
 
-    let mut bounce = level.sample();
-    bounce.bounce_offsets = vec![0, 0, 2];
-    bounce.bounce_entries.push(bounce.bounce_entries[0]);
-    bounce
-        .bounce_tiles
-        .extend_from_slice(&bounce.bounce_tiles.clone());
+    let mut parts = level.parts();
+    parts.bounce.push(bounce(1, 3, 0b11));
     assert_eq!(
-        level.refusal(&bounce),
+        level.refusal(&level.assemble(parts)),
         Error::EntryOrder {
             block: "bounce",
             cell: 1,
@@ -476,27 +564,142 @@ fn unordered_or_duplicate_entries_are_refused_by_name() {
     );
 }
 
+// A record's movers ascend by id with no repeats.
 #[test]
-fn a_bounce_entry_naming_a_non_valid_probe_is_refused_by_name() {
-    let mut level = Level::new();
-    // Cell 1's local probe 34 (dense probe 70) is invalid.
-    level.probes[70].validity = 0;
-    let mut outside = level.sample();
-    outside.bounce_entries[0].affected_probe_mask = (1 << 34) | 1;
-    let mut empty = level.sample();
-    empty.bounce_entries[0].affected_probe_mask = 0;
-    empty.bounce_tiles.clear();
-    for (section, mask) in [(outside, (1u64 << 34) | 1), (empty, 0)] {
+fn unordered_or_duplicate_record_movers_are_refused_by_name() {
+    let level = Level::new();
+    let mut unordered = level.sample();
+    unordered.direct_movers.swap(0, 1);
+    let mut duplicate = level.sample();
+    duplicate.direct_movers[1] = 3;
+    for section in [unordered, duplicate] {
         assert_eq!(
             level.refusal(&section),
-            Error::BounceProbeNotValid {
-                cell: 1,
-                entry: 0,
-                mask,
-                valid: !(1u64 << 34),
+            Error::MoverOrder {
+                cell: 0,
+                record: 0,
+                entry: 1,
             }
         );
     }
+}
+
+#[test]
+fn a_record_with_no_mover_is_refused_by_name() {
+    let level = Level::new();
+    let mut section = level.sample();
+    // Record 1's one mover entry (index 2) and its two visibility bytes,
+    // which follow record 0's 2 movers × 2 probes × 2 bytes.
+    section.direct_movers.remove(2);
+    section.mover_offsets = vec![0, 2, 2, 3];
+    section.visibility.drain(8..10);
+    assert_eq!(
+        level.refusal(&section),
+        Error::RecordWithoutMovers { cell: 1, record: 1 }
+    );
+}
+
+#[test]
+fn an_empty_probe_mask_is_refused_by_name() {
+    let level = Level::new();
+    let mut parts = level.parts();
+    parts.direct[0] = direct(
+        0,
+        record(MoverLightNamespace::StaticLight, 0, true, 0),
+        vec![(3, Vec::new())],
+    );
+    assert_eq!(
+        level.refusal(&level.assemble(parts)),
+        Error::ProbeMaskEmpty {
+            block: "direct",
+            cell: 0,
+            entry: 0,
+        }
+    );
+
+    let mut parts = level.parts();
+    parts.bounce[0] = bounce(1, 3, 0);
+    assert_eq!(
+        level.refusal(&level.assemble(parts)),
+        Error::ProbeMaskEmpty {
+            block: "bounce",
+            cell: 1,
+            entry: 0,
+        }
+    );
+}
+
+#[test]
+fn a_probe_mask_naming_a_non_valid_probe_is_refused_by_name() {
+    let mut level = Level::new();
+    // Cell 1's local probe 34 (dense probe 70) is invalid.
+    level.probes[70].validity = 0;
+    let mut parts = level.parts();
+    parts.direct[2].record.probe_mask = (1 << 1) | (1 << 34);
+    assert_eq!(
+        level.refusal(&level.assemble(parts)),
+        Error::ProbeMaskNotValid {
+            block: "direct",
+            cell: 1,
+            entry: 2,
+            mask: (1 << 1) | (1 << 34),
+            valid: !(1u64 << 34),
+        }
+    );
+
+    let mut parts = level.parts();
+    parts.bounce[0] = bounce(1, 3, (1 << 34) | 1);
+    assert_eq!(
+        level.refusal(&level.assemble(parts)),
+        Error::ProbeMaskNotValid {
+            block: "bounce",
+            cell: 1,
+            entry: 0,
+            mask: (1 << 34) | 1,
+            valid: !(1u64 << 34),
+        }
+    );
+}
+
+// The mask is exactly the union of the movers' q < 255 probes: a masked
+// probe where every mover stores 255 at both termini is refused.
+#[test]
+fn a_masked_probe_no_mover_gates_is_refused_by_name() {
+    let level = Level::new();
+    let mut parts = level.parts();
+    parts.direct[0] = direct(
+        0,
+        record(MoverLightNamespace::StaticLight, 0, true, 0b111),
+        vec![
+            (3, vec![10, 255, 255, 255, 255, 255]),
+            (9, vec![255, 255, 255, 255, 30, 255]),
+        ],
+    );
+    assert_eq!(
+        level.refusal(&level.assemble(parts)),
+        Error::ProbeMaskNotTight {
+            cell: 0,
+            record: 0,
+            probe: 1,
+        }
+    );
+}
+
+#[test]
+fn a_mover_entry_that_gates_nothing_is_refused_by_name() {
+    let level = Level::new();
+    let mut section = level.sample();
+    // Mover 9's two pairs in record 0 follow mover 3's.
+    section.visibility[4..8].fill(255);
+    assert_eq!(
+        level.refusal(&section),
+        Error::MoverGatesNothing {
+            cell: 0,
+            record: 0,
+            entry: 1,
+            mover_id: 9,
+        }
+    );
 }
 
 #[test]
@@ -554,12 +757,12 @@ fn a_light_outside_its_namespace_is_refused_by_name() {
     // Light 99 is past id 18; 1 is dynamic, 2 SDF, 3 animated.
     for light_index in [99, 1, 2, 3] {
         let mut section = level.sample();
-        section.direct_entries[0].light_index = light_index;
+        section.direct_records[0].light_index = light_index;
         assert!(
             matches!(
                 level.refusal(&section),
                 Error::LightOutOfNamespace {
-                    entry: 0,
+                    record: 0,
                     namespace: MoverLightNamespace::StaticLight,
                     light_index: index,
                     ..
@@ -569,11 +772,11 @@ fn a_light_outside_its_namespace_is_refused_by_name() {
         );
     }
     let mut section = level.sample();
-    section.direct_entries[2].light_index = 1;
+    section.direct_records[1].light_index = 1;
     assert!(matches!(
         level.refusal(&section),
         Error::LightOutOfNamespace {
-            entry: 2,
+            record: 1,
             namespace: MoverLightNamespace::AnimatedBaked,
             light_index: 1,
             ..
@@ -581,11 +784,11 @@ fn a_light_outside_its_namespace_is_refused_by_name() {
     ));
     // The section names one bake-only light, so its roster index must be 0.
     let mut section = level.sample();
-    section.direct_entries[3].light_index = 1;
+    section.direct_records[2].light_index = 1;
     assert!(matches!(
         level.refusal(&section),
         Error::LightOutOfNamespace {
-            entry: 3,
+            record: 2,
             namespace: MoverLightNamespace::BakeOnlyStaticLight,
             light_index: 1,
             ..
@@ -598,28 +801,31 @@ fn a_light_outside_its_namespace_is_refused_by_name() {
 #[test]
 fn a_bake_only_roster_with_a_gap_is_refused_by_name() {
     let level = Level::new();
-    let mut section = level.sample();
-    let mut second = section.direct_entries[3];
-    second.light_index = 1;
-    section.direct_entries.push(second);
-    section.direct_offsets[2] += 1;
-    section.visibility.extend(std::iter::repeat_n(
-        255,
-        64 * MOVER_VISIBILITY_BYTES_PER_PROBE,
-    ));
-    section.own_tiles.extend(std::iter::repeat_n(
-        0x3c00,
-        64 * MOVER_IRRADIANCE_TILE_F16_COUNT,
-    ));
+    let second = |light_index| {
+        direct(
+            0,
+            record(
+                MoverLightNamespace::BakeOnlyStaticLight,
+                light_index,
+                true,
+                1,
+            ),
+            vec![(3, vec![7, 255])],
+        )
+    };
+    let mut parts = level.parts();
+    parts.direct.push(second(1));
     level
-        .decode(&section.to_bytes())
+        .decode(&level.assemble(parts).to_bytes())
         .expect("a dense roster loads");
 
-    section.direct_entries[4].light_index = 2;
+    let mut parts = level.parts();
+    parts.direct.push(second(2));
+    // Cell 0 holds (static 0) then (bake-only 2).
     assert!(matches!(
-        level.refusal(&section),
+        level.refusal(&level.assemble(parts)),
         Error::LightOutOfNamespace {
-            entry: 4,
+            record: 1,
             namespace: MoverLightNamespace::BakeOnlyStaticLight,
             light_index: 2,
             ..
@@ -627,20 +833,20 @@ fn a_bake_only_roster_with_a_gap_is_refused_by_name() {
     ));
 }
 
-// Namespace 2 has no id-41 or id-45 entry to borrow a tile from, so an
-// entry without its own refuses the level.
+// Namespace 2 has no id-41 or id-45 entry to borrow a tile from, so a
+// record without its own refuses the level.
 #[test]
-fn a_bake_only_entry_without_its_own_tile_is_refused_by_name() {
+fn a_bake_only_record_without_its_own_tile_is_refused_by_name() {
     let level = Level::new();
     let mut section = level.sample();
-    section.direct_entries[3].carries_own_tile = false;
+    section.direct_records[2].carries_own_tile = false;
     section
         .own_tiles
-        .truncate(section.own_tiles.len() - 64 * MOVER_IRRADIANCE_TILE_F16_COUNT);
+        .truncate(section.own_tiles.len() - 2 * MOVER_IRRADIANCE_TILE_F16_COUNT);
     assert_eq!(
         level.refusal(&section),
         Error::OwnTileRequired {
-            entry: 3,
+            record: 2,
             namespace: MoverLightNamespace::BakeOnlyStaticLight,
         }
     );
@@ -697,7 +903,7 @@ fn live_tiles_past_the_tile_reference_range_are_refused_by_name_and_exactly_at_i
 #[test]
 fn a_cell_with_entries_over_coarse_base_storage_is_refused_by_name() {
     let mut level = Level::new();
-    // Cell 0 (x 0..4) is stored at L1; it holds direct entries.
+    // Cell 0 (x 0..4) is stored at L1; it holds direct records.
     for (index, probe) in level.probes.iter_mut().enumerate() {
         if index % 8 < 4 {
             probe.density_level = 1;
@@ -745,8 +951,6 @@ fn ramps_reach_only_the_movers_the_section_names() {
 // --- Through the load: the stream fixture (16×16×4 probes, every probe
 // valid, static light 0, one animated descriptor) plus id 43's mover 7.
 
-const FIXTURE_CELLS: usize = 16;
-
 fn blob(section_id: SectionId, data: Vec<u8>) -> SectionBlob {
     SectionBlob {
         section_id: section_id as u32,
@@ -755,45 +959,33 @@ fn blob(section_id: SectionId, data: Vec<u8>) -> SectionBlob {
     }
 }
 
-/// Mover 7 gates static light 0 in cell 0, changes bounce at one probe of
-/// cell 5, and carries depth at probe 17; it ramps over (0.25, 0.75).
+/// Mover 7 gates static light 0 at one probe of cell 0, changes bounce at
+/// one probe of cell 5, and carries depth at probe 17; it ramps over (0.25,
+/// 0.75).
 fn fixture_section() -> MoverProbeChannelSection {
-    let mut direct_offsets = vec![0u32];
-    direct_offsets.extend(std::iter::repeat_n(1, FIXTURE_CELLS));
-    let bounce_offsets: Vec<u32> = (0..=FIXTURE_CELLS)
-        .map(|cell| u32::from(cell > 5))
-        .collect();
-    MoverProbeChannelSection {
-        affinity_factor: AFFINITY_FACTOR,
-        affinity_dims: [4, 4, 1],
-        bounce_placement: MoverBouncePlacement::Resident,
-        valid_probe_masks: vec![u64::MAX; FIXTURE_CELLS],
-        direct_offsets,
-        direct_entries: vec![MoverDirectEntry {
-            mover_id: 7,
-            namespace: MoverLightNamespace::StaticLight,
-            carries_own_tile: false,
-            light_index: 0,
-        }],
-        visibility: vec![128; 64 * MOVER_VISIBILITY_BYTES_PER_PROBE],
-        own_tiles: Vec::new(),
-        bounce_offsets,
-        bounce_entries: vec![MoverBounceEntry {
-            mover_id: 7,
-            affected_probe_mask: 1,
-        }],
-        bounce_tiles: vec![0x3800; 2 * MOVER_IRRADIANCE_TILE_F16_COUNT],
-        depth_records: vec![MoverDepthRecord {
-            mover_id: 7,
-            probe_index: 17,
-        }],
-        depth_tiles: vec![[0x3c00, 0x4000]; 2 * PROBE_DEPTH_TILE_TEXELS],
-        ramps: vec![MoverLightRampRecord {
-            mover_id: 7,
-            start: 0.25,
-            end: 0.75,
-        }],
-    }
+    MoverProbeChannelSection::assemble(
+        MoverProbeChannelParts {
+            affinity_dims: [4, 4, 1],
+            bounce_placement: MoverBouncePlacement::Resident,
+            direct: vec![direct(
+                0,
+                record(MoverLightNamespace::StaticLight, 0, false, 1),
+                vec![(7, vec![128, 128])],
+            )],
+            bounce: vec![bounce(5, 7, 1)],
+            depth: vec![depth(7, 17)],
+        },
+        |_| u64::MAX,
+        |mover_id| {
+            Ok::<_, ()>(MoverLightRampRecord {
+                mover_id,
+                start: 0.25,
+                end: 0.75,
+            })
+        },
+    )
+    .unwrap()
+    .expect("the fixture holds entries")
 }
 
 /// Every id-34 path: the streamed base, the `off` escape over the same file,
@@ -859,7 +1051,7 @@ fn an_unresolved_section_fails_the_load_by_name_on_every_id_34_path() {
     for ramp in &mut unresolved_mover.ramps {
         ramp.mover_id = 8;
     }
-    unresolved_mover.direct_entries[0].mover_id = 8;
+    unresolved_mover.direct_movers[0] = 8;
     unresolved_mover.bounce_entries[0].mover_id = 8;
     unresolved_mover.depth_records[0].mover_id = 8;
     for result in load_every_way(Some(unresolved_mover.to_bytes())) {

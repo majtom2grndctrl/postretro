@@ -111,8 +111,8 @@ struct Gate {
     q: [u8; 2],
 }
 
-/// Every stored (entry, probe) of id 57's direct block, with the entry's
-/// mover and its static light's authored origin.
+/// Every (mover, valid probe) of each term record's cell in id 57's direct
+/// block, with the mover and the record's static light's authored origin.
 fn gates() -> (Vec<Gate>, Vec<(String, u32)>) {
     let prl = &setpiece().prl;
     let channel = MoverProbeChannelSection::from_bytes(
@@ -133,28 +133,38 @@ fn gates() -> (Vec<Gate>, Vec<(String, u32)>) {
 
     let [ax, ay, _] = channel.affinity_dims.map(|dim| dim as usize);
     let mut gates = Vec::new();
-    for view in channel.direct_entry_views() {
-        assert_eq!(view.entry.namespace, MoverLightNamespace::StaticLight);
-        let light = quake(lights.lights[view.entry.light_index as usize].origin);
-        let (cx, cy, cz) = (view.cell % ax, view.cell / ax % ay, view.cell / (ax * ay));
-        let mut slot = 0;
-        for local in 0..64 {
-            if view.valid_probe_mask & (1 << local) == 0 {
-                continue;
+    for view in channel.direct_record_views() {
+        assert_eq!(view.record.namespace, MoverLightNamespace::StaticLight);
+        let light = quake(lights.lights[view.record.light_index as usize].origin);
+        let cell = view.cell as usize;
+        let (cx, cy, cz) = (cell % ax, cell / ax % ay, cell / (ax * ay));
+        for mover in view.movers() {
+            // Every valid probe of the cell, as the dense layout stored it: a
+            // probe outside the record's mask keeps q = 1 at both termini.
+            let mut slot = 0;
+            for local in 0..64 {
+                if view.valid_probe_mask & (1 << local) == 0 {
+                    continue;
+                }
+                let q = if view.record.probe_mask & (1 << local) != 0 {
+                    slot += 1;
+                    mover.q(slot - 1)
+                } else {
+                    [255, 255]
+                };
+                let (lx, ly, lz) = local_xyz(local);
+                let grid = [cx * 4 + lx, cy * 4 + ly, cz * 4 + lz];
+                let engine: [f64; 3] = std::array::from_fn(|axis| {
+                    f64::from(base.grid_origin[axis])
+                        + grid[axis] as f64 * f64::from(base.cell_size[axis])
+                });
+                gates.push(Gate {
+                    mover: mover.mover_id,
+                    light,
+                    probe: quake(engine),
+                    q,
+                });
             }
-            let (lx, ly, lz) = local_xyz(local);
-            let grid = [cx * 4 + lx, cy * 4 + ly, cz * 4 + lz];
-            let engine: [f64; 3] = std::array::from_fn(|axis| {
-                f64::from(base.grid_origin[axis])
-                    + grid[axis] as f64 * f64::from(base.cell_size[axis])
-            });
-            gates.push(Gate {
-                mover: view.entry.mover_id,
-                light,
-                probe: quake(engine),
-                q: [view.visibility[2 * slot], view.visibility[2 * slot + 1]],
-            });
-            slot += 1;
         }
     }
     let names = movers
@@ -184,7 +194,7 @@ fn the_setpiece_channel_loads() {
     let world = postretro_level_loader::load_prl(setpiece().prl.to_str().expect("UTF-8 path"))
         .expect("the runtime loads the packed channel");
     let channel = world.mover_probe_channel().expect("id 57 is present");
-    assert!(!channel.direct_entries.is_empty());
+    assert!(!channel.direct_records.is_empty());
     assert_eq!(channel.ramps.len(), 2, "both movers gate a light");
 }
 

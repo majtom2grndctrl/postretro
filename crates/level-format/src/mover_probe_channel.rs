@@ -3,23 +3,32 @@
 // static bounce, closed-pose depth tiles) and each mover's author light ramp.
 // See: context/lib/build_pipeline.md §PRL section IDs, §Compiler pipeline step 12
 
+mod assemble;
 mod error;
+mod views;
 mod wire;
 
+pub use assemble::{BounceEntryParts, DepthRecordParts, DirectRecordParts, MoverProbeChannelParts};
 pub use error::MoverProbeChannelError;
+pub use views::{
+    BounceEntryView, DirectCellView, DirectRecordView, MoverChannelBytes, MoverDirectCounts,
+    MoverVisibilityView,
+};
 
 use crate::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE;
 use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
 /// Section-internal epoch, the first byte of the payload. Exact match.
-pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 1;
+/// Epoch 2: sparse cell list, per-(cell, light) term records with a probe
+/// mask and one own tile, per-(record, mover) visibility.
+pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 2;
 
-/// Direct-entry flag bit 0: the entry carries its own tile per valid probe,
-/// because no per-probe id-41 or id-45 entry holds the light's term there.
-/// Every other flag bit is reserved and refused.
-pub const MOVER_ENTRY_FLAG_OWN_TILE: u8 = 1 << 0;
+/// Term-record flag bit 0: the record carries its light's own tile per
+/// masked probe, because no per-probe id-41 or id-45 entry holds the light's
+/// term at the cell. Every other flag bit is reserved and refused.
+pub const MOVER_RECORD_FLAG_OWN_TILE: u8 = 1 << 0;
 
-/// Visibility bytes per (direct entry, valid probe): `q₀` then `q₁`, each
+/// Visibility bytes per (mover entry, masked probe): `q₀` then `q₁`, each
 /// `byte / 255`.
 pub const MOVER_VISIBILITY_BYTES_PER_PROBE: usize = 2;
 
@@ -32,7 +41,7 @@ pub const MOVER_IRRADIANCE_TILE_F16_COUNT: usize = DEFAULT_DELTA_PROBE_F16_STRID
 /// cells instead and records [`MoverBouncePlacement::Streamed`].
 pub const MOVER_BOUNCE_RESIDENT_BYTE_BAR: u64 = 8 * 1024 * 1024;
 
-/// What a direct entry's `u32` light index counts in. Each gated light has
+/// What a term record's `u32` light index counts in. Each gated light has
 /// exactly one name: a static lightmap light with an AlphaLights record is
 /// named in [`Self::StaticLight`], one without in [`Self::BakeOnlyStaticLight`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -50,8 +59,8 @@ pub enum MoverLightNamespace {
     /// to the number of distinct namespace-2 lights the section names
     /// ([`MoverProbeChannelSection::bake_only_light_count`]): such a light
     /// leaves no record in any other section, so the section's own roster is
-    /// the only bound load data can verify. Every entry carries its own tile,
-    /// since no id-41 or id-45 entry holds the light's term.
+    /// the only bound load data can verify. Every record carries its own
+    /// tile, since no id-41 or id-45 entry holds the light's term.
     BakeOnlyStaticLight = 2,
 }
 
@@ -65,8 +74,8 @@ impl MoverLightNamespace {
         }
     }
 
-    /// Whether every entry in this namespace must set
-    /// [`MOVER_ENTRY_FLAG_OWN_TILE`]: no per-probe entry of another section
+    /// Whether every record in this namespace must set
+    /// [`MOVER_RECORD_FLAG_OWN_TILE`]: no per-probe entry of another section
     /// can hold the light's term.
     pub fn requires_own_tile(self) -> bool {
         matches!(self, Self::BakeOnlyStaticLight)
@@ -95,26 +104,48 @@ impl MoverBouncePlacement {
     }
 }
 
-/// One (mover, light) at one affinity cell: the light's surviving soft
-/// visibility at each terminus for every valid probe of the cell.
+/// One listed affinity cell: a cell holding a direct record or a bounce
+/// entry. Cells with neither are not listed, so the index grows with the
+/// cells movers change, never with the map's size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MoverDirectEntry {
-    /// Id 43's `mover_id`.
-    pub mover_id: u32,
-    pub namespace: MoverLightNamespace,
-    /// Wire flag bit 0 ([`MOVER_ENTRY_FLAG_OWN_TILE`]).
-    pub carries_own_tile: bool,
-    pub light_index: u32,
+pub struct MoverChannelCell {
+    /// Dense affinity cell index, x-fastest over `affinity_dims`.
+    pub cell: u32,
+    /// Local x-fastest bits of the cell's valid probes: id 34's validity.
+    pub valid_probe_mask: u64,
 }
 
-impl MoverDirectEntry {
-    /// Entries ascend by this key within a cell, with no repeats.
-    pub fn order_key(&self) -> (u32, MoverLightNamespace, u32) {
-        (self.mover_id, self.namespace, self.light_index)
+/// One gated light's term at one listed cell, shared by every mover that
+/// gates it there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoverDirectRecord {
+    pub namespace: MoverLightNamespace,
+    /// Wire flag bit 0 ([`MOVER_RECORD_FLAG_OWN_TILE`]).
+    pub carries_own_tile: bool,
+    pub light_index: u32,
+    /// Storage sparsity mask: local x-fastest bits, a non-empty subset of the
+    /// cell's valid probes, set exactly where some mover's `q₀` or `q₁` is
+    /// below 255. A probe outside it stores nothing because every mover
+    /// leaves the light's term there unchanged (q = 1 at both termini), so it
+    /// composes exactly as with no section. It is never a runtime exclusion
+    /// or occlusion flag: mover state never marks a probe occluded, forces a
+    /// probe weight to zero or drops a probe from the blend.
+    pub probe_mask: u64,
+}
+
+impl MoverDirectRecord {
+    /// Records ascend by this key within a cell, with no repeats.
+    pub fn order_key(&self) -> (MoverLightNamespace, u32) {
+        (self.namespace, self.light_index)
+    }
+
+    /// Probes the record stores: `q` pairs per mover and, if flagged, a tile.
+    pub fn masked_probe_count(&self) -> usize {
+        self.probe_mask.count_ones() as usize
     }
 }
 
-/// One mover at one affinity cell: the probes whose static bounce it changes.
+/// One mover at one listed cell: the probes whose static bounce it changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MoverBounceEntry {
     pub mover_id: u32,
@@ -140,53 +171,79 @@ pub struct MoverLightRampRecord {
     pub end: f32,
 }
 
-/// MoverProbeChannel section (ID 57), epoch 1. Optional: written only when
+/// MoverProbeChannel section (ID 57), epoch 2. Optional: written only when
 /// the direct, bounce or depth block has an entry; never written empty.
 ///
-/// On-disk layout (all little-endian, f16 as raw `u16` bits):
+/// On-disk layout (all little-endian, f16 as raw `u16` bits). N is the
+/// listed cell count, R the term record count, M the mover entry count:
 ///
 /// ```text
-///   u8        epoch                       (= MOVER_PROBE_CHANNEL_EPOCH)
+///   u8        epoch                       (= MOVER_PROBE_CHANNEL_EPOCH = 2)
 ///   u8        affinity_factor             (= AFFINITY_FACTOR = 4)
-///   u32 × 3   affinity_dims               (id 35's grid / 4, rounded up)
+///   u32 × 3   affinity_dims               (id 34's grid / 4, rounded up)
 ///   u8        bounce_placement            (0 resident, 1 streamed with id 50)
-///   u64 × cells                           valid_probe_masks (id 34's validity)
-///   u32 × (cells + 1)                     direct_offsets (CSR; last = entries)
-///   per direct entry, 12 bytes:           u32 mover_id, u8 namespace (0
-///                                         AlphaLights, 1 animated roster, 2
-///                                         bake-only roster), u8 flags,
-///                                         u16 reserved 0, u32 light
-///   u8 × Σ entries 2 × popcount(mask)     visibility (q₀, q₁ per valid probe)
-///   f16 × Σ flagged popcount(mask) × 108  own_tiles (one RGB tile per probe)
-///   u32 × (cells + 1)                     bounce_offsets (CSR)
+/// cell index
+///   u32                                   N
+///   per listed cell, 12 bytes:            u32 cell (dense affinity index),
+///                                         u64 valid_probe_mask (id 34)
+/// direct block
+///   u32 × (N + 1)                         direct_offsets (records per listed
+///                                         cell, CSR; last = R)
+///   per term record, 16 bytes:            u8 namespace (0 AlphaLights, 1
+///                                         animated roster, 2 bake-only
+///                                         roster), u8 flags (bit 0 own
+///                                         tile), u16 reserved 0, u32 light,
+///                                         u64 probe_mask
+///   u32 × (R + 1)                         mover_offsets (mover entries per
+///                                         record, CSR; last = M)
+///   u32 × M                               direct_movers (mover ids)
+///   u8 × Σ entries 2 × popcount(mask)     visibility (q₀, q₁ per masked
+///                                         probe, entry after entry)
+///   f16 × Σ flagged popcount(mask) × 108  own_tiles (one RGB tile per masked
+///                                         probe, flagged record after record)
+/// bounce block
+///   u32 × (N + 1)                         bounce_offsets (CSR; last = entries)
 ///   per bounce entry, 16 bytes:           u32 mover_id, u32 reserved 0,
 ///                                         u64 affected_probe_mask
 ///   f16 × Σ popcount(affected) × 2 × 108  bounce_tiles (S^b₀ then S^b₁ per
 ///                                         affected probe; resident only)
+/// depth block
 ///   u32                                   depth record count
 ///   per depth record, 8 bytes:            u32 mover_id, u32 probe_index
 ///   [f16; 2] × records × 2 × 100          depth_tiles (D₀ then D₁ per record)
+/// ramps
 ///   per mover with any entry, 12 bytes:   u32 mover_id, f32 start, f32 end
 /// ```
 ///
-/// Namespace-2 entries always set the own-tile flag. Direct entries ascend
-/// by (mover, namespace, light) within a cell, bounce entries by mover,
-/// depth records by (mover, probe), ramp records by mover; none repeats.
-/// Ramp records cover exactly the movers named anywhere else.
-/// No sentinels: every reserved field is zero and every byte is accounted for.
+/// Listed cells ascend with no repeats, and each holds a direct record or a
+/// bounce entry. Records ascend by (namespace, light) within a cell, each
+/// gated by at least one mover; a record's movers ascend by id, and each
+/// stores some `q` below 255. Masks are non-empty subsets of their cell's
+/// valid mask, and a record's mask is exactly the union of its movers'
+/// `q < 255` probes. Namespace-2 records always set the own-tile flag.
+/// Bounce entries ascend by mover, depth records by (mover, probe), ramp
+/// records by mover; none repeats. Ramp records cover exactly the movers
+/// named anywhere else. No sentinels: every reserved field is zero and every
+/// byte is accounted for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MoverProbeChannelSection {
     pub affinity_factor: u8,
     pub affinity_dims: [u32; 3],
     pub bounce_placement: MoverBouncePlacement,
-    /// One valid-probe mask per affinity cell, equal to id 34's validity.
-    pub valid_probe_masks: Vec<u64>,
+    /// Cells holding a direct record or bounce entry, ascending.
+    pub cells: Vec<MoverChannelCell>,
+    /// Term records per listed cell (CSR, `cells.len() + 1`).
     pub direct_offsets: Vec<u32>,
-    pub direct_entries: Vec<MoverDirectEntry>,
-    /// Entry after entry: `q₀, q₁` per valid probe of the entry's cell.
+    pub direct_records: Vec<MoverDirectRecord>,
+    /// Mover entries per record (CSR, `direct_records.len() + 1`).
+    pub mover_offsets: Vec<u32>,
+    /// Each mover entry's id 43 `mover_id`.
+    pub direct_movers: Vec<u32>,
+    /// Mover entry after mover entry: `q₀, q₁` per masked probe of its record.
     pub visibility: Vec<u8>,
-    /// Flagged entries only, in entry order: one tile per valid probe.
+    /// Flagged records only, in record order: one tile per masked probe.
     pub own_tiles: Vec<u16>,
+    /// Bounce entries per listed cell (CSR, `cells.len() + 1`).
     pub bounce_offsets: Vec<u32>,
     pub bounce_entries: Vec<MoverBounceEntry>,
     /// Entry after entry: per affected probe, `S^b₀` then `S^b₁`. Empty when
@@ -198,88 +255,42 @@ pub struct MoverProbeChannelSection {
     pub ramps: Vec<MoverLightRampRecord>,
 }
 
-/// A direct entry with its payload.
-#[derive(Debug, Clone, Copy)]
-pub struct DirectEntryView<'a> {
-    pub cell: usize,
-    pub entry: &'a MoverDirectEntry,
-    pub valid_probe_mask: u64,
-    /// `q₀, q₁` per valid probe, x-fastest.
-    pub visibility: &'a [u8],
-    /// One tile per valid probe; `None` unless the entry carries its own.
-    pub own_tiles: Option<&'a [u16]>,
-}
-
-/// A bounce entry with its payload.
-#[derive(Debug, Clone, Copy)]
-pub struct BounceEntryView<'a> {
-    pub cell: usize,
-    pub entry: &'a MoverBounceEntry,
-    /// `S^b₀, S^b₁` per affected probe, x-fastest; `None` when the payload
-    /// streams with id 50.
-    pub tiles: Option<&'a [u16]>,
-}
-
 impl MoverProbeChannelSection {
     pub fn affinity_cell_count(&self) -> usize {
         self.affinity_dims.iter().map(|&d| d as usize).product()
     }
 
-    /// Whether affinity cell `cell` holds a direct or bounce entry. Such a
-    /// cell composes at L0, so the base never stores it coarser there.
+    /// Position of affinity cell `cell` in [`Self::cells`], if listed.
+    pub fn listed_position(&self, cell: usize) -> Option<usize> {
+        let cell = u32::try_from(cell).ok()?;
+        self.cells
+            .binary_search_by_key(&cell, |listed| listed.cell)
+            .ok()
+    }
+
+    /// Whether affinity cell `cell` holds a direct record or bounce entry.
+    /// Such a cell composes at L0, so the base never stores it coarser there.
     pub fn cell_has_entries(&self, cell: usize) -> bool {
-        [&self.direct_offsets, &self.bounce_offsets]
-            .into_iter()
-            .any(|offsets| {
-                offsets
-                    .get(cell..=cell + 1)
-                    .is_some_and(|range| range[0] != range[1])
-            })
+        self.listed_position(cell).is_some()
     }
 
-    /// Every direct entry with its cell and payload, in wire order.
-    pub fn direct_entry_views(&self) -> impl Iterator<Item = DirectEntryView<'_>> {
-        let mut visibility_at = 0;
-        let mut tile_at = 0;
-        entry_cells(&self.direct_offsets)
-            .zip(&self.direct_entries)
-            .map(move |(cell, entry)| {
-                let valid_probe_mask = self.valid_probe_masks[cell];
-                let probes = valid_probe_mask.count_ones() as usize;
-                let visibility_len = probes * MOVER_VISIBILITY_BYTES_PER_PROBE;
-                let visibility = &self.visibility[visibility_at..visibility_at + visibility_len];
-                visibility_at += visibility_len;
-                let own_tiles = entry.carries_own_tile.then(|| {
-                    let len = probes * MOVER_IRRADIANCE_TILE_F16_COUNT;
-                    let tiles = &self.own_tiles[tile_at..tile_at + len];
-                    tile_at += len;
-                    tiles
-                });
-                DirectEntryView {
-                    cell,
-                    entry,
-                    valid_probe_mask,
-                    visibility,
-                    own_tiles,
-                }
-            })
+    /// Whether affinity cell `cell` holds a direct record, which caps id 41's
+    /// level there.
+    pub fn cell_has_direct_records(&self, cell: usize) -> bool {
+        self.listed_position(cell)
+            .is_some_and(|at| self.direct_offsets[at] != self.direct_offsets[at + 1])
     }
 
-    /// Every bounce entry with its cell and payload, in wire order.
-    pub fn bounce_entry_views(&self) -> impl Iterator<Item = BounceEntryView<'_>> {
-        let resident = self.bounce_placement == MoverBouncePlacement::Resident;
-        let mut tile_at = 0;
-        entry_cells(&self.bounce_offsets)
-            .zip(&self.bounce_entries)
-            .map(move |(cell, entry)| {
-                let tiles = resident.then(|| {
-                    let len = bounce_entry_f16_count(entry);
-                    let tiles = &self.bounce_tiles[tile_at..tile_at + len];
-                    tile_at += len;
-                    tiles
-                });
-                BounceEntryView { cell, entry, tiles }
-            })
+    /// Every listed affinity cell, ascending.
+    pub fn listed_cells(&self) -> impl Iterator<Item = usize> + '_ {
+        self.cells.iter().map(|listed| listed.cell as usize)
+    }
+
+    /// Movers gating record `record`, ascending by id.
+    pub fn record_movers(&self, record: usize) -> &[u32] {
+        let start = self.mover_offsets[record] as usize;
+        let end = self.mover_offsets[record + 1] as usize;
+        &self.direct_movers[start..end]
     }
 
     /// `[D₀, D₁]` of depth record `record`, each a bordered id-59 tile.
@@ -302,9 +313,9 @@ impl MoverProbeChannelSection {
     /// Every mover any block names, ascending: the movers ramp records cover.
     pub fn mover_ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self
-            .direct_entries
+            .direct_movers
             .iter()
-            .map(|entry| entry.mover_id)
+            .copied()
             .chain(self.bounce_entries.iter().map(|entry| entry.mover_id))
             .chain(self.depth_records.iter().map(|record| record.mover_id))
             .collect();
@@ -317,10 +328,10 @@ impl MoverProbeChannelSection {
     /// direct block names: the roster size that bounds namespace 2's indices.
     pub fn bake_only_light_count(&self) -> usize {
         let mut lights: Vec<u32> = self
-            .direct_entries
+            .direct_records
             .iter()
-            .filter(|entry| entry.namespace == MoverLightNamespace::BakeOnlyStaticLight)
-            .map(|entry| entry.light_index)
+            .filter(|record| record.namespace == MoverLightNamespace::BakeOnlyStaticLight)
+            .map(|record| record.light_index)
             .collect();
         lights.sort_unstable();
         lights.dedup();
@@ -351,17 +362,17 @@ impl MoverProbeChannelSection {
 
     /// Bytes [`Self::to_bytes`] writes.
     pub fn encoded_len(&self) -> usize {
-        wire::encoded_len(self)
+        self.byte_breakdown().total()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
         wire::to_bytes(self)
     }
 
-    /// Structural decode: epoch first, then every count, order, reserved field
-    /// and length the layout pins. Checks against other sections (id 34's
-    /// grid and validity, id 43's movers, light namespaces, id 59's tile
-    /// count) are the loader's.
+    /// Structural decode: epoch first, then every count, order, mask,
+    /// reserved field and length the layout pins. Checks against other
+    /// sections (id 34's grid and validity, id 43's movers, light namespaces,
+    /// id 59's tile count) are the loader's.
     pub fn from_bytes(data: &[u8]) -> Result<Self, MoverProbeChannelError> {
         wire::from_bytes(data)
     }
@@ -372,11 +383,12 @@ fn bounce_entry_f16_count(entry: &MoverBounceEntry) -> usize {
     entry.affected_probe_mask.count_ones() as usize * 2 * MOVER_IRRADIANCE_TILE_F16_COUNT
 }
 
-/// The cell of each CSR entry, in entry order.
-fn entry_cells(offsets: &[u32]) -> impl Iterator<Item = usize> + '_ {
-    offsets.windows(2).enumerate().flat_map(|(cell, range)| {
-        std::iter::repeat_n(cell, range[1].saturating_sub(range[0]) as usize)
-    })
+/// The listed-cell position of each CSR entry, in entry order.
+fn entry_positions(offsets: &[u32]) -> impl Iterator<Item = usize> + '_ {
+    offsets
+        .windows(2)
+        .enumerate()
+        .flat_map(|(at, range)| std::iter::repeat_n(at, range[1].saturating_sub(range[0]) as usize))
 }
 
 #[cfg(test)]

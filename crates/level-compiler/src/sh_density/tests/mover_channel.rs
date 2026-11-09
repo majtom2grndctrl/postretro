@@ -4,67 +4,63 @@
 // one.
 
 use postretro_level_format::mover_probe_channel::{
-    MoverBounceEntry, MoverBouncePlacement, MoverDirectEntry, MoverLightNamespace,
-    MoverLightRampRecord, MoverProbeChannelSection,
+    BounceEntryParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry,
+    MoverBouncePlacement, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
+    MoverProbeChannelParts, MoverProbeChannelSection,
 };
 
 use super::*;
 
-/// A channel over `affinity_dims` with one direct entry at each of `direct`
+/// A channel over `affinity_dims` with one direct record at each of `direct`
 /// and one bounce entry at each of `bounce`, every probe valid.
 fn channel(
     affinity_dims: [u32; 3],
     direct: &[usize],
     bounce: &[usize],
 ) -> MoverProbeChannelSection {
-    let cells = affinity_dims
-        .iter()
-        .map(|&dim| dim as usize)
-        .product::<usize>();
-    let offsets = |at: &[usize]| {
-        let mut offsets = vec![0u32; cells + 1];
-        for &cell in at {
-            offsets[cell + 1] += 1;
-        }
-        for cell in 0..cells {
-            offsets[cell + 1] += offsets[cell];
-        }
-        offsets
-    };
-    MoverProbeChannelSection {
-        affinity_factor: 4,
+    let parts = MoverProbeChannelParts {
         affinity_dims,
         bounce_placement: MoverBouncePlacement::Resident,
-        valid_probe_masks: vec![u64::MAX; cells],
-        direct_offsets: offsets(direct),
-        direct_entries: direct
+        direct: direct
             .iter()
-            .map(|_| MoverDirectEntry {
-                mover_id: 0,
-                namespace: MoverLightNamespace::StaticLight,
-                carries_own_tile: false,
-                light_index: 0,
+            .map(|&cell| DirectRecordParts {
+                cell: cell as u32,
+                record: MoverDirectRecord {
+                    namespace: MoverLightNamespace::StaticLight,
+                    carries_own_tile: false,
+                    light_index: 0,
+                    probe_mask: 1,
+                },
+                movers: vec![(0, vec![0, 255])],
+                own_tiles: Vec::new(),
             })
             .collect(),
-        visibility: vec![255; direct.len() * 128],
-        own_tiles: Vec::new(),
-        bounce_offsets: offsets(bounce),
-        bounce_entries: bounce
+        bounce: bounce
             .iter()
-            .map(|_| MoverBounceEntry {
-                mover_id: 0,
-                affected_probe_mask: 1,
+            .map(|&cell| BounceEntryParts {
+                cell: cell as u32,
+                entry: MoverBounceEntry {
+                    mover_id: 0,
+                    affected_probe_mask: 1,
+                },
+                tiles: vec![0; 2 * MOVER_IRRADIANCE_TILE_F16_COUNT],
             })
             .collect(),
-        bounce_tiles: vec![0; bounce.len() * 216],
-        depth_records: Vec::new(),
-        depth_tiles: Vec::new(),
-        ramps: vec![MoverLightRampRecord {
-            mover_id: 0,
-            start: 0.0,
-            end: 1.0,
-        }],
-    }
+        depth: Vec::new(),
+    };
+    MoverProbeChannelSection::assemble(
+        parts,
+        |_| u64::MAX,
+        |mover_id| {
+            Ok::<_, ()>(MoverLightRampRecord {
+                mover_id,
+                start: 0.0,
+                end: 1.0,
+            })
+        },
+    )
+    .unwrap()
+    .expect("the fixture holds entries")
 }
 
 #[test]

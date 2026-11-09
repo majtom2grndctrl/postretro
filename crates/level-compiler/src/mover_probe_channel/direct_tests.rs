@@ -1,7 +1,8 @@
 // The direct half's production bake: q against the joint sample set (B1),
 // the dark inside-brush rule, suns and spinners (B10), bake-only lights in
-// namespace 2, the own-tile flag against ids 41 and 45 as emitted (C15), the
-// per-light memo and worker-count determinism.
+// namespace 2, the own-tile flag against ids 41 and 45 as emitted (C15), term
+// records (one tile per cell and light, masked to the probes movers change),
+// the per-light memo and worker-count determinism.
 
 use std::collections::HashSet;
 
@@ -11,7 +12,9 @@ use postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
-use postretro_level_format::mover_probe_channel::{MoverLightNamespace, MoverProbeChannelSection};
+use postretro_level_format::mover_probe_channel::{
+    DirectRecordView, MoverLightNamespace, MoverProbeChannelSection,
+};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::direct::{
@@ -707,10 +710,10 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
     })
     .unwrap()
     .expect("the gated bake-only light makes a section");
-    assert!(section.direct_entries.iter().all(|entry| {
-        entry.namespace == MoverLightNamespace::BakeOnlyStaticLight
-            && entry.light_index == 0
-            && entry.carries_own_tile
+    assert!(section.direct_records.iter().all(|record| {
+        record.namespace == MoverLightNamespace::BakeOnlyStaticLight
+            && record.light_index == 0
+            && record.carries_own_tile
     }));
     assert_eq!(section.bake_only_light_count(), 1);
 
@@ -719,25 +722,137 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         probe_payload(&world, &bake.lights[0], 0, under).expect("the probe under the slab");
     assert!(first < 255, "the slab hides the light: q₀ byte {first}");
     assert_eq!(last, 255, "the last pose is 100 m up");
-    let view = section
-        .direct_entry_views()
-        .find(|view| world.cells.valid_probes(view.cell).contains(&under))
-        .expect("the probe's cell has an entry");
-    let slot = world
-        .cells
-        .valid_probes(view.cell)
-        .iter()
-        .position(|&probe| probe == under)
-        .unwrap();
-    assert_eq!(view.visibility[2 * slot], first);
+    let (view, slot) = section
+        .direct_record_views()
+        .find_map(|view| Some((view, masked_slot(&world, &view, under)?)))
+        .expect("the probe is masked in its cell's record");
+    assert_eq!(view.movers().next().unwrap().q(slot), [first, last]);
+    assert_eq!(view.own_tile(slot).expect("its own tile"), tile);
     assert_eq!(
-        &view.own_tiles.expect("its own tile")
-            [slot * DEFAULT_DELTA_PROBE_F16_STRIDE..(slot + 1) * DEFAULT_DELTA_PROBE_F16_STRIDE],
-        tile
+        MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
+        section
+    );
+}
+
+/// The slot dense `probe` takes in `view`'s payload, if the record masks it.
+fn masked_slot(world: &World, view: &DirectRecordView<'_>, probe: usize) -> Option<usize> {
+    let valid_slot = world
+        .cells
+        .valid_probes(view.cell as usize)
+        .iter()
+        .position(|&candidate| candidate == probe)?;
+    let mut bits = view.valid_probe_mask;
+    for _ in 0..valid_slot {
+        bits &= bits - 1;
+    }
+    let local = bits.trailing_zeros();
+    let mask = view.record.probe_mask;
+    (mask & (1 << local) != 0).then(|| (mask & ((1u64 << local) - 1)).count_ones() as usize)
+}
+
+/// The slab mover and a second mover holding the same brushes at its first
+/// waypoint, so both gate the light under the slab at the same probes.
+fn twin_slab_movers() -> [MapKinematicMover; 2] {
+    let slab = slab_mover();
+    let twin = mover(1, slab.brush_volumes.clone(), false);
+    [slab, twin]
+}
+
+// Term records: two movers gating one light at one cell share one record,
+// which stores the light's tile once, at its masked probes, and each mover's
+// q pairs under it.
+#[test]
+fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
+    let world = world();
+    let light = point_light(DVec3::new(0.0, 3.5, 0.0), 10.0, 0.6);
+    let movers = twin_slab_movers();
+    let bake = world.bake(&poses_of(&movers), &[static_light(&light, 4)]);
+    let gated = &bake.lights[0];
+    let section = channel_section(&bake, &world.cells, &MoverRamps::new(&movers), |_, _, _| {
+        true
+    })
+    .unwrap()
+    .expect("the slabs gate the light");
+
+    let shared: Vec<_> = section
+        .direct_record_views()
+        .filter(|view| view.mover_ids == [0, 1])
+        .collect();
+    assert!(!shared.is_empty(), "both movers gate the light at one cell");
+    for view in &shared {
+        let masked = view.record.masked_probe_count();
+        assert_eq!(
+            view.own_tiles.map(<[u16]>::len),
+            Some(masked * DEFAULT_DELTA_PROBE_F16_STRIDE),
+            "one tile per masked probe, not one per mover"
+        );
+        for probe in world.cells.valid_probes(view.cell as usize) {
+            let Some(slot) = masked_slot(&world, view, probe) else {
+                continue;
+            };
+            for mover in view.movers() {
+                let (pair, tile) = probe_payload(&world, gated, mover.mover_id, probe)
+                    .expect("each mover's entry covers the probe");
+                assert_eq!(
+                    mover.q(slot),
+                    pair,
+                    "mover {} probe {probe}",
+                    mover.mover_id
+                );
+                assert_eq!(view.own_tile(slot), Some(tile), "probe {probe}");
+            }
+        }
+    }
+    let counts = section.direct_counts();
+    assert_eq!(
+        section.own_tiles.len(),
+        counts.own_tile_probes * DEFAULT_DELTA_PROBE_F16_STRIDE
+    );
+    assert!(
+        counts.mover_entries > counts.records,
+        "some record holds two movers: {counts:?}"
     );
     assert_eq!(
         MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
         section
+    );
+}
+
+// Term records: a valid probe where every mover keeps q = 255 at both
+// termini is left out of the record's mask, so it stores neither q nor a
+// tile; every masked probe has some mover below 255.
+#[test]
+fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
+    let world = world();
+    let light = point_light(DVec3::new(0.0, 3.5, 0.0), 10.0, 0.6);
+    let movers = twin_slab_movers();
+    let bake = world.bake(&poses_of(&movers), &[static_light(&light, 4)]);
+    let gated = &bake.lights[0];
+    let section = channel_section(&bake, &world.cells, &MoverRamps::new(&movers), |_, _, _| {
+        true
+    })
+    .unwrap()
+    .expect("the slabs gate the light");
+
+    let mut excluded = 0;
+    for view in section.direct_record_views() {
+        for probe in world.cells.valid_probes(view.cell as usize) {
+            let changed = view.mover_ids.iter().any(|&mover_id| {
+                probe_payload(&world, gated, mover_id, probe)
+                    .is_some_and(|(pair, _)| pair.iter().any(|&q| q < 255))
+            });
+            let slot = masked_slot(&world, &view, probe);
+            assert_eq!(slot.is_some(), changed, "probe {probe}");
+            if let Some(slot) = slot {
+                assert!(view.movers().any(|mover| mover.q(slot) != [255, 255]));
+            } else {
+                excluded += 1;
+            }
+        }
+    }
+    assert!(
+        excluded > 0,
+        "some valid probe of a gated cell is unchanged"
     );
 }
 
@@ -912,18 +1027,23 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
     })
     .unwrap()
     .expect("entries make a section");
-    let flags: Vec<(u32, MoverLightNamespace, bool)> = section
-        .direct_entries
-        .iter()
-        .map(|entry| (entry.mover_id, entry.namespace, entry.carries_own_tile))
+    let flags: Vec<(MoverLightNamespace, bool, &[u32])> = section
+        .direct_record_views()
+        .map(|view| {
+            (
+                view.record.namespace,
+                view.record.carries_own_tile,
+                view.mover_ids,
+            )
+        })
         .collect();
-    // Cell 0: (4, static). Cell 1: (2, animated) then (4, static).
+    // Cell 0: (static). Cell 1: (static) then (animated).
     assert_eq!(
         flags,
         vec![
-            (4, StaticLight, false),
-            (2, AnimatedBaked, false),
-            (4, StaticLight, true)
+            (StaticLight, false, &[4][..]),
+            (StaticLight, true, &[4][..]),
+            (AnimatedBaked, false, &[2][..]),
         ]
     );
     assert_eq!(section.direct_offsets, vec![0, 1, 3]);

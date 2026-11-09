@@ -106,9 +106,11 @@ pub(super) fn read_mover_probe_channel(
     )?;
     apply_light_ramps(&section, kinematic_geometry);
     log::info!(
-        "[PRL] MoverProbeChannel: {} mover(s), {} direct entr(y/ies), {} bounce entr(y/ies) ({:?}, {} B), {} depth record(s) ({} live tile(s))",
+        "[PRL] MoverProbeChannel: {} mover(s) over {} cell(s), {} direct record(s) with {} mover entr(y/ies), {} bounce entr(y/ies) ({:?}, {} B), {} depth record(s) ({} live tile(s))",
         section.ramps.len(),
-        section.direct_entries.len(),
+        section.cells.len(),
+        section.direct_records.len(),
+        section.direct_movers.len(),
         section.bounce_entries.len(),
         section.bounce_placement,
         section.bounce_payload_bytes(),
@@ -152,36 +154,44 @@ fn validate_mover_probe_channel(
             expected_border: DEFAULT_IRRADIANCE_TILE_BORDER,
         });
     }
-    for (cell, &found) in section.valid_probe_masks.iter().enumerate() {
+    for listed in &section.cells {
+        let cell = listed.cell as usize;
         let expected = valid_probe_mask_for_grid_cell(
             inputs.grid_dimensions,
             inputs.probes,
             section.affinity_dims,
             cell,
         );
-        if found != expected {
+        if listed.valid_probe_mask != expected {
             return Err(Error::ValidityMismatch {
                 cell,
-                found,
+                found: listed.valid_probe_mask,
                 expected,
             });
         }
     }
 
-    // Cells holding direct or bounce entries compose at L0, as a grid-matched
-    // delta entry's cells do: the base may never be stored coarser there.
-    let all_l0 = vec![0u8; section.affinity_cell_count()];
-    for offsets in [&section.direct_offsets, &section.bounce_offsets] {
-        validate_storage_levels_against_delta(
-            inputs.grid_dimensions,
-            inputs.probes,
-            &all_l0,
-            offsets,
-        )
-        .map_err(|error| Error::StorageCeiling {
-            message: error.to_string(),
-        })?;
+    // Listed cells hold direct or bounce entries, so they compose at L0, as a
+    // grid-matched delta entry's cells do: the base may never be stored
+    // coarser there. The shared check reads a dense CSR, one entry per
+    // listed cell.
+    let cell_count = section.affinity_cell_count();
+    let mut offsets = vec![0u32; cell_count + 1];
+    for cell in section.listed_cells() {
+        offsets[cell + 1] = 1;
     }
+    for cell in 0..cell_count {
+        offsets[cell + 1] += offsets[cell];
+    }
+    validate_storage_levels_against_delta(
+        inputs.grid_dimensions,
+        inputs.probes,
+        &vec![0u8; cell_count],
+        &offsets,
+    )
+    .map_err(|error| Error::StorageCeiling {
+        message: error.to_string(),
+    })?;
 
     // Ramp records cover exactly the movers every block names.
     if let Some(ramp) = section
@@ -195,9 +205,9 @@ fn validate_mover_probe_channel(
     }
 
     let bake_only_roster_len = section.bake_only_light_count();
-    for (entry, record) in section.direct_entries.iter().enumerate() {
+    for (index, record) in section.direct_records.iter().enumerate() {
         check_light(
-            entry,
+            index,
             record.namespace,
             record.light_index,
             inputs,
@@ -244,19 +254,19 @@ fn validate_mover_probe_channel(
     Ok(())
 }
 
-/// A direct entry's light must exist in its namespace: a static lightmap
+/// A term record's light must exist in its namespace: a static lightmap
 /// light of id 18 (id 35's set), an animated-baked light of the roster, or a
 /// bake-only light of the section's own roster, whose indices run densely
 /// below `bake_only_roster_len`.
 fn check_light(
-    entry: usize,
+    record: usize,
     namespace: MoverLightNamespace,
     light_index: u32,
     inputs: &MoverProbeChannelInputs<'_>,
     bake_only_roster_len: usize,
 ) -> Result<(), Error> {
     let refusal = |detail: String| Error::LightOutOfNamespace {
-        entry,
+        record,
         namespace,
         light_index,
         detail,

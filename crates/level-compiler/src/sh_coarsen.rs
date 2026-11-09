@@ -542,10 +542,7 @@ pub(crate) fn classify_direct_levels(
         Some(channel) => {
             let ceilings: Vec<u8> = (0..brick_count)
                 .map(|cell| {
-                    let gated = channel
-                        .direct_offsets
-                        .get(cell..=cell + 1)
-                        .is_some_and(|range| range[0] != range[1]);
+                    let gated = channel.cell_has_direct_records(cell);
                     if gated { Level::L0 } else { Level::L2 }.to_u8()
                 })
                 .collect();
@@ -1034,41 +1031,58 @@ mod tests {
     #[test]
     fn provider_caps_id41_at_l0_under_a_channel_direct_entry_only() {
         use postretro_level_format::mover_probe_channel::{
-            MoverBounceEntry, MoverBouncePlacement, MoverDirectEntry, MoverLightNamespace,
+            BounceEntryParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry,
+            MoverBouncePlacement, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
+            MoverProbeChannelParts,
         };
         let dims = [4, 4, 4];
         let validity = all_valid(dims);
         let base = bright_base_indirect(dims, 10.0);
         let delta = direct_delta_from(|_| 0.5);
-        let channel = |direct: bool| MoverProbeChannelSection {
-            affinity_factor: 4,
-            affinity_dims: [1, 1, 1],
-            bounce_placement: MoverBouncePlacement::Resident,
-            valid_probe_masks: vec![u64::MAX],
-            direct_offsets: vec![0, u32::from(direct)],
-            direct_entries: direct
-                .then_some(MoverDirectEntry {
-                    mover_id: 0,
-                    namespace: MoverLightNamespace::StaticLight,
-                    carries_own_tile: false,
-                    light_index: 0,
-                })
-                .into_iter()
-                .collect(),
-            visibility: if direct { vec![255; 128] } else { Vec::new() },
-            own_tiles: Vec::new(),
-            bounce_offsets: vec![0, u32::from(!direct)],
-            bounce_entries: (!direct)
-                .then_some(MoverBounceEntry {
-                    mover_id: 0,
-                    affected_probe_mask: 1,
-                })
-                .into_iter()
-                .collect(),
-            bounce_tiles: Vec::new(),
-            depth_records: Vec::new(),
-            depth_tiles: Vec::new(),
-            ramps: Vec::new(),
+        let channel = |direct: bool| {
+            let parts = MoverProbeChannelParts {
+                affinity_dims: [1, 1, 1],
+                bounce_placement: MoverBouncePlacement::Resident,
+                direct: direct
+                    .then(|| DirectRecordParts {
+                        cell: 0,
+                        record: MoverDirectRecord {
+                            namespace: MoverLightNamespace::StaticLight,
+                            carries_own_tile: false,
+                            light_index: 0,
+                            probe_mask: 1,
+                        },
+                        movers: vec![(0, vec![0, 255])],
+                        own_tiles: Vec::new(),
+                    })
+                    .into_iter()
+                    .collect(),
+                bounce: (!direct)
+                    .then(|| BounceEntryParts {
+                        cell: 0,
+                        entry: MoverBounceEntry {
+                            mover_id: 0,
+                            affected_probe_mask: 1,
+                        },
+                        tiles: vec![0; 2 * MOVER_IRRADIANCE_TILE_F16_COUNT],
+                    })
+                    .into_iter()
+                    .collect(),
+                depth: Vec::new(),
+            };
+            MoverProbeChannelSection::assemble(
+                parts,
+                |_| u64::MAX,
+                |mover_id| {
+                    Ok::<_, ()>(MoverLightRampRecord {
+                        mover_id,
+                        start: 0.0,
+                        end: 1.0,
+                    })
+                },
+            )
+            .unwrap()
+            .expect("one entry")
         };
         for (direct, expected) in [(true, L0), (false, L2)] {
             let channel = channel(direct);

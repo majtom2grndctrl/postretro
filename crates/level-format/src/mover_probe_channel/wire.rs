@@ -1,12 +1,13 @@
 // MoverProbeChannel (id 57) bytes: encode, and the structural decode that
-// pins every count, order, reserved field and length of the layout.
+// pins every count, order, mask, reserved field and length of the layout.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::{
-    MOVER_ENTRY_FLAG_OWN_TILE, MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_PROBE_CHANNEL_EPOCH,
-    MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry, MoverBouncePlacement, MoverDepthRecord,
-    MoverDirectEntry, MoverLightNamespace, MoverLightRampRecord, MoverProbeChannelError,
-    MoverProbeChannelSection, bounce_entry_f16_count, entry_cells,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_PROBE_CHANNEL_EPOCH, MOVER_RECORD_FLAG_OWN_TILE,
+    MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry, MoverBouncePlacement, MoverChannelBytes,
+    MoverChannelCell, MoverDepthRecord, MoverDirectRecord, MoverLightNamespace,
+    MoverLightRampRecord, MoverProbeChannelError, MoverProbeChannelSection, bounce_entry_f16_count,
+    entry_positions,
 };
 use crate::delta_sh_volumes::AFFINITY_FACTOR;
 use crate::probe_depth_tiles::{PROBE_DEPTH_TILE_TEXEL_BYTES, PROBE_DEPTH_TILE_TEXELS};
@@ -15,37 +16,54 @@ type Error = MoverProbeChannelError;
 
 /// epoch, affinity factor, affinity dims, bounce placement.
 const HEADER_BYTES: usize = 1 + 1 + 12 + 1;
-const DIRECT_ENTRY_BYTES: usize = 12;
+/// u32 cell, u64 valid-probe mask.
+const CELL_RECORD_BYTES: usize = 12;
+/// u8 namespace, u8 flags, u16 reserved, u32 light, u64 probe mask.
+const DIRECT_RECORD_BYTES: usize = 16;
+const MOVER_ID_BYTES: usize = 4;
 const BOUNCE_ENTRY_BYTES: usize = 16;
 const DEPTH_RECORD_BYTES: usize = 8;
 const RAMP_RECORD_BYTES: usize = 12;
 const DEPTH_TILE_PAIR_BYTES: usize =
     2 * PROBE_DEPTH_TILE_TEXELS * PROBE_DEPTH_TILE_TEXEL_BYTES as usize;
 
-pub(super) fn encoded_len(section: &MoverProbeChannelSection) -> usize {
-    HEADER_BYTES
-        + section.valid_probe_masks.len() * 8
-        + section.direct_offsets.len() * 4
-        + section.direct_entries.len() * DIRECT_ENTRY_BYTES
-        + section.visibility.len()
-        + section.own_tiles.len() * 2
-        + section.bounce_offsets.len() * 4
-        + section.bounce_entries.len() * BOUNCE_ENTRY_BYTES
-        + section.bounce_tiles.len() * 2
-        + 4
-        + section.depth_records.len() * DEPTH_RECORD_BYTES
-        + section.depth_tiles.len() * PROBE_DEPTH_TILE_TEXEL_BYTES as usize
-        + section.ramps.len() * RAMP_RECORD_BYTES
+impl MoverProbeChannelSection {
+    /// [`Self::to_bytes`]'s bytes, part by part.
+    pub fn byte_breakdown(&self) -> MoverChannelBytes {
+        MoverChannelBytes {
+            header: HEADER_BYTES,
+            cell_index: 4 + self.cells.len() * CELL_RECORD_BYTES,
+            direct_index: (self.direct_offsets.len() + self.mover_offsets.len()) * 4,
+            direct_records: self.direct_records.len() * DIRECT_RECORD_BYTES
+                + self.direct_movers.len() * MOVER_ID_BYTES,
+            visibility: self.visibility.len(),
+            own_tiles: self.own_tiles.len() * 2,
+            bounce_index: self.bounce_offsets.len() * 4
+                + self.bounce_entries.len() * BOUNCE_ENTRY_BYTES,
+            bounce_payload: self.bounce_tiles.len() * 2,
+            depth: 4
+                + self.depth_records.len() * DEPTH_RECORD_BYTES
+                + self.depth_tiles.len() * PROBE_DEPTH_TILE_TEXEL_BYTES as usize,
+            ramps: self.ramps.len() * RAMP_RECORD_BYTES,
+        }
+    }
 }
 
 pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
-    let cells = section.affinity_cell_count();
-    debug_assert_eq!(section.valid_probe_masks.len(), cells);
-    debug_assert_eq!(section.direct_offsets.len(), cells + 1);
-    debug_assert_eq!(section.bounce_offsets.len(), cells + 1);
+    let listed = section.cells.len();
+    debug_assert_eq!(section.direct_offsets.len(), listed + 1);
+    debug_assert_eq!(section.bounce_offsets.len(), listed + 1);
+    debug_assert_eq!(
+        section.mover_offsets.len(),
+        section.direct_records.len() + 1
+    );
     debug_assert_eq!(
         section.direct_offsets.last().copied(),
-        Some(section.direct_entries.len() as u32)
+        Some(section.direct_records.len() as u32)
+    );
+    debug_assert_eq!(
+        section.mover_offsets.last().copied(),
+        Some(section.direct_movers.len() as u32)
     );
     debug_assert_eq!(
         section.bounce_offsets.last().copied(),
@@ -57,45 +75,45 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     );
     debug_assert_eq!(section.ramps.len(), section.mover_ids().len());
 
-    let mut out = Vec::with_capacity(encoded_len(section));
+    let mut out = Vec::with_capacity(section.encoded_len());
     out.push(MOVER_PROBE_CHANNEL_EPOCH);
     out.push(section.affinity_factor);
     for dim in section.affinity_dims {
         out.extend_from_slice(&dim.to_le_bytes());
     }
     out.push(section.bounce_placement as u8);
-    for mask in &section.valid_probe_masks {
-        out.extend_from_slice(&mask.to_le_bytes());
+
+    out.extend_from_slice(&(listed as u32).to_le_bytes());
+    for cell in &section.cells {
+        out.extend_from_slice(&cell.cell.to_le_bytes());
+        out.extend_from_slice(&cell.valid_probe_mask.to_le_bytes());
     }
-    for offset in &section.direct_offsets {
-        out.extend_from_slice(&offset.to_le_bytes());
-    }
-    for entry in &section.direct_entries {
-        out.extend_from_slice(&entry.mover_id.to_le_bytes());
-        out.push(entry.namespace as u8);
-        out.push(if entry.carries_own_tile {
-            MOVER_ENTRY_FLAG_OWN_TILE
+
+    put_u32s(&mut out, &section.direct_offsets);
+    for record in &section.direct_records {
+        out.push(record.namespace as u8);
+        out.push(if record.carries_own_tile {
+            MOVER_RECORD_FLAG_OWN_TILE
         } else {
             0
         });
         out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&entry.light_index.to_le_bytes());
+        out.extend_from_slice(&record.light_index.to_le_bytes());
+        out.extend_from_slice(&record.probe_mask.to_le_bytes());
     }
+    put_u32s(&mut out, &section.mover_offsets);
+    put_u32s(&mut out, &section.direct_movers);
     out.extend_from_slice(&section.visibility);
-    for half in &section.own_tiles {
-        out.extend_from_slice(&half.to_le_bytes());
-    }
-    for offset in &section.bounce_offsets {
-        out.extend_from_slice(&offset.to_le_bytes());
-    }
+    put_halves(&mut out, &section.own_tiles);
+
+    put_u32s(&mut out, &section.bounce_offsets);
     for entry in &section.bounce_entries {
         out.extend_from_slice(&entry.mover_id.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&entry.affected_probe_mask.to_le_bytes());
     }
-    for half in &section.bounce_tiles {
-        out.extend_from_slice(&half.to_le_bytes());
-    }
+    put_halves(&mut out, &section.bounce_tiles);
+
     out.extend_from_slice(&(section.depth_records.len() as u32).to_le_bytes());
     for record in &section.depth_records {
         out.extend_from_slice(&record.mover_id.to_le_bytes());
@@ -110,8 +128,20 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
         out.extend_from_slice(&ramp.start.to_le_bytes());
         out.extend_from_slice(&ramp.end.to_le_bytes());
     }
-    debug_assert_eq!(out.len(), encoded_len(section));
+    debug_assert_eq!(out.len(), section.encoded_len());
     out
+}
+
+fn put_u32s(out: &mut Vec<u8>, values: &[u32]) {
+    for value in values {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+fn put_halves(out: &mut Vec<u8>, halves: &[u16]) {
+    for half in halves {
+        out.extend_from_slice(&half.to_le_bytes());
+    }
 }
 
 pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error> {
@@ -136,7 +166,7 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         reader.u32("affinity dims")?,
         reader.u32("affinity dims")?,
     ];
-    let cells = affinity_dims.iter().try_fold(1usize, |count, &dim| {
+    let grid_cells = affinity_dims.iter().try_fold(1usize, |count, &dim| {
         count.checked_mul(dim as usize).ok_or(Error::SizeOverflow {
             what: "affinity cell count",
         })
@@ -147,68 +177,62 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
             value: placement_byte,
         })?;
 
-    let valid_probe_masks: Vec<u64> = reader
-        .records(cells, 8, "valid-probe masks")?
-        .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
-        .collect();
+    let cells = read_cells(&mut reader, grid_cells)?;
+    let listed = cells.len();
+    let cell_of = |position: usize| cells[position].cell as usize;
 
     // Direct block.
-    let direct_offsets = reader.offsets(cells, "direct", "direct offsets")?;
-    let direct_count = *direct_offsets.last().expect("cells + 1 offsets") as usize;
-    let mut direct_entries = Vec::new();
-    for (index, bytes) in reader
-        .records(direct_count, DIRECT_ENTRY_BYTES, "direct entries")?
+    let direct_offsets = reader.offsets(listed, "direct", "direct offsets")?;
+    let record_count = *direct_offsets.last().expect("listed + 1 offsets") as usize;
+    let direct_records = read_direct_records(&mut reader, record_count)?;
+    for (index, (position, record)) in entry_positions(&direct_offsets)
+        .zip(&direct_records)
         .enumerate()
     {
-        let namespace_byte = bytes[4];
-        let namespace =
-            MoverLightNamespace::from_u8(namespace_byte).ok_or(Error::UnknownLightNamespace {
-                entry: index,
-                value: namespace_byte,
-            })?;
-        let flags = bytes[5];
-        if flags & !MOVER_ENTRY_FLAG_OWN_TILE != 0 {
-            return Err(Error::ReservedBits {
-                what: "direct entry flags",
-                index,
-                value: u32::from(flags),
-            });
-        }
-        if namespace.requires_own_tile() && flags & MOVER_ENTRY_FLAG_OWN_TILE == 0 {
-            return Err(Error::OwnTileRequired {
-                entry: index,
-                namespace,
-            });
-        }
-        let reserved = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if reserved != 0 {
-            return Err(Error::ReservedBits {
-                what: "direct entry reserved u16",
-                index,
-                value: u32::from(reserved),
-            });
-        }
-        direct_entries.push(MoverDirectEntry {
-            mover_id: le_u32(&bytes[0..4]),
-            namespace,
-            carries_own_tile: flags & MOVER_ENTRY_FLAG_OWN_TILE != 0,
-            light_index: le_u32(&bytes[8..12]),
-        });
+        check_mask("direct", cells[position], index, record.probe_mask)?;
     }
-    check_cell_order("direct", &direct_offsets, &direct_entries, |entry| {
-        entry.order_key()
-    })?;
+    check_cell_order(
+        "direct",
+        &direct_offsets,
+        &cells,
+        &direct_records,
+        |record| record.order_key(),
+    )?;
 
+    let mover_offsets = reader.offsets(record_count, "direct movers", "mover offsets")?;
+    let mover_count = *mover_offsets.last().expect("records + 1 offsets") as usize;
+    let direct_movers: Vec<u32> = reader
+        .records(mover_count, MOVER_ID_BYTES, "direct movers")?
+        .map(le_u32)
+        .collect();
     let mut visibility_len = 0usize;
     let mut own_tile_halves = 0usize;
-    for (cell, entry) in entry_cells(&direct_offsets).zip(&direct_entries) {
-        let probes = valid_probe_masks[cell].count_ones() as usize;
+    for (index, (position, record)) in entry_positions(&direct_offsets)
+        .zip(&direct_records)
+        .enumerate()
+    {
+        let movers =
+            &direct_movers[mover_offsets[index] as usize..mover_offsets[index + 1] as usize];
+        if movers.is_empty() {
+            return Err(Error::RecordWithoutMovers {
+                cell: cell_of(position),
+                record: index,
+            });
+        }
+        if let Some(at) = movers.windows(2).position(|pair| pair[0] >= pair[1]) {
+            return Err(Error::MoverOrder {
+                cell: cell_of(position),
+                record: index,
+                entry: mover_offsets[index] as usize + at + 1,
+            });
+        }
+        let probes = record.masked_probe_count();
         visibility_len = checked_add(
             visibility_len,
-            probes * MOVER_VISIBILITY_BYTES_PER_PROBE,
+            movers.len() * probes * MOVER_VISIBILITY_BYTES_PER_PROBE,
             "visibility payload",
         )?;
-        if entry.carries_own_tile {
+        if record.carries_own_tile {
             own_tile_halves = checked_add(
                 own_tile_halves,
                 probes * MOVER_IRRADIANCE_TILE_F16_COUNT,
@@ -217,11 +241,19 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         }
     }
     let visibility = reader.take(visibility_len, "visibility payload")?.to_vec();
+    check_masks_are_tight(
+        &cells,
+        &direct_offsets,
+        &direct_records,
+        &mover_offsets,
+        &direct_movers,
+        &visibility,
+    )?;
     let own_tiles = reader.halves(own_tile_halves, "own-tile payload")?;
 
     // Bounce block.
-    let bounce_offsets = reader.offsets(cells, "bounce", "bounce offsets")?;
-    let bounce_count = *bounce_offsets.last().expect("cells + 1 offsets") as usize;
+    let bounce_offsets = reader.offsets(listed, "bounce", "bounce offsets")?;
+    let bounce_count = *bounce_offsets.last().expect("listed + 1 offsets") as usize;
     let mut bounce_entries = Vec::new();
     for (index, bytes) in reader
         .records(bounce_count, BOUNCE_ENTRY_BYTES, "bounce entries")?
@@ -237,26 +269,21 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         }
         bounce_entries.push(MoverBounceEntry {
             mover_id: le_u32(&bytes[0..4]),
-            affected_probe_mask: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            affected_probe_mask: le_u64(&bytes[8..16]),
         });
     }
-    check_cell_order("bounce", &bounce_offsets, &bounce_entries, |entry| {
-        entry.mover_id
-    })?;
-    for (index, (cell, entry)) in entry_cells(&bounce_offsets)
+    check_cell_order(
+        "bounce",
+        &bounce_offsets,
+        &cells,
+        &bounce_entries,
+        |entry| entry.mover_id,
+    )?;
+    for (index, (position, entry)) in entry_positions(&bounce_offsets)
         .zip(&bounce_entries)
         .enumerate()
     {
-        let valid = valid_probe_masks[cell];
-        let mask = entry.affected_probe_mask;
-        if mask == 0 || mask & !valid != 0 {
-            return Err(Error::BounceProbeNotValid {
-                cell,
-                entry: index,
-                mask,
-                valid,
-            });
-        }
+        check_mask("bounce", cells[position], index, entry.affected_probe_mask)?;
     }
     let bounce_tiles = match bounce_placement {
         MoverBouncePlacement::Resident => {
@@ -270,6 +297,15 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         }
         MoverBouncePlacement::Streamed => Vec::new(),
     };
+
+    // Every listed cell holds a direct record or a bounce entry.
+    if let Some(position) = (0..listed).find(|&at| {
+        direct_offsets[at] == direct_offsets[at + 1] && bounce_offsets[at] == bounce_offsets[at + 1]
+    }) {
+        return Err(Error::CellWithoutEntries {
+            cell: cell_of(position),
+        });
+    }
 
     // Depth block.
     let depth_count = reader.u32("depth record count")? as usize;
@@ -294,7 +330,7 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         })
         .collect();
 
-    if direct_entries.is_empty() && bounce_entries.is_empty() && depth_records.is_empty() {
+    if direct_records.is_empty() && bounce_entries.is_empty() && depth_records.is_empty() {
         return Err(Error::Empty);
     }
 
@@ -302,9 +338,11 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         affinity_factor,
         affinity_dims,
         bounce_placement,
-        valid_probe_masks,
+        cells,
         direct_offsets,
-        direct_entries,
+        direct_records,
+        mover_offsets,
+        direct_movers,
         visibility,
         own_tiles,
         bounce_offsets,
@@ -356,23 +394,183 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
     Ok(section)
 }
 
-/// Entries of each cell ascend strictly by `key`: ordered, no duplicates.
+/// The listed cells: strictly ascending, each inside the affinity grid.
+fn read_cells(reader: &mut Reader<'_>, grid_cells: usize) -> Result<Vec<MoverChannelCell>, Error> {
+    let count = reader.u32("listed cell count")? as usize;
+    let mut cells: Vec<MoverChannelCell> = Vec::new();
+    for (listed, bytes) in reader
+        .records(count, CELL_RECORD_BYTES, "listed cells")?
+        .enumerate()
+    {
+        let cell = MoverChannelCell {
+            cell: le_u32(&bytes[0..4]),
+            valid_probe_mask: le_u64(&bytes[4..12]),
+        };
+        if cell.cell as usize >= grid_cells {
+            return Err(Error::CellOutOfRange {
+                listed,
+                cell: cell.cell,
+                cells: grid_cells,
+            });
+        }
+        if let Some(previous) = cells.last()
+            && previous.cell >= cell.cell
+        {
+            return Err(Error::CellOrder {
+                listed,
+                cell: cell.cell,
+                previous: previous.cell,
+            });
+        }
+        cells.push(cell);
+    }
+    Ok(cells)
+}
+
+fn read_direct_records(
+    reader: &mut Reader<'_>,
+    count: usize,
+) -> Result<Vec<MoverDirectRecord>, Error> {
+    let mut records = Vec::new();
+    for (index, bytes) in reader
+        .records(count, DIRECT_RECORD_BYTES, "direct records")?
+        .enumerate()
+    {
+        let namespace =
+            MoverLightNamespace::from_u8(bytes[0]).ok_or(Error::UnknownLightNamespace {
+                record: index,
+                value: bytes[0],
+            })?;
+        let flags = bytes[1];
+        if flags & !MOVER_RECORD_FLAG_OWN_TILE != 0 {
+            return Err(Error::ReservedBits {
+                what: "direct record flags",
+                index,
+                value: u32::from(flags),
+            });
+        }
+        if namespace.requires_own_tile() && flags & MOVER_RECORD_FLAG_OWN_TILE == 0 {
+            return Err(Error::OwnTileRequired {
+                record: index,
+                namespace,
+            });
+        }
+        let reserved = u16::from_le_bytes([bytes[2], bytes[3]]);
+        if reserved != 0 {
+            return Err(Error::ReservedBits {
+                what: "direct record reserved u16",
+                index,
+                value: u32::from(reserved),
+            });
+        }
+        records.push(MoverDirectRecord {
+            namespace,
+            carries_own_tile: flags & MOVER_RECORD_FLAG_OWN_TILE != 0,
+            light_index: le_u32(&bytes[4..8]),
+            probe_mask: le_u64(&bytes[8..16]),
+        });
+    }
+    Ok(records)
+}
+
+/// A record's or bounce entry's mask is a non-empty subset of its cell's
+/// valid probes.
+fn check_mask(
+    block: &'static str,
+    cell: MoverChannelCell,
+    entry: usize,
+    mask: u64,
+) -> Result<(), Error> {
+    if mask == 0 {
+        return Err(Error::ProbeMaskEmpty {
+            block,
+            cell: cell.cell as usize,
+            entry,
+        });
+    }
+    if mask & !cell.valid_probe_mask != 0 {
+        return Err(Error::ProbeMaskNotValid {
+            block,
+            cell: cell.cell as usize,
+            entry,
+            mask,
+            valid: cell.valid_probe_mask,
+        });
+    }
+    Ok(())
+}
+
+/// Each record's mask is exactly its movers' `q < 255` probes: every masked
+/// probe has a mover below 255 at either terminus, and every mover is below
+/// 255 somewhere.
+fn check_masks_are_tight(
+    cells: &[MoverChannelCell],
+    direct_offsets: &[u32],
+    records: &[MoverDirectRecord],
+    mover_offsets: &[u32],
+    movers: &[u32],
+    visibility: &[u8],
+) -> Result<(), Error> {
+    let mut at = 0;
+    for (index, (position, record)) in entry_positions(direct_offsets).zip(records).enumerate() {
+        let cell = cells[position].cell as usize;
+        let per_mover = record.masked_probe_count() * MOVER_VISIBILITY_BYTES_PER_PROBE;
+        let first = mover_offsets[index] as usize;
+        let count = mover_offsets[index + 1] as usize - first;
+        let payload = &visibility[at..at + count * per_mover];
+        at += count * per_mover;
+        for (entry, q) in payload.chunks_exact(per_mover).enumerate() {
+            if q.iter().all(|&byte| byte == u8::MAX) {
+                return Err(Error::MoverGatesNothing {
+                    cell,
+                    record: index,
+                    entry: first + entry,
+                    mover_id: movers[first + entry],
+                });
+            }
+        }
+        let mut bits = record.probe_mask;
+        let mut slot = 0;
+        while bits != 0 {
+            let local = bits.trailing_zeros();
+            bits &= bits - 1;
+            let gated = payload.chunks_exact(per_mover).any(|q| {
+                q[slot * MOVER_VISIBILITY_BYTES_PER_PROBE..][..MOVER_VISIBILITY_BYTES_PER_PROBE]
+                    .iter()
+                    .any(|&byte| byte < u8::MAX)
+            });
+            if !gated {
+                return Err(Error::ProbeMaskNotTight {
+                    cell,
+                    record: index,
+                    probe: local,
+                });
+            }
+            slot += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Entries of each listed cell ascend strictly by `key`: ordered, no
+/// duplicates.
 fn check_cell_order<T, K: Ord>(
     block: &'static str,
     offsets: &[u32],
+    cells: &[MoverChannelCell],
     entries: &[T],
     key: impl Fn(&T) -> K,
 ) -> Result<(), Error> {
-    for (cell, range) in offsets.windows(2).enumerate() {
+    for (position, range) in offsets.windows(2).enumerate() {
         let (start, end) = (range[0] as usize, range[1] as usize);
-        if let Some(position) = entries[start..end]
+        if let Some(at) = entries[start..end]
             .windows(2)
             .position(|pair| key(&pair[0]) >= key(&pair[1]))
         {
             return Err(Error::EntryOrder {
                 block,
-                cell,
-                entry: start + position + 1,
+                cell: cells[position].cell as usize,
+                entry: start + at + 1,
             });
         }
     }
@@ -385,6 +583,10 @@ fn checked_add(total: usize, add: usize, what: &'static str) -> Result<usize, Er
 
 fn le_u32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn le_u64(bytes: &[u8]) -> u64 {
+    u64::from_le_bytes(bytes.try_into().unwrap())
 }
 
 /// A cursor that refuses to read past the end, so no count read from the
@@ -437,14 +639,14 @@ impl<'a> Reader<'a> {
             .collect())
     }
 
-    /// A CSR offset table over `cells`: starts at 0, never decreases.
+    /// A CSR offset table over `rows`: starts at 0, never decreases.
     fn offsets(
         &mut self,
-        cells: usize,
+        rows: usize,
         block: &'static str,
         what: &'static str,
     ) -> Result<Vec<u32>, Error> {
-        let count = cells.checked_add(1).ok_or(Error::SizeOverflow { what })?;
+        let count = rows.checked_add(1).ok_or(Error::SizeOverflow { what })?;
         let offsets: Vec<u32> = self.records(count, 4, what)?.map(le_u32).collect();
         if offsets[0] != 0 {
             return Err(Error::CsrOffsets {

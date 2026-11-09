@@ -398,3 +398,17 @@ After task 6b (bake-only lights gated through namespace 2), same method:
 | `stress-warren-hallway-inspection` | 49 of 763 (43 of 419) | 1,745 (1,725) | 19,589,126 B | 73.9% | 25.8% | 20,165,285 B |
 
 On the hallway, 19.39 MB of the direct block is own tiles. Task 6c revises the format.
+
+After task 6c (epoch 2: sparse cells, shared per-(cell, light) tiles, probe masks), same method. Columns are index / records / q / tiles → direct block, then id 57's total.
+
+| Map | Before (6b) | After (6c) | id 57 after |
+|---|---|---|---|
+| `mover-setpiece` | 4,756 / 6,228 / 50,502 / 4,029,480 → 4,090,966 | 4,848 / 9,964 / 28,842 / 2,310,984 → 2,354,638 | 2,355,401 |
+| `kinematic-platform` | 38,092 / 360 / 2,880 / 196,992 → 238,324 | 404 / 600 / 258 / 18,360 → 19,622 | 19,749 |
+| `campaign-test` | 79,348 / 600 / 3,896 / 0 → 83,844 | 948 / 1,000 / 1,352 / 0 → 3,300 | 3,531 |
+| `stress-warren-showcase` | 161,284 / 3,540 / 23,032 / 573,480 → 761,336 | 3,864 / 5,708 / 8,616 / 198,720 → 216,908 | 217,707 |
+| `stress-warren-hallway-inspection` | 432,004 / 20,940 / 180,890 / 19,387,296 → 20,021,130 | 17,456 / 34,900 / 102,534 / 11,056,176 → 11,211,066 | 11,213,837 |
+
+- On setpiece, 519 entries became 493 records over 179 cells, with 13,762 masked probes.
+- On the hallway, each of the 1,725 records has a single mover, so the masks do all the work: 51,267 probes are masked.
+- Ids 34, 35, 41, 45, 49 and 50 are byte-identical before and after on every map.

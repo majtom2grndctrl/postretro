@@ -747,3 +747,83 @@ Some properties follow from the structure:
 - The `host_rows` ledger.
 - The summary line's live count.
 - `drain_sh_residency`'s new second duty.
+
+### Task 11
+
+Built 2026-11-09 on the main checkout (AMD Radeon Pro 5300M, Metal), on top of task 10 (b5e2f8350), uncommitted. Maps compiled with the release `prl-build` at the working tree (closet, static-door closet, set-piece); the capture tests compile their own fixtures through `compile_dev_map`.
+
+**Hand-over.** `KinematicMoverRenderCollector::hand_over_light_states` collects the post-tick (mover id, t′) list and hands it to the renderer in one call. All three frame paths use it: the play frame (`frame_loop`), the held Settling frame (`held_level_visibility`), and now the plain world-less frame (Loading, Frontend), which used to skip it. With no level it hands over an empty list. The renderer setter, the collector and the state type are unchanged, so the B19 grep gate still reads them.
+
+**Capture forced mover t.** Scene field `force_movers: [{ "name", "t" }]` (t in [0, 1], before the ramp; names unique, non-empty). `capture/forced_movers.rs`:
+- Sets each named mover's phase through a new physics inverse, `set_mover_phase_at_path_fraction` (`kinematic_mover/forced_phase.rs`, the inverse of `mover_path_fraction`). The phase rests: no wait, no velocity, not active, heading toward the last waypoint. So t = 0 reads docked closed. The transform takes the phase's position.
+- Drawn geometry, shadow casters, occluder bounds and SH sample regions then follow from the existing collectors.
+- The forced movers' portal seal (the live frame's `mover_is_docked_closed` rule) feeds capture's visibility walk. The registry now spawns before visibility.
+- The forced movers' light states are collected as the game collects them (arc-length t, then the ramp from id 57) and handed over before the first preload frame.
+- Unforced movers keep today's behaviour: rest pose, no state, no seal.
+- `dev_pose_mover` and `park_dev_pose_mover` are deleted.
+
+**Proof.**
+
+| Row | Test | Result |
+|---|---|---|
+| C9, game half | `runtime_movers::light_state_closet_tests::c9_a_tick_driven_closet_door_hands_over_its_ramped_post_tick_t_every_frame` (ignored; `MOVER_CLOSET_PRL`, `MOVER_CLOSET_RAMP_PRL`). The door is driven by ticks from load, reversed at t ≥ 0.5, and closed. Each tick presents two frames. Each frame's t′ equals the ramp of the door's drawn fraction (from its transform). The ramp variant carries `light_ramp_start` 0.6 and `light_ramp_end` 0.9 on `closet_door`, and the PRL's ramp record is checked. | pass: 173 ticks, peak t′ 0.5038, largest step 0.0059. Ramp variant (reverses at 0.75): 259 ticks, every frame at t ≤ 0.6 hands t′ = 0, peak t′ 0.519 |
+| C9, renderer half | `uploads::renderer_tests::closet_mover_channel::c9_the_closet_composes_and_writes_the_mix_at_every_handed_t` (ignored; `MOVER_CLOSET_PRL`, `POSTRETRO_SH_STREAMING=off`). Real closet, whole load, t′ sequence 0, 0.25, 0.5, 0.5, 0.375, 0.25, 0.125, 0, 0. The total indirect atlas and the tile texture are read back each frame. | pass: 15,487 atlas halves and 1,498 live-tile halves move with t′, each within one f16 step of the mix of the t′ = 0 and t′ = 1 frames; every other half holds bit for bit. The closet has no direct block, so "the gated light's composed term" has no subject here |
+| C10 (+ C7 GPU half) | `capture_mover_probe_channel::c10_streaming_off_and_sync_proof_compose_the_same_channel_output` | **open at frame level**, see below |
+| D2, frame clauses | `…::d2_no_section_is_byte_identical_and_no_state_is_within_two_levels_of_no_depth` | pass: id 57 stripped, the door's state handed over against none, max channel delta 0 (closet interior). With id 57 and no state against the depth block stripped: 0 at stations 2, 3 and interior (bar 2). Control: the same state with id 57 moves that view by 28 |
+| D4 (P24), frame clause | `capture::mover_frame_tests::d4_d5_…` (ignored; `MOVER_CLOSET_PRL`; run under `off` and `sync-proof`). The door's state is first handed over on a captured frame, then the next frame is captured. | pass: delta 0 on both paths (bar 2); the state itself moves 58 (off) and 60 (sync-proof) |
+| D5 (P25), frame clause | same test: t′ 1 for two frames, then 0; the step frame against the next | pass: delta 0 on both paths; t′ 1 against 0 moves 60 and 59 |
+| D7 (P27), app restart | `app::world_less_frame::tests::a_held_frame_after_a_restart_hands_over_the_reseeded_mover_state`. A restart respawns the door at its seeded phase; the first held frame hands over t′ 0, never the pre-restart 0.5. The renderer half is task 10's relevel row. | pass |
+| World-less hand-over | `…::a_hand_over_with_no_level_leaves_no_state` | pass |
+| K1 | `…::k1_closet_closed_reads_as_dark_as_the_static_door_and_open_reads_as_stripped` | **closed passes, open misses**, see below |
+| K2 | `…::k2_setpiece_wall_closed_darkens_the_held_receiver_like_the_static_wall` | pass |
+| K3 | `…::k3_promotion_pops_no_more_at_a_forced_terminus_than_the_ungated_arms` | pass |
+
+Units and stations:
+- Means are Rec. 709 luma of the post-tonemap sRGB capture (0–255) at 960×540.
+- K3 is in summed RGB (0–765) over lit texels.
+- The closet stations are the README's. Door face: (320, 600, 56), yaw 270, fov 60. Closet interior: (320, 540, 72), yaw 90, pitch −20.
+- Closet rows run with reflections off.
+
+**K1, door forced closed** (bar: the reference + 0.02):
+
+| | Station 2 outside door | Station 3 outside door | Pool (st2 / st3) | Door closet face |
+|---|---|---|---|---|
+| Forced closed | 0.0056 | 0.0160 | 0.000 / 0.000 | 0.000 |
+| Tiled static-door reference | 0.0059 | 0.0171 | 0.000 / 0.000 | 0.000 |
+
+Frame means: closed 0.0086 and 0.0314, reference 0.0089 and 0.0327.
+
+**K1, door forced open, misses** (bar: within 0.02 of id 57 stripped): station 2 reads 13.796 against 13.889 (0.093), and station 3 reads 29.590 against 29.722 (0.132).
+- Diagnosis at station 2. Stripping only the depth block reads 13.800, so depth accounts for 0.004 and bounce for 0.089.
+- At t′ = 1 the 144 affected probes compose S^b₁, which is stored as unencoded f16. Today's frame composes id 34, which is BC6H-encoded. B3 holds S^b₁ to id 34 only within each probe's BC6H round-trip error, and that error is what the open frame shows: 656 px move by more than 2 levels, by at most 4.
+- No compose-side fix keeps the Bounce Decision. A bake-side fix would store id 34's decoded texels as S^b_k wherever S^b_k is within the round-trip bar. That changes what the Bounce Decision says is stored ("id 34's own content re-baked"), so it goes to the owner and is not built.
+
+**K2** (receiver: a `prop_mesh` on the enemy spot, set-piece station 3 at pitch −8; 1,088 mesh px). The mesh pixels are those that differ from the receiver-free map with static indirect alone, so the floor is not judged.
+- Wall closed 27.556 against the static-wall reference's 29.041 (bar: reference + 0.02).
+- Wall open 31.174, so closed reads darker.
+- Open against id 57 stripped: 31.174 against 31.158 (0.016, bar 0.02).
+- The first cut's mask also caught the plinth and floor. Their lightmapped direct and specular are world surfaces (brief 2): specular read 0.564 closed and open against the reference's 0.035. The mesh itself has no specular.
+
+**K3** (static promotion pinned at w = 0 and 1; neither map has an animated-baked light). The set-piece's point lights are too dim for the entity-shadow selection, so the set-piece case uses the arena spot (368, 560, 288) and a kinematic slab in the back room, in its beam.
+
+| Case | Pop with channel | Ungated (forced open, id 57 stripped) |
+|---|---|---|
+| Set-piece, wall t = 0 | 5.03 | 5.50 (+ 12) |
+| Set-piece, wall t = 1 | 5.50 | 5.50 (+ 12) |
+| Closet, door t = 0 / 1 | 0.00 / 0.00 | 0.00 (+ 12) |
+
+- At t = 1 the casters follow the forced pose. Casters left at the closed rest pose would shadow the runtime arm (w = 1) while the baked arm reads open.
+- The closet gates no direct light, so its case is a control: the slab gets no light from the pinned centre light at any w.
+
+**C10, open at frame level.** `off` and `sync-proof` frames already differ with id 57 stripped.
+- With static indirect alone (mask 2): up to 9 levels on about a third of the closet's pixels.
+- With baked direct alone (mask 8): up to 15 on the set-piece. The closet's baked direct agrees byte for byte.
+- So frames cannot show byte identity. The test asserts what they can show:
+  - The channel moves both modes by more than 2 levels: 12–34 per case.
+  - With id 57, the modes differ by no more than they do stripped, plus 2: closet indirect 5 against 9; set-piece indirect 3 against 4 and 1 against 6; set-piece direct 12 against 11 and 16 against 15.
+- The compose inputs are proven equal per cell by task 9's `streamed_mover_channel`.
+- A renderer-level per-probe comparison of the composed tiles across the two paths would close the row. → Executor.
+
+**Captures** (`captures/t11-*.png`): K1 at stations 2 and 3, closed and reference, open and open-stripped, and the door face; K2 closed, reference, open and open-stripped; K3 set-piece channel at t = 0 and 1 × w = 0 and 1, and stripped at w = 0 and 1.
+
+**GPU steps.** No windowed run; nothing stalled.

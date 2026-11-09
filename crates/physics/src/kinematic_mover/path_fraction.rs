@@ -65,7 +65,7 @@ impl MoverPathArcLengths {
         self.cumulative.last().copied().unwrap_or(0.0)
     }
 
-    fn at_waypoint(&self, index: usize) -> f32 {
+    pub(super) fn at_waypoint(&self, index: usize) -> f32 {
         self.cumulative.get(index).copied().unwrap_or(0.0)
     }
 }

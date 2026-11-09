@@ -87,18 +87,23 @@ pub(crate) struct CaptureScene {
     /// Capture-only ghost transparency, `"blend"` or `"dither"`, standing in
     /// for `render.ghosts`. Omitted keeps the renderer's default, blend.
     pub(crate) ghost_transparency: Option<CaptureGhostTransparency>,
-    /// TEMPORARY (mover-light-flow--probe-channel plan task 1; task 11's
-    /// forced mover t replaces it): draws one named mover parked at one of
-    /// its waypoints instead of at rest. Pose only: no portal seal.
-    pub(crate) dev_pose_mover: Option<DevPoseMover>,
+    /// Capture-only forced mover travel: each named mover rests at travel
+    /// fraction `t` (0 at its first waypoint, 1 at its last, by arc length).
+    /// This sets its whole pose: drawn geometry, shadow casters, occluder
+    /// bounds, the portal seal at t = 0, and the light state the game would
+    /// hand the renderer at that phase, its author ramp applied. Movers not
+    /// named rest at their seeded pose with no light state, as before.
+    pub(crate) force_movers: Option<Vec<ForcedMover>>,
 }
 
-/// TEMPORARY: see [`CaptureScene::dev_pose_mover`].
+/// One mover a capture scene holds at a travel fraction.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DevPoseMover {
+pub(crate) struct ForcedMover {
+    /// The `kinematic_mover`'s authored `name`.
     pub(crate) name: String,
-    pub(crate) waypoint: String,
+    /// Arc-length travel fraction in `[0, 1]`, before the author ramp.
+    pub(crate) t: f32,
 }
 
 impl CaptureScene {
@@ -249,6 +254,12 @@ pub(crate) enum SceneError {
         "invalid capture scene: force_active radiance channels must be in 0..={MAX_FORCED_RADIANCE}, got {value}"
     )]
     ForcedAnimLightRadianceOutOfRange { value: f32 },
+    #[error("invalid capture scene: force_movers name must not be empty")]
+    EmptyForcedMoverName,
+    #[error("invalid capture scene: force_movers names mover `{0}` twice")]
+    DuplicateForcedMover(String),
+    #[error("invalid capture scene: force_movers t must be finite and in 0.0..=1.0, got {value}")]
+    ForcedMoverTOutOfRange { value: f32 },
     #[error("invalid capture scene: force_promotion weight must be finite")]
     NonFiniteForcedPromotionWeight,
     #[error("invalid capture scene: force_promotion weight must be in 0.0..=1.0, got {value}")]
@@ -389,6 +400,22 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
                 return Err(SceneError::ForcedPromotionWeightOutOfRange {
                     value: promotion.weight,
                 });
+            }
+        }
+    }
+    if let Some(movers) = &scene.force_movers {
+        for (index, mover) in movers.iter().enumerate() {
+            if mover.name.trim().is_empty() {
+                return Err(SceneError::EmptyForcedMoverName);
+            }
+            if !mover.t.is_finite() || !(0.0..=1.0).contains(&mover.t) {
+                return Err(SceneError::ForcedMoverTOutOfRange { value: mover.t });
+            }
+            if movers[..index]
+                .iter()
+                .any(|earlier| earlier.name == mover.name)
+            {
+                return Err(SceneError::DuplicateForcedMover(mover.name.clone()));
             }
         }
     }
@@ -716,6 +743,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_scene_accepts_forced_mover_travel_and_rejects_bad_entries() {
+        let with = |movers: &str| {
+            SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!("\"output\": \"capture.png\", \"force_movers\": [{movers}]"),
+            )
+        };
+        let scene = parse_scene(&with(
+            "{ \"name\": \"closet_door\", \"t\": 0.0 }, { \"name\": \"lift\", \"t\": 0.5 }",
+        ))
+        .expect("forced mover travel must parse");
+        assert_eq!(
+            scene.force_movers,
+            Some(vec![
+                ForcedMover {
+                    name: "closet_door".into(),
+                    t: 0.0
+                },
+                ForcedMover {
+                    name: "lift".into(),
+                    t: 0.5
+                },
+            ])
+        );
+        assert_eq!(
+            parse_scene(SCENE_WITH_DEFAULT_FOV).unwrap().force_movers,
+            None
+        );
+
+        for (movers, expected) in [
+            ("{ \"name\": \" \", \"t\": 0.0 }", "name must not be empty"),
+            ("{ \"name\": \"door\", \"t\": 1.5 }", "t must be finite"),
+            ("{ \"name\": \"door\", \"t\": -0.25 }", "t must be finite"),
+            (
+                "{ \"name\": \"door\", \"t\": 0.0 }, { \"name\": \"door\", \"t\": 1.0 }",
+                "names mover `door` twice",
+            ),
+            (
+                "{ \"name\": \"door\", \"t\": 0.0, \"pose\": 1 }",
+                "unknown field",
+            ),
+        ] {
+            let error = parse_scene(&with(movers))
+                .expect_err("a bad forced mover must be refused")
+                .to_string();
+            assert!(error.contains(expected), "{movers}: {error}");
+        }
+    }
+
+    #[test]
     fn parse_scene_accepts_capture_only_forced_promotion_weight() {
         let json = SCENE_WITH_DEFAULT_FOV.replace(
             "\"output\": \"capture.png\"",
@@ -928,7 +1005,7 @@ mod tests {
             planar_reflection: None,
             ghost_styles: None,
             ghost_transparency: None,
-            dev_pose_mover: None,
+            force_movers: None,
         };
         assert!(matches!(
             validate_scene(&scene),

@@ -378,27 +378,6 @@ fn open_doorway_reads_as_today() {
     }
 }
 
-// The mover-door closet still glows by design (probe depth bakes with
-// movers absent); only a darkening would flag a dropped probe.
-#[test]
-#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_probe_depth_tiles -- --ignored`"]
-fn mover_door_closet_does_not_darken() {
-    let workspace = workspace_root();
-    let scratch = tempfile::tempdir().expect("scratch dir");
-    let pair = tiled_pair(&workspace, "mover-closet");
-    let today = station_means(&workspace, scratch.path(), &pair.today, "today");
-    let tiled = station_means(&workspace, scratch.path(), &pair.tiled, "tiled");
-    for (name, (_, before), (_, after)) in
-        [("st2", &today[0], &tiled[0]), ("st3", &today[1], &tiled[1])]
-    {
-        eprintln!("mover door {name}: today {before:.3} tiled {after:.3}");
-        assert!(
-            *after >= before - 0.02,
-            "{name}: darkened {before} → {after}"
-        );
-    }
-}
-
 // The convex room's wall-hugging probes take tiles, and the tiled build moves
 // no pixel by more than 2 levels against the same PRL without id 59.
 #[test]

@@ -171,9 +171,9 @@ pub struct ShVolumeResources {
     pub cell_size: [f32; 3],
     grid_info_buffer: wgpu::Buffer,
     probe_occlusion_enabled: bool,
-    /// Total atlas handle, retained so the diagnostics readback can copy it
-    /// back to CPU each frame. Carries `COPY_SRC`.
-    #[cfg(feature = "dev-tools")]
+    /// Total atlas handle, retained so the diagnostics readback (and the
+    /// compose GPU tests) can copy it back to CPU. Carries `COPY_SRC`.
+    #[cfg(any(test, feature = "dev-tools"))]
     pub total_atlas_texture: wgpu::Texture,
 }
 
@@ -886,7 +886,7 @@ impl ShVolumeResources {
         // Retain the total atlas texture for the dev-tools readback. The
         // `wgpu::Texture` handle is an Arc clone — the views above already keep
         // the texture alive, this just gives the readback a handle to copy from.
-        #[cfg(feature = "dev-tools")]
+        #[cfg(any(test, feature = "dev-tools"))]
         let total_atlas_texture = total_atlas_texture.clone();
 
         let animation = AnimatedLightBuffers {
@@ -934,7 +934,7 @@ impl ShVolumeResources {
             cell_size,
             grid_info_buffer,
             probe_occlusion_enabled,
-            #[cfg(feature = "dev-tools")]
+            #[cfg(any(test, feature = "dev-tools"))]
             total_atlas_texture,
         }
     }

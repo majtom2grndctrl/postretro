@@ -15,6 +15,10 @@ use crate::camera::RenderCamera;
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::{App, cpu_timing, render};
 
+#[cfg(test)]
+#[path = "world_less_frame_tests.rs"]
+mod tests;
+
 /// The view a held level streams toward while a world-less frame covers it:
 /// the reveal frame's camera, so the planar mirror builds from it too.
 #[derive(Debug, Clone, Copy)]
@@ -158,11 +162,11 @@ impl App {
             crate::rebuild_blocked_portals(&mut self.blocked_portals, Some(world), &registry);
             // Mover light state reads the same final post-tick phase, so a
             // held level composes its seeded state before reveal.
-            self.kinematic_mover_render
-                .collect_light_states(&registry, Some(world));
-        }
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_mover_light_states(self.kinematic_mover_render.light_states());
+            self.kinematic_mover_render.hand_over_light_states(
+                &registry,
+                Some(world),
+                self.renderer.as_mut(),
+            );
         }
         let visible_render = VisibleRenderPreparation::for_level(
             world,
@@ -257,6 +261,17 @@ impl App {
             }
             None => {
                 session.clear_level_streaming();
+                // No world is drawn, but the hand-over still runs: a Loading
+                // or Frontend frame leaves the renderer this frame's states
+                // (none without a level), never a stale frame's.
+                {
+                    let registry = session.scripting.script_ctx.registry.borrow();
+                    self.kinematic_mover_render.hand_over_light_states(
+                        &registry,
+                        self.level.as_ref(),
+                        Some(&mut *renderer),
+                    );
+                }
                 renderer.set_planar_mirror_light_reach(&[]);
                 (
                     VisibleRenderPreparation::empty_world(),

@@ -26,6 +26,8 @@ use crate::render::{KinematicMoverInstance, MoverLightState, MoverOccluderAabb};
 
 mod light_state;
 #[cfg(test)]
+mod light_state_closet_tests;
+#[cfg(test)]
 mod light_state_tests;
 
 /// Find a mover's entity by its level-stable mover id.
@@ -273,6 +275,22 @@ impl KinematicMoverRenderCollector {
         world: Option<&LevelWorld>,
     ) {
         self.light_states.collect(registry, world);
+    }
+
+    /// Collect this frame's mover light states and hand them to `renderer`.
+    /// Every presented frame calls it, world drawn or not (play, held,
+    /// Loading and Frontend frames alike), so the renderer never keeps a
+    /// stale state: with no level, it receives none.
+    pub(crate) fn hand_over_light_states(
+        &mut self,
+        registry: &EntityRegistry,
+        world: Option<&LevelWorld>,
+        renderer: Option<&mut crate::render::Renderer>,
+    ) {
+        self.collect_light_states(registry, world);
+        if let Some(renderer) = renderer {
+            renderer.set_mover_light_states(self.light_states());
+        }
     }
 
     /// The states [`Self::collect_light_states`] last collected.

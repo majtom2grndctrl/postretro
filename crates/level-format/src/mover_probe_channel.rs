@@ -202,6 +202,18 @@ impl MoverProbeChannelSection {
         self.affinity_dims.iter().map(|&d| d as usize).product()
     }
 
+    /// Whether affinity cell `cell` holds a direct or bounce entry. Such a
+    /// cell composes at L0, so the base never stores it coarser there.
+    pub fn cell_has_entries(&self, cell: usize) -> bool {
+        [&self.direct_offsets, &self.bounce_offsets]
+            .into_iter()
+            .any(|offsets| {
+                offsets
+                    .get(cell..=cell + 1)
+                    .is_some_and(|range| range[0] != range[1])
+            })
+    }
+
     /// Every direct entry with its cell and payload, in wire order.
     pub fn direct_entry_views(&self) -> impl Iterator<Item = DirectEntryView<'_>> {
         let mut visibility_at = 0;

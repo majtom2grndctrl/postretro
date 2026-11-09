@@ -32,6 +32,7 @@ use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::MapEntitySection;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
@@ -159,6 +160,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) teleporters: &'a TeleportersSection,
     /// GhostLinks (id 56); written only when the map has a link.
     pub(super) ghost_links: &'a GhostLinksSection,
+    /// MoverProbeChannel (id 57); written only when it has an entry.
+    pub(super) mover_probe_channel: Option<&'a MoverProbeChannelSection>,
     pub(super) push_forces: Option<&'a PushForcesSection>,
     /// ReflectionProbes (id 54), or `None` when no probe was kept.
     pub(super) reflection_probes: Option<&'a ReflectionProbesSection>,
@@ -212,6 +215,7 @@ pub(super) fn write_finalized_prl(
         environment_volumes,
         teleporters,
         ghost_links,
+        mover_probe_channel,
         push_forces,
         reflection_probes,
         cell_draw_index,
@@ -263,6 +267,7 @@ pub(super) fn write_finalized_prl(
         environment_volumes,
         teleporters,
         ghost_links,
+        mover_probe_channel,
         push_forces,
         reflection_probes,
         cell_draw_index,

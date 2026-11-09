@@ -10,10 +10,14 @@ use crate::lightmap_bake::{
 };
 use crate::map_data::{LightType, MapLight};
 use crate::mover_light_gate::{
-    Pose, point_touches_brush, segment_may_touch_box, segment_touches_brush,
+    BOX_SLACK_M, Pose, point_touches_brush, segment_may_touch_box, segment_touches_brush,
 };
 use crate::partition::Aabb;
 use crate::texel_footprint::ProbeEarlyOut;
+
+/// Angular slack on the sun cone test, far above the `f32` rounding of a
+/// jittered sample direction.
+const SUN_CONE_SLACK_RAD: f64 = 1.0e-3;
 
 /// What a valid probe inside a posed brush is tested against. Nothing lives
 /// inside a brush, so such a probe feeds only that mover's own faces, which
@@ -28,9 +32,11 @@ pub(crate) enum InsideBrushRule {
     Dark,
 }
 
-/// The rule the direct bake takes: the owner's lean. `Dark` is the A/B
-/// alternative.
-pub(crate) const INSIDE_BRUSH_RULE: InsideBrushRule = InsideBrushRule::SkipContainingBrush;
+/// The rule the channel bakes take (owner, Stop 2): dark, so a valid probe
+/// inside a posed brush stores q = 0 for that pose. Skipping the containing
+/// brush leaks exterior direct light onto the mover's inner faces, since a
+/// probe inside a wall serves both of its faces.
+pub(crate) const INSIDE_BRUSH_RULE: InsideBrushRule = InsideBrushRule::Dark;
 
 /// One mover posed at one terminus as an occluder of probe-point shadow rays.
 #[derive(Debug, Clone)]
@@ -44,13 +50,18 @@ impl PosedOccluder {
         Self { pose, rule }
     }
 
+    pub(crate) fn pose(&self) -> &Pose {
+        &self.pose
+    }
+
     /// Whether any sample segment from `probe` toward `light`'s emitter can
     /// meet the pose: every such segment lies in the box around the probe
-    /// and the emitter sphere. A sun's samples run off to the far distance,
-    /// so it always may.
+    /// and the emitter sphere. A sun's samples leave the probe inside a cone
+    /// about its direction, so they can meet the pose only where that cone
+    /// meets the sphere around its bounds.
     pub(crate) fn may_meet(&self, probe: Vec3, light: &MapLight) -> bool {
         match light.light_type {
-            LightType::Directional => true,
+            LightType::Directional => self.sun_cone_may_meet(probe, light),
             LightType::Point | LightType::Spot => {
                 let reach = DVec3::splat(f64::from(emitter_radius(light).max(0.0)));
                 let probe = probe.as_dvec3();
@@ -61,6 +72,36 @@ impl PosedOccluder {
                 crate::mover_light_gate::boxes_may_touch(&span, &self.pose.bounds)
             }
         }
+    }
+
+    /// The cone test for a sun: every sample direction lies within half the
+    /// angular diameter of the direction toward it, so a segment from the
+    /// lifted probe can touch the pose only if that cone, widened by the
+    /// angle the pose's bounding sphere subtends, holds the sphere's centre.
+    fn sun_cone_may_meet(&self, probe: Vec3, light: &MapLight) -> bool {
+        let aim = DVec3::from(
+            light
+                .cone_direction
+                .unwrap_or([0.0, -1.0, 0.0])
+                .map(f64::from),
+        );
+        let to_sun = (-aim).normalize_or_zero();
+        if to_sun == DVec3::ZERO {
+            return true;
+        }
+        let bounds = &self.pose.bounds;
+        // The lift and the contact band move a segment's start and the
+        // brushes' faces; the slack covers both.
+        let radius =
+            (bounds.max - bounds.min).length() * 0.5 + BOX_SLACK_M + f64::from(RAY_EPSILON);
+        let towards = bounds.centroid() - probe.as_dvec3();
+        let distance = towards.length();
+        if distance <= radius {
+            return true;
+        }
+        let half_angle = f64::from(light.angular_diameter.max(0.0)).to_radians() * 0.5;
+        let angle = (towards.dot(to_sun) / distance).clamp(-1.0, 1.0).acos();
+        angle <= half_angle + (radius / distance).asin() + SUN_CONE_SLACK_RAD
     }
 
     /// Whether the segment `from..=to`, traced for a receiver at `probe`,

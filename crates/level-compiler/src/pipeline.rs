@@ -33,6 +33,7 @@ use delta_working_set::*;
 mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
 mod mover_light_stage;
+mod mover_probe_stage;
 pub(crate) mod runtime_cells;
 mod sdf_stage;
 mod sh_working_set_gates;
@@ -732,6 +733,13 @@ fn run_after_parsing(
         args.working_set_max_bytes,
         delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
     )?;
+    // Mover poses depend only on map data. They resolve ahead of the SH
+    // gates and every SH bake, so the probe channel's bakes, and the storage
+    // classifiers its cells cap, all read one set (P21).
+    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+    );
     // The SH base gate prices the patch cache, the later bounces at the
     // map's `_bounce_fill` and the id-34 volume from the patch set, the
     // static lights' ranges and the probe grid's dimensions. Its patch set
@@ -1197,6 +1205,30 @@ fn run_after_parsing(
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
+    // The mover probe channel's direct half bakes before any storage
+    // classifier, so its cells cap id 41's levels and the shared base levels
+    // of ids 34 and 35 as a grid-matched delta entry's do.
+    let mover_direct_half =
+        mover_probe_stage::bake_direct_half(mover_probe_stage::DirectHalfInputs {
+            poses: &mover_poses,
+            movers: &map_data.kinematic_movers,
+            sh_ctx: &sh_ctx,
+            sh_config: &sh_config,
+            portals: &runtime.portals,
+            alpha_lights: &alpha_lights_ns,
+            animated_lights: &animated_baked_lights,
+            static_embedded: &static_embedded_emitters,
+            animated_embedded: &animated_embedded_emitters,
+            mutable_descriptors: &script_mutable_descriptor_slots,
+            cache: stage_cache.as_ref(),
+            governor: &governor,
+        })?;
+    let provisional_mover_channel = mover_direct_half
+        .as_ref()
+        .map(|half| half.provisional_section(&sh_volume_section))
+        .transpose()?
+        .flatten();
+
     // The three delta bakes meet at one owned compiler-only seam. Exact-zero
     // drop observes the dense bake output; valid-probe compaction then rewrites
     // id 41 to the id-34-valid local tiles before the payload cap is applied.
@@ -1207,6 +1239,7 @@ fn run_after_parsing(
         direct_sh_delta_volumes_section,
         animated_direct_sh_delta_volumes_section,
     );
+    delta_sections.mover_channel = provisional_mover_channel;
     debug_assert_eq!(
         delta_sections.config, args.delta_section_config,
         "the post-bake delta handoff must retain the resolved compiler configuration"
@@ -1250,11 +1283,7 @@ fn run_after_parsing(
     let mut density_params = sh_coarsen::CoarsenParams::default();
     density_params.rel_p95_max *= density_fidelity;
     density_params.rel_max_max *= density_fidelity;
-    let all_deltas = sh_coarsen::DeltaSectionsRef {
-        indirect: delta_sections.indirect.as_ref(),
-        direct: delta_sections.direct.as_ref(),
-        anim_direct: delta_sections.animated_direct.as_ref(),
-    };
+    let all_deltas = delta_sections.refs();
     let density_classification = if !sh_coarsening_enabled {
         let levels = sh_density::uniform_l0_levels(sh_volume_section.grid_dimensions)
             .map_err(|error| anyhow::anyhow!("base SH uniform levels failed: {error}"))?;
@@ -1351,6 +1380,10 @@ fn run_after_parsing(
             "DirectShDeltaVolumes lost coverage for an EntityShadowLights selection after delta dropping"
         );
     }
+    if let Some(half) = mover_direct_half.as_ref() {
+        half.finish_section(&mut delta_sections)?;
+    }
+    drop(mover_direct_half);
 
     // Output-preserving SH coarsenability analysis (`--sh-analyze`). Runs AFTER
     // the delta sections are finalized — post EntityShadowLights static-light
@@ -1380,6 +1413,7 @@ fn run_after_parsing(
             delta_sections.indirect.as_ref(),
             delta_sections.direct.as_ref(),
             delta_sections.animated_direct.as_ref(),
+            delta_sections.mover_channel.as_ref(),
         );
     }
 
@@ -1550,10 +1584,6 @@ fn run_after_parsing(
 
     // The mover light gate's probe pass reads the SH family's probe grid and
     // pre-cut world, so it runs before atlas preparation cuts and rebuilds it.
-    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
-        &map_data.kinematic_movers,
-        &map_data.kinematic_waypoints,
-    );
     let mover_gate_lights =
         crate::mover_light_gate::GateLights::resolve(&static_baked_lights, &animated_baked_lights);
     let mover_light_probes = mover_light_stage::probe_gate(
@@ -2149,6 +2179,7 @@ fn run_after_parsing(
         environment_volumes: &environment_volumes_section,
         teleporters: &map_data.teleporters,
         ghost_links: &map_data.ghost_links,
+        mover_probe_channel: delta_sections.mover_channel.as_ref(),
         push_forces: push_forces_section.as_ref(),
         reflection_probes: reflection_probes_section.as_ref(),
         cell_draw_index: cell_draw_index_section.as_ref(),
@@ -2260,11 +2291,7 @@ fn apply_coarsen_classification(
     // The direct classifier still reads all three dense sections for the
     // composed reference magnitude, but produces levels only for id 41.
     let direct_levels = {
-        let all = sh_coarsen::DeltaSectionsRef {
-            indirect: delta_sections.indirect.as_ref(),
-            direct: delta_sections.direct.as_ref(),
-            anim_direct: delta_sections.animated_direct.as_ref(),
-        };
+        let all = delta_sections.refs();
         delta_sections.direct.as_ref().map(|_| {
             sh_coarsen::classify_direct_levels(
                 base,
@@ -2334,6 +2361,7 @@ fn run_sh_analysis(
     delta_anim_direct: Option<
         &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
     >,
+    mover_channel: Option<&postretro_level_format::mover_probe_channel::MoverProbeChannelSection>,
 ) {
     let Some(base) = base_indirect else {
         log::warn!("[sh-analyze] no base SH volume produced (empty grid?); analysis skipped");
@@ -2361,6 +2389,7 @@ fn run_sh_analysis(
         delta_indirect,
         delta_direct,
         delta_anim_direct,
+        mover_channel,
         protect_aabbs: &protect,
         thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
     };

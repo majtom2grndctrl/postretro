@@ -124,7 +124,7 @@ impl<'a> SdfInputs<'a> {
 /// then each leaf's solidity. A brush that emits no faces (culled as
 /// exterior, say) still changes these. Leaf bounds, faces and defining
 /// planes stay out.
-fn solidity_bytes(tree: &BspTree) -> Vec<u8> {
+pub(crate) fn solidity_bytes(tree: &BspTree) -> Vec<u8> {
     fn push_child(bytes: &mut Vec<u8>, child: &BspChild) {
         let (tag, index) = match *child {
             BspChild::Node(index) => (0u8, index),

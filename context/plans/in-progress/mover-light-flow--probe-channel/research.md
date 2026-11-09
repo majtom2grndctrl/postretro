@@ -368,3 +368,21 @@ These are measurement-mode runs over every mover at both termini, at bounce floo
 - **The depth floor localizes everywhere.** Live tiles stay under 2,300 a map wherever every mover was measured. The hallway is the exception. Its own id 59 already holds 41% of the range, and `warren_lift_0` alone adds 1,323 live tiles at 0.105. Eleven movers at that rate stay within the range (rough extrapolation: under 10,000 live tiles in all), with no id-59 trim.
 - **Direct-half byte column (q bytes and carried T): not derived.** Task 1's joint visibility runs only under the pose switch, for one mover and terminus, inside the id-35/41/45 bakes. A per-(mover, terminus, light, probe) count needs the q bake task 6 builds. It is not cheap from what exists.
 - **Bright-room probes on `mover-closet` storing a bounce entry: none** at any floor. All 144 affected probes are closet probes, 3.5 m median and 6.1 m max from the door's bounds.
+
+### M7 direct-half column (task 6, 2026-11-08)
+
+These are cold `--no-cache` builds at `-j 6` under nice, with the production q bake and the dark inside-brush rule. Bake-only lights are not gated yet (task 6b), so the counts below leave them out.
+
+| Map | Gated lights with entries | Entries (own tile) | Direct block | ÷ id 35 | ÷ (id 41 + id 45) | id 57 total | Build |
+|---|---|---|---|---|---|---|---|
+| `mover-closet` | 0 of 3 | 0 | no section | — | — | — | 2 s |
+| `mover-setpiece` | 10 of 10 | 519 (393) | 4,086,210 B | 9.97× | 1.29× | 4,092,597 B | 14 s |
+| `kinematic-platform` | 6 of 17 | 11 (0) | 1,188 B | 0.04% | 0.025% | 52,035 B | 32 s |
+| `campaign-test` | 2 of 16 | 50 (0) | 4,496 B | 0.30% | 0.057% | 110,339 B | 117 s |
+| `stress-warren-showcase` | 14 of 49 | 223 (0) | 20,398 B | 0.17% | 0.026% | 235,561 B | 540 s, RSS 5.98 GB |
+| `stress-warren-hallway-inspection` | 6 of 344 | 20 (0) | 1,618 B | 0.006% | 0.002% | 577,717 B | 887 s, RSS 7.02 GB |
+
+- Setpiece's direct block is 4,029,480 B of own tiles, 50,502 B of q and 6,228 B of records.
+- On big maps, id 57's size is mostly the dense cell index.
+- The direct bake took 0.7–312 ms wall time on every map.
+- Setpiece's base bricks go from 351/42/3 to 380/13/3 (L0/L1/L2) under the channel caps.

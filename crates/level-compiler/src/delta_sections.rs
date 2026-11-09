@@ -8,6 +8,7 @@ use postretro_level_format::delta_sh_volumes::{
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::lightmap::f32_to_f16_bits;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::sh_reconstruct::{
     Level, Tile, kept_mask, reconstruct_l1_tile, reconstruct_l2_tile, zero_tile,
 };
@@ -17,6 +18,7 @@ use crate::delta_drop_policy::{
     DropStats, ScriptMutableDescriptorSlots, drop_animated_direct_zero_entries,
     drop_direct_zero_entries, drop_indirect_zero_entries,
 };
+use crate::sh_coarsen::DeltaSectionsRef;
 
 /// Default aggregate raw payload cap for ids 27, 41, and 45 on desktop maps.
 pub(crate) const DEFAULT_MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
@@ -43,7 +45,8 @@ impl Default for DeltaSectionConfig {
     }
 }
 
-/// Delta sections after all three delta bakes have completed.
+/// Delta sections after all three delta bakes have completed, and the mover
+/// probe channel, whose cells cap storage as a delta entry's do.
 ///
 /// This is intentionally an owned handoff. The next compiler-only policy can
 /// inspect or replace these sections before packing while the pipeline and
@@ -54,6 +57,10 @@ pub(crate) struct PostBakeDeltaSections {
     pub entity_shadow_lights: Option<EntityShadowLightsSection>,
     pub direct: Option<DirectShDeltaVolumesSection>,
     pub animated_direct: Option<AnimatedDirectShDeltaVolumesSection>,
+    /// MoverProbeChannel (id 57), set by the pipeline once the channel bakes.
+    /// Its own-tile flags are settled only once ids 41 and 45 are final
+    /// (P22); until then every flag is clear.
+    pub mover_channel: Option<MoverProbeChannelSection>,
 }
 
 impl PostBakeDeltaSections {
@@ -70,6 +77,17 @@ impl PostBakeDeltaSections {
             entity_shadow_lights,
             direct,
             animated_direct,
+            mover_channel: None,
+        }
+    }
+
+    /// Borrowed views of every section the storage classifiers read.
+    pub(crate) fn refs(&self) -> DeltaSectionsRef<'_> {
+        DeltaSectionsRef {
+            indirect: self.indirect.as_ref(),
+            direct: self.direct.as_ref(),
+            anim_direct: self.animated_direct.as_ref(),
+            mover_channel: self.mover_channel.as_ref(),
         }
     }
 

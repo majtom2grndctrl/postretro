@@ -216,12 +216,16 @@ const SUMMARY_PREFIXES: [&str; 4] = [
     "  mask est.: ",
 ];
 
-/// The report: every `[MoverLight]` line at info and debug, then the Build
-/// Summary block.
+/// The gate's report logger. The probe channel logs `[MoverLight]` lines
+/// too, with its bake time, so the report keeps the gate's alone.
+const REPORT_TARGET: &str = "mover_light_gate::report] [MoverLight]";
+
+/// The report: every `[MoverLight]` line the gate's report logs at info and
+/// debug, then the Build Summary block.
 fn report(logs: &str) -> Vec<String> {
     let lines: Vec<String> = logs
         .lines()
-        .filter(|line| line.contains("[MoverLight]"))
+        .filter(|line| line.contains(REPORT_TARGET))
         .chain(logs.lines().filter(|line| {
             SUMMARY_PREFIXES
                 .iter()

@@ -92,15 +92,7 @@ pub(crate) fn apply_runtime_safe_envelope(
         |section| mutable_animated_direct_cost(section, &valid_masks),
     );
 
-    let magnitudes = dense_reference_magnitudes(
-        base,
-        base_direct,
-        DeltaSectionsRef {
-            indirect: sections.indirect.as_ref(),
-            direct: sections.direct.as_ref(),
-            anim_direct: sections.animated_direct.as_ref(),
-        },
-    )?;
+    let magnitudes = dense_reference_magnitudes(base, base_direct, sections.refs())?;
     let participating_magnitudes: Vec<f32> = magnitudes
         .iter()
         .zip(&valid_masks)
@@ -347,6 +339,7 @@ fn dense_reference_magnitudes(
         delta_indirect: deltas.indirect,
         delta_direct: deltas.direct,
         delta_anim_direct: deltas.anim_direct,
+        mover_channel: deltas.mover_channel,
         protect_aabbs: &[],
         thresholds: &[],
     };

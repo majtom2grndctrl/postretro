@@ -50,9 +50,9 @@ pub(crate) struct DensityClassification {
     pub levels: Vec<Level>,
     pub scales: Vec<u8>,
     /// Bricks whose unconstrained candidate exceeded a present delta's level,
-    /// in id 27 / id 41 / id 45 order. A brick can deliberately appear in more
-    /// than one bucket when multiple sections constrain it.
-    pub delta_pins: [u64; 3],
+    /// in id 27 / id 41 / id 45 / id 57 order. A brick can deliberately appear
+    /// in more than one bucket when multiple sections constrain it.
+    pub delta_pins: [u64; 4],
     /// Bricks the mapper/CLI protection union lowered from a non-L0 candidate.
     pub protection_pins: u64,
     pub hierarchy_blocks: crate::sh_hierarchy::BlockCounts,
@@ -174,6 +174,19 @@ pub(crate) fn storage_level_ceilings(
         }),
         "id 45",
     )?;
+    if let Some(channel) = deltas.mover_channel {
+        if channel.affinity_dims != affinity_dimensions {
+            return Err(format!(
+                "id 57 affinity grid {:?} does not match base affinity grid {affinity_dimensions:?}",
+                channel.affinity_dims
+            ));
+        }
+        for (cell, ceiling) in ceilings.iter_mut().enumerate() {
+            if channel.cell_has_entries(cell) {
+                *ceiling = Level::L0;
+            }
+        }
+    }
 
     for brick_z in 0..affinity_dimensions[2] as usize {
         for brick_y in 0..affinity_dimensions[1] as usize {
@@ -335,7 +348,9 @@ pub(crate) fn apply_forced_scale_constraints(
             offsets
                 .get(cell..=cell + 1)
                 .is_some_and(|pair| pair[0] != pair[1])
-        })
+        }) || deltas
+            .mover_channel
+            .is_some_and(|channel| channel.cell_has_entries(cell))
     };
     let mut bricks = Vec::with_capacity(levels.len());
     for z in 0..affinity_dimensions[2] as usize {
@@ -524,6 +539,7 @@ pub(crate) fn classify_base_levels(
         delta_indirect: deltas.indirect,
         delta_direct: deltas.direct,
         delta_anim_direct: deltas.anim_direct,
+        mover_channel: deltas.mover_channel,
         protect_aabbs: &[],
         thresholds: &[],
     };
@@ -670,6 +686,9 @@ pub(crate) fn classify_base_levels(
                     .get(cell..=cell + 1)
                     .is_some_and(|offsets| offsets[0] != offsets[1])
             })
+            || deltas
+                .mover_channel
+                .is_some_and(|channel| channel.cell_has_entries(cell))
     };
     let hierarchy_bricks: Vec<crate::sh_hierarchy::BrickInput> = levels
         .iter()
@@ -748,7 +767,7 @@ pub(crate) fn delta_pin_counts(
     levels: &[Level],
     grid_dimensions: [u32; 3],
     deltas: DeltaSectionsRef<'_>,
-) -> Result<[u64; 3], String> {
+) -> Result<[u64; 4], String> {
     let affinity_dimensions = grid_dimensions.map(|dimension| dimension.div_ceil(4));
     if levels.len() != checked_probe_count(affinity_dimensions)? {
         return Err("base SH delta pin attribution does not match the affinity grid".to_string());
@@ -788,6 +807,16 @@ pub(crate) fn delta_pin_counts(
                 )
             }),
         ),
+        // Every id-57 cell composes at L0.
+        deltas.mover_channel.map_or(0, |channel| {
+            candidates
+                .iter()
+                .enumerate()
+                .filter(|&(cell, &candidate)| {
+                    candidate > Level::L0.to_u8() && channel.cell_has_entries(cell)
+                })
+                .count() as u64
+        }),
     ])
 }
 
@@ -1050,7 +1079,7 @@ pub(crate) fn log_density_summary(
     irradiance_format: u32,
 ) {
     log::info!(
-        "[Compiler] SH base-density summary: L0/L1/L2 bricks {}/{}/{}, stored tiles {}, delta pins id27/id41/id45 {}/{}/{}, protection pins {}, id34 {} bytes, id35 {}, format tag {}",
+        "[Compiler] SH base-density summary: L0/L1/L2 bricks {}/{}/{}, stored tiles {}, delta pins id27/id41/id45/id57 {}/{}/{}/{}, protection pins {}, id34 {} bytes, id35 {}, format tag {}",
         stats.brick_levels[0],
         stats.brick_levels[1],
         stats.brick_levels[2],
@@ -1058,6 +1087,7 @@ pub(crate) fn log_density_summary(
         classification.delta_pins[0],
         classification.delta_pins[1],
         classification.delta_pins[2],
+        classification.delta_pins[3],
         classification.protection_pins,
         indirect_section_bytes,
         direct_section_bytes
@@ -2059,7 +2089,7 @@ mod tests {
             stored_tiles: 42,
         };
         let classification = DensityClassification {
-            delta_pins: [8, 9, 10],
+            delta_pins: [8, 9, 10, 7],
             protection_pins: 11,
             hierarchy_blocks: crate::sh_hierarchy::BlockCounts {
                 delta: 12,
@@ -2076,7 +2106,7 @@ mod tests {
         capture.assert_logged_once(LogLevel::Info, "nodes scale 1: L0/L1/L2 0/4/5");
         capture.assert_logged_once(
             LogLevel::Info,
-            "delta pins id27/id41/id45 8/9/10, protection pins 11",
+            "delta pins id27/id41/id45/id57 8/9/10/7, protection pins 11",
         );
         capture.assert_logged_once(
             LogLevel::Info,
@@ -2114,6 +2144,7 @@ mod tests {
                 indirect: Some(&indirect),
                 direct: Some(&direct),
                 anim_direct: Some(&animated),
+                mover_channel: None,
             },
         )
         .unwrap();
@@ -2148,4 +2179,7 @@ mod tests {
         .unwrap();
         assert_eq!(levels, vec![Level::L0, Level::L1]);
     }
+
+    // Bake row B9: the mover probe channel's storage caps.
+    mod mover_channel;
 }

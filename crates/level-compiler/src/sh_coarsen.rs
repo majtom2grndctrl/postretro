@@ -18,6 +18,7 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::sh_reconstruct::{Level, Tile, local_xyz, zero_tile};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
@@ -327,13 +328,18 @@ fn demote_one(level: Level, l1_eligible: bool) -> Level {
 // / reconstruction math is reused verbatim from `sh_analyze` so the numbers
 // match the measurement pass exactly.
 
-/// Borrowed handles to the three delta sections. All present sections feed the
-/// shared composed magnitude; id 41 supplies the reconstruction-error numerator.
+/// Borrowed handles to the three delta sections and the mover probe channel.
+/// All present delta sections feed the shared composed magnitude; id 41
+/// supplies the reconstruction-error numerator. The channel (id 57) feeds no
+/// magnitude: it only caps storage, as a grid-matched delta entry does, so
+/// every level away from its cells stays what the classifiers pick without
+/// it.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DeltaSectionsRef<'a> {
     pub indirect: Option<&'a DeltaShVolumesSection>,
     pub direct: Option<&'a DirectShDeltaVolumesSection>,
     pub anim_direct: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+    pub mover_channel: Option<&'a MoverProbeChannelSection>,
 }
 
 /// Probe-grid geometry: enough to place bricks in the world (AABB) and map
@@ -349,8 +355,10 @@ pub(crate) struct SectionGrid<'a> {
 
 /// Classify id 41's per-cell coarsening levels from the composed receiver.
 /// `magnitude` is the composed brightness shared across sections; `error` is
-/// id 41's own reconstruction error. Returns per-cell Level-as-u8, x-fastest,
-/// length == affinity_cell_count.
+/// id 41's own reconstruction error. A cell holding a mover probe channel
+/// direct entry is capped at L0, so a gated light's id-41 tile stays per
+/// probe there. Returns per-cell Level-as-u8, x-fastest, length ==
+/// affinity_cell_count.
 pub(crate) fn classify_direct_levels(
     base_indirect: &OctahedralShVolumeSection, // pre-BC6H RGBA16F id34
     base_direct: Option<&DirectShVolumeSection>, // pre-BC6H id35 (may be absent)
@@ -434,6 +442,7 @@ pub(crate) fn classify_direct_levels(
         delta_indirect: all_deltas.indirect,
         delta_direct: all_deltas.direct,
         delta_anim_direct: all_deltas.anim_direct,
+        mover_channel: all_deltas.mover_channel,
         protect_aabbs: &[],
         thresholds: &[],
     };
@@ -528,7 +537,21 @@ pub(crate) fn classify_direct_levels(
         }
     }
 
-    classify_levels(&bricks, affinity_dims, protect_aabbs, params)
+    match all_deltas.mover_channel {
+        None => classify_levels(&bricks, affinity_dims, protect_aabbs, params),
+        Some(channel) => {
+            let ceilings: Vec<u8> = (0..brick_count)
+                .map(|cell| {
+                    let gated = channel
+                        .direct_offsets
+                        .get(cell..=cell + 1)
+                        .is_some_and(|range| range[0] != range[1]);
+                    if gated { Level::L0 } else { Level::L2 }.to_u8()
+                })
+                .collect();
+            classify_levels_with_ceiling(&bricks, affinity_dims, protect_aabbs, &ceilings, params)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1003,6 +1026,66 @@ mod tests {
             vec![L2],
             "uniform target vs bright composed must coarsen to L2"
         );
+    }
+
+    // Bake row B9: a cell holding a mover probe channel direct entry keeps
+    // id 41 at L0, so a gated light's id-41 tile stays per probe; a bounce
+    // entry alone leaves id 41's level to the classifier.
+    #[test]
+    fn provider_caps_id41_at_l0_under_a_channel_direct_entry_only() {
+        use postretro_level_format::mover_probe_channel::{
+            MoverBounceEntry, MoverBouncePlacement, MoverDirectEntry, MoverLightNamespace,
+        };
+        let dims = [4, 4, 4];
+        let validity = all_valid(dims);
+        let base = bright_base_indirect(dims, 10.0);
+        let delta = direct_delta_from(|_| 0.5);
+        let channel = |direct: bool| MoverProbeChannelSection {
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            bounce_placement: MoverBouncePlacement::Resident,
+            valid_probe_masks: vec![u64::MAX],
+            direct_offsets: vec![0, u32::from(direct)],
+            direct_entries: direct
+                .then_some(MoverDirectEntry {
+                    mover_id: 0,
+                    namespace: MoverLightNamespace::StaticLight,
+                    carries_own_tile: false,
+                    light_index: 0,
+                })
+                .into_iter()
+                .collect(),
+            visibility: if direct { vec![255; 128] } else { Vec::new() },
+            own_tiles: Vec::new(),
+            bounce_offsets: vec![0, u32::from(!direct)],
+            bounce_entries: (!direct)
+                .then_some(MoverBounceEntry {
+                    mover_id: 0,
+                    affected_probe_mask: 1,
+                })
+                .into_iter()
+                .collect(),
+            bounce_tiles: Vec::new(),
+            depth_records: Vec::new(),
+            depth_tiles: Vec::new(),
+            ramps: Vec::new(),
+        };
+        for (direct, expected) in [(true, L0), (false, L2)] {
+            let channel = channel(direct);
+            let out = classify_direct_levels(
+                &base,
+                None,
+                DeltaSectionsRef {
+                    direct: Some(&delta),
+                    mover_channel: Some(&channel),
+                    ..Default::default()
+                },
+                grid_ref(dims, &validity),
+                &[],
+                &CoarsenParams::default(),
+            );
+            assert_eq!(out, vec![expected], "direct entry {direct}");
+        }
     }
 
     #[test]

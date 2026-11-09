@@ -51,4 +51,4 @@
 | P9 | Late joiner | A client joins while an enemy crouches. | The join baseline carries the stance component; the first display copy has the crouched volume. |
 | P10 | Target on a cover point | The target occupies a candidate. | Dynamic placement rejects it; it is never claimed. |
 | P11 | Level change or hot reload alters cover | An enemy holds a cover slot. | The claim drops on reload; the next entry re-picks from the new table. |
-| P12 | Cover point on a suppress boundary | A derived point lies exactly on an `ai_cover_suppress` plane. | Counted inside and removed, identically across bakes. |
+| P12 | Cover point on a suppress boundary | A derived point lies exactly on an `cover_suppress` plane. | Counted inside and removed, identically across bakes. |

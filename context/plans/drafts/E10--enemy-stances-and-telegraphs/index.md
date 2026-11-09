@@ -19,6 +19,7 @@ When this is done:
 ## Decisions
 - **A stance is SDK vocabulary, not an engine noun.** `stance(name, options)` is an author-time builder like `activation.shot()` (`scripting.md` §11). It returns a fragment `{ entry, activities, transitions }` of plain activities named `<name>`, `<name>_release` and `<name>_recover`. The engine sees only activities. This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
 - **`merge()` composes fragments.** It is an SDK helper, in TypeScript and Luau, that combines activity and transition maps. A duplicate key rejects load with the key named, so nothing overwrites silently. Two maps that both carry `"*"` collide too. Extra exits from a stance go in that level's `"*"` rows.
+- **A stance can set the body's stance.** An optional `stance: "stand" | "crouch"` sets the activity property `stance` (`drafts/E10--enemy-cover`) on the hold and release; the recover stands unless it carries its own. A melee enemy crouches to coil a sweep. Whichever of the two briefs lands second wires the option.
 - **One stance names one attack.** The pose is the tell. A stance with several follow-ups is hand-authored from the same parts.
 - **Defaults for novices.** `holdMs` and `recover` are optional, and experts override them.
   - An omitted `holdMs` takes a seeded range above the co-op floor.
@@ -78,6 +79,7 @@ const overhead = stance("overhead", {
 });
 const sweep = stance("sweep", {
   animation: "stance_low",
+  stance: "crouch",                      // optional body stance on hold and release
   release: { animation: "attack_sweep", attack: "jab", ms: 120 },
   then: "approach",
 });
@@ -110,6 +112,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 **Builder**
 - [ ] `stance()` and `merge()` emit identical canonical descriptors in TypeScript and Luau, and the Scripting surface example runs as `content/dev` content.
 - [ ] With a fixed `holdMs` and a `breakOn`, `stance()` output equals a checked-in hand-written fixture of the three activities and their rows, row order included.
+- [ ] `stance: "crouch"` sets `stance` on the hold and release only; a recover given its own `stance` keeps it.
 - [ ] `merge()` with a duplicate activity or transition key rejects load naming the key.
 - [ ] These reject load with a pathed error:
   - a `then` or `breakOn.to` naming no sibling, or naming the stance's own `_release`;
@@ -180,7 +183,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 |---|---|---|---|---|---|
 | stance builder | none (SDK only) | — | `stance(name, options)` | `stance(name, options)` | n/a |
 | fragment keys | none | — | `entry`, `activities`, `transitions` | same | n/a |
-| stance options | none | — | `animation`, `sound`, `holdMs`, `release { animation, attack, ms }`, `recover { animation, ms }`, `breakOn { damage, to }`, `then` | same | n/a |
+| stance options | none | — | `animation`, `sound`, `stance`, `holdMs`, `release { animation, attack, ms }`, `recover { animation, ms }`, `breakOn { damage, to }`, `then` | same | n/a |
 | generated names | none | activity keys `<name>`, `<name>_release`, `<name>_recover` | same | same | n/a |
 | merge helper | none | — | `merge(...maps)` | `merge(...)` | n/a |
 | roll fact | `BRAIN_INPUTS` tail | `"@brain.activityRoll"` | `brain.activityRoll` | `brain.activityRoll` | n/a |

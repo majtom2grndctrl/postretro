@@ -17,8 +17,9 @@ When this is done:
   - prl-build derives cover points on the navmesh rim beside static obstructions. Each carries a position, a wall normal, and a height class, `full` or `half`.
   - They land in a new table of the navmesh section, whose version bumps. The previous version decodes with no cover and one warning; older versions no longer decode and need a rebake.
   - A navmesh input, a tracer change, or a cover-authoring edit rebakes the section; a light-only edit does not.
-  - `ai_cover` (`@PointClass`) adds a spot; its `height` is optional and measured at bake when omitted. `ai_cover_suppress` (`@SolidClass`) removes derived spots inside its brushes. Authored spots are never suppressed.
-  - An `ai_cover` off the navmesh, or with no wall to take a normal from, warns at compile and is dropped. An invalid `height` is a compile error naming the entity.
+  - `cover_spot` (`@PointClass`) adds a spot; its `height` is optional and measured at bake when omitted. `cover_suppress` (`@SolidClass`) removes derived spots inside its brushes. Authored spots are never suppressed.
+  - A `cover_spot` off the navmesh, or with no wall to take a normal from, warns at compile and is dropped. An invalid `height` is a compile error naming the entity.
+  - **Shared level data.** A cover spot is a place, not an AI rule: the table carries nothing AI-specific, so a later player-cover feature reads the same spots.
   - Static world only: a door or mover neither gives nor blocks cover. Mover-aware cover waits for `E17--movers-block-shots-and-sight`, whose combined sight check the host needs to confirm a spot behind a docked mover; the roadmap carries it as an Epic 17 follow-up.
 - **Cover folds into `reposition`.** `reposition.cover: "full" | "half" | "any"` draws candidates from cover points instead of the ring; absent, the ring applies as today. A string, not a boolean: cover has kinds, and later destination kinds join the same property.
   - A `full` point qualifies when the target's eye cannot see the standing eye there. A `half` point qualifies when it cannot see the crouched eye but can see the standing eye, so a peek works.
@@ -74,8 +75,8 @@ behavior: {
 ```
 ```
 // TrenchBroom
-{ "classname" "ai_cover" "origin" "64 0 16" "height" "half" }
-{ "classname" "ai_cover_suppress" /* brushes */ }
+{ "classname" "cover_spot" "origin" "64 0 16" "height" "half" }
+{ "classname" "cover_suppress" /* brushes */ }
 ```
 The Luau twin mirrors it with Luau call syntax (`brain.attacksFiredInActivity:ge(1):or(...)`).
 
@@ -83,10 +84,10 @@ The Luau twin mirrors it with Luau call syntax (`brain.attacksFiredInActivity:ge
 ### Automated
 **Bake**
 - [ ] On a fixture with a wall and a crate, the bake derives `full` points beside the wall and `half` points beside the crate, normals facing away from each. Open floor and a ledge's drop get none.
-- [ ] Two bakes of one map produce byte-identical cover tables. A derived point exactly on an `ai_cover_suppress` plane is removed, identically across bakes (pin P12).
+- [ ] Two bakes of one map produce byte-identical cover tables. A derived point exactly on an `cover_suppress` plane is removed, identically across bakes (pin P12).
 - [ ] A map with no cover round-trips an empty table, and `cover: "any"` holds.
-- [ ] `ai_cover` adds a spot with its authored class, or the measured class when `height` is omitted. `ai_cover_suppress` removes derived spots inside it and keeps an authored spot inside it. A derived and an authored spot at one position leave one entry.
-- [ ] An `ai_cover` off the navmesh, or with no wall in reach, warns and is dropped. An invalid `height` fails the compile naming the entity.
+- [ ] `cover_spot` adds a spot with its authored class, or the measured class when `height` is omitted. `cover_suppress` removes derived spots inside it and keeps an authored spot inside it. A derived and an authored spot at one position leave one entry.
+- [ ] A `cover_spot` off the navmesh, or with no wall in reach, warns and is dropped. An invalid `height` fails the compile naming the entity.
 - [ ] A navmesh of the previous version decodes with no cover and one warning, and its level still paths. An older version is refused with a rebake message.
 - [ ] A tracer change and a cover-authoring edit rebake cover; a light-only edit does not.
 - [ ] A docked mover beside a candidate neither adds nor removes cover.
@@ -149,8 +150,8 @@ The Luau twin mirrors it with Luau call syntax (`brain.attacksFiredInActivity:ge
 | body stance | `BehaviorActivityDescriptor::stance: Option<BodyStance>` | `"stance"`: `"stand"` \| `"crouch"` | `stance?` | `stance` | n/a |
 | crouch height | `BehaviorGraphDescriptor::crouch_height: Option<f32>` | `"crouchHeight"` | `crouchHeight?` | `crouchHeight` | n/a |
 | arrival fact | `BRAIN_INPUTS` tail | `"@brain.arrived"` | `brain.arrived` | `brain.arrived` | n/a |
-| cover hint | compiler-consumed entity | navmesh cover table | — | — | `ai_cover` (`@PointClass`): `origin`, `height` (`full`/`half`, optional) |
-| cover suppression | compiler-consumed entity | none | — | — | `ai_cover_suppress` (`@SolidClass`) |
+| cover hint | compiler-consumed entity | navmesh cover table | — | — | `cover_spot` (`@PointClass`): `origin`, `height` (`full`/`half`, optional) |
+| cover suppression | compiler-consumed entity | none | — | — | `cover_suppress` (`@SolidClass`) |
 | crouch clips | host resolution | state names `crouch_X`, `crouch_X_left`, … | — | — | n/a |
 | replicated stance | new replicated component kind | next component discriminant; `stand` / `crouch`; wire and snapshot versions bump | — | — | n/a |
 

@@ -41,6 +41,7 @@ The movement state machine, cross-cutting policies (momentum, input forgiveness)
 
 - [ ] **movement--wall-run** — environment-probe state; consumes the momentum policy. Detail-on-open. Vault shipped the probe pattern first; generalize its vault-only seams here rather than copying them: riding the contact's mover (`carry_ground`, `VaultFrame`), early-end settle (`settle_broken_vault`), the dead-pawn bar (`vault_barred`) and entry layer folding. Wall-run also needs a per-tick wall-contact fact before the intent.
 - [x] **movement--vault** — environment-probe state: auto-mantle onto ledges and out of fluids, with a held camera pose and a per-weapon charge opt-out. Done (`plans/done/movement--vault`).
+- [ ] **Player cover** — immersive-sim cover for the player (stick to a wall, lean or peek over half cover, cover prompts), reading the same baked `cover_spot` data enemies use (`drafts/E10--enemy-cover/`). Not drafted.
 - Grapple is explicitly deferred — constraint physics, renderer rope, and aiming make it its own future draft (the one place a scoped Rapier solver may earn a place; see `movement.md` §1).
 
 **Testable outcome:** the player chains modern-FPS traversal — dash, crouch, slide, wall-run, vault — on top of grounded movement, all tuned through descriptor data.

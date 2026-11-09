@@ -100,7 +100,7 @@ impl MoverRamps {
 /// Ids 41 and 45 as they will be emitted: after the exact-zero drop, id
 /// 41's classification and the valid-probe compaction. An entry carries its
 /// light's own tile unless one of these holds the light's term per probe at
-/// its cell (P22).
+/// its cell.
 pub(crate) struct EmittedDirectEntries<'a> {
     pub(crate) selection: Option<&'a EntityShadowLightsSection>,
     pub(crate) direct: Option<&'a DirectShDeltaVolumesSection>,
@@ -153,6 +153,15 @@ impl EmittedDirectEntries<'_> {
             MoverLightNamespace::BakeOnlyStaticLight => false,
         }
     }
+
+    /// Whether records of `namespace` gate anything at load. With no id 45
+    /// the renderer composes animated-baked records ungated: the light's id
+    /// 45 term they gate was never added. So the compiler writes none, as
+    /// they would be dead bytes. Static and bake-only records gate through
+    /// ids 35 and 41 and their own tiles, so they always do.
+    pub(crate) fn composes_gated(&self, namespace: MoverLightNamespace) -> bool {
+        namespace != MoverLightNamespace::AnimatedBaked || self.animated.is_some()
+    }
 }
 
 /// Id 57 holding `direct`'s entries and `bounce`'s blocks, or `None` when
@@ -160,11 +169,13 @@ impl EmittedDirectEntries<'_> {
 /// at one cell become one term record, masked to the probes where some
 /// mover's `q₀` or `q₁` is below 255. `own_tile(cell, namespace, light)`
 /// says whether the record carries its light's tile at those probes; a
-/// namespace that requires one always does. Bake-only lights, which `direct`
-/// names by static-baked index, are written by rank among the bake-only
-/// lights it holds. The listed cells are the union of the direct and bounce
-/// blocks' cells. Each payload past its bar in `bars` streams with id 50's
-/// cells; the section still holds it, for id 50 to carry.
+/// namespace that requires one always does. `gated(namespace)` says whether
+/// that namespace's records gate anything once loaded; a light in one that
+/// does not writes no record. Bake-only lights, which `direct` names by
+/// static-baked index, are written by rank among the bake-only lights it
+/// holds. The listed cells are the union of the direct and bounce blocks'
+/// cells. Each payload past its bar in `bars` streams with id 50's cells;
+/// the section still holds it, for id 50 to carry.
 pub(crate) fn channel_section(
     direct: &MoverDirectBake,
     bounce: &BounceBlocks,
@@ -172,9 +183,10 @@ pub(crate) fn channel_section(
     ramps: &MoverRamps,
     bars: &MoverPayloadBars,
     own_tile: impl Fn(usize, MoverLightNamespace, u32) -> bool,
+    gated: impl Fn(MoverLightNamespace) -> bool,
 ) -> anyhow::Result<Option<MoverProbeChannelSection>> {
     let mut records = Vec::new();
-    for light in &direct.lights {
+    for light in direct.lights.iter().filter(|light| gated(light.namespace)) {
         // Entries ascend by (cell, mover): one run per cell.
         for run in light.entries.chunk_by(|a, b| a.cell == b.cell) {
             let cell = run[0].cell;

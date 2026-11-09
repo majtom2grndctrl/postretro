@@ -50,11 +50,6 @@ impl PosedScene {
         self.solid.segment_blocked(from, to)
     }
 
-    /// The posed brushes `point` lies in or on, by index.
-    pub(crate) fn containing(&self, point: Vec3) -> Vec<usize> {
-        self.solid.containing(point)
-    }
-
     /// Whether any soft-visibility sample segment from `point` (lifted
     /// along its normal by at most [`RAY_EPSILON`]) toward `light` can meet
     /// the pose. Every target lies within a ball about one centre: the

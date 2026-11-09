@@ -736,7 +736,7 @@ fn run_after_parsing(
     )?;
     // Mover poses depend only on map data. They resolve ahead of the SH
     // gates and every SH bake, so the probe channel's bakes, and the storage
-    // classifiers its cells cap, all read one set (P21).
+    // classifiers its cells cap, all read one set.
     let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,

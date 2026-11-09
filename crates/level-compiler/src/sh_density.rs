@@ -2182,6 +2182,6 @@ mod tests {
         assert_eq!(levels, vec![Level::L0, Level::L1]);
     }
 
-    // Bake row B9: the mover probe channel's storage caps.
+    // The mover probe channel's storage caps.
     mod mover_channel;
 }

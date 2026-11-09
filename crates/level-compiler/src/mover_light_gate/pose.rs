@@ -48,7 +48,8 @@ pub(crate) struct Pose {
     /// The terminus waypoint's authored name.
     pub(crate) waypoint: String,
     pub(crate) brushes: Vec<PosedBrush>,
-    /// Union of the brushes' bounds; invalid for a mover with no brush.
+    /// Union of the brushes' bounds; always valid for an analysed mover,
+    /// since one with no bounded brush is not analysed.
     pub(crate) bounds: Aabb,
 }
 
@@ -91,8 +92,7 @@ pub(crate) struct AnalysedMover {
     /// Indexed by [`Terminus::index`].
     pub(crate) poses: [Pose; 2],
     /// Union of the posed brush bounds at every waypoint on the path, not
-    /// only the termini; invalid for a mover with no brush, which gets no
-    /// side count ([`MoverPoses::swept`]).
+    /// only the termini.
     pub(crate) swept: Aabb,
 }
 
@@ -126,6 +126,8 @@ pub(crate) const SPIN_REASON: &str =
     "spin axis set, so its parked rotation is unknowable at compile time";
 pub(crate) const ONE_WAYPOINT_REASON: &str =
     "path holds one waypoint, so it has no second terminus";
+pub(crate) const NO_BOUNDS_REASON: &str =
+    "no brush has bounds, so it blocks no light at either terminus";
 
 impl MoverPoses {
     /// Pose each mover at its path's first and last waypoint: its authored
@@ -161,10 +163,18 @@ impl MoverPoses {
                 |_| Aabb::empty(),
                 |path| swept_bounds(&mover.brush_volumes, path, spins),
             );
+            // A mover with no bounded brush poses empty: it gates nothing,
+            // and analysing it would only cost the probe channel two posed
+            // bakes.
+            let bounded = mover
+                .brush_volumes
+                .iter()
+                .any(|brush| brush.aabb.is_valid());
             let reason = match &path {
                 _ if spins => Some(SPIN_REASON),
                 Err(reason) => Some(*reason),
                 Ok(path) if path.len() < 2 => Some(ONE_WAYPOINT_REASON),
+                Ok(_) if !bounded => Some(NO_BOUNDS_REASON),
                 Ok(_) => None,
             };
             let (Ok(path), None) = (path, reason) else {

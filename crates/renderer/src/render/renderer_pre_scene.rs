@@ -123,11 +123,12 @@ impl Renderer {
         };
         // Mover state lighting: slots whose t′ moved since the last planned
         // frame stale the rows carrying them, whether or not this frame
-        // records compose.
+        // records compose. The observation commits only once the plan
+        // succeeded, so a failed plan keeps the change for the next frame.
         let mover_channel = &mut level.sh_volume_resources.mover_channel;
-        mover_channel.set_states(full.mover_light_states.states());
+        mover_channel.set_states(full.mover_travel.states());
         let mover_changes = mover_channel.observe_t_changes();
-        streaming.prepare_compose_frame(
+        let planned = streaming.prepare_compose_frame(
             region_sets,
             mesh_frame_plans,
             include_viewmodels,
@@ -142,7 +143,11 @@ impl Renderer {
             &level.promoted_static_weights,
             &level.promoted_animated_states,
             mover_changes,
-        )
+        );
+        if planned.is_ok() {
+            mover_channel.commit_t_changes();
+        }
+        planned
     }
 
     /// Refresh dev-tools camera-cull diagnostics from the current frame's CPU
@@ -291,7 +296,7 @@ impl Renderer {
         // Mover state lighting: this frame's t′ reaches the table before
         // either direct pass records, on the streamed and legacy paths alike.
         let mover_channel = &mut level.sh_volume_resources.mover_channel;
-        mover_channel.set_states(full.mover_light_states.states());
+        mover_channel.set_states(full.mover_travel.states());
         mover_channel.upload_t(queue);
         let mover_state_changed = mover_channel.t_changed_since_composed();
         let direct_sh_ts = full
@@ -348,7 +353,7 @@ impl Renderer {
                 },
             );
             // Committed only after the encode, so a frame that records no
-            // compose leaves the change for the next recording frame (P12).
+            // compose leaves the change for the next recording frame.
             if encoded {
                 level.sh_volume_resources.mover_channel.commit_composed_t();
             }
@@ -620,7 +625,7 @@ impl Renderer {
             // Mover state lighting: this frame's t′ reaches the bounce table
             // before the indirect compose records, on either path.
             let mover_channel = &mut level.sh_volume_resources.mover_channel;
-            mover_channel.set_states(full.mover_light_states.states());
+            mover_channel.set_states(full.mover_travel.states());
             mover_channel.upload_t(queue);
             if let Some(streaming) = level.sh_streaming.as_mut() {
                 if let Err(error) = streaming.dispatch_indirect_compose(
@@ -651,7 +656,7 @@ impl Renderer {
                     sh_compose_ts,
                 );
                 // Committed only after the encode, so a frame that records no
-                // compose leaves the change for the next recording frame (P12).
+                // compose leaves the change for the next recording frame.
                 if encoded {
                     level
                         .sh_volume_resources

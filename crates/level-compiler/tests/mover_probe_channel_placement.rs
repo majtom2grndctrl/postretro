@@ -1,4 +1,4 @@
-//! Id 57's payload placement (task 7b), through the binary: each block whose
+//! Id 57's payload placement, through the binary: each block whose
 //! payload is over its resident bar streams with id 50's cells, one at or under
 //! it stays in id 57, and a streamed build reads back the resident build's
 //! payload, from id 50's clusters while SH streams and whole under `off`.
@@ -122,7 +122,7 @@ fn assert_off_load_holds_the_resident_payload(resident: &Path, streamed: &Path) 
     );
 }
 
-// Task 7b (bake row B17's placement clause): under the shipped bars the setpiece
+// Under the shipped bars the setpiece
 // keeps both payloads in id 57 and id 50 lists no id-57 source. With the bar
 // at the smaller payload, the larger block streams and the smaller one,
 // exactly at the bar, stays resident; at zero both stream. Each streamed build

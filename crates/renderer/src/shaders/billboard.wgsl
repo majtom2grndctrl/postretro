@@ -537,7 +537,7 @@ fn billboard_cone_aim(sl: SpecLight) -> vec3<f32> {
 
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
 // concatenated after this source at pipeline-build time (render/smoke.rs
-// `BILLBOARD_SHADER_SOURCE`). Billboard passes `reject_backface = false`: a
+// `BILLBOARD_SHADER_SOURCE`). Billboard passes `SH_BACKFACE_NONE`: a
 // camera-facing sprite has no real surface normal, so validity excludes invalid
 // probes and depth visibility attenuates occluded probes; backface rejection
 // does not apply.
@@ -545,7 +545,7 @@ fn billboard_cone_aim(sl: SpecLight) -> vec3<f32> {
 // Derive the raw grid index / sub-cell fraction and defer the depth-aware
 // 8-corner blend to the shared helper. `gi`/`gfrac` clamp the low side to the
 // grid origin; the helper owns high-side edge clamping per corner. Billboard
-// uses camera-forward (`N = V`) as its normal; with `reject_backface = false`
+// uses camera-forward (`N = V`) as its normal; with `SH_BACKFACE_NONE`
 // the geo-normal arg is unused, so the shading normal fills both slots.
 fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
@@ -573,7 +573,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 // Baked static direct SH read — the sibling of billboard's `sample_sh_indirect`
 // against the direct atlas. Single-normal convention: the caller passes
 // camera-forward (`N = V`) and this fills both the shading- and geo-normal slots
-// (`reject_backface = false`, so the geo-normal arg is inert). Grid derivation
+// (`SH_BACKFACE_NONE`, so the geo-normal arg is inert). Grid derivation
 // is identical to the indirect wrapper so the two terms line up; the shared
 // direct corner blend keeps Chebyshev ON, reading the shared `sh_depth_moments`.
 fn sample_sh_direct(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {

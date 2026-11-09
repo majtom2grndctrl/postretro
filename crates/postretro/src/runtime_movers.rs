@@ -22,13 +22,13 @@ use postretro_visibility::VisibleCells;
 
 use crate::collision::moving::MoverCollider;
 use crate::content_hash::{hash_f32, hash_len, hash_str, hash_u32, hash_vec3};
-use crate::render::{KinematicMoverInstance, MoverLightState, MoverOccluderAabb};
+use crate::render::{KinematicMoverInstance, MoverOccluderAabb, MoverTravel};
 
-mod light_state;
+mod travel;
 #[cfg(test)]
-mod light_state_closet_tests;
+mod travel_closet_tests;
 #[cfg(test)]
-mod light_state_tests;
+mod travel_tests;
 
 /// Find a mover's entity by its level-stable mover id.
 pub(crate) fn mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
@@ -234,9 +234,9 @@ pub(crate) struct KinematicMoverRenderCollector {
     /// The drawn set's cell bounds (main and mirror) when it differs from
     /// the main view's; beauty admission reads them. Reused across frames.
     drawn_cell_bounds: Vec<(u32, Vec3, Vec3)>,
-    /// Every present mover's light state, collected apart from the draw
+    /// Every present mover's travel state, collected apart from the draw
     /// lists: culled and geometry-less movers included.
-    light_states: light_state::MoverLightStateCollector,
+    travel: travel::MoverTravelCollector,
 }
 
 impl KinematicMoverRenderCollector {
@@ -250,7 +250,7 @@ impl KinematicMoverRenderCollector {
             mover_bounds_source: None,
             visible_cell_bounds: Vec::new(),
             drawn_cell_bounds: Vec::new(),
-            light_states: Default::default(),
+            travel: Default::default(),
         }
     }
 
@@ -263,39 +263,39 @@ impl KinematicMoverRenderCollector {
         self.mover_bounds_source = None;
         self.visible_cell_bounds.clear();
         self.drawn_cell_bounds.clear();
-        self.light_states.clear();
+        self.travel.clear();
     }
 
-    /// One frame's mover light states: every present mover's ramped travel
+    /// One frame's mover travel states: every present mover's ramped travel
     /// fraction from the final post-tick phase, read where the blocked
     /// portals rebuild from that phase. Allocates nothing once warm.
-    pub(crate) fn collect_light_states(
+    pub(crate) fn collect_mover_travel(
         &mut self,
         registry: &EntityRegistry,
         world: Option<&LevelWorld>,
     ) {
-        self.light_states.collect(registry, world);
+        self.travel.collect(registry, world);
     }
 
-    /// Collect this frame's mover light states and hand them to `renderer`.
+    /// Collect this frame's mover travel states and hand them to `renderer`.
     /// Every presented frame calls it, world drawn or not (play, held,
     /// Loading and Frontend frames alike), so the renderer never keeps a
     /// stale state: with no level, it receives none.
-    pub(crate) fn hand_over_light_states(
+    pub(crate) fn hand_over_mover_travel(
         &mut self,
         registry: &EntityRegistry,
         world: Option<&LevelWorld>,
         renderer: Option<&mut crate::render::Renderer>,
     ) {
-        self.collect_light_states(registry, world);
+        self.collect_mover_travel(registry, world);
         if let Some(renderer) = renderer {
-            renderer.set_mover_light_states(self.light_states());
+            renderer.set_mover_travel(self.mover_travel());
         }
     }
 
-    /// The states [`Self::collect_light_states`] last collected.
-    pub(crate) fn light_states(&self) -> &[MoverLightState] {
-        self.light_states.states()
+    /// The states [`Self::collect_mover_travel`] last collected.
+    pub(crate) fn mover_travel(&self) -> &[MoverTravel] {
+        self.travel.states()
     }
 
     /// Test entry, with no planar mirror: [`Self::collect_with_mirror`] with

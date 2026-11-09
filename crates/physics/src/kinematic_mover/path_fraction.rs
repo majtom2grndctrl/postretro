@@ -197,7 +197,7 @@ mod tests {
             tick(&mut door);
         }
         assert_fraction(&door, 0.75, "three quarter-second ticks at 1 m/s");
-        // P1: the tick that reaches the last waypoint reads exactly 1.
+        // The tick that reaches the last waypoint reads exactly 1.
         tick(&mut door);
         assert!(door.completed, "the arrival tick completes a `once` run");
         assert_eq!(
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn path_fraction_reads_terminus_waypoints_with_no_segment_left() {
-        // P9: auto-close drives an open door home; it ends with no segment
+        // Auto-close drives an open door home; it ends with no segment
         // ahead and still reads its waypoint's t.
         let mut door = one_metre_door(KinematicMoverMode::Once);
         for _ in 0..4 {
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn path_fraction_reads_zero_on_the_closing_arrival_tick_before_portals_seal() {
-        // P11: the tick that reaches waypoint 0 reads t = 0; the docked
+        // The tick that reaches waypoint 0 reads t = 0; the docked
         // predicate seals portals only from the next, settle tick. No tick has
         // the door docked while t is above 0.
         let mut door = one_metre_door(KinematicMoverMode::Once);
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn path_fraction_stays_finite_on_degenerate_paths() {
-        // P23: a zero-length path reads 0, never NaN.
+        // A zero-length path reads 0, never NaN.
         let mut still = mover(vec![Vec3::ONE, Vec3::ONE], KinematicMoverMode::Once, 0.0);
         assert_eq!(
             MoverPathArcLengths::from_waypoints(&still.waypoints).total_length(),

@@ -347,7 +347,7 @@ pub(crate) fn build_full_renderer(
         kinematic_mover_draws: Vec::new(),
         kinematic_mover_shadow_draws: Vec::new(),
         mover_occluder_aabbs: Vec::new(),
-        mover_light_states: Default::default(),
+        mover_travel: Default::default(),
         ambient_floor,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,

@@ -1,4 +1,4 @@
-//! C7's GPU half on compiled maps, on the streamed path: a channel row that
+//! GPU half on compiled maps, on the streamed path: a channel row that
 //! lags composes before any frame samples it. A row lags when its mover's t′
 //! changes while the row is outside the compose gate, or while the row is
 //! not resident. The frame that admits it (back into the gate, or installed)
@@ -50,7 +50,7 @@ fn moving_halves(a: &Tiles, b: &Tiles) -> [usize; 3] {
     mismatches(a, b).0
 }
 
-/// C7 (GPU half) on each streamed map named by `MOVER_C7_PRLS`
+/// GPU half on each streamed map named by `MOVER_C7_PRLS`
 /// (`:`-separated compiled PRLs with id 50 and id 57), with every cluster
 /// resident and every mover handed the same t′:
 /// - Gate: t′ moves 0 → 1 on a frame whose gate admits no row. Every

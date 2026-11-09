@@ -5,7 +5,7 @@
 //! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency,
 //! Sampled-row compose, Mover state lighting)
 use super::*;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render::composed_tiles::{ComposedAtlases, ComposedReadback};
 use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_loader::{PreparedShCluster, ShStreamManifest, ShStreamingMode};
@@ -103,11 +103,11 @@ impl RealLevel {
     }
 
     /// Every mover at `t`, or no state at all for `None`.
-    pub(super) fn states(&self, t: Option<f32>) -> Vec<MoverLightState> {
+    pub(super) fn states(&self, t: Option<f32>) -> Vec<MoverTravel> {
         t.map(|t| {
             self.movers
                 .iter()
-                .map(|&mover_id| MoverLightState { mover_id, t })
+                .map(|&mover_id| MoverTravel { mover_id, t })
                 .collect()
         })
         .unwrap_or_default()
@@ -128,11 +128,11 @@ impl RealLevel {
     /// and waits for the GPU. Returns the drain's deferred clusters.
     fn frame_with(
         &mut self,
-        states: &[MoverLightState],
+        states: &[MoverTravel],
         batch: ShDrainBatch,
         gate: Gate,
     ) -> Vec<PreparedShCluster> {
-        self.renderer.set_mover_light_states(states);
+        self.renderer.set_mover_travel(states);
         let outcome = self.renderer.drain_sh_residency(batch).expect("SH drain");
         assert!(outcome.dropped.is_empty(), "no targeted chunk drops");
         self.frames += 1;
@@ -202,7 +202,7 @@ impl RealLevel {
     }
 
     /// One recorded frame with `states` handed over and no residency change.
-    pub(super) fn frame(&mut self, states: &[MoverLightState], gate: Gate) {
+    pub(super) fn frame(&mut self, states: &[MoverTravel], gate: Gate) {
         let batch = self.empty_batch();
         let deferred = self.frame_with(states, batch, gate);
         assert!(deferred.is_empty());
@@ -210,7 +210,7 @@ impl RealLevel {
 
     /// Streamed only: targets and installs every cluster, recording frames
     /// at `states` under `gate` until none defers. Returns the frames taken.
-    pub(super) fn install_all(&mut self, states: &[MoverLightState], gate: Gate) -> usize {
+    pub(super) fn install_all(&mut self, states: &[MoverTravel], gate: Gate) -> usize {
         self.install_all_checking(states, gate, |_| {})
     }
 
@@ -218,7 +218,7 @@ impl RealLevel {
     /// has submitted.
     pub(super) fn install_all_checking(
         &mut self,
-        states: &[MoverLightState],
+        states: &[MoverTravel],
         gate: Gate,
         mut after_frame: impl FnMut(&Self),
     ) -> usize {
@@ -263,7 +263,7 @@ impl RealLevel {
     }
 
     /// Streamed only: evicts every cluster in one drain and records a frame.
-    pub(super) fn evict_all(&mut self, states: &[MoverLightState], gate: Gate) {
+    pub(super) fn evict_all(&mut self, states: &[MoverTravel], gate: Gate) {
         let count = self
             .manifest
             .as_ref()

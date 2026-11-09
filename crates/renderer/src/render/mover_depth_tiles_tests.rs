@@ -19,7 +19,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use crate::render::gpu_test_harness::offscreen_renderer_or_skip;
 use crate::render::mover_channel::depth_test_support::{depth_section, ramp_tile, uniform_tile};
 use crate::render::sh_depth_tiles::tests::{fixture_moments, second, whole_texels};
-use crate::render::{MoverLightState, Renderer};
+use crate::render::{MoverTravel, Renderer};
 use postretro_level_loader::ShDrainBatch;
 
 /// Id 59 tiles probes 3 and 17. Mover 4 changes probes 3, 5 and 9; mover 6
@@ -83,14 +83,14 @@ fn install(
     });
 }
 
-fn state(mover_id: u32, t: f32) -> MoverLightState {
-    MoverLightState { mover_id, t }
+fn state(mover_id: u32, t: f32) -> MoverTravel {
+    MoverTravel { mover_id, t }
 }
 
 /// One frame boundary: the game hands over `states`, the frame drains, and
 /// the frame's upload batch is submitted, as its end submits it.
-fn frame(renderer: &mut Renderer, states: &[MoverLightState]) {
-    renderer.set_mover_light_states(states);
+fn frame(renderer: &mut Renderer, states: &[MoverTravel]) {
+    renderer.set_mover_travel(states);
     renderer
         .drain_sh_residency(ShDrainBatch::default())
         .expect("the frame's drain");
@@ -188,7 +188,7 @@ fn assert_blend(found: &[[u16; 2]], d0: &[[u16; 2]], d1: &[[u16; 2]], t: f32) {
     }
 }
 
-/// Depth rows D1, D4 (whole-load half) and D11: before any hand-over every
+/// Before any hand-over every
 /// probe keeps its id-59 tile or averaged moments bit for bit; the first
 /// hand-over at the seeded terminus points each changed probe at its live
 /// tile, which already holds that terminus's tile; a live tile then reads
@@ -272,7 +272,7 @@ fn a_live_tile_holds_the_blend_and_only_g_moves_to_it() {
     eprintln!("[MoverDepthProof] live tiles blended, only G moved; ran on GPU");
 }
 
-/// Depth rows D2 (texel clauses) and D3: stripping id 57 installs exactly
+/// Stripping id 57 installs exactly
 /// today's tile texture and texels; with id 57 and no state, every texel
 /// matches the stripped install bit for bit. A frame with no t′ change, or
 /// one that hands over the same t′ (a ramp holding it at 0 or 1), writes no
@@ -329,19 +329,28 @@ fn tiles_are_written_only_on_change_and_no_state_keeps_todays_texels() {
         tile_of(&held, 5),
         "probe 20 untouched"
     );
-    // Probe 9 (shared): per texel the nearer of mover 4 at 0.5 and mover 6
-    // held at 1. Mover 4's tiles read nearer here (smaller E[d]).
+    // Probe 9 (shared, untiled): per texel and moment its averaged moments
+    // plus mover 4's blend at 0.5 and mover 6's held D₁, each less the base,
+    // clamped to a valid moment set.
     let shared = tile_of(&texture, 4);
     let d4 = (d(4, 9, 0), d(4, 9, 1));
     let d6 = d(6, 9, 1);
+    let base = fixture_moments(9).map(f16_bits_to_f32);
     for (at, texel) in shared.iter().enumerate() {
-        let mover_4 = 0.5 * f16_bits_to_f32(d4.0[at][0]) + 0.5 * f16_bits_to_f32(d4.1[at][0]);
-        let mover_6 = f16_bits_to_f32(d6[at][0]);
-        let expected = mover_4.min(mover_6);
-        assert!(
-            texel[0].abs_diff(f32_to_f16_bits(expected)) <= 1,
-            "texel {at}: the nearer blend"
-        );
+        let [mean, mean_sq] = [0, 1].map(|channel| {
+            let mover_4 =
+                0.5 * f16_bits_to_f32(d4.0[at][channel]) + 0.5 * f16_bits_to_f32(d4.1[at][channel]);
+            let mover_6 = f16_bits_to_f32(d6[at][channel]);
+            base[channel] + (mover_4 - base[channel]) + (mover_6 - base[channel])
+        });
+        let mean = mean.max(0.0);
+        let expected = [mean, mean_sq.max(mean * mean)];
+        for channel in 0..2 {
+            assert!(
+                texel[channel].abs_diff(f32_to_f16_bits(expected[channel])) <= 1,
+                "texel {at} channel {channel}: the summed differences"
+            );
+        }
     }
     // Mover 6 now travels with mover 4 held: the shared tile reads 4's held 0.5.
     frame(&mut renderer, &[state(4, 0.5), state(6, 0.0)]);
@@ -349,7 +358,7 @@ fn tiles_are_written_only_on_change_and_no_state_keeps_todays_texels() {
     eprintln!("[MoverDepthProof] write-on-change and no-state texels held; ran on GPU");
 }
 
-/// Depth row D8 (P28), whole-load half: a t′ change on a frame that runs no
+/// Whole-load half: a t′ change on a frame that runs no
 /// drain is written by the next frame that does, though t′ no longer
 /// changes; a change staged on a frame that skips present lands with the
 /// skipped frame's flush.
@@ -362,12 +371,12 @@ fn a_change_no_frame_wrote_lands_on_the_next_recording_frame() {
     install(&mut renderer, &lattice(), Some(&id59()), Some(&channel()));
     frame(&mut renderer, &[state(4, 0.0)]);
     // A held frame: the game hands over a new t′, nothing records.
-    renderer.set_mover_light_states(&[state(4, 1.0)]);
+    renderer.set_mover_travel(&[state(4, 1.0)]);
     frame(&mut renderer, &[state(4, 1.0)]);
     assert_eq!(tiles_written(&renderer), 3);
     assert_eq!(tile_of(&tile_texture(&renderer), 3), d(4, 5, 1));
     // A skipped frame: the drain stages, the frame flushes without drawing.
-    renderer.set_mover_light_states(&[state(4, 0.0)]);
+    renderer.set_mover_travel(&[state(4, 0.0)]);
     renderer
         .drain_sh_residency(ShDrainBatch::default())
         .unwrap();
@@ -377,7 +386,7 @@ fn a_change_no_frame_wrote_lands_on_the_next_recording_frame() {
     assert_eq!(tile_of(&tile_texture(&renderer), 3), d(4, 5, 0));
 }
 
-/// Depth rows D7 (P27) and D9 (P30), whole-load half: a hand-over with no
+/// Whole-load half: a hand-over with no
 /// level writes nothing and never becomes the next level's state; a
 /// relevel reusing a mover id at the old level's last t′ writes the new
 /// level's own tiles on its first frame; a t′ handed over on the frame a
@@ -389,7 +398,7 @@ fn a_relevel_writes_its_own_tiles_and_an_unload_frame_writes_nothing() {
     let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
         return;
     };
-    renderer.set_mover_light_states(&[state(4, 1.0)]);
+    renderer.set_mover_travel(&[state(4, 1.0)]);
     let (sh, tiles) = (lattice(), id59());
     install(&mut renderer, &sh, Some(&tiles), Some(&channel()));
     frame(&mut renderer, &[]);
@@ -407,13 +416,13 @@ fn a_relevel_writes_its_own_tiles_and_an_unload_frame_writes_nothing() {
 
     // The unload frame: the game hands over a new t′, then the level goes.
     // Install and release assert no upload is pending at the boundary.
-    renderer.set_mover_light_states(&[state(4, 0.5)]);
+    renderer.set_mover_travel(&[state(4, 0.5)]);
     renderer.release_level_resources();
     renderer.queue.assert_empty("after unload");
 
     // Level B reuses mover 4 with other tiles, at A's last t′.
     let other = depth_section(vec![(4, 5, d(9, 5, 0), d(9, 5, 1))]);
-    renderer.set_mover_light_states(&[state(4, 1.0)]);
+    renderer.set_mover_travel(&[state(4, 1.0)]);
     install(&mut renderer, &sh, Some(&tiles), Some(&other));
     renderer.queue.assert_empty("after install");
     frame(&mut renderer, &[state(4, 1.0)]);
@@ -430,7 +439,7 @@ fn a_relevel_writes_its_own_tiles_and_an_unload_frame_writes_nothing() {
     );
 }
 
-/// Depth row D10 (P29): with id 59 absent or zero-tile and id 57 kept, the
+/// With id 59 absent or zero-tile and id 57 kept, the
 /// texture is sized from the live tiles alone and the changed probes
 /// reference live tiles holding D₀; with id 57 stripped as well the 1×1
 /// dummy binds and no tile bytes are allocated.
@@ -486,7 +495,7 @@ fn live_tiles_without_id_59_size_the_texture_alone() {
     }
 }
 
-/// Depth row D14 and bake row B13 (depth): the tile texture's ledger row is
+/// The tile texture's ledger row is
 /// the layout's bytes for id 59's tiles plus the live tiles, sourced to ids
 /// 59 and 57; the CPU-held closed-pose tiles are a host row outside the
 /// physical total; both leave with the level.
@@ -520,8 +529,8 @@ fn tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level()
     assert_eq!(host.sources, [ResidencySource::Section(57)]);
     assert_eq!(
         host.bytes,
-        5 * 2 * PROBE_DEPTH_TILE_TEXELS as u64 * 8,
-        "decoded f32 pairs"
+        (5 * 2 + 1) * PROBE_DEPTH_TILE_TEXELS as u64 * 8,
+        "decoded f32 pairs: ten closed-pose tiles, and the base tile of probe 9, which two movers change"
     );
     renderer.release_level_resources();
     assert!(
@@ -530,7 +539,7 @@ fn tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level()
     );
 }
 
-/// Depth row D12, whole-load half: after warm-up, a frame writing two
+/// Whole-load half: after warm-up, a frame writing two
 /// travelling movers' live tiles allocates nothing on the CPU, staging
 /// included (the batch's submit is outside the window, as the frame's is).
 #[test]
@@ -548,7 +557,7 @@ fn a_frame_writing_two_travelling_movers_tiles_allocates_nothing() {
     }
     for step in 0..8 {
         let frame_states = states(0.3 + step as f32 * 0.05);
-        renderer.set_mover_light_states(&frame_states);
+        renderer.set_mover_travel(&frame_states);
         let probe = AllocSnapshot::arm();
         renderer.write_mover_depth_tiles().unwrap();
         assert_eq!(probe.allocs_since(), 0, "frame {step}");
@@ -557,11 +566,11 @@ fn a_frame_writing_two_travelling_movers_tiles_allocates_nothing() {
     }
 }
 
-/// Depth row D11, shader clause: live tiles need no sampler change. The
+/// Shader clause: live tiles need no sampler change. The
 /// depth path of `sh_sample.wgsl` (its constants, the moment decode, the
 /// tile lookup and the Chebyshev weight with its floor) hashes to the
-/// parent's (main before this brief); only Stop 2's mover backface weight
-/// changed that file (plan, Task 8 clarification).
+/// pinned byte-identical to the pre-mover-channel sampler; the mover
+/// backface weight is outside the hashed extract.
 #[test]
 fn the_sampler_depth_path_is_byte_identical_to_the_parents() {
     use crate::render::gpu_test_harness::{wgsl_const_line, wgsl_function};

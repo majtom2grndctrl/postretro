@@ -1,6 +1,6 @@
 // GPU capture proofs for the mover probe channel: scenes force each mover's
 // travel fraction, which poses its drawn geometry, shadow casters, occluder
-// bounds and portal seal, and hands the renderer the light state the game
+// bounds and portal seal, and hands the renderer the travel state the game
 // would. The closet rows judge the closet with reflections off: the pool's
 // reflection probe (id 54) is captured with movers absent
 // (drafts/mover-aware-reflection-captures.md).
@@ -26,7 +26,7 @@ use mover_capture_support::{
 
 const RESOLUTION: [u32; 2] = [960, 540];
 
-/// A C10 case: a map, its label, the pose, the movers forced mid-travel, and
+/// A mid-travel case: a map, its label, the pose, the movers forced mid-travel, and
 /// the light-term mask.
 type MidTravel<'a> = (&'a Path, &'static str, Pose, Vec<(&'static str, f32)>, u32);
 /// The brief's capture bar: no brighter than the reference plus 0.02 mean luma.
@@ -137,14 +137,14 @@ fn closet_pool_pixels(pose: Pose) -> impl Fn(u32, u32) -> bool {
     }
 }
 
-// K1. The door forced closed, reflections off: stations 2 and 3, outside the
+// The door forced closed, reflections off: stations 2 and 3, outside the
 // door's projected box, read no brighter than the tiled static-door
 // reference plus 0.02, and the closet pool stays as dark as the reference's.
 // The door's closet face is recorded beside the reference's for the Manual
 // closet row. Forced open at its last waypoint, the closet reads within 0.02
 // of the same PRL with id 57 stripped. Every clause runs under streaming
 // `sync-proof` and `off`: an unchanged terminus reads id 34 as each mode
-// composes it (task 11c), so the open door renders today's frame on both.
+// composes it, so the open door renders today's frame on both.
 // Replaces `mover_door_closet_does_not_darken`, which asserted the old glow.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
@@ -276,7 +276,7 @@ impl Setpiece {
     }
 }
 
-// K2. `setpiece_wall` forced closed: the mesh receiver held on the enemy spot
+// `setpiece_wall` forced closed: the mesh receiver held on the enemy spot
 // reads, over its pixels, no brighter than in a build where the wall is a
 // static brush at its closed pose plus 0.02, and darker than with the wall
 // forced open. Forced open, it reads within 0.02 of the same PRL with id 57
@@ -352,7 +352,7 @@ fn k2_setpiece_wall_closed_darkens_the_held_receiver_like_the_static_wall() {
     );
 }
 
-// C10, with C7's GPU half, as far as frames can show it. At mid-travel,
+// The GPU half, as far as frames can show it. At mid-travel,
 // streaming `off` (the whole-load legacy compose) and `sync-proof` (the
 // slot-pooled streamed compose, whose rows enter residency over preload
 // frames with the state already handed over) are captured per pass: baked
@@ -362,7 +362,7 @@ fn k2_setpiece_wall_closed_darkens_the_held_receiver_like_the_static_wall() {
 // claim. The row holds the channel to two things: it is live in both modes,
 // and it adds no disagreement between them past the stripped frames' own.
 // The compose inputs themselves are proven equal per cell
-// (`streamed_mover_channel`, task 9).
+// (`streamed_mover_channel`).
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
 fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
@@ -464,7 +464,7 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
     assert!(misses.is_empty(), "C10 misses:\n{}", misses.join("\n"));
 }
 
-// D2, frame clauses. With id 57 stripped, handing the door's state over
+// With id 57 stripped, handing the door's state over
 // changes no byte: the frame at its forced rest pose (state handed over,
 // portals sealed) equals the frame with no forced mover (no state). With id
 // 57 and no state handed over, the frame moves no pixel by more than 2
@@ -479,7 +479,7 @@ fn d2_no_section_is_byte_identical_and_no_state_is_within_two_levels_of_no_depth
     let plain = scene(Vec::new());
     let rest = scene(vec![(CLOSET_DOOR, 0.0)]);
     // Facing away from the door: from stations 2 and 3 the rest pose's
-    // portal seal (P11) culls the bright room seen through a sub-pixel gap at
+    // portal seal culls the bright room seen through a sub-pixel gap at
     // the door's two top corners, which moves 2 px whatever the state.
     {
         let (pose, name) = (CLOSET_INTERIOR, "interior");

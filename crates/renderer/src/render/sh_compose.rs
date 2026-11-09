@@ -494,7 +494,7 @@ impl ShComposeResources {
     /// The accumulated animated delta is always added to the base at full
     /// weight (the `delta_scale` knob was retired with the indirect-only
     /// delta). Returns whether it encoded, so the caller commits the
-    /// mover-state trigger only after an encode (P12).
+    /// mover-state trigger only after an encode.
     pub fn dispatch_if_needed(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

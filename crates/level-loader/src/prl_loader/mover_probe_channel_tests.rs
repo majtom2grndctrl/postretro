@@ -1163,7 +1163,7 @@ fn placed(
     placed
 }
 
-// Task 7b: a payload placed with id 50's cells loads whole under `off`
+// A payload placed with id 50's cells loads whole under `off`
 // (monolithic and staged parse alike, through the load's cross-check) into
 // exactly the payload a resident placement holds, placements kept. Under
 // streaming it stays with id 50: the section holds no streamed payload, and
@@ -1236,7 +1236,7 @@ fn a_streamed_payload_loads_whole_under_off_equal_to_the_resident_load() {
     }
 }
 
-/// Bake row B5, loader side, on a real PRL: id 59's tiles plus id 57's
+/// On a real PRL: id 59's tiles plus id 57's
 /// live tiles exactly at the tile reference's 1 << 15 range load, and the
 /// loaded count the renderer sizes its texture for is that range; one live
 /// tile more is refused by name. The 32×32×17 lattice holds enough valid

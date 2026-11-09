@@ -21,7 +21,7 @@ mod compose_tests;
 #[cfg(test)]
 pub(in crate::render) mod depth_test_support;
 #[cfg(test)]
-mod tests;
+pub(in crate::render) mod tests;
 
 pub(in crate::render) use depth::DepthBases;
 pub(in crate::render) use gpu::{

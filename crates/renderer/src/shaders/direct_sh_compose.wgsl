@@ -452,8 +452,8 @@ fn compose_main(
             if (slot == MC_NONE) {
                 continue;
             }
-            let blocked = 1.0 - mc_record_visibility(record, slot);
-            if (blocked <= 0.0) {
+            let loss = 1.0 - mc_record_visibility(record, slot);
+            if (loss <= 0.0) {
                 continue;
             }
             // Selected lights hand off to promotion: the runtime arm (weight
@@ -465,12 +465,12 @@ fn compose_main(
             if (light != MC_NONE) {
                 w = selection_weight(light);
             }
-            let handoff_blocked = blocked * (1.0 - w);
+            let handoff_loss = loss * (1.0 - w);
             for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
                 let term = mc_tile_texel(record, slot, texel_index);
                 let prior = accum[texel_index];
-                accum[texel_index] = vec4<f32>(prior.rgb - term * handoff_blocked, prior.a);
-                accum_free[texel_index] = accum_free[texel_index] - term * blocked;
+                accum[texel_index] = vec4<f32>(prior.rgb - term * handoff_loss, prior.a);
+                accum_free[texel_index] = accum_free[texel_index] - term * loss;
             }
         }
     }

@@ -218,7 +218,7 @@ fn brute_force_counts(scene: &Scene) -> (u32, u32) {
     (static_clear, posed_clear)
 }
 
-// Bake row B1: q is the posed clear count over the joint set's static clear
+// Q is the posed clear count over the joint set's static clear
 // count, same seed, and the posed bake scales the light's term by its byte.
 #[test]
 fn posed_direct_bake_scales_a_light_by_its_joint_sample_surviving_fraction() {
@@ -246,7 +246,7 @@ fn posed_direct_bake_scales_a_light_by_its_joint_sample_surviving_fraction() {
     assert!(joint.meets_mover());
 }
 
-// Bake row B1: a light whose samples never meet the posed mover stores no
+// A light whose samples never meet the posed mover stores no
 // entry, and the posed bake leaves its term bit for bit.
 #[test]
 fn a_light_whose_samples_miss_the_pose_keeps_its_term_and_meets_no_mover() {
@@ -278,7 +278,7 @@ fn a_sealing_pose_stores_zero_and_a_hard_light_stores_zero_or_one() {
     assert_eq!(hard_joint.surviving_byte(), 255);
 }
 
-// The inside-brush rule (owner, Stop 2): a probe inside one of the mover's
+// The inside-brush rule (owner): a probe inside one of the mover's
 // brushes reads dark. Every segment from it starts in solid, so even a light
 // no other brush hides is blocked.
 #[test]
@@ -424,4 +424,155 @@ fn a_posed_brush_meets_grazing_segments_and_rays_as_the_static_tracer_does() {
     let hit = ray(Vec3::new(-1.0, above, 0.5), Vec3::X).expect("the −x side within τ");
     assert!((hit - (1.0 - RAY_EPSILON)).abs() <= 1.0e-5, "hit at {hit}");
     assert!(ray(Vec3::new(0.2, above, 0.5), Vec3::Y).is_none());
+}
+
+// One inside-brush rule for every posed trace: a gather ray or shadow
+// segment starts in solid when its lifted origin lies inside a posed brush,
+// with no contact band. A probe within 0.1 mm of a posed face, on either
+// side of it, reads the same verdict in the bounce gather, the depth-only
+// trace and the direct half's shadow segments: inside (distance 0, blocked)
+// along −x into the brush, outside (no posed hit, clear) along +x away
+// from it.
+#[test]
+fn a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_in_every_posed_trace() {
+    use postretro_level_format::probe_depth_tiles::bordered_tile;
+
+    use super::bounce::PosedRadiance;
+    use super::gather::{PosedGather, trace_posed_depth};
+    use super::posed_scene::PosedScene;
+    use crate::bake_control::BakeControl;
+    use crate::sh_bake::{ProbeGridLayout, TileRayTable, probe_gather_directions};
+    use crate::surface_radiance::{PatchRadiance, PatchSet};
+
+    const FAR: f32 = 100.0;
+    let solid = Arc::new(solid(vec![box_brush(DVec3::ZERO, DVec3::ONE)]));
+    let scene = PosedScene::new(Arc::clone(&solid), Terminus::First).expect("posed patches");
+    let occluder = PosedOccluder::new(Arc::clone(&solid));
+    // A static floor far below, so the static tracer has a world to miss.
+    let geometry = geometry_of(&[[
+        [-50.0, -20.0, -50.0],
+        [-50.0, -20.0, 50.0],
+        [50.0, -20.0, 0.0],
+    ]]);
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("bvh");
+    let ctx = RaytracingCtx {
+        bounce_materials: None,
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+    };
+    let patches = PatchSet::try_build(&geometry).expect("static patches");
+    let radiance = PosedRadiance {
+        world: PatchRadiance::zeroed(patches.len()),
+        mover: PatchRadiance::zeroed(scene.patches.len()),
+    };
+    let gather = PosedGather::new(&patches, &radiance, &scene);
+    let directions = probe_gather_directions();
+    let rays = TileRayTable::new(&directions);
+    for offset in [5.0e-5_f32, -5.0e-5] {
+        let probe = Vec3::new(1.0 + offset, 0.5, 0.5);
+        for (dir, inside) in [(Vec3::NEG_X, true), (Vec3::X, false)] {
+            let (_, distance) = gather.sample(&ctx, probe, dir, FAR);
+            assert_eq!(
+                distance == 0.0,
+                inside,
+                "gather ray from x = 1 {offset:+} along {dir}: distance {distance}"
+            );
+            assert_eq!(
+                occluder.blocks(probe, probe + dir * 10.0),
+                inside,
+                "direct segment from x = 1 {offset:+} along {dir}"
+            );
+        }
+        // The depth-only trace bins the gather's own distances, ray for ray.
+        let distances: Vec<f32> = directions
+            .iter()
+            .map(|&dir| gather.sample(&ctx, probe, dir, FAR).1)
+            .collect();
+        assert!(
+            distances.contains(&0.0) && distances.iter().any(|&d| d > 0.0),
+            "x = 1 {offset:+}: only rays whose lifted origin is inside read 0"
+        );
+        let layout = ProbeGridLayout {
+            world_min: DVec3::ZERO,
+            dims: [1, 1, 1],
+            cell_size: [1.0; 3],
+            far_sentinel: FAR,
+            probe_positions: vec![probe.as_dvec3()],
+            validity: vec![1],
+        };
+        assert_eq!(
+            trace_posed_depth(&ctx, &layout, &scene, &BakeControl::unrestricted()),
+            vec![(0, bordered_tile(&rays.interior(&distances)))],
+            "x = 1 {offset:+}: the depth-only trace reads the gather's verdicts"
+        );
+    }
+}
+
+// Id 34's kept later bounces join a pose's running sum one by one, in bounce
+// order, as id 34 adds them. With `light_bounces` 2 and 3, a patch the pose
+// never meets (here every static patch: the pose sits far outside the
+// closet) sums id 34's later bounces bit for bit. Pre-summing the kept
+// layers reassociates the float sum and misses.
+#[test]
+fn a_patch_the_pose_never_meets_sums_id_34s_later_bounces_bit_for_bit() {
+    use super::bounce::{PosedLaterBounces, PosedRadiance, add_posed_later_bounces};
+    use super::posed_scene::PosedScene;
+    use crate::bake_control::BakeControl;
+    use crate::surface_radiance::{PatchRadiance, PatchSet, Side, add_later_bounces_keeping};
+
+    let fixture = crate::fixture_pipeline::load_fixture("mover-closet");
+    let ctx = RaytracingCtx {
+        bounce_materials: None,
+        bvh: &fixture.bvh,
+        primitives: &fixture.primitives,
+        geometry: &fixture.geometry,
+    };
+    let patches = PatchSet::try_build(&fixture.geometry).expect("static patches");
+    // Every side lit differently, so the later bounces carry values whose
+    // float sum depends on its order.
+    let mut bounce_one = PatchRadiance::zeroed(patches.len());
+    for patch in 0..patches.len() as u32 {
+        for side in Side::BOTH {
+            let seed = patch as f32 * 0.618_034 + side as usize as f32 * 0.414_213;
+            bounce_one.add_side(
+                patch,
+                side,
+                Vec3::new(seed.fract(), (seed * 1.7).fract(), (seed * 2.3).fract()) * 3.0,
+            );
+        }
+    }
+    let far = solid(vec![box_brush(DVec3::splat(500.0), DVec3::splat(501.0))]);
+    let scene = PosedScene::new(Arc::new(far), Terminus::First).expect("posed patches");
+    let control = BakeControl::unrestricted();
+    let fill = 0.7;
+    for bounces in [2u32, 3] {
+        let from = bounces - 1;
+        let mut id34 = bounce_one.clone();
+        let kept = add_later_bounces_keeping(&ctx, &patches, &mut id34, fill, Some(from), &control);
+        assert!(
+            !kept.is_empty(),
+            "light_bounces {bounces} keeps id 34's tail"
+        );
+        let mut posed = PosedRadiance {
+            world: bounce_one.clone(),
+            mover: PatchRadiance::zeroed(scene.patches.len()),
+        };
+        add_posed_later_bounces(
+            &ctx,
+            &patches,
+            &scene,
+            &mut posed,
+            fill,
+            PosedLaterBounces {
+                posed: from,
+                static_tail: &kept,
+            },
+            &control,
+        );
+        assert!(
+            posed.world == id34,
+            "light_bounces {bounces}: an untouched patch sums id 34's later bounces bit for bit"
+        );
+    }
 }

@@ -1,4 +1,4 @@
-// Mover depth's tile range (bake row B5): live tiles reserved ahead of id 59,
+// Mover depth's tile range: live tiles reserved ahead of id 59,
 // id 59 re-trimmed by its own rank, and a named error past the range.
 // See: context/lib/build_pipeline.md §PRL section IDs (ProbeDepthTiles, MoverProbeChannel)
 
@@ -10,7 +10,7 @@ use crate::sh_bake::depth_tiles_test_fixtures::DepthTileFixture;
 /// The static-door closet: id 59 tiles its door probes.
 const STATIC_DOOR: &str = "mover-closet-static-door";
 
-// Bake row B5 (P31): with `live` mover tiles reserved in a range of
+// With `live` mover tiles reserved in a range of
 // `cap + live`, id 59 keeps exactly the tiles a bake capped at `cap` keeps,
 // whose candidates fill it, and counts the extra drops; the bytes of every
 // kept tile are the uncapped bake's.
@@ -41,7 +41,7 @@ fn reserving_mover_tiles_keeps_what_a_selection_at_the_shrunk_cap_keeps() {
     }
 }
 
-// Bake row B5: id 59 and the live tiles exactly at the range keep every
+// Id 59 and the live tiles exactly at the range keep every
 // tile; one live tile past it drops one more id-59 tile; the live tiles
 // alone past the range fail by name and drop nothing.
 #[test]

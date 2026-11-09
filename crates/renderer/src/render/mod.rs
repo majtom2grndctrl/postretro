@@ -41,7 +41,7 @@ mod mesh_ghost;
 mod mesh_pass;
 mod mover_channel;
 mod mover_depth_tiles;
-mod mover_light_state;
+mod mover_travel;
 mod planar_reflection;
 mod promoted_depth_cache;
 pub(crate) mod queue_writes;
@@ -290,7 +290,7 @@ pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_range
 pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use kinematic_brush::MoverView;
 pub(crate) use material_plan::*;
-pub use mover_light_state::MoverLightState;
+pub use mover_travel::MoverTravel;
 pub(crate) use pipeline_layout::*;
 pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;
 pub use renderer_geometry::level_world_to_geometry;

@@ -361,7 +361,7 @@ mod tests {
         MoverBounceStates::new(5, bounce, depth)
     }
 
-    // Task 11c: the memo keeps each probe's stored termini and only their
+    // The memo keeps each probe's stored termini and only their
     // tiles, and refuses a probe that stores neither or a torn tile run.
     #[test]
     fn the_memo_round_trips_one_sided_states_and_refuses_a_probe_storing_nothing() {

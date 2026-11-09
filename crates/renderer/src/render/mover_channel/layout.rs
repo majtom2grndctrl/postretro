@@ -11,7 +11,7 @@ use std::ops::Range;
 
 use postretro_level_format::mover_probe_channel::{
     DirectRecordView, MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-    MoverCellPayload, MoverCellSlices, MoverChannelBlock, MoverLightNamespace,
+    MoverCellPayload, MoverCellSlices, MoverChannelBlock, MoverHalves, MoverLightNamespace,
     MoverProbeChannelSection, MoverStreamedRow,
 };
 use postretro_level_format::sh_reconstruct::{Level, kept_mask, stored_delta_tiles};
@@ -33,6 +33,16 @@ pub(super) const NO_LIGHT: u32 = u32::MAX;
 /// A mover slot's t′ while the game hands over no state: ungated.
 pub(super) const NO_STATE: f32 = -1.0;
 const TILE_HALVES: usize = MOVER_IRRADIANCE_TILE_F16_COUNT;
+/// An f16 whose exponent bits are all set is infinite or NaN.
+const F16_EXPONENT: u16 = 0x7c00;
+
+/// The first infinite or NaN half in `halves`, if any: every id-57 payload
+/// and every borrowed term is checked with this as it loads or arrives.
+pub(super) fn first_non_finite(halves: impl IntoIterator<Item = u16>) -> Option<u16> {
+    halves
+        .into_iter()
+        .find(|&half| half & F16_EXPONENT == F16_EXPONENT)
+}
 
 /// Why the channel cannot be laid out or a cell cannot be written: the
 /// section and the delta family it borrows T from disagree.
@@ -338,9 +348,11 @@ pub(in crate::render) struct MoverChannelLayout {
     records: Vec<RecordPlan>,
     rows: MoverChannelRows,
     /// Records the table leaves ungated: their delta family is absent or
-    /// disabled at load. An animated-baked record is ungated without id 45
-    /// even when it carries its own tile: Pass B gates by subtracting from
-    /// the term id 45 added, and with no id 45 that term was never added.
+    /// disabled at load (id 41 is disabled by a cleared id-40 selection,
+    /// whether or not its metadata is listed). An animated-baked record is
+    /// ungated without id 45 even when it carries its own tile: Pass B gates
+    /// by subtracting from the term id 45 added, and with no id 45 that term
+    /// was never added.
     ungated_records: usize,
 }
 
@@ -356,6 +368,13 @@ impl MoverChannelLayout {
         let Some(section) = inputs.section else {
             return Ok(Self::empty(inputs.animation_descriptor_indices));
         };
+        // The loader disables id 41 by clearing the id-40 selection. A whole
+        // load then drops id 41 as well, but a streamed load still lists its
+        // metadata; either way a record borrowing from id 41 composes
+        // ungated, so the same PRL composes alike in every mode.
+        let static_terms = inputs
+            .static_terms
+            .filter(|_| !inputs.entity_shadow_lights.is_empty());
         let selection: HashMap<u32, u32> = inputs
             .entity_shadow_lights
             .iter()
@@ -390,7 +409,7 @@ impl MoverChannelLayout {
                             let slot = selection.get(&record.light_index).copied();
                             let term = if record.carries_own_tile {
                                 TermSource::Own
-                            } else if let Some(family) = inputs.static_terms {
+                            } else if let Some(family) = static_terms {
                                 let Some(slot) = slot else {
                                     return fail(format!(
                                         "direct record {index} borrows its term from {} but light {} holds no selection slot",
@@ -463,8 +482,7 @@ impl MoverChannelLayout {
                 q_bytes: q_bytes.next_multiple_of(4),
                 needs_static_terms: needs_static,
                 needs_animated_terms: needs_animated,
-                static_valid: inputs
-                    .static_terms
+                static_valid: static_terms
                     .and_then(|family| family.valid_probe_masks.get(cell).copied())
                     .unwrap_or(0),
                 animated_valid: inputs
@@ -697,10 +715,9 @@ impl MoverChannelLayout {
 
     /// Cell `plan`'s write: its records' terms then their q bytes, as words.
     /// `payload` is the listed cell's payload
-    /// (`MoverProbeChannelSection::cell_payload`); each family's row is
-    /// needed only when a record borrows from it. Every record's probe mask
-    /// is checked tight against its q bytes, so a streamed payload that
-    /// arrives malformed is refused here.
+    /// (`MoverProbeChannelSection::cell_payload`), already checked by
+    /// [`check_direct_cell`]; each family's row is needed only when a record
+    /// borrows from it, and a borrowed term must be finite.
     pub(in crate::render) fn cell_write(
         &self,
         section: &MoverProbeChannelSection,
@@ -722,7 +739,6 @@ impl MoverChannelLayout {
         let mut q_bytes = Vec::with_capacity(cell.q_bytes);
         for record in &self.records[cell.records.clone()] {
             let view = &views[record.section_record - wire_start];
-            check_tight(record.section_record, cell.cell, view)?;
             q_bytes.extend_from_slice(view.visibility);
             let mut mask = record.probe_mask;
             let mut slot = 0usize;
@@ -744,6 +760,12 @@ impl MoverChannelLayout {
                         cell.cell, record.section_record
                     ));
                 };
+                if let Some(bad) = first_non_finite(term.iter().copied()) {
+                    return fail(format!(
+                        "affinity cell {}'s direct record {} borrows a non-finite term at local probe {local} ({bad:#06x})",
+                        cell.cell, record.section_record
+                    ));
+                }
                 tile_halves.extend_from_slice(&term);
                 slot += 1;
             }
@@ -769,6 +791,7 @@ impl MoverChannelLayout {
     /// Every cell `section`'s held direct payload can write now, with the
     /// whole-load delta rows `rows` supplies. A streamed payload not held, or
     /// a family row `rows` cannot give, leaves the cell for a later install.
+    /// Every listed cell's held payload is checked first, gated or not.
     pub(in crate::render) fn held_writes<'a>(
         &self,
         section: &MoverProbeChannelSection,
@@ -777,6 +800,9 @@ impl MoverChannelLayout {
     ) -> Result<Vec<CellWrite>, MoverChannelError> {
         if !section.payload_held(MoverChannelBlock::Direct) {
             return Ok(Vec::new());
+        }
+        for (position, cell_slices) in slices.iter().enumerate() {
+            check_direct_cell(section, position, held_direct_payload(section, cell_slices))?;
         }
         let mut writes = Vec::new();
         for (plan, cell) in self.cells.iter().enumerate() {
@@ -796,9 +822,7 @@ impl MoverChannelLayout {
             } else {
                 None
             };
-            let payload = section
-                .cell_payload(cell.position, &slices[cell.position], None)
-                .map_err(|error| MoverChannelError(error.to_string()))?;
+            let payload = held_direct_payload(section, &slices[cell.position]);
             writes.push(self.cell_write(section, plan, payload, static_row, animated_row)?);
         }
         Ok(writes)
@@ -823,6 +847,50 @@ impl MoverChannelLayout {
 fn as_u32(value: usize, what: &str) -> Result<u32, MoverChannelError> {
     u32::try_from(value)
         .map_err(|_| MoverChannelError(format!("the table's {what} ({value}) overflows u32")))
+}
+
+/// A listed cell's held direct payload alone. A direct write reads nothing
+/// else, so a bounce block streamed beside a resident direct block, whose
+/// tiles arrive with the cell's clusters, never stops the cell's write.
+fn held_direct_payload<'a>(
+    section: &'a MoverProbeChannelSection,
+    slices: &MoverCellSlices,
+) -> MoverCellPayload<'a> {
+    MoverCellPayload {
+        visibility: &section.visibility[slices.visibility.clone()],
+        own_tiles: MoverHalves::Decoded(&section.own_tiles[slices.own_tiles.clone()]),
+        bounce_tiles: MoverHalves::Decoded(&[]),
+    }
+}
+
+/// Check listed cell `position`'s direct payload as it loads or arrives:
+/// every term record's probe mask tight against its q bytes, and every own
+/// tile finite. It covers every record, whether the table gates it or leaves
+/// it ungated, so a PRL is accepted or refused alike in every mode: the
+/// whole load checks every record's tightness at decode or attach.
+pub(in crate::render) fn check_direct_cell(
+    section: &MoverProbeChannelSection,
+    position: usize,
+    payload: MoverCellPayload<'_>,
+) -> Result<(), MoverChannelError> {
+    let Some(view) = section.direct_cell_at(position, payload) else {
+        return Ok(());
+    };
+    let first = section.direct_offsets[position] as usize;
+    for (offset, record) in view.records().enumerate() {
+        let index = first + offset;
+        check_tight(index, record.cell, &record)?;
+        if let Some(bad) = record
+            .own_tiles
+            .and_then(|tiles| first_non_finite(tiles.iter()))
+        {
+            return fail(format!(
+                "affinity cell {}'s direct record {index} holds a non-finite own tile value ({bad:#06x})",
+                record.cell
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A record's probe mask must be exactly the probes where some gating mover

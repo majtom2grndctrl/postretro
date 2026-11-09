@@ -1,9 +1,10 @@
-// The SH base gate against the mover bounce half it prices (bake row B14):
+// The SH base gate against the mover bounce half it prices:
 // the measured peak of the posed scenes, the bounce bake and the states, cold
 // and warm, and the patch cache's single drop after the mover bake.
 // See: context/lib/build_pipeline.md §Compiler pipeline (working-set gate)
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 
@@ -11,10 +12,12 @@ use super::{BounceHalfPlan, BouncePlanInputs, plan_bounce_half};
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
 use crate::fixture_pipeline::{FixturePipeline, fixture_path, load_map};
+use crate::governor::Governor;
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::live_bytes::{Report, measured};
 use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{MoverBounceRequest, PosedMovers};
+use crate::reporter::StageProgress;
 use crate::sh_bake::{ShBakeCtx, ShConfig, animation_table_bytes, static_light_refs};
 use crate::surface_radiance::{
     DEFAULT_BOUNCE_FILL, MoverBounceOutcome, ShBase, bake_sh_base_with_movers, plan_sh_base,
@@ -173,7 +176,7 @@ fn open(dir: &Path) -> StageCache {
     StageCache::new(dir).expect("cache")
 }
 
-// Bake row B14: on the closet, with the door re-baking every bounce, none
+// On the closet, with the door re-baking every bounce, none
 // (depth only) or two, at fill 1 and 0, on one worker and four, the SH base
 // gate's prediction with the mover channel priced covers the measured peak
 // cold, warm over an empty cache, warm on an id-34 hit whose door misses its
@@ -267,7 +270,7 @@ fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
     }
 }
 
-// Bake row B14: over budget, the SH base gate refuses the mover-priced
+// Over budget, the SH base gate refuses the mover-priced
 // projection by name, where the same map priced without its mover is
 // admitted.
 #[test]
@@ -313,6 +316,70 @@ fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
     });
 }
 
+/// The SH base bake with the fixture's movers, on a control that reports
+/// progress: what it completed, and the total it published.
+fn progress_of(fixture: &FixturePipeline, cache: Option<&StageCache>) -> (usize, Option<usize>) {
+    with_ctx(fixture, |ctx, poses| {
+        let plan = plan_half(fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let (handoff, _) = plan_sh_base(
+            ctx.geometry,
+            &static_light_refs(ctx),
+            animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+            CONFIG.probe_spacing,
+            DEFAULT_BOUNCE_FILL,
+            u64::MAX,
+        )
+        .expect("priced");
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(usize::MAX, false)), &progress);
+        bake_sh_base_with_movers(
+            ctx,
+            &CONFIG,
+            handoff,
+            &NO_EMBEDDED_EMITTERS,
+            cache,
+            &control,
+            MAX_PROBE_DEPTH_TILES,
+            &plan.request,
+        );
+        (progress.completed(), progress.total())
+    })
+}
+
+// The SH base's progress ends exactly at the total it published, with the
+// door re-baking every bounce, none (depth only) or two: cold, warm over an
+// empty cache, on a full hit, and on an id-34 hit whose door misses its
+// memo. The mover bake counts in the total, a volume hit advances only what
+// the movers do not re-run, and a memo hit advances its job at once.
+#[test]
+fn the_sh_base_progress_ends_at_its_total_with_movers_cold_and_warm() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    for (bounces, other) in [(None, Some(2)), (Some(0), None), (Some(2), Some(0))] {
+        let fixture = load_map(&closet(maps.path(), bounces));
+        let primer = load_map(&closet(maps.path(), other));
+        let check = |mode: &str, (completed, total): (usize, Option<usize>)| {
+            assert_eq!(
+                Some(completed),
+                total,
+                "bounces {bounces:?} {mode}: progress ends at its total"
+            );
+        };
+        check("cold", progress_of(&fixture, None));
+        let cache = tempfile::tempdir().expect("cache");
+        check(
+            "warm empty",
+            progress_of(&fixture, Some(&open(cache.path()))),
+        );
+        check("full hit", progress_of(&fixture, Some(&open(cache.path()))));
+        let primed = tempfile::tempdir().expect("cache");
+        progress_of(&primer, Some(&open(primed.path())));
+        check(
+            "id-34 hit, memo miss",
+            progress_of(&fixture, Some(&open(primed.path()))),
+        );
+    }
+}
+
 /// The closet baked with its door's `light_bounces` at `bounces`, cold.
 fn closet_states(
     maps: &Path,
@@ -350,11 +417,11 @@ fn light_bounces_zero_bakes_depth_alone_and_a_count_past_id_34s_bakes_id_34s() {
     );
 }
 
-// Bake row B8: a test-only re-bake of every valid probe at each terminus,
+// A test-only re-bake of every valid probe at each terminus,
 // on the closet and the setpiece, differs from id 34 beyond the
 // affected-probe rule (each probe's own BC6H round-trip bar and the
 // perceptual floor), recomputed here from the kept tiles, exactly at the
-// probes each mover's bounce states store. Task 11c: each stored probe
+// probes each mover's bounce states store. Each stored probe
 // stores a terminus's state exactly where that terminus's re-bake leaves the
 // round-trip bar alone. Heavy: whole posed re-bakes.
 #[test]

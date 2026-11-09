@@ -1,4 +1,4 @@
-// C9, game half, on the compiled `mover-closet`: the door driven by ticks,
+// Game half, on the compiled `mover-closet`: the door driven by ticks,
 // not forced, opens, reverses at mid-travel and closes, and every frame hands
 // the renderer the t′ its author ramp gives that frame's post-tick phase. The
 // ramp comes from the PRL (id 57's ramp record), so the 0.6/0.9 variant
@@ -13,7 +13,7 @@ use super::{KinematicMoverRenderCollector, mover_entity, spawn_loaded_kinematic_
 use crate::kinematic_mover::{MoverTickStateTable, apply_mover_command, run_kinematic_mover_tick};
 
 const TICK_DT: f32 = 1.0 / 60.0;
-/// Frames presented per tick: the second must hand over the same t′ (P10).
+/// Frames presented per tick: the second must hand over the same t′.
 const FRAMES_PER_TICK: usize = 2;
 const EPSILON: f32 = 2.0e-4;
 
@@ -70,8 +70,8 @@ fn drive(world: &LevelWorld, ramp: (f32, f32), reverse_at: f32) -> Vec<(f32, f32
         }
         let t = drawn_fraction(&registry, world, mover_id);
         for frame in 0..FRAMES_PER_TICK {
-            collector.collect_light_states(&registry, Some(world));
-            let states = collector.light_states();
+            collector.collect_mover_travel(&registry, Some(world));
+            let states = collector.mover_travel();
             assert_eq!(states.len(), 1, "tick {tick}: one present mover");
             assert_eq!(states[0].mover_id, mover_id);
             let expected = ramped(t, ramp.0, ramp.1);

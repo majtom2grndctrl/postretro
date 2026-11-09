@@ -58,8 +58,7 @@ pub(crate) struct MoverBounceOutcome {
     /// One per production job, ascending by mover id: from the memo or
     /// baked.
     pub(crate) movers: Vec<MoverBounceStates>,
-    /// Each pose's re-bake, when the request keeps them: bake row B8's
-    /// full re-bake.
+    /// Each pose's re-bake, when the request keeps them: the full re-bake.
     #[cfg(test)]
     pub(crate) poses: Vec<PosedBounce>,
 }
@@ -154,6 +153,16 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
         self.pending.iter().any(|job| job.bounces > 0)
     }
 
+    /// The jobs the memo held, whose bake never runs.
+    fn hits<'j>(&self, movers: &'j MoverBounceRequest) -> impl Iterator<Item = &'j MoverBounceJob> {
+        movers
+            .jobs
+            .iter()
+            .zip(&self.found)
+            .filter(|(_, found)| found.is_some())
+            .map(|(job, _)| job)
+    }
+
     /// Store each baked job's states and merge them with the memo's, by
     /// mover id.
     fn finish(
@@ -211,7 +220,10 @@ fn static_tail(
 /// Cache reads and writes take no governor permit. Cold (`cache == None`)
 /// and warm bake the same bytes. Progress counts one unit per patch chunk
 /// of each layer's reach, then one per patch chunk of each later bounce,
-/// then one per probe; a hit advances them all at once.
+/// then one per probe, then each mover job's own units
+/// ([`MoverBounceJob::progress_units`]). A volume hit advances id 34's units
+/// at once, less the layers and later bounces the movers re-run; a memo hit
+/// advances its job's.
 ///
 /// The gather's hits also bin into each valid probe's depth tile, kept when
 /// it changes the probe's visibility, at most `tile_cap` per level
@@ -260,8 +272,12 @@ pub(crate) fn bake_sh_base_with_movers(
     crate::live_bytes::phase("plan and probe layout");
     let shading_units = plan.progress_units();
     let bounce_units = later_bounce_progress_units(patches.len(), bounce_fill);
-    let total_units = shading_units + bounce_units + layout.total_probes();
-    control.publish_total(total_units);
+    let volume_units = shading_units + bounce_units + layout.total_probes();
+    let valid_probes = layout.validity.iter().filter(|&&valid| valid != 0).count();
+    let patch_count = patches.len();
+    let job_units =
+        |job: &MoverBounceJob| job.progress_units(valid_probes, patch_count, bounce_fill);
+    control.publish_total(volume_units + movers.jobs.iter().map(job_units).sum::<usize>());
 
     // An empty grid gathers nothing, so it caches nothing either.
     let caches = cache.filter(|_| !layout.is_empty()).map(|cache| {
@@ -300,8 +316,18 @@ pub(crate) fn bake_sh_base_with_movers(
         ];
         #[cfg(test)]
         crate::live_bytes::phase("volume load");
-        control.advance(total_units);
         let lookup = MemoLookup::new(movers, Some(volume), ctx, &layout);
+        // The movers re-run the layers for bounce one, and id 34's later
+        // bounces for the ones they keep, and those advance as they run.
+        let tail_from =
+            MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)
+                .filter(|_| lookup.needs_radiance());
+        let rerun = if lookup.needs_radiance() {
+            shading_units + if tail_from.is_some() { bounce_units } else { 0 }
+        } else {
+            0
+        };
+        control.advance(volume_units - rerun + lookup.hits(movers).map(job_units).sum::<usize>());
         let (baked, _kept_poses) = if lookup.pending.is_empty() {
             (Vec::new(), Vec::new())
         } else {
@@ -318,19 +344,16 @@ pub(crate) fn bake_sh_base_with_movers(
                 PatchRadiance::sum(patches.len(), &plan, &resolved)
             });
             let bounce_one = bounce_one.unwrap_or_else(|| PatchRadiance::zeroed(0));
-            let tail =
-                MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)
-                    .filter(|_| lookup.needs_radiance())
-                    .map(|from| {
-                        later_bounce_layers(
-                            &ctx.ray_ctx(),
-                            &patches,
-                            &bounce_one,
-                            bounce_fill,
-                            from,
-                            control,
-                        )
-                    });
+            let tail = tail_from.map(|from| {
+                later_bounce_layers(
+                    &ctx.ray_ctx(),
+                    &patches,
+                    &bounce_one,
+                    bounce_fill,
+                    from,
+                    control,
+                )
+            });
             let tail = tail.and_then(|kept| static_tail(&lookup.pending, bounce_fill, kept));
             #[cfg(test)]
             let _tail = tail.as_ref().map(|tail| {
@@ -395,6 +418,7 @@ pub(crate) fn bake_sh_base_with_movers(
         ctx,
         &layout,
     );
+    control.advance(lookup.hits(movers).map(job_units).sum());
     let bounce_one = lookup.needs_radiance().then(|| radiance.clone());
     let keep_from =
         MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)

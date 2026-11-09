@@ -91,7 +91,6 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         &jobs,
         &layout,
         inputs.bounce_fill,
-        effective_tile_cap(inputs.tile_cap),
         inputs.direct_lights,
         posed,
     );

@@ -1,5 +1,5 @@
 // The SH gate's direct-entry bound against the production direct bake on the
-// dev maps with movers (task 7b): the bound prices every (light, mover, cell)
+// dev maps with movers: the bound prices every (light, mover, cell)
 // the bake's own prefilter admits, so it covers the entries the bake holds.
 
 use std::mem::size_of;

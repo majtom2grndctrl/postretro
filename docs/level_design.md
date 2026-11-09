@@ -536,7 +536,7 @@ Movers in co-op light the same on every machine, with nothing extra sent over th
 - `1` keeps the first bounce, light bouncing once off the mover and the surfaces around it, which is most of what you see, for less than half the cost.
 - `0` skips bounce for that mover entirely. Its direct light and how the lighting sees past it still follow the mover, but the bounce around it stays as if the mover were absent, so a closed door can still let a faint glow of bounced light through. Use it for small or out-of-the-way movers.
 
-`light_bounces` must be a whole number, `0` or more; a negative, fractional or non-numeric value stops the build with an error naming the mover. To return to the default, remove the key or leave its value empty.
+`light_bounces` must be a whole number, `0` or more; a negative, fractional or non-numeric value stops the build with an error naming the mover, as does one too large to count. To return to the default, remove the key or leave its value empty.
 
 ---
 
@@ -837,8 +837,10 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | Lightmap atlas layer overflow | Too many surfaces at the current texel density, or a `_lightmap_scale` region too fine | Raise `--lightmap-density` (coarser texels), lower the region's `_lightmap_scale`, or split the map |
 | Animated block count exceeds the block-table cap | More faces lie within animated lights' reach than the animated lightmap can hold | Shrink animated lights' `_falloff_range`, make some of them static, or split the map |
 | Exterior leak | Gap in the brush hull | Seal the map and check the compiler output for the breach location |
-| `light_ramp_start` and `light_ramp_end` must satisfy … | A mover's ramp keys are out of order, outside `0`–`1`, or not numbers | Keep both between `0` and `1` with the start below the end, or remove them (see Movers: Lighting) |
+| `light_ramp_start` and `light_ramp_end` must satisfy … | A mover's ramp keys are out of order or outside `0`–`1` | Keep both between `0` and `1` with the start below the end, or remove them (see Movers: Lighting) |
+| `light_ramp_start` (or `light_ramp_end`) value … is not a valid float, or … is not finite | A mover's ramp key is not a number, or is `nan` or `inf` | Write a number between `0` and `1`, or remove the key |
 | `light_bounces` must be an integer of at least 0 | A mover's `light_bounces` is negative, fractional or not a number | Use a whole number, `0` or more, or remove the key or leave it empty |
+| `light_bounces` … is too large | A mover's `light_bounces` is past 4294967295 | Use a smaller whole number: any count past the level's bounces already re-bakes them all |
 | Probes carry closed-pose depth, past the probe depth tile range | Movers reach into the lighting of more probes than the level can track | Use fewer movers, or move them where they block less of the level's light |
 | PNG color-space validation failed | An `_s.png`, `_n.png`, or `_h.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
 | `_h.png` dimensions must match diffuse | A height map is a different resolution from its diffuse texture | Re-export the height map at the diffuse's exact dimensions |

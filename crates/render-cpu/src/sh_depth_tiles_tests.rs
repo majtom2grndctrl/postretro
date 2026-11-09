@@ -136,7 +136,7 @@ fn live_tiles_follow_id_59s_in_one_texture_sized_from_their_sum() {
     );
 }
 
-/// Bake row B5, renderer side: id 59's tiles plus live tiles exactly at the
+/// Renderer side: id 59's tiles plus live tiles exactly at the
 /// reference's range lay out, and the last live tile is referenceable.
 #[test]
 fn id_59_and_live_tiles_exactly_at_the_range_lay_out_and_the_last_is_referenceable() {

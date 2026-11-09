@@ -1,4 +1,4 @@
-//! Mover probe channel on `mover-setpiece` (bake row B2): which lights `setpiece_wall` closed
+//! Mover probe channel on `mover-setpiece`: which lights `setpiece_wall` closed
 //! and `setpiece_room` raised gate, at which probes, read from the packed id 57, which the
 //! runtime loader accepts.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
@@ -198,7 +198,7 @@ fn the_setpiece_channel_loads() {
     assert_eq!(channel.ramps.len(), 2, "both movers gate a light");
 }
 
-// Bake row B2: `setpiece_wall` closed stores q < 1 at back-room probes for
+// `setpiece_wall` closed stores q < 1 at back-room probes for
 // every arena light that reaches the wall and at arena probes for every
 // back-room light, and stores no entry for the two spots that never reach
 // it; `setpiece_room` raised stores q < 1 at its interior probes for the

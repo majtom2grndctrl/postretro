@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_depth_bias, visibility_change};
 
-/// The significance floor (owner, Stop 2, 2026-11-08): a probe carries a
+/// The significance floor (owner, 2026-11-08): a probe carries a
 /// mover's closed-pose depth only when id 59's own visibility-change score
 /// of a closed-pose tile, against the probe's mover-absent moments, is at
 /// least this. The largest round value that keeps every probe the static-door

@@ -2,13 +2,13 @@
 // covers to this frame's t′ and point its probe's reference at it, on the
 // upload batch that precedes the frame's draws. Runs once per frame at the
 // SH drain, the renderer's one pre-compose boundary, so direct and bounce
-// compose and the live tiles all read the same t′ (P25).
+// compose and the live tiles all read the same t′.
 // See: context/lib/rendering_pipeline.md §4 (Direction-aware probe
 // visibility, Mover state lighting)
 
 use super::Renderer;
 use super::level_resource_set::LevelResourceSet;
-use super::mover_light_state::MoverLightState;
+use super::mover_travel::MoverTravel;
 use super::sh_depth_tile_rewrite::DepthTexels;
 use super::sh_streaming::{ShResidencyDrainError, ShResidencyState};
 use super::sh_volume::ShVolumeResources;
@@ -17,7 +17,7 @@ use super::uploads::UploadQueue;
 impl Renderer {
     /// Write this frame's live tiles and reference moves on the published
     /// level. Nothing without a level: a hand-over before install is dropped
-    /// by the state table, and install resets it (P27, P30).
+    /// by the state table, and install resets it.
     pub(super) fn write_mover_depth_tiles(&mut self) -> Result<(), ShResidencyDrainError> {
         let Self {
             device,
@@ -31,7 +31,7 @@ impl Renderer {
         let Some(level) = full.level.as_mut() else {
             return Ok(());
         };
-        level.write_mover_depth_tiles(device, queue, full.mover_light_states.states())
+        level.write_mover_depth_tiles(device, queue, full.mover_travel.states())
     }
 }
 
@@ -41,7 +41,7 @@ impl LevelResourceSet {
         &mut self,
         device: &wgpu::Device,
         queue: &UploadQueue,
-        states: &[MoverLightState],
+        states: &[MoverTravel],
     ) -> Result<(), ShResidencyDrainError> {
         write_mover_depth_tiles(
             &mut self.sh_volume_resources,
@@ -56,13 +56,15 @@ impl LevelResourceSet {
 /// Plan one frame's live tiles from `states` and stage them, then move the
 /// probe references the plan names. A whole-loaded level stages its
 /// reference texels on the frame batch with the tiles; a streamed one
-/// (`streaming`) flushes them now, after the drain that already ran.
+/// (`streaming`) flushes them now, after the drain that already ran. The
+/// mover changes commit only once every reference move landed; a failure
+/// keeps them, so the next frame plans the same writes and moves again.
 pub(in crate::render) fn write_mover_depth_tiles(
     sh: &mut ShVolumeResources,
-    mut streaming: Option<&mut ShResidencyState>,
+    streaming: Option<&mut ShResidencyState>,
     device: &wgpu::Device,
     queue: &UploadQueue,
-    states: &[MoverLightState],
+    states: &[MoverTravel],
 ) -> Result<(), ShResidencyDrainError> {
     let ShVolumeResources {
         mover_channel,
@@ -76,15 +78,38 @@ pub(in crate::render) fn write_mover_depth_tiles(
     let changes = mover_channel.plan_depth(|first, count, bytes| {
         depth_tiles.write_live_tiles(queue, first, count, bytes);
     });
-    if changes.is_empty() {
-        return Ok(());
-    }
-    let mut texels = DepthTexels {
-        depth_tiles,
-        probe_indirection_words,
-        grid_dimensions: *grid_dimensions,
-        depth_moment_texture,
+    let moved = if changes.is_empty() {
+        Ok(())
+    } else {
+        move_references(
+            changes,
+            DepthTexels {
+                depth_tiles,
+                probe_indirection_words,
+                grid_dimensions: *grid_dimensions,
+                depth_moment_texture,
+            },
+            streaming,
+            device,
+            queue,
+        )
     };
+    match moved {
+        Ok(()) => mover_channel.commit_depth(),
+        Err(_) => mover_channel.abandon_depth(),
+    }
+    moved
+}
+
+/// Point each probe `changes` names at its live tile or back at its base,
+/// and on a streamed level flush the texels now.
+fn move_references(
+    changes: &[(u32, Option<u16>)],
+    mut texels: DepthTexels<'_>,
+    mut streaming: Option<&mut ShResidencyState>,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+) -> Result<(), ShResidencyDrainError> {
     for &(probe, tile) in changes {
         // Depth records name valid probes of this lattice and live tiles
         // inside this texture (both checked at load), so a refusal here is a

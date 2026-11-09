@@ -33,7 +33,7 @@ impl ShResidencyState {
 
     /// Flush the queued texels now, on their own upload batch submitted
     /// ahead of the frame's commands: the mover live tiles move references
-    /// after this frame's drain, and the frame must sample them (P24, P25).
+    /// after this frame's drain, and the frame must sample them.
     pub(in crate::render) fn flush_depth_tile_texels_now(
         &mut self,
         device: &wgpu::Device,

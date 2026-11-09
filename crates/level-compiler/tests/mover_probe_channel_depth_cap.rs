@@ -1,4 +1,4 @@
-//! Mover depth under a lowered probe depth tile range (bake rows B5 and B6, through the binary):
+//! Mover depth under a lowered probe depth tile range (through the binary):
 //! the closet's live tiles are reserved ahead of id 59, which drops its lowest-ranked tiles to
 //! make room and reports them against the shrunk cap; live tiles alone past the range fail the
 //! build by name; and a warm mover-only edit that changes the live-tile count traces no id-34
@@ -52,7 +52,7 @@ fn assert_reports(built: &Built, cap: u32) {
     }
 }
 
-// Bake rows B5 and B6 (P31): with the range lowered below id 59 plus the
+// With the range lowered below id 59 plus the
 // door's live tiles, id 59 keeps exactly the range less the live tiles, and
 // the log and summary report that count against the shrunk cap. With the door's
 // open pose inside the closet, moving it out into the hall changes the
@@ -100,7 +100,7 @@ fn a_lowered_range_trims_id_59_for_mover_tiles_and_a_mover_edit_retrims_warm() {
     );
 }
 
-// Bake row B5: a range the door's live tiles alone exceed fails the build by
+// A range the door's live tiles alone exceed fails the build by
 // name before packing; one exactly at id 59 plus the live tiles packs, drops
 // nothing, and loads; and the summary's counted total and texture bytes are
 // the loaded level's tile count and the renderer's texture price.

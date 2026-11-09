@@ -28,7 +28,7 @@
 // the forward/billboard/fog passes hold.
 //
 // Entities follow the BILLBOARD precedent, not forward's static-surface variant:
-// `reject_backface = false` (a moving skinned entity is not a static world
+// `SH_BACKFACE_NONE` (a moving skinned entity is not a static world
 // surface) with Chebyshev probe-occlusion on. Baked static direct is computed
 // here via `sample_sh_direct`; group 2 carries the live dynamic-direct loop
 // (`accumulate_dynamic_direct`) plus the shadow-receipt bindings (b5–b8): the

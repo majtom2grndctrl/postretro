@@ -1,6 +1,6 @@
 //! Mover probe channel, bounce and depth halves, against reference builds where the mover is a
-//! static brush at its pose (bake rows B3, B4, B7) and against an animated light added to the
-//! bright room (B11, bake side). Every SH base here is stored at uniform L0 (`_sh_coarsen "0"`),
+//! static brush at its pose and against an animated light added to the
+//! bright room. Every SH base here is stored at uniform L0 (`_sh_coarsen "0"`),
 //! so id 34 reads back per probe; the references and today's id 34 build uncompressed, so they
 //! read the gathered tile itself, and the channel builds BC6H, as production does.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
@@ -67,7 +67,7 @@ fn in_closet(quake: [f64; 3]) -> bool {
     (160.0..480.0).contains(&quake[0]) && quake[1] > 504.0 && quake[1] < 760.0 && quake[2] < 128.0
 }
 
-// Bake row B3: with the door closed, the composed base at every closet probe
+// With the door closed, the composed base at every closet probe
 // valid in both bakes (S^b₀ where the probe stores it, today's id 34 where it
 // does not) equals the static-door reference's id 34 within that tile's BC6H
 // round-trip error. With the door open, every stored S^b₁ equals today's id
@@ -146,7 +146,7 @@ fn closed_door_closet_bounce_matches_the_static_door_reference() {
     );
 }
 
-// Bake row B4: every probe the static-door reference tiles either carries a
+// Every probe the static-door reference tiles either carries a
 // closed-pose tile equal to the reference's id-59 tile within f16 rounding
 // (its gather rays meet the closed door), or keeps today's id-59 tile, equal
 // to the reference's (they never meet it). Every depth record is the door's,
@@ -200,7 +200,7 @@ fn closed_door_depth_tiles_match_the_static_door_references_tiles() {
     );
 }
 
-// Bake row B4, last clause, and B17's no-change map: a mover no probe ray can
+// Last clause, and the no-change map: a mover no probe ray can
 // reach emits no section, so no depth block.
 #[test]
 fn a_mover_no_probe_ray_meets_emits_no_depth_block() {
@@ -254,7 +254,7 @@ fn in_raised_room(quake: [f64; 3]) -> bool {
     (0..3).all(|axis| MIN[axis] < quake[axis] && quake[axis] < MAX[axis])
 }
 
-// Bake row B7 (restated, owner, Stop 2): with `setpiece_room` raised, at every
+// With `setpiece_room` raised, at every
 // interior probe valid in both bakes, the composed base (S^b₁ where the probe
 // stores an entry, today's id 34 where it does not) is nearer the
 // static-room reference's id 34 than today's id 34 is, and within 3 display
@@ -320,7 +320,7 @@ fn raised_room_bounce_is_nearer_the_static_room_reference_than_today() {
     assert!(compared > 100, "the room holds its probes: {compared}");
 }
 
-// Bake row B11, bake side: an animated light added to the closet's bright
+// Bake side: an animated light added to the closet's bright
 // room leaves every bounce-state and depth byte unchanged (it shapes only
 // the direct block). It is appended last, so no static light's seed shifts.
 #[test]
@@ -341,7 +341,7 @@ fn an_animated_light_leaves_the_bounce_and_depth_blocks_unchanged() {
     assert!(!before.bounce_tiles.is_empty());
 }
 
-// Bake row B14: a budget one byte under the SH base gate's mover-priced peak
+// A budget one byte under the SH base gate's mover-priced peak
 // refuses the build with the gate's named error before any posed bounce ray:
 // no mover's bounce half logs a bake.
 #[test]

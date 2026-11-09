@@ -62,6 +62,13 @@
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use thiserror::Error;
 
+/// The codec's identity for build-cache keys: bump it when the encoder's
+/// output for a given input, or the decoder's reading of a block, changes.
+/// A memo whose stored output depends on a round trip through this codec
+/// folds it; one that stores the pre-encoding intermediate and encodes at
+/// emit needs no fold.
+pub const BC6H_CODEC_VERSION: u32 = 1;
+
 /// BC6H 4-bit index weight table. Hardware uses these to interpolate between
 /// endpoints `unq0`/`unq1`: `weight w / 64` applied as
 /// `((64 - w) * unq0 + w * unq1 + 32) >> 6`.

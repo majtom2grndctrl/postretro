@@ -12,7 +12,7 @@ use super::depth_tile_texel_tests::{
     texels, tiles,
 };
 use super::*;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use crate::render::mover_channel::depth_test_support::{depth_section, ramp_tile};
 use crate::render::mover_depth_tiles::write_mover_depth_tiles;
@@ -47,8 +47,8 @@ fn fixture(device: &wgpu::Device, raw: &wgpu::Queue) -> UploadOrderSh {
 /// One frame's live-tile step at the drain boundary, with `t` for mover 4
 /// (`None`: no state).
 fn hand_over(f: &mut UploadOrderSh, device: &wgpu::Device, queue: &UploadQueue, t: Option<f32>) {
-    let states: Vec<MoverLightState> = t
-        .map(|t| MoverLightState { mover_id: 4, t })
+    let states: Vec<MoverTravel> = t
+        .map(|t| MoverTravel { mover_id: 4, t })
         .into_iter()
         .collect();
     write_mover_depth_tiles(&mut f.sh, Some(&mut f.state), device, queue, &states)
@@ -110,7 +110,7 @@ fn live_tile(
         .collect()
 }
 
-/// Depth rows D4 and D5 (P24, P25), streamed half: the first hand-over at a
+/// Streamed half: the first hand-over at a
 /// held terminus moves every resident changed probe's texel onto its live
 /// tile on that frame, with no further drain, while the tile already holds
 /// that terminus's D; a step from 1 to 0 rewrites the tiles that frame and
@@ -173,7 +173,7 @@ fn a_streamed_first_hand_over_points_resident_texels_at_written_tiles_that_frame
     eprintln!("[MoverDepthProof] streamed first frame and 1→0 step held; ran on GPU");
 }
 
-/// Depth row D13, streamed half: live references survive eviction (the
+/// Streamed half: live references survive eviction (the
 /// texel keeps G under the invalid word), reinstall, and dense-pool
 /// growth; a probe whose cluster arrives after the hand-over promotes onto
 /// its live tile. Live tiles never enter the pool, so their texels stay.
@@ -237,7 +237,7 @@ fn live_references_survive_eviction_reinstall_and_pool_growth() {
     eprintln!("[MoverDepthProof] live references survived evict, reinstall, growth; ran on GPU");
 }
 
-/// Depth row D10 (P29), streamed half: with no id 59 the texture holds the
+/// Streamed half: with no id 59 the texture holds the
 /// live tiles alone, and the resident changed probes reference them,
 /// holding D₀, the frame of the first hand-over.
 #[test]

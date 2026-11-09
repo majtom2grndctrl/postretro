@@ -44,8 +44,6 @@ pub(crate) struct MoverChannelCost {
     pub(crate) kept_later_bounces: u64,
     pub(crate) valid_probes: u64,
     pub(crate) total_probes: u64,
-    /// The tile range mover depth may fill before the bake stops.
-    pub(crate) depth_cap: u64,
     /// The direct half's entries at their bound.
     pub(crate) direct_entry_bytes: u64,
 }
@@ -53,12 +51,11 @@ pub(crate) struct MoverChannelCost {
 impl MoverChannelCost {
     /// The channel's cost for `jobs` over `layout` at `fill`, with the
     /// direct half's bound over `direct_lights` (every static and animated
-    /// baked light) and mover depth filling at most `depth_cap` tiles.
+    /// baked light).
     pub(crate) fn new(
         jobs: &[MoverBounceJob],
         layout: &ProbeGridLayout,
         fill: f32,
-        depth_cap: u32,
         direct_lights: &[&MapLight],
         movers: &PosedMovers,
     ) -> Self {
@@ -78,7 +75,6 @@ impl MoverChannelCost {
             kept_later_bounces: kept_later_bounces(jobs, fill),
             valid_probes: layout.validity.iter().filter(|&&valid| valid != 0).count() as u64,
             total_probes: layout.total_probes() as u64,
-            depth_cap: u64::from(depth_cap),
             direct_entry_bytes: direct_entry_bound(direct_lights, movers, layout),
         }
     }
@@ -95,23 +91,25 @@ impl MoverChannelCost {
 
     /// Every mover's states held at once: a bounce state per valid probe for
     /// each mover re-baking radiance, and a depth state per valid probe for
-    /// each mover, up to the tile range plus the one mover whose depth passes
-    /// it (the bake stops there).
+    /// each mover. The tile range bounds the distinct probes carrying depth,
+    /// never the records: several movers over the same probes each keep one
+    /// there, so the range caps nothing here.
     pub(crate) fn accumulated_states_bytes(&self) -> u64 {
         let bounce = self.radiance_movers
             * self.valid_probes
             * (2 * MOVER_IRRADIANCE_TILE_F16_COUNT as u64 * 2 + size_of::<BounceProbe>() as u64);
-        let depth_records =
-            (self.movers * self.valid_probes).min(self.depth_cap + self.valid_probes);
-        let depth = depth_records * (2 * DEPTH_TILE_BYTES + size_of::<DepthProbe>() as u64);
+        let depth = self.movers
+            * self.valid_probes
+            * (2 * DEPTH_TILE_BYTES + size_of::<DepthProbe>() as u64);
         bounce + depth
     }
 
     /// What one pose holds while it runs, beside the SH base's patch cache:
     /// its posed copy of the static patch radiance and its own sides', the
     /// re-shaded (patch, light) pairs, the later-bounce buffers over both
-    /// patch sets and the static tail's sum, its gathered probes, the
-    /// mover's other pose, and one mover's memo write.
+    /// patch sets, its gathered probes, the mover's other pose, and one
+    /// mover's memo write. Id 34's kept later bounces add in place
+    /// ([`Self::kept_later_bytes`]), so no tail sum is held.
     pub(crate) fn pose_bytes(&self, patch_count: u64, light_reach_total: u64) -> u64 {
         if self.movers == 0 {
             return 0;
@@ -120,7 +118,7 @@ impl MoverChannelCost {
         let patches = patch_count + self.max_mover_patches;
         let radiance = 2 * side * patches;
         let pairs = light_reach_total * (2 * size_of::<(u32, u32)>() as u64 + 2 * side);
-        let later = 3 * side * patches + side * patch_count + 64 * side;
+        let later = 3 * side * patches + 64 * side;
         let gathered = self.valid_probes
             * (size_of::<PosedProbe>() as u64 + GATHERED_TILE_BYTES + DEPTH_TILE_BYTES);
         let other_pose = self.valid_probes
@@ -244,4 +242,46 @@ fn cell_of_probe(layout: &ProbeGridLayout, probe: usize) -> usize {
     let [ax, ay, _] = layout.dims.map(|dim| dim.div_ceil(4) as usize);
     let (x, y, z) = (probe % nx, probe / nx % ny, probe / (nx * ny));
     x / 4 + y / 4 * ax + z / 4 * ax * ay
+}
+
+#[cfg(test)]
+mod tests {
+    use postretro_level_format::probe_depth_tiles::{
+        MAX_PROBE_DEPTH_TILES, PROBE_DEPTH_TILE_TEXELS,
+    };
+
+    use super::*;
+
+    // Twenty movers over the same 3,000 valid probes each keep a depth record
+    // with both termini's tiles at every one: 60,000 records, past the
+    // tile range plus one mover's probes. The bound prices every record.
+    #[test]
+    fn many_movers_over_the_same_probes_are_priced_at_every_depth_record() {
+        let (movers, valid) = (20u64, 3_000u64);
+        let cost = MoverChannelCost {
+            movers,
+            valid_probes: valid,
+            total_probes: valid,
+            ..MoverChannelCost::default()
+        };
+        assert!(movers * valid > u64::from(MAX_PROBE_DEPTH_TILES) + valid);
+        let held: u64 = (0..movers)
+            .map(|_| {
+                let records: Vec<DepthProbe> = (0..valid as u32)
+                    .map(|probe| DepthProbe {
+                        probe,
+                        stored: [true, true],
+                        tiles: vec![[0u16; 2]; 2 * PROBE_DEPTH_TILE_TEXELS],
+                    })
+                    .collect();
+                (records.capacity() * size_of::<DepthProbe>()) as u64
+                    + records
+                        .iter()
+                        .map(|record| (record.tiles.capacity() * size_of::<[u16; 2]>()) as u64)
+                        .sum::<u64>()
+            })
+            .sum();
+        let priced = cost.accumulated_states_bytes();
+        assert!(priced >= held, "priced {priced} B under {held} B held");
+    }
 }

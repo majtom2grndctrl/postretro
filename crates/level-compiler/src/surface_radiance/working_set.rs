@@ -61,7 +61,8 @@ pub(crate) struct ShBaseWorkingSetProjection {
     pub(crate) mover_bounce_phase_bytes: u64,
     /// The direct half after the patch cache drops: id 34, the movers'
     /// states and blocks, the posed solids, and the direct entries with the
-    /// sections built from them.
+    /// one id-57 section built from them (the provisional section drops
+    /// before the final one assembles).
     pub(crate) mover_direct_phase_bytes: u64,
     pub(crate) estimated_peak_bytes: u64,
     pub(crate) budget_bytes: u64,

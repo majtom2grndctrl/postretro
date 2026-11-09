@@ -1,4 +1,4 @@
-//! Mover light state: each frame, one (mover id, ramped travel fraction) per
+//! Mover travel: each frame, one (mover id, ramped travel fraction) per
 //! present mover, read from the registry's final post-tick phase, for the
 //! renderer's mover state lighting. Every present mover is collected, culled
 //! from the frame's view or not, with or without draw geometry.
@@ -11,9 +11,9 @@ use postretro_level_loader::{LevelWorld, LoadedKinematicMover, MoverLightRamp};
 use postretro_physics::kinematic_mover::{MoverPathArcLengths, mover_path_fraction};
 
 use super::MoverListSource;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 
-/// The mover's light state from its travel fraction `t` under its author
+/// The mover's ramped travel fraction from its travel fraction `t` under its author
 /// ramp: `clamp((t - start) / (end - start), 0, 1)`. A ramp load validation
 /// would have refused (an empty or non-finite window) reads as the identity.
 pub(crate) fn ramped_travel_fraction(t: f32, ramp: MoverLightRamp) -> f32 {
@@ -33,20 +33,20 @@ pub(crate) fn ramped_travel_fraction(t: f32, ramp: MoverLightRamp) -> f32 {
 /// Per-mover data that holds for a whole level: its ramp and its path's arc
 /// lengths, built on first sight so a frame allocates nothing.
 #[derive(Debug, Default)]
-struct MoverLightPath {
+struct MoverTravelPath {
     ramp: MoverLightRamp,
     arc_lengths: MoverPathArcLengths,
 }
 
-/// Collects one frame's mover light states into a reused buffer.
+/// Collects one frame's mover travel states into a reused buffer.
 #[derive(Debug, Default)]
-pub(crate) struct MoverLightStateCollector {
-    states: Vec<MoverLightState>,
-    paths: HashMap<u32, MoverLightPath>,
+pub(crate) struct MoverTravelCollector {
+    states: Vec<MoverTravel>,
+    paths: HashMap<u32, MoverTravelPath>,
     source: Option<MoverListSource>,
 }
 
-impl MoverLightStateCollector {
+impl MoverTravelCollector {
     /// Forget the level: its ramps, its paths and the last frame's states.
     pub(crate) fn clear(&mut self) {
         self.states.clear();
@@ -69,14 +69,14 @@ impl MoverLightStateCollector {
             let path = self.paths.entry(mover.mover_id).or_default();
             path.arc_lengths.sync_to(&mover.waypoints);
             let t = mover_path_fraction(mover, &path.arc_lengths);
-            self.states.push(MoverLightState {
+            self.states.push(MoverTravel {
                 mover_id: mover.mover_id,
                 t: ramped_travel_fraction(t, path.ramp),
             });
         }
     }
 
-    pub(crate) fn states(&self) -> &[MoverLightState] {
+    pub(crate) fn states(&self) -> &[MoverTravel] {
         &self.states
     }
 
@@ -91,7 +91,7 @@ impl MoverLightStateCollector {
         for mover in movers {
             self.paths.insert(
                 mover.mover_id,
-                MoverLightPath {
+                MoverTravelPath {
                     ramp: mover.light_ramp,
                     arc_lengths: MoverPathArcLengths::default(),
                 },

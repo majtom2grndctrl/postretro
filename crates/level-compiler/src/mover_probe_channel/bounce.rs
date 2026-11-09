@@ -205,10 +205,18 @@ impl Source<'_> {
 pub(crate) struct PosedLaterBounces<'t> {
     /// Later bounces run posed: the mover's `light_bounces` less bounce one.
     pub(crate) posed: u32,
-    /// The SH base's own later bounces past the posed ones, summed per
-    /// static patch. The mover's own patches take no tail: the static
-    /// bounces never saw them.
-    pub(crate) static_tail: Option<&'t [[f32; 3]]>,
+    /// The SH base's own later bounces past the posed ones, in bounce order,
+    /// one front side per static patch each. The mover's own patches take
+    /// no tail: the static bounces never saw them.
+    pub(crate) static_tail: &'t [Vec<[f32; 3]>],
+}
+
+/// Progress units [`add_posed_later_bounces`] advances for `posed` later
+/// bounces: one per patch chunk of each, over the static and the posed
+/// patch sets.
+pub(crate) fn posed_later_progress_units(posed: u32, world: usize, mover: usize) -> usize {
+    posed.min(LATER_BOUNCE_COUNT) as usize
+        * (world.div_ceil(PATCHES_PER_CHUNK) + mover.div_ceil(PATCHES_PER_CHUNK))
 }
 
 /// [`crate::surface_radiance::add_later_bounces`] over both patch sets,
@@ -218,8 +226,11 @@ pub(crate) struct PosedLaterBounces<'t> {
 /// and every patch it reads holds its static value, its bounce is the
 /// static one bit for bit.
 ///
-/// `later.posed` later bounces run posed; `later.static_tail`, when given,
-/// joins them before the fill scales the sum.
+/// `later.posed` later bounces run posed; `later.static_tail` joins them
+/// before the fill scales the sum, each layer added to the running sum in
+/// bounce order as id 34 adds it, so a patch no posed bounce changes sums
+/// id 34's later bounces bit for bit. Each patch chunk of each posed bounce
+/// advances progress by one ([`posed_later_progress_units`]).
 pub(crate) fn add_posed_later_bounces(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
@@ -249,13 +260,20 @@ pub(crate) fn add_posed_later_bounces(
             .map(|buffer| crate::live_bytes::hold_vec("mover posed later bounces", buffer))
     });
     let directions = cosine_directions(BOUNCE_RAYS_PER_PATCH);
-    for bounce in 0..posed_later.min(LATER_BOUNCE_COUNT) {
+    let posed_later = posed_later.min(LATER_BOUNCE_COUNT);
+    for bounce in 0..posed_later {
         let source = if bounce == 0 {
             Source::First(radiance)
         } else {
             Source::Later(&previous.0, &previous.1)
         };
         if source.is_zero() {
+            // Zero in, zero out: every posed bounce left is zero too.
+            control.advance(posed_later_progress_units(
+                posed_later - bounce,
+                world_count,
+                mover_count,
+            ));
             break;
         }
         for (set, out) in [
@@ -271,6 +289,7 @@ pub(crate) fn add_posed_later_bounces(
                         *slot = gather_patch(ctx, patches, scene, source, &directions, patch)
                             .to_array();
                     }
+                    control.advance(1);
                 });
         }
         for (running, next) in [(&mut running.0, &next.0), (&mut running.1, &next.1)] {
@@ -282,8 +301,8 @@ pub(crate) fn add_posed_later_bounces(
         }
         std::mem::swap(&mut previous, &mut next);
     }
-    if let Some(tail) = static_tail {
-        for (sum, value) in running.0.iter_mut().zip(tail) {
+    for layer in static_tail {
+        for (sum, value) in running.0.iter_mut().zip(layer) {
             for (s, v) in sum.iter_mut().zip(value) {
                 *s += v;
             }

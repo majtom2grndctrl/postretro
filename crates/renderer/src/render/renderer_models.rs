@@ -280,20 +280,20 @@ impl Renderer {
         full.mover_occluder_aabbs.extend_from_slice(aabbs);
     }
 
-    /// Replace this frame's mover light states: one per present mover, its
+    /// Replace this frame's mover travel states: one per present mover, its
     /// travel fraction after the author ramp. The renderer stores them for
     /// mover state lighting; a mover with no state composes ungated. With no
     /// level installed the states are dropped, so none is read as the next
     /// level's; level install and release empty them too.
-    pub fn set_mover_light_states(&mut self, states: &[MoverLightState]) {
+    pub fn set_mover_travel(&mut self, states: &[MoverTravel]) {
         let Some(full) = self.full.as_mut() else {
             return;
         };
         if full.level.is_none() {
-            full.mover_light_states.clear();
+            full.mover_travel.clear();
             return;
         }
-        full.mover_light_states.replace(states);
+        full.mover_travel.replace(states);
     }
 
     /// Reset per-level transient mesh-pass state at level load. `pub` forwarder

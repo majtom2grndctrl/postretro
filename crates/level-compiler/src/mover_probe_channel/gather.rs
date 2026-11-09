@@ -34,9 +34,8 @@ thread_local! {
 
 /// What one gather ray from a probe meets with the mover posed.
 enum PosedRay {
-    /// The probe lies inside a posed brush: every ray reads distance 0.
-    Inside,
-    /// The pose, nearer than any static hit.
+    /// The pose, nearer than any static hit; at distance 0 with no triangle
+    /// when the ray's lifted origin lies inside a posed brush.
     Posed(PosedHit),
     Static(Hit),
     Sky,
@@ -44,12 +43,13 @@ enum PosedRay {
 
 impl PosedRay {
     /// One ray of the probe at `origin` along `dir`: the nearer of the static
-    /// hit and the pose's. A probe inside a posed brush (with contact)
-    /// meets it on every ray, at distance 0, so its depth floors its weight.
+    /// hit and the pose's. The inside-brush rule is the pose's own
+    /// ([`super::posed_solid::PosedSolid::nearest_hit`]): a ray whose lifted
+    /// origin lies inside a posed brush, with no contact band, meets it at
+    /// distance 0, as the direct half's segment from there starts in solid.
+    /// A probe deep inside a brush meets it so on every ray, so its depth
+    /// floors its weight.
     fn trace(ctx: &RaytracingCtx<'_>, scene: &PosedScene, origin: Vec3, dir: Vec3) -> Self {
-        if !scene.containing(origin).is_empty() {
-            return Self::Inside;
-        }
         let hit = gather_hit(ctx, origin, dir);
         let nearest = hit.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
         match (scene.trace(origin, dir, nearest), hit) {
@@ -60,12 +60,11 @@ impl PosedRay {
     }
 
     fn met(&self) -> bool {
-        matches!(self, Self::Inside | Self::Posed(_))
+        matches!(self, Self::Posed(_))
     }
 
     fn distance(&self, far_sentinel: f32) -> f32 {
         match self {
-            Self::Inside => 0.0,
             Self::Posed(posed) => posed.distance,
             Self::Static(hit) => hit.distance,
             Self::Sky => far_sentinel,
@@ -94,8 +93,8 @@ impl<'a> PosedGather<'a> {
     }
 
     /// One gather ray from the probe at `origin`: the nearer of the static
-    /// hit and the pose's, and its radiance. A probe inside a posed brush
-    /// reads every ray at distance 0 and black, as its direct does.
+    /// hit and the pose's, and its radiance. A ray whose lifted origin lies
+    /// inside a posed brush reads distance 0 and black, as its direct does.
     pub(crate) fn sample(
         &self,
         ctx: &RaytracingCtx<'_>,
@@ -108,7 +107,6 @@ impl<'a> PosedGather<'a> {
             MET.set(true);
         }
         let radiance = match &ray {
-            PosedRay::Inside => Vec3::ZERO,
             PosedRay::Posed(posed) => posed.triangle.map_or(Vec3::ZERO, |triangle| {
                 self.scene
                     .patches
@@ -188,7 +186,8 @@ pub(crate) fn compact_slots(layout: &ProbeGridLayout) -> Vec<u32> {
 /// does, and keep each probe that differs from id 34 (`base`, the compact
 /// RGBA16F intermediate) or whose rays meet the pose. A probe whose rays
 /// meet nothing posed and whose hits read their static radiance gathers
-/// id 34's bytes exactly, so it differs by zero.
+/// id 34's bytes exactly, so it differs by zero. Each valid probe advances
+/// progress by one.
 pub(crate) fn gather_posed_probes(
     sh_ctx: &ShBakeCtx<'_>,
     layout: &ProbeGridLayout,
@@ -208,6 +207,7 @@ pub(crate) fn gather_posed_probes(
         .filter(|&i| layout.validity[i] != 0)
         .filter_map(|i| {
             let _permit = control.governor().enter();
+            control.advance(1);
             let position = vec3_from(layout.probe_positions[i]);
             let mut distances = [0.0f32; 256];
             MET.set(false);
@@ -265,25 +265,25 @@ pub(crate) fn gather_posed_probes(
 /// 0): every valid probe some gather ray of which meets the pose, with the
 /// tile the full posed gather bins from the same rays, ascending by probe.
 /// A probe none of whose fixed directions points into the pose's bounds
-/// cannot meet it, so it traces nothing.
+/// cannot meet it, so it traces nothing: a lifted origin inside a posed
+/// brush lies in those bounds. Each valid probe advances progress by one.
 pub(crate) fn trace_posed_depth(
-    sh_ctx: &ShBakeCtx<'_>,
+    ctx: &RaytracingCtx<'_>,
     layout: &ProbeGridLayout,
     scene: &PosedScene,
     control: &BakeControl,
 ) -> Vec<(u32, Vec<[u16; 2]>)> {
     let directions = probe_gather_directions();
     let rays = TileRayTable::new(&directions);
-    let ctx = sh_ctx.ray_ctx();
     (0..layout.total_probes())
         .into_par_iter()
         .filter(|&i| layout.validity[i] != 0)
         .filter_map(|i| {
+            control.advance(1);
             let position = vec3_from(layout.probe_positions[i]);
-            if scene.containing(position).is_empty()
-                && !directions
-                    .iter()
-                    .any(|&dir| scene.may_meet_ray(position, dir))
+            if !directions
+                .iter()
+                .any(|&dir| scene.may_meet_ray(position, dir))
             {
                 return None;
             }
@@ -291,7 +291,7 @@ pub(crate) fn trace_posed_depth(
             let mut distances = [0.0f32; 256];
             let mut met = false;
             for (slot, &dir) in distances.iter_mut().zip(&directions) {
-                let ray = PosedRay::trace(&ctx, scene, position, dir);
+                let ray = PosedRay::trace(ctx, scene, position, dir);
                 met |= ray.met();
                 *slot = ray.distance(layout.far_sentinel);
             }

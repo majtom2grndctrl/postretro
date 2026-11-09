@@ -14,7 +14,7 @@ use postretro_level_format::texture_names::TextureNamesSection;
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_bake::RAY_EPSILON;
 use crate::map_data::MapKinematicMover;
-use crate::mover_light_gate::{BOX_SLACK_M, MoverPoses, Pose, Terminus, point_touches_brush};
+use crate::mover_light_gate::{BOX_SLACK_M, MoverPoses, Pose, Terminus};
 use crate::mover_pose::PosedBrush;
 use crate::partition::Aabb;
 use crate::ray_traversal::{ShadowSegment, TraceRay, triangle_points};
@@ -125,27 +125,10 @@ impl PosedSolid {
         &self.geometry
     }
 
-    /// The posed brushes `point` lies in or on, within the contact band, by
-    /// index.
-    pub(crate) fn containing(&self, point: Vec3) -> Vec<usize> {
-        let point = point.as_dvec3();
-        let slack = DVec3::splat(BOX_SLACK_M);
-        if (self.pose.bounds.min - slack).cmpgt(point).any()
-            || point.cmpgt(self.pose.bounds.max + slack).any()
-        {
-            return Vec::new();
-        }
-        self.pose
-            .brushes
-            .iter()
-            .enumerate()
-            .filter(|(_, brush)| point_touches_brush(point, brush))
-            .map(|(index, _)| index)
-            .collect()
-    }
-
     /// Whether `point` lies inside a posed brush or on its surface, by the
-    /// brushes' half-spaces alone: a ray lifted from there starts in solid.
+    /// brushes' half-spaces alone, with no contact band: a ray lifted to
+    /// there starts in solid. Every posed trace reads this one rule at its
+    /// lifted origin.
     pub(crate) fn contains(&self, point: Vec3) -> bool {
         self.contains_point(point.as_dvec3())
     }

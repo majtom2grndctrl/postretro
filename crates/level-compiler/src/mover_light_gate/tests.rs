@@ -7,7 +7,9 @@ use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::lights::GateLight;
-use super::pose::{MoverPoses, ONE_WAYPOINT_REASON, PosedBrush, SPIN_REASON, Terminus};
+use super::pose::{
+    MoverPoses, NO_BOUNDS_REASON, ONE_WAYPOINT_REASON, PosedBrush, SPIN_REASON, Terminus,
+};
 use super::probes::{ProbeScene, gate_probes};
 use super::segment::{CONTACT_TOLERANCE_M, point_touches_brush, segment_touches_brush};
 use super::side_count::{SideCount, side_counts};
@@ -559,9 +561,10 @@ fn a_spinners_swept_bounds_hold_its_brushes_at_any_rotation_and_reach_its_side_c
 }
 
 #[test]
-fn a_mover_without_brushes_gets_no_side_count_analysed_or_not() {
+fn a_mover_without_brushes_is_not_analysed_and_gets_no_side_count() {
     let (mut movers, mut waypoints) = sliding_door();
-    // An analysed mover and a spinner, neither with a brush.
+    // A two-waypoint mover and a spinner, neither with a brush: the first is
+    // not analysed for want of bounds, so the probe channel never poses it.
     movers.push(mover(1, "empty", "e_a", Vec::new()));
     waypoints.push(waypoint("e_a", "e_b", DVec3::ZERO));
     waypoints.push(waypoint("e_b", "", DVec3::X));
@@ -571,8 +574,13 @@ fn a_mover_without_brushes_gets_no_side_count_analysed_or_not() {
     waypoints.push(waypoint("f_b", "", DVec3::X));
     movers.push(spinner);
     let poses = MoverPoses::resolve(&movers, &waypoints);
-    assert_eq!(poses.analysed.len(), 2);
-    assert_eq!(poses.not_analysed.len(), 1);
+    assert_eq!(poses.analysed.len(), 1);
+    let reasons: Vec<(u32, &str)> = poses
+        .not_analysed
+        .iter()
+        .map(|mover| (mover.mover_id, mover.reason))
+        .collect();
+    assert_eq!(reasons, vec![(1, NO_BOUNDS_REASON), (2, SPIN_REASON)]);
 
     // A dynamic sun reaches every mover with bounds, and only those.
     let mut sun = dynamic_light(DVec3::ZERO, 1.0);

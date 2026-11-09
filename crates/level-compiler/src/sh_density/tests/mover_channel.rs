@@ -1,4 +1,4 @@
-// Bake row B9: every base cell under a mover probe channel entry stores L0,
+// Every base cell under a mover probe channel entry stores L0,
 // and every other cell keeps the level the same classifier picks with the
 // channel withheld, save the cells seam smoothing refines beside a capped
 // one.

@@ -1,4 +1,4 @@
-// K3 capture proofs: promotion pops no more at a forced terminus than the
+// Capture proofs: promotion pops no more at a forced terminus than the
 // same light's ungated arms. With the mover forced to each terminus and the
 // gated light's promotion pinned at w = 0 and w = 1, the mean summed-RGB
 // change over a kinematic receiver's lit texels is no larger than the same
@@ -107,7 +107,7 @@ fn with_light_keys(map: &str, origin: &str, keys: &[(&str, &str)]) -> String {
     format!("{}{added}{}", &map[..at], &map[at..])
 }
 
-/// One K3 case: a map with a kinematic receiver and a tagged gated light,
+/// One promotion case: a map with a kinematic receiver and a tagged gated light,
 /// its mover, the camera on the receiver, and the receiver's box.
 struct PopCase {
     name: &'static str,
@@ -130,7 +130,7 @@ fn rgb_mean(image: &RgbaImage, pixels: &[(u32, u32)]) -> f64 {
         / pixels.len() as f64
 }
 
-/// The K3 bar on one case. Returns the misses.
+/// The promotion bar on one case. Returns the misses.
 fn pop_misses(run: &Run, case: PopCase) -> Vec<String> {
     let source = sibling_map(&run.workspace, &format!("k3-{}", case.name), &case.source);
     let stem = source
@@ -236,7 +236,7 @@ fn channel_of(prl: &Path) -> MoverProbeChannelSection {
     MoverProbeChannelSection::from_bytes(&section.data).expect("id 57 decodes")
 }
 
-/// The set-piece with the arena spot carrying `keys` and the K3 slab.
+/// The set-piece with the arena spot carrying `keys` and the gated slab.
 fn setpiece_case(
     run: &Run,
     name: &'static str,
@@ -261,7 +261,7 @@ fn setpiece_case(
     }
 }
 
-// K3, static promotion. The set-piece's point lights are too dim for the
+// The static promotion case. The set-piece's point lights are too dim for the
 // entity-shadow selection; its spots are not, so the arena spot carries the
 // pin. The closet gates no direct light (its id 57 has no direct block), so
 // its case holds the bar with nothing gated: the kinematic-receiver slab
@@ -300,7 +300,7 @@ fn k3_promotion_pops_no_more_at_a_forced_terminus_than_the_ungated_arms() {
     );
 }
 
-// K3, animated promotion. The set-piece's arena spot made animated-baked
+// The animated promotion case. The set-piece's arena spot made animated-baked
 // (`_animated 1`), so id 45 bakes it and id 57 gates it in namespace 1; its
 // animated promotion is pinned at w = 0 and 1 on the same slab.
 #[test]

@@ -17,7 +17,7 @@ use wgpu::util::DeviceExt;
 
 use super::tests::{FixtureRecord, fixture_section, record};
 use super::{MoverChannelInputs, MoverChannelResources, TermFamily, WholeTermRows};
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::{
     DirectShComposeDebugOverrides, DirectShComposeFrameInputs, DirectShComposePipelines,
@@ -158,12 +158,12 @@ fn build_scene(ctx: &GpuCtx, section: Option<&MoverProbeChannelSection>, animate
 /// animated light's promotion weight.
 #[derive(Clone, Copy)]
 struct Frame<'a> {
-    states: &'a [MoverLightState],
+    states: &'a [MoverTravel],
     static_weight: f32,
     animated_weight: f32,
 }
 
-fn frame(states: &[MoverLightState]) -> Frame<'_> {
+fn frame(states: &[MoverTravel]) -> Frame<'_> {
     Frame {
         states,
         static_weight: 0.0,
@@ -171,8 +171,8 @@ fn frame(states: &[MoverLightState]) -> Frame<'_> {
     }
 }
 
-fn state(mover_id: u32, t: f32) -> MoverLightState {
-    MoverLightState { mover_id, t }
+fn state(mover_id: u32, t: f32) -> MoverTravel {
+    MoverTravel { mover_id, t }
 }
 
 /// `(promotion-free, handoff)` atlas bytes after one compose of `frame`.
@@ -272,7 +272,7 @@ fn gpu(test: &str) -> Option<GpuCtx> {
     gpu_or_skip(test)
 }
 
-/// C1: gated only at terminus 0, the light composes S₀ at t′ = 0, ungated at
+/// Gated only at terminus 0, the light composes S₀ at t′ = 0, ungated at
 /// t′ = 1 and their mix at 0.5; a second light the mover does not gate there
 /// (a bake-only light under another mover, held open) never moves, and no
 /// texel outside the gated probe moves.
@@ -318,7 +318,7 @@ fn a_single_terminus_gate_composes_s0_ungated_and_their_mix() {
     assert_near(probe_0(&ungated), 0.25, "no state is ungated");
 }
 
-/// C2: stripping the section composes exactly what supplying no mover state
+/// Stripping the section composes exactly what supplying no mover state
 /// does, and both equal today's atlases.
 #[test]
 fn a_stripped_section_and_no_state_both_compose_todays_atlases() {
@@ -344,7 +344,7 @@ fn a_stripped_section_and_no_state_both_compose_todays_atlases() {
     }
 }
 
-/// C4 and C12's GPU half: two movers gating one light at one probe compose
+/// Two movers gating one light at one probe compose
 /// the product of their lerped visibilities, never brighter than either
 /// alone and never negative; with one held at 0.3, the shared probe reads
 /// the held mover's t′ beside the travelling one's.
@@ -367,7 +367,7 @@ fn two_movers_on_one_light_compose_their_product() {
     }
 }
 
-/// C5: a gated animated-baked light composes its curve × its gated term, the
+/// A gated animated-baked light composes its curve × its gated term, the
 /// handoff under its (1 − w) arm; Pass B also carries a gated static light
 /// into the promotion-free atlas.
 #[test]
@@ -430,7 +430,7 @@ fn a_gated_animated_light_composes_its_curve_times_its_gated_term() {
     }
 }
 
-/// C6: in the handoff atlas a promoted gated static light contributes
+/// In the handoff atlas a promoted gated static light contributes
 /// (1 − w) × its gated term, nothing at w = 1; the promotion-free atlas
 /// keeps its full gated term at every w.
 #[test]
@@ -464,7 +464,7 @@ fn the_handoff_crossfades_the_gated_term_and_the_promotion_free_atlas_keeps_it()
     }
 }
 
-/// C15: a gated light with no surviving id-41 entry carries its own tile and
+/// A gated light with no surviving id-41 entry carries its own tile and
 /// composes S₀ at t′ = 0 exactly as an id-41-backed light does.
 #[test]
 fn an_own_tile_light_composes_as_an_id_41_backed_one() {
@@ -542,7 +542,7 @@ fn an_animated_record_without_id_45_composes_ungated_and_subtracts_nothing() {
     }
 }
 
-/// B19's compose half: a direct-only section composes (every row above); a
+/// A direct-only section composes (every case above); a
 /// bounce-only one lays out no direct record and composes today's atlases.
 #[test]
 fn a_bounce_only_section_composes_todays_direct_atlases() {
@@ -571,7 +571,7 @@ fn a_bounce_only_section_composes_todays_direct_atlases() {
     );
 }
 
-/// C11's legacy half: a t′ change alone dispatches the whole-load compose
+/// Legacy half: a t′ change alone dispatches the whole-load compose
 /// once no other input is active, and its trigger commits only with the
 /// encode, so a frame that encodes nothing leaves it for the next one.
 #[test]
@@ -583,7 +583,7 @@ fn the_legacy_compose_dispatches_on_a_t_change_alone_until_it_encodes() {
     let section = fixture_section([1, 1, 1], &[selected_light(&[7], false)]);
     let mut scene = build_scene(&ctx, Some(&section), false);
     let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
-    let step = |scene: &mut Scene, states: &[MoverLightState], record: bool| {
+    let step = |scene: &mut Scene, states: &[MoverTravel], record: bool| {
         scene.channel.set_states(states);
         scene.channel.upload_t(&uploads);
         let changed = scene.channel.t_changed_since_composed();
@@ -625,7 +625,7 @@ fn the_legacy_compose_dispatches_on_a_t_change_alone_until_it_encodes() {
     assert_eq!(step(&mut scene, &[state(7, 0.5)], true), Some(false));
 }
 
-/// B13: the channel table is priced in the SH allocation ledger while its
+/// The channel table is priced in the SH allocation ledger while its
 /// level is installed, and leaves with it.
 #[test]
 fn the_channel_table_is_ledgered_while_installed_and_gone_after_unload() {

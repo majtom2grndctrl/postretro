@@ -1813,8 +1813,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     {
         let registry = script_ctx.registry.borrow();
         rebuild_blocked_portals(&mut app.blocked_portals, app.level.as_ref(), &registry);
-        // Mover light state reads the same final post-tick phase.
-        app.kinematic_mover_render.hand_over_light_states(
+        // Mover travel reads the same final post-tick phase.
+        app.kinematic_mover_render.hand_over_mover_travel(
             &registry,
             app.level.as_ref(),
             app.renderer.as_mut(),

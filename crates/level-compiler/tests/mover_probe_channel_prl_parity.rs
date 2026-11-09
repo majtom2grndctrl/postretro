@@ -1,4 +1,4 @@
-//! Bake row B17: a map with no movers, and a map whose movers change nothing in the probe data,
+//! A map with no movers, and a map whose movers change nothing in the probe data,
 //! emit no MoverProbeChannel (id 57) and pack byte-identical to the parent commit's compiler.
 //!
 //! Opt-in and `#[ignore]`: it runs a second compiler. A missing baseline fails the test, so a

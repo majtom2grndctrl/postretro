@@ -506,8 +506,8 @@ fn reset_level_frame_state(full: &mut FullRenderer) {
         &mut full.mover_occluder_aabbs,
     );
     // Mover ids are the new level's: no level composes with another's mover
-    // light state, even under a reused id.
-    full.mover_light_states.clear();
+    // travel state, even under a reused id.
+    full.mover_travel.clear();
 }
 
 /// Why a level's renderer resources could not be built. Every variant is a

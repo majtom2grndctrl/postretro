@@ -110,24 +110,32 @@ impl ShResidencyState {
             .mover_channel
             .stage_cluster(gpu.device, gpu.queue, &rows, &first_cells)
             .map_err(|error| refuse(&error))?;
-        if writes.grew {
+        if writes.grew
+            && let Some(pools) = self.gpu.as_mut()
             // The grown table is live and holds every earlier word; the
             // passes bound to the old one rebind before anything composes.
-            if let Some(pools) = self.gpu.as_mut() {
-                pools.rebind_mover_channel(gpu.device, gpu.sh, gpu.selection_weights)?;
-            }
+            && let Err(error) =
+                pools.rebind_mover_channel(gpu.device, gpu.sh, gpu.selection_weights)
+        {
+            // Free what the cluster placed, as a failed upload stage does;
+            // the caller rolls the journal back.
+            gpu.sh.mover_channel.undo_cluster(&writes);
+            return Err(error);
         }
         Ok(writes)
     }
 
     /// Free every pooled cell whose last carrying cluster left since the
     /// last flush, into `uploads`, which is submitted before any later
-    /// install can reuse a freed range.
+    /// install can reuse a freed range. A cell a cluster referenced again
+    /// before the flush is live once more and drops from the list, so a late
+    /// flush never frees a range a resident cluster's payload occupies.
     pub(super) fn flush_mover_releases(
         &mut self,
         uploads: &mut StagedUploads,
         channel: &mut MoverChannelResources,
     ) -> Result<(), ShResidencyDrainError> {
+        self.drop_rereferenced_mover_releases();
         for cell in std::mem::take(&mut self.released_mover_cells) {
             channel.release_cell(uploads, cell).map_err(|_| {
                 ShResidencyDrainError::GpuCapacity {
@@ -139,8 +147,49 @@ impl ShResidencyState {
         Ok(())
     }
 
+    /// Drop each pending release whose cell holds a storage reference again.
+    /// Checked at the flush, not when the reference is taken, so an install
+    /// that rolls its reference back leaves the release pending.
+    pub(super) fn drop_rereferenced_mover_releases(&mut self) {
+        let refs = &self.storage_refs;
+        self.released_mover_cells
+            .retain(|&cell| !refs.holds_sparse_row(&(MOVER_CHANNEL_ID, cell)));
+        self.released_mover_cells.sort_unstable();
+        self.released_mover_cells.dedup();
+    }
+
     /// Refresh the channel's share of the streamed pool for the snapshot.
     pub(super) fn observe_mover_pool(&mut self, channel: &MoverChannelResources) {
         self.mover_pool_bytes = channel.pool_bytes();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::install_tests::SyntheticMap;
+    use super::*;
+
+    /// A pooled cell released and then referenced again before the flush is
+    /// live: it leaves the pending list, so the flush cannot free its range.
+    /// A cell still unreferenced stays pending, once.
+    #[test]
+    fn a_cell_referenced_again_before_the_flush_is_not_released() {
+        let mut state = SyntheticMap::new([8, 4, 4], [1, 1, 1]).state();
+        state.released_mover_cells = vec![5, 3, 5];
+        state
+            .storage_refs
+            .add_sparse_row((MOVER_CHANNEL_ID, 5))
+            .unwrap();
+        state.drop_rereferenced_mover_releases();
+        assert_eq!(state.released_mover_cells, [3]);
+
+        // The re-reference rolled back: the release is pending again.
+        state.released_mover_cells.push(5);
+        state
+            .storage_refs
+            .release_sparse_row(&(MOVER_CHANNEL_ID, 5))
+            .unwrap();
+        state.drop_rereferenced_mover_releases();
+        assert_eq!(state.released_mover_cells, [3, 5]);
     }
 }

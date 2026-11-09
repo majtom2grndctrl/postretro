@@ -30,7 +30,7 @@ use postretro_render_cpu::frame_uniforms::{LightTermMask, UNIFORM_SIZE};
 use wgpu::util::DeviceExt;
 
 use super::{ClusterTermRows, MoverChannelInputs, MoverChannelResources};
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render::direct_sh_promotion_split_test::{ATLAS, TILE, copy_out, read, red};
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use crate::render::pipeline_layout::uniform_bind_group_layout_entries;
@@ -265,20 +265,20 @@ fn build_scene(ctx: &GpuCtx, section: Option<&MoverProbeChannelSection>, streame
     }
 }
 
-fn state(mover_id: u32, t: f32) -> MoverLightState {
-    MoverLightState { mover_id, t }
+fn state(mover_id: u32, t: f32) -> MoverTravel {
+    MoverTravel { mover_id, t }
 }
 
 /// The total atlas after composing with `states`. The compose rebuilds the
 /// whole atlas, as the legacy pass does on any mover-state change.
-fn compose(ctx: &GpuCtx, scene: &mut Scene, states: &[MoverLightState]) -> Vec<u8> {
+fn compose(ctx: &GpuCtx, scene: &mut Scene, states: &[MoverTravel]) -> Vec<u8> {
     compose_masked(ctx, scene, states, LightTermMask::ALL)
 }
 
 fn compose_masked(
     ctx: &GpuCtx,
     scene: &mut Scene,
-    states: &[MoverLightState],
+    states: &[MoverTravel],
     mask: LightTermMask,
 ) -> Vec<u8> {
     let mut uniforms = [0u8; UNIFORM_SIZE];
@@ -336,7 +336,7 @@ fn outside_probe_0(atlas: &[u8]) -> Vec<u8> {
     bytes
 }
 
-/// C3: at the probe a mover affects, id 34 becomes the lerp of its bounce
+/// At the probe a mover affects, id 34 becomes the lerp of its bounce
 /// states (S^b₀ at t′ = 0, S^b₁ at 1, their mix at 0.5) and id 27's delta
 /// still adds on top; with no state handed over, or no section at all, the
 /// atlas is today's byte for byte; no texel outside the probe moves.
@@ -374,7 +374,7 @@ fn c3_bounce_replaces_id_34_with_the_lerp_of_its_states_and_deltas_still_add() {
     // A state for another mover changes nothing.
     let other = compose(&ctx, &mut scene, &[state(9, 0.0)]);
     assert_eq!(other, today);
-    // B11 (GPU): id 27 composes unchanged on top. Without its animated term
+    // Id 27 composes unchanged on top. Without its animated term
     // the probe reads the bounce state alone; with it, that plus the same
     // delta every probe gets, whatever the mover does.
     let mut static_only = LightTermMask::ALL;
@@ -385,7 +385,7 @@ fn c3_bounce_replaces_id_34_with_the_lerp_of_its_states_and_deltas_still_add() {
 }
 
 /// Two movers at one probe: the first's lerp replaces id 34, the second adds
-/// its lerped difference from id 34 (the brief's base + Σ deltas).
+/// its lerped difference from id 34 (base + Σ deltas).
 #[test]
 fn two_movers_at_one_probe_add_their_lerped_differences_from_id_34() {
     let Some(ctx) =
@@ -480,7 +480,7 @@ fn the_summed_base_clamps_per_texel_at_zero_before_deltas_add() {
     assert_tile(&atlas, 1, 0.25 + 0.25 + DELTA_RED, "probe 1 positive");
 }
 
-/// Task 11c: a terminus an affected probe stores no state for composes id
+/// A terminus an affected probe stores no state for composes id
 /// 34's own texel there. One-sided at terminus 0, the probe reads S^b₀ at
 /// t′ = 0, the exact mix toward id 34 at 0.5, and today's atlas byte for
 /// byte at 1; one-sided at terminus 1 likewise. A second mover at the probe
@@ -573,7 +573,7 @@ fn outside_probe_1(atlas: &[u8]) -> Vec<u8> {
     bytes
 }
 
-/// B11/C10 (GPU): a streamed bounce block composes nothing at a cell until
+/// A streamed bounce block composes nothing at a cell until
 /// its payload arrives, then exactly what the resident build composes; the
 /// eviction frees the payload and the cell composes id 34 again; the
 /// re-arrival composes the same bytes.
@@ -693,7 +693,8 @@ fn arrive(ctx: &GpuCtx, scene: &mut Scene, tile_bytes: &[u8]) {
 /// to the new one (`rebind_mover_channel`). The whole-load composes, which a
 /// streamed level never dispatches, bind an empty table in a pooled table's
 /// place, so once the pool grows nothing but in-flight work holds its old
-/// buffer. A table that never pools is the one they bind.
+/// buffer. A table that never pools is the one they bind; each stand-in is
+/// a dummy ledger row of its table's kind.
 #[test]
 fn the_whole_load_composes_never_bind_a_pooled_table_that_grows() {
     let Some(ctx) = bc_gpu_or_skip("the_whole_load_composes_never_bind_a_pooled_table_that_grows")
@@ -729,8 +730,9 @@ fn the_whole_load_composes_never_bind_a_pooled_table_that_grows() {
         .expect("the fixture channel lays out")
     };
 
+    let mut tables_ledger = ShAllocationLedger::new();
     let whole = channel(&resident, false);
-    let [direct, bounce] = whole.whole_load_tables(device);
+    let [direct, bounce] = whole.whole_load_tables(device, &mut tables_ledger);
     assert!(direct == *whole.buffer() && bounce == *whole.bounce_buffer());
 
     let mut pooled = channel(&streamed, true);
@@ -738,12 +740,20 @@ fn the_whole_load_composes_never_bind_a_pooled_table_that_grows() {
     pooled.size_streamed_pools(device, 0.0);
     assert_eq!(pooled.pool_bytes(), (0, 0));
     let first = pooled.bounce_buffer().clone();
-    let [direct, bounce] = pooled.whole_load_tables(device);
+    let [direct, bounce] = pooled.whole_load_tables(device, &mut tables_ledger);
     assert!(
         direct == *pooled.buffer(),
         "the resident direct block keeps its table"
     );
     assert!(bounce != first, "the pooled bounce table is not bound");
+    let stand_ins = tables_ledger.finish().allocations;
+    assert_eq!(stand_ins.len(), 1, "only the pooled table's stand-in");
+    assert_eq!(stand_ins[0].name, "mover_bounce_table");
+    assert_eq!(stand_ins[0].bytes, bounce.size());
+    assert_eq!(
+        stand_ins[0].state,
+        crate::render::residency::ResidencyAllocationState::Dummy
+    );
 
     let tile_bytes: Vec<u8> = resident
         .bounce_tiles

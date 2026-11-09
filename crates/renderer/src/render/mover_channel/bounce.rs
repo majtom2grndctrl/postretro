@@ -17,7 +17,7 @@ use postretro_level_format::mover_probe_channel::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MoverCellPayload, MoverProbeChannelSection,
 };
 
-use super::layout::{CellWrite, MoverChannelError, MoverRows, NO_BASE, NO_STATE};
+use super::layout::{CellWrite, MoverChannelError, MoverRows, NO_BASE, NO_STATE, first_non_finite};
 
 /// Header words, in `mover_bounce.wgsl`'s `MB_HEADER_*` order. Id 27's
 /// descriptor map starts right after it, so the compose reads a light's
@@ -28,8 +28,6 @@ pub(super) const BOUNCE_HEADER_WORDS: usize = 8;
 const ENTRY_WORDS: usize = 6;
 /// f16 halves per stored (probe, terminus): one tile.
 const TILE_HALVES: usize = MOVER_IRRADIANCE_TILE_F16_COUNT;
-/// An f16 whose exponent bits are all set is infinite or NaN.
-const F16_EXPONENT: u16 = 0x7c00;
 
 #[derive(Clone, Debug)]
 struct BounceCellPlan {
@@ -241,10 +239,7 @@ impl BounceLayout {
                 ))
             })?;
             let halves = tiles.to_vec();
-            if let Some(bad) = halves
-                .iter()
-                .find(|&&half| half & F16_EXPONENT == F16_EXPONENT)
-            {
+            if let Some(bad) = first_non_finite(halves.iter().copied()) {
                 return Err(MoverChannelError(format!(
                     "affinity cell {}'s bounce state for mover {} holds a non-finite value ({bad:#06x})",
                     cell.cell, entry.entry.mover_id

@@ -1,4 +1,4 @@
-//! C10 on compiled maps: streaming `off` and `sync-proof` compose identical
+//! Compiled maps: streaming `off` and `sync-proof` compose identical
 //! channel output. The same PRL is loaded whole (the legacy atlases) and
 //! streamed with every cluster resident (the dense slot pools). With every
 //! mover handed no state, then t′ = 0, 0.5 and 1, each probe the channel
@@ -18,7 +18,7 @@
 //! - Indirect, at a probe n movers carry bounce at: compose writes
 //!   Σ lerp(S^b₀, S^b₁, t′) − (n − 1) × base, plus id 27's deltas, which the
 //!   no-state frame also carries. A terminus a mover stores no state for
-//!   reads the base there (task 11c), so its lerp puts weight w = (1 − t′)
+//!   reads the base there, so its lerp puts weight w = (1 − t′)
 //!   or t′ on the base: the compose writes Σ stored parts + (Σ w − (n − 1))
 //!   × base + deltas. With c = n − 1 − Σ w, (with state) + c × (no state)
 //!   is Σ stored parts + (1 + c) × deltas, the same in both modes. Where c
@@ -37,7 +37,7 @@ use crate::render::composed_tiles::{
 use postretro_level_loader::ShStreamingMode;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// No state, then the three hand-overs C10 names.
+/// No state, then three hand-overs (t′ = 0, 0.5, 1).
 const TS: [Option<f32>; 4] = [None, Some(0.0), Some(0.5), Some(1.0)];
 
 type Tile = [u16; TILE_HALVES];
@@ -190,7 +190,7 @@ fn base_weight(stored: &[[bool; 2]], t: f32) -> f32 {
     stored.len() as f32 - 1.0 - reads_base
 }
 
-/// The per-map C10 numbers, printed and asserted by the caller.
+/// The per-map numbers, printed and asserted by the caller.
 struct MapGaps {
     /// Every stored tile with no state, off against sync-proof.
     baseline: [Gap; 3],
@@ -346,7 +346,7 @@ fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, Vec<[bool; 
 /// and two movers, the most any fixture puts on a probe.
 const ROUNDING_STEPS: f32 = 1.0;
 
-/// C10 on each map named by `MOVER_C10_PRLS` (`:`-separated compiled PRLs,
+/// Each map named by `MOVER_C10_PRLS` (`:`-separated compiled PRLs,
 /// each with id 50 and id 57). The channel's output at every probe it
 /// touches equals across `off` and `sync-proof`, base taken out as the
 /// module docs derive: indirect bit for bit where one mover carries bounce

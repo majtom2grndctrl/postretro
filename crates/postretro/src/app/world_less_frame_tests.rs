@@ -1,4 +1,4 @@
-// Mover light state on world-less frames: a held (Settling) frame hands the
+// Mover travel on world-less frames: a held (Settling) frame hands the
 // renderer the post-tick phase's state, so a restarted level's first
 // presented frame carries its re-seeded t′; a frame with no level hands over
 // none, so no stale state survives into a Loading or Frontend frame.
@@ -9,7 +9,7 @@ use postretro_level_loader::{KinematicGeometry, LoadedKinematicWaypoint};
 
 use crate::app::world_less_frame::HeldLevelView;
 use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render_preparation::planar_test_fixtures::camera;
 use crate::runtime_movers::tests::{mover, single_cell_world};
 use crate::runtime_movers::{ENGINE_AUTO_CLOSE_MS, mover_entity, spawn_loaded_kinematic_movers};
@@ -40,11 +40,11 @@ fn door_level() -> postretro_level_loader::LevelWorld {
     })
 }
 
-fn handed(app: &crate::App) -> Vec<MoverLightState> {
-    app.kinematic_mover_render.light_states().to_vec()
+fn handed(app: &crate::App) -> Vec<MoverTravel> {
+    app.kinematic_mover_render.mover_travel().to_vec()
 }
 
-/// P13 / D7, app half: the first held frame after a restart that re-seeds
+/// App half: the first held frame after a restart that re-seeds
 /// the door hands over its seeded t′, never the pre-restart value. The
 /// renderer half (install resets the state table; the first hand-over writes
 /// live tiles at that t′) is `mover_depth_tiles_tests`'s relevel row.
@@ -69,7 +69,7 @@ fn a_held_frame_after_a_restart_hands_over_the_reseeded_mover_state() {
         .expect("a held frame");
     assert_eq!(
         handed(&app),
-        vec![MoverLightState {
+        vec![MoverTravel {
             mover_id: 7,
             t: 0.0
         }]
@@ -83,7 +83,7 @@ fn a_held_frame_after_a_restart_hands_over_the_reseeded_mover_state() {
         .expect("a held frame");
     assert_eq!(
         handed(&app),
-        vec![MoverLightState {
+        vec![MoverTravel {
             mover_id: 7,
             t: 0.5
         }]
@@ -102,7 +102,7 @@ fn a_held_frame_after_a_restart_hands_over_the_reseeded_mover_state() {
         .expect("a held frame");
     assert_eq!(
         handed(&app),
-        vec![MoverLightState {
+        vec![MoverTravel {
             mover_id: 7,
             t: 0.0
         }],
@@ -127,9 +127,9 @@ fn a_hand_over_with_no_level_leaves_no_state() {
     spawn_loaded_kinematic_movers(&mut registry.borrow_mut(), &world, ENGINE_AUTO_CLOSE_MS)
         .expect("the door spawns");
     app.kinematic_mover_render
-        .hand_over_light_states(&registry.borrow(), Some(&world), None);
+        .hand_over_mover_travel(&registry.borrow(), Some(&world), None);
     assert_eq!(handed(&app).len(), 1, "a world frame hands over the door");
     app.kinematic_mover_render
-        .hand_over_light_states(&registry.borrow(), None, None);
+        .hand_over_mover_travel(&registry.borrow(), None, None);
     assert!(handed(&app).is_empty(), "no level, no state");
 }

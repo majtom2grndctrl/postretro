@@ -423,7 +423,7 @@
     crush_sound(string) : "Sound key played when a crusher deals damage" : ""
     light_ramp_start(float) : "Travel fraction (0 to 1) where baked light starts changing as the mover leaves its first waypoint; below it the first waypoint's lighting holds" : "0"
     light_ramp_end(float) : "Travel fraction (0 to 1, above light_ramp_start) where baked light reaches its last-waypoint state" : "1"
-    light_bounces(integer) : "Static light bounces this mover's poses re-bake (0 or more); blank re-bakes every bounce, 0 keeps the static bounce and bakes only its shadowing of probe depth"
+    light_bounces(integer) : "Static light bounces this mover's poses re-bake (0 or more); blank re-bakes every bounce, 0 re-bakes no bounce; its direct light and probe depth still follow the mover"
     move_mode(choices) : "Move mode" : "once" =
     [
         "once" : "Once"

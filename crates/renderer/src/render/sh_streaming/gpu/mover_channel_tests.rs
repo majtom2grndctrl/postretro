@@ -5,7 +5,7 @@
 //! SH residency)
 
 use super::*;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::fluid_surface_frame_test::f16_rgb;
@@ -66,7 +66,7 @@ fn compose_at(
     fixture: &mut UploadOrderSh,
     device: &wgpu::Device,
     queue: &UploadQueue,
-    states: &[MoverLightState],
+    states: &[MoverTravel],
 ) -> (Vec<f32>, usize) {
     use wgpu::util::DeviceExt;
     let mask = LightTermMask::ALL;
@@ -102,6 +102,7 @@ fn compose_at(
             &changes,
         )
         .expect("streamed compose plan");
+    fixture.sh.mover_channel.commit_t_changes();
     let mut uniform_bytes = [0u8; UNIFORM_SIZE];
     uniform_bytes[88..92].copy_from_slice(&mask.bits().to_ne_bytes());
     let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -158,13 +159,13 @@ fn compose_at(
     (rgb, composed as usize)
 }
 
-fn state(t: f32) -> MoverLightState {
-    MoverLightState { mover_id: 7, t }
+fn state(t: f32) -> MoverTravel {
+    MoverTravel { mover_id: 7, t }
 }
 
-/// C10's streamed half (the whole-load half is `compose_tests`): a drained
+/// Streamed half (the whole-load half is `compose_tests`): a drained
 /// cluster composes the channel's gating, S₀ at t′ = 0 against the ungated
-/// pool at t′ = 1 on exactly one probe tile, and their mix at 0.5. C7: a
+/// pool at t′ = 1 on exactly one probe tile, and their mix at 0.5. A
 /// frame whose t′ holds composes no row; one whose t′ moves composes only
 /// the mover's row.
 #[test]

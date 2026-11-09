@@ -5,7 +5,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
 use super::layout::NO_STATE;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 
 /// The whole-load compose passes a mover's t′ can recompose: the direct
 /// passes (A and B, one trigger) and the indirect SH compose.
@@ -66,14 +66,25 @@ impl MoverTBlock {
 
     /// Take this frame's states. A mover the section does not name is
     /// ignored; a slot no state names, or one whose t′ is not finite, reads
-    /// as no state and composes ungated.
-    pub(super) fn set_states(&mut self, states: &[MoverLightState]) {
+    /// as no state and composes ungated. Each mover appears at most once in
+    /// one frame's list. Change detection compares bits, so −0.0 is stored
+    /// as +0.0: the same position never reads as a move.
+    pub(super) fn set_states(&mut self, states: &[MoverTravel]) {
+        debug_assert!(
+            states.iter().enumerate().all(|(at, state)| {
+                states[..at]
+                    .iter()
+                    .all(|earlier| earlier.mover_id != state.mover_id)
+            }),
+            "one frame hands over each mover at most once"
+        );
         self.values.fill(NO_STATE);
         for state in states {
             if let Ok(slot) = self.ids.binary_search(&state.mover_id)
                 && state.t.is_finite()
             {
-                self.values[slot] = state.t.clamp(0.0, 1.0);
+                // `+ 0.0` turns −0.0 into +0.0 and leaves every other value.
+                self.values[slot] = state.t.clamp(0.0, 1.0) + 0.0;
             }
         }
         for (slot, value) in self.values.iter().enumerate() {
@@ -97,37 +108,57 @@ impl MoverTBlock {
         differs.then_some(&self.bytes[..])
     }
 
-    /// Slots whose t′ moved since the last call: the streamed planner's
-    /// mover-state trigger. Observed once per planned frame, so a change on
-    /// a frame that records no compose still stales its rows.
+    /// Slots whose t′ moved since the streamed planner last committed an
+    /// observation: its mover-state trigger. Peeking marks nothing; the
+    /// caller commits with [`Self::commit_observed`] once the frame's plan
+    /// has staled the rows, so a plan that fails keeps the change for the
+    /// next frame. Planned once per frame, so a change on a frame that
+    /// records no compose still stales its rows.
     pub(super) fn observe_changes(&mut self) -> &[u32] {
         self.changed.clear();
         for slot in 0..self.values.len() {
-            let bits = self.bits(slot);
-            if self.observed[slot] != bits {
-                self.observed[slot] = bits;
+            if self.observed[slot] != self.bits(slot) {
                 self.changed.push(slot as u32);
             }
         }
         &self.changed
     }
 
+    /// The planner staled the rows of the slots [`Self::observe_changes`]
+    /// last reported.
+    pub(super) fn commit_observed(&mut self) {
+        for at in 0..self.changed.len() {
+            let slot = self.changed[at] as usize;
+            self.observed[slot] = self.bits(slot);
+        }
+    }
+
     /// This frame's t′ per slot (`NO_STATE` where the game handed over
     /// none), and the slots whose t′ moved since the depth live tiles were
-    /// last written, marking them written: the live tiles' mover-state
-    /// trigger. The caller stages every write it implies on the frame's
-    /// upload batch, which is always submitted, so a change is never
-    /// consumed unwritten (P28).
-    pub(super) fn take_depth_changes(&mut self) -> (&[f32], &[u32]) {
+    /// last written: the live tiles' mover-state trigger. Peeking marks
+    /// nothing; the caller commits with [`Self::commit_depth_changes`] once
+    /// every write the change implies is staged and every reference move
+    /// succeeded, so a failure keeps the change for the next frame. The
+    /// tile writes go on the frame's upload batch; on a streamed level the
+    /// reference texels flush on their own immediate submission, after the
+    /// staged batch.
+    pub(super) fn depth_changes(&mut self) -> (&[f32], &[u32]) {
         self.depth_changed.clear();
         for slot in 0..self.values.len() {
-            let bits = self.bits(slot);
-            if self.depth_written[slot] != bits {
-                self.depth_written[slot] = bits;
+            if self.depth_written[slot] != self.bits(slot) {
                 self.depth_changed.push(slot as u32);
             }
         }
         (&self.values, &self.depth_changed)
+    }
+
+    /// The live tiles were written from the slots [`Self::depth_changes`]
+    /// last reported.
+    pub(super) fn commit_depth_changes(&mut self) {
+        for at in 0..self.depth_changed.len() {
+            let slot = self.depth_changed[at] as usize;
+            self.depth_written[slot] = self.bits(slot);
+        }
     }
 
     #[cfg(test)]
@@ -154,8 +185,8 @@ impl MoverTBlock {
 mod tests {
     use super::*;
 
-    fn state(mover_id: u32, t: f32) -> MoverLightState {
-        MoverLightState { mover_id, t }
+    fn state(mover_id: u32, t: f32) -> MoverTravel {
+        MoverTravel { mover_id, t }
     }
 
     #[test]
@@ -184,14 +215,15 @@ mod tests {
         assert!(block.take_upload().is_none());
     }
 
-    /// P10: two frames between one pair of ticks hand over the same t; the
-    /// second observes no change. P12: an unplanned change is never lost,
+    /// Two frames between one pair of ticks hand over the same t; the
+    /// second observes no change. An unplanned change is never lost,
     /// since observation and commit are separate from upload.
     #[test]
     fn observation_reports_each_change_once() {
         let mut block = MoverTBlock::new(&[1, 2]);
         block.set_states(&[state(1, 0.5), state(2, 0.0)]);
         assert_eq!(block.observe_changes(), &[0, 1]);
+        block.commit_observed();
         block.set_states(&[state(1, 0.5), state(2, 0.0)]);
         assert!(block.observe_changes().is_empty());
         block.set_states(&[state(2, 0.0)]);
@@ -202,7 +234,61 @@ mod tests {
         );
     }
 
-    /// P12 on the legacy compose: each pass's trigger holds until that
+    /// A plan that fails after peeking keeps the change: the slots stay
+    /// reported until a successful plan commits them, for the planner and
+    /// the live tiles alike.
+    #[test]
+    fn a_change_is_kept_until_a_successful_plan_commits_it() {
+        let mut block = MoverTBlock::new(&[1, 2]);
+        block.set_states(&[state(1, 0.5)]);
+        assert_eq!(block.observe_changes(), &[0]);
+        assert_eq!(block.depth_changes().1, &[0]);
+        // Both plans failed: nothing committed.
+        block.set_states(&[state(1, 0.5)]);
+        assert_eq!(
+            block.observe_changes(),
+            &[0],
+            "the planner's change is kept"
+        );
+        assert_eq!(
+            block.depth_changes().1,
+            &[0],
+            "the live tiles' change is kept"
+        );
+        block.commit_observed();
+        block.commit_depth_changes();
+        assert!(block.observe_changes().is_empty());
+        assert!(block.depth_changes().1.is_empty());
+    }
+
+    /// −0.0 and +0.0 are the same position: handing over one after the
+    /// other is no change, and the block holds +0.0.
+    #[test]
+    fn negative_zero_is_the_same_position_as_zero() {
+        let mut block = MoverTBlock::new(&[1]);
+        block.set_states(&[state(1, 0.0)]);
+        let _ = block.observe_changes();
+        block.commit_observed();
+        let _ = block.depth_changes();
+        block.commit_depth_changes();
+        let _ = block.take_upload();
+        block.set_states(&[state(1, -0.0)]);
+        assert_eq!(block.values()[0].to_bits(), 0.0f32.to_bits());
+        assert!(block.observe_changes().is_empty());
+        assert!(block.depth_changes().1.is_empty());
+        assert!(block.take_upload().is_none());
+    }
+
+    /// One frame's list names each mover at most once.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "each mover at most once")]
+    fn a_mover_handed_over_twice_in_one_frame_is_a_bug() {
+        let mut block = MoverTBlock::new(&[1]);
+        block.set_states(&[state(1, 0.25), state(1, 0.5)]);
+    }
+
+    /// On the legacy compose, each pass's trigger holds until that
     /// pass encodes, whatever the other pass did.
     #[test]
     fn the_legacy_trigger_holds_until_an_encode_commits_it() {
@@ -231,23 +317,26 @@ mod tests {
     #[test]
     fn depth_changes_report_each_t_change_once_on_their_own_trigger() {
         let mut block = MoverTBlock::new(&[1, 2]);
-        assert!(block.take_depth_changes().1.is_empty(), "no state yet");
+        let take = |block: &mut MoverTBlock| {
+            let (values, changed) = block.depth_changes();
+            let taken = (values.to_vec(), changed.to_vec());
+            block.commit_depth_changes();
+            taken
+        };
+        assert!(take(&mut block).1.is_empty(), "no state yet");
         block.set_states(&[state(1, 0.0), state(2, 1.0)]);
         let _ = block.observe_changes();
-        assert_eq!(block.take_depth_changes().1, &[0, 1], "the first hand-over");
+        block.commit_observed();
+        assert_eq!(take(&mut block).1, [0, 1], "the first hand-over");
         block.set_states(&[state(1, 0.0), state(2, 1.0)]);
-        assert!(block.take_depth_changes().1.is_empty());
+        assert!(take(&mut block).1.is_empty());
         block.set_states(&[state(2, 0.5), state(1, 0.0)]);
-        assert_eq!(block.take_depth_changes(), (&[0.0, 0.5][..], &[1][..]));
+        assert_eq!(take(&mut block), (vec![0.0, 0.5], vec![1]));
         block.set_states(&[state(2, 0.5)]);
-        assert_eq!(
-            block.take_depth_changes().1,
-            &[0],
-            "losing a state is a change"
-        );
+        assert_eq!(take(&mut block).1, [0], "losing a state is a change");
     }
 
-    /// C14 on the legacy compose: a mover whose entries feed only one pass
+    /// On the legacy compose, a mover whose entries feed only one pass
     /// never recomposes the other.
     #[test]
     fn a_mover_recomposes_only_the_passes_its_entries_feed() {
@@ -279,9 +368,11 @@ mod tests {
             block.set_states(&[state(1, t), state(2, 1.0 - t)]);
             let _ = block.take_upload();
             let _ = block.observe_changes();
+            block.commit_observed();
             let _ = block.changed_since_composed(LegacyPass::Indirect);
             block.commit_composed(LegacyPass::Indirect);
-            let _ = block.take_depth_changes();
+            let _ = block.depth_changes();
+            block.commit_depth_changes();
         }
         assert_eq!(capacities(&block), before);
     }

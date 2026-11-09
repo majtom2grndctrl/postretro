@@ -277,10 +277,10 @@ impl PreparedCapture {
         );
         renderer.set_kinematic_ghost_draws(mover_ghost_collector.instances());
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
-        // The forced movers' light states, as the game hands them over for
+        // The forced movers' travel states, as the game hands them over for
         // the phase they rest at; the renderer composes them from the first
         // preload frame on.
-        renderer.set_mover_light_states(&forced_movers.light_states(
+        renderer.set_mover_travel(&forced_movers.mover_travel(
             &registry,
             &world,
             &mut mover_collector,
@@ -559,13 +559,10 @@ impl PreparedCapture {
 
     /// Test seam: hand the renderer `states` for the next frames, as a play
     /// frame's hand-over does, without re-posing any mover. Frame-pair rows
-    /// change only the light state between captured frames.
+    /// change only the travel state between captured frames.
     #[cfg(test)]
-    pub(super) fn hand_over_mover_light_states(
-        &mut self,
-        states: &[crate::render::MoverLightState],
-    ) {
-        self.renderer.set_mover_light_states(states);
+    pub(super) fn hand_over_mover_travel(&mut self, states: &[crate::render::MoverTravel]) {
+        self.renderer.set_mover_travel(states);
     }
 }
 

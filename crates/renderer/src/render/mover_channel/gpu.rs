@@ -22,11 +22,11 @@ use super::bounce::BounceLayout;
 use super::depth::{DepthBases, MoverDepthTiles, ReferenceChange};
 use super::layout::{
     CellWrite, MoverChannelError, MoverChannelInputs, MoverChannelLayout, MoverChannelRows,
-    NO_BASE, TermRow,
+    NO_BASE, TermRow, check_direct_cell,
 };
 use super::pool::CellPool;
 use super::state::{LegacyPass, MoverTBlock};
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render::gpu_create::GpuCreate;
 use crate::render::residency::{ResidencyAllocationState, source_ids};
 use crate::render::sh_allocation::{ShAllocationKind, buffer_allocation};
@@ -317,7 +317,7 @@ impl MoverChannelResources {
                 None,
             ],
         );
-        let depth = MoverDepthTiles::new(inputs.section, layout.mover_ids());
+        let depth = MoverDepthTiles::new(inputs.section, layout.mover_ids())?;
         let mut t = MoverTBlock::new(layout.mover_ids());
         let mut rows = layout.rows().clone();
         rows.bounce_by_mover = bounce_layout.rows_by_mover().clone();
@@ -396,26 +396,34 @@ impl MoverChannelResources {
     /// table grows by replacement and only the streamed passes rebind to the
     /// new one. A pooled table means a streamed level, whose whole-load
     /// composes never dispatch, so they bind an empty table in its place
-    /// and never hold a grown pool's old buffer until unload.
-    pub(in crate::render) fn whole_load_tables(&self, device: &wgpu::Device) -> [wgpu::Buffer; 2] {
+    /// and never hold a grown pool's old buffer until unload. Each empty
+    /// table is a small header buffer of its own, recorded in `ledger` as a
+    /// dummy row of its table's kind.
+    pub(in crate::render) fn whole_load_tables(
+        &self,
+        device: &wgpu::Device,
+        ledger: &mut ShAllocationLedger,
+    ) -> [wgpu::Buffer; 2] {
+        let mut stand_in = |label: &'static str, kind: ShAllocationKind, words: &[u32]| {
+            record_table(ledger, kind, words, [None; 3]);
+            table_buffer(device, label, words, 0)
+        };
         let direct = match self.direct.pool {
             None => self.direct.buffer.clone(),
-            Some(_) => table_buffer(
-                device,
+            Some(_) => stand_in(
                 "Mover Probe Channel Table (whole-load, streamed level)",
+                ShAllocationKind::MoverChannelTable,
                 MoverChannelLayout::empty(&[]).initial_words(),
-                0,
             ),
         };
         let bounce = match self.bounce.pool {
             None => self.bounce.buffer.clone(),
-            Some(_) => table_buffer(
-                device,
+            Some(_) => stand_in(
                 "Mover Probe Channel Bounce Table (whole-load, streamed level)",
+                ShAllocationKind::MoverBounceTable,
                 BounceLayout::build(None, &[], &[], false)
                     .expect("an empty bounce table lays out")
                     .initial_words(),
-                0,
             ),
         };
         [direct, bounce]
@@ -432,7 +440,7 @@ impl MoverChannelResources {
     }
 
     /// Take this frame's mover states; idempotent within a frame.
-    pub(in crate::render) fn set_states(&mut self, states: &[MoverLightState]) {
+    pub(in crate::render) fn set_states(&mut self, states: &[MoverTravel]) {
         self.t.set_states(states);
     }
 
@@ -479,15 +487,29 @@ impl MoverChannelResources {
     }
 
     /// Plan this frame's live tiles from the held t′: every tile a mover
-    /// whose t′ moved since the last write covers reaches `write_run`, and
-    /// the probe references to move return. Call once per frame, after
-    /// [`Self::set_states`]; a frame allocates nothing.
+    /// whose t′ moved since the last committed write covers reaches
+    /// `write_run`, and the probe references to move return. Call once per
+    /// frame, after [`Self::set_states`], then [`Self::commit_depth`] once
+    /// every reference move landed or [`Self::abandon_depth`] if one failed,
+    /// so a failed frame's change is planned again. A frame allocates
+    /// nothing.
     pub(in crate::render) fn plan_depth(
         &mut self,
         write_run: impl FnMut(u32, u32, &[u8]),
     ) -> &[ReferenceChange] {
-        let (values, changed) = self.t.take_depth_changes();
+        let (values, changed) = self.t.depth_changes();
         self.depth.plan(values, changed, write_run)
+    }
+
+    /// The last [`Self::plan_depth`]'s writes and reference moves landed.
+    pub(in crate::render) fn commit_depth(&mut self) {
+        self.t.commit_depth_changes();
+    }
+
+    /// A reference move of the last [`Self::plan_depth`] failed: keep its
+    /// mover changes for the next frame.
+    pub(in crate::render) fn abandon_depth(&mut self) {
+        self.depth.abandon_plan();
     }
 
     /// Live tiles the last planned frame wrote.
@@ -496,9 +518,16 @@ impl MoverChannelResources {
         self.depth.tiles_written()
     }
 
-    /// Slots whose t′ moved since the streamed planner last looked.
+    /// Slots whose t′ moved since the streamed planner last committed an
+    /// observation. Peeking marks nothing: call
+    /// [`Self::commit_t_changes`] once the frame's plan succeeded.
     pub(in crate::render) fn observe_t_changes(&mut self) -> &[u32] {
         self.t.observe_changes()
+    }
+
+    /// The streamed planner staled the rows of the last observed changes.
+    pub(in crate::render) fn commit_t_changes(&mut self) {
+        self.t.commit_observed();
     }
 
     /// The legacy direct compose's mover-state trigger.
@@ -591,9 +620,11 @@ impl MoverChannelResources {
     /// The writes one streamed cluster brings: each pooled cell `first_cells`
     /// names (cells whose first resident cluster this is) placed from the
     /// cluster's id-57 rows, and each whole direct cell still waiting that
-    /// the cluster's rows complete. Each cell is checked as the loader checks
-    /// a held payload, so a malformed row refuses the cluster before any
-    /// upload. A pool that cannot hold its cells grows here.
+    /// the cluster's rows complete. Every arriving row's direct payload is
+    /// checked as the whole load checks a held one, every record gated or
+    /// not, and each placed bounce cell for finite tiles, so a malformed row
+    /// refuses the cluster before any upload. A pool that cannot hold its
+    /// cells grows here.
     pub(in crate::render) fn stage_cluster(
         &mut self,
         device: &wgpu::Device,
@@ -624,6 +655,24 @@ impl MoverChannelResources {
         let Some(streamed) = self.streamed.as_ref() else {
             return Ok(());
         };
+        // Every arriving row's direct payload is checked whole, each record
+        // whether the table gates it or not, as the whole load checks it at
+        // attach: the same PRL is accepted or refused alike in every mode.
+        if !streamed.section.payload_held(MoverChannelBlock::Direct) {
+            for row in &rows.channel_rows {
+                let Some(position) = streamed.section.listed_position(row.cell as usize) else {
+                    return Err(MoverChannelError(format!(
+                        "a streamed row names affinity cell {}, which the section does not list",
+                        row.cell
+                    )));
+                };
+                let payload = streamed
+                    .section
+                    .cell_payload(position, &streamed.slices[position], Some(*row))
+                    .map_err(|error| MoverChannelError(error.to_string()))?;
+                check_direct_cell(&streamed.section, position, payload)?;
+            }
+        }
         let channel_row = |cell: u32| {
             rows.channel_rows
                 .iter()

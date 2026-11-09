@@ -21,7 +21,7 @@ use crate::texel_footprint::ProbeEarlyOut;
 const SUN_CONE_SLACK_RAD: f64 = 1.0e-3;
 
 /// One mover posed at one terminus as an occluder of probe-point shadow rays.
-/// A valid probe inside a posed brush reads dark (owner, Stop 2): every
+/// A valid probe inside a posed brush reads dark (owner): every
 /// brush occludes, so each of its segments starts in solid and it stores
 /// q = 0 for that pose. Skipping the containing brush instead leaks exterior
 /// direct light onto the mover's inner faces, since a probe inside a wall

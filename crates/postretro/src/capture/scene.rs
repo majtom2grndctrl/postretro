@@ -90,9 +90,9 @@ pub(crate) struct CaptureScene {
     /// Capture-only forced mover travel: each named mover rests at travel
     /// fraction `t` (0 at its first waypoint, 1 at its last, by arc length).
     /// This sets its whole pose: drawn geometry, shadow casters, occluder
-    /// bounds, the portal seal at t = 0, and the light state the game would
+    /// bounds, the portal seal at t = 0, and the travel state the game would
     /// hand the renderer at that phase, its author ramp applied. Movers not
-    /// named rest at their seeded pose with no light state, as before.
+    /// named rest at their seeded pose with no travel state, as before.
     pub(crate) force_movers: Option<Vec<ForcedMover>>,
 }
 

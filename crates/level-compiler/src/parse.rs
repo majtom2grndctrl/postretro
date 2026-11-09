@@ -601,8 +601,10 @@ fn parse_kinematic_light_ramp(
 
 /// The mover's `light_bounces` key: how many static bounces its poses
 /// re-bake, an integer of at least 0. Absent or blank re-bakes every bounce
-/// the SH base bakes. A negative, fractional or non-numeric value fails the
-/// build, naming the mover.
+/// the SH base bakes. The integer reads as the map's other integer keys do
+/// (`priority`, `_stream_priority`): an optional sign, so `+2` is 2 and `-0`
+/// is 0. A negative, fractional or non-numeric value fails the build, naming
+/// the mover, as does one past `u32::MAX`, which says it is too large.
 fn parse_kinematic_light_bounces(
     props: &HashMap<String, String>,
     name: &str,
@@ -610,12 +612,25 @@ fn parse_kinematic_light_bounces(
     let Some(raw) = non_blank(props, "light_bounces") else {
         return Ok(None);
     };
-    raw.parse::<u32>().map(Some).map_err(|_| {
+    let too_large = || {
+        anyhow::anyhow!(
+            "kinematic_mover `{name}` `light_bounces` `{raw}` is too large: it must be at most \
+             {}, and any count past the level's bounces bakes them all",
+            u32::MAX
+        )
+    };
+    let not_a_count = || {
         anyhow::anyhow!(
             "kinematic_mover `{name}` `light_bounces` must be an integer of at least 0, \
              got `{raw}`"
         )
-    })
+    };
+    match raw.parse::<i64>() {
+        Ok(value) if value < 0 => Err(not_a_count()),
+        Ok(value) => u32::try_from(value).map(Some).map_err(|_| too_large()),
+        Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => Err(too_large()),
+        Err(_) => Err(not_a_count()),
+    }
 }
 
 fn parse_kinematic_spin_axis(
@@ -4480,7 +4495,7 @@ mod tests {
             "crush_sound(string) : \"Sound key played when a crusher deals damage\" : \"\"",
             "light_ramp_start(float) : \"Travel fraction (0 to 1) where baked light starts changing as the mover leaves its first waypoint; below it the first waypoint's lighting holds\" : \"0\"",
             "light_ramp_end(float) : \"Travel fraction (0 to 1, above light_ramp_start) where baked light reaches its last-waypoint state\" : \"1\"",
-            "light_bounces(integer) : \"Static light bounces this mover's poses re-bake (0 or more); blank re-bakes every bounce, 0 keeps the static bounce and bakes only its shadowing of probe depth\"",
+            "light_bounces(integer) : \"Static light bounces this mover's poses re-bake (0 or more); blank re-bakes every bounce, 0 re-bakes no bounce; its direct light and probe depth still follow the mover\"",
         ] {
             assert!(
                 mover_class.contains(property),
@@ -6093,7 +6108,14 @@ mod tests {
                 "a blank key is absent: every bounce"
             );
         }
-        for (value, expected) in [("0", 0), ("2", 2), ("9", 9)] {
+        for (value, expected) in [
+            ("0", 0),
+            ("2", 2),
+            ("9", 9),
+            ("-0", 0),
+            ("+2", 2),
+            ("4294967295", u32::MAX),
+        ] {
             let map = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", value)]))
                 .unwrap_or_else(|err| panic!("light_bounces {value} must parse: {err:#}"));
             assert_eq!(map.kinematic_movers[0].light_bounces, Some(expected));
@@ -6102,13 +6124,23 @@ mod tests {
 
     #[test]
     fn kinematic_mover_rejects_negative_or_fractional_light_bounces_naming_the_mover() {
-        for value in ["-1", "1.5", "two"] {
+        for (value, says) in [
+            ("-1", "must be an integer of at least 0"),
+            ("-99999999999999999999", "must be an integer of at least 0"),
+            ("1.5", "must be an integer of at least 0"),
+            ("two", "must be an integer of at least 0"),
+            ("4294967296", "is too large"),
+            ("99999999999999999999", "is too large"),
+        ] {
             let err = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", value)]))
                 .expect_err(&format!("light_bounces `{value}` must be rejected"));
             let message = format!("{err:#}");
             assert!(
-                message.contains("kinematic_mover `lift_a`") && message.contains("light_bounces"),
-                "`{value}`: the error must name the mover and the key, got: {message}"
+                message.contains("kinematic_mover `lift_a`")
+                    && message.contains("light_bounces")
+                    && message.contains(says),
+                "`{value}`: the error must name the mover and the key and say `{says}`, got: \
+                 {message}"
             );
         }
     }

@@ -518,13 +518,13 @@ fn animated_compose_main(
             if (slot == MC_NONE) {
                 continue;
             }
-            let blocked = 1.0 - mc_record_visibility(record, slot);
-            if (blocked <= 0.0) {
+            let loss = 1.0 - mc_record_visibility(record, slot);
+            if (loss <= 0.0) {
                 continue;
             }
             for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
                 accum_free[texel_index] = accum_free[texel_index]
-                    - mc_tile_texel(record, slot, texel_index) * blocked;
+                    - mc_tile_texel(record, slot, texel_index) * loss;
             }
         }
     }
@@ -538,12 +538,12 @@ fn animated_compose_main(
         if (slot == MC_NONE) {
             continue;
         }
-        let blocked = 1.0 - mc_record_visibility(record, slot);
-        if (blocked <= 0.0) {
+        let loss = 1.0 - mc_record_visibility(record, slot);
+        if (loss <= 0.0) {
             continue;
         }
         let light_index = mc_record_word(record, MC_RECORD_LIGHT);
-        let full_scale = animated_light_full_scale(light_index) * blocked;
+        let full_scale = animated_light_full_scale(light_index) * loss;
         let scale = full_scale * animated_compose_weight(light_index);
         for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
             let term = mc_tile_texel(record, slot, texel_index);

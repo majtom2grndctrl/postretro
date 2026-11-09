@@ -95,6 +95,9 @@ impl ShResidencyState {
                     Ok(writes) => writes,
                     Err(error) => {
                         self.roll_back(journal);
+                        // A pool may have grown before the refusal: the
+                        // snapshot reports what the table holds now.
+                        self.observe_mover_pool(&gpu.sh.mover_channel);
                         return Err(error);
                     }
                 };
@@ -116,6 +119,8 @@ impl ShResidencyState {
                 // mirror: a rolled-back install uploads nothing.
                 gpu.sh.mover_channel.undo_cluster(&channel_writes);
                 self.roll_back(journal);
+                // The pool keeps any growth this cluster caused.
+                self.observe_mover_pool(&gpu.sh.mover_channel);
                 return Err(error);
             }
             upload_copy_regions = uploads.copy_count();

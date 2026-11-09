@@ -57,7 +57,7 @@ pub const MOVER_VISIBILITY_BYTES_PER_PROBE: usize = 2;
 pub const MOVER_IRRADIANCE_TILE_F16_COUNT: usize = DEFAULT_DELTA_PROBE_F16_STRIDE;
 
 /// Most bounce payload bytes a level keeps resident in this section (owner,
-/// Stop 2, 2026-11-08). The compiler places a heavier bounce payload with id
+/// 2026-11-08). The compiler places a heavier bounce payload with id
 /// 50's cells instead and records [`MoverPayloadPlacement::Streamed`].
 pub const MOVER_BOUNCE_RESIDENT_BYTE_BAR: u64 = 8 * 1024 * 1024;
 

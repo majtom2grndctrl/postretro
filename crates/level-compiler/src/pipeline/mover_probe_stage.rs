@@ -156,16 +156,22 @@ impl DirectHalf {
             &self.ramps,
             &self.payload_bars,
             |_, _, _| false,
+            |_| true,
         )
     }
 
     /// Settle id 57's own-tile flags against ids 41 and 45 as emitted:
     /// after the exact-zero drop, id 41's classification under the channel's
-    /// cap, and valid-probe compaction (P22).
+    /// cap, and valid-probe compaction. With no id 45, no animated-baked
+    /// record is written ([`EmittedDirectEntries::composes_gated`]). The
+    /// provisional section drops before the final one is assembled, so the
+    /// held blocks and one section are the only copies live, as the SH gate
+    /// prices the direct phase.
     pub(super) fn finish_section(
         &self,
         sections: &mut PostBakeDeltaSections,
     ) -> anyhow::Result<()> {
+        drop(sections.mover_channel.take());
         let emitted = EmittedDirectEntries {
             selection: sections.entity_shadow_lights.as_ref(),
             direct: sections.direct.as_ref(),
@@ -178,6 +184,7 @@ impl DirectHalf {
             &self.ramps,
             &self.payload_bars,
             |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
+            |ns| emitted.composes_gated(ns),
         )?;
         if let Some(section) = &section {
             let counts = section.direct_counts();

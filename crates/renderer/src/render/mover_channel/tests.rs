@@ -8,7 +8,8 @@ use postretro_level_format::mover_probe_channel::{
 };
 
 use super::layout::{
-    MoverChannelInputs, MoverChannelLayout, NO_LIGHT, NO_STATE, TermFamily, WholeTermRows,
+    MoverChannelInputs, MoverChannelLayout, MoverChannelRows, NO_LIGHT, NO_STATE, TermFamily,
+    WholeTermRows,
 };
 
 const TILE: usize = MOVER_IRRADIANCE_TILE_F16_COUNT;
@@ -225,7 +226,7 @@ fn records_lay_out_static_lights_first_with_their_light_keys_and_mover_slots() {
     assert!(!layout.rows().has_animated(0));
 }
 
-/// P22 and C15's data half: a record carrying its own tile and one borrowing
+/// Data half: a record carrying its own tile and one borrowing
 /// id 41's per-probe term write the same T when the tiles agree.
 #[test]
 fn an_own_tile_and_a_borrowed_id_41_tile_write_the_same_term() {
@@ -271,7 +272,7 @@ fn an_own_tile_and_a_borrowed_id_41_tile_write_the_same_term() {
     assert_eq!(borrowed[0].words, own[0].words);
 }
 
-/// Task 5's open item: an unflagged record whose family is absent at load
+/// An unflagged record whose family is absent at load
 /// composes ungated; one whose family holds no L0 entry is refused.
 #[test]
 fn a_missing_family_leaves_the_record_ungated_and_a_coarse_cell_is_refused() {
@@ -303,8 +304,62 @@ fn a_missing_family_leaves_the_record_ungated_and_a_coarse_cell_is_refused() {
     assert!(error.to_string().contains("holds no entry"), "{error}");
 }
 
+/// A streamed load whose id-40 selection the loader cleared still lists
+/// id 41's metadata; it composes like the whole load, which drops id 41: a
+/// record borrowing from id 41 is ungated and counted, never refused, and a
+/// record carrying its own tile still gates.
+#[test]
+fn a_cleared_selection_composes_like_the_whole_load() {
+    let section = fixture_section(
+        [1, 1, 1],
+        &[
+            record(
+                0,
+                MoverLightNamespace::StaticLight,
+                5,
+                None,
+                0b1,
+                vec![(7, 0, 255)],
+            ),
+            record(
+                0,
+                MoverLightNamespace::BakeOnlyStaticLight,
+                0,
+                Some(F16_QUARTER),
+                0b10,
+                vec![(7, 0, 255)],
+            ),
+        ],
+    );
+    let family = StaticFamily::new(1, F16_QUARTER);
+    let whole_inputs = MoverChannelInputs {
+        entity_shadow_lights: &[],
+        ..inputs(&section, None)
+    };
+    let streamed_inputs = MoverChannelInputs {
+        entity_shadow_lights: &[],
+        ..inputs(&section, Some(family.family()))
+    };
+    let whole = MoverChannelLayout::build(&whole_inputs, false).unwrap();
+    let streamed = MoverChannelLayout::build(&streamed_inputs, false)
+        .expect("a cleared selection disables id 41; it is not refused");
+    assert_eq!(streamed.ungated_records(), 1);
+    assert_eq!(streamed.record_count(), 1, "the own-tile record gates");
+    assert_eq!(streamed.ungated_records(), whole.ungated_records());
+    assert_eq!(streamed.initial_words(), whole.initial_words());
+    assert_eq!(streamed.rows(), whole.rows());
+    let slices = section.cell_slices();
+    assert_eq!(
+        streamed
+            .held_writes(&section, &slices, |_, _| None)
+            .unwrap(),
+        whole.held_writes(&section, &slices, |_, _| None).unwrap()
+    );
+}
+
 /// A streamed payload's masks are unchecked at load under async: the cell
-/// write checks them, and a mask that is not tight is refused.
+/// check before any write covers them, and a mask that is not tight is
+/// refused.
 #[test]
 fn a_cell_whose_mask_is_not_tight_is_refused_at_write() {
     let mut section = fixture_section(
@@ -328,7 +383,93 @@ fn a_cell_whose_mask_is_not_tight_is_refused_at_write() {
     assert!(error.to_string().contains("not tight"), "{error}");
 }
 
-/// C13's data half: records resolve by affinity row, never by stored slot,
+/// Every direct term is checked finite, as bounce tiles are: an own tile
+/// holding an infinite or NaN half is refused even where the table leaves its
+/// record ungated, and so is a borrowed id-41 term.
+#[test]
+fn a_non_finite_own_or_borrowed_term_is_refused() {
+    for bad in [0x7c00, 0xfc00, 0x7e00] {
+        // A static light's own tile is gated; an animated-baked light's is
+        // ungated without id 45.
+        for (namespace, gated) in [
+            (MoverLightNamespace::StaticLight, 1),
+            (MoverLightNamespace::AnimatedBaked, 0),
+        ] {
+            let mut own = fixture_section(
+                [1, 1, 1],
+                &[record(
+                    0,
+                    namespace,
+                    5,
+                    Some(F16_QUARTER),
+                    0b1,
+                    vec![(7, 0, 255)],
+                )],
+            );
+            own.own_tiles[3] = bad;
+            let layout = MoverChannelLayout::build(&inputs(&own, None), false).unwrap();
+            assert_eq!(layout.record_count(), gated);
+            let error = layout
+                .held_writes(&own, &own.cell_slices(), |_, _| None)
+                .unwrap_err();
+            assert!(error.to_string().contains("non-finite"), "{error}");
+        }
+
+        let mut family = StaticFamily::new(1, F16_QUARTER);
+        family.tiles[5] = bad;
+        let borrowed = fixture_section(
+            [1, 1, 1],
+            &[record(
+                0,
+                MoverLightNamespace::StaticLight,
+                5,
+                None,
+                0b1,
+                vec![(7, 0, 255)],
+            )],
+        );
+        let rows = WholeTermRows::new(family.family(), &family.tiles);
+        let layout =
+            MoverChannelLayout::build(&inputs(&borrowed, Some(family.family())), false).unwrap();
+        let error = layout
+            .held_writes(&borrowed, &borrowed.cell_slices(), |cell, _| rows.row(cell))
+            .unwrap_err();
+        assert!(error.to_string().contains("non-finite"), "{error}");
+    }
+}
+
+/// A resident direct block beside a streamed bounce block: a cell holding
+/// both writes its direct payload at load, though its bounce tiles arrive
+/// only with its clusters.
+#[test]
+fn a_direct_cell_writes_while_its_bounce_payload_streams() {
+    let mut section = fixture_section(
+        [1, 1, 1],
+        &[record(
+            0,
+            MoverLightNamespace::BakeOnlyStaticLight,
+            0,
+            Some(F16_QUARTER),
+            0b1,
+            vec![(7, 0, 255)],
+        )],
+    );
+    section.bounce_placement = MoverPayloadPlacement::Streamed;
+    section.bounce_offsets = vec![0, 1];
+    section.bounce_entries = vec![
+        postretro_level_format::mover_probe_channel::MoverBounceEntry {
+            mover_id: 7,
+            stored_probe_masks: [0b1, 0],
+        },
+    ];
+    let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
+    let writes = layout
+        .held_writes(&section, &section.cell_slices(), |_, _| None)
+        .expect("the direct payload is held");
+    assert_eq!(writes.len(), 1);
+}
+
+/// Data half: records resolve by affinity row, never by stored slot,
 /// so a re-tenanted slot composes its new row's own entries.
 #[test]
 fn records_resolve_by_affinity_row() {
@@ -379,14 +520,10 @@ fn no_section_lays_out_the_header_and_pass_b_descriptor_map_only() {
 }
 
 mod planner {
-    //! C7, C8, C11, C12 and C14 on the streamed planner, for the direct
+    //! The streamed planner's change tracking, lag and routing, for the direct
     //! passes and the indirect pass.
-    use super::super::layout::MoverChannelRows;
     use super::*;
-    use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
-    use crate::render::direct_sh_compose::DirectShDebugOverride;
     use crate::render::sh_streaming::compose_plan_test_support::PlannerHarness;
-    use postretro_render_cpu::frame_uniforms::LightTermMask;
 
     /// Row 0: a static record of mover slot 0 (A) and slot 1 (B). Row 1:
     /// slot 0 only, static. Row 2: slot 1, an animated-baked light.
@@ -454,7 +591,7 @@ mod planner {
         harness
     }
 
-    /// C7 and C12: a frame with no t′ change composes no channel row; a
+    /// A frame with no t′ change composes no channel row; a
     /// travelling mover (B, slot 1) composes only its rows; a row it shares
     /// with a held mover is among them, and a row only the held mover
     /// carries stays current.
@@ -473,7 +610,7 @@ mod planner {
         );
     }
 
-    /// C14: entries route to the passes they feed. A static-only mover (A)
+    /// Entries route to the passes they feed. A static-only mover (A)
     /// stales Pass A, which then schedules Pass B at those rows; it never
     /// touches an animated-only row.
     #[test]
@@ -485,7 +622,7 @@ mod planner {
         assert_eq!(plan.animated_rows, vec![0, 1]);
     }
 
-    /// C7's lag half and C11: a row outside the view gate lags and composes
+    /// A row outside the view gate lags and composes
     /// the frame it re-enters; a change on a frame that records no compose
     /// composes on the next recording frame though t′ no longer moves.
     #[test]
@@ -508,7 +645,7 @@ mod planner {
         );
     }
 
-    /// C7, C14 (indirect): a travelling mover recomposes in the indirect
+    /// Indirect: a travelling mover recomposes in the indirect
     /// pass only the rows its bounce entries name; a mover with no bounce
     /// entry stales no indirect row, and a frame with no t′ change none.
     #[test]
@@ -531,7 +668,7 @@ mod planner {
         );
     }
 
-    /// C11 (indirect): a bounce change outside the gate lags to the frame
+    /// Indirect: a bounce change outside the gate lags to the frame
     /// the row re-enters; one on a frame recording no compose is kept.
     #[test]
     fn a_bounce_change_outside_the_gate_or_unrecorded_composes_later() {
@@ -549,26 +686,208 @@ mod planner {
         assert_eq!(plan.indirect_rows, vec![2], "the unrecorded change is kept");
     }
 
-    /// C8: a promotion weight or a curve changing raises no mover trigger:
-    /// rows the channel alone carries stay current.
+    // A light's curve or promotion weight raises no mover trigger, yet the
+    // direct rows carrying its gated term recompose through their own
+    // triggers: proved on the real membership in
+    // `sh_streaming/contributing_rows_tests.rs`
+    // (`a_light_change_recomposes_its_gated_direct_rows_without_a_mover_trigger`)
+    // over [`light_trigger_rows`].
+}
+
+/// Rows over a 4×1×1 affinity grid for the light-trigger proof, all carried
+/// by mover 7 (slot 0): row 0 a bake-only record (never promotes), row 1 a
+/// namespace-0 record whose light holds selection slot 0 (promotable), row 2
+/// an animated-baked record, and row 3 a bounce entry.
+pub(in crate::render) fn light_trigger_rows() -> MoverChannelRows {
+    let section = fixture_section(
+        [4, 1, 1],
+        &[
+            record(
+                0,
+                MoverLightNamespace::BakeOnlyStaticLight,
+                0,
+                Some(F16_QUARTER),
+                0b1,
+                vec![(7, 0, 255)],
+            ),
+            record(
+                1,
+                MoverLightNamespace::StaticLight,
+                5,
+                Some(F16_QUARTER),
+                0b1,
+                vec![(7, 0, 255)],
+            ),
+            record(
+                2,
+                MoverLightNamespace::AnimatedBaked,
+                0,
+                Some(F16_QUARTER),
+                0b1,
+                vec![(7, 0, 255)],
+            ),
+        ],
+    );
+    let animated = TermFamily {
+        name: "id 45",
+        valid_probe_masks: &[u64::MAX; 4],
+        cell_levels: &[0; 4],
+        affinity_offsets: &[0; 5],
+        affinity_lights: &[],
+    };
+    let layout = MoverChannelLayout::build(
+        &MoverChannelInputs {
+            section: Some(&section),
+            entity_shadow_lights: &[5],
+            static_terms: None,
+            animated_terms: Some(animated),
+            animation_descriptor_indices: &[0],
+            indirect_descriptor_indices: &[],
+        },
+        false,
+    )
+    .expect("the light-trigger fixture lays out");
+    let mut rows = layout.rows().clone();
+    rows.bounce_by_mover = super::layout::MoverRows::from_sets(vec![vec![3]]);
+    assert_eq!(rows.promotable, [1]);
+    assert_eq!(rows.animated, [2]);
+    rows
+}
+
+mod arrival {
+    //! A streamed direct payload checked on arrival against the whole load:
+    //! the same id-57 bytes are accepted or refused alike, every record
+    //! checked whether the table gates it or not.
+    use super::super::{ClusterTermRows, MoverChannelResources};
+    use super::*;
+    use crate::render::gpu_test_harness::{GpuCtx, gpu_or_skip};
+    use crate::render::sh_residency::ShAllocationLedger;
+    use crate::render::uploads::UploadQueue;
+    use postretro_level_format::mover_probe_channel::MoverStreamedRow;
+
+    /// Cell 0: a record borrowing from id 41, ungated with no id 41, so the
+    /// table plans nothing there. Cell 1: a gated bake-only record.
+    fn held() -> MoverProbeChannelSection {
+        fixture_section(
+            [2, 1, 1],
+            &[
+                record(
+                    0,
+                    MoverLightNamespace::StaticLight,
+                    5,
+                    None,
+                    0b11,
+                    vec![(7, 0, 255)],
+                ),
+                record(
+                    1,
+                    MoverLightNamespace::BakeOnlyStaticLight,
+                    0,
+                    Some(F16_QUARTER),
+                    0b1,
+                    vec![(7, 0, 255)],
+                ),
+            ],
+        )
+    }
+
+    /// `held` with its direct payload streamed, and each listed cell's id-50
+    /// direct bytes: its q bytes, then its own tiles little-endian.
+    fn streamed(
+        held: &MoverProbeChannelSection,
+    ) -> (MoverProbeChannelSection, Vec<(u32, Vec<u8>)>) {
+        let slices = held.cell_slices();
+        let rows = held
+            .cells
+            .iter()
+            .zip(&slices)
+            .map(|(listed, slices)| {
+                let mut bytes = held.visibility[slices.visibility.clone()].to_vec();
+                bytes.extend(
+                    held.own_tiles[slices.own_tiles.clone()]
+                        .iter()
+                        .flat_map(|half| half.to_le_bytes()),
+                );
+                (listed.cell, bytes)
+            })
+            .collect();
+        let mut section = held.clone();
+        section.direct_placement = MoverPayloadPlacement::Streamed;
+        section.visibility.clear();
+        section.own_tiles.clear();
+        (section, rows)
+    }
+
+    /// The whole load's verdict on `held`, then a streamed level's on one
+    /// cluster bringing every cell's row.
+    fn verdicts(ctx: &GpuCtx, held: &MoverProbeChannelSection) -> [Result<(), String>; 2] {
+        let mut ledger = ShAllocationLedger::new();
+        let whole = MoverChannelResources::new(
+            &ctx.device,
+            &inputs(held, None),
+            false,
+            |_, _| None,
+            &mut ledger,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+        let (section, rows) = streamed(held);
+        let mut channel = MoverChannelResources::new(
+            &ctx.device,
+            &inputs(&section, None),
+            true,
+            |_, _| None,
+            &mut ledger,
+        )
+        .expect("the streamed structure lays out");
+        channel.size_streamed_pools(&ctx.device, 1.0);
+        let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
+        let cluster = ClusterTermRows {
+            channel_rows: rows
+                .iter()
+                .map(|(cell, bytes)| MoverStreamedRow {
+                    cell: *cell,
+                    direct: bytes,
+                    bounce: &[],
+                })
+                .collect(),
+            ..ClusterTermRows::default()
+        };
+        let first: Vec<u32> = rows.iter().map(|(cell, _)| *cell).collect();
+        let arrival = channel
+            .stage_cluster(&ctx.device, &uploads, &cluster, &first)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        [whole, arrival]
+    }
+
+    /// A mask that is not tight on a record the table leaves ungated, in a
+    /// cell it plans nothing for, and a non-finite own tile, are refused on
+    /// arrival exactly as the whole load refuses them; the same payload
+    /// intact is accepted by both.
     #[test]
-    fn weight_and_curve_changes_raise_no_mover_trigger() {
-        let rows = rows();
-        let mut harness = harness();
-        let plan = harness.frame_with(
-            true,
-            &[0, 1, 2],
-            &[],
-            &rows,
-            &[0.5],
-            true,
-            LightTermMask::ALL,
-            DirectShDebugOverride::default(),
-            AnimatedDirectShDebugOverride::default(),
-        );
-        assert!(
-            plan.static_rows.is_empty(),
-            "no id-41 row and no mover moved: Pass A composes nothing"
-        );
+    fn arrival_checks_every_record_as_the_whole_load_does() {
+        let Some(ctx) = gpu_or_skip("arrival_checks_every_record_as_the_whole_load_does") else {
+            return;
+        };
+        for verdict in verdicts(&ctx, &held()) {
+            assert_eq!(verdict, Ok(()));
+        }
+
+        // Cell 0's second masked probe now stores 255 at both termini.
+        let mut untight = held();
+        untight.visibility[2] = 255;
+        untight.visibility[3] = 255;
+        for verdict in verdicts(&ctx, &untight) {
+            let error = verdict.unwrap_err();
+            assert!(error.contains("not tight"), "{error}");
+        }
+
+        let mut non_finite = held();
+        non_finite.own_tiles[3] = 0x7e00;
+        for verdict in verdicts(&ctx, &non_finite) {
+            let error = verdict.unwrap_err();
+            assert!(error.contains("non-finite"), "{error}");
+        }
     }
 }

@@ -7,7 +7,10 @@ use std::time::Instant;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
-use super::bounce::{PosedLaterBounces, add_posed_later_bounces, light_terms, posed_bounce_one};
+use super::bounce::{
+    PosedLaterBounces, add_posed_later_bounces, light_terms, posed_bounce_one,
+    posed_later_progress_units,
+};
 use super::depth::MoverAbsentDepth;
 use super::gather::{PosedGather, PosedProbe, gather_posed_probes, trace_posed_depth};
 use super::posed_scene::PosedScene;
@@ -44,6 +47,30 @@ impl MoverBounceJob {
         let count = sh_base_bounce_count(fill);
         (self.bounces >= 1 && self.bounces < count).then(|| self.bounces - 1)
     }
+
+    /// Progress units this job's bake advances over `valid_probes` valid
+    /// probes and `patch_count` static patches at `fill`: per pose, one per
+    /// valid probe (the posed gather, or the depth-only trace) and one per
+    /// patch chunk of each posed later bounce. Posed bounce one counts none.
+    /// A memo hit advances them all at once.
+    pub(crate) fn progress_units(
+        &self,
+        valid_probes: usize,
+        patch_count: usize,
+        fill: f32,
+    ) -> usize {
+        self.scenes
+            .iter()
+            .map(|scene| {
+                let later = if self.bounces == 0 || fill == 0.0 {
+                    0
+                } else {
+                    posed_later_progress_units(self.bounces - 1, patch_count, scene.patches.len())
+                };
+                valid_probes + later
+            })
+            .sum()
+    }
 }
 
 /// The movers one SH base bake re-bakes, and how.
@@ -52,7 +79,7 @@ pub(crate) struct MoverBounceRequest {
     pub(crate) jobs: Vec<MoverBounceJob>,
     /// The PRL stores id 34 as f16, so the bar is exact equality.
     pub(crate) uncompressed: bool,
-    /// Bake row B8's full re-bake (test only; production leaves both off):
+    /// The full re-bake (test only; production leaves both off):
     /// keep every valid probe's posed tile, hand each pose back, and reduce
     /// no mover.
     pub(crate) keep_every_tile: bool,
@@ -83,7 +110,7 @@ impl MoverBounceRequest {
 
 /// One pose's bounce and depth state, before its mover's two poses reduce.
 pub(crate) struct PosedBounce {
-    /// Which pose this is, for bake row B8's full re-bake.
+    /// Which pose this is, for the full re-bake.
     #[cfg(test)]
     pub(crate) mover_id: u32,
     #[cfg(test)]
@@ -102,19 +129,13 @@ pub(crate) struct StaticTail {
 }
 
 impl StaticTail {
-    /// The sum of id 34's later bounces from index `from` on, per patch, in
-    /// bounce order; `None` when none is kept there.
-    fn sum_from(&self, from: u32, patch_count: usize) -> Option<Vec<[f32; 3]>> {
-        let skip = from.checked_sub(self.first)? as usize;
-        let mut sum = vec![[0.0f32; 3]; patch_count];
-        for layer in self.layers.iter().skip(skip) {
-            for (sum, value) in sum.iter_mut().zip(layer) {
-                for (s, v) in sum.iter_mut().zip(value) {
-                    *s += v;
-                }
-            }
-        }
-        Some(sum)
+    /// Id 34's later bounces from index `from` on, in bounce order; empty
+    /// when none is kept there. The pose adds them one by one, as id 34 does:
+    /// pre-summing them would reassociate the float sum.
+    fn layers_from(&self, from: u32) -> &[Vec<[f32; 3]>] {
+        from.checked_sub(self.first)
+            .and_then(|skip| self.layers.get(skip as usize..))
+            .unwrap_or(&[])
     }
 }
 
@@ -159,11 +180,27 @@ pub(crate) fn bake_mover_bounce(
     );
     let terms = light_terms(inputs.lights, inputs.plan);
     let absent = MoverAbsentDepth::new(inputs.base, inputs.depth_tiles);
+    let valid_probes = inputs
+        .layout
+        .validity
+        .iter()
+        .filter(|&&valid| valid != 0)
+        .count();
     let mut movers: Vec<MoverBounceStates> = Vec::new();
     let mut kept_poses = Vec::new();
     let mut depth_probes = std::collections::BTreeSet::new();
-    for job in jobs {
+    for (at, job) in jobs.iter().enumerate() {
         if depth_probes.len() > request.depth_cap as usize {
+            // The build fails by name when it reserves these tiles; the
+            // jobs left never run, so their progress lands at once.
+            control.advance(
+                jobs[at..]
+                    .iter()
+                    .map(|job| {
+                        job.progress_units(valid_probes, inputs.patches.len(), inputs.bounce_fill)
+                    })
+                    .sum(),
+            );
             break;
         }
         let started = Instant::now();
@@ -172,7 +209,7 @@ pub(crate) fn bake_mover_bounce(
         let mut _held = Vec::new();
         for scene in &job.scenes {
             if job.bounces == 0 {
-                let depth = trace_posed_depth(sh_ctx, inputs.layout, scene, control);
+                let depth = trace_posed_depth(&ctx, inputs.layout, scene, control);
                 poses.push(PoseStates {
                     changed: Vec::new(),
                     depth,
@@ -264,13 +301,10 @@ fn bake_pose(
         scene,
         control,
     );
-    let tail = job
+    let static_tail = job
         .static_tail_from(inputs.bounce_fill)
-        .and_then(|from| inputs.static_tail?.sum_from(from, inputs.patches.len()));
-    #[cfg(test)]
-    let _tail = tail
-        .as_ref()
-        .map(|tail| crate::live_bytes::hold_vec("mover static tail sum", tail));
+        .zip(inputs.static_tail)
+        .map_or(&[][..], |(from, tail)| tail.layers_from(from));
     add_posed_later_bounces(
         ctx,
         inputs.patches,
@@ -279,11 +313,10 @@ fn bake_pose(
         inputs.bounce_fill,
         PosedLaterBounces {
             posed: job.bounces - 1,
-            static_tail: tail.as_deref(),
+            static_tail,
         },
         control,
     );
-    drop(tail);
     let gather = PosedGather::new(inputs.patches, &radiance, scene);
     let probes = gather_posed_probes(
         sh_ctx,

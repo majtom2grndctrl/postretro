@@ -46,6 +46,8 @@ struct Frame {
     animated_active: bool,
     static_weight: f32,
     mask: LightTermMask,
+    /// Mover slots whose t′ moved this frame.
+    mover_changes: Vec<u32>,
 }
 
 impl Frame {
@@ -58,6 +60,7 @@ impl Frame {
             animated_active: false,
             static_weight: 0.0,
             mask: LightTermMask::ALL,
+            mover_changes: Vec::new(),
         }
     }
 
@@ -152,7 +155,7 @@ impl Harness {
                 AnimatedDirectShDebugOverride::default(),
                 &[frame.static_weight],
                 &[],
-                &[],
+                &frame.mover_changes,
             )
             .unwrap();
         let plan = self.state.compose_frame_plan.as_ref().unwrap();
@@ -606,4 +609,68 @@ fn deactivation_tail_plans_only_entry_carrying_rows() {
     for frame in [Frame::per_source(), Frame::idle(), Frame::per_source()] {
         assert_eq!(harness.frame(frame), entry_rows);
     }
+}
+
+/// A gated light's curve or promotion weight raises no mover trigger, yet
+/// the direct rows carrying its gated term recompose on it, as id-41/45 rows
+/// do: a promotable namespace-0 record and an animated-baked record make
+/// their rows contribute with no id-41 or id-45 entry there. A row the
+/// same mover carries for a light that never promotes stays current, and
+/// bounce rows never recompose on a light change. A t′ change, the mover
+/// trigger, stales every row the mover carries in the passes they feed.
+#[test]
+fn a_light_change_recomposes_its_gated_direct_rows_without_a_mover_trigger() {
+    // Four bricks, no id-27, id-41 or id-45 entry anywhere: every
+    // contribution below comes from the channel's rows.
+    let map = SyntheticMap::new([16, 4, 4], [2, 1, 1])
+        .with_empty_rows(INDIRECT_DELTA_ID, &ALL_ROWS)
+        .with_empty_rows(DIRECT_DELTA_ID, &ALL_ROWS)
+        .with_empty_rows(ANIMATED_DIRECT_DELTA_ID, &ALL_ROWS);
+    let mut harness = Harness::new(map);
+    harness.state.mover_channel_rows = crate::render::mover_channel::tests::light_trigger_rows();
+    for cluster_id in 0..harness.map.cluster_count() {
+        harness.install(cluster_id);
+    }
+    harness.frame(Frame::idle());
+    assert_eq!(harness.frame(Frame::idle()), Planned::default());
+
+    // The real membership: row 1 contributes to Pass A (and upstream of
+    // Pass B), row 2 to Pass B; rows 0 and 3 to neither.
+    let state = &harness.state;
+    let contributing = |pass, row| pass_membership(state, pass, row).contributing;
+    assert!(contributing(ComposePass::StaticDirect, 1));
+    assert!(pass_membership(state, ComposePass::AnimatedDirect, 1).upstream);
+    assert!(contributing(ComposePass::AnimatedDirect, 2));
+    for row in [0, 3] {
+        assert!(!contributing(ComposePass::StaticDirect, row), "row {row}");
+        assert!(!contributing(ComposePass::AnimatedDirect, row), "row {row}");
+    }
+    for row in ALL_ROWS {
+        assert!(!contributing(ComposePass::Indirect, row), "row {row}");
+    }
+
+    // A promotion weight change: Pass A recomposes the promotable row, Pass
+    // B that row upstream and the animated row; row 0 (mover 7's, a light
+    // that never promotes) and the bounce row stay current.
+    let weight = harness.frame(Frame {
+        static_weight: 0.5,
+        ..Frame::idle()
+    });
+    assert_eq!(weight, [vec![], vec![1], vec![1, 2]]);
+    // A curve change (both animated triggers), the weight held: Pass B's
+    // animated row only; the bounce row stays current.
+    let curve = harness.frame(Frame {
+        static_weight: 0.5,
+        ..Frame::per_source()
+    });
+    assert_eq!(curve, [vec![], vec![], vec![2]]);
+
+    // The mover trigger, for contrast: every row mover 7 carries, in the
+    // passes its entries feed.
+    let moved = harness.frame(Frame {
+        static_weight: 0.5,
+        mover_changes: vec![0],
+        ..Frame::idle()
+    });
+    assert_eq!(moved, [vec![3], vec![0, 1], vec![0, 1, 2]]);
 }

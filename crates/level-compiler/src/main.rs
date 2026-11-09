@@ -884,7 +884,7 @@ fn help_text() -> String {
          --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache). The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          --probe-depth-tile-cap <N> Probe depth tiles (id 59's and the movers' live tiles together) a level may hold, at most {probe_depth_tile_max}; lower only to test the tile trim and range error (default: {probe_depth_tile_max})\n    \
-         --mover-payload-resident-bar <SIZE> Bytes of each mover probe channel payload block kept resident in id 57 before it streams with id 50's cells; lower only to test streamed placement (default: {mover_payload_bar})\n    \
+         --mover-payload-resident-bar <SIZE> Bytes of each mover probe channel payload block kept resident in id 57 before it streams with id 50's cells, at most {mover_payload_bar}; lower only to test streamed placement (default: {mover_payload_bar})\n    \
          --direction-texel-scale <N> Per-axis static-direction atlas reduction, power of two in 1..={direction_texel_scale_max} (default: {direction_texel_scale})\n    \
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
@@ -905,10 +905,17 @@ fn help_text() -> String {
         direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE,
         direction_texel_scale_max = lightmap_bake::MIN_ATLAS_DIMENSION,
         probe_depth_tile_max = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
-        mover_payload_bar = size_options::format_size_for_help(
-            postretro_level_format::mover_probe_channel::MOVER_BOUNCE_RESIDENT_BYTE_BAR
-        ),
+        mover_payload_bar = size_options::format_size_for_help(mover_payload_resident_bar_max()),
     )
+}
+
+/// The highest `--mover-payload-resident-bar` accepted: the lower of the
+/// owner's two resident bars, so the flag only ever lowers a bar.
+fn mover_payload_resident_bar_max() -> u64 {
+    use postretro_level_format::mover_probe_channel::{
+        MOVER_BOUNCE_RESIDENT_BYTE_BAR, MOVER_DIRECT_RESIDENT_BYTE_BAR,
+    };
+    MOVER_BOUNCE_RESIDENT_BYTE_BAR.min(MOVER_DIRECT_RESIDENT_BYTE_BAR)
 }
 
 /// Consume the value token that must follow a value-taking flag `flag`.
@@ -1127,10 +1134,14 @@ where
             }
             "--mover-payload-resident-bar" => {
                 let size_str = flag_value(&mut args, "--mover-payload-resident-bar")?;
-                mover_payload_resident_bar = Some(size_options::parse_size(
-                    "--mover-payload-resident-bar",
-                    &size_str,
-                )?);
+                let max = mover_payload_resident_bar_max();
+                let bar = size_options::parse_size("--mover-payload-resident-bar", &size_str)?;
+                anyhow::ensure!(
+                    bar <= max,
+                    "--mover-payload-resident-bar must be a size from 0 through {max} bytes, \
+                     got `{size_str}`"
+                );
+                mover_payload_resident_bar = Some(bar);
             }
             "--direction-texel-scale" => {
                 quality_flag_supplied = true;
@@ -2194,6 +2205,34 @@ mod tests {
             parse_args_from(["input.map".to_string(), "--baked-root".to_string()].into_iter())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn mover_payload_resident_bar_only_lowers_the_owners_bars() {
+        let bar = |value: &str| {
+            parse_args_from(
+                [
+                    "input.map".to_string(),
+                    "--mover-payload-resident-bar".to_string(),
+                    value.to_string(),
+                ]
+                .into_iter(),
+            )
+        };
+        let max = mover_payload_resident_bar_max();
+        assert_eq!(max, 8 * 1024 * 1024);
+        assert_eq!(bar("0").unwrap().mover_payload_resident_bar, Some(0));
+        assert_eq!(bar("8MiB").unwrap().mover_payload_resident_bar, Some(max));
+        for above in [(max + 1).to_string(), "9MiB".to_string()] {
+            let err = bar(&above).unwrap_err().to_string();
+            assert!(
+                err.contains("--mover-payload-resident-bar must be a size from 0 through")
+                    && err.contains(&above),
+                "`{above}`: {err}"
+            );
+        }
+        let without = parse_args_from(["input.map".to_string()].into_iter()).unwrap();
+        assert_eq!(without.mover_payload_resident_bar, None);
     }
 
     #[test]

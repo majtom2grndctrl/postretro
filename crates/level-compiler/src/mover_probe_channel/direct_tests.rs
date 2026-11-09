@@ -1,6 +1,6 @@
-// The direct half's production bake: q against the joint sample set (B1),
-// the dark inside-brush rule, suns and spinners (B10), bake-only lights in
-// namespace 2, the own-tile flag against ids 41 and 45 as emitted (C15), term
+// The direct half's production bake: q against the joint sample set,
+// the dark inside-brush rule, suns and spinners, bake-only lights in
+// namespace 2, the own-tile flag against ids 41 and 45 as emitted, term
 // records (one tile per cell and light, masked to the probes movers change),
 // the per-light memo and worker-count determinism.
 
@@ -368,7 +368,7 @@ fn probe_payload<'e>(
     })
 }
 
-// Bake row B1: every stored q is the posed clear count over the joint
+// Every stored q is the posed clear count over the joint
 // sample set's static clear count, same seed, and its byte scales the
 // light's term in the posed direct bake.
 #[test]
@@ -455,7 +455,7 @@ fn production_q_is_the_joint_sample_surviving_fraction_at_every_gated_probe() {
     );
 }
 
-// Bake row B1: a light the mover is a candidate for, whose samples never
+// A light the mover is a candidate for, whose samples never
 // meet it, stores no entry.
 #[test]
 fn a_light_whose_samples_never_meet_the_pose_stores_no_entry() {
@@ -470,7 +470,7 @@ fn a_light_whose_samples_never_meet_the_pose_stores_no_entry() {
     assert!(bake.lights.is_empty(), "{:?}", bake.lights);
 }
 
-// Inside-brush rule (owner, Stop 2): a valid probe inside a posed brush
+// Inside-brush rule (owner): a valid probe inside a posed brush
 // stores q = 0 for that pose, though nothing else blocks its light.
 #[test]
 fn a_probe_inside_a_posed_brush_stores_zero() {
@@ -484,7 +484,7 @@ fn a_probe_inside_a_posed_brush_stores_zero() {
     assert_eq!((first, last), (0, 255));
 }
 
-// Bake row B10: a sun the posed brushes block stores q < 1, and a spinner,
+// A sun the posed brushes block stores q < 1, and a spinner,
 // which has no parked pose, stores no entry.
 #[test]
 fn a_blocked_sun_stores_q_below_one_and_a_spinner_stores_no_entry() {
@@ -676,7 +676,7 @@ fn the_gated_set_names_bake_only_lights_by_static_baked_index_and_no_light_twice
     );
 }
 
-// Lights in scope (task 6b): a bake-only light the posed slab blocks stores
+// Lights in scope: a bake-only light the posed slab blocks stores
 // q < 1 under it, and its entry carries its own tile even where the caller
 // would flag none, ranked to index 0 of the section's bake-only roster.
 #[test]
@@ -704,6 +704,7 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         &MoverRamps::new(&movers),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| false,
+        |_| true,
     )
     .unwrap()
     .expect("the gated bake-only light makes a section");
@@ -772,6 +773,7 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
         &MoverRamps::new(&movers),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
+        |_| true,
     )
     .unwrap()
     .expect("the slabs gate the light");
@@ -841,6 +843,7 @@ fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
         &MoverRamps::new(&movers),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
+        |_| true,
     )
     .unwrap()
     .expect("the slabs gate the light");
@@ -969,7 +972,7 @@ fn two_cells() -> ProbeCells {
     }
 }
 
-// C15 flag (P22): an entry carries its light's tile unless ids 41 or 45, as
+// Own-tile flag: an entry carries its light's tile unless ids 41 or 45, as
 // emitted, hold the term per probe at its cell: a static light with no id-41
 // entry there, or whose cell id 41 stores coarser, carries it.
 #[test]
@@ -1040,6 +1043,7 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
         &ramps,
         &super::section::MoverPayloadBars::default(),
         |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
+        |ns| emitted.composes_gated(ns),
     )
     .unwrap()
     .expect("entries make a section");
@@ -1076,6 +1080,79 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
     assert_eq!(decoded, section);
 }
 
+// No id 45, no namespace-1 record: the renderer composes animated-baked
+// records ungated when id 45 is absent, so the compiler writes none. Static
+// and bake-only records stay, and a bake whose only entries are animated
+// writes no section.
+#[test]
+fn with_no_id_45_no_animated_baked_record_is_written() {
+    use MoverLightNamespace::{AnimatedBaked, BakeOnlyStaticLight, StaticLight};
+    let without_id45 = EmittedDirectEntries {
+        selection: None,
+        direct: None,
+        animated: None,
+    };
+    assert!(!without_id45.composes_gated(AnimatedBaked));
+    assert!(without_id45.composes_gated(StaticLight));
+    assert!(without_id45.composes_gated(BakeOnlyStaticLight));
+    let lights = |namespaces: &[MoverLightNamespace]| MoverDirectBake {
+        lights: namespaces
+            .iter()
+            .map(|&namespace| LightEntries {
+                namespace,
+                light_index: 1,
+                entries: vec![entry(1, 2)],
+            })
+            .collect(),
+    };
+    let section = |bake: &MoverDirectBake, emitted: &EmittedDirectEntries<'_>| {
+        channel_section(
+            bake,
+            &BounceBlocks::default(),
+            &two_cells(),
+            &MoverRamps::new(&[mover(2, Vec::new(), false)]),
+            &super::section::MoverPayloadBars::default(),
+            |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
+            |ns| emitted.composes_gated(ns),
+        )
+        .unwrap()
+    };
+    let namespaces = |section: &MoverProbeChannelSection| -> Vec<MoverLightNamespace> {
+        section
+            .direct_record_views()
+            .map(|view| view.record.namespace)
+            .collect()
+    };
+
+    let both = lights(&[StaticLight, AnimatedBaked]);
+    let kept = section(&both, &without_id45).expect("the static record stays");
+    assert_eq!(namespaces(&kept), vec![StaticLight]);
+    assert!(
+        section(&lights(&[AnimatedBaked]), &without_id45).is_none(),
+        "animated-only entries write no section without id 45"
+    );
+
+    let animated = AnimatedDirectShDeltaVolumesSection {
+        affinity_factor: 4,
+        affinity_dims: [2, 1, 1],
+        tile_dimension: 6,
+        tile_border: 1,
+        animation_descriptor_indices: vec![0, 1],
+        valid_probe_masks: vec![u64::MAX; 2],
+        cell_levels: vec![0, 0],
+        affinity_offsets: vec![0, 0, 1],
+        affinity_lights: vec![1],
+        delta_subblocks: Vec::new(),
+    };
+    let with_id45 = EmittedDirectEntries {
+        selection: None,
+        direct: None,
+        animated: Some(&animated),
+    };
+    let kept = section(&both, &with_id45).expect("both records stay");
+    assert_eq!(namespaces(&kept), vec![StaticLight, AnimatedBaked]);
+}
+
 fn emitted_with<'a>(
     selection: &'a EntityShadowLightsSection,
     direct: &'a DirectShDeltaVolumesSection,
@@ -1098,6 +1175,7 @@ fn a_bake_with_no_entry_makes_no_section() {
         &MoverRamps::new(&[]),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
+        |_| true,
     )
     .unwrap();
     assert!(section.is_none());
@@ -1223,7 +1301,7 @@ fn world_with(world: &World, edit: impl FnOnce(&mut GeometryResult)) -> (World, 
     (copy, vertices)
 }
 
-// Bake row B12, direct half: the bake does not depend on the worker count.
+// Direct half: the bake does not depend on the worker count.
 #[test]
 fn the_direct_bake_is_identical_across_worker_counts() {
     let world = world();
@@ -1249,7 +1327,7 @@ fn held_entry_bytes(bake: &MoverDirectBake) -> u64 {
         .sum()
 }
 
-// SH gate (B14, task 7b): the direct half's bound, priced with no ray from
+// SH gate: the direct half's bound, priced with no ray from
 // the bake's own prefilter, covers what the bake holds for a lit point light
 // and a sun, and is tighter than charging every cell in the light's reach a
 // full cell's payload for every mover it may meet (what it charged before,

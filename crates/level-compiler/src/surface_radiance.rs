@@ -12,12 +12,12 @@ mod sum;
 mod volume;
 mod working_set;
 
-#[cfg(test)]
-pub(crate) use bounce::add_later_bounces;
 pub(crate) use bounce::{
     BOUNCE_RAYS_PER_PATCH, DEFAULT_BOUNCE_FILL, LATER_BOUNCE_COUNT, cosine_directions,
     is_valid_bounce_fill, patch_frame,
 };
+#[cfg(test)]
+pub(crate) use bounce::{add_later_bounces, add_later_bounces_keeping};
 pub(crate) use gather::{PatchGather, PatchLookup};
 pub(crate) use layer::shade_patch_side;
 #[cfg(test)]

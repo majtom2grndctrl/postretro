@@ -1,4 +1,4 @@
-// D4 and D5 frame clauses on the compiled `mover-closet`, through the capture
+// Frame-level proofs on the compiled `mover-closet`, through the capture
 // harness's offscreen frames: the frame a state is first handed over, and the
 // frame a t′ steps from 1 to 0, each render within 2 levels per channel of
 // the frame after, so no frame samples an unwritten live tile or pairs one
@@ -9,7 +9,7 @@
 
 use super::prepared::PreparedCapture;
 use super::scene::parse_scene;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 
 const UNIT: f32 = 0.0254;
 
@@ -57,13 +57,13 @@ fn d4_d5_first_hand_over_and_a_one_to_zero_step_render_within_two_levels_of_the_
     let map = std::env::var("MOVER_CLOSET_PRL").expect("set MOVER_CLOSET_PRL");
     let mode = std::env::var("POSTRETRO_SH_STREAMING").unwrap_or_default();
     let id = door_id(&map);
-    let door = |t: f32| [MoverLightState { mover_id: id, t }];
+    let door = |t: f32| [MoverTravel { mover_id: id, t }];
 
-    // D4 (P24): the door held at its seeded terminus, first handed over on a
+    // The door held at its seeded terminus, first handed over on a
     // captured frame.
     let mut capture = prepare(&map);
     let unstated = capture.capture_frame().expect("frame without state");
-    capture.hand_over_mover_light_states(&door(0.0));
+    capture.hand_over_mover_travel(&door(0.0));
     let first = capture.capture_frame().expect("first hand-over frame");
     let after = capture.capture_frame().expect("the frame after");
     let first_delta = max_channel_delta(&first, &after);
@@ -81,12 +81,12 @@ fn d4_d5_first_hand_over_and_a_one_to_zero_step_render_within_two_levels_of_the_
         "the closed door's state must move the frame"
     );
 
-    // D5 (P25): t′ steps from 1 to 0 on one frame, then holds.
+    // T′ steps from 1 to 0 on one frame, then holds.
     let mut capture = prepare(&map);
-    capture.hand_over_mover_light_states(&door(1.0));
+    capture.hand_over_mover_travel(&door(1.0));
     let open = capture.capture_frame().expect("t′ = 1");
     let _ = capture.capture_frame().expect("t′ = 1 held");
-    capture.hand_over_mover_light_states(&door(0.0));
+    capture.hand_over_mover_travel(&door(0.0));
     let step = capture.capture_frame().expect("the 1 → 0 step frame");
     let held = capture.capture_frame().expect("t′ held at 0");
     let step_delta = max_channel_delta(&step, &held);

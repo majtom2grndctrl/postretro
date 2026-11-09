@@ -160,9 +160,9 @@ impl App {
         {
             let registry = session.scripting.script_ctx.registry.borrow();
             crate::rebuild_blocked_portals(&mut self.blocked_portals, Some(world), &registry);
-            // Mover light state reads the same final post-tick phase, so a
+            // Mover travel reads the same final post-tick phase, so a
             // held level composes its seeded state before reveal.
-            self.kinematic_mover_render.hand_over_light_states(
+            self.kinematic_mover_render.hand_over_mover_travel(
                 &registry,
                 Some(world),
                 self.renderer.as_mut(),
@@ -266,7 +266,7 @@ impl App {
                 // (none without a level), never a stale frame's.
                 {
                     let registry = session.scripting.script_ctx.registry.borrow();
-                    self.kinematic_mover_render.hand_over_light_states(
+                    self.kinematic_mover_render.hand_over_mover_travel(
                         &registry,
                         self.level.as_ref(),
                         Some(&mut *renderer),

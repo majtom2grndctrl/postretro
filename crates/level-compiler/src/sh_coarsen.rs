@@ -1025,7 +1025,7 @@ mod tests {
         );
     }
 
-    // Bake row B9: a cell holding a mover probe channel direct entry keeps
+    // A cell holding a mover probe channel direct entry keeps
     // id 41 at L0, so a gated light's id-41 tile stays per probe; a bounce
     // entry alone leaves id 41's level to the classifier.
     #[test]

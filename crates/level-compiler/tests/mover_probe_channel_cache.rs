@@ -1,7 +1,6 @@
-//! Mover probe channel through the binary: id 57's bytes across cold builds and worker counts
-//! (B12), and warm builds over the per-light direct memos and the per-mover bounce memo (B15,
-//! B16): a mover edit re-bakes only the lights reaching its old or new pose, no id-41 or id-45
-//! entry, and only that mover's bounce states; a static-light edit only that light's direct
+//! Mover probe channel through the binary: id 57's bytes across cold builds and worker counts, and warm builds over the
+//! per-light direct memos and the per-mover bounce memo: a mover edit re-bakes only the
+//! lights reaching its old or new pose, no id-41 or id-45 entry, and only that mover's bounce states; a static-light edit only that light's direct
 //! entries but every mover's bounce states; an animated-light edit only its id-45 entries; a
 //! retexture no direct entry but every bounce state; and every warm PRL equals the edited map's
 //! cold PRL. Over one cache, edits and their revert build warm equal to cold, and the revert
@@ -387,7 +386,7 @@ fn assert_all_hit(logs: &str, stage: &str) {
     );
 }
 
-// Bake row B12, direct half: id 57 is byte-identical across two cold builds
+// Direct half: id 57 is byte-identical across two cold builds
 // and across one and four workers; every namespace carries entries, and the
 // runtime loader accepts the section.
 #[test]
@@ -436,7 +435,7 @@ fn the_section_is_identical_across_cold_builds_and_worker_counts() {
     assert_eq!(world.mover_probe_channel(), Some(&channel));
 }
 
-// Bake row B17, direct half: a map with no mover packs no id 57.
+// Direct half: a map with no mover packs no id 57.
 #[test]
 fn a_map_without_movers_packs_no_section() {
     let built = build(
@@ -450,7 +449,7 @@ fn a_map_without_movers_packs_no_section() {
     assert!(section(&built.prl, SectionId::MoverProbeChannel).is_none());
 }
 
-// Bake row B15, direct half: moving the plate's last waypoint traces nothing
+// Direct half: moving the plate's last waypoint traces nothing
 // for ids 34, 35, 41 and 45, re-bakes every light's entries but the one
 // reaching only the plate's first pose, and packs the edited map's cold bytes.
 #[test]
@@ -474,7 +473,7 @@ fn moving_a_movers_last_waypoint_rebakes_only_the_lights_reaching_its_poses() {
     assert!(bounce_memo_line(&warm, "shutter", "hit"), "{warm}");
 }
 
-// Bake row B15, direct half: editing one static light's colour re-bakes no
+// Direct half: editing one static light's colour re-bakes no
 // other light's entries, in id 57 or id 41, and no id-45 entry.
 #[test]
 fn editing_one_static_lights_colour_rebakes_only_its_entries() {
@@ -516,7 +515,7 @@ fn editing_the_animated_light_rebakes_only_its_animated_direct_entries() {
     assert_all_hit(&warm, ENTITY_SHADOW_DIRECT);
 }
 
-// Bake row B15, direct half: retexturing a static surface moves nothing the
+// Direct half: retexturing a static surface moves nothing the
 // direct half, id 41 or id 45 traces, so every light hits.
 #[test]
 fn retexturing_a_static_surface_rebakes_no_direct_entry() {
@@ -529,7 +528,7 @@ fn retexturing_a_static_surface_rebakes_no_direct_entry() {
     }
 }
 
-// Bake row B15, direct half: duplicating a static light, appended so no
+// Direct half: duplicating a static light, appended so no
 // other light's seed shifts, re-bakes only the duplicate's entries, in id 57
 // and id 41.
 #[test]
@@ -552,7 +551,7 @@ fn duplicating_a_static_light_rebakes_only_the_duplicate() {
     );
 }
 
-// Bake row B15, bounce half: retexturing a static surface changes the
+// Bounce half: retexturing a static surface changes the
 // bounce albedo id 34 reads, so every mover's bounce states re-bake, while
 // no direct entry does.
 #[test]
@@ -568,7 +567,7 @@ fn retexturing_a_static_surface_rebakes_every_movers_bounce() {
     }
 }
 
-// Bake row B16 (P19): over one cache, a mover edit, then a static-light edit
+// Over one cache, a mover edit, then a static-light edit
 // on top of it, then reverting both, each build warm equal to cold; the
 // revert hits every direct, bounce and id-34 memo.
 #[test]
@@ -600,7 +599,7 @@ fn edits_and_their_revert_over_one_cache_build_warm_equal_to_cold() {
     );
 }
 
-// Bake row B16 with streamed payloads (task 7b): with the resident bar at zero
+// With streamed payloads: with the resident bar at zero
 // both of id 57's payloads stream with id 50's cells; over a cache that build
 // filled, a mover edit, then its revert, each build warm equal to cold, and the
 // revert hits every direct and bounce memo.

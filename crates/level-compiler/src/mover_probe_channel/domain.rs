@@ -56,14 +56,14 @@ pub(crate) fn max_abs_difference(a: &[OctahedralAtlasTexel], b: &[OctahedralAtla
         .fold(0.0, f32::max)
 }
 
-/// The perceptual floor (owner, Stop 2, 2026-11-08): a probe's bounce is
+/// The perceptual floor (owner, 2026-11-08): a probe's bounce is
 /// affected only when its change also exceeds this many display levels
 /// ([`display_levels`]). The largest floor that keeps every `mover-closet`
 /// probe the closed door darkens, whose smallest change is 2.30 levels.
 pub(crate) const BOUNCE_FLOOR_LEVELS: f32 = 2.0;
 
 /// The receiver the perceptual measure lights: mid-grey.
-const DISPLAY_ALBEDO: f32 = 0.5;
+pub(super) const DISPLAY_ALBEDO: f32 = 0.5;
 
 /// Linear to sRGB-encoded, 0..=1, as an `Rgba8UnormSrgb` target writes it.
 fn srgb_encode(linear: f32) -> f32 {

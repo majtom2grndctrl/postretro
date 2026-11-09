@@ -58,8 +58,8 @@ pub(crate) struct PostBakeDeltaSections {
     pub direct: Option<DirectShDeltaVolumesSection>,
     pub animated_direct: Option<AnimatedDirectShDeltaVolumesSection>,
     /// MoverProbeChannel (id 57), set by the pipeline once the channel bakes.
-    /// Its own-tile flags are settled only once ids 41 and 45 are final
-    /// (P22); until then every flag is clear.
+    /// Its own-tile flags are settled only once ids 41 and 45 are final;
+    /// until then every flag is clear.
     pub mover_channel: Option<MoverProbeChannelSection>,
 }
 

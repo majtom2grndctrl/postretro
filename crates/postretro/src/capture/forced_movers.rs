@@ -1,7 +1,7 @@
 // Capture's forced mover travel: a scene holds named movers at a travel
 // fraction by setting their phase, so every input a frame derives from phase
 // agrees: drawn geometry, shadow casters, occluder bounds, the portal seal and
-// the mover light state the game would hand the renderer.
+// the mover travel state the game would hand the renderer.
 // See: context/lib/rendering_pipeline.md §7.8 · §4 (Mover state lighting)
 
 use anyhow::{Context, Result, bail};
@@ -12,7 +12,7 @@ use postretro_physics::kinematic_mover::{
 };
 
 use super::scene::ForcedMover;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::runtime_movers::{KinematicMoverRenderCollector, mover_entity};
 
 /// The movers a scene forced, by mover id, in scene order.
@@ -101,18 +101,18 @@ impl ForcedCaptureMovers {
         blocked
     }
 
-    /// The forced movers' light states, collected as the game collects them
+    /// The forced movers' travel states, collected as the game collects them
     /// (travel fraction from phase, then the author ramp). Movers a scene
     /// does not force hand over no state and compose ungated, as before.
-    pub(super) fn light_states(
+    pub(super) fn mover_travel(
         &self,
         registry: &EntityRegistry,
         world: &LevelWorld,
         collector: &mut KinematicMoverRenderCollector,
-    ) -> Vec<MoverLightState> {
-        collector.collect_light_states(registry, Some(world));
+    ) -> Vec<MoverTravel> {
+        collector.collect_mover_travel(registry, Some(world));
         collector
-            .light_states()
+            .mover_travel()
             .iter()
             .filter(|state| self.mover_ids.contains(&state.mover_id))
             .copied()
@@ -195,7 +195,7 @@ mod tests {
         );
 
         let mut collector = KinematicMoverRenderCollector::new();
-        let states = forced.light_states(&registry, &world, &mut collector);
+        let states = forced.mover_travel(&registry, &world, &mut collector);
         assert_eq!(
             states.len(),
             1,

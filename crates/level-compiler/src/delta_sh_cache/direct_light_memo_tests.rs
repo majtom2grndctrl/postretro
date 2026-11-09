@@ -360,7 +360,7 @@ fn a_corrupt_entry_rebakes_that_light() {
     assert_eq!(rebuilt.tally, DeltaShCacheTally { hits: 1, misses: 2 });
 }
 
-// Task 7b: a light's entry holds its tiles at valid probes only, so an
+// A light's entry holds its tiles at valid probes only, so an
 // invalid probe's zero tile costs nothing. Light 1 reaches cell 0 (three
 // valid probes of four in the grid) and cell 1 (one): four tiles of two
 // halves, 16 bytes, where the dense sub-blocks would be 512.

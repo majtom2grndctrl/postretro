@@ -1,5 +1,6 @@
 // CPU proofs for the mover depth live-tile plan: the blend, the write and
-// reference triggers, the two-mover rule, run coalescing and the frame's
+// reference triggers, the several-mover rule (differences from the base add,
+// clamped to a valid moment set), run coalescing and the frame's
 // allocations. GPU proofs live in `mover_depth_tiles_tests.rs`.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
@@ -37,7 +38,7 @@ impl Plan {
         probes: &[OctahedralShProbe],
     ) -> Self {
         let ids = section.mover_ids();
-        let mut depth = MoverDepthTiles::new(Some(section), &ids);
+        let mut depth = MoverDepthTiles::new(Some(section), &ids).expect("the depth block loads");
         let live = depth.live_tile_count();
         let references = ProbeDepthTileReferences::from_section(Some(id59), live);
         depth.bind(
@@ -108,6 +109,25 @@ fn f16(bits: u16) -> f32 {
     f16_bits_to_f32(bits)
 }
 
+/// An id-34 probe whose averaged moments are `[mean, mean_sq]`.
+fn averaged(mean: f32, mean_sq: f32) -> OctahedralShProbe {
+    OctahedralShProbe {
+        validity: 1,
+        mean_distance: f32_to_f16_bits(mean),
+        mean_sq_distance: f32_to_f16_bits(mean_sq),
+        density_level: 0,
+        node_scale: 0,
+    }
+}
+
+/// An id 59 that tiles no probe.
+fn no_id59() -> ProbeDepthTilesSection {
+    ProbeDepthTilesSection {
+        probe_indices: Vec::new(),
+        texels: Vec::new(),
+    }
+}
+
 /// Within one f16 ulp of `expected`, per channel.
 fn assert_within_ulp(texels: &[[u16; 2]], expected: impl Fn(usize, usize) -> f32) {
     for (at, texel) in texels.iter().enumerate() {
@@ -123,7 +143,7 @@ fn assert_within_ulp(texels: &[[u16; 2]], expected: impl Fn(usize, usize) -> f32
     }
 }
 
-/// Depth row D1, CPU half: a live tile reads D₀ at t′ = 0, D₁ at t′ = 1 and
+/// A live tile reads D₀ at t′ = 0, D₁ at t′ = 1 and
 /// their linear mix at 0.5 within one f16 ulp, rising and after a reversal;
 /// the first write points the probe at it, and later ones leave the
 /// reference alone.
@@ -151,12 +171,11 @@ fn a_live_tile_blends_its_movers_closed_pose_tiles_exact_at_both_termini() {
     }
 }
 
-/// Task 11c: a terminus a record stores no tile for blends toward the
+/// A terminus a record stores no tile for blends toward the
 /// probe's base moment set: its id-59 tile where it has one, else its
 /// averaged id-34 moments in every texel. At that terminus the live tile
 /// holds the base bit for bit; elsewhere it is the exact linear mix. With
-/// two movers, a mover at its unstored terminus offers the base as its pair
-/// in the nearer-occluder rule.
+/// two movers, a mover parked at its unstored terminus adds nothing.
 #[test]
 fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
     let (d0, d1) = (ramp_tile(0.25), ramp_tile(3.0));
@@ -178,16 +197,9 @@ fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
         probe_indices: vec![9],
         texels: tiled.clone(),
     };
-    let moments = |mean: f32, mean_sq: f32| OctahedralShProbe {
-        validity: 1,
-        mean_distance: f32_to_f16_bits(mean),
-        mean_sq_distance: f32_to_f16_bits(mean_sq),
-        density_level: 0,
-        node_scale: 0,
-    };
-    let mut probes = vec![moments(0.0, 0.0); 21];
-    probes[12] = moments(2.0, 4.5);
-    probes[20] = moments(3.0, 9.5);
+    let mut probes = vec![averaged(0.0, 0.0); 21];
+    probes[12] = averaged(2.0, 4.5);
+    probes[20] = averaged(3.0, 9.5);
     let mut plan = Plan::with_bases(&section, &id59, &probes);
     let averaged_12 = uniform_tile(2.0, 4.5);
     let averaged_20 = uniform_tile(3.0, 9.5);
@@ -216,18 +228,24 @@ fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
         0.5 * f16(averaged_12[at][channel]) + 0.5 * f16(d1[at][channel])
     });
 
-    // Probe 20: mover 4 at its unstored D₁ offers the averaged moments (E[d]
-    // 3); mover 6 at D₁ offers 0.5, the nearer, then at D₀ offers 6.
-    plan.frame(&[(0, 1.0), (1, 1.0)], &[0, 1]);
-    assert_eq!(plan.tile(live_20), &uniform_tile(0.5, 1.0)[..]);
-    plan.frame(&[(1, 0.0)], &[1]);
+    // Probe 20 (base: averaged moments 3, 9.5): mover 4 parked at its
+    // unstored D₁ adds nothing, so the tile is mover 6's alone, bit for bit,
+    // at D₀ and then at D₁.
+    plan.frame(&[(0, 1.0), (1, 0.0)], &[0, 1]);
     assert_eq!(
         plan.tile(live_20),
-        &averaged_20[..],
-        "the base is the nearer pair"
+        &uniform_tile(6.0, 37.0)[..],
+        "the parked mover adds nothing"
     );
+    plan.frame(&[(1, 1.0)], &[1]);
+    assert_eq!(plan.tile(live_20), &uniform_tile(0.5, 1.0)[..]);
+    // Mover 4 at its stored D₀ (4, 17) adds (1, 7.5) to mover 6's
+    // (−2.5, −8.5): base + both = (1.5, 8.5).
     plan.frame(&[(0, 0.0)], &[0]);
-    assert_eq!(plan.tile(live_20), &uniform_tile(4.0, 17.0)[..]);
+    assert_eq!(plan.tile(live_20), &uniform_tile(1.5, 8.5)[..]);
+    // With mover 6's state gone, mover 4 at its unstored D₁ is the base.
+    plan.frame(&[(0, 1.0), (1, -1.0)], &[0, 1]);
+    assert_eq!(plan.tile(live_20), &averaged_20[..]);
 
     // The CPU holds five stored tiles and three base tiles (probes 9, 12, 20).
     assert_eq!(
@@ -236,7 +254,7 @@ fn an_unstored_terminus_blends_toward_the_probes_base_moments() {
     );
 }
 
-/// Depth rows D1 (bit-for-bit clause) and D2's no-state clause, CPU half: a
+/// A
 /// probe keeps its id-59 tile or averaged moments until its mover's first
 /// hand-over, and returns to it once no mover changing it has state.
 #[test]
@@ -259,7 +277,29 @@ fn a_probe_keeps_its_id_59_reference_without_state_and_returns_to_it() {
     );
 }
 
-/// Depth row D3: a frame with no change writes nothing; a travelling mover
+/// A frame whose reference moves fail abandons its plan: the next plan from
+/// the same uncommitted change emits the same moves again, so a reference
+/// never stays behind its live tile.
+#[test]
+fn an_abandoned_plan_emits_its_reference_moves_again() {
+    let section = depth_section(vec![(1, 5, uniform_tile(1.0, 2.0), uniform_tile(2.0, 5.0))]);
+    let mut plan = Plan::new(&section, &[]);
+    plan.frame(&[(0, 0.5)], &[0]);
+    assert_eq!(plan.references, [(5, Some(0))]);
+    plan.depth.abandon_plan();
+    plan.frame(&[], &[0]);
+    assert_eq!(plan.references, [(5, Some(0))], "the move is emitted again");
+    plan.frame(&[], &[0]);
+    assert!(plan.references.is_empty(), "a landed move is not repeated");
+    // Returning to the base, abandoned, is emitted again too.
+    plan.frame(&[(0, -1.0)], &[0]);
+    assert_eq!(plan.references, [(5, None)]);
+    plan.depth.abandon_plan();
+    plan.frame(&[], &[0]);
+    assert_eq!(plan.references, [(5, None)]);
+}
+
+/// A frame with no change writes nothing; a travelling mover
 /// writes only live tiles its records cover; a tile only a held mover
 /// covers stays untouched; a shared tile is rewritten at the held t′.
 #[test]
@@ -284,17 +324,21 @@ fn only_a_travelling_movers_tiles_are_written_and_shared_ones_read_the_held_t() 
         [0, 1],
         "probe 7's tile, mover 2's alone, is untouched"
     );
-    // Probe 4: mover 1 at 0.5 reads E[d] 2.0, mover 2 held at 1 reads 0.5;
-    // the nearer pair is the held mover's.
-    assert_eq!(plan.tile(1), &uniform_tile(0.5, 0.25)[..]);
+    // Probe 4 is rewritten from both movers, mover 2 at its held t′ = 1:
+    // the tile a fresh plan writes from both states at once.
+    let mut fresh = Plan::new(&section, &[]);
+    fresh.frame(&[(0, 0.5), (1, 1.0)], &[0, 1]);
+    assert_eq!(plan.tile(1), fresh.tile(1));
 }
 
-/// Depth row D6 (P26): two movers changing one probe write its live tile
+/// Two movers changing one probe write its live tile
 /// once a frame, with bytes that depend only on their t′, whichever state
-/// is handed over first; each texel holds the nearer mover's blended pair.
+/// is handed over first; each texel holds the base plus both movers'
+/// blended differences from it, so an open mover adds nothing.
 #[test]
-fn two_movers_at_one_probe_write_it_once_with_the_nearer_blend_per_texel() {
-    // Mover 1 closes near on the low texels, mover 2 on the high ones.
+fn two_movers_at_one_probe_write_it_once_adding_their_differences() {
+    // Probe 6's base is the open tile (averaged moments 4, 16). Mover 1
+    // closes near on the low texels, mover 2 on the high ones.
     let near_low: Vec<[u16; 2]> = (0..PROBE_DEPTH_TILE_TEXELS)
         .map(|i| {
             let mean = if i < 50 { 0.5 } else { 4.0 };
@@ -307,20 +351,48 @@ fn two_movers_at_one_probe_write_it_once_with_the_nearer_blend_per_texel() {
         (1, 6, near_low.clone(), open.clone()),
         (2, 6, near_high.clone(), open.clone()),
     ]);
+    let mut probes = vec![averaged(0.0, 0.0); 7];
+    probes[6] = averaged(4.0, 16.0);
     let tile = |states: &[(usize, f32)]| {
-        let mut plan = Plan::new(&section, &[]);
+        let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
         plan.frame(states, &[0, 1]);
         assert_eq!(plan.runs, [(0, 1)], "one write of the shared tile");
         plan.tile(0).to_vec()
     };
     let both_closed = tile(&[(0, 0.0), (1, 0.0)]);
     assert_eq!(both_closed, tile(&[(1, 0.0), (0, 0.0)]), "hand-over order");
-    for (at, texel) in both_closed.iter().enumerate() {
-        assert_eq!(f16(texel[0]), 0.5, "texel {at}: the nearer door");
-    }
+    assert_eq!(
+        both_closed,
+        uniform_tile(0.5, 0.25),
+        "each texel takes its one closing mover's difference"
+    );
     let one_open = tile(&[(0, 1.0), (1, 0.0)]);
-    assert_eq!(one_open, near_high.to_vec());
+    assert_eq!(one_open, near_high.to_vec(), "the open mover adds nothing");
     assert_eq!(tile(&[(0, 1.0), (1, 1.0)]), open);
+}
+
+/// Where two movers change the same texel their differences add, which can
+/// leave no valid moment set; the clamp restores `E[d] ≥ 0` and
+/// `E[d²] ≥ E[d]²`, and a sum already valid passes unchanged.
+#[test]
+fn overlapping_differences_clamp_to_a_valid_moment_set() {
+    let section = depth_section(vec![
+        (1, 6, uniform_tile(2.0, 5.0), uniform_tile(4.0, 17.0)),
+        (2, 6, uniform_tile(3.0, 10.0), uniform_tile(1.0, 1.5)),
+    ]);
+    let mut probes = vec![averaged(0.0, 0.0); 7];
+    probes[6] = averaged(4.0, 17.0);
+    let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+    // Both at D₀: (4 − 2 − 1, 17 − 12 − 7) = (1, −2); E[d²] lifts to E[d]².
+    plan.frame(&[(0, 0.0), (1, 0.0)], &[0, 1]);
+    assert_eq!(plan.tile(0), &uniform_tile(1.0, 1.0)[..]);
+    // Mover 2 at D₁: (4 − 2 − 3, 17 − 12 − 15.5) = (−1, −10.5); both clamp
+    // to zero.
+    plan.frame(&[(1, 1.0)], &[1]);
+    assert_eq!(plan.tile(0), &uniform_tile(0.0, 0.0)[..]);
+    // Mover 1 at its D₁, the base, adds nothing: mover 2's D₁ bit for bit.
+    plan.frame(&[(0, 1.0)], &[0]);
+    assert_eq!(plan.tile(0), &uniform_tile(1.0, 1.5)[..]);
 }
 
 /// Runs of live tiles coalesce while consecutive on one tile row and break
@@ -368,7 +440,7 @@ fn a_movers_live_tiles_are_consecutive() {
     assert_eq!(plan.runs, [(1, 3), (4, 1)]);
 }
 
-/// Depth row D12, CPU half: after the first frame, planning two travelling
+/// After the first frame, planning two travelling
 /// movers' tiles keeps every buffer at its capacity.
 #[test]
 fn a_frame_keeps_every_depth_buffer_at_its_capacity() {
@@ -391,6 +463,21 @@ fn a_frame_keeps_every_depth_buffer_at_its_capacity() {
     }
     assert_eq!(plan.depth.capacities(), before);
     assert!(sink > 0);
+}
+
+/// A closed-pose tile holding an infinite or NaN moment refuses the install,
+/// as a non-finite bounce tile does; finite tiles load.
+#[test]
+fn a_non_finite_closed_pose_tile_is_refused() {
+    let mut d1 = uniform_tile(2.0, 4.0);
+    let finite = depth_section(vec![(1, 3, uniform_tile(1.0, 1.0), d1.clone())]);
+    assert!(MoverDepthTiles::new(Some(&finite), &finite.mover_ids()).is_ok());
+    for bad in [0x7c00, 0xfc00, 0x7e00] {
+        d1[17][1] = bad;
+        let section = depth_section(vec![(1, 3, uniform_tile(1.0, 1.0), d1.clone())]);
+        let error = MoverDepthTiles::new(Some(&section), &section.mover_ids()).unwrap_err();
+        assert!(error.to_string().contains("non-finite"), "{error}");
+    }
 }
 
 /// The fast f16 paths agree with the shared converters bit for bit.
@@ -432,7 +519,7 @@ fn a_travelling_movers_live_tile_plan_cost_on_a_real_map() {
     let section = world.mover_probe_channel().expect("an id-57 section");
     let id59 = world.probe_depth_tiles();
     let ids = section.mover_ids();
-    let mut depth = MoverDepthTiles::new(Some(section), &ids);
+    let mut depth = MoverDepthTiles::new(Some(section), &ids).expect("the depth block loads");
     let live = depth.live_tile_count();
     let references = ProbeDepthTileReferences::from_section(id59, live);
     depth.bind(

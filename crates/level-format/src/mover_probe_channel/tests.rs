@@ -393,7 +393,7 @@ const ALL_PLACEMENTS: [(MoverPayloadPlacement, MoverPayloadPlacement); 4] = {
     ]
 };
 
-// Task 7b: each block's payload round-trips resident or streamed, in every
+// Each block's payload round-trips resident or streamed, in every
 // combination. A streamed payload leaves the section, which keeps its
 // cells, records, masks and mover entries; the payload's weight does not
 // change; and the rows id 50 carries attach back to the resident section's
@@ -472,7 +472,7 @@ fn both_placements_of_both_blocks_round_trip_and_attach_back_to_the_resident_pay
     }
 }
 
-// Task 7b: a renderer reads a cell through one view whatever holds each
+// A renderer reads a cell through one view whatever holds each
 // block: a streamed block from its id-50 row, a resident one from the
 // section. Both give the resident section's records, movers, q, own tiles
 // and bounce tiles.
@@ -525,7 +525,7 @@ fn a_cells_payload_reads_the_same_whichever_placement_holds_it() {
     }
 }
 
-// Task 7b: a streamed block's payload with no id-50 row is the named error,
+// A streamed block's payload with no id-50 row is the named error,
 // never an empty read; so is a row of the wrong length, a row two chunks
 // disagree on, and a cell no chunk carries when the payload attaches.
 #[test]
@@ -600,7 +600,7 @@ fn an_unresolved_or_malformed_streamed_payload_is_refused_by_name() {
     ));
 }
 
-// Task 7b: the header's two placement bytes are read per block; an
+// The header's two placement bytes are read per block; an
 // earlier epoch is a named re-bake, an unknown placement names its block,
 // and a streamed block with no entry is refused for that block.
 #[test]
@@ -724,7 +724,7 @@ fn depth_block_offset(section: &MoverProbeChannelSection) -> usize {
         + parts.bounce_payload
 }
 
-// Task 11c: epoch 4 stores per terminus. A bounce entry's two masks and a
+// Epoch 4 stores per terminus. A bounce entry's two masks and a
 // depth record's stored-termini word sit where the layout pins them; a
 // record storing neither terminus, a reserved termini bit, and a bounce
 // entry storing nothing are each refused by name.
@@ -778,7 +778,7 @@ fn per_terminus_storage_sits_at_its_pinned_offsets_and_is_refused_when_malformed
     ));
 }
 
-// Task 11c: a bounce entry's tiles are indexed probe after probe, S^b₀
+// A bounce entry's tiles are indexed probe after probe, S^b₀
 // before S^b₁, counting only stored termini.
 #[test]
 fn a_bounce_entrys_probe_tiles_count_only_stored_termini() {

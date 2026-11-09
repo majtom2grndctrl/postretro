@@ -1,4 +1,4 @@
-// Bake row B7, direct clause: with `setpiece_room` raised, at every interior
+// Direct clause: with `setpiece_room` raised, at every interior
 // probe valid in both bakes, each light the static-room reference's walls
 // block composes S₁ = q₁ · T within one q step (T / 255) of the reference's
 // term for that light. The reference is the setpiece with the room made a

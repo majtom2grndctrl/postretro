@@ -1,4 +1,4 @@
-//! C9, renderer half, on the compiled `mover-closet`, whole-loaded: the door's
+//! Renderer half, on the compiled `mover-closet`, whole-loaded: the door's
 //! t′ sequence the game half hands over (rising, a reversal at mid-travel,
 //! closing, held), each frame composing the indirect atlas and writing the
 //! door's live depth tiles. At every t′ the composed atlas and the tile
@@ -8,7 +8,7 @@
 //! no direct light (its id 57 has no direct block), so no direct atlas moves.
 //! See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 use super::*;
-use crate::render::MoverLightState;
+use crate::render::MoverTravel;
 use crate::render::composed_tiles::{f16_to_f32, read_halves};
 
 /// The door's t′ per frame: first hand-over at 0, rising, held across two
@@ -65,7 +65,7 @@ impl Closet {
 
     /// One recorded frame with the door's state at `t`, then both readbacks.
     fn frame(&mut self, t: f32) -> (Vec<f32>, Vec<f32>) {
-        self.renderer.set_mover_light_states(&[MoverLightState {
+        self.renderer.set_mover_travel(&[MoverTravel {
             mover_id: self.door,
             t,
         }]);

@@ -410,7 +410,7 @@ Worldspawn brushes always follow the rule. A TrenchBroom group or layer cannot c
 
 ## Movers
 
-A `kinematic_mover` is a brush entity that slides along a path of `kinematic_waypoint` points, spins, or both: doors, lifts, platforms, carousels. This section covers what a mover does to a player in its way, and then to enemies and their corpses.
+A `kinematic_mover` is a brush entity that slides along a path of `kinematic_waypoint` points, spins, or both: doors, lifts, platforms, carousels. This section covers what a mover does to a player in its way, then to enemies and their corpses, and then to baked lighting.
 
 ### Pinned players
 
@@ -502,6 +502,41 @@ Outside `crush`, the engine guarantees only that a mover never leaves a player s
 **Co-op.** Any player can hold a default door open by standing in it. A door that must close, such as one sealing an arena, needs `crush`. On a remote player's screen a held mover may move for a moment, then settle back where the host holds it.
 
 **Headroom.** A lift whose rider is too tall for the gap above its stop just waits, with the rider under the ceiling. A rider who crouches or steps off lets it carry on. The first time a mover holds or backs off for a pinned rider (a rider carried sideways into a wall included), the engine logs one `[Mover]` warning giving the mover's numeric id and its current position in TrenchBroom coordinates; it does not repeat for that mover until the level loads again. Raise the ceiling, lower the stop, or use `crush`.
+
+### Lighting
+
+A mover changes the baked lighting around it as it travels. The compiler bakes what each mover does to the level's baked light with the mover at each end of its path, its first and last waypoint, and the engine blends between the two by how far along its path the mover is. Close a door and the light that spilled through the doorway fades out, the dark room behind it stays dark, and a character behind the door goes dark. Open it again and the light ramps back in with the door's travel. Raising a room out of the floor works the same way: its interior stops taking the arena's light as its walls rise.
+
+What follows the mover:
+
+- Baked light from static and animated lights on characters, props and the mover's own faces.
+- Bounced light from static lights, on every surface, on fog and on water.
+- How the lighting sees past the mover, so light no longer leaks through a closed door.
+
+What does not, yet:
+
+- Lightmaps on static walls and floors. A character on the floor behind a closed sliding wall goes dark, but the lightmapped floor under them stays lit by the same light.
+- Bounced light from animated lights.
+- Water reflections, which show the level with every mover absent: a pool behind a closed door still mirrors the lit doorway.
+- Positions other than the two ends of the path. A path through a middle waypoint blends straight from the first waypoint's lighting to the last's, by distance travelled. A mover with a `spin_axis` changes no lighting.
+
+Movers in co-op light the same on every machine, with nothing extra sent over the network. A mover that changes no lighting adds nothing to the compiled map. **Rebuild the map** after you change a mover, its path or the level around it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `light_ramp_start` | float | `0` | Fraction of the path, from `0` (first waypoint) to `1` (last waypoint), where the lighting starts to change. Until the mover passes it, the first waypoint's lighting holds. |
+| `light_ramp_end` | float | `1` | Fraction of the path where the lighting finishes changing. Past it, the last waypoint's lighting holds. Must be greater than `light_ramp_start`. |
+| `light_bounces` | integer | every bounce | How many bounces of static light the compiler re-bakes with this mover in place. `0` re-bakes no bounce. Leave it off to re-bake every bounce the level bakes; a larger number does the same. |
+
+**Shaping the ramp.** The ramp measures distance along the whole path. Use it when only part of the travel changes how much light gets through. A door whose first 60% of travel slides inside a wall pocket and which seals only near the end of its travel might use `light_ramp_start` `0.6` and `light_ramp_end` `0.9`. Both keys must lie between `0` and `1`, with the start below the end. Anything else, or a value that is not a number, stops the build with an error naming the mover.
+
+**Bake cost and `light_bounces`.** Re-baking bounced light is the expensive part. Each end of each mover's path costs about as much as baking the level's whole bounced lighting once, however small the mover. A map with a few movers can take several times longer to compile than the same map without them, and a large map with many movers far longer. After the first build, editing one mover re-bakes only that mover; editing a static light or static geometry re-bakes every mover's bounce. `light_bounces` is your lever:
+
+- Leave it off for a mover whose bounce you can see: a door sealing a lit room from a dark one, or a room that rises in the middle of a lit space.
+- `1` keeps the first bounce, light bouncing once off the mover and the surfaces around it, which is most of what you see, for less than half the cost.
+- `0` skips bounce for that mover entirely. Its direct light and how the lighting sees past it still follow the mover, but the bounce around it stays as if the mover were absent, so a closed door can still let a faint glow of bounced light through. Use it for small or out-of-the-way movers.
+
+`light_bounces` must be a whole number, `0` or more; a negative, fractional or non-numeric value stops the build with an error naming the mover. To return to the default, remove the key: an empty value is not read as the default.
 
 ---
 
@@ -802,6 +837,9 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | Lightmap atlas layer overflow | Too many surfaces at the current texel density, or a `_lightmap_scale` region too fine | Raise `--lightmap-density` (coarser texels), lower the region's `_lightmap_scale`, or split the map |
 | Animated block count exceeds the block-table cap | More faces lie within animated lights' reach than the animated lightmap can hold | Shrink animated lights' `_falloff_range`, make some of them static, or split the map |
 | Exterior leak | Gap in the brush hull | Seal the map and check the compiler output for the breach location |
+| `light_ramp_start` and `light_ramp_end` must satisfy … | A mover's ramp keys are out of order, outside `0`–`1`, or not numbers | Keep both between `0` and `1` with the start below the end, or remove them (see Movers: Lighting) |
+| `light_bounces` must be an integer of at least 0 | A mover's `light_bounces` is negative, fractional, empty or not a number | Use a whole number, `0` or more, or remove the key |
+| Probes carry closed-pose depth, past the probe depth tile range | Movers reach into the lighting of more probes than the level can track | Use fewer movers, or move them where they block less of the level's light |
 | PNG color-space validation failed | An `_s.png`, `_n.png`, or `_h.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
 | `_h.png` dimensions must match diffuse | A height map is a different resolution from its diffuse texture | Re-export the height map at the diffuse's exact dimensions |
 | `_h.png` and `_s.png` … must have identical dimensions | A height map and its specular sibling disagree | Match them. The two are packed into one two-channel texture and cannot be resized independently |

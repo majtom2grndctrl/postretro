@@ -26,7 +26,9 @@ const STAGE_ID: &str = "mover_probe_bounce";
 /// or a depth pose no gather ray meets, stores nothing.
 /// 4: id 34's kept later bounces add one by one in bounce order; posed
 /// gather rays take the pose's inside-brush rule (lifted origin, no band).
-const STAGE_VERSION: u32 = 4;
+/// 5: a terminus that encloses the probe stores no state and reads id 34;
+/// its depth still bakes dark.
+const STAGE_VERSION: u32 = 5;
 
 /// The per-mover memo over one stage cache, under one id-34 volume key: an
 /// edit that re-bakes id 34 re-keys every mover.

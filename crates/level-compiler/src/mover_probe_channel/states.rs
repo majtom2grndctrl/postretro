@@ -162,7 +162,10 @@ fn compact_rgb(tile: &[OctahedralAtlasTexel]) -> impl Iterator<Item = u16> + '_ 
 /// Bounce: a probe affected at either terminus joins the domain. At each
 /// terminus it stores its state when that state leaves the round-trip bar
 /// of id 34; within the bar it stores none and composes id 34 there, the
-/// texel the frame composes with no section (owner, 2026-11-09).
+/// texel the frame composes with no section (owner, 2026-11-09). A terminus
+/// that encloses the probe is never changed, so it stores none either, and
+/// a probe enclosed at both termini joins no bounce entry
+/// ([`super::gather::PosedProbe::changed`]).
 ///
 /// Depth: a probe some gather ray of which met the pose at either terminus
 /// carries the mover's depth when a closed-pose tile of it scores at least
@@ -170,7 +173,9 @@ fn compact_rgb(tile: &[OctahedralAtlasTexel]) -> impl Iterator<Item = u16> + '_ 
 /// tile at each terminus whose pose some gather ray of it meets. At a
 /// terminus no ray meets, the posed gather bins the mover-absent tile
 /// exactly, so it stores none and the probe reads its base there: its id-59
-/// tile or its averaged moments.
+/// tile or its averaged moments. An enclosing terminus meets every ray at
+/// distance 0, so it stores that dark tile and Chebyshev still rejects the
+/// probe at rest.
 ///
 /// The floor is per mover: it compares the mover's own closed-pose tile with
 /// the mover-absent depth, so a probe below it never joins the states. Depth

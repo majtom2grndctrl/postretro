@@ -1230,3 +1230,99 @@ Diagnosis, 2026-11-09, at 2a37e58c0 (AMD Radeon Pro 5300M, Metal), on the owner'
 **Fix cost at rest (t = 1).** The room's upper interior walls read 0.910 direct luma against 0.558, the frame 5.52 against 5.10, and the interior 9.08 against 8.89. Sweeper faces move 1 level or less. Dropping D_k as well makes the leak far worse (upper walls 8.33), so depth keeps the dark rule.
 
 **Not fixed by it.** The roof top's broad dimming at t′ 0.3–0.65 comes from the z 123 layer, whose t = 1 state is legitimately inside the dark room. The sweeper's west face at t′ 0.25–0.30 reads 7.5–8.5 levels dark from shadow states (q₀ = 0) at x 1339 and 1378. Both are probes whose terminus state is dark from the far side of a face the mover sweeps past. That is §Rising-room probe blobs' fix 3 family. Blending values through the base mid-travel fixed the roof band in the mirror (0.59 → 1.0 at 0.5), but it changes the Bounce and Direct Decisions and lights the room interior mid-travel.
+
+### Task 12d
+
+Built and measured 2026-11-09 on the main checkout at fdac84596 plus this task's diff, AMD Radeon Pro 5300M under Metal. Owner ruling (brief Decisions, A terminus that encloses the probe reads the base): an enclosing terminus stores no value state and reads the base; its depth keeps the dark rule.
+
+**Rule.** One predicate, `PosedSolid::contains`: the inside-brush rule's half-space test with no contact band, read at the probe's own position instead of a ray's lifted origin. `PosedOccluder::encloses` and `PosedScene::encloses` both call it.
+- Direct (`direct.rs` `bake_cell`): a terminus whose pose encloses the probe skips the joint trace, so q_k stays 255. The entry's `met` flag and the term record's tight mask then follow from the bytes as before.
+- Bounce (`gather.rs`): `PosedProbe` gains `enclosed`, and `changed()` is false for an enclosed probe, so no S^b_k is stored (m_k clear) and `affected()` follows. The posed gather still bins its rays, so D_k stays the inside-brush rule's tile: every ray whose lifted origin lies inside reads distance 0.
+- Memos: `mover_probe_bounce` 4 → 5 and `mover_probe_direct` 3 → 4. The id-41/45 per-light memos (`direct_sh_delta_light`, `animated_direct_sh_delta_light`) and the gate memos (`mover_light_*`) never read q or S^b. Id 41's storage classification reads the section's cells, but it is not memoized; B15 and B16 still pass warm = cold.
+- Renderer: no change. An unstored bounce terminus already composes id 34 (`mover_bounce.wgsl` `mb_entry_tiles`), and q = 255 composes the mover-absent term. No format or loader change.
+
+**Tests.**
+- `direct_tests::an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask` replaces `a_probe_inside_a_posed_brush_stores_zero`. The probe inside the slab mover's block stores (255, 255), though its segments are still blocked. The assembled record masks exactly the probes some mover gates and leaves the enclosed probe out.
+- `direct_tests::a_probe_beside_a_face_is_not_enclosed_and_keeps_the_per_ray_rule`: a probe 0.05 mm outside a posed face is not enclosed, and its q₀ is the joint ratio (< 255).
+- `direct_tests::production_q_…` (B1) now asserts that its one enclosed probe stores 255, instead of the joint ratio.
+- `pipeline::mover_bounce_stage::tests::an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth`: the closet with a 2.8 m-deep door lifted only 24 u, so the slab encloses doorway probes. 18 probes are enclosed at both termini and join no bounce entry, yet keep a depth record. 12 are enclosed at one terminus, and 9 of those store the other terminus. 48 enclosed (probe, terminus) pairs, every lifted ray inside, store the dark tile exactly. The bounce masks are tight, and the section round-trips.
+- `tests::a_segment_from_inside_a_posed_brush_is_blocked_toward_every_light` (renamed): the per-ray rule is unchanged. `a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_in_every_posed_trace` is unchanged and passes.
+- Under the old rule, the enclosed-probe direct test, B1's test and the bounce test fail; the beside-face test passes either way (mutation check: both rule lines reverted, then restored).
+- B8 (`a_full_re_bake_…`, ignored) now skips enclosed (probe, terminus) pairs: the ruling defines their state as id 34's. With that, it passes. Closet: 191 stored of 191 past the rule. Setpiece room: 11,258 of 11,258. Wall: 3,154 of 3,154.
+
+**Bytes** (warm release bakes, same cache; before is HEAD's release `prl-build`).
+
+| Map | id 57 | Direct payload | Bounce payload | Affected probes | Depth records / live / CPU tiles |
+|---|---|---|---|---|---|
+| `mover-closet` | 42,952 → 42,952 | 0 → 0 | 31,104 → 31,104 | 144 → 144 | 28 / 28 / 28, unchanged |
+| `mover-setpiece` | 6,688,026 → 6,487,380 | 2,339,826 → 2,191,452 | 3,545,856 → 3,493,584 | 13,405 → 13,353 | 1,000 / 991 / 1,906, unchanged |
+| `enemy-movers` | 2,345,932 → 2,258,482 | 443,040 → 377,242 | 1,442,664 → 1,421,496 | 4,562 → 4,518 | 571 / 473 / 1,102, unchanged |
+
+The closet PRL is byte-identical: its door encloses no valid probe. So B3, B4 and K1 see the same bytes.
+
+**Swept-face metric.** The harness is §Swept-face probe blobs' (`blobs2.py`, copied to scratch `t12d/`, driver `run.py`). Captures are 960×540, sync-proof, forced full compose, reflections off, every light term, and use the same capture binary (renderer unchanged). Each cell is as built minus the same PRL with id 57 stripped: bright max / peaks, then dark max / pits (levels). Before reproduces the diagnosis table exactly.
+
+| Surface, t | Before | After |
+|---|---|---|
+| Sweeper west face, 0.08 | +6.7/13 −5.1/19 | +1.3/0 −0.2/0 |
+| Sweeper west face, 0.12 | +26.2/49 −13.1/66 | +3.0/0 −2.0/0 |
+| Sweeper west face, 0.16 | +31.3/31 −11.4/64 | +3.1/0 −2.5/0 |
+| Sweeper west face, 0.20 | +25.9/22 −9.2/49 | +2.8/0 −2.4/0 |
+| Sweeper east face, 0.75 | +16.9/15 −9.1/27 | +3.2/0 −0.9/0 |
+| Sweeper east face, 0.80 | +22.0/17 −11.4/32 | +3.8/0 −1.1/0 |
+| Sweeper east face, 0.84 | +17.6/6 −13.2/26 | +3.1/0 −1.1/0 |
+| Roof top, 0.70 (mean, metric) | −24.3, +7.5/0 −2.6/0 | −5.8, +4.1/0 −3.1/2 |
+| Roof top, 0.80 | −29.9, +7.1/0 −3.7/3 | −1.7, +2.1/0 −4.9/0 |
+| Roof top, 0.88 | −34.7, +14.0/0 −4.2/0 | −1.5, +1.9/0 −5.8/0 |
+| Roof top, 0.92 | −9.3, +4.8/40 −4.3/30 (lattice) | +0.2, +0.5/0 −2.2/0 |
+
+- The sweeper's dark spheres and the roof's darkening are gone. Every after cell is within 3.8 levels, with no peaks.
+- The roof's two pits at 0.70 (3.1 levels) sit in the broad mid-travel band the diagnosis left to the owner (fix-3 family).
+
+**12c interior-floor metric** (raw max excess / peaks, §Task 12c): unchanged at every t. As built: 6.5/3, 7.7/3, 8.9/3, 8.7/4 and 6.8/2 at t 0.80, 0.86, 0.90, 0.95 and 1.00, before and after. Stripped: 2.6/0, 3.1/0, 3.6/0, 3.2/0 and 2.2/0, both. The room's floor probes are never enclosed.
+
+**At rest** (task 8's views at t = 1, 1280×720, frame-mean Rec. 709 luma).
+
+| View | Before | After |
+|---|---|---|
+| Interior | 8.891 | 9.076 |
+| Upper walls | 5.097 | 5.524 |
+| Upper, direct only (mask 24) | 0.558 | 0.910 |
+| Upper, indirect only (mask 6) | 4.483 | 4.566 |
+| West face | 28.690 | 28.822 |
+| Station 2 | 34.791 | 34.818 |
+
+- The diagnosis predicted upper walls 0.558 → 0.910 direct and frame 5.10 → 5.52; it measures exactly that. This is the accepted cost.
+- M5: the mover's own faces read no darker: the west face +0.13, station 2 +0.03.
+
+**Proof.** 
+PRLs were baked by this tree's release `prl-build` (warm, `-j 6`), plus the setpiece at `--mover-payload-resident-bar 0` and a ramp closet (0.6 / 0.9). `POSTRETRO_REQUIRE_GPU=1` throughout.
+- **Bake rows.** The compiler suite passes (the bin and every integration test): 2,772 passed, 0 failed, 66 ignored. That covers:
+  - B3/B4 (`mover_probe_channel_bounce`): the closet bytes are unchanged.
+  - B7 (bounce base and `raised_room_direct_…`): enclosed probes are invalid in the static-room reference, so they are not compared.
+  - B12, B15 and B16 (`mover_probe_channel_cache`, warm = cold).
+  - B8, ignored: passes as above.
+  - B17, ignored, against `t6/prl-build-parent`: pass.
+  - Separately, a `--no-cache` setpiece bake is byte-identical to the warm one.
+- **C9.** Renderer half: 15,504 atlas halves and 3,890 depth-tile halves move, each at its mix. Game half: 173 ticks with peak t′ 0.5038; the ramp variant runs 259 ticks with peak t′ 0.5192. Pass.
+- **C10** (closet, setpiece, setpiece at bar 0): pass. Depth tiles differ at 0 halves between modes; the channel moves 5,600 and 175,648 / 198,200 / 163,632 halves. `enemy-movers` fails the test's own precondition (`ROUNDING_STEPS` covers at most two movers at a probe), before and after alike. It is outside C10's set.
+- **C7** (closet, setpiece at bar 0): pass. 144 and 11,301 channel probes resident, 0 halves off.
+- **K1.** Sync-proof: st2 0.0056 against 0.0059, st3 0.0160 against 0.0171. Off: 0.0057 / 0.0060 and 0.0160 / 0.0178. Open equals stripped, with 0 px differing. Identical to 12c: the closet PRL did not change.
+- **K2.** Closed 27.556, reference 29.041, open 31.164, stripped 31.158.
+- **K3.** Static: setpiece 5.025 / 5.495 against 5.496 + 12; closet 0. Animated: 0.000 / 1.062 against 1.063 + 12.
+- **D2.** Deltas 0. D4/D5 pass under off and sync-proof. The capture C10 passes.
+- **Gates.**
+  - `cargo test`: level-format 727, level-loader 388 (1 ignored), renderer 1,357 (15 ignored). The postretro bin passes 2,515 (18 ignored), and 2,601 (19 ignored) with capture.
+  - `cargo clippy --workspace --all-targets -D warnings`, with and without `postretro/capture`: clean.
+  - `cargo fmt --check`: clean.
+
+**Files.**
+- `crates/level-compiler/src/mover_probe_channel/`:
+  - the rule: `gather.rs`, `direct.rs`, `visibility.rs`, `posed_scene.rs`, `posed_solid.rs`;
+  - memos and docs: `bounce_memo.rs`, `direct_memo.rs`, `states.rs`;
+  - tests: `direct_tests.rs`, `tests.rs`.
+- `crates/level-compiler/src/pipeline/mover_bounce_stage_tests.rs` (the new bounce test and B8) and `crates/level-compiler/src/sh_bake/probe.rs` (doc).
+- `context/lib/build_pipeline.md` (Posed occluder, An enclosing terminus reads the base) and `rendering_pipeline.md` §4 (Mover backface).
+- `docs/level_design.md` does not describe the inside-brush rule, so it is unchanged.
+
+**Residue.** The roof's broad mid-travel dimming (two 3.1-level pits at t 0.70) and the sweeper's west face at t′ 0.25–0.30 are not fixed by this. Both are the fix-3 family routed to the owner (§Swept-face probe blobs).

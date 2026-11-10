@@ -1,5 +1,5 @@
 // The direct half's production bake: q against the joint sample set,
-// the dark inside-brush rule, suns and spinners, bake-only lights in
+// the enclosing-terminus rule, suns and spinners, bake-only lights in
 // namespace 2, the own-tile flag against ids 41 and 45 as emitted, term
 // records (one tile per cell and light, masked to the probes movers change),
 // the per-light memo and worker-count determinism.
@@ -387,7 +387,7 @@ fn production_q_is_the_joint_sample_surviving_fraction_at_every_gated_probe() {
         &poses.movers()[0].solids[Terminus::First.index()],
     ));
     let ctx = world.ctx();
-    let (mut checked, mut partial) = (0, 0);
+    let (mut checked, mut partial, mut enclosed) = (0, 0, 0);
     for entry in &gated.entries {
         for (slot, probe) in world
             .cells
@@ -403,6 +403,12 @@ fn production_q_is_the_joint_sample_surviving_fraction_at_every_gated_probe() {
             };
             if radiance == Vec3::ZERO {
                 assert_eq!(stored, 255);
+                continue;
+            }
+            if first.encloses(point) {
+                // The enclosing terminus reads the mover-absent term.
+                assert_eq!(stored, 255, "probe {probe} is enclosed");
+                enclosed += 1;
                 continue;
             }
             let joint = joint_soft_visibility(
@@ -450,8 +456,8 @@ fn production_q_is_the_joint_sample_surviving_fraction_at_every_gated_probe() {
         }
     }
     assert!(
-        checked > 0 && partial > 0,
-        "{checked} probes, {partial} in penumbra"
+        checked > 0 && partial > 0 && enclosed == 1,
+        "{checked} probes, {partial} in penumbra, {enclosed} enclosed"
     );
 }
 
@@ -470,18 +476,119 @@ fn a_light_whose_samples_never_meet_the_pose_stores_no_entry() {
     assert!(bake.lights.is_empty(), "{:?}", bake.lights);
 }
 
-// Inside-brush rule (owner): a valid probe inside a posed brush
-// stores q = 0 for that pose, though nothing else blocks its light.
+// Enclosing terminus (owner, 2026-11-09): a valid probe inside a posed
+// brush stores q = 255 for that pose and reads the light's mover-absent
+// term, though every segment from it starts in solid. With q = 255 at both
+// termini it leaves the record's probe mask, which stays tight: exactly the
+// probes some mover gates.
 #[test]
-fn a_probe_inside_a_posed_brush_stores_zero() {
+fn an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask() {
     let world = world();
     let light = point_light(DVec3::new(0.0, 3.5, 0.0), 10.0, 0.6);
-    let poses = poses_of(&[slab_mover()]);
+    let movers = [slab_mover()];
+    let poses = poses_of(&movers);
     let bake = world.bake(&poses, &[static_light(&light, 0)]);
     let inside = world.probe_at([2.0, 0.0, 2.0]);
-    let ([first, last], _) =
-        probe_payload(&world, &bake.lights[0], 0, inside).expect("the inside probe is gated");
-    assert_eq!((first, last), (0, 255));
+    let point = vec3_from(world.layout.probe_positions[inside]);
+    let first = PosedOccluder::new(Arc::clone(
+        &poses.movers()[0].solids[Terminus::First.index()],
+    ));
+    assert!(first.encloses(point), "the block encloses the probe");
+    assert!(
+        first.blocks(point, light.origin.as_vec3()),
+        "the per-ray rule still blocks its segments"
+    );
+    let ([q0, q1], _) =
+        probe_payload(&world, &bake.lights[0], 0, inside).expect("the slab gates the probe's cell");
+    assert_eq!(
+        (q0, q1),
+        (255, 255),
+        "both termini read the mover-absent term"
+    );
+
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &MoverRamps::new(&movers),
+        &super::section::MoverPayloadBars::default(),
+        |_, _, _| false,
+        |_| true,
+    )
+    .unwrap()
+    .expect("the slab gates the light");
+    let mut masked = 0;
+    for view in section.direct_record_views() {
+        for probe in world.cells.valid_probes(view.cell as usize) {
+            let (pair, _) = probe_payload(&world, &bake.lights[0], 0, probe)
+                .expect("the entry covers every valid probe of its cell");
+            let gated = pair.iter().any(|&q| q < 255);
+            assert_eq!(
+                masked_slot(&world, &view, probe).is_some(),
+                gated,
+                "probe {probe}: masked exactly where q < 255"
+            );
+            masked += usize::from(gated);
+        }
+    }
+    assert!(masked > 0, "the slab gates some probe");
+    assert!(
+        section
+            .direct_record_views()
+            .all(|view| masked_slot(&world, &view, inside).is_none()),
+        "the enclosed probe stores nothing"
+    );
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
+        section
+    );
+}
+
+// A probe a hair off a posed face, outside it, is not enclosed: its q is
+// still the joint ratio, the samples that cross into the brush blocked and
+// the rest clear. (The lift rule itself, one verdict per ray in every posed
+// trace, is `a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_…`.)
+#[test]
+fn a_probe_beside_a_face_is_not_enclosed_and_keeps_the_per_ray_rule() {
+    let world = world();
+    // The light straight above the probe at (2, 0, 1); the block's −z
+    // face sits 0.05 mm past the probe, so the probe is outside it.
+    let light = point_light(DVec3::new(2.0, 3.5, 1.0), 10.0, 0.6);
+    let beside = mover(
+        0,
+        vec![box_brush(
+            DVec3::new(1.5, -0.5, 1.000_05),
+            DVec3::new(2.5, 0.5, 2.0),
+        )],
+        false,
+    );
+    let poses = poses_of(&[beside]);
+    let probe = world.probe_at([2.0, 0.0, 1.0]);
+    let point = vec3_from(world.layout.probe_positions[probe]);
+    let first = PosedOccluder::new(Arc::clone(
+        &poses.movers()[0].solids[Terminus::First.index()],
+    ));
+    assert!(!first.encloses(point), "the probe is beside the face");
+    let ctx = world.ctx();
+    let (_, l) = incident_radiance_at_point(&light, point).expect("lit");
+    let joint = joint_soft_visibility(
+        point,
+        l,
+        &light,
+        soft_visibility_seed(probe as u64, 0, 3),
+        DEFAULT_AREA_SAMPLE_COUNT,
+        ProbeEarlyOut::Agreed,
+        |from, to| segment_clear(&ctx, from, to),
+        |from, to| first.blocks(from, to),
+    );
+    assert!(
+        joint.meets_mover() && joint.posed_clear > 0,
+        "some samples' lifts cross the face, some do not: {joint:?}"
+    );
+    let bake = world.bake(&poses, &[static_light(&light, 0)]);
+    let ([q0, q1], _) = probe_payload(&world, &bake.lights[0], 0, probe).expect("gated");
+    assert_eq!((q0, q1), (joint.surviving_byte(), 255));
+    assert!(q0 < 255);
 }
 
 // A sun the posed brushes block stores q < 1, and a spinner,

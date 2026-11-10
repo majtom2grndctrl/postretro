@@ -522,6 +522,155 @@ fn light_bounces_zero_bakes_depth_alone_and_a_count_past_id_34s_bakes_id_34s() {
     );
 }
 
+/// The closet door made 2.8 m deep and lifted only 24 units at its open
+/// waypoint: the slab encloses valid probes in the doorway at both termini,
+/// and others at one.
+fn fat_door(text: String) -> String {
+    let start = text.find("// brush door_slab").expect("the door slab");
+    let end = start + text[start..].find("\n}\n").expect("its end");
+    let slab = text[start..end]
+        .replace(" 504 ", " 552 ")
+        .replace(" 488 ", " 440 ");
+    format!("{}{slab}{}", &text[..start], &text[end..])
+        .replace("\"origin\" \"320 496 168\"", "\"origin\" \"320 496 80\"")
+}
+
+// Enclosing terminus (owner, 2026-11-09): a terminus whose posed brushes
+// enclose a probe's position stores no bounce state there, so the probe
+// reads id 34 at it, and a probe enclosed at both termini joins no bounce
+// entry. Its depth still bakes as the inside-brush rule traces it: a probe
+// every one of whose lifted rays starts inside the pose stores the dark
+// tile (every ray at distance 0) at that terminus, so Chebyshev still
+// rejects it at rest. The bounce masks stay tight: each entry's stored
+// masks are exactly its probes' stored termini, non-empty, within the
+// valid mask.
+#[test]
+fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
+    use std::collections::BTreeMap;
+
+    use postretro_level_format::probe_depth_tiles::bordered_tile;
+
+    use crate::mover_probe_channel::{BounceBlocks, MoverDirectBake, ProbeCells};
+    use crate::ray_traversal::RAY_EPSILON;
+    use crate::sh_bake::{TileRayTable, probe_gather_directions, vec3_from};
+
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet_edited(maps.path(), None, "fat-door", fat_door));
+    with_ctx(&fixture, |ctx, poses| {
+        let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let (_, _, outcome) = bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
+        let [states] = outcome.movers.as_slice() else {
+            panic!("one door");
+        };
+        let posed = PosedMovers::resolve(
+            poses,
+            &fixture.kinematic_movers,
+            &fixture.geometry.texture_names,
+        )
+        .expect("the door poses");
+        let solids = &posed.movers()[0].solids;
+        let layout = crate::sh_bake::probe_grid_layout_of(
+            ctx.geometry,
+            ctx.tree,
+            ctx.exterior_leaves,
+            CONFIG.probe_spacing,
+        );
+        let directions = probe_gather_directions();
+        let dark = bordered_tile(&TileRayTable::new(&directions).interior(&[0.0; 256]));
+        let bounce: BTreeMap<u32, _> = states.bounce.iter().map(|p| (p.probe, p)).collect();
+        let depth: BTreeMap<u32, _> = states.depth.iter().map(|p| (p.probe, p)).collect();
+        let (mut both, mut one, mut other_stored, mut deep) = (0, 0, 0, 0);
+        for (probe, position) in layout.probe_positions.iter().enumerate() {
+            if layout.validity[probe] == 0 {
+                continue;
+            }
+            let probe = probe as u32;
+            let position = vec3_from(*position);
+            let enclosed = [0, 1].map(|k| solids[k].contains(position));
+            if enclosed == [false, false] {
+                continue;
+            }
+            if let Some(entry) = bounce.get(&probe) {
+                for (k, (enclosed, stored)) in enclosed.iter().zip(entry.stored).enumerate() {
+                    assert!(
+                        !(*enclosed && stored),
+                        "probe {probe}: enclosed at terminus {k} yet stores its state"
+                    );
+                }
+                other_stored += 1;
+            }
+            if enclosed == [true, true] {
+                both += 1;
+                assert!(
+                    !bounce.contains_key(&probe),
+                    "probe {probe}: enclosed at both termini joins no bounce entry"
+                );
+            } else {
+                one += 1;
+            }
+            let record = depth
+                .get(&probe)
+                .unwrap_or_else(|| panic!("probe {probe}: an enclosing pose keeps its depth"));
+            let mut tiles = record.tiles.chunks_exact(dark.len());
+            for k in 0..2 {
+                let tile = record.stored[k].then(|| tiles.next().expect("a stored tile"));
+                if !enclosed[k] {
+                    continue;
+                }
+                let tile = tile.unwrap_or_else(|| {
+                    panic!("probe {probe}: the enclosing terminus {k} stores depth")
+                });
+                let lifted = directions
+                    .iter()
+                    .all(|&dir| solids[k].contains(position + dir * RAY_EPSILON));
+                if lifted {
+                    deep += 1;
+                    assert_eq!(tile, dark.as_slice(), "probe {probe} terminus {k}: dark");
+                }
+            }
+        }
+        eprintln!(
+            "fat door: {both} probe(s) enclosed at both termini, {one} at one, \
+             {other_stored} of them storing the other terminus, {deep} dark tile(s)"
+        );
+        assert!(
+            both > 0 && one > 0 && deep > 0,
+            "the fixture encloses probes"
+        );
+
+        let cells = ProbeCells::of_layout(&layout);
+        let blocks = BounceBlocks::new(std::slice::from_ref(states), &cells);
+        assert!(!blocks.bounce.is_empty(), "the door still changes bounce");
+        for part in &blocks.bounce {
+            let [m0, m1] = part.entry.stored_probe_masks;
+            let valid = cells.valid_masks[part.cell as usize];
+            assert!(
+                m0 | m1 != 0 && (m0 | m1) & !valid == 0,
+                "cell {}",
+                part.cell
+            );
+        }
+        let section = crate::mover_probe_channel::channel_section(
+            &MoverDirectBake::default(),
+            &blocks,
+            &cells,
+            &crate::mover_probe_channel::MoverRamps::new(&fixture.kinematic_movers),
+            &crate::mover_probe_channel::MoverPayloadBars::default(),
+            |_, _, _| false,
+            |_| true,
+        )
+        .expect("assembles")
+        .expect("a section");
+        assert_eq!(
+            postretro_level_format::mover_probe_channel::MoverProbeChannelSection::from_bytes(
+                &section.to_bytes()
+            )
+            .expect("decodes"),
+            section
+        );
+    });
+}
+
 // A tile range the closet door's depth alone passes, well past it: the
 // bake keeps exactly one record past it, the reservation fails by name with
 // the door's whole count, exact, and the cut states are never memoized, so a
@@ -660,7 +809,8 @@ fn warm_and_cold_stop_at_the_same_mover_past_the_tile_range() {
 // on the closet and the setpiece, differs from id 34 beyond the
 // affected-probe rule (each probe's own BC6H round-trip bar and the
 // perceptual floor), recomputed here from the kept tiles, exactly at the
-// probes each mover's bounce states store. Each stored probe
+// probes each mover's bounce states store. A terminus that encloses the
+// probe reads id 34 by rule, so its re-bake joins neither set. Each stored probe
 // stores a terminus's state exactly where that terminus's re-bake leaves the
 // round-trip bar alone. Heavy: whole posed re-bakes.
 #[test]
@@ -707,6 +857,11 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                     .entry((pose.mover_id, pose.terminus.index()))
                     .or_default();
                 for probe in &pose.probes {
+                    if probe.enclosed {
+                        // An enclosing terminus reads id 34 (owner,
+                        // 2026-11-09): its dark re-bake is never a state.
+                        continue;
+                    }
                     let tile = probe.tile.as_ref().expect("every tile kept");
                     let id34 = compact_tile(&base.section, slots[probe.probe as usize] as usize);
                     let difference = max_abs_difference(tile, &id34);

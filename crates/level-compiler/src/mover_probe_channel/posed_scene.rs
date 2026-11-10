@@ -100,6 +100,13 @@ impl PosedScene {
         self.solid.may_meet_ray(origin, dir)
     }
 
+    /// Whether the pose encloses `probe`: the inside-brush rule's own test
+    /// at the probe's position ([`PosedSolid::contains`]). Such a terminus
+    /// stores no bounce state for the probe; its depth still bakes.
+    pub(crate) fn encloses(&self, probe: Vec3) -> bool {
+        self.solid.contains(probe)
+    }
+
     /// The pose's nearest hit along `dir` from `origin`, nearer than
     /// `nearest` ([`PosedSolid::nearest_hit`]).
     pub(crate) fn trace(&self, origin: Vec3, dir: Vec3, nearest: f32) -> Option<PosedHit> {

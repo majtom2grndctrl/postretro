@@ -22,7 +22,9 @@ use crate::mover_light_gate::{Terminus, gate_key_hasher};
 const STAGE_ID: &str = "mover_probe_direct";
 /// 3: posed shadow segments meet the posed sides through the static
 /// tracer's own segment test ([`super::posed_solid::PosedSolid`]).
-const STAGE_VERSION: u32 = 3;
+/// 4: a terminus that encloses the probe stores q = 255, the light's
+/// mover-absent term.
+const STAGE_VERSION: u32 = 4;
 
 /// What every light's key shares: the occluding world, the probe grid and
 /// the reach decomposition's inputs. Only occlusion enters: vertex

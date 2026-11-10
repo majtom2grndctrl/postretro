@@ -108,7 +108,9 @@ pub(crate) fn bake_probe_direct_rgb(
 /// [`bake_probe_direct_rgb`] with `posed` added as an occluder: each
 /// light's term scales by its surviving-visibility byte q, so the probe
 /// holds that terminus's composed state S = q × T. A light whose samples
-/// cannot meet the pose keeps its term bit for bit.
+/// cannot meet the pose keeps its term bit for bit. A probe the pose
+/// encloses reads dark here, by the per-ray rule; the channel stores no q
+/// for it and composes the mover-absent term instead (owner, 2026-11-09).
 pub(crate) fn bake_probe_direct_rgb_posed(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,

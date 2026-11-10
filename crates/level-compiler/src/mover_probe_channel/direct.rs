@@ -341,7 +341,9 @@ impl StaticSamples {
 
 /// `light`'s entries at `cell`: one per mover whose posed brushes meet a
 /// static-clear sample at some valid probe. A probe where the light's term
-/// is zero keeps q = 1, as does one no pose can meet.
+/// is zero keeps q = 1, as does one no pose can meet, and one a pose
+/// encloses keeps q = 1 at that terminus: it reads the light's mover-absent
+/// term there (owner, 2026-11-09).
 pub(crate) fn bake_cell(
     light: &ChannelLight<'_>,
     movers: &[LightMover],
@@ -371,7 +373,7 @@ pub(crate) fn bake_cell(
                 let Some(occluder) = &gate.poses[terminus.index()] else {
                     continue;
                 };
-                if !occluder.may_meet(point, &light.baked) {
+                if occluder.encloses(point) || !occluder.may_meet(point, &light.baked) {
                     continue;
                 }
                 let joint = joint_soft_visibility(

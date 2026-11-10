@@ -128,7 +128,9 @@ impl PosedSolid {
     /// Whether `point` lies inside a posed brush or on its surface, by the
     /// brushes' half-spaces alone, with no contact band: a ray lifted to
     /// there starts in solid. Every posed trace reads this one rule at its
-    /// lifted origin.
+    /// lifted origin, and the enclosing-terminus rule reads it at the
+    /// probe's own position: a pose that contains a probe stores no value
+    /// state for it and reads the base (owner, 2026-11-09).
     pub(crate) fn contains(&self, point: Vec3) -> bool {
         self.contains_point(point.as_dvec3())
     }

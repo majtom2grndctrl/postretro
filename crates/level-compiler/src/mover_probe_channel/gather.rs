@@ -92,6 +92,12 @@ impl<'a> PosedGather<'a> {
         }
     }
 
+    /// Whether the pose encloses the probe at `position`
+    /// ([`PosedScene::encloses`]).
+    pub(crate) fn encloses(&self, position: Vec3) -> bool {
+        self.scene.encloses(position)
+    }
+
     /// One gather ray from the probe at `origin`: the nearer of the static
     /// hit and the pose's, and its radiance. A ray whose lifted origin lies
     /// inside a posed brush reads distance 0 and black, as its direct does.
@@ -141,6 +147,10 @@ pub(crate) struct PosedProbe {
     pub(crate) tile: Option<Vec<OctahedralAtlasTexel>>,
     /// The closed-pose bordered depth tile, when a gather ray meets the pose.
     pub(crate) depth: Option<Vec<[u16; 2]>>,
+    /// Whether the pose encloses the probe's position
+    /// ([`PosedScene::encloses`]): the terminus stores no state and reads
+    /// id 34, though its depth still bakes dark.
+    pub(crate) enclosed: bool,
 }
 
 impl PosedProbe {
@@ -150,12 +160,15 @@ impl PosedProbe {
         self.changed() && self.levels > BOUNCE_FLOOR_LEVELS
     }
 
-    /// Past the round-trip bar alone: at an affected probe, whether this
-    /// terminus stores its state. One within the bar is id 34 as the
-    /// encoding already holds it, so the terminus stores nothing and
-    /// composes id 34 (owner, 2026-11-09).
+    /// Past the round-trip bar alone, at a probe the pose does not enclose:
+    /// at an affected probe, whether this terminus stores its state. One
+    /// within the bar is id 34 as the encoding already holds it, so the
+    /// terminus stores nothing and composes id 34 (owner, 2026-11-09). An
+    /// enclosed probe's dark state is never stored either, and composes id
+    /// 34 as an unchanged terminus does (owner, 2026-11-09): lerped over the
+    /// whole travel, it stayed mostly black once the face swept past.
     pub(crate) fn changed(&self) -> bool {
-        self.difference > self.bar
+        !self.enclosed && self.difference > self.bar
     }
 
     /// Heap bytes the probe holds beside its own size.
@@ -186,8 +199,9 @@ pub(crate) fn compact_slots(layout: &ProbeGridLayout) -> Vec<u32> {
 /// does, and keep each probe that differs from id 34 (`base`, the compact
 /// RGBA16F intermediate) or whose rays meet the pose. A probe whose rays
 /// meet nothing posed and whose hits read their static radiance gathers
-/// id 34's bytes exactly, so it differs by zero. Each valid probe advances
-/// progress by one.
+/// id 34's bytes exactly, so it differs by zero. A probe the pose encloses
+/// is kept for its depth alone ([`PosedProbe::changed`]). Each valid probe
+/// advances progress by one.
 pub(crate) fn gather_posed_probes(
     sh_ctx: &ShBakeCtx<'_>,
     layout: &ProbeGridLayout,
@@ -252,6 +266,7 @@ pub(crate) fn gather_posed_probes(
                 levels,
                 tile: None,
                 depth: met.then(|| bordered_tile(&rays.interior(&distances))),
+                enclosed: gather.encloses(position),
             };
             if probe.changed() || keep_every_tile {
                 probe.tile = Some(tile);

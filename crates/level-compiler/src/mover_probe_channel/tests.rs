@@ -278,11 +278,13 @@ fn a_sealing_pose_stores_zero_and_a_hard_light_stores_zero_or_one() {
     assert_eq!(hard_joint.surviving_byte(), 255);
 }
 
-// The inside-brush rule (owner): a probe inside one of the mover's
-// brushes reads dark. Every segment from it starts in solid, so even a light
-// no other brush hides is blocked.
+// The per-ray inside-brush rule: every segment from a probe inside one of
+// the mover's brushes starts in solid, so even a light no other brush hides
+// is blocked. The stored state is the enclosing-terminus rule's (the probe
+// reads the base there: `direct_tests` and `mover_bounce_stage_tests`); this rule
+// still decides the probe's posed rays and so its dark depth.
 #[test]
-fn a_probe_inside_a_posed_brush_reads_dark_toward_every_light() {
+fn a_segment_from_inside_a_posed_brush_is_blocked_toward_every_light() {
     let containing = box_brush(DVec3::splat(-0.5), DVec3::splat(0.5));
     let beside = box_brush(DVec3::new(2.0, -1.0, -1.0), DVec3::new(2.2, 1.0, 1.0));
     let up = soft_light(DVec3::new(0.0, 3.0, 0.0), 0.0);

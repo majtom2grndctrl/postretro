@@ -48,7 +48,7 @@ When this is done:
   - **Budget only.** "Encounter" stays free for the set-piece concept (roadmap E18-E) and its kill progress, which may later start an attack pool.
 - **Turn lifetime.** A turn is for one attack and holds that attack's draws.
   - **No two turns share a token.** An enemy never holds two turns that draw the same token, so its claw and its rifle may overlap while two melee attacks take turns. Another attack never rides a held turn: an attack sharing a token with one its enemy holds requests once that turn ends.
-  - **One request at a time.** An enemy requests for the attack it would start now. A request it drops stops blocking its tokens (pin P19).
+  - **One request at a time.** An enemy requests for the attack it would start now. A request it drops stops reserving its tokens (pin P19).
   - **Marked activities.** An activity marked `attackTurn: "slam"` requests a turn for `slam` on entry and keeps requesting until granted. The turn holds while any activity marked for that attack is on the active path, so a windup → commit → recover chain holds one turn. Entering a sibling marked for another attack releases it and requests behind existing waiters.
   - **Marks never disagree.** Load rejects a mark nested inside a mark for another attack, and an action under a mark that fires another attack, each with a pathed error.
   - **Unmarked attacks.** With no marked activity on its path, an attack requests only on a tick it is otherwise ready to fire. It holds the turn until that attack's cooldown ends, and a weapon until its execution clears and then its cooldown.

@@ -239,6 +239,7 @@ pub(crate) fn test_app() -> App {
         published_level_identity: None,
         pending_splash_override: None,
         host_spawn_points: Vec::new(),
+        spawn_poses: Default::default(),
         script_time: 0.0,
         anim_time: 0.0,
         anim_time_scale: 1.0,

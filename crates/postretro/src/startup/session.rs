@@ -373,6 +373,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         client_reload_edges: Default::default(),
         client_overheat_edge: Default::default(),
         host_spawn_points: Vec::new(),
+        spawn_poses: Default::default(),
         script_time: 0.0,
         anim_time: 0.0,
         anim_time_scale: 1.0,

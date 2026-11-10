@@ -23,6 +23,7 @@ mod life_state_eye;
 #[cfg(test)]
 mod presentation_budget_measurement_tests;
 mod respawn_placements;
+mod spawn_pose;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -1120,6 +1121,8 @@ pub(crate) struct App {
     /// (spawn-point / built-in-handled / remaining-entity bookkeeping) now lives
     /// as locals inside `install_world_cpu`; only this host copy outlives install.
     host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+    /// Each remote seat's resolved spawn pose on the installed level.
+    spawn_poses: crate::spawn_pose::SpawnPoseResolver,
 
     /// Seconds since level load, not wall clock. Resets to zero on level unload
     /// and during level install. Maintained for future engine consumers that need a
@@ -3960,6 +3963,7 @@ impl App {
         // the client arm (disjoint `self` fields from `self.session`).
         let environment_volumes = &self.environment_volumes;
         let collision_world = &self.collision_world;
+        let spawn_poses = &mut self.spawn_poses;
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
         // so the client arm's `mesh_clip_tables` read does not re-borrow the
@@ -4242,26 +4246,29 @@ impl App {
                                     );
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
-                                    let joinable =
-                                        crate::scripting::builtins::player_spawn::joinable_sites(
+                                    // Promotion spawns at the seat's recorded
+                                    // pose, the one its hint named.
+                                    let placements = crate::spawn_pose::SpawnPlacements::joinable(
+                                        &host_spawn_points,
+                                        &net_descriptors,
+                                        host_agent_params,
+                                    );
+                                    let Some(spawn) = seat_table.as_deref_mut().and_then(|seats| {
+                                        let spawn = spawn_poses.resolve_for_promotion(
+                                            seat,
+                                            seats,
+                                            &registry,
+                                            &placements,
+                                        );
+                                        crate::respawn_placements::publish(
+                                            &script_ctx,
                                             &host_spawn_points,
                                             &net_descriptors,
+                                            Some(seats),
+                                            None,
                                         );
-                                    let Some(placement_index) =
-                                        seat_table.as_deref_mut().and_then(|seats| {
-                                            let placement = seats.assign_joiner_placement(
-                                                &registry, seat, &joinable,
-                                            );
-                                            crate::respawn_placements::publish(
-                                                &script_ctx,
-                                                &host_spawn_points,
-                                                &net_descriptors,
-                                                Some(seats),
-                                                None,
-                                            );
-                                            placement
-                                        })
-                                    else {
+                                        spawn
+                                    }) else {
                                         log::warn!(
                                             "[Net] participating client {client_id} could not receive a player_spawn placement; closing inconsistent slot"
                                         );
@@ -4275,24 +4282,36 @@ impl App {
                                         .as_deref()
                                         .and_then(|seats| seats.carried_state(seat))
                                         .cloned();
-                                    netcode::host_handle_accept_descriptor_at_placement(
-                                        &mut registry,
-                                        allocator,
-                                        replicable,
-                                        slot_pawns,
-                                        command_queues,
-                                        owners,
-                                        weapon_owners,
-                                        open_shots,
-                                        pending_hit_declarations,
-                                        weaponless_fire_logged,
-                                        *client_id,
-                                        &host_spawn_points,
-                                        placement_index,
-                                        &net_descriptors,
-                                        host_agent_params,
-                                        carried_loadout.as_ref(),
-                                    )
+                                    let pawn = spawn
+                                        .spawn_placement(
+                                            &host_spawn_points,
+                                            &net_descriptors,
+                                            host_agent_params,
+                                        )
+                                        .and_then(|placement| {
+                                            netcode::host_handle_accept_descriptor_at_placement(
+                                                &mut registry,
+                                                allocator,
+                                                replicable,
+                                                slot_pawns,
+                                                command_queues,
+                                                owners,
+                                                weapon_owners,
+                                                open_shots,
+                                                pending_hit_declarations,
+                                                weaponless_fire_logged,
+                                                *client_id,
+                                                std::slice::from_ref(placement.as_ref()),
+                                                0,
+                                                &net_descriptors,
+                                                host_agent_params,
+                                                carried_loadout.as_ref(),
+                                            )
+                                        });
+                                    if pawn.is_some() {
+                                        spawn_poses.spawned(seat);
+                                    }
+                                    pawn
                                 };
                                 let Some(pawn) = pawn else {
                                     log::warn!(

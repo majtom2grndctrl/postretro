@@ -260,6 +260,14 @@ impl NetServer {
         self.revealed_level.as_deref()
     }
 
+    /// The level life of the installed catalog level: the life a client's
+    /// `Revealed` must name. `None` on an uncatalogued install and with no
+    /// level installed.
+    #[must_use]
+    pub fn installed_level_life(&self) -> Option<u64> {
+        self.relevel.as_ref().map(|(_, level_life)| *level_life)
+    }
+
     /// Install the catalog id clients should follow, or `None` at unload and
     /// suspend. This is intentionally separate from level parity: the net
     /// crate cannot distinguish a catalog id from a raw-path fallback inside

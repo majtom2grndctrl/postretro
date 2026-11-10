@@ -287,6 +287,9 @@ impl App {
                 .modal_stack
                 .clear_script_tree_tier(postretro_ui::modal_stack::ScopeTier::Level);
         }
+        // Recorded spawn poses are level-scoped, like the placement
+        // assignments the unload clear above dropped.
+        self.spawn_poses.clear_for_level_unload();
         self.active_level_tags.clear();
         self.active_level_source = None;
 

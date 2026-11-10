@@ -605,13 +605,15 @@ mod tests {
             pitch: -0.5,
         };
         assert!(round_trips(&ServerControlMessage::SpawnPoseHint(hint)));
-        assert!(round_trips(&ServerControlMessage::SpawnPoseHint(SpawnPoseHint {
-            level_identity: "maps/path-level.prl".to_string(),
-            level_life: None,
-            eye: [0.0; 3],
-            yaw: 0.0,
-            pitch: 0.0,
-        })));
+        assert!(round_trips(&ServerControlMessage::SpawnPoseHint(
+            SpawnPoseHint {
+                level_identity: "maps/path-level.prl".to_string(),
+                level_life: None,
+                eye: [0.0; 3],
+                yaw: 0.0,
+                pitch: 0.0,
+            }
+        )));
     }
 
     #[test]

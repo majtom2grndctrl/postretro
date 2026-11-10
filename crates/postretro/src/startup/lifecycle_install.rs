@@ -164,6 +164,7 @@ impl App {
             models,
         );
         let first_spawn = self.install_level_post_load_passes(script_ctx, products);
+        self.send_install_spawn_pose_hints();
         self.install_level_camera_pose(first_spawn);
         self.install_level_fog_masks(fog_masks);
         let sprite_created =

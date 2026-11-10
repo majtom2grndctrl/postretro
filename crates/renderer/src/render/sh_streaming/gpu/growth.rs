@@ -521,9 +521,10 @@ impl StreamingGpuPools {
     /// Rebind every compose pass to the mover channel's live tables after a
     /// streamed id-57 pool grew. The dense atlases and sparse pools stay as
     /// they are; submitted command buffers keep the old table alive until
-    /// they retire. A direct pass whose output atlases are gone is the
-    /// error dense growth names, checked before any pass rebinds, never a
-    /// silently skipped rebind that leaves it on the old table.
+    /// they retire. It refuses exactly what dense growth refuses: a direct
+    /// pass whose output atlases are gone, or an animated direct pass with no
+    /// intermediate atlas, checked before any pass rebinds, never a silently
+    /// skipped rebind that leaves it on the old table.
     pub(in crate::render::sh_streaming) fn rebind_mover_channel(
         &mut self,
         device: &wgpu::Device,
@@ -536,6 +537,11 @@ impl StreamingGpuPools {
             .direct_compose
             .is_some()
             .then(|| {
+                if self.has_animated_direct_pass && self.direct_intermediate.is_none() {
+                    return Err(ShResidencyDrainError::GpuCapacity {
+                        reason: "mover channel rebind lost its animated direct intermediate atlas",
+                    });
+                }
                 DirectPools {
                     base_view: self.direct_base_view.as_ref(),
                     promotion_free: self.direct_atlas.as_ref(),

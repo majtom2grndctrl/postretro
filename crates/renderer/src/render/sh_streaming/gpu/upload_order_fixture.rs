@@ -139,7 +139,9 @@ impl UploadOrderSh {
                 depth_tiles: tiles,
                 sh: None,
                 stream_base_present: true,
-                stream_base_probes: None,
+                // As a streamed install passes them: the base an untiled
+                // probe's mover depth blends through.
+                stream_base_probes: Some(state.base_metadata.probes.as_slice()),
                 stream_animation_descriptors: Some(&[]),
                 indirect_delta_present: true,
                 direct: None,
@@ -152,7 +154,8 @@ impl UploadOrderSh {
             false,
             mover_channel,
             &mut ledger,
-        );
+        )
+        .expect("the fixture's SH volume installs");
         let uniforms = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH upload-order uniform layout"),
             entries: &crate::render::pipeline_layout::uniform_bind_group_layout_entries(),

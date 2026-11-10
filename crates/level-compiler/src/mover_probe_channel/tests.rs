@@ -510,16 +510,19 @@ fn a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_in_every_posed_trace
 }
 
 // Id 34's kept later bounces join a pose's running sum one by one, in bounce
-// order, as id 34 adds them. With `light_bounces` 2 and 3, a patch the pose
-// never meets (here every static patch: the pose sits far outside the
-// closet) sums id 34's later bounces bit for bit. Pre-summing the kept
-// layers reassociates the float sum and misses.
+// order, as id 34 adds them. With every `light_bounces` that keeps a tail,
+// 1 (every later bounce is id 34's: the tail alone) through 4 (only id 34's
+// last layer), a patch the pose never meets (here every static patch: the
+// pose sits far outside the closet) sums id 34's later bounces bit for bit.
+// Pre-summing the kept layers reassociates the float sum and misses.
 #[test]
 fn a_patch_the_pose_never_meets_sums_id_34s_later_bounces_bit_for_bit() {
     use super::bounce::{PosedLaterBounces, PosedRadiance, add_posed_later_bounces};
     use super::posed_scene::PosedScene;
     use crate::bake_control::BakeControl;
-    use crate::surface_radiance::{PatchRadiance, PatchSet, Side, add_later_bounces_keeping};
+    use crate::surface_radiance::{
+        LATER_BOUNCE_COUNT, PatchRadiance, PatchSet, Side, add_later_bounces_keeping,
+    };
 
     let fixture = crate::fixture_pipeline::load_fixture("mover-closet");
     let ctx = RaytracingCtx {
@@ -546,13 +549,14 @@ fn a_patch_the_pose_never_meets_sums_id_34s_later_bounces_bit_for_bit() {
     let scene = PosedScene::new(Arc::new(far), Terminus::First).expect("posed patches");
     let control = BakeControl::unrestricted();
     let fill = 0.7;
-    for bounces in [2u32, 3] {
+    for bounces in 1..=LATER_BOUNCE_COUNT {
         let from = bounces - 1;
         let mut id34 = bounce_one.clone();
         let kept = add_later_bounces_keeping(&ctx, &patches, &mut id34, fill, Some(from), &control);
-        assert!(
-            !kept.is_empty(),
-            "light_bounces {bounces} keeps id 34's tail"
+        assert_eq!(
+            kept.len() as u32,
+            LATER_BOUNCE_COUNT - from,
+            "light_bounces {bounces} keeps id 34's later bounces from {from} on"
         );
         let mut posed = PosedRadiance {
             world: bounce_one.clone(),

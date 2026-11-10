@@ -92,7 +92,8 @@ pub(super) fn install_sh_volume(
         probe_occlusion_enabled,
         mover_channel,
         &mut sh_allocation_ledger,
-    );
+    )
+    .map_err(|error| sh_streaming::ShResidencyDrainError::InvalidBatch(error.to_string()))?;
 
     // The plan already ran every level-data check; what can still fail
     // here is the first pool generation against the device and the live

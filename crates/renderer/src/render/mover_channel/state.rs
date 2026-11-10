@@ -7,6 +7,11 @@
 use super::layout::NO_STATE;
 use crate::render::MoverTravel;
 
+/// `depth_written` for a slot whose last planned write did not land: a NaN
+/// pattern, which [`MoverTBlock::set_states`] never stores (a non-finite t′
+/// reads as `NO_STATE`), so no frame's bits equal it.
+const DEPTH_UNWRITTEN: u32 = u32::MAX;
+
 /// The whole-load compose passes a mover's t′ can recompose: the direct
 /// passes (A and B, one trigger) and the indirect SH compose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +166,18 @@ impl MoverTBlock {
         }
     }
 
+    /// Some reference move planned from the slots [`Self::depth_changes`]
+    /// last reported failed, after others may have landed: mark those slots
+    /// written from no t′ at all, so the next frame reports them changed
+    /// whatever t′ it hands over, a return to the old t′ or to no state
+    /// included, and replans their probes from the current t′.
+    pub(super) fn forget_depth_changes(&mut self) {
+        for at in 0..self.depth_changed.len() {
+            let slot = self.depth_changed[at] as usize;
+            self.depth_written[slot] = DEPTH_UNWRITTEN;
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn values(&self) -> &[f32] {
         &self.values
@@ -258,6 +275,26 @@ mod tests {
         block.commit_observed();
         block.commit_depth_changes();
         assert!(block.observe_changes().is_empty());
+        assert!(block.depth_changes().1.is_empty());
+    }
+
+    /// A forgotten depth change is reported again whatever t′ the next frame
+    /// hands over, the written one or no state included; only the slots that
+    /// frame reported are forgotten.
+    #[test]
+    fn a_forgotten_depth_change_is_reported_whatever_t_comes_next() {
+        let mut block = MoverTBlock::new(&[1, 2]);
+        block.set_states(&[state(2, 1.0)]);
+        let _ = block.depth_changes();
+        block.commit_depth_changes();
+        block.set_states(&[state(1, 0.5), state(2, 1.0)]);
+        assert_eq!(block.depth_changes().1, &[0]);
+        block.forget_depth_changes();
+        // Back to no state, the bits the slot was last written from.
+        block.set_states(&[state(2, 1.0)]);
+        assert_eq!(block.depth_changes().1, &[0], "no state is a change now");
+        block.commit_depth_changes();
+        block.set_states(&[state(2, 1.0)]);
         assert!(block.depth_changes().1.is_empty());
     }
 

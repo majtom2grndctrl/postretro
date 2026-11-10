@@ -228,7 +228,8 @@ fn build_scene(ctx: &GpuCtx, section: Option<&MoverProbeChannelSection>, streame
         false,
         channel,
         &mut ledger,
-    );
+    )
+    .expect("the fixture's SH volume installs");
     let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("mover bounce uniforms layout"),
         entries: &uniform_bind_group_layout_entries(),

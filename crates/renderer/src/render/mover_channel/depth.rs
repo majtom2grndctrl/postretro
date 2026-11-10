@@ -38,6 +38,10 @@ const TILE_BYTES: usize = PROBE_DEPTH_TILE_TEXELS * TEXEL_BYTES;
 /// A record terminus that stores no tile, before [`MoverDepthTiles::bind`]
 /// points it at its probe's base tile. CPU-side only; never on the wire.
 const UNBOUND_BASE: u32 = u32::MAX;
+/// The largest finite binary16, the most a live-tile moment may hold: the
+/// bake saturates a far texel's `E[d²]` to it, and a sum past it would
+/// encode as infinity, which the sampler turns into NaN.
+const F16_MAX: f64 = 65504.0;
 
 /// What each probe reads with no mover state: the load's id-59 tiles and
 /// its id-34 probe moments. A record terminus that stores no tile blends
@@ -94,6 +98,10 @@ pub(in crate::render) struct MoverDepthTiles {
     binding: Option<LiveTileBinding>,
     /// Whether probe `k` references its live tile now.
     pointed: Vec<bool>,
+    /// Whether probe `k`'s reference is unknown: a move planned for it was
+    /// abandoned, and may or may not have landed. Its next plan emits its
+    /// move whatever `pointed` says.
+    unsure: Vec<bool>,
     dirty: Vec<bool>,
     dirty_list: Vec<u32>,
     reference_changes: Vec<ReferenceChange>,
@@ -198,6 +206,7 @@ impl MoverDepthTiles {
             slot_probes,
             binding: None,
             pointed: vec![false; probe_count],
+            unsure: vec![false; probe_count],
             dirty: vec![false; probe_count],
             dirty_list: Vec::with_capacity(probe_count),
             reference_changes: Vec::with_capacity(probe_count),
@@ -227,17 +236,22 @@ impl MoverDepthTiles {
     /// `bases`, which its blends pass through and its unstored termini read:
     /// the id-59 tile its reference names, else its averaged id-34 moments
     /// in every texel, exactly what the probe reads with no section. A level
-    /// whose SH is unusable never binds, and plans nothing.
+    /// whose SH is unusable never binds, and plans nothing. An untiled probe
+    /// outside `bases.probes` has no base to blend through and refuses the
+    /// install, never a silent zero moment set.
     pub(in crate::render) fn bind(
         &mut self,
         first_live_tile: u32,
         layout: ProbeDepthTileTextureLayout,
         references: &ProbeDepthTileReferences,
         bases: DepthBases<'_>,
-    ) {
+    ) -> Result<(), MoverChannelError> {
         if self.probes.is_empty() {
-            return;
+            return Ok(());
         }
+        // Exactly the base tiles, so the host ledger row is what is held.
+        self.tiles
+            .reserve_exact(self.probes.len() * PROBE_DEPTH_TILE_TEXELS);
         for (k, &probe) in self.probes.iter().enumerate() {
             let records = self.probe_offsets[k] as usize..self.probe_offsets[k + 1] as usize;
             let at = self.tiles.len() as u32;
@@ -249,9 +263,16 @@ impl MoverDepthTiles {
                         .map(|&[mean, mean_sq]| [f16_to_f32(mean), f16_to_f32(mean_sq)]),
                 ),
                 _ => {
-                    let moments = bases.probes.get(probe as usize).map_or([0.0; 2], |p| {
-                        [f16_to_f32(p.mean_distance), f16_to_f32(p.mean_sq_distance)]
-                    });
+                    let Some(base) = bases.probes.get(probe as usize) else {
+                        return Err(MoverChannelError(format!(
+                            "a closed-pose depth record names probe {probe}, outside the level's {} id-34 probe(s), with no id-59 tile to blend through",
+                            bases.probes.len()
+                        )));
+                    };
+                    let moments = [
+                        f16_to_f32(base.mean_distance),
+                        f16_to_f32(base.mean_sq_distance),
+                    ];
                     self.tiles
                         .extend(std::iter::repeat_n(moments, PROBE_DEPTH_TILE_TEXELS));
                 }
@@ -274,6 +295,7 @@ impl MoverDepthTiles {
                 .map(|&probe| references.tile_of(probe))
                 .collect(),
         });
+        Ok(())
     }
 
     /// Live tiles the last planned frame wrote.
@@ -347,8 +369,9 @@ impl MoverDepthTiles {
             if !stated {
                 // No mover changing this probe has state: its id-59 tile or
                 // averaged moments again, bit for bit.
-                if self.pointed[k as usize] {
+                if self.pointed[k as usize] || self.unsure[k as usize] {
                     self.pointed[k as usize] = false;
+                    self.unsure[k as usize] = false;
                     self.reference_changes
                         .push((self.probes[k as usize], binding.base_references[k as usize]));
                     self.changed_live.push(k);
@@ -368,8 +391,9 @@ impl MoverDepthTiles {
                 &mut self.run_tiles,
             );
             run_len += 1;
-            if !self.pointed[k as usize] {
+            if !self.pointed[k as usize] || self.unsure[k as usize] {
                 self.pointed[k as usize] = true;
+                self.unsure[k as usize] = false;
                 self.reference_changes
                     .push((self.probes[k as usize], Some(tile as u16)));
                 self.changed_live.push(k);
@@ -390,12 +414,15 @@ impl MoverDepthTiles {
         &self.reference_changes
     }
 
-    /// The last plan's reference moves did not all land: forget them, so
-    /// the next plan from the same mover changes emits them again. Its tile
+    /// The last plan's reference moves did not all land, and any of them
+    /// may have: mark each probe they name unsure, so the next plan that
+    /// reaches it emits its move again whatever it planned last, landed or
+    /// not, including a move back to its base. The caller replans those
+    /// probes next frame (`MoverTBlock::forget_depth_changes`); their tile
     /// writes are rewritten then too, so nothing else needs undoing.
     pub(in crate::render) fn abandon_plan(&mut self) {
         for &k in &self.changed_live {
-            self.pointed[k as usize] = !self.pointed[k as usize];
+            self.unsure[k as usize] = true;
         }
         self.changed_live.clear();
         self.reference_changes.clear();
@@ -426,11 +453,14 @@ impl MoverDepthTiles {
 /// 2026-11-09). One stated mover writes its blend itself. Several write,
 /// per texel and per moment, the base plus each mover's blended difference
 /// from the base, then clamp to a valid moment set: `E[d] ≥ 0`, `E[d²] ≥
-/// E[d]²` (owner, 2026-11-09). Differences add, never select, so the result
-/// is independent of hand-over order. The sum runs in f64, where every
-/// difference of two f32 moments is exact: a mover whose blend equals the
-/// base adds exactly zero, and a single non-zero difference returns that
-/// mover's blend bit for bit wherever the blend is itself a valid moment set.
+/// E[d]²` (owner, 2026-11-09), each moment then capped at the largest finite
+/// f16, so a saturated far texel (`E[d²]` stored as 65504 below `E[d]²`)
+/// returns exactly and nothing encodes as infinity. Differences add, never
+/// select, so the result is independent of hand-over order. The sum runs in
+/// f64, where every difference of two f32 moments is exact: a mover whose
+/// blend equals the base adds exactly zero, and a single non-zero difference
+/// returns that mover's blend bit for bit wherever the blend is itself a
+/// valid moment set.
 fn blend_probe(
     tiles: &[[f32; 2]],
     record_tiles: &[[u32; 2]],
@@ -488,8 +518,10 @@ fn blend_probe(
         }
     }
     for ((texel, difference), base) in tile.iter_mut().zip(&sum).zip(base) {
-        let mean = (f64::from(base[0]) + difference[0]).max(0.0);
-        let mean_sq = (f64::from(base[1]) + difference[1]).max(mean * mean);
+        let mean = (f64::from(base[0]) + difference[0]).clamp(0.0, F16_MAX);
+        let mean_sq = (f64::from(base[1]) + difference[1])
+            .max(mean * mean)
+            .min(F16_MAX);
         *texel = texel_bytes([mean as f32, mean_sq as f32]);
     }
 }

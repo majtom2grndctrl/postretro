@@ -76,6 +76,10 @@ struct PlacedWrite {
     words: Vec<u32>,
     /// Pooled: the base word is published after the payload.
     pooled: bool,
+    /// Pooled, and this cluster placed the range: a cell already resident
+    /// (re-referenced while its release is pending) keeps the range it had,
+    /// so only a fresh placement is the cluster's to free.
+    placed_here: bool,
 }
 
 /// One cluster's channel work, staged before its upload batch.
@@ -303,7 +307,7 @@ impl MoverChannelResources {
             &direct_words,
             [
                 present.then_some(57),
-                (present && inputs.static_terms.is_some()).then_some(41),
+                (present && inputs.live_static_terms().is_some()).then_some(41),
                 inputs.animated_terms.is_some().then_some(45),
             ],
         );
@@ -475,15 +479,16 @@ impl MoverChannelResources {
     }
 
     /// Bind the depth block's live tiles to the installed tile texture;
-    /// `bases` gives the moment set an unstored terminus blends toward.
+    /// `bases` gives the moment set an unstored terminus blends toward. A
+    /// probe with no base there refuses the install.
     pub(in crate::render) fn bind_depth(
         &mut self,
         first_live_tile: u32,
         layout: postretro_level_format::probe_depth_tiles::ProbeDepthTileTextureLayout,
         references: &postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences,
         bases: DepthBases<'_>,
-    ) {
-        self.depth.bind(first_live_tile, layout, references, bases);
+    ) -> Result<(), MoverChannelError> {
+        self.depth.bind(first_live_tile, layout, references, bases)
     }
 
     /// Plan this frame's live tiles from the held t′: every tile a mover
@@ -506,10 +511,14 @@ impl MoverChannelResources {
         self.t.commit_depth_changes();
     }
 
-    /// A reference move of the last [`Self::plan_depth`] failed: keep its
-    /// mover changes for the next frame.
+    /// A reference move of the last [`Self::plan_depth`] failed, possibly
+    /// after others landed: the next frame replans every probe its movers
+    /// cover from that frame's t′, even one equal to the last committed t′
+    /// (a return to no state included), and emits each of the abandoned
+    /// plan's reference moves again whether or not it landed.
     pub(in crate::render) fn abandon_depth(&mut self) {
         self.depth.abandon_plan();
+        self.t.forget_depth_changes();
     }
 
     /// Live tiles the last planned frame wrote.
@@ -655,10 +664,14 @@ impl MoverChannelResources {
         let Some(streamed) = self.streamed.as_ref() else {
             return Ok(());
         };
-        // Every arriving row's direct payload is checked whole, each record
-        // whether the table gates it or not, as the whole load checks it at
-        // attach: the same PRL is accepted or refused alike in every mode.
-        if !streamed.section.payload_held(MoverChannelBlock::Direct) {
+        // Every arriving row's payload is checked whole, each copy of it, not
+        // only the one that places the cell: its direct records whether the
+        // table gates them or not, and its bounce tiles finite, as the whole
+        // load checks them at attach. The same PRL is accepted or refused
+        // alike in every mode.
+        let direct_streams = !streamed.section.payload_held(MoverChannelBlock::Direct);
+        let bounce_streams = !streamed.section.payload_held(MoverChannelBlock::Bounce);
+        if direct_streams || bounce_streams {
             for row in &rows.channel_rows {
                 let Some(position) = streamed.section.listed_position(row.cell as usize) else {
                     return Err(MoverChannelError(format!(
@@ -670,7 +683,13 @@ impl MoverChannelResources {
                     .section
                     .cell_payload(position, &streamed.slices[position], Some(*row))
                     .map_err(|error| MoverChannelError(error.to_string()))?;
-                check_direct_cell(&streamed.section, position, payload)?;
+                if direct_streams {
+                    check_direct_cell(&streamed.section, position, payload)?;
+                }
+                if bounce_streams && let Some(plan) = self.bounce_layout.plan_of_cell(row.cell) {
+                    self.bounce_layout
+                        .cell_write(&streamed.section, plan, payload)?;
+                }
             }
         }
         let channel_row = |cell: u32| {
@@ -701,7 +720,7 @@ impl MoverChannelResources {
             }
             let payload =
                 self.layout
-                    .plan_payload(&streamed.section, &streamed.slices, plan, row)?;
+                    .plan_direct_payload(&streamed.section, &streamed.slices, plan, row)?;
             self.layout
                 .cell_write(&streamed.section, plan, payload, static_row, animated_row)
         };
@@ -731,6 +750,7 @@ impl MoverChannelResources {
                     base: self.layout.whole_base(plan).unwrap_or(NO_BASE),
                     words: write.words,
                     pooled: false,
+                    placed_here: false,
                 });
             }
         }
@@ -762,8 +782,11 @@ impl MoverChannelResources {
                 TableKind::Direct => (self.direct.pool.as_mut(), self.direct.payload_word),
                 TableKind::Bounce => (self.bounce.pool.as_mut(), self.bounce.payload_word),
             };
-            let range = pool
-                .and_then(|pool| pool.place(plan))
+            let (range, placed_here) = pool
+                .and_then(|pool| {
+                    let existed = pool.range(plan).is_some();
+                    pool.place(plan).map(|range| (range, !existed))
+                })
                 .ok_or_else(|| MoverChannelError(format!("cell plan {plan} cannot place")))?;
             debug_assert_eq!(range.len as usize, words.len());
             out.writes.push(PlacedWrite {
@@ -772,14 +795,18 @@ impl MoverChannelResources {
                 base: payload_word as u32 + range.start,
                 words,
                 pooled: true,
+                placed_here,
             });
         }
         Ok(())
     }
 
-    /// Free what `writes` placed: a later step of the install failed.
+    /// Free the ranges `writes` newly placed: a later step of the install
+    /// failed. A range the cell held before the cluster stays placed: its
+    /// pending release frees it and writes the cell's not-resident base
+    /// word, which a release here would leave pointing at a freed range.
     pub(in crate::render) fn undo_cluster(&mut self, writes: &ClusterChannelWrites) {
-        for write in writes.writes.iter().filter(|write| write.pooled) {
+        for write in writes.writes.iter().filter(|write| write.placed_here) {
             if let Some(pool) = self.table_mut(write.table).pool.as_mut() {
                 pool.release(write.plan);
             }

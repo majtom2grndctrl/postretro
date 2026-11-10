@@ -890,4 +890,228 @@ mod arrival {
             assert!(error.contains("non-finite"), "{error}");
         }
     }
+
+    /// Cell 0: one direct record, gated by mover 7, either borrowing id 41's
+    /// term (AlphaLights 5) or holding its own tile, and mover 7's bounce
+    /// state at probe 0's D₀, its tiles streamed: a resident direct block
+    /// beside a streamed bounce block.
+    fn streamed_bounce(borrows_id_41: bool) -> MoverProbeChannelSection {
+        let (namespace, light, own_tile) = if borrows_id_41 {
+            (MoverLightNamespace::StaticLight, 5, None)
+        } else {
+            (
+                MoverLightNamespace::BakeOnlyStaticLight,
+                0,
+                Some(F16_QUARTER),
+            )
+        };
+        let mut section = fixture_section(
+            [1, 1, 1],
+            &[record(
+                0,
+                namespace,
+                light,
+                own_tile,
+                0b1,
+                vec![(7, 0, 255)],
+            )],
+        );
+        section.bounce_placement = MoverPayloadPlacement::Streamed;
+        section.bounce_offsets = vec![0, 1];
+        section.bounce_entries = vec![
+            postretro_level_format::mover_probe_channel::MoverBounceEntry {
+                mover_id: 7,
+                stored_probe_masks: [0b1, 0],
+            },
+        ];
+        section
+    }
+
+    /// Cell 0's id-50 bounce bytes: one tile of a quarter, `bad` at half 3.
+    fn bounce_bytes(bad: Option<u16>) -> Vec<u8> {
+        let mut halves = vec![F16_QUARTER; TILE];
+        if let Some(bad) = bad {
+            halves[3] = bad;
+        }
+        halves.iter().flat_map(|half| half.to_le_bytes()).collect()
+    }
+
+    fn bounce_row(bytes: &[u8]) -> ClusterTermRows<'_> {
+        ClusterTermRows {
+            channel_rows: vec![MoverStreamedRow {
+                cell: 0,
+                direct: &[],
+                bounce: bytes,
+            }],
+            ..ClusterTermRows::default()
+        }
+    }
+
+    /// `section` laid out as a streamed level lays it out, its pools sized
+    /// for the whole map.
+    fn streamed_channel<'a>(
+        ctx: &GpuCtx,
+        section: &'a MoverProbeChannelSection,
+        static_terms: Option<TermFamily<'a>>,
+    ) -> MoverChannelResources {
+        let mut ledger = ShAllocationLedger::new();
+        let mut channel = MoverChannelResources::new(
+            &ctx.device,
+            &inputs(section, static_terms),
+            true,
+            |_, _| None,
+            &mut ledger,
+        )
+        .expect("the streamed structure lays out");
+        channel.size_streamed_pools(&ctx.device, 1.0);
+        channel
+    }
+
+    /// Each arriving copy of a cell's bounce bytes is checked finite, as the
+    /// whole load checks every bounce tile: the copy that places the cell,
+    /// and a later cluster's copy of a cell already resident.
+    #[test]
+    fn every_arriving_copy_of_a_cells_bounce_bytes_is_checked_finite() {
+        let Some(ctx) =
+            gpu_or_skip("every_arriving_copy_of_a_cells_bounce_bytes_is_checked_finite")
+        else {
+            return;
+        };
+        let section = streamed_bounce(false);
+        let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
+        let (finite, bad) = (bounce_bytes(None), bounce_bytes(Some(0x7e00)));
+
+        let mut channel = streamed_channel(&ctx, &section, None);
+        let error = channel
+            .stage_cluster(&ctx.device, &uploads, &bounce_row(&bad), &[0])
+            .unwrap_err();
+        assert!(error.to_string().contains("non-finite"), "{error}");
+
+        let writes = channel
+            .stage_cluster(&ctx.device, &uploads, &bounce_row(&finite), &[0])
+            .expect("the first copy places the cell");
+        channel.commit_cluster(&writes);
+        let error = channel
+            .stage_cluster(&ctx.device, &uploads, &bounce_row(&bad), &[])
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("non-finite"),
+            "a resident cell's later copy is checked too: {error}"
+        );
+    }
+
+    /// A cluster that fails after staging frees only the ranges it placed.
+    /// A cell already resident, re-referenced while its release is pending,
+    /// keeps its range, so the pending release still frees it (and writes
+    /// its not-resident base word) rather than finding nothing placed.
+    #[test]
+    fn undoing_a_cluster_frees_only_the_ranges_it_placed() {
+        let Some(ctx) = gpu_or_skip("undoing_a_cluster_frees_only_the_ranges_it_placed") else {
+            return;
+        };
+        let section = streamed_bounce(false);
+        let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
+        let bytes = bounce_bytes(None);
+        let payload = bytes.len() as u64;
+        let mut channel = streamed_channel(&ctx, &section, None);
+
+        let fresh = channel
+            .stage_cluster(&ctx.device, &uploads, &bounce_row(&bytes), &[0])
+            .expect("the cell places");
+        assert_eq!(channel.pool_bytes().1, payload);
+        channel.undo_cluster(&fresh);
+        assert_eq!(channel.pool_bytes().1, 0, "a fresh placement is undone");
+
+        let first = channel
+            .stage_cluster(&ctx.device, &uploads, &bounce_row(&bytes), &[0])
+            .expect("the cell places");
+        channel.commit_cluster(&first);
+        // Its last cluster left (release pending); another references it
+        // again, then fails a later install step.
+        let again = channel
+            .stage_cluster(&ctx.device, &uploads, &bounce_row(&bytes), &[0])
+            .expect("the resident range is found");
+        channel.undo_cluster(&again);
+        assert_eq!(
+            channel.pool_bytes().1,
+            payload,
+            "the range the cell held before the cluster stays placed"
+        );
+
+        let mut batch = crate::render::uploads::StagedUploads::from_scratch(Vec::new(), 0);
+        channel
+            .release_cell(&mut batch, 0)
+            .expect("the pending release flushes");
+        assert_eq!(channel.pool_bytes().1, 0, "the release frees it");
+    }
+
+    /// A whole direct cell waiting for its borrowed id-41 term writes from
+    /// its held direct payload alone when the term arrives, though its bounce
+    /// block streams and the cluster brings no id-57 row for it.
+    #[test]
+    fn a_waiting_direct_cell_writes_beside_a_streamed_bounce_block() {
+        let Some(ctx) = gpu_or_skip("a_waiting_direct_cell_writes_beside_a_streamed_bounce_block")
+        else {
+            return;
+        };
+        let section = streamed_bounce(true);
+        let family = StaticFamily::new(1, F16_QUARTER);
+        let whole = WholeTermRows::new(family.family(), &family.tiles);
+        let term = whole.row(0).expect("id 41 holds cell 0");
+        let mut channel = streamed_channel(&ctx, &section, Some(family.family()));
+        assert!(channel.wants_terms(&[]), "cell 0 waits for its id-41 term");
+        let rows = ClusterTermRows {
+            static_rows: vec![super::super::ClusterSparseRow {
+                cell: 0,
+                entry_offsets: term.entry_offsets,
+                tiles: term.tiles,
+            }],
+            ..ClusterTermRows::default()
+        };
+        let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
+        let writes = channel
+            .stage_cluster(&ctx.device, &uploads, &rows, &[])
+            .expect("the held direct payload writes with no bounce bytes");
+        channel.commit_cluster(&writes);
+        assert!(!channel.wants_terms(&[]), "the cell is written");
+    }
+
+    /// A streamed load whose id-40 selection the loader cleared still lists
+    /// id 41's metadata, but the table reads no id-41 term: its ledger row
+    /// names no id-41 source. With the selection, it does.
+    #[test]
+    fn a_cleared_selection_ledgers_no_id_41_source() {
+        use crate::render::residency::ResidencySource;
+        let Some(ctx) = gpu_or_skip("a_cleared_selection_ledgers_no_id_41_source") else {
+            return;
+        };
+        let section = streamed_bounce(true);
+        let family = StaticFamily::new(1, F16_QUARTER);
+        for (lights, sourced) in [(&[][..], false), (&[5][..], true)] {
+            let mut ledger = ShAllocationLedger::new();
+            MoverChannelResources::new(
+                &ctx.device,
+                &MoverChannelInputs {
+                    entity_shadow_lights: lights,
+                    ..inputs(&section, Some(family.family()))
+                },
+                true,
+                |_, _| None,
+                &mut ledger,
+            )
+            .expect("the streamed structure lays out");
+            let report = ledger.finish();
+            let table = report
+                .allocations
+                .iter()
+                .find(|allocation| allocation.name == "mover_channel_table")
+                .expect("the table is ledgered");
+            assert_eq!(
+                table.sources.contains(&ResidencySource::Section(41)),
+                sourced,
+                "selection {lights:?}: {:?}",
+                table.sources
+            );
+        }
+    }
 }

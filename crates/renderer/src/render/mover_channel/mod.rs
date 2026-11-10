@@ -3,8 +3,9 @@
 // reads, the per-frame mover t′ block inside each, each streamed block's
 // per-cell residency, the per-mover rows the streamed planner recomposes
 // when a mover travels, and the depth block's CPU-held closed-pose tiles with
-// the live-tile plan. Mover state and residency drive every write here; no
-// light change ever does.
+// the live-tile plan. Mover state and residency drive every mover trigger and
+// tile write here; a gated light's own curve or promotion weight recomposes
+// only the direct rows carrying its term, through the passes' existing triggers.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
 mod bounce;

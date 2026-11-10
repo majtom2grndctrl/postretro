@@ -393,7 +393,8 @@ impl ShVolumeResources {
     /// file had no `OctahedralShVolume` section — in that case dummy 1×1
     /// octahedral atlas textures and a dummy 1×1×1 depth-moment texture are
     /// uploaded, and the `has_sh_volume` flag is zero so the shader skips SH
-    /// sampling and falls back to `ambient_floor + direct_sum`.
+    /// sampling and falls back to `ambient_floor + direct_sum`. Fails only
+    /// when id 57's depth block cannot bind to the level's probes.
     pub fn new(
         device: &wgpu::Device,
         queue: &dyn crate::render::queue_writes::QueueWrites,
@@ -402,7 +403,7 @@ impl ShVolumeResources {
         probe_occlusion_enabled: bool,
         mover_channel: super::mover_channel::MoverChannelResources,
         ledger: &mut ShAllocationLedger,
-    ) -> Self {
+    ) -> Result<Self, super::mover_channel::MoverChannelError> {
         let ShVolumeSections {
             sh: section,
             stream_base_present,
@@ -485,7 +486,7 @@ impl ShVolumeResources {
                         .or(stream_base_probes)
                         .unwrap_or_default(),
                 },
-            );
+            )?;
             ledger.record_host(
                 "mover_closed_pose_depth_tiles",
                 mover_channel.depth_host_bytes(),
@@ -909,7 +910,7 @@ impl ShVolumeResources {
             dirty: false,
             oor_warned: false,
         };
-        Self {
+        Ok(Self {
             bind_group,
             bind_group_layout,
             mesh_bind_group,
@@ -948,7 +949,7 @@ impl ShVolumeResources {
             probe_occlusion_enabled,
             #[cfg(any(test, feature = "dev-tools"))]
             total_atlas_texture,
-        }
+        })
     }
 
     /// Mint a fresh sampled view over the per-probe depth-moment texture for

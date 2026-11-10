@@ -596,6 +596,34 @@ fn a_mover_without_brushes_is_not_analysed_and_gets_no_side_count() {
 }
 
 #[test]
+fn a_mover_whose_brushes_all_lack_bounds_is_not_analysed() {
+    let (mut movers, mut waypoints) = sliding_door();
+    // A two-waypoint mover with brushes, every one's bounds invalid: one
+    // inverted (empty), one non-finite. It has brushes but no bounds, so it
+    // is not analysed, as a mover with no brush is not.
+    let mut inverted = box_brush(DVec3::ZERO, DVec3::ONE);
+    inverted.aabb = Aabb {
+        min: DVec3::ONE,
+        max: DVec3::ZERO,
+    };
+    let mut non_finite = box_brush(DVec3::ZERO, DVec3::ONE);
+    non_finite.aabb.max.y = f64::NAN;
+    assert!(!inverted.aabb.is_valid() && !non_finite.aabb.is_valid());
+    movers.push(mover(1, "boundless", "b_a", vec![inverted, non_finite]));
+    waypoints.push(waypoint("b_a", "b_b", DVec3::ZERO));
+    waypoints.push(waypoint("b_b", "", DVec3::X));
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    let analysed: Vec<u32> = poses.analysed.iter().map(|mover| mover.mover_id).collect();
+    assert_eq!(analysed, [0], "only the door is analysed");
+    let reasons: Vec<(u32, &str)> = poses
+        .not_analysed
+        .iter()
+        .map(|mover| (mover.mover_id, mover.reason))
+        .collect();
+    assert_eq!(reasons, vec![(1, NO_BOUNDS_REASON)]);
+}
+
+#[test]
 fn side_count_splits_lights_this_mover_carries_from_the_rest() {
     let (mut movers, mut waypoints) = sliding_door();
     movers.push(mover(

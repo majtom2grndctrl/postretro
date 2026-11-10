@@ -322,6 +322,18 @@ pub(in crate::render) struct MoverChannelInputs<'a> {
     pub(in crate::render) indirect_descriptor_indices: &'a [u32],
 }
 
+impl<'a> MoverChannelInputs<'a> {
+    /// Id 41 as the table reads it. The loader disables id 41 by clearing
+    /// the id-40 selection. A whole load then drops id 41 as well, but a
+    /// streamed load still lists its metadata; either way a record borrowing
+    /// from id 41 composes ungated and the table reads no id-41 term, so the
+    /// same PRL composes, and is ledgered, alike in every mode.
+    pub(in crate::render) fn live_static_terms(&self) -> Option<TermFamily<'a>> {
+        self.static_terms
+            .filter(|_| !self.entity_shadow_lights.is_empty())
+    }
+}
+
 /// One listed cell's payload words, ready to place: its records' terms, then
 /// their q bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,13 +380,7 @@ impl MoverChannelLayout {
         let Some(section) = inputs.section else {
             return Ok(Self::empty(inputs.animation_descriptor_indices));
         };
-        // The loader disables id 41 by clearing the id-40 selection. A whole
-        // load then drops id 41 as well, but a streamed load still lists its
-        // metadata; either way a record borrowing from id 41 composes
-        // ungated, so the same PRL composes alike in every mode.
-        let static_terms = inputs
-            .static_terms
-            .filter(|_| !inputs.entity_shadow_lights.is_empty());
+        let static_terms = inputs.live_static_terms();
         let selection: HashMap<u32, u32> = inputs
             .entity_shadow_lights
             .iter()
@@ -828,9 +834,11 @@ impl MoverChannelLayout {
         Ok(writes)
     }
 
-    /// Cell `plan`'s payload for a write: held in `section`, or from the
-    /// cell's streamed id-50 row.
-    pub(in crate::render) fn plan_payload<'a>(
+    /// Cell `plan`'s direct payload for a write: held in `section`, or from
+    /// the cell's streamed id-50 row. A held direct payload reads nothing
+    /// else, so a bounce block streaming beside it, its tiles absent from
+    /// `streamed` or never brought, never stops the write.
+    pub(in crate::render) fn plan_direct_payload<'a>(
         &self,
         section: &'a MoverProbeChannelSection,
         slices: &[MoverCellSlices],
@@ -838,6 +846,9 @@ impl MoverChannelLayout {
         streamed: Option<MoverStreamedRow<'a>>,
     ) -> Result<MoverCellPayload<'a>, MoverChannelError> {
         let position = self.cells[plan].position;
+        if section.payload_held(MoverChannelBlock::Direct) {
+            return Ok(held_direct_payload(section, &slices[position]));
+        }
         section
             .cell_payload(position, &slices[position], streamed)
             .map_err(|error| MoverChannelError(error.to_string()))

@@ -103,7 +103,8 @@ pub(crate) fn build_full_renderer(
         probe_occlusion_enabled,
         super::mover_channel::MoverChannelResources::empty(device),
         &mut sh_allocation_ledger,
-    );
+    )
+    .expect("the no-level SH volume has no mover depth to bind");
 
     // The no-level SDF atlas exists only for its bind-group layout.
     let sdf_atlas_resources = SdfAtlasResources::new(device, queue, None);

@@ -5,11 +5,14 @@
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
 use super::*;
+use crate::render::MoverTravel;
 use crate::render::mover_channel::depth_test_support::{
     depth_section, ramp_tile, stored_depth_section, through_base, uniform_tile,
 };
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_volume::OctahedralShProbe;
+
+use super::super::state::MoverTBlock;
 
 struct Plan {
     depth: MoverDepthTiles,
@@ -21,13 +24,20 @@ struct Plan {
 }
 
 impl Plan {
-    /// `section` bound after `id59` id-59 tiles, which tile `id59_probes`.
+    /// `section` bound after `id59` id-59 tiles, which tile `id59_probes`;
+    /// every untiled probe's averaged moments are zero.
     fn new(section: &MoverProbeChannelSection, id59_probes: &[u32]) -> Self {
         let id59 = ProbeDepthTilesSection {
             probe_indices: id59_probes.to_vec(),
             texels: vec![[0, 0]; id59_probes.len() * PROBE_DEPTH_TILE_TEXELS],
         };
-        Self::with_bases(section, &id59, &[])
+        let probes = section
+            .depth_records
+            .iter()
+            .map(|record| record.probe_index as usize + 1)
+            .max()
+            .unwrap_or(0);
+        Self::with_bases(section, &id59, &vec![averaged(0.0, 0.0); probes])
     }
 
     /// `section` bound after `id59`'s tiles, over the id-34 `probes` an
@@ -41,15 +51,17 @@ impl Plan {
         let mut depth = MoverDepthTiles::new(Some(section), &ids).expect("the depth block loads");
         let live = depth.live_tile_count();
         let references = ProbeDepthTileReferences::from_section(Some(id59), live);
-        depth.bind(
-            id59.tile_count() as u32,
-            references.texture_layout().expect("tiles lay out"),
-            &references,
-            DepthBases {
-                id59: Some(id59),
-                probes,
-            },
-        );
+        depth
+            .bind(
+                id59.tile_count() as u32,
+                references.texture_layout().expect("tiles lay out"),
+                &references,
+                DepthBases {
+                    id59: Some(id59),
+                    probes,
+                },
+            )
+            .expect("every probe has a base");
         Self {
             depth,
             t: vec![-1.0; ids.len()],
@@ -346,6 +358,80 @@ fn an_abandoned_plan_emits_its_reference_moves_again() {
     assert_eq!(plan.references, [(5, None)]);
 }
 
+/// One frame of the live-tile step as `MoverChannelResources` drives it:
+/// the t′ block's changes plan the frame, the first `land` reference moves
+/// land in `texels` and the rest fail. A frame whose moves all land
+/// commits; one that fails abandons both halves.
+fn step(
+    depth: &mut MoverDepthTiles,
+    block: &mut MoverTBlock,
+    texels: &mut std::collections::BTreeMap<u32, Option<u16>>,
+    states: &[MoverTravel],
+    land: usize,
+) -> Vec<ReferenceChange> {
+    block.set_states(states);
+    let (t, changed) = block.depth_changes();
+    let references = depth.plan(t, changed, |_, _, _| {}).to_vec();
+    for &(probe, tile) in references.iter().take(land) {
+        texels.insert(probe, tile);
+    }
+    if land >= references.len() {
+        block.commit_depth_changes();
+    } else {
+        depth.abandon_plan();
+        block.forget_depth_changes();
+    }
+    references
+}
+
+/// A reference move fails after another landed, and the mover's state is
+/// gone by the next frame, which is the t′ the slot was last written from.
+/// The next frame still replans and moves every probe of the abandoned plan
+/// back to its base, the landed one included, so no probe keeps a live tile
+/// while no mover has state.
+#[test]
+fn a_partial_landing_then_no_state_returns_every_probe_to_its_base() {
+    let section = depth_section(vec![
+        (1, 5, uniform_tile(1.0, 2.0), uniform_tile(2.0, 5.0)),
+        (1, 9, uniform_tile(1.0, 2.0), uniform_tile(2.0, 5.0)),
+    ]);
+    let mut plan = Plan::new(&section, &[]);
+    let mut block = MoverTBlock::new(&section.mover_ids());
+    // Each probe's reference in the moment texels; absent is its base.
+    let mut texels = std::collections::BTreeMap::new();
+    let state = [MoverTravel {
+        mover_id: 1,
+        t: 0.5,
+    }];
+    let moves = step(&mut plan.depth, &mut block, &mut texels, &state, 1);
+    assert_eq!(moves, [(5, Some(0)), (9, Some(1))]);
+    assert_eq!(texels.get(&5), Some(&Some(0)), "probe 5's move landed");
+    assert_eq!(texels.get(&9), None, "probe 9's failed");
+
+    let moves = step(&mut plan.depth, &mut block, &mut texels, &[], usize::MAX);
+    assert_eq!(
+        moves,
+        [(5, None), (9, None)],
+        "both moves back, landed or not"
+    );
+    assert!(
+        texels.values().all(Option::is_none),
+        "every probe at its base"
+    );
+    let moves = step(&mut plan.depth, &mut block, &mut texels, &[], usize::MAX);
+    assert!(moves.is_empty(), "nothing left to move");
+
+    // The same failure, then the same t′ again: both moves are emitted.
+    let moves = step(&mut plan.depth, &mut block, &mut texels, &state, 1);
+    assert_eq!(moves.len(), 2);
+    let moves = step(&mut plan.depth, &mut block, &mut texels, &state, usize::MAX);
+    assert_eq!(moves, [(5, Some(0)), (9, Some(1))]);
+    assert_eq!(
+        texels.values().copied().collect::<Vec<_>>(),
+        [Some(0), Some(1)]
+    );
+}
+
 /// A frame with no change writes nothing; a travelling mover
 /// writes only live tiles its records cover; a tile only a held mover
 /// covers stays untouched; a shared tile is rewritten at the held t′.
@@ -440,6 +526,84 @@ fn overlapping_differences_clamp_to_a_valid_moment_set() {
     // Mover 1 at its D₁, the base, adds nothing: mover 2's D₁ bit for bit.
     plan.frame(&[(0, 1.0)], &[0]);
     assert_eq!(plan.tile(0), &uniform_tile(1.0, 1.5)[..]);
+}
+
+/// A far texel the bake saturated (`E[d²]` stored as the largest finite
+/// f16, 65504, below `E[d]²`) passes the several-mover sum exactly: two
+/// movers at t′ = 0.5 return the base bit for bit, never an infinite `E[d²]`
+/// the sampler would turn into NaN. Overlapping far differences stay finite.
+#[test]
+fn a_saturated_far_texel_stays_finite_under_several_movers() {
+    let far = uniform_tile(300.0, 65504.0);
+    assert_eq!(
+        far[0],
+        [f32_to_f16_bits(300.0), 0x7bff],
+        "the bake's saturated texel"
+    );
+    let section = depth_section(vec![
+        (1, 6, uniform_tile(1.0, 2.0), uniform_tile(2.0, 5.0)),
+        (2, 6, uniform_tile(3.0, 10.0), uniform_tile(0.5, 1.0)),
+    ]);
+    // Probe 6 is tiled by id 59 with the saturated texel: live tile 1.
+    let id59 = ProbeDepthTilesSection {
+        probe_indices: vec![6],
+        texels: far.clone(),
+    };
+    let mut plan = Plan::with_bases(&section, &id59, &[]);
+    plan.frame(&[(0, 0.5), (1, 0.5)], &[0, 1]);
+    assert_eq!(plan.tile(1), &far[..], "the saturated base bit for bit");
+
+    // Both movers close on far texels over a nearer base: each adds (200,
+    // 55504), so the sum passes the largest finite f16 in both moments.
+    let near = uniform_tile(100.0, 10000.0);
+    let section = depth_section(vec![
+        (1, 6, far.clone(), near.clone()),
+        (2, 6, far.clone(), near.clone()),
+    ]);
+    let mut probes = vec![averaged(0.0, 0.0); 7];
+    probes[6] = averaged(100.0, 10000.0);
+    let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+    for t in [0.0, 0.1, 0.25, 0.4] {
+        plan.frame(&[(0, t), (1, t)], &[0, 1]);
+        for texel in plan.tile(0) {
+            for &half in texel {
+                assert_ne!(half & 0x7c00, 0x7c00, "t′ = {t}: a non-finite moment");
+            }
+        }
+    }
+    plan.frame(&[(0, 0.0), (1, 0.0)], &[0, 1]);
+    assert_eq!(plan.tile(0), &uniform_tile(500.0, 65504.0)[..]);
+}
+
+/// An untiled probe outside the level's id-34 probes has no base to blend
+/// through: binding refuses it, never blending toward zero moments. A bound
+/// level holds exactly its stored and base tiles, the host ledger's row.
+#[test]
+fn a_probe_with_no_base_refuses_the_bind() {
+    let section = depth_section(vec![(1, 9, uniform_tile(1.0, 2.0), uniform_tile(2.0, 5.0))]);
+    let id59 = no_id59();
+    let mut depth = MoverDepthTiles::new(Some(&section), &section.mover_ids()).unwrap();
+    let references = ProbeDepthTileReferences::from_section(Some(&id59), depth.live_tile_count());
+    let probes = vec![averaged(1.0, 1.0); 9];
+    let error = depth
+        .bind(
+            0,
+            references.texture_layout().expect("tiles lay out"),
+            &references,
+            DepthBases {
+                id59: Some(&id59),
+                probes: &probes,
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("probe 9"), "{error}");
+
+    let plan = Plan::with_bases(&section, &id59, &[averaged(1.0, 1.0); 10]);
+    assert_eq!(
+        (plan.depth.capacities()[4] * size_of::<[f32; 2]>()) as u64,
+        plan.depth.host_bytes(),
+        "the CPU-held tiles are reserved exactly"
+    );
 }
 
 /// Runs of live tiles coalesce while consecutive on one tile row and break
@@ -569,17 +733,19 @@ fn a_travelling_movers_live_tile_plan_cost_on_a_real_map() {
     let mut depth = MoverDepthTiles::new(Some(section), &ids).expect("the depth block loads");
     let live = depth.live_tile_count();
     let references = ProbeDepthTileReferences::from_section(id59, live);
-    depth.bind(
-        id59.map_or(0, |tiles| tiles.tile_count() as u32),
-        references.texture_layout().expect("tiles lay out"),
-        &references,
-        DepthBases {
-            id59,
-            probes: world
-                .sh_volume()
-                .map_or(&[], |volume| volume.probes.as_slice()),
-        },
-    );
+    depth
+        .bind(
+            id59.map_or(0, |tiles| tiles.tile_count() as u32),
+            references.texture_layout().expect("tiles lay out"),
+            &references,
+            DepthBases {
+                id59,
+                probes: world
+                    .sh_volume()
+                    .map_or(&[], |volume| volume.probes.as_slice()),
+            },
+        )
+        .expect("every probe has a base");
     let mut t = vec![0.0f32; ids.len()];
     let all: Vec<u32> = (0..ids.len() as u32).collect();
     depth.plan(&t, &all, |_, _, _| {});

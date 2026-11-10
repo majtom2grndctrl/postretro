@@ -459,3 +459,37 @@ fn a_streamed_rewrite_refuses_a_probe_outside_the_lattice_or_invalid() {
     );
     assert_eq!(state.check_depth_tile_probe(TILED), Ok(()));
 }
+
+/// A texel flush that fails keeps every queued probe for the next flush,
+/// the ones it reached before the failure included; one that succeeds
+/// empties the queue. CPU-only: a probe whose texel is not sampleable needs
+/// no upload, and one past the lattice fails the flush.
+#[test]
+fn a_failed_texel_flush_keeps_its_queue_for_the_next() {
+    let mut state = SyntheticMap::new([8, 4, 4], [1, 1, 1]).state();
+    let references =
+        postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences::from_section(None, 0);
+    state.queue_depth_tile_texel(TILED);
+    state.queue_depth_tile_texel(1000);
+    let mut uploads = crate::render::uploads::StagedUploads::from_scratch(Vec::new(), 0);
+    assert!(
+        state
+            .flush_depth_tile_texels(&mut uploads, &references)
+            .is_err(),
+        "a probe past the lattice fails the flush"
+    );
+    assert_eq!(
+        state
+            .pending_depth_tile_texels
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [TILED, 1000],
+        "nothing queued is lost"
+    );
+    state.pending_depth_tile_texels.remove(&1000);
+    state
+        .flush_depth_tile_texels(&mut uploads, &references)
+        .expect("the rest flushes");
+    assert!(state.pending_depth_tile_texels.is_empty());
+}

@@ -54,7 +54,9 @@ impl ShResidencyState {
     /// retained id-34 base metadata (the id-50 decode in
     /// `level-format` refuses a patch whose moments disagree with id 34, so
     /// promotion wrote the same bits), B/A from
-    /// the sampled word, G from `references`.
+    /// the sampled word, G from `references`. The queue empties only once
+    /// every texel is staged: a failure keeps it whole for the next flush,
+    /// and restaging a texel that did land writes the same bits.
     pub(super) fn flush_depth_tile_texels(
         &mut self,
         uploads: &mut StagedUploads,
@@ -63,9 +65,8 @@ impl ShResidencyState {
         if self.pending_depth_tile_texels.is_empty() {
             return Ok(());
         }
-        let queued = std::mem::take(&mut self.pending_depth_tile_texels);
-        let mut updates = Vec::with_capacity(queued.len());
-        for dense in queued {
+        let mut updates = Vec::with_capacity(self.pending_depth_tile_texels.len());
+        for &dense in &self.pending_depth_tile_texels {
             let index = dense as usize;
             let word = *self
                 .sampled_words
@@ -92,6 +93,7 @@ impl ShResidencyState {
                 references,
             )?;
         }
+        self.pending_depth_tile_texels.clear();
         Ok(())
     }
 }

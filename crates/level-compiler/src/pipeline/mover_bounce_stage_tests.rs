@@ -463,11 +463,7 @@ fn the_sh_base_progress_ends_at_its_total_on_every_early_break() {
     ];
     for (case, fixture, fill, depth_cap) in &cases {
         if depth_cap.is_some() {
-            assert_eq!(
-                fixture.kinematic_movers.len(),
-                2,
-                "{case}: two mover jobs"
-            );
+            assert_eq!(fixture.kinematic_movers.len(), 2, "{case}: two mover jobs");
         }
         let check = |mode: &str, (completed, total): (usize, Option<usize>)| {
             assert_eq!(

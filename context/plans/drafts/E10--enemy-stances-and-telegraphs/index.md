@@ -95,7 +95,7 @@ offense: {
   transitions: merge(
     {
       approach: [
-        // a heavy slam waits its class; the sweep's jab does not
+        // a slam also waits on `heavy`; the sweep's jab only on `melee`
         { to: overhead.entry, when: attackTurnFree("slam").and(brain.targetDistance.le(3.5)).and(brain.activityRoll.lt(0.5)) },
         { to: sweep.entry, when: attackTurnFree("jab").and(brain.targetDistance.le(3.5)) },
       ],

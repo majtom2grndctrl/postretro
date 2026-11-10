@@ -39,9 +39,26 @@ impl ProbeGridLayout {
 /// Build the probe-grid layout from geometry + probe spacing: the grid every
 /// whole-volume bake gathers over.
 pub(crate) fn probe_grid_layout(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ProbeGridLayout {
-    let probe_spacing_meters = config.probe_spacing;
+    probe_grid_layout_of(
+        inputs.geometry,
+        inputs.tree,
+        inputs.exterior_leaves,
+        config.probe_spacing,
+    )
+}
+
+/// [`probe_grid_layout`] from its inputs alone: the world faces, the BSP
+/// tree and exterior leaves that classify each probe, and the spacing. No
+/// ray is traced, so the SH working-set gate places the grid before any SH
+/// work.
+pub(crate) fn probe_grid_layout_of(
+    geometry: &GeometryResult,
+    tree: &BspTree,
+    exterior_leaves: &HashSet<usize>,
+    probe_spacing_meters: f32,
+) -> ProbeGridLayout {
     let cell_size = [probe_spacing_meters; 3];
-    if inputs.geometry.geometry.vertices.is_empty() {
+    if geometry.geometry.vertices.is_empty() {
         return ProbeGridLayout {
             world_min: DVec3::ZERO,
             dims: [0, 0, 0],
@@ -52,7 +69,7 @@ pub(crate) fn probe_grid_layout(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> Pr
         };
     }
 
-    let (world_min, world_max) = world_aabb(inputs.geometry);
+    let (world_min, world_max) = world_aabb(geometry);
     let dims = grid_dimensions(world_min, world_max, probe_spacing_meters);
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
 
@@ -63,7 +80,7 @@ pub(crate) fn probe_grid_layout(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> Pr
     let validity: Vec<u8> = probe_positions
         .iter()
         .map(|&p| {
-            if probe_is_valid(inputs.tree, inputs.exterior_leaves, p) {
+            if probe_is_valid(tree, exterior_leaves, p) {
                 1
             } else {
                 0

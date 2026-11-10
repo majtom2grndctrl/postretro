@@ -89,6 +89,7 @@ pub(crate) fn build_full_renderer(
             depth_tiles: None,
             sh: None,
             stream_base_present: false,
+            stream_base_probes: None,
             stream_animation_descriptors: None,
             indirect_delta_present: false,
             direct: None,
@@ -100,8 +101,10 @@ pub(crate) fn build_full_renderer(
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
         probe_occlusion_enabled,
+        super::mover_channel::MoverChannelResources::empty(device),
         &mut sh_allocation_ledger,
-    );
+    )
+    .expect("the no-level SH volume has no mover depth to bind");
 
     // The no-level SDF atlas exists only for its bind-group layout.
     let sdf_atlas_resources = SdfAtlasResources::new(device, queue, None);
@@ -345,6 +348,7 @@ pub(crate) fn build_full_renderer(
         kinematic_mover_draws: Vec::new(),
         kinematic_mover_shadow_draws: Vec::new(),
         mover_occluder_aabbs: Vec::new(),
+        mover_travel: Default::default(),
         ambient_floor,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,

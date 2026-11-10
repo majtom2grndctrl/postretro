@@ -210,6 +210,17 @@ pub struct MapKinematicMover {
     pub crush_sound: Option<String>,
     /// FGD `crush_damage_type`: the registered damage-type name a crush deals.
     pub crush_damage_type: Option<String>,
+    /// FGD `light_ramp_start` and `light_ramp_end`: the travel window, as path
+    /// fractions with `0 <= start < end <= 1`, that the mover's light state
+    /// ramps across (defaults 0 and 1). They reach runtime through the probe
+    /// channel's ramp record (id 57), never through id 43.
+    pub light_ramp_start: f32,
+    pub light_ramp_end: f32,
+    /// FGD `light_bounces`: how many static bounces the mover probe channel
+    /// re-bakes with this mover posed, bounce one first; later bounces keep
+    /// the SH base's. `None` (absent) re-bakes every bounce; 0 re-bakes none
+    /// and keeps only the posed probe depth.
+    pub light_bounces: Option<u32>,
     pub move_mode: KinematicMoveMode,
     pub start_on_spawn: bool,
     pub brush_volumes: Vec<BrushVolume>,

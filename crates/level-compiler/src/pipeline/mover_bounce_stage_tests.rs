@@ -1,0 +1,962 @@
+// The SH base gate against the mover bounce half it prices:
+// the measured peak of the posed scenes, the bounce bake and the states, cold
+// and warm, and the patch cache's single drop after the mover bake.
+// See: context/lib/build_pipeline.md §Compiler pipeline (working-set gate)
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
+
+use super::{BounceHalfPlan, BouncePlanInputs, plan_bounce_half};
+use crate::bake_control::BakeControl;
+use crate::cache::StageCache;
+use crate::fixture_pipeline::{FixturePipeline, fixture_path, load_map};
+use crate::governor::Governor;
+use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
+use crate::live_bytes::{Report, measured};
+use crate::mover_light_gate::MoverPoses;
+use crate::mover_probe_channel::{MoverBounceRequest, PosedMovers};
+use crate::reporter::StageProgress;
+use crate::sh_bake::{ShBakeCtx, ShConfig, animation_table_bytes, static_light_refs};
+use crate::surface_radiance::{
+    DEFAULT_BOUNCE_FILL, MoverBounceOutcome, ShBase, bake_sh_base_with_movers, plan_sh_base,
+    stage_events,
+};
+use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
+
+/// The closet with its door's `light_bounces`, absent or `n`, written under
+/// `dir`.
+fn closet(dir: &Path, bounces: Option<u32>) -> PathBuf {
+    let text = std::fs::read_to_string(fixture_path("mover-closet")).expect("closet map");
+    let text = match bounces {
+        Some(n) => text.replace(
+            "\"name\" \"closet_door\"",
+            &format!("\"name\" \"closet_door\"\n\"light_bounces\" \"{n}\""),
+        ),
+        None => text,
+    };
+    let path = dir.join(format!("closet-{bounces:?}.map"));
+    std::fs::write(&path, text).expect("write closet");
+    path
+}
+
+/// Run `f` over the fixture's SH bake context and mover poses.
+fn with_ctx<R>(fixture: &FixturePipeline, f: impl FnOnce(&ShBakeCtx<'_>, &MoverPoses) -> R) -> R {
+    let static_lights = StaticBakedLights::from_lights(&fixture.lights);
+    let animated_lights = AnimatedBakedLights::from_lights(&fixture.lights);
+    let ctx = ShBakeCtx {
+        bounce_materials: None,
+        bvh: &fixture.bvh,
+        primitives: &fixture.primitives,
+        geometry: &fixture.geometry,
+        tree: &fixture.tree,
+        exterior_leaves: &fixture.exterior_leaves,
+        static_lights: &static_lights,
+        animated_lights: &animated_lights,
+        total_light_count: fixture.lights.len(),
+    };
+    let poses = MoverPoses::resolve(&fixture.kinematic_movers, &fixture.kinematic_waypoints);
+    f(&ctx, &poses)
+}
+
+const CONFIG: ShConfig = ShConfig { probe_spacing: 1.0 };
+
+/// The bounce half's plan as the pipeline makes it.
+fn plan_half(
+    fixture: &FixturePipeline,
+    ctx: &ShBakeCtx<'_>,
+    poses: &MoverPoses,
+    fill: f32,
+) -> BounceHalfPlan {
+    let direct_lights: Vec<_> = ctx
+        .static_lights
+        .entries()
+        .iter()
+        .map(|entry| entry.light)
+        .chain(
+            ctx.animated_lights
+                .entries()
+                .iter()
+                .map(|entry| entry.light),
+        )
+        .collect();
+    let posed = PosedMovers::resolve(
+        poses,
+        &fixture.kinematic_movers,
+        &fixture.geometry.texture_names,
+    )
+    .expect("the fixture's movers pose");
+    plan_bounce_half(BouncePlanInputs {
+        poses,
+        posed: &posed,
+        movers: &fixture.kinematic_movers,
+        geometry: &fixture.geometry,
+        tree: &fixture.tree,
+        exterior_leaves: &fixture.exterior_leaves,
+        probe_spacing: CONFIG.probe_spacing,
+        bounce_fill: fill,
+        direct_lights: &direct_lights,
+        uncompressed: false,
+        tile_cap: MAX_PROBE_DEPTH_TILES,
+    })
+    .expect("the bounce half plans")
+}
+
+/// The SH base gate, priced with `plan`, and the SH base bake with its
+/// request.
+fn bake_base(
+    ctx: &ShBakeCtx<'_>,
+    plan: &BounceHalfPlan,
+    request: &MoverBounceRequest,
+    fill: f32,
+    cache: Option<&StageCache>,
+) -> (u64, ShBase, MoverBounceOutcome) {
+    let (handoff, mut projection) = plan_sh_base(
+        ctx.geometry,
+        &static_light_refs(ctx),
+        animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+        CONFIG.probe_spacing,
+        fill,
+        u64::MAX,
+    )
+    .expect("priced");
+    projection.price_movers(&plan.cost);
+    let (base, outcome) = bake_sh_base_with_movers(
+        ctx,
+        &CONFIG,
+        handoff,
+        &NO_EMBEDDED_EMITTERS,
+        cache,
+        &BakeControl::unrestricted(),
+        MAX_PROBE_DEPTH_TILES,
+        request,
+    );
+    (projection.estimated_peak_bytes, base, outcome)
+}
+
+/// What one measured bake of the bounce half saw.
+struct Measured {
+    predicted: u64,
+    report: Report,
+    events: Vec<String>,
+    logs: Vec<String>,
+}
+
+/// Plan the bounce half and the SH base gate as the pipeline does, then
+/// bake the SH base with the movers, all on one measured pool of `threads`.
+fn bake(
+    fixture: &FixturePipeline,
+    fill: f32,
+    cache: Option<&StageCache>,
+    threads: usize,
+) -> Measured {
+    with_ctx(fixture, |ctx, poses| {
+        let ((predicted, events, logs), report) = measured(threads, || {
+            // The measured pool's thread runs the stage: capture its lines.
+            let logs = postretro_test_log_capture::LogCapture::start();
+            stage_events::take();
+            let plan = plan_half(fixture, ctx, poses, fill);
+            assert_eq!(plan.request.jobs.len(), 1, "the closet's door is analysed");
+            let (predicted, base, outcome) = bake_base(ctx, &plan, &plan.request, fill, cache);
+            drop((base, outcome, plan));
+            let logs = logs.records().into_iter().map(|r| r.message).collect();
+            (predicted, stage_events::take(), logs)
+        });
+        Measured {
+            predicted,
+            report,
+            events,
+            logs,
+        }
+    })
+}
+
+fn open(dir: &Path) -> StageCache {
+    StageCache::new(dir).expect("cache")
+}
+
+// On the closet, with the door re-baking every bounce, none
+// (depth only) or two, at fill 1 and 0, on one worker and four, the SH base
+// gate's prediction with the mover channel priced covers the measured peak
+// cold, warm over an empty cache, warm on an id-34 hit whose door misses its
+// memo (another `light_bounces` primed the cache), and warm on a full hit.
+// Cold, the mover bake finishes before the patch cache drops, which it does
+// once.
+#[test]
+fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let mut rows = Vec::new();
+    for (fill, bounces, other) in [
+        (DEFAULT_BOUNCE_FILL, None, Some(2)),
+        (DEFAULT_BOUNCE_FILL, Some(0), None),
+        (DEFAULT_BOUNCE_FILL, Some(2), Some(0)),
+        (0.0, None, Some(0)),
+    ] {
+        let fixture = load_map(&closet(maps.path(), bounces));
+        let primer = load_map(&closet(maps.path(), other));
+        for threads in [1, 4] {
+            let cold = bake(&fixture, fill, None, threads);
+            let order: Vec<&str> = cold
+                .events
+                .iter()
+                .map(String::as_str)
+                .filter(|event| {
+                    [
+                        stage_events::MOVER_BOUNCE_DONE,
+                        stage_events::PATCH_CACHE_DROPPED,
+                    ]
+                    .contains(event)
+                })
+                .collect();
+            assert_eq!(
+                order,
+                [
+                    stage_events::MOVER_BOUNCE_DONE,
+                    stage_events::PATCH_CACHE_DROPPED
+                ],
+                "cold: the mover bake runs before the patch cache's one drop"
+            );
+            let empty = tempfile::tempdir().expect("cache");
+            let warm_empty = bake(&fixture, fill, Some(&open(empty.path())), threads);
+            let full_hit = bake(&fixture, fill, Some(&open(empty.path())), threads);
+            assert!(
+                full_hit
+                    .logs
+                    .iter()
+                    .any(|line| line.contains("mover_probe_bounce hit (1 mover(s))")),
+                "{:?}",
+                full_hit.logs
+            );
+            let primed = tempfile::tempdir().expect("cache");
+            bake(&primer, fill, Some(&open(primed.path())), threads);
+            let memo_miss = bake(&fixture, fill, Some(&open(primed.path())), threads);
+            assert!(
+                memo_miss
+                    .logs
+                    .iter()
+                    .any(|line| line.contains("sh_base_volume hit"))
+                    && memo_miss
+                        .logs
+                        .iter()
+                        .any(|line| line.contains("mover_probe_bounce miss (1 of 1")),
+                "an id-34 hit whose door re-bakes: {:?}",
+                memo_miss.logs
+            );
+            for (mode, measured) in [
+                ("cold", cold),
+                ("warm empty", warm_empty),
+                ("id-34 hit, memo miss", memo_miss),
+                ("full hit", full_hit),
+            ] {
+                rows.push(format!(
+                    "fill {fill} bounces {bounces:?} x{threads} {mode:<22} predicted {:>10} \
+                     measured {:>10} ({:.2}x) at peak {:?}",
+                    measured.predicted,
+                    measured.report.peak,
+                    measured.predicted as f64 / measured.report.peak.max(1) as f64,
+                    measured.report.at_peak,
+                ));
+                assert!(
+                    measured.predicted >= measured.report.peak,
+                    "the gate predicts less than the bake holds: {}",
+                    rows.last().expect("row")
+                );
+            }
+        }
+    }
+    for row in &rows {
+        eprintln!("{row}");
+    }
+}
+
+// Over budget, the SH base gate refuses the mover-priced
+// projection by name, where the same map priced without its mover is
+// admitted.
+#[test]
+fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet(maps.path(), None));
+    with_ctx(&fixture, |ctx, poses| {
+        let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let gate = |budget: u64| {
+            plan_sh_base(
+                &fixture.geometry,
+                &static_light_refs(ctx),
+                animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+                1.0,
+                DEFAULT_BOUNCE_FILL,
+                budget,
+            )
+            .expect("priced")
+            .1
+        };
+        let mut priced = gate(u64::MAX);
+        let static_peak = priced.estimated_peak_bytes;
+        priced.price_movers(&plan.cost);
+        let mover_peak = priced.estimated_peak_bytes;
+        assert!(mover_peak > static_peak, "{static_peak} → {mover_peak}");
+
+        let budget = mover_peak - 1;
+        let mut projection = gate(budget);
+        projection
+            .admit()
+            .expect("without the mover, the budget admits");
+        projection.price_movers(&plan.cost);
+        let error = projection
+            .admit()
+            .expect_err("the mover channel exceeds the budget");
+        let message = error.to_string();
+        assert!(
+            message.contains("SH base working-set gate refused before patch shading")
+                && message.contains(&format!("estimated peak {mover_peak} bytes"))
+                && message.contains("mover bounce"),
+            "{message}"
+        );
+    });
+}
+
+/// The SH base bake with the fixture's movers, on a control that reports
+/// progress: what it completed, and the total it published.
+fn progress_of(fixture: &FixturePipeline, cache: Option<&StageCache>) -> (usize, Option<usize>) {
+    progress_at(fixture, cache, DEFAULT_BOUNCE_FILL, None)
+}
+
+/// [`progress_of`] at bounce fill `fill`, with mover depth's tile range
+/// lowered to `depth_cap` where given.
+fn progress_at(
+    fixture: &FixturePipeline,
+    cache: Option<&StageCache>,
+    fill: f32,
+    depth_cap: Option<u32>,
+) -> (usize, Option<usize>) {
+    with_ctx(fixture, |ctx, poses| {
+        let mut plan = plan_half(fixture, ctx, poses, fill);
+        if let Some(cap) = depth_cap {
+            plan.request.depth_cap = cap;
+        }
+        let (handoff, _) = plan_sh_base(
+            ctx.geometry,
+            &static_light_refs(ctx),
+            animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+            CONFIG.probe_spacing,
+            fill,
+            u64::MAX,
+        )
+        .expect("priced");
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(usize::MAX, false)), &progress);
+        bake_sh_base_with_movers(
+            ctx,
+            &CONFIG,
+            handoff,
+            &NO_EMBEDDED_EMITTERS,
+            cache,
+            &control,
+            MAX_PROBE_DEPTH_TILES,
+            &plan.request,
+        );
+        (progress.completed(), progress.total())
+    })
+}
+
+// The SH base's progress ends exactly at the total it published, with the
+// door re-baking every bounce, none (depth only) or two: cold, warm over an
+// empty cache, on a full hit, and on an id-34 hit whose door misses its
+// memo. The mover bake counts in the total, a volume hit advances only what
+// the movers do not re-run, and a memo hit advances its job at once.
+#[test]
+fn the_sh_base_progress_ends_at_its_total_with_movers_cold_and_warm() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    for (bounces, other) in [(None, Some(2)), (Some(0), None), (Some(2), Some(0))] {
+        let fixture = load_map(&closet(maps.path(), bounces));
+        let primer = load_map(&closet(maps.path(), other));
+        let check = |mode: &str, (completed, total): (usize, Option<usize>)| {
+            assert_eq!(
+                Some(completed),
+                total,
+                "bounces {bounces:?} {mode}: progress ends at its total"
+            );
+        };
+        check("cold", progress_of(&fixture, None));
+        let cache = tempfile::tempdir().expect("cache");
+        check(
+            "warm empty",
+            progress_of(&fixture, Some(&open(cache.path()))),
+        );
+        check("full hit", progress_of(&fixture, Some(&open(cache.path()))));
+        let primed = tempfile::tempdir().expect("cache");
+        progress_of(&primer, Some(&open(primed.path())));
+        check(
+            "id-34 hit, memo miss",
+            progress_of(&fixture, Some(&open(primed.path()))),
+        );
+    }
+}
+
+/// The closet as [`closet`] writes it, then `edit`ed, under `dir`.
+fn closet_edited(
+    dir: &Path,
+    bounces: Option<u32>,
+    name: &str,
+    edit: impl FnOnce(String) -> String,
+) -> PathBuf {
+    let text = std::fs::read_to_string(closet(dir, bounces)).expect("closet map");
+    let edited = edit(text.clone());
+    assert_ne!(edited, text, "{name}: the edit applies");
+    let path = dir.join(format!("closet-{name}-{bounces:?}.map"));
+    std::fs::write(&path, edited).expect("write closet");
+    path
+}
+
+/// Every light black: bounce one is zero, so id 34's and every pose's
+/// later bounces stop at a zero source.
+fn dark(text: String) -> String {
+    text.replace("\"_color\" \"255 244 230\"", "\"_color\" \"0 0 0\"")
+}
+
+/// A second door, `closet_door_b`, the first's copy on its path: two
+/// mover jobs, so a tile range the first fills stops the bake before the
+/// second.
+fn two_doors(text: String) -> String {
+    let start = text
+        .find("{\n\"classname\" \"kinematic_mover\"")
+        .expect("the door");
+    let end = start
+        + text[start..]
+            .find("\n{\n\"classname\" \"kinematic_waypoint\"")
+            .expect("its waypoints")
+        + 1;
+    let door = text[start..end].replace("\"name\" \"closet_door\"", "\"name\" \"closet_door_b\"");
+    format!("{}{door}{}", &text[..end], &text[end..])
+}
+
+// The SH base's progress ends exactly at its total on each early break:
+// fill 0, where neither id 34 nor a pose gathers a later bounce; a dark
+// closet, whose zero bounce one stops id 34's and the pose's later bounces
+// at a zero source; and two doors under a tile range of zero, where the
+// first door's depth stops the bake before the second door's job runs.
+// Cold, warm over an empty cache, and on a full hit.
+#[test]
+fn the_sh_base_progress_ends_at_its_total_on_every_early_break() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let cases = [
+        ("fill 0", load_map(&closet(maps.path(), None)), 0.0, None),
+        (
+            "dark, posed zero source",
+            load_map(&closet_edited(maps.path(), Some(3), "dark", dark)),
+            DEFAULT_BOUNCE_FILL,
+            None,
+        ),
+        (
+            "depth cap, depth only",
+            load_map(&closet_edited(maps.path(), Some(0), "two-doors", two_doors)),
+            DEFAULT_BOUNCE_FILL,
+            Some(0),
+        ),
+        (
+            "depth cap, posed bounces",
+            load_map(&closet_edited(maps.path(), Some(2), "two-doors", two_doors)),
+            DEFAULT_BOUNCE_FILL,
+            Some(0),
+        ),
+    ];
+    for (case, fixture, fill, depth_cap) in &cases {
+        if depth_cap.is_some() {
+            assert_eq!(fixture.kinematic_movers.len(), 2, "{case}: two mover jobs");
+        }
+        let check = |mode: &str, (completed, total): (usize, Option<usize>)| {
+            assert_eq!(
+                Some(completed),
+                total,
+                "{case} {mode}: progress ends at its total"
+            );
+        };
+        check("cold", progress_at(fixture, None, *fill, *depth_cap));
+        let cache = tempfile::tempdir().expect("cache");
+        check(
+            "warm empty",
+            progress_at(fixture, Some(&open(cache.path())), *fill, *depth_cap),
+        );
+        check(
+            "full hit",
+            progress_at(fixture, Some(&open(cache.path())), *fill, *depth_cap),
+        );
+    }
+}
+
+/// The closet baked with its door's `light_bounces` at `bounces`, cold.
+fn closet_states(
+    maps: &Path,
+    bounces: Option<u32>,
+) -> (u32, Vec<crate::mover_probe_channel::MoverBounceStates>) {
+    let fixture = load_map(&closet(maps, bounces));
+    with_ctx(&fixture, |ctx, poses| {
+        let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let job_bounces = plan.request.jobs[0].bounces;
+        let (_, _, outcome) = bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
+        (job_bounces, outcome.movers)
+    })
+}
+
+// The `light_bounces` key: absent re-bakes id 34's every bounce (five at
+// fill 1) and a count past it bakes the same; two re-bakes two and keeps
+// the same closed-pose depth; zero stores no bounce entry, yet its
+// depth-only trace bins the same closed-pose depth as the full gather.
+#[test]
+fn light_bounces_zero_bakes_depth_alone_and_a_count_past_id_34s_bakes_id_34s() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let (every_n, every) = closet_states(maps.path(), None);
+    let (past_n, past) = closet_states(maps.path(), Some(99));
+    let (two_n, two) = closet_states(maps.path(), Some(2));
+    let (zero_n, zero) = closet_states(maps.path(), Some(0));
+    assert_eq!((every_n, past_n, two_n, zero_n), (5, 5, 2, 0));
+    assert_eq!(past, every, "a count past id 34's bakes id 34's");
+    assert!(!every[0].bounce.is_empty() && !every[0].depth.is_empty());
+    assert!(!two[0].bounce.is_empty());
+    assert_eq!(two[0].depth, every[0].depth, "depth does not depend on N");
+    assert!(zero[0].bounce.is_empty(), "zero stores no bounce entry");
+    assert_eq!(
+        zero[0].depth, every[0].depth,
+        "the depth-only trace bins the full gather's closed-pose depth"
+    );
+}
+
+/// The closet door made 2.8 m deep and lifted only 24 units at its open
+/// waypoint: the slab encloses valid probes in the doorway at both termini,
+/// and others at one.
+fn fat_door(text: String) -> String {
+    let start = text.find("// brush door_slab").expect("the door slab");
+    let end = start + text[start..].find("\n}\n").expect("its end");
+    let slab = text[start..end]
+        .replace(" 504 ", " 552 ")
+        .replace(" 488 ", " 440 ");
+    format!("{}{slab}{}", &text[..start], &text[end..])
+        .replace("\"origin\" \"320 496 168\"", "\"origin\" \"320 496 80\"")
+}
+
+// Enclosing terminus (owner, 2026-11-09): a terminus whose posed brushes
+// enclose a probe's position, inside one brush by at least the gather's
+// lift, stores no bounce state there, so the probe reads id 34 at it, and a
+// probe enclosed at both termini joins no bounce entry. Enclosure is
+// recomputed here from the solids' own half-spaces, never read from the
+// bake. Every lifted ray of an enclosed probe starts inside the pose, so
+// its depth is the dark tile (every ray at distance 0) at that terminus and
+// Chebyshev still rejects it at rest. The bounce masks stay tight: each
+// entry's stored masks are exactly its probes' stored termini, non-empty,
+// within the valid mask.
+#[test]
+fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
+    use std::collections::BTreeMap;
+
+    use postretro_level_format::probe_depth_tiles::bordered_tile;
+
+    use crate::mover_probe_channel::{BounceBlocks, MoverDirectBake, ProbeCells, enclosure_inset};
+    use crate::ray_traversal::RAY_EPSILON;
+    use crate::sh_bake::{TileRayTable, probe_gather_directions, vec3_from};
+
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet_edited(maps.path(), None, "fat-door", fat_door));
+    with_ctx(&fixture, |ctx, poses| {
+        let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let (_, _, outcome) = bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, None);
+        let [states] = outcome.movers.as_slice() else {
+            panic!("one door");
+        };
+        let posed = PosedMovers::resolve(
+            poses,
+            &fixture.kinematic_movers,
+            &fixture.geometry.texture_names,
+        )
+        .expect("the door poses");
+        let solids = &posed.movers()[0].solids;
+        let layout = crate::sh_bake::probe_grid_layout_of(
+            ctx.geometry,
+            ctx.tree,
+            ctx.exterior_leaves,
+            CONFIG.probe_spacing,
+        );
+        let directions = probe_gather_directions();
+        let dark = bordered_tile(&TileRayTable::new(&directions).interior(&[0.0; 256]));
+        let bounce: BTreeMap<u32, _> = states.bounce.iter().map(|p| (p.probe, p)).collect();
+        let depth: BTreeMap<u32, _> = states.depth.iter().map(|p| (p.probe, p)).collect();
+        let (mut both, mut one, mut other_stored, mut deep) = (0, 0, 0, 0);
+        let (mut band, mut band_dark) = (0, 0);
+        for (probe, position) in layout.probe_positions.iter().enumerate() {
+            if layout.validity[probe] == 0 {
+                continue;
+            }
+            let probe = probe as u32;
+            let position = vec3_from(*position);
+            // Enclosure from the solids' own half-spaces, inset by the lift.
+            let inset = enclosure_inset(position);
+            let enclosed = [0, 1].map(|k| solids[k].contains_by(position, inset));
+            let lifted = [0, 1].map(|k| {
+                directions
+                    .iter()
+                    .all(|&dir| solids[k].contains(position + dir * RAY_EPSILON))
+            });
+            for k in 0..2 {
+                assert!(
+                    !enclosed[k] || lifted[k],
+                    "probe {probe} terminus {k}: enclosed, yet a lifted ray escapes"
+                );
+                if solids[k].contains(position) && !enclosed[k] {
+                    band += 1;
+                    band_dark += usize::from(lifted[k]);
+                }
+            }
+            if enclosed == [false, false] {
+                continue;
+            }
+            if let Some(entry) = bounce.get(&probe) {
+                for (k, (enclosed, stored)) in enclosed.iter().zip(entry.stored).enumerate() {
+                    assert!(
+                        !(*enclosed && stored),
+                        "probe {probe}: enclosed at terminus {k} yet stores its state"
+                    );
+                }
+                other_stored += 1;
+            }
+            if enclosed == [true, true] {
+                both += 1;
+                assert!(
+                    !bounce.contains_key(&probe),
+                    "probe {probe}: enclosed at both termini joins no bounce entry"
+                );
+            } else {
+                one += 1;
+            }
+            let record = depth
+                .get(&probe)
+                .unwrap_or_else(|| panic!("probe {probe}: an enclosing pose keeps its depth"));
+            let mut tiles = record.tiles.chunks_exact(dark.len());
+            for (k, (&stored, &enclosed)) in record.stored.iter().zip(&enclosed).enumerate() {
+                let tile = stored.then(|| tiles.next().expect("a stored tile"));
+                if !enclosed {
+                    continue;
+                }
+                let tile = tile.unwrap_or_else(|| {
+                    panic!("probe {probe}: the enclosing terminus {k} stores depth")
+                });
+                deep += 1;
+                assert_eq!(tile, dark.as_slice(), "probe {probe} terminus {k}: dark");
+            }
+        }
+        eprintln!(
+            "fat door: {both} probe(s) enclosed at both termini, {one} at one, \
+             {other_stored} of them storing the other terminus, {deep} dark tile(s); \
+             {band} (probe, terminus) pair(s) inside within the lift, {band_dark} with \
+             every lifted ray inside"
+        );
+        assert!(
+            both > 0 && one > 0 && deep > 0,
+            "the fixture encloses probes"
+        );
+
+        let cells = ProbeCells::of_layout(&layout);
+        let blocks = BounceBlocks::new(std::slice::from_ref(states), &cells);
+        assert!(!blocks.bounce.is_empty(), "the door still changes bounce");
+        for part in &blocks.bounce {
+            let [m0, m1] = part.entry.stored_probe_masks;
+            let valid = cells.valid_masks[part.cell as usize];
+            assert!(
+                m0 | m1 != 0 && (m0 | m1) & !valid == 0,
+                "cell {}",
+                part.cell
+            );
+        }
+        let section = crate::mover_probe_channel::channel_section(
+            &MoverDirectBake::default(),
+            &blocks,
+            &cells,
+            &crate::mover_probe_channel::MoverRamps::new(&fixture.kinematic_movers),
+            &crate::mover_probe_channel::MoverPayloadBars::default(),
+            |_, _, _| false,
+            |_| true,
+        )
+        .expect("assembles")
+        .expect("a section");
+        assert_eq!(
+            postretro_level_format::mover_probe_channel::MoverProbeChannelSection::from_bytes(
+                &section.to_bytes()
+            )
+            .expect("decodes"),
+            section
+        );
+    });
+}
+
+// A tile range the closet door's depth alone passes, well past it: the
+// bake keeps exactly one record past it, the reservation fails by name with
+// the door's whole count, exact, and the cut states are never memoized, so a
+// full-range build over that cache bakes the door's whole depth. A hit
+// stored under the full range is cut the same way.
+#[test]
+fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet(maps.path(), Some(0)));
+    with_ctx(&fixture, |ctx, poses| {
+        let full_plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let full_cache = tempfile::tempdir().expect("cache");
+        let (_, _, full) = bake_base(
+            ctx,
+            &full_plan,
+            &full_plan.request,
+            DEFAULT_BOUNCE_FILL,
+            Some(&open(full_cache.path())),
+        );
+        let carried = full.movers[0].depth.len();
+        assert!(carried >= 4, "the door carries depth: {carried}");
+        let cap = (carried / 2) as u32;
+        let mut narrow = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        narrow.request.depth_cap = cap;
+
+        let check = |mode: &str, cache: Option<&StageCache>| {
+            let (_, mut base, outcome) =
+                bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
+            assert_eq!(
+                outcome.movers[0].depth[..],
+                full.movers[0].depth[..cap as usize + 1],
+                "{mode}: one record past the range, the full bake's first"
+            );
+            assert_eq!(outcome.movers[0].depth_carried, carried, "{mode}");
+            let error = super::finish_bounce_half(
+                &outcome.movers,
+                outcome.stopped,
+                &base.section,
+                &mut base.depth_tiles,
+                cap,
+            )
+            .expect_err("the door alone passes the range")
+            .to_string();
+            assert!(
+                error.contains(&format!(
+                    "MoverProbeChannel (id 57): {carried} probes carry closed-pose depth"
+                )),
+                "{mode}: the door's whole count, exact: {error}"
+            );
+        };
+        let narrow_cache = tempfile::tempdir().expect("cache");
+        check("cold", None);
+        check("warm empty", Some(&open(narrow_cache.path())));
+        check("memo hit past the range", Some(&open(full_cache.path())));
+
+        let (_, _, rebuilt) = bake_base(
+            ctx,
+            &full_plan,
+            &full_plan.request,
+            DEFAULT_BOUNCE_FILL,
+            Some(&open(narrow_cache.path())),
+        );
+        assert_eq!(
+            rebuilt.movers, full.movers,
+            "the cut states were never memoized"
+        );
+    });
+}
+
+// Two doors on one path under a tile range the first alone passes: cold
+// stops before the second door and fails with a lower bound, since the
+// second never ran. Warm over an empty cache, and over a cache holding both
+// doors' full-range states, stop at the same door, hold no states for the
+// second, and fail with the same text.
+#[test]
+fn warm_and_cold_stop_at_the_same_mover_past_the_tile_range() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet_edited(maps.path(), Some(0), "two-doors", two_doors));
+    with_ctx(&fixture, |ctx, poses| {
+        let full_plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        assert_eq!(full_plan.request.jobs.len(), 2, "two mover jobs");
+        let primed = tempfile::tempdir().expect("cache");
+        let (_, _, full) = bake_base(
+            ctx,
+            &full_plan,
+            &full_plan.request,
+            DEFAULT_BOUNCE_FILL,
+            Some(&open(primed.path())),
+        );
+        assert!(!full.stopped && full.movers.len() == 2);
+        let carried = full.movers[0].depth_carried;
+        assert!(carried >= 4, "the door carries depth: {carried}");
+        let cap = (carried / 2) as u32;
+        let mut narrow = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        narrow.request.depth_cap = cap;
+
+        let run = |cache: Option<&StageCache>| {
+            let (_, mut base, outcome) =
+                bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
+            let error = super::finish_bounce_half(
+                &outcome.movers,
+                outcome.stopped,
+                &base.section,
+                &mut base.depth_tiles,
+                cap,
+            )
+            .expect_err("the first door alone passes the range")
+            .to_string();
+            (outcome.movers, outcome.stopped, error)
+        };
+        let (cold_movers, cold_stopped, cold_error) = run(None);
+        assert!(cold_stopped && cold_movers.len() == 1, "cold stops");
+        assert!(
+            cold_error.contains(&format!(
+                "at least {carried} probes carry closed-pose depth"
+            )),
+            "a lower bound: {cold_error}"
+        );
+        let empty = tempfile::tempdir().expect("cache");
+        for (mode, cache) in [
+            ("warm empty", empty.path()),
+            ("warm over full-range hits", primed.path()),
+        ] {
+            let (movers, stopped, error) = run(Some(&open(cache)));
+            assert_eq!(movers, cold_movers, "{mode}: the same states");
+            assert_eq!(
+                (stopped, &error),
+                (cold_stopped, &cold_error),
+                "{mode}: the same stop and error"
+            );
+        }
+    });
+}
+
+// A test-only re-bake of every valid probe at each terminus,
+// on the closet and the setpiece, differs from id 34 beyond the
+// affected-probe rule (each probe's own BC6H round-trip bar and the
+// perceptual floor), recomputed here from the kept tiles, exactly at the
+// probes each mover's bounce states store. A terminus that encloses the
+// probe reads id 34 by rule, so its re-bake joins neither set. Each stored probe
+// stores a terminus's state exactly where that terminus's re-bake leaves the
+// round-trip bar alone. Heavy: whole posed re-bakes.
+#[test]
+#[ignore = "re-bakes every valid probe at both termini of every mover; run on demand"]
+fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use crate::mover_probe_channel::{
+        BOUNCE_FLOOR_LEVELS, compact_slots, compact_tile, display_levels, enclosure_inset,
+        max_abs_difference, round_trip_error,
+    };
+    use crate::ray_traversal::RAY_EPSILON;
+    use crate::sh_bake::{probe_gather_directions, vec3_from};
+
+    for name in ["mover-closet", "mover-setpiece"] {
+        let fixture = crate::fixture_pipeline::load_fixture(name);
+        with_ctx(&fixture, |ctx, poses| {
+            let mut plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+            let mut request = std::mem::take(&mut plan.request);
+            assert!(!request.jobs.is_empty(), "{name} poses a mover");
+            // Production's states, then the same poses with every tile kept.
+            let (_, _, stored) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
+            request.keep_every_tile = true;
+            request.keep_poses = true;
+            let (_, base, outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
+            assert_eq!(outcome.poses.len(), 2 * request.jobs.len());
+            let layout = crate::sh_bake::probe_grid_layout_of(
+                ctx.geometry,
+                ctx.tree,
+                ctx.exterior_leaves,
+                CONFIG.probe_spacing,
+            );
+            let valid = layout.validity.iter().filter(|&&v| v != 0).count();
+            let slots = compact_slots(&layout);
+            // Enclosure from the posed solids' own half-spaces at the probe,
+            // inset by the gather's lift, never the bake's own flag.
+            let posed = PosedMovers::resolve(
+                poses,
+                &fixture.kinematic_movers,
+                &fixture.geometry.texture_names,
+            )
+            .expect("the poses resolve");
+            let directions = probe_gather_directions();
+            let mut enclosed_pairs = 0;
+            let dim = base.section.tile_dimension as usize;
+            let mut beyond: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+            let mut past_bar: BTreeMap<(u32, usize), BTreeSet<u32>> = BTreeMap::new();
+            for pose in &outcome.poses {
+                assert_eq!(
+                    pose.probes.len(),
+                    valid,
+                    "{name}: every valid probe re-baked"
+                );
+                let set = beyond.entry(pose.mover_id).or_default();
+                let bar_set = past_bar
+                    .entry((pose.mover_id, pose.terminus.index()))
+                    .or_default();
+                let solid = &posed
+                    .movers()
+                    .iter()
+                    .find(|mover| mover.mover_id == pose.mover_id)
+                    .expect("the pose's mover")
+                    .solids[pose.terminus.index()];
+                for probe in &pose.probes {
+                    let position = vec3_from(layout.probe_positions[probe.probe as usize]);
+                    if solid.contains_by(position, enclosure_inset(position)) {
+                        // An enclosing terminus reads id 34 (owner,
+                        // 2026-11-09): its dark re-bake is never a state.
+                        assert!(
+                            directions
+                                .iter()
+                                .all(|&dir| solid.contains(position + dir * RAY_EPSILON)),
+                            "{name} probe {}: enclosed, yet a lifted ray escapes",
+                            probe.probe
+                        );
+                        enclosed_pairs += 1;
+                        continue;
+                    }
+                    let tile = probe.tile.as_ref().expect("every tile kept");
+                    let id34 = compact_tile(&base.section, slots[probe.probe as usize] as usize);
+                    let difference = max_abs_difference(tile, &id34);
+                    if difference > round_trip_error(&id34, dim, false) {
+                        bar_set.insert(probe.probe);
+                        if display_levels(tile, &id34) > BOUNCE_FLOOR_LEVELS {
+                            set.insert(probe.probe);
+                        }
+                    }
+                }
+            }
+            eprintln!("{name}: {enclosed_pairs} enclosed (probe, terminus) pair(s) skipped");
+            assert_eq!(stored.movers.len(), request.jobs.len());
+            for states in &stored.movers {
+                let stored: BTreeSet<u32> = states.bounce.iter().map(|probe| probe.probe).collect();
+                let expected = beyond.remove(&states.mover_id).unwrap_or_default();
+                eprintln!(
+                    "{name} mover #{}: {} probe(s) past the rule, {} stored, of {valid} valid",
+                    states.mover_id,
+                    expected.len(),
+                    stored.len()
+                );
+                assert_eq!(
+                    stored, expected,
+                    "{name} mover #{}: stored probes are the full re-bake's beyond the rule",
+                    states.mover_id
+                );
+                let mut one_sided = 0;
+                for probe in &states.bounce {
+                    for terminus in 0..2 {
+                        let leaves_bar = past_bar
+                            .get(&(states.mover_id, terminus))
+                            .is_some_and(|set| set.contains(&probe.probe));
+                        assert_eq!(
+                            probe.stored[terminus], leaves_bar,
+                            "{name} mover #{} probe {} terminus {terminus}: a state is stored \
+                             exactly where it leaves the round-trip bar",
+                            states.mover_id, probe.probe
+                        );
+                    }
+                    one_sided += usize::from(probe.stored != [true, true]);
+                }
+                eprintln!(
+                    "{name} mover #{}: {one_sided} of {} stored probe(s) store one terminus",
+                    states.mover_id,
+                    states.bounce.len()
+                );
+            }
+            assert!(
+                beyond.values().all(BTreeSet::is_empty),
+                "{name}: {beyond:?}"
+            );
+        });
+    }
+}

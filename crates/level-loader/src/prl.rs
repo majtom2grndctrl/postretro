@@ -52,6 +52,10 @@ use postretro_level_format::lightmap::LightmapBlockIndex;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::map_entity::MapEntityRecord;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::mover_probe_channel::{
+    MoverProbeChannelError, MoverProbeChannelSection,
+};
+#[cfg(feature = "load-prl")]
 use postretro_level_format::navmesh::NavMeshSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
@@ -163,6 +167,8 @@ pub enum PrlLoadError {
     ClusterDirectory(#[from] ClusterDirectoryError),
     #[error(transparent)]
     ClusterShPayloads(#[from] ClusterShPayloadsError),
+    #[error(transparent)]
+    MoverProbeChannel(#[from] MoverProbeChannelError),
     #[error("invalid POSTRETRO_SH_STREAMING mode `{value}` (expected off, sync-proof, or async)")]
     InvalidShStreamingMode { value: String },
     #[error(
@@ -505,6 +511,36 @@ pub struct LoadedKinematicMover {
     pub crush_sound: Option<String>,
     /// The crusher's damage-type name, resolved at level install.
     pub crush_damage_type: Option<String>,
+    /// The window of travel this mover's light state ramps across. Every mover
+    /// loads the identity ramp; a mover the probe channel records carries its
+    /// authored `light_ramp_start` and `light_ramp_end`.
+    pub light_ramp: MoverLightRamp,
+}
+
+/// A mover's author light ramp, as plain numbers: its light state reads
+/// `clamp((t - start) / (end - start), 0, 1)` for travel fraction `t`, so the
+/// state holds its closed value until `start` and its open value from `end`.
+/// Load validation keeps `0 <= start < end <= 1`; the identity ramp is (0, 1).
+#[cfg(feature = "load-prl")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoverLightRamp {
+    pub start: f32,
+    pub end: f32,
+}
+
+#[cfg(feature = "load-prl")]
+impl MoverLightRamp {
+    pub const IDENTITY: Self = Self {
+        start: 0.0,
+        end: 1.0,
+    };
+}
+
+#[cfg(feature = "load-prl")]
+impl Default for MoverLightRamp {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
 }
 
 /// Runtime copy of a KinematicGeometry member-light relation. Alpha-light
@@ -569,6 +605,7 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             blocked_sound: record.blocked_sound,
             crush_sound: record.crush_sound,
             crush_damage_type: record.crush_damage_type,
+            light_ramp: MoverLightRamp::IDENTITY,
         }
     }
 }
@@ -636,6 +673,13 @@ pub struct LevelWorld {
     /// SH storage modes. `None` and a zero-tile section render alike.
     #[cfg(feature = "load-prl")]
     pub probe_depth_tiles: Option<ProbeDepthTilesSection>,
+    /// Optional id 57: what each analysed mover changes in the probe data at
+    /// its termini, validated against id 34's grid and validity, id 18's
+    /// lights, the animated-baked roster, id 43's movers and id 59's tile
+    /// count. Whole-resident in both SH storage modes; its ramp records
+    /// already rode into `kinematic_geometry`. `None` composes today's frame.
+    #[cfg(feature = "load-prl")]
+    pub mover_probe_channel: Option<MoverProbeChannelSection>,
     /// Id-22 cell-block index: header plus one record per block. `None` or
     /// zero blocks is placeholder mode (no static baked light). The texels
     /// live in `gpu_lighting_payloads` until install.
@@ -873,6 +917,8 @@ impl LevelWorld {
             sh_storage: ShStorage::Legacy,
             #[cfg(feature = "load-prl")]
             probe_depth_tiles: None,
+            #[cfg(feature = "load-prl")]
+            mover_probe_channel: None,
             #[cfg(feature = "load-prl")]
             lightmap: None,
             #[cfg(feature = "load-prl")]
@@ -2005,6 +2051,7 @@ mod tests {
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
             probe_depth_tiles: None,
+            mover_probe_channel: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -2116,6 +2163,7 @@ mod tests {
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
             probe_depth_tiles: None,
+            mover_probe_channel: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -2181,6 +2229,7 @@ mod tests {
             sh_volume: None,
             sh_storage: ShStorage::Legacy,
             probe_depth_tiles: None,
+            mover_probe_channel: None,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,

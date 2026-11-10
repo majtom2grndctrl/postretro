@@ -1,9 +1,10 @@
-// Content fingerprints several bake stages fold into their cache keys: geometry and bounce materials.
+// Content fingerprints several bake stages fold into their cache keys: geometry, the occluding world, the probe grid and bounce materials.
 // See: context/lib/build_pipeline.md §Build Cache
 
 use blake3::Hasher;
 
 use crate::geometry::GeometryResult;
+use crate::sh_bake::ProbeGridLayout;
 use crate::surface_materials::stats::BounceMaterials;
 
 /// Whole-map `GeometryResult` content hash (postcard + blake3): what every
@@ -12,6 +13,43 @@ use crate::surface_materials::stats::BounceMaterials;
 pub(crate) fn geometry_content_hash(geometry: &GeometryResult) -> [u8; 32] {
     let encoded = postcard::to_allocvec(geometry).expect("postcard serialize GeometryResult");
     *blake3::hash(&encoded).as_bytes()
+}
+
+/// The occluding world as a shadow ray sees it: vertex positions and the
+/// index buffer, never texture names, UVs or face metadata, so a retexture
+/// folds the same bytes. The tracer's answer reads nothing else
+/// (`ray_traversal::segment_clear`).
+pub(crate) fn fold_occluding_geometry(hasher: &mut Hasher, geometry: &GeometryResult) {
+    let geometry = &geometry.geometry;
+    hasher.update(&(geometry.vertices.len() as u64).to_le_bytes());
+    for vertex in &geometry.vertices {
+        for component in vertex.position {
+            hasher.update(&component.to_bits().to_le_bytes());
+        }
+    }
+    hasher.update(&(geometry.indices.len() as u64).to_le_bytes());
+    for index in &geometry.indices {
+        hasher.update(&index.to_le_bytes());
+    }
+}
+
+/// The SH probe grid every probe-point bake reads: origin, per-axis count
+/// and cell size, each probe's position and its validity.
+pub(crate) fn fold_probe_grid_layout(hasher: &mut Hasher, layout: &ProbeGridLayout) {
+    for component in layout.world_min.to_array() {
+        hasher.update(&component.to_bits().to_le_bytes());
+    }
+    for (count, size) in layout.dims.iter().zip(&layout.cell_size) {
+        hasher.update(&count.to_le_bytes());
+        hasher.update(&size.to_bits().to_le_bytes());
+    }
+    hasher.update(&(layout.probe_positions.len() as u64).to_le_bytes());
+    for position in &layout.probe_positions {
+        for component in position.to_array() {
+            hasher.update(&component.to_bits().to_le_bytes());
+        }
+    }
+    hasher.update(&layout.validity);
 }
 
 /// Compute once per stage; no geometry scan or allocation occurs per group/entry.

@@ -191,7 +191,7 @@ pub(super) fn run(ctx: &GpuCtx, lattice: &Lattice<'_>, queries: &[Query]) -> Vec
         wgpu::util::TextureDataOrder::LayerMajor,
         &u16_slice_to_bytes(&moment_texels),
     );
-    let plan = depth_tile_texture_plan(lattice.tiles);
+    let plan = depth_tile_texture_plan(lattice.tiles, 0);
     let flat: Vec<u16> = plan.texels.iter().flatten().copied().collect();
     let tiles = device.create_texture_with_data(
         &ctx.queue,

@@ -29,6 +29,18 @@ pub(super) struct StagedInstall {
     required_direct_epoch: u64,
 }
 
+impl StagedInstall {
+    /// Dense index of every probe the chunk names.
+    pub(super) fn dense_probes(&self) -> impl Iterator<Item = u32> + '_ {
+        self.patches.probes.iter().map(|probe| probe.dense)
+    }
+
+    /// Hold one more storage reference with the installed record.
+    pub(super) fn push_sparse_reference(&mut self, key: (u32, u32)) {
+        self.sparse_rows.push(key);
+    }
+}
+
 impl ShResidencyState {
     pub(super) fn install(
         &mut self,
@@ -68,7 +80,7 @@ impl ShResidencyState {
         // or make a half cluster reachable on a later drain, and rollback
         // touches only what this cluster changed.
         let mut journal = InstallJournal::default();
-        let staged = match self.stage_install(&mut journal, prepared, has_dense_payload) {
+        let mut staged = match self.stage_install(&mut journal, prepared, has_dense_payload) {
             Ok(staged) => staged,
             Err(error) => {
                 self.roll_back(journal);
@@ -76,19 +88,45 @@ impl ShResidencyState {
             }
         };
         if let Some(gpu) = gpu {
+            // Mover channel cells this cluster places or completes, checked
+            // before any upload: a malformed id-57 row refuses the cluster.
+            let channel_writes =
+                match self.stage_mover_channel(&mut journal, gpu, prepared, &mut staged) {
+                    Ok(writes) => writes,
+                    Err(error) => {
+                        self.roll_back(journal);
+                        // A pool may have grown before the refusal: the
+                        // snapshot reports what the table holds now.
+                        self.observe_mover_pool(&gpu.sh.mover_channel);
+                        return Err(error);
+                    }
+                };
             // Nearly every decoded byte is uploaded; reserve for it once.
             let mut uploads =
                 self.begin_uploads(prepared.chunk.bytes.len() + prepared.chunk.bytes.len() / 8);
-            if let Err(error) =
-                self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged)
-            {
+            let staged_uploads = self
+                .stage_uploads(&mut uploads, prepared, has_dense_payload, &staged)
+                .and_then(|()| {
+                    gpu.sh
+                        .mover_channel
+                        .stage_writes(&mut uploads, &channel_writes)
+                        .map_err(|_| {
+                            malformed(cluster_id, "mover channel cell write is out of bounds")
+                        })
+                });
+            if let Err(error) = staged_uploads {
                 // Discarding the batch keeps each GPU word equal to its
                 // mirror: a rolled-back install uploads nothing.
+                gpu.sh.mover_channel.undo_cluster(&channel_writes);
                 self.roll_back(journal);
+                // The pool keeps any growth this cluster caused.
+                self.observe_mover_pool(&gpu.sh.mover_channel);
                 return Err(error);
             }
             upload_copy_regions = uploads.copy_count();
             self.submit_uploads(uploads, gpu.device, gpu.queue);
+            gpu.sh.mover_channel.commit_cluster(&channel_writes);
+            self.observe_mover_pool(&gpu.sh.mover_channel);
         }
         self.commit_install(cluster_id, staged);
         if let Some(started) = trace_started {

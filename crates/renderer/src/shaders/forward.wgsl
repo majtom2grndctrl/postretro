@@ -527,7 +527,7 @@ fn sample_sh_indirect(
         offset_world,
         shading_normal,
         geo_normal,
-        true,
+        SH_BACKFACE_HARD,
         sh_grid.probe_occlusion != 0u,
     );
 }

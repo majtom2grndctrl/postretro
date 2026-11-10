@@ -22,10 +22,11 @@ pub(crate) use cache::{
     ANIMATED_MEMO, GateMemo, PROBE_MEMO, TEXEL_MEMO, fold_gate_light, gate_key_hasher,
 };
 pub(crate) use lights::{GateLight, GateLights};
-pub(crate) use pose::MoverPoses;
+pub(crate) use pose::{MoverPoses, Pose, Terminus};
 pub(crate) use probes::{ProbeScene, gate_probes};
 pub(crate) use report::{log_rows, log_side_counts};
 pub(crate) use rows::MoverTexels;
+pub(crate) use segment::{BOX_SLACK_M, boxes_may_touch, segment_may_touch_box, sphere_touches_box};
 pub(crate) use side_count::side_counts;
 pub(crate) use summary::{LIGHTMAP_FAMILY, MoverLightSummary};
 pub(crate) use tally::GateTally;

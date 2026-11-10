@@ -616,6 +616,7 @@ fn bake_stages(lights: &[MapLight], flagged: bool, cache: Option<&StageCache>) -
         &config,
         &alpha_lights,
         &selected,
+        cache,
         &control,
     )
     .expect("the selected static lights reach probes");
@@ -635,6 +636,7 @@ fn bake_stages(lights: &[MapLight], flagged: bool, cache: Option<&StageCache>) -
             embedded_emitters: &animated_flags,
         },
         &config,
+        cache,
         &control,
     )
     .expect("the animated lights reach probes");

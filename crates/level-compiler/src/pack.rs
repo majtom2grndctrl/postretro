@@ -44,6 +44,7 @@ use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSec
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
@@ -502,6 +503,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         &GhostLinksSection::default(),
         None,
         None,
+        None,
         cell_draw_index_section,
         cell_visibility_section,
         None,
@@ -552,6 +554,9 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     teleporters: &TeleportersSection,
     // GhostLinks (id 56); written only when non-empty.
     ghost_links: &GhostLinksSection,
+    // MoverProbeChannel (id 57), or `None` when no mover changes the probe
+    // data.
+    mover_probe_channel: Option<&MoverProbeChannelSection>,
     // PushForces (id 53), or `None` when every force is 1.
     push_forces: Option<&PushForcesSection>,
     // ReflectionProbes (id 54), or `None` when no probe was kept.
@@ -605,6 +610,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
             animated_direct_sh_delta_volumes,
             billboard_direct_scatter_volume,
             animated_billboard_direct_scatter_delta_volumes,
+            mover_probe_channel,
         )?,
     };
     // Keep the pre-BC6H packed sources borrowed through descriptor planning and
@@ -713,6 +719,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         environment_volumes,
         teleporters,
         ghost_links,
+        mover_probe_channel,
         push_forces,
         reflection_probes,
         cell_draw_index: cell_draw_index_section,

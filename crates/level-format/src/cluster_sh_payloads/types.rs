@@ -32,9 +32,13 @@ pub fn cluster_sh_isolated_atlas_array_layout(
 
 pub(super) const SOURCE_KIND_DENSE_BASE_ATLAS: u32 = 0;
 pub(super) const SOURCE_KIND_SPARSE_AFFINITY: u32 = 1;
+pub(super) const SOURCE_KIND_MOVER_CHANNEL: u32 = 2;
 pub(super) const BLOCK_KIND_PROBE_PATCHES: u32 = 0;
 pub(super) const BLOCK_KIND_ISOLATED_ATLAS: u32 = 1;
 pub(super) const BLOCK_KIND_SPARSE_ROWS: u32 = 3;
+/// Id 57's streamed payload rows for the chunk's listed cells
+/// ([`crate::mover_probe_channel::parse_streamed_rows`]).
+pub const CLUSTER_SH_MOVER_ROWS_BLOCK_KIND: u32 = 4;
 
 pub(super) const PROBE_INDIRECTION_LEVEL_MASK: u32 = 0x0000_0003;
 pub(super) const PROBE_INDIRECTION_VALID_BIT: u32 = 0x0000_0004;
@@ -95,6 +99,9 @@ impl ClusterShPayloadsHeader {
 pub enum ClusterShPayloadsSourceKind {
     DenseBaseAtlas = SOURCE_KIND_DENSE_BASE_ATLAS,
     SparseAffinity = SOURCE_KIND_SPARSE_AFFINITY,
+    /// Id 57's streamed direct and bounce payloads, one row per listed
+    /// affinity cell.
+    MoverChannel = SOURCE_KIND_MOVER_CHANNEL,
 }
 
 impl ClusterShPayloadsSourceKind {
@@ -102,6 +109,7 @@ impl ClusterShPayloadsSourceKind {
         match value {
             SOURCE_KIND_DENSE_BASE_ATLAS => Ok(Self::DenseBaseAtlas),
             SOURCE_KIND_SPARSE_AFFINITY => Ok(Self::SparseAffinity),
+            SOURCE_KIND_MOVER_CHANNEL => Ok(Self::MoverChannel),
             _ => invalid(format!("source kind {value} is unknown")),
         }
     }
@@ -174,12 +182,22 @@ pub enum ClusterShPayloadsSourceMetadata<'a> {
         affinity_offsets: &'a [u32],
         affinity_lights: &'a [u32],
     },
+    /// Id 57 with a streamed payload: its structure (cells, records, masks,
+    /// entries, placements) stays resident, and the rows each chunk carries
+    /// derive from it.
+    MoverChannel {
+        section_id: u32,
+        internal_version: u32,
+        section: &'a MoverProbeChannelSection,
+    },
 }
 
 impl ClusterShPayloadsSourceMetadata<'_> {
     pub fn section_id(self) -> u32 {
         match self {
-            Self::Dense { section_id, .. } | Self::Sparse { section_id, .. } => section_id,
+            Self::Dense { section_id, .. }
+            | Self::Sparse { section_id, .. }
+            | Self::MoverChannel { section_id, .. } => section_id,
         }
     }
 
@@ -190,6 +208,9 @@ impl ClusterShPayloadsSourceMetadata<'_> {
             }
             | Self::Sparse {
                 internal_version, ..
+            }
+            | Self::MoverChannel {
+                internal_version, ..
             } => internal_version,
         }
     }
@@ -198,8 +219,22 @@ impl ClusterShPayloadsSourceMetadata<'_> {
         match self {
             Self::Dense { .. } => ClusterShPayloadsSourceKind::DenseBaseAtlas,
             Self::Sparse { .. } => ClusterShPayloadsSourceKind::SparseAffinity,
+            Self::MoverChannel { .. } => ClusterShPayloadsSourceKind::MoverChannel,
         }
     }
+}
+
+/// Id 57 as an id-50 source: present only when a block's payload streams.
+pub fn mover_channel_source(
+    section: &MoverProbeChannelSection,
+) -> Option<ClusterShPayloadsSourceMetadata<'_>> {
+    section
+        .streams()
+        .then_some(ClusterShPayloadsSourceMetadata::MoverChannel {
+            section_id: SectionId::MoverProbeChannel as u32,
+            internal_version: u32::from(MOVER_PROBE_CHANNEL_EPOCH),
+            section,
+        })
 }
 
 /// The metadata-only inputs shared by compiler publication and loader startup.
@@ -209,8 +244,9 @@ impl ClusterShPayloadsSourceMetadata<'_> {
 pub struct ClusterShPayloadsValidationInputs<'a> {
     pub directory: &'a ClusterDirectorySection,
     pub base: ClusterShPayloadsBaseMetadata<'a>,
-    /// Exactly the present streaming sources: 27/34/35/41/45. The base id 34
-    /// dense source is required; ids 47/48 are never valid here.
+    /// Exactly the present streaming sources: 27/34/35/41/45, and 57 when
+    /// its payload streams. The base id 34 dense source is required; ids
+    /// 47/48 are never valid here.
     pub sources: &'a [ClusterShPayloadsSourceMetadata<'a>],
 }
 
@@ -223,8 +259,9 @@ pub fn source_metadata_from_sections<'a>(
     delta: Option<&'a DeltaShVolumesSection>,
     direct_delta: Option<&'a DirectShDeltaVolumesSection>,
     animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+    mover_channel: Option<&'a MoverProbeChannelSection>,
 ) -> Vec<ClusterShPayloadsSourceMetadata<'a>> {
-    let mut sources = Vec::with_capacity(5);
+    let mut sources = Vec::with_capacity(6);
     if let Some(delta) = delta {
         sources.push(sparse_source(
             SectionId::DeltaShVolumes as u32,
@@ -276,6 +313,7 @@ pub fn source_metadata_from_sections<'a>(
             &delta.affinity_lights,
         ));
     }
+    sources.extend(mover_channel.and_then(mover_channel_source));
     sources
 }
 

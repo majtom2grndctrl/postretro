@@ -16,18 +16,24 @@ pub use animation::validate_light_animations;
 pub(crate) use bounce::bounce_sample_index;
 pub(crate) use bounce::{reflected_radiance, soft_visibility_seed};
 pub(crate) use depth_tiles::{
-    ProbeDepthTiles, chebyshev_visibility, depth_tile_bytes, fold_depth_tile_constants,
-    probe_depth_bias,
+    ProbeDepthTiles, TileRayTable, chebyshev_visibility, depth_tile_bytes, effective_tile_cap,
+    fold_depth_tile_constants, probe_depth_bias, visibility_change,
 };
 pub(crate) use grid::{
-    ProbeGridLayout, probe_grid_dims, probe_grid_layout, probe_is_valid_pub, vec3_from,
+    ProbeGridLayout, probe_grid_dims, probe_grid_layout, probe_grid_layout_of, probe_is_valid_pub,
+    vec3_from,
 };
 pub(crate) use light_eval::{
     bounce_contribution, incident_radiance_at_point, light_reaches_point, spot_cone_parameters,
 };
 #[cfg(test)]
 pub(crate) use probe::bake_probe;
-pub(crate) use probe::{bake_probe_direct_rgb, bake_probe_indirect_rgb};
+#[cfg(test)]
+pub(crate) use probe::probe_direct_joint_visibility;
+pub(crate) use probe::{
+    bake_probe_direct_rgb, bake_probe_direct_rgb_posed, bake_probe_indirect_rgb,
+    bake_probe_with_source, probe_gather_directions,
+};
 pub use section::log_stats;
 #[cfg(test)]
 pub(crate) use section::section_heap_bytes;
@@ -40,7 +46,6 @@ pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 
 pub(crate) use animation::animation_descriptor_for_light;
 use depth_tiles::DepthTileSelector;
-use probe::{bake_probe_with_source, probe_gather_directions};
 use sh_math::pack_octahedral_irradiance_atlas;
 
 use std::collections::HashSet;
@@ -130,6 +135,10 @@ pub(crate) enum RadianceSource<'a> {
     /// Read the surface radiance cache's patch at the hit; traces no shadow
     /// ray. The SH base bake, warm and cold (`surface_radiance::bake_sh_base`).
     Patches(&'a PatchGather<'a>),
+    /// The mover probe channel's posed gather: the static patches and a
+    /// mover posed at one terminus, its brushes nearer than a static hit
+    /// where a ray meets them first (`mover_probe_channel::PosedGather`).
+    Posed(&'a crate::mover_probe_channel::PosedGather<'a>),
 }
 
 /// Shared between the base SH baker and per-light delta SH baker (`delta_sh_bake.rs`).

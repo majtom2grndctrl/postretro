@@ -95,6 +95,9 @@ pub(super) fn validate_chunk_bytes(
             BLOCK_KIND_SPARSE_ROWS => {
                 validate_sparse_rows(&bytes[body.clone()], section_id, expected)?
             }
+            CLUSTER_SH_MOVER_ROWS_BLOCK_KIND => {
+                validate_mover_rows(cluster_id, &bytes[body.clone()], expected)?
+            }
             _ => unreachable!("expected blocks use only known kinds"),
         }
         blocks.push(DecodedClusterShBlock {
@@ -275,6 +278,34 @@ fn validate_sparse_rows(
         != tile_f16_count
     {
         return invalid("sparse tile ranges do not consume the payload".into());
+    }
+    Ok(())
+}
+
+/// Id 57's rows name exactly the covered listed cells the section's
+/// structure expects, with their lengths; the payload bytes themselves are
+/// the section's to check when they are read.
+fn validate_mover_rows(
+    cluster_id: u32,
+    bytes: &[u8],
+    expected: &ExpectedChunk,
+) -> Result<(), ClusterShPayloadsError> {
+    let rows = parse_streamed_rows(bytes).map_err(|error| {
+        ClusterShPayloadsError::InvalidData(format!("cluster {cluster_id} id-57 rows: {error}"))
+    })?;
+    let found: Vec<(u32, u32, u32)> = rows
+        .iter()
+        .map(|row| (row.cell, row.direct.len() as u32, row.bounce.len() as u32))
+        .collect();
+    let wanted: Vec<(u32, u32, u32)> = expected
+        .mover_rows
+        .iter()
+        .map(|(cell, lens)| (*cell, lens.direct, lens.bounce))
+        .collect();
+    if found != wanted {
+        return invalid(format!(
+            "cluster {cluster_id} id-57 rows disagree with id 49/id 57 metadata"
+        ));
     }
     Ok(())
 }

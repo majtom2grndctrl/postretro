@@ -223,7 +223,7 @@ pub(super) fn preflight_initial_resource_limits(
         limits,
         true,
     )?;
-    if sources.direct_delta.is_some() || sources.animated_direct_delta.is_some() {
+    if sparse_compose.direct.is_some() {
         preflight_sparse_carrier(
             planned_direct_layout(sparse_compose)?,
             sparse_capacities.get(&DIRECT_DELTA_SECTION).copied(),

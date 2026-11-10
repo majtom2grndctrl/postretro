@@ -121,7 +121,14 @@ impl Renderer {
         let Some(streaming) = level.sh_streaming.as_mut() else {
             return Ok(());
         };
-        streaming.prepare_compose_frame(
+        // Mover state lighting: slots whose t′ moved since the last planned
+        // frame stale the rows carrying them, whether or not this frame
+        // records compose. The observation commits only once the plan
+        // succeeded, so a failed plan keeps the change for the next frame.
+        let mover_channel = &mut level.sh_volume_resources.mover_channel;
+        mover_channel.set_states(full.mover_travel.states());
+        let mover_changes = mover_channel.observe_t_changes();
+        let planned = streaming.prepare_compose_frame(
             region_sets,
             mesh_frame_plans,
             include_viewmodels,
@@ -135,7 +142,12 @@ impl Renderer {
             animated_override,
             &level.promoted_static_weights,
             &level.promoted_animated_states,
-        )
+            mover_changes,
+        );
+        if planned.is_ok() {
+            mover_channel.commit_t_changes();
+        }
+        planned
     }
 
     /// Refresh dev-tools camera-cull diagnostics from the current frame's CPU
@@ -281,6 +293,12 @@ impl Renderer {
         let Some(level) = full.level.as_mut() else {
             return true;
         };
+        // Mover state lighting: this frame's t′ reaches the table before
+        // either direct pass records, on the streamed and legacy paths alike.
+        let mover_channel = &mut level.sh_volume_resources.mover_channel;
+        mover_channel.set_states(full.mover_travel.states());
+        mover_channel.upload_t(queue);
+        let mover_state_changed = mover_channel.t_changed_since_composed();
         let direct_sh_ts = full
             .frame_timing
             .as_ref()
@@ -315,7 +333,7 @@ impl Renderer {
                 }
             }
         } else {
-            level.direct_sh_compose.dispatch_if_needed(
+            let encoded = level.direct_sh_compose.dispatch_if_needed(
                 queue,
                 encoder,
                 DirectShComposeFrameInputs {
@@ -327,12 +345,18 @@ impl Renderer {
                         animated: animated_direct_sh_debug_override,
                     },
                     animated_promotion_states: &level.promoted_animated_states,
+                    mover_state_changed,
                     timestamp_writes: DirectShComposeTimestampWrites {
                         promotion: direct_sh_ts,
                         animated: animated_direct_sh_ts,
                     },
                 },
             );
+            // Committed only after the encode, so a frame that records no
+            // compose leaves the change for the next recording frame.
+            if encoded {
+                level.sh_volume_resources.mover_channel.commit_composed_t();
+            }
             true
         };
         // Shares the already-flushed descriptor/sample buffers with animated
@@ -598,6 +622,11 @@ impl Renderer {
             let streamed_indirect_active = level.sh_streaming.as_ref().is_some_and(|streaming| {
                 streaming.indirect_has_active_animation(&level.sh_volume_resources.animation)
             });
+            // Mover state lighting: this frame's t′ reaches the bounce table
+            // before the indirect compose records, on either path.
+            let mover_channel = &mut level.sh_volume_resources.mover_channel;
+            mover_channel.set_states(full.mover_travel.states());
+            mover_channel.upload_t(queue);
             if let Some(streaming) = level.sh_streaming.as_mut() {
                 if let Err(error) = streaming.dispatch_indirect_compose(
                     queue,
@@ -614,13 +643,26 @@ impl Renderer {
                 let indirect_active = level
                     .sh_compose
                     .has_active_animated_descriptor(&level.sh_volume_resources.animation);
-                level.sh_compose.dispatch_if_needed(
+                let mover_state_changed = level
+                    .sh_volume_resources
+                    .mover_channel
+                    .bounce_t_changed_since_composed();
+                let encoded = level.sh_compose.dispatch_if_needed(
                     encoder,
                     &full.uniform_bind_group,
                     indirect_active,
+                    mover_state_changed,
                     frame_light_term_mask,
                     sh_compose_ts,
                 );
+                // Committed only after the encode, so a frame that records no
+                // compose leaves the change for the next recording frame.
+                if encoded {
+                    level
+                        .sh_volume_resources
+                        .mover_channel
+                        .commit_composed_bounce_t();
+                }
             }
         }
         true

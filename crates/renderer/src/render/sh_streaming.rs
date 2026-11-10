@@ -29,7 +29,11 @@ mod cluster_demand_tests;
 mod compose_plan;
 #[cfg(test)]
 mod compose_plan_oracle;
+#[cfg(test)]
+pub(in crate::render) mod compose_plan_test_support;
 mod compose_staleness;
+#[cfg(test)]
+mod composed_tiles;
 #[cfg(test)]
 mod contributing_rows_tests;
 mod dense;
@@ -43,6 +47,7 @@ mod install_journal;
 #[cfg(test)]
 mod install_tests;
 mod lifecycle;
+mod mover_cells;
 mod patches;
 mod payload;
 mod pipelines;
@@ -59,6 +64,7 @@ mod rows;
 mod sample_region_index;
 mod sample_regions;
 mod setup;
+pub(in crate::render) use setup::gate_direct_compose;
 #[cfg(test)]
 pub(in crate::render) use setup::{residency_plan_summary, whole_map_bound_for_test};
 mod sparse_install;
@@ -69,7 +75,8 @@ mod stored_nodes;
 #[cfg(test)]
 mod tests;
 
-use allocator::{FirstFitRanges, PoolRange, SparsePool};
+use allocator::SparsePool;
+pub(in crate::render) use allocator::{FirstFitRanges, PoolRange};
 use compose_plan::{ComposeFramePlan, RowMembership, StreamedComposePlanner};
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 pub use diagnostics::{ShMissBuckets, ShStreamingLiveDiagnostics};
@@ -81,6 +88,7 @@ pub(in crate::render) use gpu::write_nine_cluster_prl;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, u32_bytes};
 use install::InstallGpu;
 use install_journal::InstallJournal;
+use mover_cells::MOVER_CHANNEL_ID;
 use patches::{ChunkPatches, SlotRun};
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 pub(crate) use pipelines::StreamingShPipelines;
@@ -276,6 +284,15 @@ pub(super) struct ShResidencyState {
     animated_direct_compose_required: bool,
     direct_animation_descriptor_indices: Vec<u32>,
     compose_planner: StreamedComposePlanner,
+    /// Id 57's per-mover rows and the rows whose membership the channel
+    /// widens, copied from the level's channel at GPU setup.
+    mover_channel_rows: crate::render::mover_channel::MoverChannelRows,
+    /// Pooled channel cells whose last carrying cluster left, freed in the
+    /// eviction's own upload batch (`mover_cells.rs`).
+    released_mover_cells: Vec<u32>,
+    /// The channel's pooled tables: bytes allocated and bytes resident cells
+    /// fill, mirrored for the snapshot.
+    mover_pool_bytes: (u64, u64),
     compose_frame_plan: Option<ComposeFramePlan>,
     /// Load-time writer-row and per-cell row caches for the sampled-row gate.
     sample_region_index: SampleRegionIndex,
@@ -357,6 +374,8 @@ impl ShResidencyState {
             })
             .expect("validated streamed sparse entry bytes must fit the logical ledger");
         dense_bytes
+            .checked_add(self.mover_pool_bytes.1)
+            .expect("validated streamed mover channel bytes must fit the logical ledger")
             .checked_add(
                 sparse_f16
                     .checked_mul(2)
@@ -375,7 +394,20 @@ impl Renderer {
     /// Drain the loader-owned batch at the single pre-compose boundary.  The
     /// application/controller remains responsible for applying the returned
     /// permit and ready-byte outcome; it never observes renderer pool slots.
+    ///
+    /// Then, on any level, bring the mover depth live tiles to this frame's
+    /// mover state: every frame entry drains once before it records, so the
+    /// tiles, their references and the compose passes share one t′.
     pub fn drain_sh_residency(
+        &mut self,
+        batch: ShDrainBatch,
+    ) -> Result<ShDrainOutcome, ShResidencyDrainError> {
+        let outcome = self.drain_streamed_sh(batch)?;
+        self.write_mover_depth_tiles()?;
+        Ok(outcome)
+    }
+
+    fn drain_streamed_sh(
         &mut self,
         batch: ShDrainBatch,
     ) -> Result<ShDrainOutcome, ShResidencyDrainError> {

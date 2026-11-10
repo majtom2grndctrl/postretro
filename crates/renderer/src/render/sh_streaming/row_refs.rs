@@ -228,16 +228,21 @@ impl ShResidencyState {
     /// rows.
     pub(super) fn compose_row_membership(&self, row: u32) -> RowMembership {
         let direct_resident = self.direct_compose_resident(row);
+        // A gated static light that can promote moves the handoff with its
+        // weight even where id 41 holds no entry: the row contributes.
         let static_contributing =
-            self.sparse_row_contributes(RowRefTable::DirectPromotion, DIRECT_DELTA_ID, row);
+            self.sparse_row_contributes(RowRefTable::DirectPromotion, DIRECT_DELTA_ID, row)
+                || (direct_resident && self.mover_channel_rows.has_promotable(row));
         let animated_direct = if self.animated_direct_compose_required {
             PassMembership {
                 resident: direct_resident,
+                // A gated animated-baked light's curve moves its row even
+                // where id 45 holds no entry.
                 contributing: self.sparse_row_contributes(
                     RowRefTable::DirectAnimated,
                     ANIMATED_DIRECT_DELTA_ID,
                     row,
-                ),
+                ) || (direct_resident && self.mover_channel_rows.has_animated(row)),
                 upstream: static_contributing,
             }
         } else {

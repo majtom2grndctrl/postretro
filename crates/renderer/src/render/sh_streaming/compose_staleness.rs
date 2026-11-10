@@ -176,6 +176,24 @@ impl PassStaleness {
         }
     }
 
+    /// Make one resident row stale until it next commits: a mover whose t′
+    /// moved carries entries there. Unlike `mark_pending` it keeps the view
+    /// gate, so a row outside it lags and composes when it re-enters. A
+    /// non-resident row needs nothing: its residency entry composes it.
+    pub(super) fn mark_stale(&mut self, row: u32) {
+        let Some(&flags) = self.flags.get(row as usize) else {
+            debug_assert!(false, "compose row {row} exceeds the planner row space");
+            return;
+        };
+        if flags & RESIDENT == 0 {
+            return;
+        }
+        if !self.is_stale(row) {
+            self.current_by_members[members_index(flags)] -= 1;
+        }
+        self.flags[row as usize] |= CARRIED;
+    }
+
     /// Drop pending work for rows that are no longer resident. O(pending).
     pub(super) fn retain_resident_pending(&mut self) {
         let flags = &mut self.flags;

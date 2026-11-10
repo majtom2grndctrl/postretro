@@ -32,7 +32,9 @@ mod finalized_publication;
 use delta_working_set::*;
 mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
+mod mover_bounce_stage;
 mod mover_light_stage;
+mod mover_probe_stage;
 pub(crate) mod runtime_cells;
 mod sdf_stage;
 mod sh_working_set_gates;
@@ -732,11 +734,56 @@ fn run_after_parsing(
         args.working_set_max_bytes,
         delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
     )?;
+    // Mover poses depend only on map data. They resolve ahead of the SH
+    // gates and every SH bake, so the probe channel's bakes, and the storage
+    // classifiers its cells cap, all read one set.
+    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+    );
+    // Every analysed mover posed at both termini, once: the bounce half's
+    // scenes and the direct half's occluders share these solids.
+    let posed_movers = crate::mover_probe_channel::PosedMovers::resolve(
+        &mover_poses,
+        &map_data.kinematic_movers,
+        &geo_result.texture_names,
+    )?;
+    // The probe channel's bounce half poses every analysed mover at both
+    // termini now, so the SH base gate prices its scenes, its states and the
+    // direct half's entries before any SH ray.
+    let probe_depth_tile_cap = args.probe_depth_tile_cap;
+    let bounce_plan = {
+        let direct_lights: Vec<&crate::map_data::MapLight> = static_baked_lights
+            .entries()
+            .iter()
+            .map(|entry| entry.light)
+            .chain(
+                animated_baked_lights
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.light),
+            )
+            .collect();
+        mover_bounce_stage::plan_bounce_half(mover_bounce_stage::BouncePlanInputs {
+            poses: &mover_poses,
+            posed: &posed_movers,
+            movers: &map_data.kinematic_movers,
+            geometry: &geo_result,
+            tree: &runtime.cells.tree,
+            exterior_leaves: &runtime.cells.exterior_cells,
+            probe_spacing: sh_config.probe_spacing,
+            bounce_fill: map_data.bounce_fill,
+            direct_lights: &direct_lights,
+            uncompressed: args.uncompressed_irradiance,
+            tile_cap: probe_depth_tile_cap,
+        })?
+    };
     // The SH base gate prices the patch cache, the later bounces at the
     // map's `_bounce_fill` and the id-34 volume from the patch set, the
-    // static lights' ranges and the probe grid's dimensions. Its patch set
-    // and fill move whole into the SH base bake.
-    let (sh_base_handoff, sh_base_projection) = surface_radiance::plan_sh_base(
+    // static lights' ranges and the probe grid's dimensions, and the mover
+    // probe channel beside them. Its patch set and fill move whole into the
+    // SH base bake.
+    let (sh_base_handoff, mut sh_base_projection) = surface_radiance::plan_sh_base(
         &geo_result,
         &static_baked_lights
             .entries()
@@ -748,6 +795,7 @@ fn run_after_parsing(
         map_data.bounce_fill,
         args.working_set_max_bytes,
     )?;
+    sh_base_projection.price_movers(&bounce_plan.cost);
     sh_working_set_gates::admit_sh_working_sets(
         delta_working_set_projection,
         &sh_base_projection,
@@ -851,18 +899,34 @@ fn run_after_parsing(
     // layer and a `_bounce_fill` edit re-shades none. The patch cache is
     // freed inside the bake; only id 34 and the probe depth tiles (id 59),
     // binned from the same gather rays, leave the stage.
-    let surface_radiance::ShBase {
-        section: mut sh_volume_section,
-        depth_tiles: probe_depth_tiles,
-    } = surface_radiance::bake_sh_base(
+    let (
+        surface_radiance::ShBase {
+            section: mut sh_volume_section,
+            depth_tiles: mut probe_depth_tiles,
+        },
+        mover_bounce,
+    ) = surface_radiance::bake_sh_base_with_movers(
         &sh_ctx,
         &sh_config,
         sh_base_handoff,
         &bounce_embedded_emitters,
         stage_cache.as_ref(),
         &sh_control,
-        postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
+        probe_depth_tile_cap,
+        &bounce_plan.request,
     );
+    let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
+        &mover_bounce.movers,
+        mover_bounce.stopped,
+        &sh_volume_section,
+        &mut probe_depth_tiles,
+        probe_depth_tile_cap,
+    )?;
+    let mover_bounce_summary = (mover_bounce_blocks
+        != crate::mover_probe_channel::BounceBlocks::default())
+    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation));
+    drop(mover_bounce);
+    drop(bounce_plan);
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` and buried lights omitted), so remap the
@@ -1037,6 +1101,7 @@ fn run_after_parsing(
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
             &sh_config,
+            stage_cache.as_ref(),
             &animated_direct_sh_control,
         )
     };
@@ -1101,6 +1166,7 @@ fn run_after_parsing(
                     &sh_config,
                     &alpha_lights_ns,
                     section,
+                    stage_cache.as_ref(),
                     &direct_sh_delta_control,
                 )
             });
@@ -1167,6 +1233,35 @@ fn run_after_parsing(
     }
     log_direct_sh_delta_stats(direct_sh_delta_stats.as_ref(), args.verbose);
 
+    // The mover probe channel's direct half bakes before any storage
+    // classifier, so its cells cap id 41's levels and the shared base levels
+    // of ids 34 and 35 as a grid-matched delta entry's do.
+    let mover_direct_half =
+        mover_probe_stage::bake_direct_half(mover_probe_stage::DirectHalfInputs {
+            posed: &posed_movers,
+            movers: &map_data.kinematic_movers,
+            sh_ctx: &sh_ctx,
+            sh_config: &sh_config,
+            portals: &runtime.portals,
+            alpha_lights: &alpha_lights_ns,
+            animated_lights: &animated_baked_lights,
+            static_embedded: &static_embedded_emitters,
+            animated_embedded: &animated_embedded_emitters,
+            mutable_descriptors: &script_mutable_descriptor_slots,
+            cache: stage_cache.as_ref(),
+            governor: &governor,
+            bounce: mover_bounce_blocks,
+            payload_bars: crate::mover_probe_channel::MoverPayloadBars::with_override(
+                args.mover_payload_resident_bar,
+            ),
+        })?;
+    drop(posed_movers);
+    let provisional_mover_channel = mover_direct_half
+        .as_ref()
+        .map(|half| half.provisional_section(&sh_volume_section))
+        .transpose()?
+        .flatten();
+
     // The three delta bakes meet at one owned compiler-only seam. Exact-zero
     // drop observes the dense bake output; valid-probe compaction then rewrites
     // id 41 to the id-34-valid local tiles before the payload cap is applied.
@@ -1177,6 +1272,7 @@ fn run_after_parsing(
         direct_sh_delta_volumes_section,
         animated_direct_sh_delta_volumes_section,
     );
+    delta_sections.mover_channel = provisional_mover_channel;
     debug_assert_eq!(
         delta_sections.config, args.delta_section_config,
         "the post-bake delta handoff must retain the resolved compiler configuration"
@@ -1220,11 +1316,7 @@ fn run_after_parsing(
     let mut density_params = sh_coarsen::CoarsenParams::default();
     density_params.rel_p95_max *= density_fidelity;
     density_params.rel_max_max *= density_fidelity;
-    let all_deltas = sh_coarsen::DeltaSectionsRef {
-        indirect: delta_sections.indirect.as_ref(),
-        direct: delta_sections.direct.as_ref(),
-        anim_direct: delta_sections.animated_direct.as_ref(),
-    };
+    let all_deltas = delta_sections.refs();
     let density_classification = if !sh_coarsening_enabled {
         let levels = sh_density::uniform_l0_levels(sh_volume_section.grid_dimensions)
             .map_err(|error| anyhow::anyhow!("base SH uniform levels failed: {error}"))?;
@@ -1321,6 +1413,15 @@ fn run_after_parsing(
             "DirectShDeltaVolumes lost coverage for an EntityShadowLights selection after delta dropping"
         );
     }
+    let mut mover_placement_summary = None;
+    if let Some(half) = mover_direct_half.as_ref() {
+        half.finish_section(&mut delta_sections)?;
+        mover_placement_summary = delta_sections
+            .mover_channel
+            .as_ref()
+            .map(|section| half.summary_line(section));
+    }
+    drop(mover_direct_half);
 
     // Output-preserving SH coarsenability analysis (`--sh-analyze`). Runs AFTER
     // the delta sections are finalized — post EntityShadowLights static-light
@@ -1350,6 +1451,7 @@ fn run_after_parsing(
             delta_sections.indirect.as_ref(),
             delta_sections.direct.as_ref(),
             delta_sections.animated_direct.as_ref(),
+            delta_sections.mover_channel.as_ref(),
         );
     }
 
@@ -1520,10 +1622,6 @@ fn run_after_parsing(
 
     // The mover light gate's probe pass reads the SH family's probe grid and
     // pre-cut world, so it runs before atlas preparation cuts and rebuilds it.
-    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
-        &map_data.kinematic_movers,
-        &map_data.kinematic_waypoints,
-    );
     let mover_gate_lights =
         crate::mover_light_gate::GateLights::resolve(&static_baked_lights, &animated_baked_lights);
     let mover_light_probes = mover_light_stage::probe_gate(
@@ -2075,6 +2173,7 @@ fn run_after_parsing(
             billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
             animated_billboard_direct_scatter_delta_volumes:
                 animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+            mover_probe_channel: delta_sections.mover_channel.as_ref(),
         })?;
     finish_stage(
         &mut timings,
@@ -2119,6 +2218,7 @@ fn run_after_parsing(
         environment_volumes: &environment_volumes_section,
         teleporters: &map_data.teleporters,
         ghost_links: &map_data.ghost_links,
+        mover_probe_channel: delta_sections.mover_channel.as_ref(),
         push_forces: push_forces_section.as_ref(),
         reflection_probes: reflection_probes_section.as_ref(),
         cell_draw_index: cell_draw_index_section.as_ref(),
@@ -2148,10 +2248,12 @@ fn run_after_parsing(
         footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
     let mut details = mover_light_summary.lines(lightmap_family_bytes);
     details.extend(footprint.sh_mandatory.lines());
-    details.push(
-        probe_depth_tiles
-            .summary_line(postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES),
-    );
+    details.push(probe_depth_tiles.summary_line(
+        mover_depth_reservation.shrunk_cap,
+        mover_depth_reservation.live,
+    ));
+    details.extend(mover_bounce_summary);
+    details.extend(mover_placement_summary);
     details.extend(footprint.lightmap_pool.lines());
     reporter.finalize(BuildSummary {
         timings,
@@ -2230,11 +2332,7 @@ fn apply_coarsen_classification(
     // The direct classifier still reads all three dense sections for the
     // composed reference magnitude, but produces levels only for id 41.
     let direct_levels = {
-        let all = sh_coarsen::DeltaSectionsRef {
-            indirect: delta_sections.indirect.as_ref(),
-            direct: delta_sections.direct.as_ref(),
-            anim_direct: delta_sections.animated_direct.as_ref(),
-        };
+        let all = delta_sections.refs();
         delta_sections.direct.as_ref().map(|_| {
             sh_coarsen::classify_direct_levels(
                 base,
@@ -2304,6 +2402,7 @@ fn run_sh_analysis(
     delta_anim_direct: Option<
         &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
     >,
+    mover_channel: Option<&postretro_level_format::mover_probe_channel::MoverProbeChannelSection>,
 ) {
     let Some(base) = base_indirect else {
         log::warn!("[sh-analyze] no base SH volume produced (empty grid?); analysis skipped");
@@ -2331,6 +2430,7 @@ fn run_sh_analysis(
         delta_indirect,
         delta_direct,
         delta_anim_direct,
+        mover_channel,
         protect_aabbs: &protect,
         thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
     };

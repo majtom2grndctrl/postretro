@@ -18,11 +18,11 @@ use crate::render::sh_streaming::PROBE_INDIRECTION_VALID_BIT;
 use crate::render::sh_streaming::install_tests::synthetic_moments;
 
 /// Cluster 0 holds probes with x < 4, cluster 1 the rest (8×4×4 lattice).
-const TILED: u32 = 9; // (1, 1, 0), cluster 0, id-59 tile 0
-const TILED_IN_ONE: u32 = 22; // (6, 2, 0), cluster 1, id-59 tile 1
-const UNTILED: u32 = 10; // (2, 1, 0), cluster 0
+pub(super) const TILED: u32 = 9; // (1, 1, 0), cluster 0, id-59 tile 0
+pub(super) const TILED_IN_ONE: u32 = 22; // (6, 2, 0), cluster 1, id-59 tile 1
+pub(super) const UNTILED: u32 = 10; // (2, 1, 0), cluster 0
 
-fn tiles() -> ProbeDepthTilesSection {
+pub(super) fn tiles() -> ProbeDepthTilesSection {
     ProbeDepthTilesSection {
         probe_indices: vec![TILED, TILED_IN_ONE],
         texels: vec![[0x3800, 0x3400]; 2 * PROBE_DEPTH_TILE_TEXELS],
@@ -40,7 +40,11 @@ fn fixture(device: &wgpu::Device, raw: &wgpu::Queue) -> UploadOrderSh {
 }
 
 /// Every texel of the streamed moments texture, x fastest.
-fn texels(f: &UploadOrderSh, device: &wgpu::Device, queue: &UploadQueue) -> Vec<[u16; 4]> {
+pub(super) fn texels(
+    f: &UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+) -> Vec<[u16; 4]> {
     let texture = &f.state.gpu.as_ref().unwrap().depth_moments;
     let extent = texture.size();
     let row = extent.width * 8;
@@ -77,7 +81,7 @@ fn texels(f: &UploadOrderSh, device: &wgpu::Device, queue: &UploadQueue) -> Vec<
         .collect()
 }
 
-fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
+pub(super) fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
     let (send, receive) = std::sync::mpsc::channel();
     buffer
         .slice(..)
@@ -150,7 +154,13 @@ fn word(texel: [u16; 4]) -> u32 {
 
 /// `dense`'s texel: R its id-34 `E[d]`, G a reference to `tile`, B/A the
 /// sampled word (valid exactly when `sampleable`).
-fn assert_tiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32, tile: u16, sampleable: bool) {
+pub(super) fn assert_tiled(
+    f: &UploadOrderSh,
+    texels: &[[u16; 4]],
+    dense: u32,
+    tile: u16,
+    sampleable: bool,
+) {
     let texel = texels[dense as usize];
     assert_eq!(
         texel[0],
@@ -167,7 +177,7 @@ fn assert_tiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32, tile: u16, s
 }
 
 /// `dense`'s texel packs as an untiled probe: id-34 `E[d]` and `E[d²]`.
-fn assert_untiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32) {
+pub(super) fn assert_untiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32) {
     let texel = texels[dense as usize];
     assert_eq!(
         [texel[0], texel[1]],
@@ -177,7 +187,7 @@ fn assert_untiled(f: &UploadOrderSh, texels: &[[u16; 4]], dense: u32) {
     assert_eq!(word(texel), f.state.sampled_words[dense as usize]);
 }
 
-fn install_and_promote(
+pub(super) fn install_and_promote(
     f: &mut UploadOrderSh,
     device: &wgpu::Device,
     queue: &UploadQueue,
@@ -448,4 +458,38 @@ fn a_streamed_rewrite_refuses_a_probe_outside_the_lattice_or_invalid() {
         Err(Error::InvalidProbe { probe: 5 })
     );
     assert_eq!(state.check_depth_tile_probe(TILED), Ok(()));
+}
+
+/// A texel flush that fails keeps every queued probe for the next flush,
+/// the ones it reached before the failure included; one that succeeds
+/// empties the queue. CPU-only: a probe whose texel is not sampleable needs
+/// no upload, and one past the lattice fails the flush.
+#[test]
+fn a_failed_texel_flush_keeps_its_queue_for_the_next() {
+    let mut state = SyntheticMap::new([8, 4, 4], [1, 1, 1]).state();
+    let references =
+        postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences::from_section(None, 0);
+    state.queue_depth_tile_texel(TILED);
+    state.queue_depth_tile_texel(1000);
+    let mut uploads = crate::render::uploads::StagedUploads::from_scratch(Vec::new(), 0);
+    assert!(
+        state
+            .flush_depth_tile_texels(&mut uploads, &references)
+            .is_err(),
+        "a probe past the lattice fails the flush"
+    );
+    assert_eq!(
+        state
+            .pending_depth_tile_texels
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        [TILED, 1000],
+        "nothing queued is lost"
+    );
+    state.pending_depth_tile_texels.remove(&1000);
+    state
+        .flush_depth_tile_texels(&mut uploads, &references)
+        .expect("the rest flushes");
+    assert!(state.pending_depth_tile_texels.is_empty());
 }

@@ -61,6 +61,7 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::delta_sh_volumes::{DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::octahedral::irradiance_array_tile_location;
 use postretro_level_format::sh_reconstruct::{
     Level, Tile, corner_locals, local_xyz, node_corner_coord, node_l1_corner_weight,
@@ -253,6 +254,9 @@ pub struct AnalyzeInputs<'a> {
     pub delta_indirect: Option<&'a DeltaShVolumesSection>,
     pub delta_direct: Option<&'a DirectShDeltaVolumesSection>,
     pub delta_anim_direct: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+    /// The mover probe channel (id 57): it caps storage under its cells and
+    /// feeds no magnitude.
+    pub mover_channel: Option<&'a MoverProbeChannelSection>,
     pub protect_aabbs: &'a [ProtectAabb],
     pub thresholds: &'a [f32],
 }
@@ -1498,6 +1502,7 @@ fn project_hierarchy(
         indirect: inputs.delta_indirect,
         direct: inputs.delta_direct,
         anim_direct: inputs.delta_anim_direct,
+        mover_channel: inputs.mover_channel,
     };
     let ceilings = match crate::sh_density::storage_level_ceilings(inputs.grid_dims, deltas) {
         Ok(ceilings) => ceilings,
@@ -1539,6 +1544,9 @@ fn project_hierarchy(
                     .get(cell..=cell + 1)
                     .is_some_and(|offsets| offsets[0] != offsets[1])
             })
+            || inputs
+                .mover_channel
+                .is_some_and(|channel| channel.cell_has_entries(cell))
     };
     let bricks: Vec<BrickInput> = levels
         .into_iter()
@@ -3519,6 +3527,7 @@ mod tests {
                 delta_indirect: None,
                 delta_direct: Some(&direct),
                 delta_anim_direct: None,
+                mover_channel: None,
                 protect_aabbs: &[],
                 thresholds: &thresholds,
             },

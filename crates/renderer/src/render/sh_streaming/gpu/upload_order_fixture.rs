@@ -84,8 +84,54 @@ impl UploadOrderSh {
         map: SyntheticMap,
         tiles: Option<&postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection>,
     ) -> Self {
+        Self::with_map_tiles_and_channel(device, queue, dense_slots, map, tiles, None)
+    }
+
+    /// Id 41 without id 45, with an id-57 `channel` laid out as a streamed
+    /// level install lays it out.
+    pub(in crate::render::sh_streaming) fn with_static_direct_compose_and_channel(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        channel: &postretro_level_format::mover_probe_channel::MoverProbeChannelSection,
+    ) -> Self {
+        Self::with_map_tiles_and_channel(
+            device,
+            queue,
+            128,
+            SyntheticMap::new([8, 4, 4], [1, 1, 1]).without_animated_direct(),
+            None,
+            Some(channel),
+        )
+    }
+
+    fn with_map_tiles_and_channel(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        dense_slots: u32,
+        map: SyntheticMap,
+        tiles: Option<&postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection>,
+        channel: Option<&postretro_level_format::mover_probe_channel::MoverProbeChannelSection>,
+    ) -> Self {
         let state = map.state();
         let mut ledger = crate::render::sh_residency::ShAllocationLedger::new();
+        let mover_channel = match channel {
+            Some(section) => crate::render::mover_channel::MoverChannelResources::new(
+                device,
+                &crate::render::mover_channel::MoverChannelInputs {
+                    section: Some(section),
+                    entity_shadow_lights: &[],
+                    static_terms: None,
+                    animated_terms: None,
+                    animation_descriptor_indices: &[],
+                    indirect_descriptor_indices: &[],
+                },
+                true,
+                |_, _| None,
+                &mut ledger,
+            )
+            .expect("the fixture channel lays out"),
+            None => crate::render::mover_channel::MoverChannelResources::empty(device),
+        };
         let sh = ShVolumeResources::new(
             device,
             queue,
@@ -93,6 +139,9 @@ impl UploadOrderSh {
                 depth_tiles: tiles,
                 sh: None,
                 stream_base_present: true,
+                // As a streamed install passes them: the base an untiled
+                // probe's mover depth blends through.
+                stream_base_probes: Some(state.base_metadata.probes.as_slice()),
                 stream_animation_descriptors: Some(&[]),
                 indirect_delta_present: true,
                 direct: None,
@@ -103,8 +152,10 @@ impl UploadOrderSh {
             },
             1,
             false,
+            mover_channel,
             &mut ledger,
-        );
+        )
+        .expect("the fixture's SH volume installs");
         let uniforms = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH upload-order uniform layout"),
             entries: &crate::render::pipeline_layout::uniform_bind_group_layout_entries(),
@@ -152,6 +203,7 @@ impl UploadOrderSh {
         // The 128 above fixes geometry. These pools undersize their map on
         // purpose, so growth here answers to the device alone.
         fixture.state.gpu.as_mut().unwrap().whole_map = WholeMapCap::uncapped();
+        fixture.state.mover_channel_rows = fixture.sh.mover_channel.rows().clone();
         fixture
     }
 
@@ -287,6 +339,9 @@ impl UploadOrderSh {
         self.state
             .evict(&mut uploads, self.sh.depth_tiles.references(), cluster)
             .unwrap();
+        self.state
+            .flush_mover_releases(&mut uploads, &mut self.sh.mover_channel)
+            .unwrap();
         self.state.submit_uploads(uploads, device, queue);
         self.state.targets.insert(cluster);
         let mut gpu = super::super::InstallGpu {
@@ -342,6 +397,7 @@ impl UploadOrderSh {
                 mask,
                 promotion,
                 animated,
+                &[],
                 &[],
                 &[],
             )
@@ -407,7 +463,13 @@ mod depth_tile_texel_tests;
 mod direct_split_tests;
 #[path = "limit_tests.rs"]
 mod limit_tests;
+#[path = "mover_depth_tile_tests.rs"]
+mod mover_depth_tile_tests;
 #[path = "pool_admission_tests.rs"]
 mod pool_admission_tests;
 #[path = "shared_storage_tests.rs"]
 mod shared_storage_tests;
+
+#[cfg(test)]
+#[path = "mover_channel_tests.rs"]
+mod mover_channel_tests;

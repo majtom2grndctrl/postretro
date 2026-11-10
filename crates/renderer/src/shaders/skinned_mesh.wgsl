@@ -28,7 +28,7 @@
 // the forward/billboard/fog passes hold.
 //
 // Entities follow the BILLBOARD precedent, not forward's static-surface variant:
-// `reject_backface = false` (a moving skinned entity is not a static world
+// `SH_BACKFACE_NONE` (a moving skinned entity is not a static world
 // surface) with Chebyshev probe-occlusion on. Baked static direct is computed
 // here via `sample_sh_direct`; group 2 carries the live dynamic-direct loop
 // (`accumulate_dynamic_direct`) plus the shadow-receipt bindings (b5–b8): the
@@ -381,7 +381,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
         offset_world,
         shading_normal,
         geo_normal,
-        false,
+        SH_BACKFACE_NONE,
         sh_grid.probe_occlusion != 0u,
     );
 }
@@ -413,7 +413,7 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
         offset_world,
         shading_normal,
         geo_normal,
-        false,
+        SH_BACKFACE_NONE,
         sh_grid.probe_occlusion != 0u,
     );
 }

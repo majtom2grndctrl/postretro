@@ -346,6 +346,7 @@ pub(super) fn mover_geometry() -> postretro_level_loader::KinematicGeometry {
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
             crush_damage_type: None,
+            light_ramp: Default::default(),
         }],
         waypoints: Vec::new(),
     }

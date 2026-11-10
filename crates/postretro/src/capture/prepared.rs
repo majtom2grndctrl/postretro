@@ -21,6 +21,7 @@ use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cluster_hints::decode_level_hints;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 
+use super::forced_movers::ForcedCaptureMovers;
 use super::lightmap::{
     CaptureLightmapResidency, preload_capture_lightmap, validate_lightmap_overrides,
 };
@@ -31,7 +32,7 @@ use super::receivers::{
 };
 use super::scene::CaptureScene;
 use super::setup::{
-    apply_scene_reflection, capture_camera, capture_level_geometry,
+    apply_scene_reflection, capture_camera, capture_level_geometry, capture_mover_probe_channel,
     capture_static_lights_and_shadow_selection, derive_texture_materials,
     install_capture_animated_promotion_bridge, install_forced_active_animation_descriptors,
     resolve_forced_promotion_rows_from_metadata,
@@ -138,6 +139,8 @@ impl PreparedCapture {
             );
         // Capture installs the way the game does: the payloads move into the
         // upload and the world keeps headers only.
+        let mover_probe_channel =
+            capture_mover_probe_channel(&world.lights, world.mover_probe_channel());
         let gpu_lighting_payloads = world.take_gpu_lighting_payloads();
         let mut geometry = capture_level_geometry(
             &world,
@@ -145,6 +148,7 @@ impl PreparedCapture {
             &static_lights,
             &static_light_influences,
             &static_entity_shadow_lights,
+            mover_probe_channel.as_ref(),
         );
         if let Some(streaming) = geometry.lightmap_streaming.as_mut() {
             streaming.pool_sizing.first_generation_override = scene.lightmap_first_generation();
@@ -170,12 +174,23 @@ impl PreparedCapture {
         let camera = capture_camera(&scene.camera, width, height);
         let eye = camera.eye_position;
         let view_proj = camera.view_projection;
+        // Capture has no script context or levelLoad event. Stand up only the
+        // VM-free map-authored receiver state the windowed render frame
+        // collects, then rest any forced movers at their travel fractions, so
+        // visibility walks with their portal seal as the live frame does.
+        let mut registry = spawn_capture_receiver_registry(&world)?;
+        let forced_movers = ForcedCaptureMovers::apply(
+            &mut registry,
+            &world,
+            scene.force_movers.as_deref().unwrap_or_default(),
+        )?;
+        let blocked_portals = forced_movers.blocked_portals(&registry, &world);
         let mut scratch = postretro_visibility::PortalWalkScratch::new();
         let visible_render = VisibleRenderPreparation::for_level(
             &world,
             eye,
             view_proj,
-            &[],
+            &blocked_portals,
             CAPTURE_PORTAL_WALK,
             &mut scratch,
             postretro_visibility::TimingGate::OFF,
@@ -211,9 +226,6 @@ impl PreparedCapture {
             .saturating_mul(4)
             .saturating_add(2);
 
-        // Capture has no script context or levelLoad event. Stand up only the
-        // VM-free map-authored receiver state the windowed render frame collects.
-        let mut registry = spawn_capture_receiver_registry(&world)?;
         // Selected-static promotion needs no bridge: its forward record is
         // appended by the renderer from the selection itself.
         if forced_promotion_weights
@@ -265,6 +277,14 @@ impl PreparedCapture {
         );
         renderer.set_kinematic_ghost_draws(mover_ghost_collector.instances());
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
+        // The forced movers' travel states, as the game hands them over for
+        // the phase they rest at; the renderer composes them from the first
+        // preload frame on.
+        renderer.set_mover_travel(&forced_movers.mover_travel(
+            &registry,
+            &world,
+            &mut mover_collector,
+        ));
         // Capture loads no manifest, so every fluid volume draws at the fixed
         // capture opacity, with no fog or wave, reflecting at reflectivity 1
         // wherever a face binds a probe.
@@ -535,6 +555,14 @@ impl PreparedCapture {
     /// The report's planar block; `None` below very high.
     pub(super) fn planar_report(&self) -> Option<CapturePlanarReport> {
         self.planar.report(&self.visible_render.visible_cells)
+    }
+
+    /// Test seam: hand the renderer `states` for the next frames, as a play
+    /// frame's hand-over does, without re-posing any mover. Frame-pair rows
+    /// change only the travel state between captured frames.
+    #[cfg(test)]
+    pub(super) fn hand_over_mover_travel(&mut self, states: &[crate::render::MoverTravel]) {
+        self.renderer.set_mover_travel(states);
     }
 }
 

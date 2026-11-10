@@ -36,6 +36,7 @@ impl DenseTextures {
         queue: &dyn crate::render::queue_writes::QueueWrites,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
+        direct_compose_required: bool,
         shape: AtlasShape,
         sh: &mut ShVolumeResources,
     ) -> Result<Self, ShResidencyDrainError> {
@@ -90,8 +91,6 @@ impl DenseTextures {
         } else {
             (None, None, None)
         };
-        let direct_compose_required =
-            sources.direct_delta.is_some() || sources.animated_direct_delta.is_some();
         let (direct_atlas, direct_handoff, direct_intermediate) = if direct_compose_required {
             if direct_base.is_none() {
                 return Err(ShResidencyDrainError::GpuCapacity {

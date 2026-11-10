@@ -19,7 +19,6 @@ pub(super) struct StreamingIndirectCompose {
     affinity_lights: wgpu::Buffer,
     delta_subblocks: wgpu::Buffer,
     compaction_metadata: wgpu::Buffer,
-    descriptor_index_buffer: wgpu::Buffer,
     grid: ComposeGridParams,
     max_workgroups_x: u32,
     dynamic_alignment: u32,
@@ -228,11 +227,6 @@ impl StreamingIndirectCompose {
                 .checked_mul(4)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?,
         );
-        let descriptor_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Streamed SH Indirect Descriptor Indices"),
-            contents: &u32_bytes(&descriptor_words),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
         let compaction_metadata = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed SH Indirect Compaction Metadata"),
             contents: &u32_bytes(&compaction_words),
@@ -265,7 +259,7 @@ impl StreamingIndirectCompose {
             &sh.animation.descriptors,
             &sh.animation.anim_samples,
             &affinity_lights,
-            &descriptor_index_buffer,
+            sh.mover_channel.bounce_buffer(),
             compose_indirection,
             &compaction_metadata,
         );
@@ -280,7 +274,6 @@ impl StreamingIndirectCompose {
             affinity_lights,
             delta_subblocks,
             compaction_metadata,
-            descriptor_index_buffer,
             grid,
             max_workgroups_x: limits.max_compute_workgroups_per_dimension,
             dynamic_alignment: limits.min_uniform_buffer_offset_alignment,
@@ -308,7 +301,7 @@ impl StreamingIndirectCompose {
         animation_descriptors: &wgpu::Buffer,
         animation_samples: &wgpu::Buffer,
         affinity_lights: &wgpu::Buffer,
-        descriptor_index_buffer: &wgpu::Buffer,
+        mover_bounce: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
         compaction_metadata: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
@@ -360,9 +353,10 @@ impl StreamingIndirectCompose {
                     binding: BIND_AFFINITY_LIGHTS,
                     resource: affinity_lights.as_entire_binding(),
                 },
+                // Id 57's bounce table, holding id 27's descriptor map.
                 wgpu::BindGroupEntry {
-                    binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
-                    resource: descriptor_index_buffer.as_entire_binding(),
+                    binding: BIND_MOVER_BOUNCE,
+                    resource: mover_bounce.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: BIND_PROBE_INDIRECTION,

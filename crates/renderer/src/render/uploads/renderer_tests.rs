@@ -416,6 +416,7 @@ fn mover_and_billboard_ghosts_record_through_their_pipelines_in_both_modes() {
         sealed_portal_ids: Vec::new(),
         carried_lights: Vec::new(),
         crush_damage_type: None,
+        light_ramp: Default::default(),
     };
     let geometry = postretro_level_loader::KinematicGeometry {
         movers: vec![mover],
@@ -676,5 +677,20 @@ mod ui_text_timing;
 #[cfg(feature = "dev-tools")]
 mod streamed_inventory;
 
+#[path = "renderer_tests/streamed_mover_channel.rs"]
+mod streamed_mover_channel;
+
+#[path = "renderer_tests/closet_mover_channel.rs"]
+mod closet_mover_channel;
+
 #[path = "renderer_tests/indirect_scale.rs"]
 mod indirect_scale;
+
+#[path = "renderer_tests/real_level.rs"]
+mod real_level;
+
+#[path = "renderer_tests/mover_channel_modes.rs"]
+mod mover_channel_modes;
+
+#[path = "renderer_tests/mover_channel_lag.rs"]
+mod mover_channel_lag;

@@ -158,6 +158,7 @@ pub fn level_world_to_geometry<'a>(
         billboard_direct_scatter_volume: world.billboard_direct_scatter_volume(),
         animated_billboard_direct_scatter_delta_volumes: world
             .animated_billboard_direct_scatter_delta_volumes(),
+        mover_probe_channel: world.mover_probe_channel(),
         entity_shadow_lights: world.entity_shadow_lights(),
         shadowmask_atlas: world.shadowmask_atlas(),
         sdf_atlas: world.sdf_atlas.as_ref(),

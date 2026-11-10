@@ -52,12 +52,17 @@ pub(super) struct ExpectedChunk {
     pub(super) blocks: Vec<ExpectedBlock>,
     pub(super) probe_patches: Vec<ExpectedProbePatch>,
     pub(super) sparse_blocks: BTreeMap<u32, ExpectedSparseBlock>,
+    /// Id 57's rows in this chunk: each covered listed cell whose streamed
+    /// blocks carry a byte, ascending, with its lengths.
+    pub(super) mover_rows: Vec<(u32, MoverStreamedRowLens)>,
 }
 
 pub(super) struct ValidationPlan<'a> {
     inputs: ClusterShPayloadsValidationInputs<'a>,
     prefix: StoredBrickPrefixSum,
     dense_nodes_per_cluster: Vec<BTreeSet<usize>>,
+    /// Id 57's per-cell payload slices, when it is a source.
+    mover_slices: Option<(&'a MoverProbeChannelSection, Vec<MoverCellSlices>)>,
 }
 
 impl<'a> ValidationPlan<'a> {
@@ -82,10 +87,17 @@ impl<'a> ValidationPlan<'a> {
             }
             dense_nodes_per_cluster.push(nodes);
         }
+        let mover_slices = inputs.sources.iter().find_map(|source| match source {
+            ClusterShPayloadsSourceMetadata::MoverChannel { section, .. } => {
+                Some((*section, section.cell_slices()))
+            }
+            _ => None,
+        });
         Ok(Self {
             inputs,
             prefix,
             dense_nodes_per_cluster,
+            mover_slices,
         })
     }
 
@@ -254,6 +266,27 @@ impl<'a> ValidationPlan<'a> {
                 });
             }
         }
+        let mover_rows = match &self.mover_slices {
+            Some((section, slices)) => section.streamed_rows_for(
+                slices,
+                affinity_indices(
+                    self.inputs.directory,
+                    cluster_id,
+                    SectionId::MoverProbeChannel as u32,
+                )?,
+            ),
+            None => Vec::new(),
+        };
+        if !mover_rows.is_empty() {
+            blocks.push(ExpectedBlock {
+                section_id: SectionId::MoverProbeChannel as u32,
+                kind: CLUSTER_SH_MOVER_ROWS_BLOCK_KIND,
+                element_count: u32::try_from(mover_rows.len())
+                    .map_err(|_| ClusterShPayloadsError::SizeOverflow("mover row count"))?,
+                byte_len: mover_rows_block_len(&mover_rows)?,
+                irradiance_format: None,
+            });
+        }
         for source in self.inputs.sources {
             let ClusterShPayloadsSourceMetadata::Sparse {
                 section_id,
@@ -311,7 +344,14 @@ impl<'a> ValidationPlan<'a> {
                 .and_then(|value| value.checked_add(decoded_bytes))
                 .ok_or(ClusterShPayloadsError::SizeOverflow("chunk payload bytes"))?
         };
-        let requested_resident_bytes = self.requested_resident_bytes(nodes, &sparse_rows)?;
+        let requested_resident_bytes = self
+            .requested_resident_bytes(nodes, &sparse_rows)?
+            .checked_add(if mover_rows.is_empty() {
+                0
+            } else {
+                mover_rows_block_len(&mover_rows)?
+            })
+            .ok_or(ClusterShPayloadsError::SizeOverflow("resident bytes"))?;
         Ok(ExpectedChunk {
             stored_tile_count,
             dense_patch_count,
@@ -322,6 +362,7 @@ impl<'a> ValidationPlan<'a> {
             blocks,
             probe_patches,
             sparse_blocks,
+            mover_rows,
         })
     }
 
@@ -340,6 +381,8 @@ impl<'a> ValidationPlan<'a> {
         })?;
         for source in self.inputs.sources {
             match source {
+                // Priced with its rows by the caller.
+                ClusterShPayloadsSourceMetadata::MoverChannel { .. } => {}
                 ClusterShPayloadsSourceMetadata::Dense { .. } => {
                     total = total
                         .checked_add(
@@ -514,4 +557,20 @@ pub(super) fn validate_index_against_expected(
         ));
     }
     Ok(())
+}
+
+/// Body bytes of an id-57 row block over `rows`.
+pub(super) fn mover_rows_block_len(
+    rows: &[(u32, MoverStreamedRowLens)],
+) -> Result<u64, ClusterShPayloadsError> {
+    let table = u64::try_from(rows.len())
+        .ok()
+        .and_then(|count| count.checked_mul(MOVER_STREAMED_ROW_BYTES as u64))
+        .and_then(|table| table.checked_add(MOVER_STREAMED_BLOCK_HEADER_BYTES as u64))
+        .ok_or(ClusterShPayloadsError::SizeOverflow("mover row table"))?;
+    rows.iter()
+        .try_fold(table, |total, (_, lens)| total.checked_add(lens.total()))
+        .ok_or(ClusterShPayloadsError::SizeOverflow(
+            "mover row block bytes",
+        ))
 }

@@ -1,6 +1,7 @@
 //! Source gates for coloured bounce: means are never persisted, one material
 //! module computes them, and authors get no albedo or saturation knob and one
-//! bounce knob, the map key `_bounce_fill`.
+//! bounce-tuning knob, the map key `_bounce_fill` (a mover's `light_bounces`
+//! only picks how many static bounces its poses re-bake).
 //! See: context/lib/build_pipeline.md §Compiler pipeline, §Baked texture mips
 
 use std::path::{Path, PathBuf};
@@ -376,10 +377,13 @@ const BOUNCE_FILL: &str = "_bounce_fill";
 
 #[test]
 fn no_worldspawn_key_fgd_field_or_cli_flag_steers_bounce_albedo_or_saturation() {
-    // FGD: `_bounce_fill` is the one bounce field; fog's scatter
+    // FGD: `_bounce_fill` is the one bounce field that tunes the bounce;
+    // a mover's `light_bounces` picks how many static bounces its poses
+    // re-bake and steers no albedo or saturation; fog's scatter
     // `saturation` predates and is unrelated to bounce.
     const ADMITTED: &[(&str, &str)] = &[
         ("worldspawn", BOUNCE_FILL),
+        ("kinematic_mover", "light_bounces"),
         ("fog_volume", "saturation"),
         ("fog_lamp", "saturation"),
         ("fog_tube", "saturation"),

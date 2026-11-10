@@ -7,7 +7,9 @@ use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::lights::GateLight;
-use super::pose::{MoverPoses, ONE_WAYPOINT_REASON, PosedBrush, SPIN_REASON, Terminus};
+use super::pose::{
+    MoverPoses, NO_BOUNDS_REASON, ONE_WAYPOINT_REASON, PosedBrush, SPIN_REASON, Terminus,
+};
 use super::probes::{ProbeScene, gate_probes};
 use super::segment::{CONTACT_TOLERANCE_M, point_touches_brush, segment_touches_brush};
 use super::side_count::{SideCount, side_counts};
@@ -82,6 +84,9 @@ fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> Ma
         start_on_spawn: false,
         brush_volumes: brushes,
         crush_damage_type: None,
+        light_ramp_start: 0.0,
+        light_ramp_end: 1.0,
+        light_bounces: None,
     }
 }
 
@@ -556,9 +561,10 @@ fn a_spinners_swept_bounds_hold_its_brushes_at_any_rotation_and_reach_its_side_c
 }
 
 #[test]
-fn a_mover_without_brushes_gets_no_side_count_analysed_or_not() {
+fn a_mover_without_brushes_is_not_analysed_and_gets_no_side_count() {
     let (mut movers, mut waypoints) = sliding_door();
-    // An analysed mover and a spinner, neither with a brush.
+    // A two-waypoint mover and a spinner, neither with a brush: the first is
+    // not analysed for want of bounds, so the probe channel never poses it.
     movers.push(mover(1, "empty", "e_a", Vec::new()));
     waypoints.push(waypoint("e_a", "e_b", DVec3::ZERO));
     waypoints.push(waypoint("e_b", "", DVec3::X));
@@ -568,8 +574,13 @@ fn a_mover_without_brushes_gets_no_side_count_analysed_or_not() {
     waypoints.push(waypoint("f_b", "", DVec3::X));
     movers.push(spinner);
     let poses = MoverPoses::resolve(&movers, &waypoints);
-    assert_eq!(poses.analysed.len(), 2);
-    assert_eq!(poses.not_analysed.len(), 1);
+    assert_eq!(poses.analysed.len(), 1);
+    let reasons: Vec<(u32, &str)> = poses
+        .not_analysed
+        .iter()
+        .map(|mover| (mover.mover_id, mover.reason))
+        .collect();
+    assert_eq!(reasons, vec![(1, NO_BOUNDS_REASON), (2, SPIN_REASON)]);
 
     // A dynamic sun reaches every mover with bounds, and only those.
     let mut sun = dynamic_light(DVec3::ZERO, 1.0);
@@ -582,6 +593,34 @@ fn a_mover_without_brushes_gets_no_side_count_analysed_or_not() {
             others: vec![0],
         }]
     );
+}
+
+#[test]
+fn a_mover_whose_brushes_all_lack_bounds_is_not_analysed() {
+    let (mut movers, mut waypoints) = sliding_door();
+    // A two-waypoint mover with brushes, every one's bounds invalid: one
+    // inverted (empty), one non-finite. It has brushes but no bounds, so it
+    // is not analysed, as a mover with no brush is not.
+    let mut inverted = box_brush(DVec3::ZERO, DVec3::ONE);
+    inverted.aabb = Aabb {
+        min: DVec3::ONE,
+        max: DVec3::ZERO,
+    };
+    let mut non_finite = box_brush(DVec3::ZERO, DVec3::ONE);
+    non_finite.aabb.max.y = f64::NAN;
+    assert!(!inverted.aabb.is_valid() && !non_finite.aabb.is_valid());
+    movers.push(mover(1, "boundless", "b_a", vec![inverted, non_finite]));
+    waypoints.push(waypoint("b_a", "b_b", DVec3::ZERO));
+    waypoints.push(waypoint("b_b", "", DVec3::X));
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    let analysed: Vec<u32> = poses.analysed.iter().map(|mover| mover.mover_id).collect();
+    assert_eq!(analysed, [0], "only the door is analysed");
+    let reasons: Vec<(u32, &str)> = poses
+        .not_analysed
+        .iter()
+        .map(|mover| (mover.mover_id, mover.reason))
+        .collect();
+    assert_eq!(reasons, vec![(1, NO_BOUNDS_REASON)]);
 }
 
 #[test]

@@ -31,12 +31,10 @@ impl DirectPromotionStorage {
             ShAllocationKind::DirectComposeCompactionMetadata,
             ShAllocationKind::DirectComposeAffinityOffsets,
             ShAllocationKind::DirectComposeAffinityLights,
-            None,
             delta_subblocks,
             &buffers.compaction_meta_words(),
             &buffers.affinity_offsets,
             &buffers.affinity_lights,
-            None,
         );
         Self { buffers, payloads }
     }

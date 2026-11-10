@@ -489,6 +489,8 @@ mod tests {
                     animated_direct_active: step.animated_active,
                     effective_static_weights: &self.static_weights,
                     effective_animated_weights: &self.animated_weights,
+                    mover_changes: &[],
+                    mover_rows: &crate::render::mover_channel::NO_MOVER_ROWS,
                     controls: self.controls,
                 },
                 &mut self.plan,
@@ -961,6 +963,8 @@ mod tests {
             animated_direct_active: true,
             effective_static_weights: static_weights,
             effective_animated_weights: animated_weights,
+            mover_changes: &[],
+            mover_rows: &crate::render::mover_channel::NO_MOVER_ROWS,
             controls: controls(),
         }
     }

@@ -148,6 +148,32 @@ pub(super) fn validate_inputs(
                     ))
                 })?;
             }
+            ClusterShPayloadsSourceMetadata::MoverChannel {
+                section_id,
+                internal_version,
+                section,
+            } => {
+                if *section_id != SectionId::MoverProbeChannel as u32 {
+                    return source_mismatch(format!(
+                        "mover channel source {section_id} is invalid"
+                    ));
+                }
+                if *internal_version != expected_internal_version(*section_id)? {
+                    return source_mismatch(format!(
+                        "mover channel source {section_id} has stale version {internal_version}"
+                    ));
+                }
+                if section.affinity_dims != expected_affinity {
+                    return source_mismatch(format!(
+                        "mover channel source {section_id} affinity grid disagrees with id 34"
+                    ));
+                }
+                if !section.streams() {
+                    return source_mismatch(format!(
+                        "mover channel source {section_id} places no payload with id 50"
+                    ));
+                }
+            }
         }
     }
     if !base_present {
@@ -195,7 +221,8 @@ fn validate_directory_source_resources(
             ClusterShPayloadsSourceKind::DenseBaseAtlas => {
                 (ClusterResourceDomain::DenseProbe, grid_dimensions)
             }
-            ClusterShPayloadsSourceKind::SparseAffinity => {
+            ClusterShPayloadsSourceKind::SparseAffinity
+            | ClusterShPayloadsSourceKind::MoverChannel => {
                 (ClusterResourceDomain::AffinityCell, affinity_dimensions)
             }
         };

@@ -252,9 +252,14 @@ pub enum SectionId {
     /// See `ghost_links::GhostLinksSection`.
     GhostLinks = 56,
 
+    /// Optional mover probe channel: per (mover, terminus) direct visibility
+    /// of gated lights, absolute static bounce and closed-pose depth tiles,
+    /// plus each mover's author light ramp. Absent means no mover gating.
+    /// See `mover_probe_channel::MoverProbeChannelSection`.
+    MoverProbeChannel = 57,
+
     /// Worst mandatory pool layers of any camera cell, per pool. Present when
-    /// Lightmap has blocks and CellResidencySet exists. Id 57 is left free for
-    /// a section another plan claims.
+    /// Lightmap has blocks and CellResidencySet exists.
     /// See `lightmap_pool_bound::LightmapPoolBoundSection`.
     LightmapPoolBound = 58,
 
@@ -313,6 +318,7 @@ impl SectionId {
             54 => Some(Self::ReflectionProbes),
             55 => Some(Self::Teleporters),
             56 => Some(Self::GhostLinks),
+            57 => Some(Self::MoverProbeChannel),
             58 => Some(Self::LightmapPoolBound),
             59 => Some(Self::ProbeDepthTiles),
             _ => None,
@@ -371,6 +377,7 @@ mod tests {
             SectionId::ReflectionProbes,
             SectionId::Teleporters,
             SectionId::GhostLinks,
+            SectionId::MoverProbeChannel,
             SectionId::LightmapPoolBound,
             SectionId::ProbeDepthTiles,
         ];
@@ -380,7 +387,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(57), None);
         assert_eq!(SectionId::from_u32(60), None);
     }
 }

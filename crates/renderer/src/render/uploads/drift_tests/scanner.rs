@@ -773,6 +773,9 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
             "StreamingSparseBuffers",
             "clear_all_row_pairs",
         ) => Some("drain-internal"),
+        ("render/mover_channel/gpu.rs", "MoverChannelResources", "clear_pools") => {
+            Some("drain-internal")
+        }
         _ => None,
     }
 }

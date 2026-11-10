@@ -596,6 +596,7 @@ fn probe_overlay_composes_its_sampling_region_without_forcing_unrelated_resident
                 crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride::default(),
                 &[],
                 &[],
+                &[],
             )
             .unwrap();
     };
@@ -665,6 +666,7 @@ fn probe_overlay_composes_rounded_probe_positions_when_world_bounds_collapse() {
             crate::render::direct_sh_compose::DirectShDebugOverride::default(),
             crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride::default(),
             &[], &[],
+            &[],
         ).expect("plan precision fixture");
         };
     // Finish the initial residency repair, then inspect a steady frame whose

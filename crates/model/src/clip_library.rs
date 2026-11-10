@@ -1145,7 +1145,9 @@ mod tests {
     // Regression: both inputs panicked inside gltf, before any library check ran.
     #[test]
     fn malformed_library_document_fails_the_load_not_panic() {
-        let patches: [(&str, fn(&mut serde_json::Value)); 2] = [
+        /// A named edit that breaks the glTF document.
+        type Patch = (&'static str, fn(&mut serde_json::Value));
+        let patches: [Patch; 2] = [
             ("POSITION index past the accessors", |root| {
                 root["meshes"] = serde_json::json!([
                     { "primitives": [{ "attributes": { "POSITION": 99 } }] }

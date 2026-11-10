@@ -26,6 +26,7 @@ impl ShResidencyState {
         animated_override: AnimatedDirectShDebugOverride,
         promoted_static_weights: &[f32],
         promoted_animated_states: &[PromotedBakedLightState],
+        mover_changes: &[u32],
     ) -> Result<(), ShResidencyDrainError> {
         let started = Instant::now();
         // Scratch buffers leave `self` while borrowed alongside it and return
@@ -128,6 +129,8 @@ impl ShResidencyState {
                         promotion_override,
                         animated_override,
                     },
+                    mover_changes,
+                    mover_rows: &self.mover_channel_rows,
                 },
                 &mut frame_plan,
             );
@@ -323,7 +326,11 @@ impl ShResidencyState {
             self.gpu.as_ref().map_or((0, 0, 0), |gpu| {
                 (
                     gpu.fixed_metadata_bytes,
-                    gpu.active_capacity_bytes,
+                    // A streamed id-57 payload's pooled tables are this
+                    // pool's residency too.
+                    gpu.active_capacity_bytes
+                        .checked_add(self.mover_pool_bytes.0)
+                        .expect("validated streamed GPU capacities must not overflow u64"),
                     gpu.retiring_capacity_bytes(),
                 )
             });

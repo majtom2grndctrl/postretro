@@ -108,9 +108,17 @@ impl ProbeDepthTiles {
             + self.section.texels.capacity() * size_of::<[u16; 2]>()) as u64
     }
 
-    /// The bytes the runtime's tile texture allocates for these tiles.
-    pub(crate) fn texture_bytes(&self) -> u64 {
-        probe_depth_tile_texture_bytes(self.section.tile_count() as u32)
+    /// Tiles the runtime's tile texture holds: these, then `live_tiles`
+    /// mover live tiles (id 57), the count the loader bounds and the
+    /// renderer sizes the texture for.
+    pub(crate) fn texture_tile_count(&self, live_tiles: usize) -> usize {
+        self.section.tile_count() + live_tiles
+    }
+
+    /// The bytes the runtime's tile texture allocates for these tiles and
+    /// `live_tiles` live tiles.
+    pub(crate) fn texture_bytes(&self, live_tiles: usize) -> u64 {
+        probe_depth_tile_texture_bytes(self.texture_tile_count(live_tiles) as u32)
     }
 
     /// The once-per-build info line, warm or cold, for a bake asked to keep
@@ -124,16 +132,19 @@ impl ProbeDepthTiles {
         );
     }
 
-    /// The Build Summary line for a bake asked to keep `tile_cap`.
-    pub(crate) fn summary_line(&self, tile_cap: u32) -> String {
-        let bytes = self.texture_bytes();
+    /// The Build Summary line for a bake asked to keep `tile_cap`, beside
+    /// `live_tiles` mover live tiles: the tile texture's bytes are the
+    /// runtime's, for id 59's tiles and the live ones together.
+    pub(crate) fn summary_line(&self, tile_cap: u32, live_tiles: usize) -> String {
+        let bytes = self.texture_bytes(live_tiles);
         format!(
             "Probe depth tiles: {} tiles, {} dropped past the {}-tile cap; \
-             tile texture {bytes} bytes ({:.2} MiB)",
+             tile texture {bytes} bytes ({:.2} MiB) for {} tile(s) with {live_tiles} live",
             self.section.tile_count(),
             self.dropped,
             effective_tile_cap(tile_cap),
             bytes as f64 / (1024.0 * 1024.0),
+            self.texture_tile_count(live_tiles),
         )
     }
 }
@@ -142,13 +153,13 @@ impl ProbeDepthTiles {
 /// Built once per volume from the one direction set every probe shares. A
 /// texel no direction lands in borrows the direction nearest its centre, so
 /// a tile has no holes.
-pub(super) struct TileRayTable {
+pub(crate) struct TileRayTable {
     /// Per interior texel (`x + y·8`), its ray indices, ascending.
     members: Vec<Vec<u16>>,
 }
 
 impl TileRayTable {
-    pub(super) fn new(directions: &[Vec3]) -> Self {
+    pub(crate) fn new(directions: &[Vec3]) -> Self {
         let mut members = vec![Vec::new(); PROBE_DEPTH_TILE_INTERIOR_TEXELS];
         for (ray, dir) in directions.iter().enumerate() {
             members[interior_texel_of_direction(dir.to_array())].push(ray as u16);
@@ -182,7 +193,7 @@ impl TileRayTable {
     /// squared distance over its rays, summed in ray order, as f16 bits
     /// saturated at [`F16_MAX`]: hits are unbounded, so `E[d²]` overflows
     /// past ~256 m.
-    pub(super) fn interior(
+    pub(crate) fn interior(
         &self,
         distances: &[f32],
     ) -> [[u16; 2]; PROBE_DEPTH_TILE_INTERIOR_TEXELS] {
@@ -244,6 +255,57 @@ impl PartialEq for Candidate {
 }
 
 impl Eq for Candidate {}
+
+/// The largest absolute change between `before`'s visibility and `tile`'s
+/// over `probe`'s valid in-grid lattice neighbours, each at its own distance.
+/// `before` maps the offset toward a neighbour to the moments the probe reads
+/// without `tile`: its averaged id-34 pair, or its own id-59 tile there.
+/// Id 59's selection score, and the mover probe channel's significance score.
+pub(crate) fn visibility_change(
+    dims: [u32; 3],
+    cell_size: [f32; 3],
+    validity: &[u8],
+    bias: f32,
+    probe: usize,
+    before: impl Fn(Vec3) -> [f32; 2],
+    tile: &[[u16; 2]],
+) -> f32 {
+    let (x, y, z) = probe_index_to_xyz(probe, dims);
+    let cell = Vec3::from(cell_size);
+    let mut largest = 0.0f32;
+    for oz in -1i64..=1 {
+        for oy in -1i64..=1 {
+            for ox in -1i64..=1 {
+                if (ox, oy, oz) == (0, 0, 0) {
+                    continue;
+                }
+                let n = [i64::from(x) + ox, i64::from(y) + oy, i64::from(z) + oz];
+                if n.iter()
+                    .zip(dims)
+                    .any(|(&c, d)| !(0..i64::from(d)).contains(&c))
+                {
+                    continue;
+                }
+                let neighbour = n[0] as usize
+                    + n[1] as usize * dims[0] as usize
+                    + n[2] as usize * dims[0] as usize * dims[1] as usize;
+                if validity[neighbour] == 0 {
+                    continue;
+                }
+                let offset = Vec3::new(ox as f32, oy as f32, oz as f32) * cell;
+                let distance = offset.length();
+                let previous = chebyshev_visibility(before(offset), distance, bias);
+                let after = chebyshev_visibility(
+                    sample_tile_moments(tile, offset.to_array()),
+                    distance,
+                    bias,
+                );
+                largest = largest.max((after - previous).abs());
+            }
+        }
+    }
+    largest
+}
 
 /// Ranks the bake's candidates into at most `cap` tiles while the gather
 /// runs. Each probe offers its own tile from inside the parallel gather, so
@@ -313,42 +375,15 @@ impl<'a> DepthTileSelector<'a> {
         averaged: [f32; 2],
         tile: &[[u16; 2]],
     ) -> f32 {
-        let dims = self.layout.dims;
-        let (x, y, z) = probe_index_to_xyz(probe, dims);
-        let cell = Vec3::from(self.layout.cell_size);
-        let mut largest = 0.0f32;
-        for oz in -1i64..=1 {
-            for oy in -1i64..=1 {
-                for ox in -1i64..=1 {
-                    if (ox, oy, oz) == (0, 0, 0) {
-                        continue;
-                    }
-                    let n = [i64::from(x) + ox, i64::from(y) + oy, i64::from(z) + oz];
-                    if n.iter()
-                        .zip(dims)
-                        .any(|(&c, d)| !(0..i64::from(d)).contains(&c))
-                    {
-                        continue;
-                    }
-                    let neighbour = n[0] as usize
-                        + n[1] as usize * dims[0] as usize
-                        + n[2] as usize * dims[0] as usize * dims[1] as usize;
-                    if self.layout.validity[neighbour] == 0 {
-                        continue;
-                    }
-                    let offset = Vec3::new(ox as f32, oy as f32, oz as f32) * cell;
-                    let distance = offset.length();
-                    let before = chebyshev_visibility(averaged, distance, self.bias);
-                    let after = chebyshev_visibility(
-                        sample_tile_moments(tile, offset.to_array()),
-                        distance,
-                        self.bias,
-                    );
-                    largest = largest.max((after - before).abs());
-                }
-            }
-        }
-        largest
+        visibility_change(
+            self.layout.dims,
+            self.layout.cell_size,
+            &self.layout.validity,
+            self.bias,
+            probe,
+            |_| averaged,
+            tile,
+        )
     }
 
     fn offer(&self, candidate: Candidate) {

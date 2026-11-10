@@ -90,6 +90,9 @@ pub struct ShVolumeResources {
     /// Normal-free static/animated direct scatter sampled only by billboards.
     /// Its real/dummy binding selection is level-load fixed.
     pub(super) billboard_direct_scatter: BillboardDirectScatterResources,
+    /// Id 57's direct table and this frame's mover t′, bound by both direct
+    /// compose passes in either SH storage mode.
+    pub(super) mover_channel: super::mover_channel::MoverChannelResources,
     #[allow(dead_code)]
     pub present: bool,
     /// Probe grid dimensions (in cells, x/y/z).
@@ -120,9 +123,10 @@ pub struct ShVolumeResources {
     /// passes; held here so the SDF shadow pass can mint its own
     /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
     /// and the SDF shadow pass rebuilds its bind group on resize / level reload).
-    depth_moment_texture: wgpu::Texture,
-    /// Id 59's tile texture (binding 18), grid words and this load's probe →
-    /// tile reference table. Streamed installs bind the same texture.
+    pub(super) depth_moment_texture: wgpu::Texture,
+    /// The tile texture (binding 18) with id 59's tiles and id 57's live
+    /// tiles, grid words and this load's probe → tile reference table.
+    /// Streamed installs bind the same texture.
     pub(super) depth_tiles: ShDepthTiles,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
@@ -167,9 +171,9 @@ pub struct ShVolumeResources {
     pub cell_size: [f32; 3],
     grid_info_buffer: wgpu::Buffer,
     probe_occlusion_enabled: bool,
-    /// Total atlas handle, retained so the diagnostics readback can copy it
-    /// back to CPU each frame. Carries `COPY_SRC`.
-    #[cfg(feature = "dev-tools")]
+    /// Total atlas handle, retained so the diagnostics readback (and the
+    /// compose GPU tests) can copy it back to CPU. Carries `COPY_SRC`.
+    #[cfg(any(test, feature = "dev-tools"))]
     pub total_atlas_texture: wgpu::Texture,
 }
 
@@ -179,6 +183,10 @@ pub(super) struct ShVolumeSections<'a> {
     /// Whole-resident billboard scatter must key its availability to that
     /// metadata seam rather than the legacy compact-atlas upload path.
     pub stream_base_present: bool,
+    /// The streamed base metadata's probes: their averaged moments are what
+    /// an id-57 depth record's unstored terminus blends toward. `None` on a
+    /// whole load, which reads them from `sh`.
+    pub stream_base_probes: Option<&'a [OctahedralShProbe]>,
     /// Streaming retains curve descriptors (including their samples) as fixed
     /// metadata while intentionally omitting id-34's compact atlas body.
     /// Keep the normal group-3 animation buffers live from that metadata.
@@ -385,18 +393,21 @@ impl ShVolumeResources {
     /// file had no `OctahedralShVolume` section — in that case dummy 1×1
     /// octahedral atlas textures and a dummy 1×1×1 depth-moment texture are
     /// uploaded, and the `has_sh_volume` flag is zero so the shader skips SH
-    /// sampling and falls back to `ambient_floor + direct_sum`.
+    /// sampling and falls back to `ambient_floor + direct_sum`. Fails only
+    /// when id 57's depth block cannot bind to the level's probes.
     pub fn new(
         device: &wgpu::Device,
         queue: &dyn crate::render::queue_writes::QueueWrites,
         sections: ShVolumeSections<'_>,
         scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,
+        mover_channel: super::mover_channel::MoverChannelResources,
         ledger: &mut ShAllocationLedger,
-    ) -> Self {
+    ) -> Result<Self, super::mover_channel::MoverChannelError> {
         let ShVolumeSections {
             sh: section,
             stream_base_present,
+            stream_base_probes,
             stream_animation_descriptors,
             indirect_delta_present,
             direct: direct_section,
@@ -444,14 +455,47 @@ impl ShVolumeResources {
         let probe_indirection_words = build_probe_indirection_words(usable);
         // Tiles ride only a level whose moments texture is real: a whole
         // usable id 34 or a streamed base. Built before the moments, which
-        // pack G from its references.
+        // pack G from its references. Id 57's live tiles follow id 59's in
+        // the same texture; its closed-pose tiles stay on the CPU.
+        let moments_real = usable.is_some() || stream_base_present;
+        let mut mover_channel = mover_channel;
+        let live_tiles = if moments_real {
+            mover_channel.depth_live_tile_count()
+        } else {
+            0
+        };
         let depth_tiles = ShDepthTiles::new(
             device,
             queue,
-            depth_tiles_section.filter(|_| usable.is_some() || stream_base_present),
+            depth_tiles_section.filter(|_| moments_real),
+            live_tiles,
             usable.map(|sec| sec.probes.as_slice()),
             ledger,
         );
+        if live_tiles > 0
+            && let Some(layout) = depth_tiles.layout()
+        {
+            mover_channel.bind_depth(
+                depth_tiles.first_live_tile(),
+                layout,
+                depth_tiles.references(),
+                super::mover_channel::DepthBases {
+                    id59: depth_tiles_section,
+                    probes: usable
+                        .map(|sec| sec.probes.as_slice())
+                        .or(stream_base_probes)
+                        .unwrap_or_default(),
+                },
+            )?;
+            ledger.record_host(
+                "mover_closed_pose_depth_tiles",
+                mover_channel.depth_host_bytes(),
+                &source_ids([Some(57)]),
+            );
+        } else {
+            // No usable SH: no tile texture to write, so hold no tiles.
+            mover_channel.discard_depth();
+        }
 
         #[cfg(feature = "dev-tools")]
         let validity: Vec<u8> = usable
@@ -510,10 +554,11 @@ impl ShVolumeResources {
             );
             base_atlas_texture =
                 upload_compact_base_atlas_texture(device, queue, sec, base_allocation);
+            // Copied back by the dev-tools readback and the compose GPU tests.
             let total_allocation = indirect_total_atlas_allocation(
                 sec.atlas_dimensions,
                 sec.layer_count,
-                cfg!(feature = "dev-tools"),
+                cfg!(any(test, feature = "dev-tools")),
             );
             ledger.record_texture(total_allocation, &indirect_sources, false, indirect_state);
             total_atlas_texture =
@@ -854,7 +899,7 @@ impl ShVolumeResources {
         // Retain the total atlas texture for the dev-tools readback. The
         // `wgpu::Texture` handle is an Arc clone — the views above already keep
         // the texture alive, this just gives the readback a handle to copy from.
-        #[cfg(feature = "dev-tools")]
+        #[cfg(any(test, feature = "dev-tools"))]
         let total_atlas_texture = total_atlas_texture.clone();
 
         let animation = AnimatedLightBuffers {
@@ -865,13 +910,14 @@ impl ShVolumeResources {
             dirty: false,
             oor_warned: false,
         };
-        Self {
+        Ok(Self {
             bind_group,
             bind_group_layout,
             mesh_bind_group,
             mesh_bind_group_layout,
             direct,
             billboard_direct_scatter,
+            mover_channel,
             present,
             grid_dimensions,
             atlas_dimensions,
@@ -901,15 +947,9 @@ impl ShVolumeResources {
             cell_size,
             grid_info_buffer,
             probe_occlusion_enabled,
-            #[cfg(feature = "dev-tools")]
+            #[cfg(any(test, feature = "dev-tools"))]
             total_atlas_texture,
-        }
-    }
-
-    /// The whole-load moments texture a depth-tile reference rewrite writes
-    /// one texel of (`sh_depth_tile_rewrite`); a dummy on a streamed level.
-    pub(super) fn depth_moment_texture(&self) -> &wgpu::Texture {
-        &self.depth_moment_texture
+        })
     }
 
     /// Mint a fresh sampled view over the per-probe depth-moment texture for

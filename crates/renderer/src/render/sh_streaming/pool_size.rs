@@ -81,20 +81,19 @@ struct SparsePlan {
 pub(crate) fn plan_initial_pool(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
+    direct_compose: bool,
     bound: &ShPoolBound,
     whole_dense_slots: u32,
     limits: &wgpu::Limits,
 ) -> Result<InitialPool, ShResidencyDrainError> {
-    if (sources.direct_delta.is_some() || sources.animated_direct_delta.is_some())
-        && sources.direct.is_none()
-    {
+    if direct_compose && sources.direct.is_none() {
         return Err(ShResidencyDrainError::GpuCapacity {
             reason: "streamed direct compose has no id-35 base atlas",
         });
     }
 
     validate_fixed_storage_bindings(base, sources, limits)?;
-    let dense_slot_bytes = dense_slot_bytes(base, sources)?;
+    let dense_slot_bytes = dense_slot_bytes(base, sources, direct_compose)?;
     let mut sparse = sparse_plans(sources, &bound.sparse, limits)?;
 
     let dense_slots = with_headroom_capped(bound.dense_slots, whole_dense_slots)
@@ -151,6 +150,7 @@ fn with_headroom_capped(units: u32, whole: u32) -> u32 {
 fn dense_slot_bytes(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
+    direct_compose: bool,
 ) -> Result<u64, ShResidencyDrainError> {
     sh_dense_slot_bytes(ShDenseSlotTextures {
         indirect_format: base.irradiance_format,
@@ -158,7 +158,7 @@ fn dense_slot_bytes(
             .direct
             .as_ref()
             .map(|direct| direct.irradiance_format),
-        direct_compose: sources.direct_delta.is_some() || sources.animated_direct_delta.is_some(),
+        direct_compose,
         animated_direct_compose: sources.animated_direct_delta.is_some(),
     })
     .ok_or(ShResidencyDrainError::GpuCapacity {

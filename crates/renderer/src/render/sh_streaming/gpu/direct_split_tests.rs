@@ -52,6 +52,7 @@ fn assert_binding_15(
         queue,
         &fixture.map.base(),
         &fixture.map.sources(),
+        fixture.state.direct_compose_required,
         shape,
         &mut fixture.sh,
     )
@@ -110,7 +111,11 @@ fn streamed_base_only_level_binds_the_direct_base_to_both_groups() {
 }
 
 /// Every layer of an Rgba16Float pool, de-padded.
-fn read_pool(device: &wgpu::Device, queue: &UploadQueue, texture: &wgpu::Texture) -> Vec<u8> {
+pub(super) fn read_pool(
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+    texture: &wgpu::Texture,
+) -> Vec<u8> {
     let size = texture.size();
     let row = size.width * 8;
     let padded =
@@ -200,6 +205,7 @@ fn compose_at(
             animated,
             &[],
             &animated_states,
+            &[],
         )
         .expect("streamed compose plan");
     // Bytes 88..92 are `FrameUniforms::light_term_mask` (`build_uniform_data`).

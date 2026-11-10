@@ -1,0 +1,316 @@
+// The posed probe gather: id 34's gather with one mover posed, its absolute
+// bounce state per probe, and closed-pose depth tiles from the same rays.
+// See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
+
+use std::cell::Cell;
+
+use glam::Vec3;
+use postretro_level_format::octahedral::{
+    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+};
+use postretro_level_format::probe_depth_tiles::bordered_tile;
+use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
+use rayon::prelude::*;
+
+use super::bounce::PosedRadiance;
+use super::domain::{
+    BOUNCE_FLOOR_LEVELS, compact_tile, display_levels, max_abs_difference, round_trip_error,
+};
+use super::posed_scene::PosedScene;
+use super::posed_solid::PosedHit;
+use crate::bake_control::BakeControl;
+use crate::sh_bake::{
+    Hit, ProbeGridLayout, RadianceSource, RaytracingCtx, SKY_COLOR, ShBakeCtx, TileRayTable,
+    bake_probe_with_source, gather_hit, pack_octahedral_irradiance_tile, probe_gather_directions,
+    static_light_refs, vec3_from,
+};
+use crate::surface_radiance::{PatchGather, PatchLookup, PatchSet};
+
+thread_local! {
+    /// Whether a gather ray of the probe this thread is gathering met the
+    /// pose first. A probe gathers all its rays on one thread.
+    static MET: Cell<bool> = const { Cell::new(false) };
+}
+
+/// What one gather ray from a probe meets with the mover posed.
+enum PosedRay {
+    /// The pose, nearer than any static hit; at distance 0 with no triangle
+    /// when the ray's lifted origin lies inside a posed brush.
+    Posed(PosedHit),
+    Static(Hit),
+    Sky,
+}
+
+impl PosedRay {
+    /// One ray of the probe at `origin` along `dir`: the nearer of the static
+    /// hit and the pose's. The inside-brush rule is the pose's own
+    /// ([`super::posed_solid::PosedSolid::nearest_hit`]): a ray whose lifted
+    /// origin lies inside a posed brush, with no contact band, meets it at
+    /// distance 0, as the direct half's segment from there starts in solid.
+    /// A probe deep inside a brush meets it so on every ray, so its depth
+    /// floors its weight.
+    fn trace(ctx: &RaytracingCtx<'_>, scene: &PosedScene, origin: Vec3, dir: Vec3) -> Self {
+        let hit = gather_hit(ctx, origin, dir);
+        let nearest = hit.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
+        match (scene.trace(origin, dir, nearest), hit) {
+            (Some(posed), _) => Self::Posed(posed),
+            (None, Some(hit)) => Self::Static(hit),
+            (None, None) => Self::Sky,
+        }
+    }
+
+    fn met(&self) -> bool {
+        matches!(self, Self::Posed(_))
+    }
+
+    fn distance(&self, far_sentinel: f32) -> f32 {
+        match self {
+            Self::Posed(posed) => posed.distance,
+            Self::Static(hit) => hit.distance,
+            Self::Sky => far_sentinel,
+        }
+    }
+}
+
+/// The probe gather's radiance source with one mover posed.
+pub(crate) struct PosedGather<'a> {
+    world: PatchGather<'a>,
+    scene: &'a PosedScene,
+    radiance: &'a PosedRadiance,
+}
+
+impl<'a> PosedGather<'a> {
+    pub(crate) fn new(
+        patches: &'a PatchSet,
+        radiance: &'a PosedRadiance,
+        scene: &'a PosedScene,
+    ) -> Self {
+        Self {
+            world: PatchGather::new(patches, &radiance.world, PatchLookup::PRODUCTION),
+            scene,
+            radiance,
+        }
+    }
+
+    /// Whether the pose encloses the probe at `position`
+    /// ([`PosedScene::encloses`]).
+    pub(crate) fn encloses(&self, position: Vec3) -> bool {
+        self.scene.encloses(position)
+    }
+
+    /// One gather ray from the probe at `origin`: the nearer of the static
+    /// hit and the pose's, and its radiance. A ray whose lifted origin lies
+    /// inside a posed brush reads distance 0 and black, as its direct does.
+    pub(crate) fn sample(
+        &self,
+        ctx: &RaytracingCtx<'_>,
+        origin: Vec3,
+        dir: Vec3,
+        far_sentinel: f32,
+    ) -> (Vec3, f32) {
+        let ray = PosedRay::trace(ctx, self.scene, origin, dir);
+        if ray.met() {
+            MET.set(true);
+        }
+        let radiance = match &ray {
+            PosedRay::Posed(posed) => posed.triangle.map_or(Vec3::ZERO, |triangle| {
+                self.scene
+                    .patches
+                    .lookup_bilinear(triangle, posed.point, dir)
+                    .map_or(Vec3::ZERO, |(blend, side)| {
+                        blend
+                            .entries()
+                            .iter()
+                            .map(|&(patch, w)| self.radiance.mover.get(patch, side) * w)
+                            .sum()
+                    })
+            }),
+            PosedRay::Static(hit) => self.world.radiance_at(hit, dir),
+            PosedRay::Sky => Vec3::from(SKY_COLOR),
+        };
+        (radiance, ray.distance(far_sentinel))
+    }
+}
+
+/// One valid probe the posed gather changed.
+pub(crate) struct PosedProbe {
+    /// Dense probe index.
+    pub(crate) probe: u32,
+    /// Largest |S^b − id 34| over the tile, and the id-34 tile's own
+    /// round-trip error: the bar.
+    pub(crate) difference: f32,
+    pub(crate) bar: f32,
+    /// The same change in display levels ([`display_levels`]).
+    pub(crate) levels: f32,
+    /// S^b's tile, kept when it leaves the round-trip bar ([`Self::changed`],
+    /// so every affected probe's) or for every probe, asked.
+    pub(crate) tile: Option<Vec<OctahedralAtlasTexel>>,
+    /// The closed-pose bordered depth tile, when a gather ray meets the pose.
+    pub(crate) depth: Option<Vec<[u16; 2]>>,
+    /// Whether the pose encloses the probe's position
+    /// ([`PosedScene::encloses`]): the terminus stores no state and reads
+    /// id 34, though its depth still bakes dark.
+    pub(crate) enclosed: bool,
+}
+
+impl PosedProbe {
+    /// Past both the round-trip bar and the perceptual floor
+    /// ([`BOUNCE_FLOOR_LEVELS`]): the affected-probe rule.
+    pub(crate) fn affected(&self) -> bool {
+        self.changed() && self.levels > BOUNCE_FLOOR_LEVELS
+    }
+
+    /// Past the round-trip bar alone, at a probe the pose does not enclose:
+    /// at an affected probe, whether this terminus stores its state. One
+    /// within the bar is id 34 as the encoding already holds it, so the
+    /// terminus stores nothing and composes id 34 (owner, 2026-11-09). An
+    /// enclosed probe's dark state is never stored either, and composes id
+    /// 34 as an unchanged terminus does (owner, 2026-11-09): lerped over the
+    /// whole travel, it stayed mostly black once the face swept past.
+    pub(crate) fn changed(&self) -> bool {
+        !self.enclosed && self.difference > self.bar
+    }
+
+    /// Heap bytes the probe holds beside its own size.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        (self.tile.as_ref().map_or(0, |tile| {
+            tile.capacity() * size_of::<OctahedralAtlasTexel>()
+        }) + self
+            .depth
+            .as_ref()
+            .map_or(0, |depth| depth.capacity() * size_of::<[u16; 2]>())) as u64
+    }
+}
+
+/// Each valid probe's compact slot in id 34's valid-probe order, indexed by
+/// dense probe.
+pub(crate) fn compact_slots(layout: &ProbeGridLayout) -> Vec<u32> {
+    let mut slots = Vec::with_capacity(layout.total_probes());
+    let mut slot = 0u32;
+    for &valid in &layout.validity {
+        slots.push(slot);
+        slot += u32::from(valid != 0);
+    }
+    slots
+}
+
+/// Gather every valid probe of `layout` under `gather`, as id 34's gather
+/// does, and keep each probe that differs from id 34 (`base`, the compact
+/// RGBA16F intermediate) or whose rays meet the pose. A probe whose rays
+/// meet nothing posed and whose hits read their static radiance gathers
+/// id 34's bytes exactly, so it differs by zero. A probe the pose encloses
+/// is kept for its depth alone ([`PosedProbe::changed`]). Each valid probe
+/// advances progress by one.
+pub(crate) fn gather_posed_probes(
+    sh_ctx: &ShBakeCtx<'_>,
+    layout: &ProbeGridLayout,
+    gather: &PosedGather<'_>,
+    base: &OctahedralShVolumeSection,
+    uncompressed: bool,
+    keep_every_tile: bool,
+    control: &BakeControl,
+) -> Vec<PosedProbe> {
+    let directions = probe_gather_directions();
+    let rays = TileRayTable::new(&directions);
+    let lights = static_light_refs(sh_ctx);
+    let slots = compact_slots(layout);
+    let dim = DEFAULT_IRRADIANCE_TILE_DIMENSION as usize;
+    (0..layout.total_probes())
+        .into_par_iter()
+        .filter(|&i| layout.validity[i] != 0)
+        .filter_map(|i| {
+            let _permit = control.governor().enter();
+            control.advance(1);
+            let position = vec3_from(layout.probe_positions[i]);
+            let mut distances = [0.0f32; 256];
+            MET.set(false);
+            let baked = bake_probe_with_source(
+                &directions,
+                sh_ctx,
+                position,
+                &lights,
+                None,
+                layout.far_sentinel,
+                true,
+                i as u64,
+                RadianceSource::Posed(gather),
+                &mut distances,
+            );
+            let tile = pack_octahedral_irradiance_tile(
+                &baked.coefficients,
+                true,
+                DEFAULT_IRRADIANCE_TILE_DIMENSION,
+                DEFAULT_IRRADIANCE_TILE_BORDER,
+            );
+            let base_tile = compact_tile(base, slots[i] as usize);
+            let difference = max_abs_difference(&tile, &base_tile);
+            let met = MET.get();
+            if difference == 0.0 && !met && !keep_every_tile {
+                return None;
+            }
+            let bar = if difference > 0.0 {
+                round_trip_error(&base_tile, dim, uncompressed)
+            } else {
+                0.0
+            };
+            let levels = if difference > 0.0 {
+                display_levels(&tile, &base_tile)
+            } else {
+                0.0
+            };
+            let mut probe = PosedProbe {
+                probe: i as u32,
+                difference,
+                bar,
+                levels,
+                tile: None,
+                depth: met.then(|| bordered_tile(&rays.interior(&distances))),
+                enclosed: gather.encloses(position),
+            };
+            if probe.changed() || keep_every_tile {
+                probe.tile = Some(tile);
+            }
+            Some(probe)
+        })
+        .collect()
+}
+
+/// The closed-pose depth of a mover that bakes no bounce (`light_bounces`
+/// 0): every valid probe some gather ray of which meets the pose, with the
+/// tile the full posed gather bins from the same rays, ascending by probe.
+/// A probe none of whose fixed directions points into the pose's bounds
+/// cannot meet it, so it traces nothing: a lifted origin inside a posed
+/// brush lies in those bounds. Each valid probe advances progress by one.
+pub(crate) fn trace_posed_depth(
+    ctx: &RaytracingCtx<'_>,
+    layout: &ProbeGridLayout,
+    scene: &PosedScene,
+    control: &BakeControl,
+) -> Vec<(u32, Vec<[u16; 2]>)> {
+    let directions = probe_gather_directions();
+    let rays = TileRayTable::new(&directions);
+    (0..layout.total_probes())
+        .into_par_iter()
+        .filter(|&i| layout.validity[i] != 0)
+        .filter_map(|i| {
+            control.advance(1);
+            let position = vec3_from(layout.probe_positions[i]);
+            if !directions
+                .iter()
+                .any(|&dir| scene.may_meet_ray(position, dir))
+            {
+                return None;
+            }
+            let _permit = control.governor().enter();
+            let mut distances = [0.0f32; 256];
+            let mut met = false;
+            for (slot, &dir) in distances.iter_mut().zip(&directions) {
+                let ray = PosedRay::trace(ctx, scene, position, dir);
+                met |= ray.met();
+                *slot = ray.distance(layout.far_sentinel);
+            }
+            met.then(|| (i as u32, bordered_tile(&rays.interior(&distances))))
+        })
+        .collect()
+}

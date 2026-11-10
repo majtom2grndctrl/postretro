@@ -228,7 +228,7 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
         });
         payload.extend_from_slice(&chunk);
     }
-    let sources = source_metadata_from_sections(&base, None, None, None, None);
+    let sources = source_metadata_from_sections(&base, None, None, None, None, None);
     let payloads = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
             cluster_count: 9,

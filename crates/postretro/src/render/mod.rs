@@ -29,7 +29,7 @@ pub use postretro_renderer::{
     LevelGeometryParts, LevelGeometryRangeError, LevelInstallError, LevelSetBuilder,
     LevelSetBuilderProbe, LevelSetId, LightTermMask, LightmapResidencyReport, LocatorDiagnostics,
     ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey, ModelEntryIdentity,
-    MoverOccluderAabb, PendingLevelSet, PortalOverlayState, PresentHandle, Renderer,
+    MoverOccluderAabb, MoverTravel, PendingLevelSet, PortalOverlayState, PresentHandle, Renderer,
     ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
     SPLASH_CLEAR_COLOR, SdfShadowMode, ShResidencyReport, ShSampleRegion, ShSampleRegionSets,
     ShStreamingLifecycleSummary, SpatialCellSetDiagnostics, SpatialDiagnostics,

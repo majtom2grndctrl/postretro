@@ -1,5 +1,11 @@
-//! Per-entry sparse delta-SH sub-block bakes, cached (indirect) or uncached.
+//! Sparse delta-SH sub-block bakes: the indirect bake caches per CSR entry,
+//! the two direct bakes per light ([`direct_light_memo`]), and a cold build
+//! bakes every entry uncached.
 //! Governing contracts: `context/lib/build_pipeline.md` §Build Cache.
+
+pub(crate) mod direct_light_memo;
+#[cfg(test)]
+mod direct_light_memo_tests;
 
 use rayon::prelude::*;
 
@@ -26,9 +32,8 @@ pub(crate) struct DeltaShCachedSubblocks {
     pub(crate) tally: DeltaShCacheTally,
 }
 
-/// Cache-key inputs for a cached delta-SH bake. Only the indirect delta bake
-/// caches; the direct and animated-direct bakes call
-/// [`bake_delta_subblocks_uncached`] and build no key inputs.
+/// Cache-key inputs for the indirect delta bake's per-entry cache. The two
+/// direct bakes key per light instead ([`direct_light_memo`]).
 pub(crate) struct DeltaShCacheInputs<'a> {
     pub(crate) bounce_hash: Option<&'a [u8; 32]>,
     pub(crate) stage_id: &'a str,
@@ -51,11 +56,10 @@ pub(crate) struct DeltaShCacheInputs<'a> {
 
 /// Build one `(affinity cell, light)` key.
 ///
-/// This is `pub(crate)` so the cached bake and every delta stage's
-/// version-contract tests use one explicit fold order. The stage id/version
-/// live in [`CacheKey`] itself; stage ids must stay distinct because the raw
-/// f16 payload shapes match across the three delta sections, including the two
-/// uncached direct-delta stages whose dormant key folds the tests still pin.
+/// This is `pub(crate)` so the cached bake and its version-contract tests use
+/// one explicit fold order. The stage id/version live in [`CacheKey`] itself;
+/// stage ids must stay distinct from the two direct memos', whose payloads
+/// hold the same dense f16 sub-blocks.
 pub(crate) struct DeltaShEntryKeyInputs<'a> {
     pub(crate) bounce_hash: Option<&'a [u8; 32]>,
     pub(crate) stage_id: &'a str,

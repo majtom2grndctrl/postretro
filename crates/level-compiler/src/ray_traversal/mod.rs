@@ -19,7 +19,7 @@ pub(crate) use hit_test::{
 #[cfg(test)]
 pub(crate) use hit_test::{with_planted_t, with_tolerance};
 pub(crate) use occlusion::{
-    Occluder, RAY_EPSILON, ray_clear, segment_clear, segment_clear_remembering,
+    Occluder, RAY_EPSILON, ShadowSegment, ray_clear, segment_clear, segment_clear_remembering,
 };
 #[cfg(test)]
 pub(crate) use occlusion::{ray_clear_brute_force, segment_clear_brute_force, without_cache_gate};

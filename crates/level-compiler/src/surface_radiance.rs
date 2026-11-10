@@ -12,25 +12,33 @@ mod sum;
 mod volume;
 mod working_set;
 
+pub(crate) use bounce::{
+    BOUNCE_RAYS_PER_PATCH, DEFAULT_BOUNCE_FILL, LATER_BOUNCE_COUNT, cosine_directions,
+    is_valid_bounce_fill, patch_frame,
+};
 #[cfg(test)]
-pub(crate) use bounce::{BOUNCE_RAYS_PER_PATCH, LATER_BOUNCE_COUNT, add_later_bounces};
-pub(crate) use bounce::{DEFAULT_BOUNCE_FILL, is_valid_bounce_fill};
-pub(crate) use gather::PatchGather;
-#[cfg(test)]
-pub(crate) use gather::PatchLookup;
+pub(crate) use bounce::{add_later_bounces, add_later_bounces_keeping};
+pub(crate) use gather::{PatchGather, PatchLookup};
+pub(crate) use layer::shade_patch_side;
 #[cfg(test)]
 pub(crate) use layer::{
     LayerKeys, LightDigest, SH_PATCH_LAYER_STAGE_ID, SH_PATCH_LAYER_STAGE_VERSION, SparseLayer,
     shade_light_layer,
 };
-#[cfg(test)]
 pub(crate) use layer_set::LayerPlan;
 #[cfg(test)]
-pub(crate) use patches::{PATCH_SIZE_M, Patch, PatchSet, Side, patch_seed_id};
-#[cfg(test)]
+pub(crate) use patches::{PATCH_SIZE_M, patch_seed_id};
+pub(crate) use patches::{Patch, PatchCountExceeded, PatchSet, Side};
 pub(crate) use reach::PatchReachIndex;
-pub(crate) use stage::{ShBase, bake_sh_base, warn_bounce_only_emitters};
 #[cfg(test)]
+pub(crate) use reach::REACH_INDEX_BYTES_PER_PATCH;
+#[cfg(test)]
+pub(crate) use stage::MoverBounceOutcome;
+#[cfg(test)]
+pub(crate) use stage::bake_sh_base;
+#[cfg(test)]
+pub(crate) use stage::stage_events;
+pub(crate) use stage::{ShBase, bake_sh_base_with_movers, warn_bounce_only_emitters};
 pub(crate) use sum::PatchRadiance;
 #[cfg(test)]
 pub(crate) use volume::{SH_BASE_VOLUME_STAGE_ID, SH_BASE_VOLUME_STAGE_VERSION, volume_key};

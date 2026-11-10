@@ -10,8 +10,9 @@ use postretro_level_format::SectionEntry;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::cluster_sh_payloads::{
     ClusterShPayloadsError, ClusterShPayloadsSection, ClusterShPayloadsValidationInputs,
-    DecodedClusterShPayload, ValidatedClusterShPayloadsSection,
+    DecodedClusterShPayload, ValidatedClusterShPayloadsSection, mover_channel_source,
 };
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::{ContainerMeta, SectionId};
 
 use super::boundary::ShDrainBatch;
@@ -98,6 +99,15 @@ impl ShStreamManifest {
 
     pub fn payloads(&self) -> &ClusterShPayloadsSection {
         self.payloads.section()
+    }
+
+    /// Whether id 50 lists `section` as a source: where a streamed payload
+    /// of that section is placed.
+    pub fn carries_source(&self, section: SectionId) -> bool {
+        self.payloads()
+            .sources
+            .iter()
+            .any(|source| source.section_id == section as u32)
     }
 
     pub fn base(&self) -> &ShStreamBaseMetadata {
@@ -295,7 +305,7 @@ pub(crate) fn load_manifest_positionally(
     ensure_section_floor(payload_entry, header_len, "id-50 header")?;
     let header_bytes = read_vec_at(&file, payload_entry.offset, header_len, "id-50 header")?;
     let header = ClusterShPayloadsSection::parse_header(&header_bytes)?;
-    const MAX_STREAMED_SOURCES: u32 = 5;
+    const MAX_STREAMED_SOURCES: u32 = 6;
     if header.source_count > MAX_STREAMED_SOURCES {
         return Err(stream_error(format!(
             "id-50 source count {} exceeds the {MAX_STREAMED_SOURCES}-source streaming inventory",
@@ -365,8 +375,21 @@ pub(crate) fn load_manifest_positionally(
         )?,
     };
     validate_projected_sources(&base, &sources)?;
+    // A streamed id-57 payload is an id-50 source when id 50 lists it. Its
+    // structure is resident, so it is read whole; whether a streamed block
+    // that id 50 does not list resolves is id 57's own named error at load.
+    let mover_channel = if payloads
+        .sources
+        .iter()
+        .any(|source| source.section_id == SectionId::MoverProbeChannel as u32)
+    {
+        read_mover_channel_structure(&file, &container)?
+    } else {
+        None
+    };
     let content_tag = streaming_content_tag(&container, cluster_directory_bytes, &metadata_bytes);
-    let codec_sources = sources.codec_sources(&base);
+    let mut codec_sources = sources.codec_sources(&base);
+    codec_sources.extend(mover_channel.as_ref().and_then(mover_channel_source));
     let payloads = payloads.into_validated(ClusterShPayloadsValidationInputs {
         directory: &cluster_directory,
         base: base.codec_metadata(),
@@ -384,6 +407,19 @@ pub(crate) fn load_manifest_positionally(
         cluster_portal_topology: std::sync::OnceLock::new(),
     };
     Ok(manifest)
+}
+
+/// Id 57's structure, read whole and decoded, when the table holds it.
+fn read_mover_channel_structure(
+    file: &PrlFile,
+    container: &ContainerMeta,
+) -> Result<Option<MoverProbeChannelSection>, PrlLoadError> {
+    let Some(entry) = optional_entry(container, SectionId::MoverProbeChannel)? else {
+        return Ok(None);
+    };
+    validate_positional_entry_bounds(file, container, entry)?;
+    let bytes = read_vec_at(file, entry.offset, entry.size, "id-57 section")?;
+    Ok(Some(MoverProbeChannelSection::from_bytes(&bytes)?))
 }
 
 /// Check an entire positional read against its table entry *before* allocating
@@ -448,6 +484,7 @@ fn validate_streamed_entry_cardinality(container: &ContainerMeta) -> Result<(), 
         SectionId::DirectShVolume,
         SectionId::DirectShDeltaVolumes,
         SectionId::AnimatedDirectShDeltaVolumes,
+        SectionId::MoverProbeChannel,
     ] {
         let count = container
             .sections

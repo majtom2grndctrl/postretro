@@ -55,21 +55,25 @@ pub struct ProbeDepthTileReferences {
 }
 
 impl ProbeDepthTileReferences {
-    /// References from a load's id 59. Absent and zero-tile id 59 both give
-    /// the empty table, so every probe packs exactly as before id 59 existed.
-    pub fn from_section(section: Option<&ProbeDepthTilesSection>) -> Self {
-        let Some(section) = section else {
-            return Self::default();
-        };
-        debug_assert!(section.tile_count() as u32 <= MAX_PROBE_DEPTH_TILES);
+    /// References from a load's id 59, in a texture that also holds
+    /// `live_tiles` renderer-owned live tiles after id 59's (mover depth,
+    /// id 57). No probe references a live tile until the runtime points it
+    /// there. Absent and zero-tile id 59 both give an empty table, so every
+    /// probe packs exactly as before id 59 existed.
+    pub fn from_section(section: Option<&ProbeDepthTilesSection>, live_tiles: u32) -> Self {
+        let id59_tiles = section.map_or(0, |section| section.tile_count() as u32);
+        let tile_count = id59_tiles + live_tiles;
+        debug_assert!(tile_count <= MAX_PROBE_DEPTH_TILES);
         Self {
-            entries: section
-                .probe_indices
-                .iter()
-                .enumerate()
-                .map(|(tile, &probe)| (probe, tile as u16))
-                .collect(),
-            tile_count: section.tile_count() as u32,
+            entries: section.map_or_else(Vec::new, |section| {
+                section
+                    .probe_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(tile, &probe)| (probe, tile as u16))
+                    .collect()
+            }),
+            tile_count,
         }
     }
 
@@ -152,9 +156,15 @@ pub struct DepthTileTexturePlan {
     pub texels: Vec<[u16; 2]>,
 }
 
-pub fn depth_tile_texture_plan(section: Option<&ProbeDepthTilesSection>) -> DepthTileTexturePlan {
-    let Some((section, layout)) =
-        section.and_then(|section| section.texture_layout().map(|layout| (section, layout)))
+/// The texture for id 59's tiles followed by `live_tiles` live tiles, sized
+/// from their sum. Live tiles start zero: the runtime writes each before any
+/// probe references it.
+pub fn depth_tile_texture_plan(
+    section: Option<&ProbeDepthTilesSection>,
+    live_tiles: u32,
+) -> DepthTileTexturePlan {
+    let id59_tiles = section.map_or(0, ProbeDepthTilesSection::tile_count);
+    let Some(layout) = ProbeDepthTileTextureLayout::for_tile_count(id59_tiles as u32 + live_tiles)
     else {
         return DepthTileTexturePlan {
             extent: [1, 1],
@@ -164,6 +174,12 @@ pub fn depth_tile_texture_plan(section: Option<&ProbeDepthTilesSection>) -> Dept
     let [width, height] = layout.extent();
     let mut texels = vec![[0u16; 2]; width as usize * height as usize];
     let edge = PROBE_DEPTH_TILE_BORDERED_EDGE as usize;
+    let Some(section) = section else {
+        return DepthTileTexturePlan {
+            extent: [width, height],
+            texels,
+        };
+    };
     for tile in 0..section.tile_count() {
         let [ox, oy] = layout.tile_origin(tile as u32);
         let source = section.tile(tile);

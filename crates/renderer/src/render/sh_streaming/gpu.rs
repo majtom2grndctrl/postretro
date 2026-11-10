@@ -79,7 +79,7 @@ use isolated_tiles::{pack_isolated_upload_span, plan_isolated_uploads};
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
 const BIND_AFFINITY_OFFSETS: u32 = 21;
 const BIND_AFFINITY_LIGHTS: u32 = 24;
-const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
+const BIND_MOVER_BOUNCE: u32 = 25;
 const BIND_PROBE_INDIRECTION: u32 = 26;
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 const DIRECT_DELTA_SECTION: u32 = 41;
@@ -289,7 +289,7 @@ pub(in crate::render::sh_streaming) fn compose_bgl_entries() -> Vec<wgpu::BindGr
         storage(22),
         storage(23),
         storage(BIND_AFFINITY_LIGHTS),
-        storage(BIND_ANIMATION_DESCRIPTOR_INDICES),
+        storage(BIND_MOVER_BOUNCE),
         storage(BIND_PROBE_INDIRECTION),
         storage(BIND_DELTA_COMPACTION_META),
     ]

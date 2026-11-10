@@ -35,7 +35,6 @@ pub(super) enum ShAllocationKind {
     IndirectComposeDeltaSubblocks,
     IndirectComposeAffinityOffsets,
     IndirectComposeAffinityLights,
-    IndirectComposeDescriptorIndices,
     IndirectComposeProbeIndirection,
     IndirectComposeCompactionMetadata,
     IndirectComposeGrid,
@@ -52,7 +51,6 @@ pub(super) enum ShAllocationKind {
     AnimatedDirectComposeCompactionMetadata,
     AnimatedDirectComposeAffinityOffsets,
     AnimatedDirectComposeAffinityLights,
-    AnimatedDirectComposeDescriptorIndices,
     AnimatedDirectComposeProbeIndirection,
     AnimatedDirectComposeGrid,
     AnimatedDirectComposeLightScale,
@@ -63,6 +61,15 @@ pub(super) enum ShAllocationKind {
     BillboardComposeOffsets,
     BillboardComposeLights,
     BillboardComposeDescriptorIndices,
+    /// Id 57's direct table: records, masks, mover entries, q bytes and each
+    /// gated light's term per masked probe, Pass B's descriptor map, and the
+    /// per-frame mover t′ block. Both direct compose passes bind it.
+    MoverChannelTable,
+    /// Id 57's bounce table: id 27's delta-light → descriptor map (which the
+    /// indirect compose reads here), each cell's bounce entries, the mover t′
+    /// block, and each cell's S^b₀/S^b₁ tiles, whole or pooled per resident
+    /// cell. The indirect SH compose binds it.
+    MoverBounceTable,
 }
 
 /// The exact texture request sent to wgpu for one physical SH texture.
@@ -280,9 +287,16 @@ pub(super) fn depth_moment_allocation(grid_dimensions: [u32; 3]) -> TextureAlloc
     )
 }
 
-/// The id-59 tile texture: one `Rg16Float` 2D texture at `extent`, the 1×1
-/// dummy when a level has no tiles.
+/// The probe depth tile texture: id 59's tiles and the mover live tiles in
+/// one `Rg16Float` 2D texture at `extent`, the 1×1 dummy when a level has
+/// no tiles. Live tiles are written by copy, never by storage writes; tests
+/// read the texture back.
 pub(super) fn depth_tile_allocation(extent: [u32; 2]) -> TextureAllocation {
+    let readback = if cfg!(test) {
+        wgpu::TextureUsages::COPY_SRC
+    } else {
+        wgpu::TextureUsages::empty()
+    };
     texture_allocation(
         ShAllocationKind::DepthTiles,
         wgpu::TextureFormat::Rg16Float,
@@ -292,7 +306,7 @@ pub(super) fn depth_tile_allocation(extent: [u32; 2]) -> TextureAllocation {
             depth_or_array_layers: 1,
         },
         wgpu::TextureDimension::D2,
-        sampled_upload_usage(),
+        sampled_upload_usage() | readback,
     )
 }
 
@@ -522,7 +536,6 @@ pub(super) struct ComposeStoragePayloads {
     pub(super) compaction_metadata: StorageBufferPayload,
     pub(super) affinity_offsets: StorageBufferPayload,
     pub(super) affinity_lights: StorageBufferPayload,
-    pub(super) descriptor_indices: Option<StorageBufferPayload>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -531,16 +544,11 @@ pub(super) fn compose_storage_payloads(
     compaction_kind: ShAllocationKind,
     offsets_kind: ShAllocationKind,
     lights_kind: ShAllocationKind,
-    descriptor_kind: Option<ShAllocationKind>,
     delta_subblocks: &[u16],
     compaction_metadata: &[u32],
     affinity_offsets: &[u32],
     affinity_lights: &[u32],
-    descriptor_indices: Option<&[u32]>,
 ) -> ComposeStoragePayloads {
-    let descriptor_indices = descriptor_kind
-        .zip(descriptor_indices)
-        .map(|(kind, indices)| StorageBufferPayload::new(kind, u32_slice_to_bytes(indices), 4));
     ComposeStoragePayloads {
         delta_subblocks: StorageBufferPayload::new(
             delta_kind,
@@ -562,7 +570,6 @@ pub(super) fn compose_storage_payloads(
             u32_slice_to_bytes(affinity_lights),
             4,
         ),
-        descriptor_indices,
     }
 }
 
@@ -684,25 +691,15 @@ mod tests {
             ShAllocationKind::IndirectComposeCompactionMetadata,
             ShAllocationKind::IndirectComposeAffinityOffsets,
             ShAllocationKind::IndirectComposeAffinityLights,
-            Some(ShAllocationKind::IndirectComposeDescriptorIndices),
             &[],
             &[],
             &[],
             &[],
-            Some(&[]),
         );
         assert_eq!(payloads.delta_subblocks.allocation.byte_len, 4);
         assert_eq!(payloads.compaction_metadata.allocation.byte_len, 4);
         assert_eq!(payloads.affinity_offsets.allocation.byte_len, 8);
         assert_eq!(payloads.affinity_lights.allocation.byte_len, 4);
-        assert_eq!(
-            payloads
-                .descriptor_indices
-                .expect("indirect compose owns descriptor indices")
-                .allocation
-                .byte_len,
-            4
-        );
     }
 
     #[test]

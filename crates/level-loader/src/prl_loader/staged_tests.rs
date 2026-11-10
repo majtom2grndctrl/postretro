@@ -121,6 +121,7 @@ fn assert_worlds_match(staged: &LevelWorld, monolithic: &LevelWorld) {
         sh_volume,
         sh_storage,
         probe_depth_tiles,
+        mover_probe_channel,
         lightmap,
         lightmap_mode,
         sdf_atlas,
@@ -184,6 +185,11 @@ fn assert_worlds_match(staged: &LevelWorld, monolithic: &LevelWorld) {
     same_debug("sh_volume", sh_volume, &m.sh_volume);
     same_sh_storage(sh_storage, &m.sh_storage);
     same_debug("probe_depth_tiles", probe_depth_tiles, &m.probe_depth_tiles);
+    same_debug(
+        "mover_probe_channel",
+        mover_probe_channel,
+        &m.mover_probe_channel,
+    );
     same_debug("lightmap", lightmap, &m.lightmap);
     same_debug("lightmap_mode", lightmap_mode, &m.lightmap_mode);
     same_debug("sdf_atlas", sdf_atlas, &m.sdf_atlas);
@@ -358,6 +364,7 @@ fn assert_hand_outs_match(hand_outs: &[HandOut], monolithic: &LevelWorld) {
                         lights,
                         light_influences,
                         sh_volume,
+                        mover_probe_channel,
                         lightmap,
                         lightmap_mode,
                         sdf_atlas,

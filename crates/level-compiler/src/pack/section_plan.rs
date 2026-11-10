@@ -74,6 +74,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
     pub(super) teleporters: &'a TeleportersSection,
     pub(super) ghost_links: &'a GhostLinksSection,
+    pub(super) mover_probe_channel: Option<&'a MoverProbeChannelSection>,
     pub(super) push_forces: Option<&'a PushForcesSection>,
     pub(super) reflection_probes: Option<&'a ReflectionProbesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
@@ -155,6 +156,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         environment_volumes,
         teleporters,
         ghost_links,
+        mover_probe_channel,
         push_forces,
         reflection_probes,
         cell_draw_index,
@@ -495,6 +497,15 @@ pub(super) fn build_finalized_section_plan<'a>(
             1,
             ghost_links.byte_len(),
             || Ok(ghost_links.to_bytes()),
+        ));
+    }
+    // Absent means no mover changes the probe data; never written empty.
+    if let Some(section) = mover_probe_channel {
+        sections.push(PlannedSection::new(
+            SectionId::MoverProbeChannel as u32,
+            1,
+            section.encoded_len(),
+            || Ok(section.to_bytes()),
         ));
     }
     if let Some(section) = trigger_volumes {

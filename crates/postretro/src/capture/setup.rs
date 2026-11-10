@@ -11,6 +11,7 @@ use glam::Vec3;
 use postretro_entities::ComponentKind;
 use postretro_entities::EntityRegistry;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
+use postretro_level_format::mover_probe_channel::{MoverLightNamespace, MoverProbeChannelSection};
 
 use super::scene::{CameraPose, CaptureScene, ForcedAnimLight, ForcedPromotion};
 use crate::camera;
@@ -98,13 +99,53 @@ pub(super) fn capture_level_geometry<'a>(
     static_lights: &'a [postretro_level_loader::MapLight],
     static_light_influences: &'a [postretro_render_data::influence::LightInfluence],
     static_entity_shadow_lights: &'a [u32],
+    mover_probe_channel: Option<&'a MoverProbeChannelSection>,
 ) -> LevelGeometry<'a> {
     LevelGeometry {
         lights: static_lights,
         light_influences: static_light_influences,
         entity_shadow_lights: static_entity_shadow_lights,
+        mover_probe_channel,
         ..level_world_to_geometry(world, texture_materials)
     }
+}
+
+/// Id 57 with its namespace-0 light indices moved into the same compact
+/// static-light index space as [`capture_static_lights_and_shadow_selection`]'s
+/// selection, so a record still finds its light's selection slot. The remap
+/// keeps static-light order, so records stay ascending within each cell.
+pub(super) fn capture_mover_probe_channel(
+    lights: &[postretro_level_loader::MapLight],
+    section: Option<&MoverProbeChannelSection>,
+) -> Option<MoverProbeChannelSection> {
+    let mut section = section?.clone();
+    let global_to_static = global_to_static_lights(lights);
+    for record in &mut section.direct_records {
+        if record.namespace == MoverLightNamespace::StaticLight {
+            record.light_index = global_to_static
+                .get(record.light_index as usize)
+                .copied()
+                .unwrap_or(u32::MAX);
+        }
+    }
+    Some(section)
+}
+
+/// Global light index → compact static-light index; `u32::MAX` for a
+/// dynamic light.
+fn global_to_static_lights(lights: &[postretro_level_loader::MapLight]) -> Vec<u32> {
+    let mut next = 0;
+    lights
+        .iter()
+        .map(|light| {
+            if light.is_dynamic {
+                u32::MAX
+            } else {
+                next += 1;
+                next - 1
+            }
+        })
+        .collect()
 }
 
 /// The existing `force_active` descriptor only owns Pass B. When a forced
@@ -430,14 +471,13 @@ pub(super) fn capture_static_lights_and_shadow_selection(
     Vec<postretro_render_data::influence::LightInfluence>,
     Vec<u32>,
 ) {
-    let mut global_to_static = vec![u32::MAX; lights.len()];
+    let global_to_static = global_to_static_lights(lights);
     let mut static_lights = Vec::with_capacity(lights.len());
     let mut static_influences = Vec::with_capacity(lights.len());
     for (global_index, light) in lights.iter().enumerate() {
         if light.is_dynamic {
             continue;
         }
-        global_to_static[global_index] = static_lights.len() as u32;
         static_lights.push(light.clone());
         static_influences.push(influences.get(global_index).cloned().unwrap_or(
             postretro_render_data::influence::LightInfluence {

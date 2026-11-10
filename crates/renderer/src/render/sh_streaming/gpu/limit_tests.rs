@@ -192,6 +192,7 @@ fn sh_growth_production_small_bound_load_holds_every_cluster() {
     let pool = plan_initial_pool(
         manifest.base(),
         manifest.sources(),
+        f.state.direct_compose_required,
         &f.state.pool_bound,
         whole,
         &limits,
@@ -1188,6 +1189,7 @@ fn pool_geometry_and_charges_match_gpu_for_every_load_shape() {
         let pool = plan_initial_pool(
             &f.map.base(),
             &f.map.sources(),
+            f.state.direct_compose_required,
             &f.state.pool_bound,
             whole,
             &limits,

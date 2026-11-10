@@ -3,8 +3,11 @@
 
 mod cpu_windows;
 mod driver;
+mod forced_movers;
 mod ghosts;
 mod lightmap;
+#[cfg(test)]
+mod mover_frame_tests;
 mod planar;
 mod prepared;
 mod receivers;

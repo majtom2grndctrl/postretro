@@ -234,7 +234,7 @@ fn with_plan<T>(
 ) -> T {
     let direct_delta = direct_delta();
     let sources: Vec<ClusterShPayloadsSourceMetadata<'_>> =
-        source_metadata_from_sections(base, None, Some(delta), Some(&direct_delta), None);
+        source_metadata_from_sections(base, None, Some(delta), Some(&direct_delta), None, None);
     let inputs = ClusterShPayloadsValidationInputs {
         directory,
         base: ClusterShPayloadsBaseMetadata {
@@ -244,7 +244,7 @@ fn with_plan<T>(
         sources: &sources,
     };
     let sparse = SparseSources::from_sections(Some(delta), Some(&direct_delta), None).unwrap();
-    with(&ChunkPlan::new(inputs, sparse).unwrap())
+    with(&ChunkPlan::new(inputs, sparse, None).unwrap())
 }
 
 fn encode(
@@ -690,6 +690,7 @@ fn recomputed_bound_equals_the_stored_bound_on_the_compiled_fixture() {
         delta.as_ref(),
         direct_delta.as_ref(),
         animated.as_ref(),
+        None,
     );
     let inputs = ClusterShPayloadsValidationInputs {
         directory: &directory,
@@ -699,7 +700,7 @@ fn recomputed_bound_equals_the_stored_bound_on_the_compiled_fixture() {
     let sparse =
         SparseSources::from_sections(delta.as_ref(), direct_delta.as_ref(), animated.as_ref())
             .unwrap();
-    let demand = ChunkPlan::new(inputs, sparse)
+    let demand = ChunkPlan::new(inputs, sparse, None)
         .unwrap()
         .storage_demand()
         .unwrap();

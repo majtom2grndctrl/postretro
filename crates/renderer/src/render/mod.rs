@@ -39,6 +39,9 @@ mod loaded_texture;
 mod mesh_depth;
 mod mesh_ghost;
 mod mesh_pass;
+mod mover_channel;
+mod mover_depth_tiles;
+mod mover_travel;
 mod planar_reflection;
 mod promoted_depth_cache;
 pub(crate) mod queue_writes;
@@ -76,6 +79,8 @@ pub(crate) mod uploads;
 
 #[cfg(test)]
 mod animated_atlas_parity_test;
+#[cfg(test)]
+pub(crate) mod composed_tiles;
 #[cfg(test)]
 mod curve_eval_test;
 #[cfg(all(test, feature = "dev-tools"))]
@@ -256,7 +261,7 @@ use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
 pub use sh_depth_tile_rewrite::ProbeDepthTileRewriteError;
 pub use sh_residency::{
-    ShResidencyReport, ShStreamingAllocationSummary, ShStreamingLifecycleSummary,
+    ShHostAllocation, ShResidencyReport, ShStreamingAllocationSummary, ShStreamingLifecycleSummary,
 };
 pub use sh_sample_regions::{ShSampleRegion, ShSampleRegionSets};
 pub use sh_streaming::{
@@ -285,6 +290,7 @@ pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_range
 pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use kinematic_brush::MoverView;
 pub(crate) use material_plan::*;
+pub use mover_travel::MoverTravel;
 pub(crate) use pipeline_layout::*;
 pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;
 pub use renderer_geometry::level_world_to_geometry;

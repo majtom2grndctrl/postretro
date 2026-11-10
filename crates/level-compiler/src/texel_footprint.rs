@@ -357,6 +357,15 @@ impl ProbeEarlyOut {
         }
     }
 
+    /// The byte a memo key folds for this rule; fixed per variant.
+    pub(crate) fn key_byte(self) -> u8 {
+        match self {
+            Self::Agreed => 0,
+            Self::Blocked => 1,
+            Self::Off => 2,
+        }
+    }
+
     /// Whether the probes' `clear` count of `surviving` ends the sample; a
     /// footprint asks only when no probe was clipped.
     pub(crate) fn ends(self, clear: u32, surviving: u32) -> bool {

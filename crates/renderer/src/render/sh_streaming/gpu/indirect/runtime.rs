@@ -55,7 +55,7 @@ impl StreamingIndirectCompose {
             &sh.animation.descriptors,
             &sh.animation.anim_samples,
             &self.affinity_lights,
-            &self.descriptor_index_buffer,
+            sh.mover_channel.bounce_buffer(),
             compose_indirection,
             &self.compaction_metadata,
         );
@@ -327,10 +327,8 @@ impl StreamingIndirectCompose {
                 .checked_mul(4)
                 .expect("validated streamed CSR prefix must fit fixed metadata"),
             self.origin_buffer.size(),
-            // This buffer is always allocated at least one u32 for a legal
-            // empty storage binding, so count the actual allocation rather
-            // than the logical descriptor-index vector length.
-            self.descriptor_index_buffer.size(),
+            // Id 27's descriptor map rides id 57's bounce table, which the
+            // level's ledger rows price.
             sparse_dummy_bytes.unwrap_or(0),
         ]
         .into_iter()

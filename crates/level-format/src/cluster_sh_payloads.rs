@@ -19,6 +19,10 @@ use crate::{
     direct_sh_delta_volumes::{DIRECT_SH_DELTA_VOLUMES_VERSION, DirectShDeltaVolumesSection},
     direct_sh_volume::{DIRECT_SH_VOLUME_VERSION, DirectShVolumeSection},
     lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F},
+    mover_probe_channel::{
+        MOVER_PROBE_CHANNEL_EPOCH, MOVER_STREAMED_BLOCK_HEADER_BYTES, MOVER_STREAMED_ROW_BYTES,
+        MoverCellSlices, MoverProbeChannelSection, MoverStreamedRowLens, parse_streamed_rows,
+    },
     octahedral::{
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
         IrradianceAtlasArrayLayout, MAX_SH_ATLAS_DIMENSION, irradiance_atlas_array_layout,
@@ -43,15 +47,15 @@ pub use codec::{
 };
 pub use types::{
     CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, CLUSTER_SH_LOGICAL_TILE_BORDER,
-    CLUSTER_SH_LOGICAL_TILE_DIMENSION, CLUSTER_SH_PAYLOADS_CONTAINER_VERSION,
-    CLUSTER_SH_PAYLOADS_HEADER_SIZE, CLUSTER_SH_PAYLOADS_INDEX_RECORD_SIZE,
-    CLUSTER_SH_PAYLOADS_SOURCE_RECORD_SIZE, CLUSTER_SH_PAYLOADS_VERSION,
-    CLUSTER_SH_PHYSICAL_TILE_STRIDE, CLUSTER_SH_SPARSE_ROW_RECORD_SIZE,
-    ClusterShPayloadsBaseMetadata, ClusterShPayloadsError, ClusterShPayloadsHeader,
-    ClusterShPayloadsIndexRecord, ClusterShPayloadsSection, ClusterShPayloadsSourceKind,
-    ClusterShPayloadsSourceMetadata, ClusterShPayloadsSourceRecord,
+    CLUSTER_SH_LOGICAL_TILE_DIMENSION, CLUSTER_SH_MOVER_ROWS_BLOCK_KIND,
+    CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_HEADER_SIZE,
+    CLUSTER_SH_PAYLOADS_INDEX_RECORD_SIZE, CLUSTER_SH_PAYLOADS_SOURCE_RECORD_SIZE,
+    CLUSTER_SH_PAYLOADS_VERSION, CLUSTER_SH_PHYSICAL_TILE_STRIDE,
+    CLUSTER_SH_SPARSE_ROW_RECORD_SIZE, ClusterShPayloadsBaseMetadata, ClusterShPayloadsError,
+    ClusterShPayloadsHeader, ClusterShPayloadsIndexRecord, ClusterShPayloadsSection,
+    ClusterShPayloadsSourceKind, ClusterShPayloadsSourceMetadata, ClusterShPayloadsSourceRecord,
     ClusterShPayloadsValidationInputs, cluster_sh_isolated_atlas_array_layout,
-    source_metadata_from_sections,
+    mover_channel_source, source_metadata_from_sections,
 };
 
 use decode::*;

@@ -5,7 +5,7 @@
 //! See: context/lib/boot_sequence.md §1 (Presented pose) · context/lib/networking.md §Slot lifecycle
 
 use crate::App;
-use crate::startup::{LevelRequest, LevelSource};
+use crate::startup::{BootState, LevelRequest, LevelSource};
 
 impl App {
     /// Mark a load of `catalog_id` already in flight or queued as host-named,
@@ -53,7 +53,19 @@ impl App {
     /// it was following (installed, loading or queued) is stale: it unloads,
     /// and the frontend menu is presented with no backdrop load. A level that
     /// is not host-named (the client's own backdrop, a level it booted) stays.
+    /// Before boot clears, no level exists yet: a queued host level is
+    /// dropped, and the boot-destination step presents the menu instead of
+    /// populating the frontend.
     pub(super) fn leave_stale_host_level(&mut self) {
+        if matches!(
+            self.boot_state,
+            BootState::Splash | BootState::FirstLaunchHold
+        ) {
+            self.level_requests
+                .retain(|request| !matches!(request, LevelRequest::HostLevel(_)));
+            self.boot_host_level_missing = true;
+            return;
+        }
         let queued = self
             .level_requests
             .iter()

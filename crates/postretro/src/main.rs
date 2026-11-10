@@ -1189,6 +1189,11 @@ pub(crate) struct App {
     /// with `active_level_source`, cleared with it.
     active_level_host_named: bool,
 
+    /// Before boot left the splash or the first-launch hold, the host named
+    /// a catalog level this client lacks. The boot-destination step consumes
+    /// it: a frontend boot presents the menu with no backdrop load.
+    boot_host_level_missing: bool,
+
     /// The level load in flight, if any: its generation, whether its stages
     /// were dispatched, and its progress. See: `startup::level_loads`.
     level_loads: startup::level_loads::LevelLoads,

@@ -35,6 +35,7 @@ impl App {
         self.active_level_tags.clear();
         self.active_level_source = None;
         self.active_level_host_named = false;
+        self.boot_host_level_missing = false;
         self.level_requests.clear();
         self.boot_load = false;
         self.boot_destination = None;

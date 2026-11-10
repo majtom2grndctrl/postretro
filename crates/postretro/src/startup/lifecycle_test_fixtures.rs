@@ -250,6 +250,7 @@ pub(crate) fn test_app() -> App {
         active_level_tags: Vec::new(),
         active_level_source: None,
         active_level_host_named: false,
+        boot_host_level_missing: false,
         last_relevel: None,
         level_load: None,
         level_loads: Default::default(),

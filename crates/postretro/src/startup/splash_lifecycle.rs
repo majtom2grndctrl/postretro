@@ -259,6 +259,9 @@ impl App {
     /// splash's OS-preference wait or the first-launch hold — is already queued
     /// and outranks both the frontend backdrop and a CLI boot map.
     pub(crate) fn start_boot_destination(&mut self, destination: BootDestination) {
+        // The host named a level this client lacks: the frontend is the
+        // fallback a failed host load returns to, with no backdrop load.
+        let host_level_missing = std::mem::take(&mut self.boot_host_level_missing);
         let host_load_queued = self
             .level_requests
             .iter()
@@ -269,7 +272,7 @@ impl App {
                     renderer.clear_splash();
                 }
                 self.boot_state = BootState::Frontend;
-                if host_load_queued {
+                if host_load_queued || host_level_missing {
                     self.present_frontend_menu();
                 } else {
                     self.populate_frontend();

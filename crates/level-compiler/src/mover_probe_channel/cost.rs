@@ -103,9 +103,11 @@ impl MoverChannelCost {
     /// records are bounded by its own reduction: below-floor probes drop as
     /// its two poses reduce, and it keeps at most one record past the range
     /// ([`super::states::reduce_poses`]), since one mover past the range
-    /// fails the build by name. A memo hit stored under a larger range is cut
-    /// the same way. The raw traced tiles a mover's poses hold before the
-    /// reduction are one mover's at a time, priced in [`Self::pose_bytes`].
+    /// fails the build by name. The range rides id 34's volume key, so no
+    /// memo is read under another range; the cut on read handles entries
+    /// written before past-range movers stopped being memoized. The raw
+    /// traced tiles a mover's poses hold before the reduction are one
+    /// mover's at a time, priced in [`Self::pose_bytes`].
     pub(crate) fn accumulated_states_bytes(&self) -> u64 {
         let bounce = self.radiance_movers
             * self.valid_probes

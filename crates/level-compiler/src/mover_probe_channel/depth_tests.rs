@@ -4,7 +4,7 @@
 
 use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 
-use super::{MoverTileRangeExceeded, reserve_mover_tiles};
+use super::{CarriedDepth, MoverTileRangeExceeded, reserve_mover_tiles};
 use crate::sh_bake::depth_tiles_test_fixtures::DepthTileFixture;
 
 /// The static-door closet: id 59 tiles its door probes.
@@ -24,8 +24,13 @@ fn reserving_mover_tiles_keeps_what_a_selection_at_the_shrunk_cap_keeps() {
         let shrunk = kept - live;
         let capped = fixture.bake(shrunk, None);
         let mut tiles = full.depth_tiles.clone();
-        let reservation = reserve_mover_tiles(&mut tiles, &full.section, live as usize, kept)
-            .expect("the live tiles fit the range");
+        let reservation = reserve_mover_tiles(
+            &mut tiles,
+            &full.section,
+            CarriedDepth::exact(live as usize),
+            kept,
+        )
+        .expect("the live tiles fit the range");
         assert_eq!(reservation.live, live as usize);
         assert_eq!(reservation.shrunk_cap, shrunk);
         assert_eq!(reservation.trimmed, u64::from(live));
@@ -53,7 +58,9 @@ fn the_tile_range_holds_live_tiles_first_and_refuses_them_past_it_by_name() {
     let cap = (kept + live) as u32;
 
     let mut at_cap = full.depth_tiles.clone();
-    let reservation = reserve_mover_tiles(&mut at_cap, &full.section, live, cap).expect("fits");
+    let reservation =
+        reserve_mover_tiles(&mut at_cap, &full.section, CarriedDepth::exact(live), cap)
+            .expect("fits");
     assert_eq!(reservation.trimmed, 0);
     assert_eq!(
         at_cap, full.depth_tiles,
@@ -61,25 +68,34 @@ fn the_tile_range_holds_live_tiles_first_and_refuses_them_past_it_by_name() {
     );
 
     let mut over = full.depth_tiles.clone();
-    let reservation = reserve_mover_tiles(&mut over, &full.section, live + 1, cap).expect("fits");
+    let reservation =
+        reserve_mover_tiles(&mut over, &full.section, CarriedDepth::exact(live + 1), cap)
+            .expect("fits");
     assert_eq!(reservation.trimmed, 1);
     assert_eq!(over.section.tile_count(), kept - 1);
 
     let mut refused = full.depth_tiles.clone();
-    let error = reserve_mover_tiles(&mut refused, &full.section, cap as usize + 1, cap)
+    let carried = CarriedDepth::exact(cap as usize + 1);
+    let error = reserve_mover_tiles(&mut refused, &full.section, carried, cap)
         .expect_err("live tiles alone past the range");
-    assert_eq!(
-        error,
-        MoverTileRangeExceeded {
-            live: cap as usize + 1,
-            cap,
-        }
-    );
+    assert_eq!(error, MoverTileRangeExceeded { carried, cap });
     let message = error.to_string();
     assert!(
         message.contains("MoverProbeChannel (id 57)")
+            && message.contains(&format!(": {} probes carry", cap + 1))
             && message.contains("no mover tile is dropped"),
         "{message}"
+    );
+    let partial = CarriedDepth {
+        exact: false,
+        ..carried
+    };
+    let message = reserve_mover_tiles(&mut refused, &full.section, partial, cap)
+        .expect_err("a partial count past the range")
+        .to_string();
+    assert!(
+        message.contains(&format!("at least {} probes carry", cap + 1)),
+        "a partial count reads as a lower bound: {message}"
     );
     assert_eq!(
         refused, full.depth_tiles,

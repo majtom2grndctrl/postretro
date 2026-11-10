@@ -522,10 +522,11 @@ fn light_bounces_zero_bakes_depth_alone_and_a_count_past_id_34s_bakes_id_34s() {
     );
 }
 
-// A tile range the closet door's depth alone passes: the bake keeps
-// exactly one record past it, the reservation fails by name, and the cut
-// states are never memoized, so a full-range build over that cache bakes the
-// door's whole depth. A hit stored under the full range is cut the same way.
+// A tile range the closet door's depth alone passes, well past it: the
+// bake keeps exactly one record past it, the reservation fails by name with
+// the door's whole count, exact, and the cut states are never memoized, so a
+// full-range build over that cache bakes the door's whole depth. A hit
+// stored under the full range is cut the same way.
 #[test]
 fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
     let maps = tempfile::tempdir().expect("maps dir");
@@ -554,16 +555,21 @@ fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
                 full.movers[0].depth[..cap as usize + 1],
                 "{mode}: one record past the range, the full bake's first"
             );
+            assert_eq!(outcome.movers[0].depth_carried, carried, "{mode}");
             let error = super::finish_bounce_half(
                 &outcome.movers,
+                outcome.stopped,
                 &base.section,
                 &mut base.depth_tiles,
                 cap,
             )
-            .expect_err("the door alone passes the range");
+            .expect_err("the door alone passes the range")
+            .to_string();
             assert!(
-                error.to_string().contains("MoverProbeChannel (id 57)"),
-                "{mode}: {error}"
+                error.contains(&format!(
+                    "MoverProbeChannel (id 57): {carried} probes carry closed-pose depth"
+                )),
+                "{mode}: the door's whole count, exact: {error}"
             );
         };
         let narrow_cache = tempfile::tempdir().expect("cache");
@@ -582,6 +588,71 @@ fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
             rebuilt.movers, full.movers,
             "the cut states were never memoized"
         );
+    });
+}
+
+// Two doors on one path under a tile range the first alone passes: cold
+// stops before the second door and fails with a lower bound, since the
+// second never ran. Warm over an empty cache, and over a cache holding both
+// doors' full-range states, stop at the same door, hold no states for the
+// second, and fail with the same text.
+#[test]
+fn warm_and_cold_stop_at_the_same_mover_past_the_tile_range() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet_edited(maps.path(), Some(0), "two-doors", two_doors));
+    with_ctx(&fixture, |ctx, poses| {
+        let full_plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        assert_eq!(full_plan.request.jobs.len(), 2, "two mover jobs");
+        let primed = tempfile::tempdir().expect("cache");
+        let (_, _, full) = bake_base(
+            ctx,
+            &full_plan,
+            &full_plan.request,
+            DEFAULT_BOUNCE_FILL,
+            Some(&open(primed.path())),
+        );
+        assert!(!full.stopped && full.movers.len() == 2);
+        let carried = full.movers[0].depth_carried;
+        assert!(carried >= 4, "the door carries depth: {carried}");
+        let cap = (carried / 2) as u32;
+        let mut narrow = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        narrow.request.depth_cap = cap;
+
+        let run = |cache: Option<&StageCache>| {
+            let (_, mut base, outcome) =
+                bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
+            let error = super::finish_bounce_half(
+                &outcome.movers,
+                outcome.stopped,
+                &base.section,
+                &mut base.depth_tiles,
+                cap,
+            )
+            .expect_err("the first door alone passes the range")
+            .to_string();
+            (outcome.movers, outcome.stopped, error)
+        };
+        let (cold_movers, cold_stopped, cold_error) = run(None);
+        assert!(cold_stopped && cold_movers.len() == 1, "cold stops");
+        assert!(
+            cold_error.contains(&format!(
+                "at least {carried} probes carry closed-pose depth"
+            )),
+            "a lower bound: {cold_error}"
+        );
+        let empty = tempfile::tempdir().expect("cache");
+        for (mode, cache) in [
+            ("warm empty", empty.path()),
+            ("warm over full-range hits", primed.path()),
+        ] {
+            let (movers, stopped, error) = run(Some(&open(cache)));
+            assert_eq!(movers, cold_movers, "{mode}: the same states");
+            assert_eq!(
+                (stopped, &error),
+                (cold_stopped, &cold_error),
+                "{mode}: the same stop and error"
+            );
+        }
     });
 }
 

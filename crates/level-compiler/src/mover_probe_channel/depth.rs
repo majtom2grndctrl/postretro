@@ -3,6 +3,7 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel) · §PRL section IDs
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use postretro_level_format::probe_depth_tiles::{
     PROBE_DEPTH_TILE_TEXELS, ProbeDepthTilesSection, f16_bits_to_f32, sample_tile_moments,
@@ -10,6 +11,7 @@ use postretro_level_format::probe_depth_tiles::{
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use thiserror::Error;
 
+use super::states::MoverBounceStates;
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_depth_bias, visibility_change};
 
 /// The significance floor (owner, 2026-11-08): a probe carries a
@@ -78,16 +80,67 @@ fn averaged_moments(section: &OctahedralShVolumeSection, probe: u32) -> [f32; 2]
     ]
 }
 
+/// Distinct probes carrying closed-pose depth across the movers: one live
+/// tile each. Exact, or a lower bound once the range cut what the bake saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CarriedDepth {
+    pub(crate) probes: usize,
+    pub(crate) exact: bool,
+}
+
+impl CarriedDepth {
+    #[cfg(test)]
+    pub(crate) fn exact(probes: usize) -> Self {
+        Self {
+            probes,
+            exact: true,
+        }
+    }
+
+    /// `live` distinct probes over `movers`' depth records. Exact unless the
+    /// bake `stopped` before every mover ran, or the range cut one mover's
+    /// records while another mover carries depth too, so their overlap past
+    /// the cut is unknown. Then the larger of `live` and the most one mover
+    /// carries, a lower bound.
+    pub(crate) fn new(live: usize, movers: &[MoverBounceStates], stopped: bool) -> Self {
+        let cut = movers
+            .iter()
+            .any(|states| states.depth_carried > states.depth.len());
+        let carrying = movers
+            .iter()
+            .filter(|states| !states.depth.is_empty())
+            .count();
+        let most = movers
+            .iter()
+            .map(|states| states.depth_carried)
+            .max()
+            .unwrap_or(0);
+        Self {
+            probes: live.max(most),
+            exact: !stopped && (!cut || carrying == 1),
+        }
+    }
+}
+
+impl fmt::Display for CarriedDepth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.exact {
+            f.write_str("at least ")?;
+        }
+        write!(f, "{}", self.probes)
+    }
+}
+
 /// Live tiles past the tile reference's range: the build refuses rather than
 /// drop a mover tile.
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error(
-    "MoverProbeChannel (id 57): {live} probes carry closed-pose depth, past the {cap}-tile \
+    "MoverProbeChannel (id 57): {carried} probes carry closed-pose depth, past the {cap}-tile \
      probe depth tile range; no mover tile is dropped. Lower the movers' reach into probe \
      depth (fewer movers, or movers meeting fewer probes' gather rays)"
 )]
 pub(crate) struct MoverTileRangeExceeded {
-    pub(crate) live: usize,
+    pub(crate) carried: CarriedDepth,
     pub(crate) cap: u32,
 }
 
@@ -102,24 +155,26 @@ pub(crate) struct DepthReservation {
     pub(crate) trimmed: u64,
 }
 
-/// Reserve `live` tiles of the range `cap` for mover depth, ahead of id 59:
-/// id 59 keeps at most `cap − live` tiles, dropping its lowest-ranked as
+/// Reserve one live tile per `carried` probe of the range `cap`, ahead of id
+/// 59: id 59 keeps at most `cap − live` tiles, dropping its lowest-ranked as
 /// its own selection ranks them (score descending, then probe index
 /// ascending), the scores recomputed against the probes' averaged id-34
 /// moments since the cached tiles keep none. So id 59 keeps exactly what a
 /// selection at the shrunk cap keeps. Live tiles alone past the range are a
-/// named error, never a dropped mover tile.
+/// named error, never a dropped mover tile. A count within the range is
+/// exact: below it, the range cuts no mover and stops no bake.
 pub(crate) fn reserve_mover_tiles(
     tiles: &mut ProbeDepthTiles,
     base: &OctahedralShVolumeSection,
-    live: usize,
+    carried: CarriedDepth,
     cap: u32,
 ) -> Result<DepthReservation, MoverTileRangeExceeded> {
     let cap = effective_tile_cap(cap);
+    let live = carried.probes;
     let shrunk_cap = u32::try_from(live)
         .ok()
         .and_then(|live| cap.checked_sub(live))
-        .ok_or(MoverTileRangeExceeded { live, cap })?;
+        .ok_or(MoverTileRangeExceeded { carried, cap })?;
     let kept = tiles.section.tile_count();
     if kept <= shrunk_cap as usize {
         return Ok(DepthReservation {

@@ -80,6 +80,10 @@ pub(crate) struct MoverBounceStates {
     pub(crate) bounce: Vec<BounceProbe>,
     /// Probes carrying closed-pose depth, ascending.
     pub(crate) depth: Vec<DepthProbe>,
+    /// Probes whose closed-pose depth passes the significance floor, before
+    /// the tile range cuts `depth`: its length unless the mover alone passes
+    /// the range.
+    pub(crate) depth_carried: usize,
     #[cfg(test)]
     held: crate::live_bytes::Held,
 }
@@ -92,6 +96,7 @@ impl MoverBounceStates {
         )]
         let mut states = Self {
             mover_id,
+            depth_carried: depth.len(),
             bounce,
             depth,
             #[cfg(test)]
@@ -112,7 +117,9 @@ impl MoverBounceStates {
     }
 
     /// Keep at most one depth record past the tile range `depth_cap`, as
-    /// [`reduce_poses`] does: for a memo hit stored under a larger range.
+    /// [`reduce_poses`] does, and the count it carried. The range rides id
+    /// 34's volume key, so no memo is read under another range: this cuts
+    /// entries written before past-range movers stopped being memoized.
     pub(crate) fn stop_depth_past_range(&mut self, depth_cap: u32) {
         if self.depth.len() <= depth_cap as usize + 1 {
             return;
@@ -170,7 +177,8 @@ fn compact_rgb(tile: &[OctahedralAtlasTexel]) -> impl Iterator<Item = u16> + '_ 
 /// keeps at most `depth_cap + 1` records, the cap being the tile range: one
 /// mover carrying depth at more probes than the range already fails the
 /// build by name ([`super::depth::MoverTileRangeExceeded`]), and the one
-/// record past it keeps that failure.
+/// record past it keeps that failure. Every probe past the floor still
+/// counts toward `depth_carried`, so the failure names the mover's reach.
 pub(crate) fn reduce_poses(
     mover_id: u32,
     poses: &[PoseStates; 2],
@@ -205,28 +213,33 @@ pub(crate) fn reduce_poses(
             met.entry(*probe).or_default()[terminus] = Some(tile);
         }
     }
-    let depth = met
-        .into_iter()
-        .filter(|(probe, tiles)| {
-            tiles
-                .iter()
-                .flatten()
-                .any(|tile| absent.score(*probe, tile) >= DEPTH_SIGNIFICANCE_FLOOR)
-        })
-        .take(depth_cap as usize + 1)
-        .map(|(probe, tiles)| {
-            let mut stored = Vec::with_capacity(2 * PROBE_DEPTH_TILE_TEXELS);
-            for tile in tiles.iter().flatten() {
-                stored.extend_from_slice(tile);
-            }
-            DepthProbe {
-                probe,
-                stored: tiles.map(|tile| tile.is_some()),
-                tiles: stored,
-            }
-        })
-        .collect();
-    MoverBounceStates::new(mover_id, bounce, depth)
+    let mut depth = Vec::new();
+    let mut carried = 0;
+    for (probe, tiles) in met {
+        let significant = tiles
+            .iter()
+            .flatten()
+            .any(|tile| absent.score(probe, tile) >= DEPTH_SIGNIFICANCE_FLOOR);
+        if !significant {
+            continue;
+        }
+        carried += 1;
+        if depth.len() > depth_cap as usize {
+            continue;
+        }
+        let mut stored = Vec::with_capacity(2 * PROBE_DEPTH_TILE_TEXELS);
+        for tile in tiles.iter().flatten() {
+            stored.extend_from_slice(tile);
+        }
+        depth.push(DepthProbe {
+            probe,
+            stored: tiles.map(|tile| tile.is_some()),
+            tiles: stored,
+        });
+    }
+    let mut states = MoverBounceStates::new(mover_id, bounce, depth);
+    states.depth_carried = carried;
+    states
 }
 
 /// Stored termini as one byte: bit k stores terminus k.

@@ -14,8 +14,8 @@ use crate::geometry::GeometryResult;
 use crate::map_data::{MapKinematicMover, MapLight};
 use crate::mover_light_gate::{MoverPoses, Terminus};
 use crate::mover_probe_channel::{
-    BounceBlocks, DepthReservation, MoverBounceJob, MoverBounceRequest, MoverBounceStates,
-    MoverChannelCost, PosedMovers, PosedScene, ProbeCells, reserve_mover_tiles,
+    BounceBlocks, CarriedDepth, DepthReservation, MoverBounceJob, MoverBounceRequest,
+    MoverBounceStates, MoverChannelCost, PosedMovers, PosedScene, ProbeCells, reserve_mover_tiles,
     sh_base_bounce_count,
 };
 use crate::partition::BspTree;
@@ -122,9 +122,11 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved
 /// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room and
 /// logs its counts once against the shrunk cap. Live tiles alone past the
-/// range fail the build by name.
+/// range fail the build by name, with the count a lower bound once the bake
+/// `stopped` short of a job or the range cut a mover sharing the range.
 pub(super) fn finish_bounce_half(
     movers: &[MoverBounceStates],
+    stopped: bool,
     base: &OctahedralShVolumeSection,
     depth_tiles: &mut ProbeDepthTiles,
     tile_cap: u32,
@@ -133,7 +135,8 @@ pub(super) fn finish_bounce_half(
         base.probes[probe].validity != 0
     });
     let blocks = BounceBlocks::new(movers, &cells);
-    let reservation = reserve_mover_tiles(depth_tiles, base, blocks.live_tile_count(), tile_cap)?;
+    let carried = CarriedDepth::new(blocks.live_tile_count(), movers, stopped);
+    let reservation = reserve_mover_tiles(depth_tiles, base, carried, tile_cap)?;
     if reservation.live > 0 {
         log::info!(
             "[MoverLight] probe depth tiles: {} live tile(s) reserved for mover depth ahead of id \

@@ -100,8 +100,8 @@ fn a_lowered_range_trims_id_59_for_mover_tiles_and_a_mover_edit_retrims_warm() {
     );
 }
 
-// A range the door's live tiles alone exceed fails the build by
-// name before packing; one exactly at id 59 plus the live tiles packs, drops
+// A range the door's live tiles alone exceed, well past it, fails the
+// build by name before packing, with the door's whole count; one exactly at id 59 plus the live tiles packs, drops
 // nothing, and loads; and the summary's counted total and texture bytes are
 // the loaded level's tile count and the renderer's texture price.
 #[test]
@@ -144,7 +144,7 @@ fn live_tiles_past_the_range_fail_by_name_and_a_range_exactly_full_packs_and_loa
         "{summary}"
     );
 
-    let short = (live - 1).to_string();
+    let short = (live / 2).to_string();
     let logs = try_build(
         &closet(LINTEL),
         "mover-closet",
@@ -155,7 +155,7 @@ fn live_tiles_past_the_range_fail_by_name_and_a_range_exactly_full_packs_and_loa
     .expect("live tiles past the range fail the build");
     assert!(
         logs.contains("MoverProbeChannel (id 57)")
-            && logs.contains(&format!("{live} probes carry closed-pose depth"))
+            && logs.contains(&format!(": {live} probes carry closed-pose depth"))
             && logs.contains("no mover tile is dropped"),
         "{logs}"
     );

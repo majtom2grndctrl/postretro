@@ -106,7 +106,7 @@ pub(in crate::render) struct MoverDepthTiles {
     dirty_list: Vec<u32>,
     reference_changes: Vec<ReferenceChange>,
     /// The live-tile index `k` of each entry in `reference_changes`, so a
-    /// frame whose reference moves fail can undo its `pointed` flips.
+    /// frame whose reference moves fail can mark those probes `unsure`.
     changed_live: Vec<u32>,
     /// One run of live tiles on one tile row, tile after tile as texel
     /// bytes, then the run's texels row-major across the row as the texture

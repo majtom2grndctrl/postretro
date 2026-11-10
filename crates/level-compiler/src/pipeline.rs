@@ -917,6 +917,7 @@ fn run_after_parsing(
     );
     let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
         &mover_bounce.movers,
+        mover_bounce.stopped,
         &sh_volume_section,
         &mut probe_depth_tiles,
         probe_depth_tile_cap,

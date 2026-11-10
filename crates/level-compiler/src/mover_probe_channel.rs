@@ -36,13 +36,13 @@ mod tests;
 #[cfg(test)]
 pub(crate) use bake::PosedBounce;
 pub(crate) use bake::{
-    MoverBounceJob, MoverBounceRequest, StaticBounce, StaticTail, bake_mover_bounce,
-    sh_base_bounce_count,
+    MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, StaticBounce, StaticTail,
+    bake_mover_bounce, sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
 pub(crate) use bounce_memo::BounceMemo;
 pub(crate) use cost::MoverChannelCost;
-pub(crate) use depth::{DepthReservation, reserve_mover_tiles};
+pub(crate) use depth::{CarriedDepth, DepthReservation, reserve_mover_tiles};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 #[cfg(test)]
 pub(crate) use domain::{

@@ -17,8 +17,8 @@ use crate::light_namespaces::StaticBakedLights;
 #[cfg(test)]
 use crate::mover_probe_channel::PosedBounce;
 use crate::mover_probe_channel::{
-    BounceMemo, MoverBounceJob, MoverBounceRequest, MoverBounceStates, StaticBounce, StaticTail,
-    bake_mover_bounce,
+    BounceMemo, MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverBounceStates, MoverSlot,
+    StaticBounce, StaticTail, bake_mover_bounce,
 };
 use crate::sh_bake::{
     GatheredVolume, ProbeDepthTiles, ProbeGridLayout, RadianceSource, ShBakeCtx, ShConfig,
@@ -56,8 +56,11 @@ pub(crate) struct ShBase {
 #[derive(Default)]
 pub(crate) struct MoverBounceOutcome {
     /// One per production job, ascending by mover id: from the memo or
-    /// baked.
+    /// baked. Short of one per job when the bake stopped.
     pub(crate) movers: Vec<MoverBounceStates>,
+    /// The bake stopped past the tile range before every job ran: the jobs
+    /// from there on hold no states, so the depth they carry is unknown.
+    pub(crate) stopped: bool,
     /// Each pose's re-bake, when the request keeps them: the full re-bake.
     #[cfg(test)]
     pub(crate) poses: Vec<PosedBounce>,
@@ -101,8 +104,10 @@ struct MemoLookup<'r, 'c> {
 impl<'r, 'c> MemoLookup<'r, 'c> {
     /// Read every job's memo under id 34's volume key, when a cache is open
     /// and the request is production's. Logs one `[cache]` line and one line
-    /// per mover. A hit stored under a larger tile range keeps one depth
-    /// record past this one, as the bake would, and fails the build by name.
+    /// per mover. The tile range rides that key, so no hit was stored under
+    /// another range; one written before past-range movers stopped being
+    /// memoized keeps one depth record past it, as the bake would, and fails
+    /// the build by name.
     fn new(
         movers: &'r MoverBounceRequest,
         volume: Option<&VolumeCache<'c>>,
@@ -158,6 +163,19 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
         self.pending.iter().any(|job| job.bounces > 0)
     }
 
+    /// Every job in request order: held from the memo, or baked.
+    fn slots<'s>(&'s self, movers: &'s MoverBounceRequest) -> Vec<MoverSlot<'s>> {
+        movers
+            .jobs
+            .iter()
+            .zip(&self.found)
+            .map(|(job, found)| match found {
+                Some(states) => MoverSlot::Held(states),
+                None => MoverSlot::Bake(job),
+            })
+            .collect()
+    }
+
     /// The jobs the memo held, whose bake never runs.
     fn hits<'j>(&self, movers: &'j MoverBounceRequest) -> impl Iterator<Item = &'j MoverBounceJob> {
         movers
@@ -169,15 +187,14 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
     }
 
     /// Store each baked job's states and merge them with the memo's, by
-    /// mover id. A mover whose depth alone passes the tile range is not
-    /// stored: the bake stopped it one record past the range and the build
-    /// fails by name.
-    fn finish(
-        mut self,
-        movers: &MoverBounceRequest,
-        baked: Vec<MoverBounceStates>,
-    ) -> Vec<MoverBounceStates> {
-        for states in baked {
+    /// mover id, short of the jobs from the slot the bake stopped at. A
+    /// mover whose depth alone passes the tile range is not stored: the bake
+    /// stopped it one record past the range and the build fails by name.
+    fn finish(mut self, movers: &MoverBounceRequest, baked: MoverBounceBake) -> MoverBounceOutcome {
+        if let Some(stopped_at) = baked.stopped_at {
+            self.found[stopped_at..].fill(None);
+        }
+        for states in baked.movers {
             let Some(at) = movers
                 .jobs
                 .iter()
@@ -194,7 +211,12 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
         }
         let mut states: Vec<MoverBounceStates> = self.found.into_iter().flatten().collect();
         states.sort_by_key(|states| states.mover_id);
-        states
+        MoverBounceOutcome {
+            movers: states,
+            stopped: baked.stopped_at.is_some(),
+            #[cfg(test)]
+            poses: baked.poses,
+        }
     }
 }
 
@@ -337,9 +359,7 @@ pub(crate) fn bake_sh_base_with_movers(
             0
         };
         control.advance(volume_units - rerun + lookup.hits(movers).map(job_units).sum::<usize>());
-        let (baked, _kept_poses) = if lookup.pending.is_empty() {
-            (Vec::new(), Vec::new())
-        } else {
+        let baked = {
             let bounce_one = lookup.needs_radiance().then(|| {
                 let layer_cache = caches.as_ref().map(|(layers, _)| layers);
                 let resolved = resolve_layers(
@@ -384,7 +404,7 @@ pub(crate) fn bake_sh_base_with_movers(
                     depth_tiles: &depth_tiles,
                     static_tail: tail.as_ref(),
                 },
-                &lookup.pending,
+                &lookup.slots(movers),
                 movers,
                 control,
             )
@@ -393,17 +413,13 @@ pub(crate) fn bake_sh_base_with_movers(
         if !movers.is_empty() {
             stage_events::record(stage_events::MOVER_BOUNCE_DONE);
         }
-        let states = lookup.finish(movers, baked);
+        let outcome = lookup.finish(movers, baked);
         return (
             ShBase {
                 section,
                 depth_tiles,
             },
-            MoverBounceOutcome {
-                movers: states,
-                #[cfg(test)]
-                poses: _kept_poses,
-            },
+            outcome,
         );
     }
 
@@ -478,9 +494,7 @@ pub(crate) fn bake_sh_base_with_movers(
     ];
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
-    let (baked, _kept_poses) = if lookup.pending.is_empty() {
-        (Vec::new(), Vec::new())
-    } else {
+    let baked = {
         let empty = PatchRadiance::zeroed(0);
         bake_mover_bounce(
             ctx,
@@ -495,7 +509,7 @@ pub(crate) fn bake_sh_base_with_movers(
                 depth_tiles: &depth_tiles,
                 static_tail: tail.as_ref(),
             },
-            &lookup.pending,
+            &lookup.slots(movers),
             movers,
             control,
         )
@@ -512,7 +526,7 @@ pub(crate) fn bake_sh_base_with_movers(
     if let Some((_, volume)) = &caches {
         volume.store(&mut section, &depth_tiles);
     }
-    let states = lookup.finish(movers, baked);
+    let outcome = lookup.finish(movers, baked);
     #[cfg(test)]
     crate::live_bytes::phase("volume store");
     (
@@ -520,11 +534,7 @@ pub(crate) fn bake_sh_base_with_movers(
             section,
             depth_tiles,
         },
-        MoverBounceOutcome {
-            movers: states,
-            #[cfg(test)]
-            poses: _kept_poses,
-        },
+        outcome,
     )
 }
 

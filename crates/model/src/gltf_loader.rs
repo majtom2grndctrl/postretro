@@ -3244,25 +3244,24 @@ mod tests {
     }
 
     fn reference_enemy_model_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/dev/models/reference_enemy_kaykit_knight/scene.gltf")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/models/mutant/model.gltf")
     }
 
     #[test]
-    fn reference_enemy_model_loads_four_clips_used_by_the_brain() {
-        // The CC0 KayKit Knight is packaged as the map-placeable reference enemy.
-        // It must load through the same external-glTF path the engine uses at
-        // level load, expose a skinned mesh + skeleton, and carry exactly the
-        // four animation clips the `mesh`/`ai` state maps name. Guards the asset
-        // and the GLB->glTF conversion (clip prune + body-part mesh merge)
-        // against regression. Gated on the asset existing so a stripped checkout
-        // skips rather than fails.
+    fn reference_enemy_model_binds_its_clip_library() {
+        // The Mixamo Mutant is the map-placeable reference enemy. It ships mesh
+        // and skeleton only and takes its clips from `mixamo_brute`. It must load
+        // through the same external-glTF path the engine uses at level load,
+        // expose a skinned mesh + skeleton, and bind every library clip the
+        // reference enemy and the stances brief name, the windup trims included.
+        // Gated on the asset existing so a stripped checkout skips rather than
+        // fails.
         let path = reference_enemy_model_path();
         if !path.exists() {
             eprintln!("skipping: model asset not present at {}", path.display());
             return;
         }
-        let model = load_model(&path).expect("reference enemy (KayKit Knight) model loads");
+        let model = load_model(&path).expect("reference enemy (Mutant) model loads");
 
         assert!(!model.mesh.vertices.is_empty(), "mesh has vertices");
         assert!(!model.mesh.indices.is_empty(), "mesh has indices");
@@ -3280,34 +3279,34 @@ mod tests {
         // Skinned skeleton, parent-before-child topo order.
         assert!(
             !model.skeleton.joints.is_empty(),
-            "Knight skin contributes joints"
+            "Mutant skin contributes joints"
         );
         for (i, joint) in model.skeleton.joints.iter().enumerate() {
             if let Some(parent) = joint.parent {
                 assert!(parent < i, "joint {i} parent {parent} precedes it");
             }
         }
+        assert_eq!(model.submeshes.len(), 1, "one material, one submesh");
 
-        // The six body-part primitives were merged into one mesh; each is a
-        // submesh of the single loaded mesh.
-        assert_eq!(
-            model.submeshes.len(),
-            6,
-            "six merged body-part primitives -> six submeshes"
-        );
-
-        // Exactly the four clips named by the reference enemy's mesh/ai maps.
         let mut clip_names: Vec<&str> = model.clips.iter().map(|c| c.name.as_str()).collect();
         clip_names.sort_unstable();
         assert_eq!(
             clip_names,
             vec![
-                "1H_Melee_Attack_Slice_Horizontal",
-                "Death_A",
-                "Idle",
-                "Walking_A",
+                "death",
+                "falling",
+                "hit_reaction",
+                "idle",
+                "punch",
+                "roar",
+                "run",
+                "smash",
+                "smash_windup",
+                "swipe",
+                "swipe_windup",
+                "walk",
             ],
-            "pruned to the four clips the brain/mesh state maps reference"
+            "the library's clips bind to the model"
         );
         for clip in &model.clips {
             assert!(clip.duration > 0.0, "clip `{}` has duration", clip.name);
@@ -3317,6 +3316,121 @@ mod tests {
                 "clip `{}` tracks parallel to skeleton joints",
                 clip.name
             );
+        }
+        let duration = |name: &str| {
+            model
+                .clips
+                .iter()
+                .find(|clip| clip.name == name)
+                .unwrap()
+                .duration
+        };
+        // Trims end at their windup peak, on a 30 fps key.
+        assert!((duration("smash_windup") - 0.4).abs() < 1e-3);
+        assert!((duration("swipe_windup") - 0.9).abs() < 1e-3);
+        assert!(duration("smash_windup") < duration("smash"));
+        assert!(duration("swipe_windup") < duration("swipe"));
+    }
+
+    /// The two dev melee enemies bound to Mutant clip libraries: the brute and
+    /// the shadow hunter.
+    fn bound_mutant_bodies() -> [(&'static str, PathBuf); 2] {
+        let models = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/models");
+        [
+            ("brute", models.join("mutant/model.gltf")),
+            (
+                "shadow hunter",
+                models.join("decraniated_low_poly_retro_pixel/model.gltf"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn bound_mutant_bodies_stand_on_their_feet_and_face_plus_z() {
+        // Each body is authored feet-at-origin and facing +Z (AI facing aims
+        // +Z), and its library clips pose it upright: through idle, walk and run
+        // a foot stays near the floor and the head stays high. A sunk pivot, a
+        // library turned the other way, or a root-height mismatch fails here
+        // before anyone sees it in the engine.
+        use crate::anim::{Loop, sample_clip_looped_world};
+        for (name, path) in bound_mutant_bodies() {
+            if !path.exists() {
+                eprintln!("skipping: model asset not present at {}", path.display());
+                continue;
+            }
+            let model = load_model(&path).unwrap_or_else(|e| panic!("{name} loads: {e:?}"));
+            assert_eq!(model.legs.len(), 2, "{name}: two legs");
+            let feet: Vec<usize> = model.legs.iter().map(|leg| leg.foot_joint).collect();
+            let root = model
+                .skeleton
+                .joints
+                .iter()
+                .position(|joint| joint.parent.is_none())
+                .expect("a root joint");
+            let hand = |socket: &str| match model.sockets.get(socket) {
+                Some(SocketBinding::SkinnedJoint(joint)) => *joint,
+                _ => panic!("{name}: {socket} socket on a skinned joint"),
+            };
+            let (left_hand, right_hand) = (hand("hand_l"), hand("hand_r"));
+
+            let mut world = Vec::new();
+            let clip = |clip: &str| {
+                model
+                    .clips
+                    .iter()
+                    .find(|c| c.name == clip)
+                    .unwrap_or_else(|| panic!("{name}: clip `{clip}`"))
+            };
+            let pose = |world: &mut Vec<Mat4>, clip: &str, t: f32| {
+                sample_clip_looped_world(clip_ref(&model, clip), &model.skeleton, t, Loop::Clamp, world);
+            };
+            fn clip_ref<'a>(model: &'a LoadedModel, name: &str) -> &'a crate::skeleton::AnimationClip {
+                model.clips.iter().find(|c| c.name == name).unwrap()
+            }
+            let y = |world: &Vec<Mat4>, joint: usize| world[joint].w_axis.y;
+            let top = |world: &Vec<Mat4>| world.iter().map(|m| m.w_axis.y).fold(f32::MIN, f32::max);
+
+            // Facing: in idle the left hand is on the +X side of the right, which
+            // puts the front on +Z.
+            pose(&mut world, "idle", 0.0);
+            let (left_x, right_x) = (world[left_hand].w_axis.x, world[right_hand].w_axis.x);
+            assert!(
+                left_x > right_x + 0.1,
+                "{name}: faces +Z (left hand x {left_x:.2}, right {right_x:.2})"
+            );
+
+            for name_clip in ["idle", "walk", "run"] {
+                let duration = clip(name_clip).duration;
+                let mut t = 0.0;
+                while t <= duration {
+                    pose(&mut world, name_clip, t);
+                    let low = feet.iter().map(|&f| y(&world, f)).fold(f32::MAX, f32::min);
+                    assert!(
+                        (-0.1..0.35).contains(&low),
+                        "{name}: `{name_clip}` at {t:.2}s holds a foot near the floor ({low:.2} m)"
+                    );
+                    assert!(
+                        top(&world) > 1.2,
+                        "{name}: `{name_clip}` at {t:.2}s stands upright ({:.2} m)",
+                        top(&world)
+                    );
+                    t += 1.0 / 30.0;
+                }
+            }
+
+            // The swipe lunges forward, toward +Z; the pinned smash stays put.
+            let mut reach = f32::MIN;
+            let mut drift = 0.0f32;
+            let mut t = 0.0;
+            while t <= clip("smash").duration.max(clip("swipe").duration) {
+                pose(&mut world, "swipe", t);
+                reach = reach.max(world[root].w_axis.z);
+                pose(&mut world, "smash", t);
+                drift = drift.max(world[root].w_axis.x.abs()).max(world[root].w_axis.z.abs());
+                t += 1.0 / 30.0;
+            }
+            assert!(reach > 0.3, "{name}: the swipe lunges toward +Z ({reach:.2} m)");
+            assert!(drift < 0.15, "{name}: the smash is pinned in place ({drift:.2} m)");
         }
     }
 

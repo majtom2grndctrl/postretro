@@ -435,13 +435,13 @@ swells the echo.
 
 It is a two-player set-piece, and both players start side by side in copy A.
 Each copy hides monsters behind purple doors in the north and south walls of
-its room: two knights in each of copy A's closets, and a limitator in each of
+its room: two brutes in each of copy A's closets, and a limitator in each of
 copy B's. Until its cue, each closet stays shut and its monsters asleep.
 
 - **Copy A's north closet** opens fifteen seconds after the level loads, or
   as soon as a player walks up to the barrier, whichever comes first. The
   count starts at load, so a host still waiting for a partner may meet these
-  knights alone. At fifteen seconds a klaxon sounds once for everyone
+  brutes alone. At fifteen seconds a klaxon sounds once for everyone
   connected then, on the host's timeline; a player who joins later never
   hears it.
 - **The split** is the first press of copy A's purple pad. It sends whoever
@@ -457,7 +457,7 @@ copy B's. Until its cue, each closet stays shut and its monsters asleep.
   need not be clear. Pressing it sends only you, not anyone else in copy B,
   back to room A. Your arrival reunites you: the purple pads stop flipping,
   and after a three-second beat the purple door in back room A's east wall
-  sinks and two knights and two limitators come out. A second arrival starts
+  sinks and two brutes and two limitators come out. A second arrival starts
   nothing again.
 
 ```bash

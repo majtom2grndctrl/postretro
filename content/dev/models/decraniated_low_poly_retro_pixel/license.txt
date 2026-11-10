@@ -9,3 +9,20 @@ Model License:
 
 If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
 This work is based on "Decraniated (Low Poly Retro Pixel)" (https://sketchfab.com/3d-models/decraniated-low-poly-retro-pixel-2e551e0991e147489152e17ce15f2d4d) by KallMor (https://sketchfab.com/kallmor) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+
+Packaging notes (PostRetro):
+* scene.gltf is the Sketchfab export, unchanged (used by the target dummy and
+  the animation demo).
+* model.gltf / model.bin are the shadow hunter's body: the same mesh with its
+  Mixamo-named skeleton, converted with mixamo_to_gltf.py (scale 100,
+  --yaw 180) and bound to clip_libraries/mixamo_mutant. Then:
+    - lifted 0.936 m so the soles sit at y = 0 (the export's origin was at
+      mid-body);
+    - hit zones stripped: the converter zones only head and legs, and a ray
+      missing every capsule misses the model, so the torso would be
+      unhittable; hits land on the descriptor's authored hitbox instead;
+    - re-rested from its A-pose onto the library's T-pose with
+      tools/rest_to_library.py, so the Mutant clips play as authored instead
+      of swinging the arms across the body.
+* The base-color material was wired by hand after conversion (a converter
+  rerun drops it); the engine reads base color only.

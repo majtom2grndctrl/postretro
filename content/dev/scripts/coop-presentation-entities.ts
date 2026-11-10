@@ -4,15 +4,15 @@ import { activation, defineEntity, defineImpactEvent } from "postretro";
 import { ballistic } from "./damage-types";
 import { combatDummyLifecycle } from "./combat-lifecycle";
 
-const KNIGHT = "models/reference_enemy_kaykit_knight/scene.gltf";
+const BRUTE = "models/mutant/model.gltf";
 const SMG = "models/cyberpunk_weapons/smg/model.gltf";
 const light = { color: [0.2, 0.8, 1] as [number, number, number], intensity: 8, range: 6, is_dynamic: true };
 const animatedMesh = {
-  model: KNIGHT,
+  model: BRUTE,
   animations: {
-    idle: { clip: "Idle", loop: true },
-    alert: { clip: "Walking_A", loop: true, crossfadeMs: 200 },
-    death: { clip: "Death_A", loop: false, crossfadeMs: 120, interrupt: "snap" as const },
+    idle: { clip: "idle", loop: true },
+    alert: { clip: "walk", loop: true, crossfadeMs: 200 },
+    death: { clip: "death", loop: false, crossfadeMs: 120, interrupt: "snap" as const },
   },
   defaultState: "idle",
 };

@@ -1,0 +1,35 @@
+Animation Information:
+* title:	Mixamo Mutant clip library (Creature Pack)
+* source:	https://www.mixamo.com/
+* author:	Adobe Mixamo (https://www.mixamo.com)
+
+License:
+* license type:	Mixamo Service Terms (https://www.adobe.com/legal/terms.html)
+* requirements:	Free to use in projects for Mixamo account holders.
+                	Mixamo characters and animations may be used in commercial and
+                	non-commercial projects. Redistribution of the raw assets
+                	outside of a project is not permitted.
+
+Packaging notes (PostRetro):
+* The Mixamo Creature Pack (Mutant) on the Mutant rig, plus Falling Idle and a
+  hit reaction, for the shadow hunter. It is kept apart from mixamo_brute (the
+  same rig) so the two enemies' clips can be tuned separately.
+* Clip names and their Mixamo sources:
+    idle (breathing idle), idle_b (idle), idle_c (idle 2), walk, run, punch,
+    swipe, swipe_b (swiping, creature pack), smash (jump attack),
+    smash_b (the pack's second jump attack), roar, roar_b (roaring, pack),
+    flex (flexing muscles), jump_a (jumping), jump_b (jumping 2),
+    death, death_b (dying, pack), hit_reaction, falling (Falling Idle),
+    turn_left_45, turn_left_45_b, turn_right_45, turn_right_45_b, turn_right_90.
+  Where the pack and the earlier hand-picked download hold the same clip
+  frame for frame, one copy is kept.
+* Built with:
+    mixamo_to_gltf.py --library --base Mutant.fbx --yaw 180 \
+      --in-place smash smash_b hit_reaction
+* --yaw 180 turns the rig to face +Z, the front AI facing aims, so root motion
+  runs the way bound bodies face.
+* smash, smash_b and hit_reaction are pinned in place: the jump attacks land
+  1.6 m forward and the hit reaction staggers 1 m back, so the body would snap
+  back when the clip ended. Deaths keep their motion: they hold the last frame.
+* Turn clips end turned; a state that plays one snaps back to the entity's
+  facing when it ends.

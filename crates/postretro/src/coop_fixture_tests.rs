@@ -486,17 +486,14 @@ fn assert_fixture_targets_hittable(app: &crate::App) {
         for target in targets {
             if tag == "coop_dummy" {
                 let mesh = registry.get_component::<MeshComponent>(target).unwrap();
-                assert_eq!(
-                    mesh.model,
-                    "models/reference_enemy_kaykit_knight/scene.gltf"
-                );
+                assert_eq!(mesh.model, "models/mutant/model.gltf");
                 let model = store
                     .get_by_name(&mesh.model)
-                    .expect("the actual knight model must load during CPU installation");
+                    .expect("the actual brute model must load during CPU installation");
                 assert!(model.joint_zones.iter().all(Option::is_none));
                 assert!(model.derived_bound.is_none());
             }
-            // Regression: the unzoned knight had no authored hitbox, so pistol torso rays missed.
+            // Regression: the unzoned dummy had no authored hitbox, so pistol torso rays missed.
             let torso = registry
                 .get_component::<Transform>(target)
                 .unwrap()

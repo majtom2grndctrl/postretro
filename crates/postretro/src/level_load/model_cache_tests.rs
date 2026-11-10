@@ -41,8 +41,8 @@ use crate::scripting_systems::hit_zones::ModelHitZones;
 const ZONES: &str = "models/pose-modifier-fixture/joint_zones.gltf";
 /// A textured rifle: an external buffer and four base-color PNGs.
 const RIFLE: &str = "models/ar_4/model.gltf";
-/// A textured, animated enemy.
-const KNIGHT: &str = "models/reference_enemy_kaykit_knight/scene.gltf";
+/// A textured, animated enemy bound to a clip library.
+const BRUTE: &str = "models/mutant/model.gltf";
 /// A prop no dev descriptor names.
 const PROP: &str = "models/decraniated_low_poly_retro_pixel/scene.gltf";
 
@@ -464,7 +464,7 @@ fn same_content_change_hits_every_model() {
     else {
         return;
     };
-    let handles = [ZONES, RIFLE, KNIGHT];
+    let handles = [ZONES, RIFLE, BRUTE];
     let level = level_with_props(&handles);
     let (content, prm) = (dev_content_root(), dev_prm_root());
     let pool = test_pool();
@@ -756,7 +756,7 @@ fn model_cache_release_and_commit_lifetimes() {
     assert_eq!(key_set(&renderer), sorted(&[ZONES, RIFLE]));
 
     // B, beside A: its miss is not visible before it commits.
-    let map_b = level_with_props(&[RIFLE, KNIGHT]);
+    let map_b = level_with_props(&[RIFLE, BRUTE]);
     let (stages, b) = load(
         &mut renderer,
         &pool,
@@ -766,7 +766,7 @@ fn model_cache_release_and_commit_lifetimes() {
         cache_uses(&b),
         vec![
             (RIFLE.to_string(), ModelCacheUse::Hit),
-            (KNIGHT.to_string(), ModelCacheUse::Miss)
+            (BRUTE.to_string(), ModelCacheUse::Miss)
         ]
     );
     assert_eq!(key_set(&renderer), sorted(&[ZONES, RIFLE]));
@@ -790,7 +790,7 @@ fn model_cache_release_and_commit_lifetimes() {
             retained: 2
         }
     );
-    assert_eq!(key_set(&renderer), sorted(&[RIFLE, KNIGHT]));
+    assert_eq!(key_set(&renderer), sorted(&[RIFLE, BRUTE]));
     let b_id = resident(&b);
 
     // D commits with B kept resident: B's entries survive the sweep.

@@ -40,7 +40,7 @@ function setupLevel(_ctx)
   local barrier = Postretro.getMapEntities("mover", { tag = "vault_barrier" })
   local open = Postretro.defineReaction("barrier.open", map(barrier, function(door) return door:start() end))
 
-  -- North closet, copy A: its door sinks and its two knights wake. The monsters'
+  -- North closet, copy A: its door sinks and its two brutes wake. The monsters'
   -- sealed aggro gate (enabled_on_spawn 0) ignores everything else, damage
   -- included. Fifteen seconds after level load, or the first player to walk up
   -- to the barrier, whichever comes first. A start on a mover already moving
@@ -51,7 +51,7 @@ function setupLevel(_ctx)
     Postretro.npcs({ tag = "echo_monster_a1" }):update({ aggro = true }),
   })
   -- The timer counts from level load, so a host still waiting for a partner
-  -- may meet the knights alone. The host opens the closet (`fire` reuses the
+  -- may meet the brutes alone. The host opens the closet (`fire` reuses the
   -- reaction the barrier approach fires too); each connected machine sounds
   -- the klaxon once, on the host's timeline, and a player who joins later
   -- never hears it.
@@ -82,7 +82,7 @@ function setupLevel(_ctx)
   })
 
   -- The crossing into copy B starts both fights in one body. Copy A's south
-  -- closet opens at once, so its two knights wait for whoever is left in or
+  -- closet opens at once, so its two brutes wait for whoever is left in or
   -- flips back to copy A; copy B's closets open three seconds later, so the
   -- arrival gets a beat to look around before the limitators wake.
   local splitLanded = Postretro.defineReaction("split.landed", {

@@ -14,7 +14,9 @@ Usage:
         [--fix-eyes] \
         [--eye-inset 0.01] \
         [--exclude-meshes EXO_Body] \
-        [--library | --clip-library ../clip_libraries/rifle/library.gltf]
+        [--library | --clip-library ../clip_libraries/rifle/library.gltf] \
+        [--in-place smash] \
+        [--trim smash_windup=smash:400]
 
 The --base file is treated as the base mesh + armature.  If omitted, the
 first FBX alphabetically is used (which may be an animation-only file —
@@ -25,6 +27,12 @@ MCH_* driver tracks) are dropped; real animation comes from the clips.
 
 Use --yaw when a model was exported facing a non-standard direction (it
 rotates about the vertical axis on top of the standard facing flip).
+
+--in-place pins the named clips' root (Hips) to its first key on the ground
+plane, keeping vertical motion: a lunge or leap then ends where it started.
+--trim appends a copy of a clip cut at a time in milliseconds, rounded down to
+a key. A state that plays it without looping holds its last pose, which is how
+a held windup is made from an attack. Trims copy the clip after --in-place.
 
 After export the script tags the Mixamo skeleton with engine extras
 (poseMask, aimBendWeight, socket, hitZone) and sets the skin skeleton root.
@@ -54,6 +62,7 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 import math
+import struct
 from mathutils import Matrix, Vector
 
 
@@ -207,9 +216,28 @@ def parse_args():
              "export and name the library by this path, relative to --output "
              "and written with forward slashes."
     )
+    parser.add_argument(
+        "--in-place", nargs="+", default=[], metavar="CLIP",
+        help="Pin each named clip's root (Hips) to its first key on the "
+             "ground plane, keeping vertical motion, so the clip ends where it "
+             "started (e.g. --in-place smash)."
+    )
+    parser.add_argument(
+        "--trim", action="append", default=[], metavar="NEW=SOURCE:END_MS",
+        help="Append clip NEW: a copy of SOURCE cut at END_MS milliseconds, "
+             "rounded down to a key. Played without looping, it holds its last "
+             "pose (e.g. --trim smash_windup=smash:400). Repeatable."
+    )
     args = parser.parse_args(argv)
+    try:
+        args.trim = [parse_trim(spec) for spec in args.trim]
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.library and args.clip_library is not None:
         parser.error("--library and --clip-library cannot be combined")
+    if args.clip_library is not None and (args.in_place or args.trim):
+        parser.error("--in-place and --trim edit clips, and a character bound "
+                     "with --clip-library keeps none; apply them to its library")
     if args.library and not args.base:
         parser.error("--library requires --base, or the first clip would "
                      "silently become the rig")
@@ -1338,6 +1366,136 @@ def check_library(gltf):
         raise ValueError("library export contains no clips")
 
 
+def parse_trim(spec):
+    """Parse `NEW=SOURCE:END_MS` into (new, source, end_ms)."""
+    match = re.fullmatch(r"([^=:]+)=([^=:]+):([0-9]+(?:\.[0-9]+)?)", spec)
+    if not match:
+        raise ValueError(f"--trim '{spec}': expected NEW=SOURCE:END_MS")
+    new, source, end_ms = match.group(1), match.group(2), float(match.group(3))
+    if new == source:
+        raise ValueError(f"--trim '{spec}': the new clip needs its own name")
+    return new, source, end_ms
+
+
+ACCESSOR_WIDTH = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+
+
+def read_floats(gltf, bin_bytes, index):
+    """Return one float accessor's elements as a list of tuples."""
+    accessor = gltf["accessors"][index]
+    if accessor.get("componentType") != 5126 or "sparse" in accessor:
+        raise ValueError(f"accessor {index}: expected dense float data")
+    width = ACCESSOR_WIDTH[accessor["type"]]
+    view = gltf["bufferViews"][accessor["bufferView"]]
+    start = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+    stride = view.get("byteStride", 4 * width)
+    return [struct.unpack_from(f"<{width}f", bin_bytes, start + i * stride)
+            for i in range(accessor["count"])]
+
+
+def write_floats(gltf, bin_bytes, index, elements):
+    """Overwrite one float accessor's elements in `bin_bytes` (a bytearray)."""
+    accessor = gltf["accessors"][index]
+    width = ACCESSOR_WIDTH[accessor["type"]]
+    view = gltf["bufferViews"][accessor["bufferView"]]
+    start = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+    stride = view.get("byteStride", 4 * width)
+    for i, element in enumerate(elements):
+        struct.pack_into(f"<{width}f", bin_bytes, start + i * stride, *element)
+    if "min" in accessor or "max" in accessor:
+        accessor["min"] = [min(e[c] for e in elements) for c in range(width)]
+        accessor["max"] = [max(e[c] for e in elements) for c in range(width)]
+
+
+def append_floats(gltf, bin_bytes, elements, accessor_type, bounds):
+    """Append a tightly packed float accessor; return its index."""
+    bin_bytes.extend(bytes(-len(bin_bytes) % 4))
+    width = ACCESSOR_WIDTH[accessor_type]
+    offset = len(bin_bytes)
+    for element in elements:
+        bin_bytes.extend(struct.pack(f"<{width}f", *element))
+    gltf.setdefault("bufferViews", []).append(
+        {"buffer": 0, "byteOffset": offset, "byteLength": len(bin_bytes) - offset})
+    accessor = {"bufferView": len(gltf["bufferViews"]) - 1, "componentType": 5126,
+                "count": len(elements), "type": accessor_type}
+    if bounds:
+        accessor["min"] = [min(e[c] for e in elements) for c in range(width)]
+        accessor["max"] = [max(e[c] for e in elements) for c in range(width)]
+    gltf.setdefault("accessors", []).append(accessor)
+    gltf["buffers"][0]["byteLength"] = len(bin_bytes)
+    return len(gltf["accessors"]) - 1
+
+
+def find_clip(gltf, name):
+    for animation in gltf.get("animations", []):
+        if animation.get("name") == name:
+            return animation
+    raise ValueError(f"no clip named '{name}'")
+
+
+def pin_root_in_place(gltf, bin_bytes, clip):
+    """Hold the root's ground-plane translation (glTF X and Z) at its first key.
+
+    `bin_bytes` is a bytearray, edited in place; vertical (Y) motion is kept.
+    """
+    animation = find_clip(gltf, clip)
+    root = next((i for i, node in enumerate(gltf.get("nodes", []))
+                 if node.get("name") == MIXAMO_PREFIX + "Hips"), None)
+    if root is None:
+        raise ValueError(f"--in-place {clip}: no '{MIXAMO_PREFIX}Hips' joint")
+    outputs = {animation["samplers"][c["sampler"]]["output"]
+               for c in animation.get("channels", [])
+               if c["target"].get("node") == root and c["target"]["path"] == "translation"}
+    if not outputs:
+        raise ValueError(f"--in-place {clip}: the clip does not move its root")
+    for output in outputs:
+        sampler = next(s for s in animation["samplers"] if s["output"] == output)
+        keys = read_floats(gltf, bin_bytes, output)
+        if sampler.get("interpolation") == "CUBICSPLINE":
+            raise ValueError(f"--in-place {clip}: cubic spline root tracks are not supported")
+        x0, _, z0 = keys[0]
+        write_floats(gltf, bin_bytes, output, [(x0, y, z0) for _, y, _ in keys])
+
+
+def trim_clip(gltf, bin_bytes, new, source, end_ms):
+    """Append clip `new`: `source` cut at `end_ms`, rounded down to a key.
+
+    `bin_bytes` is a bytearray that grows with the copy's keys.
+    """
+    if any(a.get("name") == new for a in gltf.get("animations", [])):
+        raise ValueError(f"--trim {new}: a clip with that name already exists")
+    animation = find_clip(gltf, source)
+    end = end_ms / 1000.0 + 1e-4
+    inputs = {}
+    samplers = []
+    for sampler in animation["samplers"]:
+        if sampler.get("interpolation") == "CUBICSPLINE":
+            raise ValueError(f"--trim {new}: cubic spline clips are not supported")
+        times = read_floats(gltf, bin_bytes, sampler["input"])
+        if times[-1][0] < end - 2e-4:
+            raise ValueError(f"--trim {new}: {end_ms:g} ms is past the end of "
+                             f"'{source}' ({times[-1][0] * 1000:.0f} ms)")
+        kept = sum(1 for (t,) in times if t <= end)
+        if kept == 0:
+            raise ValueError(f"--trim {new}: {end_ms:g} ms is before the first key")
+        if sampler["input"] not in inputs:
+            inputs[sampler["input"]] = append_floats(
+                gltf, bin_bytes, times[:kept], "SCALAR", bounds=True)
+        output = gltf["accessors"][sampler["output"]]
+        values = read_floats(gltf, bin_bytes, sampler["output"])[:kept]
+        copy = {"input": inputs[sampler["input"]],
+                "output": append_floats(gltf, bin_bytes, values, output["type"],
+                                        bounds="min" in output)}
+        if "interpolation" in sampler:
+            copy["interpolation"] = sampler["interpolation"]
+        samplers.append(copy)
+    gltf["animations"].append({
+        "name": new,
+        "channels": [dict(c, target=dict(c["target"])) for c in animation["channels"]],
+        "samplers": samplers,
+    })
+
+
 def gltf_bin_path(gltf_path, gltf):
     buffers = gltf.get("buffers", [])
     uri = buffers[0].get("uri", "") if len(buffers) == 1 else ""
@@ -1347,7 +1505,7 @@ def gltf_bin_path(gltf_path, gltf):
 
 
 def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False,
-                     tag_if_missing=False):
+                     tag_if_missing=False, in_place=(), trims=()):
     """Run the post-export pass on a `.gltf` and its `.bin`, in place.
 
     Normalization comes first so tagging sees canonical names; `tag` gates only
@@ -1362,6 +1520,20 @@ def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False,
         print(f"\nNormalized {renamed} numbered bone prefix(es) to '{MIXAMO_PREFIX}'")
     if tag or (tag_if_missing and (renamed or not has_engine_tags(gltf))):
         print_tag_summary(gltf, tag_skeleton(gltf))
+
+    if in_place or trims:
+        if clip_library is not None:
+            raise ValueError("--in-place and --trim edit clips, and a bound "
+                             "character keeps none; apply them to its library")
+        bin_path = gltf_bin_path(gltf_path, gltf)
+        bin_bytes = bytearray(bin_path.read_bytes())
+        for clip in in_place:
+            pin_root_in_place(gltf, bin_bytes, clip)
+            print(f"\nPinned '{clip}' in place")
+        for new, source, end_ms in trims:
+            trim_clip(gltf, bin_bytes, new, source, end_ms)
+            print(f"\nTrimmed '{source}' at {end_ms:g} ms into '{new}'")
+        bin_path.write_bytes(bytes(bin_bytes))
 
     if library or clip_library is not None:
         bin_path = gltf_bin_path(gltf_path, gltf)
@@ -1407,7 +1579,8 @@ def main():
     try:
         # Library joints carry no extras: only a mesh's own skeleton is tagged.
         postprocess_gltf(args.output, tag=not (args.no_tag or args.library),
-                         clip_library=args.clip_library, library=args.library)
+                         clip_library=args.clip_library, library=args.library,
+                         in_place=args.in_place, trims=args.trim)
     except (ValueError, OSError) as exc:
         # Blender exits 0 on an uncaught script exception.
         print(f"ERROR: {exc}")

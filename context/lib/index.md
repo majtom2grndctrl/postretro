@@ -36,6 +36,7 @@
 - **Particles / particle pool / what belongs in the registry versus outside it / emitter parameters at spawn** → `entity_model.md` §1, §8 · billboard draw: `rendering_pipeline.md` §7.4
 - **Enemy AI / behavior state graph / transition guards / brain component** → `entity_model.md` §7c · `scripting.md` §11
 - **Hierarchical enemy behavior / statecharts / nested activities / layers / committed attack phases** → `entity_model.md` §7c · `scripting.md` §11
+- **Enemy combat pacing / attack budget / attack tokens / turns / refresh / `ai_attack_pool` / strafe and reposition / activity facing** → `entity_model.md` §7c (Engaged motion, Attack budget) · `scripting.md` §2 (Attack token declarations), §11 (attack turn facts), §12 (Entity addressing) · `build_pipeline.md` §Custom FGD
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
 - **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)

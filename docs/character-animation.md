@@ -26,6 +26,23 @@ the rig has facial bones that no character uses, which keeps the library smaller
 Keep the clip folder. To add a clip, place its FBX there and rerun the command.
 A library rebuilds from its sources; it cannot be appended to without them.
 
+Two options edit clips as the library is written, so a rebuild repeats them:
+
+- `--in-place smash` holds the named clips' hips at their first position across
+  the ground, keeping up and down motion. Use it on an attack that lunges or
+  leaps forward: the enemy itself does not move with the clip, so it would snap
+  back when the clip ended.
+- `--trim smash_windup=smash:400` adds a clip named `smash_windup`: the first
+  400 ms of `smash`, ending on the nearest earlier key. A state that plays it
+  with `loop: false` holds its last pose. Mixamo attacks rarely hold a windup,
+  so this is how an enemy holds one before it strikes. Repeat `--trim` for
+  each clip. Trims are cut after `--in-place`.
+
+Both apply to a library or to a character that keeps its own clips, never with
+`--clip-library`. When the characters on a library all need the same `--yaw`,
+build the library with it too, so root motion such as a lunge runs the way they
+face.
+
 ## Bind a character
 
 ```bash
@@ -53,12 +70,31 @@ inside the model.
 The engine binds at load, with no rebake:
 
 - **Joints match by exact name.** Each library rotation applies as a change from
-  the library's rest pose, so rigs with different rest poses still share clips.
+  the library's rest pose, on top of the character's own rest pose. Small
+  differences in rest pose carry through as small offsets. A large one does not
+  fit: an A-pose character on a T-pose library swings its arms across its body.
+  See [Match the library's rest pose](#match-the-librarys-rest-pose).
 - **Proportions stay the character's.** Translation on non-root joints and all
   scale are dropped.
 - **Root motion scales by height.** Root translation scales by the character's
   root rest height over the library's, so a taller character takes longer strides
   and its death poses still reach the floor.
+
+### Match the library's rest pose
+
+Mixamo's own downloads are posed for each character, so this comes up with a
+rigged character from elsewhere: a Sketchfab model with Mixamo-named joints, for
+example, often binds in an A-pose. Re-rest it onto its library's pose after
+binding:
+
+```bash
+python3 tools/rest_to_library.py content/mymod/models/ghoul/model.gltf
+```
+
+Each joint takes the library's rest rotation, and the mesh moves into that pose
+with its own skin weights. The character's bone lengths stay its own. The script
+needs Python with `numpy` but not Blender, and rewrites the model in place.
+Rerunning the conversion undoes it, so run it again after any reconversion.
 
 A clip library needs clips that store a change from rest. `mixamo_to_gltf.py`
 writes them that way. A clip that needs translation on a non-root joint, such as

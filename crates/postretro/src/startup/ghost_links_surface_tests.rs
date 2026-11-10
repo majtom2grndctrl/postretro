@@ -80,7 +80,7 @@ const RISE_FRAMES: usize = 120;
 const PEDESTAL_HALF_HEIGHT: f32 = 24.0 / UNITS_PER_METRE;
 /// Where the players stand for the final wave: in room A just inside the
 /// doorway, east of the cover wall, in sight of the final closet. From farther
-/// back in room A the baked navmesh offers the closet's knights no route (a
+/// back in room A the baked navmesh offers the closet's brutes no route (a
 /// `find_path` limit, not this map's geometry), so they would wait in it.
 const HOST_STAND: (f32, f32) = (160.0, -32.0);
 const PARTNER_STAND: (f32, f32) = (160.0, 32.0);
@@ -1077,7 +1077,7 @@ fn ghost_link_seats_both_players_apart_in_copy_a() {
 // pads. Each later press flips both players between the copies and narrows
 // projectiles; the next press flips them again. Monsters, whose descriptor
 // does not opt in, and the viewer's own pawn never ghost. Under the real AI
-// tick, the south closet's knight then walks out and hits the player in copy
+// tick, the south closet's brute then walks out and hits the player in copy
 // A, and copy B's limitators shoot the player in copy B.
 #[test]
 fn ghost_link_dev_level_runs_the_barrier_puzzle_split_and_flip() {
@@ -1117,7 +1117,7 @@ fn classes(level: &Level, tag: &str) -> Vec<String> {
         .collect()
 }
 
-/// Copy A's and copy B's closets, checked as the level installs: two knights
+/// Copy A's and copy B's closets, checked as the level installs: two brutes
 /// behind each of copy A's doors, a limitator behind each of copy B's, every
 /// monster in its closet and asleep.
 fn closets(map: &str, level: &Level) {
@@ -1129,12 +1129,12 @@ fn closets(map: &str, level: &Level) {
     assert_eq!(
         classes(level, "echo_monster_a1"),
         ["reference_enemy"; 2],
-        "{map}: two knights wait in copy A's north closet"
+        "{map}: two brutes wait in copy A's north closet"
     );
     assert_eq!(
         classes(level, "echo_monster_a2"),
         ["reference_enemy"; 2],
-        "{map}: two knights wait in copy A's south closet"
+        "{map}: two brutes wait in copy A's south closet"
     );
     assert_eq!(
         classes(level, "echo_monster_b"),
@@ -1560,7 +1560,7 @@ fn run_set_pieces(map: &str, mut level: Level) {
         "{map}: neither the viewer nor a monster ever ghosts: {ghosts:#?}"
     );
 
-    // The fights: the south closet's knight walks out and hits the partner,
+    // The fights: the south closet's brute walks out and hits the partner,
     // flipped back into copy A, and copy B's limitators shoot the presser from
     // their closet mouths. The sim runs the real AI tick, so this is the whole
     // path from the crossing to a monster's attack.
@@ -1583,7 +1583,7 @@ fn run_set_pieces(map: &str, mut level: Level) {
         .iter()
         .flat_map(|tag| level.entities(ComponentKind::Health, tag))
         .collect();
-    let south_knight = level.entities(ComponentKind::Health, "echo_monster_a2");
+    let south_brute = level.entities(ComponentKind::Health, "echo_monster_a2");
     let mut left_closet: HashSet<EntityId> = HashSet::new();
     let mut engaged: HashSet<EntityId> = HashSet::new();
     for _ in 0..BATTLE_FRAMES {
@@ -1601,10 +1601,10 @@ fn run_set_pieces(map: &str, mut level: Level) {
         let drop = closed.y - level.position(door).y;
         assert!(drop > 2.5, "{map}: every opened closet door sinks: {drop}");
     }
-    for &npc in &south_knight {
+    for &npc in &south_brute {
         assert!(
             left_closet.contains(&npc),
-            "{map}: the south closet's knight walks out"
+            "{map}: the south closet's brute walks out"
         );
     }
     for &npc in &fighters {
@@ -1612,7 +1612,7 @@ fn run_set_pieces(map: &str, mut level: Level) {
     }
     assert!(
         health(&level, level.partner) < partner_full,
-        "{map}: copy A's knight hits the player in copy A"
+        "{map}: copy A's brute hits the player in copy A"
     );
     assert!(
         health(&level, level.pawn) < pawn_full,
@@ -1622,9 +1622,9 @@ fn run_set_pieces(map: &str, mut level: Level) {
 
 // The north closet's timer, in co-op with both players standing at their
 // spawns in copy A: with nobody near the barrier, its door holds and its
-// knights sleep for fifteen seconds from level load, then the door sinks and
-// exactly its two knights wake, walk out and engage. The south closet, which
-// waits for the split, stays shut with its two knights asleep inside, and so
+// brutes sleep for fifteen seconds from level load, then the door sinks and
+// exactly its two brutes wake, walk out and engage. The south closet, which
+// waits for the split, stays shut with its two brutes asleep inside, and so
 // do copy B's closets.
 #[test]
 fn ghost_link_north_closet_opens_fifteen_seconds_after_level_load() {
@@ -1676,7 +1676,7 @@ fn run_north_timer(map: &str, mut level: Level) {
     assert_eq!(
         awake,
         level.entities(ComponentKind::Health, "echo_monster_a1"),
-        "{map}: the timer wakes the north closet's two knights and nobody else"
+        "{map}: the timer wakes the north closet's two brutes and nobody else"
     );
     assert_north_knights_engage(map, &mut level);
     for (doors, monsters) in [
@@ -1688,17 +1688,17 @@ fn run_north_timer(map: &str, mut level: Level) {
     hidden_return(map, &level, "while nobody presses the barrier button");
 }
 
-/// The north closet's door sinks open and both its knights walk out and
+/// The north closet's door sinks open and both its brutes walk out and
 /// engage a player, under the real AI tick.
 fn assert_north_knights_engage(map: &str, level: &mut Level) {
     let door = only(map, level, ComponentKind::KinematicMover, "echo_closet_a1");
     let shut = level.position(door).y;
-    let knights = level.entities(ComponentKind::Health, "echo_monster_a1");
+    let brutes = level.entities(ComponentKind::Health, "echo_monster_a1");
     let mut left_closet: HashSet<EntityId> = HashSet::new();
     let mut engaged: HashSet<EntityId> = HashSet::new();
     for _ in 0..BATTLE_FRAMES {
         level.frame();
-        for &npc in &knights {
+        for &npc in &brutes {
             if level.position(npc).x.abs() < CLOSET_LINE {
                 left_closet.insert(npc);
             }
@@ -1712,10 +1712,10 @@ fn assert_north_knights_engage(map: &str, level: &mut Level) {
         drop > 2.5,
         "{map}: the north closet door sinks open: {drop}"
     );
-    for &npc in &knights {
+    for &npc in &brutes {
         assert!(
             left_closet.contains(&npc) && engaged.contains(&npc),
-            "{map}: every north closet knight walks out and engages"
+            "{map}: every north closet brute walks out and engages"
         );
     }
 }
@@ -1784,7 +1784,7 @@ fn run_barrier_approach(map: &str, mut level: Level) {
 }
 
 /// The final wave's closet door and monsters, checked as the level installs:
-/// one purple door in back room A's east wall, two knights and two limitators
+/// one purple door in back room A's east wall, two brutes and two limitators
 /// behind it, asleep.
 fn final_wave(map: &str, level: &Level) -> (Vec<EntityId>, Vec<EntityId>) {
     let doors = level.entities(ComponentKind::KinematicMover, "final_closet_door");
@@ -1800,7 +1800,7 @@ fn final_wave(map: &str, level: &Level) -> (Vec<EntityId>, Vec<EntityId>) {
             "reference_enemy",
             "reference_enemy"
         ],
-        "{map}: the final wave mixes knights and limitators"
+        "{map}: the final wave mixes brutes and limitators"
     );
     for &npc in &monsters {
         assert!(
@@ -1959,9 +1959,9 @@ fn assert_wave_beat(
     }
 }
 
-/// The final wave fights: the door sinks open, the knights walk out and every
+/// The final wave fights: the door sinks open, the brutes walk out and every
 /// monster engages a player in room A, under the real AI tick. Whether a hit
-/// lands is left to play: a limitator firing past a knight can start the
+/// lands is left to play: a limitator firing past a brute can start the
 /// monsters fighting each other.
 fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monsters: &[EntityId]) {
     let shut: Vec<f32> = doors.iter().map(|&door| level.position(door).y).collect();
@@ -1999,7 +1999,7 @@ fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monster
         if classes[&npc] == "reference_enemy" {
             assert!(
                 left_closet.contains(&npc),
-                "{map}: every final-wave knight walks out of the closet"
+                "{map}: every final-wave brute walks out of the closet"
             );
         }
     }

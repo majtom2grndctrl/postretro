@@ -47,6 +47,7 @@ import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEnemyEntity } from "./scripts/reference-enemy";
 import { enemyRifleEntity } from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
+import { shadowHunterEntity } from "./scripts/shadow-hunter";
 import {
   RIFLE_TOLERANCE,
   RIFLE_TROOPERS_FACTION,
@@ -376,6 +377,8 @@ export default defineMod({
     acidRifleEntity,
     enemyRifleEntity,
     limitatorEntity,
+    // Fast melee skirmisher: `"classname" "shadow_hunter"`.
+    shadowHunterEntity,
     // Rifle squads: `"classname" "rifle_trooper"` / `"rifle_warrior"`.
     rifleTrooperEntity,
     rifleWarriorEntity,

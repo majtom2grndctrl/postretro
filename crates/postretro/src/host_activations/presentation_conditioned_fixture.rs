@@ -41,7 +41,7 @@ const RTT: f64 = 160_000.0;
 const CLIENT_A: u64 = 7;
 const CLIENT_B: u64 = 8;
 const MODEL: &str = "models/decraniated_low_poly_retro_pixel/scene.gltf";
-const ANIMATED_MODEL: &str = "models/reference_enemy_kaykit_knight/scene.gltf";
+const ANIMATED_MODEL: &str = "models/mutant/model.gltf";
 
 fn emitter() -> BillboardEmitterComponent {
     BillboardEmitterComponent {
@@ -65,8 +65,8 @@ fn descriptors() -> Vec<EntityTypeDescriptor> {
     let mut mesh = mesh_descriptor("mesh_prop", true);
     let animated_mesh = mesh.mesh.as_mut().unwrap();
     animated_mesh.model = ANIMATED_MODEL.into();
-    animated_mesh.animations.get_mut("idle").unwrap().clip = "Idle".into();
-    animated_mesh.animations.get_mut("attack").unwrap().clip = "Walking_A".into();
+    animated_mesh.animations.get_mut("idle").unwrap().clip = "idle".into();
+    animated_mesh.animations.get_mut("attack").unwrap().clip = "walk".into();
     let mut lit = mesh.clone();
     lit.canonical_name = Some("lit_prop".into());
     lit.light = Some(postretro_entities::LightDescriptor {

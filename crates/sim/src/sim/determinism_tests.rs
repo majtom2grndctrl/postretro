@@ -1794,7 +1794,7 @@ fn reference_enemy_walking_hit_zones() -> Option<(String, usize, HitZoneStore)> 
     use postretro_model::ModelHandle;
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../content/dev/models/reference_enemy_kaykit_knight/scene.gltf");
+        .join("../../content/dev/models/mutant/model.gltf");
     if !path.exists() {
         eprintln!("skipping: model asset not present at {}", path.display());
         return None;
@@ -1804,11 +1804,11 @@ fn reference_enemy_walking_hit_zones() -> Option<(String, usize, HitZoneStore)> 
     let walking_index = model
         .clips
         .iter()
-        .position(|clip| clip.name == "Walking_A")
-        .expect("reference enemy declares Walking_A");
+        .position(|clip| clip.name == "run")
+        .expect("reference enemy's library binds run");
     assert_eq!(
         model.clips[walking_index].travel_speed, None,
-        "E10 fallback is justified only when the shipped Walking_A clip derives no travel speed",
+        "E10 fallback is justified only when the shipped run clip derives no travel speed",
     );
 
     let model_key = path.to_string_lossy().into_owned();
@@ -1915,7 +1915,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
             .states
             .get_mut("locomotion")
             .expect("driven agent declares locomotion state");
-        locomotion.clip = "Walking_A".to_string();
+        locomotion.clip = "run".to_string();
         locomotion.clip_index = Some(walking_index);
         registry
             .set_component(enemy, mesh)
@@ -1955,7 +1955,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
             .expect("driven agent keeps mesh");
         let animation = mesh.animation.as_ref().unwrap();
         let speed_xz = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
-        // E10 premise: the shipped Walking_A clip is authored in-place, so Task
+        // E10 premise: the shipped run clip is authored in-place, so Task
         // 2 derives no travel speed and this state declares no override. This
         // uses the actual shipped model store rather than an empty-store stand-in.
         assert_eq!(

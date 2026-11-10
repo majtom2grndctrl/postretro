@@ -58,38 +58,41 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     },
     // A single normal hit is enough to redirect this playtest fixture.
     tolerance: 4,
+    // The Mixamo Mutant, on the `mixamo_brute` clip library.
     mesh: {
-      model: "models/reference_enemy_kaykit_knight/scene.gltf",
+      model: "models/mutant/model.gltf",
       animations: {
-        idle: { clip: "Idle", loop: true },
+        idle: { clip: "idle", loop: true },
+        // Every move runs at `moveSpeed`, so locomotion plays the run; its
+        // planted foot travels about 2.2 m/s.
         walk: {
-          clip: "Walking_A",
+          clip: "run",
           loop: true,
           crossfadeMs: 200,
-          travelSpeed: 3,
+          travelSpeed: 2.2,
         },
         attack_jab: {
-          clip: "1H_Melee_Attack_Slice_Horizontal",
+          clip: "punch",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",
         },
+        // The punch's strike lands about 250 ms in, with the slam's commit.
+        // Stances replace this cycle with `smash` and `swipe`.
         attack_slam: {
-          clip: "1H_Melee_Attack_Slice_Horizontal",
+          clip: "punch",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",
         },
-        // The reference model has no dedicated pain clip; this distinct state
-        // still makes the authored startle observable to replication clients.
         flinch: {
-          clip: "1H_Melee_Attack_Slice_Horizontal",
+          clip: "hit_reaction",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",
         },
         death: {
-          clip: "Death_A",
+          clip: "death",
           loop: false,
           crossfadeMs: 120,
           interrupt: "snap",

@@ -1,7 +1,7 @@
 # mover-light-flow--mid-travel-poses — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 83dfb5317 (no source change since the brief's 1f24e7926; every cited symbol re-read)
 
 ## Corrections
@@ -103,7 +103,7 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 | 4 | **Compose, first slice.** Renderer install expands knots through the ramp, with squeezed knots carrying the end states. Piecewise bounce in `sh_compose.wgsl`/`mover_bounce.wgsl` and direct in `mover_channel.wgsl`. Depth on the CPU with both candidates behind a test-only switch. ACs 15, 16, 17 (and 2's compose half). | integrating executor | 2 | |
 | 5 | **First-slice capture — owner gate.** Build the setpiece and enemy-movers at `--release`. Capture the roof (12d metric), sweeper faces and room floor (12c metric) at the brief's t′, as plain lerp against per-interval through-base depth, beside today's and stripped frames. Run AC 19's test, today's build failing and this one passing. Report bytes and bake times. **Stop: owner picks the depth rule (M1), and the Decision is restated in the brief.** | integrating executor | 3, 4 | |
 | 6 | **Depth rule lands.** Remove the switch and keep the owner's rule; two-terminus intervals stay through-base. AC 18's compose half. | integrating executor | 5 | |
-| 7 | **Skipping and cross-pose reductions.** Per-pose raw states, with `reduce_poses` and skipping run after every state resolves. Bars are tested against what compose reads after the ramp and after earlier skips; the depth floor is judged against the interval compose will read. ACs 10, 11, 18. | integrating executor | 6 | |
+| 7 | **Redundant mid-pose skipping and cross-pose reductions.** Per-pose raw states, with `reduce_poses` and skipping run after every state resolves. Bars are tested against what compose reads after the ramp and after earlier skips; the depth floor is judged against the interval compose will read. ACs 10, 11, 18. | integrating executor | 6 | |
 | 8 | **Memos per pose.** Full-state memo per (mover, pose), keyed by effective bounce count. Terminus bounce-one-over-domain memo. Mid-pose memo free of fidelity. Bump `mover_probe_bounce`'s stage version. Direct memo per light folds every pose. ACs 25, 26, 27 (cache half), 23. | integrating executor | 7 | |
 | 9 | **Bake fidelity.** `--bake-fidelity` arg, usage error beside `--release`, quality flag. TUI field and the `no_cache` fix. Fidelity and release intent as explicit stage inputs. A `low` build probes the `high` key first. Build Summary pose count, fidelity, approximate marking and projected time (`sh_base_bake_time` entry). `dist` refuses the flag in a recipe. ACs 20, 21, 22, 24, 27, 29, 33 (dist half). | integrating executor | 8 | |
 | 10 | **Gate report, memory gate and ledger.** Mid-pose-only gated-light count per mover. SH base gate prices every pose, with termini bounce-one layers over the domain. Closed-pose host row per stored pose. ACs 13 (report half), 30, 31. | integrating executor | 3 | |

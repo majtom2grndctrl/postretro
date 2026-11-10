@@ -1,0 +1,115 @@
+# mover-light-flow--mid-travel-poses — plan of record
+
+mode: resumable
+status: proposed
+read at: 83dfb5317 (no source change since the brief's 1f24e7926; every cited symbol re-read)
+
+## Corrections
+
+- **Fraction → position.** Brief: the compiler can reuse the runtime's arc-length rule. → Physics exports only `MoverPathArcLengths` and `mover_path_fraction` (phase → t). `set_mover_phase_at_path_fraction` needs an entities component and positive speed, and `cumulative` is private. Planning around it by adding one pure public helper in `postretro_physics::kinematic_mover` (arc lengths + t → position, same segment rule). `forced_phase` then calls it, so the bake and the runtime share one function. Physics becomes a normal dependency of level-compiler. The only cycle runs through dev-dependencies, which Cargo allows. Termini keep today's f64 offsets (0, and last − first), so rest bytes cannot move. Mid poses use the helper on waypoints converted to f32 the way the loader converts them.
+- **Swept volume.** Brief: the domain is the union of the brushes' swept volumes. → `AnalysedMover.swept` is one AABB over every waypoint's pose, which is loose on a diagonal or bent path. Planning around it with a new domain type: one box per (brush, path segment), the hull of the brush's bounds at both segment ends, widened by the gather lift plus one probe spacing. It is a conservative superset of the exact sweep, and exact for the axis-aligned box movers on both fixtures.
+- **Bounce memo holds reduced states.** `bounce_memo` stores `MoverBounceStates` after `reduce_poses`, one key per mover. MP5 needs unskipped per-pose states with the reductions run after. Planning around it by memoizing each pose's raw `PoseStates` and moving `reduce_poses` and skipping after every memo read.
+- **Terminus later shares need bounce one over the domain (MP7).** A terminus's full-state memo cannot hold a domain-gathered bounce one without keying on the domain, and that key would re-bake a terminus (~216 s on the hallway) whenever a middle waypoint moves. Planning around it with a second, cheap per-terminus memo: posed bounce one gathered over the domain, keyed on the pose and the domain. Each terminus's full state keeps its own key.
+- **Mid-pose memos and fidelity.** A mid pose's own memo holds its bounce one over the domain and its depth. Neither depends on fidelity, so its key folds no fidelity and one entry serves both. Fidelity reaches a mid pose only through the termini's later shares, which are blended after the memo reads. This keeps the meaning of "per (mover, pose, fidelity)", since the cache keys on what changes the output.
+- **TUI (MP6).** Brief: a `--no-cache` launch confirmed unchanged must not become a release bake. → `--no-cache` and `--release` set `quality_flag_supplied`, so today the config screen never shows on such a launch. The latent hazard is real, though. The form starts in `Production` when `args.release || args.no_cache`, and confirming `Production` writes `release = true`. Planning around it:
+  - `--bake-fidelity` is a quality flag too.
+  - The form starts in `Production` only from `release`.
+  - `IncrementalBuild` keeps a CLI `no_cache`.
+  - The form carries fidelity.
+  - The `--release` × `--bake-fidelity` usage check reads the flags the author typed, before the TUI runs.
+  - The AC is proved at `apply_form_to_args`, whether or not the screen shows.
+- **A `None` cache is not release intent.** `construct_stage_cache` also returns `None` when the cache directory cannot be created. Confirms the Path: fidelity and the release intent reach the stages as explicit inputs.
+- **Gate report columns.** Brief: the gate report's "per-terminus columns". → The Build Summary block (`mover_light_gate/summary.rs`) prints only four aggregate lines. The per-terminus structure is the `-v` line per (mover, terminus) and the tally rows behind it. Planning around it:
+  - Those rows and lines stay terminus-only and unchanged.
+  - The block gains one line per mover with mid-pose-only gated lights. The `-v` log gains matching lines.
+- **C10 harness.** C10 refuses `enemy-movers`, because three movers meet at one probe and the harness supports two. AC 1 needs it, so the harness is generalised to any number of movers.
+- **"Both build-flag tables"** are `docs/level_design.md` §Common options and `build_pipeline.md` §CLI flags. `docs/distribution.md`'s refused-args table also gains `--bake-fidelity`. `docs/level_design.md` :523 ("blends straight from the first waypoint's lighting to the last's") and :533 (bake cost per end of the path) are rewritten.
+- **Mid poses have no waypoint name.** `Pose.waypoint` is an authored name that reports print. A mid pose reports by its path fraction instead (`t 0.40`).
+
+## Delegated answers
+
+- **Epoch-5 byte layout** — proposed below for the owner's skim. It is pinned in the format task (T2), and the brief's Wire format table is updated then. Reason: it meets every Wire format constraint, keeps the direct and bounce GPU tables close to epoch 4's, and puts every variable length behind offsets the loader checks.
+- **Where id 34's recorded bake time lives** (AC 26) — in a small cache entry, `"sh_base_bake_time"`, keyed on id 34's volume key. It is written whenever id 34 bakes, cold or warm, and a `--release` build uses its own measured time. Reason: a field inside the `sh_base_volume` entry would bump that stage's version and re-bake every author's id 34 once, for no change to bytes. A build with no record prints "—".
+
+### Proposed epoch-5 layout
+
+Little-endian, internal epoch 5 in the first byte, exact match. The header, cell index and placements are unchanged from epoch 4.
+
+| Part | Epoch 5 bytes |
+|---|---|
+| Mover records (replaces ramp records) | Count u32. Then per mover, ascending by id: `mover_id u32`, `ramp_start f32`, `ramp_end f32`, `pose_count u32` (N ≥ 2), then N `f32` knots. Knots are finite and strictly ascending, knot 0 is exactly 0.0 and knot N−1 exactly 1.0. Exactly the movers with entries in any block, as today. |
+| Direct | Record and mover-entry CSR unchanged. Under each mover entry, N `u8` q per masked probe, probe-major: byte `slot·N + k`. The record mask is the union over poses of q < 255. A mover storing 255 at every masked probe and pose is still refused. |
+| Bounce | Per cell, an entry-offset CSR (u32 byte offsets, from 0, ascending) replaces the fixed 24-byte stride. Entry: `mover_id u32`, `reserved u32 = 0`, then N pairs `(stored u64, base u64)`. At a terminus, `base` must be 0: unmarked already reads the base. At a mid pose, `base` marks probes that read the base (enclosed or unchanged), and unmarked blends across. A probe set in both is refused. The union of `stored` over poses is the affected mask, which must be non-empty, tight and within the valid mask. Tiles follow, pose-major, then probe by `stored` rank, in id 27's compact format. |
+| Depth | Records by mover, then probe: `mover_id u32`, `probe_index u32`, then N two-bit marks (bit 0 stored, bit 1 base), packed low-first and padded to 4 bytes. That stride is fixed per mover, because N is the mover's. Both bits set is refused. Base at a terminus is refused, as for bounce. A record storing no pose is refused. Tiles follow, in pose order. |
+| Streaming | Unchanged: the direct q bytes plus own tiles, and the bounce tiles, stream past their 8 MiB bars. Records, masks, marks, knots and offsets stay resident. |
+
+The renderer expands what the GPU needs at install: per-pose tile offsets and each mover's knots mapped through its ramp. The shaders then do no per-texel scan.
+
+## AC-to-proof
+
+Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–3, Placement 4–6, Bake 7–14, Compose 15–19, Fidelity and cache 20–31, Format and docs 32–33), manual rows M1–M8.
+
+| AC | Proof | Status |
+|---|---|---|
+| 1 Rest unchanged at high (three maps, t′ 0/1, C10-style, three-mover probes) | GPU harness `rest_channel_output_equals_the_pre_change_build` (`--ignored`, `POSTRETRO_REQUIRE_GPU`), pre-change PRLs rebaked fresh at 83dfb5317 | achievable as stated |
+| 2 `light_poses 2` at `high` stores and composes today's blend | compiler: section equals the pre-change build; renderer compose test at sampled t′ | achievable as stated |
+| 3 K1, K2, K3, C7, C10 pass on `--release`; C9 renderer half against the piecewise mix | existing capture and renderer tests on `--release` PRLs; C9 expectation generalised | achievable as stated |
+| 4 Automatic pose count, even arc length, unequal, degenerate and zero-length paths, positions match the runtime's t | compiler unit tests on placement, plus the physics helper round-tripping `mover_path_fraction` | achievable as stated |
+| 5 16 exactly, 17 → 16 + warning, `light_poses 20` → 20 and no warning | compiler unit tests with log capture | achievable as stated |
+| 6 `light_poses` parse accepts and rejects | `parse.rs` tests | achievable as stated |
+| 7 Mid pose matches static-brush reference (direct, bounce one, depth) on room and sweeper | compiler tests on the `raised_room_tests` pattern; the reference uses `_bounce_fill 0` for first bounce alone | achievable as stated |
+| 8 Mid bounce = bounce one + blended later shares; enclosing terminus lends none; `low` mid = `low` terminus there (MP3) | compiler unit tests | achievable as stated |
+| 9 Near-field domain in/out; direct still covers outside | compiler unit test | achievable as stated |
+| 10 Skipping within bars; adjacent skips bounded (MP2) | compiler unit tests on synthetic curves | achievable as stated |
+| 11 Ramp (0.6, 0.9) skips post-ramp; ramp edit re-decides; warm = `--no-cache` (MP9) | compiler tests plus `prl-build` integration | achievable as stated |
+| 12 Enclosed mid pose reads base and keeps dark depth; face probe keeps per-ray rule | compiler unit test | achievable as stated |
+| 13 Mid-pose-only blocked light gated; report counts it; per-terminus columns unchanged | compiler test plus gate report comparison against the pre-change build | achievable as stated |
+| 14 Squeezed-out blocking pose loads and composes unblocked (MP11) | integration: build, load, renderer compose test | achievable as stated |
+| 15 Exact at stored knots, mix between, direct exact, out-and-back alike | renderer compose tests (GPU, skip without adapter) | achievable as stated |
+| 16 Two movers, different pose counts and skips, combine as today | renderer compose test | achievable as stated |
+| 17 Ramp edges read first and last pose; ungated without state (MP1, MP10) | renderer compose tests | achievable as stated |
+| 18 Outside-domain and all-skipped depth compose through-base (MP8) | renderer depth unit test plus compiler skip test | achievable as stated |
+| 19 em_sweeper t′ 0.25, 0.30 and roof t′ 0.4, 0.6 within 3 levels of a static-brush reference; today fails | compiler-side CPU compose against a reference bake, run on today's build first to show it fails | achievable as stated |
+| 20 `low` caps at 1, `high` uses own, `--release` = interactive `high` on empty cache, `light_bounces 0` stores no bounce | `prl-build` integration | achievable as stated |
+| 21 `--release` + `--bake-fidelity` fails naming both; `--no-cache` and failed cache dir bake `low` | `main.rs` arg tests; integration with an uncreatable cache dir | achievable as stated |
+| 22 TUI carries fidelity; `--no-cache` confirmed unchanged never becomes release (MP6) | `tui_config` tests at `apply_form_to_args` (Corrections, TUI) | achievable as stated |
+| 23 Per fidelity, warm = `--no-cache`; two `low` builds alike | integration | achievable as stated |
+| 24 `low` after `high` serves `high`, bakes edited mover `low`; `high` after `low` = `--release` | integration | achievable as stated |
+| 25 `light_poses` change hits both termini, bakes new poses, warm = cold (MP5) | integration, with memo hit lines asserted | achievable as stated |
+| 26 Middle waypoint move changes domain; warm = cold (MP7) | integration | achievable as stated |
+| 27 `high` termini lend `high` shares to a `low` build's new mid poses; `light_bounces` edit moves every mid share (MP4) | integration | achievable as stated |
+| 28 Low against high at rest, largest difference and sign, fails past owner's bound | `--ignored` gate test; bound set from M2 | achievable as stated (bound pending M2) |
+| 29 Build Summary: pose count, fidelity, projected time or "—", approximate marking | compiler summary tests with log capture | achievable as stated |
+| 30 SH memory gate covers every pose; under-budget refuses by name | extend `a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray` | achievable as stated |
+| 31 Ledger counts every stored pose's closed-pose tile; zero after unload | extend `tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level` | achievable as stated |
+| 32 Loader refusals for epoch 5; epoch 4 refused | level-format and loader tests | achievable as stated |
+| 33 `light_poses` in FGD and docs; `--bake-fidelity` in both flag tables; `dist` refuses it in a recipe | FGD property test; `manifest.rs` `rejects_reserved_bake_arguments`; docs review | achievable as stated |
+| M1 Depth candidates: owner picks | owner, from first-slice stills | manual |
+| M2 Low vs high first measurement: owner sets bound | owner | manual |
+| M3 Roof top t′ 0.3–0.70, `low` and `high`, within 3 levels, no pits | owner, in-engine and captures | manual |
+| M4 em_sweeper faces within 3 levels, no pits | owner | manual |
+| M5 Rising room floor, no dots or diamonds | owner | manual |
+| M6 Rising room mean luma against t′ | owner | manual |
+| M7 5300M trace ≤ 0.2 ms per travelling mover | owner, Metal System Trace | manual |
+| M8 Cold and warm bake times, id-57 bytes per block, hallway | owner judges; executor measures | manual |
+
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | **Poses.** Physics fraction → position helper (forced_phase uses it). Pose model widened from `Terminus` to N indexed poses, with termini first and last and today's offsets kept. Placement rule, cap and warning. `light_poses` parse, FGD line and its tests. Near-field domain type. ACs 4, 5, 6, 9 (domain half). | integrating executor | — | |
+| 2 | **Epoch-5 format.** Wire layout above in level-format: types, `to_bytes`/`from_bytes`, assemble, streamed rows. Loader carries knots to mover runtime data beside the ramp. Every named refusal. AC 32. | integrating executor | 1 | |
+| 3 | **Bake, first slice (high, no skip).** Mid-pose direct q at every reached probe, with a light gated when any pose blocks it. Mid-pose bounce one and depth over the domain. Termini's posed bounce one over the domain, and later shares blended to each mid pose. Enclosing rule at every pose. Interim memo: today's one key per mover, folding every pose, so warm still equals cold. ACs 7, 8 (high half), 9, 12, 13, 14. | integrating executor | 1, 2 | |
+| 4 | **Compose, first slice.** Renderer install expands knots through the ramp, with squeezed knots carrying the end states. Piecewise bounce in `sh_compose.wgsl`/`mover_bounce.wgsl` and direct in `mover_channel.wgsl`. Depth on the CPU with both candidates behind a test-only switch. ACs 15, 16, 17 (and 2's compose half). | integrating executor | 2 | |
+| 5 | **First-slice capture — owner gate.** Build the setpiece and enemy-movers at `--release`. Capture the roof (12d metric), sweeper faces and room floor (12c metric) at the brief's t′, as plain lerp against per-interval through-base depth, beside today's and stripped frames. Run AC 19's test, today's build failing and this one passing. Report bytes and bake times. **Stop: owner picks the depth rule (M1), and the Decision is restated in the brief.** | integrating executor | 3, 4 | |
+| 6 | **Depth rule lands.** Remove the switch and keep the owner's rule; two-terminus intervals stay through-base. AC 18's compose half. | integrating executor | 5 | |
+| 7 | **Skipping and cross-pose reductions.** Per-pose raw states, with `reduce_poses` and skipping run after every state resolves. Bars are tested against what compose reads after the ramp and after earlier skips; the depth floor is judged against the interval compose will read. ACs 10, 11, 18. | integrating executor | 6 | |
+| 8 | **Memos per pose.** Full-state memo per (mover, pose), keyed by effective bounce count. Terminus bounce-one-over-domain memo. Mid-pose memo free of fidelity. Bump `mover_probe_bounce`'s stage version. Direct memo per light folds every pose. ACs 25, 26, 27 (cache half), 23. | integrating executor | 7 | |
+| 9 | **Bake fidelity.** `--bake-fidelity` arg, usage error beside `--release`, quality flag. TUI field and the `no_cache` fix. Fidelity and release intent as explicit stage inputs. A `low` build probes the `high` key first. Build Summary pose count, fidelity, approximate marking and projected time (`sh_base_bake_time` entry). `dist` refuses the flag in a recipe. ACs 20, 21, 22, 24, 27, 29, 33 (dist half). | integrating executor | 8 | |
+| 10 | **Gate report, memory gate and ledger.** Mid-pose-only gated-light count per mover. SH base gate prices every pose, with termini bounce-one layers over the domain. Closed-pose host row per stored pose. ACs 13 (report half), 30, 31. | integrating executor | 3 | |
+| 11 | **Regression and rest gates.** Generalise the C10 harness to N movers. Rest-unchanged comparison on all three maps against fresh pre-change PRLs. K1–K3, C7, C9 renderer half, and C10 on `--release`. `light_poses 2` regression. Low-vs-high gate with the bound from M2. ACs 1, 2, 3, 19, 28. | integrating executor | 9, 10 | |
+| 12 | **Docs.** `docs/level_design.md`: mover lighting table, error rows, Common options, and rewritten :523 and :533. `docs/distribution.md` refused args. FGD help. AC 33 (docs half). The "not built yet" flips in `context/lib/` happen at landing. | integrating executor | 9 | |
+
+Execution is sequential on the main checkout's warm `target/`. Every task crosses the compiler ↔ format ↔ renderer seam, so worktree workers would each build the engine cold for little parallelism. Tasks 3 and 4 touch disjoint crates once task 2 lands, and may run as one worktree worker if disk stays above 15 GB plus a debug build.
+
+Hot paths: compose is still one dispatch per moved row per pass. The interval lookup runs once per (entry, probe), never per texel, from install-expanded tables. Live-tile writes allocate nothing per frame. The 0.2 ms budget is proved manually (M7).

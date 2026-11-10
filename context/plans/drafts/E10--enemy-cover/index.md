@@ -62,14 +62,14 @@ behavior: {
                 reposition: { cover: "half", arc: [45, 135] } },
       settle: { motion: "hold", animation: "idle", stance: "crouch" },  // plays crouch_idle
       peek:   { motion: "hold", animation: "idle_aiming",
-                action: { attack: "shoot" }, attackTurn: true },
+                action: { attack: "shoot" }, attackTurn: "shoot" },
       strafe: { motion: "strafe", animation: "walk" },
     },
     transitions: {
       cover:  [{ to: "settle", when: brain.arrived },
                { to: "strafe", when: brain.timeInActivityMs.ge(2000) }],     // no cover in reach
       settle: [{ to: "cover", when: brain.targetVisible },               // flanked first
-               { to: "peek",  when: brain.attackTurnFree }],
+               { to: "peek",  when: brain.attackTurnFree("shoot") }],
       peek:   [{ to: "settle", when: brain.attacksFiredInActivity.ge(1)
                                      .and(brain.timeInActivityMs.ge(900))    // burst finishes standing
                                      .or(brain.timeInActivityMs.ge(1500)) }],

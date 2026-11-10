@@ -11,7 +11,7 @@ The defect: a rocket-launched enemy turns to face its flight path, because knock
 
 When this is done:
 - An author gives enemies strafing, fire-then-relocate and flanking behavior that reads correctly on screen.
-- A per-target attack budget, seeded by the engine, shaped per mod into named profiles with per-class limits, and given its own pool by a map-authored attack pool, keeps idle enemies moving instead of piling on.
+- A per-target attack budget, seeded by the engine, shaped per mod into named profiles with limits per attack class, and given its own pool by a map-authored attack pool, keeps idle enemies moving instead of piling on. An enemy with a ranged and a melee attack queues each in its own class.
 - A launched enemy keeps the yaw it had at impact.
 
 ## Decisions
@@ -32,9 +32,10 @@ When this is done:
 - **The attack budget is an engine mechanism with authored values** (`scripting.md` §1: pacing is taste; the engine seeds a default).
   - **Pools.** Every enemy draws from one pool. Members of the active attack pool draw from it, and everyone else from the default pool. Each pool keeps its own held cost per target, so the two pools stack on one player.
   - **Profiles.** A pool's limits come from a named budget profile: a `total` and optional per-class limits, `{ total, classes: [heavy.limit(1)] }`. The mod declares profiles in `defineMod({ attackBudgets })`; a profile without `total` rejects. The default pool uses the profile `default`; the engine seeds `default` as `{ total: 3 }` when the mod omits it. The seeded value is tuning, not contract.
-  - **Classes are declared handles**, like damage types (`scripting.md` §2): `defineAttackClass()` takes its name from its binding, and `defineMod({ attackClasses })` registers them. An archetype references one as `attackClass`, so one class can span several archetypes. A typo fails to compile in TypeScript, and an unregistered class fails load in both runtimes. An archetype with no class, or a class its pool's profile does not limit, is limited by `total` alone.
-  - **Grants.** The `total` counts cost; a class limit counts attackers, so `heavy.limit(1)` means one heavy at a time whatever its cost. An enemy is granted a turn when its cost fits its pool's `total` and its class has an attacker free on that target. A `total` with no counted turn held under it always admits, so an oversized archetype is never locked out.
-  - **Valid values.** A `total` and every class limit must be an integer of at least 1. `attackCost` is a non-negative integer, default 1: a designer trades slots of the total, so a brute at cost 2 fills two. Cost 0 never counts against anything, its class limit included, and is always granted: the lever for fodder that chips while heavies take turns.
+  - **Classes are declared handles**, like damage types (`scripting.md` §2): `defineAttackClass()` takes its name from its binding, and `defineMod({ attackClasses })` registers them. A typo fails to compile in TypeScript, and an unregistered class fails load in both runtimes.
+  - **Class and cost belong to the attack.** Each attack may set `attackClass` and `attackCost`; one it omits takes its archetype's, set the same way on `behavior`. An ogre's grenade waits on lobbers while its chainsaw does not, and one class can span several archetypes. An attack with no class, or a class its pool's profile does not limit, is limited by `total` alone.
+  - **Grants.** The `total` counts cost; a class limit counts turns, so `heavy.limit(1)` means one heavy attack at a time whatever its cost. A request is granted when its attack's cost fits its pool's `total` and its class has a turn free on that target. A `total` with no counted turn held under it always admits, so an oversized attack is never locked out.
+  - **Valid values.** A `total` and every class limit must be an integer of at least 1. `attackCost` is a non-negative integer, default 1: a designer trades slots of the total, so a slam at cost 2 fills two. Cost 0 never counts against anything, its class limit included, and is always granted: the lever for fodder that chips while heavies take turns.
   - **Host-only, and outside the co-op compatibility digest.** Clients never read the budget.
   - A literal for now. A store-derived expression can be added later without breaking anything; defense layers are the precedent.
 - **An attack pool is a logic entity, `ai_attack_pool`** (`@PointClass`): `_tags`, `member_tag`, and `budget_profile` (empty means `default`). Where it sits does not matter; triggers and scripts reach it by its `_tags`, as Quake-family maps reach a relay.
@@ -44,32 +45,33 @@ When this is done:
   - **Validation.** An empty `member_tag`, or two pools sharing one `_tags`, is a compile error naming the entities. A `budget_profile` the mod does not declare warns at level load and uses `default`.
   - The active pool is serializable state: it survives a serialize-and-restore.
   - **Budget only.** "Encounter" stays free for the set-piece concept (roadmap E18-E) and its kill progress, which may later start an attack pool.
-- **Turn lifetime.**
-  - **Marked activities.** An activity marked `attackTurn: true` requests on entry and keeps requesting until granted. The turn holds while any marked activity is on the active path, so a windup → commit → recover chain holds one turn.
+- **Turn lifetime.** A turn is for one attack and counts that attack's class and cost.
+  - **One request at a time.** An enemy requests for the attack it would start now. Switching to another attack keeps its wait clock, and its old request stops blocking that class (pin P19).
+  - **Marked activities.** An activity marked `attackTurn: "slam"` requests a turn for `slam` on entry and keeps requesting until granted. The turn holds while any activity marked for that attack is on the active path, so a windup → commit → recover chain holds one turn. Entering an activity marked for another attack releases it and requests anew.
   - **Unmarked attacks.** With no marked activity on its path, an attack requests only on a tick it is otherwise ready to fire. It holds the turn until that attack's cooldown ends, and a weapon until its execution clears and then its cooldown.
-  - **One turn, one attack.** A second unmarked attack never rides a held turn. It requests behind the existing waiters.
+  - **One turn, one attack.** Another attack never rides a held turn. It requests behind the existing waiters.
   - **Every turn** holds through an execution already started. A target change cancels that execution and releases the turn, and so does the holder leaving the AI set.
   - A turn held under more than one rule ends when the last of them ends.
   - Lowering a budget, or an enemy changing pool, revokes no turn.
-- **The budget is a hard gate, plus two facts.** An attack starts only while its enemy holds a turn. A refused attack commits nothing.
-  - `@brain.hasAttackTurn`.
-  - `@brain.attackTurnFree`: "a request from me would be granted now". It reads 0 with no target.
+- **The budget is a hard gate, plus two facts.** An attack starts only while its enemy holds a turn for it. A refused attack commits nothing.
+  - `brain.hasAttackTurn`: a turn is held, for any attack.
+  - `brain.attackTurnFree(attack)`: "a request for this attack would be granted now". It names one of the archetype's attacks, as `defense(layer)` names a layer, and reads 0 with no target.
 - **Arbitration is host-only and deterministic.**
   - It runs as one batch step after compute and before apply fires.
   - The longest wait wins, where a wait starts at the first request after last holding a turn. Slot order breaks ties.
   - Arbitration runs per pool and target, and one pool never blocks another.
-  - **Head of line, per limit.** Within a pool and target, for each limit, the longest waiter that fails it blocks later grants that need that limit: a class limit blocks only its class, and the `total` blocks the whole pool. Each blocks until it fits, or until that limit holds no counted turn. Nobody starves, and grunts keep taking turns while a heavy waits on its class.
+  - **Head of line, per limit.** Within a pool and target, for each limit, the longest waiter that fails it blocks later grants that need that limit: a class limit blocks only its class, and the `total` blocks the whole pool. Each blocks until it fits, or until that limit holds no counted turn. Nobody starves, and grunts keep taking turns while a heavy attack waits on its class.
   - Turns are derived host state and never replicate.
 - **Shipped content adopts the vocabulary in this brief.**
   - `content/dev` and `sdk/behaviors/reference`, the patterns every SDK bundle copies.
   - The limitator and rifle squads gain strafe-while-waiting and fire-then-reposition, a three-shot `enemy_rifle_burst`, and `walk_left`, `walk_right` and `walk_backward` states bound from the Mixamo library.
+  - The reference enemy's slam takes the `heavy` class at cost 2; its jab stays unclassed. The dev mod's `default` profile limits rifles to two and heavies to one.
   - Tests pinned to pile-on behavior or to bursts following a new target are updated.
 - **Non-goals:**
   - **Back-off and kiting.** `reposition` covers fire-then-move. A third verb waits for a consumer.
   - **Softening attacks from outside the target's view.** An additive follow-up on the budget.
   - **Several active attack pools, or a pool suspending the default pool.** Several pools at once would fight over one player's experience. Splitting one fight into atomic pools waits for a designer who needs it.
   - **Volume membership.** Engines pair a trigger volume that fires on entry with tag-addressed targets; the tag already names who belongs.
-  - **Per-attack classes.** A class sits on the archetype. A per-attack override can be added later without breaking anything.
   - **Protective cover and squad tactics.** Their exclusion stands from the line-of-sight and positioning briefs.
   - **Per-activity speed.** The statecharts brief keeps it additive, so a strafe and a run share `moveSpeed` until it lands.
   - **Cover, and flank routes that avoid the target's sight.** Both need exposure data the navmesh does not carry; the cover brief owns them.
@@ -79,21 +81,31 @@ When this is done:
 // Proposed design
 // classes.ts — named by their bindings
 export const rifle = defineAttackClass();
+export const heavy = defineAttackClass();
 
 // start-script.ts — budget profiles per target (engine seeds default { total: 3 })
 export default defineMod({
   /* … */
-  attackClasses: [rifle],
+  attackClasses: [rifle, heavy],
   attackBudgets: {
-    default: { total: 3, classes: [rifle.limit(2)] },
+    default: { total: 3, classes: [rifle.limit(2), heavy.limit(1)] },
     arena:   { total: 1 },
   },
 });
 
+// reference enemy behavior (excerpt): one slam on a player at a time; the jab
+// queues on the total alone
+behavior: {
+  attacks: {
+    jab:  { damage: 8, maxRange: 2, cooldownMs: 1200 },
+    slam: { damage: 14, maxRange: 3.5, cooldownMs: 1800, attackClass: heavy, attackCost: 2 },
+  },
+  /* … */
+}
+
 // rifle trooper behavior (excerpt)
 behavior: {
-  attackCost: 1,
-  attackClass: rifle,
+  attackClass: rifle,                     // its attacks' default; cost defaults to 1
   attacks: { shoot: { weapon: "enemy_rifle_burst", standoffDistance: 6 } },
   activities: {
     engage: {
@@ -103,12 +115,12 @@ behavior: {
           initial: "wait",
           activities: {
             wait:  { animation: "walk", motion: "strafe" },
-            burst: { animation: "idle_aiming", motion: "hold", action: { attack: "shoot" }, attackTurn: true },
+            burst: { animation: "idle_aiming", motion: "hold", action: { attack: "shoot" }, attackTurn: "shoot" },
             move:  { animation: "run", motion: "reposition", facing: "travel",
                      reposition: { arc: [60, 120] } },   // flank: lateral to its approach
           },
           transitions: {
-            wait:  [{ to: "burst", when: brain.attackTurnFree.and(brain.targetVisible) }],
+            wait:  [{ to: "burst", when: brain.attackTurnFree("shoot").and(brain.targetVisible) }],
             burst: [{ to: "move", when: brain.attacksFiredInActivity.ge(1).and(brain.timeInActivityMs.ge(900)) },
                     { to: "wait", when: brain.hasAttackTurn.not().and(brain.timeInActivityMs.ge(100)) }],
             move:  [{ to: "wait", when: brain.timeInActivityMs.ge(1500) }],
@@ -164,15 +176,18 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] With three requesters on one tick and one turn free, exactly one is granted. A replay grants the same one.
 - [ ] Under budget 2: cost 2 is granted alone and refused beside a cost-1 holder; cost 3 is granted when no counted holder remains. Cost 0 never counts or blocks (pin P8).
 - [ ] Under budget 2, a waiting cost-3 enemy among cost-1 enemies that keep a turn held is granted within a bounded wait. No cost-1 enemy is granted past it in the meantime (pin P12).
-- [ ] Under `{ total: 3, classes: [heavy.limit(1)] }` with cost 1 throughout: a second heavy waits while one heavy holds, and unclassed enemies are granted past it up to the total. A heavy at the head of the line blocks only heavies (pin P14).
-- [ ] Two archetypes declaring the `heavy` class under `heavy.limit(1)` never hold two turns on one target at once.
-- [ ] Per-limit head of line: with a heavy waiting on its class at the head and an unclassed cost-3 enemy waiting on `total` behind it, a later cost-1 requester is not granted past the cost-3 enemy (pin P18).
-- [ ] A cost-0 enemy of a limited class attacks while its class limit is full and never counts against it.
+- [ ] Under `{ total: 3, classes: [heavy.limit(1)] }` with cost 1 throughout: a second heavy attack waits while one holds, and unclassed attacks are granted past it up to the total. A heavy attack at the head of the line blocks only heavies (pin P14).
+- [ ] Heavy attacks from two archetypes under `heavy.limit(1)` never hold two turns on one target at once.
+- [ ] Per-limit head of line: with a heavy attack waiting on its class at the head and an unclassed cost-3 attack waiting on `total` behind it, a later cost-1 request is not granted past the cost-3 attack (pin P18).
+- [ ] A cost-0 attack of a limited class lands while its class limit is full and never counts against it.
+- [ ] An attack without `attackClass` or `attackCost` takes its archetype's. With neither set, it is unclassed at cost 1.
+- [ ] One enemy, two classes, under `{ total: 3, classes: [lobber.limit(1)] }`: while another enemy's grenade holds, this enemy's claw is granted and its grenade waits. `attackTurnFree("grenade")` reads 0 and `attackTurnFree("claw")` reads 1. A grenade request it drops for the claw stops blocking lobbers, and the claw keeps its wait clock (pin P19).
+- [ ] A chain marked for `slam` refuses a `jab` fired inside it. Entering an activity marked for `jab` releases the slam turn and requests a jab turn.
 - [ ] Strafing after a `reposition` steps 45° around the target from its current bearing, with no snap to the shared ring.
 - [ ] A `reposition` entered directly above its target measures its arc from its held slot, or ignores the arc with none. Slots straight inward or outward on the entry bearing never qualify.
-- [ ] A mod reload lowering `heavy` from 2 to 1 while two heavies hold revokes neither turn, and no heavy is granted until both release. A reload that removes the active pool's profile makes it use `default` from the next tick.
-- [ ] A hot reload that changes an archetype's `attackClass` or `attackCost` releases its holders' turns (pin P5, graph reseat); they re-request under the new class and cost.
-- [ ] An archetype whose class the profile does not limit is limited by `total` alone. A heavy of cost 2 under `heavy.limit(1)` is granted when no heavy holds.
+- [ ] A mod reload lowering `heavy` from 2 to 1 while two heavy attacks hold revokes neither turn, and no heavy attack is granted until both release. A reload that removes the active pool's profile makes it use `default` from the next tick.
+- [ ] A hot reload that changes an attack's or its archetype's `attackClass` or `attackCost` releases its holders' turns (pin P5, graph reseat); they re-request under the new class and cost.
+- [ ] An attack whose class the profile does not limit is limited by `total` alone. A heavy attack of cost 2 under `heavy.limit(1)` is granted when no heavy holds.
 - [ ] A refused attack commits nothing and fires on its first granted tick in the same activity (pin P2).
 - [ ] Under budget 1, three contact attackers ready together: at most one holds a turn on any tick. Each holds until its own cooldown ends, even after leaving its attacking activity. Each attacks within a bounded window.
 - [ ] Under budget 1, an enemy alternating two unmarked attacks never starts the second under the first's turn while another enemy waits.
@@ -182,9 +197,9 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] A turn holds across marked siblings with no release-and-regrant gap. It holds after leaving a marked activity mid-burst until the execution clears.
 - [ ] A target switch mid-burst cancels the burst and releases the turn. No shot lands on the new target from that burst (pin P6).
 - [ ] No turn leaks across any release case in pin P5, and a returning enemy re-requests.
-- [ ] `hasAttackTurn` and `attackTurnFree` follow pin P7. `attackTurnFree` reads 0 with no target.
+- [ ] `hasAttackTurn` and `attackTurnFree(attack)` follow pin P7. `attackTurnFree` reads 0 with no target.
 - [ ] A serialize-and-restore follows pin P11.
-- [ ] Two manifests differing only in `attackBudgets` or `attackClass` produce the same compatibility digest.
+- [ ] Two manifests differing only in `attackBudgets`, `attackClass` or `attackCost` produce the same compatibility digest.
 
 **Attack pools**
 - [ ] Starting an `ai_attack_pool` by trigger `start` and by script `start` each make its members draw from a pool with its profile's limits. An empty `budget_profile` uses `default`; an undeclared one warns at level load and uses `default`.
@@ -193,7 +208,7 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] Starting a second attack pool ends the first. Its members return to the default pool on that tick, and so does every member on `stop`. `stop` on an inactive pool changes nothing.
 - [ ] Membership: a tag holder present at start and a later spawn whose `spawned_tags` carry the tag are members.
 - [ ] An enemy leaving a pool while holding a turn keeps it. The turn counts against its new pool until it ends by its own rule, and no grant in that pool fits around it (pin P13).
-- [ ] An empty `member_tag` is a compile error naming the entity. In both runtimes, a profile without `total`, a `total` or class limit below 1 or non-integer, a negative or non-integer `attackCost`, an unregistered `attackClass`, a duplicate class name, or a non-finite value rejects with a pathed error. A TypeScript class reference that names no declaration fails to compile.
+- [ ] An empty `member_tag` is a compile error naming the entity. In both runtimes, a profile without `total`, a `total` or class limit below 1 or non-integer, a negative or non-integer `attackCost`, an unregistered `attackClass`, a duplicate class name, an `attackTurn` or `attackTurnFree` naming no attack of its archetype, or a non-finite value rejects with a pathed error. A TypeScript class reference that names no declaration fails to compile.
 - [ ] A level with no `ai_attack_pool` behaves as the default pool alone.
 - [ ] Start and stop requests follow pin P15: a trigger-bound start applies before that tick's arbitration, and two starts on one tick leave the later-issued one active.
 - [ ] An attack pool active when its level restarts or changes is not active in the next install, and its members draw from the default pool from that install's first tick.
@@ -201,7 +216,7 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 - [ ] Two levels differing only in an `ai_attack_pool`'s `budget_profile` produce the same level content digest.
 
 **Surface**
-- [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content. After `arena.start` fires, a tagged guard draws from an attack pool under the `arena` profile.
+- [ ] The Scripting surface example parses identically in TypeScript and Luau, and runs as `content/dev` content. After `arena.start` fires, a tagged guard draws from an attack pool under the `arena` profile. Two reference enemies on one player never slam together, while either may jab.
 
 ### Manual
 - [ ] On `movement-feel`, the shipped rifle squad under its authored budget: shooters relocate after a burst while waiters strafe and take over. A closet reveal on `closet-reveal` releases its payload without a pile-on. A rocket-launched reference enemy keeps its facing in flight.
@@ -216,9 +231,10 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
   - The trap member (`getMapEntities("trap")`, a point entity carried by the id-29 map-entity record) as the precedent for a map entity with `start` and `stop` from triggers and scripts.
   - `trigger_direct_commands.rs` routes a trigger's `command` by member kind. Script `start` and `stop` steps run on the trigger's tick only through `CONSEQUENTIAL_PRIMITIVES` (`trigger_bindings/partition.rs`) and `command_binding.rs`. The build-time member table (`MapMemberKind`, `script_light_membership.rs`) needs the new kind too.
   - The spawner's `spawned_tags` path (`crates/sim/src/spawner.rs`), which carries tag membership to later spawns.
-- **Shape.** Turns live on `BrainComponent`, as the held target, the counted pool and the wait clock (all transient). The attack pool's state lives on its own serializable component; its profile resolves by name each tick, so a mod reload applies. Per-pool, per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
+- **Shape.** Turns live on `BrainComponent`, as the held target, the turn's attack, the counted pool and the wait clock (all transient). The attack pool's state lives on its own serializable component; its profile resolves by name each tick, so a mod reload applies. Per-pool, per-target totals are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
 - **Attack-pool rivals** are argued in `research.md` (Attack pool precedent).
 - **Slice order.** The knockback facing split first: it touches the fewest seams and proves the velocity separation strafe needs. Then the verbs and the scorer's per-query constraints, turns and arbitration, profiles and classes, the attack pool entity, and last the shipped content that proves them together.
+- **Named turn facts.** `attackTurnFree(attack)` resolves its attack per archetype at load, as `@defense.<layer>` resolves its layer (`sdk/lib/brain.luau`), and reads one value per attack. `hasAttackTurn` stays a fixed brain input.
 - **Watch for.**
   - Combat-slot hysteresis never selects anything in this caller (`research.md`), so `reposition` must pass its exclusions explicitly. The batch scans no challengers while an incumbent is retained (`scan_challengers` in `combat_slots.rs`), so on entry `reposition` forces the scan and drops its incumbent.
   - Test the arc on the ring index's generated angle, not a measured angle, so a bound on a ring direction includes it.
@@ -237,13 +253,14 @@ The Luau twin mirrors it with Luau call syntax (`brain.targetVisible:and(...)`).
 | reposition verb | `MotionVerb::Reposition` | `"reposition"` | `"reposition"` | `"reposition"` | n/a |
 | activity facing | `BehaviorActivityDescriptor::facing: Option<FacingPolicy>` | `"facing"`: `"target"` \| `"travel"` | `facing?` | `facing` | n/a |
 | reposition properties | `BehaviorActivityDescriptor::reposition: Option<RepositionParams { arc_deg: [f32; 2], min_travel_m: f32 }>` | `"reposition"`: `{ "arc"?, "minTravel"? }` | `reposition?: { arc?: [number, number]; minTravel?: number }` | `reposition` | n/a |
-| turn marking | `BehaviorActivityDescriptor::attack_turn: bool` | `"attackTurn"` | `attackTurn?` | `attackTurn` | n/a |
-| archetype cost | `BehaviorGraphDescriptor::attack_cost` | `"attackCost"` | `attackCost?` | `attackCost` | n/a |
-| attack class | declared name; `BehaviorGraphDescriptor::attack_class: Option<String>` | `"attackClass"`: the class name | `defineAttackClass()` → handle; `attackClass?: AttackClass` | `defineAttackClass(name)`; `attackClass` | n/a |
+| turn marking | `BehaviorActivityDescriptor::attack_turn: Option<String>` | `"attackTurn"`: the attack's name | `attackTurn?: string` | `attackTurn` | n/a |
+| attack class handle | declared name | the class name | `defineAttackClass()` → `AttackClass` | `defineAttackClass(name)` | n/a |
+| attack class and cost | `AttackParams::{attack_class: Option<String>, attack_cost: Option<u32>}` | `"attackClass"`, `"attackCost"` on an attack | `attackClass?: AttackClass`, `attackCost?` | same | n/a |
+| archetype defaults | `BehaviorGraphDescriptor::{attack_class, attack_cost}` | `"attackClass"`, `"attackCost"` on `behavior` | same | same | n/a |
 | class registration | `ModManifestResult` field | `"attackClasses"`: names | `attackClasses?` | `attackClasses` | n/a |
 | budget profiles | `ModManifestResult` field, name → `{ total, classes }` | `"attackBudgets"`: `{ [profile]: { total, classes?: [{ class, limit }] } }` | `attackBudgets?`; `cls.limit(n)` | `attackBudgets`; `cls:limit(n)` | n/a |
 | attack pool entity | attack pool component | id-29 map-entity record | — | — | `ai_attack_pool` (`@PointClass`): `_tags`, `member_tag`, `budget_profile(string)`; empty means `default` |
 | attack pool member | attack pool member handle | — | `getMapEntities("attackPool")` → `start`, `stop` | same | trigger `command` `start` / `stop` |
 | turn held | `BRAIN_INPUTS` tail | `"@brain.hasAttackTurn"` | `brain.hasAttackTurn` | `brain.hasAttackTurn` | n/a |
-| turn free | `BRAIN_INPUTS` tail, after the above | `"@brain.attackTurnFree"` | `brain.attackTurnFree` | `brain.attackTurnFree` | n/a |
+| turn free | named input, resolved per attack at load | `"@brain.attackTurnFree.<attack>"` | `brain.attackTurnFree(attack)` | `brain.attackTurnFree(attack)` | n/a |
 | directional variants | host resolution | state names `X_left`, `X_right`, `X_backward` | — | — | n/a |

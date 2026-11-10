@@ -29,9 +29,9 @@ When this is done:
   - **Where the constant lives.** The floor is an engine constant outside netcode, exported to both SDKs. A netcode test fails if the floor falls below the buffer ceiling, as with `SPAWN_ATTACK_WINDUP_MS`.
   - **What it doesn't cover.** Network transit has no load-time bound, so the floor leaves it out.
   - **Where it's checked.** `stance()` warns through the script log when a stance's minimum hold falls below the floor. The engine cannot tell a stance's hold from any other activity.
-- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` (`drafts/E10--enemy-combat-movement`), so one turn spans the cycle.
+- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` with the release's attack (`drafts/E10--enemy-combat-movement`), so one turn for that attack spans the cycle and counts its class and cost.
   - A tell must never promise an attack that cannot come. So the builder's hold also exits to `then` when no turn is held one tick after entry, the facts' lag.
-  - Authors gate stance entry on `brain.attackTurnFree`.
+  - Authors gate stance entry on `brain.attackTurnFree(attack)` with the release's attack.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
   - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity is left.
   - It is a fact the engine computes, not an IR node.
@@ -95,8 +95,9 @@ offense: {
   transitions: merge(
     {
       approach: [
-        { to: overhead.entry, when: brain.attackTurnFree.and(brain.targetDistance.le(3.5)).and(brain.activityRoll.lt(0.5)) },
-        { to: sweep.entry, when: brain.attackTurnFree.and(brain.targetDistance.le(3.5)) },
+        // a heavy slam waits its class; the sweep's jab does not
+        { to: overhead.entry, when: brain.attackTurnFree("slam").and(brain.targetDistance.le(3.5)).and(brain.activityRoll.lt(0.5)) },
+        { to: sweep.entry, when: brain.attackTurnFree("jab").and(brain.targetDistance.le(3.5)) },
       ],
       flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(450) }],
     },
@@ -125,7 +126,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - [ ] A `then` naming the stance's own hold loads, and chains back-to-back stances.
 - [ ] A test fails if the co-op floor falls below the remote interpolation buffer ceiling, and passes when the floor is above it.
 - [ ] A stance given only `animation`, `release` and `then` loads silently. It gets the seeded hold range, above the floor, and a recovery that holds the release clip for the seeded duration.
-- [ ] Once `attackTurn` exists, all three emitted activities carry it. A stance entered without a turn, having lost a same-tick grant, leaves its hold for `then` on the first evaluation that can see the missing turn. Its release never fires.
+- [ ] Once `attackTurn` exists, all three emitted activities carry it, naming the release's attack. A stance entered without a turn, having lost a same-tick grant, leaves its hold for `then` on the first evaluation that can see the missing turn. Its release never fires.
 
 **Roll**
 - [ ] Across many entries, the hold's threshold varies within [min, max], and the hold ends on the first tick at or past it. A fixed `holdMs` never varies.

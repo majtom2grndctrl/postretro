@@ -1003,15 +1003,17 @@ fn candidate_input_typedefs_match_the_foundation_table() {
 
 /// Drift guard for the behavior-graph verb vocabularies. The registry
 /// registrations in `scripting/primitives/mod.rs` are a second spelling of the
-/// closed vocabularies, so this test derives the expected motion/patrol unions
-/// from the enums themselves. `ActionVerb` carries its required attack name as
+/// closed vocabularies, so this test derives the expected motion, facing and
+/// patrol unions from the enums themselves. `ActionVerb` carries its required attack name as
 /// an object, which the registry must preserve as a struct rather than flatten
 /// into the old string union.
 #[test]
 fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
-    use postretro_foundation::data_descriptors::{ActionVerb, MotionVerb, PatrolMode};
+    use postretro_foundation::data_descriptors::{
+        ActionVerb, FacingPolicy, MotionVerb, PatrolMode,
+    };
 
     fn wire<T: serde::Serialize>(variant: &T) -> String {
         serde_json::to_value(variant)
@@ -1058,7 +1060,13 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
 
     let motion: Vec<String> = MotionVerb::ALL.iter().map(wire).collect();
     let patrol_modes: Vec<String> = PatrolMode::ALL.iter().map(wire).collect();
+    let facing: Vec<String> = FacingPolicy::ALL.iter().map(wire).collect();
     for output in [&ts, &luau] {
+        assert_eq!(
+            union_members(output, "FacingPolicy"),
+            facing,
+            "emitted `FacingPolicy` union does not match `FacingPolicy::ALL`"
+        );
         assert_eq!(
             union_members(output, "MotionVerb"),
             motion,
@@ -1082,6 +1090,11 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     assert!(
         !luau.contains("points: {{number}},"),
         "patrol points must retain their fixed `[x, z]` arity"
+    );
+    assert!(ts.contains("arc?: readonly [number, number];"));
+    assert!(
+        luau.contains("arc: {number, number}?,"),
+        "a reposition arc must retain its fixed `[min, max]` arity"
     );
     assert_eq!(
         ActionVerb::all(),

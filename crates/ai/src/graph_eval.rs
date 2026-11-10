@@ -154,10 +154,17 @@ pub(super) fn engages_path(
     scope: &mut BrainScope,
     brain: &BrainComponent,
 ) -> bool {
+    motion_for_path(bound, scope, brain).is_some_and(is_engaged_motion)
+        || action_for_path(bound, scope, brain).is_some()
+}
+
+/// Motion that engages the target by itself, with or without an action:
+/// pursuit and the two combat-slot verbs.
+fn is_engaged_motion(motion: MotionVerb) -> bool {
     matches!(
-        motion_for_path(bound, scope, brain),
-        Some(MotionVerb::ChaseTarget)
-    ) || action_for_path(bound, scope, brain).is_some()
+        motion,
+        MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition
+    )
 }
 
 /// Target retention follows the active path's engagement capability, not the
@@ -181,7 +188,7 @@ fn activity_can_engage(activity: &BehaviorActivityDescriptor) -> bool {
         return false;
     }
 
-    matches!(activity.motion, Some(MotionVerb::ChaseTarget))
+    activity.motion.is_some_and(is_engaged_motion)
         || activity.action.is_some()
         || activity
             .layers
@@ -193,11 +200,8 @@ fn selector_can_engage(name: &str, layer: &BehaviorLayerDescriptor) -> bool {
     match (name, layer) {
         ("move", BehaviorLayerDescriptor::Selector(entries)) => {
             entries.iter().any(|entry| match entry {
-                BehaviorSelectorEntry::Row(row) => {
-                    matches!(row.motion, Some(MotionVerb::ChaseTarget))
-                }
-                BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget) => true,
-                BehaviorSelectorEntry::Motion(_) => false,
+                BehaviorSelectorEntry::Row(row) => row.motion.is_some_and(is_engaged_motion),
+                BehaviorSelectorEntry::Motion(motion) => is_engaged_motion(*motion),
             })
         }
         ("offense", BehaviorLayerDescriptor::Selector(entries)) => entries
@@ -332,6 +336,9 @@ pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
         | MotionVerb::Patrol
         | MotionVerb::Hold => SteeringIntent::Clear,
         MotionVerb::Freeze => SteeringIntent::Hold,
+        // Interim until task 3 of E10--enemy-combat-movement: both verbs stand
+        // engaged like `hold` until their combat-slot steering lands.
+        MotionVerb::Strafe | MotionVerb::Reposition => SteeringIntent::Clear,
     }
 }
 
@@ -363,6 +370,9 @@ mod statechart_tests {
             motion,
             action,
             on_enter: None,
+            facing: None,
+            reposition: None,
+            attack_turn: None,
             layers,
         }
     }

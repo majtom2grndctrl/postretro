@@ -1599,6 +1599,9 @@ An activity is either a leaf or a composite:
 | `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
+| `facing` | `"target"` \| `"travel"` (optional) | Which way the enemy faces while this activity is active, including the motion its own `move` layer picks. Omitted, the motion's default applies. |
+| `reposition` | `{ arc?, minTravel? }` (optional) | Bounds for this activity's own `"reposition"` motion; see below. Only valid when `motion` is `"reposition"`. |
+| `attackTurn` | `string` (optional) | Marks the activity for one of `attacks`. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a windup → commit → recover chain holds a single turn. Checked at load: the name must be declared, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
 
 A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
 activity in its own envelope. Unknown sources or destinations, cross-boundary
@@ -1647,6 +1650,27 @@ an action or no action. A nested offense graph has its own active activity path.
 | `"patrol"` | Steer through the graph-wide anchor-relative route, advancing its persistent cursor in `"loop"` or `"pingPong"` order. |
 | `"hold"` | Stand still by **clearing** the navigation destination. |
 | `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
+| `"strafe"` | Circle the target at combat-slot distance, 45° at a time in one direction, turning back when the next slot is blocked, taken or out of sight. Takes no parameters. |
+| `"reposition"` | Move to a combat slot at least one slot spacing (the gap between neighboring slots) from the one held on entry, then hold. It never backs straight off, and holds when no slot qualifies. |
+
+`strafe` and `reposition` engage the target, face it unless the activity sets
+`facing: "travel"`, and can fire an `action` mid-move. An activity whose own
+`motion` is `"reposition"` may bound it, both measured once on entry:
+
+```typescript
+move: { animation: "run", motion: "reposition", facing: "travel",
+        reposition: { arc: [60, 120], minTravel: 4 } },   // flank sideways
+```
+
+- `arc: [min, max]` — degrees around the target from the bearing between the
+  target and the enemy at entry: `0` back where it started, `90` to the side,
+  `180` the far side. Either side counts. Default `[0, 180]`. It must lie within
+  0–180 with `min <= max` and include a multiple of 45, because slots sit 45°
+  apart.
+- `minTravel` — metres the slot must be from where the enemy stood at entry.
+  Finite and `>= 0`; default one slot spacing.
+
+A `reposition` picked by a `move` selector row uses the defaults.
 
 The `hold`/`freeze` distinction is easy to get backwards. `hold` is the one that
 stops the agent: it clears the destination, so the agent settles in place.
@@ -1675,7 +1699,7 @@ has fired. A later firing-leaf dwell can fire again only after cooldown permits
 it. A graph with no `attacks` entries never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is a selected
-`"chaseTarget"` motion or any active action. This current-tick engagement
+`"chaseTarget"`, `"strafe"` or `"reposition"` motion or any active action. This current-tick engagement
 controls combat-slot participation and target facing. Target retention follows
 active-path engagement capability, so it continues through a committed,
 actionless selector-held phase. Idle, patrol, and position-goal paths drop a
@@ -1686,7 +1710,9 @@ activity stands its ground and swings while keeping its target and slot.
 active offense leaf that supplies `animation` wins; otherwise the active
 composite's optional locomotion `animation` wins. This sole `current_state`
 replicates; layers do not blend clips. Set `components.mesh.defaultState` to a
-suitable root initial animation.
+suitable root initial animation. While an enemy faces its target, an activity
+animation `X` plays `X_left`, `X_right` or `X_backward` when it travels that way,
+and plays `X` when the mesh declares no such state.
 
 ### Evaluation rules
 

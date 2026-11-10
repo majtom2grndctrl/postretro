@@ -454,7 +454,13 @@ pub(super) fn evaluate(
         // before its leaf exposes an action. It is still committed to the
         // target: keep its aim moving even though its resolved current verb is
         // `hold`, which `engages_path` correctly leaves false.
-        let committed_aim = retains_target && matches!(motion, Some(MotionVerb::Hold));
+        // Interim until task 3 of E10--enemy-combat-movement: `strafe` and
+        // `reposition` hold facing the target, as `hold` does.
+        let committed_aim = retains_target
+            && matches!(
+                motion,
+                Some(MotionVerb::Hold | MotionVerb::Strafe | MotionVerb::Reposition)
+            );
         // Facing and the attack gate read steering velocity alone, so knockback
         // never turns the enemy toward its flight. A launch holds its impact yaw
         // under travel facing; target facing keeps re-aiming.

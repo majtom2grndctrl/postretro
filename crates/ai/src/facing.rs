@@ -2,6 +2,7 @@
 // See: context/lib/entity_model.md §7c (enemy brain component)
 
 use glam::{Quat, Vec3};
+use postretro_foundation::FacingPolicy;
 
 use super::LocomotionIntent;
 use super::engine_floor::SteeringIntent;
@@ -24,15 +25,6 @@ const ATTACK_FACING_COMPARISON_EPSILON: f32 = 2.0 * f32::EPSILON;
 /// This is the opposite of the engine camera/view forward (`-Z`). Facing code
 /// orients a rendered mesh, so it must aim the mesh's authored front (`+Z`).
 const MESH_FORWARD: Vec3 = Vec3::Z;
-
-/// Which heading an enemy's facing follows this tick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FacingPolicy {
-    /// Turn toward the selected target's aim point.
-    Target,
-    /// Turn toward steering travel; hold the heading while steering is stopped.
-    Travel,
-}
 
 /// The facing policy each verb implies when the activity names none. `None`
 /// writes no heading. A position goal faces travel only. An engaged path faces

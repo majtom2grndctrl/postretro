@@ -7119,6 +7119,9 @@ fn authored_state(
         motion: Some(motion),
         action,
         on_enter: None,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
         layers: BTreeMap::new(),
     }
 }
@@ -8279,6 +8282,9 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                     motion: None,
                     action: None,
                     on_enter: None,
+                    facing: None,
+                    reposition: None,
+                    attack_turn: None,
                     layers: BTreeMap::new(),
                 },
             ),
@@ -8290,6 +8296,9 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                     motion: None,
                     action: None,
                     on_enter: Some("secondEntered".to_string()),
+                    facing: None,
+                    reposition: None,
+                    attack_turn: None,
                     layers: BTreeMap::new(),
                 },
             ),
@@ -8320,6 +8329,9 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 motion: None,
                 action: None,
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: BTreeMap::from([
                     ("offense".to_string(), offense),
                     ("phase".to_string(), BehaviorLayerDescriptor::Graph(phase)),
@@ -9105,6 +9117,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         motion: None,
         action,
         on_enter: None,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
         layers: BTreeMap::new(),
     };
     let move_selector = BehaviorLayerDescriptor::Selector(vec![
@@ -9210,6 +9225,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                         motion: None,
                         action: None,
                         on_enter: None,
+                        facing: None,
+                        reposition: None,
+                        attack_turn: None,
                         layers: BTreeMap::from([
                             ("move".to_string(), move_selector),
                             ("offense".to_string(), offense),
@@ -10984,6 +11002,9 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 motion: None,
                 action: None,
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: BTreeMap::from([
                     (
                         "move".to_string(),
@@ -12854,6 +12875,9 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                 motion: None,
                 action: None,
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: BTreeMap::from([
                     (
                         "move".to_string(),

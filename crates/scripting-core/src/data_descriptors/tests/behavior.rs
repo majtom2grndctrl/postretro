@@ -547,3 +547,197 @@ fn shipped_pose_fixture_is_a_recursive_graph_with_valid_mesh_animation_states() 
         "the pose meshes stay in lockstep"
     );
 }
+
+// Engaged motion surface (E10): `strafe`, `reposition`, `facing`, and
+// `attackTurn` marks, through both production VMs.
+
+const TWO_ATTACKS_JS: &str = "jab: { damage: 4, maxRange: 2, cooldownMs: 500 }, slam: { damage: 9, maxRange: 3, cooldownMs: 1500 }";
+const TWO_ATTACKS_LUA: &str = "jab = { damage = 4, maxRange = 2, cooldownMs = 500 }, slam = { damage = 9, maxRange = 3, cooldownMs = 1500 }";
+
+fn js_activities(activities: &str) -> String {
+    js_behavior(&format!(
+        ", initial: \"engage\", attacks: {{ {TWO_ATTACKS_JS} }}, activities: {{ {activities} }}, transitions: {{}}"
+    ))
+}
+
+fn lua_activities(activities: &str) -> String {
+    lua_behavior(&format!(
+        ", initial = \"engage\", attacks = {{ {TWO_ATTACKS_LUA} }}, activities = {{ {activities} }}, transitions = {{}}"
+    ))
+}
+
+#[test]
+fn engaged_motion_surface_parses_identically_in_both_runtimes() {
+    use postretro_foundation::data_descriptors::FacingPolicy;
+
+    let js = eval_js(
+        &js_activities(&format!(
+            r#"engage: {{ animation: "walk", layers: {{ offense: {{
+                initial: "wait",
+                activities: {{
+                    wait: {{ animation: "walk", motion: "strafe" }},
+                    burst: {{ animation: "idle_aiming", motion: "hold", action: {{ attack: "slam" }}, attackTurn: "slam" }},
+                    move: {{ animation: "run", motion: "reposition", facing: "travel", reposition: {{ arc: [60, 120] }} }},
+                    far: {{ animation: "run", motion: "reposition", facing: "target", reposition: {{ minTravel: 8 }} }}
+                }},
+                transitions: {{
+                    wait: [{{ when: {JS_GUARD}, to: "burst" }}],
+                    burst: [{{ when: {JS_GUARD}, to: "move" }}],
+                    move: [{{ when: {JS_GUARD}, to: "far" }}]
+                }}
+            }} }} }}"#
+        )),
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_activities(&format!(
+            r#"engage = {{ animation = "walk", layers = {{ offense = {{
+                initial = "wait",
+                activities = {{
+                    wait = {{ animation = "walk", motion = "strafe" }},
+                    burst = {{ animation = "idle_aiming", motion = "hold", action = {{ attack = "slam" }}, attackTurn = "slam" }},
+                    move = {{ animation = "run", motion = "reposition", facing = "travel", reposition = {{ arc = {{ 60, 120 }} }} }},
+                    far = {{ animation = "run", motion = "reposition", facing = "target", reposition = {{ minTravel = 8 }} }}
+                }},
+                transitions = {{
+                    wait = {{ {{ when = {LUA_GUARD}, to = "burst" }} }},
+                    burst = {{ {{ when = {LUA_GUARD}, to = "move" }} }},
+                    move = {{ {{ when = {LUA_GUARD}, to = "far" }} }}
+                }}
+            }} }} }}"#
+        )),
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let (js, lua) = (js.behavior.unwrap(), lua.behavior.unwrap());
+    assert_eq!(js, lua);
+
+    let BehaviorLayerDescriptor::Graph(offense) =
+        &js.envelope.activities["engage"].layers["offense"]
+    else {
+        panic!("offense is a nested graph");
+    };
+    let activity = |name: &str| &offense.activities[name];
+    assert_eq!(activity("wait").motion, Some(MotionVerb::Strafe));
+    assert_eq!(activity("wait").facing, None);
+    assert_eq!(activity("burst").attack_turn.as_deref(), Some("slam"));
+    let moving = activity("move");
+    assert_eq!(moving.motion, Some(MotionVerb::Reposition));
+    assert_eq!(moving.facing, Some(FacingPolicy::Travel));
+    let params = moving.reposition.expect("move authors reposition bounds");
+    assert_eq!(params.arc_deg, [60.0, 120.0]);
+    assert_eq!(
+        params.min_travel_m, None,
+        "omitted minTravel resolves at runtime"
+    );
+    let far = activity("far");
+    assert_eq!(far.facing, Some(FacingPolicy::Target));
+    let params = far.reposition.expect("far authors reposition bounds");
+    assert_eq!(
+        params.arc_deg,
+        [0.0, 180.0],
+        "omitted arc defaults to [0, 180]"
+    );
+    assert_eq!(params.min_travel_m, Some(8.0));
+}
+
+#[test]
+fn both_runtimes_reject_invalid_reposition_params_with_paths() {
+    const ENGAGE: &str = "components.behavior.activities.engage";
+    for (js_activity, lua_activity, path, needle) in [
+        (
+            r#"engage: { animation: "run", motion: "reposition", reposition: { arc: [-10, 90] } }"#,
+            r#"engage = { animation = "run", motion = "reposition", reposition = { arc = { -10, 90 } } }"#,
+            format!("{ENGAGE}.reposition.arc"),
+            "within 0 to 180",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "reposition", reposition: { arc: [0, 190] } }"#,
+            r#"engage = { animation = "run", motion = "reposition", reposition = { arc = { 0, 190 } } }"#,
+            format!("{ENGAGE}.reposition.arc"),
+            "within 0 to 180",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "reposition", reposition: { arc: [120, 60] } }"#,
+            r#"engage = { animation = "run", motion = "reposition", reposition = { arc = { 120, 60 } } }"#,
+            format!("{ENGAGE}.reposition.arc"),
+            "must not exceed",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "reposition", reposition: { arc: [50, 80] } }"#,
+            r#"engage = { animation = "run", motion = "reposition", reposition = { arc = { 50, 80 } } }"#,
+            format!("{ENGAGE}.reposition.arc"),
+            "no multiple of 45",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "reposition", reposition: { arc: [0, Infinity] } }"#,
+            r#"engage = { animation = "run", motion = "reposition", reposition = { arc = { 0, math.huge } } }"#,
+            "activities.engage.reposition.arc[1]".to_string(),
+            "non-finite",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "reposition", reposition: { minTravel: -1 } }"#,
+            r#"engage = { animation = "run", motion = "reposition", reposition = { minTravel = -1 } }"#,
+            format!("{ENGAGE}.reposition.minTravel"),
+            ">= 0.0",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "reposition", reposition: { minTravel: NaN } }"#,
+            r#"engage = { animation = "run", motion = "reposition", reposition = { minTravel = 0 / 0 } }"#,
+            "activities.engage.reposition.minTravel".to_string(),
+            "non-finite",
+        ),
+        (
+            r#"engage: { animation: "walk", motion: "strafe", reposition: {} }"#,
+            r#"engage = { animation = "walk", motion = "strafe", reposition = {} }"#,
+            format!("{ENGAGE}.reposition"),
+            "\"reposition\"",
+        ),
+        (
+            r#"engage: { reposition: { arc: [0, 90] }, layers: { move: ["reposition"] } }"#,
+            r#"engage = { reposition = { arc = { 0, 90 } }, layers = { move = { "reposition" } } }"#,
+            format!("{ENGAGE}.reposition"),
+            "\"reposition\"",
+        ),
+    ] {
+        let js = js_error(&js_activities(js_activity));
+        let lua = lua_error(&lua_activities(lua_activity));
+        for error in [&js, &lua] {
+            assert!(error.contains(&path), "{js_activity}: {error}");
+            assert!(error.contains(needle), "{js_activity}: {error}");
+        }
+    }
+}
+
+#[test]
+fn both_runtimes_reject_disagreeing_attack_turn_marks_with_paths() {
+    const ENGAGE: &str = "components.behavior.activities.engage";
+    let guard_js = JS_GUARD;
+    let guard_lua = LUA_GUARD;
+    for (js_activity, lua_activity, path) in [
+        (
+            r#"engage: { animation: "idle", attackTurn: "kick" }"#.to_string(),
+            r#"engage = { animation = "idle", attackTurn = "kick" }"#.to_string(),
+            format!("{ENGAGE}.attackTurn"),
+        ),
+        (
+            r#"engage: { attackTurn: "slam", layers: { offense: { initial: "jab", activities: { jab: { animation: "jab", attackTurn: "jab" } }, transitions: {} } } }"#.to_string(),
+            r#"engage = { attackTurn = "slam", layers = { offense = { initial = "jab", activities = { jab = { animation = "jab", attackTurn = "jab" } }, transitions = {} } } }"#.to_string(),
+            format!("{ENGAGE}.layers.offense.activities.jab.attackTurn"),
+        ),
+        (
+            r#"engage: { animation: "jab", attackTurn: "slam", action: { attack: "jab" } }"#.to_string(),
+            r#"engage = { animation = "jab", attackTurn = "slam", action = { attack = "jab" } }"#.to_string(),
+            format!("{ENGAGE}.action.attack"),
+        ),
+        (
+            format!(r#"engage: {{ attackTurn: "slam", layers: {{ offense: [{{ when: {guard_js}, action: {{ attack: "jab" }} }}] }} }}"#),
+            format!(r#"engage = {{ attackTurn = "slam", layers = {{ offense = {{ {{ when = {guard_lua}, action = {{ attack = "jab" }} }} }} }} }}"#),
+            format!("{ENGAGE}.layers.offense[0].action.attack"),
+        ),
+    ] {
+        let js = js_error(&js_activities(&js_activity));
+        let lua = lua_error(&lua_activities(&lua_activity));
+        assert_eq!(js, lua, "both runtimes reject {js_activity} identically");
+        assert!(js.contains(&path), "{js_activity}: {js}");
+    }
+}

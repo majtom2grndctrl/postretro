@@ -679,6 +679,9 @@ mod tests {
                 motion: Some(MotionVerb::ChaseTarget),
                 action: Some(ActionVerb::Attack("slam".to_string())),
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: Default::default(),
             },
         );

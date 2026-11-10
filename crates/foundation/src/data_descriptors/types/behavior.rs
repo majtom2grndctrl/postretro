@@ -18,16 +18,24 @@ pub enum MotionVerb {
     Patrol,
     Hold,
     Freeze,
+    /// Engaged: step 45° around the target at standoff, reversing at an
+    /// unusable next slot. Takes no parameters.
+    Strafe,
+    /// Engaged: claim a combat slot at least one spacing from the entry slot,
+    /// within the activity's `reposition` bounds.
+    Reposition,
 }
 
 impl MotionVerb {
-    pub const ALL: [MotionVerb; 6] = [
+    pub const ALL: [MotionVerb; 8] = [
         MotionVerb::ChaseTarget,
         MotionVerb::MoveToAnchor,
         MotionVerb::MoveToLastKnown,
         MotionVerb::Patrol,
         MotionVerb::Hold,
         MotionVerb::Freeze,
+        MotionVerb::Strafe,
+        MotionVerb::Reposition,
     ];
 
     /// Fixed-world-position motion is non-engaged even when selected from a
@@ -151,8 +159,11 @@ where
     deserializer.deserialize_any(PatrolPointsVisitor)
 }
 
+mod activity_motion;
+mod attack_turn_marks;
 mod recursive;
 
+pub use activity_motion::{DEFAULT_REPOSITION_ARC_DEG, FacingPolicy, RepositionParams};
 pub use recursive::*;
 
 /// Whether an activity represents locomotion rather than an action-bearing

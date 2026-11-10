@@ -97,6 +97,13 @@ fn held_world_participation_suspends_mixed_actor_and_retains_private_execution()
         retained.activation_programs.primary.as_ref().unwrap(),
         private.activation_programs.primary.as_ref().unwrap()
     ));
+    assert_eq!(
+        runtime.weapons.executing_attack(item),
+        Some("attack"),
+        "the held enemy keeps its accepted execution"
+    );
+    // The drop returns it to the AI set holding no attack turn, so the kept
+    // execution stops rather than fire its second shot without one.
     registry
         .set_component(holder, Inventory::default())
         .unwrap();
@@ -107,17 +114,16 @@ fn held_world_participation_suspends_mixed_actor_and_retains_private_execution()
                 .len()
         })
         .sum();
-    assert_eq!(
-        shots, 1,
-        "the accepted execution resumes without reinstall or a fresh start"
-    );
+    assert_eq!(shots, 0, "the kept execution never fires without a turn");
+    assert_eq!(runtime.weapons.executing_attack(item), None);
     assert_eq!(
         runtime
             .weapons
             .weapon(item, "enemy.rifle")
             .unwrap()
             .magazine,
-        3
+        private.magazine,
+        "the cancelled shot is never paid"
     );
 }
 

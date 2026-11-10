@@ -18,8 +18,9 @@ pub enum MotionVerb {
     Patrol,
     Hold,
     Freeze,
-    /// Engaged: step 45° around the target at standoff, reversing at an
-    /// unusable next slot. Takes no parameters.
+    /// Engaged: circle the target at standoff in one direction as a
+    /// continuous orbit, aiming one 45° ring step ahead and re-aiming every
+    /// tick; reverses when the way ahead is unusable. Takes no parameters.
     Strafe,
     /// Engaged: claim a combat slot at least one spacing from the entry slot,
     /// within the activity's `reposition` bounds.

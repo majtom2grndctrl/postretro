@@ -362,3 +362,36 @@ fn marked_graph(attacks: Vec<(&str, AttackParams)>) -> BehaviorGraphDescriptor {
     }
     graph("idle", activities, vec![], attacks)
 }
+
+/// An engaged enemy's outcome as compute leaves it before combat slots, with
+/// no attack proposed.
+fn engaged_outcome(
+    id: EntityId,
+    position: Vec3,
+    brain: BrainComponent,
+    target: TargetPawn,
+) -> EnemyOutcome {
+    EnemyOutcome {
+        id,
+        position,
+        target: Some(target),
+        enemy_eye_offset: Vec3::ZERO,
+        target_aim: Some(target.position),
+        standoff_distance: brain.graph.standoff_distance_for_action(None),
+        prior_standoff_distance: brain.graph.standoff_distance_for_action(None),
+        prior_acquired_target: Some(target.entity),
+        brain,
+        steering: SteeringIntent::Chase,
+        engaged: true,
+        facing_direction: None,
+        travel_variant: Default::default(),
+        combat_slot: None,
+        engaged_ring: None,
+        graph_reseated: false,
+        state_changed: false,
+        attack: None,
+        weapon_aim: None,
+        entered: None,
+        fresh_unmarked_grant: None,
+    }
+}

@@ -385,6 +385,74 @@ fn full_turn_capacity_refuses_drawn_attacks_but_not_undrawn_ones() {
     assert_eq!(held(&reg, enemy).len(), 5);
 }
 
+// The `draws: []` contract past its own capacity: four undrawn turns fill an
+// enemy's undrawn capacity, and a fifth undrawn attack still fires, holding
+// no turn, so `attackTurnHeld` reads false for it while the four read true.
+#[test]
+fn undrawn_attack_past_capacity_fires_holding_no_turn() {
+    let names = ["u1", "u2", "u3", "u4", "u5"];
+    let acts: Vec<String> = names.iter().map(|name| format!("{name}_act")).collect();
+    let mut activities = vec![
+        ("probe", idle()),
+        ("fifth_held", idle()),
+        ("fourth_held", idle()),
+        ("neither", idle()),
+    ];
+    for (name, act) in names.iter().zip(&acts) {
+        activities.push((act.as_str(), striking(name)));
+    }
+    let held_read = |attack: &str| brain_input(&format!("@attackTurnHeld.{attack}"));
+    let graph = graph(
+        "neither",
+        activities,
+        vec![(
+            "probe",
+            vec![
+                edge("fifth_held", held_read("u5")),
+                edge("fourth_held", held_read("u4")),
+                edge(
+                    "neither",
+                    IrNode::Const {
+                        value: IrValue::Bool(true),
+                    },
+                ),
+            ],
+        )],
+        names
+            .iter()
+            .map(|&name| (name, drawing(contact(1.0, 100_000.0), vec![])))
+            .collect(),
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, player_spot());
+    let enemy = spawn_at(&mut reg, 0, &graph, "neither");
+
+    for act in &acts[..4] {
+        enter(&mut reg, enemy, act);
+        tick(&mut reg, &mut runtime);
+    }
+    assert_eq!(held(&reg, enemy), vec!["u1", "u2", "u3", "u4"]);
+
+    enter(&mut reg, enemy, "u5_act");
+    tick(&mut reg, &mut runtime);
+    assert_eq!(fired(&reg, enemy), 1, "the fifth undrawn attack fires");
+    assert_eq!(player_hp_lost(&reg, pawn), 5.0);
+    assert_eq!(
+        held(&reg, enemy).len(),
+        4,
+        "and holds no turn past the undrawn capacity"
+    );
+
+    enter(&mut reg, enemy, "probe");
+    tick(&mut reg, &mut runtime);
+    assert_eq!(
+        state(&reg, enemy),
+        "fourth_held",
+        "`attackTurnHeld` reads false for the fifth, true for a held one"
+    );
+}
+
 // B33: an unmarked attack requests no turn while out of range or line of
 // sight, so a ready neighbor under limit 1 is granted at once.
 #[test]

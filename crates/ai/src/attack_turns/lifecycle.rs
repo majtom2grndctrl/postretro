@@ -30,16 +30,26 @@ pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
 /// before any grant: releases run first for every enemy, then arbitration
 /// grants per pool and target, then the hard gate drops every pending attack
 /// whose enemy holds no turn for it. A dropped proposal committed nothing, so
-/// its once-per-entry fire stays open for the first granted tick. An undrawn
-/// attack is always granted, so the gate never drops one.
+/// its once-per-entry fire stays open for the first granted tick. The gate
+/// never drops an undrawn attack; past its capacity it fires holding no turn.
 ///
 /// Every turn that ended since the last tick starts its refresh before any
 /// grant, on its target, in its holder's current pool: a turn counts in that
 /// pool while it holds (P13). A holder that left the AI set records in the
-/// turn's last pool, unless that pool stopped or began a new run this tick,
-/// which dropped its counts (P30). An ended turn whose attack is still
-/// executing cancels the execution, whatever ended it, so no shot fires
-/// without a turn.
+/// turn's last pool. If that pool stopped this tick, the refresh lands in the
+/// default pool, where its members now count (P13); if it began a new run
+/// this tick, the refresh is dropped, because a new run begins open (P30).
+///
+/// Executions stop in one place, before any grant, so only executions begun
+/// on earlier ticks are seen: a grant starts its execution in apply, after
+/// this pass. Two rules cancel one. An ended turn whose attack is still
+/// executing cancels it, whatever ended the turn, undrawn turns included;
+/// after a reseat the ended turn's index may name the graph it left, so this
+/// rule stands aside. And an executing attack, resolved by name against the
+/// current graph, is cancelled when the name no longer resolves, or when it
+/// is not known to be undrawn and its enemy holds no turn for it. The second
+/// rule covers what no ended turn reports: a burst a held enemy kept, on its
+/// drop with its turns cleared, and a burst kept across a graph reseat.
 pub(crate) fn arbitrate_attack_turns(
     outcomes: &mut [EnemyOutcome],
     programs: &BrainPrograms,
@@ -67,9 +77,12 @@ pub(crate) fn arbitrate_attack_turns(
         }
         let mark = path_mark(&outcome.brain);
         let programs_entry = programs.get(outcome.id);
+        // The execution in flight, by name, resolved against the current
+        // graph: `None` inside `Some` when the name no longer resolves.
         let executing = weapons
             .executing_attack(outcome.id)
-            .and_then(|name| attack_index(&outcome.brain.graph, name));
+            .map(|name| attack_index(&outcome.brain.graph, name));
+        let graph_reseated = outcome.graph_reseated;
         let BrainComponent {
             attack_turns: turns,
             graph,
@@ -77,11 +90,14 @@ pub(crate) fn arbitrate_attack_turns(
             ..
         } = &mut outcome.brain;
 
+        let executing_attack = executing.flatten();
         turns.retain_held(|turn| {
             // Switching to another target ends a turn. No target this tick
             // (a path that neither engages nor is due to acquire) is no
             // switch: it ends only a turn its mark alone held, since a mark
-            // must sit under an engaged path.
+            // must sit under an engaged path. A turn can survive such a
+            // tick, but its burst still needs aim to continue: apply passes
+            // none, so the weapon controller cancels the execution.
             if target.is_some_and(|target| target != turn.target) {
                 return false;
             }
@@ -93,21 +109,31 @@ pub(crate) fn arbitrate_attack_turns(
                 .is_none_or(|draws| draws.same_draws(&turn.draws));
             draws_unchanged
                 && ((target.is_some() && mark == Some(turn.attack))
-                    || executing == Some(turn.attack)
+                    || executing_attack == Some(turn.attack)
                     || (turn.until_cooldown && cooling_down(graph, cooldowns, turn.attack)))
         });
         // Every turn an evaluated holder lost since last tick is reported
         // here, whatever ended it (a target switch, a draws change, a reseat,
-        // closing aggro), so this is where its execution stops.
+        // closing aggro), so this is where its execution stops. A reported
+        // turn names an attack of the graph it was granted under; after a
+        // reseat that may not be the current graph, so only the name check
+        // below applies.
         let mut cancel_execution = false;
         roster.ended_for(outcome.id, turns, |turn| {
-            cancel_execution |= executing == Some(turn.attack);
+            cancel_execution |= !graph_reseated && executing_attack == Some(turn.attack);
             ledger.record(
                 (pool, turn.target),
                 &turn.draws,
                 budgets.for_pool(pool),
                 now_ms,
             );
+        });
+        // No drawn attack executes without a turn, whether or not a reported
+        // turn ended: an undrawn one may, past its capacity.
+        cancel_execution |= executing.is_some_and(|attack| {
+            attack.is_none_or(|attack| {
+                !turns.holds_attack(attack) && !attack_draws_nothing(programs_entry, attack)
+            })
         });
         if cancel_execution {
             weapons.cancel_actor(outcome.id);
@@ -158,11 +184,12 @@ pub(crate) fn arbitrate_attack_turns(
         // A departed holder's execution is not cancelled here. A held (suspended)
         // enemy keeps its private execution by the held-ownership contract
         // (`entity_model.md`), and a despawned one loses its controller with it.
-        if budgets.pool_continues(turn.pool) {
+        // A held enemy's kept burst stops on drop, by the name check above.
+        if let Some(pool) = budgets.departed_refresh_pool(turn.pool) {
             ledger.record(
-                (turn.pool, turn.target),
+                (pool, turn.target),
                 &turn.draws,
-                budgets.for_pool(turn.pool),
+                budgets.for_pool(pool),
                 now_ms,
             );
         }
@@ -270,7 +297,14 @@ fn draws_nothing(
     pending: &PendingAttack,
 ) -> bool {
     attack_index(graph, &pending.attack_name)
-        .and_then(|attack| programs?.attack_draws(attack))
+        .is_some_and(|attack| attack_draws_nothing(programs, attack))
+}
+
+/// Whether the attack at `attack` resolves to no draws. Unresolved draws
+/// count as drawn: such an attack is never granted, so it needs a turn.
+fn attack_draws_nothing(programs: Option<&BrainEntityPrograms>, attack: u16) -> bool {
+    programs
+        .and_then(|programs| programs.attack_draws(attack))
         .is_some_and(|draws| draws.is_empty())
 }
 

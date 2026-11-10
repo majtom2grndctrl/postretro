@@ -710,7 +710,11 @@ The slam counts two against `melee` and one against `heavy`, while jabs keep
 queuing beside it. A request is granted only when every token it draws has
 room; the enemy that has waited longest goes first. `draws: []` opts out: the
 attack is never counted and never waits, which suits fodder that chips while
-heavies take turns. An attack draws at most 8 tokens, each once.
+heavies take turns. It still holds a turn while it runs, so
+`brain.hasAttackTurn` reads `true`; an enemy has room for 4 such turns apart
+from its 4 drawn ones. Past that it fires holding no turn, so
+`attackTurnHeld` can read `false` while it fires. An attack draws at most 8
+tokens, each once.
 
 ### Profiles
 
@@ -1917,7 +1921,9 @@ tick.
 | `attackTurnFree(attack)` | `boolean` | `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. |
 
 `attackTurnFree` is `false` with no target, and `false` for an attack that
-shares a token with a turn the enemy already holds. It predicts a grant; it
+shares a token with a turn the enemy already holds. It is also `false` for an
+attack that draws tokens while the enemy already holds its maximum of 4 drawn
+turns. It predicts a grant; it
 does not take one. `brain.hasAttackTurn` is a property of `brain`.
 `attackTurnHeld` and `attackTurnFree` are functions: TypeScript imports them
 from `"postretro"`, and Luau data scripts call them as globals. Naming an attack

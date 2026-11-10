@@ -17,7 +17,7 @@ const FORWARD_SECTOR_RADIANS: f32 = std::f32::consts::FRAC_PI_4;
 const BACKWARD_SECTOR_RADIANS: f32 = 3.0 * std::f32::consts::FRAC_PI_4;
 /// How far past its sector edge travel must swing before a side or backward
 /// clip on screen gives way. Each switch restarts the clip under a crossfade,
-/// and a strafe can run near an edge: the limitator's runs about 48.5°.
+/// and a strafe can run within a few degrees of the 45° edge.
 const HOLD_BAND_RADIANS: f32 = 10.0_f32.to_radians();
 
 /// The variant this tick's travel asks for. Only a target-facing mover whose

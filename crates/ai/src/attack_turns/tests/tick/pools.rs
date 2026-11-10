@@ -492,12 +492,13 @@ fn refresh_lands_in_the_pool_a_turn_ends_in_and_stays_there() {
     );
 }
 
-// P30 for a departed holder: a holder leaving the AI set on the tick its pool
-// stops, or stops and restarts in one drain, starts no refresh there, since
-// the stop dropped that pool's counts. Regression: its refresh landed
-// orphaned in the stopped pool, or leaked into the new run.
+// P13 and P30 for a departed holder: a holder leaving the AI set on the tick
+// its pool stops starts its refresh in the default pool, where the stopped
+// pool's members now count. On the tick its pool stops and restarts in one
+// drain, the refresh is dropped, since a new run begins open. Regression: its
+// refresh landed orphaned in the stopped pool, or leaked into the new run.
 #[test]
-fn departed_holder_refresh_skips_a_stopped_or_restarted_pool() {
+fn departed_holder_refresh_lands_in_default_on_stop_and_drops_on_restart() {
     for restart in [false, true] {
         let mut reg = EntityRegistry::new();
         install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
@@ -523,10 +524,17 @@ fn departed_holder_refresh_skips_a_stopped_or_restarted_pool() {
             0,
             "restart {restart}: nothing of the old run refreshes in A"
         );
+        let (in_default, entries) = if restart { (0, 0) } else { (1, 1) };
+        assert_eq!(
+            refreshing(&runtime, AttackPoolId::Default, pawn),
+            in_default,
+            "restart {restart}: a stop hands the refresh to the default pool; \
+             a restart drops it"
+        );
         assert_eq!(
             runtime.turns.refreshing_entries(),
-            0,
-            "restart {restart}: and no orphaned count is kept"
+            entries,
+            "restart {restart}: no orphaned count is kept"
         );
     }
 }

@@ -89,13 +89,18 @@ impl AttackBudgets {
         }
     }
 
-    /// Whether counts recorded in `pool` belong to the run it had last tick.
-    /// A pool that stopped or began a new run this tick dropped its counts,
-    /// so nothing from its old run lands there.
-    pub(crate) fn pool_continues(&self, pool: AttackPoolId) -> bool {
+    /// Where a departed holder's refresh lands for a turn last counted in
+    /// `pool`. A pool still on last tick's run keeps it. A pool that stopped
+    /// this tick hands it to the default pool, where its members now count
+    /// (P13). A pool that began a new run this tick drops it: a new run
+    /// begins open (P30).
+    pub(crate) fn departed_refresh_pool(&self, pool: AttackPoolId) -> Option<AttackPoolId> {
         match pool {
-            AttackPoolId::Default => true,
-            AttackPoolId::Pool(entity) => self.pools.continues(entity),
+            AttackPoolId::Pool(entity) if !self.pools.is_running(entity) => {
+                Some(AttackPoolId::Default)
+            }
+            AttackPoolId::Pool(entity) if self.pools.opened(entity) => None,
+            pool => Some(pool),
         }
     }
 

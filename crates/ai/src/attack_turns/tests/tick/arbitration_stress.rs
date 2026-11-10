@@ -85,12 +85,14 @@ impl Wave {
             .iter()
             .map(|&enemy| {
                 let transform = *reg.get_component::<Transform>(enemy).unwrap();
-                engaged_outcome(
+                let mut outcome = engaged_outcome(
                     enemy,
                     transform.position,
                     reg.get_component::<BrainComponent>(enemy).unwrap().clone(),
                     target,
-                )
+                );
+                outcome.attack = Some(ready_attack());
+                outcome
             })
             .collect();
         Self {
@@ -151,38 +153,6 @@ impl Wave {
         assert!(outcome.brain.enter_activity_at(0, self.idle));
         outcome.attack = None;
         leaver
-    }
-}
-
-/// An engaged enemy's outcome as compute leaves it before combat slots.
-fn engaged_outcome(
-    id: EntityId,
-    position: Vec3,
-    brain: BrainComponent,
-    target: TargetPawn,
-) -> EnemyOutcome {
-    EnemyOutcome {
-        id,
-        position,
-        target: Some(target),
-        enemy_eye_offset: Vec3::ZERO,
-        target_aim: Some(target.position),
-        standoff_distance: brain.graph.standoff_distance_for_action(None),
-        prior_standoff_distance: brain.graph.standoff_distance_for_action(None),
-        prior_acquired_target: Some(target.entity),
-        brain,
-        steering: SteeringIntent::Chase,
-        engaged: true,
-        facing_direction: None,
-        travel_variant: Default::default(),
-        combat_slot: None,
-        engaged_ring: None,
-        graph_reseated: false,
-        state_changed: false,
-        attack: Some(ready_attack()),
-        weapon_aim: None,
-        entered: None,
-        fresh_unmarked_grant: None,
     }
 }
 

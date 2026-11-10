@@ -170,8 +170,9 @@ impl AiWeaponControllers {
     }
 
     /// Cancel one actor's execution in flight, keeping its installed weapons,
-    /// paid resources and owed recovery. A turn holder's target switch ends
-    /// its burst here, so no shot of it lands on the new target.
+    /// paid resources and owed recovery. Attack-turn arbitration ends a burst
+    /// here when its turn ends or its enemy holds none for it, so no shot of
+    /// it lands without a turn.
     pub(crate) fn cancel_actor(&mut self, actor: EntityId) {
         let Some(actor_weapons) = self.actors.get_mut(&actor) else {
             return;

@@ -44,11 +44,10 @@ impl PoolBudgets {
         self.index(pool).is_ok()
     }
 
-    /// Whether `pool` runs on in last tick's run: running, and neither
-    /// started nor restarted at this tick's sync.
-    pub(super) fn continues(&self, pool: EntityId) -> bool {
-        self.index(pool)
-            .is_ok_and(|index| !self.pools[index].opened)
+    /// Whether `pool` started or began a new run at this tick's sync. A pool
+    /// that is not running did neither.
+    pub(super) fn opened(&self, pool: EntityId) -> bool {
+        self.index(pool).is_ok_and(|index| self.pools[index].opened)
     }
 
     pub(super) fn table(&self, pool: EntityId) -> Option<&BudgetTable> {

@@ -202,3 +202,152 @@ fn restore_drops_turns_and_wait_clocks() {
     assert!(held(&restored, holder).is_empty());
     assert_eq!(wait_since(&restored, holder), Some(1));
 }
+
+/// A standing shooter whose `attack` fires a three-shot burst of
+/// `enemy.burst`.
+fn burst_shooter() -> BehaviorGraphDescriptor {
+    graph(
+        "strike",
+        vec![("strike", striking("attack"))],
+        vec![],
+        vec![("attack", weapon("enemy.burst"))],
+    )
+}
+
+fn projectile_shots(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    descriptors: &[EntityTypeDescriptor],
+    ticks: usize,
+) -> usize {
+    (0..ticks)
+        .map(|_| tick_with(reg, runtime, descriptors).projectile_spawns.len())
+        .sum()
+}
+
+// Held enemies keep their execution, but never fire it without a turn. A
+// shooter picked up mid-burst keeps the burst while held; the drop returns
+// it holding nothing, and the kept burst does not resume. Regression: the
+// drop cleared its turns, no ended turn reported the burst, and its last two
+// shots fired holding no turn.
+#[test]
+fn dropped_enemy_does_not_resume_a_kept_burst() {
+    let descriptors = [burst_weapon("enemy.burst", 3, 64.0, 160.0)];
+    let rival_graph = marked_graph(vec![("attack", contact(1.0, 100_000.0))]);
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    set_limits(&mut runtime, &[1]);
+    let pawn = spawn_player(&mut reg, player_spot());
+    let shooter = spawn_at(&mut reg, 0, &burst_shooter(), "strike");
+    let rival = spawn_at(&mut reg, 1, &rival_graph, "idle");
+    assert_eq!(
+        projectile_shots(&mut reg, &mut runtime, &descriptors, 1),
+        1,
+        "fixture: the burst starts on the grant tick"
+    );
+    assert_eq!(held(&reg, shooter), vec!["attack"]);
+
+    // The pawn picks the shooter up; the rival takes the only turn.
+    let mut inventory = Inventory::default();
+    inventory.wieldables[9] = Some(shooter);
+    reg.set_component(pawn, inventory).unwrap();
+    enter(&mut reg, rival, "attack_act");
+    assert_eq!(
+        projectile_shots(&mut reg, &mut runtime, &descriptors, 4),
+        0,
+        "a held enemy fires nothing"
+    );
+    assert_eq!(
+        runtime.weapons.executing_attack(shooter),
+        Some("attack"),
+        "a held enemy keeps its execution"
+    );
+    assert_eq!(held(&reg, rival), vec!["attack"], "fixture: the turn moved");
+
+    reg.set_component(pawn, Inventory::default()).unwrap();
+    assert_eq!(
+        projectile_shots(&mut reg, &mut runtime, &descriptors, 30),
+        0,
+        "the kept burst never fires without a turn"
+    );
+    assert_eq!(runtime.weapons.executing_attack(shooter), None);
+    assert!(
+        held(&reg, shooter).is_empty(),
+        "fixture: the rival holds on"
+    );
+}
+
+// A graph reseat mid-burst clears the shooter's turns, and arbitration stops
+// the burst by attack name: the replacement keeps the burst's weapon under
+// another attack, or keeps the attack at another index. Regression: the
+// ended turn's old index was compared with the execution's index in the new
+// graph, so the burst fired on holding no turn. Through the whole tick the
+// weapon controller also reinstalls its weapons on a rebind, which cancels
+// as well, so this drives arbitration with the execution kept.
+#[test]
+fn graph_reseat_mid_burst_cancels_execution_by_name() {
+    for moved in [false, true] {
+        let descriptors = [burst_weapon("enemy.burst", 3, 64.0, 160.0)];
+        let undrawn = drawing(contact(1.0, 100_000.0), vec![]);
+        let replacement = if moved {
+            graph(
+                "strike",
+                vec![("strike", striking("aaa"))],
+                vec![],
+                vec![("aaa", undrawn), ("attack", weapon("enemy.burst"))],
+            )
+        } else {
+            graph(
+                "strike",
+                vec![("strike", striking("other"))],
+                vec![],
+                vec![("other", undrawn), ("volley", weapon("enemy.burst"))],
+            )
+        };
+        assert_eq!(
+            attack_index(&replacement, "attack"),
+            moved.then_some(1),
+            "fixture: moved {moved}"
+        );
+        let mut reg = EntityRegistry::new();
+        let mut runtime = AiRuntime::new();
+        let pawn = spawn_player(&mut reg, player_spot());
+        let shooter = spawn_at(&mut reg, 0, &burst_shooter(), "strike");
+        assert_eq!(
+            projectile_shots(&mut reg, &mut runtime, &descriptors, 1),
+            1,
+            "moved {moved}: fixture: the burst starts"
+        );
+        assert_eq!(runtime.weapons.executing_attack(shooter), Some("attack"));
+
+        let mut brain = reg
+            .get_component::<BrainComponent>(shooter)
+            .unwrap()
+            .clone();
+        brain.graph = std::sync::Arc::new(replacement);
+        reg.set_component(shooter, brain.clone()).unwrap();
+        runtime
+            .programs
+            .sync(&reg, &descriptors, 0, &mut HashSet::new());
+        // The brain as compute leaves it after a reseat.
+        assert!(brain.reseat_to_initial(), "fixture: moved {moved}");
+        brain.attack_turns.clear();
+        let target = TargetPawn {
+            entity: pawn,
+            position: player_spot(),
+        };
+        let mut outcome = engaged_outcome(shooter, attacker_spot(0), brain, target);
+        outcome.graph_reseated = true;
+        crate::attack_turns::arbitrate_attack_turns(
+            &mut [outcome],
+            &runtime.programs,
+            &mut runtime.turns,
+            &mut runtime.weapons,
+        );
+        assert_eq!(
+            runtime.weapons.executing_attack(shooter),
+            None,
+            "moved {moved}: the reseat stops the burst"
+        );
+    }
+}

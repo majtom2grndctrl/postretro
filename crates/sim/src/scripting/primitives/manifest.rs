@@ -375,7 +375,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "attackBudgets?",
             "AttackBudgetProfiles",
-            "Budget profiles keyed by name, each a list of `token.with({ limit?, refreshMs? })` overrides; a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load.",
+            "Budget profiles keyed by name, each a list of overrides made with the token's `with({ limit?, refreshMs? })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load.",
         )
         .field(
             "stores?",

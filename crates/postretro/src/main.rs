@@ -330,6 +330,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 // this frame reads them with the payload's viscosities.
                 app.refresh_environment_fluids();
             }
+            // Task 4 of coop--client-spawn-view-handoff routes this to the
+            // client hint store; until then the stand-in ignores it.
+            ServerControlMessage::SpawnPoseHint(_) => {}
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;

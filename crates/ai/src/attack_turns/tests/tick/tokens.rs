@@ -417,10 +417,11 @@ fn default_token_needs_no_registration_and_draws_beside_mod_tokens() {
 }
 
 /// B20 / P19: `lobber` at 1, `melee` at 3. A's grenade holds; B's grenade
-/// waits longest; B's graph then asks for its claw and is granted it, and its
-/// dropped grenade request stops blocking `lobber`, so C's later grenade is
-/// granted the tick A's releases. Meanwhile `attackTurnFree("grenade")` reads
-/// false and `attackTurnFree("claw")` true.
+/// waits longest; B's graph then asks for its claw while a blocker fills
+/// `melee`, keeping its clock, and is granted the claw once `melee` has room.
+/// Its dropped grenade request stops blocking `lobber`, so C's later grenade
+/// is granted the tick A's releases. Meanwhile `attackTurnFree("grenade")`
+/// reads false and `attackTurnFree("claw")` true.
 #[test]
 fn declared_waiter_switching_attack_frees_its_dropped_token() {
     let free = |attack: &str| brain_input(&format!("@attackTurnFree.{attack}"));
@@ -444,6 +445,8 @@ fn declared_waiter_switching_attack_frees_its_dropped_token() {
             ("claw", held_attack(vec![token("melee")])),
         ],
     );
+    // Holds all of `melee` until it idles.
+    let blocker_graph = marked_graph(vec![("claw", held_attack(vec![costing("melee", 3)]))]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("lobber", 1), ("melee", 3)]);
     let mut runtime = AiRuntime::new();
@@ -454,12 +457,22 @@ fn declared_waiter_switching_attack_frees_its_dropped_token() {
     // The probes start reading once the line has formed (facts lag a tick).
     let grenade_probe = spawn_at(&mut reg, 3, &graph, "idle");
     let claw_probe = spawn_at(&mut reg, 4, &graph, "idle");
+    let blocker = spawn_at(&mut reg, 5, &blocker_graph, "claw_act");
 
     tick(&mut reg, &mut runtime);
     assert_eq!(held(&reg, a), vec!["grenade"]);
+    assert_eq!(held(&reg, blocker), vec!["claw"], "fixture: melee is full");
     assert_eq!(wait_since(&reg, b), Some(1));
 
     enter(&mut reg, b, "claw_act");
+    tick(&mut reg, &mut runtime);
+    assert_eq!(requested(&reg, b).as_deref(), Some("claw"));
+    assert_eq!(
+        wait_since(&reg, b),
+        Some(1),
+        "switching attack keeps B's clock"
+    );
+    enter(&mut reg, blocker, "idle");
     tick(&mut reg, &mut runtime);
     assert_eq!(held(&reg, b), vec!["claw"], "B is granted its claw");
     enter(&mut reg, c, "grenade_act");

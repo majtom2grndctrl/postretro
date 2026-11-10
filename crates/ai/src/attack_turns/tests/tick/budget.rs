@@ -437,7 +437,10 @@ fn undrawn_attack_past_capacity_fires_holding_no_turn() {
     enter(&mut reg, enemy, "u5_act");
     tick(&mut reg, &mut runtime);
     assert_eq!(fired(&reg, enemy), 1, "the fifth undrawn attack fires");
-    assert_eq!(player_hp_lost(&reg, pawn), 5.0);
+    assert!(
+        (player_hp_lost(&reg, pawn) - 5.0).abs() <= 1.0e-4,
+        "five 1-damage hits land"
+    );
     assert_eq!(
         held(&reg, enemy).len(),
         4,

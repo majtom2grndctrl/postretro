@@ -1923,11 +1923,11 @@ tick.
 `attackTurnFree` is `false` with no target, and `false` for an attack that
 shares a token with a turn the enemy already holds. It is also `false` for an
 attack that draws tokens while the enemy already holds its maximum of 4 drawn
-turns. It predicts a grant; it
-does not take one. `brain.hasAttackTurn` is a property of `brain`.
-`attackTurnHeld` and `attackTurnFree` are functions: TypeScript imports them
-from `"postretro"`, and Luau data scripts call them as globals. Naming an attack
-the archetype does not declare fails load (see [Load errors](#load-errors)).
+turns. It predicts a grant; it does not take one. `brain.hasAttackTurn` is a
+property of `brain`. `attackTurnHeld` and `attackTurnFree` are functions:
+TypeScript imports them from `"postretro"`, and Luau data scripts call them as
+globals. Naming an attack the archetype does not declare fails load (see
+[Load errors](#load-errors)).
 
 ```typescript
 import { attackTurnFree, brain } from "postretro";

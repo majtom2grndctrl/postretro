@@ -156,33 +156,7 @@ fn restore_drops_turns_and_wait_clocks() {
     assert_eq!(held(&reg, holder), vec!["attack"]);
     assert_eq!(wait_since(&reg, late), Some(2));
 
-    let kinds = [
-        ComponentKind::Transform,
-        ComponentKind::PlayerMovement,
-        ComponentKind::Mesh,
-        ComponentKind::Health,
-        ComponentKind::Agent,
-        ComponentKind::Brain,
-        ComponentKind::EntityState,
-    ];
-    let mut restored = EntityRegistry::new();
-    for id in [pawn, late, holder] {
-        let saved: Vec<serde_json::Value> = kinds
-            .iter()
-            .filter_map(|&kind| {
-                reg.iter_with_kind(kind)
-                    .find(|(entity, _)| *entity == id)
-                    .map(|(_, value)| serde_json::to_value(value).expect("component serializes"))
-            })
-            .collect();
-        let restored_id = restored.spawn(Transform::default());
-        assert_eq!(restored_id, id, "fixture: restore keeps entity ids");
-        for value in saved {
-            let value: ComponentValue =
-                serde_json::from_value(value).expect("component deserializes");
-            restored.set_component_value(restored_id, value).unwrap();
-        }
-    }
+    let mut restored = restore(&reg, &[pawn, late, holder]);
     for enemy in [late, holder] {
         assert_eq!(
             turns(&restored, enemy),
@@ -201,6 +175,78 @@ fn restore_drops_turns_and_wait_clocks() {
     );
     assert!(held(&restored, holder).is_empty());
     assert_eq!(wait_since(&restored, holder), Some(1));
+}
+
+// B38 / P11: a serialize-and-restore drops every refreshing count, so a slam
+// waiting on a refreshing `heavy` is granted on the first restored tick.
+#[test]
+fn restore_drops_refreshing_counts() {
+    use super::refresh::{heavy_refreshing, install_budgets, slam_and_jab};
+    let budgets = |reg: &mut EntityRegistry| {
+        install_budgets(reg, (3, 0.0), (1, 4000.0), serde_json::json!({}));
+    };
+    let graph = slam_and_jab();
+    let mut reg = EntityRegistry::new();
+    budgets(&mut reg);
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, player_spot());
+    let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
+    let waiter = spawn_at(&mut reg, 1, &graph, "slam_act");
+    tick(&mut reg, &mut runtime);
+    assert_eq!(held(&reg, holder), vec!["slam"]);
+    enter(&mut reg, holder, "idle");
+    tick(&mut reg, &mut runtime);
+    assert!(
+        held(&reg, waiter).is_empty(),
+        "fixture: heavy is refreshing"
+    );
+    assert_eq!(heavy_refreshing(&runtime, pawn), 1);
+
+    let mut restored = restore(&reg, &[pawn, holder, waiter]);
+    // Level load registers the mod's budgets again.
+    budgets(&mut restored);
+    let mut restored_runtime = AiRuntime::new();
+    assert_eq!(restored_runtime.turns.refreshing_entries(), 0);
+    tick(&mut restored, &mut restored_runtime);
+    assert_eq!(
+        held(&restored, waiter),
+        vec!["slam"],
+        "no refreshing count survives the restore"
+    );
+    assert_eq!(heavy_refreshing(&restored_runtime, pawn), 0);
+}
+
+/// Serialize every component of `ids` and deserialize them into a fresh
+/// registry under the same ids, as a save and load would.
+fn restore(reg: &EntityRegistry, ids: &[EntityId]) -> EntityRegistry {
+    let kinds = [
+        ComponentKind::Transform,
+        ComponentKind::PlayerMovement,
+        ComponentKind::Mesh,
+        ComponentKind::Health,
+        ComponentKind::Agent,
+        ComponentKind::Brain,
+        ComponentKind::EntityState,
+    ];
+    let mut restored = EntityRegistry::new();
+    for &id in ids {
+        let saved: Vec<serde_json::Value> = kinds
+            .iter()
+            .filter_map(|&kind| {
+                reg.iter_with_kind(kind)
+                    .find(|(entity, _)| *entity == id)
+                    .map(|(_, value)| serde_json::to_value(value).expect("component serializes"))
+            })
+            .collect();
+        let restored_id = restored.spawn(Transform::default());
+        assert_eq!(restored_id, id, "fixture: restore keeps entity ids");
+        for value in saved {
+            let value: ComponentValue =
+                serde_json::from_value(value).expect("component deserializes");
+            restored.set_component_value(restored_id, value).unwrap();
+        }
+    }
+    restored
 }
 
 /// A standing shooter whose `attack` fires a three-shot burst of
@@ -274,6 +320,11 @@ fn dropped_enemy_does_not_resume_a_kept_burst() {
     assert!(
         held(&reg, shooter).is_empty(),
         "fixture: the rival holds on"
+    );
+    assert_eq!(
+        held(&reg, rival),
+        vec!["attack"],
+        "fixture: no turn is free for the shooter"
     );
 }
 
@@ -350,4 +401,59 @@ fn graph_reseat_mid_burst_cancels_execution_by_name() {
             "moved {moved}: the reseat stops the burst"
         );
     }
+}
+
+// An invalid-path reseat keeps the graph and ends every turn, so it stops an
+// undrawn burst too, though an undrawn attack may fire holding no turn.
+// Regression: the reseat spared the ended-turn rule and the name check spared
+// the undrawn attack, so its burst ran on past the reseat.
+#[test]
+fn invalid_path_reseat_mid_burst_cancels_an_undrawn_execution() {
+    let descriptors = [burst_weapon("enemy.burst", 3, 64.0, 160.0)];
+    let shooter_graph = graph(
+        "strike",
+        vec![("strike", striking("attack"))],
+        vec![],
+        vec![("attack", drawing(weapon("enemy.burst"), vec![]))],
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, player_spot());
+    let shooter = spawn_at(&mut reg, 0, &shooter_graph, "strike");
+    assert_eq!(
+        projectile_shots(&mut reg, &mut runtime, &descriptors, 1),
+        1,
+        "fixture: the burst starts"
+    );
+    assert_eq!(runtime.weapons.executing_attack(shooter), Some("attack"));
+
+    // The brain as compute leaves it after reseating an invalid path.
+    let mut brain = reg
+        .get_component::<BrainComponent>(shooter)
+        .unwrap()
+        .clone();
+    brain.active_activity_path_len = 0;
+    assert!(
+        !brain.has_valid_active_path(),
+        "fixture: the path is invalid"
+    );
+    assert!(brain.reseat_to_initial());
+    brain.attack_turns.clear();
+    let target = TargetPawn {
+        entity: pawn,
+        position: player_spot(),
+    };
+    let mut outcome = engaged_outcome(shooter, attacker_spot(0), brain, target);
+    outcome.graph_reseated = true;
+    crate::attack_turns::arbitrate_attack_turns(
+        &mut [outcome],
+        &runtime.programs,
+        &mut runtime.turns,
+        &mut runtime.weapons,
+    );
+    assert_eq!(
+        runtime.weapons.executing_attack(shooter),
+        None,
+        "the reseat stops the undrawn burst"
+    );
 }

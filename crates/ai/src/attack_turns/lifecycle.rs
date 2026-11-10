@@ -40,16 +40,19 @@ pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
 /// default pool, where its members now count (P13); if it began a new run
 /// this tick, the refresh is dropped, because a new run begins open (P30).
 ///
-/// Executions stop in one place, before any grant, so only executions begun
-/// on earlier ticks are seen: a grant starts its execution in apply, after
-/// this pass. Two rules cancel one. An ended turn whose attack is still
-/// executing cancels it, whatever ended the turn, undrawn turns included;
-/// after a reseat the ended turn's index may name the graph it left, so this
-/// rule stands aside. And an executing attack, resolved by name against the
+/// Within arbitration, executions stop in one place, before any grant, so
+/// only executions begun on earlier ticks are seen: a grant starts its
+/// execution in apply, after this pass. Outside it, apply cancels one with no
+/// aim or on a weapon switch, and a weapon sync refresh cancels one too.
+/// Three rules cancel one here. An ended turn whose attack is still executing
+/// cancels it, whatever ended the turn, undrawn turns included. After a
+/// reseat the ended turn's index may name the graph it left, so a reseat
+/// cancels any execution in flight outright: it ends every turn, so no turn's
+/// burst outlives it. And an executing attack, resolved by name against the
 /// current graph, is cancelled when the name no longer resolves, or when it
-/// is not known to be undrawn and its enemy holds no turn for it. The second
+/// is not known to be undrawn and its enemy holds no turn for it. The last
 /// rule covers what no ended turn reports: a burst a held enemy kept, on its
-/// drop with its turns cleared, and a burst kept across a graph reseat.
+/// drop with its turns cleared.
 pub(crate) fn arbitrate_attack_turns(
     outcomes: &mut [EnemyOutcome],
     programs: &BrainPrograms,
@@ -116,11 +119,12 @@ pub(crate) fn arbitrate_attack_turns(
         // here, whatever ended it (a target switch, a draws change, a reseat,
         // closing aggro), so this is where its execution stops. A reported
         // turn names an attack of the graph it was granted under; after a
-        // reseat that may not be the current graph, so only the name check
-        // below applies.
-        let mut cancel_execution = false;
+        // reseat that may not be the current graph, so a reseat cancels
+        // whatever executes. An invalid-path reseat keeps the graph, so the
+        // name check below would spare an undrawn burst.
+        let mut cancel_execution = graph_reseated && executing.is_some();
         roster.ended_for(outcome.id, turns, |turn| {
-            cancel_execution |= !graph_reseated && executing_attack == Some(turn.attack);
+            cancel_execution |= executing_attack == Some(turn.attack);
             ledger.record(
                 (pool, turn.target),
                 &turn.draws,
@@ -184,7 +188,11 @@ pub(crate) fn arbitrate_attack_turns(
         // A departed holder's execution is not cancelled here. A held (suspended)
         // enemy keeps its private execution by the held-ownership contract
         // (`entity_model.md`), and a despawned one loses its controller with it.
-        // A held enemy's kept burst stops on drop, by the name check above.
+        // A held enemy's kept drawn burst stops on drop, by the name check
+        // above, and does not resume even if a turn is granted that same
+        // tick: the cancel runs before any grant. A kept undrawn burst may
+        // resume, since an undrawn attack fires holding no turn past its
+        // capacity anyway.
         if let Some(pool) = budgets.departed_refresh_pool(turn.pool) {
             ledger.record(
                 (pool, turn.target),

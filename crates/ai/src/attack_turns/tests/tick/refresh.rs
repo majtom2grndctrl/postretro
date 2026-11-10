@@ -13,7 +13,7 @@ const FOUR_SECONDS: usize = 250;
 
 /// Register `melee` and `heavy` as (limit, refreshMs), with `budgets` as the
 /// mod's `attackBudgets`.
-fn install_budgets(
+pub(super) fn install_budgets(
     reg: &mut EntityRegistry,
     melee: (u32, f32),
     heavy: (u32, f32),
@@ -31,14 +31,14 @@ fn install_budgets(
     reg.set_attack_budgets(std::sync::Arc::new(vocabulary));
 }
 
-fn slam_and_jab() -> BehaviorGraphDescriptor {
+pub(super) fn slam_and_jab() -> BehaviorGraphDescriptor {
     marked_graph(vec![
         ("slam", held_attack(vec![token("melee"), token("heavy")])),
         ("jab", held_attack(vec![token("melee")])),
     ])
 }
 
-fn heavy_refreshing(runtime: &AiRuntime, target: EntityId) -> u32 {
+pub(super) fn heavy_refreshing(runtime: &AiRuntime, target: EntityId) -> u32 {
     runtime
         .turns
         .refreshing_now((AttackPoolId::Default, target), HEAVY_ID)

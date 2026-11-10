@@ -123,7 +123,7 @@ fn held_world_participation_suspends_mixed_actor_and_retains_private_execution()
             .unwrap()
             .magazine,
         private.magazine,
-        "the cancelled shot is never paid"
+        "no round is spent after the first shot"
     );
 }
 

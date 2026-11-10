@@ -35,7 +35,7 @@ Source re-read at `d29ac3a5f` (106 commits past the brief's `5932287f`). Only th
   - **Limits.** Per-brain turn state is inline POD (`MAX_HELD_TURNS = 4`, `MAX_ATTACK_DRAWS = 8`), so task 5 rejects an attack drawing more than 8 tokens. After review, undrawn turns have their own `MAX_UNDRAWN_TURNS = 4` slots, so a `draws: []` attack never takes a drawn turn's place. Past its own capacity, an undrawn attack fires holding no turn. P8 keeps `hasAttackTurn` true while an undrawn turn is held.
   - **A mark must sit under an engaged path.** A marked activity whose path neither engages nor acts has no target between acquisitions, so it releases its turn.
   - **A missing target is not a target change (review).** Between acquisitions a non-engaging activity reads no target. That keeps an unmarked turn held for its cooldown or execution (B29), and only a switch to a different target releases it. A marked turn with no target and no execution still releases.
-  - **Held enemies keep their execution (review).** The Decision's "leaving the AI set" release covers death, despawn and quiescence. A picked-up (held) enemy also leaves the set and its turns end, but by the held-ownership contract (`entity_model.md` §Held ownership) its private weapon execution is kept, not cancelled. Arbitration cancels any execution of a drawn attack whose holder holds no turn for it, matched by attack name. So a dropped enemy's kept burst, or a burst surviving a graph reseat, never fires without a turn.
+  - **Held enemies keep their execution (review).** The Decision's "leaving the AI set" release covers death, despawn and quiescence. A picked-up (held) enemy also leaves the set and its turns end, but by the held-ownership contract (`entity_model.md` §Held ownership) its private weapon execution is kept, not cancelled. Arbitration cancels any execution of a drawn attack whose holder holds no turn for it, matched by attack name. So a dropped enemy's kept drawn burst, or a burst surviving a graph reseat, never fires without a turn. It does not resume even when a turn is granted on the drop tick. Execution is also cancelled when its attack name no longer resolves in the current graph, and on any reseat. An undrawn kept burst may resume, because undrawn attacks fire without a turn past capacity anyway. **Owner call:** this replaces the earlier tested behavior where a dropped enemy resumed its burst (`held_world_participation_tests.rs`).
   - **Burst shots spill into the next activity.** Shots that land after the enemy leaves the firing activity count toward the new activity's `attacksFiredInActivity`, which is existing behavior. A marked sibling granted after a burst may find its once-per-entry fire already closed. Follow-up candidate; task 8 content avoids firing in the activity after a burst.
   - **Reference enemy pacing.** The jab and slam now take turns on one token, so the jab's 1.2 s cooldown delays the slam. Two existing reference-enemy routing tests opt out with `draws: []` so they still test routing.
 - **Where `facing` and `reposition` resolve.** `motion_for_path` searches the active path deepest-first, and a selector row may supply the motion (`BehaviorSelectorRow { when, motion, action }`, with no facing or params). **Clarification:** `facing` resolves deepest-first, and an activity declaring it covers the motion its own selector layer supplies. A selector-supplied `reposition` uses the default `arc` and `minTravel`. `reposition: {…}` is allowed only on an activity whose own `motion` is `reposition`, matching the brief's rejection row.
@@ -95,106 +95,108 @@ Source re-read at `d29ac3a5f` (106 commits past the brief's `5932287f`). Only th
 
 Test homes: `crates/ai/src/attack_turns/tests/` (budget, arbitration and facts), `crates/ai/src/ai_tests/` (motion, facing and knockback through the tick), `crates/scripting-core` (twin-runtime validation), `crates/level-compiler` (`--bin prl-build`, FGD validation), and `crates/sim` (pool commands and spawner). Test names are proposals.
 
+Results are from the final full workspace run at `e568c0181`: 15,636 passed, 0 failed. The polish commit reruns `-p postretro-ai`.
+
 **Motion and facing**
 
-| AC | Proof | Status |
-|---|---|---|
-| M1 strafe orbits at standoff, faces, fires mid-move | `strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass` | achievable as stated |
-| M2 strafe reverses; holds with no neighbor, no flip; batch loser reverses once (P9) | `strafe_reverses_at_blocked_occupied_or_blind_slot`, `strafe_holds_without_flipping_when_both_neighbors_unusable`, `strafe_batch_loser_reverses_once` | achievable as stated |
-| M3 reposition ≥ one spacing from entry position and slot, after `hold`, with no slot; re-entry picks again; holds with none | `reposition_arrives_one_spacing_from_entry_position_and_slot` (variants: after hold, no held slot, re-entry), `reposition_holds_without_oscillating_when_no_slot_qualifies` | achievable as stated |
-| M4 arc bounds 45–135 / 90–90 / 180–180 / empty arc holds | `reposition_arc_bounds_select_ring_slots_on_both_sides` (tests generated ring index angles) | achievable as stated |
-| M5 arc and entry position fixed while target moves; re-entry re-measures (P16) | `reposition_entry_bearing_and_position_stay_fixed_while_target_moves` | achievable as stated |
-| M6 `minTravel` 8: refuses 7 m, accepts 9 m; unreachable holds without flipping | `reposition_min_travel_refuses_near_and_accepts_far_slot`, `reposition_min_travel_beyond_every_candidate_holds` | achievable as stated |
-| M7 two repositioners, same tick, bearing and arc → distinct slots, replay identical | `reposition_twins_claim_distinct_slots_deterministically` | achievable as stated |
-| M8 serialize-and-restore mid-reposition and mid-strafe (P17) | `restore_mid_reposition_and_strafe_records_fresh_entry` (component serde round-trip; see Corrections) | achievable as stated |
-| M9 validation rejects bad `arc` / `minTravel` / misplaced `reposition`, pathed, both runtimes | `reposition_params_reject_with_pathed_error_{js,luau}` (scripting-core) + foundation descriptor validation unit tests | achievable as stated |
-| M10 `facing: travel` on reposition; `facing: target` on chase; unchanged default on every existing verb | `activity_facing_policy_overrides_verb_default`, `existing_verbs_face_as_before_without_facing` (one case per `MotionVerb::ALL` entry) | achievable as stated |
-| M11 directional variants under target facing; `walk` under travel facing; missing variants → `walk` | `target_facing_travel_selects_directional_variant`, `travel_facing_plays_base_clip`, `missing_variant_falls_back_to_base_clip` | achievable as stated |
-| M12 strafe after reposition steps 45° from current bearing, no snap | `strafe_after_reposition_steps_from_current_bearing` | achievable as stated |
-| M13 reposition from above target uses held slot or ignores arc; inward/outward slots never qualify | `reposition_above_target_measures_from_held_slot_or_ignores_arc`, `reposition_never_picks_radial_slots` | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| M1 strafe orbits at standoff, faces, fires mid-move | `strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass` | achievable as stated | pass |
+| M2 strafe reverses; holds with no neighbor, no flip; batch loser reverses once (P9) | `strafe_reverses_at_blocked_occupied_or_blind_slot`, `strafe_holds_without_flipping_when_both_neighbors_unusable`, `strafe_batch_loser_reverses_once` | achievable as stated | pass |
+| M3 reposition ≥ one spacing from entry position and slot, after `hold`, with no slot; re-entry picks again; holds with none | `reposition_arrives_one_spacing_from_entry_position_and_slot` (variants: after hold, no held slot, re-entry), `reposition_holds_without_oscillating_when_no_slot_qualifies` | achievable as stated | pass |
+| M4 arc bounds 45–135 / 90–90 / 180–180 / empty arc holds | `reposition_arc_bounds_select_ring_slots_on_both_sides` (tests generated ring index angles) | achievable as stated | pass |
+| M5 arc and entry position fixed while target moves; re-entry re-measures (P16) | `reposition_entry_bearing_and_position_stay_fixed_while_target_moves` | achievable as stated | pass |
+| M6 `minTravel` 8: refuses 7 m, accepts 9 m; unreachable holds without flipping | `reposition_min_travel_refuses_near_and_accepts_far_slot`, `reposition_min_travel_beyond_every_candidate_holds` | achievable as stated | pass (min-travel case lives in sim `rotated_ring.rs`) |
+| M7 two repositioners, same tick, bearing and arc → distinct slots, replay identical | `reposition_twins_claim_distinct_slots_deterministically` | achievable as stated | pass |
+| M8 serialize-and-restore mid-reposition and mid-strafe (P17) | `restore_mid_reposition_and_strafe_records_fresh_entry` (component serde round-trip; see Corrections) | achievable as stated | pass |
+| M9 validation rejects bad `arc` / `minTravel` / misplaced `reposition`, pathed, both runtimes | `reposition_params_reject_with_pathed_error_{js,luau}` (scripting-core) + foundation descriptor validation unit tests | achievable as stated | pass: `both_runtimes_reject_invalid_reposition_params_with_paths` (one test, both runtimes), `reposition_validation_rejects_each_bad_bound_with_its_path`, `reposition_properties_reject_on_any_other_motion` |
+| M10 `facing: travel` on reposition; `facing: target` on chase; unchanged default on every existing verb | `activity_facing_policy_overrides_verb_default`, `existing_verbs_face_as_before_without_facing` (one case per `MotionVerb::ALL` entry) | achievable as stated | pass |
+| M11 directional variants under target facing; `walk` under travel facing; missing variants → `walk` | `target_facing_travel_selects_directional_variant`, `travel_facing_plays_base_clip`, `missing_variant_falls_back_to_base_clip` | achievable as stated | pass |
+| M12 strafe after reposition steps 45° from current bearing, no snap | `strafe_after_reposition_steps_from_current_bearing` | achievable as stated | pass |
+| M13 reposition from above target uses held slot or ignores arc; inward/outward slots never qualify | `reposition_above_target_measures_from_held_slot_or_ignores_arc`, `reposition_never_picks_radial_slots` | achievable as stated | pass |
 
 **Knockback**
 
-| AC | Proof | Status |
-|---|---|---|
-| K1 launched under non-target facing keeps impact yaw, steering still runs | `launched_enemy_holds_impact_yaw_while_steering_runs` | achievable as stated |
-| K2 under target facing, slews at the facing rate | `launched_target_facing_enemy_slews_at_facing_rate` | achievable as stated |
-| K3 airborne launch → `jump_loop` after fall delay, ground clip on landing; horizontal shove keeps ground clip (P10) | `airborne_launch_plays_jump_loop_after_fall_delay_then_lands`, `horizontal_shove_keeps_ground_clip` | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| K1 launched under non-target facing keeps impact yaw, steering still runs | `launched_enemy_holds_impact_yaw_while_steering_runs` | achievable as stated | pass |
+| K2 under target facing, slews at the facing rate | `launched_target_facing_enemy_slews_at_facing_rate` | achievable as stated | pass |
+| K3 airborne launch → `jump_loop` after fall delay, ground clip on landing; horizontal shove keeps ground clip (P10) | `airborne_launch_plays_jump_loop_after_fall_delay_then_lands`, `horizontal_shove_keeps_ground_clip` | achievable as stated | pass |
 
 **Budget** (B1–B39, in brief order)
 
-| AC | Proof | Status |
-|---|---|---|
-| B1 no budgets or draws: `defaultToken` at 3, fourth waits | `default_token_admits_three_and_queues_fourth` | achievable as stated |
-| B2 limit 2, third never starts until release (P1) | `third_requester_waits_until_a_holder_releases` | achievable as stated |
-| B3 three requesters, one free → exactly one, replay same | `one_free_turn_grants_exactly_one_deterministically` | achievable as stated |
-| B4 cost 2 alone / refused beside cost 1 / cost 3 when empty; `draws: []` never counts (P8) | `cost_fits_against_limit_and_oversized_draw_admits_when_empty`, `undrawn_attack_never_counts_or_blocks` | achievable as stated |
-| B5 cost-3 waiter among rotating cost-1 granted in bounded wait, none pass it (P12) | `oversized_head_of_line_waiter_is_granted_within_bounded_wait` | achievable as stated |
-| B6 melee 4 / heavy 1: second slam reserves, jabs pass, granted on release (P14) | `waiting_slam_reserves_melee_and_heavy_while_jabs_pass` | achievable as stated |
-| B7 slam and rocket sharing `heavy` never overlap on one target | `heavy_draws_from_two_archetypes_never_overlap` | achievable as stated |
-| B8 head of line per token (P18, P32) | `head_of_line_reserves_per_token_in_wait_order` | achievable as stated |
-| B9 multi-token waiter among single-token traffic (P27) | `multi_token_waiter_is_granted_among_cycling_single_token_traffic` | achievable as stated |
-| B10 fit judged against this tick's earlier grants (P31) | `grants_within_a_tick_see_earlier_grants_and_reservations` | achievable as stated |
-| B11 one enemy's turns overlap on separate tokens; second melee waits, wait starts then | `one_enemy_holds_melee_and_ranged_turns_at_once` | achievable as stated |
-| B12 refresh 4 s on heavy while jabs flow (P26) | `heavy_refresh_spaces_slams_while_jabs_draw_melee` | achievable as stated |
-| B13 refreshing count counts for admission and head of line (P28) | `refreshing_count_holds_admission_and_head_of_line` | achievable as stated |
-| B14 interrupted turn still refreshes (P29: no start, target switch, killed, reload) | `interrupted_turn_spends_its_refresh` (four cases) | achievable as stated |
-| B15 refresh lifetime (P30) | `refresh_lands_in_pool_at_turn_end_and_drops_on_stop_level_and_target_loss` | achievable as stated |
-| B16 `attackTurnFree` false during refresh, true the tick after lapse (P7) | `attack_turn_free_reads_refresh_with_one_tick_lag` | achievable as stated |
-| B17 profile override changes only named fields | `profile_override_keeps_unnamed_fields_and_tokens` | achievable as stated |
-| B18 every target its own allowance; ally and hostile on one monster share | `each_target_has_its_own_allowance` | achievable as stated |
-| B19 `defaultToken` unlisted, overridable; listing it rejects | `default_token_needs_no_registration_and_rejects_when_listed_{js,luau}` + arbitration case | achievable as stated |
-| B20 grenade/claw switch while waiting (P19) | `waiter_switching_attack_keeps_clock_and_frees_dropped_token` | achievable as stated |
-| B21 waiter switching off a blocking draw (P24) | `waiter_switching_to_a_fitting_draw_unblocks_token_same_tick` | achievable as stated |
-| B22 marked sibling switch queues behind existing waiters (P21) | `marked_sibling_switch_requests_behind_older_waiters` | achievable as stated |
-| B23 marked switch mid-execution holds until clear (P20) | `marked_switch_mid_execution_holds_turn_until_clear` | achievable as stated |
-| B24 request names the attack the fire step resolves (P25) | `request_names_fire_step_attack_not_cooldown_seed_attack` | achievable as stated |
-| B25 waiter clock across pause, target switch (P22) | `wait_clock_survives_gaps_and_restarts_on_target_switch` (with pool-change, AI-set exit and reseat variants) | achievable as stated |
-| B26 reload lowering limit revokes nothing; removed profile → default; lowered `refreshMs` applies | `reload_lowering_budgets_revokes_no_turn_and_applies_next_tick` | achievable as stated |
-| B27 reload changing resolved draws releases holders; resolved comparison | `reload_changing_resolved_draws_releases_holders` (via the live descriptor; see Corrections) | achievable as stated |
-| B28 refused attack commits nothing, fires on first granted tick (P2) | `refused_attack_commits_nothing_and_fires_when_granted` | achievable as stated |
-| B29 limit 1, three contact attackers: ≤1 holds, cooldown holds after leaving, bounded window | `contact_attackers_take_bounded_turns_under_limit_one` | achievable as stated |
-| B30 two unmarked attacks on one token never overlap | `unmarked_attacks_sharing_a_token_never_overlap` | achievable as stated |
-| B31 three-shot weapon holds through execution and cooldown (P4) | `unmarked_burst_holds_turn_through_execution_and_cooldown` (first enemy multi-shot test) | achievable as stated |
-| B32 granted unmarked attack that does not start releases (P3) | `granted_unmarked_attack_that_cannot_start_releases_same_tick` | achievable as stated |
-| B33 out of range or line of sight requests nothing | `unmarked_attack_requests_only_when_fire_gates_pass` | achievable as stated |
-| B34 marked siblings hold one turn without a gap; leaving mid-burst holds until clear | `marked_chain_holds_one_turn_without_regrant_gap` | achievable as stated |
-| B35 target switch mid-burst cancels and releases, no shot on new target (P6) | `target_switch_mid_burst_cancels_execution_and_releases` (new `cancel_actor`) | achievable as stated |
-| B36 no leak across every P5 release case; returner re-requests | `turn_releases_on_every_ai_set_exit` (quiescence, despawn, inventory, killed in pass, aggro close, reseat) | achievable as stated |
-| B37 the three facts per P7/P23 | `turn_facts_follow_pins` | achievable as stated |
-| B38 serialize-and-restore (P11) | `restore_drops_turns_waits_and_refresh_but_keeps_pools` (component serde round-trip) | achievable as stated |
-| B39 compatibility digest ignores tokens, budgets, draws | `compatibility_digest_ignores_attack_budget_fields` (`mod_digest.rs`) | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| B1 no budgets or draws: `defaultToken` at 3, fourth waits | `default_token_admits_three_and_queues_fourth` | achievable as stated | pass |
+| B2 limit 2, third never starts until release (P1) | `third_requester_waits_until_a_holder_releases` | achievable as stated | pass |
+| B3 three requesters, one free → exactly one, replay same | `one_free_turn_grants_exactly_one_deterministically` | achievable as stated | pass |
+| B4 cost 2 alone / refused beside cost 1 / cost 3 when empty; `draws: []` never counts (P8) | `cost_fits_against_limit_and_oversized_draw_admits_when_empty`, `undrawn_attack_never_counts_or_blocks` | achievable as stated | pass (+ `undrawn_attack_past_capacity_fires_holding_no_turn`) |
+| B5 cost-3 waiter among rotating cost-1 granted in bounded wait, none pass it (P12) | `oversized_head_of_line_waiter_is_granted_within_bounded_wait` | achievable as stated | pass |
+| B6 melee 4 / heavy 1: second slam reserves, jabs pass, granted on release (P14) | `waiting_slam_reserves_melee_and_heavy_while_jabs_pass` | achievable as stated | pass (engine) + `declared_slam_reserves_melee_and_heavy_while_jabs_pass` (tick) |
+| B7 slam and rocket sharing `heavy` never overlap on one target | `heavy_draws_from_two_archetypes_never_overlap` | achievable as stated | pass (engine) + `declared_heavy_shared_by_two_archetypes_never_overlaps` (tick) |
+| B8 head of line per token (P18, P32) | `head_of_line_reserves_per_token_in_wait_order` | achievable as stated | pass (engine) + `declared_head_of_line_reserves_per_token_in_wait_order` (tick) |
+| B9 multi-token waiter among single-token traffic (P27) | `multi_token_waiter_is_granted_among_cycling_single_token_traffic` | achievable as stated | pass (engine) + `declared_multi_token_waiter_is_granted_among_cycling_traffic` (tick) |
+| B10 fit judged against this tick's earlier grants (P31) | `grants_within_a_tick_see_earlier_grants_and_reservations` | achievable as stated | pass |
+| B11 one enemy's turns overlap on separate tokens; second melee waits, wait starts then | `one_enemy_holds_melee_and_ranged_turns_at_once` | achievable as stated | pass |
+| B12 refresh 4 s on heavy while jabs flow (P26) | `heavy_refresh_spaces_slams_while_jabs_draw_melee` | achievable as stated | pass |
+| B13 refreshing count counts for admission and head of line (P28) | `refreshing_count_holds_admission_and_head_of_line` | achievable as stated | pass |
+| B14 interrupted turn still refreshes (P29: no start, target switch, killed, reload) | `interrupted_turn_spends_its_refresh` (four cases) | achievable as stated | pass |
+| B15 refresh lifetime (P30) | `refresh_lands_in_pool_at_turn_end_and_drops_on_stop_level_and_target_loss` | achievable as stated | pass: `refresh_lands_in_pool_at_turn_end_and_drops_on_stop`, `refresh_drops_on_level_change_and_target_loss`, `refresh_lands_in_the_pool_a_turn_ends_in_and_stays_there`, `departed_holder_refresh_lands_in_default_on_stop_and_drops_on_restart` |
+| B16 `attackTurnFree` false during refresh, true the tick after lapse (P7) | `attack_turn_free_reads_refresh_with_one_tick_lag` | achievable as stated | pass |
+| B17 profile override changes only named fields | `profile_override_keeps_unnamed_fields_and_tokens` | achievable as stated | pass (+ `pool_profile_override_keeps_unnamed_fields_and_tokens`, foundation `profile_budgets_override_only_named_fields`) |
+| B18 every target its own allowance; ally and hostile on one monster share | `each_target_has_its_own_allowance` | achievable as stated | pass (+ `allowances_are_per_pool_and_per_target`) |
+| B19 `defaultToken` unlisted, overridable; listing it rejects | `default_token_needs_no_registration_and_rejects_when_listed_{js,luau}` + arbitration case | achievable as stated | pass: `default_token_needs_no_registration_and_rejects_when_listed` (one test, both runtimes), `default_token_needs_no_registration_and_draws_beside_mod_tokens` |
+| B20 grenade/claw switch while waiting (P19) | `waiter_switching_attack_keeps_clock_and_frees_dropped_token` | achievable as stated | pass: `declared_waiter_switching_attack_frees_its_dropped_token` (clock-kept assertion added in the final polish) |
+| B21 waiter switching off a blocking draw (P24) | `waiter_switching_to_a_fitting_draw_unblocks_token_same_tick` | achievable as stated | pass: `declared_waiter_switching_to_a_fitting_draw_unblocks_token_same_tick` |
+| B22 marked sibling switch queues behind existing waiters (P21) | `marked_sibling_switch_requests_behind_older_waiters` | achievable as stated | pass |
+| B23 marked switch mid-execution holds until clear (P20) | `marked_switch_mid_execution_holds_turn_until_clear` | achievable as stated | pass |
+| B24 request names the attack the fire step resolves (P25) | `request_names_fire_step_attack_not_cooldown_seed_attack` | achievable as stated | pass |
+| B25 waiter clock across pause, target switch (P22) | `wait_clock_survives_gaps_and_restarts_on_target_switch` (with pool-change, AI-set exit and reseat variants) | achievable as stated | pass |
+| B26 reload lowering limit revokes nothing; removed profile → default; lowered `refreshMs` applies | `reload_lowering_budgets_revokes_no_turn_and_applies_next_tick` | achievable as stated | pass (+ `reload_removing_a_pool_profile_falls_back_to_default_next_tick`, `reload_reordering_draws_keeps_the_turn`, `vocabulary_shift_keeps_held_turns_and_refreshing_counts`) |
+| B27 reload changing resolved draws releases holders; resolved comparison | `reload_changing_resolved_draws_releases_holders` (via the live descriptor; see Corrections) | achievable as stated | pass (+ `committed_vocabulary_re_resolves_live_draws_by_name`, `draws_change_mid_burst_cancels_execution`) |
+| B28 refused attack commits nothing, fires on first granted tick (P2) | `refused_attack_commits_nothing_and_fires_when_granted` | achievable as stated | pass |
+| B29 limit 1, three contact attackers: ≤1 holds, cooldown holds after leaving, bounded window | `contact_attackers_take_bounded_turns_under_limit_one` | achievable as stated | pass (+ `unmarked_turn_holds_through_cooldown_between_strided_acquisitions`, beyond 12 m) |
+| B30 two unmarked attacks on one token never overlap | `unmarked_attacks_sharing_a_token_never_overlap` | achievable as stated | pass |
+| B31 three-shot weapon holds through execution and cooldown (P4) | `unmarked_burst_holds_turn_through_execution_and_cooldown` (first enemy multi-shot test) | achievable as stated | pass |
+| B32 granted unmarked attack that does not start releases (P3) | `granted_unmarked_attack_that_cannot_start_releases_same_tick` | achievable as stated | pass |
+| B33 out of range or line of sight requests nothing | `unmarked_attack_requests_only_when_fire_gates_pass` | achievable as stated | pass |
+| B34 marked siblings hold one turn without a gap; leaving mid-burst holds until clear | `marked_chain_holds_one_turn_without_regrant_gap` | achievable as stated | pass |
+| B35 target switch mid-burst cancels and releases, no shot on new target (P6) | `target_switch_mid_burst_cancels_execution_and_releases` (new `cancel_actor`) | achievable as stated | pass (+ `dropped_enemy_does_not_resume_a_kept_burst`, `graph_reseat_mid_burst_cancels_execution_by_name`) |
+| B36 no leak across every P5 release case; returner re-requests | `turn_releases_on_every_ai_set_exit` (quiescence, despawn, inventory, killed in pass, aggro close, reseat) | achievable as stated | pass |
+| B37 the three facts per P7/P23 | `turn_facts_follow_pins` | achievable as stated | pass: split across `has_attack_turn_reads_the_previous_ticks_turns`, `attack_turn_held_names_one_attack`, `attack_turn_free_reads_target_and_own_turns`, `attack_turn_free_leaves_out_the_readers_own_request` and two engine-level `turn_free_*` tests; capacity case in `full_turn_capacity_refuses_drawn_attacks_but_not_undrawn_ones` |
+| B38 serialize-and-restore (P11) | `restore_drops_turns_waits_and_refresh_but_keeps_pools` (component serde round-trip) | achievable as stated | pass: `restore_drops_turns_and_wait_clocks` (refresh-dropped assertion added in the final polish), `restore_keeps_running_pools_and_assignments` |
+| B39 compatibility digest ignores tokens, budgets, draws | `compatibility_digest_ignores_attack_budget_fields` (`mod_digest.rs`) | achievable as stated | pass |
 
 **Attack pools** (A1–A13; pin ids stay P1–P34)
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 trigger `start` and script `start` both apply profile; empty → default; undeclared warns and uses default | `attack_pool_start_by_trigger_and_script_applies_profile`, `undeclared_budget_profile_warns_at_load` (log capture) | achievable as stated |
-| A2 separate pools grant independently; head of line never crosses pools | `attack_pool_and_default_pool_arbitrate_independently` | achievable as stated |
-| A3 restart re-assigns; held state stands; client start inert | `restarting_a_running_pool_reassigns_tag_holders`, `attack_pool_start_on_client_changes_nothing` | achievable as stated |
-| A4 two pools run; stop returns to default same tick; stop on stopped is no-op | `two_pools_run_side_by_side_and_stop_independently` | achievable as stated |
-| A5 membership by start and tagged spawn; later tag edits move no one; shared `member_tag` compiles | `pool_membership_is_assigned_by_start_and_spawn_only` (sim), compile case in `prl-build` | achievable as stated |
-| A6 latest assignment wins; issue order (P15); spawn on two pools (P33); spawn on stop tick (P34) | `latest_pool_assignment_wins`, `spawn_matching_two_pools_joins_latest_started`, `spawn_on_pool_stop_tick_follows_issue_order` | achievable as stated |
-| A7 leaving a pool keeps the held turn, counted in the new pool (P13) | `enemy_changing_pool_keeps_turn_counted_in_new_pool` | achievable as stated |
-| A8 validation set (compile errors and pathed rejects, both runtimes) | `prl-build`: `ai_attack_pool_empty_member_tag_is_compile_error`, `ai_attack_pools_sharing_tags_is_compile_error`; scripting-core: `attack_budget_declarations_reject_with_pathed_errors_{js,luau}` (table of cases); TS reference typo: typedef pins `draws` to `AttackToken \| AttackTokenRef` (no `string`), plus the undeclared binding being a TS unresolved name, the same standard as `getMapEntities`' unknown kind. No tsc gate runs in CI | achievable as stated |
-| A9 no `ai_attack_pool` → default pool alone | covered by B1–B39 (no pool) + `level_without_attack_pool_uses_default_pool` | achievable as stated |
-| A10 start/stop timing (P15) | `trigger_bound_pool_start_applies_before_arbitration`, `pool_start_and_stop_same_tick_apply_in_issue_order` | achievable as stated |
-| A11 level restart or change: no pool running, default from first tick | `level_change_stops_attack_pools_and_clears_ledger` | achievable as stated |
-| A12 reload changing `default` reaches a pool using default | `reload_changing_default_profile_reaches_pool_next_tick` | achievable as stated |
-| A13 level digest ignores `budget_profile` | `level_content_digest_ignores_attack_pool_profile` (`runtime_movers.rs`) | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 trigger `start` and script `start` both apply profile; empty → default; undeclared warns and uses default | `attack_pool_start_by_trigger_and_script_applies_profile`, `undeclared_budget_profile_warns_at_load` (log capture) | achievable as stated | pass, close equivalent: sim `attack_pool_start_by_trigger_and_script_applies_profile` (timing), ai `running_pool_arbitrates_under_its_profile` (profile, empty and undeclared), `undeclared_budget_profile_warns_at_load` |
+| A2 separate pools grant independently; head of line never crosses pools | `attack_pool_and_default_pool_arbitrate_independently` | achievable as stated | pass |
+| A3 restart re-assigns; held state stands; client start inert | `restarting_a_running_pool_reassigns_tag_holders`, `attack_pool_start_on_client_changes_nothing` | achievable as stated | pass |
+| A4 two pools run; stop returns to default same tick; stop on stopped is no-op | `two_pools_run_side_by_side_and_stop_independently` | achievable as stated | pass (+ sim `two_pools_assign_side_by_side_and_stop_independently`) |
+| A5 membership by start and tagged spawn; later tag edits move no one; shared `member_tag` compiles | `pool_membership_is_assigned_by_start_and_spawn_only` (sim), compile case in `prl-build` | achievable as stated | pass: sim `pool_membership_is_assigned_by_start_and_spawn_only`, level-compiler `ai_attack_pools_sharing_member_tag_compile_cleanly` |
+| A6 latest assignment wins; issue order (P15); spawn on two pools (P33); spawn on stop tick (P34) | `latest_pool_assignment_wins`, `spawn_matching_two_pools_joins_latest_started`, `spawn_on_pool_stop_tick_follows_issue_order` | achievable as stated | pass: `latest_pool_assignment_wins`, `spawn_matching_two_pools_joins_latest_started`, `spawn_on_pool_stop_tick_follows_issue_order` |
+| A7 leaving a pool keeps the held turn, counted in the new pool (P13) | `enemy_changing_pool_keeps_turn_counted_in_new_pool` | achievable as stated | pass |
+| A8 validation set (compile errors and pathed rejects, both runtimes) | `prl-build`: `ai_attack_pool_empty_member_tag_is_compile_error`, `ai_attack_pools_sharing_tags_is_compile_error`; scripting-core: `attack_budget_declarations_reject_with_pathed_errors_{js,luau}` (table of cases); TS reference typo: typedef pins `draws` to `AttackToken \| AttackTokenRef` (no `string`), plus the undeclared binding being a TS unresolved name, the same standard as `getMapEntities`' unknown kind. No tsc gate runs in CI | achievable as stated | pass: compile errors (`…empty_member_tag…`, `…sharing_tags…`, `…member_tag_with_whitespace…`), `attack_budget_declarations_reject_with_pathed_errors` (both runtimes), foundation rejection tests, `attack_pool_steps_reject_args_and_non_member_addressing_in_both_vms`. The TS typo half is type-level only; no tsc gate runs |
+| A9 no `ai_attack_pool` → default pool alone | covered by B1–B39 (no pool) + `level_without_attack_pool_uses_default_pool` | achievable as stated | pass |
+| A10 start/stop timing (P15) | `trigger_bound_pool_start_applies_before_arbitration`, `pool_start_and_stop_same_tick_apply_in_issue_order` | achievable as stated | pass |
+| A11 level restart or change: no pool running, default from first tick | `level_change_stops_attack_pools_and_clears_ledger` | achievable as stated | pass, close equivalent: calls the two unload paths directly rather than driving `App` unload |
+| A12 reload changing `default` reaches a pool using default | `reload_changing_default_profile_reaches_pool_next_tick` | achievable as stated | pass |
+| A13 level digest ignores `budget_profile` | `level_content_digest_ignores_attack_pool_profile` (`runtime_movers.rs`) | achievable as stated | pass |
 
 **Surface**
 
-| AC | Proof | Status |
-|---|---|---|
-| S1 surface example parses identically in TS and Luau, runs as `content/dev`; arena guard in pool; reference slams within 10 s, ≥4 s apart, jab granted during slam; ≤2 ranged turns on three troopers | `scripting_surface_example_parses_identically_in_both_runtimes` (scripting-core) + sim integration `dev_mod_budget_paces_reference_enemies_and_troopers` driving the shipped `content/dev` descriptors headlessly | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| S1 surface example parses identically in TS and Luau, runs as `content/dev`; arena guard in pool; reference slams within 10 s, ≥4 s apart, jab granted during slam; ≤2 ranged turns on three troopers | `scripting_surface_example_parses_identically_in_both_runtimes` (scripting-core) + sim integration `dev_mod_budget_paces_reference_enemies_and_troopers` driving the shipped `content/dev` descriptors headlessly | achievable as stated | pass: `scripting_surface_example_parses_identically_in_both_runtimes`, `dev_mod_budget_paces_reference_enemies_and_troopers` (slams 0.30 / 6.66 / 12.54 s; ranged ≤ 2), `dev_mod_declares_the_surface_attack_tokens_and_arena_profile`, `arena_start_runs_tagged_guards_under_the_arena_profile` |
 
 **Manual**
 
-| AC | Proof | Status |
-|---|---|---|
-| MAN1 `movement-feel` rifle squad relocate/strafe/take over; `closet-reveal` payload without a pile-on; rocket-launched reference enemy keeps facing | owner, in-engine | manual |
-| MAN2 co-op loopback shows the same strafing, directional clips and launch facing | owner, two instances on loopback | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| MAN1 `movement-feel` rifle squad relocate/strafe/take over; `closet-reveal` payload without a pile-on; rocket-launched reference enemy keeps facing | owner, in-engine | manual | outstanding: owner, in-engine |
+| MAN2 co-op loopback shows the same strafing, directional clips and launch facing | owner, two instances on loopback | manual | outstanding: owner, loopback co-op |
 
 **Not an AC: perf row** (Path: "Add a wave-scale stress row for arbitration"). An `#[ignore]`-gated measurement times `arbitrate_attack_turns` at 64 and 128 engaged agents on one target with three tokens, plus a zero-allocation probe on the steady-state pass (`alloc_probe`). It records its numbers in this plan beside the `perf-ai-tick-cost` draft's `sim_ai` baseline, which has no engaged-agent row yet.
 
@@ -202,7 +204,7 @@ Test homes: `crates/ai/src/attack_turns/tests/` (budget, arbitration and facts),
 - **Phases.** *Held*: the gate is full and nothing is granted. *Turnover*: one holder leaves and one waiter is granted each call.
 
 | Wave on one target | Held median / p95 | Turnover median / p95 |
-|---|---|---|
+|---|---|---|---|
 | 64 | 8.3 / 8.8–9.9 µs | 12.4 / 13.2 µs |
 | 128 | 18.4 / 18.9–19.4 µs | 27.1 / 28.1–28.5 µs |
 
@@ -228,3 +230,48 @@ Test homes: `crates/ai/src/attack_turns/tests/` (budget, arbitration and facts),
 | 10 | Preflight, review panel and fix loop; full gate; results column | integrating executor | 1–9 | |
 
 Hot paths touched: the per-tick AI pass (arbitration adds one batch pass; no per-tick allocation in steady state, so turn and waiter vectors are reused scratch on `AiRuntime`), combat-slot scoring (the rotated ring replaces, never adds to, the generated set for the two verbs), and apply (one clip-name compare per brain).
+
+## Review loop
+
+- **Round 1.** Nine lenses over the whole branch: four tracers, two contract verifiers, one adversarial tester and two hygiene reviewers. No 🔴. These were fixed in `cac877bbf`:
+  - An unmarked turn released early on a missing target, breaking the B29 Decision.
+  - An execution could continue after its turn ended.
+  - The 4-turn cap blocked `draws: []` attacks.
+  - Draws compared order-sensitively on reload.
+  - A departed refresh landed in a dead or restarted pool.
+  - A whitespace `member_tag` compiled to a pool with no members.
+  - A Luau `with` dot-call silently dropped fields.
+  - Directional variants chattered at 45°.
+  - `compute.rs` had grown, so the heading block moved to `heading.rs`.
+  - The ring-step constant was duplicated.
+  - Host and client clip picks could diverge.
+  - Docs gaps: the attack-turn reads, the load error, the profile-name grammar and the strafe wording.
+- **Round 2.** Three lenses over the fix diff, fixed in `e568c0181`:
+  - A dropped (held) enemy's kept burst resumed without a turn.
+  - A graph reseat compared attack indices across graphs.
+  - A departed holder's refresh on a pool-stop tick landed nowhere.
+  - The overflow test was missing.
+  - The `with` hover docs showed the dot form.
+- **Round 3.** Two lenses over the round-2 commit, nits only. Fixed in the final polish:
+  - An undrawn burst survived an invalid-path reseat.
+  - Comment wording.
+  - The B20 and B38 assertions were tightened.
+- **Deliberately left** (owner call or follow-up):
+  - **Client walk rate includes knockback.** The host's walk rate excludes knockback; the client's interpolated speed includes it, so a shove quickens a client's stride. Fixing it needs enemy velocity on the wire. Documented at both sites.
+  - **Strafe replan demand.** Strafe re-aims its goal every tick, so a strafer earns a drift replan about every 0.13 s. At about 30 strafers the 4-per-tick drift tier saturates and chasers fall to staleness replans. A fix changes the feel of the orbit, so it is an owner call.
+  - **Reloads cancel windups.** Any reload cancels every projectile windup, because the weapon refresh runs on each generation bump. That predates the branch, and P29 accepts the refresh it spends.
+  - **Removed token fails open.** A reload that removes a token an attack still draws via the spawn-time fallback leaves that attack drawing nothing. It warns once per process.
+  - **Removed profile is silent.** A reload removing a running pool's profile falls back to `default` without a warning; only the level-load warning exists.
+  - **Two weapons on separate tokens cannot overlap.** The weapon controller runs one execution per actor. It already worked that way before this branch.
+  - **Launch facing.** A launch latches the impact yaw once, so switching to travel facing mid-flight slews back to it.
+  - **Restore mid-reposition.** A restore abandons the slot in flight, which is P17's fresh entry.
+  - **An arc of only 0° holds forever,** as M4/M13 specify ("with no slot in the arc it holds").
+  - **Validation nits.** Profile overrides that name no field are accepted; types are wider than validation for `with` placement; TS and Luau differ on non-table arguments.
+  - **The latched P15 rule counts from the frame-end drain under catch-up frames.** This is engine-wide and shared with traps.
+  - **The pool request list is not saved.** It is unreachable today because no save exists. `AttackPoolRequest` derives serde, and the constraint goes into `entity_model.md` §7c at landing.
+- **Landing docs** (`context/lib`):
+  - Flip the "decided, not yet built" markers: `entity_model.md` §7c Engaged motion and Attack budget, `scripting.md` §2 tokens, attack-turn facts, the attack pool member row, and `build_pipeline.md` for `ai_attack_pool`.
+  - Correct `entity_model.md:301`'s strafe wording.
+  - Add the held-ownership exception (a drawn kept burst is cancelled on drop).
+  - Add the pool-request save constraint.
+

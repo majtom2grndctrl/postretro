@@ -511,6 +511,168 @@ fn a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_in_every_posed_trace
     }
 }
 
+// Enclosure takes the gather's lift as an inset (owner rule, an enclosing
+// terminus reads the base). A probe 0.5 mm inside a posed face is not
+// enclosed: its rays keep the per-ray rule, those whose lift leaves the face
+// reading past it, so its depth is not the dark tile and the pose stores its
+// bounce state as for any changed probe. A probe 2 mm inside is enclosed:
+// every lifted gather ray starts in solid, so its depth is the dark tile,
+// and the pose stores no bounce state for it.
+#[test]
+fn a_probe_within_the_lift_of_a_face_keeps_the_per_ray_rule_and_one_past_it_is_enclosed() {
+    use std::collections::HashSet;
+
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+    use postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
+    use postretro_level_format::probe_depth_tiles::bordered_tile;
+    use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+
+    use super::bounce::PosedRadiance;
+    use super::gather::{PosedGather, gather_posed_probes, trace_posed_depth};
+    use super::posed_scene::PosedScene;
+    use crate::bake_control::BakeControl;
+    use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
+    use crate::partition::{Aabb, BspLeaf, BspTree};
+    use crate::sh_bake::{ProbeGridLayout, ShBakeCtx, TileRayTable, probe_gather_directions};
+    use crate::surface_radiance::{PatchRadiance, PatchSet};
+
+    const FAR: f32 = 100.0;
+    let solid = Arc::new(solid(vec![box_brush(DVec3::ZERO, DVec3::ONE)]));
+    let scene = PosedScene::new(Arc::clone(&solid), Terminus::First).expect("posed patches");
+    let occluder = PosedOccluder::new(Arc::clone(&solid));
+    let geometry = geometry_of(&[[
+        [-50.0, -20.0, -50.0],
+        [-50.0, -20.0, 50.0],
+        [50.0, -20.0, 0.0],
+    ]]);
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("bvh");
+    let ctx = RaytracingCtx {
+        bounce_materials: None,
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+    };
+    let tree = BspTree {
+        nodes: Vec::new(),
+        leaves: vec![BspLeaf {
+            face_indices: Vec::new(),
+            bounds: Aabb {
+                min: DVec3::splat(-100.0),
+                max: DVec3::splat(100.0),
+            },
+            is_solid: false,
+            defining_planes: Vec::new(),
+        }],
+    };
+    let exterior = HashSet::new();
+    let static_lights = StaticBakedLights::from_lights(&[]);
+    let animated_lights = AnimatedBakedLights::from_lights(&[]);
+    let sh_ctx = ShBakeCtx {
+        bounce_materials: None,
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+        tree: &tree,
+        exterior_leaves: &exterior,
+        static_lights: &static_lights,
+        animated_lights: &animated_lights,
+        total_light_count: 0,
+    };
+    let patches = PatchSet::try_build(&geometry).expect("static patches");
+    let radiance = PosedRadiance {
+        world: PatchRadiance::zeroed(patches.len()),
+        mover: PatchRadiance::zeroed(scene.patches.len()),
+    };
+    let gather = PosedGather::new(&patches, &radiance, &scene);
+    let directions = probe_gather_directions();
+    let rays = TileRayTable::new(&directions);
+    let dark = bordered_tile(&rays.interior(&[0.0; 256]));
+    // Id 34 as one uncompressed tile of 1.0: the posed gather, black here,
+    // leaves its bar at every texel.
+    let dim = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+    let one = 0x3c00u16.to_le_bytes();
+    let base = OctahedralShVolumeSection {
+        grid_dimensions: [1, 1, 1],
+        tile_dimension: dim,
+        atlas_dimensions: [dim, dim],
+        layer_count: 1,
+        tiles_per_layer: 1,
+        atlas_tiles_per_row: 1,
+        irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+        compact_atlas: one.repeat(4 * (dim * dim) as usize),
+        ..OctahedralShVolumeSection::placeholder()
+    };
+    for (depth_m, enclosed) in [(5.0e-4_f32, false), (2.0e-3, true)] {
+        // `depth_m` inside the box's +x face, deep inside every other.
+        let probe = Vec3::new(1.0 - depth_m, 0.5, 0.5);
+        assert_eq!(solid.encloses(probe), enclosed, "{depth_m} m inside");
+        assert_eq!(scene.encloses(probe), enclosed, "{depth_m} m: the scene");
+        assert_eq!(
+            occluder.encloses(probe),
+            enclosed,
+            "{depth_m} m: the occluder"
+        );
+        assert!(
+            solid.contains(probe),
+            "{depth_m} m: inside by the no-band test"
+        );
+
+        let distances: Vec<f32> = directions
+            .iter()
+            .map(|&dir| gather.sample(&ctx, probe, dir, FAR).1)
+            .collect();
+        assert_eq!(
+            distances.iter().all(|&d| d == 0.0),
+            enclosed,
+            "{depth_m} m: every lifted ray starts in solid exactly when enclosed"
+        );
+        assert!(
+            !occluder.blocks(probe, probe + Vec3::X * 10.0) || enclosed,
+            "{depth_m} m: a segment out through the near face escapes"
+        );
+        let layout = ProbeGridLayout {
+            world_min: DVec3::ZERO,
+            dims: [1, 1, 1],
+            cell_size: [1.0; 3],
+            far_sentinel: FAR,
+            probe_positions: vec![probe.as_dvec3()],
+            validity: vec![1],
+        };
+        let traced = trace_posed_depth(&ctx, &layout, &scene, &BakeControl::unrestricted());
+        assert_eq!(traced.len(), 1, "{depth_m} m: the pose meets the probe");
+        assert_eq!(
+            traced[0].1 == dark,
+            enclosed,
+            "{depth_m} m: the depth is the dark tile exactly when enclosed"
+        );
+
+        let posed = gather_posed_probes(
+            &sh_ctx,
+            &layout,
+            &gather,
+            &base,
+            true,
+            false,
+            &BakeControl::unrestricted(),
+        );
+        let [posed] = posed.as_slice() else {
+            panic!("{depth_m} m: the probe differs from id 34");
+        };
+        assert_eq!(posed.enclosed, enclosed, "{depth_m} m");
+        assert!(posed.difference > posed.bar, "{depth_m} m: past the bar");
+        assert_eq!(
+            posed.tile.is_some(),
+            !enclosed,
+            "{depth_m} m: the state is stored exactly when not enclosed"
+        );
+        assert_eq!(
+            posed.depth.as_ref(),
+            Some(&traced[0].1),
+            "{depth_m} m: the gather bins the depth-only trace's tile"
+        );
+    }
+}
+
 // Id 34's kept later bounces join a pose's running sum one by one, in bounce
 // order, as id 34 adds them. With every `light_bounces` that keeps a tail,
 // 1 (every later bounce is id 34's: the tail alone) through 4 (only id 34's

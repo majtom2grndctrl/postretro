@@ -54,6 +54,8 @@ pub(crate) use gather::compact_slots;
 pub(crate) use lights::{ChannelLightSources, channel_lights};
 pub(crate) use posed_scene::PosedScene;
 pub(crate) use posed_solid::PosedMovers;
+#[cfg(test)]
+pub(crate) use posed_solid::enclosure_inset;
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRamps, channel_section};
 pub(crate) use states::MoverBounceStates;
 pub(crate) use visibility::{JointVisibility, PosedOccluder, joint_soft_visibility};

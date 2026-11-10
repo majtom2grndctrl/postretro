@@ -128,18 +128,40 @@ impl PosedSolid {
     /// Whether `point` lies inside a posed brush or on its surface, by the
     /// brushes' half-spaces alone, with no contact band: a ray lifted to
     /// there starts in solid. Every posed trace reads this one rule at its
-    /// lifted origin, and the enclosing-terminus rule reads it at the
-    /// probe's own position: a pose that contains a probe stores no value
-    /// state for it and reads the base (owner, 2026-11-09).
+    /// lifted origin.
     pub(crate) fn contains(&self, point: Vec3) -> bool {
-        self.contains_point(point.as_dvec3())
+        self.contains_by(point, 0.0)
     }
 
-    fn contains_point(&self, point: DVec3) -> bool {
+    /// Whether `point` lies inside one posed brush by at least `inset`
+    /// metres on every one of that brush's planes: [`Self::contains`]'s
+    /// half-space test with each plane moved `inset` inward. An inset of 0
+    /// is the inside-brush rule itself.
+    pub(crate) fn contains_by(&self, point: Vec3, inset: f64) -> bool {
+        self.contains_point(point.as_dvec3(), inset)
+    }
+
+    /// Whether the pose encloses the probe at `probe`: [`Self::contains_by`]
+    /// at [`enclosure_inset`], so every lifted gather ray from the probe
+    /// starts in solid and its depth is the dark tile. A pose that encloses
+    /// a probe stores no value state for it and reads the base (owner,
+    /// 2026-11-09). A probe on a face or less than the inset inside it is
+    /// not enclosed: its rays keep the per-ray rule, and those whose lift
+    /// escapes read past the face.
+    ///
+    /// The inset holds inside one brush. Where the mover's brushes touch, a
+    /// probe within the inset of the seam is not enclosed even though each
+    /// lifted ray may land in one brush or the other; it keeps the per-ray
+    /// rule. So enclosure always implies every lifted ray starts in solid.
+    pub(crate) fn encloses(&self, probe: Vec3) -> bool {
+        self.contains_by(probe, enclosure_inset(probe))
+    }
+
+    fn contains_point(&self, point: DVec3, inset: f64) -> bool {
         self.pose
             .brushes
             .iter()
-            .any(|brush| in_half_spaces(point, brush))
+            .any(|brush| in_half_spaces(point, brush, inset))
     }
 
     /// Whether the unbounded ray from `origin` along `dir` can come near
@@ -217,7 +239,7 @@ impl PosedSolid {
         if !ray_may_touch_box(o, d, reach, &self.pose.bounds) {
             return false;
         }
-        if self.contains_point(o) {
+        if self.contains_point(o, 0.0) {
             return true;
         }
         self.faces.iter().any(|face| {
@@ -334,12 +356,30 @@ impl PosedMovers {
     }
 }
 
-/// Whether `point` lies inside `brush` or on its surface, with no band.
-fn in_half_spaces(point: DVec3, brush: &PosedBrush) -> bool {
+/// Whether `point` lies inside `brush` by at least `inset` on every plane:
+/// at 0, inside or on its surface, with no band. Plane normals are unit, as
+/// parse builds them, so `inset` is metres.
+fn in_half_spaces(point: DVec3, brush: &PosedBrush, inset: f64) -> bool {
     brush
         .planes
         .iter()
-        .all(|&(normal, distance)| normal.dot(point) - distance <= 0.0)
+        .all(|&(normal, distance)| normal.dot(point) - distance <= -inset)
+}
+
+/// How deep inside one posed brush a probe must lie for the pose to enclose
+/// it ([`PosedSolid::encloses`]): the gather's lift, [`RAY_EPSILON`] along
+/// each ray's unit direction, plus the `f32` rounding of that lifted origin
+/// at the probe's magnitude. Each component of `origin + dir · lift` rounds
+/// by at most half an ulp, under `|x| · 2⁻²⁴`; the allowance takes twice
+/// that on all three axes. So a probe this deep has every lifted gather ray
+/// inside the brush, toward the nearest face included. The direct half's
+/// segments lift twice, along the light's direction and then the segment's,
+/// up to two lifts in all; an enclosed probe traces none, since it keeps
+/// q = 255.
+pub(crate) fn enclosure_inset(probe: Vec3) -> f64 {
+    let lift = f64::from(RAY_EPSILON);
+    let magnitude = f64::from(probe.abs().max_element()) + lift;
+    lift + 3.0_f64.sqrt() * magnitude * f64::from(f32::EPSILON)
 }
 
 fn fold_aabb(hasher: &mut blake3::Hasher, bounds: &Aabb) {

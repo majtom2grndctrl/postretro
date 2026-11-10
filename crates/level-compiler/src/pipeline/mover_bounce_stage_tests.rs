@@ -536,21 +536,22 @@ fn fat_door(text: String) -> String {
 }
 
 // Enclosing terminus (owner, 2026-11-09): a terminus whose posed brushes
-// enclose a probe's position stores no bounce state there, so the probe
-// reads id 34 at it, and a probe enclosed at both termini joins no bounce
-// entry. Its depth still bakes as the inside-brush rule traces it: a probe
-// every one of whose lifted rays starts inside the pose stores the dark
-// tile (every ray at distance 0) at that terminus, so Chebyshev still
-// rejects it at rest. The bounce masks stay tight: each entry's stored
-// masks are exactly its probes' stored termini, non-empty, within the
-// valid mask.
+// enclose a probe's position, inside one brush by at least the gather's
+// lift, stores no bounce state there, so the probe reads id 34 at it, and a
+// probe enclosed at both termini joins no bounce entry. Enclosure is
+// recomputed here from the solids' own half-spaces, never read from the
+// bake. Every lifted ray of an enclosed probe starts inside the pose, so
+// its depth is the dark tile (every ray at distance 0) at that terminus and
+// Chebyshev still rejects it at rest. The bounce masks stay tight: each
+// entry's stored masks are exactly its probes' stored termini, non-empty,
+// within the valid mask.
 #[test]
 fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
     use std::collections::BTreeMap;
 
     use postretro_level_format::probe_depth_tiles::bordered_tile;
 
-    use crate::mover_probe_channel::{BounceBlocks, MoverDirectBake, ProbeCells};
+    use crate::mover_probe_channel::{BounceBlocks, MoverDirectBake, ProbeCells, enclosure_inset};
     use crate::ray_traversal::RAY_EPSILON;
     use crate::sh_bake::{TileRayTable, probe_gather_directions, vec3_from};
 
@@ -580,13 +581,31 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
         let bounce: BTreeMap<u32, _> = states.bounce.iter().map(|p| (p.probe, p)).collect();
         let depth: BTreeMap<u32, _> = states.depth.iter().map(|p| (p.probe, p)).collect();
         let (mut both, mut one, mut other_stored, mut deep) = (0, 0, 0, 0);
+        let (mut band, mut band_dark) = (0, 0);
         for (probe, position) in layout.probe_positions.iter().enumerate() {
             if layout.validity[probe] == 0 {
                 continue;
             }
             let probe = probe as u32;
             let position = vec3_from(*position);
-            let enclosed = [0, 1].map(|k| solids[k].contains(position));
+            // Enclosure from the solids' own half-spaces, inset by the lift.
+            let inset = enclosure_inset(position);
+            let enclosed = [0, 1].map(|k| solids[k].contains_by(position, inset));
+            let lifted = [0, 1].map(|k| {
+                directions
+                    .iter()
+                    .all(|&dir| solids[k].contains(position + dir * RAY_EPSILON))
+            });
+            for k in 0..2 {
+                assert!(
+                    !enclosed[k] || lifted[k],
+                    "probe {probe} terminus {k}: enclosed, yet a lifted ray escapes"
+                );
+                if solids[k].contains(position) && !enclosed[k] {
+                    band += 1;
+                    band_dark += usize::from(lifted[k]);
+                }
+            }
             if enclosed == [false, false] {
                 continue;
             }
@@ -612,26 +631,23 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
                 .get(&probe)
                 .unwrap_or_else(|| panic!("probe {probe}: an enclosing pose keeps its depth"));
             let mut tiles = record.tiles.chunks_exact(dark.len());
-            for k in 0..2 {
-                let tile = record.stored[k].then(|| tiles.next().expect("a stored tile"));
-                if !enclosed[k] {
+            for (k, (&stored, &enclosed)) in record.stored.iter().zip(&enclosed).enumerate() {
+                let tile = stored.then(|| tiles.next().expect("a stored tile"));
+                if !enclosed {
                     continue;
                 }
                 let tile = tile.unwrap_or_else(|| {
                     panic!("probe {probe}: the enclosing terminus {k} stores depth")
                 });
-                let lifted = directions
-                    .iter()
-                    .all(|&dir| solids[k].contains(position + dir * RAY_EPSILON));
-                if lifted {
-                    deep += 1;
-                    assert_eq!(tile, dark.as_slice(), "probe {probe} terminus {k}: dark");
-                }
+                deep += 1;
+                assert_eq!(tile, dark.as_slice(), "probe {probe} terminus {k}: dark");
             }
         }
         eprintln!(
             "fat door: {both} probe(s) enclosed at both termini, {one} at one, \
-             {other_stored} of them storing the other terminus, {deep} dark tile(s)"
+             {other_stored} of them storing the other terminus, {deep} dark tile(s); \
+             {band} (probe, terminus) pair(s) inside within the lift, {band_dark} with \
+             every lifted ray inside"
         );
         assert!(
             both > 0 && one > 0 && deep > 0,
@@ -819,9 +835,11 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
     use std::collections::{BTreeMap, BTreeSet};
 
     use crate::mover_probe_channel::{
-        BOUNCE_FLOOR_LEVELS, compact_slots, compact_tile, display_levels, max_abs_difference,
-        round_trip_error,
+        BOUNCE_FLOOR_LEVELS, compact_slots, compact_tile, display_levels, enclosure_inset,
+        max_abs_difference, round_trip_error,
     };
+    use crate::ray_traversal::RAY_EPSILON;
+    use crate::sh_bake::{probe_gather_directions, vec3_from};
 
     for name in ["mover-closet", "mover-setpiece"] {
         let fixture = crate::fixture_pipeline::load_fixture(name);
@@ -843,6 +861,16 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
             );
             let valid = layout.validity.iter().filter(|&&v| v != 0).count();
             let slots = compact_slots(&layout);
+            // Enclosure from the posed solids' own half-spaces at the probe,
+            // inset by the gather's lift, never the bake's own flag.
+            let posed = PosedMovers::resolve(
+                poses,
+                &fixture.kinematic_movers,
+                &fixture.geometry.texture_names,
+            )
+            .expect("the poses resolve");
+            let directions = probe_gather_directions();
+            let mut enclosed_pairs = 0;
             let dim = base.section.tile_dimension as usize;
             let mut beyond: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
             let mut past_bar: BTreeMap<(u32, usize), BTreeSet<u32>> = BTreeMap::new();
@@ -856,10 +884,25 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                 let bar_set = past_bar
                     .entry((pose.mover_id, pose.terminus.index()))
                     .or_default();
+                let solid = &posed
+                    .movers()
+                    .iter()
+                    .find(|mover| mover.mover_id == pose.mover_id)
+                    .expect("the pose's mover")
+                    .solids[pose.terminus.index()];
                 for probe in &pose.probes {
-                    if probe.enclosed {
+                    let position = vec3_from(layout.probe_positions[probe.probe as usize]);
+                    if solid.contains_by(position, enclosure_inset(position)) {
                         // An enclosing terminus reads id 34 (owner,
                         // 2026-11-09): its dark re-bake is never a state.
+                        assert!(
+                            directions
+                                .iter()
+                                .all(|&dir| solid.contains(position + dir * RAY_EPSILON)),
+                            "{name} probe {}: enclosed, yet a lifted ray escapes",
+                            probe.probe
+                        );
+                        enclosed_pairs += 1;
                         continue;
                     }
                     let tile = probe.tile.as_ref().expect("every tile kept");
@@ -873,6 +916,7 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                     }
                 }
             }
+            eprintln!("{name}: {enclosed_pairs} enclosed (probe, terminus) pair(s) skipped");
             assert_eq!(stored.movers.len(), request.jobs.len());
             for states in &stored.movers {
                 let stored: BTreeSet<u32> = states.bounce.iter().map(|probe| probe.probe).collect();

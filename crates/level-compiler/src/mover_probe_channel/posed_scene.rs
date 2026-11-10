@@ -100,11 +100,12 @@ impl PosedScene {
         self.solid.may_meet_ray(origin, dir)
     }
 
-    /// Whether the pose encloses `probe`: the inside-brush rule's own test
-    /// at the probe's position ([`PosedSolid::contains`]). Such a terminus
-    /// stores no bounce state for the probe; its depth still bakes.
+    /// Whether the pose encloses `probe`: inside one posed brush by at
+    /// least the gather's lift ([`PosedSolid::encloses`]), so every lifted
+    /// gather ray starts in solid. Such a terminus stores no bounce state
+    /// for the probe; its depth still bakes, as the dark tile.
     pub(crate) fn encloses(&self, probe: Vec3) -> bool {
-        self.solid.contains(probe)
+        self.solid.encloses(probe)
     }
 
     /// The pose's nearest hit along `dir` from `origin`, nearer than

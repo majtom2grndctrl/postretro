@@ -591,6 +591,59 @@ fn a_probe_beside_a_face_is_not_enclosed_and_keeps_the_per_ray_rule() {
     assert!(q0 < 255);
 }
 
+// Enclosure takes the gather's lift as an inset: a probe 0.5 mm inside a
+// posed face is not enclosed, so it traces the joint set and stores its
+// per-ray q; one 2 mm inside is enclosed and stores q = 255, though every
+// segment from it is blocked as well. The light sits beyond the box, so
+// every segment crosses it either way.
+#[test]
+fn a_probe_within_the_lift_of_a_face_stores_its_per_ray_q_and_one_past_it_stores_255() {
+    let world = world();
+    let light = point_light(DVec3::new(2.0, 0.0, 4.5), 10.0, 0.6);
+    let probe = world.probe_at([2.0, 0.0, 1.0]);
+    let point = vec3_from(world.layout.probe_positions[probe]);
+    let ctx = world.ctx();
+    let (_, l) = incident_radiance_at_point(&light, point).expect("lit");
+    for (depth_m, enclosed) in [(5.0e-4, false), (2.0e-3, true)] {
+        // The box's −z face sits `depth_m` short of the probe.
+        let block = mover(
+            0,
+            vec![box_brush(
+                DVec3::new(1.5, -0.5, 1.0 - depth_m),
+                DVec3::new(2.5, 0.5, 1.5),
+            )],
+            false,
+        );
+        let poses = poses_of(&[block]);
+        let first = PosedOccluder::new(Arc::clone(
+            &poses.movers()[0].solids[Terminus::First.index()],
+        ));
+        assert_eq!(first.encloses(point), enclosed, "{depth_m} m inside");
+        let joint = joint_soft_visibility(
+            point,
+            l,
+            &light,
+            soft_visibility_seed(probe as u64, 0, 3),
+            DEFAULT_AREA_SAMPLE_COUNT,
+            ProbeEarlyOut::Agreed,
+            |from, to| segment_clear(&ctx, from, to),
+            |from, to| first.blocks(from, to),
+        );
+        assert!(
+            joint.meets_mover() && joint.surviving_byte() < 255,
+            "{depth_m} m: the box blocks the light's samples: {joint:?}"
+        );
+        let bake = world.bake(&poses, &[static_light(&light, 0)]);
+        let ([q0, q1], _) = probe_payload(&world, &bake.lights[0], 0, probe).expect("gated");
+        let expected = if enclosed {
+            255
+        } else {
+            joint.surviving_byte()
+        };
+        assert_eq!((q0, q1), (expected, 255), "{depth_m} m");
+    }
+}
+
 // A sun the posed brushes block stores q < 1, and a spinner,
 // which has no parked pose, stores no entry.
 #[test]

@@ -24,7 +24,9 @@ const STAGE_ID: &str = "mover_probe_direct";
 /// tracer's own segment test ([`super::posed_solid::PosedSolid`]).
 /// 4: a terminus that encloses the probe stores q = 255, the light's
 /// mover-absent term.
-const STAGE_VERSION: u32 = 4;
+/// 5: enclosure takes the gather's lift as an inset: a probe on a face or
+/// less than the lift inside it keeps the per-ray rule.
+const STAGE_VERSION: u32 = 5;
 
 /// What every light's key shares: the occluding world, the probe grid and
 /// the reach decomposition's inputs. Only occlusion enters: vertex

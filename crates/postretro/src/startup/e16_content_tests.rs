@@ -221,7 +221,14 @@ fn dev_mod_loads_clean_with_e16_content() {
         "models/decraniated_low_poly_retro_pixel/model.gltf",
         "the shadow hunter wears the re-rested Decraniated body"
     );
-    assert!(hunter.behavior.as_ref().unwrap().attacks.contains_key("claw"));
+    assert!(
+        hunter
+            .behavior
+            .as_ref()
+            .unwrap()
+            .attacks
+            .contains_key("claw")
+    );
 }
 
 // Every dev-mod weapon names its type: the plasma bolt plasma, the

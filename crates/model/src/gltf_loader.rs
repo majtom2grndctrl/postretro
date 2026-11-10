@@ -3384,9 +3384,18 @@ mod tests {
                     .unwrap_or_else(|| panic!("{name}: clip `{clip}`"))
             };
             let pose = |world: &mut Vec<Mat4>, clip: &str, t: f32| {
-                sample_clip_looped_world(clip_ref(&model, clip), &model.skeleton, t, Loop::Clamp, world);
+                sample_clip_looped_world(
+                    clip_ref(&model, clip),
+                    &model.skeleton,
+                    t,
+                    Loop::Clamp,
+                    world,
+                );
             };
-            fn clip_ref<'a>(model: &'a LoadedModel, name: &str) -> &'a crate::skeleton::AnimationClip {
+            fn clip_ref<'a>(
+                model: &'a LoadedModel,
+                name: &str,
+            ) -> &'a crate::skeleton::AnimationClip {
                 model.clips.iter().find(|c| c.name == name).unwrap()
             }
             let y = |world: &Vec<Mat4>, joint: usize| world[joint].w_axis.y;
@@ -3428,11 +3437,19 @@ mod tests {
                 pose(&mut world, "swipe", t);
                 reach = reach.max(world[root].w_axis.z);
                 pose(&mut world, "smash", t);
-                drift = drift.max(world[root].w_axis.x.abs()).max(world[root].w_axis.z.abs());
+                drift = drift
+                    .max(world[root].w_axis.x.abs())
+                    .max(world[root].w_axis.z.abs());
                 t += 1.0 / 30.0;
             }
-            assert!(reach > 0.3, "{name}: the swipe lunges toward +Z ({reach:.2} m)");
-            assert!(drift < 0.15, "{name}: the smash is pinned in place ({drift:.2} m)");
+            assert!(
+                reach > 0.3,
+                "{name}: the swipe lunges toward +Z ({reach:.2} m)"
+            );
+            assert!(
+                drift < 0.15,
+                "{name}: the smash is pinned in place ({drift:.2} m)"
+            );
         }
     }
 

@@ -18,21 +18,49 @@ pub(crate) use lifecycle::{admit, arbitrate_attack_turns, release_unstarted_gran
 #[cfg(test)]
 pub(crate) use budget::{BudgetTable, TokenBudget};
 
+use std::sync::Arc;
+
 use postretro_entities::EntityId;
 use postretro_entities::components::brain::{AttackPoolId, AttackTokenId, BrainComponent};
 use postretro_foundation::BehaviorGraphDescriptor;
+use postretro_foundation::attack_budget::AttackBudgetVocabulary;
 
 use arbitration::{Arbiter, GroupKey};
 
 /// The attack-turn state the AI runtime keeps across ticks: the tick clock
 /// wait clocks read, the budgets, and reused scratch. Turns themselves live
 /// on brains.
-#[derive(Default)]
 pub(crate) struct AttackTurnRuntime {
     pub(crate) tick: u64,
     pub(crate) budgets: AttackBudgets,
+    /// The committed vocabulary `budgets` was built from.
+    vocabulary: Arc<AttackBudgetVocabulary>,
     pub(crate) previous: PreviousTickLine,
     arbiter: Arbiter,
+}
+
+impl Default for AttackTurnRuntime {
+    fn default() -> Self {
+        let vocabulary = AttackBudgetVocabulary::shared_default();
+        Self {
+            tick: 0,
+            budgets: AttackBudgets::from_vocabulary(&vocabulary),
+            vocabulary,
+            previous: PreviousTickLine::default(),
+            arbiter: Arbiter::default(),
+        }
+    }
+}
+
+impl AttackTurnRuntime {
+    /// Rebuild the budgets when a new vocabulary has been committed. A commit
+    /// replaces the pointer, so an unchanged one costs a pointer compare.
+    pub(crate) fn sync_budgets(&mut self, committed: &Arc<AttackBudgetVocabulary>) {
+        if !Arc::ptr_eq(&self.vocabulary, committed) {
+            self.budgets = AttackBudgets::from_vocabulary(committed);
+            self.vocabulary = Arc::clone(committed);
+        }
+    }
 }
 
 /// The pool an enemy takes turns in. Every enemy is in the default pool until

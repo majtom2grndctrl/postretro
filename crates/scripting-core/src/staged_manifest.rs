@@ -11,8 +11,8 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    PlayerEventSite, drain_audio_profile_js, drain_audio_profile_lua,
-    drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
+    PlayerEventSite, drain_attack_budgets_js, drain_attack_budgets_lua, drain_audio_profile_js,
+    drain_audio_profile_lua, drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
     drain_defense_vocabulary_js, drain_defense_vocabulary_lua, drain_faction_sentiment_decay_js,
     drain_faction_sentiment_decay_lua, drain_faction_sentiments_js, drain_faction_sentiments_lua,
     drain_factions_js, drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js,
@@ -364,6 +364,7 @@ fn run_staged_manifest_build(
         loading: manifest.loading,
         store_declarations: manifest.store_declarations,
         defense: manifest.defense,
+        attack_budgets: manifest.attack_budgets,
         dependency_paths,
     }))
 }
@@ -764,13 +765,19 @@ fn manifest_from_js_value<'js>(
             "mod-init: `{source_path}` default mod manifest export damage vocabulary invalid: {error}"
         ),
     })?;
-    crate::runtime::check_entity_defense_references(&entities, &defense).map_err(|error| {
-        ScriptError::InvalidArgument {
+    let attack_budgets =
+        drain_attack_budgets_js(ctx, &obj).map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export attack budget invalid: {error}"
+            ),
+        })?;
+    crate::runtime::check_entity_defense_references(&entities, &defense, &attack_budgets).map_err(
+        |error| ScriptError::InvalidArgument {
             reason: format!(
                 "mod-init: `{source_path}` default mod manifest export invalid: {error}"
             ),
-        }
-    })?;
+        },
+    )?;
 
     Ok(ModManifestResult {
         name,
@@ -806,6 +813,7 @@ fn manifest_from_js_value<'js>(
         player_events,
         store_declarations,
         defense,
+        attack_budgets,
     })
 }
 
@@ -1155,11 +1163,17 @@ fn run_staged_mod_init_luau(
                 "mod-init: `{source_path}` returned mod manifest damage vocabulary invalid: {error}"
             ),
         })?;
-    crate::runtime::check_entity_defense_references(&entities, &defense).map_err(|error| {
-        ScriptError::InvalidArgument {
+    let attack_budgets =
+        drain_attack_budgets_lua(&table).map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest attack budget invalid: {error}"
+            ),
+        })?;
+    crate::runtime::check_entity_defense_references(&entities, &defense, &attack_budgets).map_err(
+        |error| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
-        }
-    })?;
+        },
+    )?;
 
     Ok(ModManifestResult {
         name,
@@ -1195,12 +1209,17 @@ fn run_staged_mod_init_luau(
         player_events,
         store_declarations,
         defense,
+        attack_budgets,
     })
 }
 
 #[cfg(test)]
 #[path = "staged_manifest/defense_manifest_tests.rs"]
 mod defense_manifest_tests;
+
+#[cfg(test)]
+#[path = "staged_manifest/attack_budget_manifest_tests.rs"]
+mod attack_budget_manifest_tests;
 
 #[cfg(test)]
 #[path = "staged_manifest/attack_turn_read_tests.rs"]

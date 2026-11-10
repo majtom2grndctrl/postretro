@@ -11,6 +11,7 @@ use postretro_entities::components::brain::ResolvedDraws;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor,
 };
+use postretro_foundation::attack_budget::AttackBudgetVocabulary;
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
     BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType, ResolutionMode,
@@ -128,6 +129,9 @@ impl BrainEntityPrograms {
 
 /// The evaluator's programs and reusable live binding scopes.
 pub(crate) struct BrainPrograms {
+    /// The committed attack-token vocabulary every entry's draws resolved
+    /// against. A new commit re-resolves them without reseating any brain.
+    attack_budgets: Arc<AttackBudgetVocabulary>,
     scope: BrainScope,
     candidate_scope: CandidateScope,
     entries: HashMap<EntityId, BrainEntityPrograms>,
@@ -140,6 +144,7 @@ pub(crate) struct BrainPrograms {
 impl BrainPrograms {
     pub(crate) fn new() -> Self {
         Self {
+            attack_budgets: AttackBudgetVocabulary::shared_default(),
             scope: BrainScope::for_validation(),
             candidate_scope: CandidateScope::for_validation(),
             entries: HashMap::new(),
@@ -205,6 +210,11 @@ impl BrainPrograms {
         descriptor_generation: u64,
         warned: &mut HashSet<String>,
     ) {
+        let committed = registry.attack_budgets();
+        let budgets_changed = !Arc::ptr_eq(&self.attack_budgets, committed);
+        if budgets_changed {
+            self.attack_budgets = Arc::clone(committed);
+        }
         self.live.clear();
         for (entity, value) in registry.iter_with_kind(ComponentKind::Brain) {
             let ComponentValue::Brain(brain) = value else {
@@ -227,15 +237,23 @@ impl BrainPrograms {
                         Arc::clone(&brain.graph),
                         descriptors,
                         descriptor_generation,
+                        &self.attack_budgets,
                         warned,
                     ),
                 );
-            } else if let Some(entry) = self.entries.get_mut(&entity)
-                && entry.descriptor_generation != descriptor_generation
-            {
+                continue;
+            }
+            let Some(entry) = self.entries.get_mut(&entity) else {
+                continue;
+            };
+            if entry.descriptor_generation != descriptor_generation {
                 entry.resolved_projectile_attacks =
                     resolve_projectile_attacks(&brain.graph, descriptors, warned);
                 entry.descriptor_generation = descriptor_generation;
+            }
+            if budgets_changed {
+                entry.attack_draws =
+                    resolve_attack_draws(&brain.graph, &self.attack_budgets, warned);
             }
         }
         self.entries.retain(|entity, _| self.live.contains(entity));
@@ -250,6 +268,7 @@ pub(super) fn bind_graph(
     graph: Arc<BehaviorGraphDescriptor>,
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
+    attack_budgets: &AttackBudgetVocabulary,
     warned: &mut HashSet<String>,
 ) -> BrainEntityPrograms {
     let mut envelopes = Vec::new();
@@ -259,11 +278,7 @@ pub(super) fn bind_graph(
         .as_ref()
         .and_then(|filter| bind_candidate_filter(scope, candidate_scope, filter, warned));
     let resolved_projectile_attacks = resolve_projectile_attacks(&graph, descriptors, warned);
-    let attack_draws = graph
-        .attacks
-        .values()
-        .map(crate::attack_turns::resolve_attack_draws)
-        .collect();
+    let attack_draws = resolve_attack_draws(&graph, attack_budgets, warned);
     BrainEntityPrograms {
         graph,
         descriptor_generation,
@@ -272,6 +287,19 @@ pub(super) fn bind_graph(
         resolved_projectile_attacks,
         attack_draws,
     }
+}
+
+/// Each attack's draws, in the graph's attack-name order.
+fn resolve_attack_draws(
+    graph: &BehaviorGraphDescriptor,
+    attack_budgets: &AttackBudgetVocabulary,
+    warned: &mut HashSet<String>,
+) -> Vec<ResolvedDraws> {
+    graph
+        .attacks
+        .values()
+        .map(|attack| crate::attack_turns::resolve_attack_draws(attack, attack_budgets, warned))
+        .collect()
 }
 
 fn resolve_projectile_attacks(
@@ -496,6 +524,7 @@ mod tests {
             engagement_radius: None,
             standoff_distance: None,
             damage_type: None,
+            draws: None,
         }
     }
 

@@ -2,25 +2,14 @@
 // attack draws.
 // See: context/lib/entity_model.md §7c (Attack budget)
 
+use std::collections::HashSet;
+
 use postretro_entities::components::brain::{
-    AttackPoolId, AttackTokenId, ResolvedDraw, ResolvedDraws,
+    AttackPoolId, AttackTokenId, MAX_ATTACK_DRAWS, ResolvedDraw, ResolvedDraws,
 };
 use postretro_foundation::AttackParams;
-
-/// The SDK's `defaultToken`: what an attack without `draws` draws.
-pub(crate) const DEFAULT_TOKEN: AttackTokenId = AttackTokenId(0);
-/// `defineAttackToken`'s default `limit`, which `defaultToken` declares.
-pub(crate) const DEFAULT_TOKEN_LIMIT: u32 = 3;
-
-/// One token's budget on one target.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TokenBudget {
-    /// How much of the token may be drawn on one target at once.
-    pub(crate) limit: u32,
-    /// How long a spent draw stays counted after its turn ends. Carried as
-    /// data; refresh counting lands with the budget ledger.
-    pub(crate) refresh_ms: f32,
-}
+use postretro_foundation::attack_budget::AttackBudgetVocabulary;
+pub(crate) use postretro_foundation::attack_budget::TokenBudget;
 
 /// One profile's budgets, indexed by token id.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,13 +22,9 @@ impl BudgetTable {
         Self { tokens }
     }
 
-    /// The budgets a mod with no declarations runs under: `defaultToken`
-    /// alone, at the SDK default.
-    pub(crate) fn sdk_default() -> Self {
-        Self::new(vec![TokenBudget {
-            limit: DEFAULT_TOKEN_LIMIT,
-            refresh_ms: 0.0,
-        }])
+    /// Each registered token at its declared budget.
+    pub(crate) fn declared(vocabulary: &AttackBudgetVocabulary) -> Self {
+        Self::new(vocabulary.declared_budgets().collect())
     }
 
     pub(crate) fn token_count(&self) -> usize {
@@ -64,6 +49,11 @@ impl AttackBudgets {
         Self { default }
     }
 
+    /// The default pool runs at the declared budgets until profiles apply.
+    pub(crate) fn from_vocabulary(vocabulary: &AttackBudgetVocabulary) -> Self {
+        Self::new(BudgetTable::declared(vocabulary))
+    }
+
     /// Only the default pool's `default` profile exists until attack pools
     /// name profiles.
     pub(crate) fn for_pool(&self, _pool: AttackPoolId) -> &BudgetTable {
@@ -78,16 +68,33 @@ impl AttackBudgets {
 
 impl Default for AttackBudgets {
     fn default() -> Self {
-        Self::new(BudgetTable::sdk_default())
+        Self::from_vocabulary(&AttackBudgetVocabulary::default())
     }
 }
 
-/// THE draw-resolution chokepoint: what one attack draws. Until mods declare
-/// tokens and attacks list `draws`, every attack draws one `defaultToken`.
-pub(crate) fn resolve_attack_draws(_attack: &AttackParams) -> ResolvedDraws {
-    ResolvedDraws::from_slice(&[ResolvedDraw {
-        token: DEFAULT_TOKEN,
-        cost: 1,
-    }])
-    .expect("one draw fits the inline draw list")
+/// THE draw-resolution chokepoint: what one attack draws, as token ids in the
+/// registered vocabulary. An attack without `draws` draws one `defaultToken`.
+/// Runs at bind time, never per tick. A reference naming no registered token
+/// (stale content load validation never saw) warns once and is left out.
+pub(crate) fn resolve_attack_draws(
+    attack: &AttackParams,
+    vocabulary: &AttackBudgetVocabulary,
+    warned: &mut HashSet<String>,
+) -> ResolvedDraws {
+    let resolved: Vec<ResolvedDraw> = vocabulary
+        .resolve_draws(attack.draws.as_deref(), |token| {
+            if warned.insert(format!("attack-draw:{token}")) {
+                log::warn!(
+                    "[AI] an attack draws unregistered attack token `{token}`; the draw is ignored"
+                );
+            }
+        })
+        .into_iter()
+        .take(MAX_ATTACK_DRAWS)
+        .map(|(token, cost)| ResolvedDraw {
+            token: AttackTokenId(token),
+            cost,
+        })
+        .collect();
+    ResolvedDraws::from_slice(&resolved).expect("draw lists are capped at MAX_ATTACK_DRAWS")
 }

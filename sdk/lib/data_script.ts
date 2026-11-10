@@ -46,6 +46,8 @@ export type {
   PlayerEventReaction,
 } from "./data_script/player_events";
 export { defineTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
+import { attackTokenDeclarationOf } from "./data_script/attack_budget";
+export { defaultToken, defineAttackToken } from "./data_script/attack_budget";
 export type {
   TriggerEventDescriptor,
   TriggerEventReaction,
@@ -848,6 +850,9 @@ export function defineMod(
   }
   if (config.damageTypes !== undefined) {
     manifest.damageTypes = config.damageTypes.map((entry) => declarationOf(damageTypeDeclarations, entry));
+  }
+  if (config.attackTokens !== undefined) {
+    manifest.attackTokens = config.attackTokens.map(attackTokenDeclarationOf);
   }
   return manifest as import("postretro").ModManifest;
 }

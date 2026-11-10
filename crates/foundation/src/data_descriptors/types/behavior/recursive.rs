@@ -898,6 +898,13 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
         if let Some(sound) = attack.sound.as_deref() {
             validate_sound_key(&format!("components.behavior.attacks.{name}.sound"), sound)?;
         }
+        if let Some(draws) = &attack.draws {
+            crate::attack_budget::check_draw_shapes(
+                &format!("components.behavior.attacks.{name}.draws"),
+                draws,
+            )
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+        }
     }
     Ok(())
 }
@@ -983,6 +990,7 @@ mod tests {
                     engagement_radius: Some(3.0),
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             )]),
             engagement_radius: Some(2.0),
@@ -1062,6 +1070,7 @@ mod tests {
                 engagement_radius: None,
                 standoff_distance: Some(0.0),
                 damage_type: None,
+                draws: None,
             },
         )]);
 
@@ -1127,6 +1136,7 @@ mod tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
             (
@@ -1140,6 +1150,7 @@ mod tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
             (
@@ -1153,6 +1164,7 @@ mod tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
         ] {

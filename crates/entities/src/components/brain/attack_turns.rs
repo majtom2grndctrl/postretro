@@ -5,8 +5,8 @@
 use crate::registry::EntityId;
 
 /// Most tokens one attack may draw. Draw lists are stored inline so a brain
-/// clone never allocates; registration rejects an attack drawing more.
-pub const MAX_ATTACK_DRAWS: usize = 8;
+/// clone never allocates; load rejects an attack drawing more.
+pub const MAX_ATTACK_DRAWS: usize = postretro_foundation::attack_budget::MAX_ATTACK_DRAWS;
 
 /// Most turns one enemy holds at once. No two of its turns share a token, so
 /// this bounds the distinct tokens (plus undrawn attacks) one enemy can have

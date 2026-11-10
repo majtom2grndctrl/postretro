@@ -425,8 +425,8 @@ fn sdk_attack_params_discriminate_weapon_and_contact_entries() {
     ))
     .expect("read committed postretro.d.luau");
 
-    let ts_attack_union = "export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };";
-    let luau_attack_union = "export type AttackParams = { weapon: never?, damage: number, damageType: DamageType?, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, damageType: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }";
+    let ts_attack_union = "export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] };";
+    let luau_attack_union = "export type AttackParams = { weapon: never?, damage: number, damageType: DamageType?, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string?, draws: {AttackToken | AttackTokenRef}? } | { weapon: string, damage: never?, damageType: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string?, draws: {AttackToken | AttackTokenRef}? }";
 
     assert!(
         generated_ts.contains(ts_attack_union) && committed_ts.contains(ts_attack_union),
@@ -436,6 +436,48 @@ fn sdk_attack_params_discriminate_weapon_and_contact_entries() {
         generated_luau.contains(luau_attack_union) && committed_luau.contains(luau_attack_union),
         "Luau must expose mutually exclusive contact and weapon attack entries"
     );
+}
+
+// Row A8 (TypeScript typo clause): a draw is a token handle or a reference
+// built from one, never a string, so a misspelled token is an unresolved
+// name in TypeScript rather than a string that only load catches.
+#[test]
+fn sdk_attack_draws_admit_token_handles_and_never_strings() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    for (generated, draws) in [
+        (
+            generate_typescript(&registry),
+            "draws?: (AttackToken | AttackTokenRef)[]",
+        ),
+        (
+            generate_luau(&registry),
+            "draws: {AttackToken | AttackTokenRef}?",
+        ),
+    ] {
+        let attack_params = generated
+            .lines()
+            .find(|line| line.contains("export type AttackParams ="))
+            .expect("AttackParams is emitted");
+        assert_eq!(
+            attack_params.matches(draws).count(),
+            2,
+            "both attack shapes declare `{draws}`"
+        );
+        for clause in attack_params.split("draws").skip(1) {
+            let element = clause.split(['}', ';', ',']).next().unwrap_or_default();
+            assert!(
+                !element.contains("string"),
+                "`draws` admits no string: {element}"
+            );
+        }
+        for token_type in ["type AttackToken =", "type AttackTokenRef ="] {
+            assert!(generated.contains(token_type), "`{token_type}` is declared");
+        }
+    }
 }
 
 /// Map members reach authors only through `getMapEntities`, whose kind union

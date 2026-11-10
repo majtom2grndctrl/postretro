@@ -117,6 +117,11 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "DamageType" => "DamageType".to_string(),
         "DefenseLayerEntry" => "DefenseLayerEntry".to_string(),
         "DefenseResistMap" => "{ readonly [damageType: string]: NumberValue }".to_string(),
+        "AttackToken" => "AttackToken".to_string(),
+        "AttackBudgetProfiles" => {
+            "{ readonly [profile: string]: ReadonlyArray<AttackToken | AttackTokenRef> }"
+                .to_string()
+        }
         "BehaviorGraphDescriptor" => "BehaviorGraphDescriptor".to_string(),
         "BehaviorGraphEnvelope" => "BehaviorGraphEnvelope".to_string(),
         "BehaviorActivityDescriptor" => "BehaviorActivityDescriptor".to_string(),
@@ -333,6 +338,8 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "DamageType" => "DamageType".to_string(),
         "DefenseLayerEntry" => "DefenseLayerEntry".to_string(),
         "DefenseResistMap" => "{ [string]: NumberValue }".to_string(),
+        "AttackToken" => "AttackToken".to_string(),
+        "AttackBudgetProfiles" => "{ [string]: {AttackToken | AttackTokenRef} }".to_string(),
         "BehaviorGraphDescriptor" => "BehaviorGraphDescriptor".to_string(),
         "BehaviorGraphEnvelope" => "BehaviorGraphEnvelope".to_string(),
         "BehaviorActivityDescriptor" => "BehaviorActivityDescriptor".to_string(),

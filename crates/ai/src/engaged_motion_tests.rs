@@ -75,6 +75,7 @@ fn shoot_attack() -> BTreeMap<String, AttackParams> {
             engagement_radius: None,
             standoff_distance: None,
             damage_type: None,
+            draws: None,
         },
     )])
 }

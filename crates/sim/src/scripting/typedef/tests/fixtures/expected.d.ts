@@ -800,8 +800,8 @@ declare module "postretro" {
     attack: string;
   };
 
-  /** One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. */
-  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };
+  /** One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or `token.with({ cost })`; omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once. */
+  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] };
 
   /** How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`. */
   export type PatrolMode =
@@ -1714,6 +1714,10 @@ declare module "postretro" {
     damageTypes?: ReadonlyArray<DamageType>;
     /** The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies. */
     defaultDamageType?: DamageType;
+    /** Attack tokens from `defineAttackToken(...)`, each carrying its default budget. Optional; the SDK's `defaultToken` is always registered and is never listed. An attack's `draws` name only a listed token or `defaultToken`; two entries with one name, a token named `default`, an entry that is not a token handle, or a `limit` that is not an integer of at least 1 or a `refreshMs` that is not a finite number of at least 0 fails load. */
+    attackTokens?: ReadonlyArray<AttackToken>;
+    /** Budget profiles keyed by name, each a list of `token.with({ limit?, refreshMs? })` overrides; a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load. */
+    attackBudgets?: { readonly [profile: string]: ReadonlyArray<AttackToken | AttackTokenRef> };
     /** Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
@@ -2748,6 +2752,24 @@ declare module "postretro" {
   /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+
+  /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
+  export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
+  /** Fields a token reference carries. In an attack's `draws`: `cost`, an integer of at least 1 (default 1). In an `attackBudgets` profile: `limit` and `refreshMs`, overriding the declared budget. A field in the other place rejects load. */
+  export type AttackTokenFields = { readonly cost?: number; readonly limit?: number; readonly refreshMs?: number };
+  /** A registered attack token. It crosses the manifest as `{ kind, name }`; its budget rides the declaration `defineMod` resolves. `with` builds a reference carrying fields. */
+  export type AttackToken = {
+    readonly kind: "attackToken";
+    readonly name: string;
+    with(fields: AttackTokenFields): AttackTokenRef;
+  };
+  /** A token reference with fields, built by `token.with({ ... })`. It crosses as `{ token, ...fields }`. */
+  export type AttackTokenRef = { readonly token: AttackToken } & AttackTokenFields;
+  /** The SDK's attack token at the default budget: what an attack without `draws` draws. Every mod has it and never lists it in `attackTokens`; a profile may override it. */
+  export const defaultToken: AttackToken;
+  /** Declare an attack token by its default budget. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ attackTokens: [token] })`, then draw it from attacks' `draws`. */
+  export function defineAttackToken(budget?: AttackTokenBudget): AttackToken;
+  export function defineAttackToken(name: string, budget?: AttackTokenBudget): AttackToken;
 
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;

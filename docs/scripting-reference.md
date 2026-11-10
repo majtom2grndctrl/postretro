@@ -56,7 +56,7 @@ the manifest lacks any required field.
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType` and `defineDefenseLayer` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
+**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer` and `defineAttackToken` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -645,6 +645,91 @@ Each new persisted slot needs a durable identity: run
 `bin/postretro-tool mint-identity <mod>` and ship the updated `identity.json`.
 Pair shields with a `plasma` type that strips them (`{ shield: 1.5 }`) and
 armor with a `corrosive` one (`{ armor: 2 }`) to give each weapon a job.
+
+---
+
+## Attack tokens and budgets
+
+An enemy attack starts only while its enemy holds a turn for it, so a group
+takes turns instead of piling on. An **attack token** is what a turn draws:
+each target allows so much of each token at once. You declare tokens, list
+them in `defineMod`, and say what each attack draws.
+
+### Declaring and registering
+
+```typescript
+// scripts/budget.ts — each object is the token's default budget
+import { defineAttackToken } from "postretro";
+export const melee  = defineAttackToken({ limit: 3 });
+export const ranged = defineAttackToken({ limit: 2 });
+export const heavy  = defineAttackToken({ limit: 1, refreshMs: 4000 });
+
+// start-script.ts
+export default defineMod({
+  /* … */
+  attackTokens: [melee, ranged, heavy],
+  attackBudgets: {
+    arena: [melee.with({ limit: 1 }), ranged.with({ limit: 1 })],
+  },
+});
+```
+
+Luau passes each name explicitly and calls `with` as a method:
+`Postretro.defineAttackToken("heavy", { limit = 1, refreshMs = 4000 })`,
+`melee:with({ limit = 1 })`.
+
+- **`limit`** (default 3) is how much of the token may be drawn on one target
+  at once: an integer of at least 1. Every target has its own allowance, so
+  each co-op player, NPC ally and infighting monster counts separately.
+- **`refreshMs`** (default 0) is how long a spent draw stays counted after
+  its turn ends, however it ends: a finite number of at least 0. `heavy` above
+  lands one heavy attack, then stays shut 4 s while lighter attacks keep
+  drawing `melee`.
+- **`defaultToken`** is the SDK's token at the default budget. An attack
+  without `draws` draws it, so enemies take turns with no setup. Every mod has
+  it: never list it in `attackTokens`, and never declare a token named
+  `default`.
+- **Names** follow the damage-type rules: from the `const` binding in
+  TypeScript, 1–64 bytes of ASCII letters, digits, `_` and `-`. A handle
+  crosses as `{ kind, name }`; a bare string (`"melee"`) is not a token.
+
+### Draws
+
+An attack's `draws` lists the tokens it takes. A token alone draws one;
+`token.with({ cost })` draws `cost` (an integer of at least 1).
+
+```typescript
+attacks: {
+  jab:  { draws: [melee], damage: 8, maxRange: 2, cooldownMs: 1200 },
+  slam: { draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800 },
+  chip: { draws: [], damage: 2, maxRange: 2, cooldownMs: 400 },
+}
+```
+
+The slam counts two against `melee` and one against `heavy`, while jabs keep
+queuing beside it. A request is granted only when every token it draws has
+room; the enemy that has waited longest goes first. `draws: []` opts out: the
+attack is never counted and never waits, which suits fodder that chips while
+heavies take turns. An attack draws at most 8 tokens, each once.
+
+### Profiles
+
+`attackBudgets` declares named profiles, each a list of overrides in the same
+shape: `token.with({ limit, refreshMs })`. A profile changes only the fields it
+names, and a token it leaves out keeps its declared budget. A map's attack
+pools select a profile by name; enemies in no running pool use `default`,
+which is the declared budgets unless you declare it. A profile may override
+`defaultToken` too.
+
+### Load errors
+
+Each of these fails load and names the key path: a `limit` or `cost` that is
+not an integer of at least 1; a `refreshMs` that is negative or not finite; a
+field in the wrong place (`cost` in a profile, `limit` or `refreshMs` in a
+draw); one token drawn twice by one attack or overridden twice by one profile;
+a bare string, a handle of another kind, or a token `attackTokens` does not
+list; two tokens with one name; `defaultToken`, or a token named `default`, in
+`attackTokens`; and an attack drawing more than 8 tokens.
 
 ---
 
@@ -1619,6 +1704,9 @@ slam: { damage: 8, damageType: ballistic, maxRange: 2, cooldownMs: 1200 }
 
 `damageType` is an optional damage-type handle beside `damage`; omitted, the
 hit takes the mod's `defaultDamageType`.
+
+Either form may list `draws`, the attack tokens a turn for it takes; omitted,
+it draws `defaultToken`. See [Attack tokens and budgets](#attack-tokens-and-budgets).
 
 Use the weapon form when the attack should use a weapon descriptor, including a
 traveling projectile. `weapon` supplies the damage, range, and cooldown; keep

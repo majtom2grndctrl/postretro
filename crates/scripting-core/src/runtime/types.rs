@@ -344,13 +344,18 @@ pub struct ModManifestResult {
     /// `defaultDamageType`. Every descriptor's layer and resist names were
     /// checked against it before this result was returned.
     pub defense: postretro_foundation::defense::DefenseVocabulary,
+    /// The registered attack tokens and budget profiles: `attackTokens` and
+    /// `attackBudgets`. Every attack's `draws` were checked against it
+    /// before this result was returned.
+    pub attack_budgets: postretro_foundation::attack_budget::AttackBudgetVocabulary,
 }
 
-/// Check every descriptor's layer and resist names against the registered
-/// vocabulary, naming the failing key path.
+/// Check every descriptor's layer and resist names, and every attack's
+/// `draws`, against the registered vocabularies, naming the failing key path.
 pub(crate) fn check_entity_defense_references(
     entities: &[EntityTypeDescriptor],
     vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+    attack_budgets: &postretro_foundation::attack_budget::AttackBudgetVocabulary,
 ) -> Result<(), String> {
     for (index, descriptor) in entities.iter().enumerate() {
         let components = format!("entities[{index}].components");
@@ -383,6 +388,10 @@ pub(crate) fn check_entity_defense_references(
                         handle,
                     )?;
                 }
+                attack_budgets.check_draws(
+                    &format!("{components}.behavior.attacks.{name}.draws"),
+                    attack.draws.as_deref(),
+                )?;
             }
         }
     }
@@ -892,6 +901,7 @@ mod guard_attack_turn_read_tests {
                 standoff_distance: None,
                 sound: None,
                 damage_type: None,
+                draws: None,
             },
         )]);
         let guard = |name: &str| {

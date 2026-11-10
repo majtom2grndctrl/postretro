@@ -422,6 +422,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: None,

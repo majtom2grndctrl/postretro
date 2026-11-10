@@ -6,6 +6,7 @@ mod budget;
 mod facts;
 mod lifetime;
 mod release;
+mod tokens;
 
 use super::*;
 use crate::attack_turns::{AttackBudgets, BudgetTable, TokenBudget, attack_index};
@@ -119,6 +120,7 @@ fn contact(damage: f32, cooldown_ms: f32) -> AttackParams {
         engagement_radius: None,
         standoff_distance: None,
         damage_type: None,
+        draws: None,
     }
 }
 
@@ -132,6 +134,7 @@ fn weapon(name: &str) -> AttackParams {
         engagement_radius: None,
         standoff_distance: None,
         damage_type: None,
+        draws: None,
     }
 }
 

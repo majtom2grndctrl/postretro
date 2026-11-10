@@ -457,6 +457,8 @@ mod tests {
                 "defineStore",
                 "defineDefenseLayer",
                 "defineDamageType",
+                "defineAttackToken",
+                "defaultToken",
                 "read",
                 "fromRuntime",
                 "set",

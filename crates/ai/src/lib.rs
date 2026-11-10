@@ -488,6 +488,7 @@ where
         turns,
     } = runtime;
     turns.tick = turns.tick.wrapping_add(1);
+    turns.sync_budgets(registry.attack_budgets());
     programs.sync(registry, descriptors, descriptor_generation, warned);
     weapons.sync(registry, programs, |actor| {
         host.is_quiescent(registry, actor)

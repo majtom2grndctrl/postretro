@@ -1393,6 +1393,8 @@ export type ModManifestInput = {
   defenseLayers: {DefenseLayer}?,
   damageTypes: {DamageType}?,
   defaultDamageType: DamageType?,
+  attackTokens: {AttackToken}?,
+  attackBudgets: { [string]: {AttackToken | AttackTokenRef} }?,
 }
 
 --- Build a frozen state-store handle. Pure: calling it performs no FFI and
@@ -1426,6 +1428,32 @@ declare function defineDefenseLayer(name: string, options: {}?): DefenseLayer
 --- Declare a damage type by its matrix. Luau passes the name explicitly.
 --- Register it with `defineMod({ damageTypes = { type } })`. `options` is reserved.
 declare function defineDamageType(name: string, matrix: DamageTypeMatrix, options: {}?): DamageType
+--- A token's default budget on one target. `limit`: how much of it may be
+--- drawn on one target at once, an integer of at least 1 (default 3).
+--- `refreshMs`: how long a spent draw stays counted after its turn ends, a
+--- finite number of at least 0 (default 0).
+export type AttackTokenBudget = { limit: number?, refreshMs: number? }
+--- Fields a token reference carries: `cost` in an attack's `draws` (an integer
+--- of at least 1, default 1); `limit` and `refreshMs` in an `attackBudgets`
+--- profile. A field in the other place rejects load.
+export type AttackTokenFields = { cost: number?, limit: number?, refreshMs: number? }
+--- A registered attack token. It crosses the manifest as `{ kind, name }`; its
+--- budget rides the declaration `defineMod` resolves. `token:with({ ... })`
+--- builds a reference carrying fields.
+export type AttackToken = {
+  kind: "attackToken",
+  name: string,
+  with: (self: AttackToken, fields: AttackTokenFields) -> AttackTokenRef,
+}
+--- A token reference with fields, built by `token:with({ ... })`.
+export type AttackTokenRef = { token: AttackToken, cost: number?, limit: number?, refreshMs: number? }
+--- The SDK's attack token at the default budget: what an attack without
+--- `draws` draws. Every mod has it and never lists it in `attackTokens`; a
+--- profile may override it.
+declare defaultToken: AttackToken
+--- Declare an attack token by its default budget. Luau passes the name
+--- explicitly. Register it with `defineMod({ attackTokens = { token } })`.
+declare function defineAttackToken(name: string, budget: AttackTokenBudget?): AttackToken
 
 --- Lift a number or boolean state ref into the fluent impact-expression algebra.
 declare read: ((ref: StateRef<number>) -> NumberRef) & ((ref: StateRef<boolean>) -> BoolRef)

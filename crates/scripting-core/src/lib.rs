@@ -41,6 +41,7 @@ pub mod ir {
     mod ui_predicate_parity_tests;
 }
 
+pub mod attack_budget_vocabulary;
 #[cfg(test)]
 mod defense_read_tests;
 pub mod defense_vocabulary;

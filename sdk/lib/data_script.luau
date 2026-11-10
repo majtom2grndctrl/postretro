@@ -1046,8 +1046,13 @@ end
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
-function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any? }): T
-  if config.stores == nil and config.defenseLayers == nil and config.damageTypes == nil then
+function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any?, attackTokens: any? }): T
+  if
+    config.stores == nil
+    and config.defenseLayers == nil
+    and config.damageTypes == nil
+    and config.attackTokens == nil
+  then
     return config
   end
 
@@ -1069,6 +1074,13 @@ function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: a
   manifest.stores = resolve(config.stores, storeDeclarations)
   manifest.defenseLayers = resolve(config.defenseLayers, defenseLayerDeclarations)
   manifest.damageTypes = resolve(config.damageTypes, damageTypeDeclarations)
+  if config.attackTokens ~= nil then
+    local resolved = {}
+    for key, entry in pairs(config.attackTokens) do
+      resolved[key] = dataScriptParts.attackBudget.attackTokenDeclarationOf(entry)
+    end
+    manifest.attackTokens = resolved
+  end
   return manifest
 end
 
@@ -1308,6 +1320,7 @@ end
 -- builders declared above; `data_script_export_inventory_matches_returned_sdk_fields`
 -- pins the merged set.
 for _, part in ipairs({
+  dataScriptParts.attackBudget,
   dataScriptParts.playerEvents,
   dataScriptParts.commands,
   dataScriptParts.reactions,

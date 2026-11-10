@@ -895,6 +895,9 @@ pub struct EntityRegistry {
     /// The committed damage vocabulary the chokepoint scales hits by. Empty
     /// until a mod registers one, which leaves every hit untyped.
     defense_vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    /// The committed attack tokens and budget profiles the AI's attack
+    /// budget arbitrates under. The SDK default until a mod commits one.
+    attack_budgets: std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary>,
     /// The host's expression-parameter evaluator; `None` on a connected client
     /// and until the simulation binds one.
     defense_parameters:
@@ -940,6 +943,8 @@ impl EntityRegistry {
             impact_dispatches: Vec::new(),
             host_tick: 0,
             defense_vocabulary: Default::default(),
+            attack_budgets:
+                postretro_foundation::attack_budget::AttackBudgetVocabulary::shared_default(),
             defense_parameters: None,
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             impact_particle_requests: Vec::with_capacity(MAX_PENDING_IMPACT_PARTICLE_REQUESTS),
@@ -1380,6 +1385,22 @@ impl EntityRegistry {
         vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
     ) {
         self.defense_vocabulary = vocabulary;
+    }
+
+    /// The committed attack-budget vocabulary.
+    pub fn attack_budgets(
+        &self,
+    ) -> &std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary> {
+        &self.attack_budgets
+    }
+
+    /// Install the committed attack-budget vocabulary; the AI resolves draws
+    /// and budgets from it when the pointer changes.
+    pub fn set_attack_budgets(
+        &mut self,
+        vocabulary: std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary>,
+    ) {
+        self.attack_budgets = vocabulary;
     }
 
     /// The host's expression-parameter evaluator, when one is installed.

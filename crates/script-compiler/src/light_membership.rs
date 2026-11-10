@@ -98,6 +98,11 @@ const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau")
 /// `__postretroDataScriptParts.playerEvents` at load.
 const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
     (
+        "attackBudget",
+        include_str!("../../../sdk/lib/data_script/attack_budget.luau"),
+        "sdk/lib/data_script/attack_budget.luau",
+    ),
+    (
         "playerEvents",
         include_str!("../../../sdk/lib/data_script/player_events.luau"),
         "sdk/lib/data_script/player_events.luau",
@@ -617,6 +622,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineStore",
     "defineDefenseLayer",
     "defineDamageType",
+    "defineAttackToken",
+    "defaultToken",
     "read",
     "fromRuntime",
     "set",

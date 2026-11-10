@@ -830,6 +830,24 @@
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
 
+  /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
+  export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
+  /** Fields a token reference carries. In an attack's `draws`: `cost`, an integer of at least 1 (default 1). In an `attackBudgets` profile: `limit` and `refreshMs`, overriding the declared budget. A field in the other place rejects load. */
+  export type AttackTokenFields = { readonly cost?: number; readonly limit?: number; readonly refreshMs?: number };
+  /** A registered attack token. It crosses the manifest as `{ kind, name }`; its budget rides the declaration `defineMod` resolves. `with` builds a reference carrying fields. */
+  export type AttackToken = {
+    readonly kind: "attackToken";
+    readonly name: string;
+    with(fields: AttackTokenFields): AttackTokenRef;
+  };
+  /** A token reference with fields, built by `token.with({ ... })`. It crosses as `{ token, ...fields }`. */
+  export type AttackTokenRef = { readonly token: AttackToken } & AttackTokenFields;
+  /** The SDK's attack token at the default budget: what an attack without `draws` draws. Every mod has it and never lists it in `attackTokens`; a profile may override it. */
+  export const defaultToken: AttackToken;
+  /** Declare an attack token by its default budget. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ attackTokens: [token] })`, then draw it from attacks' `draws`. */
+  export function defineAttackToken(budget?: AttackTokenBudget): AttackToken;
+  export function defineAttackToken(name: string, budget?: AttackTokenBudget): AttackToken;
+
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
   export function read(ref: StateRef<boolean>): BoolRef;

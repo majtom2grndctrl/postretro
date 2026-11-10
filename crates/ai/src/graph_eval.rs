@@ -535,6 +535,7 @@ mod statechart_tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             )]),
             engagement_radius: None,
@@ -600,6 +601,7 @@ mod statechart_tests {
             Arc::new(graph.clone()),
             &[],
             0,
+            &postretro_foundation::attack_budget::AttackBudgetVocabulary::default(),
             &mut HashSet::new(),
         );
         (programs, scope)

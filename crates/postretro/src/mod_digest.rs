@@ -54,6 +54,10 @@ pub(crate) fn mod_compatibility_digest(
 /// also stripped from the tuning payload: each peer resolves them from its own
 /// descriptors, so peers whose opt-ins differ see different ghosts and stay
 /// admitted.
+///
+/// Named skip: `registry.attack_budgets` (`attackTokens`, `attackBudgets`) and
+/// attack `draws`. The attack budget is host-only: clients never arbitrate
+/// turns or read a budget, so peers whose budgets differ stay admitted.
 pub(crate) fn mod_compatibility_digest_from_registry(registry: &DataRegistry) -> [u8; 32] {
     mod_compatibility_digest(
         &registry.factions,
@@ -391,6 +395,7 @@ pub(crate) mod tests {
             player_events: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
             defense: Default::default(),
+            attack_budgets: Default::default(),
         }
     }
 
@@ -409,6 +414,7 @@ pub(crate) mod tests {
         registry.replace_global_trigger_pools(manifest.trigger_pools.clone());
         registry.replace_fluids(manifest.fluids.clone());
         registry.replace_ghost_styles(manifest.ghost_styles.clone());
+        registry.attack_budgets = std::sync::Arc::new(manifest.attack_budgets.clone());
         mod_compatibility_digest_from_registry(&registry)
     }
 
@@ -903,6 +909,62 @@ pub(crate) mod tests {
                 "entity descriptor {field} is intentionally outside the mod digest"
             );
         }
+    }
+
+    // B39: two manifests differing only in `attackTokens`, `attackBudgets`
+    // or an attack's `draws` produce the same compatibility digest.
+    #[test]
+    fn compatibility_digest_ignores_attack_budget_fields() {
+        use postretro_foundation::attack_budget::{AttackBudgetVocabulary, TokenDraw};
+
+        let baseline = manifest_digest(&manifest());
+        let melee = serde_json::json!({ "kind": "attackToken", "name": "melee" });
+        let mut budgeted = manifest();
+        budgeted.attack_budgets = AttackBudgetVocabulary::from_manifest(
+            Some(&serde_json::json!([
+                { "kind": "attackToken", "name": "melee", "budget": { "limit": 1, "refreshMs": 4000 } }
+            ])),
+            Some(&serde_json::json!({ "arena": [{ "token": melee, "limit": 2 }] })),
+        )
+        .expect("a valid registration");
+        assert_eq!(
+            baseline,
+            manifest_digest(&budgeted),
+            "attackTokens and attackBudgets"
+        );
+
+        let mut drawing = manifest();
+        let mut behaved = entity_descriptor();
+        let slam = |draws: Option<Vec<TokenDraw>>| postretro_foundation::AttackParams {
+            weapon: None,
+            damage: Some(14.0),
+            max_range: Some(3.0),
+            cooldown_ms: Some(1800.0),
+            engagement_radius: None,
+            standoff_distance: None,
+            sound: None,
+            damage_type: None,
+            draws,
+        };
+        let mut behavior = behavior_descriptor();
+        behavior.attacks.insert(
+            "slam".to_string(),
+            slam(Some(vec![TokenDraw(
+                serde_json::json!({ "token": melee, "cost": 2 }),
+            )])),
+        );
+        behaved.behavior = Some(behavior.clone());
+        let mut undrawn = entity_descriptor();
+        behavior.attacks.insert("slam".to_string(), slam(None));
+        undrawn.behavior = Some(behavior);
+        drawing.entities = vec![behaved];
+        let mut plain = manifest();
+        plain.entities = vec![undrawn];
+        assert_eq!(
+            manifest_digest(&plain),
+            manifest_digest(&drawing),
+            "attack draws"
+        );
     }
 
     // Flipping a descriptor's `ghost` or a weapon's

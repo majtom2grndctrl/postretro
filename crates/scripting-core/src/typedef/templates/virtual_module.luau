@@ -200,6 +200,10 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   defineDefenseLayer: typeof(defineDefenseLayer),
   defineDamageType: typeof(defineDamageType),
+  --- Declare an attack token by its default budget.
+  defineAttackToken: typeof(defineAttackToken),
+  --- The SDK's attack token at the default budget; every mod has it.
+  defaultToken: AttackToken,
   --- Read a state ref into an expression value.
   read: typeof(read),
   --- Read whether the evaluated player (or local crossing's own pawn) is in an authored life state.

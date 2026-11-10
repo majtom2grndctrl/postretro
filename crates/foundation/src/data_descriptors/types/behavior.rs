@@ -90,6 +90,15 @@ pub struct AttackParams {
     /// so naming one beside `weapon` rejects load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub damage_type: Option<crate::AuthoredHandle>,
+    /// The attack tokens this attack draws, each a handle or
+    /// `token.with({ cost })`. `None` draws `defaultToken`; an empty list
+    /// opts out of the attack budget.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::attack_budget::deserialize_draws"
+    )]
+    pub draws: Option<Vec<crate::attack_budget::TokenDraw>>,
 }
 
 /// How an authored patrol route moves when it reaches an endpoint.

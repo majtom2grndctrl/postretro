@@ -2579,16 +2579,23 @@ mod tests {
     // declaration kind, a wire-35 peer the snapshot's host level tick, and a
     // wire-36 peer the host level life on `Relevel` and `Revealed`, a wire-37
     // peer the player life-state record, and a wire-38 peer the assist fields.
-    // The admission gate refuses each declaration with a typed cause and admits
-    // a PRLC / 39 one.
+    // A PRLC peer predates the spawn-pose hint. The admission gate refuses each
+    // declaration with a typed cause and admits a PRLD / 39 one.
     #[test]
-    fn admission_refuses_prlb_or_wire_32_to_38_and_admits_prlc_39() {
+    fn admission_refuses_prlb_prlc_or_wire_32_to_38_and_admits_prld_39() {
         let current = wire::ProtocolVersion {
-            app_protocol_id: 0x_5052_4C43,
+            app_protocol_id: 0x_5052_4C44,
             wire_version: 39,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C43,
+                    ..current
+                },
+                false,
+            ),
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C42,

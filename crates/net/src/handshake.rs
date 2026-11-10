@@ -739,10 +739,12 @@ mod switch_tick_epoch_tests {
             assert!(WIRE_VERSION >= 34);
             assert!(crate::wire::SNAPSHOT_VERSION >= 22);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let peer = |wire_version| ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version,
@@ -775,7 +777,7 @@ mod switch_tick_epoch_tests {
         const {
             assert!(WIRE_VERSION >= 35);
         }
-        assert_eq!(PROTOCOL_ID, 0x_5052_4C43);
+        const { assert!(PROTOCOL_ID >= 0x_5052_4C43) };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_KIND_WIRE_VERSION,
@@ -812,10 +814,12 @@ mod switch_tick_epoch_tests {
             );
         };
         const { assert!(crate::wire::SNAPSHOT_VERSION >= 23) };
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_LEVEL_TICK_WIRE_VERSION,
@@ -850,10 +854,12 @@ mod switch_tick_epoch_tests {
             assert!(WIRE_VERSION > PRE_LEVEL_LIFE_WIRE_VERSION);
             assert!(crate::wire::SNAPSHOT_VERSION >= 23);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_LEVEL_LIFE_WIRE_VERSION,
@@ -887,10 +893,12 @@ mod switch_tick_epoch_tests {
             assert!(WIRE_VERSION > PRE_LIFE_STATE_WIRE_VERSION);
             assert!(crate::wire::SNAPSHOT_VERSION >= 24);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_LIFE_STATE_WIRE_VERSION,
@@ -922,10 +930,12 @@ mod switch_tick_epoch_tests {
         const PRE_ASSIST_WIRE_VERSION: u32 = 38;
         assert_eq!(WIRE_VERSION, 39);
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_ASSIST_WIRE_VERSION,
@@ -964,18 +974,17 @@ mod switch_tick_epoch_tests {
     fn gameplay_channel_layout_refuses_prlb_and_wire_32_peers() {
         const PRE_LAYOUT_PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
         const PRE_LAYOUT_WIRE_VERSION: u32 = 32;
-        assert_eq!(PROTOCOL_ID, 0x_5052_4C43, "the layout is protocol 12, PRLC");
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "the layout is protocol 12, PRLC, or later"
+            );
+        };
         const { assert!(WIRE_VERSION > PRE_LAYOUT_WIRE_VERSION) };
         assert_eq!(
-            validate_handshake(
-                protocol_version(),
-                ProtocolVersion {
-                    app_protocol_id: 0x_5052_4C43,
-                    wire_version: WIRE_VERSION,
-                },
-            ),
+            validate_handshake(protocol_version(), protocol_version()),
             Ok(()),
-            "a PRLC peer at the current wire version is admitted"
+            "a current peer at the current wire version is admitted"
         );
         for (app_protocol_id, wire_version) in [
             (PRE_LAYOUT_PROTOCOL_ID, WIRE_VERSION),

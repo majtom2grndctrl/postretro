@@ -6,6 +6,7 @@ read at: 3f851eff1 (no `crates/` change since the brief's b215170, so the brief'
 
 ## Corrections
 - Wire table types the hint with `f32` fields → `ServerControlMessage` derives `Eq`, which `f32` cannot satisfy; planning around it by dropping `Eq` (keeping `PartialEq`) on `ServerControlMessage` if nothing needs it, otherwise wrapping the pose in a `PartialEq`-only struct. Layout and fields are unchanged.
+- `ServerControlMessage` dropped `Eq` (nothing needed it). Earlier bumps' tests pinned `PROTOCOL_ID == PRLC`; they now assert `>= PRLC`, and PRLC / 39 joins the refused pairs.
 - App protocol id moves `PRLC` → `PRLD` (the brief says "moves the app protocol id" without naming it).
 
 ## Delegated answers
@@ -61,7 +62,7 @@ Row ids: R = resolver and reservation, C = client stand-in, M = frontend menu, A
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Wire: append `SpawnPoseHint`, protocol `PRLD`, append guard, round trip, gate-1 refusal (W1) | integrating executor | — | |
+| 1 | Wire: append `SpawnPoseHint`, protocol `PRLD`, append guard, round trip, gate-1 refusal (W1) | integrating executor | — | done: `cargo test -p postretro-net` 318 pass (`spawn_pose_hint_*`, `admission_refuses_prlb_prlc_*`, `netcode_handshake_*`); placeholder client arm in `client_drain_control` |
 | 2 | Host resolver module + reservation + promotion at recorded pose (placement-backed and unbacked spawn entry) + install send; first slice proves R1, R2 | worker (host) | 1 | |
 | 3 | Host remaining send sites and re-resolution: admission (world-less and Running), loading-host admission, overlap, single-use, demote/hold, host frontend names no level (R3–R14, M8) | worker (host) | 2 | |
 | 4 | Client hint store + stand-in: install, Settling retarget, Running unarmed, arming guards (C1–C12, A1, A2) | worker (client) | 1 | |

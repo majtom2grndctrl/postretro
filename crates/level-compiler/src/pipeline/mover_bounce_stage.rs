@@ -87,10 +87,12 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
             });
         }
     }
+    let depth_cap = effective_tile_cap(inputs.tile_cap);
     let cost = MoverChannelCost::new(
         &jobs,
         &layout,
         inputs.bounce_fill,
+        depth_cap,
         inputs.direct_lights,
         posed,
     );
@@ -112,7 +114,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         uncompressed: inputs.uncompressed,
         keep_every_tile: false,
         keep_poses: false,
-        depth_cap: effective_tile_cap(inputs.tile_cap),
+        depth_cap,
     };
     Ok(BounceHalfPlan { request, cost })
 }

@@ -319,14 +319,28 @@ fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
 /// The SH base bake with the fixture's movers, on a control that reports
 /// progress: what it completed, and the total it published.
 fn progress_of(fixture: &FixturePipeline, cache: Option<&StageCache>) -> (usize, Option<usize>) {
+    progress_at(fixture, cache, DEFAULT_BOUNCE_FILL, None)
+}
+
+/// [`progress_of`] at bounce fill `fill`, with mover depth's tile range
+/// lowered to `depth_cap` where given.
+fn progress_at(
+    fixture: &FixturePipeline,
+    cache: Option<&StageCache>,
+    fill: f32,
+    depth_cap: Option<u32>,
+) -> (usize, Option<usize>) {
     with_ctx(fixture, |ctx, poses| {
-        let plan = plan_half(fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let mut plan = plan_half(fixture, ctx, poses, fill);
+        if let Some(cap) = depth_cap {
+            plan.request.depth_cap = cap;
+        }
         let (handoff, _) = plan_sh_base(
             ctx.geometry,
             &static_light_refs(ctx),
             animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
             CONFIG.probe_spacing,
-            DEFAULT_BOUNCE_FILL,
+            fill,
             u64::MAX,
         )
         .expect("priced");
@@ -380,6 +394,101 @@ fn the_sh_base_progress_ends_at_its_total_with_movers_cold_and_warm() {
     }
 }
 
+/// The closet as [`closet`] writes it, then `edit`ed, under `dir`.
+fn closet_edited(
+    dir: &Path,
+    bounces: Option<u32>,
+    name: &str,
+    edit: impl FnOnce(String) -> String,
+) -> PathBuf {
+    let text = std::fs::read_to_string(closet(dir, bounces)).expect("closet map");
+    let edited = edit(text.clone());
+    assert_ne!(edited, text, "{name}: the edit applies");
+    let path = dir.join(format!("closet-{name}-{bounces:?}.map"));
+    std::fs::write(&path, edited).expect("write closet");
+    path
+}
+
+/// Every light black: bounce one is zero, so id 34's and every pose's
+/// later bounces stop at a zero source.
+fn dark(text: String) -> String {
+    text.replace("\"_color\" \"255 244 230\"", "\"_color\" \"0 0 0\"")
+}
+
+/// A second door, `closet_door_b`, the first's copy on its path: two
+/// mover jobs, so a tile range the first fills stops the bake before the
+/// second.
+fn two_doors(text: String) -> String {
+    let start = text
+        .find("{\n\"classname\" \"kinematic_mover\"")
+        .expect("the door");
+    let end = start
+        + text[start..]
+            .find("\n{\n\"classname\" \"kinematic_waypoint\"")
+            .expect("its waypoints")
+        + 1;
+    let door = text[start..end].replace("\"name\" \"closet_door\"", "\"name\" \"closet_door_b\"");
+    format!("{}{door}{}", &text[..end], &text[end..])
+}
+
+// The SH base's progress ends exactly at its total on each early break:
+// fill 0, where neither id 34 nor a pose gathers a later bounce; a dark
+// closet, whose zero bounce one stops id 34's and the pose's later bounces
+// at a zero source; and two doors under a tile range of zero, where the
+// first door's depth stops the bake before the second door's job runs.
+// Cold, warm over an empty cache, and on a full hit.
+#[test]
+fn the_sh_base_progress_ends_at_its_total_on_every_early_break() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let cases = [
+        ("fill 0", load_map(&closet(maps.path(), None)), 0.0, None),
+        (
+            "dark, posed zero source",
+            load_map(&closet_edited(maps.path(), Some(3), "dark", dark)),
+            DEFAULT_BOUNCE_FILL,
+            None,
+        ),
+        (
+            "depth cap, depth only",
+            load_map(&closet_edited(maps.path(), Some(0), "two-doors", two_doors)),
+            DEFAULT_BOUNCE_FILL,
+            Some(0),
+        ),
+        (
+            "depth cap, posed bounces",
+            load_map(&closet_edited(maps.path(), Some(2), "two-doors", two_doors)),
+            DEFAULT_BOUNCE_FILL,
+            Some(0),
+        ),
+    ];
+    for (case, fixture, fill, depth_cap) in &cases {
+        if depth_cap.is_some() {
+            assert_eq!(
+                fixture.kinematic_movers.len(),
+                2,
+                "{case}: two mover jobs"
+            );
+        }
+        let check = |mode: &str, (completed, total): (usize, Option<usize>)| {
+            assert_eq!(
+                Some(completed),
+                total,
+                "{case} {mode}: progress ends at its total"
+            );
+        };
+        check("cold", progress_at(fixture, None, *fill, *depth_cap));
+        let cache = tempfile::tempdir().expect("cache");
+        check(
+            "warm empty",
+            progress_at(fixture, Some(&open(cache.path())), *fill, *depth_cap),
+        );
+        check(
+            "full hit",
+            progress_at(fixture, Some(&open(cache.path())), *fill, *depth_cap),
+        );
+    }
+}
+
 /// The closet baked with its door's `light_bounces` at `bounces`, cold.
 fn closet_states(
     maps: &Path,
@@ -415,6 +524,69 @@ fn light_bounces_zero_bakes_depth_alone_and_a_count_past_id_34s_bakes_id_34s() {
         zero[0].depth, every[0].depth,
         "the depth-only trace bins the full gather's closed-pose depth"
     );
+}
+
+// A tile range the closet door's depth alone passes: the bake keeps
+// exactly one record past it, the reservation fails by name, and the cut
+// states are never memoized, so a full-range build over that cache bakes the
+// door's whole depth. A hit stored under the full range is cut the same way.
+#[test]
+fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet(maps.path(), Some(0)));
+    with_ctx(&fixture, |ctx, poses| {
+        let full_plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let full_cache = tempfile::tempdir().expect("cache");
+        let (_, _, full) = bake_base(
+            ctx,
+            &full_plan,
+            &full_plan.request,
+            DEFAULT_BOUNCE_FILL,
+            Some(&open(full_cache.path())),
+        );
+        let carried = full.movers[0].depth.len();
+        assert!(carried >= 4, "the door carries depth: {carried}");
+        let cap = (carried / 2) as u32;
+        let mut narrow = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        narrow.request.depth_cap = cap;
+
+        let check = |mode: &str, cache: Option<&StageCache>| {
+            let (_, mut base, outcome) =
+                bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
+            assert_eq!(
+                outcome.movers[0].depth[..],
+                full.movers[0].depth[..cap as usize + 1],
+                "{mode}: one record past the range, the full bake's first"
+            );
+            let error = super::finish_bounce_half(
+                &outcome.movers,
+                &base.section,
+                &mut base.depth_tiles,
+                cap,
+            )
+            .expect_err("the door alone passes the range");
+            assert!(
+                error.to_string().contains("MoverProbeChannel (id 57)"),
+                "{mode}: {error}"
+            );
+        };
+        let narrow_cache = tempfile::tempdir().expect("cache");
+        check("cold", None);
+        check("warm empty", Some(&open(narrow_cache.path())));
+        check("memo hit past the range", Some(&open(full_cache.path())));
+
+        let (_, _, rebuilt) = bake_base(
+            ctx,
+            &full_plan,
+            &full_plan.request,
+            DEFAULT_BOUNCE_FILL,
+            Some(&open(narrow_cache.path())),
+        );
+        assert_eq!(
+            rebuilt.movers, full.movers,
+            "the cut states were never memoized"
+        );
+    });
 }
 
 // A test-only re-bake of every valid probe at each terminus,

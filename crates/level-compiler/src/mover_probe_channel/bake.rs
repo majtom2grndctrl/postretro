@@ -86,7 +86,9 @@ pub(crate) struct MoverBounceRequest {
     pub(crate) keep_poses: bool,
     /// The tile range mover depth may fill: once the movers baked so far
     /// carry depth at more probes, the bake stops, and the build fails by
-    /// name when it reserves their tiles.
+    /// name when it reserves their tiles. No mover keeps more than one depth
+    /// record past it ([`super::states::reduce_poses`]), and a mover past it
+    /// is never memoized.
     pub(crate) depth_cap: u32,
 }
 
@@ -160,7 +162,8 @@ pub(crate) struct StaticBounce<'a> {
 /// each mover's two poses to its states. A pose holds one posed copy of the
 /// patch radiance and the later-bounce buffers while it runs, and drops
 /// them before the next; a mover holds its two poses' gathered probes until
-/// it reduces them.
+/// it reduces them, and the reduction drops its depth below the significance
+/// floor before the next mover runs.
 pub(crate) fn bake_mover_bounce(
     sh_ctx: &ShBakeCtx<'_>,
     inputs: &StaticBounce<'_>,
@@ -260,7 +263,7 @@ pub(crate) fn bake_mover_bounce(
         let Ok(poses) = <[PoseStates; 2]>::try_from(poses) else {
             continue;
         };
-        let states = reduce_poses(job.mover_id, &poses, &absent);
+        let states = reduce_poses(job.mover_id, &poses, &absent, request.depth_cap);
         drop(poses);
         log::info!(
             "[MoverLight] probe channel bounce: mover `{}` (#{}) re-baked {} posed bounce(s): \

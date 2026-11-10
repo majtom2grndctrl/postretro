@@ -104,6 +104,27 @@ impl MoverBounceStates {
         states
     }
 
+    /// Whether the mover alone carries depth at more probes than the tile
+    /// range `depth_cap`: the build then fails by name, so its states are
+    /// never memoized.
+    pub(crate) fn depth_past_range(&self, depth_cap: u32) -> bool {
+        self.depth.len() > depth_cap as usize
+    }
+
+    /// Keep at most one depth record past the tile range `depth_cap`, as
+    /// [`reduce_poses`] does: for a memo hit stored under a larger range.
+    pub(crate) fn stop_depth_past_range(&mut self, depth_cap: u32) {
+        if self.depth.len() <= depth_cap as usize + 1 {
+            return;
+        }
+        self.depth.truncate(depth_cap as usize + 1);
+        self.depth.shrink_to_fit();
+        #[cfg(test)]
+        {
+            self.held = crate::live_bytes::hold("mover bounce states", self.heap_bytes());
+        }
+    }
+
     #[cfg(test)]
     fn heap_bytes(&self) -> u64 {
         let bounce: usize = self
@@ -143,10 +164,18 @@ fn compact_rgb(tile: &[OctahedralAtlasTexel]) -> impl Iterator<Item = u16> + '_ 
 /// terminus no ray meets, the posed gather bins the mover-absent tile
 /// exactly, so it stores none and the probe reads its base there: its id-59
 /// tile or its averaged moments.
+///
+/// The floor is per mover: it compares the mover's own closed-pose tile with
+/// the mover-absent depth, so a probe below it never joins the states. Depth
+/// keeps at most `depth_cap + 1` records, the cap being the tile range: one
+/// mover carrying depth at more probes than the range already fails the
+/// build by name ([`super::depth::MoverTileRangeExceeded`]), and the one
+/// record past it keeps that failure.
 pub(crate) fn reduce_poses(
     mover_id: u32,
     poses: &[PoseStates; 2],
     absent: &MoverAbsentDepth<'_>,
+    depth_cap: u32,
 ) -> MoverBounceStates {
     let mut changed: BTreeMap<u32, [Option<&ChangedProbe>; 2]> = BTreeMap::new();
     for (terminus, pose) in poses.iter().enumerate() {
@@ -184,6 +213,7 @@ pub(crate) fn reduce_poses(
                 .flatten()
                 .any(|tile| absent.score(*probe, tile) >= DEPTH_SIGNIFICANCE_FLOOR)
         })
+        .take(depth_cap as usize + 1)
         .map(|(probe, tiles)| {
             let mut stored = Vec::with_capacity(2 * PROBE_DEPTH_TILE_TEXELS);
             for tile in tiles.iter().flatten() {

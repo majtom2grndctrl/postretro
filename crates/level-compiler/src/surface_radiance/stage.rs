@@ -101,7 +101,8 @@ struct MemoLookup<'r, 'c> {
 impl<'r, 'c> MemoLookup<'r, 'c> {
     /// Read every job's memo under id 34's volume key, when a cache is open
     /// and the request is production's. Logs one `[cache]` line and one line
-    /// per mover.
+    /// per mover. A hit stored under a larger tile range keeps one depth
+    /// record past this one, as the bake would, and fails the build by name.
     fn new(
         movers: &'r MoverBounceRequest,
         volume: Option<&VolumeCache<'c>>,
@@ -126,7 +127,11 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
                 .memo
                 .as_ref()
                 .zip(key.as_ref())
-                .and_then(|(memo, key)| memo.get(key, job.mover_id, layout));
+                .and_then(|(memo, key)| memo.get(key, job.mover_id, layout))
+                .map(|mut states| {
+                    states.stop_depth_past_range(movers.depth_cap);
+                    states
+                });
             if lookup.memo.is_some() {
                 log::info!(
                     "[MoverLight] probe channel bounce memo: mover `{}` (#{}) {}",
@@ -164,7 +169,9 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
     }
 
     /// Store each baked job's states and merge them with the memo's, by
-    /// mover id.
+    /// mover id. A mover whose depth alone passes the tile range is not
+    /// stored: the bake stopped it one record past the range and the build
+    /// fails by name.
     fn finish(
         mut self,
         movers: &MoverBounceRequest,
@@ -178,7 +185,9 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
             else {
                 continue;
             };
-            if let (Some(memo), Some(key)) = (self.memo.as_ref(), self.keys[at].as_ref()) {
+            if let (Some(memo), Some(key)) = (self.memo.as_ref(), self.keys[at].as_ref())
+                && !states.depth_past_range(movers.depth_cap)
+            {
                 memo.put(key, &states);
             }
             self.found[at] = Some(states);

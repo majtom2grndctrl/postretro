@@ -46,6 +46,23 @@ pub struct RecentAttacker {
     pub time_since_damage_ms: f32,
 }
 
+/// A brain's memory of a knockback launch, which "launched" means for as long as
+/// knockback velocity remains. Storage only; the AI tick owns the rules.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct LaunchState {
+    /// Yaw held while launched, latched on the first launched tick. `None` when
+    /// not launched.
+    #[serde(default)]
+    pub impact_yaw: Option<f32>,
+    /// Consecutive airborne ticks of a stretch a launch began; `0` on the ground.
+    #[serde(default)]
+    pub air_ticks: u32,
+    /// Whether the airborne clip was last requested for this launch: the
+    /// animation latch that switches back to the activity's clip on landing.
+    #[serde(default)]
+    pub airborne_presented: bool,
+}
+
 /// Engine-internal AI brain: the retained behavior graph plus the live state it
 /// sits in. Seeded at spawn in the graph's `initial` state with every timer at
 /// rest; the AI tick in `postretro-ai`'s `AiRuntime` drives the rest.
@@ -114,6 +131,11 @@ pub struct BrainComponent {
     /// instead of re-requesting the same animation every tick.
     #[serde(default)]
     pub locomotion_moving: bool,
+    /// Presentation memory of a knockback launch, advanced by the AI tick.
+    /// Serialized beside `locomotion_moving` for the same reason: a restored
+    /// brain must not strand its airborne clip. Old brains default to grounded.
+    #[serde(default)]
+    pub launch: LaunchState,
     /// Whether this brain may acquire and pursue a target. This is
     /// host-authoritative simulation state: it deliberately has no snapshot
     /// field, because a closed brain's stationary Idle transform is already the
@@ -227,6 +249,7 @@ impl BrainComponent {
             attack_cooldown_remaining_ms: BTreeMap::new(),
             think_stride_counter: 0,
             locomotion_moving: false,
+            launch: LaunchState::default(),
             aggro_armed: true,
             target_reachable: false,
             acquired_target: None,

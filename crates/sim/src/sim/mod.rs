@@ -76,10 +76,10 @@ use crate::weapon::FireButtonState;
 pub use descriptor_health::install_descriptor_player_health_range;
 pub use mesh_bindings::{resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities};
 pub use player_locomotion::{
-    CrouchTier, JumpStates, LocomotionFooting, LocomotionInput, LocomotionPosture,
-    LocomotionStance, LocomotionTier, LocomotionTierKind, PlayerLocomotionStates,
-    classify_locomotion_direction, player_travel_heading_yaw, store_locomotion_direction,
-    store_locomotion_memory,
+    CrouchTier, FALL_DELAY_TICKS, JUMP_LOOP_STATE, JumpStates, LocomotionFooting, LocomotionInput,
+    LocomotionPosture, LocomotionStance, LocomotionTier, LocomotionTierKind,
+    PlayerLocomotionStates, classify_locomotion_direction, player_travel_heading_yaw,
+    store_locomotion_direction, store_locomotion_memory,
 };
 use postretro_collision::EnvironmentView;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
@@ -1355,7 +1355,10 @@ fn update_brain_animation_playback_rates(
         let Some(path_state) = agent_steering::path_state(registry, id) else {
             continue;
         };
-        let speed_xz = Vec3::new(path_state.velocity.x, 0.0, path_state.velocity.z).length();
+        // The stride cadence follows the agent's own travel; a knockback slide
+        // or launch never quickens the walk cycle.
+        let travel = path_state.steering_velocity();
+        let speed_xz = Vec3::new(travel.x, 0.0, travel.z).length();
 
         let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
             continue;

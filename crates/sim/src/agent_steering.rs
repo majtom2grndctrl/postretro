@@ -226,8 +226,23 @@ pub struct AgentPathState {
     pub distance_to_destination: f32,
     /// Current agent position (capsule center, world space).
     pub position: Vec3,
-    /// Live agent velocity (world space) after the last tick.
+    /// Live agent velocity (world space) after the last tick: path steering
+    /// plus the knockback layer below.
     pub velocity: Vec3,
+    /// The external layer of `velocity` path steering never replaces
+    /// ([`AgentComponent::knockback_velocity`]). Nonzero while a hit's impulse
+    /// remains.
+    pub knockback_velocity: Vec3,
+    /// The agent is off the ground (`GroundRef::Airborne`).
+    pub airborne: bool,
+}
+
+impl AgentPathState {
+    /// The agent's own travel: `velocity` without its knockback layer. Facing
+    /// and stride selection read this, so a hit never steers either.
+    pub fn steering_velocity(&self) -> Vec3 {
+        self.velocity - self.knockback_velocity
+    }
 }
 
 /// Set (or replace) an agent's destination.
@@ -312,6 +327,8 @@ pub fn path_state(registry: &EntityRegistry, agent: EntityId) -> Option<AgentPat
         distance_to_destination,
         position,
         velocity: component.velocity,
+        knockback_velocity: component.knockback_velocity,
+        airborne: !component.ground.is_grounded(),
     })
 }
 

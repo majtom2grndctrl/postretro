@@ -1105,6 +1105,13 @@ external impulse separately so ordinary speed caps and enemy navigation do not
 erase it. Multiplayer resolves hits and pushes on the host; authoritative
 movement updates carry the resulting momentum through client reconciliation.
 
+A pushed enemy never turns toward its flight or breaks into a stride. While push
+remains it keeps the facing it had when hit, though an enemy aiming at its target
+keeps turning toward it. Its walk cycle follows only its own steering. A push
+that lifts it plays its mesh's `jump_loop` after the same delay as a player's
+fall, and it returns to its activity's clip on landing. A mesh without `jump_loop`
+keeps its current clip.
+
 ### Reserved engine-fired reaction addresses
 
 The engine owns the following 26 bare addresses. A mod may register one or more

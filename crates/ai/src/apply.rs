@@ -5,6 +5,7 @@ pub(super) fn should_switch_animation(state_changed: bool, moving: bool, latch: 
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
 use super::graph_eval::animation_for_path;
+use super::launch;
 use super::targeting::selected_target_alive;
 use super::{
     AiTickResult, AttackOutcome, ENEMY_ATTACK_EVENT, ENEMY_ATTACK_SOURCE_ID, LocomotionIntent,
@@ -116,10 +117,11 @@ where
         }
 
         let path_state = agent_steering::path_state(registry, outcome.id);
+        // The stride reads steering velocity alone: knockback never picks it.
         let locomotion_intent = if outcome.brain.aggro_armed {
             path_state
                 .as_ref()
-                .map(|path| LocomotionIntent::from_velocity(path.velocity))
+                .map(|path| LocomotionIntent::from_velocity(path.steering_velocity()))
                 .unwrap_or(LocomotionIntent::STOPPED)
         } else {
             LocomotionIntent::STOPPED
@@ -330,18 +332,22 @@ where
             continue;
         }
 
-        // Animation: on a state change or locomotion stop/resume, request the
-        // selected animation name for the new graph/locomotion state. A failed
-        // switch (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and
-        // keeps the prior animation — it never aborts the tick. The locomotion
-        // latch is still persisted after failures so unresolved clips do not
-        // re-request the same switch every tick.
+        // Animation: on a state change, locomotion stop/resume, or an airborne
+        // launch's clip starting or ending, request the selected animation name
+        // for the new graph/locomotion state. A failed switch
+        // (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and keeps
+        // the prior animation — it never aborts the tick. The latches are still
+        // persisted after failures so unresolved clips do not re-request the
+        // same switch every tick.
+        let airborne_clip = launch::airborne_clip(registry, outcome.id, &outcome.brain.launch);
         if should_switch_animation(
             outcome.state_changed,
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
-        ) {
-            let animation_name = animation_for_path(&outcome.brain, locomotion_intent.moving);
+        ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
+        {
+            let animation_name = airborne_clip
+                .or_else(|| animation_for_path(&outcome.brain, locomotion_intent.moving));
             if let Some(name) = animation_name {
                 match switch_animation_state(registry, outcome.id, name) {
                     SwitchResult::Switched | SwitchResult::AlreadyInState => {}
@@ -357,18 +363,19 @@ where
                 }
             }
         }
-        // Fold the locomotion latch into whatever the component NOW holds. The
+        // Fold the animation latches into whatever the component NOW holds. The
         // damage chokepoint and `on_impact` ran since the publish above, and
         // either can mutate this entity's brain (`apply_update_npc_state_to_brain`
         // writes exactly this component); writing the pre-callback snapshot back
-        // would silently discard that. The latch is the only field this pass
-        // still owns. A missing component means the entity did not survive the
-        // callbacks, and there is nothing to update.
+        // would silently discard that. The animation latches are the only
+        // fields this pass still owns. A missing component means the entity did
+        // not survive the callbacks, and there is nothing to update.
         if let Ok(mut brain) = registry
             .get_component::<BrainComponent>(outcome.id)
             .cloned()
         {
             brain.locomotion_moving = locomotion_intent.moving;
+            brain.launch.airborne_presented = airborne_clip.is_some();
             let _ = registry.set_component(outcome.id, brain);
         }
     }

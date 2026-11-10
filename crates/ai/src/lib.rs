@@ -18,6 +18,7 @@ mod compute;
 mod engine_floor;
 mod facing;
 mod graph_eval;
+mod launch;
 mod perception;
 mod steering;
 mod targeting;
@@ -382,8 +383,9 @@ macro_rules! test_tick_runner {
 ///    this is the fresh spawn's initial seating.
 /// 4. Latch-fire an active leaf's action on its first dwell tick that passes its
 ///    cooldown, range, live-target, LOS, and post-slew-facing gates.
-/// 5. On an activity change or locomotion stop/resume, request the one animation
-///    state resolved from the active nested path.
+/// 5. On an activity change, locomotion stop/resume, or an airborne launch's
+///    `jump_loop` starting or ending, request the one animation state resolved
+///    from the active nested path, or `jump_loop` while it plays.
 #[cfg(any(test, feature = "test-support"))]
 pub fn run_ai_tick(
     registry: &mut EntityRegistry,

@@ -13433,3 +13433,318 @@ fn contact_attack_deals_its_damage_type() {
         "a heavy contact attack is ×2 on health"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Knockback launch: facing and stride read steering velocity alone; a launch
+// holds its impact yaw and plays `jump_loop` after the player's fall delay.
+// ---------------------------------------------------------------------------
+
+/// `enemy_mesh` plus a resolved `jump_loop` state.
+fn enemy_mesh_with_jump_loop() -> MeshComponent {
+    let mut mesh = enemy_mesh();
+    mesh.animation
+        .as_mut()
+        .unwrap()
+        .states
+        .insert("jump_loop".to_string(), usable_state("jump_loop_clip", 4));
+    mesh
+}
+
+fn enemy_agent(reg: &EntityRegistry, enemy: EntityId) -> AgentComponent {
+    reg.get_component::<AgentComponent>(enemy).unwrap().clone()
+}
+
+/// Land a knockback impulse on the enemy through the agent's own entry point, as
+/// the damage chokepoint does before the AI tick reads it.
+fn launch_enemy(reg: &mut EntityRegistry, enemy: EntityId, impulse: Vec3) {
+    let mut agent = enemy_agent(reg, enemy);
+    assert!(agent.add_knockback(impulse), "the impulse must apply");
+    reg.set_component(enemy, agent).unwrap();
+}
+
+/// One fixed tick in sim order: the AI pass, then steering.
+fn ai_then_steering_tick(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    graph: &NavGraph,
+) {
+    run_ai_tick_with_navigation(reg, runtime, STEER_DT, Some(graph), Some(world));
+    agent_steering::tick(
+        reg,
+        world,
+        Some(graph),
+        postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+        STEER_DT,
+    );
+}
+
+/// A grounded chaser pursuing a player far ahead along +Z, already travelling
+/// and facing its travel.
+fn travelling_chaser(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    graph: &NavGraph,
+    mesh: MeshComponent,
+) -> EntityId {
+    spawn_player(reg, Vec3::new(10.0, chaser_rest_y(), 26.0));
+    let enemy = spawn_chaser(reg, 10.0, 10.0);
+    reg.set_component(enemy, mesh).unwrap();
+    set_enemy_yaw(reg, enemy, 0.0);
+    for _ in 0..30 {
+        ai_then_steering_tick(reg, runtime, world, graph);
+    }
+    let agent = enemy_agent(reg, enemy);
+    assert!(
+        agent.is_grounded(),
+        "fixture: the chaser settles on the floor"
+    );
+    assert!(
+        LocomotionIntent::from_velocity(agent.velocity).moving,
+        "fixture: the chaser travels"
+    );
+    assert_eq!(enemy_state_name(reg, enemy), TEST_ALERT_STATE);
+    assert_eq!(enemy_animation(reg, enemy), "locomotion");
+    enemy
+}
+
+#[test]
+fn launched_enemy_holds_impact_yaw_while_steering_runs() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = travelling_chaser(&mut reg, &mut runtime, &world, &graph, enemy_mesh());
+
+    // A sideways rocket hit: the flight path points along +X while the chase
+    // travels +Z, so facing the combined velocity would turn the enemy.
+    launch_enemy(&mut reg, enemy, Vec3::new(9.0, 6.0, 0.0));
+    let impact_yaw = enemy_yaw(&reg, enemy);
+    let launch_x = reg.get_component::<Transform>(enemy).unwrap().position.x;
+
+    let mut launched_ticks = 0;
+    while enemy_agent(&reg, enemy).knockback_velocity != Vec3::ZERO {
+        assert!(launched_ticks < 600, "the knockback must end on the floor");
+        ai_then_steering_tick(&mut reg, &mut runtime, &world, &graph);
+        launched_ticks += 1;
+        assert!(
+            yaw_distance(enemy_yaw(&reg, enemy), impact_yaw) <= 1.0e-5,
+            "launched tick {launched_ticks}: yaw {} left the impact yaw {impact_yaw}",
+            enemy_yaw(&reg, enemy),
+        );
+        let agent = enemy_agent(&reg, enemy);
+        assert!(
+            agent.destination.is_some() && agent.steer_velocity.length() > 0.1,
+            "launched tick {launched_ticks}: steering keeps running under the launch",
+        );
+        assert_eq!(enemy_state_name(&reg, enemy), TEST_ALERT_STATE);
+    }
+    assert!(
+        launched_ticks > 1,
+        "fixture: the launch lasts several ticks"
+    );
+    assert!(
+        reg.get_component::<Transform>(enemy).unwrap().position.x - launch_x > 1.0,
+        "fixture: the hit carried the enemy sideways off its +Z chase",
+    );
+
+    // Once the knockback ends, facing follows steering travel again.
+    let held = enemy_yaw(&reg, enemy);
+    ai_then_steering_tick(&mut reg, &mut runtime, &world, &graph);
+    let travel = enemy_agent(&reg, enemy).steer_velocity;
+    let travel_yaw = travel.x.atan2(travel.z);
+    if yaw_distance(held, travel_yaw) > 1.0e-3 {
+        assert!(
+            yaw_distance(enemy_yaw(&reg, enemy), held) > 1.0e-4,
+            "after the knockback ends the enemy turns toward its travel again",
+        );
+    }
+}
+
+#[test]
+fn launched_target_facing_enemy_slews_at_facing_rate() {
+    // An engaged chaser whose steering stands still faces its target. Every
+    // bit of its velocity here is knockback pointing away from the target, so
+    // reading the combined velocity would turn it toward the flight.
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_ALERT_STATE),
+        50.0,
+    );
+    set_enemy_yaw(&mut reg, enemy, 0.0);
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+    launch_enemy(&mut reg, enemy, Vec3::new(-6.0, 0.0, 0.0));
+
+    let target_yaw = std::f32::consts::FRAC_PI_2;
+    let step = FACING_TURN_RATE * STEER_DT;
+    let mut remaining = yaw_distance(enemy_yaw(&reg, enemy), target_yaw);
+    let mut ticks = 0;
+    while remaining > 1.0e-5 {
+        assert!(ticks < 60, "the enemy must reach its target heading");
+        let before = enemy_yaw(&reg, enemy);
+        run_ai_tick(&mut reg, &mut runtime, STEER_DT);
+        ticks += 1;
+        assert_ne!(
+            enemy_agent(&reg, enemy).knockback_velocity,
+            Vec3::ZERO,
+            "fixture: the enemy stays launched"
+        );
+        let after = enemy_yaw(&reg, enemy);
+        assert!(
+            yaw_distance(before, after) <= step + 1.0e-5,
+            "tick {ticks}: one tick turns no farther than the facing rate",
+        );
+        let now = yaw_distance(after, target_yaw);
+        assert!(
+            (now - (remaining - step).max(0.0)).abs() <= 1.0e-4,
+            "tick {ticks}: the launched enemy re-aims at the full facing rate \
+             (remaining {remaining} -> {now})",
+        );
+        remaining = now;
+    }
+    assert!(
+        ticks > 1,
+        "a quarter turn spans several ticks at the facing rate"
+    );
+}
+
+/// Drive one launch from the impact tick to landing and return the clip the AI
+/// requested on each tick, paired with whether the body was airborne when the
+/// tick began.
+fn clips_through_vertical_launch(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    graph: &NavGraph,
+    enemy: EntityId,
+) -> Vec<(bool, String)> {
+    launch_enemy(reg, enemy, Vec3::new(0.0, 7.0, 0.0));
+    let mut clips = Vec::new();
+    for _ in 0..240 {
+        let airborne = !enemy_agent(reg, enemy).is_grounded();
+        run_ai_tick_with_navigation(reg, runtime, STEER_DT, Some(graph), Some(world));
+        assert_eq!(
+            enemy_state_name(reg, enemy),
+            TEST_ALERT_STATE,
+            "the activity stays unchanged through the launch"
+        );
+        clips.push((airborne, enemy_animation(reg, enemy)));
+        if !airborne {
+            return clips;
+        }
+        agent_steering::tick(
+            reg,
+            world,
+            Some(graph),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            STEER_DT,
+        );
+    }
+    panic!("the launched enemy must land");
+}
+
+#[test]
+fn airborne_launch_plays_jump_loop_after_fall_delay_then_lands() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = travelling_chaser(
+        &mut reg,
+        &mut runtime,
+        &world,
+        &graph,
+        enemy_mesh_with_jump_loop(),
+    );
+
+    let clips = clips_through_vertical_launch(&mut reg, &mut runtime, &world, &graph, enemy);
+    let air_ticks = clips.iter().filter(|(airborne, _)| *airborne).count() as u32;
+    assert!(
+        air_ticks > crate::sim::FALL_DELAY_TICKS,
+        "fixture: the flight outlasts the fall delay ({air_ticks} ticks)"
+    );
+    for (tick, (airborne, clip)) in clips.iter().enumerate() {
+        let air_tick = tick as u32 + 1;
+        let expected = if !airborne {
+            // Landing returns to the activity's resolved clip: still travelling.
+            "locomotion"
+        } else if air_tick >= crate::sim::FALL_DELAY_TICKS {
+            "jump_loop"
+        } else {
+            "locomotion"
+        };
+        assert_eq!(clip, expected, "AI tick {air_tick} after the launch");
+    }
+    assert!(
+        !clips.last().unwrap().0,
+        "the last tick reads the landed body"
+    );
+}
+
+#[test]
+fn airborne_launch_without_jump_loop_keeps_current_clip() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = travelling_chaser(&mut reg, &mut runtime, &world, &graph, enemy_mesh());
+
+    let clips = clips_through_vertical_launch(&mut reg, &mut runtime, &world, &graph, enemy);
+    assert!(clips.len() as u32 > crate::sim::FALL_DELAY_TICKS);
+    assert!(
+        clips.iter().all(|(_, clip)| clip == "locomotion"),
+        "a mesh without `jump_loop` keeps its clip through the launch: {clips:?}"
+    );
+    assert!(
+        !runtime.warned.contains("anim:jump_loop"),
+        "an undeclared airborne clip is never requested, so nothing warns"
+    );
+}
+
+#[test]
+fn horizontal_shove_keeps_ground_clip() {
+    // A stopped chaser rests on its graph's rest clip. A grounded horizontal
+    // shove moves it fast, but knockback never picks a stride: the clip and the
+    // locomotion latch stay put, and a grounded launch never plays `jump_loop`.
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_ALERT_STATE),
+        50.0,
+    );
+    reg.set_component(enemy, enemy_mesh_with_jump_loop())
+        .unwrap();
+    let mut agent = enemy_agent(&reg, enemy);
+    agent.ground = postretro_foundation::GroundRef::World;
+    agent.velocity = Vec3::ZERO;
+    reg.set_component(enemy, agent).unwrap();
+
+    run_ai_tick(&mut reg, &mut runtime, STEER_DT);
+    assert_eq!(enemy_animation(&reg, enemy), "idle", "fixture: rest clip");
+
+    launch_enemy(&mut reg, enemy, Vec3::new(6.0, 0.0, 0.0));
+    for tick in 0..(2 * crate::sim::FALL_DELAY_TICKS) {
+        run_ai_tick(&mut reg, &mut runtime, STEER_DT);
+        assert!(enemy_agent(&reg, enemy).is_grounded());
+        assert_eq!(
+            enemy_animation(&reg, enemy),
+            "idle",
+            "tick {tick}: a shove keeps the ground clip"
+        );
+        assert!(
+            !enemy_locomotion_moving(&reg, enemy),
+            "tick {tick}: knockback never sets the stride latch"
+        );
+    }
+}

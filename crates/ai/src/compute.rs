@@ -1,34 +1,7 @@
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment};
 
-use super::{FACTION_STATE_FIELD, LocomotionIntent, perception};
-
-/// Resolve the one direction this tick's apply pass will slew toward. A
-/// committed aim holds its movement destination but still turns toward the
-/// shared eye-to-target vector; other engaged states keep the established
-/// velocity-first facing behavior.
-pub(super) fn facing_direction(
-    steering: SteeringIntent,
-    engaged: bool,
-    committed_aim: bool,
-    target_perception: Option<perception::EnemyTargetPerception>,
-    path_state: Option<crate::agent_steering::AgentPathState>,
-) -> Option<Vec3> {
-    let moving_velocity = path_state
-        .map(|path| path.velocity)
-        .filter(|velocity| LocomotionIntent::from_velocity(*velocity).moving);
-    let aim_facing =
-        target_perception.map(|perception| perception.target_aim - perception.enemy_eye);
-    match steering {
-        // Moving toward a destination faces the movement velocity, else nothing.
-        SteeringIntent::MoveTo(_) => moving_velocity,
-        // A committed aim turns toward the eye-to-target vector.
-        _ if committed_aim => aim_facing,
-        // Other engaged states face velocity first, falling back to the aim vector.
-        _ if engaged => moving_velocity.or(aim_facing),
-        _ => None,
-    }
-}
+use super::{FACTION_STATE_FIELD, LocomotionIntent, launch, perception};
 
 pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32 {
     registry
@@ -39,7 +12,8 @@ pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32
 use super::brain_scope::BrainFacts;
 use super::engine_floor::SteeringIntent;
 use super::facing::{
-    FACING_TURN_RATE, slewed_yaw_toward, yaw_from_rotation, yaw_within_attack_tolerance,
+    FACING_TURN_RATE, facing_direction, slewed_yaw_toward, verb_facing_policy, yaw_from_rotation,
+    yaw_within_attack_tolerance,
 };
 use super::graph_eval::{
     action_for_path, engages_active, engages_path, motion_for_path, select_transition_path,
@@ -481,12 +455,24 @@ pub(super) fn evaluate(
         // target: keep its aim moving even though its resolved current verb is
         // `hold`, which `engages_path` correctly leaves false.
         let committed_aim = retains_target && matches!(motion, Some(MotionVerb::Hold));
-        let facing_direction = facing_direction(
+        // Facing and the attack gate read steering velocity alone, so knockback
+        // never turns the enemy toward its flight. A launch holds its impact yaw
+        // under travel facing; target facing keeps re-aiming.
+        let path_state = agent_steering::path_state(registry, snap.id);
+        launch::advance(&mut brain.launch, path_state.as_ref(), snap.rotation);
+        let steering_velocity = path_state.map(|path| path.steering_velocity());
+        let facing_policy = verb_facing_policy(
             steering,
             engaged,
             committed_aim,
-            target_perception,
-            agent_steering::path_state(registry, snap.id),
+            steering_velocity
+                .is_some_and(|velocity| LocomotionIntent::from_velocity(velocity).moving),
+        );
+        let facing_direction = facing_direction(
+            facing_policy,
+            steering_velocity,
+            target_perception.map(|perception| perception.target_aim - perception.enemy_eye),
+            brain.launch.impact_yaw,
         );
         // If no horizontal yaw is derivable (for example, melee contact's
         // vertical eye-to-aim segment), apply leaves the transform untouched;

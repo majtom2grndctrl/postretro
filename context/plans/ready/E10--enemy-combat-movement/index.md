@@ -55,9 +55,11 @@ When this is done:
   - **Every turn** holds through an execution already started. A target change cancels that execution and releases the turn, and so does the holder leaving the AI set.
   - A turn held under more than one rule ends when the last of them ends.
   - Lowering a budget, or an enemy changing pool, revokes no turn.
-- **The budget is a hard gate, plus two facts.** An attack starts only while its enemy holds a turn for it. A refused attack commits nothing.
-  - `brain.hasAttackTurn`: a turn is held.
-  - `attackTurnFree(attack)`: true when a request for this attack would be granted now, false with no target. A free function beside `state(name)` and `defense(layer)`; its argument names one of the archetype's attacks, checked at load.
+- **The budget is a hard gate, plus three facts.** An attack starts only while its enemy holds a turn for it. A refused attack commits nothing. Each fact means one thing wherever a guard reads it.
+  - `brain.hasAttackTurn`: a turn is held, for any attack.
+  - `attackTurnHeld(attack)`: a turn is held for this attack.
+  - `attackTurnFree(attack)`: a request for this attack would be granted now; false with no target.
+  - The named two are free Bool functions beside `state(name)` and `defense(layer)`; their argument names one of the archetype's attacks, checked at load.
 - **Arbitration is host-only and deterministic.**
   - It sees every request and release of the tick before any attack fires (pin P1).
   - The longest wait wins, where a wait starts at the first request after last holding a turn. Brain slot-index order breaks ties.
@@ -211,7 +213,7 @@ Budget and attack pool rows draw one token unless they say otherwise, and "limit
 - [ ] A turn holds across marked siblings for one attack with no release-and-regrant gap. It holds after leaving a marked activity mid-burst until the execution clears.
 - [ ] A target switch mid-burst cancels the burst and releases the turn. No shot lands on the new target from that burst (pin P6).
 - [ ] No turn leaks across any release case in pin P5, and a returning enemy re-requests.
-- [ ] `hasAttackTurn` and `attackTurnFree(attack)` follow pin P7. `hasAttackTurn` is true while any turn is held, whatever the path's current action. `attackTurnFree` is false with no target, leaves out the reader's own pending request, and is false for an attack sharing a token with a turn the reader holds (pin P23).
+- [ ] `hasAttackTurn`, `attackTurnHeld(attack)` and `attackTurnFree(attack)` follow pin P7. `hasAttackTurn` is true while any turn is held, whatever the path's current action; `attackTurnHeld("slam")` is false while the enemy holds only a `ranged` turn. `attackTurnFree` is false with no target, leaves out the reader's own pending request, and is false for an attack sharing a token with a turn the reader holds (pin P23).
 - [ ] A serialize-and-restore follows pin P11.
 - [ ] Two manifests differing only in `attackTokens`, `attackBudgets` or `draws` produce the same compatibility digest.
 
@@ -223,7 +225,7 @@ Budget and attack pool rows draw one token unless they say otherwise, and "limit
 - [ ] Membership: a tag holder present at start, and a spawn whose `spawned_tags` carry the tag while the pool runs, are members. A tag added or removed later moves no one, and two pools sharing one `member_tag` compile cleanly.
 - [ ] The latest assignment wins: starting pool B over pool A's members moves them to B, and stopping B returns them to the default pool, not to A. Two starts on one tick assign in issue order (pin P15). A spawn whose `spawned_tags` match two running pools joins the one started or re-started latest, and a replay or restore agrees (pin P33). A spawn on the tick a matching pool stops follows pin P34.
 - [ ] An enemy leaving a pool while holding a turn keeps it. The turn counts against its new pool until it ends by its own rule, and no grant in that pool fits around it (pin P13).
-- [ ] An empty `member_tag` is a compile error naming the entity. In both runtimes, a `limit` or `cost` below 1 or non-integer, a negative or non-finite `refreshMs`, a field in the wrong place, a token drawn twice by one attack or overridden twice by one profile, a token reference that is a bare string, a handle of another kind or unregistered, a duplicate token name, an `attackTurn` or `attackTurnFree` naming no attack of its archetype, a mark nested inside a mark for another attack, an action under a mark that fires another attack, or a mod token named `default` rejects with a pathed error. Two `ai_attack_pool`s sharing one `_tags` is a compile error naming both. A TypeScript token reference that names no declaration fails to compile.
+- [ ] An empty `member_tag` is a compile error naming the entity. In both runtimes, a `limit` or `cost` below 1 or non-integer, a negative or non-finite `refreshMs`, a field in the wrong place, a token drawn twice by one attack or overridden twice by one profile, a token reference that is a bare string, a handle of another kind or unregistered, a duplicate token name, an `attackTurn`, `attackTurnHeld` or `attackTurnFree` naming no attack of its archetype, a mark nested inside a mark for another attack, an action under a mark that fires another attack, or a mod token named `default` rejects with a pathed error. Two `ai_attack_pool`s sharing one `_tags` is a compile error naming both. A TypeScript token reference that names no declaration fails to compile.
 - [ ] A level with no `ai_attack_pool` behaves as the default pool alone.
 - [ ] Start and stop requests follow pin P15: a trigger-bound start applies before that tick's arbitration, and a start and a stop of one pool on one tick apply in issue order.
 - [ ] Attack pools running when their level restarts or changes are not running in the next install, and their members take turns in the default pool from that install's first tick.
@@ -249,7 +251,7 @@ Budget and attack pool rows draw one token unless they say otherwise, and "limit
 - **Shape.** Turns live on `BrainComponent`: each held turn's target, attack and counted pool, and the wait clock (all transient). Refreshing counts live with the pool's per-target, per-token tally. Each attack pool's state lives on its own serializable component; its profile resolves by name each tick, so a mod reload applies. Per-pool, per-target, per-token counts are recounted each tick. Rival: a per-target map on `AiRuntime`, rejected as a second source of truth to clear on despawn.
 - **Attack-pool rivals** are argued in `research.md` (Attack pool precedent).
 - **Slice order.** The knockback facing split first: it touches the fewest seams and proves the velocity separation strafe needs. Then the verbs and the scorer's per-query constraints, turns and arbitration, tokens, profiles and refresh, the attack pool entity, and last the shipped content that proves them together.
-- **Named turn fact.** `attackTurnFree(attack)` follows the `state(name)` / `defense(layer)` path (`sdk/lib/brain.luau`; resolution in `crates/foundation/src/brain.rs`), but projects `IrType::Bool` where those project `Number`, and checks its name against the archetype's attacks rather than the mod vocabulary (`crates/scripting-core/src/runtime/types.rs` walks `behavior.attacks` beside the guard walk). `hasAttackTurn` stays a fixed brain input; the typedef drift test pins `brain` to `BRAIN_INPUTS`.
+- **Named turn facts.** `attackTurnHeld(attack)` and `attackTurnFree(attack)` follow the `state(name)` / `defense(layer)` path (`sdk/lib/brain.luau`; resolution in `crates/foundation/src/brain.rs`), but projects `IrType::Bool` where those project `Number`, and checks its name against the archetype's attacks rather than the mod vocabulary (`crates/scripting-core/src/runtime/types.rs` walks `behavior.attacks` beside the guard walk). `hasAttackTurn` stays a fixed brain input; the typedef drift test pins `brain` to `BRAIN_INPUTS`.
 - **Token declarations.** Binding-name sugar fires only for definers on a fixed list (`crates/script-compiler/src/lib.rs`; Luau export lists in `luau_prelude.rs` and `luau_require.rs`), so `defineAttackToken` joins it. `with` rides the handle the way `DefenseLayer`'s accessors do, hidden in TypeScript and a metatable `__index` in Luau (`sdk/lib/data_script.ts`, `data_script.luau`), outside the serialized `{ kind, name }`.
 - **Hot reload.** A reload reseats no live brain, so an attack's `draws` resolve from the live descriptor at each grant and refresh on descriptor generation, as `resolved_projectile_attacks` does (`crates/ai/src/brain_programs.rs`).
 - **Watch for.**
@@ -280,5 +282,6 @@ Budget and attack pool rows draw one token unless they say otherwise, and "limit
 | attack pool entity | attack pool component | id-29 map-entity record | — | — | `ai_attack_pool` (`@PointClass`): `_tags`, `member_tag`, `budget_profile(string)`; empty means `default` |
 | attack pool member | attack pool member handle | — | `getMapEntities("attackPool")` → `start`, `stop` | same | trigger `command` `start` / `stop` |
 | turn held | `BRAIN_INPUTS` tail | `"@brain.hasAttackTurn"` | `brain.hasAttackTurn` | `brain.hasAttackTurn` | n/a |
+| turn held for an attack | named Bool input, resolved per attack at load | `"@attackTurnHeld.<attack>"` | `attackTurnHeld(attack: string)` | `attackTurnHeld(attack)` | n/a |
 | turn free | named Bool input, resolved per attack at load | `"@attackTurnFree.<attack>"` | `attackTurnFree(attack: string)` | `attackTurnFree(attack)` | n/a |
 | directional variants | host resolution | state names `X_left`, `X_right`, `X_backward` | — | — | n/a |

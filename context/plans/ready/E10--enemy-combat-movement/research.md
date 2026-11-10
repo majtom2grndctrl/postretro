@@ -66,7 +66,8 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 - Engine-fixed melee and ranged tokens, inferred from the attack's kind: pacing is taste (`scripting.md` §1), and a charged or thrown attack fits neither.
 - Archetype-level default draws: no shipped enemy needs them, and they add a second resolution rule. Additive later.
 - Token references as plain objects (`{ token, cost }`) beside a handle-based declaration: two styles. `token.with({ ... })` keeps every reference a handle, and its fields mirror the declaration's.
-- `attackTurnFree` as a member of `brain`: `brain` is a fixed fact table pinned to `BRAIN_INPUTS` by the typedef drift test; named reads are free functions (`state`, `defense`).
+- `attackTurnFree` as a member of `brain`: `brain` is a fixed fact table, pinned to `BRAIN_INPUTS` by the typedef drift test; named reads are free functions (`state`, `defense`).
+- `hasAttackTurn` scoped to the attack marked on the path, in place of `attackTurnHeld(attack)`: a fact whose meaning shifts with where a guard reads it is a trap, and a ranged branch could not ask about its melee turn.
 
 ## Pin table
 

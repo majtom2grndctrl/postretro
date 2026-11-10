@@ -60,4 +60,4 @@ The owner raised this while gating client level verbs. Basis: a defect read in s
 - First slice: the transport disconnect plus a loopback test asserting the host's close cause. This falsifies the riskiest assumption, that renet_netcode delivers the disconnect before the endpoint drops.
 
 ## Open questions
-- Should leave also show the player a "left session" or "disconnected" notice? — **delegated**: the executor decides and reports it in the plan of record. The default is a log line only.
+- Should leave also show the player a "left session" or "disconnected" notice? — **delegated**: the executor decides and reports it in the plan of record. The default is a log line only. Whatever notice ships should also cover a host-named load that fails on the client, which `ready/coop--client-spawn-view-handoff` returns to the frontend menu with no message.

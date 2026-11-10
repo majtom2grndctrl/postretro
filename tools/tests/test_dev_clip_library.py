@@ -30,6 +30,10 @@ LIBRARIES = {
             "cyberpunk-warrior.ts",
         ],
     },
+    "mixamo_mutant": {
+        "models": {"decraniated_low_poly_retro_pixel": 1_500_000},
+        "descriptors": ["shadow-hunter.ts"],
+    },
     "mixamo_brute": {
         "models": {"mutant": 700_000},
         "descriptors": [

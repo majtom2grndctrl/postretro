@@ -215,6 +215,13 @@ fn dev_mod_loads_clean_with_e16_content() {
         claw.damage_type.as_ref().unwrap().0,
         serde_json::json!({ "kind": "damageType", "name": "corrosive" })
     );
+    let hunter = entity(&manifest, "shadow_hunter");
+    assert_eq!(
+        hunter.mesh.as_ref().unwrap().model,
+        "models/decraniated_low_poly_retro_pixel/model.gltf",
+        "the shadow hunter wears the re-rested Decraniated body"
+    );
+    assert!(hunter.behavior.as_ref().unwrap().attacks.contains_key("claw"));
 }
 
 // Every dev-mod weapon names its type: the plasma bolt plasma, the

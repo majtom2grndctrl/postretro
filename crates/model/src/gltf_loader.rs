@@ -3332,6 +3332,108 @@ mod tests {
         assert!(duration("swipe_windup") < duration("swipe"));
     }
 
+    /// The two dev melee enemies bound to Mutant clip libraries: the brute and
+    /// the shadow hunter.
+    fn bound_mutant_bodies() -> [(&'static str, PathBuf); 2] {
+        let models = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/models");
+        [
+            ("brute", models.join("mutant/model.gltf")),
+            (
+                "shadow hunter",
+                models.join("decraniated_low_poly_retro_pixel/model.gltf"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn bound_mutant_bodies_stand_on_their_feet_and_face_plus_z() {
+        // Each body is authored feet-at-origin and facing +Z (AI facing aims
+        // +Z), and its library clips pose it upright: through idle, walk and run
+        // a foot stays near the floor and the head stays high. A sunk pivot, a
+        // library turned the other way, or a root-height mismatch fails here
+        // before anyone sees it in the engine.
+        use crate::anim::{Loop, sample_clip_looped_world};
+        for (name, path) in bound_mutant_bodies() {
+            if !path.exists() {
+                eprintln!("skipping: model asset not present at {}", path.display());
+                continue;
+            }
+            let model = load_model(&path).unwrap_or_else(|e| panic!("{name} loads: {e:?}"));
+            assert_eq!(model.legs.len(), 2, "{name}: two legs");
+            let feet: Vec<usize> = model.legs.iter().map(|leg| leg.foot_joint).collect();
+            let root = model
+                .skeleton
+                .joints
+                .iter()
+                .position(|joint| joint.parent.is_none())
+                .expect("a root joint");
+            let hand = |socket: &str| match model.sockets.get(socket) {
+                Some(SocketBinding::SkinnedJoint(joint)) => *joint,
+                _ => panic!("{name}: {socket} socket on a skinned joint"),
+            };
+            let (left_hand, right_hand) = (hand("hand_l"), hand("hand_r"));
+
+            let mut world = Vec::new();
+            let clip = |clip: &str| {
+                model
+                    .clips
+                    .iter()
+                    .find(|c| c.name == clip)
+                    .unwrap_or_else(|| panic!("{name}: clip `{clip}`"))
+            };
+            let pose = |world: &mut Vec<Mat4>, clip: &str, t: f32| {
+                sample_clip_looped_world(clip_ref(&model, clip), &model.skeleton, t, Loop::Clamp, world);
+            };
+            fn clip_ref<'a>(model: &'a LoadedModel, name: &str) -> &'a crate::skeleton::AnimationClip {
+                model.clips.iter().find(|c| c.name == name).unwrap()
+            }
+            let y = |world: &Vec<Mat4>, joint: usize| world[joint].w_axis.y;
+            let top = |world: &Vec<Mat4>| world.iter().map(|m| m.w_axis.y).fold(f32::MIN, f32::max);
+
+            // Facing: in idle the left hand is on the +X side of the right, which
+            // puts the front on +Z.
+            pose(&mut world, "idle", 0.0);
+            let (left_x, right_x) = (world[left_hand].w_axis.x, world[right_hand].w_axis.x);
+            assert!(
+                left_x > right_x + 0.1,
+                "{name}: faces +Z (left hand x {left_x:.2}, right {right_x:.2})"
+            );
+
+            for name_clip in ["idle", "walk", "run"] {
+                let duration = clip(name_clip).duration;
+                let mut t = 0.0;
+                while t <= duration {
+                    pose(&mut world, name_clip, t);
+                    let low = feet.iter().map(|&f| y(&world, f)).fold(f32::MAX, f32::min);
+                    assert!(
+                        (-0.1..0.35).contains(&low),
+                        "{name}: `{name_clip}` at {t:.2}s holds a foot near the floor ({low:.2} m)"
+                    );
+                    assert!(
+                        top(&world) > 1.2,
+                        "{name}: `{name_clip}` at {t:.2}s stands upright ({:.2} m)",
+                        top(&world)
+                    );
+                    t += 1.0 / 30.0;
+                }
+            }
+
+            // The swipe lunges forward, toward +Z; the pinned smash stays put.
+            let mut reach = f32::MIN;
+            let mut drift = 0.0f32;
+            let mut t = 0.0;
+            while t <= clip("smash").duration.max(clip("swipe").duration) {
+                pose(&mut world, "swipe", t);
+                reach = reach.max(world[root].w_axis.z);
+                pose(&mut world, "smash", t);
+                drift = drift.max(world[root].w_axis.x.abs()).max(world[root].w_axis.z.abs());
+                t += 1.0 / 30.0;
+            }
+            assert!(reach > 0.3, "{name}: the swipe lunges toward +Z ({reach:.2} m)");
+            assert!(drift < 0.15, "{name}: the smash is pinned in place ({drift:.2} m)");
+        }
+    }
+
     // --- Submesh range partition (multi-primitive split bookkeeping) -------
 
     #[test]

@@ -70,12 +70,31 @@ inside the model.
 The engine binds at load, with no rebake:
 
 - **Joints match by exact name.** Each library rotation applies as a change from
-  the library's rest pose, so rigs with different rest poses still share clips.
+  the library's rest pose, on top of the character's own rest pose. Small
+  differences in rest pose carry through as small offsets. A large one does not
+  fit: an A-pose character on a T-pose library swings its arms across its body.
+  See [Match the library's rest pose](#match-the-librarys-rest-pose).
 - **Proportions stay the character's.** Translation on non-root joints and all
   scale are dropped.
 - **Root motion scales by height.** Root translation scales by the character's
   root rest height over the library's, so a taller character takes longer strides
   and its death poses still reach the floor.
+
+### Match the library's rest pose
+
+Mixamo's own downloads are posed for each character, so this comes up with a
+rigged character from elsewhere: a Sketchfab model with Mixamo-named joints, for
+example, often binds in an A-pose. Re-rest it onto its library's pose after
+binding:
+
+```bash
+python3 tools/rest_to_library.py content/mymod/models/ghoul/model.gltf
+```
+
+Each joint takes the library's rest rotation, and the mesh moves into that pose
+with its own skin weights. The character's bone lengths stay its own. The script
+needs Python with `numpy` but not Blender, and rewrites the model in place.
+Rerunning the conversion undoes it, so run it again after any reconversion.
 
 A clip library needs clips that store a change from rest. `mixamo_to_gltf.py`
 writes them that way. A clip that needs translation on a non-root joint, such as

@@ -1,7 +1,7 @@
 # mover-light-flow--probe-channel — plan of record
 
 mode: resumable
-status: approved (task 12d done 2026-11-09; awaiting owner playtest and "land the plane")
+status: done (landed 2026-11-09)
 read at: c4a3d980c (no source change since the brief's 9382e3c23; every cited symbol re-read this session)
 
 ## Corrections

@@ -12,7 +12,7 @@ Reflection probes (PRL id 54) are captured at compile time with every mover abse
 - With reflections off, the posed closet matches the reference: 0.009 at station 2 and 0.032 at station 3, against 0.009 and 0.033.
 - The leak comes only from reflections. It is outside the probe channel, so `mover-light-flow--probe-channel` judges its closet rows with reflections off (owner, 2026-11-08).
 
-Evidence: `context/plans/in-progress/mover-light-flow--probe-channel/research.md` §Captures, and `captures/t2-closet-sheet.png` (×20 rows) in the same folder.
+Evidence: `context/plans/done/mover-light-flow--probe-channel/research.md` §Captures, and `captures/t2-closet-sheet.png` (×20 rows) in the same folder.
 
 ## Shape of a fix (unscoped)
 

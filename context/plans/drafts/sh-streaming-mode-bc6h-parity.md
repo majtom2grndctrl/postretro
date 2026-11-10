@@ -23,7 +23,7 @@ Frames differ by up to 9 levels on the closet's static indirect and up to 16 on 
 
 Built with `--uncompressed-irradiance`, every tile and frame is bit-identical across modes. That proves the encoding is the whole cause.
 
-Evidence: `context/plans/in-progress/mover-light-flow--probe-channel/research.md` §Task 11 and §Task 11b.
+Evidence: `context/plans/done/mover-light-flow--probe-channel/research.md` §Task 11 and §Task 11b.
 
 ## Shape of a fix (unscoped)
 

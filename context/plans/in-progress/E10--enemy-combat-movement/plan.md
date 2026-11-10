@@ -196,6 +196,20 @@ Test homes: `crates/ai/src/attack_turns/tests/` (budget, arbitration and facts),
 
 **Not an AC: perf row** (Path: "Add a wave-scale stress row for arbitration"). An `#[ignore]`-gated measurement times `arbitrate_attack_turns` at 64 and 128 engaged agents on one target with three tokens, plus a zero-allocation probe on the steady-state pass (`alloc_probe`). It records its numbers in this plan beside the `perf-ai-tick-cost` draft's `sim_ai` baseline, which has no engaged-agent row yet.
 
+**Recorded (task 9).** Release build on an Intel Mac, idle machine, `caffeinate`, 5000 samples after 200 warmup. Times are per `arbitrate_attack_turns` call, which is also per AI tick. Runs 2–3 agree within about 1%.
+- **Phases.** *Held*: the gate is full and nothing is granted. *Turnover*: one holder leaves and one waiter is granted each call.
+
+| Wave on one target | Held median / p95 | Turnover median / p95 |
+|---|---|---|
+| 64 | 8.3 / 8.8–9.9 µs | 12.4 / 13.2 µs |
+| 128 | 18.4 / 18.9–19.4 µs | 27.1 / 28.1–28.5 µs |
+
+- **Scaling.** 64→128 costs about 2.2×.
+- **Against the baseline.** That is about 1% of the 1.0 ms `sim_ai` target at 64 agents, and about 0.25% of today's 10.5–11 ms `sim_ai` at 128. The comparison is not like-for-like: this is an isolated microbenchmark, and the baseline is a real-map window average from before arbitration existed.
+- **Rerun.** `caffeinate -dims cargo test --release -p postretro-ai --lib arbitration_stress_row -- --ignored --nocapture --test-threads=1`.
+- **Alloc probe.** It covers 128 enemies over 4 targets, 64 on one target and 128 on one target, all at 0 allocations.
+- **Ring allocation (the Allocation Correction).** `ring_wave_allocates_no_more_per_tick_than_chase` measures 64 engaged enemies: 709 allocations per AI tick on the ring against 4692 on chase. The ring adds nothing. The per-tick allocations of the slot batch (`select_combat_positions_batch`) predate this brief and are out of scope.
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
@@ -208,7 +222,7 @@ Test homes: `crates/ai/src/attack_turns/tests/` (budget, arbitration and facts),
 | 6 | **Profiles, refresh and reload**: `attackBudgets`, the refresh ledger on `AiRuntime`, `clear_level_state`, live-descriptor `draws` on reload. Rows B12–B17, B26, B27 | integrating executor | 5 | done: ai `attack_turns/{refresh,roster,pools,token_remap,draws}.rs`, tests `tests/refresh.rs`, `tests/tick/{refresh,reload}.rs`; B15/B17/B26 split engine+tick (pool seam stubbed until task 7); mutation-checked B14/B16/B27; `-p postretro-ai` 335, foundation 185, scripting-core 1040, sim lib 1957, postretro bin unload/reload 119; alloc probe 0; clippy and fmt clean |
 | 7 | **`ai_attack_pool`**: FGD, compiler validation, `MapMemberKind`, component plus builtin, `COMMAND_KINDS`, script `start`/`stop` step primitives and validators, `getMapEntities("attackPool")` twins, the pre-AI request drain, spawn joining, undeclared-profile warning. Rows A1–A13 | worker (sim, compiler and SDK plumbing, against task 6's pool-id contract), integrated and tested by the executor | 6 | done: entities `attack_pool.rs`, sim `attack_pools/`, builtin, level-compiler `parse/attack_pools.rs`, SDK `entities/attack_pools.{ts,luau}`, FGD, docs; tests `sim/attack_pool_tick_tests.rs`, ai `tests/tick/pools.rs` (incl. P26/P30 pool-change halves); mutation-checked membership and drain order; ai 346, sim lib 1972, scripting-core 1042, prl-build 2442, level-format 727, net 315, entities 311; alloc probes 0 (incl. 32 pools × 256 brains); clippy and fmt clean |
 | 8 | **Shipped content**: dev mod `melee`/`ranged`/`heavy`; reference enemy (both twins), shadow hunter, limitator and troopers with strafe-while-waiting, fire-then-reposition, `enemy_rifle_burst`; Mixamo `walk_left`/`walk_right`/`walk_backward` bindings, with walk-cycle rate scaling extended to the directional variants (sim and netcode); `sdk/behaviors/reference` adoption; surface-example and pacing tests. Row S1; enables MAN1–MAN2 | integrating executor | 3, 7 || done: content `attack-tokens.{ts,luau}`, reference enemy twins, shadow hunter, limitator, `enemy_rifle_burst`, SDK reference draws; directional walk rate scaling in sim and netcode; tests `shipped_content.rs` (S1 pacing: slams 0.30/6.66/12.54 s, ranged ≤2), `surface_example_tests.rs`, per-variant stride tests; ai 349, sim lib 1973, netcode 1016, scripting-core 1043, postretro bin 2517; clippy and fmt clean |
-| 9 | **Arbitration stress row**: the `#[ignore]` measurement and alloc probe above; record numbers | integrating executor | 6 | |
+| 9 | **Arbitration stress row**: the `#[ignore]` measurement and alloc probe above; record numbers | integrating executor | 6 || done: ai `tests/tick/arbitration_stress.rs` (`#[ignore]`), alloc probe widened to 3 shapes (0), `engaged_motion_alloc_tests.rs` (ring ≤ chase); numbers above; ai 350 + 1 ignored; clippy and fmt clean |
 | 10 | Preflight, review panel and fix loop; full gate; results column | integrating executor | 1–9 | |
 
 Hot paths touched: the per-tick AI pass (arbitration adds one batch pass; no per-tick allocation in steady state, so turn and waiter vectors are reused scratch on `AiRuntime`), combat-slot scoring (the rotated ring replaces, never adds to, the generated set for the two verbs), and apply (one clip-name compare per brain).

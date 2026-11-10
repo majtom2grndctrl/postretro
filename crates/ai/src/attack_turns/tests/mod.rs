@@ -74,11 +74,30 @@ fn grants(arbiter: &mut Arbiter, table: &BudgetTable) -> Vec<usize> {
 
 // Hot path: once its scratch has grown, a steady-state turn pass (refresh
 // pruning, the previous-tick line, turn ends found on the roster and recorded
-// in the refresh ledger, arbitration over a wave on three tokens and several
-// targets with refreshing counts, the turn facts, and the roster rebuild)
-// performs no heap allocation.
+// in the refresh ledger, arbitration over a wave on three tokens with
+// refreshing counts, the turn facts, and the roster rebuild) performs no heap
+// allocation. Shapes: a wave spread over several targets, and the 64- and
+// 128-enemy waves on one target that the arbitration stress row times
+// (`tick/arbitration_stress.rs`).
 #[test]
 fn steady_state_turn_passes_allocate_nothing() {
+    // Every fourth enemy still holds, all of them on the first target.
+    steady_turn_pass_allocates_nothing(128, 4, |slot| slot % 4 == 0);
+    // One ranged-and-heavy holder leaves melee room, so a melee waiter is
+    // granted on the shared target.
+    steady_turn_pass_allocates_nothing(64, 1, |slot| slot == 2);
+    steady_turn_pass_allocates_nothing(128, 1, |slot| slot == 2);
+}
+
+/// One warm turn pass, then one probed steady pass over the same inputs:
+/// `enemy_count` enemies spread over `target_count` targets, each holding a
+/// turn last tick. This tick those `still_holds` picks keep theirs, the rest
+/// wait, and the last eight left the AI set.
+fn steady_turn_pass_allocates_nothing(
+    enemy_count: usize,
+    target_count: usize,
+    still_holds: impl Fn(usize) -> bool,
+) {
     use super::refresh::{RefreshLedger, RefreshView};
     use super::roster::TurnRoster;
     use super::{AttackBudgets, LineEntry, PreviousTickLine};
@@ -102,8 +121,8 @@ fn steady_state_turn_passes_allocate_nothing() {
         },
     ]);
     let budgets = AttackBudgets::new(table.clone());
-    let ids = targets(132);
-    let (targets, enemies) = ids.split_at(4);
+    let ids = targets(target_count + enemy_count);
+    let (targets, enemies) = ids.split_at(target_count);
     let kinds = [
         draws(&[(MELEE, 1)]),
         draws(&[(MELEE, 2), (HEAVY, 1)]),
@@ -116,8 +135,6 @@ fn steady_state_turn_passes_allocate_nothing() {
         draws: kinds[slot % kinds.len()],
         until_cooldown: true,
     };
-    // Last tick every enemy held a turn; this tick every fourth still does,
-    // the rest wait, and the last eight left the AI set.
     let before: Vec<AttackTurnState> = (0..enemies.len())
         .map(|slot| {
             let mut turns = AttackTurnState::default();
@@ -129,7 +146,7 @@ fn steady_state_turn_passes_allocate_nothing() {
     let brains: Vec<AttackTurnState> = (0..present)
         .map(|slot| {
             let mut turns = AttackTurnState::default();
-            if slot % 4 == 0 {
+            if still_holds(slot) {
                 turns.hold(held(slot));
             } else {
                 let turn = held(slot);
@@ -223,8 +240,12 @@ fn steady_state_turn_passes_allocate_nothing() {
     let snapshot = AllocSnapshot::arm();
     let steady = pass(5000.0);
     let allocs = snapshot.allocs_since();
-    assert_eq!(steady, warm, "the same inputs grant the same set");
-    assert!(warm.0 > 0, "fixture: some requests are granted");
-    assert!(warm.2 > 0, "fixture: ended turns are refreshing");
-    assert_eq!(allocs, 0, "a steady-state turn pass must not allocate");
+    let shape = format!("{enemy_count} enemies on {target_count} targets");
+    assert_eq!(steady, warm, "{shape}: the same inputs grant the same set");
+    assert!(warm.0 > 0, "{shape}: fixture: some requests are granted");
+    assert!(warm.2 > 0, "{shape}: fixture: ended turns are refreshing");
+    assert_eq!(
+        allocs, 0,
+        "{shape}: a steady-state turn pass must not allocate"
+    );
 }

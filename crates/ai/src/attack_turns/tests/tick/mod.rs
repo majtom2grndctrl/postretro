@@ -2,6 +2,7 @@
 // the turn facts, refresh, profiles and reloads, on the AI test fixtures.
 // See: context/lib/entity_model.md §7c (Attack budget)
 
+mod arbitration_stress;
 mod budget;
 mod facts;
 mod lifetime;

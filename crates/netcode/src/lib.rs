@@ -7528,7 +7528,11 @@ mod tests {
         resolve_pending_animation_stamps(&mut registry, 0.0);
         replication.cache_remote_enemy_walk_playback(
             NetworkId(7),
-            Some((60.0, "locomotion".to_string(), None)),
+            Some(client::RemoteEnemyWalkPlayback::base(
+                60.0,
+                "locomotion",
+                None,
+            )),
         );
 
         let time_sync = ClientTimeSync::new();

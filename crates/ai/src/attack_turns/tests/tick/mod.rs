@@ -9,6 +9,7 @@ mod pools;
 mod refresh;
 mod release;
 mod reload;
+mod shipped_content;
 mod tokens;
 
 use super::*;

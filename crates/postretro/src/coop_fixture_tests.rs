@@ -275,6 +275,10 @@ pub(crate) fn initialize_dev_mod(
         &ctx,
         manifest.defense.clone(),
     );
+    postretro_scripting_core::attack_budget_vocabulary::commit_attack_budgets(
+        &ctx,
+        manifest.attack_budgets.clone(),
+    );
     {
         let mut data = ctx.data_registry.borrow_mut();
         data.replace_entity_types(manifest.entities.clone());

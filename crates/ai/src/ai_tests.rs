@@ -9105,6 +9105,8 @@ fn reference_single_attack_graph() -> BehaviorGraphDescriptor {
 /// `content/dev/scripts/reference-enemy.{ts,luau}`. The twin parser guard and
 /// the Luau oracle below keep this executable fixture honest.
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
+    use postretro_foundation::attack_budget::TokenDraw;
+
     const DETECTION_RANGE: f32 = 16.0;
     const ALERT_MS: f32 = 4000.0;
     const SEARCH_AFTER_MS: f32 = 800.0;
@@ -9113,104 +9115,156 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const STARTLE_MS: f32 = 200.0;
     const JAB_RANGE: f32 = 2.0;
     const SLAM_RANGE: f32 = 3.5;
+    const CLOSE_STANDOFF: f32 = 1.5;
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
     const SLAM_WINDUP_MS: f32 = 250.0;
     const SLAM_COMMIT_MS: f32 = 150.0;
     const SLAM_RECOVER_MS: f32 = 1450.0;
+    const JAB_STRIKE_MS: f32 = 450.0;
+    const JAB_REST_MS: f32 = 750.0;
+    const PRESS_MS: f32 = 5000.0;
 
-    let leaf = |animation: &str, action: Option<ActionVerb>| BehaviorActivityDescriptor {
-        sound: None,
-        animation: Some(animation.to_string()),
-        motion: None,
-        action,
-        on_enter: None,
-        facing: None,
-        reposition: None,
-        attack_turn: None,
-        layers: BTreeMap::new(),
+    let activity = |animation: Option<&str>,
+                    action: Option<&str>,
+                    attack_turn: Option<&str>,
+                    layers: BTreeMap<String, BehaviorLayerDescriptor>| {
+        BehaviorActivityDescriptor {
+            sound: None,
+            animation: animation.map(str::to_string),
+            motion: None,
+            action: action.map(|attack| ActionVerb::Attack(attack.to_string())),
+            on_enter: None,
+            facing: None,
+            reposition: None,
+            attack_turn: attack_turn.map(str::to_string),
+            layers,
+        }
     };
+    let leaf = |animation: &str, action: Option<&str>, attack_turn: Option<&str>| {
+        activity(Some(animation), action, attack_turn, BTreeMap::new())
+    };
+    let and = |a: IrNode, b: IrNode| IrNode::And {
+        a: Box::new(a),
+        b: Box::new(b),
+    };
+    let at_least = |input: &str, value: f32| IrNode::Ge {
+        a: Box::new(brain_input(input)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(value),
+        }),
+    };
+    let in_activity_ms = |ms: f32| at_least(BRAIN_TIME_IN_ACTIVITY_MS_INPUT, ms);
+    let turn_read = |prefix: &str, attack: &str| brain_input(&format!("{prefix}{attack}"));
+
     let move_selector = BehaviorLayerDescriptor::Selector(vec![
         BehaviorSelectorEntry::Row(BehaviorSelectorRow {
-            when: Some(target_within(SLAM_RANGE)),
+            when: Some(target_within(JAB_RANGE)),
             motion: Some(MotionVerb::Hold),
             action: None,
         }),
         BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget),
     ]);
-    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
-        initial: "approach".to_string(),
+    let jabs = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "stalk".to_string(),
         activities: BTreeMap::from([
-            ("approach".to_string(), leaf("walk", None)),
+            ("stalk".to_string(), leaf("walk", None, None)),
             (
                 "jab".to_string(),
-                leaf("attack_jab", Some(ActionVerb::Attack("jab".to_string()))),
+                leaf("attack_jab", Some("jab"), Some("jab")),
             ),
-            ("windup".to_string(), leaf("attack_slam", None)),
-            (
-                "commit".to_string(),
-                leaf("attack_slam", Some(ActionVerb::Attack("slam".to_string()))),
-            ),
-            ("recover".to_string(), leaf("attack_slam", None)),
         ]),
         transitions: BTreeMap::from([
             (
-                "approach".to_string(),
-                vec![
-                    edge("jab", target_within(JAB_RANGE)),
-                    edge("windup", target_within(SLAM_RANGE)),
-                ],
+                "stalk".to_string(),
+                vec![edge(
+                    "jab",
+                    and(
+                        and(target_within(JAB_RANGE), in_activity_ms(JAB_REST_MS)),
+                        turn_read(postretro_foundation::ATTACK_TURN_FREE_INPUT_PREFIX, "jab"),
+                    ),
+                )],
             ),
             (
                 "jab".to_string(),
+                vec![
+                    edge(
+                        "stalk",
+                        and(
+                            at_least(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, 1.0),
+                            in_activity_ms(JAB_STRIKE_MS),
+                        ),
+                    ),
+                    edge("stalk", target_beyond(JAB_RANGE)),
+                ],
+            ),
+        ]),
+    });
+    let jabbing = || {
+        activity(
+            None,
+            None,
+            None,
+            BTreeMap::from([("offense".to_string(), jabs.clone())]),
+        )
+    };
+    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "hunt".to_string(),
+        activities: BTreeMap::from([
+            ("hunt".to_string(), jabbing()),
+            ("press".to_string(), jabbing()),
+            (
+                "windup".to_string(),
+                leaf("attack_slam", None, Some("slam")),
+            ),
+            (
+                "commit".to_string(),
+                leaf("attack_slam", Some("slam"), Some("slam")),
+            ),
+            (
+                "recover".to_string(),
+                leaf("attack_slam", None, Some("slam")),
+            ),
+        ]),
+        transitions: BTreeMap::from([
+            (
+                "hunt".to_string(),
                 vec![edge(
                     "windup",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(1.0),
-                        }),
-                    },
+                    and(
+                        target_within(SLAM_RANGE),
+                        turn_read(postretro_foundation::ATTACK_TURN_FREE_INPUT_PREFIX, "slam"),
+                    ),
                 )],
             ),
             (
                 "windup".to_string(),
-                vec![edge(
-                    "commit",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(SLAM_WINDUP_MS),
-                        }),
-                    },
-                )],
+                vec![
+                    edge(
+                        "commit",
+                        and(
+                            in_activity_ms(SLAM_WINDUP_MS),
+                            turn_read(postretro_foundation::ATTACK_TURN_HELD_INPUT_PREFIX, "slam"),
+                        ),
+                    ),
+                    edge("hunt", in_activity_ms(SLAM_WINDUP_MS)),
+                ],
             ),
             (
                 "commit".to_string(),
-                vec![edge(
-                    "recover",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(SLAM_COMMIT_MS),
-                        }),
-                    },
-                )],
+                vec![edge("recover", in_activity_ms(SLAM_COMMIT_MS))],
             ),
             (
                 "recover".to_string(),
-                vec![edge(
-                    "approach",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(SLAM_RECOVER_MS),
-                        }),
-                    },
-                )],
+                vec![edge("press", in_activity_ms(SLAM_RECOVER_MS))],
+            ),
+            (
+                "press".to_string(),
+                vec![edge("hunt", in_activity_ms(PRESS_MS))],
             ),
         ]),
     });
+    let token = |name: &str| serde_json::json!({ "kind": "attackToken", "name": name });
 
     BehaviorGraphDescriptor {
         knockback: Default::default(),
@@ -9431,7 +9485,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
-                    draws: None,
+                    draws: Some(vec![TokenDraw(token("melee"))]),
                 },
             ),
             (
@@ -9442,10 +9496,13 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     damage: Some(14.0),
                     max_range: Some(SLAM_RANGE),
                     cooldown_ms: Some(1800.0),
-                    engagement_radius: Some(SLAM_RANGE),
+                    engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
-                    draws: None,
+                    draws: Some(vec![
+                        TokenDraw(serde_json::json!({ "token": token("melee"), "cost": 2 })),
+                        TokenDraw(token("heavy")),
+                    ]),
                 },
             ),
             (
@@ -9466,7 +9523,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 },
             ),
         ]),
-        engagement_radius: Some(JAB_RANGE),
+        engagement_radius: Some(CLOSE_STANDOFF),
         move_speed: 3.0,
     }
 }
@@ -9514,13 +9571,30 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     globals.set("brain", brain).unwrap();
     globals.set("candidate", candidate).unwrap();
     globals.set("defense", defense).unwrap();
+    for read in ["attackTurnFree", "attackTurnHeld"] {
+        let function: mlua::Function = brain_sdk
+            .get(read)
+            .unwrap_or_else(|_| panic!("brain.luau exports `{read}`"));
+        globals.set(read, function).unwrap();
+    }
     globals.set("defineEntity", define_entity).unwrap();
-    // No prelude, so no `require`: the enemy's two vocabulary modules resolve
-    // to tables of name-carrying handles, as the real modules return.
+    // A token handle's `with` lives on its metatable, off the wire, as the
+    // SDK's does.
+    let token_methods: mlua::Table = lua
+        .load(
+            "return { __index = { with = function(self, fields) \
+             local reference = table.clone(fields) reference.token = self \
+             return reference end } }",
+        )
+        .eval()
+        .expect("token handle methods");
+    // No prelude, so no `require`: the enemy's three vocabulary modules
+    // resolve to tables of name-carrying handles, as the real modules return.
     let require = lua
-        .create_function(|lua, path: String| {
+        .create_function(move |lua, path: String| {
             let handles = lua.create_table()?;
             let (kind, names): (&str, &[&str]) = match path.as_str() {
+                "./scripts/attack-tokens.luau" => ("attackToken", &["melee", "ranged", "heavy"]),
                 "./scripts/defenses.luau" => ("defenseLayer", &["shield", "armor"]),
                 "./scripts/damage-types.luau" => (
                     "damageType",
@@ -9543,6 +9617,9 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 let handle = lua.create_table()?;
                 handle.set("kind", kind)?;
                 handle.set("name", *name)?;
+                if kind == "attackToken" {
+                    handle.set_metatable(Some(token_methods.clone()))?;
+                }
                 handles.set(*name, handle)?;
             }
             Ok(handles)
@@ -9631,6 +9708,7 @@ fn step_reference_enemy_graph_with_hostility(
 ) -> String {
     let graph = reference_behavior_graph();
     let mut registry = EntityRegistry::new();
+    install_dev_attack_tokens(&mut registry);
     let enemy = registry.spawn(Transform::default());
     registry
         .set_component(enemy, BrainComponent::from_graph(&graph))
@@ -9983,13 +10061,14 @@ struct BrainTrace {
 }
 
 /// Where the player stands on `tick` — out of detection, inside detection,
-/// in contact, backing off, and finally past its authored stand-down range.
+/// in contact long enough for a slam and the jabs that follow it, backing off,
+/// and finally past its authored stand-down range.
 fn reference_player_x(tick: u32) -> f32 {
     match tick {
         0..=9 => 30.0,
         10..=39 => 10.0,
-        40..=139 => 1.5,
-        140..=169 => 6.0,
+        40..=239 => 1.5,
+        240..=269 => 6.0,
         _ => 80.0,
     }
 }
@@ -10021,16 +10100,15 @@ fn give_reference_armor(registry: &mut EntityRegistry, enemy: EntityId) {
 }
 
 fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
-    const TICKS: u32 = 200;
+    const TICKS: u32 = 300;
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
+    // The shipped draws, under the dev mod's tokens: alone on its target, the
+    // brute is granted every turn it asks for.
+    install_dev_attack_tokens(&mut reg);
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     give_reference_armor(&mut reg, enemy);
-    // The trace's jab-then-slam rotation lands inside the jab's cooldown, which
-    // a shared token spaces out. Opting both attacks out of the budget keeps
-    // this trace about nesting; turn pacing has its own proofs.
-    opt_out_of_attack_budget(&mut reg, &mut runtime, enemy);
 
     (0..TICKS)
         .map(|tick| {
@@ -10073,7 +10151,10 @@ fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
     let authored = trace_reference_fixture(BrainComponent::from_graph(&reference_behavior_graph()));
 
     // The fixture has to visit the nested phases, or the full-path assertion is
-    // vacuous. A committed slam appears after the counter-driven jab rotation.
+    // vacuous. The slam comes first, as soon as its turn is free; the jabs
+    // follow while the brute presses.
+    const HUNT_STALK: &str = "engage/offense/hunt/offense/stalk";
+    const PRESS_JAB: &str = "engage/offense/press/offense/jab";
     let states: Vec<&str> = authored
         .iter()
         .map(|row| row.state.as_str())
@@ -10083,9 +10164,10 @@ fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
     assert_eq!(
         states,
         vec![
-            "engage/offense/approach",
             "engage/offense/commit",
-            "engage/offense/jab",
+            HUNT_STALK,
+            PRESS_JAB,
+            "engage/offense/press/offense/stalk",
             "engage/offense/recover",
             "engage/offense/windup",
             "patrol",
@@ -10100,23 +10182,24 @@ fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
         .collect();
     assert!(
         damage_ticks.len() >= 2,
-        "the jab and committed slam must both fire: {damage_ticks:?}"
+        "the committed slam and a jab must both fire: {damage_ticks:?}"
     );
+    let first_animation = |name: &str| authored.iter().position(|row| row.animation == name);
     assert!(
-        authored.iter().any(|row| row.animation == "attack_jab")
-            && authored.iter().any(|row| row.animation == "attack_slam"),
-        "the fixture must switch from the jab to the committed slam clip"
-    );
-    assert!(
-        authored
-            .iter()
-            .any(|row| row.state == "engage/offense/approach" && row.has_destination),
-        "the engage.move fallback chases while the target is outside the slam standoff"
+        first_animation("attack_slam") < first_animation("attack_jab")
+            && first_animation("attack_jab").is_some(),
+        "the fixture must switch from the committed slam clip to the jab"
     );
     assert!(
         authored
             .iter()
-            .any(|row| row.state == "engage/offense/jab" && !row.has_destination),
+            .any(|row| row.state == HUNT_STALK && row.has_destination),
+        "the engage.move fallback chases while the target is outside jab reach"
+    );
+    assert!(
+        authored
+            .iter()
+            .any(|row| row.state == PRESS_JAB && !row.has_destination),
         "the engage.move selector holds at the authored combat range"
     );
 }
@@ -13437,6 +13520,25 @@ fn an_arrival_guard_below_the_engine_epsilon_leaves_a_position_goal_wedged() {
 /// activities that author no `on_enter` fire nothing and are skipped.
 /// Bind `enemy`'s graph now and make every one of its attacks draw nothing,
 /// as `draws: []` does: always granted, never counted.
+/// Register the dev mod's attack tokens (`content/dev/scripts/attack-tokens.ts`),
+/// which the shipped reference enemy's `draws` name, as its manifest does.
+fn install_dev_attack_tokens(reg: &mut EntityRegistry) {
+    let declare = |name: &str, budget: serde_json::Value| serde_json::json!({ "kind": "attackToken", "name": name, "budget": budget });
+    let vocabulary = postretro_foundation::attack_budget::AttackBudgetVocabulary::from_manifest(
+        Some(&serde_json::json!([
+            declare("melee", serde_json::json!({ "limit": 3 })),
+            declare("ranged", serde_json::json!({ "limit": 2 })),
+            declare(
+                "heavy",
+                serde_json::json!({ "limit": 1, "refreshMs": 4000 })
+            ),
+        ])),
+        None,
+    )
+    .expect("the dev tokens register");
+    reg.set_attack_budgets(std::sync::Arc::new(vocabulary));
+}
+
 fn opt_out_of_attack_budget(reg: &mut EntityRegistry, runtime: &mut AiRuntime, enemy: EntityId) {
     let mut warned = HashSet::new();
     runtime.programs.sync(reg, &[], 0, &mut warned);

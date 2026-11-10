@@ -52,6 +52,7 @@ use postretro_net::wire::{
     WireKinematicMoverState, WirePlayerMovementState,
 };
 
+use postretro_entities::components::brain::TravelVariant;
 use postretro_entities::components::mesh::{
     LocomotionDirection, MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
 };
@@ -165,13 +166,32 @@ enum DeltaApply {
 /// Descriptor-immutable locomotion reference data for a remote enemy. The host
 /// replicates only its changing pose and mesh state; the client reads this from the
 /// shared descriptor table when that remote is materialized.
-#[derive(Debug, Clone)]
-struct RemoteEnemyWalkPlayback {
-    move_speed: f32,
-    walk_state: String,
-    /// Load-derived speed for the alert state's clip. The runtime state applies
-    /// its authored `travelSpeed` override before this value.
-    derived_travel_speed: Option<f32>,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RemoteEnemyWalkPlayback {
+    pub(crate) move_speed: f32,
+    /// The graph's locomotion state. It and its directional variants
+    /// (`_left`, `_right`, `_backward`) scale with presented speed.
+    pub(crate) walk_state: String,
+    /// Load-derived speed of each variant's clip, indexed by
+    /// [`TravelVariant::index`]. The runtime state applies its authored
+    /// `travelSpeed` override before this value.
+    pub(crate) derived_travel_speeds: [Option<f32>; 4],
+}
+
+impl RemoteEnemyWalkPlayback {
+    /// A reference whose only calibrated clip is the base walk's.
+    #[cfg(test)]
+    pub(crate) fn base(
+        move_speed: f32,
+        walk_state: impl Into<String>,
+        derived_travel_speed: Option<f32>,
+    ) -> Self {
+        Self {
+            move_speed,
+            walk_state: walk_state.into(),
+            derived_travel_speeds: [derived_travel_speed, None, None, None],
+        }
+    }
 }
 
 /// Descriptor-derived locomotion data for a remote player avatar. Remote player
@@ -2647,18 +2667,12 @@ impl ClientReplication {
     pub(crate) fn cache_remote_enemy_walk_playback(
         &mut self,
         network_id: NetworkId,
-        reference: Option<(f32, String, Option<f32>)>,
+        reference: Option<RemoteEnemyWalkPlayback>,
     ) {
         match reference {
-            Some((move_speed, walk_state, derived_travel_speed)) => {
-                self.remote_enemy_walk_playback.insert(
-                    network_id,
-                    RemoteEnemyWalkPlayback {
-                        move_speed,
-                        walk_state,
-                        derived_travel_speed,
-                    },
-                );
+            Some(reference) => {
+                self.remote_enemy_walk_playback
+                    .insert(network_id, reference);
             }
             None => {
                 self.remote_enemy_walk_playback.remove(&network_id);
@@ -2842,8 +2856,9 @@ impl ClientReplication {
     }
 
     /// Apply the rate for one presented remote pose. Only an enemy whose current
-    /// mesh state is the descriptor's alert-mapped walk state receives its displayed
-    /// XZ speed; every other state deliberately rests at rate 1.
+    /// mesh state is the descriptor's locomotion walk state, or a directional
+    /// variant of it, receives its displayed XZ speed; every other state
+    /// deliberately rests at rate 1.
     fn update_remote_enemy_walk_playback_rate(
         &self,
         registry: &mut EntityRegistry,
@@ -2860,11 +2875,14 @@ impl ClientReplication {
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
             .and_then(|animation| {
-                if animation.current_state != reference.walk_state || !animation.speed_scale {
+                let variant =
+                    TravelVariant::of_state(&reference.walk_state, &animation.current_state);
+                let Some(variant) = variant.filter(|_| animation.speed_scale) else {
                     return Some(1.0);
-                }
+                };
                 let state = animation.states.get(&animation.current_state)?;
-                let effective = state.effective_travel_speed(reference.derived_travel_speed);
+                let effective =
+                    state.effective_travel_speed(reference.derived_travel_speeds[variant.index()]);
                 Some(MeshAnimation::locomotion_rate_ratio(
                     speed_xz,
                     effective,
@@ -5342,7 +5360,7 @@ mod tests {
         // (5 m over 10 server ticks), then the next is full speed (10 m).
         client.cache_remote_enemy_walk_playback(
             NetworkId(7),
-            Some((60.0, "locomotion".into(), None)),
+            Some(RemoteEnemyWalkPlayback::base(60.0, "locomotion", None)),
         );
 
         client.apply_snapshot(
@@ -5449,7 +5467,11 @@ mod tests {
             registry.set_component(id, mesh).unwrap();
             client.cache_remote_enemy_walk_playback(
                 NetworkId(7),
-                Some((move_speed, "locomotion".to_string(), case.derived_speed)),
+                Some(RemoteEnemyWalkPlayback::base(
+                    move_speed,
+                    "locomotion",
+                    case.derived_speed,
+                )),
             );
 
             client.update_remote_enemy_walk_playback_rate(
@@ -5471,6 +5493,64 @@ mod tests {
                 (actual - expected).abs() <= EPSILON,
                 "{}: expected {expected}, got {actual}",
                 case.label
+            );
+        }
+    }
+
+    // E10: a remote enemy's directional walk variants scale with presented
+    // speed, each against its own clip's derived stride, as the host scales
+    // them; a state that only shares the prefix rests at rate 1.
+    #[test]
+    fn remote_directional_walk_variants_scale_against_their_own_strides() {
+        let measured = 3.0_f32;
+        let reference = RemoteEnemyWalkPlayback {
+            move_speed: 3.5,
+            walk_state: "locomotion".to_string(),
+            derived_travel_speeds: [Some(2.5), Some(2.0), Some(2.4), Some(1.5)],
+        };
+        for (state, expected) in [
+            ("locomotion_left", measured / 2.0),
+            ("locomotion_right", measured / 2.4),
+            ("locomotion_backward", measured / 1.5),
+            ("locomotion_sideways", 1.0),
+        ] {
+            let mut registry = EntityRegistry::new();
+            let mut client = ClientReplication::new();
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    0,
+                    100,
+                    vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+                ),
+            );
+            let id = *client.map().get(&NetworkId(7)).expect("remote is mapped");
+            let mut mesh = unresolved_mesh();
+            let animation = mesh.animation.as_mut().unwrap();
+            let walk = animation.states["locomotion"].clone();
+            animation.states.insert(state.to_string(), walk);
+            animation.current_state = state.to_string();
+            registry.set_component(id, mesh).unwrap();
+            client.cache_remote_enemy_walk_playback(NetworkId(7), Some(reference.clone()));
+
+            client.update_remote_enemy_walk_playback_rate(
+                &mut registry,
+                NetworkId(7),
+                id,
+                measured,
+                1.0,
+            );
+            let actual = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .rate;
+            let expected = expected.clamp(RATE_MIN, RATE_MAX);
+            assert!(
+                (actual - expected).abs() <= EPSILON,
+                "`{state}`: expected {expected}, got {actual}"
             );
         }
     }
@@ -5501,7 +5581,7 @@ mod tests {
         resolve_pending_animation_stamps(&mut registry, 0.0);
         client.cache_remote_enemy_walk_playback(
             NetworkId(7),
-            Some((60.0, "locomotion".into(), None)),
+            Some(RemoteEnemyWalkPlayback::base(60.0, "locomotion", None)),
         );
 
         let before = registry

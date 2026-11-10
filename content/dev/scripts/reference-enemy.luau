@@ -3,6 +3,7 @@
 
 local M = {}
 
+local AttackTokens = require("./scripts/attack-tokens.luau")
 local DamageTypes = require("./scripts/damage-types.luau")
 local Defenses = require("./scripts/defenses.luau")
 
@@ -16,12 +17,59 @@ local HALF_PI = math.pi / 2
 local STARTLE_MS = 200
 local JAB_RANGE = 2
 local SLAM_RANGE = 3.5
+-- Combat slots sit inside jab reach, so the brute fights close enough to jab.
+local CLOSE_STANDOFF = 1.5
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
 local SLAM_WINDUP_MS = 250
 local SLAM_COMMIT_MS = 150
 -- The 1,850 ms phase cycle is longer than slam's 1,800 ms cooldown.
 local SLAM_RECOVER_MS = 1450
+-- Strike plus rest covers the jab's 1,200 ms cooldown.
+local JAB_STRIKE_MS = 450
+local JAB_REST_MS = 750
+-- Longer than `heavy`'s 4 s refresh, so a second brute takes the next slam.
+local PRESS_MS = 5000
+
+-- The jab loop both fighting phases nest.
+local jabs = {
+  initial = "stalk",
+  activities = {
+    stalk = { animation = "walk" },
+    jab = {
+      animation = "attack_jab",
+      action = { attack = "jab" },
+      attackTurn = "jab",
+    },
+  },
+  transitions = {
+    stalk = {
+      {
+        to = "jab",
+        when = brain.targetDistance:le(JAB_RANGE)["and"](
+          brain.targetDistance:le(JAB_RANGE),
+          brain.timeInActivityMs:ge(JAB_REST_MS)
+        )["and"](
+          brain.targetDistance:le(JAB_RANGE)["and"](
+            brain.targetDistance:le(JAB_RANGE),
+            brain.timeInActivityMs:ge(JAB_REST_MS)
+          ),
+          attackTurnFree("jab")
+        ),
+      },
+    },
+    jab = {
+      {
+        to = "stalk",
+        when = brain.attacksFiredInActivity:ge(1)["and"](
+          brain.attacksFiredInActivity:ge(1),
+          brain.timeInActivityMs:ge(JAB_STRIKE_MS)
+        ),
+      },
+      { to = "stalk", when = brain.targetDistance:gt(JAB_RANGE) },
+    },
+  },
+}
 
 M.referenceEnemyEntity = defineEntity({
   canonicalName = M.REFERENCE_ENEMY_CLASSNAME,
@@ -89,16 +137,16 @@ M.referenceEnemyEntity = defineEntity({
       initial = "idle",
       moveSpeed = 3,
       attacks = {
-        jab = { damage = 8, maxRange = JAB_RANGE, cooldownMs = 1200 },
+        jab = { draws = { AttackTokens.melee }, damage = 8, maxRange = JAB_RANGE, cooldownMs = 1200 },
         slam = {
+          draws = { AttackTokens.melee:with({ cost = 2 }), AttackTokens.heavy },
           damage = 14,
           maxRange = SLAM_RANGE,
           cooldownMs = 1800,
-          engagementRadius = SLAM_RANGE,
         },
         claw = { damage = 15, damageType = DamageTypes.corrosive, maxRange = 2, cooldownMs = 800 },
       },
-      engagementRadius = JAB_RANGE,
+      engagementRadius = CLOSE_STANDOFF,
       patrol = {
         mode = "pingPong",
         points = { { 0, 0 }, { 6, 0 }, { 6, 6 } },
@@ -111,46 +159,52 @@ M.referenceEnemyEntity = defineEntity({
           layers = {
             move = {
               {
-                when = brain.targetDistance:le(SLAM_RANGE),
+                when = brain.targetDistance:le(JAB_RANGE),
                 motion = "hold",
               },
               "chaseTarget",
             },
             offense = {
-              initial = "approach",
+              initial = "hunt",
               activities = {
-                approach = { animation = "walk" },
-                jab = {
-                  animation = "attack_jab",
-                  action = { attack = "jab" },
-                },
-                windup = { animation = "attack_slam" },
+                hunt = { layers = { offense = jabs } },
+                press = { layers = { offense = jabs } },
+                windup = { animation = "attack_slam", attackTurn = "slam" },
                 commit = {
                   animation = "attack_slam",
                   action = { attack = "slam" },
+                  attackTurn = "slam",
                 },
-                recover = { animation = "attack_slam" },
+                recover = { animation = "attack_slam", attackTurn = "slam" },
               },
               transitions = {
-                approach = {
-                  { to = "jab", when = brain.targetDistance:le(JAB_RANGE) },
-                  { to = "windup", when = brain.targetDistance:le(SLAM_RANGE) },
-                },
-                jab = {
+                hunt = {
                   {
                     to = "windup",
-                    when = brain.attacksFiredInActivity:ge(1),
+                    when = brain.targetDistance:le(SLAM_RANGE)["and"](
+                      brain.targetDistance:le(SLAM_RANGE),
+                      attackTurnFree("slam")
+                    ),
                   },
                 },
                 windup = {
-                  { to = "commit", when = brain.timeInActivityMs:ge(SLAM_WINDUP_MS) },
+                  {
+                    to = "commit",
+                    when = brain.timeInActivityMs:ge(SLAM_WINDUP_MS)["and"](
+                      brain.timeInActivityMs:ge(SLAM_WINDUP_MS),
+                      attackTurnHeld("slam")
+                    ),
+                  },
+                  -- Another brute asked on the same tick and won the turn.
+                  { to = "hunt", when = brain.timeInActivityMs:ge(SLAM_WINDUP_MS) },
                 },
                 commit = {
                   { to = "recover", when = brain.timeInActivityMs:ge(SLAM_COMMIT_MS) },
                 },
                 recover = {
-                  { to = "approach", when = brain.timeInActivityMs:ge(SLAM_RECOVER_MS) },
+                  { to = "press", when = brain.timeInActivityMs:ge(SLAM_RECOVER_MS) },
                 },
+                press = { { to = "hunt", when = brain.timeInActivityMs:ge(PRESS_MS) } },
               },
             },
           },

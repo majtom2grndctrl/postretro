@@ -1226,6 +1226,10 @@ mod attack_budget_manifest_tests;
 mod attack_turn_read_tests;
 
 #[cfg(test)]
+#[path = "staged_manifest/surface_example_tests.rs"]
+mod surface_example_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::data_descriptors::ModThemeTokens;

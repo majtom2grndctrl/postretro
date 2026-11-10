@@ -85,7 +85,7 @@ use postretro_collision::EnvironmentView;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::brain::{BrainComponent, TravelVariant};
 #[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{
@@ -1373,13 +1373,17 @@ fn update_brain_animation_playback_rates(
         };
 
         // Rate-scale only the graph's locomotion state — the one that chases
-        // without an action of its own — and only while the archetype leaves
+        // without an action of its own — or a directional variant of it
+        // (`_left`, `_right`, `_backward`), and only while the archetype leaves
         // `speedScale` on. Every other case rests at the authored rate (1.0).
-        // Calibration is `measured_ground_speed / effective_travel_speed`; a
-        // state with neither an override nor a derived clip stride falls back to
+        // Calibration is `measured_ground_speed / effective_travel_speed`, each
+        // variant against its own clip's stride; a state with neither an
+        // override nor a derived clip stride falls back to
         // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
-        let is_locomotion = postretro_foundation::locomotion_animation(&brain.graph)
-            .is_some_and(|locomotion| animation.current_state == locomotion);
+        let is_locomotion =
+            postretro_foundation::locomotion_animation(&brain.graph).is_some_and(|locomotion| {
+                TravelVariant::of_state(locomotion, &animation.current_state).is_some()
+            });
         let rate_input = if is_locomotion && animation.speed_scale {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);
             MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)

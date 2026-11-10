@@ -1825,7 +1825,9 @@ composite's optional locomotion `animation` wins. This sole `current_state`
 replicates; layers do not blend clips. Set `components.mesh.defaultState` to a
 suitable root initial animation. While an enemy faces its target, an activity
 animation `X` plays `X_left`, `X_right` or `X_backward` when it travels that way,
-and plays `X` when the mesh declares no such state.
+and plays `X` when the mesh declares no such state. A directional state's walk
+cycle follows the enemy's speed exactly as `X`'s does, against its own
+`travelSpeed`.
 
 ### Evaluation rules
 

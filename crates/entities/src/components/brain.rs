@@ -82,6 +82,14 @@ pub enum TravelVariant {
 }
 
 impl TravelVariant {
+    /// Every variant, in [`Self::index`] order.
+    pub const ALL: [TravelVariant; 4] = [
+        TravelVariant::Base,
+        TravelVariant::Left,
+        TravelVariant::Right,
+        TravelVariant::Backward,
+    ];
+
     /// The state-name suffix this variant appends to an activity animation.
     pub const fn suffix(self) -> &'static str {
         match self {
@@ -90,6 +98,26 @@ impl TravelVariant {
             TravelVariant::Right => "_right",
             TravelVariant::Backward => "_backward",
         }
+    }
+
+    /// This variant's position in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        match self {
+            TravelVariant::Base => 0,
+            TravelVariant::Left => 1,
+            TravelVariant::Right => 2,
+            TravelVariant::Backward => 3,
+        }
+    }
+
+    /// The variant `state` presents of activity animation `base`: `base`
+    /// itself, or `base` with one directional suffix. `None` for any other
+    /// state. Compares without composing a name.
+    pub fn of_state(base: &str, state: &str) -> Option<Self> {
+        let suffix = state.strip_prefix(base)?;
+        Self::ALL
+            .into_iter()
+            .find(|variant| variant.suffix() == suffix)
     }
 }
 
@@ -960,6 +988,24 @@ mod tests {
     use crate::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation, MeshComponent};
     use crate::registry::Transform;
     use std::collections::HashMap;
+
+    // The walk-cycle rate scaling on host and client reads a state as the
+    // locomotion clip's variant only by this naming rule.
+    #[test]
+    fn travel_variant_of_state_names_only_the_base_and_its_three_suffixes() {
+        assert_eq!(
+            TravelVariant::of_state("walk", "walk"),
+            Some(TravelVariant::Base)
+        );
+        for variant in TravelVariant::ALL {
+            let state = format!("walk{}", variant.suffix());
+            assert_eq!(TravelVariant::of_state("walk", &state), Some(variant));
+            assert_eq!(TravelVariant::ALL[variant.index()], variant);
+        }
+        for other in ["walking", "walk_forward", "walk_left_", "run_left", "wal"] {
+            assert_eq!(TravelVariant::of_state("walk", other), None, "{other}");
+        }
+    }
 
     fn declared_state(clip: &str) -> AnimationState {
         AnimationState {

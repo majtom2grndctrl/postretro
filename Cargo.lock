@@ -4450,6 +4450,7 @@ dependencies = [
  "postretro-level-format",
  "postretro-net",
  "postretro-physics",
+ "postretro-script-compiler",
  "postretro-scripting-core",
  "postretro-sim",
  "postretro-test-log-capture",

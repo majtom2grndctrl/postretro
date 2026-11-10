@@ -1,6 +1,7 @@
 //! Descriptor-aware remote snapshot materialization, after descriptor-blind apply.
 //! See: context/lib/networking.md
 
+use postretro_entities::components::brain::TravelVariant;
 use postretro_entities::{EntityRegistry, EntityTypeDescriptor};
 use postretro_foundation::NavAgentParams;
 
@@ -114,25 +115,29 @@ pub(super) fn materialize_remote_entities(
             // animation substitution uses: the graph's locomotion state, which chases
             // without an action of its own. The brain's graph is the descriptor's
             // authored `behavior` block, so both ends agree on what this enemy carries.
+            // Its directional variants scale too, each against its own clip.
             let walk_reference = descriptor.and_then(|descriptor| {
                 let mesh = descriptor.mesh.as_ref()?;
                 let graph = descriptor.behavior.as_ref()?;
                 let locomotion = postretro_foundation::locomotion_animation(graph)?;
-                let state = mesh.animations.get(locomotion)?;
-                let derived_travel_speed = hit_zone_store
-                    .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
-                    .and_then(|model| {
-                        model
-                            .clips
-                            .iter()
-                            .find(|clip| clip.name == state.clip)
-                            .and_then(|clip| clip.travel_speed)
-                    });
-                Some((
-                    graph.move_speed,
-                    locomotion.to_string(),
-                    derived_travel_speed,
-                ))
+                mesh.animations.get(locomotion)?;
+                let model =
+                    hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
+                let derived_travel_speeds = TravelVariant::ALL.map(|variant| {
+                    let state = mesh
+                        .animations
+                        .get(&format!("{locomotion}{}", variant.suffix()))?;
+                    model?
+                        .clips
+                        .iter()
+                        .find(|clip| clip.name == state.clip)
+                        .and_then(|clip| clip.travel_speed)
+                });
+                Some(client::RemoteEnemyWalkPlayback {
+                    move_speed: graph.move_speed,
+                    walk_state: locomotion.to_string(),
+                    derived_travel_speeds,
+                })
             });
             replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
             remote_materialize::materialize_armed_remote_enemy(

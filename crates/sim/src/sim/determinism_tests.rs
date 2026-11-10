@@ -2100,13 +2100,28 @@ fn hit_zone_store_with_clip_travel_speed(
     clip_index: usize,
     travel_speed: Option<f32>,
 ) -> HitZoneStore {
+    hit_zone_store_with_clip_travel_speeds(model, &[(clip_index, travel_speed)])
+}
+
+/// [`hit_zone_store_with_clip_travel_speed`] for several clips at once: every
+/// listed clip index carries its stride, and every other clip none.
+fn hit_zone_store_with_clip_travel_speeds(
+    model: &str,
+    strides: &[(usize, Option<f32>)],
+) -> HitZoneStore {
     use crate::scripting_systems::hit_zones::ModelHitZones;
     use postretro_model::skeleton::{AnimationClip, Skeleton};
     use std::sync::Arc;
 
-    let mut clips: Vec<AnimationClip> =
-        (0..=clip_index).map(|_| AnimationClip::default()).collect();
-    clips[clip_index].travel_speed = travel_speed;
+    let clip_count = strides
+        .iter()
+        .map(|(index, _)| index + 1)
+        .max()
+        .unwrap_or(0);
+    let mut clips: Vec<AnimationClip> = (0..clip_count).map(|_| AnimationClip::default()).collect();
+    for &(clip_index, travel_speed) in strides {
+        clips[clip_index].travel_speed = travel_speed;
+    }
     let mut store = HitZoneStore::new();
     store.insert_for_test(
         postretro_model::ModelHandle::from(model.to_string()),
@@ -2171,6 +2186,77 @@ fn update_brain_playback_rate_scales_from_clip_travel_speed() {
         rate > 1.0,
         "moving faster than the authored stride plays faster"
     );
+}
+
+// E10: a target-facing mover plays its locomotion clip's `_left`, `_right` or
+// `_backward` variant. Each variant scales with measured speed against its own
+// clip's stride, as the base walk does; a state that only shares the prefix
+// rests at the authored rate.
+#[test]
+fn update_brain_playback_rate_scales_directional_walk_variants_against_their_own_strides() {
+    let variants = [
+        ("locomotion_left", 4, 2.0_f32),
+        ("locomotion_right", 5, 2.4),
+        ("locomotion_backward", 6, 1.5),
+    ];
+    let mut strides: Vec<(usize, Option<f32>)> = variants
+        .iter()
+        .map(|&(_, clip_index, stride)| (clip_index, Some(stride)))
+        .collect();
+    strides.push((7, Some(2.5)));
+    let store = hit_zone_store_with_clip_travel_speeds("driven-agent", &strides);
+    let cases = variants
+        .iter()
+        .map(|&(state, _, stride)| (state, (3.0 / stride).clamp(RATE_MIN, RATE_MAX)))
+        .chain([("locomotion_sideways", 1.0)]);
+
+    for (state, expected) in cases {
+        let mut registry = EntityRegistry::new();
+        let enemy = spawn_driven_agent(
+            &mut registry,
+            Vec3::new(5.0, 1.21, 5.0),
+            ALERT_STATE,
+            "locomotion",
+        );
+        let mut mesh = registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .clone();
+        let animation = mesh.animation.as_mut().unwrap();
+        for (name, clip, clip_index) in [
+            ("locomotion_left", "walk_left", 4),
+            ("locomotion_right", "walk_right", 5),
+            ("locomotion_backward", "walk_backward", 6),
+            ("locomotion_sideways", "walk_sideways", 7),
+        ] {
+            let mut variant = animation.states["locomotion"].clone();
+            variant.clip = clip.to_string();
+            variant.clip_index = Some(clip_index);
+            animation.states.insert(name.to_string(), variant);
+        }
+        animation.current_state = state.to_string();
+        registry.set_component(enemy, mesh).unwrap();
+        let mut agent = registry
+            .get_component::<AgentComponent>(enemy)
+            .unwrap()
+            .clone();
+        agent.velocity = Vec3::new(3.0, 0.0, 0.0);
+        registry.set_component(enemy, agent).unwrap();
+
+        super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+
+        let rate = registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .rate;
+        assert!(
+            (rate - expected).abs() <= 1.0e-6,
+            "`{state}` plays at {expected}, got {rate}",
+        );
+    }
 }
 
 // `speedScale: false` disables rate-scaling entirely: even with a calibrated

@@ -446,7 +446,7 @@ pub(super) fn shipped_reference_descriptor_from_typescript(
     ));
     std::fs::create_dir_all(&directory).expect("create reference-enemy fixture directory");
     // The dev enemy imports the vocabulary modules beside it.
-    for module in ["defenses.ts", "damage-types.ts"] {
+    for module in ["defenses.ts", "damage-types.ts", "attack-tokens.ts"] {
         std::fs::write(
             directory.join(module),
             std::fs::read_to_string(

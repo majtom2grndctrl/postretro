@@ -18,6 +18,7 @@ use postretro_entities::{EntityId, Transform};
 use postretro_foundation::PlayerMovementComponent;
 use postretro_level_format::map_entity::MapEntityRecord;
 use postretro_net::wire::{ServerControlMessage, SpawnPoseHint};
+use postretro_scripting_core::runtime::{Frontend, MenuCamera};
 use postretro_sim::scripting::map_entity::MapEntity;
 use std::time::Instant;
 
@@ -29,6 +30,25 @@ pub(super) const SETTLED: SettleReport = SettleReport {
     sh: ResourceSettle::NotStreamed,
     lightmap: ResourceSettle::NotStreamed,
 };
+
+/// The frontend menu's camera: far from every start, facing its own way.
+pub(super) fn menu_camera() -> MenuCamera {
+    MenuCamera {
+        position: [40.0, 12.0, -30.0],
+        yaw: 2.0,
+        pitch: 0.35,
+    }
+}
+
+/// The pose the frontend menu presents.
+pub(super) fn menu_pose() -> PresentedPose {
+    let menu = menu_camera();
+    PresentedPose {
+        position: Vec3::from_array(menu.position),
+        yaw: menu.yaw,
+        pitch: menu.pitch,
+    }
+}
 
 /// The pose a hint describes.
 pub(super) fn hint_pose(hint: &SpawnPoseHint) -> PresentedPose {
@@ -56,6 +76,30 @@ pub(super) fn assert_pose(actual: PresentedPose, expected: PresentedPose, what: 
         expected.yaw,
         expected.pitch
     );
+}
+
+/// `messages` with every hint still in flight.
+pub(super) fn without_hints(messages: &[ServerControlMessage]) -> Vec<ServerControlMessage> {
+    messages
+        .iter()
+        .filter(|message| !matches!(message, ServerControlMessage::SpawnPoseHint(_)))
+        .cloned()
+        .collect()
+}
+
+/// The host restarts its level, or moves to `catalog_id`, and `client_id`'s
+/// next Relevel and hint arrive. Returns what arrived, in arrival order.
+pub(super) fn host_reinstalls(
+    relay: &mut Relay,
+    client_id: u64,
+    catalog_id: &str,
+    points: &[MapEntity],
+) -> Vec<ServerControlMessage> {
+    let hints_before = relay.hints(client_id).len();
+    relay.unload();
+    relay.install_from(Some(catalog_id), points.to_vec());
+    relay.pump_until(|relay| relay.hints(client_id).len() > hints_before);
+    relay.forward(client_id)
 }
 
 /// `points` as the level file carries them, in this client's map order.
@@ -90,6 +134,7 @@ fn uncatalogued_load() -> InFlightLevelLoad {
             tags: Vec::new(),
             loading_tree: Vec::new(),
         },
+        host_named: false,
     }
 }
 
@@ -121,6 +166,40 @@ impl ClientView {
             points,
             first_spawn: None,
         }
+    }
+
+    /// [`Self::new`] with no endpoint: a single-player App.
+    pub(super) fn single_player(points: Vec<MapEntity>) -> Self {
+        let mut view = Self::new(points);
+        view.app.session.as_mut().unwrap().net_endpoint = None;
+        view
+    }
+
+    /// Register the mod's frontend: its menu tree, the menu camera, and the
+    /// host's level as its backdrop. Nothing is presented.
+    pub(super) fn with_frontend(mut self) -> Self {
+        let session = self.app.session.as_mut().unwrap();
+        session.modal_stack.registry_mut().register(
+            "mainMenu",
+            postretro_ui::demo::build_frontend_menu_descriptor(),
+            postretro_ui::modal_stack::ScopeTier::Mod,
+            false,
+        );
+        session.frontend = Some(Frontend {
+            menu_tree: "mainMenu".to_string(),
+            background_level: Some(LEVEL.to_string()),
+            camera: menu_camera(),
+        });
+        self
+    }
+
+    pub(super) fn menu_is_present(&self) -> bool {
+        self.app.frontend_menu_is_present()
+    }
+
+    /// How many modal layers are pushed.
+    pub(super) fn pushed_layers(&self) -> usize {
+        self.app.session.as_ref().unwrap().modal_stack.len()
     }
 
     /// One Control drain, as the client's poll runs it.

@@ -9,7 +9,7 @@ use super::spawn_pose_handoff_fixtures::{
     LEVEL, OfferOne, Relay, hint_pose_of, spawn_points, standing_on,
 };
 use super::spawn_pose_stand_in_fixtures::{
-    ClientView, OTHER_LEVEL, SETTLED, assert_pose, hint_pose,
+    ClientView, OTHER_LEVEL, SETTLED, assert_pose, hint_pose, host_reinstalls, without_hints,
 };
 use super::*;
 use crate::session::level_streaming::settle::{ResourceSettle, SettleReport};
@@ -36,15 +36,6 @@ fn hints_in(messages: &[ServerControlMessage]) -> Vec<SpawnPoseHint> {
         .collect()
 }
 
-/// `messages` with every hint still in flight.
-fn without_hints(messages: &[ServerControlMessage]) -> Vec<ServerControlMessage> {
-    messages
-        .iter()
-        .filter(|message| !is_hint(message))
-        .cloned()
-        .collect()
-}
-
 /// A host with one seated client and `points` installed, and that client's
 /// App, which drained the host's Relevel and hint at its frontend.
 fn joined(points: Vec<MapEntity>) -> (Relay, ClientView, SpawnPoseHint) {
@@ -54,20 +45,6 @@ fn joined(points: Vec<MapEntity>) -> (Relay, ClientView, SpawnPoseHint) {
     let mut client = ClientView::new(points);
     client.follow(&mut relay, CLIENT);
     (relay, client, hint)
-}
-
-/// The host restarts its level, or moves to `catalog_id`, and the client's
-/// next Relevel and hint arrive. Returns them in arrival order.
-fn host_reinstalls(
-    relay: &mut Relay,
-    catalog_id: &str,
-    points: &[MapEntity],
-) -> Vec<ServerControlMessage> {
-    let hints_before = relay.hints(CLIENT).len();
-    relay.unload();
-    relay.install_from(Some(catalog_id), points.to_vec());
-    relay.pump_until(|relay| relay.hints(CLIENT).len() > hints_before);
-    relay.forward(CLIENT)
 }
 
 fn declared_reveal(client: &ClientView) -> Option<RevealedLevel> {
@@ -166,7 +143,7 @@ fn hint_in_the_same_drain_as_relevel_applies_to_the_new_level_after_the_old_one_
     );
     let running = client.camera();
 
-    let messages = host_reinstalls(&mut relay, LEVEL, &points);
+    let messages = host_reinstalls(&mut relay, CLIENT, LEVEL, &points);
     let relevel = messages
         .iter()
         .position(|message| matches!(message, ServerControlMessage::Relevel { .. }))
@@ -247,7 +224,7 @@ fn hint_naming_another_level_or_an_earlier_life_is_ignored_and_the_stand_in_stay
 
     // A host restart: the new life's hint is still in flight when the client
     // reinstalls, so the store holds the previous life's.
-    let restart = host_reinstalls(&mut relay, LEVEL, &points);
+    let restart = host_reinstalls(&mut relay, CLIENT, LEVEL, &points);
     let restart_life = restart
         .iter()
         .find_map(|message| match message {
@@ -263,7 +240,7 @@ fn hint_naming_another_level_or_an_earlier_life_is_ignored_and_the_stand_in_stay
     client.assert_at(client.first_spawn_pose(), "an earlier life is ignored");
 
     // The host moves to another level; the hint naming it is still in flight.
-    let moved = host_reinstalls(&mut relay, OTHER_LEVEL, &points);
+    let moved = host_reinstalls(&mut relay, CLIENT, OTHER_LEVEL, &points);
     client.drain(without_hints(&moved));
     client.install();
     assert_eq!(
@@ -284,7 +261,7 @@ fn host_same_map_restart_reloads_the_client_and_settles_it_at_the_new_lifes_hint
     client.install();
     client.reveal();
 
-    let restart = host_reinstalls(&mut relay, LEVEL, &points);
+    let restart = host_reinstalls(&mut relay, CLIENT, LEVEL, &points);
     let new_life = hints_in(&restart).pop().unwrap();
     assert_eq!(new_life.level_identity, LEVEL);
     assert_ne!(new_life.level_life, first_life.level_life, "a new life");

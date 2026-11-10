@@ -126,7 +126,7 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
     app.follow_relevel_catalog("e1m1".to_string(), 2);
     assert_eq!(
         app.level_requests,
-        VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+        VecDeque::from([LevelRequest::HostLevel("e1m1".to_string())]),
         "a host restart reloads the active map"
     );
     app.drain_level_requests();
@@ -186,7 +186,7 @@ fn host_restart_during_settling_reloads_the_settling_life() {
     app.follow_relevel_catalog("e1m1".to_string(), 2);
     assert_eq!(
         app.level_requests,
-        VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+        VecDeque::from([LevelRequest::HostLevel("e1m1".to_string())]),
     );
     app.drain_level_requests();
     assert_eq!(

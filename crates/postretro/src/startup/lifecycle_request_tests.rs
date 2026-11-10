@@ -660,6 +660,7 @@ fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
             tags: Vec::new(),
             loading_tree: Vec::new(),
         },
+        host_named: false,
     });
     // Even a new life: the in-flight load installs a fresh one.
     app.follow_relevel_catalog("e1m1".to_string(), 2);
@@ -674,7 +675,7 @@ fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
     app.follow_relevel_catalog("e1m1".to_string(), 4);
     assert_eq!(
         app.level_requests,
-        VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+        VecDeque::from([LevelRequest::HostLevel("e1m1".to_string())]),
         "duplicate relevels queued before the lifecycle drain coalesce too"
     );
 }
@@ -1057,6 +1058,7 @@ fn failing_catalog_load() -> InFlightLevelLoad {
             tags: Vec::new(),
             loading_tree: Vec::new(),
         },
+        host_named: false,
     }
 }
 

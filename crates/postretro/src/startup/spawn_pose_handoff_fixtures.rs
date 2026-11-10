@@ -337,6 +337,7 @@ impl Relay {
                 tags: Vec::new(),
                 loading_tree: Vec::new(),
             },
+            host_named: false,
         });
         self.app.install_level_identity(&world);
         self.app.level_load = None;

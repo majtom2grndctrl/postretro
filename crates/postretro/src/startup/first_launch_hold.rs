@@ -69,7 +69,7 @@ mod tests {
 
     use crate::App;
     use crate::startup::lifecycle::tests::test_app;
-    use crate::startup::{BootDestination, BootState, LevelRequest, LevelSource};
+    use crate::startup::{BootDestination, BootState, LevelRequest};
 
     fn map(id: &str) -> ModMapEntry {
         ModMapEntry {
@@ -188,9 +188,7 @@ mod tests {
             );
             assert_eq!(
                 app.level_requests,
-                [LevelRequest::Load(LevelSource::Catalog(
-                    "host_map".to_string()
-                ))]
+                [LevelRequest::HostLevel("host_map".to_string())]
             );
 
             close_panel(&mut app);

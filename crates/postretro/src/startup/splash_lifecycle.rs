@@ -262,7 +262,7 @@ impl App {
         let host_load_queued = self
             .level_requests
             .iter()
-            .any(|request| matches!(request, LevelRequest::Load(_)));
+            .any(|request| matches!(request, LevelRequest::HostLevel(_)));
         match destination {
             BootDestination::Frontend => {
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -779,9 +779,7 @@ mod tests {
         // doesn't carry, so `resolve_level_source` rejects it and the queued
         // load never dispatches — the failure case finding B guards.
         app.level_requests
-            .push_back(LevelRequest::Load(LevelSource::Catalog(
-                "host-map".to_string(),
-            )));
+            .push_back(LevelRequest::HostLevel("host-map".to_string()));
 
         app.start_boot_destination(BootDestination::BootMap(PathBuf::from(
             "content/dev/maps/cli-boot.prl",

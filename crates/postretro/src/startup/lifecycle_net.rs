@@ -292,6 +292,7 @@ impl App {
         self.spawn_poses.clear_for_level_unload();
         self.active_level_tags.clear();
         self.active_level_source = None;
+        self.active_level_host_named = false;
 
         self.pending_level_log = false;
         // An unload during Settling abandons the settle: no reveal edge fires,

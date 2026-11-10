@@ -2,6 +2,11 @@
 //! declares the `lifecycle_*` siblings that load, install, finish and rebuild a level.
 //! See: context/lib/boot_sequence.md §1 · §4
 
+#[path = "host_named_level.rs"]
+mod host_named_level;
+#[cfg(test)]
+#[path = "host_named_level_tests.rs"]
+mod host_named_level_tests;
 #[path = "lifecycle_beside.rs"]
 mod lifecycle_beside;
 #[path = "lifecycle_boot_state.rs"]
@@ -219,6 +224,7 @@ impl App {
                         tags: entry.tags,
                         loading_tree: entry.loading_tree,
                     },
+                    host_named: false,
                 })
             }
             LevelSource::Path(map_path) => {
@@ -237,6 +243,7 @@ impl App {
                         loading_tree: Vec::new(),
                     },
                     map_path,
+                    host_named: false,
                 })
             }
         }
@@ -255,6 +262,7 @@ impl App {
             return;
         }
         self.retire_active_level_load();
+        let host_named = self.level_load.as_ref().is_some_and(|load| load.host_named);
         let level = self
             .level_load
             .take()
@@ -283,6 +291,12 @@ impl App {
             renderer.clear_splash();
         }
         self.boot_state = BootState::Frontend;
+        // A connected client's failed host-named load puts the menu back,
+        // whose install would have cleared it, with no backdrop load: the
+        // backdrop may be the very level that failed.
+        if host_named {
+            self.present_frontend_menu();
+        }
         self.request_redraw();
     }
 }

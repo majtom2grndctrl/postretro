@@ -431,6 +431,7 @@ fn a_connected_clients_backdrop_still_publishes_its_level_identity() {
             tags: Vec::new(),
             loading_tree: Vec::new(),
         },
+        host_named: false,
     });
 
     app.install_level_identity(&level_world(LEVEL, 1));

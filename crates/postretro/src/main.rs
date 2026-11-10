@@ -1184,6 +1184,11 @@ pub(crate) struct App {
     /// `restartLevel()` can requeue the same catalog id or raw dev path.
     active_level_source: Option<LevelSource>,
 
+    /// The installed level is a connected client's host-named level: its
+    /// load was requested or adopted by the host's relevel. Set at install
+    /// with `active_level_source`, cleared with it.
+    active_level_host_named: bool,
+
     /// The level load in flight, if any: its generation, whether its stages
     /// were dispatched, and its progress. See: `startup::level_loads`.
     level_loads: startup::level_loads::LevelLoads,

@@ -50,9 +50,11 @@ impl App {
         if let Some(load) = self.level_load.as_ref() {
             self.active_level_tags = load.entry.tags.clone();
             self.active_level_source = Some(level_source_for_load_entry(&load.entry));
+            self.active_level_host_named = load.host_named;
         } else {
             self.active_level_tags.clear();
             self.active_level_source = None;
+            self.active_level_host_named = false;
         }
     }
 
@@ -192,6 +194,12 @@ impl App {
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
         self.retain_active_level_tags_for_install();
+        // The host's level, never a backdrop: every frontend menu layer goes
+        // before anything reads the presented pose, so the stand-in is what
+        // Settling streams from and the reveal presents.
+        if self.active_level_host_named {
+            self.clear_frontend_menu_for_host_level();
+        }
         let join_seed = {
             let session = self
                 .session

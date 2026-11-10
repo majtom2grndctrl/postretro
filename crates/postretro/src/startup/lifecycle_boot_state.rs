@@ -34,6 +34,7 @@ impl App {
         self.level_load = None;
         self.active_level_tags.clear();
         self.active_level_source = None;
+        self.active_level_host_named = false;
         self.level_requests.clear();
         self.boot_load = false;
         self.boot_destination = None;
@@ -100,9 +101,10 @@ impl App {
         }
 
         match &request {
-            LevelRequest::Load(_) => {
-                self.level_requests
-                    .retain(|queued| !matches!(queued, LevelRequest::Load(_)));
+            LevelRequest::Load(_) | LevelRequest::HostLevel(_) => {
+                self.level_requests.retain(|queued| {
+                    !matches!(queued, LevelRequest::Load(_) | LevelRequest::HostLevel(_))
+                });
             }
             LevelRequest::Unload => {
                 // Only a repeat of the queue's last request is redundant: an
@@ -122,11 +124,14 @@ impl App {
     ///
     /// `level_life` names the host install. A repeat of the last life changes
     /// nothing, and a load already in flight or queued for the id serves any
-    /// life. The connection's first relevel naming a known id keeps a matching
-    /// active map and adopts its life, re-declaring the reveal if already
-    /// revealed. Any later life naming the active map is a host reinstall: the
-    /// client reloads, so `levelLoad` fires again and teardown clears the
-    /// previous life's level state.
+    /// life, adopted as host-named. The connection's first relevel naming a
+    /// known id keeps a matching active map and adopts its life, re-declaring
+    /// the reveal if already revealed, unless that map is the frontend's
+    /// backdrop, which reloads as the host's level. Any later life naming the
+    /// active map is a host reinstall: the client reloads, so `levelLoad`
+    /// fires again and teardown clears the previous life's level state. What
+    /// the client loads here is host-named (`LevelRequest::HostLevel`). An id
+    /// the client lacks leaves a host-named level it was following.
     pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String, level_life: u64) {
         let catalog_has_id = self.session.as_ref().is_some_and(|session| {
             session
@@ -140,13 +145,14 @@ impl App {
         });
         if !catalog_has_id {
             log::warn!("[Net] relevel names unknown catalog id `{catalog_id}`");
+            self.leave_stale_host_level();
             return;
         }
 
         let previous = self.last_relevel.replace((catalog_id.clone(), level_life));
         let first = previous.is_none();
         if previous.is_some_and(|(_, life)| life == level_life)
-            || self.relevel_load_is_selected(&catalog_id)
+            || self.adopt_selected_relevel_load(&catalog_id)
         {
             return;
         }
@@ -154,7 +160,11 @@ impl App {
             &self.active_level_source,
             Some(LevelSource::Catalog(id)) if *id == catalog_id
         );
-        if active && first {
+        // A backdrop carries only what the menu needs, so it never serves as
+        // the host's level.
+        let backdrop = active && self.frontend_menu_is_present();
+        if active && first && !backdrop {
+            self.active_level_host_named = true;
             // A reveal declared before the host named a life cannot promote
             // into a catalog level; declare the adopted one.
             if self.boot_state == BootState::Running {
@@ -162,24 +172,17 @@ impl App {
             }
             return;
         }
-        if active {
+        if backdrop {
+            log::info!(
+                "[Net] host named `{catalog_id}` (level life {level_life}), the installed frontend backdrop; reloading it as the host's level"
+            );
+        } else if active {
             log::info!(
                 "[Net] host reinstalled `{catalog_id}` (level life {level_life}); reloading it"
             );
         }
 
-        self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(catalog_id)));
-    }
-
-    /// Whether a load of `catalog_id` is in flight or queued. Either installs
-    /// a fresh life, so a relevel never restarts it.
-    fn relevel_load_is_selected(&self, catalog_id: &str) -> bool {
-        self.level_load
-            .as_ref()
-            .is_some_and(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
-            || self.level_requests.iter().any(|request| {
-                matches!(request, LevelRequest::Load(LevelSource::Catalog(id)) if id == catalog_id)
-            })
+        self.enqueue_level_request(LevelRequest::HostLevel(catalog_id));
     }
 
     #[cfg(feature = "dev-tools")]
@@ -226,11 +229,17 @@ impl App {
         }
 
         while let Some(request) = self.level_requests.pop_front() {
-            match request {
-                LevelRequest::Load(source) => {
-                    let Some(load) = self.resolve_level_source(source) else {
+            let (source, host_named) = match request {
+                LevelRequest::Load(source) => (Some(source), false),
+                LevelRequest::HostLevel(id) => (Some(LevelSource::Catalog(id)), true),
+                LevelRequest::Unload => (None, false),
+            };
+            match source {
+                Some(source) => {
+                    let Some(mut load) = self.resolve_level_source(source) else {
                         continue;
                     };
+                    load.host_named = host_named;
                     self.cancel_beside_level_load();
                     if self.level_is_installed_state() {
                         self.unload_level();
@@ -238,7 +247,7 @@ impl App {
                     self.begin_level_load(load);
                     return;
                 }
-                LevelRequest::Unload => {
+                None => {
                     self.cancel_beside_level_load();
                     self.abandon_level_load_for_frontend();
                     if self.level_is_installed_state() {

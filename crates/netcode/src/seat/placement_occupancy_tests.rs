@@ -128,3 +128,56 @@ fn placement_for_a_fresh_join_skips_a_live_occupied_unheld_spawn() {
         Some(2)
     );
 }
+
+// R7: a seat assigned a shared spawn at resolution keeps it, without a second
+// warning, when its later promotion finds a live pawn standing there.
+#[test]
+fn placement_for_an_overflowing_seat_keeps_its_shared_spawn_and_warns_once() {
+    let mut seats = SeatTable::from_test_session_id([24; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1]);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let first = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    let sharing = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+    let capture = postretro_test_log_capture::LogCapture::start();
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, first, &sites),
+        Some(1)
+    );
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, sharing, &sites),
+        Some(0)
+    );
+
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, sharing, &sites),
+        Some(0),
+        "with none free, the seat keeps the spawn it already shares"
+    );
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "every player_spawn placement is occupied; sharing index 0",
+    );
+}
+
+#[test]
+fn released_placement_is_free_for_the_next_joiner() {
+    let mut seats = SeatTable::from_test_session_id([25; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1, 2]);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let released = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, released, &sites),
+        Some(1)
+    );
+
+    seats.release_placement(released);
+    let next = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+
+    assert_eq!(seats.placement_for_seat(released), None);
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, next, &sites),
+        Some(1)
+    );
+}

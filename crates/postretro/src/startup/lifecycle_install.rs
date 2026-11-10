@@ -202,6 +202,16 @@ impl App {
                 session.player_options.player_id,
             )
         };
+        // A host's frontend backdrop names no level to its clients: no parity,
+        // no Relevel and so no reveal, and no spawn-pose hint. Joiners wait at
+        // their own menu until the host starts a level.
+        let host_backdrop = self.frontend_menu_is_present()
+            && matches!(
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.net_endpoint.as_ref()),
+                Some(crate::netcode::NetEndpoint::Host { .. })
+            );
         if let Some(endpoint) = self
             .session
             .as_mut()
@@ -209,6 +219,12 @@ impl App {
             .net_endpoint
             .as_mut()
         {
+            if host_backdrop {
+                self.published_level_identity = None;
+                endpoint.set_level_parity(None);
+                endpoint.set_relevel_catalog_id(None);
+                return;
+            }
             let level_content_digest =
                 crate::runtime_movers::level_content_digest(&world.kinematic_geometry, world);
             let source = self

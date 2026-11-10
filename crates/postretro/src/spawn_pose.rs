@@ -18,6 +18,7 @@ use crate::scripting::builtins::player_spawn::{
     joinable_sites, spawn_descriptor, standing_position,
 };
 use crate::scripting::map_entity::MapEntity;
+use postretro_net::transport::NetServer;
 
 /// Eye position plus yaw and pitch, radians in engine convention (YXZ: the
 /// placement's `angles.y` and `angles.x`), as host install seeds its own camera.
@@ -165,11 +166,56 @@ pub(crate) struct SpawnPoseResolver {
     unbacked_source: Option<Box<dyn UnbackedSpawnSource>>,
 }
 
+/// The spawn promotion materializes, and whether its client's hint must be
+/// sent again: the seat resolved only now, or moved off its reserved start.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PromotionSpawn {
+    pub(crate) spawn: ResolvedSpawn,
+    pub(crate) rehint: bool,
+}
+
+/// The installed level a hint names, as one host poll or install reads it.
+pub(crate) struct NamedLevel<'a> {
+    pub(crate) placements: &'a SpawnPlacements<'a>,
+    /// The parity identity install published. No level is named while none
+    /// is installed, or while the host's frontend backdrop is.
+    pub(crate) level_identity: &'a str,
+    pub(crate) script_ctx: &'a postretro_entities::ScriptCtx,
+}
+
+impl NamedLevel<'_> {
+    /// Respawn reads seat assignments from this snapshot, so every resolution
+    /// republishes it.
+    pub(crate) fn publish_reservations(&self, seats: &SeatTable) {
+        crate::respawn_placements::publish(
+            self.script_ctx,
+            self.placements.spawn_points,
+            self.placements.descriptors,
+            Some(seats),
+            None,
+        );
+    }
+
+    /// Send `spawn`'s hint to `client_id` on Control, tagged with this install
+    /// and the host level life (`None` on an uncatalogued level).
+    pub(crate) fn send_hint(&self, server: &mut NetServer, client_id: u64, spawn: &ResolvedSpawn) {
+        let hint = spawn.hint(
+            self.level_identity.to_owned(),
+            server.installed_level_life(),
+        );
+        server.send_control(
+            client_id,
+            postretro_net::wire::encode(&ServerControlMessage::SpawnPoseHint(hint)),
+        );
+    }
+}
+
 impl SpawnPoseResolver {
-    /// Resolve `seat` afresh and record it. The unbacked source answers first;
-    /// otherwise the seat's placement assignment is made here, which reserves
-    /// that start for it until unload. `None` when no start can be assigned
-    /// (none resolves, or the seat has no carried record yet).
+    /// Resolve `seat` afresh and record it. The unbacked source answers first,
+    /// and a seat it answers holds no placement; otherwise the seat's placement
+    /// assignment is made here, which reserves that start for it until unload.
+    /// `None` when no start can be assigned (none resolves, or the seat has no
+    /// carried record yet).
     pub(crate) fn resolve(
         &mut self,
         seat: Seat,
@@ -182,6 +228,7 @@ impl SpawnPoseResolver {
             .as_ref()
             .and_then(|source| source.pose_for(seat))
         {
+            seats.release_placement(seat);
             let spawn = ResolvedSpawn::Unbacked(unbacked);
             self.resolved.insert(seat, spawn.clone());
             return Some(spawn);
@@ -189,9 +236,29 @@ impl SpawnPoseResolver {
         self.resolve_placement(seat, seats, registry, placements)
     }
 
-    /// The spawn promotion materializes: the recorded unbacked pose as
-    /// recorded; a recorded placement through the seat's sticky assignment,
-    /// which keeps it unless a live pawn now overlaps it; and a seat with no
+    /// Resolve `seat` on `level`, republish respawn's reservations and send
+    /// its client the hint: every site that first names an installed level to
+    /// a seat, and a seat whose spawn consumed its single-use pose.
+    pub(crate) fn resolve_and_hint(
+        &mut self,
+        level: &NamedLevel<'_>,
+        server: &mut NetServer,
+        seats: &mut SeatTable,
+        registry: &EntityRegistry,
+        seat: Seat,
+        client_id: u64,
+    ) -> Option<ResolvedSpawn> {
+        let spawn = self.resolve(seat, seats, registry, level.placements);
+        level.publish_reservations(seats);
+        let spawn = spawn?;
+        level.send_hint(server, client_id, &spawn);
+        Some(spawn)
+    }
+
+    /// The spawn promotion materializes. A recorded unbacked pose stays as
+    /// recorded. A recorded placement goes through the seat's sticky
+    /// assignment, which keeps it unless a live pawn now stands on it; then
+    /// the seat takes a free start and needs a fresh hint. A seat with no
     /// record resolves now.
     pub(crate) fn resolve_for_promotion(
         &mut self,
@@ -199,14 +266,19 @@ impl SpawnPoseResolver {
         seats: &mut SeatTable,
         registry: &EntityRegistry,
         placements: &SpawnPlacements<'_>,
-    ) -> Option<ResolvedSpawn> {
-        match self.resolved.get(&seat) {
-            Some(spawn @ ResolvedSpawn::Unbacked(_)) => Some(spawn.clone()),
+    ) -> Option<PromotionSpawn> {
+        let recorded = self.resolved.get(&seat).cloned();
+        let spawn = match &recorded {
+            Some(spawn @ ResolvedSpawn::Unbacked(_)) => spawn.clone(),
             Some(ResolvedSpawn::Placement { .. }) => {
-                self.resolve_placement(seat, seats, registry, placements)
+                self.resolve_placement(seat, seats, registry, placements)?
             }
-            None => self.resolve(seat, seats, registry, placements),
-        }
+            None => self.resolve(seat, seats, registry, placements)?,
+        };
+        Some(PromotionSpawn {
+            rehint: recorded.as_ref() != Some(&spawn),
+            spawn,
+        })
     }
 
     fn resolve_placement(
@@ -232,18 +304,47 @@ impl SpawnPoseResolver {
     }
 
     /// `seat`'s pawn spawned from its recorded pose. A single-use pose is
-    /// consumed: its source stops offering it and the record goes, so the
-    /// seat's next resolution starts afresh.
-    pub(crate) fn spawned(&mut self, seat: Seat) {
+    /// consumed: its source stops offering it and the record goes. Returns
+    /// whether it was, so the caller resolves the seat afresh and hints it
+    /// before any later promotion.
+    pub(crate) fn spawned(&mut self, seat: Seat) -> bool {
         let Some(ResolvedSpawn::Unbacked(UnbackedSpawn {
             single_use: true, ..
         })) = self.resolved.get(&seat)
         else {
-            return;
+            return false;
         };
         self.resolved.remove(&seat);
         if let Some(source) = self.unbacked_source.as_mut() {
             source.consume(seat);
+        }
+        true
+    }
+
+    /// After promotion spawned and bound `seat`'s pawn: a single-use pose is
+    /// consumed, and the seat resolves afresh and its client is hinted before
+    /// any later promotion; a promotion that resolved the seat only now, or
+    /// moved it off a start a live pawn stood on, hints that spawn. Both hints
+    /// follow this promotion's marker. With no level named, nothing is sent.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finish_promotion(
+        &mut self,
+        promotion: &PromotionSpawn,
+        level: Option<&NamedLevel<'_>>,
+        server: &mut NetServer,
+        seats: &mut SeatTable,
+        registry: &EntityRegistry,
+        seat: Seat,
+        client_id: u64,
+    ) {
+        let consumed = self.spawned(seat);
+        let Some(level) = level else {
+            return;
+        };
+        if consumed {
+            self.resolve_and_hint(level, server, seats, registry, seat, client_id);
+        } else if promotion.rehint {
+            level.send_hint(server, client_id, &promotion.spawn);
         }
     }
 
@@ -263,9 +364,10 @@ impl crate::App {
     /// Host install, after the host's pawn binds its start and the spawn points
     /// are retained: resolve every client-bound seat against this install and
     /// send each its hint on Control, after the Relevel install's identity
-    /// stage sent. A level with no `player_spawn` sends none.
+    /// stage sent. A level with no `player_spawn`, and a host frontend
+    /// backdrop (which names no level), send none.
     pub(crate) fn send_install_spawn_pose_hints(&mut self) {
-        let Some(level_identity) = self.published_level_identity.clone() else {
+        let Some(level_identity) = self.published_level_identity.as_deref() else {
             return;
         };
         let Some(session) = self.session.as_mut() else {
@@ -284,7 +386,11 @@ impl crate::App {
             &data_registry.entities,
             self.nav_graph.as_ref().map(|graph| graph.agent_params()),
         );
-        let level_life = server.installed_level_life();
+        let level = NamedLevel {
+            placements: &placements,
+            level_identity,
+            script_ctx: ctx,
+        };
         let mut bound: Vec<(Seat, u64)> = server
             .connected_clients()
             .into_iter()
@@ -294,25 +400,8 @@ impl crate::App {
         // transport's client order.
         bound.sort_unstable_by_key(|(seat, _)| *seat);
         for (seat, client_id) in bound {
-            let Some(spawn) = self
-                .spawn_poses
-                .resolve(seat, seats, &registry, &placements)
-            else {
-                continue;
-            };
-            crate::respawn_placements::publish(
-                ctx,
-                &self.host_spawn_points,
-                &data_registry.entities,
-                Some(seats),
-                None,
-            );
-            server.send_control(
-                client_id,
-                postretro_net::wire::encode(&ServerControlMessage::SpawnPoseHint(
-                    spawn.hint(level_identity.clone(), level_life),
-                )),
-            );
+            self.spawn_poses
+                .resolve_and_hint(&level, server, seats, &registry, seat, client_id);
         }
     }
 }

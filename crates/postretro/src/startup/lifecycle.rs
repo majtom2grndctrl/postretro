@@ -74,8 +74,14 @@ mod lifecycle_world_cpu;
 #[path = "lifecycle_world_handles.rs"]
 mod lifecycle_world_handles;
 #[cfg(test)]
+#[path = "spawn_pose_handoff_fixtures.rs"]
+mod spawn_pose_handoff_fixtures;
+#[cfg(test)]
 #[path = "spawn_pose_handoff_tests.rs"]
 mod spawn_pose_handoff_tests;
+#[cfg(test)]
+#[path = "spawn_pose_reservation_tests.rs"]
+mod spawn_pose_reservation_tests;
 
 #[cfg(test)]
 pub(crate) use lifecycle_model_sweep::parse_sweep_models;

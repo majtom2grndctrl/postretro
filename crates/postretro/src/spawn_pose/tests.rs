@@ -134,8 +134,11 @@ impl Fixture {
     /// The host's pawn stands on its install spawn and seat zero holds it, as
     /// install's first-player bind leaves them.
     fn new() -> Self {
+        Self::with_points(spawn_points())
+    }
+
+    fn with_points(points: Vec<MapEntity>) -> Self {
         let mut registry = EntityRegistry::new();
-        let points = spawn_points();
         let descriptors = descriptors();
         let first = spawn_from_player_starts(&points, &descriptors, &mut registry, None)
             .expect("host takes the first start");
@@ -165,6 +168,15 @@ impl Fixture {
     }
 
     fn promote(&mut self, resolver: &mut SpawnPoseResolver, seat: Seat) -> Option<ResolvedSpawn> {
+        self.promotion(resolver, seat)
+            .map(|promotion| promotion.spawn)
+    }
+
+    fn promotion(
+        &mut self,
+        resolver: &mut SpawnPoseResolver,
+        seat: Seat,
+    ) -> Option<PromotionSpawn> {
         let placements = SpawnPlacements::joinable(&self.points, &self.descriptors, None);
         resolver.resolve_for_promotion(seat, &mut self.seats, &self.registry, &placements)
     }
@@ -487,4 +499,126 @@ fn hint_carries_the_install_tag_and_the_pose() {
             pitch: 0.25,
         }
     );
+}
+
+// The Decision: a seat whose pose no placement backs holds none.
+#[test]
+fn unbacked_resolution_releases_the_start_the_seat_held() {
+    let mut fixture = Fixture::new();
+    let seat = fixture.admit(7);
+    let mut resolver = SpawnPoseResolver::default();
+    fixture.resolve(&mut resolver, seat).unwrap();
+    assert_eq!(fixture.seats.placement_for_seat(seat), Some(1));
+    resolver.set_unbacked_source(Some(Box::new(OfferOne {
+        seat,
+        spawn: scout_pose(),
+        consumed: Default::default(),
+    })));
+
+    fixture.resolve(&mut resolver, seat).unwrap();
+    let next = fixture.admit(8);
+
+    assert_eq!(fixture.seats.placement_for_seat(seat), None);
+    assert!(matches!(
+        fixture.resolve(&mut resolver, next),
+        Some(ResolvedSpawn::Placement { map_index: 1, .. })
+    ));
+}
+
+#[test]
+fn promotion_rehints_a_seat_it_resolves_or_moves_but_not_a_kept_start() {
+    let mut fixture = Fixture::with_points(row_of_starts(4));
+    let kept = fixture.admit(7);
+    let unresolved = fixture.admit(8);
+    let mut resolver = SpawnPoseResolver::default();
+    fixture.resolve(&mut resolver, kept).unwrap();
+
+    assert!(!fixture.promotion(&mut resolver, kept).unwrap().rehint);
+    assert!(fixture.promotion(&mut resolver, unresolved).unwrap().rehint);
+
+    // The host's pawn steps onto the kept seat's start.
+    let onto = fixture.points[1].origin + Vec3::Y * (0.4 + 0.8);
+    let mut transform = *fixture
+        .registry
+        .get_component::<Transform>(fixture.host_pawn)
+        .unwrap();
+    transform.position = onto;
+    fixture
+        .registry
+        .set_component(fixture.host_pawn, transform)
+        .unwrap();
+    let moved = fixture.promotion(&mut resolver, kept).unwrap();
+    assert!(moved.rehint);
+    assert!(
+        matches!(moved.spawn, ResolvedSpawn::Placement { map_index: 3, .. }),
+        "the free start past the unresolved seat's: {moved:?}"
+    );
+}
+
+fn row_of_starts(count: usize) -> Vec<MapEntity> {
+    (0..count)
+        .map(|index| player_spawn(Vec3::X * (8.0 * index as f32), 0.0, 0.0))
+        .collect()
+}
+
+// R7: free starts remain.
+#[test]
+fn seats_resolved_before_spawning_take_distinct_starts_past_the_host_and_a_held_seat() {
+    let mut fixture = Fixture::with_points(row_of_starts(4));
+    let mut resolver = SpawnPoseResolver::default();
+    let held = fixture.admit(7);
+    fixture.resolve(&mut resolver, held).unwrap();
+    fixture
+        .seats
+        .hold_disconnected_client(&mut fixture.registry, 7)
+        .unwrap();
+    let first = fixture.admit(8);
+    let second = fixture.admit(9);
+
+    fixture.resolve(&mut resolver, first).unwrap();
+    fixture.resolve(&mut resolver, second).unwrap();
+
+    assert_eq!(fixture.seats.placement_for_seat(held), Some(1));
+    assert_eq!(fixture.seats.placement_for_seat(first), Some(2));
+    assert_eq!(fixture.seats.placement_for_seat(second), Some(3));
+}
+
+// R7: every start taken.
+#[test]
+fn overflowing_seats_share_starts_round_robin_and_each_warns_once() {
+    let mut fixture = Fixture::with_points(row_of_starts(2));
+    let mut resolver = SpawnPoseResolver::default();
+    let seats: Vec<Seat> = (7..=9).map(|client| fixture.admit(client)).collect();
+    let capture = postretro_test_log_capture::LogCapture::start();
+
+    for &seat in &seats {
+        fixture.resolve(&mut resolver, seat).unwrap();
+    }
+    // Promotion resolves each again; the host's pawn still stands on start 0.
+    for _ in 0..2 {
+        for &seat in &seats {
+            fixture.promote(&mut resolver, seat).unwrap();
+        }
+    }
+
+    let placements: Vec<_> = seats
+        .iter()
+        .map(|&seat| fixture.seats.placement_for_seat(seat))
+        .collect();
+    assert_eq!(
+        placements,
+        [Some(1), Some(0), Some(1)],
+        "round-robin shares"
+    );
+    let warnings = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn
+                && record
+                    .message
+                    .contains("every player_spawn placement is occupied")
+        })
+        .count();
+    assert_eq!(warnings, 2, "one warning per overflowing seat");
 }

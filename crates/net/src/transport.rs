@@ -1012,6 +1012,14 @@ fn parity_cause(
 /// retry: a denial (full host) or an expired token ends the connect.
 pub const CONNECT_ATTEMPTS: u32 = 4;
 
+/// One server Control frame as the client drained it: an engine message, or
+/// the payload-less marker that arms a participation epoch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControlArrival {
+    ParticipationMarker { epoch: u64 },
+    Message(ServerControlMessage),
+}
+
 /// Synchronous client transport. It declares values but never compares them.
 pub struct NetClient {
     client: RenetClient,
@@ -1453,6 +1461,24 @@ impl NetClient {
     /// Route returned lifecycle controls before draining snapshots: epoch filtering
     /// keeps a later same-batch promotion's snapshots available.
     pub fn drain_control(&mut self) -> Vec<ServerControlMessage> {
+        self.drain_control_arrivals()
+            .into_iter()
+            .filter_map(|arrival| match arrival {
+                ControlArrival::Message(message) => Some(message),
+                ControlArrival::ParticipationMarker { .. } => None,
+            })
+            .collect()
+    }
+
+    /// [`Self::drain_control`] with each participation marker kept in its
+    /// place, for tests asserting Control order around promotion. Applies the
+    /// same epoch effects.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub fn drain_control_with_markers(&mut self) -> Vec<ControlArrival> {
+        self.drain_control_arrivals()
+    }
+
+    fn drain_control_arrivals(&mut self) -> Vec<ControlArrival> {
         drain_client_channel(&mut self.client, Channel::Control)
             .into_iter()
             .filter_map(|bytes| {
@@ -1464,12 +1490,12 @@ impl NetClient {
                     }
                 };
                 let Some(payload) = frame.payload else {
-                    if let Some(epoch) = frame.participation_epoch {
-                        self.activate_participation(epoch);
-                    } else {
+                    let Some(epoch) = frame.participation_epoch else {
                         log::warn!("[Net] dropping participation marker without an epoch");
-                    }
-                    return None;
+                        return None;
+                    };
+                    self.activate_participation(epoch);
+                    return Some(ControlArrival::ParticipationMarker { epoch });
                 };
                 let message: ServerControlMessage = match wire::decode(&payload) {
                     Ok(message) => message,
@@ -1485,7 +1511,7 @@ impl NetClient {
                 {
                     self.retire_participation(epoch);
                 }
-                Some(message)
+                Some(ControlArrival::Message(message))
             })
             .collect()
     }

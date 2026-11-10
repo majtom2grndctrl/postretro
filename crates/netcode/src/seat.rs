@@ -490,6 +490,12 @@ impl SeatTable {
         self.placement_assignments.get(&seat).copied()
     }
 
+    /// Drop `seat`'s placement assignment: its spawn pose no longer comes from
+    /// a `player_spawn`, so it holds none.
+    pub fn release_placement(&mut self, seat: Seat) {
+        self.placement_assignments.remove(&seat);
+    }
+
     /// Current and held-seat placement assignments, without a seat-count guess.
     pub fn assigned_placements(&self) -> impl Iterator<Item = (Seat, usize)> + '_ {
         self.placement_assignments
@@ -699,7 +705,8 @@ impl SeatTable {
     /// The `player_spawn` a participating joiner's pawn materializes at, judged
     /// by the occupancy rule respawn shares: its seat's earlier assignment while
     /// no live pawn overlaps it, else the lowest `sites` placement that is free.
-    /// With none free, joiners share them round-robin, with a warning.
+    /// With none free, joiners share them round-robin, with one warning per
+    /// seat: a seat already sharing keeps its spawn.
     ///
     /// `sites` is in map order and holds only spawns that can materialize a
     /// pawn; the caller owns that resolution, so this table never reads the
@@ -729,11 +736,13 @@ impl SeatTable {
             return Some(site.map_index);
         }
 
-        let placement = match sites
-            .iter()
-            .find(|site| occupancy.is_free(site.map_index, site.foot_anchor, site.capsule.as_ref()))
-        {
-            Some(free) => free.map_index,
+        let free = sites.iter().find(|site| {
+            occupancy.is_free(site.map_index, site.foot_anchor, site.capsule.as_ref())
+        });
+        // With none free, a seat already sharing keeps its shared spawn rather
+        // than taking the next one and warning again.
+        let placement = match free.or(recalled) {
+            Some(site) => site.map_index,
             None => {
                 let shared = sites[self.overflow_cursor % sites.len()].map_index;
                 self.overflow_cursor = self.overflow_cursor.wrapping_add(1);

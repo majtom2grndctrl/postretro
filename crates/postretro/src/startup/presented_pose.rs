@@ -58,6 +58,9 @@ pub(crate) fn resolve_presented_pose(
 impl App {
     /// The chokepoint every reader of the presented pose goes through.
     /// Before install's camera step the spawn half is the previous camera.
+    /// On a connected client the spawn half is its host's spawn-pose hint
+    /// when one names the install: install's camera step and a hint arriving
+    /// during Settling put it on the camera (`spawn_pose_stand_in`).
     pub(crate) fn presented_pose(&self) -> PresentedPose {
         let menu = self
             .frontend_menu_is_present()

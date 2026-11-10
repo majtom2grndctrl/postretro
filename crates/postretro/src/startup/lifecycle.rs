@@ -82,6 +82,14 @@ mod spawn_pose_handoff_tests;
 #[cfg(test)]
 #[path = "spawn_pose_reservation_tests.rs"]
 mod spawn_pose_reservation_tests;
+#[path = "spawn_pose_stand_in.rs"]
+mod spawn_pose_stand_in;
+#[cfg(test)]
+#[path = "spawn_pose_stand_in_fixtures.rs"]
+mod spawn_pose_stand_in_fixtures;
+#[cfg(test)]
+#[path = "spawn_pose_stand_in_tests.rs"]
+mod spawn_pose_stand_in_tests;
 
 #[cfg(test)]
 pub(crate) use lifecycle_model_sweep::parse_sweep_models;

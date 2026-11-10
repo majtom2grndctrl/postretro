@@ -240,6 +240,9 @@ fn append_tick_weapon_script_events(
 /// transport state and registry replication; level following, input latches,
 /// presentation pools, and client-local UI state remain above that boundary.
 fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
+    // A spawn-pose hint from an earlier drain moves a Running, unarmed stand-in
+    // before this drain and its snapshots.
+    app.apply_held_spawn_pose_hint();
     for control in controls {
         match control {
             ServerControlMessage::Relevel {
@@ -331,9 +334,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 // this frame reads them with the payload's viscosities.
                 app.refresh_environment_fluids();
             }
-            // Task 4 of coop--client-spawn-view-handoff routes this to the
-            // client hint store; until then the stand-in ignores it.
-            ServerControlMessage::SpawnPoseHint(_) => {}
+            ServerControlMessage::SpawnPoseHint(hint) => app.receive_spawn_pose_hint(hint),
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;

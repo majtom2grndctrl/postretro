@@ -82,6 +82,8 @@ pub(super) struct RelayClient {
     id: u64,
     client: NetClient,
     log: Vec<ControlArrival>,
+    /// How much of `log` [`Relay::forward`] has handed on.
+    forwarded: usize,
 }
 
 pub(super) struct Relay {
@@ -168,6 +170,7 @@ impl Relay {
             id: client_id,
             client,
             log: Vec::new(),
+            forwarded: 0,
         });
         self.client(client_id)
     }
@@ -384,6 +387,38 @@ impl Relay {
         self.reveal_as(client_id, &identity, life);
     }
 
+    /// The client installs the host's installed level and declares its
+    /// parity, as install does, without revealing it yet.
+    pub(super) fn declare_parity(&mut self, client_id: u64) {
+        let identity = self
+            .app
+            .published_level_identity
+            .clone()
+            .expect("the host names an installed level");
+        let digest = self.level_digest;
+        self.client(client_id)
+            .set_level_parity(Some((identity, digest)));
+    }
+
+    /// How many holding notices `client_id` has received.
+    pub(super) fn holding_notices(&self, client_id: u64) -> usize {
+        self.clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .unwrap()
+            .log
+            .iter()
+            .filter(|arrival| {
+                matches!(
+                    arrival,
+                    ControlArrival::Message(ServerControlMessage::Divergence(
+                        postretro_net::wire::DivergenceReason::Holding(_)
+                    ))
+                )
+            })
+            .count()
+    }
+
     pub(super) fn reveal_as(&mut self, client_id: u64, identity: &str, life: Option<u64>) {
         let digest = self.level_digest;
         let client = self.client(client_id);
@@ -410,6 +445,26 @@ impl Relay {
                 ControlArrival::Message(_) => None,
             })
             .collect()
+    }
+
+    /// `client_id`'s Control messages that arrived since the last forward, in
+    /// arrival order, for a client App's drain. Participation markers are
+    /// transport-only, so none is handed on.
+    pub(super) fn forward(&mut self, client_id: u64) -> Vec<ServerControlMessage> {
+        let client = self
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+            .unwrap();
+        let messages = client.log[client.forwarded..]
+            .iter()
+            .filter_map(|arrival| match arrival {
+                ControlArrival::Message(message) => Some(message.clone()),
+                ControlArrival::ParticipationMarker { .. } => None,
+            })
+            .collect();
+        client.forwarded = client.log.len();
+        messages
     }
 
     pub(super) fn hints(&self, client_id: u64) -> Vec<SpawnPoseHint> {

@@ -573,7 +573,12 @@ pub(crate) fn install_descriptor_world(
 }
 
 /// Production segment-B install and presentation finalization for CPU tests.
-pub(crate) fn install_capture_world(app: &mut App, world: &postretro_level_loader::LevelWorld) {
+/// Returns the first spawn's standing position and angles, install's camera
+/// stand-in.
+pub(crate) fn install_capture_world(
+    app: &mut App,
+    world: &postretro_level_loader::LevelWorld,
+) -> Option<(Vec3, Vec3)> {
     let ctx = script_ctx(app);
     let content_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
     let session = app.session.as_mut().unwrap();
@@ -609,7 +614,7 @@ pub(crate) fn install_capture_world(app: &mut App, world: &postretro_level_loade
         suppress_boot_pawn: true,
         local_carried_loadout: None,
     };
-    let _ = install_world_cpu(
+    let products = install_world_cpu(
         handles,
         &mut StartupTimings::new(),
         |_models, _clips| crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide,
@@ -622,6 +627,7 @@ pub(crate) fn install_capture_world(app: &mut App, world: &postretro_level_loade
         &mut session.emitter_bridge,
     );
     app.script_time = 0.0;
+    products.first_spawn
 }
 
 /// Parse identical raw descriptors through a bundled TS entry and the Luau

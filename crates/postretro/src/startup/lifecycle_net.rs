@@ -349,6 +349,17 @@ impl App {
         }
     }
 
+    /// The host level life of the installed level: the life of the last
+    /// relevel naming it, `None` on an uncatalogued level or one no relevel
+    /// named. With the published identity, it names the install a reveal
+    /// declares and a spawn-pose hint must match.
+    pub(crate) fn followed_level_life(&self) -> Option<u64> {
+        match (&self.active_level_source, &self.last_relevel) {
+            (Some(LevelSource::Catalog(active)), Some((id, life))) if active == id => Some(*life),
+            _ => None,
+        }
+    }
+
     /// The reveal edge's net half: publish that this peer has revealed the
     /// installed level. A host records its own reveal, which may promote
     /// revealed, parity-matched clients; the world poll later this frame
@@ -362,10 +373,7 @@ impl App {
         let Some(identity) = self.published_level_identity.clone() else {
             return;
         };
-        let level_life = match (&self.active_level_source, &self.last_relevel) {
-            (Some(LevelSource::Catalog(active)), Some((id, life))) if active == id => Some(*life),
-            _ => None,
-        };
+        let level_life = self.followed_level_life();
         let Some(endpoint) = self
             .session
             .as_mut()

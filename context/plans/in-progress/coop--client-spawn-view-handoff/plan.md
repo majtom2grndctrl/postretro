@@ -18,6 +18,11 @@ read at: 3f851eff1 (no `crates/` change since the brief's b215170, so the brief'
 - Path said the host's backdrop install publishes parity and the relevel id → a host install under the frontend root now publishes neither and sets no `published_level_identity`, which also gates every hint send (M8). Client backdrops unchanged.
 - Decision "a seat whose pose no placement backs holds none" → added `SeatTable::release_placement`, called when a seat resolves unbacked.
 
+- "Client hint store on the endpoint" → `NetEndpoint` lives in netcode, so the store type `ClientSpawnPoseHint` does too (beside `ClientSessionStatus`); the apply logic is `startup/spawn_pose_stand_in.rs`.
+- The presented-pose chokepoint gains no hint term: every apply site writes the hint to the camera, then calls `place_camera_at_presented_pose()`, so the menu pose still wins while the menu is present.
+- O7 needs no reveal-frame flag: a Running client applies a held hint at the start of the next drain, before its snapshots. A hint arriving in the same drain as the arming snapshot is never applied, which the brief allows.
+- A1/A2/C10 arm through `ClientView::arm`, which copies the host pawn's promotion transform and movement and marks it local the way `maybe_arm_local_pawn` does, then runs the real `run_client_predicted_tick` follow: no relay harness exists for a client App, and wiring one does real socket I/O. The hints are real host output.
+
 ## Delegated answers
 - Which descriptor class and key bag a pose that no placement backs spawns with — the test substitution names the class beside its pose (an empty key bag); production never yields an unbacked pose until E25 U2 pins its own.
 
@@ -74,6 +79,6 @@ Row ids: R = resolver and reservation, C = client stand-in, M = frontend menu, A
 | 1 | Wire: append `SpawnPoseHint`, protocol `PRLD`, append guard, round trip, gate-1 refusal (W1) | integrating executor | — | done: `cargo test -p postretro-net` 318 pass (`spawn_pose_hint_*`, `admission_refuses_prlb_prlc_*`, `netcode_handshake_*`); placeholder client arm in `client_drain_control` |
 | 2 | Host resolver module + reservation + promotion at recorded pose (placement-backed and unbacked spawn entry) + install send; first slice proves R1, R2 | worker (host) | 1 | done: `spawn_pose` module; `cargo test -p postretro --features dev-tools --bin postretro spawn_pose` 15 pass (R1 `host_install_sends_relevel_then_hint_and_promotion_spawns_at_the_hinted_pose`, R2 `unbacked_test_pose_reserves_nothing_and_its_pawn_spawns_there`, R14 `joiners_never_take_the_hosts_install_spawn`); startup/respawn/coop/host_activations 654 pass |
 | 3 | Host remaining send sites and re-resolution: admission (world-less and Running), loading-host admission, overlap, single-use, demote/hold, host frontend names no level (R3–R14, M8) | worker (host) | 2 | done: `spawn_pose` 34 pass (R3–R13, M8 in `startup::spawn_pose_reservation_tests` / `spawn_pose_handoff_tests`); netcode `seat` 62 pass; net 318 pass; startup/respawn/coop/host_activations/client_weapon 709 pass |
-| 4 | Client hint store + stand-in: install, Settling retarget, Running unarmed, arming guards (C1–C12, A1, A2) | worker (client) | 1 | |
+| 4 | Client hint store + stand-in: install, Settling retarget, Running unarmed, arming guards (C1–C12, A1, A2) | worker (client) | 1 | done: `startup::lifecycle::spawn_pose_stand_in_tests` 16 pass (C1–C12, A1, A2, R2 and R12 client halves); netcode `client_spawn_pose_hint` 2 pass; startup/spawn_pose/coop 543 pass; ghost_links/presentation/teleporters 169 pass |
 | 5 | Client frontend menu: host-named load marker, clear layers, failure fallback without backdrop, installed-backdrop reload (M1–M7, M9) | worker (client) | 4 | |
 | 6 | Docs: drop "decided, not yet built" markers, Version gates entry, ledger fix, `docs/` join view note; manual fixture yaw | integrating executor | 2–5 | |

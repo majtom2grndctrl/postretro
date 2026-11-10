@@ -718,8 +718,31 @@ heavies take turns. An attack draws at most 8 tokens, each once.
 shape: `token.with({ limit, refreshMs })`. A profile changes only the fields it
 names, and a token it leaves out keeps its declared budget. A map's attack
 pools select a profile by name; enemies in no running pool use `default`,
-which is the declared budgets unless you declare it. A profile may override
-`defaultToken` too.
+which is the declared budgets unless you declare it. A pool naming a profile
+you do not declare uses `default`. A profile may override `defaultToken` too.
+
+### Refresh
+
+When a turn ends, its draws stay counted for each token that sets
+`refreshMs`, for that long, exactly as a held turn counts: a waiting enemy
+gets no room from them, and one that has waited longest still goes first once
+they lapse. This holds however the turn ends. Cutting off a slam, killing its
+enemy or pulling its target away buys the same 4 s as surviving it.
+
+The delay is measured each tick against the token's current `refreshMs` in
+that pool, so lowering it frees counts sooner. A count stays with the target
+and pool it was counted in. It is gone when that target leaves the world,
+when its attack pool stops, and on every level change.
+
+### Hot reload
+
+A mod reload applies its budgets from the next tick and takes no turn away.
+Lowering a `limit` below what is held lets those turns end by their own rules,
+and nothing more is granted until the count fits. A reload that changes what
+an attack draws ends that attack's turns, which spend their refresh, and its
+enemies ask again under the new draws. Draws compare after resolution, so a
+change from no `draws` to `[defaultToken]` ends nothing. A reload removing a
+profile a running pool uses moves that pool to `default`.
 
 ### Load errors
 

@@ -1,11 +1,13 @@
-// Attack turns through the AI tick: the budget, turn lifetimes, the hard gate
-// and the turn facts, on the AI test fixtures.
+// Attack turns through the AI tick: the budget, turn lifetimes, the hard gate,
+// the turn facts, refresh, profiles and reloads, on the AI test fixtures.
 // See: context/lib/entity_model.md §7c (Attack budget)
 
 mod budget;
 mod facts;
 mod lifetime;
+mod refresh;
 mod release;
+mod reload;
 mod tokens;
 
 use super::*;
@@ -13,6 +15,7 @@ use crate::attack_turns::{AttackBudgets, BudgetTable, TokenBudget, attack_index}
 use postretro_entities::components::brain::{
     AttackTokenId, AttackTurnState, ResolvedDraw, ResolvedDraws,
 };
+use postretro_foundation::attack_budget::{AttackBudgetVocabulary, TokenDraw};
 use postretro_foundation::{BRAIN_ATTACK_COOLDOWN_MS_INPUT, BRAIN_HAS_ATTACK_TURN_INPUT};
 
 const DT: f32 = 0.016;
@@ -309,4 +312,50 @@ fn burst_weapon(name: &str, shots: usize, wait_ms: f32, recovery_ms: f32) -> Ent
 
 fn player_hp_lost(reg: &EntityRegistry, pawn: EntityId) -> f32 {
     100.0 - player_hp(reg, pawn)
+}
+
+/// Register `tokens` (name, limit) as the mod's `attackTokens`, as a
+/// committed manifest does.
+fn install_tokens(reg: &mut EntityRegistry, tokens: &[(&str, u32)]) {
+    let declarations: Vec<serde_json::Value> = tokens
+        .iter()
+        .map(|(name, limit)| {
+            serde_json::json!({ "kind": "attackToken", "name": name, "budget": { "limit": limit } })
+        })
+        .collect();
+    let vocabulary =
+        AttackBudgetVocabulary::from_manifest(Some(&serde_json::json!(declarations)), None)
+            .expect("a valid token registration");
+    reg.set_attack_budgets(std::sync::Arc::new(vocabulary));
+}
+
+/// A draw of one `name`, as a bare handle crosses.
+fn token(name: &str) -> TokenDraw {
+    TokenDraw(serde_json::json!({ "kind": "attackToken", "name": name }))
+}
+
+/// `name.with({ cost })`, as it crosses.
+fn costing(name: &str, cost: u32) -> TokenDraw {
+    TokenDraw(serde_json::json!({ "token": { "kind": "attackToken", "name": name }, "cost": cost }))
+}
+
+fn drawing(mut attack: AttackParams, draws: Vec<TokenDraw>) -> AttackParams {
+    attack.draws = Some(draws);
+    attack
+}
+
+/// A held-forever contact attack drawing `draws`.
+fn held_attack(draws: Vec<TokenDraw>) -> AttackParams {
+    drawing(contact(1.0, 100_000.0), draws)
+}
+
+/// Marked activities, one per attack, plus `idle`, which releases.
+fn marked_graph(attacks: Vec<(&str, AttackParams)>) -> BehaviorGraphDescriptor {
+    let names: Vec<String> = attacks.iter().map(|(name, _)| name.to_string()).collect();
+    let acts: Vec<String> = names.iter().map(|name| format!("{name}_act")).collect();
+    let mut activities = vec![("idle", idle())];
+    for (name, act) in names.iter().zip(&acts) {
+        activities.push((act.as_str(), marked(striking(name), name)));
+    }
+    graph("idle", activities, vec![], attacks)
 }

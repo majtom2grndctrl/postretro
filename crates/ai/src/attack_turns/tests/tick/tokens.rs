@@ -3,57 +3,7 @@
 // Re-proves the multi-token pins (P14, P18, P19, P24, P27) beside the
 // engine-level proofs in `tests/arbitration.rs`, plus per-target allowances.
 
-use std::sync::Arc;
-
-use postretro_foundation::attack_budget::{AttackBudgetVocabulary, TokenDraw};
-use serde_json::json;
-
 use super::*;
-
-/// Register `tokens` (name, limit) as the mod's `attackTokens`, as a
-/// committed manifest does.
-fn install_tokens(reg: &mut EntityRegistry, tokens: &[(&str, u32)]) {
-    let declarations: Vec<serde_json::Value> = tokens
-        .iter()
-        .map(|(name, limit)| {
-            json!({ "kind": "attackToken", "name": name, "budget": { "limit": limit } })
-        })
-        .collect();
-    let vocabulary = AttackBudgetVocabulary::from_manifest(Some(&json!(declarations)), None)
-        .expect("a valid token registration");
-    reg.set_attack_budgets(Arc::new(vocabulary));
-}
-
-/// A draw of one `name`, as a bare handle crosses.
-fn token(name: &str) -> TokenDraw {
-    TokenDraw(json!({ "kind": "attackToken", "name": name }))
-}
-
-/// `name.with({ cost })`, as it crosses.
-fn costing(name: &str, cost: u32) -> TokenDraw {
-    TokenDraw(json!({ "token": { "kind": "attackToken", "name": name }, "cost": cost }))
-}
-
-fn drawing(mut attack: AttackParams, draws: Vec<TokenDraw>) -> AttackParams {
-    attack.draws = Some(draws);
-    attack
-}
-
-/// A held-forever contact attack drawing `draws`.
-fn held_attack(draws: Vec<TokenDraw>) -> AttackParams {
-    drawing(contact(1.0, 100_000.0), draws)
-}
-
-/// Marked activities, one per attack, plus `idle`, which releases.
-fn marked_graph(attacks: Vec<(&str, AttackParams)>) -> BehaviorGraphDescriptor {
-    let names: Vec<String> = attacks.iter().map(|(name, _)| name.to_string()).collect();
-    let acts: Vec<String> = names.iter().map(|name| format!("{name}_act")).collect();
-    let mut activities = vec![("idle", idle())];
-    for (name, act) in names.iter().zip(&acts) {
-        activities.push((act.as_str(), marked(striking(name), name)));
-    }
-    graph("idle", activities, vec![], attacks)
-}
 
 /// B6 / P14: `melee` at 4, `heavy` at 1. One slam (`melee`, `heavy`) holds; a
 /// second waits longest and reserves one `melee` and the `heavy`; two jabs

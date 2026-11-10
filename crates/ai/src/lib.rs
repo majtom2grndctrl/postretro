@@ -300,6 +300,13 @@ impl AiRuntime {
         self.weapons.cancel_activations();
     }
 
+    /// Drop the state that names the unloading level's entities: refreshing
+    /// attack-turn counts, the turn roster, and the running attack pools'
+    /// budgets. Call on level unload, before the next level's first tick.
+    pub fn clear_level_state(&mut self) {
+        self.turns.clear_level_state();
+    }
+
     pub fn new() -> Self {
         Self {
             warned: HashSet::new(),
@@ -487,8 +494,8 @@ where
         weapons,
         turns,
     } = runtime;
-    turns.tick = turns.tick.wrapping_add(1);
-    turns.sync_budgets(registry.attack_budgets());
+    turns.begin_tick(dt_ms, registry);
+    turns.sync_pools(attack_turns::running_attack_pools(registry));
     programs.sync(registry, descriptors, descriptor_generation, warned);
     weapons.sync(registry, programs, |actor| {
         host.is_quiescent(registry, actor)
@@ -521,6 +528,7 @@ where
             let transform = registry.get_component::<Transform>(id).ok()?;
             let mut brain = brain.clone();
             attack_turns::admit(&mut brain.attack_turns, turns.tick);
+            turns.remap_brain(&mut brain.attack_turns);
             Some(EnemySnapshot {
                 id,
                 position: transform.position,
@@ -586,6 +594,7 @@ where
         warned,
         blocked_warned,
         weapons,
+        turns,
         host,
     )
 }

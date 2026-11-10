@@ -352,6 +352,7 @@ pub(super) fn evaluate(
                 let reader = attack_turns::TurnFactReader {
                     line: &turns.previous,
                     budgets: &turns.budgets,
+                    refresh: turns.previous_refresh(),
                     entity: snap.id,
                     slot: slot as u32,
                     pool: attack_turns::attack_pool_of(snap.id),

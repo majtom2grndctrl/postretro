@@ -599,6 +599,7 @@ mod statechart_tests {
             &scope,
             &candidate_scope,
             Arc::new(graph.clone()),
+            None,
             &[],
             0,
             &postretro_foundation::attack_budget::AttackBudgetVocabulary::default(),

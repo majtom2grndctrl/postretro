@@ -1,10 +1,12 @@
 // Engine-level attack-turn proofs on synthetic token tables: arbitration
-// order, cost fit, head-of-line reservations, and the turn-free fact.
-// Through-the-tick proofs live in `tick_*.rs`, beside the AI test fixtures.
+// order, cost fit, head-of-line reservations, the turn-free fact, and the
+// refresh ledger and pool profiles at the runtime seam. Through-the-tick
+// proofs live in `tick/`, mounted beside the AI test fixtures.
 // See: context/lib/entity_model.md §7c (Attack budget)
 
 mod arbitration;
 mod facts;
+mod refresh;
 
 use postretro_entities::components::brain::{
     AttackPoolId, AttackTokenId, ResolvedDraw, ResolvedDraws,
@@ -12,7 +14,7 @@ use postretro_entities::components::brain::{
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 
 use super::arbitration::{Arbiter, GroupKey, WaitKey};
-use super::{BudgetTable, TokenBudget, refreshing_count};
+use super::{BudgetTable, TokenBudget};
 
 const MELEE: u16 = 0;
 const HEAVY: u16 = 1;
@@ -50,6 +52,11 @@ fn targets(count: usize) -> Vec<EntityId> {
         .collect()
 }
 
+/// Nothing refreshing anywhere.
+fn no_refresh(_group: GroupKey, _token: AttackTokenId) -> u32 {
+    0
+}
+
 fn group(target: EntityId) -> GroupKey {
     (AttackPoolId::Default, target)
 }
@@ -60,23 +67,40 @@ fn key(since_tick: u64, slot: u32) -> WaitKey {
 
 /// One arbitration on `table` for a single pool; returns granted tags sorted.
 fn grants(arbiter: &mut Arbiter, table: &BudgetTable) -> Vec<usize> {
-    let mut granted = arbiter.arbitrate(|_| table, refreshing_count).to_vec();
+    let mut granted = arbiter.arbitrate(|_| table, no_refresh).to_vec();
     granted.sort_unstable();
     granted
 }
 
-// Hot path: once its scratch has grown, a steady-state turn pass (the
-// previous-tick line, then arbitration over a wave on three tokens and
-// several targets) performs no heap allocation.
+// Hot path: once its scratch has grown, a steady-state turn pass (refresh
+// pruning, the previous-tick line, turn ends found on the roster and recorded
+// in the refresh ledger, arbitration over a wave on three tokens and several
+// targets with refreshing counts, the turn facts, and the roster rebuild)
+// performs no heap allocation.
 #[test]
 fn steady_state_turn_passes_allocate_nothing() {
+    use super::refresh::{RefreshLedger, RefreshView};
+    use super::roster::TurnRoster;
     use super::{AttackBudgets, LineEntry, PreviousTickLine};
     use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::components::brain::{
         AttackTurnState, HeldTurn, TurnRequest, WaitClock,
     };
 
-    let table = table(&[3, 1, 2]);
+    let table = BudgetTable::new(vec![
+        TokenBudget {
+            limit: 3,
+            refresh_ms: 0.0,
+        },
+        TokenBudget {
+            limit: 1,
+            refresh_ms: 4000.0,
+        },
+        TokenBudget {
+            limit: 2,
+            refresh_ms: 0.0,
+        },
+    ]);
     let budgets = AttackBudgets::new(table.clone());
     let ids = targets(132);
     let (targets, enemies) = ids.split_at(4);
@@ -85,32 +109,40 @@ fn steady_state_turn_passes_allocate_nothing() {
         draws(&[(MELEE, 2), (HEAVY, 1)]),
         draws(&[(RANGED, 1), (HEAVY, 1)]),
     ];
-    let brains: Vec<AttackTurnState> = enemies
-        .iter()
-        .enumerate()
-        .map(|(slot, _)| {
-            let target = targets[slot % targets.len()];
-            let draws = kinds[slot % kinds.len()];
+    let held = |slot: usize| HeldTurn {
+        attack: 0,
+        target: targets[slot % targets.len()],
+        pool: AttackPoolId::Default,
+        draws: kinds[slot % kinds.len()],
+        until_cooldown: true,
+    };
+    // Last tick every enemy held a turn; this tick every fourth still does,
+    // the rest wait, and the last eight left the AI set.
+    let before: Vec<AttackTurnState> = (0..enemies.len())
+        .map(|slot| {
+            let mut turns = AttackTurnState::default();
+            turns.hold(held(slot));
+            turns
+        })
+        .collect();
+    let present = enemies.len() - 8;
+    let brains: Vec<AttackTurnState> = (0..present)
+        .map(|slot| {
             let mut turns = AttackTurnState::default();
             if slot % 4 == 0 {
-                turns.hold(HeldTurn {
-                    attack: 0,
-                    target,
-                    pool: AttackPoolId::Default,
-                    draws,
-                    until_cooldown: true,
-                });
+                turns.hold(held(slot));
             } else {
+                let turn = held(slot);
                 turns.request = Some(TurnRequest {
                     attack: 0,
-                    draws,
+                    draws: turn.draws,
                     marked: false,
-                    target,
+                    target: turn.target,
                     pool: AttackPoolId::Default,
                 });
                 turns.wait = Some(WaitClock {
                     since_tick: slot as u64 % 7,
-                    target,
+                    target: turn.target,
                 });
             }
             turns
@@ -119,7 +151,11 @@ fn steady_state_turn_passes_allocate_nothing() {
 
     let mut line = PreviousTickLine::default();
     let mut arbiter = Arbiter::default();
-    let pass = |line: &mut PreviousTickLine, arbiter: &mut Arbiter| {
+    let mut ledger = RefreshLedger::default();
+    let mut roster = TurnRoster::default();
+    let mut pass = |now_ms: f64| {
+        roster.rebuild(enemies.iter().copied().zip(&before));
+        ledger.prune(now_ms - 16.0, &budgets, |_| true);
         line.rebuild(
             &budgets,
             enemies
@@ -133,8 +169,30 @@ fn steady_state_turn_passes_allocate_nothing() {
                     turns,
                 }),
         );
+        let view = RefreshView {
+            ledger: &ledger,
+            at_ms: now_ms - 16.0,
+        };
+        let free = enemies[..present]
+            .iter()
+            .enumerate()
+            .filter(|&(slot, entity)| {
+                let group = group(targets[slot % targets.len()]);
+                line.would_grant(
+                    group,
+                    &kinds[1],
+                    &table,
+                    *entity,
+                    WaitKey::fresh(slot as u32),
+                    |token| view.count(group, token, &table),
+                )
+            })
+            .count();
         arbiter.begin();
-        for (slot, turns) in brains.iter().enumerate() {
+        for (slot, (entity, turns)) in enemies.iter().zip(&brains).enumerate() {
+            roster.ended_for(*entity, turns, |turn| {
+                ledger.record(group(turn.target), &turn.draws, &table, now_ms);
+            });
             for turn in turns.held() {
                 arbiter.hold(group(turn.target), turn.draws);
             }
@@ -148,14 +206,25 @@ fn steady_state_turn_passes_allocate_nothing() {
                 );
             }
         }
-        arbiter.arbitrate(|_| &table, refreshing_count).len()
+        roster.departed(|turn| {
+            ledger.record(group(turn.target), &turn.draws, &table, now_ms);
+        });
+        let granted = arbiter
+            .arbitrate(
+                |_| &table,
+                |group, token| ledger.count(group, token, now_ms, table.refresh_ms(token)),
+            )
+            .len();
+        roster.rebuild(enemies.iter().copied().zip(&brains));
+        (granted, free, ledger.len())
     };
-    let warm = pass(&mut line, &mut arbiter);
+    let warm = pass(0.0);
 
     let snapshot = AllocSnapshot::arm();
-    let granted = pass(&mut line, &mut arbiter);
+    let steady = pass(5000.0);
     let allocs = snapshot.allocs_since();
-    assert_eq!(granted, warm, "the same inputs grant the same set");
-    assert!(granted > 0, "fixture: some requests are granted");
+    assert_eq!(steady, warm, "the same inputs grant the same set");
+    assert!(warm.0 > 0, "fixture: some requests are granted");
+    assert!(warm.2 > 0, "fixture: ended turns are refreshing");
     assert_eq!(allocs, 0, "a steady-state turn pass must not allocate");
 }

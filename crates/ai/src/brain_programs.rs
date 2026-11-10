@@ -18,6 +18,7 @@ use postretro_foundation::{
     bind,
 };
 
+use super::attack_turns::{live_behavior, resolve_graph_draws};
 use super::brain_scope::BrainScope;
 use super::candidate_scope::CandidateScope;
 
@@ -203,6 +204,10 @@ impl BrainPrograms {
     /// Bind changed graphs, refresh descriptor-derived attacks, and release
     /// dead entries. All growth happens here, outside the hot evaluator and
     /// its zero-allocation probe window.
+    ///
+    /// A reload reseats no live brain, so its `graph` keeps the spawn-time
+    /// attacks. Draws therefore resolve from the live descriptor the entity
+    /// was materialized from, on a new descriptor generation or vocabulary.
     pub(crate) fn sync(
         &mut self,
         registry: &EntityRegistry,
@@ -235,6 +240,7 @@ impl BrainPrograms {
                         &self.scope,
                         &self.candidate_scope,
                         Arc::clone(&brain.graph),
+                        live_behavior(registry, entity, descriptors),
                         descriptors,
                         descriptor_generation,
                         &self.attack_budgets,
@@ -246,14 +252,19 @@ impl BrainPrograms {
             let Some(entry) = self.entries.get_mut(&entity) else {
                 continue;
             };
-            if entry.descriptor_generation != descriptor_generation {
+            let generation_changed = entry.descriptor_generation != descriptor_generation;
+            if generation_changed {
                 entry.resolved_projectile_attacks =
                     resolve_projectile_attacks(&brain.graph, descriptors, warned);
                 entry.descriptor_generation = descriptor_generation;
             }
-            if budgets_changed {
-                entry.attack_draws =
-                    resolve_attack_draws(&brain.graph, &self.attack_budgets, warned);
+            if generation_changed || budgets_changed {
+                entry.attack_draws = resolve_graph_draws(
+                    &brain.graph,
+                    live_behavior(registry, entity, descriptors),
+                    &self.attack_budgets,
+                    warned,
+                );
             }
         }
         self.entries.retain(|entity, _| self.live.contains(entity));
@@ -262,10 +273,12 @@ impl BrainPrograms {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // each derived table names its own source.
 pub(super) fn bind_graph(
     scope: &BrainScope,
     candidate_scope: &CandidateScope,
     graph: Arc<BehaviorGraphDescriptor>,
+    live: Option<&BehaviorGraphDescriptor>,
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
     attack_budgets: &AttackBudgetVocabulary,
@@ -278,7 +291,7 @@ pub(super) fn bind_graph(
         .as_ref()
         .and_then(|filter| bind_candidate_filter(scope, candidate_scope, filter, warned));
     let resolved_projectile_attacks = resolve_projectile_attacks(&graph, descriptors, warned);
-    let attack_draws = resolve_attack_draws(&graph, attack_budgets, warned);
+    let attack_draws = resolve_graph_draws(&graph, live, attack_budgets, warned);
     BrainEntityPrograms {
         graph,
         descriptor_generation,
@@ -287,19 +300,6 @@ pub(super) fn bind_graph(
         resolved_projectile_attacks,
         attack_draws,
     }
-}
-
-/// Each attack's draws, in the graph's attack-name order.
-fn resolve_attack_draws(
-    graph: &BehaviorGraphDescriptor,
-    attack_budgets: &AttackBudgetVocabulary,
-    warned: &mut HashSet<String>,
-) -> Vec<ResolvedDraws> {
-    graph
-        .attacks
-        .values()
-        .map(|attack| crate::attack_turns::resolve_attack_draws(attack, attack_budgets, warned))
-        .collect()
 }
 
 fn resolve_projectile_attacks(

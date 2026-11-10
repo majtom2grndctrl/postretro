@@ -1,15 +1,12 @@
-// Attack token budgets per pool, and the one chokepoint that resolves what an
-// attack draws.
+// Attack token budgets: one table per profile, and the table each pool
+// arbitrates under.
 // See: context/lib/entity_model.md §7c (Attack budget)
 
-use std::collections::HashSet;
-
-use postretro_entities::components::brain::{
-    AttackPoolId, AttackTokenId, MAX_ATTACK_DRAWS, ResolvedDraw, ResolvedDraws,
-};
-use postretro_foundation::AttackParams;
-use postretro_foundation::attack_budget::AttackBudgetVocabulary;
+use postretro_entities::components::brain::{AttackPoolId, AttackTokenId};
 pub(crate) use postretro_foundation::attack_budget::TokenBudget;
+use postretro_foundation::attack_budget::{AttackBudgetVocabulary, DEFAULT_PROFILE_NAME};
+
+use super::pools::PoolBudgets;
 
 /// One profile's budgets, indexed by token id.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,9 +19,17 @@ impl BudgetTable {
         Self { tokens }
     }
 
-    /// Each registered token at its declared budget.
-    pub(crate) fn declared(vocabulary: &AttackBudgetVocabulary) -> Self {
-        Self::new(vocabulary.declared_budgets().collect())
+    /// Profile `name`'s budgets: the declared budgets with its named fields
+    /// applied. `None` when the mod declares no profile by that name.
+    pub(crate) fn profile(vocabulary: &AttackBudgetVocabulary, name: &str) -> Option<Self> {
+        vocabulary.profile_budgets(name).map(Self::new)
+    }
+
+    /// The `default` profile: the declared budgets unless the mod overrides
+    /// `default`.
+    pub(crate) fn default_profile(vocabulary: &AttackBudgetVocabulary) -> Self {
+        Self::profile(vocabulary, DEFAULT_PROFILE_NAME)
+            .expect("the `default` profile always resolves")
     }
 
     pub(crate) fn token_count(&self) -> usize {
@@ -35,29 +40,53 @@ impl BudgetTable {
     pub(crate) fn limit(&self, token: AttackTokenId) -> Option<u32> {
         self.tokens.get(token.0 as usize).map(|budget| budget.limit)
     }
+
+    /// How long a draw on `token` stays counted after its turn ends. A token
+    /// outside the table never refreshes.
+    pub(crate) fn refresh_ms(&self, token: AttackTokenId) -> f32 {
+        self.tokens
+            .get(token.0 as usize)
+            .map_or(0.0, |budget| budget.refresh_ms)
+    }
 }
 
-/// The budget table each pool arbitrates under. Every pool shares one token
+/// The budget table each pool arbitrates under: the default pool's `default`
+/// profile, and each running attack pool's own. Every pool shares one token
 /// vocabulary, so tables differ only in their values.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AttackBudgets {
     default: BudgetTable,
+    pub(super) pools: PoolBudgets,
 }
 
 impl AttackBudgets {
+    /// The default pool at `default`, with no attack pool running.
     pub(crate) fn new(default: BudgetTable) -> Self {
-        Self { default }
+        Self {
+            default,
+            pools: PoolBudgets::default(),
+        }
     }
 
-    /// The default pool runs at the declared budgets until profiles apply.
     pub(crate) fn from_vocabulary(vocabulary: &AttackBudgetVocabulary) -> Self {
-        Self::new(BudgetTable::declared(vocabulary))
+        Self::new(BudgetTable::default_profile(vocabulary))
     }
 
-    /// Only the default pool's `default` profile exists until attack pools
-    /// name profiles.
-    pub(crate) fn for_pool(&self, _pool: AttackPoolId) -> &BudgetTable {
-        &self.default
+    /// Re-resolve every table against a newly committed vocabulary. A running
+    /// pool keeps its profile name, so a reload that removes the profile
+    /// drops it to `default` and one that changes `default` reaches it.
+    pub(crate) fn resolve(&mut self, vocabulary: &AttackBudgetVocabulary) {
+        self.default = BudgetTable::default_profile(vocabulary);
+        self.pools.resolve(vocabulary);
+    }
+
+    /// The table `pool` arbitrates under. A pool not running, or running a
+    /// profile the mod does not declare, uses `default`.
+    pub(crate) fn for_pool(&self, pool: AttackPoolId) -> &BudgetTable {
+        match pool {
+            AttackPoolId::Default => &self.default,
+            AttackPoolId::Pool(entity) => self.pools.table(entity).unwrap_or(&self.default),
+        }
     }
 
     /// Tokens in the shared vocabulary.
@@ -70,31 +99,4 @@ impl Default for AttackBudgets {
     fn default() -> Self {
         Self::from_vocabulary(&AttackBudgetVocabulary::default())
     }
-}
-
-/// THE draw-resolution chokepoint: what one attack draws, as token ids in the
-/// registered vocabulary. An attack without `draws` draws one `defaultToken`.
-/// Runs at bind time, never per tick. A reference naming no registered token
-/// (stale content load validation never saw) warns once and is left out.
-pub(crate) fn resolve_attack_draws(
-    attack: &AttackParams,
-    vocabulary: &AttackBudgetVocabulary,
-    warned: &mut HashSet<String>,
-) -> ResolvedDraws {
-    let resolved: Vec<ResolvedDraw> = vocabulary
-        .resolve_draws(attack.draws.as_deref(), |token| {
-            if warned.insert(format!("attack-draw:{token}")) {
-                log::warn!(
-                    "[AI] an attack draws unregistered attack token `{token}`; the draw is ignored"
-                );
-            }
-        })
-        .into_iter()
-        .take(MAX_ATTACK_DRAWS)
-        .map(|(token, cost)| ResolvedDraw {
-            token: AttackTokenId(token),
-            cost,
-        })
-        .collect();
-    ResolvedDraws::from_slice(&resolved).expect("draw lists are capped at MAX_ATTACK_DRAWS")
 }

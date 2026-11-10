@@ -4,12 +4,15 @@
 // See: context/lib/entity_model.md §7c (Attack budget) · context/lib/scripting.md §11
 
 use postretro_entities::EntityId;
-use postretro_entities::components::brain::{AttackPoolId, AttackTurnState, ResolvedDraws};
+use postretro_entities::components::brain::{
+    AttackPoolId, AttackTokenId, AttackTurnState, ResolvedDraws,
+};
 use postretro_foundation::BehaviorGraphDescriptor;
 
 use super::arbitration::{GroupKey, WaitKey};
+use super::attack_index;
 use super::budget::{AttackBudgets, BudgetTable};
-use super::{attack_index, refreshing_count};
+use super::refresh::RefreshView;
 use crate::brain_programs::BrainEntityPrograms;
 
 /// Which named attack-turn read a guard binds.
@@ -137,7 +140,8 @@ impl PreviousTickLine {
     }
 
     /// Whether `draws`, requested by `reader` at `key`, would be granted
-    /// against this line, leaving out the reader's own request.
+    /// against this line and `refreshing` counts, leaving out the reader's
+    /// own request.
     pub(super) fn would_grant(
         &self,
         group: GroupKey,
@@ -145,6 +149,7 @@ impl PreviousTickLine {
         table: &BudgetTable,
         reader: EntityId,
         key: WaitKey,
+        refreshing: impl Fn(AttackTokenId) -> u32,
     ) -> bool {
         draws.as_slice().iter().all(|draw| {
             let Some(limit) = table.limit(draw.token) else {
@@ -161,7 +166,7 @@ impl PreviousTickLine {
                 .map_or(0, |head| head.cost.min(limit));
             let counted = line
                 .held
-                .saturating_add(refreshing_count(group, draw.token))
+                .saturating_add(refreshing(draw.token))
                 .saturating_add(reserved);
             counted == 0 || counted.saturating_add(draw.cost) <= limit
         })
@@ -172,6 +177,8 @@ impl PreviousTickLine {
 pub(crate) struct TurnFactReader<'a> {
     pub(crate) line: &'a PreviousTickLine,
     pub(crate) budgets: &'a AttackBudgets,
+    /// Refreshing counts as they stood after the previous tick.
+    pub(crate) refresh: RefreshView<'a>,
     pub(crate) entity: EntityId,
     pub(crate) slot: u32,
     pub(crate) pool: AttackPoolId,
@@ -216,12 +223,11 @@ impl TurnFactReader<'_> {
             },
             _ => WaitKey::fresh(self.slot),
         };
-        self.line.would_grant(
-            (self.pool, target),
-            &draws,
-            self.budgets.for_pool(self.pool),
-            self.entity,
-            key,
-        )
+        let group = (self.pool, target);
+        let table = self.budgets.for_pool(self.pool);
+        self.line
+            .would_grant(group, &draws, table, self.entity, key, |token| {
+                self.refresh.count(group, token, table)
+            })
     }
 }

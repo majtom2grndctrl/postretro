@@ -11,9 +11,7 @@ use postretro_entities::components::brain::{
 use postretro_foundation::BehaviorGraphDescriptor;
 
 use super::arbitration::WaitKey;
-use super::{
-    AttackTurnRuntime, attack_index, attack_name, attack_pool_of, path_mark, refreshing_count,
-};
+use super::{AttackTurnRuntime, attack_index, attack_name, attack_pool_of, path_mark};
 use crate::brain_programs::{BrainEntityPrograms, BrainPrograms};
 use crate::weapon_controller::AiWeaponControllers;
 use crate::{EnemyOutcome, PendingAttack};
@@ -28,17 +26,15 @@ pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
     turns.seen_tick = tick;
 }
 
-/// Release a granted unmarked turn whose attack did not start on its grant
-/// tick: nothing fired and no execution began.
-pub(crate) fn release_unstarted_grant(turns: &mut AttackTurnState, attack: u16) {
-    turns.retain_held(|turn| turn.attack != attack);
-}
-
 /// The tick's turn pass. Every release and request of the tick is known
 /// before any grant: releases run first for every enemy, then arbitration
 /// grants per pool and target, then the hard gate drops every pending attack
 /// whose enemy holds no turn for it. A dropped proposal committed nothing, so
 /// its once-per-entry fire stays open for the first granted tick.
+///
+/// Every turn that ended since the last tick, including a holder's that left
+/// the AI set, starts its refresh before any grant, in the pool and on the
+/// target it counted against when it ended.
 pub(crate) fn arbitrate_attack_turns(
     outcomes: &mut [EnemyOutcome],
     programs: &BrainPrograms,
@@ -47,10 +43,14 @@ pub(crate) fn arbitrate_attack_turns(
 ) {
     let AttackTurnRuntime {
         tick,
+        now_ms,
         budgets,
+        ledger,
+        roster,
         arbiter,
         ..
     } = runtime;
+    let now_ms = *now_ms;
     arbiter.begin();
 
     for (slot, outcome) in outcomes.iter_mut().enumerate() {
@@ -61,6 +61,7 @@ pub(crate) fn arbitrate_attack_turns(
             outcome.brain.attack_turns.clear();
         }
         let mark = path_mark(&outcome.brain);
+        let programs_entry = programs.get(outcome.id);
         let executing = weapons
             .executing_attack(outcome.id)
             .and_then(|name| attack_index(&outcome.brain.graph, name));
@@ -78,13 +79,27 @@ pub(crate) fn arbitrate_attack_turns(
                 return false;
             }
             turn.pool = pool;
-            mark == Some(turn.attack)
-                || executing == Some(turn.attack)
-                || (turn.until_cooldown && cooling_down(graph, cooldowns, turn.attack))
+            // A reload that changed what the attack draws ends its turn; it
+            // re-requests under the new draws.
+            let draws_unchanged = programs_entry
+                .and_then(|entry| entry.attack_draws(turn.attack))
+                .is_none_or(|draws| draws == turn.draws);
+            draws_unchanged
+                && (mark == Some(turn.attack)
+                    || executing == Some(turn.attack)
+                    || (turn.until_cooldown && cooling_down(graph, cooldowns, turn.attack)))
         });
         if cancel_execution {
             weapons.cancel_actor(outcome.id);
         }
+        roster.ended_for(outcome.id, turns, |turn| {
+            ledger.record(
+                (pool, turn.target),
+                &turn.draws,
+                budgets.for_pool(pool),
+                now_ms,
+            );
+        });
 
         let request = target.and_then(|target| {
             next_request(
@@ -92,7 +107,7 @@ pub(crate) fn arbitrate_attack_turns(
                 graph,
                 mark,
                 outcome.attack.as_ref(),
-                programs.get(outcome.id),
+                programs_entry,
                 target,
                 pool,
             )
@@ -127,7 +142,20 @@ pub(crate) fn arbitrate_attack_turns(
         }
     }
 
-    for &slot in arbiter.arbitrate(|pool| budgets.for_pool(pool), refreshing_count) {
+    roster.departed(|turn| {
+        ledger.record(
+            (turn.pool, turn.target),
+            &turn.draws,
+            budgets.for_pool(turn.pool),
+            now_ms,
+        );
+    });
+
+    let refreshing = |group: (AttackPoolId, EntityId), token| {
+        let refresh_ms = budgets.for_pool(group.0).refresh_ms(token);
+        ledger.count(group, token, now_ms, refresh_ms)
+    };
+    for &slot in arbiter.arbitrate(|pool| budgets.for_pool(pool), refreshing) {
         let outcome = &mut outcomes[slot];
         let turns = &mut outcome.brain.attack_turns;
         let Some(request) = turns.request.take() else {
@@ -146,6 +174,12 @@ pub(crate) fn arbitrate_attack_turns(
             outcome.fresh_unmarked_grant = Some(request.attack);
         }
     }
+
+    roster.rebuild(
+        outcomes
+            .iter()
+            .map(|outcome| (outcome.id, &outcome.brain.attack_turns)),
+    );
 
     for outcome in outcomes.iter_mut() {
         if let Some(pending) = outcome.attack.as_ref()

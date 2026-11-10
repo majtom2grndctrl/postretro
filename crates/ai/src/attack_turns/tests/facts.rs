@@ -65,15 +65,15 @@ fn turn_free_leaves_out_the_readers_own_request_and_applies_its_clock() {
     let table = budgets.for_pool(AttackPoolId::Default);
 
     assert!(
-        line.would_grant(group(target), &jab, table, b, key(10, 1)),
+        line.would_grant(group(target), &jab, table, b, key(10, 1), |_| 0),
         "B's own slam is left out and B's clock heads the line"
     );
     assert!(
-        !line.would_grant(group(target), &jab, table, c, key(12, 2)),
+        !line.would_grant(group(target), &jab, table, c, key(12, 2), |_| 0),
         "C reads false while B's slam reserves the token"
     );
     assert!(
-        !line.would_grant(group(target), &jab, table, d, WaitKey::fresh(3)),
+        !line.would_grant(group(target), &jab, table, d, WaitKey::fresh(3), |_| 0),
         "a fresh reader queues behind B's reservation too"
     );
 }
@@ -90,7 +90,14 @@ fn turn_free_reads_true_for_every_reader_while_room_and_no_waiter() {
     let table = budgets.for_pool(AttackPoolId::Default);
     let jab = draws(&[(MELEE, 1)]);
     for (slot, reader) in [(1, ids[2]), (2, ids[3])] {
-        assert!(line.would_grant(group(target), &jab, table, reader, WaitKey::fresh(slot)));
+        assert!(line.would_grant(
+            group(target),
+            &jab,
+            table,
+            reader,
+            WaitKey::fresh(slot),
+            |_| 0
+        ));
     }
     assert!(
         !line.would_grant(
@@ -98,7 +105,8 @@ fn turn_free_reads_true_for_every_reader_while_room_and_no_waiter() {
             &draws(&[(MELEE, 2)]),
             table,
             ids[2],
-            WaitKey::fresh(1)
+            WaitKey::fresh(1),
+            |_| 0
         ),
         "a cost-2 draw does not fit beside the holder"
     );
@@ -108,7 +116,8 @@ fn turn_free_reads_true_for_every_reader_while_room_and_no_waiter() {
             &draws(&[(MELEE, 2)]),
             table,
             ids[3],
-            WaitKey::fresh(2)
+            WaitKey::fresh(2),
+            |_| 0
         ),
         "another target's allowance is empty"
     );

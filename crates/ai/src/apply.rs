@@ -43,6 +43,7 @@ fn commit_attack_fire(
 }
 
 /// Pass 3: mutate the registry from resolved enemy outcomes.
+#[allow(clippy::too_many_arguments)] // orchestration keeps each apply-stage input explicit.
 pub(super) fn apply_outcomes<H>(
     registry: &mut postretro_entities::EntityRegistry,
     outcomes: Vec<super::EnemyOutcome>,
@@ -50,6 +51,7 @@ pub(super) fn apply_outcomes<H>(
     warned: &mut std::collections::HashSet<String>,
     blocked_warned: &mut std::collections::HashSet<postretro_entities::EntityId>,
     weapons: &mut AiWeaponControllers,
+    turns: &mut attack_turns::AttackTurnRuntime,
     host: &mut H,
 ) -> super::AiTickResult
 where
@@ -410,7 +412,7 @@ where
             if let Some(attack) = outcome.fresh_unmarked_grant
                 && !grant_started
             {
-                attack_turns::release_unstarted_grant(&mut brain.attack_turns, attack);
+                turns.release_unstarted_grant(outcome.id, &mut brain.attack_turns, attack);
             }
             brain.locomotion_moving = locomotion_intent.moving;
             brain.launch.airborne_presented = airborne_clip.is_some();

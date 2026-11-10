@@ -1,6 +1,6 @@
-// The three attack-turn facts guards read: `hasAttackTurn`, `attackTurnHeld`
-// and `attackTurnFree`, all from the previous tick's turns, counts and
-// reservations.
+// The named attack-turn reads guards bind, `attackTurnHeld` and
+// `attackTurnFree`, from the previous tick's turns, counts and reservations.
+// `hasAttackTurn` is a brain fact compute sets beside them.
 // See: context/lib/entity_model.md §7c (Attack budget) · context/lib/scripting.md §11
 
 use postretro_entities::EntityId;
@@ -212,6 +212,11 @@ impl TurnFactReader<'_> {
             .held()
             .any(|turn| turn.draws.shares_token(&draws))
         {
+            return false;
+        }
+        // A drawn request is made only with room for its turn. An undrawn
+        // attack fires without one.
+        if !draws.is_empty() && !self.turns.has_room_for(&draws) {
             return false;
         }
         // The reader's own clock places it in line; a wait on another target

@@ -26,7 +26,8 @@ impl FacingPolicy {
 pub const DEFAULT_REPOSITION_ARC_DEG: [f32; 2] = [0.0, 180.0];
 
 /// The combat ring steps in 45° slots, so an arc must contain one of these.
-const RING_STEP_DEG: f32 = 45.0;
+/// Validation here and the runtime ring (sim `combat_positioning`) share it.
+pub const COMBAT_RING_STEP_DEG: f32 = 45.0;
 
 /// Bounds a `reposition` activity fixes at entry. `min_travel_m` stays `None`
 /// when omitted: its default, one slot spacing, depends on the standoff the
@@ -93,7 +94,7 @@ pub(super) fn validate_reposition(
         });
     }
     let contains_ring_step = (0..=4).any(|step| {
-        let bearing = RING_STEP_DEG * step as f32;
+        let bearing = COMBAT_RING_STEP_DEG * step as f32;
         min <= bearing && bearing <= max
     });
     if !contains_ring_step {

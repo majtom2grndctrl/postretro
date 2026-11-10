@@ -128,7 +128,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "speedScale?",
             "bool",
-            "Whether V1 rate-scales engine-selected player locomotion and the AI alert-mapped locomotion state, with its `_left`, `_right` and `_backward` variants. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.",
+            "Whether the engine rate-scales engine-selected player locomotion and the brain graph's locomotion state, with its `_left`, `_right` and `_backward` variants. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.",
         )
         .finish();
     registry
@@ -635,7 +635,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .variant(
             "strafe",
-            "Engaged: step 45° at a time around the target at standoff in one direction, reversing when the next slot is unreachable, occupied or out of sight. Faces the target by default. Takes no parameters.",
+            "Engaged: circle the target at standoff in one direction as a continuous orbit, reversing when the way ahead is unreachable, occupied or out of sight. Faces the target by default. Takes no parameters.",
         )
         .variant(
             "reposition",

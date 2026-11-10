@@ -89,6 +89,16 @@ impl AttackBudgets {
         }
     }
 
+    /// Whether counts recorded in `pool` belong to the run it had last tick.
+    /// A pool that stopped or began a new run this tick dropped its counts,
+    /// so nothing from its old run lands there.
+    pub(crate) fn pool_continues(&self, pool: AttackPoolId) -> bool {
+        match pool {
+            AttackPoolId::Default => true,
+            AttackPoolId::Pool(entity) => self.pools.continues(entity),
+        }
+    }
+
     /// Tokens in the shared vocabulary.
     pub(crate) fn token_count(&self) -> usize {
         self.default.token_count()

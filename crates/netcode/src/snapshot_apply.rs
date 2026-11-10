@@ -59,26 +59,17 @@ pub(super) fn materialize_remote_entities(
                     .state_names()
                     .filter_map(|state_name| {
                         let state = mesh.animations.get(state_name)?;
-                        let speed = model?
-                            .clips
-                            .iter()
-                            .find(|clip| clip.name == state.clip)?
-                            .travel_speed?;
+                        let speed = model?.state_clip(None, &state.clip)?.travel_speed?;
                         Some((state_name.to_string(), speed))
                     })
                     .collect();
-                // Equivalent to the host fixed tick's clip lookup, which tries the
-                // resolved clip index first and the clip name after, so both peers
-                // end a jump one-shot after the same length.
+                // The host's clip lookup with no resolved index (a descriptor has
+                // none), so both peers end a jump one-shot after the same length.
                 let clip_durations = states
                     .one_shot_names()
                     .filter_map(|state_name| {
                         let state = mesh.animations.get(state_name)?;
-                        let duration = model?
-                            .clips
-                            .iter()
-                            .find(|clip| clip.name == state.clip)?
-                            .duration;
+                        let duration = model?.state_clip(None, &state.clip)?.duration;
                         Some((state_name.to_string(), duration))
                     })
                     .collect();
@@ -120,18 +111,19 @@ pub(super) fn materialize_remote_entities(
                 let mesh = descriptor.mesh.as_ref()?;
                 let graph = descriptor.behavior.as_ref()?;
                 let locomotion = postretro_foundation::locomotion_animation(graph)?;
+                // Bails when the mesh never declares the graph's locomotion
+                // state: no walk reference, so this client leaves the enemy's
+                // playback rate alone.
                 mesh.animations.get(locomotion)?;
                 let model =
                     hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
+                // The same clip pick as the host's `effective_travel_speed`; a
+                // descriptor state has no resolved clip index.
                 let derived_travel_speeds = TravelVariant::ALL.map(|variant| {
                     let state = mesh
                         .animations
                         .get(&format!("{locomotion}{}", variant.suffix()))?;
-                    model?
-                        .clips
-                        .iter()
-                        .find(|clip| clip.name == state.clip)
-                        .and_then(|clip| clip.travel_speed)
+                    model?.state_clip(None, &state.clip)?.travel_speed
                 });
                 Some(client::RemoteEnemyWalkPlayback {
                     move_speed: graph.move_speed,

@@ -30,11 +30,16 @@ pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
 /// before any grant: releases run first for every enemy, then arbitration
 /// grants per pool and target, then the hard gate drops every pending attack
 /// whose enemy holds no turn for it. A dropped proposal committed nothing, so
-/// its once-per-entry fire stays open for the first granted tick.
+/// its once-per-entry fire stays open for the first granted tick. An undrawn
+/// attack is always granted, so the gate never drops one.
 ///
-/// Every turn that ended since the last tick, including a holder's that left
-/// the AI set, starts its refresh before any grant, in the pool and on the
-/// target it counted against when it ended.
+/// Every turn that ended since the last tick starts its refresh before any
+/// grant, on its target, in its holder's current pool: a turn counts in that
+/// pool while it holds (P13). A holder that left the AI set records in the
+/// turn's last pool, unless that pool stopped or began a new run this tick,
+/// which dropped its counts (P30). An ended turn whose attack is still
+/// executing cancels the execution, whatever ended it, so no shot fires
+/// without a turn.
 pub(crate) fn arbitrate_attack_turns(
     outcomes: &mut [EnemyOutcome],
     programs: &BrainPrograms,
@@ -72,10 +77,12 @@ pub(crate) fn arbitrate_attack_turns(
             ..
         } = &mut outcome.brain;
 
-        let mut cancel_execution = false;
         turns.retain_held(|turn| {
-            if Some(turn.target) != target {
-                cancel_execution |= executing == Some(turn.attack);
+            // Switching to another target ends a turn. No target this tick
+            // (a path that neither engages nor is due to acquire) is no
+            // switch: it ends only a turn its mark alone held, since a mark
+            // must sit under an engaged path.
+            if target.is_some_and(|target| target != turn.target) {
                 return false;
             }
             turn.pool = pool;
@@ -83,16 +90,18 @@ pub(crate) fn arbitrate_attack_turns(
             // re-requests under the new draws.
             let draws_unchanged = programs_entry
                 .and_then(|entry| entry.attack_draws(turn.attack))
-                .is_none_or(|draws| draws == turn.draws);
+                .is_none_or(|draws| draws.same_draws(&turn.draws));
             draws_unchanged
-                && (mark == Some(turn.attack)
+                && ((target.is_some() && mark == Some(turn.attack))
                     || executing == Some(turn.attack)
                     || (turn.until_cooldown && cooling_down(graph, cooldowns, turn.attack)))
         });
-        if cancel_execution {
-            weapons.cancel_actor(outcome.id);
-        }
+        // Every turn an evaluated holder lost since last tick is reported
+        // here, whatever ended it (a target switch, a draws change, a reseat,
+        // closing aggro), so this is where its execution stops.
+        let mut cancel_execution = false;
         roster.ended_for(outcome.id, turns, |turn| {
+            cancel_execution |= executing == Some(turn.attack);
             ledger.record(
                 (pool, turn.target),
                 &turn.draws,
@@ -100,6 +109,9 @@ pub(crate) fn arbitrate_attack_turns(
                 now_ms,
             );
         });
+        if cancel_execution {
+            weapons.cancel_actor(outcome.id);
+        }
 
         let request = target.and_then(|target| {
             next_request(
@@ -142,13 +154,18 @@ pub(crate) fn arbitrate_attack_turns(
         }
     }
 
-    roster.departed(|turn| {
-        ledger.record(
-            (turn.pool, turn.target),
-            &turn.draws,
-            budgets.for_pool(turn.pool),
-            now_ms,
-        );
+    roster.departed(|_holder, turn| {
+        // A departed holder's execution is not cancelled here. A held (suspended)
+        // enemy keeps its private execution by the held-ownership contract
+        // (`entity_model.md`), and a despawned one loses its controller with it.
+        if budgets.pool_continues(turn.pool) {
+            ledger.record(
+                (turn.pool, turn.target),
+                &turn.draws,
+                budgets.for_pool(turn.pool),
+                now_ms,
+            );
+        }
     });
 
     let refreshing = |group: (AttackPoolId, EntityId), token| {
@@ -184,6 +201,7 @@ pub(crate) fn arbitrate_attack_turns(
     for outcome in outcomes.iter_mut() {
         if let Some(pending) = outcome.attack.as_ref()
             && !holds_turn_for(&outcome.brain, pending, outcome.target.map(|t| t.entity))
+            && !draws_nothing(programs.get(outcome.id), &outcome.brain.graph, pending)
         {
             outcome.attack = None;
         }
@@ -206,10 +224,15 @@ fn next_request(
         Some(mark) => (mark, true),
         None => (attack_index(graph, &pending?.attack_name)?, false),
     };
-    if turns.holds_attack(attack) || !turns.has_room() {
+    if turns.holds_attack(attack) {
         return None;
     }
     let draws = programs?.attack_draws(attack)?;
+    // With no room, the request could never be granted. An undrawn attack
+    // fires anyway; a drawn one waits for a held turn to end.
+    if !turns.has_room_for(&draws) {
+        return None;
+    }
     // No two turns of one enemy share a token. A ready unmarked attack waits
     // to request until that turn ends; a marked activity's request stands
     // from entry and waits in line until it can be granted.
@@ -237,6 +260,18 @@ fn cooling_down(
     attack_name(graph, attack)
         .and_then(|name| cooldowns.get(name))
         .is_some_and(|remaining| *remaining > 0.0)
+}
+
+/// An attack drawing nothing is always granted: past its turn capacity it
+/// fires holding no turn.
+fn draws_nothing(
+    programs: Option<&BrainEntityPrograms>,
+    graph: &BehaviorGraphDescriptor,
+    pending: &PendingAttack,
+) -> bool {
+    attack_index(graph, &pending.attack_name)
+        .and_then(|attack| programs?.attack_draws(attack))
+        .is_some_and(|draws| draws.is_empty())
 }
 
 fn holds_turn_for(

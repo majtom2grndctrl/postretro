@@ -31,6 +31,20 @@ local JAB_REST_MS = 750
 -- Longer than `heavy`'s 4 s refresh, so a second brute takes the next slam.
 local PRESS_MS = 5000
 
+-- `and` is a Luau keyword, so composition uses bracket spelling; bind the left
+-- operands first so a three-term guard does not repeat its prefix.
+local inReach = brain.targetDistance:le(JAB_RANGE)
+local restedInReach = inReach["and"](inReach, brain.timeInActivityMs:ge(JAB_REST_MS))
+local inSlamRange = brain.targetDistance:le(SLAM_RANGE)
+local windupDone = brain.timeInActivityMs:ge(SLAM_WINDUP_MS)
+local noTarget = brain.hasTarget["not"](brain.hasTarget)
+local staleNoTarget = noTarget["and"](noTarget, brain.timeSinceDamageMs:gt(ALERT_MS))
+local freshKnownDamage = brain.damageSourceKnown["and"](brain.damageSourceKnown, brain.timeSinceDamageMs:le(STARTLE_MS))
+local alertKnownDamage = brain.damageSourceKnown["and"](brain.damageSourceKnown, brain.timeSinceDamageMs:le(ALERT_MS))
+
+local aheadBearing = brain.damageBearing:gt(HALF_PI)
+local behindBearing = aheadBearing["or"](aheadBearing, brain.damageBearing:lt(-HALF_PI))
+
 -- The jab loop both fighting phases nest.
 local jabs = {
   initial = "stalk",
@@ -46,16 +60,7 @@ local jabs = {
     stalk = {
       {
         to = "jab",
-        when = brain.targetDistance:le(JAB_RANGE)["and"](
-          brain.targetDistance:le(JAB_RANGE),
-          brain.timeInActivityMs:ge(JAB_REST_MS)
-        )["and"](
-          brain.targetDistance:le(JAB_RANGE)["and"](
-            brain.targetDistance:le(JAB_RANGE),
-            brain.timeInActivityMs:ge(JAB_REST_MS)
-          ),
-          attackTurnFree("jab")
-        ),
+        when = restedInReach["and"](restedInReach, attackTurnFree("jab")),
       },
     },
     jab = {
@@ -181,19 +186,13 @@ M.referenceEnemyEntity = defineEntity({
                 hunt = {
                   {
                     to = "windup",
-                    when = brain.targetDistance:le(SLAM_RANGE)["and"](
-                      brain.targetDistance:le(SLAM_RANGE),
-                      attackTurnFree("slam")
-                    ),
+                    when = inSlamRange["and"](inSlamRange, attackTurnFree("slam")),
                   },
                 },
                 windup = {
                   {
                     to = "commit",
-                    when = brain.timeInActivityMs:ge(SLAM_WINDUP_MS)["and"](
-                      brain.timeInActivityMs:ge(SLAM_WINDUP_MS),
-                      attackTurnHeld("slam")
-                    ),
+                    when = windupDone["and"](windupDone, attackTurnHeld("slam")),
                   },
                   -- Another brute asked on the same tick and won the turn.
                   { to = "hunt", when = brain.timeInActivityMs:ge(SLAM_WINDUP_MS) },
@@ -219,31 +218,13 @@ M.referenceEnemyEntity = defineEntity({
           -- still point at an unreached memory.
           {
             to = "patrol",
-            when = brain.hasTarget["not"](brain.hasTarget)["and"](
-              brain.hasTarget["not"](brain.hasTarget)["and"](
-                brain.hasTarget["not"](brain.hasTarget),
-                brain.timeSinceDamageMs:gt(ALERT_MS)
-              ),
-              brain.distanceToLastKnown:le(ARRIVE)
-            ),
+            when = staleNoTarget["and"](staleNoTarget, brain.distanceToLastKnown:le(ARRIVE)),
           },
           -- A selected neutral target is an engine-admitted over-tolerance
           -- retaliator, so it remains engageable like an ordinary hostile.
           {
             to = "startle",
-            when = brain.damageSourceKnown["and"](
-              brain.damageSourceKnown,
-              brain.timeSinceDamageMs:le(STARTLE_MS)
-            )["and"](
-              brain.damageSourceKnown["and"](
-                brain.damageSourceKnown,
-                brain.timeSinceDamageMs:le(STARTLE_MS)
-              ),
-              brain.damageBearing:gt(HALF_PI)["or"](
-                brain.damageBearing:gt(HALF_PI),
-                brain.damageBearing:lt(-HALF_PI)
-              )
-            ),
+            when = freshKnownDamage["and"](freshKnownDamage, behindBearing),
           },
         },
         idle = { { to = "patrol", when = runtime.constant(true) } },
@@ -259,16 +240,7 @@ M.referenceEnemyEntity = defineEntity({
             to = "investigate",
             -- Generic damage recency also resets for contextless reactions;
             -- provenance proves this hit supplied the remembered position.
-            when = brain.damageSourceKnown["and"](
-              brain.damageSourceKnown,
-              brain.timeSinceDamageMs:le(ALERT_MS)
-            )["and"](
-              brain.damageSourceKnown["and"](
-                brain.damageSourceKnown,
-                brain.timeSinceDamageMs:le(ALERT_MS)
-              ),
-              brain.distanceToLastKnown:gt(ARRIVE)
-            ),
+            when = alertKnownDamage["and"](alertKnownDamage, brain.distanceToLastKnown:gt(ARRIVE)),
           },
         },
         engage = {

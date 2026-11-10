@@ -223,7 +223,7 @@ fn steady_turn_pass_allocates_nothing(
                 );
             }
         }
-        roster.departed(|turn| {
+        roster.departed(|_, turn| {
             ledger.record(group(turn.target), &turn.draws, &table, now_ms);
         });
         let granted = arbiter

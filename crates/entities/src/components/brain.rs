@@ -34,7 +34,7 @@ use super::mesh::MeshComponent;
 mod attack_turns;
 pub use attack_turns::{
     AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
-    ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
+    MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
 };
 
 /// Maximum number of distinct damagers remembered by one brain. Entries age to

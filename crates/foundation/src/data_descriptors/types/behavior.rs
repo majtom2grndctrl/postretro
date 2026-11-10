@@ -172,7 +172,9 @@ mod activity_motion;
 mod attack_turn_marks;
 mod recursive;
 
-pub use activity_motion::{DEFAULT_REPOSITION_ARC_DEG, FacingPolicy, RepositionParams};
+pub use activity_motion::{
+    COMBAT_RING_STEP_DEG, DEFAULT_REPOSITION_ARC_DEG, FacingPolicy, RepositionParams,
+};
 pub use recursive::*;
 
 /// Whether an activity represents locomotion rather than an action-bearing

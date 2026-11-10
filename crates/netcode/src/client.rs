@@ -2858,7 +2858,10 @@ impl ClientReplication {
     /// Apply the rate for one presented remote pose. Only an enemy whose current
     /// mesh state is the descriptor's locomotion walk state, or a directional
     /// variant of it, receives its displayed XZ speed; every other state
-    /// deliberately rests at rate 1.
+    /// deliberately rests at rate 1. That speed includes knockback, which the
+    /// host's steering-velocity rate excludes (sim
+    /// `update_brain_animation_playback_rates`): a known divergence until
+    /// enemies carry velocity on the wire.
     fn update_remote_enemy_walk_playback_rate(
         &self,
         registry: &mut EntityRegistry,

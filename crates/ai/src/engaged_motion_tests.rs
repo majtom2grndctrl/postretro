@@ -1198,6 +1198,33 @@ fn target_facing_travel_selects_directional_variant() {
     assert_eq!(clips, ["walk_right", "walk_left", "walk_backward", "walk"]);
 }
 
+// A strafe running near the 45° edge keeps its side clip: once on screen it
+// holds until travel swings past the hold band, so the clip never restarts
+// tick to tick.
+#[test]
+fn travel_near_the_sector_edge_keeps_the_side_clip() {
+    // Facing east (yaw π/2); `degrees` counter-clockwise from it is its left.
+    let left_of_facing = |degrees: f32| {
+        let yaw = std::f32::consts::FRAC_PI_2 + degrees.to_radians();
+        Vec3::new(yaw.sin(), 0.0, yaw.cos()) * 3.0
+    };
+    let (clips, _) = clips_for_travel(
+        None,
+        mesh_with_walk_variants(),
+        &[
+            left_of_facing(48.5),
+            left_of_facing(41.0),
+            left_of_facing(48.5),
+            left_of_facing(38.0),
+            left_of_facing(30.0),
+        ],
+    );
+    assert_eq!(
+        clips,
+        ["walk_left", "walk_left", "walk_left", "walk_left", "walk"]
+    );
+}
+
 #[test]
 fn travel_facing_plays_base_clip() {
     let (clips, _) = clips_for_travel(

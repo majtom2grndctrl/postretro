@@ -492,6 +492,45 @@ fn refresh_lands_in_the_pool_a_turn_ends_in_and_stays_there() {
     );
 }
 
+// P30 for a departed holder: a holder leaving the AI set on the tick its pool
+// stops, or stops and restarts in one drain, starts no refresh there, since
+// the stop dropped that pool's counts. Regression: its refresh landed
+// orphaned in the stopped pool, or leaked into the new run.
+#[test]
+fn departed_holder_refresh_skips_a_stopped_or_restarted_pool() {
+    for restart in [false, true] {
+        let mut reg = EntityRegistry::new();
+        install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
+        let mut runtime = AiRuntime::new();
+        let pawn = spawn_player(&mut reg, player_spot());
+        let holder = spawn_at(&mut reg, 0, &slam_and_jab(), "slam_act");
+        tag(&mut reg, holder, "guard");
+        let arena = spawn_pool(&mut reg, "arena", "guard", "");
+        let in_arena = AttackPoolId::Pool(arena);
+        start(&mut reg, arena);
+        pool_tick(&mut reg, &mut runtime);
+        assert_eq!(held_pools(&reg, holder), vec![in_arena], "fixture");
+
+        // The holder leaves the AI set on the drain's tick.
+        set_hp(&mut reg, holder, 0.0);
+        stop(&mut reg, arena);
+        if restart {
+            start(&mut reg, arena);
+        }
+        pool_tick(&mut reg, &mut runtime);
+        assert_eq!(
+            refreshing(&runtime, in_arena, pawn),
+            0,
+            "restart {restart}: nothing of the old run refreshes in A"
+        );
+        assert_eq!(
+            runtime.turns.refreshing_entries(),
+            0,
+            "restart {restart}: and no orphaned count is kept"
+        );
+    }
+}
+
 // A9: with no `ai_attack_pool`, the feed is empty and every turn counts in
 // the default pool.
 #[test]

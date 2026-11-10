@@ -8,10 +8,15 @@ use crate::registry::EntityId;
 /// clone never allocates; load rejects an attack drawing more.
 pub const MAX_ATTACK_DRAWS: usize = postretro_foundation::attack_budget::MAX_ATTACK_DRAWS;
 
-/// Most turns one enemy holds at once. No two of its turns share a token, so
-/// this bounds the distinct tokens (plus undrawn attacks) one enemy can have
-/// in flight; a request past it waits until a held turn ends.
+/// Most turns with draws one enemy holds at once. No two of its turns share a
+/// token, so this bounds the distinct tokens one enemy can have in flight; a
+/// request past it waits until a held turn ends.
 pub const MAX_HELD_TURNS: usize = 4;
+
+/// Most undrawn turns one enemy holds at once, stored apart so an undrawn
+/// turn never takes a drawn turn's place. An undrawn attack past it still
+/// fires; it simply holds no turn.
+pub const MAX_UNDRAWN_TURNS: usize = 4;
 
 /// A registered attack token, by its index in the mod's token table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,6 +63,19 @@ impl ResolvedDraws {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Whether the two lists draw the same tokens at the same costs, in any
+    /// order: a reload that only reorders `draws` changes nothing.
+    pub fn same_draws(&self, other: &Self) -> bool {
+        let (ours, theirs) = (self.as_slice(), other.as_slice());
+        let count = |list: &[ResolvedDraw], draw: &ResolvedDraw| {
+            list.iter().filter(|entry| *entry == draw).count()
+        };
+        ours.len() == theirs.len()
+            && ours
+                .iter()
+                .all(|draw| count(ours, draw) == count(theirs, draw))
     }
 
     /// Whether the two lists draw any token in common.
@@ -115,7 +133,7 @@ pub struct WaitClock {
 /// holds no turn and waits on no clock.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AttackTurnState {
-    held: [Option<HeldTurn>; MAX_HELD_TURNS],
+    held: [Option<HeldTurn>; MAX_HELD_TURNS + MAX_UNDRAWN_TURNS],
     pub request: Option<TurnRequest>,
     pub wait: Option<WaitClock>,
     /// The last AI tick this brain was evaluated on. A gap means it left the
@@ -136,12 +154,26 @@ impl AttackTurnState {
         self.held().any(|turn| turn.attack == attack)
     }
 
-    pub fn has_room(&self) -> bool {
-        self.held.iter().any(Option::is_none)
+    /// Whether a turn drawing `draws` fits beside the turns held now. Drawn
+    /// and undrawn turns each have their own capacity.
+    pub fn has_room_for(&self, draws: &ResolvedDraws) -> bool {
+        let undrawn = draws.is_empty();
+        let capacity = if undrawn {
+            MAX_UNDRAWN_TURNS
+        } else {
+            MAX_HELD_TURNS
+        };
+        self.held()
+            .filter(|turn| turn.draws.is_empty() == undrawn)
+            .count()
+            < capacity
     }
 
-    /// Store a granted turn; `false` when every slot is taken.
+    /// Store a granted turn; `false` when its capacity is taken.
     pub fn hold(&mut self, turn: HeldTurn) -> bool {
+        if !self.has_room_for(&turn.draws) {
+            return false;
+        }
         match self.held.iter_mut().find(|slot| slot.is_none()) {
             Some(slot) => {
                 *slot = Some(turn);

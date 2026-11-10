@@ -4,6 +4,7 @@
 //! See: context/lib/entity_model.md §7c (Engaged motion and facing).
 
 use glam::{Quat, Vec3};
+use postretro_foundation::COMBAT_RING_STEP_DEG;
 
 use super::scoring::score_candidate;
 use super::{CombatCandidate, CombatQuery, compare_candidates};
@@ -13,7 +14,6 @@ use crate::nav::distance_xz;
 /// Slots on a rotated ring, one every 45°.
 pub const RING_SLOT_COUNT: u8 = 8;
 const RING_STEP_RADIANS: f32 = std::f32::consts::FRAC_PI_4;
-const RING_STEP_DEG: f32 = 45.0;
 /// A keep-away is inclusive at its distance: a neighbor slot sits exactly one
 /// spacing from its sibling, and float rotation must not push it out.
 const KEEP_AWAY_TOLERANCE: f32 = 1.0e-3;
@@ -28,7 +28,7 @@ pub fn slot_spacing(standoff: f32) -> f32 {
 fn ring_index_arc_deg(index: u8) -> f32 {
     let index = index % RING_SLOT_COUNT;
     let steps = index.min(RING_SLOT_COUNT - index);
-    RING_STEP_DEG * f32::from(steps)
+    COMBAT_RING_STEP_DEG * f32::from(steps)
 }
 
 /// Ring indices whose generated angle lies within `[min, max]` degrees, on

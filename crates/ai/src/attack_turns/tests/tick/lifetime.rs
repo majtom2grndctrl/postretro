@@ -542,3 +542,50 @@ fn target_switch_mid_burst_cancels_execution_and_releases() {
         "the cancelled burst lands nothing on the new target"
     );
 }
+
+// P6 for every release cause: a reload that changes the attack's draws
+// mid-burst ends its turn and cancels the burst, so no shot fires without a
+// turn. Regression: only a target switch cancelled; the burst fired on.
+#[test]
+fn draws_change_mid_burst_cancels_execution() {
+    let descriptors = [burst_weapon("enemy.burst", 3, 64.0, 160.0)];
+    let burst = graph(
+        "strike",
+        vec![("strike", striking("attack"))],
+        vec![],
+        vec![("attack", weapon("enemy.burst"))],
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, player_spot());
+    let shooter = spawn_at(&mut reg, 0, &burst, "strike");
+
+    let shots = tick_with(&mut reg, &mut runtime, &descriptors)
+        .projectile_spawns
+        .len();
+    assert_eq!(shots, 1);
+    assert_eq!(held(&reg, shooter), vec!["attack"]);
+
+    // The reload re-resolves the attack to `defaultToken` at cost 2.
+    set_draws(
+        &reg,
+        &mut runtime,
+        &descriptors,
+        shooter,
+        "attack",
+        &[(0, 2)],
+    );
+    let mut later_shots = 0;
+    for tick_index in 2..=30 {
+        later_shots += tick_with(&mut reg, &mut runtime, &descriptors)
+            .projectile_spawns
+            .len();
+        if tick_index == 2 {
+            assert!(
+                held(&reg, shooter).is_empty(),
+                "the draws change ends the turn"
+            );
+        }
+    }
+    assert_eq!(later_shots, 0, "the burst ends with its turn");
+}

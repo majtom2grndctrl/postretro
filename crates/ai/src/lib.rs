@@ -20,6 +20,7 @@ mod engaged_motion;
 mod engine_floor;
 mod facing;
 mod graph_eval;
+mod heading;
 mod launch;
 mod perception;
 mod steering;
@@ -405,10 +406,17 @@ macro_rules! test_tick_runner {
 /// 3. On entry, reset the entered path suffix. Raise its leaf `onEnter` unless
 ///    this is the fresh spawn's initial seating.
 /// 4. Latch-fire an active leaf's action on its first dwell tick that passes its
-///    cooldown, range, live-target, LOS, and post-slew-facing gates.
+///    cooldown, range, live-target, LOS, and post-slew-facing gates. An
+///    unmarked attack ready to fire requests an attack turn; the hard gate
+///    drops any drawn attack whose enemy holds no turn for it.
 /// 5. On an activity change, locomotion stop/resume, or an airborne launch's
 ///    `jump_loop` starting or ending, request the one animation state resolved
 ///    from the active nested path, or `jump_loop` while it plays.
+///
+/// Between compute and apply run the batch stages, across all enemies: combat
+/// slots, then attack-turn arbitration (releases, requests, grants, the hard
+/// gate). Apply then commits each outcome and releases an unmarked grant whose
+/// attack did not start.
 #[cfg(any(test, feature = "test-support"))]
 pub fn run_ai_tick(
     registry: &mut EntityRegistry,

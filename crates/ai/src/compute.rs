@@ -1,7 +1,11 @@
+// AI compute pass: evaluate each enemy snapshot into an outcome — target
+// selection, guard facts, transitions, steering and the attack proposal.
+// See: context/lib/entity_model.md §7c · context/lib/scripting.md §11
+
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment};
 
-use super::{FACTION_STATE_FIELD, LocomotionIntent, launch, perception};
+use super::{FACTION_STATE_FIELD, heading, perception};
 
 pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32 {
     registry
@@ -11,13 +15,8 @@ pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32
 
 use super::brain_scope::BrainFacts;
 use super::engine_floor::SteeringIntent;
-use super::facing::{
-    FACING_TURN_RATE, facing_direction, resolve_facing_policy, slewed_yaw_toward,
-    verb_facing_policy, yaw_from_rotation, yaw_within_attack_tolerance,
-};
 use super::graph_eval::{
-    action_for_path, authored_facing, engages_active, engages_path, resolved_motion,
-    select_transition_path,
+    action_for_path, engages_active, engages_path, resolved_motion, select_transition_path,
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
@@ -25,8 +24,7 @@ use super::targeting::{
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
-use super::{attack_turns, engaged_motion, travel_variants};
-use crate::agent_steering;
+use super::{attack_turns, engaged_motion};
 use crate::nav::{NavStart, find_path_from};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_entities::components::agent::AgentComponent;
@@ -472,56 +470,28 @@ pub(super) fn evaluate(
         };
 
         // Resolved engagement remains the facing policy for ordinary chase and
-        // action paths. Committed actionless aim is handled separately below.
+        // action paths. Committed actionless aim is handled in `heading`.
         let engaged = target.is_some()
             && !resolved_position_goal
             && programs
                 .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
                 .unwrap_or(false);
 
-        // A nested offense phase can intentionally hold at an authored standoff
-        // before its leaf exposes an action. It is still committed to the
-        // target: keep its aim moving even though its resolved current verb is
-        // `hold`, which `engages_path` correctly leaves false.
-        let committed_aim = retains_target && motion == Some(MotionVerb::Hold);
-        // Facing and the attack gate read steering velocity alone, so knockback
-        // never turns the enemy toward its flight. A launch holds its impact yaw
-        // under travel facing; target facing keeps re-aiming.
-        let path_state = agent_steering::path_state(registry, snap.id);
-        launch::advance(&mut brain.launch, path_state.as_ref(), snap.rotation);
-        let steering_velocity = path_state.map(|path| path.steering_velocity());
-        let facing_policy = resolve_facing_policy(
-            brain.aggro_armed.then(|| authored_facing(&brain)).flatten(),
-            motion,
-            || {
-                verb_facing_policy(
-                    steering,
-                    engaged,
-                    committed_aim,
-                    steering_velocity
-                        .is_some_and(|velocity| LocomotionIntent::from_velocity(velocity).moving),
-                )
+        let tick_heading = heading::resolve(
+            registry,
+            &mut brain,
+            heading::HeadingQuery {
+                id: snap.id,
+                rotation: snap.rotation,
+                motion,
+                steering,
+                engaged,
+                retains_target,
+                aim_direction: target_perception
+                    .map(|perception| perception.target_aim - perception.enemy_eye),
+                tick_dt,
             },
         );
-        let facing_direction = facing_direction(
-            facing_policy,
-            steering_velocity,
-            target_perception.map(|perception| perception.target_aim - perception.enemy_eye),
-            brain.launch.impact_yaw,
-        );
-        // If no horizontal yaw is derivable (for example, melee contact's
-        // vertical eye-to-aim segment), apply leaves the transform untouched;
-        // the firing check therefore reads that unchanged heading.
-        let post_slew_yaw = facing_direction
-            .and_then(|direction| {
-                slewed_yaw_toward(snap.rotation, direction, FACING_TURN_RATE * tick_dt)
-            })
-            .unwrap_or_else(|| yaw_from_rotation(snap.rotation));
-        let travel_variant =
-            travel_variants::classify(facing_policy, steering_velocity, post_slew_yaw);
-        let post_slew_facing_is_within_tolerance = target_perception.is_some_and(|perception| {
-            yaw_within_attack_tolerance(post_slew_yaw, perception.target_aim - perception.enemy_eye)
-        });
         let weapon_aim = target_perception.and_then(|perception| {
             Some(WeaponAim {
                 origin: perception.enemy_eye,
@@ -548,7 +518,7 @@ pub(super) fn evaluate(
             && brain.activity_attack_count(firing_leaf_depth) == Some(0)
             && selected_target_alive(registry, target.entity)
             && perception::fire_gate(target_perception)
-            && post_slew_facing_is_within_tolerance
+            && tick_heading.within_attack_tolerance
             && let Some((attack_name, cooldown_ms, outcome)) = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     let action = action_for_path(bound, scope, &brain)?;
@@ -662,8 +632,8 @@ pub(super) fn evaluate(
             entered,
             steering,
             engaged,
-            facing_direction,
-            travel_variant,
+            facing_direction: tick_heading.facing_direction,
+            travel_variant: tick_heading.travel_variant,
             combat_slot: None,
             engaged_ring,
             fresh_unmarked_grant: None,

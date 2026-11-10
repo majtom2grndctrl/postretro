@@ -28,6 +28,8 @@ struct PoolBudget {
     /// `default` reaches it.
     table: Option<BudgetTable>,
     seen: bool,
+    /// Started from stopped, or began a new run, at this tick's sync.
+    opened: bool,
 }
 
 /// Every running attack pool's budget, by pool entity.
@@ -40,6 +42,13 @@ impl PoolBudgets {
     /// Whether `pool` was running at this tick's sync.
     pub(super) fn is_running(&self, pool: EntityId) -> bool {
         self.index(pool).is_ok()
+    }
+
+    /// Whether `pool` runs on in last tick's run: running, and neither
+    /// started nor restarted at this tick's sync.
+    pub(super) fn continues(&self, pool: EntityId) -> bool {
+        self.index(pool)
+            .is_ok_and(|index| !self.pools[index].opened)
     }
 
     pub(super) fn table(&self, pool: EntityId) -> Option<&BudgetTable> {
@@ -58,6 +67,7 @@ impl PoolBudgets {
     ) {
         for pool in &mut self.pools {
             pool.seen = false;
+            pool.opened = false;
         }
         for running in running {
             let profile = profile_name(running.profile);
@@ -70,6 +80,7 @@ impl PoolBudgets {
                     entry.seen = true;
                     if entry.run != running.run {
                         entry.run = running.run;
+                        entry.opened = true;
                         closed(running.pool);
                     }
                     if entry.profile != profile {
@@ -88,6 +99,7 @@ impl PoolBudgets {
                             run: running.run,
                             table: resolve_table(vocabulary, profile),
                             seen: true,
+                            opened: true,
                         },
                     );
                 }

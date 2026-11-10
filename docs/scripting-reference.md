@@ -723,6 +723,13 @@ declared budgets unless you declare it. A pool naming a profile you do not
 declare warns when the level loads and uses `default`. A profile may override
 `defaultToken` too.
 
+A profile name matches `[A-Za-z0-9_-]{1,64}`, the same rule as token names, and
+a name outside it fails load. A map's `budget_profile` must name a profile in
+that form.
+
+Guards read a turn through `brain.hasAttackTurn`, `attackTurnHeld(attack)` and
+`attackTurnFree(attack)`; see [Attack turn reads](#attack-turn-reads).
+
 ### Refresh
 
 When a turn ends, its draws stay counted for each token that sets
@@ -754,7 +761,10 @@ field in the wrong place (`cost` in a profile, `limit` or `refreshMs` in a
 draw); one token drawn twice by one attack or overridden twice by one profile;
 a bare string, a handle of another kind, or a token `attackTokens` does not
 list; two tokens with one name; `defaultToken`, or a token named `default`, in
-`attackTokens`; and an attack drawing more than 8 tokens.
+`attackTokens`; an attack drawing more than 8 tokens; and an
+`attackTurnHeld` or `attackTurnFree` guard that names no attack in its
+archetype's `behavior.attacks` (the error names the guard's key path and the
+read, and says it "names no attack in this archetype's `behavior.attacks`").
 
 ---
 
@@ -1763,7 +1773,7 @@ an action or no action. A nested offense graph has its own active activity path.
 | `"patrol"` | Steer through the graph-wide anchor-relative route, advancing its persistent cursor in `"loop"` or `"pingPong"` order. |
 | `"hold"` | Stand still by **clearing** the navigation destination. |
 | `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
-| `"strafe"` | Circle the target at combat-slot distance, 45° at a time in one direction, turning back when the next slot is blocked, taken or out of sight. Takes no parameters. |
+| `"strafe"` | Circle the target at combat-slot distance in one direction as a continuous orbit, aiming one 45° ring step ahead of the enemy's current bearing and re-aiming every tick. It turns back when the next slot is blocked, taken or out of sight. Takes no parameters. |
 | `"reposition"` | Move to a combat slot at least one slot spacing (the gap between neighboring slots) from the one held on entry, then hold. It never backs straight off, and holds when no slot qualifies. |
 
 `strafe` and `reposition` engage the target, face it unless the activity sets
@@ -1879,6 +1889,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.distanceToLastKnown` | `@brain.distanceToLastKnown` | `number` | XZ distance in metres to the remembered last-known target position, or the `1e9` no-memory sentinel. A bare `gt`/`ge` is true with no memory, so pair an investigate-distance guard with recent sight, or with both recent damage and `damageSourceKnown`. |
 | `brain.damageBearing` | `@brain.damageBearing` | `number` | Signed XZ yaw in radians from this enemy's visual `+Z` forward toward the attacker that landed its most recent damage. `0` is ahead and the two sides have opposite signs. Meaningful only when damage is recent **and** `damageSourceKnown` is true. |
 | `brain.damageSourceKnown` | `@brain.damageSourceKnown` | `boolean` | Whether the most recent damaging hit supplied an attacker world position. Pair it with damage recency before treating shared last-known-position memory or bearing as belonging to that hit. |
+| `brain.hasAttackTurn` | `@brain.hasAttackTurn` | `boolean` | Whether the enemy holds an attack turn for any attack, as of the previous tick: it reads `true` from the tick after the grant. See [Attack turn reads](#attack-turn-reads) for `attackTurnHeld` and `attackTurnFree`. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;
@@ -1891,6 +1902,36 @@ policies are a separate authoring surface from `components.behavior` — this fi
 does not document them.
 
 Reading any other name is a load error.
+
+### Attack turn reads
+
+Three guard reads report an enemy's attack turns (see
+[Attack tokens and budgets](#attack-tokens-and-budgets)). All three read the
+previous tick, so each reads `true` from the tick after a grant, never the same
+tick.
+
+| Read | Type | Meaning |
+|------|------|---------|
+| `brain.hasAttackTurn` | `boolean` | `true` while the enemy holds an attack turn for any attack. |
+| `attackTurnHeld(attack)` | `boolean` | `true` while the enemy holds a turn for `attack`, one of its archetype's attacks. |
+| `attackTurnFree(attack)` | `boolean` | `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. |
+
+`attackTurnFree` is `false` with no target, and `false` for an attack that
+shares a token with a turn the enemy already holds. It predicts a grant; it
+does not take one. `brain.hasAttackTurn` is a property of `brain`.
+`attackTurnHeld` and `attackTurnFree` are functions: TypeScript imports them
+from `"postretro"`, and Luau data scripts call them as globals. Naming an attack
+the archetype does not declare fails load (see [Load errors](#load-errors)).
+
+```typescript
+import { attackTurnFree, brain } from "postretro";
+
+// A waiting activity leaves for the firing one once a "shoot" turn is free.
+const waiting = { animation: "idle", motion: "hold" };
+const transitions = {
+  wait: [{ to: "fire", when: attackTurnFree("shoot").and(brain.targetVisible) }],
+};
+```
 
 ### Faction and hostility
 
@@ -2593,7 +2634,7 @@ local loopOn = Postretro.defineReaction("wave.loopOn", steps) -- nested tables f
 
 ### Attack pool members
 
-An `ai_attack_pool` gives an arena its own attack budget (see [level_design.md](level_design.md#attack-pools) and [Attack tokens and budgets](#attack-tokens-and-budgets)). Its member has two verbs, each returning one step:
+An `ai_attack_pool` gives an arena its own attack budget (see [level_design.md](level_design.md#attack-pools) and [Attack tokens and budgets](#attack-tokens-and-budgets)). Its member has two verbs, each returning steps:
 
 - `start()` runs the pool. Every enemy carrying its `member_tag` then takes turns in it, under its `budget_profile`, and while it runs an enemy a spawner releases with the tag in its `spawned_tags` joins on spawning. `start` on a running pool assigns its current tag holders again and leaves turns, waiting enemies and refreshing counts as they are, so one step returns a group from "frenzy" to "calm".
 - `stop()` returns the pool's members to the default pool and drops its refreshing counts. `stop` on a stopped pool does nothing.

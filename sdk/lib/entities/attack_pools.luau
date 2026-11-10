@@ -9,7 +9,9 @@ export type AttackPoolEntityHandle = {
   id: EntityId,
   position: Vec3,
   tags: {string},
+  --- Start the pool: every enemy carrying its member tag takes turns in it, under its budget profile, and a spawn carrying the tag joins while it runs. On a running pool, re-assigns its current tag holders; turns, waits and refreshing counts stand.
   start: (self: AttackPoolEntityHandle) -> {StartAttackPoolStep},
+  --- Stop the pool: its members return to the default pool and its refreshing counts drop. A no-op on a stopped pool.
   stop: (self: AttackPoolEntityHandle) -> {StopAttackPoolStep},
 }
 

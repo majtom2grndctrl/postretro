@@ -285,3 +285,103 @@ fn reload_changing_resolved_draws_releases_holders() {
     );
     assert_eq!(requested(&reg, chipper).as_deref(), Some("chip"));
 }
+
+// B27, compared resolved: a reload that only reorders an attack's draws is
+// no draws change, so its turn stands and `heavy` starts no refresh.
+// Regression: draws compared in list order, so a reorder released holders.
+#[test]
+fn reload_reordering_draws_keeps_the_turn() {
+    let original = marked_graph(vec![(
+        "slam",
+        held_attack(vec![token("melee"), token("heavy")]),
+    )]);
+    let mut reg = EntityRegistry::new();
+    commit(
+        &mut reg,
+        json!([declare("melee", 3, 0.0), declare("heavy", 1, 4000.0)]),
+        json!({}),
+    );
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, player_spot());
+    let slammer = spawn_brute(&mut reg, 0, &original, "slam_act");
+    let mut descriptors = vec![brute(&original)];
+    tick_at(&mut reg, &mut runtime, &descriptors, 0);
+    assert_eq!(held(&reg, slammer), vec!["slam"]);
+
+    let mut reloaded = original.clone();
+    reloaded.attacks.get_mut("slam").unwrap().draws = Some(vec![token("heavy"), token("melee")]);
+    descriptors[0] = brute(&reloaded);
+    tick_at(&mut reg, &mut runtime, &descriptors, 1);
+
+    assert_eq!(
+        held(&reg, slammer),
+        vec!["slam"],
+        "a reorder keeps the turn"
+    );
+    assert_eq!(
+        runtime
+            .turns
+            .refreshing_now((AttackPoolId::Default, pawn), HEAVY_ID),
+        0,
+        "the turn never ended"
+    );
+}
+
+// Token remap through the tick: a commit that inserts a token ahead of a held
+// turn's token shifts its id. The held turn survives, re-keyed to the new id,
+// and the refreshing count moves with it.
+#[test]
+fn vocabulary_shift_keeps_held_turns_and_refreshing_counts() {
+    const SHIFTED_HEAVY_ID: AttackTokenId = AttackTokenId(3);
+    let graph = marked_graph(vec![("slam", held_attack(vec![token("heavy")]))]);
+    let mut reg = EntityRegistry::new();
+    commit(
+        &mut reg,
+        json!([declare("melee", 3, 0.0), declare("heavy", 2, 4000.0)]),
+        json!({}),
+    );
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, player_spot());
+    let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
+    let ender = spawn_at(&mut reg, 1, &graph, "slam_act");
+    tick(&mut reg, &mut runtime);
+    assert_eq!(held(&reg, holder), vec!["slam"]);
+    assert_eq!(held(&reg, ender), vec!["slam"]);
+    enter(&mut reg, ender, "idle");
+    tick(&mut reg, &mut runtime);
+    let group = (AttackPoolId::Default, pawn);
+    assert_eq!(
+        runtime.turns.refreshing_now(group, HEAVY_ID),
+        1,
+        "fixture: the ender's heavy refreshes"
+    );
+
+    // `ranged` lands between `melee` and `heavy`: heavy's id moves from 2 to 3.
+    commit(
+        &mut reg,
+        json!([
+            declare("melee", 3, 0.0),
+            declare("ranged", 2, 0.0),
+            declare("heavy", 2, 4000.0)
+        ]),
+        json!({}),
+    );
+    tick(&mut reg, &mut runtime);
+
+    assert_eq!(held(&reg, holder), vec!["slam"], "the held turn survives");
+    assert_eq!(
+        held_draws(&reg, holder),
+        vec![draws(&[(SHIFTED_HEAVY_ID.0, 1)])],
+        "re-keyed to heavy's new id"
+    );
+    assert_eq!(
+        runtime.turns.refreshing_now(group, SHIFTED_HEAVY_ID),
+        1,
+        "the refreshing count moved with heavy"
+    );
+    assert_eq!(
+        runtime.turns.refreshing_entries(),
+        1,
+        "and the holder's turn started none"
+    );
+}

@@ -1343,6 +1343,12 @@ pub fn update_player_animation_locomotion(
 /// the renderer. The AI pass's locomotion intent is deliberately not reused: it
 /// is a pre-steering, squared-speed read from the prior tick, while this path
 /// must match the motion the steering system actually produced.
+///
+/// The rate reads steering velocity, which excludes knockback, so a shove never
+/// quickens the stride; that is the contract the client mirrors. The client's
+/// remote walk rate (netcode `update_remote_enemy_walk_playback_rate`) feeds
+/// interpolated displacement speed instead, which includes knockback: a known
+/// divergence until enemies carry velocity on the wire.
 fn update_brain_animation_playback_rates(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -1413,10 +1419,9 @@ fn update_brain_animation_playback_rates(
 /// Resolve the effective travel speed for a locomotion state's speed-scaled
 /// playback: the active state's authored `travelSpeed` override wins, else the
 /// model clip's load-derived stride (via [`HitZoneStore`], keyed by the mesh's
-/// model handle and active state's clip). Runtime spawns may still have a pending
-/// clip index during their first rate pass, so the declared clip name is the
-/// equivalent lookup fallback. `None` when neither is calibrated — the
-/// degenerate reference (`speed_xz / move_speed`) that keeps the shipped
+/// model handle, with the clip picked by `ModelHitZones::state_clip`, which the
+/// client's remote walk reference shares). `None` when neither is calibrated —
+/// the degenerate reference (`speed_xz / move_speed`) that keeps the shipped
 /// in-place walk byte-for-byte unchanged.
 fn effective_travel_speed(
     animation: &MeshAnimation,
@@ -1424,16 +1429,10 @@ fn effective_travel_speed(
     hit_zone_store: &HitZoneStore,
 ) -> Option<f32> {
     let state = animation.states.get(&animation.current_state)?;
-    let derived = hit_zone_store.get_by_name(&mesh.model).and_then(|model| {
-        state
-            .clip_index
-            .and_then(|clip_index| model.clips.get(clip_index))
-            // Runtime spawns reach this pass before their install-time clip-index
-            // queue drains. Resolve by declared clip name for that first tick so
-            // derived calibration does not temporarily fall back to move_speed.
-            .or_else(|| model.clips.iter().find(|clip| clip.name == state.clip))
-            .and_then(|clip| clip.travel_speed)
-    });
+    let derived = hit_zone_store
+        .get_by_name(&mesh.model)
+        .and_then(|model| model.state_clip(state.clip_index, &state.clip))
+        .and_then(|clip| clip.travel_speed);
     state.effective_travel_speed(derived)
 }
 
@@ -1446,11 +1445,9 @@ fn clip_duration(
     state: &str,
 ) -> Option<f32> {
     let state = animation.states.get(state)?;
-    let model = hit_zone_store.get_by_name(&mesh.model)?;
-    state
-        .clip_index
-        .and_then(|clip_index| model.clips.get(clip_index))
-        .or_else(|| model.clips.iter().find(|clip| clip.name == state.clip))
+    hit_zone_store
+        .get_by_name(&mesh.model)?
+        .state_clip(state.clip_index, &state.clip)
         .map(|clip| clip.duration)
 }
 

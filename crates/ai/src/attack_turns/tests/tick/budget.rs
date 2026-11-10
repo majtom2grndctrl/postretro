@@ -244,6 +244,147 @@ fn contact_attackers_take_bounded_turns_under_limit_one() {
     }
 }
 
+// B29 beyond the near stride band: a holder resting after its attack has no
+// target on ticks not due to acquire, and still holds through its cooldown.
+// Regression: a missing target released a held unmarked turn early.
+#[test]
+fn unmarked_turn_holds_through_cooldown_between_strided_acquisitions() {
+    const COOLDOWN_TICKS: usize = 20;
+    let player = Vec3::new(14.0, 0.0, 0.0);
+    let enemy_at = attacker_spot(0);
+    assert!(
+        crate::engine_floor::think_stride_for_distance(player.distance(enemy_at)) > 1,
+        "fixture: acquisition is strided"
+    );
+    let mut long_reach = contact(1.0, COOLDOWN_TICKS as f32 * 16.0);
+    long_reach.max_range = Some(20.0);
+    let graph = graph(
+        "strike",
+        vec![("strike", striking("attack")), ("rest", idle())],
+        vec![(
+            "strike",
+            vec![edge(
+                "rest",
+                IrNode::Ge {
+                    a: Box::new(brain_input(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT)),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(1.0),
+                    }),
+                },
+            )],
+        )],
+        vec![("attack", long_reach)],
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    set_limits(&mut runtime, &[1]);
+    let pawn = spawn_player(&mut reg, player);
+    let mut brain = authored_brain(&graph, "strike");
+    // The first tick is due to acquire, so the attack lands on it.
+    brain.think_stride_counter = 3;
+    let enemy = spawn_enemy(&mut reg, enemy_at, brain, 50.0);
+
+    tick(&mut reg, &mut runtime);
+    assert_eq!(
+        player_hp_lost(&reg, pawn),
+        1.0,
+        "fixture: granted and fired"
+    );
+    let mut released_at = None;
+    for tick_index in 2..=COOLDOWN_TICKS + 5 {
+        tick(&mut reg, &mut runtime);
+        assert_eq!(state(&reg, enemy), "rest", "fixture: it left `strike`");
+        let holding = turns(&reg, enemy).holds_any();
+        match released_at {
+            None if !holding => released_at = Some(tick_index),
+            Some(_) => assert!(!holding, "`rest` fires nothing to regrant"),
+            None => {}
+        }
+    }
+    let released = released_at.expect("the turn ends with the cooldown");
+    assert!(
+        (COOLDOWN_TICKS..=COOLDOWN_TICKS + 2).contains(&released),
+        "held through the whole cooldown, released on tick {released}"
+    );
+}
+
+// The turn cap and the `draws: []` contract: four drawn turns fill an enemy's
+// drawn capacity, so a fifth drawn attack reads `attackTurnFree` false and
+// never fires, while an undrawn attack is still granted and fires.
+// Regression: the fact read true for a request that could never be made, and
+// the cap silently refused undrawn attacks.
+#[test]
+fn full_turn_capacity_refuses_drawn_attacks_but_not_undrawn_ones() {
+    let names = ["first", "second", "third", "fourth", "fifth", "chip"];
+    let acts: Vec<String> = names.iter().map(|name| format!("{name}_act")).collect();
+    let mut activities = vec![("probe", idle()), ("free", idle()), ("full", idle())];
+    for (name, act) in names.iter().zip(&acts) {
+        activities.push((act.as_str(), striking(name)));
+    }
+    let fifth_free = || brain_input("@attackTurnFree.fifth");
+    let graph = graph(
+        "full",
+        activities,
+        vec![(
+            "probe",
+            vec![
+                edge("free", fifth_free()),
+                edge(
+                    "full",
+                    IrNode::Not {
+                        x: Box::new(fifth_free()),
+                    },
+                ),
+            ],
+        )],
+        names
+            .iter()
+            .map(|&name| (name, contact(1.0, 100_000.0)))
+            .collect(),
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    set_limits(&mut runtime, &[1; 5]);
+    let pawn = spawn_player(&mut reg, player_spot());
+    let enemy = spawn_at(&mut reg, 0, &graph, "full");
+    for (token, name) in names[..5].iter().enumerate() {
+        set_draws(&reg, &mut runtime, &[], enemy, name, &[(token as u16, 1)]);
+    }
+    set_draws(&reg, &mut runtime, &[], enemy, "chip", &[]);
+
+    for act in &acts[..4] {
+        enter(&mut reg, enemy, act);
+        tick(&mut reg, &mut runtime);
+    }
+    assert_eq!(
+        held(&reg, enemy).len(),
+        4,
+        "four drawn turns on four tokens"
+    );
+    assert_eq!(player_hp_lost(&reg, pawn), 4.0);
+
+    enter(&mut reg, enemy, "fifth_act");
+    for _ in 0..3 {
+        tick(&mut reg, &mut runtime);
+        assert_eq!(fired(&reg, enemy), 0, "the fifth drawn attack never fires");
+        assert_eq!(requested(&reg, enemy), None, "nor requests");
+    }
+    enter(&mut reg, enemy, "probe");
+    tick(&mut reg, &mut runtime);
+    assert_eq!(
+        state(&reg, enemy),
+        "full",
+        "`attackTurnFree` agrees: no room, though its token is open"
+    );
+
+    enter(&mut reg, enemy, "chip_act");
+    tick(&mut reg, &mut runtime);
+    assert_eq!(fired(&reg, enemy), 1, "the undrawn attack is granted");
+    assert_eq!(player_hp_lost(&reg, pawn), 5.0);
+    assert!(held(&reg, enemy).contains(&"chip".to_string()));
+    assert_eq!(held(&reg, enemy).len(), 5);
+}
+
 // B33: an unmarked attack requests no turn while out of range or line of
 // sight, so a ready neighbor under limit 1 is granted at once.
 #[test]

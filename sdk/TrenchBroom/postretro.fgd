@@ -400,7 +400,7 @@
     size(-8 -8 -8, 8 8 8)
     = ai_attack_pool : "AI Attack Pool"
 [
-    member_tag(string) : "Tag its members carry (required). A start assigns every enemy carrying it; a spawn carrying it joins while the pool runs" : ""
+    member_tag(string) : "One tag its members carry, no spaces (required). A start assigns every enemy carrying it; a spawn carrying it joins while the pool runs" : ""
     budget_profile(string) : "Mod budget profile (`attackBudgets`) its members take turns under. Blank means `default`; an undeclared name warns at level load and uses `default`" : ""
 ]
 
@@ -616,10 +616,10 @@
 //
 // Everything else matches `trigger_volume`: `on_fire` / `on_exit` named
 // reactions, `target_tag` + `command` / `command_arg` direct commands (movers,
-// traps, spawners, attack pools), and the same `fire_mode` / `rearm_ms` / `enabled_on_spawn`
-// firing rules. Clearing any
-// of those fields — or `use_reach` — means "unset": the compiler falls back to
-// the default rather than failing.
+// traps, spawners, attack pools), and the same `fire_mode` / `rearm_ms` /
+// `enabled_on_spawn` firing rules. Clearing any of those fields — or
+// `use_reach` — means "unset": the compiler falls back to the default rather
+// than failing.
 //
 // The `use_reach` default and the ceiling stated in its help text below are
 // hand-copied from `DEFAULT_SWITCH_USE_REACH` and `MAX_SWITCH_USE_REACH` in

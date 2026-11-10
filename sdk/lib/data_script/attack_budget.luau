@@ -19,6 +19,11 @@ local function attackTokenHandle(name: string): AttackToken
   local handle
   local methods = {
     with = function(_self, fields: AttackTokenFields): AttackTokenRef
+      -- `melee.with({ ... })` binds the fields table to `_self` and leaves
+      -- `fields` nil: a silent cost-1 draw. Reject it rather than guess.
+      if fields == nil and type(_self) == "table" and _self ~= handle then
+        error("attack token: call `with` as a method, melee:with({ ... }), not melee.with({ ... })", 2)
+      end
       local reference = table.clone(fields or {})
       reference.token = handle
       return table.freeze(reference)

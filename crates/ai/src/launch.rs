@@ -12,7 +12,8 @@ use crate::agent_steering::AgentPathState;
 use crate::sim::{FALL_DELAY_TICKS, JUMP_LOOP_STATE};
 
 /// Advance a brain's launch memory from this tick's start-of-tick path state.
-/// Compute calls it once per tick, before facing reads the impact yaw.
+/// `heading::resolve` calls it once per tick, before facing reads the impact
+/// yaw.
 ///
 /// Launched means knockback velocity remains. The first launched tick latches
 /// the current yaw, which is the yaw at impact: the hit lands before the AI

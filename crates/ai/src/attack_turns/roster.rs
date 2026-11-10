@@ -1,7 +1,9 @@
 // Every turn standing at the end of the last tick. A turn missing from its
-// holder this tick ended, however it ended: released by its own rule, cleared
-// by a reseat or a reload, or its holder gone from the AI set or the world.
-// That is the one place a turn's refresh starts.
+// holder this tick ended across the tick boundary, however it ended: released
+// by its own rule, cleared by a reseat or a reload, or its holder gone from
+// the AI set or the world. A grant apply releases on its own tick is the
+// exception: `release_unstarted_grant` records that refresh itself and
+// removes the turn from the roster.
 // See: context/lib/entity_model.md §7c (Attack budget)
 
 use postretro_entities::EntityId;
@@ -46,11 +48,11 @@ impl TurnRoster {
         }
     }
 
-    /// Each turn whose holder this tick never reached: it left the AI set or
-    /// the world.
-    pub(crate) fn departed(&self, mut ended: impl FnMut(&HeldTurn)) {
+    /// Each turn whose holder this tick never reached, with that holder: it
+    /// left the AI set or the world.
+    pub(crate) fn departed(&self, mut ended: impl FnMut(EntityId, &HeldTurn)) {
         for entry in self.entries.iter().filter(|entry| !entry.visited) {
-            ended(&entry.turn);
+            ended(entry.entity, &entry.turn);
         }
     }
 

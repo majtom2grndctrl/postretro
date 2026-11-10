@@ -16,7 +16,8 @@ pub(super) struct AttackPoolChecker {
 
 impl AttackPoolChecker {
     /// Check one pool, `entity` labelling it as `entity N 'ai_attack_pool'`.
-    /// An empty `member_tag` would assign no one on start; it is an error.
+    /// An empty `member_tag` would assign no one on start; one with whitespace
+    /// could never match a member, since tag lists split on whitespace. Both are errors.
     pub(super) fn record(
         &mut self,
         entity: usize,
@@ -28,6 +29,11 @@ impl AttackPoolChecker {
         if member_tag.is_empty() {
             bail!(
                 "{label} has an empty `member_tag`; name the tag its members carry (`_tags`, or a spawner's `spawned_tags`)"
+            );
+        }
+        if member_tag.contains(char::is_whitespace) {
+            bail!(
+                "{label} has a `member_tag` with whitespace (`{member_tag}`); a member tag is one tag"
             );
         }
         for tag in tags {
@@ -81,6 +87,20 @@ mod tests {
             .to_string();
         assert!(
             error.contains("entity 1 'ai_attack_pool' has an empty `member_tag`"),
+            "{error}"
+        );
+    }
+
+    // A member tag is one tag: `_tags` splits on whitespace, so a spaced one never matches.
+    #[test]
+    fn ai_attack_pool_member_tag_with_whitespace_is_compile_error() {
+        let error = parse("whitespace-member-tag", &pool("arena", "arena guard"))
+            .expect_err("a member tag with whitespace fails the build")
+            .to_string();
+        assert!(
+            error.contains(
+                "entity 1 'ai_attack_pool' has a `member_tag` with whitespace (`arena guard`); a member tag is one tag"
+            ),
             "{error}"
         );
     }

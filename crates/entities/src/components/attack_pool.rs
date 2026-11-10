@@ -7,8 +7,10 @@ use crate::registry::EntityId;
 
 /// One request on the attack pools, applied in issue order by the drain that
 /// runs immediately before the AI tick. A spawn's join rides the same list so
-/// it orders against the starts and stops issued beside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// it orders against the starts and stops issued beside it. Serde because
+/// pending requests sit on the registry between issue and the pre-AI drain, and
+/// must travel with any future save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttackPoolRequest {
     /// Start `pool`, or re-start it when running: assign its current tag
     /// holders and rank it latest.

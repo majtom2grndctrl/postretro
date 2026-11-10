@@ -599,9 +599,10 @@ and set its `command`: `fire` shoots once each time a player enters, `start`
 and `stop` switch the repeats. One trigger can drive movers, traps, spawners
 and attack pools sharing a tag; each takes only the commands it understands
 (movers `start`, `stop`, `reverse`, `go_to_path_node`; traps `fire`, `start`,
-`stop`; spawners `fire`, one batch each; attack pools `start`, `stop`). A tag that only reaches things that ignore
-the command warns at level load. Triggers act when a player enters; to stop a
-trap when the player leaves, use a second trigger or a script. Scripting:
+`stop`; spawners `fire`, one batch each; attack pools `start`, `stop`). A tag
+that only reaches things that ignore the command warns at level load. Triggers
+act when a player enters; to stop a trap when the player leaves, use a second
+trigger or a script. Scripting:
 [scripting-reference.md](scripting-reference.md#projectile-trap-members).
 
 ---
@@ -617,7 +618,7 @@ matter; triggers and scripts reach it by its tag, as they reach a relay.
 
 | Key | Meaning |
 |---|---|
-| `member_tag` | Required. The tag its members carry: map-placed enemies' `_tags`, or a spawner's `spawned_tags`. |
+| `member_tag` | Required. One tag, no spaces. The tag its members carry: map-placed enemies' `_tags`, or a spawner's `spawned_tags`. |
 | `budget_profile` | The profile its members take turns under. Blank means `default`. |
 | `_tags` | Tags a trigger or script addresses it by. |
 
@@ -889,6 +890,7 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | Exterior leak | Gap in the brush hull | Seal the map and check the compiler output for the breach location |
 | `ai_attack_pool` has an empty `member_tag` | An attack pool names no members | Set `member_tag` to the tag its enemies carry |
 | … `ai_attack_pool` … share `_tags` … | Two attack pools carry the same tag, so a trigger on it would reach both | Give each pool its own tag |
+| `ai_attack_pool` has a `member_tag` with whitespace | A member tag is one tag, so a space-separated list matches nothing | Set `member_tag` to a single tag with no spaces |
 | `light_ramp_start` and `light_ramp_end` must satisfy … | A mover's ramp keys are out of order or outside `0`–`1` | Keep both between `0` and `1` with the start below the end, or remove them (see Movers: Lighting) |
 | `light_ramp_start` (or `light_ramp_end`) value … is not a valid float, or … is not finite | A mover's ramp key is not a number, or is `nan` or `inf` | Write a number between `0` and `1`, or remove the key |
 | `light_bounces` must be an integer of at least 0 | A mover's `light_bounces` is negative, fractional or not a number | Use a whole number, `0` or more, or remove the key or leave it empty |

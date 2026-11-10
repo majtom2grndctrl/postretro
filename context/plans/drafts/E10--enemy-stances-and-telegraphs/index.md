@@ -192,7 +192,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 | roll fact | `BRAIN_INPUTS` tail | `"@brain.activityRoll"` | `brain.activityRoll` | `brain.activityRoll` | n/a |
 | damage fact | `BRAIN_INPUTS` tail, after the roll | `"@brain.damageInActivity"` | `brain.damageInActivity` | `brain.damageInActivity` | n/a |
 
-If `E10--enemy-combat-movement` lands first, these facts append after its two.
+If `E10--enemy-combat-movement` lands first, these facts append after its `hasAttackTurn`.
 
 ## Wire format
 **Enemy cue message, host to clients.** It follows `WeaponCuesMessage`:

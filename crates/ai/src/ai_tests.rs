@@ -13418,6 +13418,9 @@ fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static
 #[path = "held_world_participation_tests.rs"]
 mod held_world_participation;
 
+#[path = "engaged_motion_tests.rs"]
+mod engaged_motion;
+
 #[test]
 fn contact_attack_deals_its_damage_type() {
     let mut reg = EntityRegistry::new();

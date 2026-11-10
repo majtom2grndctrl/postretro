@@ -167,9 +167,14 @@ pub use activity_motion::{DEFAULT_REPOSITION_ARC_DEG, FacingPolicy, RepositionPa
 pub use recursive::*;
 
 /// Whether an activity represents locomotion rather than an action-bearing
-/// combat phase.
+/// combat phase. An engaged verb that moves without acting (`chaseTarget`,
+/// `strafe`, `reposition`) is locomotion: its animation is a travel cycle, so
+/// it yields to the rest animation at a standstill.
 pub fn is_locomotion_activity(activity: &BehaviorActivityDescriptor) -> bool {
-    matches!(activity.motion, Some(MotionVerb::ChaseTarget)) && activity.action.is_none()
+    matches!(
+        activity.motion,
+        Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
+    ) && activity.action.is_none()
         || activity.motion.is_some_and(MotionVerb::is_position_goal)
 }
 

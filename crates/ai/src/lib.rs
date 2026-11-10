@@ -15,6 +15,7 @@ mod brain_scope;
 mod candidate_scope;
 mod combat_slots;
 mod compute;
+mod engaged_motion;
 mod engine_floor;
 mod facing;
 mod graph_eval;
@@ -22,6 +23,7 @@ mod launch;
 mod perception;
 mod steering;
 mod targeting;
+mod travel_variants;
 mod weapon_controller;
 
 #[cfg(test)]
@@ -179,7 +181,13 @@ pub(crate) struct EnemyOutcome {
     /// Carrying it across the pass boundary lets the fire gate inspect this
     /// tick's exact post-slew heading rather than the previous tick's rotation.
     facing_direction: Option<Vec3>,
+    /// The directional travel clip this tick's facing and travel ask for,
+    /// before the mesh is checked for it.
+    travel_variant: postretro_entities::components::brain::TravelVariant,
     pub(crate) combat_slot: Option<Vec3>,
+    /// The rotated ring an engaged `strafe` or `reposition` proposes in place
+    /// of the shared ring. Its steering resolves from the claim.
+    pub(crate) engaged_ring: Option<crate::combat_positioning::SlotRing>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
     pub(crate) prior_acquired_target: Option<EntityId>,

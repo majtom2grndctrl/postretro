@@ -7,6 +7,7 @@ use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
 use super::graph_eval::animation_for_path;
 use super::launch;
 use super::targeting::selected_target_alive;
+use super::travel_variants;
 use super::{
     AiTickResult, AttackOutcome, ENEMY_ATTACK_EVENT, ENEMY_ATTACK_SOURCE_ID, LocomotionIntent,
 };
@@ -16,7 +17,7 @@ use crate::emission::entity_emitter;
 use crate::sim::EnemyProjectilePresentationSpawn;
 use crate::weapon_controller::AiWeaponControllers;
 use glam::Quat;
-use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::brain::{BrainComponent, TravelVariant};
 use postretro_entities::components::health::{DamageContext, DamageProducer};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_entities::{AiCue, AiEmission, Transform};
@@ -83,7 +84,7 @@ where
             outcome.weapon_aim = None;
             outcome.facing_direction = None;
             outcome.combat_slot = None;
-            if matches!(outcome.steering, SteeringIntent::Chase) {
+            if matches!(outcome.steering, SteeringIntent::Chase) || outcome.engaged_ring.is_some() {
                 outcome.steering = SteeringIntent::Clear;
             }
         }
@@ -332,23 +333,40 @@ where
             continue;
         }
 
-        // Animation: on a state change, locomotion stop/resume, or an airborne
-        // launch's clip starting or ending, request the selected animation name
-        // for the new graph/locomotion state. A failed switch
+        // Animation: on a state change, locomotion stop/resume, an airborne
+        // launch's clip starting or ending, or a directional travel variant
+        // changing, request the selected animation name for the new
+        // graph/locomotion state. A failed switch
         // (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and keeps
         // the prior animation — it never aborts the tick. The latches are still
         // persisted after failures so unresolved clips do not re-request the
         // same switch every tick.
         let airborne_clip = launch::airborne_clip(registry, outcome.id, &outcome.brain.launch);
+        let animation_name =
+            airborne_clip.or_else(|| animation_for_path(&outcome.brain, locomotion_intent.moving));
+        let travel_variant = if airborne_clip.is_some() {
+            TravelVariant::Base
+        } else {
+            travel_variants::presentable(
+                registry,
+                outcome.id,
+                animation_name,
+                outcome.travel_variant,
+            )
+        };
         if should_switch_animation(
             outcome.state_changed,
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
         ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
+            || travel_variant != outcome.brain.presented_travel_variant
         {
-            let animation_name = airborne_clip
-                .or_else(|| animation_for_path(&outcome.brain, locomotion_intent.moving));
-            if let Some(name) = animation_name {
+            // Only a variant the mesh declares is requested, so a missing
+            // `X_left` plays `X` without warning.
+            let variant_name = animation_name
+                .filter(|_| travel_variant != TravelVariant::Base)
+                .map(|name| format!("{name}{}", travel_variant.suffix()));
+            if let Some(name) = variant_name.as_deref().or(animation_name) {
                 match switch_animation_state(registry, outcome.id, name) {
                     SwitchResult::Switched | SwitchResult::AlreadyInState => {}
                     SwitchResult::UnknownState | SwitchResult::NotAnimated => {
@@ -376,6 +394,7 @@ where
         {
             brain.locomotion_moving = locomotion_intent.moving;
             brain.launch.airborne_presented = airborne_clip.is_some();
+            brain.presented_travel_variant = travel_variant;
             let _ = registry.set_component(outcome.id, brain);
         }
     }

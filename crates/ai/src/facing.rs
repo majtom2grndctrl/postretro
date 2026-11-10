@@ -2,7 +2,7 @@
 // See: context/lib/entity_model.md §7c (enemy brain component)
 
 use glam::{Quat, Vec3};
-use postretro_foundation::FacingPolicy;
+use postretro_foundation::{FacingPolicy, MotionVerb};
 
 use super::LocomotionIntent;
 use super::engine_floor::SteeringIntent;
@@ -43,6 +43,24 @@ pub(super) fn verb_facing_policy(
         _ if engaged => Some(FacingPolicy::Target),
         _ => None,
     }
+}
+
+/// The facing this tick follows: the active path's authored `facing`, else
+/// the verb's default. `strafe` and `reposition` face the target; every other
+/// verb keeps [`verb_facing_policy`], read only when nothing above decides.
+/// Resolving first matters: that rule faces travel for any `MoveTo`, which
+/// both engaged slot verbs steer by.
+pub(super) fn resolve_facing_policy(
+    authored: Option<FacingPolicy>,
+    motion: Option<MotionVerb>,
+    verb_policy: impl FnOnce() -> Option<FacingPolicy>,
+) -> Option<FacingPolicy> {
+    authored
+        .or_else(|| {
+            matches!(motion, Some(MotionVerb::Strafe | MotionVerb::Reposition))
+                .then_some(FacingPolicy::Target)
+        })
+        .or_else(verb_policy)
 }
 
 /// Resolve the one direction this tick's facing slews toward, for compute's

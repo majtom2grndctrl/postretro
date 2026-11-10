@@ -35,10 +35,13 @@ pub(super) fn position_goal_steering(
         MotionVerb::Patrol => patrol_steering(brain, position),
         // This resolver owns only motion modes with per-brain position goals.
         // Every other mode remains the pure graph evaluator's responsibility.
-        MotionVerb::ChaseTarget | MotionVerb::Hold | MotionVerb::Freeze => steering_for(motion),
-        // Interim until task 3 of E10--enemy-combat-movement: the combat-slot
-        // verbs defer to `steering_for` until their slot steering lands.
-        MotionVerb::Strafe | MotionVerb::Reposition => steering_for(motion),
+        // The engaged slot verbs resolve after the combat-slot batch
+        // (`engaged_motion::settle`).
+        MotionVerb::ChaseTarget
+        | MotionVerb::Hold
+        | MotionVerb::Freeze
+        | MotionVerb::Strafe
+        | MotionVerb::Reposition => steering_for(motion),
     }
 }
 

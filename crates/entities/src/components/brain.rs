@@ -63,6 +63,66 @@ pub struct LaunchState {
     pub airborne_presented: bool,
 }
 
+/// Directional travel clip a target-facing mover presents: activity animation
+/// `X` plays as `X_left`, `X_right` or `X_backward`, or `X` itself (`Base`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TravelVariant {
+    #[default]
+    Base,
+    Left,
+    Right,
+    Backward,
+}
+
+impl TravelVariant {
+    /// The state-name suffix this variant appends to an activity animation.
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            TravelVariant::Base => "",
+            TravelVariant::Left => "_left",
+            TravelVariant::Right => "_right",
+            TravelVariant::Backward => "_backward",
+        }
+    }
+}
+
+/// What an engaged `strafe` or `reposition` recorded on entry. Storage only;
+/// the AI tick owns the rules. Transient: a restored brain re-enters fresh.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum EngagedMotionMemory {
+    #[default]
+    None,
+    Strafe(StrafeMemory),
+    Reposition(RepositionMemory),
+}
+
+/// A strafer's travel direction around its target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrafeMemory {
+    pub target: EntityId,
+    /// `1` counter-clockwise seen from above (+yaw), `-1` clockwise, `0` not
+    /// yet picked: the entry tick picks by score.
+    pub direction: i8,
+}
+
+/// A repositioner's bounds, fixed at entry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RepositionMemory {
+    pub target: EntityId,
+    /// Unit XZ direction from the target of the ring's index 0: the entry
+    /// bearing, or the bearing to the held slot when there was none.
+    pub ring_bearing: Vec3,
+    /// Qualifying ring indices as a bitmask (bit `i` is index `i`).
+    pub ring_slots: u8,
+    pub entry_position: Vec3,
+    pub min_travel: f32,
+    /// The combat slot held at entry, if any.
+    pub entry_slot: Option<Vec3>,
+    /// One slot spacing at the entry standoff.
+    pub slot_spacing: f32,
+}
+
 /// Engine-internal AI brain: the retained behavior graph plus the live state it
 /// sits in. Seeded at spawn in the graph's `initial` state with every timer at
 /// rest; the AI tick in `postretro-ai`'s `AiRuntime` drives the rest.
@@ -136,6 +196,16 @@ pub struct BrainComponent {
     /// brain must not strand its airborne clip. Old brains default to grounded.
     #[serde(default)]
     pub launch: LaunchState,
+    /// The directional travel variant last requested for the activity's clip:
+    /// the latch that switches `walk_left` to `walk_right` with no activity or
+    /// stop/resume edge. Serialized beside `locomotion_moving` so a restored
+    /// brain never strands a variant clip.
+    #[serde(default)]
+    pub presented_travel_variant: TravelVariant,
+    /// Entry memory of an engaged `strafe` or `reposition`. Transient: a
+    /// restore re-enters fresh, recording new bounds and re-picking direction.
+    #[serde(skip)]
+    pub engaged_motion: EngagedMotionMemory,
     /// Whether this brain may acquire and pursue a target. This is
     /// host-authoritative simulation state: it deliberately has no snapshot
     /// field, because a closed brain's stationary Idle transform is already the
@@ -250,6 +320,8 @@ impl BrainComponent {
             think_stride_counter: 0,
             locomotion_moving: false,
             launch: LaunchState::default(),
+            presented_travel_variant: TravelVariant::Base,
+            engaged_motion: EngagedMotionMemory::None,
             aggro_armed: true,
             target_reachable: false,
             acquired_target: None,

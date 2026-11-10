@@ -1196,3 +1196,37 @@ PRLs were built by this tree's release `prl-build` (warm): closet, setpiece, and
   - `cargo fmt --check`: clean.
 
 **Files.** `crates/renderer/src/render/mover_channel/depth.rs` (blend, bind, docs), `mover_channel/depth_test_support.rs` (`through_base`), `mover_channel/depth_tests.rs`, `mover_depth_tiles_tests.rs`, `uploads/renderer_tests/closet_mover_channel.rs` (C9), `shaders/sh_sample.wgsl` (k = 8), `kinematic_brush.rs` (its test), `sh_residency.rs` (host-row doc); `context/lib/rendering_pipeline.md` §4 (Depth live tiles, Mover backface), `context/lib/resource_management.md` §8.2 (host row); captures `t12c-*.png`. Scratch harness (not in git): `blobs.py`, `excess_sheet.py`, the five capture binaries.
+
+### Swept-face probe blobs
+
+Diagnosis, 2026-11-09, at 2a37e58c0 (AMD Radeon Pro 5300M, Metal), on the owner's own 18:40 `mover-setpiece` and 18:50 `enemy-movers` PRLs. Owner playtest report: dark spheres on a mover that travels along its face normal, on the "inside" face, near both ends of the ping-pong. The sliding wall is clean. Harness and stills: session scratch `blobs2/` (not in git): `stills-sweeper.png` (as built | id 57 stripped | fix), `sheet-sweeper.png`, `stills-roof.png`, `sheet-roof.png`, the id-57 dump and rewrite tool, and `mirror.py`.
+
+**Mechanism.** Probes inside the mover's slab at terminus k take the dark inside-brush state: S^b_k = 0, q_k = 0 for every light, and D_k ≡ 0. As the mover leaves k, the face that encloses them sweeps past, and they sit in open air in front of the face that points back toward k's resting volume. Their value is lerp(dark, other terminus, t′), still 70–90% black.
+- Depth does not reject them: lerp(0, base, 2t′) has a large variance, so Chebyshev returns 1. Variant (c), depth stripped, equals as built exactly.
+- The k = 8 backface weight favours a probe in front of the face: about 1 straight ahead, falling to about 0.27 between probes, while lit probes behind the face take about 0.03.
+- Each enclosed probe therefore paints a dark sphere centred on itself. The other face has those probes behind it, so backface rejects them there; that is the owner's clean "outside" face (inferred). The sliding wall's enclosed probes never pass in front of its large face (inferred, not measured).
+- The blends take t′ only, so out and back read alike (from the code).
+
+**Probes.**
+- `em_sweeper` (slab x 1280–1312, travels +x by 256 u): the x 1300.0 layer (20 probes, y 78.9–433.3, z 23.4 and 62.7) is enclosed at t = 0, and the x 1536.2 layer (20 probes, 0.2 u inside the west face) at t = 1. Every one is valid and untiled, stores a dark terminus with D ≡ 0, and its other terminus is lit (S^b ≈ 0.06–0.085, q = 255).
+- `setpiece_room`: the roof layer z 162.3 is enclosed at t = 1 (64 probes). The wall column x 846.9 is enclosed at both termini (6 per layer).
+
+**Measured.** Each cell is as built minus id 57 stripped, as bright max / peaks then dark max / pits (block-excess metric, §Task 12c). The "fix" column rewrites the container so an enclosed terminus reads the base.
+
+| Surface, t | As built | Depth stripped | Direct only | Fix |
+|---|---|---|---|---|
+| Sweeper west face, 0.12 | +26.2/49 −13.1/66 | identical | +21.4/77 −13.1/87 | +3.0/0 −2.0/0 |
+| Sweeper west face, 0.16 | +31.3/31 −11.4/64 | identical | +26.0/48 | +3.1/0 −2.5/0 |
+| Sweeper west face, 0.08 / 0.20 | 6.7/13 / 25.9/22 | identical | — | 1.3 / 2.8 |
+| Sweeper east face, 0.80 | +22.0/17 −11.4/32 | identical | +12.7/2 | +3.8/0 −1.1/0 |
+| Sweeper east face, 0.75 / 0.84 | 16.9/15 / 17.6/6 | identical | — | 3.2 / 3.1 |
+| Roof top, mean darkening at 0.70 / 0.80 / 0.88 | −24 / −30 / −35 | same | −22 / −26 / −30 | −5.8 / −1.7 / −1.5 |
+| Roof top, 0.92 | −9.3, +4.8/40 −4.3/30 (lattice) | — | — | +0.2, 0 peaks |
+
+- Outside these windows the sweeper faces read 2–3 levels or less. The pits sit at the enclosed probes' y and z. Baked static direct (mask 8) carries most of it, and indirect (mask 2) less.
+- No lattice shows on the room's interior floor or ceiling at any t, or on the static floor around the sweeper (1.4 levels or less).
+- The CPU mirror (0.1 m normal offset, trilinear, k = 8, Chebyshev on the real D₀ → base → D₁ tiles) reproduces the pits at the enclosed probes. Giving the enclosed terminus base values restores the face mean from 0.17–0.41 to 1.0, with no pits. Returning to k = 2 does not fix it.
+
+**Fix cost at rest (t = 1).** The room's upper interior walls read 0.910 direct luma against 0.558, the frame 5.52 against 5.10, and the interior 9.08 against 8.89. Sweeper faces move 1 level or less. Dropping D_k as well makes the leak far worse (upper walls 8.33), so depth keeps the dark rule.
+
+**Not fixed by it.** The roof top's broad dimming at t′ 0.3–0.65 comes from the z 123 layer, whose t = 1 state is legitimately inside the dark room. The sweeper's west face at t′ 0.25–0.30 reads 7.5–8.5 levels dark from shadow states (q₀ = 0) at x 1339 and 1378. Both are probes whose terminus state is dark from the far side of a face the mover sweeps past. That is §Rising-room probe blobs' fix 3 family. Blending values through the base mid-travel fixed the roof band in the mirror (0.59 → 1.0 at 0.5), but it changes the Bounce and Direct Decisions and lights the room interior mid-travel.

@@ -186,6 +186,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::ProjectileTrap => "projectile_trap",
         ComponentKind::GhostLink => "ghost_link",
         ComponentKind::DefenseLayers => "defense_layers",
+        ComponentKind::AttackPool => "attack_pool",
     }
 }
 
@@ -281,6 +282,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "defense_layers" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "DefenseLayers component is engine-managed and not exposed to scripts",
+            )),
+            "attack_pool" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "AttackPool component is engine-managed and not exposed to scripts",
             )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
@@ -427,6 +432,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "DefenseLayers component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::AttackPool(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "AttackPool component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::HitVolume(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "HitVolume component is engine-managed and not exposed to scripts",
@@ -515,6 +524,9 @@ impl FromLua for ComponentValue {
             )),
             "defense_layers" => Err(mlua::Error::RuntimeError(
                 "DefenseLayers component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            "attack_pool" => Err(mlua::Error::RuntimeError(
+                "AttackPool component is engine-managed and not exposed to scripts".to_string(),
             )),
             "fog_volume" => fog_from_lua(t),
             other => Err(mlua::Error::RuntimeError(format!(
@@ -627,6 +639,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::DefenseLayers(_) => Err(mlua::Error::RuntimeError(
                 "DefenseLayers component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::AttackPool(_) => Err(mlua::Error::RuntimeError(
+                "AttackPool component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::HitVolume(_) => Err(mlua::Error::RuntimeError(
                 "HitVolume component is engine-managed and not exposed to scripts".to_string(),

@@ -449,6 +449,17 @@ pub(super) fn bind_command_at(
             };
             Some(BoundTriggerCommand::Trap { target, request })
         }
+        primitive if postretro_foundation::is_attack_pool_primitive(primitive) => {
+            let Some(target @ BoundTarget::Entity(_)) = target_from_context else {
+                log::warn!(
+                    "[Trigger] `{primitive}` requires an attack pool member target; not binding"
+                );
+                return None;
+            };
+            let verb = crate::attack_pools::AttackPoolVerb::from_primitive(primitive)
+                .expect("an attack-pool primitive names a verb");
+            Some(BoundTriggerCommand::AttackPool { target, verb })
+        }
         "spawnFromSpawner" => match target_from_context {
             // A spawner member's `fire()` step: that spawner only.
             Some(target @ BoundTarget::Entity(_)) => Some(BoundTriggerCommand::Spawn { target }),

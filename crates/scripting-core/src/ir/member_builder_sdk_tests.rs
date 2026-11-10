@@ -1,4 +1,4 @@
-// Light, fog and trap member builders in both runtimes: every verb emits the
+// Light, fog, trap and attack pool member builders in both runtimes: every verb emits the
 // same step wire, unset fields omitted rather than null.
 // See: context/lib/scripting.md §7 (Animation capabilities)
 use super::*;
@@ -11,10 +11,11 @@ use crate::primitives_registry::ContextScope;
 const LIGHT_ID: u32 = 7;
 const FOG_ID: u32 = 11;
 const TRAP_ID: u32 = 13;
+const POOL_ID: u32 = 17;
 
 /// A registry whose only primitive is a `worldQuery` answering one light, one
-/// fog volume and one projectile trap, so `getMapEntities` wraps real member
-/// handles.
+/// fog volume, one projectile trap and one attack pool, so `getMapEntities`
+/// wraps real member handles.
 fn member_registry() -> PrimitiveRegistry {
     let mut registry = PrimitiveRegistry::new();
     registry
@@ -38,6 +39,11 @@ fn member_registry() -> PrimitiveRegistry {
                         "id": TRAP_ID,
                         "position": position,
                         "tags": ["wave"],
+                    }]),
+                    "attack_pool" => serde_json::json!([{
+                        "id": POOL_ID,
+                        "position": position,
+                        "tags": ["arena"],
                     }]),
                     _ => serde_json::json!([]),
                 }))
@@ -245,5 +251,45 @@ fn trap_member_builders_emit_identical_steps_in_both_runtimes() {
         let step = step(verb);
         assert_eq!(step["primitive"], "startTrap", "{verb} primitive");
         assert_eq!(step["args"], args, "{verb} args carry only named options");
+    }
+}
+
+// `getMapEntities("attackPool")` in both runtimes: `start` and `stop` bake the
+// member id into one argless step each, and the snapshot carries its tags.
+#[test]
+fn attack_pool_member_builders_emit_identical_steps_in_both_runtimes() {
+    let ts = quickjs_member_steps(
+        r#"
+        import { getMapEntities } from "postretro";
+        const pool = getMapEntities("attackPool", { tag: "arena" })[0];
+        (globalThis as any).__memberSteps = {
+          tags: pool.tags,
+          start: pool.start(),
+          stop: pool.stop(),
+        };
+        "#,
+    );
+    let luau = luau_member_steps(
+        r#"
+        local pool = getMapEntities("attackPool", { tag = "arena" })[1]
+        return {
+          tags = pool.tags,
+          start = pool:start(),
+          stop = pool:stop(),
+        }
+        "#,
+    );
+    assert_eq!(
+        serde_json::to_vec(&ts).unwrap(),
+        serde_json::to_vec(&luau).unwrap(),
+        "TS and Luau attack pool steps diverged:\n  ts:   {ts}\n  luau: {luau}"
+    );
+    assert_eq!(ts["tags"], serde_json::json!(["arena"]));
+    for (verb, primitive) in [("start", "startAttackPool"), ("stop", "stopAttackPool")] {
+        assert_eq!(
+            ts[verb],
+            serde_json::json!([{ "id": POOL_ID, "primitive": primitive }]),
+            "{verb} emits one argless member step"
+        );
     }
 }

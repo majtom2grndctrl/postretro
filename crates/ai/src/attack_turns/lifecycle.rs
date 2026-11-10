@@ -55,7 +55,7 @@ pub(crate) fn arbitrate_attack_turns(
 
     for (slot, outcome) in outcomes.iter_mut().enumerate() {
         let target = outcome.target.map(|target| target.entity);
-        let pool = attack_pool_of(outcome.id);
+        let pool = attack_pool_of(budgets, &outcome.brain);
         // Closing aggro takes the enemy out of the AI set.
         if !outcome.brain.aggro_armed {
             outcome.brain.attack_turns.clear();

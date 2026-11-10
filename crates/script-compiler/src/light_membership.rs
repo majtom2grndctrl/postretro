@@ -83,6 +83,11 @@ const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
         include_str!("../../../sdk/lib/entities/traps.luau"),
         "sdk/lib/entities/traps.luau",
     ),
+    (
+        "wrapAttackPoolEntity",
+        include_str!("../../../sdk/lib/entities/attack_pools.luau"),
+        "sdk/lib/entities/attack_pools.luau",
+    ),
 ];
 const MAP_ENTITIES_LUAU: &str = include_str!("../../../sdk/lib/map_entities.luau");
 const GRAVITY_LUAU: &str = include_str!("../../../sdk/lib/gravity.luau");
@@ -395,6 +400,8 @@ const STUBBED_PRIMITIVES: &[(&str, StubReturn)] = &[
     ("fireTrap", StubReturn::Null),
     ("startTrap", StubReturn::Null),
     ("stopTrap", StubReturn::Null),
+    ("startAttackPool", StubReturn::Null),
+    ("stopAttackPool", StubReturn::Null),
 ];
 
 fn install_js_determinism(ctx: &JsCtx<'_>) -> Result<()> {
@@ -1103,6 +1110,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "ghost_link",
     "spawner",
     "projectile_trap",
+    "attack_pool",
     "particle",
     "sprite_visual",
 ];
@@ -1365,9 +1373,9 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     // players resolved at runtime: it is a legal step that reserves no light
     // slot, so it must not make the caller skip the sequence. Mirror the
     // runtime parser's rejections — an unknown kind, an `id` beside `kind`, a
-    // non-string tag, a control primitive, `spawnFromSpawner`, the trap verbs
-    // and a ghost-link step (spawners, traps and links are map members, never
-    // a group).
+    // non-string tag, a control primitive, `spawnFromSpawner`, the trap verbs,
+    // a ghost-link step and an attack-pool verb (spawners, traps, links and
+    // pools are map members, never a group).
     match step.get("kind") {
         None | Some(JsonValue::Null) => {}
         Some(JsonValue::String(kind)) => {
@@ -1380,7 +1388,8 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
                 && !control
                 && primitive != "spawnFromSpawner"
                 && !matches!(primitive, "fireTrap" | "startTrap" | "stopTrap")
-                && !postretro_foundation::is_ghost_link_primitive(primitive);
+                && !postretro_foundation::is_ghost_link_primitive(primitive)
+                && !postretro_foundation::is_attack_pool_primitive(primitive);
         }
         Some(_) => return false,
     }
@@ -1423,8 +1432,11 @@ fn subject_token_carries(target: &str, primitive: &str) -> bool {
     }
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
-    // A ghost-link step addresses one link member; no token carries it.
-    if postretro_foundation::is_ghost_link_primitive(primitive) {
+    // A ghost-link or attack-pool step addresses one member; no token
+    // carries it.
+    if postretro_foundation::is_ghost_link_primitive(primitive)
+        || postretro_foundation::is_attack_pool_primitive(primitive)
+    {
         return false;
     }
     match target {

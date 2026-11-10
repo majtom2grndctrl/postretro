@@ -216,6 +216,12 @@ pub struct BrainComponent {
     /// a restored brain holds nothing and arbitrates from scratch.
     #[serde(skip)]
     pub attack_turns: AttackTurnState,
+    /// The `ai_attack_pool` this enemy takes turns in, assigned by a pool's
+    /// start or a tagged spawn's join and cleared by its stop. `None` is the
+    /// default pool. Serialized: a restored enemy keeps its assignment rather
+    /// than re-deriving it from tags.
+    #[serde(default)]
+    pub attack_pool: Option<EntityId>,
     /// Whether this brain may acquire and pursue a target. This is
     /// host-authoritative simulation state: it deliberately has no snapshot
     /// field, because a closed brain's stationary Idle transform is already the
@@ -333,6 +339,7 @@ impl BrainComponent {
             presented_travel_variant: TravelVariant::Base,
             engaged_motion: EngagedMotionMemory::None,
             attack_turns: AttackTurnState::default(),
+            attack_pool: None,
             aggro_armed: true,
             target_reachable: false,
             acquired_target: None,

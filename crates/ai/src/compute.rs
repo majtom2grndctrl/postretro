@@ -355,7 +355,7 @@ pub(super) fn evaluate(
                     refresh: turns.previous_refresh(),
                     entity: snap.id,
                     slot: slot as u32,
-                    pool: attack_turns::attack_pool_of(snap.id),
+                    pool: attack_turns::attack_pool_of(&turns.budgets, &brain),
                     target: target.map(|target| target.entity),
                     turns: &brain.attack_turns,
                     graph: &brain.graph,

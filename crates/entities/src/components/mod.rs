@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod ammo_reserve;
 pub mod animation;
+pub mod attack_pool;
 pub mod billboard_emitter;
 pub mod brain;
 mod contributor_ledger;

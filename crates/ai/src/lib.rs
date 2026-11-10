@@ -550,7 +550,7 @@ where
             .map(|(slot, snapshot)| attack_turns::LineEntry {
                 entity: snapshot.id,
                 slot: slot as u32,
-                pool: attack_turns::attack_pool_of(snapshot.id),
+                pool: attack_turns::attack_pool_of(budgets, &snapshot.brain),
                 turns: &snapshot.brain.attack_turns,
             }),
     );

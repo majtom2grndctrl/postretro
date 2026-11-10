@@ -123,8 +123,19 @@
     stop(): SequenceStep[];
   }
 
+  /** Snapshot of a map-placed `ai_attack_pool`: id, position and tags. Its member tag and budget profile stay on the map entity. */
+  export type AttackPoolEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+
+  /** Attack pool member returned by `getMapEntities("attackPool")`. Every step is host-only. */
+  export interface AttackPoolEntityHandle extends AttackPoolEntity {
+    /** Start the pool: every enemy carrying its member tag takes turns in it, under its budget profile, and a spawn carrying the tag joins while it runs. On a running pool, re-assigns its current tag holders; turns, waits and refreshing counts stand. */
+    start(): SequenceStep[];
+    /** Stop the pool: its members return to the default pool and its refreshing counts drop. A no-op on a stopped pool. */
+    stop(): SequenceStep[];
+  }
+
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -137,6 +148,7 @@
     K extends "emitter" ? EmitterEntity :
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
+    K extends "attackPool" ? AttackPoolEntityHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -303,6 +315,10 @@
   export type StartTrapStep = { id: EntityId; primitive: "startTrap"; args?: TrapStartOptions };
   /** Sequence step that stops one projectile trap member's repeats (`t.stop()`). */
   export type StopTrapStep = { id: EntityId; primitive: "stopTrap"; args?: never };
+  /** Sequence step that starts one attack pool member, or re-assigns its tag holders while it runs (`p.start()`). */
+  export type StartAttackPoolStep = { id: EntityId; primitive: "startAttackPool"; args?: never };
+  /** Sequence step that stops one attack pool member (`p.stop()`). */
+  export type StopAttackPoolStep = { id: EntityId; primitive: "stopAttackPool"; args?: never };
 
   /** Control-step payload for `WaitStep`. `interruptible` defaults to `false` when omitted by the author. */
   export interface WaitArgs { readonly durationMs: number; readonly interruptible: boolean; }
@@ -341,6 +357,8 @@
     | FireTrapStep
     | StartTrapStep
     | StopTrapStep
+    | StartAttackPoolStep
+    | StopAttackPoolStep
     | GroupCommand
     | SubjectTokenCommand
     | SystemReactionStep<any>

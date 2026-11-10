@@ -377,6 +377,9 @@ fn spawn_resolved_spawners(
                 }
                 let _ = registry.set_component(enemy, brain);
             }
+            // A tagged spawn joins the latest-started running pool whose
+            // member tag it carries, in issue order beside pool requests.
+            crate::attack_pools::queue_spawn_join(registry, enemy);
         }
     }
 }

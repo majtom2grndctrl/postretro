@@ -596,13 +596,63 @@ sees and hears them, and only the host fires them.
 
 **Without a script**, point a `trigger_volume` or `switch` at the trap's tag
 and set its `command`: `fire` shoots once each time a player enters, `start`
-and `stop` switch the repeats. One trigger can drive movers, traps and
-spawners sharing a tag; each takes only the commands it understands (movers
-`start`, `stop`, `reverse`, `go_to_path_node`; traps `fire`, `start`, `stop`;
-spawners `fire`, one batch each). A tag that only reaches things that ignore
+and `stop` switch the repeats. One trigger can drive movers, traps, spawners
+and attack pools sharing a tag; each takes only the commands it understands
+(movers `start`, `stop`, `reverse`, `go_to_path_node`; traps `fire`, `start`,
+`stop`; spawners `fire`, one batch each; attack pools `start`, `stop`). A tag that only reaches things that ignore
 the command warns at level load. Triggers act when a player enters; to stop a
 trap when the player leaves, use a second trigger or a script. Scripting:
 [scripting-reference.md](scripting-reference.md#projectile-trap-members).
+
+---
+
+## Attack Pools
+
+An `ai_attack_pool` point entity gives an arena its own attack budget: while it
+runs, the enemies it assigned take turns under a budget profile your mod
+declares (`attackBudgets`, see
+[scripting-reference.md](scripting-reference.md#attack-tokens-and-budgets)),
+instead of the default pool every other enemy shares. Where it sits does not
+matter; triggers and scripts reach it by its tag, as they reach a relay.
+
+| Key | Meaning |
+|---|---|
+| `member_tag` | Required. The tag its members carry: map-placed enemies' `_tags`, or a spawner's `spawned_tags`. |
+| `budget_profile` | The profile its members take turns under. Blank means `default`. |
+| `_tags` | Tags a trigger or script addresses it by. |
+
+- **Starting** a pool assigns every enemy carrying its `member_tag`. While it
+  runs, an enemy a spawner releases with the tag joins as it spawns. Starting a
+  pool that is already running assigns its current tag holders again, so one
+  trigger returns a group from a "frenzy" pool to "calm".
+- **Stopping** it returns its members to the default pool.
+- Each enemy is in one pool at a time, and the latest start wins: start a
+  "frenzy" pool over a "calm" pool's guards to escalate them without stopping
+  "calm". Stopping "frenzy" sends them to the default pool, not back to
+  "calm". An enemy spawned with tags matching two running pools joins the one
+  started latest. Retagging an enemy later moves no one.
+- Pools run side by side, so co-op players in two arenas each fight under their
+  own arena's budget. No pool runs when a level starts.
+- Only the host runs pools; clients never see them.
+
+**Without a script**, point a `trigger_volume` or `switch` at the pool's tag
+with `command` `start` or `stop`. A trigger's start acts before that tick's
+attacks are decided. Scripting:
+[scripting-reference.md](scripting-reference.md#attack-pool-members).
+
+```
+{
+"classname" "ai_attack_pool"
+"origin" "0 0 0"
+"_tags" "arena"
+"member_tag" "arena_guard"
+"budget_profile" "arena"
+}
+```
+
+An empty `member_tag`, or two pools sharing a `_tags` tag, fails the build
+naming the entities. A `budget_profile` your mod does not declare warns when the
+level loads and uses `default`.
 
 ---
 
@@ -837,6 +887,8 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | Lightmap atlas layer overflow | Too many surfaces at the current texel density, or a `_lightmap_scale` region too fine | Raise `--lightmap-density` (coarser texels), lower the region's `_lightmap_scale`, or split the map |
 | Animated block count exceeds the block-table cap | More faces lie within animated lights' reach than the animated lightmap can hold | Shrink animated lights' `_falloff_range`, make some of them static, or split the map |
 | Exterior leak | Gap in the brush hull | Seal the map and check the compiler output for the breach location |
+| `ai_attack_pool` has an empty `member_tag` | An attack pool names no members | Set `member_tag` to the tag its enemies carry |
+| … `ai_attack_pool` … share `_tags` … | Two attack pools carry the same tag, so a trigger on it would reach both | Give each pool its own tag |
 | `light_ramp_start` and `light_ramp_end` must satisfy … | A mover's ramp keys are out of order or outside `0`–`1` | Keep both between `0` and `1` with the start below the end, or remove them (see Movers: Lighting) |
 | `light_ramp_start` (or `light_ramp_end`) value … is not a valid float, or … is not finite | A mover's ramp key is not a number, or is `nan` or `inf` | Write a number between `0` and `1`, or remove the key |
 | `light_bounces` must be an integer of at least 0 | A mover's `light_bounces` is negative, fractional or not a number | Use a whole number, `0` or more, or remove the key or leave it empty |

@@ -40,6 +40,8 @@ export type { SpawnerEntityHandle } from "./entities/spawners";
 
 export type { TrapEntityHandle } from "./entities/traps";
 
+export type { AttackPoolEntityHandle } from "./entities/attack_pools";
+
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
 

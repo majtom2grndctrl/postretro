@@ -5,6 +5,7 @@
 mod budget;
 mod facts;
 mod lifetime;
+mod pools;
 mod refresh;
 mod release;
 mod reload;

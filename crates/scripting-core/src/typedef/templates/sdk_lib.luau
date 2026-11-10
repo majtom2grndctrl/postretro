@@ -186,9 +186,29 @@ export type TrapEntityHandle = {
   stop: (self: TrapEntityHandle) -> {StopTrapStep},
 }
 
+--- Snapshot of a map-placed `ai_attack_pool`: id, position and tags. Its
+--- member tag and budget profile stay on the map entity.
+export type AttackPoolEntity = { id: EntityId, position: Vec3, tags: {string} }
+
+--- Attack pool member returned by `getMapEntities("attackPool")`. Every step
+--- is host-only.
+export type AttackPoolEntityHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  --- Start the pool: every enemy carrying its member tag takes turns in it,
+  --- under its budget profile, and a spawn carrying the tag joins while it
+  --- runs. On a running pool, re-assigns its current tag holders; turns,
+  --- waits and refreshing counts stand.
+  start: (self: AttackPoolEntityHandle) -> {StartAttackPoolStep},
+  --- Stop the pool: its members return to the default pool and its
+  --- refreshing counts drop. A no-op on a stopped pool.
+  stop: (self: AttackPoolEntityHandle) -> {StopAttackPoolStep},
+}
+
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -208,6 +228,7 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
   & ((kind: "trap", filter: MapEntityFilter?) -> {TrapEntityHandle})
+  & ((kind: "attackPool", filter: MapEntityFilter?) -> {AttackPoolEntityHandle})
 
 --- Level default gravity in m/s² (negative = downward; positive = upward):
 --- the gravity outside every gravity volume. Seeded from the worldspawn
@@ -541,6 +562,19 @@ export type StopTrapStep = {
   primitive: "stopTrap",
 }
 
+--- Sequence step that starts one attack pool member, or re-assigns its tag
+--- holders while it runs (`p:start()`).
+export type StartAttackPoolStep = {
+  id: EntityId,
+  primitive: "startAttackPool",
+}
+
+--- Sequence step that stops one attack pool member (`p:stop()`).
+export type StopAttackPoolStep = {
+  id: EntityId,
+  primitive: "stopAttackPool",
+}
+
 --- Control-step payload for `WaitStep`. `interruptible` defaults to `false`
 --- when omitted by the author.
 export type WaitArgs = { durationMs: number, interruptible: boolean }
@@ -565,7 +599,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A

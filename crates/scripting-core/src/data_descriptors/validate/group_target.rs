@@ -60,9 +60,10 @@ pub fn is_trap_primitive(primitive: &str) -> bool {
     matches!(primitive, "fireTrap" | "startTrap" | "stopTrap")
 }
 
-/// Reject `spawnFromSpawner`, the trap verbs and the ghost-link member steps
-/// beside a group `kind`: a spawner is addressed by `tag` or member id, and a
-/// trap or a ghost link by member id, so the `kind` would be silently dropped.
+/// Reject `spawnFromSpawner`, the trap verbs, the ghost-link member steps and
+/// the attack-pool verbs beside a group `kind`: a spawner is addressed by
+/// `tag` or member id, and a trap, a ghost link or an attack pool by member
+/// id, so the `kind` would be silently dropped.
 /// Life-state verbs accept only the player group. Every other primitive passes;
 /// the handler decides what a group applies to.
 pub fn validate_group_kind_primitive(
@@ -89,6 +90,11 @@ pub fn validate_group_kind_primitive(
     if postretro_foundation::is_ghost_link_primitive(primitive) {
         return Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` addresses one ghost link member, so it cannot carry a group `kind`"
+        ));
+    }
+    if postretro_foundation::is_attack_pool_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one attack pool member, so it cannot carry a group `kind`"
         ));
     }
     Ok(())
@@ -207,6 +213,12 @@ pub fn validate_subject_token_primitive(
     if postretro_foundation::is_ghost_link_primitive(primitive) {
         return Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` addresses one ghost link member from `getMapEntities(\"ghostLink\")`; no subject token carries it, so it cannot take `{}`",
+            token.as_wire()
+        ));
+    }
+    if postretro_foundation::is_attack_pool_primitive(primitive) {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` addresses one attack pool member from `getMapEntities(\"attackPool\")`; no subject token carries it, so it cannot take `{}`",
             token.as_wire()
         ));
     }

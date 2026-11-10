@@ -25,6 +25,10 @@ const ENTITY_SPAWNER_CLASSNAME: &str = "entity_spawner";
 /// (`postretro-sim` `scripting::builtins::projectile_trap::CLASSNAME`).
 const PROJECTILE_TRAP_CLASSNAME: &str = "projectile_trap";
 
+/// Runtime classname whose built-in handler places an attack pool
+/// (`postretro-sim` `scripting::builtins::attack_pool::CLASSNAME`).
+pub(crate) const ATTACK_POOL_CLASSNAME: &str = "ai_attack_pool";
+
 /// Raw KVP the runtime spawner handler splits on whitespace into the tags its
 /// spawns carry.
 const SPAWNED_TAGS_KEY: &str = "spawned_tags";
@@ -89,8 +93,8 @@ pub(crate) fn light_table_from_lights(
 }
 
 /// Build the non-light member table: exactly the movers, trigger volumes
-/// (switches included), teleporters, spawners, projectile traps and ghost
-/// links the runtime places, each with the tags and Transform position runtime
+/// (switches included), teleporters, spawners, projectile traps, ghost links
+/// and attack pools the runtime places, each with the tags and Transform position runtime
 /// gives it. Order is authored order within each kind, the order runtime spawns
 /// them and therefore answers queries in.
 ///
@@ -98,8 +102,9 @@ pub(crate) fn light_table_from_lights(
 /// (`runtime_movers` spawns at the PRL record origin), a trigger volume's AABB
 /// center (`TriggerVolumeBridge::populate_from_level`), a teleporter's entity
 /// origin, a spawner's narrowed entity origin (`entity_spawner::handle`), a
-/// projectile trap's entity origin (`projectile_trap::handle`), and a ghost
-/// link's companion origin.
+/// projectile trap's entity origin (`projectile_trap::handle`), a ghost
+/// link's companion origin, and an attack pool's entity origin
+/// (`attack_pool::handle`).
 pub(crate) fn map_members_from_map(
     movers: &[MapKinematicMover],
     triggers: &[MapTriggerVolume],
@@ -162,12 +167,22 @@ pub(crate) fn map_members_from_map(
             position: vec3(entity.origin),
             spawned_tags: Vec::new(),
         });
+    let attack_pools = entities
+        .iter()
+        .filter(|entity| entity.classname == ATTACK_POOL_CLASSNAME)
+        .map(|entity| MapMember {
+            kind: MapMemberKind::AttackPool,
+            tags: entity.tags.clone(),
+            position: vec3(entity.origin),
+            spawned_tags: Vec::new(),
+        });
     movers
         .chain(triggers)
         .chain(spawners)
         .chain(teleporters)
         .chain(traps)
         .chain(ghost_links)
+        .chain(attack_pools)
         .collect()
 }
 
@@ -923,5 +938,42 @@ mod tests {
             .find(|entity| entity.classname == "projectile_trap")
             .expect("trap record");
         assert_eq!(members[0].position, vec3(trap.origin));
+    }
+
+    #[test]
+    fn attack_pool_classname_matches_runtime_handler_source() {
+        let runtime = include_str!("../../sim/src/scripting/builtins/attack_pool.rs");
+        let classname = format!("pub const CLASSNAME: &str = \"{ATTACK_POOL_CLASSNAME}\";");
+        assert!(
+            runtime.contains(&classname),
+            "runtime attack_pool no longer defines `{classname}`"
+        );
+    }
+
+    // The light pass answers `getMapEntities("attackPool")` with each pool's
+    // authored tags and entity origin, as the runtime places it.
+    #[test]
+    fn attack_pools_join_the_member_table_at_their_origin() {
+        let map = parse_inline_map(
+            "attack-pool-member",
+            &format!(
+                "{}\n{{\n\"classname\" \"ai_attack_pool\"\n\"origin\" \"8 16 24\"\n\"member_tag\" \"arena_guard\"\n\"_tags\" \"arena\"\n}}\n",
+                worldspawn()
+            ),
+        );
+        let members = map_members_from_map(
+            &map.kinematic_movers,
+            &map.trigger_volumes,
+            &map.map_entities,
+        );
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].kind, MapMemberKind::AttackPool);
+        assert_eq!(members[0].tags, ["arena"]);
+        let pool = map
+            .map_entities
+            .iter()
+            .find(|entity| entity.classname == ATTACK_POOL_CLASSNAME)
+            .expect("pool record");
+        assert_eq!(members[0].position, vec3(pool.origin));
     }
 }

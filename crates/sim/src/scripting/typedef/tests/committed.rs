@@ -507,8 +507,9 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && ts.contains("K extends \"ghostLink\" ? GhostLinkHandle :")
             && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
             && ts.contains("K extends \"trap\" ? TrapEntityHandle :")
+            && ts.contains("K extends \"attackPool\" ? AttackPoolEntityHandle :")
             && ts.contains(
-                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\";"
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\" | \"attackPool\";"
             ),
         "TypeScript must select each member handle by map kind:\n{ts}"
     );
@@ -525,7 +526,10 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && luau.contains(
                 "((kind: \"spawner\", filter: MapEntityFilter?) -> {SpawnerEntityHandle})"
             )
-            && luau.contains("((kind: \"trap\", filter: MapEntityFilter?) -> {TrapEntityHandle})"),
+            && luau.contains("((kind: \"trap\", filter: MapEntityFilter?) -> {TrapEntityHandle})")
+            && luau.contains(
+                "((kind: \"attackPool\", filter: MapEntityFilter?) -> {AttackPoolEntityHandle})"
+            ),
         "Luau must select each member handle by map kind:\n{luau}"
     );
 }
@@ -576,6 +580,27 @@ fn trap_member_handle_and_step_types_are_emitted_in_both_sdk_surfaces() {
             "\"fireTrap\"",
             "\"startTrap\"",
             "\"stopTrap\"",
+        ] {
+            assert!(output.contains(needle), "{label} typedef lacks {needle}");
+        }
+    }
+}
+
+#[test]
+fn attack_pool_member_handle_and_step_types_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    for (label, output) in [("ts", generate_typescript(&r)), ("luau", generate_luau(&r))] {
+        for needle in [
+            "AttackPoolEntity",
+            "AttackPoolEntityHandle",
+            "StartAttackPoolStep",
+            "StopAttackPoolStep",
+            "\"startAttackPool\"",
+            "\"stopAttackPool\"",
         ] {
             assert!(output.contains(needle), "{label} typedef lacks {needle}");
         }

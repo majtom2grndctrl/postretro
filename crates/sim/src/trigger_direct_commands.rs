@@ -6,6 +6,7 @@ use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, TriggerCommand, TriggerVolumeComponent,
 };
 
+use crate::attack_pools::{AttackPoolVerb, issue_attack_pool_request};
 use crate::kinematic_mover::MoverAutoCloseTimers;
 use crate::mover_commands::apply_mover_command_to_known_movers;
 use crate::spawner::{SpawnContext, spawn_from_spawner_member};
@@ -17,16 +18,19 @@ enum CommandKind {
     Mover,
     Trap,
     Spawner,
+    AttackPool,
 }
 
-const COMMAND_KINDS: [(CommandKind, ComponentKind); 3] = [
+const COMMAND_KINDS: [(CommandKind, ComponentKind); 4] = [
     (CommandKind::Mover, ComponentKind::KinematicMover),
     (CommandKind::Trap, ComponentKind::ProjectileTrap),
     (CommandKind::Spawner, ComponentKind::Spawner),
+    (CommandKind::AttackPool, ComponentKind::AttackPool),
 ];
 
 /// The acceptance table. Movers take their motion commands, traps `fire`,
-/// `start` and `stop`, spawners `fire` (one batch per firing).
+/// `start` and `stop`, spawners `fire` (one batch per firing), attack pools
+/// `start` and `stop`.
 fn accepts(kind: CommandKind, command: &TriggerCommand) -> bool {
     match kind {
         CommandKind::Mover => !matches!(command, TriggerCommand::Fire),
@@ -35,6 +39,9 @@ fn accepts(kind: CommandKind, command: &TriggerCommand) -> bool {
             TriggerCommand::Fire | TriggerCommand::Start | TriggerCommand::Stop
         ),
         CommandKind::Spawner => matches!(command, TriggerCommand::Fire),
+        CommandKind::AttackPool => {
+            matches!(command, TriggerCommand::Start | TriggerCommand::Stop)
+        }
     }
 }
 
@@ -78,7 +85,8 @@ pub struct DirectCommandHandles {
 
 /// Apply a trigger's command on Enter to every brainless member carrying
 /// `tag` whose kind accepts it. Runs only on the authoritative trigger tick,
-/// so a trap request here acts on this tick's trap stage.
+/// so a trap request here acts on this tick's trap stage and an attack-pool
+/// request on this tick's arbitration.
 pub(crate) fn apply_direct_trigger_command(
     registry: &mut EntityRegistry,
     tag: &str,
@@ -121,6 +129,15 @@ pub(crate) fn apply_direct_trigger_command(
                 };
                 for spawner in members {
                     spawn_from_spawner_member(registry, spawner, spawn_context);
+                }
+            }
+            CommandKind::AttackPool => {
+                let verb = match command {
+                    TriggerCommand::Start => AttackPoolVerb::Start,
+                    _ => AttackPoolVerb::Stop,
+                };
+                for pool in members {
+                    issue_attack_pool_request(registry, pool, verb);
                 }
             }
         }

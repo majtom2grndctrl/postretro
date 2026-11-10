@@ -25,6 +25,8 @@ use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
+#[path = "parse/attack_pools.rs"]
+mod attack_pools;
 #[path = "parse/authoring_regions.rs"]
 mod authoring_regions;
 #[cfg(test)]
@@ -956,6 +958,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut environment_volumes = Vec::new();
     let mut teleporters = teleporters::TeleporterParser::default();
     let mut ghost_links = ghost_links::GhostLinkParser::default();
+    let mut attack_pools = attack_pools::AttackPoolChecker::default();
     // Parallel to `environment_volumes`: each volume's authored brush ids, kept
     // until the fluid volumes' textured sides are built in one pass.
     let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
@@ -1676,6 +1679,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .get("_tags")
             .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
             .unwrap_or_default();
+        if classname == attack_pools::ATTACK_POOL_CLASSNAME {
+            attack_pools.record(entities.len() - 1, &props, &tags)?;
+        }
         let mut key_values: Vec<(String, String)> = props
             .into_iter()
             .filter(|(k, _)| is_runtime_map_entity_key(k))

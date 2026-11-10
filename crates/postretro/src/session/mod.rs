@@ -953,6 +953,10 @@ fn build_scripting_core(
         spawn_context.clone(),
     );
     register_sequenced_trap_primitives(&mut sequence_registry, script_ctx.clone());
+    postretro_sim::attack_pools::commands::register_sequenced_attack_pool_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+    );
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction
     // fires. Populated once at startup; survives level reloads.

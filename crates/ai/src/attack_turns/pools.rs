@@ -37,6 +37,11 @@ pub(crate) struct PoolBudgets {
 }
 
 impl PoolBudgets {
+    /// Whether `pool` was running at this tick's sync.
+    pub(super) fn is_running(&self, pool: EntityId) -> bool {
+        self.index(pool).is_ok()
+    }
+
     pub(super) fn table(&self, pool: EntityId) -> Option<&BudgetTable> {
         let index = self.index(pool).ok()?;
         self.pools[index].table.as_ref()

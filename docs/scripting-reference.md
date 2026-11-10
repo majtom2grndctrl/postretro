@@ -717,9 +717,11 @@ heavies take turns. An attack draws at most 8 tokens, each once.
 `attackBudgets` declares named profiles, each a list of overrides in the same
 shape: `token.with({ limit, refreshMs })`. A profile changes only the fields it
 names, and a token it leaves out keeps its declared budget. A map's attack
-pools select a profile by name; enemies in no running pool use `default`,
-which is the declared budgets unless you declare it. A pool naming a profile
-you do not declare uses `default`. A profile may override `defaultToken` too.
+pools (`ai_attack_pool`, [Attack pool members](#attack-pool-members)) select a
+profile by name; enemies in no running pool use `default`, which is the
+declared budgets unless you declare it. A pool naming a profile you do not
+declare warns when the level loads and uses `default`. A profile may override
+`defaultToken` too.
 
 ### Refresh
 
@@ -2446,7 +2448,7 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
 - **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
@@ -2462,6 +2464,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
+| attack pool member | `getMapEntities("attackPool")` | `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
 | player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
@@ -2494,6 +2497,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
 | `"spawner"` | `SpawnerEntityHandle` | `id`, `position`, `tags`, `spawnedTags` |
 | `"trap"` | `TrapEntityHandle` | `id`, `position`, `tags` |
+| `"attackPool"` | `AttackPoolEntityHandle` | `id`, `position`, `tags` |
 
 - Fields are a snapshot taken when the query runs. Member methods build reaction steps; they never change the entity during setup.
 - Only map-placed entities appear. A light or emitter carried by a spawned NPC, or by a player, never does.
@@ -2583,6 +2587,33 @@ for i, t in ipairs(traps) do
   table.insert(steps, t:start({ intervalMs = periodMs, phaseMs = (i - 1) * 250 }))
 end
 local loopOn = Postretro.defineReaction("wave.loopOn", steps) -- nested tables flatten
+```
+
+### Attack pool members
+
+An `ai_attack_pool` gives an arena its own attack budget (see [level_design.md](level_design.md#attack-pools) and [Attack tokens and budgets](#attack-tokens-and-budgets)). Its member has two verbs, each returning one step:
+
+- `start()` runs the pool. Every enemy carrying its `member_tag` then takes turns in it, under its `budget_profile`, and while it runs an enemy a spawner releases with the tag in its `spawned_tags` joins on spawning. `start` on a running pool assigns its current tag holders again and leaves turns, waiting enemies and refreshing counts as they are, so one step returns a group from "frenzy" to "calm".
+- `stop()` returns the pool's members to the default pool and drops its refreshing counts. `stop` on a stopped pool does nothing.
+
+Each enemy is in one pool at a time, and the latest assignment wins: starting a second pool over the same members moves them to it, and stopping that pool returns them to the default pool, not the first. An enemy spawned with tags matching two running pools joins the one started or restarted latest. Changing an enemy's tags later moves no one. A pool's members keep the turns they hold when they change pool; those turns count against the new pool until they end.
+
+Every pool step acts on the host only, and no pool runs when a level starts or restarts. A step that runs during a trigger's or teleporter's own tick acts before that tick's attacks are decided; every other step — after a `wait`, from a named or `levelLoad` reaction, or from a player event — acts on the next tick. Steps on one tick apply in the order they were issued, beside any spawns between them.
+
+```typescript
+// A trigger with `target_tag arena` and `command start` does the same with no script.
+defineReaction("arena.start", {
+  sequence: getMapEntities("attackPool", { tag: "arena" }).flatMap((p) => p.start()),
+});
+defineReaction("arena.cleared", getMapEntities("attackPool", { tag: "arena" }).map((p) => p.stop()));
+```
+
+```lua
+local steps = {}
+for _, p in ipairs(Postretro.getMapEntities("attackPool", { tag = "arena" })) do
+  table.insert(steps, p:start())
+end
+Postretro.defineReaction("arena.start", { sequence = steps }) -- nested tables flatten
 ```
 
 ### LightEntityHandle

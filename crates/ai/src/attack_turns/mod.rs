@@ -29,7 +29,7 @@ pub(crate) use budget::{BudgetTable, TokenBudget};
 use std::sync::Arc;
 
 use postretro_entities::components::brain::{AttackPoolId, AttackTurnState, BrainComponent};
-use postretro_entities::{EntityId, EntityRegistry};
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::BehaviorGraphDescriptor;
 use postretro_foundation::attack_budget::AttackBudgetVocabulary;
 
@@ -202,18 +202,31 @@ impl AttackTurnRuntime {
     }
 }
 
-/// The pool an enemy takes turns in. Every enemy is in the default pool until
-/// `ai_attack_pool` assigns members.
-pub(crate) fn attack_pool_of(_enemy: EntityId) -> AttackPoolId {
-    AttackPoolId::Default
+/// The pool an enemy takes turns in: the running attack pool a start or a
+/// tagged spawn assigned it, else the default pool. An assignment naming a
+/// pool that is not running this tick reads as the default pool.
+pub(crate) fn attack_pool_of(budgets: &AttackBudgets, brain: &BrainComponent) -> AttackPoolId {
+    match brain.attack_pool {
+        Some(pool) if budgets.pools.is_running(pool) => AttackPoolId::Pool(pool),
+        _ => AttackPoolId::Default,
+    }
 }
 
-/// The attack pools running this tick, with their profiles. None run until
-/// `ai_attack_pool` exists.
+/// The attack pools running this tick, with their profiles, in slot order.
+/// Reads the pool column in place; nothing allocates.
 pub(crate) fn running_attack_pools(
-    _registry: &EntityRegistry,
+    registry: &EntityRegistry,
 ) -> impl Iterator<Item = RunningPool<'_>> {
-    std::iter::empty()
+    registry
+        .iter_with_kind(ComponentKind::AttackPool)
+        .filter_map(|(pool, value)| match value {
+            ComponentValue::AttackPool(component) if component.running => Some(RunningPool {
+                pool,
+                profile: &component.budget_profile,
+                run: component.run,
+            }),
+            _ => None,
+        })
 }
 
 /// An attack's index in its graph's `attacks`, the identity turns store.

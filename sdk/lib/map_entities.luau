@@ -6,14 +6,15 @@
 --
 -- `wrapTeleporterEntity`, `wrapGhostLinkEntity`, `wrapLightEntity`,
 -- `wrapFogVolumeEntity`, `wrapMoverEntity`, `wrapTriggerVolumeEntity`,
--- `wrapSpawnerEntity` and `wrapTrapEntity` are installed as temporary globals
+-- `wrapSpawnerEntity`, `wrapTrapEntity` and `wrapAttackPoolEntity` are
+-- installed as temporary globals
 -- by the prelude evaluator before this module evaluates, captured below, and
 -- nil'd out after it returns so author scripts never see them.
 -- See: context/lib/scripting.md §12 (Entity addressing)
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -26,6 +27,7 @@ local wrapMoverEntity = wrapMoverEntity
 local wrapTriggerVolumeEntity = wrapTriggerVolumeEntity
 local wrapSpawnerEntity = wrapSpawnerEntity
 local wrapTrapEntity = wrapTrapEntity
+local wrapAttackPoolEntity = wrapAttackPoolEntity
 
 local function projectEmitter(snapshot: any): any
   return {
@@ -47,8 +49,9 @@ local MAP_KINDS: { [string]: { component: string, wrap: (any) -> any } } = {
   emitter = { component = "emitter", wrap = projectEmitter },
   spawner = { component = "spawner", wrap = wrapSpawnerEntity },
   trap = { component = "projectile_trap", wrap = wrapTrapEntity },
+  attackPool = { component = "attack_pool", wrap = wrapAttackPoolEntity },
 }
-local KIND_NAMES = '"mover", "trigger", "teleporter", "ghostLink", "light", "fog", "emitter", "spawner", "trap"'
+local KIND_NAMES = '"mover", "trigger", "teleporter", "ghostLink", "light", "fog", "emitter", "spawner", "trap", "attackPool"'
 
 local MapEntitiesSdk = {}
 

@@ -941,6 +941,11 @@ where
     let stage = cpu.scope(SimStage::Ai);
     let ai_result = {
         let mut registry = registry.borrow_mut();
+        // Attack-pool requests apply after this tick's triggers fired and
+        // before arbitration: a trigger-bound start acts on this tick, and
+        // every request issued since the last drain applies first, all in
+        // issue order.
+        crate::attack_pools::apply_attack_pool_requests(&mut registry);
         let mut host = SimAiHost::new(&mut on_impact);
         run_ai(
             &mut registry,
@@ -2067,9 +2072,13 @@ pub use movement_overlap::report_static_overlap;
 // Hosts `SimHarness` (`frame`/`new`/`tick`/`record`); the tick-driven
 // timed-reaction ordering tests live in its child module.
 #[cfg(test)]
+mod attack_pool_tick_tests;
+#[cfg(test)]
 pub(crate) mod determinism_tests;
 #[cfg(test)]
 mod divergence_spike_tests;
+#[cfg(test)]
+mod member_tick_test_fixtures;
 #[cfg(test)]
 mod mover_pin_tick_tests;
 #[cfg(test)]

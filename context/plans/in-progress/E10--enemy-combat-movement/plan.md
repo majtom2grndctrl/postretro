@@ -1,7 +1,7 @@
 # E10--enemy-combat-movement — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: d29ac3a5f
 
 Source re-read at `d29ac3a5f` (106 commits past the brief's `5932287f`). Only the Mixamo brute and shadow-hunter swaps (`22d29d530`, `2bfc3afa2`, `a9e4dcd6d`) touch the cited paths, and they change content and one doc comment, not logic. Every Decision premise holds. The corrections below are Path claims and clarifications that keep each Decision's meaning.

@@ -29,9 +29,9 @@ When this is done:
   - **Where the constant lives.** The floor is an engine constant outside netcode, exported to both SDKs. A netcode test fails if the floor falls below the buffer ceiling, as with `SPAWN_ATTACK_WINDUP_MS`.
   - **What it doesn't cover.** Network transit has no load-time bound, so the floor leaves it out.
   - **Where it's checked.** `stance()` warns through the script log when a stance's minimum hold falls below the floor. The engine cannot tell a stance's hold from any other activity.
-- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` with the release's attack (`drafts/E10--enemy-combat-movement`), so one turn for that attack spans the cycle and counts its class and cost.
+- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` with the release's attack (`drafts/E10--enemy-combat-movement`), so one turn for that attack spans the cycle and counts its lane, class and cost.
   - A tell must never promise an attack that cannot come. So the builder's hold also exits to `then` when no turn is held one tick after entry, the facts' lag.
-  - Authors gate stance entry on `brain.attackTurnFree(attack)` with the release's attack.
+  - Authors gate stance entry on `attackTurnFree(attack)` with the release's attack.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
   - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity is left.
   - It is a fact the engine computes, not an IR node.
@@ -66,7 +66,7 @@ When this is done:
 ### Scripting surface
 ```ts
 // Proposed design
-import { brain, merge, stance } from "postretro";
+import { attackTurnFree, brain, merge, stance } from "postretro";
 
 const overhead = stance("overhead", {
   animation: "stance_overhead",          // the held pose names the attack
@@ -96,8 +96,8 @@ offense: {
     {
       approach: [
         // a heavy slam waits its class; the sweep's jab does not
-        { to: overhead.entry, when: brain.attackTurnFree("slam").and(brain.targetDistance.le(3.5)).and(brain.activityRoll.lt(0.5)) },
-        { to: sweep.entry, when: brain.attackTurnFree("jab").and(brain.targetDistance.le(3.5)) },
+        { to: overhead.entry, when: attackTurnFree("slam").and(brain.targetDistance.le(3.5)).and(brain.activityRoll.lt(0.5)) },
+        { to: sweep.entry, when: attackTurnFree("jab").and(brain.targetDistance.le(3.5)) },
       ],
       flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(450) }],
     },

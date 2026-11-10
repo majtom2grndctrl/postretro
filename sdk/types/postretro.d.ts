@@ -3052,6 +3052,8 @@ declare module "postretro" {
      * position. Pair this with damage recency before treating shared memory or
      * bearing as belonging to that hit (boolean). */
     readonly damageSourceKnown: RuntimeGuardNode;
+    /** `true` while the enemy holds an attack turn, for any attack, as of the previous tick: it reads true from the tick after the grant (boolean). */
+    readonly hasAttackTurn: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -3085,6 +3087,12 @@ declare module "postretro" {
 
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
+  /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load. */
+  export function attackTurnHeld(attack: string): RuntimeGuardNode;
+
+  /** `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load. */
+  export function attackTurnFree(attack: string): RuntimeGuardNode;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

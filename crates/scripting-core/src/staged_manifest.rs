@@ -1203,6 +1203,10 @@ fn run_staged_mod_init_luau(
 mod defense_manifest_tests;
 
 #[cfg(test)]
+#[path = "staged_manifest/attack_turn_read_tests.rs"]
+mod attack_turn_read_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::data_descriptors::ModThemeTokens;

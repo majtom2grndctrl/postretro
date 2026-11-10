@@ -222,6 +222,10 @@ export type PostretroModule = {
   state: typeof(state),
   --- Build `@defense.<name>` guard input leaves for the brain's own layer.
   defense: typeof(defense),
+  --- Build an `@attackTurnHeld.<attack>` guard input leaf for one of the archetype's attacks.
+  attackTurnHeld: typeof(attackTurnHeld),
+  --- Build an `@attackTurnFree.<attack>` guard input leaf for one of the archetype's attacks.
+  attackTurnFree: typeof(attackTurnFree),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

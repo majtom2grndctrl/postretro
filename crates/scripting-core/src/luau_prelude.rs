@@ -316,7 +316,14 @@ const GAME_STATE_FIELDS: &[&str] = &["getGameState"];
 
 /// Behavior-graph guard-input SDK fields lifted to globals after evaluating
 /// `brain.luau`.
-const BRAIN_LUAU_FIELDS: &[&str] = &["brain", "candidate", "defense", "state"];
+const BRAIN_LUAU_FIELDS: &[&str] = &[
+    "brain",
+    "candidate",
+    "defense",
+    "state",
+    "attackTurnHeld",
+    "attackTurnFree",
+];
 
 /// Audio SDK fields exported through `require("postretro/audio")`.
 const AUDIO_FIELDS: &[&str] = &["setGhostAudio"];
@@ -430,6 +437,8 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "candidate",
     "defense",
     "state",
+    "attackTurnHeld",
+    "attackTurnFree",
     "emitter",
     "smokeEmitter",
     "sparkEmitter",

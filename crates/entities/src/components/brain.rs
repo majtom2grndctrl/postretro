@@ -31,6 +31,12 @@ use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
 
 use super::mesh::MeshComponent;
 
+mod attack_turns;
+pub use attack_turns::{
+    AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
+    ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
+};
+
 /// Maximum number of distinct damagers remembered by one brain. Entries age to
 /// the shared damage-recency sentinel and remain until this bounded ledger must
 /// make room for another attacker.
@@ -206,6 +212,10 @@ pub struct BrainComponent {
     /// restore re-enters fresh, recording new bounds and re-picking direction.
     #[serde(skip)]
     pub engaged_motion: EngagedMotionMemory,
+    /// Attack turns held, the pending request and the wait clock. Transient:
+    /// a restored brain holds nothing and arbitrates from scratch.
+    #[serde(skip)]
+    pub attack_turns: AttackTurnState,
     /// Whether this brain may acquire and pursue a target. This is
     /// host-authoritative simulation state: it deliberately has no snapshot
     /// field, because a closed brain's stationary Idle transform is already the
@@ -322,6 +332,7 @@ impl BrainComponent {
             launch: LaunchState::default(),
             presented_travel_variant: TravelVariant::Base,
             engaged_motion: EngagedMotionMemory::None,
+            attack_turns: AttackTurnState::default(),
             aggro_armed: true,
             target_reachable: false,
             acquired_target: None,

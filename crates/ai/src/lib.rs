@@ -10,6 +10,7 @@ use std::{borrow::Cow, cell::RefCell};
 use glam::{Quat, Vec3};
 
 mod apply;
+mod attack_turns;
 mod brain_programs;
 mod brain_scope;
 mod candidate_scope;
@@ -211,6 +212,9 @@ pub(crate) struct EnemyOutcome {
     /// The activity entered this tick, present only on the tick the brain
     /// entered it.
     entered: Option<EnteredActivity>,
+    /// An unmarked turn granted this tick, by attack index. Released in apply
+    /// unless that attack starts this tick.
+    fresh_unmarked_grant: Option<u16>,
 }
 
 /// An activity the brain entered this tick: its authored `on_enter` address,
@@ -284,6 +288,9 @@ pub struct AiRuntime {
     los_grace: HashMap<EntityId, LosGraceState>,
     /// Canonical weapon components retained across attacks and descriptor sync.
     weapons: weapon_controller::AiWeaponControllers,
+    /// The attack-turn tick clock, budgets and arbitration scratch. Turns
+    /// themselves live on brains.
+    turns: attack_turns::AttackTurnRuntime,
 }
 
 impl AiRuntime {
@@ -301,6 +308,7 @@ impl AiRuntime {
             programs: BrainPrograms::new(),
             los_grace: HashMap::new(),
             weapons: weapon_controller::AiWeaponControllers::default(),
+            turns: attack_turns::AttackTurnRuntime::default(),
         }
     }
 }
@@ -477,7 +485,9 @@ where
         programs,
         los_grace,
         weapons,
+        turns,
     } = runtime;
+    turns.tick = turns.tick.wrapping_add(1);
     programs.sync(registry, descriptors, descriptor_generation, warned);
     weapons.sync(registry, programs, |actor| {
         host.is_quiescent(registry, actor)
@@ -508,14 +518,33 @@ where
                 return None;
             };
             let transform = registry.get_component::<Transform>(id).ok()?;
+            let mut brain = brain.clone();
+            attack_turns::admit(&mut brain.attack_turns, turns.tick);
             Some(EnemySnapshot {
                 id,
                 position: transform.position,
                 rotation: transform.rotation,
-                brain: brain.clone(),
+                brain,
             })
         })
         .collect();
+    // The turn facts guards read this tick describe the line as it stood
+    // after the previous tick.
+    let attack_turns::AttackTurnRuntime {
+        budgets, previous, ..
+    } = &mut *turns;
+    previous.rebuild(
+        budgets,
+        snapshots
+            .iter()
+            .enumerate()
+            .map(|(slot, snapshot)| attack_turns::LineEntry {
+                entity: snapshot.id,
+                slot: slot as u32,
+                pool: attack_turns::attack_pool_of(snapshot.id),
+                turns: &snapshot.brain.attack_turns,
+            }),
+    );
 
     // The live view exists only for compute. `apply_outcomes` can invoke an
     // impact policy which mutates the overlay, so retaining this Ref across the
@@ -535,6 +564,7 @@ where
             mover_nav.gate,
             collision_world,
             &live_factions,
+            turns,
         )
     };
 
@@ -545,6 +575,8 @@ where
         mover_nav,
         collision_world,
     );
+
+    attack_turns::arbitrate_attack_turns(&mut outcomes, programs, turns, weapons);
 
     apply::apply_outcomes(
         registry,

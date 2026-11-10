@@ -677,6 +677,7 @@ fn step_graph(
             target_reachable: true,
             target_visible: true,
             attacks_fired_in_activity: 0,
+            has_attack_turn: false,
         },
     );
 
@@ -9647,6 +9648,7 @@ fn step_reference_enemy_graph_with_hostility(
             target_reachable: true,
             target_visible,
             attacks_fired_in_activity: 0,
+            has_attack_turn: false,
         },
     );
 
@@ -10015,6 +10017,10 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     give_reference_armor(&mut reg, enemy);
+    // The trace's jab-then-slam rotation lands inside the jab's cooldown, which
+    // a shared token spaces out. Opting both attacks out of the budget keeps
+    // this trace about nesting; turn pacing has its own proofs.
+    opt_out_of_attack_budget(&mut reg, &mut runtime, enemy);
 
     (0..TICKS)
         .map(|tick| {
@@ -10112,6 +10118,8 @@ fn reference_enemy_routes_slam_only_and_jab_ranges_to_their_named_attacks() {
     let mut runtime = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "alert"), 50.0);
+    // Routing, not pacing: the slam's held turn would space the jab out.
+    opt_out_of_attack_budget(&mut reg, &mut runtime, enemy);
 
     run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "attack_slam");
@@ -13408,6 +13416,26 @@ fn an_arrival_guard_below_the_engine_epsilon_leaves_a_position_goal_wedged() {
 
 /// The addresses a tick's enemy emissions fire, in order. Entry emissions for
 /// activities that author no `on_enter` fire nothing and are skipped.
+/// Bind `enemy`'s graph now and make every one of its attacks draw nothing,
+/// as `draws: []` does: always granted, never counted.
+fn opt_out_of_attack_budget(reg: &mut EntityRegistry, runtime: &mut AiRuntime, enemy: EntityId) {
+    let mut warned = HashSet::new();
+    runtime.programs.sync(reg, &[], 0, &mut warned);
+    let attacks = reg
+        .get_component::<BrainComponent>(enemy)
+        .expect("the enemy carries a brain")
+        .graph
+        .attacks
+        .len();
+    for attack in 0..attacks {
+        runtime.programs.set_attack_draws_for_test(
+            enemy,
+            attack as u16,
+            postretro_entities::components::brain::ResolvedDraws::NONE,
+        );
+    }
+}
+
 fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static, str>> {
     events
         .iter()
@@ -13420,6 +13448,9 @@ mod held_world_participation;
 
 #[path = "engaged_motion_tests.rs"]
 mod engaged_motion;
+
+#[path = "attack_turns/tests/tick/mod.rs"]
+mod attack_turn_ticks;
 
 #[test]
 fn contact_attack_deals_its_damage_type() {

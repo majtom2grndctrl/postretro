@@ -58,6 +58,16 @@ struct ActorWeapons {
     descriptor_generation: Option<u64>,
 }
 
+impl ActorWeapons {
+    fn cancel_all(&mut self) {
+        self.active = None;
+        for weapon in self.weapons.values_mut() {
+            weapon.component.cancel_activation();
+            weapon.attack_name = None;
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct AiWeaponControllers {
     actors: HashMap<EntityId, ActorWeapons>,
@@ -159,13 +169,30 @@ impl AiWeaponControllers {
         self.actors.remove(&actor);
     }
 
+    /// Cancel one actor's execution in flight, keeping its installed weapons,
+    /// paid resources and owed recovery. A turn holder's target switch ends
+    /// its burst here, so no shot of it lands on the new target.
+    pub(crate) fn cancel_actor(&mut self, actor: EntityId) {
+        let Some(actor_weapons) = self.actors.get_mut(&actor) else {
+            return;
+        };
+        actor_weapons.cancel_all();
+    }
+
+    /// The attack whose execution this actor has in flight, if any.
+    pub(crate) fn executing_attack(&self, actor: EntityId) -> Option<&str> {
+        let actor_weapons = self.actors.get(&actor)?;
+        let weapon = actor_weapons.weapons.get(actor_weapons.active.as_ref()?)?;
+        weapon
+            .component
+            .state
+            .activation_cursor()
+            .and(weapon.attack_name.as_deref())
+    }
+
     pub(crate) fn cancel_activations(&mut self) {
         for actor in self.actors.values_mut() {
-            actor.active = None;
-            for weapon in actor.weapons.values_mut() {
-                weapon.component.cancel_activation();
-                weapon.attack_name = None;
-            }
+            actor.cancel_all();
         }
     }
 
@@ -182,11 +209,7 @@ impl AiWeaponControllers {
     ) -> Option<CommittedWeaponFire> {
         let actor_weapons = self.actors.get_mut(&actor)?;
         if aim.is_none() {
-            for weapon in actor_weapons.weapons.values_mut() {
-                weapon.component.cancel_activation();
-                weapon.attack_name = None;
-            }
-            actor_weapons.active = None;
+            actor_weapons.cancel_all();
         }
         let request = request.filter(|_| aim.is_some());
         if let Some(request) = request.as_ref()

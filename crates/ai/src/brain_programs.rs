@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use postretro_entities::components::brain::ResolvedDraws;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor,
 };
@@ -93,6 +94,8 @@ pub(crate) struct BrainEntityPrograms {
     envelopes: Vec<BoundEnvelope>,
     candidate_filter: Option<BoundProgram<CandidateScope>>,
     resolved_projectile_attacks: HashMap<String, ResolvedProjectileAttack>,
+    /// Each attack's resolved draws, in the graph's attack-name order.
+    attack_draws: Vec<ResolvedDraws>,
 }
 
 impl BrainEntityPrograms {
@@ -115,6 +118,11 @@ impl BrainEntityPrograms {
         attack_name: &str,
     ) -> Option<&ResolvedProjectileAttack> {
         self.resolved_projectile_attacks.get(attack_name)
+    }
+
+    /// What the attack at `attack` (its index in the graph's attacks) draws.
+    pub(crate) fn attack_draws(&self, attack: u16) -> Option<ResolvedDraws> {
+        self.attack_draws.get(attack as usize).copied()
     }
 }
 
@@ -158,6 +166,18 @@ impl BrainPrograms {
     ) -> Option<R> {
         let (entries, scope) = (&self.entries, &mut self.scope);
         entries.get(&entity).map(|entry| evaluate(entry, scope))
+    }
+
+    /// Override what one attack draws, standing in for authored `draws`.
+    #[cfg(test)]
+    pub(crate) fn set_attack_draws_for_test(
+        &mut self,
+        entity: EntityId,
+        attack: u16,
+        draws: ResolvedDraws,
+    ) {
+        let entry = self.entries.get_mut(&entity).expect("the entity is bound");
+        entry.attack_draws[attack as usize] = draws;
     }
 
     pub(crate) fn take_reseat(&mut self, entity: EntityId) -> bool {
@@ -239,12 +259,18 @@ pub(super) fn bind_graph(
         .as_ref()
         .and_then(|filter| bind_candidate_filter(scope, candidate_scope, filter, warned));
     let resolved_projectile_attacks = resolve_projectile_attacks(&graph, descriptors, warned);
+    let attack_draws = graph
+        .attacks
+        .values()
+        .map(crate::attack_turns::resolve_attack_draws)
+        .collect();
     BrainEntityPrograms {
         graph,
         descriptor_generation,
         envelopes,
         candidate_filter,
         resolved_projectile_attacks,
+        attack_draws,
     }
 }
 

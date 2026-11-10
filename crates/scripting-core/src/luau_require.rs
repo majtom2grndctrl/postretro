@@ -467,6 +467,8 @@ mod tests {
                 "candidate",
                 "defense",
                 "state",
+                "attackTurnHeld",
+                "attackTurnFree",
                 "emitter",
                 "smokeEmitter",
                 "sparkEmitter",

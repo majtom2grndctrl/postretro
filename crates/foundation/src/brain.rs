@@ -119,6 +119,17 @@ pub const BRAIN_DAMAGE_BEARING_INPUT: &str = "@brain.damageBearing";
 /// Authors conjoin this with [`BRAIN_TIME_SINCE_DAMAGE_MS_INPUT`] before using
 /// damage recency to interpret shared last-known-position memory or bearing.
 pub const BRAIN_DAMAGE_SOURCE_KNOWN_INPUT: &str = "@brain.damageSourceKnown";
+/// Whether this enemy held an attack turn, for any attack, as of the previous
+/// tick's arbitration.
+pub const BRAIN_HAS_ATTACK_TURN_INPUT: &str = "@brain.hasAttackTurn";
+
+/// Prefix of the named Bool read `attackTurnHeld(attack)`: a turn is held for
+/// that attack, as of the previous tick.
+pub const ATTACK_TURN_HELD_INPUT_PREFIX: &str = "@attackTurnHeld.";
+/// Prefix of the named Bool read `attackTurnFree(attack)`: a request for that
+/// attack would be granted now against the previous tick's counts and
+/// reservations. False with no target.
+pub const ATTACK_TURN_FREE_INPUT_PREFIX: &str = "@attackTurnFree.";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -150,7 +161,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 20] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 21] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -171,6 +182,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 20] = [
     (BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, IrType::Number),
     (BRAIN_DAMAGE_BEARING_INPUT, IrType::Number),
     (BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, IrType::Bool),
+    (BRAIN_HAS_ATTACK_TURN_INPUT, IrType::Bool),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -189,6 +201,20 @@ pub enum BrainInputRef<'a> {
     /// The brain entity's own layer, `@defense.<layer>[.capacity]`. The layer
     /// name is checked against the registered vocabulary at load.
     Defense { layer: &'a str, capacity: bool },
+    /// `@attackTurnHeld.<attack>`: one of the brain archetype's attacks, checked
+    /// at load. Projects as a boolean.
+    AttackTurnHeld(&'a str),
+    /// `@attackTurnFree.<attack>`: one of the brain archetype's attacks, checked
+    /// at load. Projects as a boolean.
+    AttackTurnFree(&'a str),
+}
+
+/// The attack name a named attack-turn read carries, or `None` for any other
+/// input name.
+pub fn attack_turn_input(name: &str) -> Option<&str> {
+    name.strip_prefix(ATTACK_TURN_HELD_INPUT_PREFIX)
+        .or_else(|| name.strip_prefix(ATTACK_TURN_FREE_INPUT_PREFIX))
+        .filter(|attack| !attack.is_empty())
 }
 
 /// Resolve a guard input name, or `None` when it belongs to neither the fixed
@@ -199,6 +225,12 @@ pub fn resolve_brain_input(name: &str) -> Option<BrainInputRef<'_>> {
     }
     if let Some((layer, capacity)) = crate::defense::defense_input(name) {
         return Some(BrainInputRef::Defense { layer, capacity });
+    }
+    if let Some(attack) = name.strip_prefix(ATTACK_TURN_HELD_INPUT_PREFIX) {
+        return (!attack.is_empty()).then_some(BrainInputRef::AttackTurnHeld(attack));
+    }
+    if let Some(attack) = name.strip_prefix(ATTACK_TURN_FREE_INPUT_PREFIX) {
+        return (!attack.is_empty()).then_some(BrainInputRef::AttackTurnFree(attack));
     }
     let index = BRAIN_INPUTS
         .iter()
@@ -233,6 +265,7 @@ impl BindingScope for BrainValidationScope {
         let ir_type = match resolve_brain_input(name)? {
             BrainInputRef::Fixed { ir_type, .. } => ir_type,
             BrainInputRef::State(_) | BrainInputRef::Defense { .. } => IrType::Number,
+            BrainInputRef::AttackTurnHeld(_) | BrainInputRef::AttackTurnFree(_) => IrType::Bool,
         };
         Some(ResolvedInput {
             handle: ir_type,
@@ -388,6 +421,34 @@ mod tests {
             (BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, IrType::Bool),
             "new brain facts append; they never repoint existing guard handles"
         );
+    }
+
+    #[test]
+    fn has_attack_turn_appends_at_fixed_slot_twenty() {
+        assert_eq!(
+            BRAIN_INPUTS[20],
+            (BRAIN_HAS_ATTACK_TURN_INPUT, IrType::Bool),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn validation_scope_resolves_named_attack_turn_reads_as_booleans() {
+        let scope = BrainValidationScope;
+        for name in ["@attackTurnHeld.slam", "@attackTurnFree.slam"] {
+            let resolved = scope
+                .resolve_input(name)
+                .unwrap_or_else(|| panic!("`{name}` must resolve"));
+            assert_eq!(resolved.ir_type, IrType::Bool, "`{name}` is a Bool read");
+        }
+        assert_eq!(attack_turn_input("@attackTurnFree.slam"), Some("slam"));
+        for name in ["@attackTurnHeld.", "@attackTurnFree.", "@attackTurn.slam"] {
+            assert!(
+                scope.resolve_input(name).is_none(),
+                "`{name}` names no attack"
+            );
+            assert_eq!(attack_turn_input(name), None);
+        }
     }
 
     #[test]

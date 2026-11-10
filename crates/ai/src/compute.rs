@@ -25,7 +25,7 @@ use super::targeting::{
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
-use super::{engaged_motion, travel_variants};
+use super::{attack_turns, engaged_motion, travel_variants};
 use crate::agent_steering;
 use crate::nav::{NavStart, find_path_from};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
@@ -46,9 +46,10 @@ pub(super) fn evaluate(
     gate: crate::nav::NavGate<'_>,
     collision_world: Option<&crate::collision::CollisionWorld>,
     factions: &LiveFactionSentiment<'_>,
+    turns: &attack_turns::AttackTurnRuntime,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
-    for snap in snapshots {
+    for (slot, snap) in snapshots.into_iter().enumerate() {
         let mut brain = snap.brain;
         let mut graph_reseated = programs.take_reseat(snap.id);
         if graph_reseated {
@@ -68,6 +69,11 @@ pub(super) fn evaluate(
                 );
             }
             graph_reseated |= brain.reseat_to_initial();
+        }
+        // A reseat takes the enemy out of the AI set: its turns, request and
+        // clock name attacks of the graph it left.
+        if graph_reseated {
+            brain.attack_turns.clear();
         }
         // Candidate refresh runs during selection below, before the established
         // brain damage-fact aging site. Advance the paired attacker ledger here
@@ -339,6 +345,23 @@ pub(super) fn evaluate(
             // armed brain evaluates its whole guard set whether or not it has a
             // pawn: that is how an interrupt reaches an enemy nobody is standing
             // in front of.
+            // Turn facts read the previous tick's turns and line, against the
+            // target selected now.
+            let has_attack_turn = brain.attack_turns.holds_any();
+            programs.with_entry_scope(snap.id, |bound, scope| {
+                let reader = attack_turns::TurnFactReader {
+                    line: &turns.previous,
+                    budgets: &turns.budgets,
+                    entity: snap.id,
+                    slot: slot as u32,
+                    pool: attack_turns::attack_pool_of(snap.id),
+                    target: target.map(|target| target.entity),
+                    turns: &brain.attack_turns,
+                    graph: &brain.graph,
+                    programs: bound,
+                };
+                scope.refresh_attack_turns(|attack, read| reader.read(attack, read));
+            });
             // Selector guards may choose the current action, but their input
             // snapshot has not yet been refreshed for this enemy. Seed a
             // type-correct zero cooldown first, resolve that action without
@@ -361,6 +384,7 @@ pub(super) fn evaluate(
                     target_reachable,
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                    has_attack_turn,
                 },
             );
             let attack_cooldown_ms = programs
@@ -390,6 +414,7 @@ pub(super) fn evaluate(
                     target_reachable,
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                    has_attack_turn,
                 },
             );
             prior_standoff_distance = programs
@@ -640,6 +665,7 @@ pub(super) fn evaluate(
             travel_variant,
             combat_slot: None,
             engaged_ring,
+            fresh_unmarked_grant: None,
             brain,
         });
     }

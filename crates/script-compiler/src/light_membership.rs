@@ -526,6 +526,16 @@ fn install_lua_determinism(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Behavior-graph guard-input helpers `brain.luau` exports.
+const BRAIN_LUAU_FIELDS: &[&str] = &[
+    "brain",
+    "candidate",
+    "defense",
+    "state",
+    "attackTurnHeld",
+    "attackTurnFree",
+];
+
 fn install_lua_game_state(lua: &Lua) -> mlua::Result<()> {
     let bridge = json_to_lua(lua, &game_state_refs_json())?;
     let install: LuaFunction = lua.load(LUAU_INSTALL_BY_PLAYER.as_str()).eval()?;
@@ -695,18 +705,14 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     globals.set("runtime", runtime.clone())?;
 
     let brain = eval_lua_table(lua, BRAIN_LUAU, "sdk/lib/brain.luau")?;
-    copy_lua_fields(
-        &globals,
-        &brain,
-        &["brain", "candidate", "defense", "state"],
-    )?;
+    copy_lua_fields(&globals, &brain, BRAIN_LUAU_FIELDS)?;
 
     let root = lua.create_table()?;
     copy_lua_fields(&root, &map_entities, MAP_ENTITIES_FIELDS)?;
     copy_lua_fields(&root, &gravity, GRAVITY_FIELDS)?;
     root.set("runtime", runtime)?;
     copy_lua_fields(&root, &game_state, &["getGameState"])?;
-    copy_lua_fields(&root, &brain, &["brain", "candidate", "defense", "state"])?;
+    copy_lua_fields(&root, &brain, BRAIN_LUAU_FIELDS)?;
     copy_lua_fields(&root, &keyframes, &["timeline", "sequence"])?;
     copy_lua_fields(
         &root,

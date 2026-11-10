@@ -50,7 +50,9 @@ local BrainSdk = {}
 --- `damageBearing` (number; signed XZ yaw from visual `+Z` toward the most
 --- recent damage attacker, zero ahead and opposite signs on each side), and
 --- `damageSourceKnown` (boolean; true only when the latest damaging hit
---- supplied an attacker world position; pair it with damage recency).
+--- supplied an attacker world position; pair it with damage recency), and
+--- `hasAttackTurn` (boolean; an attack turn is held, for any attack, as of the
+--- previous tick).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -72,6 +74,7 @@ BrainSdk.brain = table.freeze({
   distanceToLastKnown = input("@brain.distanceToLastKnown"),
   damageBearing = input("@brain.damageBearing"),
   damageSourceKnown = input("@brain.damageSourceKnown"),
+  hasAttackTurn = input("@brain.hasAttackTurn"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.
@@ -111,6 +114,21 @@ function BrainSdk.defense(layer: any): { current: RuntimeGuardNode, capacity: Ru
     current = input(defenseInput(layer, false)),
     capacity = input(defenseInput(layer, true)),
   })
+end
+
+--- `true` while the enemy holds a turn for `attack`, one of its archetype's
+--- attacks, as of the previous tick. Naming another attack fails load.
+function BrainSdk.attackTurnHeld(attack: string): RuntimeGuardNode
+  return input("@attackTurnHeld." .. attack)
+end
+
+--- `true` when a request for `attack`, one of its archetype's attacks, would be
+--- granted now against the previous tick's counts and reservations, leaving out
+--- the enemy's own pending request. False with no target, and for an attack
+--- sharing a token with a turn the enemy holds. Naming another attack fails
+--- load.
+function BrainSdk.attackTurnFree(attack: string): RuntimeGuardNode
+  return input("@attackTurnFree." .. attack)
 end
 
 return BrainSdk

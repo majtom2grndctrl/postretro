@@ -2,6 +2,7 @@ pub(super) fn should_switch_animation(state_changed: bool, moving: bool, latch: 
     state_changed || moving != latch
 }
 
+use super::attack_turns;
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
 use super::graph_eval::animation_for_path;
@@ -219,6 +220,11 @@ where
         // materialize a host-owned flight entity; the shared projectile stage
         // resolves its later contact through that same chokepoint.
         let mut weapon_request = None;
+        // A fresh unmarked grant holds only if its attack starts this tick.
+        let granted_attack = outcome
+            .fresh_unmarked_grant
+            .and_then(|attack| attack_turns::attack_name(&outcome.brain.graph, attack));
+        let mut grant_started = false;
         if let (Some(pending), Some(target)) = (outcome.attack.take(), outcome.target)
             && !invalidated_entities.contains(&target.entity)
             && selected_target_alive(registry, target.entity)
@@ -270,6 +276,7 @@ where
                     false
                 }
             };
+            grant_started |= attack_fired;
             if attack_fired {
                 events.push(AiEmission {
                     sounds: None,
@@ -299,19 +306,27 @@ where
                     && !host.is_quiescent(registry, target.entity)
             })
         });
-        if let Some(fire) = weapons.advance_actor(
+        let fire = weapons.advance_actor(
             registry,
             outcome.id,
             weapon_request,
             weapon_aim,
             tick_dt.max(0.0) * 1000.0,
             host,
-        ) && commit_attack_fire(
-            registry,
-            outcome.id,
-            fire.attack_name.clone(),
-            fire.recovery_ms,
-        ) {
+        );
+        grant_started |= granted_attack.is_some_and(|granted| {
+            fire.as_ref()
+                .is_some_and(|fire| fire.attack_name == granted)
+                || weapons.executing_attack(outcome.id) == Some(granted)
+        });
+        if let Some(fire) = fire
+            && commit_attack_fire(
+                registry,
+                outcome.id,
+                fire.attack_name.clone(),
+                fire.recovery_ms,
+            )
+        {
             projectile_spawns.push(EnemyProjectilePresentationSpawn {
                 projectile: fire.projectile,
                 descriptor_class: fire.canonical_weapon,
@@ -392,6 +407,11 @@ where
             .get_component::<BrainComponent>(outcome.id)
             .cloned()
         {
+            if let Some(attack) = outcome.fresh_unmarked_grant
+                && !grant_started
+            {
+                attack_turns::release_unstarted_grant(&mut brain.attack_turns, attack);
+            }
             brain.locomotion_moving = locomotion_intent.moving;
             brain.launch.airborne_presented = airborne_clip.is_some();
             brain.presented_travel_variant = travel_variant;

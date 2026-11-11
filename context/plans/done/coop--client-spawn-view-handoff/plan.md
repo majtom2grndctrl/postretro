@@ -1,7 +1,7 @@
 # coop--client-spawn-view-handoff — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 3f851eff1 (no `crates/` change since the brief's b215170, so the brief's grounded reads stand)
 
 ## Corrections
@@ -84,7 +84,7 @@ Row ids: R = resolver and reservation, C = client stand-in, M = frontend menu, A
 | A1 with hint applied, arming frame camera within 1 cm, yaw/pitch unchanged; single-spawn and non-first placement | client arm test | achievable as stated | pass — `arming_with_an_applied_hint_keeps_the_camera_within_a_centimetre_and_its_facing` (arm emulated via `ClientView::arm`, see Corrections) |
 | A2 regression: unarmed view turn keeps yaw/pitch at arm | client arm test | achievable as stated | pass — `view_turned_while_unarmed_keeps_its_yaw_and_pitch_when_the_pawn_arms` |
 | W1 round trip; previous app protocol refused at gate 1; no shipped Control encoding changes; net has no internal dep | `crates/net` wire + handshake tests; `layering_invariants_hold` | achievable as stated | pass — `control_envelopes_round_trip`, `spawn_pose_hint_append_preserves_shipped_control_encodings`, `spawn_pose_hint_refuses_the_previous_protocol_id`, `netcode_handshake_*` (PRLC / 39 refused), `layering_invariants_hold` |
-| X1 loopback co-op on `coop-presentation-test` with distinct client yaw, with and without client map arg | owner, in-engine | manual | outstanding — owner, in-engine (see manual note below) |
+| X1 loopback co-op on `coop-presentation-test` with distinct client yaw, with and without client map arg | owner, in-engine | manual | pass — owner, in-engine (2026-11-10): spawn-facing run on `coop-presentation-test`, and the no-map-argument join on catalog `combat-demo` (menu cleared at the host's level) |
 
 Gate (final, at c7161a739): `cargo fmt --check` ✓ · `cargo clippy --target-dir target/preflight-clippy -- -D warnings` ✓ (0 warnings) · `cargo test --workspace --no-fail-fast` ✓ 15,525 passed, 0 failed, 121 ignored · `cargo check --release` ✓ · `crate-graph --check` ✓.
 

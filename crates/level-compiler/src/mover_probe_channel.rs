@@ -49,6 +49,8 @@ pub(crate) use cost::MoverChannelCost;
 pub(crate) use depth::{CarriedDepth, DepthReservation, reserve_mover_tiles};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 #[cfg(test)]
+pub(crate) use domain::direct_display_levels;
+#[cfg(test)]
 pub(crate) use domain::{
     BOUNCE_FLOOR_LEVELS, compact_tile, display_levels, max_abs_difference, round_trip_error,
 };

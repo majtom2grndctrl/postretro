@@ -1024,3 +1024,6 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
 
 #[path = "mover_mid_pose_tests.rs"]
 mod mid_pose;
+
+#[path = "mover_mid_pose_compose_tests.rs"]
+mod mid_pose_compose;

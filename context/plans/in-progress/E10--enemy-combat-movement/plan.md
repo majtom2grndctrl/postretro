@@ -276,6 +276,7 @@ Hot paths touched: the per-tick AI pass (arbitration adds one batch pass; no per
 - **Reload warnings (post-review, owner-requested 2026-11-10).** Both behaviors stand; they now say so on every reload.
   - **Removed token.** A reload that removes a token an attack still draws drops that draw, so the token no longer limits the attack. It used to warn once per process, naming only the token. It now warns once per attack and token for each committed vocabulary: `[AI] attack `slam` draws `heavy`, which is not a registered attack token; ...` (`reload_removing_a_drawn_token_warns_on_each_reload`).
   - **Removed profile.** A reload that removes a profile a placed pool names now warns at the commit, as level install does. The check moved from `postretro-sim` (`attack_pools::install`) to `postretro-scripting-core` (`attack_budget_vocabulary::warn_undeclared_budget_profiles`), so `commit_attack_budgets`, the reload chokepoint, can call it (`reload_commit_dropping_a_placed_pool_profile_warns`).
+  - **Gate (Windows, f417059e1).** scripting-core `attack_budget` 7, ai lib 367 (2 ignored), sim `attack_pool` 14; `cargo check -p postretro --all-targets` and clippy `-D warnings` on all four crates are clean. Full preflight runs at landing.
 - **Landing docs** (`context/lib`):
   - Flip the "decided, not yet built" markers: `entity_model.md` §7c Engaged motion and Attack budget, `scripting.md` §2 tokens, attack-turn facts, the attack pool member row, and `build_pipeline.md` for `ai_attack_pool`.
   - Correct `entity_model.md:301`'s strafe wording.

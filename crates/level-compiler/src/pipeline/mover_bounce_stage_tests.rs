@@ -41,7 +41,8 @@ fn closet(dir: &Path, bounces: Option<u32>) -> PathBuf {
     path
 }
 
-/// Run `f` over the fixture's SH bake context and mover poses.
+/// Run `f` over the fixture's SH bake context and mover poses, placed along
+/// each path as the pipeline places them.
 fn with_ctx<R>(fixture: &FixturePipeline, f: impl FnOnce(&ShBakeCtx<'_>, &MoverPoses) -> R) -> R {
     let static_lights = StaticBakedLights::from_lights(&fixture.lights);
     let animated_lights = AnimatedBakedLights::from_lights(&fixture.lights);
@@ -56,7 +57,8 @@ fn with_ctx<R>(fixture: &FixturePipeline, f: impl FnOnce(&ShBakeCtx<'_>, &MoverP
         animated_lights: &animated_lights,
         total_light_count: fixture.lights.len(),
     };
-    let poses = MoverPoses::resolve(&fixture.kinematic_movers, &fixture.kinematic_waypoints);
+    let mut poses = MoverPoses::resolve(&fixture.kinematic_movers, &fixture.kinematic_waypoints);
+    poses.place_poses(&fixture.kinematic_movers, CONFIG.probe_spacing);
     f(&ctx, &poses)
 }
 
@@ -523,8 +525,8 @@ fn light_bounces_zero_bakes_depth_alone_and_a_count_past_id_34s_bakes_id_34s() {
 }
 
 /// The closet door made 2.8 m deep and lifted only 24 units at its open
-/// waypoint: the slab encloses valid probes in the doorway at both termini,
-/// and others at one.
+/// waypoint, baking four poses (`light_poses`): the slab encloses valid
+/// probes in the doorway at every pose, and others at some.
 fn fat_door(text: String) -> String {
     let start = text.find("// brush door_slab").expect("the door slab");
     let end = start + text[start..].find("\n}\n").expect("its end");
@@ -533,22 +535,30 @@ fn fat_door(text: String) -> String {
         .replace(" 488 ", " 440 ");
     format!("{}{slab}{}", &text[..start], &text[end..])
         .replace("\"origin\" \"320 496 168\"", "\"origin\" \"320 496 80\"")
+        .replace(
+            "\"name\" \"closet_door\"",
+            "\"name\" \"closet_door\"\n\"light_poses\" \"4\"",
+        )
 }
 
-// Enclosing terminus (owner, 2026-11-09): a terminus whose posed brushes
-// enclose a probe's position, inside one brush by at least the gather's
-// lift, stores no bounce state there, so the probe reads id 34 at it, and a
-// probe enclosed at both termini joins no bounce entry. Enclosure is
-// recomputed here from the solids' own half-spaces, never read from the
-// bake. Every lifted ray of an enclosed probe starts inside the pose, so
-// its depth is the dark tile (every ray at distance 0) at that terminus and
-// Chebyshev still rejects it at rest. The bounce masks stay tight: each
-// entry's stored masks are exactly its probes' stored termini, non-empty,
-// within the valid mask.
+// Enclosing pose (owner, 2026-11-09), at every pose: a pose whose posed
+// brushes enclose a probe's position, inside one brush by at least the
+// gather's lift, stores no bounce state there, so the probe reads id 34 at
+// it: unmarked at a terminus, the base at a mid pose. A probe enclosed at
+// both termini joins no bounce entry: neither terminus lends a later share,
+// so no mid pose stores one either. Enclosure is recomputed here from the
+// solids' own half-spaces, never read from the bake. Every lifted ray of an
+// enclosed probe starts inside the pose, so its depth is the dark tile
+// (every ray at distance 0) at that pose, stored, and Chebyshev still
+// rejects it at rest. A probe on a face, inside within the lift, keeps the
+// per-ray rule. The bounce masks stay tight: each entry's stored masks are
+// exactly its probes' stored poses, non-empty, within the valid mask, and
+// its base marks lie inside them.
 #[test]
-fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
+fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
     use std::collections::BTreeMap;
 
+    use postretro_level_format::mover_probe_channel::PoseMark;
     use postretro_level_format::probe_depth_tiles::bordered_tile;
 
     use crate::mover_probe_channel::{BounceBlocks, MoverDirectBake, ProbeCells, enclosure_inset};
@@ -563,6 +573,9 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
         let [states] = outcome.movers.as_slice() else {
             panic!("one door");
         };
+        let pose_count = states.pose_count;
+        assert_eq!(pose_count, 4, "the door bakes its authored four poses");
+        let last = pose_count - 1;
         let posed = PosedMovers::resolve(
             poses,
             &fixture.kinematic_movers,
@@ -581,6 +594,7 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
         let bounce: BTreeMap<u32, _> = states.bounce.iter().map(|p| (p.probe, p)).collect();
         let depth: BTreeMap<u32, _> = states.depth.iter().map(|p| (p.probe, p)).collect();
         let (mut both, mut one, mut other_stored, mut deep) = (0, 0, 0, 0);
+        let (mut mid_enclosed, mut mid_base) = (0, 0);
         let (mut band, mut band_dark) = (0, 0);
         for (probe, position) in layout.probe_positions.iter().enumerate() {
             if layout.validity[probe] == 0 {
@@ -590,68 +604,80 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
             let position = vec3_from(*position);
             // Enclosure from the solids' own half-spaces, inset by the lift.
             let inset = enclosure_inset(position);
-            let enclosed = [0, 1].map(|k| solids[k].contains_by(position, inset));
-            let lifted = [0, 1].map(|k| {
-                directions
-                    .iter()
-                    .all(|&dir| solids[k].contains(position + dir * RAY_EPSILON))
-            });
-            for k in 0..2 {
+            let enclosed: Vec<bool> = solids
+                .iter()
+                .map(|solid| solid.contains_by(position, inset))
+                .collect();
+            let lifted: Vec<bool> = solids
+                .iter()
+                .map(|solid| {
+                    directions
+                        .iter()
+                        .all(|&dir| solid.contains(position + dir * RAY_EPSILON))
+                })
+                .collect();
+            for k in 0..pose_count {
                 assert!(
                     !enclosed[k] || lifted[k],
-                    "probe {probe} terminus {k}: enclosed, yet a lifted ray escapes"
+                    "probe {probe} pose {k}: enclosed, yet a lifted ray escapes"
                 );
                 if solids[k].contains(position) && !enclosed[k] {
                     band += 1;
                     band_dark += usize::from(lifted[k]);
                 }
             }
-            if enclosed == [false, false] {
+            if !enclosed.contains(&true) {
                 continue;
             }
             if let Some(entry) = bounce.get(&probe) {
-                for (k, (enclosed, stored)) in enclosed.iter().zip(entry.stored).enumerate() {
+                for (k, (&enclosed, &mark)) in enclosed.iter().zip(&entry.marks).enumerate() {
                     assert!(
-                        !(*enclosed && stored),
-                        "probe {probe}: enclosed at terminus {k} yet stores its state"
+                        !(enclosed && mark == PoseMark::Stored),
+                        "probe {probe}: enclosed at pose {k} yet stores its state"
                     );
+                    if enclosed && k != 0 && k != last {
+                        assert_eq!(mark, PoseMark::Base, "probe {probe} pose {k}: the base");
+                        mid_base += 1;
+                    }
                 }
                 other_stored += 1;
             }
-            if enclosed == [true, true] {
+            if enclosed[0] && enclosed[last] {
                 both += 1;
                 assert!(
                     !bounce.contains_key(&probe),
                     "probe {probe}: enclosed at both termini joins no bounce entry"
                 );
-            } else {
+            } else if enclosed[0] || enclosed[last] {
                 one += 1;
             }
+            mid_enclosed += enclosed[1..last].iter().filter(|&&e| e).count();
             let record = depth
                 .get(&probe)
                 .unwrap_or_else(|| panic!("probe {probe}: an enclosing pose keeps its depth"));
             let mut tiles = record.tiles.chunks_exact(dark.len());
-            for (k, (&stored, &enclosed)) in record.stored.iter().zip(&enclosed).enumerate() {
-                let tile = stored.then(|| tiles.next().expect("a stored tile"));
+            for (k, (&mark, &enclosed)) in record.marks.iter().zip(&enclosed).enumerate() {
+                let tile = (mark == PoseMark::Stored).then(|| tiles.next().expect("a stored tile"));
                 if !enclosed {
                     continue;
                 }
                 let tile = tile.unwrap_or_else(|| {
-                    panic!("probe {probe}: the enclosing terminus {k} stores depth")
+                    panic!("probe {probe}: the enclosing pose {k} stores depth")
                 });
                 deep += 1;
-                assert_eq!(tile, dark.as_slice(), "probe {probe} terminus {k}: dark");
+                assert_eq!(tile, dark.as_slice(), "probe {probe} pose {k}: dark");
             }
         }
         eprintln!(
             "fat door: {both} probe(s) enclosed at both termini, {one} at one, \
-             {other_stored} of them storing the other terminus, {deep} dark tile(s); \
-             {band} (probe, terminus) pair(s) inside within the lift, {band_dark} with \
-             every lifted ray inside"
+             {other_stored} of them storing another pose, {deep} dark tile(s), \
+             {mid_enclosed} enclosed (probe, mid pose) pair(s), {mid_base} reading the base \
+             in an entry; {band} (probe, pose) pair(s) inside within the lift, {band_dark} \
+             with every lifted ray inside"
         );
         assert!(
-            both > 0 && one > 0 && deep > 0,
-            "the fixture encloses probes"
+            both > 0 && one > 0 && deep > 0 && mid_enclosed > 0,
+            "the fixture encloses probes, at mid poses too"
         );
 
         let cells = ProbeCells::of_layout(&layout);
@@ -665,12 +691,16 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
                 "cell {}",
                 part.cell
             );
+            for masks in &part.entry.poses {
+                assert_eq!(masks.base & !affected, 0, "cell {}: base inside", part.cell);
+                assert_eq!(masks.base & masks.stored, 0, "cell {}", part.cell);
+            }
         }
         let section = crate::mover_probe_channel::channel_section(
             &MoverDirectBake::default(),
             &blocks,
             &cells,
-            &crate::mover_probe_channel::MoverRecords::new(&fixture.kinematic_movers),
+            &crate::mover_probe_channel::MoverRecords::new(&fixture.kinematic_movers, poses),
             &crate::mover_probe_channel::MoverPayloadBars::default(),
             |_, _, _| false,
             |_| true,
@@ -834,6 +864,8 @@ fn warm_and_cold_stop_at_the_same_mover_past_the_tile_range() {
 fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits() {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use postretro_level_format::mover_probe_channel::PoseMark;
+
     use crate::mover_probe_channel::{
         BOUNCE_FLOOR_LEVELS, compact_slots, compact_tile, display_levels, enclosure_inset,
         max_abs_difference, round_trip_error,
@@ -852,7 +884,16 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
             request.keep_every_tile = true;
             request.keep_poses = true;
             let (_, base, outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
-            assert_eq!(outcome.poses.len(), 2 * request.jobs.len());
+            let pose_counts: BTreeMap<u32, usize> = request
+                .jobs
+                .iter()
+                .map(|job| (job.mover_id, job.scenes.len()))
+                .collect();
+            assert_eq!(
+                outcome.poses.len(),
+                pose_counts.values().sum::<usize>(),
+                "every pose handed back"
+            );
             let layout = crate::sh_bake::probe_grid_layout_of(
                 ctx.geometry,
                 ctx.tree,
@@ -875,21 +916,26 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
             let mut beyond: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
             let mut past_bar: BTreeMap<(u32, usize), BTreeSet<u32>> = BTreeMap::new();
             for pose in &outcome.poses {
+                let last = pose_counts[&pose.mover_id] - 1;
+                if pose.pose != 0 && pose.pose != last {
+                    // A mid pose hands back its near-field bounce one alone.
+                    assert!(pose.probes.is_empty() && !pose.domain.is_empty());
+                    continue;
+                }
+                let terminus = usize::from(pose.pose == last);
                 assert_eq!(
                     pose.probes.len(),
                     valid,
                     "{name}: every valid probe re-baked"
                 );
                 let set = beyond.entry(pose.mover_id).or_default();
-                let bar_set = past_bar
-                    .entry((pose.mover_id, pose.terminus.index()))
-                    .or_default();
+                let bar_set = past_bar.entry((pose.mover_id, terminus)).or_default();
                 let solid = &posed
                     .movers()
                     .iter()
                     .find(|mover| mover.mover_id == pose.mover_id)
                     .expect("the pose's mover")
-                    .solids[pose.terminus.index()];
+                    .solids[pose.pose];
                 for probe in &pose.probes {
                     let position = vec3_from(layout.probe_positions[probe.probe as usize]);
                     if solid.contains_by(position, enclosure_inset(position)) {
@@ -918,8 +964,19 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
             }
             eprintln!("{name}: {enclosed_pairs} enclosed (probe, terminus) pair(s) skipped");
             assert_eq!(stored.movers.len(), request.jobs.len());
+            let at_terminus = |probe: &crate::mover_probe_channel::BounceProbe| {
+                let last = probe.marks.len() - 1;
+                [0, last].map(|pose| probe.marks[pose] == PoseMark::Stored)
+            };
             for states in &stored.movers {
-                let stored: BTreeSet<u32> = states.bounce.iter().map(|probe| probe.probe).collect();
+                // Probes a terminus stores: the termini decide them alone;
+                // a probe only a mid pose stores is the near-field bake's.
+                let stored: BTreeSet<u32> = states
+                    .bounce
+                    .iter()
+                    .filter(|probe| at_terminus(probe).contains(&true))
+                    .map(|probe| probe.probe)
+                    .collect();
                 let expected = beyond.remove(&states.mover_id).unwrap_or_default();
                 eprintln!(
                     "{name} mover #{}: {} probe(s) past the rule, {} stored, of {valid} valid",
@@ -934,18 +991,22 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                 );
                 let mut one_sided = 0;
                 for probe in &states.bounce {
-                    for terminus in 0..2 {
+                    let termini = at_terminus(probe);
+                    if !termini.contains(&true) {
+                        continue;
+                    }
+                    for (terminus, &stored) in termini.iter().enumerate() {
                         let leaves_bar = past_bar
                             .get(&(states.mover_id, terminus))
                             .is_some_and(|set| set.contains(&probe.probe));
                         assert_eq!(
-                            probe.stored[terminus], leaves_bar,
+                            stored, leaves_bar,
                             "{name} mover #{} probe {} terminus {terminus}: a state is stored \
                              exactly where it leaves the round-trip bar",
                             states.mover_id, probe.probe
                         );
                     }
-                    one_sided += usize::from(probe.stored != [true, true]);
+                    one_sided += usize::from(termini != [true, true]);
                 }
                 eprintln!(
                     "{name} mover #{}: {one_sided} of {} stored probe(s) store one terminus",
@@ -960,3 +1021,6 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
         });
     }
 }
+
+#[path = "mover_mid_pose_tests.rs"]
+mod mid_pose;

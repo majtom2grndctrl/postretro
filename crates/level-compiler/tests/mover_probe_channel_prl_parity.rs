@@ -1,5 +1,7 @@
 //! A map with no movers, and a map whose movers change nothing in the probe data,
 //! emit no MoverProbeChannel (id 57) and pack byte-identical to the parent commit's compiler.
+//! A map whose every mover bakes `light_poses 2` packs byte-identical too, and with mid poses
+//! every terminus state equals the parent's.
 //!
 //! Opt-in and `#[ignore]`: it runs a second compiler. A missing baseline fails the test, so a
 //! green run always means both maps were compared.
@@ -29,6 +31,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use postretro_level_format::mover_probe_channel::{MoverProbeChannelSection, PoseMark};
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use prl_build_support::REACH_VERIFY_ENV;
 
@@ -173,4 +176,220 @@ fn maps_whose_movers_change_nothing_pack_byte_identical_to_the_parent_compiler()
         compared += 1;
     }
     assert_eq!(compared, 2, "both parity maps compared");
+}
+
+/// `map` with `"light_poses" "<count>"` on every kinematic mover.
+fn with_light_poses(map: &str, count: u32) -> String {
+    map.replace(
+        "\"classname\" \"kinematic_mover\"",
+        &format!("\"classname\" \"kinematic_mover\"\n\"light_poses\" \"{count}\""),
+    )
+}
+
+/// The dev maps with movers the probe channel bakes.
+const MOVER_MAPS: [&str; 3] = ["mover-closet", "mover-setpiece", "enemy-movers"];
+
+// Regression guard (`light_poses 2`): a mover baking its two termini alone
+// stores today's terminus states, so a map whose every mover sets the key
+// packs byte-identical to the parent compiler's.
+#[test]
+#[ignore = "opt-in comparison: set POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN to the parent commit's prl-build"]
+fn every_mover_at_light_poses_two_packs_byte_identical_to_the_parent_compiler() {
+    let baseline = baseline_compiler();
+    let branch = PathBuf::from(env!("CARGO_BIN_EXE_prl-build"));
+    let dir = tempfile::tempdir().expect("create output directory");
+    let maps = dir.path().join("maps");
+    std::fs::create_dir_all(&maps).expect("create maps directory");
+    for name in MOVER_MAPS {
+        let text =
+            std::fs::read_to_string(workspace_root().join(format!("content/dev/maps/{name}.map")))
+                .expect("read the dev map");
+        let map = maps.join(format!("{name}-two-poses.map"));
+        std::fs::write(&map, with_light_poses(&text, 2)).expect("write the map");
+        let before = std::fs::read(compile(&baseline, &map, &dir.path().join("parent")))
+            .expect("read baseline PRL");
+        let after = std::fs::read(compile(&branch, &map, &dir.path().join("branch")))
+            .expect("read compiled PRL");
+        assert!(
+            channel_of(&after).is_some_and(|channel| channel
+                .mover_records
+                .iter()
+                .all(|record| record.knots == [0.0, 1.0])),
+            "{name}: every mover stores two poses"
+        );
+        assert!(
+            before == after,
+            "{name}: packed PRL differs from the parent compiler's: {} B against {} B, first \
+             difference at byte {:?}",
+            before.len(),
+            after.len(),
+            before.iter().zip(&after).position(|(a, b)| a != b)
+        );
+    }
+}
+
+fn channel_of(prl: &[u8]) -> Option<MoverProbeChannelSection> {
+    let mut cursor = Cursor::new(prl);
+    let meta = read_container(&mut cursor).expect("read the container");
+    read_section_data(&mut cursor, &meta, SectionId::MoverProbeChannel as u32)
+        .expect("read the section table")
+        .map(|bytes| MoverProbeChannelSection::from_bytes(&bytes).expect("id 57 decodes"))
+}
+
+// Rest is unchanged at the termini: with mid poses placed, every terminus
+// state id 57 stores equals the parent compiler's two-pose bake, block by
+// block. Direct: each (cell, light, mover)'s q at the first and last pose at
+// every probe the parent masked, and 255 at both termini at any probe only
+// a mid pose masks. Bounce: each (cell, mover) entry's stored masks and
+// tiles at both termini, and no terminus storing where the parent stored
+// nothing. Depth: each (mover, probe) record's termini marks and tiles, and
+// a record only mid poses carry reads its base at both termini.
+#[test]
+#[ignore = "opt-in comparison: set POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN to the parent commit's prl-build"]
+fn mid_poses_keep_every_terminus_state_of_the_parent_compiler() {
+    use std::collections::BTreeMap;
+
+    let baseline = baseline_compiler();
+    let branch = PathBuf::from(env!("CARGO_BIN_EXE_prl-build"));
+    let dir = tempfile::tempdir().expect("create output directory");
+    for name in MOVER_MAPS {
+        let map = workspace_root().join(format!("content/dev/maps/{name}.map"));
+        let read = |compiler: &Path, side: &str| {
+            let prl = compile(compiler, &map, &dir.path().join(side));
+            channel_of(&std::fs::read(prl).expect("read the PRL")).expect("id 57")
+        };
+        let (before, after) = (read(&baseline, "parent"), read(&branch, "branch"));
+        let mid_poses: usize = after
+            .mover_records
+            .iter()
+            .map(|record| record.knots.len() - 2)
+            .sum();
+        assert!(mid_poses > 0, "{name}: some mover places mid poses");
+
+        // Direct: (cell, namespace, light, mover) → (mask, q per probe).
+        type DirectKey = (u32, u8, u32, u32);
+        let direct = |channel: &MoverProbeChannelSection| {
+            let mut out: BTreeMap<DirectKey, BTreeMap<u32, [u8; 2]>> = BTreeMap::new();
+            for view in channel.direct_record_views() {
+                for mover in view.movers() {
+                    let last = mover.pose_count - 1;
+                    let mut slot = 0;
+                    let mut probes = BTreeMap::new();
+                    for local in 0..64u32 {
+                        if view.record.probe_mask & (1 << local) == 0 {
+                            continue;
+                        }
+                        probes.insert(local, [mover.q(slot, 0), mover.q(slot, last)]);
+                        slot += 1;
+                    }
+                    let key = (
+                        view.cell,
+                        view.record.namespace as u8,
+                        view.record.light_index,
+                        mover.mover_id,
+                    );
+                    out.insert(key, probes);
+                }
+            }
+            out
+        };
+        let (direct_before, direct_after) = (direct(&before), direct(&after));
+        let mut compared = 0;
+        for (key, probes) in &direct_after {
+            let parent = direct_before.get(key);
+            for (local, q) in probes {
+                let expected = parent
+                    .and_then(|p| p.get(local))
+                    .copied()
+                    .unwrap_or([255; 2]);
+                assert_eq!(
+                    *q, expected,
+                    "{name}: direct {key:?} probe {local} at the termini"
+                );
+                compared += 1;
+            }
+        }
+        for (key, probes) in &direct_before {
+            for (local, q) in probes {
+                if *q != [255; 2] {
+                    assert!(
+                        direct_after.get(key).is_some_and(|p| p.contains_key(local)),
+                        "{name}: direct {key:?} probe {local} lost its terminus gate"
+                    );
+                }
+            }
+        }
+
+        // Bounce: (cell, mover) → per terminus, its stored mask and tiles.
+        let bounce = |channel: &MoverProbeChannelSection| {
+            let mut out = BTreeMap::new();
+            for view in channel.bounce_entry_views() {
+                let last = view.entry.pose_count() - 1;
+                let termini = [0, last].map(|pose| {
+                    let stored = view.entry.poses[pose].stored;
+                    let tiles: Vec<Vec<u16>> = (0..64u32)
+                        .filter(|local| stored & (1 << local) != 0)
+                        .map(|local| view.pose_tile(pose, local).expect("a stored tile").to_vec())
+                        .collect();
+                    (stored, tiles)
+                });
+                out.insert((view.cell, view.entry.mover_id), termini);
+            }
+            out
+        };
+        let (bounce_before, bounce_after) = (bounce(&before), bounce(&after));
+        for (key, termini) in &bounce_before {
+            assert_eq!(
+                bounce_after.get(key),
+                Some(termini),
+                "{name}: bounce entry {key:?} at the termini"
+            );
+        }
+        for (key, termini) in &bounce_after {
+            if !bounce_before.contains_key(key) {
+                assert!(
+                    termini.iter().all(|(stored, _)| *stored == 0),
+                    "{name}: bounce entry {key:?} only mid poses add stores at a terminus"
+                );
+            }
+        }
+
+        // Depth: (mover, probe) → termini marks and tiles.
+        let depth = |channel: &MoverProbeChannelSection| {
+            channel
+                .depth_record_views()
+                .map(|view| {
+                    let last = view.record.pose_count() - 1;
+                    let termini = [0, last].map(|pose| {
+                        (
+                            view.record.marks[pose],
+                            view.pose_tile(pose).map(<[_]>::to_vec),
+                        )
+                    });
+                    (view.record.order_key(), termini)
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let (depth_before, depth_after) = (depth(&before), depth(&after));
+        for (key, termini) in &depth_before {
+            assert_eq!(depth_after.get(key), Some(termini), "{name}: depth {key:?}");
+        }
+        for (key, termini) in &depth_after {
+            if !depth_before.contains_key(key) {
+                assert!(
+                    termini.iter().all(|(mark, _)| *mark == PoseMark::Unmarked),
+                    "{name}: depth {key:?} carried only by mid poses reads its base at rest"
+                );
+            }
+        }
+        eprintln!(
+            "{name}: {mid_poses} mid pose(s); {compared} (direct entry, probe) pair(s), {} bounce \
+             entr(y/ies) and {} depth record(s) of the parent's kept at the termini; {} entr(y/ies) \
+             and {} record(s) new",
+            bounce_before.len(),
+            depth_before.len(),
+            bounce_after.len() - bounce_before.len(),
+            depth_after.len() - depth_before.len(),
+        );
+    }
 }

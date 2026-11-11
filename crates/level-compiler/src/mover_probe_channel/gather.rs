@@ -276,25 +276,103 @@ pub(crate) fn gather_posed_probes(
         .collect()
 }
 
+/// One probe of a mover's near-field domain, gathered at one pose: its SH
+/// coefficients under the gather's radiance, and, asked, its closed-pose
+/// depth.
+pub(crate) struct DomainProbe {
+    /// Dense probe index.
+    pub(crate) probe: u32,
+    /// The gather's SH coefficients, before any packing: a later share
+    /// subtracts and adds these exactly up to `f32`.
+    pub(crate) coefficients: [f32; 27],
+    /// The closed-pose bordered depth tile, when a gather ray meets the pose
+    /// and depth is binned.
+    pub(crate) depth: Option<Vec<[u16; 2]>>,
+    /// Whether the pose encloses the probe ([`PosedScene::encloses`]).
+    pub(crate) enclosed: bool,
+}
+
+impl DomainProbe {
+    /// Heap bytes the probe holds beside its own size.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        self.depth
+            .as_ref()
+            .map_or(0, |depth| (depth.capacity() * size_of::<[u16; 2]>()) as u64)
+    }
+}
+
+/// Gather each of `probes` (valid dense probes, ascending) under `gather`
+/// along id 34's own directions and weights, keeping every one: a mover's
+/// near-field domain at one pose. With `bin_depth`, a probe some ray of
+/// which meets the pose bins its closed-pose depth from the same rays. Each
+/// probe advances progress by one.
+pub(crate) fn gather_domain_probes(
+    sh_ctx: &ShBakeCtx<'_>,
+    layout: &ProbeGridLayout,
+    gather: &PosedGather<'_>,
+    probes: &[u32],
+    bin_depth: bool,
+    control: &BakeControl,
+) -> Vec<DomainProbe> {
+    let directions = probe_gather_directions();
+    let rays = TileRayTable::new(&directions);
+    let lights = static_light_refs(sh_ctx);
+    probes
+        .par_iter()
+        .map(|&probe| {
+            let _permit = control.governor().enter();
+            control.advance(1);
+            let i = probe as usize;
+            debug_assert!(layout.validity[i] != 0, "a domain probe is valid");
+            let position = vec3_from(layout.probe_positions[i]);
+            let mut distances = [0.0f32; 256];
+            MET.set(false);
+            let baked = bake_probe_with_source(
+                &directions,
+                sh_ctx,
+                position,
+                &lights,
+                None,
+                layout.far_sentinel,
+                true,
+                i as u64,
+                RadianceSource::Posed(gather),
+                &mut distances,
+            );
+            let met = MET.get();
+            DomainProbe {
+                probe,
+                coefficients: baked.coefficients,
+                depth: (bin_depth && met).then(|| bordered_tile(&rays.interior(&distances))),
+                enclosed: gather.encloses(position),
+            }
+        })
+        .collect()
+}
+
 /// The closed-pose depth of a mover that bakes no bounce (`light_bounces`
-/// 0): every valid probe some gather ray of which meets the pose, with the
-/// tile the full posed gather bins from the same rays, ascending by probe.
-/// A probe none of whose fixed directions points into the pose's bounds
-/// cannot meet it, so it traces nothing: a lifted origin inside a posed
-/// brush lies in those bounds. Each valid probe advances progress by one.
+/// 0) at each of `probes` (valid dense probes, ascending) some gather ray of
+/// which meets the pose, with the tile the full posed gather bins from the
+/// same rays, ascending by probe. A probe none of whose fixed directions
+/// points into the pose's bounds cannot meet it, so it traces nothing: a
+/// lifted origin inside a posed brush lies in those bounds. Each probe
+/// advances progress by one.
 pub(crate) fn trace_posed_depth(
     ctx: &RaytracingCtx<'_>,
     layout: &ProbeGridLayout,
     scene: &PosedScene,
+    probes: &[u32],
     control: &BakeControl,
 ) -> Vec<(u32, Vec<[u16; 2]>)> {
     let directions = probe_gather_directions();
     let rays = TileRayTable::new(&directions);
-    (0..layout.total_probes())
-        .into_par_iter()
-        .filter(|&i| layout.validity[i] != 0)
-        .filter_map(|i| {
+    probes
+        .par_iter()
+        .filter_map(|&probe| {
             control.advance(1);
+            let i = probe as usize;
+            debug_assert!(layout.validity[i] != 0, "a traced probe is valid");
             let position = vec3_from(layout.probe_positions[i]);
             if !directions
                 .iter()
@@ -310,7 +388,16 @@ pub(crate) fn trace_posed_depth(
                 met |= ray.met();
                 *slot = ray.distance(layout.far_sentinel);
             }
-            met.then(|| (i as u32, bordered_tile(&rays.interior(&distances))))
+            met.then(|| (probe, bordered_tile(&rays.interior(&distances))))
         })
+        .collect()
+}
+
+/// Every valid probe of `layout`, ascending: the termini's depth-only trace
+/// covers them all.
+pub(crate) fn valid_probes(layout: &ProbeGridLayout) -> Vec<u32> {
+    (0..layout.total_probes())
+        .filter(|&i| layout.validity[i] != 0)
+        .map(|i| i as u32)
         .collect()
 }

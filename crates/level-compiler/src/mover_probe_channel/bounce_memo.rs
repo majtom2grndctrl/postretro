@@ -4,10 +4,11 @@
 
 use postretro_level_format::indirect_display::{DEFAULT_INDIRECT_SCALE, TONEMAP_KNEE_START};
 
+use super::bake::MoverBounceJob;
 use super::depth::DEPTH_SIGNIFICANCE_FLOOR;
 use super::domain::{BOUNCE_FLOOR_LEVELS, DISPLAY_ALBEDO};
-use super::posed_scene::PosedScene;
-use super::states::{self, MoverBounceStates};
+use super::state_memo;
+use super::states::MoverBounceStates;
 use crate::bc6h::BC6H_CODEC_VERSION;
 use crate::cache::{CacheKey, StageCache};
 use crate::sh_bake::ProbeGridLayout;
@@ -30,7 +31,9 @@ const STAGE_ID: &str = "mover_probe_bounce";
 /// its depth still bakes dark.
 /// 6: enclosure takes the gather's lift as an inset: a probe on a face or
 /// less than the lift inside it keeps the per-ray rule.
-const STAGE_VERSION: u32 = 6;
+/// 7: states at every pose along the path: per-pose marks, mid poses over
+/// the near-field domain with the termini's later shares blended in.
+const STAGE_VERSION: u32 = 7;
 
 /// The per-mover memo over one stage cache, under one id-34 volume key: an
 /// edit that re-bakes id 34 re-keys every mover.
@@ -63,21 +66,38 @@ impl<'c> BounceMemo<'c> {
         Self { cache, prefix }
     }
 
-    /// The prefix, then the mover's posed bounce count and each pose: its
-    /// terminus, its solid (bounds, brush planes and side triangles), each
-    /// side's texture index and the albedo of every texture those sides name.
-    /// The mover id is not folded: the payload never names it.
+    /// The prefix, then the mover's posed bounce count, its knots (a mid
+    /// pose blends the termini's shares to its own), its near-field domain
+    /// (the boxes and the probe spacing that widened them: what a mid pose
+    /// and the termini's bounce one gather over) and each pose: its index,
+    /// its solid (bounds, brush planes and side triangles), each side's
+    /// texture index and the albedo of every texture those sides name. The
+    /// mover id is not folded: the payload never names it. One key holds
+    /// every pose, so warm equals cold.
     pub(crate) fn key(
         &self,
-        bounces: u32,
-        scenes: &[PosedScene],
+        job: &MoverBounceJob,
         materials: Option<&BounceMaterials>,
     ) -> CacheKey {
         let mut hasher = self.prefix.clone();
-        hasher.update(&bounces.to_le_bytes());
-        hasher.update(&(scenes.len() as u32).to_le_bytes());
-        for scene in scenes {
-            hasher.update(&[scene.terminus.index() as u8]);
+        hasher.update(&job.bounces.to_le_bytes());
+        hasher.update(&(job.knots.len() as u32).to_le_bytes());
+        for knot in &job.knots {
+            hasher.update(&knot.to_bits().to_le_bytes());
+        }
+        hasher.update(&job.domain.probe_spacing().to_bits().to_le_bytes());
+        let boxes = job.domain.boxes();
+        hasher.update(&(boxes.len() as u32).to_le_bytes());
+        for bounds in boxes {
+            for corner in [bounds.min, bounds.max] {
+                for component in corner.to_array() {
+                    hasher.update(&component.to_bits().to_le_bytes());
+                }
+            }
+        }
+        hasher.update(&(job.scenes.len() as u32).to_le_bytes());
+        for scene in &job.scenes {
+            hasher.update(&(scene.pose as u32).to_le_bytes());
             scene.fold_key(&mut hasher);
             match materials {
                 Some(materials) => {
@@ -92,19 +112,22 @@ impl<'c> BounceMemo<'c> {
         CacheKey::new(STAGE_ID, STAGE_VERSION, hasher.finalize().as_bytes())
     }
 
-    /// The states stored under `key`, or `None` on a miss. A payload that
-    /// names an invalid probe, lists probes out of order or has a torn tile
-    /// is corrupt: a miss that re-bakes. Runs outside any governor permit.
+    /// The states stored under `key` for a mover of `pose_count` poses, or
+    /// `None` on a miss. A payload of another pose count, or that names an
+    /// invalid probe, lists probes out of order, marks a probe badly or has
+    /// a torn tile is corrupt: a miss that re-bakes. Runs outside any
+    /// governor permit.
     pub(crate) fn get(
         &self,
         key: &CacheKey,
         mover_id: u32,
+        pose_count: usize,
         layout: &ProbeGridLayout,
     ) -> Option<MoverBounceStates> {
         let bytes = self.cache.get(key)?;
         #[cfg(test)]
         let _payload = crate::live_bytes::hold_vec("mover bounce memo", &bytes);
-        let decoded = states::decode(&bytes, mover_id, layout);
+        let decoded = state_memo::decode(&bytes, mover_id, pose_count, layout);
         if decoded.is_none() {
             log::warn!("[cache] corrupt {STAGE_ID} entry, re-baking");
         }
@@ -114,7 +137,7 @@ impl<'c> BounceMemo<'c> {
     /// Store `states`, empty included, so an unchanged mover hits next
     /// build. Runs outside any governor permit.
     pub(crate) fn put(&self, key: &CacheKey, states: &MoverBounceStates) {
-        let bytes = states::encode(states);
+        let bytes = state_memo::encode(states);
         #[cfg(test)]
         let _payload = crate::live_bytes::hold_vec("mover bounce memo", &bytes);
         self.cache.put(key, &bytes);

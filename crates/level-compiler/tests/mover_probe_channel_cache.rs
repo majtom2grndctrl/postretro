@@ -450,8 +450,10 @@ fn a_map_without_movers_packs_no_section() {
 }
 
 // Direct half: moving the plate's last waypoint traces nothing
-// for ids 34, 35, 41 and 45, re-bakes every light's entries but the one
-// reaching only the plate's first pose, and packs the edited map's cold bytes.
+// for ids 34, 35, 41 and 45 and packs the edited map's cold bytes. It moves
+// every mid pose and changes the plate's pose count (4.88 m of path, six
+// poses, to 3.25 m, five), so every light's key, which folds each pose,
+// re-bakes; the first-pose light included.
 #[test]
 fn moving_a_movers_last_waypoint_rebakes_only_the_lights_reaching_its_poses() {
     let warm = warm_equals_cold(&Scene {
@@ -464,8 +466,8 @@ fn moving_a_movers_last_waypoint_rebakes_only_the_lights_reaching_its_poses() {
     assert_all_hit(&warm, ANIMATED_DIRECT);
     assert_eq!(
         miss_share(&warm),
-        (base_probed() - 1, base_probed()),
-        "every light but the first-pose one re-bakes\n{warm}"
+        (base_probed(), base_probed()),
+        "every light re-bakes: every mid pose moved\n{warm}"
     );
     // Bounce half: only the plate's states re-bake, from the cached layers.
     assert_eq!(bounce_share(&warm), (1, MOVERS), "{warm}");

@@ -23,7 +23,9 @@ pub(crate) use cache::{
     ANIMATED_MEMO, GateMemo, PROBE_MEMO, TEXEL_MEMO, fold_gate_light, gate_key_hasher,
 };
 pub(crate) use lights::{GateLight, GateLights};
-pub(crate) use pose::{AnalysedMover, MoverPoses, Pose, Terminus};
+#[cfg(test)]
+pub(crate) use pose::Terminus;
+pub(crate) use pose::{AnalysedMover, MoverPoses, Pose};
 pub(crate) use probes::{ProbeScene, gate_probes};
 pub(crate) use report::{log_rows, log_side_counts};
 pub(crate) use rows::MoverTexels;

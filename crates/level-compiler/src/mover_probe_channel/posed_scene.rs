@@ -1,4 +1,4 @@
-// One mover posed at one terminus for the SH base's rays: its solid (the
+// One mover posed at one pose for the SH base's rays: its solid (the
 // static tracer's own hit test over its sides, its brushes' half-spaces for
 // origins inside them) and patches on its sides.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
@@ -11,27 +11,26 @@ use super::posed_solid::{PosedHit, PosedSolid};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{RAY_EPSILON, emitter_radius, hard_ray_target};
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::{BOX_SLACK_M, Terminus, segment_may_touch_box};
+use crate::mover_light_gate::{BOX_SLACK_M, segment_may_touch_box};
 use crate::partition::Aabb;
 use crate::surface_radiance::{PatchCountExceeded, PatchSet};
 
 /// The posed mover for the SH base: its solid, which every posed ray and
 /// shadow segment meets ([`PosedSolid`]), and a patch set over its sides.
 pub(crate) struct PosedScene {
-    pub(crate) terminus: Terminus,
+    /// The pose's index along the mover's path: 0 the first terminus, the
+    /// last index the last.
+    pub(crate) pose: usize,
     solid: Arc<PosedSolid>,
     pub(crate) patches: PatchSet,
 }
 
 impl PosedScene {
-    /// A mover posed at `terminus` as `solid`, with patches over its sides.
-    pub(crate) fn new(
-        solid: Arc<PosedSolid>,
-        terminus: Terminus,
-    ) -> Result<Self, PatchCountExceeded> {
+    /// A mover posed at pose `pose` as `solid`, with patches over its sides.
+    pub(crate) fn new(solid: Arc<PosedSolid>, pose: usize) -> Result<Self, PatchCountExceeded> {
         let patches = PatchSet::try_build(solid.geometry())?;
         Ok(Self {
-            terminus,
+            pose,
             solid,
             patches,
         })
@@ -102,8 +101,9 @@ impl PosedScene {
 
     /// Whether the pose encloses `probe`: inside one posed brush by at
     /// least the gather's lift ([`PosedSolid::encloses`]), so every lifted
-    /// gather ray starts in solid. Such a terminus stores no bounce state
-    /// for the probe; its depth still bakes, as the dark tile.
+    /// gather ray starts in solid. Such a pose stores no bounce state for
+    /// the probe and reads the base; its depth still bakes, as the dark
+    /// tile.
     pub(crate) fn encloses(&self, probe: Vec3) -> bool {
         self.solid.encloses(probe)
     }

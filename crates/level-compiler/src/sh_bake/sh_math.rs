@@ -115,35 +115,40 @@ pub(crate) fn pack_octahedral_irradiance_tile(
     tile_dimension: u32,
     border: u32,
 ) -> Vec<OctahedralAtlasTexel> {
-    let interior = tile_dimension - 2 * border;
-    let mut interior_texels = vec![OctahedralAtlasTexel::default(); (interior * interior) as usize];
+    if !valid {
+        return vec![OctahedralAtlasTexel::default(); (tile_dimension * tile_dimension) as usize];
+    }
+    pack_rgb_tile(&octahedral_irradiance_tile_rgb(
+        coefficients,
+        tile_dimension,
+        border,
+    ))
+}
 
-    if valid {
-        let valid_alpha = f32_to_f16_bits(1.0);
-        for iy in 0..interior {
-            for ix in 0..interior {
-                let dir = Vec3::from(irradiance_interior_texel_direction(
-                    ix,
-                    iy,
-                    tile_dimension,
-                    border,
-                ));
-                let irradiance = evaluate_sh_rgb(coefficients, dir);
-                let off = (iy * interior + ix) as usize;
-                interior_texels[off] = OctahedralAtlasTexel {
-                    rgba: [
-                        f32_to_f16_bits(irradiance.x),
-                        f32_to_f16_bits(irradiance.y),
-                        f32_to_f16_bits(irradiance.z),
-                        valid_alpha,
-                    ],
-                };
-            }
+/// A valid probe's bordered irradiance tile in `f32`, before the f16 the
+/// atlas stores: what [`pack_octahedral_irradiance_tile`] packs, texel for
+/// texel. The mover probe channel sums such tiles before it packs them, so
+/// a sum of gathers rounds once.
+pub(crate) fn octahedral_irradiance_tile_rgb(
+    coefficients: &[f32; 27],
+    tile_dimension: u32,
+    border: u32,
+) -> Vec<[f32; 3]> {
+    let interior = tile_dimension - 2 * border;
+    let mut interior_texels = vec![[0.0f32; 3]; (interior * interior) as usize];
+    for iy in 0..interior {
+        for ix in 0..interior {
+            let dir = Vec3::from(irradiance_interior_texel_direction(
+                ix,
+                iy,
+                tile_dimension,
+                border,
+            ));
+            interior_texels[(iy * interior + ix) as usize] =
+                evaluate_sh_rgb(coefficients, dir).to_array();
         }
     }
-
-    let mut tile =
-        vec![OctahedralAtlasTexel::default(); (tile_dimension * tile_dimension) as usize];
+    let mut tile = vec![[0.0f32; 3]; (tile_dimension * tile_dimension) as usize];
     for tile_y in 0..tile_dimension {
         for tile_x in 0..tile_dimension {
             let [src_x, src_y] =
@@ -153,6 +158,22 @@ pub(crate) fn pack_octahedral_irradiance_tile(
         }
     }
     tile
+}
+
+/// A valid probe's `f32` tile as the atlas stores it: each RGB rounded to
+/// f16, alpha 1.
+pub(crate) fn pack_rgb_tile(tile: &[[f32; 3]]) -> Vec<OctahedralAtlasTexel> {
+    let valid_alpha = f32_to_f16_bits(1.0);
+    tile.iter()
+        .map(|&[r, g, b]| OctahedralAtlasTexel {
+            rgba: [
+                f32_to_f16_bits(r),
+                f32_to_f16_bits(g),
+                f32_to_f16_bits(b),
+                valid_alpha,
+            ],
+        })
+        .collect()
 }
 
 // Ramamoorthi & Hanrahan 2001, eq. 11 — zonal-harmonic cosine-lobe factors.

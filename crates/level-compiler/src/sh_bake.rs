@@ -41,7 +41,9 @@ pub(crate) use section::{
     compact_section_from_dense_atlas, encode_sh_volume_section_bc6h, f16_bits_to_f32,
     sh_atlas_array_layout,
 };
-pub(crate) use sh_math::pack_octahedral_irradiance_tile;
+pub(crate) use sh_math::{
+    octahedral_irradiance_tile_rgb, pack_octahedral_irradiance_tile, pack_rgb_tile,
+};
 pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 
 pub(crate) use animation::animation_descriptor_for_light;

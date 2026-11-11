@@ -15,8 +15,9 @@ use postretro_level_format::mover_probe_channel::{
 use postretro_level_format::sh_reconstruct::Level;
 
 use super::blocks::BounceBlocks;
-use super::direct::{BAKED_POSES, DirectEntry, MoverDirectBake, ProbeCells};
+use super::direct::{DirectEntry, MoverDirectBake, ProbeCells};
 use crate::map_data::MapKinematicMover;
+use crate::mover_light_gate::MoverPoses;
 
 /// The resident byte bar each payload block is held against: level-format's
 /// bars by default, or one lowered bar for both (the
@@ -71,24 +72,28 @@ impl MoverPayloadBars {
 }
 
 /// Every mover's id-57 record, ascending by id: its author ramp, and the
-/// knots of the poses the channel stores. The bake stores the termini alone,
-/// so each record is a two-pose record (knots 0 and 1), matching the
-/// [`BAKED_POSES`] states every block holds per mover.
+/// knots of the poses the channel stores. An analysed mover's knots are its
+/// poses' path fractions t, not ramped: the renderer maps them through the
+/// ramp. A mover the channel does not pose keeps its two termini; no block
+/// names it, so assembly writes no record for it.
 pub(crate) struct MoverRecords(Vec<MoverRecord>);
 
 impl MoverRecords {
-    pub(crate) fn new(movers: &[MapKinematicMover]) -> Self {
+    pub(crate) fn new(movers: &[MapKinematicMover], poses: &MoverPoses) -> Self {
         let mut records: Vec<MoverRecord> = movers
             .iter()
             .map(|mover| {
-                MoverRecord::termini(mover.mover_id, mover.light_ramp_start, mover.light_ramp_end)
+                let mut record = MoverRecord::termini(
+                    mover.mover_id,
+                    mover.light_ramp_start,
+                    mover.light_ramp_end,
+                );
+                if let Some(analysed) = poses.mover(mover.mover_id) {
+                    record.knots.clone_from(&analysed.knots);
+                }
+                record
             })
             .collect();
-        debug_assert!(
-            records
-                .iter()
-                .all(|record| record.pose_count() == BAKED_POSES)
-        );
         records.sort_by_key(|record| record.mover_id);
         Self(records)
     }
@@ -173,7 +178,7 @@ impl EmittedDirectEntries<'_> {
 /// Id 57 holding `direct`'s entries and `bounce`'s blocks, or `None` when
 /// there are none: the section is never written empty. Each light's entries
 /// at one cell become one term record, masked to the probes where some
-/// mover's `q₀` or `q₁` is below 255. `own_tile(cell, namespace, light)`
+/// mover's `q` is below 255 at some pose. `own_tile(cell, namespace, light)`
 /// says whether the record carries its light's tile at those probes; a
 /// namespace that requires one always does. `gated(namespace)` says whether
 /// that namespace's records gate anything once loaded; a light in one that
@@ -233,19 +238,18 @@ pub(crate) fn channel_section(
 
 /// One light's term record at one cell from its movers' entries there, each
 /// holding every valid probe. The mask keeps the probes where some mover's
-/// `q` is below 255 at some pose; every other probe composes exactly
-/// as with no section, so it stores nothing. The tile is the light's, the
-/// same in every mover's entry, so it is stored once. `None` when no mover
-/// changes the term at any probe.
+/// `q` is below 255 at some pose, mid poses included; every other probe
+/// composes exactly as with no section, so it stores nothing. Each kept
+/// mover stores its N `q` per masked probe, probe-major. The tile is the
+/// light's, the same in every mover's entry, so it is stored once. `None`
+/// when no mover changes the term at any probe.
 fn term_record(
     run: &[DirectEntry],
     valid_mask: u64,
     mut record: MoverDirectRecord,
 ) -> Option<DirectRecordParts> {
-    fn pair(entry: &DirectEntry, slot: usize) -> &[u8] {
-        &entry.visibility[slot * BAKED_POSES..][..BAKED_POSES]
-    }
-    let gates = |entry: &DirectEntry, slot: usize| pair(entry, slot).iter().any(|&q| q < u8::MAX);
+    let gates =
+        |entry: &DirectEntry, slot: usize| entry.poses_at(slot).iter().any(|&q| q < u8::MAX);
     let mut kept_slots = Vec::new();
     let mut bits = valid_mask;
     let mut slot = 0;
@@ -271,7 +275,7 @@ fn term_record(
         .map(|entry| {
             let visibility = kept_slots
                 .iter()
-                .flat_map(|&slot| pair(entry, slot).iter().copied())
+                .flat_map(|&slot| entry.poses_at(slot).iter().copied())
                 .collect();
             (entry.mover_id, visibility)
         })

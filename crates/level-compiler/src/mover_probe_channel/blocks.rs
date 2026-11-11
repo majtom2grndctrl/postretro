@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::mover_probe_channel::{
-    BounceEntryParts, DepthRecordParts, MOVER_BOUNCE_RESIDENT_BYTE_BAR,
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverDepthRecord,
+    BounceEntryParts, BouncePoseMasks, DepthRecordParts, MOVER_BOUNCE_RESIDENT_BYTE_BAR,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverDepthRecord, PoseMark,
 };
 use postretro_level_format::sh_reconstruct::local_xyz;
 
@@ -62,19 +62,27 @@ impl BounceBlocks {
             }
             for (cell, mut probes) in by_cell {
                 probes.sort_unstable_by_key(|&(local, _)| local);
-                let mut stored = [0u64; 2];
+                let mut poses = vec![BouncePoseMasks::default(); states.pose_count];
                 for &(local, probe) in &probes {
-                    for (mask, stored) in stored.iter_mut().zip(probe.stored) {
-                        *mask |= u64::from(stored) << local;
+                    debug_assert_eq!(probe.marks.len(), states.pose_count);
+                    for (masks, mark) in poses.iter_mut().zip(&probe.marks) {
+                        match mark {
+                            PoseMark::Stored => masks.stored |= 1 << local,
+                            PoseMark::Base => masks.base |= 1 << local,
+                            PoseMark::Unmarked => {}
+                        }
                     }
                 }
-                // A probe's tiles run terminus by terminus; the section's run
-                // pose after pose, then probe by stored rank.
+                // A probe's tiles run pose by pose; the section's run pose
+                // after pose, then probe by stored rank.
                 let mut tiles = Vec::new();
-                for terminus in 0..2 {
+                for pose in 0..states.pose_count {
                     for &(_, probe) in &probes {
-                        if probe.stored[terminus] {
-                            let at = usize::from(terminus == 1 && probe.stored[0]);
+                        if probe.marks[pose] == PoseMark::Stored {
+                            let at = probe.marks[..pose]
+                                .iter()
+                                .filter(|&&mark| mark == PoseMark::Stored)
+                                .count();
                             tiles.extend_from_slice(
                                 &probe.tiles[at * MOVER_IRRADIANCE_TILE_F16_COUNT..]
                                     [..MOVER_IRRADIANCE_TILE_F16_COUNT],
@@ -84,13 +92,20 @@ impl BounceBlocks {
                 }
                 blocks.bounce.push(BounceEntryParts {
                     cell,
-                    entry: MoverBounceEntry::termini(states.mover_id, stored),
+                    entry: MoverBounceEntry {
+                        mover_id: states.mover_id,
+                        poses,
+                    },
                     tiles,
                 });
             }
             for probe in &states.depth {
                 blocks.depth.push(DepthRecordParts {
-                    record: MoverDepthRecord::termini(states.mover_id, probe.probe, probe.stored),
+                    record: MoverDepthRecord {
+                        mover_id: states.mover_id,
+                        probe_index: probe.probe,
+                        marks: probe.marks.clone(),
+                    },
                     tiles: probe.tiles.clone(),
                 });
             }

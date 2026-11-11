@@ -1052,7 +1052,6 @@ fn mid_poses_sit_at_even_arc_length_by_the_runtimes_rule_and_termini_are_unchang
             "pose {index} at t {t}"
         );
         assert_eq!(lift.poses[index].name, format!("t {t:.2}"));
-        assert_eq!(lift.terminus_at(index), None);
     }
     // t 0.25 is the end of the 1 m leg, past the degenerate segment; t 0.5
     // is 1 m up the 3 m leg.

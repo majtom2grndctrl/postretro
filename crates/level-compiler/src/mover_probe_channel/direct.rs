@@ -1,4 +1,4 @@
-// Mover probe channel, direct half: per (mover, terminus, gated light, valid
+// Mover probe channel, direct half: per (mover, pose, gated light, valid
 // probe) the share q of the light's baked soft visibility that survives with
 // the mover posed, and the light's own per-probe tile T.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
@@ -28,7 +28,7 @@ use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, emitter_radius};
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::{BOX_SLACK_M, Terminus, sphere_touches_box};
+use crate::mover_light_gate::{BOX_SLACK_M, sphere_touches_box};
 use crate::ray_traversal::RAY_EPSILON;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, bake_probe_direct_rgb_posed, incident_radiance_at_point,
@@ -58,18 +58,20 @@ pub(crate) struct ChannelLight<'a> {
     pub(crate) policy: AffinityReachPolicy,
 }
 
-/// A mover the light may meet, posed at each terminus its reach touches.
+/// A mover the light may meet, posed at each pose its reach touches.
 #[derive(Debug, Clone)]
 pub(crate) struct LightMover {
     pub(crate) mover_id: u32,
-    /// By [`Terminus::index`]; `None` where the light's reach misses the pose.
-    pub(crate) poses: [Option<PosedOccluder>; 2],
+    /// One per pose of the mover, in path order; `None` where the light's
+    /// reach misses the pose.
+    pub(crate) poses: Vec<Option<PosedOccluder>>,
 }
 
-/// The movers `light` may meet, ascending by id: every analysed mover with a
-/// pose inside the ball its sample segments sweep. A probe the light lights
-/// lies within its falloff range of the origin, and a sample target within
-/// its emitter radius, so every segment lies in the larger ball; a sun's
+/// The movers `light` may meet, ascending by id: every analysed mover with
+/// some pose, terminus or mid, inside the ball its sample segments sweep, so
+/// a light only a mid pose may block is gated. A probe the light lights lies
+/// within its falloff range of the origin, and a sample target within its
+/// emitter radius, so every segment lies in the larger ball; a sun's
 /// segments reach every pose.
 pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightMover> {
     let reach = match light.light_type {
@@ -84,13 +86,17 @@ pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightM
         .movers()
         .iter()
         .filter_map(|mover| {
-            let poses = Terminus::BOTH.map(|terminus| {
-                let solid = &mover.solids[terminus.index()];
-                let bounds = solid.bounds();
-                let reached = bounds.is_valid()
-                    && reach.is_none_or(|radius| sphere_touches_box(light.origin, radius, bounds));
-                reached.then(|| PosedOccluder::new(Arc::clone(solid)))
-            });
+            let poses: Vec<Option<PosedOccluder>> = mover
+                .solids
+                .iter()
+                .map(|solid| {
+                    let bounds = solid.bounds();
+                    let reached = bounds.is_valid()
+                        && reach
+                            .is_none_or(|radius| sphere_touches_box(light.origin, radius, bounds));
+                    reached.then(|| PosedOccluder::new(Arc::clone(solid)))
+                })
+                .collect();
             poses.iter().any(Option::is_some).then_some(LightMover {
                 mover_id: mover.mover_id,
                 poses,
@@ -99,18 +105,15 @@ pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightM
         .collect()
 }
 
-/// Poses the channel bakes per mover: its two termini, first then last.
-/// Id 57 stores them as a two-pose mover record (knots 0 and 1), so a
-/// direct entry holds [`BAKED_POSES`] `q` bytes per probe in pose order.
-pub(crate) const BAKED_POSES: usize = Terminus::BOTH.len();
-
 /// One mover's gate on one light at one affinity cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectEntry {
     pub(crate) cell: u32,
     pub(crate) mover_id: u32,
-    /// Per valid probe of the cell, x-fastest, `q` at each baked pose
-    /// (byte `slot · BAKED_POSES + pose`); `q = byte / 255`.
+    /// The mover's pose count N, as its id-57 record stores it.
+    pub(crate) pose_count: usize,
+    /// Per valid probe of the cell, x-fastest, `q` at each pose (byte
+    /// `slot · N + pose`); `q = byte / 255`.
     pub(crate) visibility: Vec<u8>,
     /// The light's own term T per valid probe, x-fastest, in id 41's compact
     /// RGB f16 tile: what the section carries where no per-probe id-41 or
@@ -131,6 +134,13 @@ pub(crate) struct LightEntries {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MoverDirectBake {
     pub(crate) lights: Vec<LightEntries>,
+}
+
+impl DirectEntry {
+    /// The probe at `slot`'s `q` byte at every pose, in pose order.
+    pub(crate) fn poses_at(&self, slot: usize) -> &[u8] {
+        &self.visibility[slot * self.pose_count..][..self.pose_count]
+    }
 }
 
 impl MoverDirectBake {
@@ -329,8 +339,8 @@ pub(crate) fn bake_direct(
 }
 
 /// Static-trace results for one probe and light, by sample target. The
-/// sample set is fixed by the probe, light and seed, so every mover and
-/// terminus at the probe reuses one static trace per sample.
+/// sample set is fixed by the probe, light and seed, so every mover and pose
+/// at the probe reuses one static trace per sample.
 #[derive(Default)]
 struct StaticSamples(RefCell<Vec<(Vec3, bool)>>);
 
@@ -346,10 +356,12 @@ impl StaticSamples {
 }
 
 /// `light`'s entries at `cell`: one per mover whose posed brushes meet a
-/// static-clear sample at some valid probe. A probe where the light's term
-/// is zero keeps q = 1, as does one no pose can meet, and one a pose
-/// encloses keeps q = 1 at that terminus: it reads the light's mover-absent
-/// term there (owner, 2026-11-09).
+/// static-clear sample at some valid probe at some pose. A probe where the
+/// light's term is zero keeps q = 1, as does one no pose can meet, and one
+/// a pose encloses keeps q = 1 at that pose: it reads the light's
+/// mover-absent term there (owner, 2026-11-09). Every pose bakes, mid poses
+/// included, and wherever the light reaches: never only the near-field
+/// domain, and never skipping a pose the author ramp squeezes out.
 pub(crate) fn bake_cell(
     light: &ChannelLight<'_>,
     movers: &[LightMover],
@@ -361,7 +373,10 @@ pub(crate) fn bake_cell(
         return Vec::new();
     }
     let layout = scene.layout;
-    let mut visibility = vec![vec![u8::MAX; probes.len() * BAKED_POSES]; movers.len()];
+    let mut visibility: Vec<Vec<u8>> = movers
+        .iter()
+        .map(|gate| vec![u8::MAX; probes.len() * gate.poses.len()])
+        .collect();
     let mut met = vec![false; movers.len()];
     for (slot, &probe) in probes.iter().enumerate() {
         let point = vec3_from(layout.probe_positions[probe]);
@@ -374,8 +389,9 @@ pub(crate) fn bake_cell(
         let seed = soft_visibility_seed(probe as u64, 0, light.seed_axis);
         let statics = StaticSamples::default();
         for (mover, gate) in movers.iter().enumerate() {
-            for terminus in Terminus::BOTH {
-                let Some(occluder) = &gate.poses[terminus.index()] else {
+            let pose_count = gate.poses.len();
+            for (pose, occluder) in gate.poses.iter().enumerate() {
+                let Some(occluder) = occluder else {
                     continue;
                 };
                 if occluder.encloses(point) || !occluder.may_meet(point, &light.baked) {
@@ -392,8 +408,7 @@ pub(crate) fn bake_cell(
                     |from, to| occluder.blocks(from, to),
                 );
                 if joint.meets_mover() {
-                    visibility[mover][slot * BAKED_POSES + terminus.index()] =
-                        joint.surviving_byte();
+                    visibility[mover][slot * pose_count + pose] = joint.surviving_byte();
                     met[mover] = true;
                 }
             }
@@ -414,6 +429,7 @@ pub(crate) fn bake_cell(
         .map(|((gate, visibility), _)| DirectEntry {
             cell,
             mover_id: gate.mover_id,
+            pose_count: gate.poses.len(),
             visibility,
             tiles: tiles.clone(),
         })

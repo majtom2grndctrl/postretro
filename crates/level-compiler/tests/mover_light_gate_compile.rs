@@ -161,6 +161,8 @@ fn compile_keeping_prl(map_text: &str) -> (String, Vec<u8>) {
         .lines()
         .filter(|line| line.contains("[MoverLight]"))
         .filter(|line| line.contains("[WARN") || line.contains("[ERROR"))
+        // The probe channel's pose-cap warning is placement's, not the gate's.
+        .filter(|line| !line.contains("mover_light_gate::placement"))
         .collect();
     assert!(
         warned.is_empty(),

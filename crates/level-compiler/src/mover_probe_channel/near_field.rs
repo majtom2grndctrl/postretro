@@ -7,6 +7,7 @@ use glam::{DVec3, Vec3};
 use crate::lightmap_bake::RAY_EPSILON;
 use crate::mover_light_gate::AnalysedMover;
 use crate::partition::Aabb;
+use crate::sh_bake::{ProbeGridLayout, vec3_from};
 
 /// The mover's brushes swept along its path, widened by the gather's lift
 /// plus one probe spacing. A probe inside gathers at every mid pose; one
@@ -16,6 +17,7 @@ use crate::partition::Aabb;
 #[derive(Debug, Clone)]
 pub(crate) struct NearFieldDomain {
     boxes: Vec<Aabb>,
+    probe_spacing: f32,
 }
 
 impl NearFieldDomain {
@@ -29,7 +31,10 @@ impl NearFieldDomain {
                 max: sweep.max + margin,
             })
             .collect();
-        Self { boxes }
+        Self {
+            boxes,
+            probe_spacing,
+        }
     }
 
     /// Inclusive: a probe on the boundary is inside.
@@ -43,5 +48,21 @@ impl NearFieldDomain {
     /// The widened boxes, in brush-then-segment order, for cache keys.
     pub(crate) fn boxes(&self) -> &[Aabb] {
         &self.boxes
+    }
+
+    /// The probe spacing the boxes are widened by, for cache keys.
+    pub(crate) fn probe_spacing(&self) -> f32 {
+        self.probe_spacing
+    }
+
+    /// The valid probes of `layout` inside the domain, ascending by dense
+    /// index, at the `f32` positions the gather traces from.
+    pub(crate) fn valid_probes(&self, layout: &ProbeGridLayout) -> Vec<u32> {
+        (0..layout.total_probes())
+            .filter(|&i| {
+                layout.validity[i] != 0 && self.contains(vec3_from(layout.probe_positions[i]))
+            })
+            .map(|i| i as u32)
+            .collect()
     }
 }

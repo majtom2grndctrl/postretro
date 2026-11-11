@@ -19,6 +19,7 @@ use crate::delta_sections::PostBakeDeltaSections;
 use crate::governor::Governor;
 use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights};
 use crate::map_data::MapKinematicMover;
+use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
     BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
     MoverPayloadBars, MoverRecords, PosedMovers, ProbeCells, bake_direct, channel_lights,
@@ -31,9 +32,12 @@ use crate::texel_footprint::EmbeddedEmitters;
 
 /// What the direct half reads from the pipeline.
 pub(super) struct DirectHalfInputs<'a> {
-    /// Every analysed mover posed at both termini, as the bounce half
+    /// Every analysed mover posed at each of its poses, as the bounce half
     /// posed them.
     pub(super) posed: &'a PosedMovers,
+    /// The poses `posed` holds, whose knots each mover's id-57 record
+    /// carries.
+    pub(super) poses: &'a MoverPoses,
     pub(super) movers: &'a [MapKinematicMover],
     pub(super) sh_ctx: &'a ShBakeCtx<'a>,
     pub(super) sh_config: &'a ShConfig,
@@ -134,7 +138,7 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
         bake,
         bounce: inputs.bounce,
         cells,
-        mover_records: MoverRecords::new(inputs.movers),
+        mover_records: MoverRecords::new(inputs.movers, inputs.poses),
         payload_bars: inputs.payload_bars,
     }))
 }

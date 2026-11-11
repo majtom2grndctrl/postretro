@@ -117,17 +117,6 @@ impl AnalysedMover {
             Terminus::Last => &self.poses[self.poses.len() - 1],
         }
     }
-
-    /// Pose `index`'s place in path order: a terminus, or a mid pose.
-    pub(crate) fn terminus_at(&self, index: usize) -> Option<Terminus> {
-        if index == 0 {
-            Some(Terminus::First)
-        } else if index + 1 == self.poses.len() {
-            Some(Terminus::Last)
-        } else {
-            None
-        }
-    }
 }
 
 /// A mover the gate cannot pose at compile time, and why.

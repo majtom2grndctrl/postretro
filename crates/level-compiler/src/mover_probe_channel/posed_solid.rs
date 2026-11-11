@@ -1,4 +1,4 @@
-// One mover posed at one terminus as solid geometry: its brushes'
+// One mover posed at one pose as solid geometry: its brushes'
 // half-spaces, and its sides cut where its other brushes cover them, met
 // through the static tracer's own hit test with τ. Every posed trace of the
 // channel meets a pose here: the bounce half's gather rays, the direct
@@ -14,7 +14,7 @@ use postretro_level_format::texture_names::TextureNamesSection;
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_bake::RAY_EPSILON;
 use crate::map_data::MapKinematicMover;
-use crate::mover_light_gate::{BOX_SLACK_M, MoverPoses, Pose, Terminus};
+use crate::mover_light_gate::{BOX_SLACK_M, MoverPoses, Pose};
 use crate::mover_pose::PosedBrush;
 use crate::partition::Aabb;
 use crate::ray_traversal::{ShadowSegment, TraceRay, triangle_points};
@@ -51,7 +51,7 @@ pub(crate) struct PosedSolid {
 }
 
 impl PosedSolid {
-    /// `mover` at `pose`, one of its analysed termini. Texture indices
+    /// `mover` at `pose`, one of its analysed poses. Texture indices
     /// resolve against `texture_names` read-only: the geometry stage already
     /// appended every mover-only name, so nothing here can add one.
     pub(crate) fn new(
@@ -295,14 +295,15 @@ impl PosedSolid {
     }
 }
 
-/// One analysed mover's solids, by [`Terminus::index`].
+/// One analysed mover's solids, one per pose in path order: the first and
+/// last are its termini.
 pub(crate) struct PosedMover {
     pub(crate) mover_id: u32,
-    pub(crate) solids: [Arc<PosedSolid>; 2],
+    pub(crate) solids: Vec<Arc<PosedSolid>>,
 }
 
-/// Every analysed mover posed at both termini as solids, ascending by id:
-/// each pose built once and shared by every trace that meets it.
+/// Every analysed mover posed at each of its poses as solids, ascending by
+/// id: each pose built once and shared by every trace that meets it.
 pub(crate) struct PosedMovers(Vec<PosedMover>);
 
 impl PosedMovers {
@@ -325,13 +326,11 @@ impl PosedMovers {
                     })?;
                 Ok(PosedMover {
                     mover_id: analysed.mover_id,
-                    solids: Terminus::BOTH.map(|terminus| {
-                        Arc::new(PosedSolid::new(
-                            mover,
-                            analysed.pose(terminus),
-                            texture_names,
-                        ))
-                    }),
+                    solids: analysed
+                        .poses
+                        .iter()
+                        .map(|pose| Arc::new(PosedSolid::new(mover, pose, texture_names)))
+                        .collect(),
                 })
             })
             .collect::<anyhow::Result<_>>()

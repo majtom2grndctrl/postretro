@@ -742,16 +742,16 @@ fn run_after_parsing(
         &map_data.kinematic_waypoints,
     );
     mover_poses.place_poses(&map_data.kinematic_movers, sh_config.probe_spacing);
-    // Every analysed mover posed at both termini, once: the bounce half's
-    // scenes and the direct half's occluders share these solids.
+    // Every analysed mover posed at each of its poses, once: the bounce
+    // half's scenes and the direct half's occluders share these solids.
     let posed_movers = crate::mover_probe_channel::PosedMovers::resolve(
         &mover_poses,
         &map_data.kinematic_movers,
         &geo_result.texture_names,
     )?;
-    // The probe channel's bounce half poses every analysed mover at both
-    // termini now, so the SH base gate prices its scenes, its states and the
-    // direct half's entries before any SH ray.
+    // The probe channel's bounce half poses every analysed mover at each of
+    // its poses now, so the SH base gate prices its scenes, its states and
+    // the direct half's entries before any SH ray.
     let probe_depth_tile_cap = args.probe_depth_tile_cap;
     let bounce_plan = {
         let direct_lights: Vec<&crate::map_data::MapLight> = static_baked_lights
@@ -1240,6 +1240,7 @@ fn run_after_parsing(
     let mover_direct_half =
         mover_probe_stage::bake_direct_half(mover_probe_stage::DirectHalfInputs {
             posed: &posed_movers,
+            poses: &mover_poses,
             movers: &map_data.kinematic_movers,
             sh_ctx: &sh_ctx,
             sh_config: &sh_config,

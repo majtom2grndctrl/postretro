@@ -16,14 +16,17 @@ use crate::sh_bake::{
 use crate::texel_footprint::ProbeEarlyOut;
 use postretro_level_format::mover_probe_channel::MoverLightNamespace;
 
+/// The probe spacing every fixture scene lays its grid at.
+pub(crate) const SPACING: f32 = 1.0;
+
 /// One build's tracing scene and probe grid.
-pub(super) struct Scene {
-    pub(super) fixture: FixturePipeline,
-    pub(super) layout: ProbeGridLayout,
+pub(crate) struct Scene {
+    pub(crate) fixture: FixturePipeline,
+    pub(crate) layout: ProbeGridLayout,
 }
 
 impl Scene {
-    pub(super) fn of(fixture: FixturePipeline) -> Self {
+    pub(crate) fn of(fixture: FixturePipeline) -> Self {
         let static_lights = StaticBakedLights::from_lights(&fixture.lights);
         let animated_lights = AnimatedBakedLights::from_lights(&fixture.lights);
         let layout = probe_grid_layout(
@@ -38,12 +41,14 @@ impl Scene {
                 animated_lights: &animated_lights,
                 total_light_count: fixture.lights.len(),
             },
-            &ShConfig { probe_spacing: 1.0 },
+            &ShConfig {
+                probe_spacing: SPACING,
+            },
         );
         Self { fixture, layout }
     }
 
-    pub(super) fn ctx(&self) -> RaytracingCtx<'_> {
+    pub(crate) fn ctx(&self) -> RaytracingCtx<'_> {
         RaytracingCtx {
             bounce_materials: None,
             bvh: &self.fixture.bvh,
@@ -53,7 +58,7 @@ impl Scene {
     }
 
     /// `light`'s static term at `probe`, under seed axis `seed_axis`.
-    pub(super) fn term(&self, light: &ChannelLight<'_>, probe: usize) -> [f32; 27] {
+    pub(crate) fn term(&self, light: &ChannelLight<'_>, probe: usize) -> [f32; 27] {
         bake_probe_direct_rgb_posed(
             &self.ctx(),
             vec3_from(self.layout.probe_positions[probe]),
@@ -65,14 +70,21 @@ impl Scene {
         )
     }
 
-    /// The map's analysed movers posed as solids.
-    pub(super) fn poses(&self) -> PosedMovers {
-        let poses = MoverPoses::resolve(
+    /// The map's analysed movers, each placed at its poses along its path
+    /// as the pipeline places them.
+    pub(crate) fn mover_poses(&self) -> MoverPoses {
+        let mut poses = MoverPoses::resolve(
             &self.fixture.kinematic_movers,
             &self.fixture.kinematic_waypoints,
         );
+        poses.place_poses(&self.fixture.kinematic_movers, SPACING);
+        poses
+    }
+
+    /// The map's analysed movers posed as solids at every pose.
+    pub(crate) fn poses(&self) -> PosedMovers {
         PosedMovers::resolve(
-            &poses,
+            &self.mover_poses(),
             &self.fixture.kinematic_movers,
             &self.fixture.geometry.texture_names,
         )
@@ -81,7 +93,7 @@ impl Scene {
 
     /// Every light of the map gated as a static light, its index its seed
     /// axis: the channel's q and a term traced here share one sample set.
-    pub(super) fn static_channel_lights(&self) -> Vec<ChannelLight<'_>> {
+    pub(crate) fn static_channel_lights(&self) -> Vec<ChannelLight<'_>> {
         self.fixture
             .lights
             .iter()
@@ -98,7 +110,7 @@ impl Scene {
             .collect()
     }
 
-    pub(super) fn bake(&self, lights: &[ChannelLight<'_>], cells: &ProbeCells) -> MoverDirectBake {
+    pub(crate) fn bake(&self, lights: &[ChannelLight<'_>], cells: &ProbeCells) -> MoverDirectBake {
         let vertices: Vec<[f32; 3]> = self
             .fixture
             .geometry
@@ -117,7 +129,7 @@ impl Scene {
                 tree: &self.fixture.tree,
                 exterior_leaves: &self.fixture.exterior_leaves,
                 portals: &self.fixture.portals,
-                probe_spacing: 1.0,
+                probe_spacing: SPACING,
             },
         };
         bake_direct(&poses, lights, &scene, None, &BakeControl::unrestricted())

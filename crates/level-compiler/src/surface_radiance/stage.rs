@@ -127,12 +127,12 @@ impl<'r, 'c> MemoLookup<'r, 'c> {
             let key = lookup
                 .memo
                 .as_ref()
-                .map(|memo| memo.key(job.bounces, &job.scenes, ctx.bounce_materials));
+                .map(|memo| memo.key(job, ctx.bounce_materials));
             let found = lookup
                 .memo
                 .as_ref()
                 .zip(key.as_ref())
-                .and_then(|(memo, key)| memo.get(key, job.mover_id, layout))
+                .and_then(|(memo, key)| memo.get(key, job.mover_id, job.scenes.len(), layout))
                 .map(|mut states| {
                     states.stop_depth_past_range(movers.depth_cap);
                     states

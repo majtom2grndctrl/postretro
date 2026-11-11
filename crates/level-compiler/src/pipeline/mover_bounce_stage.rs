@@ -1,8 +1,8 @@
 //! The mover probe channel's bounce half at its pipeline seam: every
-//! analysed mover posed at both termini and priced by the SH working-set
-//! gate before any SH work; its states re-baked inside the SH base bake;
-//! then id 57's bounce and depth blocks laid out, with the mover tiles
-//! reserved ahead of id 59's.
+//! analysed mover posed at each of its poses, with its near-field domain,
+//! and priced by the SH working-set gate before any SH work; its states
+//! re-baked inside the SH base bake; then id 57's bounce and depth blocks
+//! laid out, with the mover tiles reserved ahead of id 59's.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 use std::collections::HashSet;
@@ -12,11 +12,11 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::geometry::GeometryResult;
 use crate::map_data::{MapKinematicMover, MapLight};
-use crate::mover_light_gate::{MoverPoses, Terminus};
+use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
     BounceBlocks, CarriedDepth, DepthReservation, MoverBounceJob, MoverBounceRequest,
-    MoverBounceStates, MoverChannelCost, PosedMovers, PosedScene, ProbeCells, reserve_mover_tiles,
-    sh_base_bounce_count,
+    MoverBounceStates, MoverChannelCost, NearFieldDomain, PosedMovers, PosedScene, ProbeCells,
+    reserve_mover_tiles, sh_base_bounce_count,
 };
 use crate::partition::BspTree;
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
@@ -45,10 +45,11 @@ pub(super) struct BounceHalfPlan {
     pub(super) cost: MoverChannelCost,
 }
 
-/// Pose every analysed mover at both termini, its `light_bounces` clamped to
-/// the SH base's bounce count, and price the channel: the scenes, the probe
-/// grid's valid probes (classified now, with no ray) and the direct half's
-/// bound. No analysed mover or no probe grid, no job.
+/// Pose every analysed mover at each of its poses, its `light_bounces`
+/// clamped to the SH base's bounce count, with its near-field domain and the
+/// valid probes inside it, and price the channel: the scenes, the probe
+/// grid's valid probes (classified now, with no ray), the domains and the
+/// direct half's bound. No analysed mover or no probe grid, no job.
 pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<BounceHalfPlan> {
     let count = sh_base_bounce_count(inputs.bounce_fill);
     let layout = probe_grid_layout_of(
@@ -67,16 +68,18 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
                 .iter()
                 .find(|mover| mover.mover_id == analysed.mover_id)
                 .expect("resolved movers are map movers");
-            let scenes = Terminus::BOTH
-                .into_iter()
-                .map(|terminus| {
-                    PosedScene::new(Arc::clone(&solids.solids[terminus.index()]), terminus).map_err(
-                        |error| {
-                            anyhow::anyhow!("kinematic_mover `{}` posed sides: {error}", mover.name)
-                        },
-                    )
+            debug_assert_eq!(analysed.knots.len(), solids.solids.len());
+            let scenes = solids
+                .solids
+                .iter()
+                .enumerate()
+                .map(|(pose, solid)| {
+                    PosedScene::new(Arc::clone(solid), pose).map_err(|error| {
+                        anyhow::anyhow!("kinematic_mover `{}` posed sides: {error}", mover.name)
+                    })
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
+            let domain = NearFieldDomain::new(analysed, inputs.probe_spacing);
             jobs.push(MoverBounceJob {
                 mover_id: mover.mover_id,
                 label: analysed.label.clone(),
@@ -84,6 +87,9 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
                     .light_bounces
                     .map_or(count, |bounces| bounces.min(count)),
                 scenes,
+                knots: analysed.knots.clone(),
+                domain_probes: domain.valid_probes(&layout),
+                domain,
             });
         }
     }
@@ -99,13 +105,17 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
     if !jobs.is_empty() {
         log::info!(
             "[MoverLight] probe channel bounce half: {} mover(s), {} re-baking bounce, {} \
-             depth only; {} posed patch(es)",
+             depth only; {} pose(s), {} posed patch(es), {} near-field probe(s)",
             jobs.len(),
             cost.radiance_movers,
             cost.movers - cost.radiance_movers,
+            jobs.iter().map(|job| job.scenes.len()).sum::<usize>(),
             jobs.iter()
                 .flat_map(|job| &job.scenes)
                 .map(|scene| scene.patches.len())
+                .sum::<usize>(),
+            jobs.iter()
+                .map(|job| job.domain_probes.len())
                 .sum::<usize>(),
         );
     }

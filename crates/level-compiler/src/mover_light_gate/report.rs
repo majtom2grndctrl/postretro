@@ -3,6 +3,7 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use super::lights::GateLights;
+use super::mid_pose_only::MidPoseOnlyLights;
 use super::pose::{MoverPoses, Terminus};
 use super::side_count::SideCount;
 use super::tally::{GateTally, RowKey, RowTally};
@@ -87,6 +88,25 @@ pub(crate) fn log_rows(
                 );
             }
         }
+    }
+}
+
+/// Per mover with lights only a mid pose gates, one `info` line naming
+/// them, after every per-terminus line: mover id order, then source index.
+pub(crate) fn log_mid_pose_only(
+    poses: &MoverPoses,
+    mid_pose_only: &MidPoseOnlyLights,
+    light_label: impl Fn(usize) -> String,
+) {
+    for (mover_id, lights) in mid_pose_only.movers() {
+        let Some(label) = poses.label(mover_id) else {
+            continue;
+        };
+        log::info!(
+            "[MoverLight] {label} gates {} baked light(s) only at a mid pose: {}",
+            lights.len(),
+            name_lights(lights.iter().copied(), &light_label),
+        );
     }
 }
 

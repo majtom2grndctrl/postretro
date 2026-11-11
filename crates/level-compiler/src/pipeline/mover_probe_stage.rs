@@ -19,11 +19,11 @@ use crate::delta_sections::PostBakeDeltaSections;
 use crate::governor::Governor;
 use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights};
 use crate::map_data::MapKinematicMover;
-use crate::mover_light_gate::MoverPoses;
+use crate::mover_light_gate::{MidPoseOnlyLights, MoverPoses};
 use crate::mover_probe_channel::{
     BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
     MoverPayloadBars, MoverRecords, PosedMovers, ProbeCells, bake_direct, channel_lights,
-    channel_section,
+    channel_section, mid_pose_only_lights,
 };
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
@@ -65,6 +65,9 @@ pub(super) struct DirectHalf {
     cells: ProbeCells,
     mover_records: MoverRecords,
     payload_bars: MoverPayloadBars,
+    /// Per mover, the lights the bake gates only at a mid pose, which the
+    /// mover light gate's report counts.
+    mid_pose_only: MidPoseOnlyLights,
 }
 
 /// Bake the direct half: per gated light, the entries of every analysed
@@ -134,7 +137,9 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
             .count(),
         started.elapsed().as_secs_f64() * 1000.0,
     );
+    let mid_pose_only = mid_pose_only_lights(&bake, &lights);
     Ok(Some(DirectHalf {
+        mid_pose_only,
         bake,
         bounce: inputs.bounce,
         cells,
@@ -239,6 +244,11 @@ impl DirectHalf {
         }
         sections.mover_channel = section;
         Ok(())
+    }
+
+    /// Per mover, the lights the bake gates only at a mid pose.
+    pub(super) fn mid_pose_only(&self) -> &MidPoseOnlyLights {
+        &self.mid_pose_only
     }
 
     /// The Build Summary line for id 57's payload placement, once final.

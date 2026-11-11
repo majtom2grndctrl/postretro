@@ -166,20 +166,40 @@ struct Measured {
 }
 
 /// Plan the bounce half and the SH base gate as the pipeline does, then
-/// bake the SH base with the movers, all on one measured pool of `threads`.
+/// bake the SH base with the movers, all on one measured pool of `threads`,
+/// at high fidelity on the closet, whose door alone is analysed.
 fn bake(
     fixture: &FixturePipeline,
     fill: f32,
     cache: Option<&StageCache>,
     threads: usize,
 ) -> Measured {
+    bake_at(
+        fixture,
+        fill,
+        cache,
+        threads,
+        BakeMode::Interactive(BakeFidelity::High),
+        1,
+    )
+}
+
+/// [`bake`] for a build baking `mode`, with `movers` movers analysed.
+fn bake_at(
+    fixture: &FixturePipeline,
+    fill: f32,
+    cache: Option<&StageCache>,
+    threads: usize,
+    mode: BakeMode,
+    movers: usize,
+) -> Measured {
     with_ctx(fixture, |ctx, poses| {
         let ((predicted, events, logs), report) = measured(threads, || {
             // The measured pool's thread runs the stage: capture its lines.
             let logs = postretro_test_log_capture::LogCapture::start();
             stage_events::take();
-            let plan = plan_half(fixture, ctx, poses, fill);
-            assert_eq!(plan.request.jobs.len(), 1, "the closet's door is analysed");
+            let plan = plan_half_at(fixture, ctx, poses, fill, mode);
+            assert_eq!(plan.request.jobs.len(), movers, "every mover is analysed");
             let (predicted, base, outcome) = bake_base(ctx, &plan, &plan.request, fill, cache);
             drop((base, outcome, plan));
             let logs = logs.records().into_iter().map(|r| r.message).collect();
@@ -287,6 +307,63 @@ fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
                     rows.last().expect("row")
                 );
             }
+        }
+    }
+    for row in &rows {
+        eprintln!("{row}");
+    }
+}
+
+// AC 30, in process: on the setpiece, whose wall bakes 15 poses and whose
+// room 6, at `low` and at `high`, on four workers, the SH base gate's
+// prediction with the mover channel priced covers the measured peak cold,
+// warm over an empty cache, and on a full memo hit. Every pose is priced:
+// the posed scenes, one pose's posed bounce and later-bounce buffers, a mid
+// pose's near-field states and gather, the mover-absent later bounces, and
+// the raw states one mover's poses hold before it reduces. A `low` build
+// bakes fewer posed bounces than it is priced for, so its bound is looser.
+#[test]
+fn the_sh_base_gate_covers_every_poses_bake_on_the_setpiece_at_either_fidelity() {
+    let fixture = load_map(&fixture_path("mover-setpiece"));
+    let mut rows = Vec::new();
+    // The closet's test covers one worker against four; a single-worker
+    // setpiece bake costs minutes.
+    let threads = 4;
+    for mode in [BakeMode::Interactive(BakeFidelity::Low), BakeMode::Release] {
+        let cold = bake_at(&fixture, DEFAULT_BOUNCE_FILL, None, threads, mode, 2);
+        let empty = tempfile::tempdir().expect("cache");
+        let warm = |cache: &StageCache| {
+            bake_at(&fixture, DEFAULT_BOUNCE_FILL, Some(cache), threads, mode, 2)
+        };
+        let warm_empty = warm(&open(empty.path()));
+        let full_hit = warm(&open(empty.path()));
+        assert!(
+            full_hit
+                .logs
+                .iter()
+                .any(|line| line.contains("mover_probe_bounce hit (")
+                    && line.ends_with("of 2 mover(s))")),
+            "{:?}",
+            full_hit.logs
+        );
+        for (cache, measured) in [
+            ("cold", cold),
+            ("warm empty", warm_empty),
+            ("full hit", full_hit),
+        ] {
+            rows.push(format!(
+                "{mode:?} x{threads} {cache:<10} predicted {:>10} measured {:>10} ({:.2}x) \
+                 at peak {:?}",
+                measured.predicted,
+                measured.report.peak,
+                measured.predicted as f64 / measured.report.peak.max(1) as f64,
+                measured.report.at_peak,
+            ));
+            assert!(
+                measured.predicted >= measured.report.peak,
+                "the gate predicts less than the bake holds: {}",
+                rows.last().expect("row")
+            );
         }
     }
     for row in &rows {

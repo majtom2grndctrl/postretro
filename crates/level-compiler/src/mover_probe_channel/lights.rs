@@ -60,6 +60,7 @@ pub(crate) fn channel_lights<'a>(sources: &ChannelLightSources<'a>) -> Vec<Chann
             light_index,
             baked: (*light).clone(),
             authored: light,
+            source_index: source,
             seed_axis: global,
             early_out: ProbeEarlyOut::for_probe_point(
                 sources.static_embedded.is_embedded(global as usize),
@@ -84,6 +85,7 @@ pub(crate) fn channel_lights<'a>(sources: &ChannelLightSources<'a>) -> Vec<Chann
             light_index: roster as u32,
             baked,
             authored: entry.light,
+            source_index: entry.source_index,
             seed_axis: entry.source_index as u64,
             early_out: ProbeEarlyOut::for_probe_point(
                 sources.animated_embedded.is_embedded(roster),

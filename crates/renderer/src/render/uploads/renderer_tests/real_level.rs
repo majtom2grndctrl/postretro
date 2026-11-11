@@ -102,6 +102,11 @@ impl RealLevel {
         })
     }
 
+    /// The installed level's id 57, as the loader decoded it.
+    pub(super) fn channel(&self) -> &MoverProbeChannelSection {
+        &self.channel
+    }
+
     /// Every mover at `t`, or no state at all for `None`.
     pub(super) fn states(&self, t: Option<f32>) -> Vec<MoverTravel> {
         t.map(|t| {

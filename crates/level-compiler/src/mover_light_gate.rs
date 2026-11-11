@@ -4,6 +4,7 @@
 mod animated;
 mod cache;
 mod lights;
+mod mid_pose_only;
 mod placement;
 mod pose;
 mod probes;
@@ -23,11 +24,12 @@ pub(crate) use cache::{
     ANIMATED_MEMO, GateMemo, PROBE_MEMO, TEXEL_MEMO, fold_gate_light, gate_key_hasher,
 };
 pub(crate) use lights::{GateLight, GateLights};
+pub(crate) use mid_pose_only::MidPoseOnlyLights;
 #[cfg(test)]
 pub(crate) use pose::Terminus;
 pub(crate) use pose::{AnalysedMover, MoverPoses, Pose};
 pub(crate) use probes::{ProbeScene, gate_probes};
-pub(crate) use report::{log_rows, log_side_counts};
+pub(crate) use report::{log_mid_pose_only, log_rows, log_side_counts};
 pub(crate) use rows::MoverTexels;
 pub(crate) use segment::{BOX_SLACK_M, boxes_may_touch, segment_may_touch_box, sphere_touches_box};
 pub(crate) use side_count::side_counts;

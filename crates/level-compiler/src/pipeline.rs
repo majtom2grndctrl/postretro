@@ -1278,6 +1278,12 @@ fn run_after_parsing(
             ),
         })?;
     drop(posed_movers);
+    // The gate's report counts these beside its per-terminus rows, once
+    // every tier's rows are in.
+    let mover_mid_pose_only = mover_direct_half
+        .as_ref()
+        .map(|half| half.mid_pose_only().clone())
+        .unwrap_or_default();
     let provisional_mover_channel = mover_direct_half
         .as_ref()
         .map(|half| half.provisional_section(&sh_volume_section))
@@ -2053,6 +2059,7 @@ fn run_after_parsing(
         &mover_light_rows,
         light_label,
     );
+    crate::mover_light_gate::log_mid_pose_only(&mover_poses, &mover_mid_pose_only, light_label);
     let mover_side_counts = crate::mover_light_gate::side_counts(
         &mover_poses,
         &map_data.lights,
@@ -2065,6 +2072,7 @@ fn run_after_parsing(
         &mover_gate_lights,
         &mover_light_rows,
         &mover_side_counts,
+        &mover_mid_pose_only,
     );
 
     let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {

@@ -344,43 +344,75 @@ fn an_animated_light_leaves_the_bounce_and_depth_blocks_unchanged() {
     assert!(!before.bounce_tiles.is_empty());
 }
 
-// A budget one byte under the SH base gate's mover-priced peak
-// refuses the build with the gate's named error before any posed bounce ray:
-// no mover's bounce half logs a bake.
-#[test]
-fn a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray() {
-    let map = dev_map("mover-closet.map");
-    let admitted = build(&map, "mover-closet", Cache::Cold, &[]);
-    let peak: u64 = admitted
-        .logs
-        .lines()
+/// The SH base gate's logged peak in `logs`.
+fn priced_peak(logs: &str) -> u64 {
+    logs.lines()
         .find_map(|line| line.split_once("SH base working-set gate: estimated peak "))
         .and_then(|(_, tail)| tail.split_once(" bytes"))
         .map(|(peak, _)| peak.parse().expect("a byte count"))
-        .unwrap_or_else(|| panic!("the gate logs its peak\n{}", admitted.logs));
-    assert!(
-        admitted
-            .logs
-            .contains("[MoverLight] probe channel bounce: mover"),
-        "{}",
-        admitted.logs
-    );
-    let budget = (peak - 1).to_string();
-    let logs = mover_bounce_support::try_build(
-        &map,
-        "mover-closet",
-        Cache::Cold,
-        &["--working-set-max-size", &budget],
-    )
-    .err()
-    .expect("the mover channel's peak exceeds the budget");
-    assert!(
-        logs.contains("SH base working-set gate refused before patch shading")
-            && logs.contains("mover bounce"),
-        "{logs}"
-    );
-    assert!(
-        !logs.contains("[MoverLight] probe channel bounce: mover"),
-        "no posed bounce ray before the refusal\n{logs}"
-    );
+        .unwrap_or_else(|| panic!("the gate logs its peak\n{logs}"))
+}
+
+/// The bounce half's mover and pose counts, from its plan line.
+fn bounce_half_poses(logs: &str) -> (u64, u64) {
+    let line = logs
+        .lines()
+        .find_map(|line| line.split_once("probe channel bounce half: "))
+        .map(|(_, tail)| tail)
+        .unwrap_or_else(|| panic!("the bounce half logs its plan\n{logs}"));
+    let count = |after: &str| -> u64 {
+        line.split(after)
+            .next()
+            .and_then(|head| head.rsplit(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{after} in {line}"))
+    };
+    (count(" mover(s)"), count(" pose(s)"))
+}
+
+// On the setpiece, whose two movers bake mid poses as well as their termini,
+// at `low` and at `high` (`--release`): a budget one byte under the SH base
+// gate's mover-priced peak refuses the build with the gate's named error
+// before any posed bounce ray, so no mover's bounce half logs a bake. The
+// priced peak covers every pose's resident bake at either fidelity; the
+// in-process proof that it covers what the bake holds is
+// `the_sh_base_gate_covers_every_poses_bake_on_the_setpiece_at_either_fidelity`.
+#[test]
+fn a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray() {
+    let map = dev_map("mover-setpiece.map");
+    for flags in [&["--bake-fidelity", "low"][..], RELEASE] {
+        let admitted = build(&map, "mover-setpiece", Cache::Cold, flags);
+        let peak = priced_peak(&admitted.logs);
+        let (movers, poses) = bounce_half_poses(&admitted.logs);
+        assert!(
+            movers > 0 && poses > 2 * movers,
+            "{flags:?}: the movers bake mid poses ({movers} mover(s), {poses} pose(s))"
+        );
+        assert!(
+            admitted
+                .logs
+                .contains("[MoverLight] probe channel bounce: mover"),
+            "{flags:?}\n{}",
+            admitted.logs
+        );
+        let budget = (peak - 1).to_string();
+        let logs = mover_bounce_support::try_build(
+            &map,
+            "mover-setpiece",
+            Cache::Cold,
+            &[flags, &["--working-set-max-size", &budget]].concat(),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{flags:?}: the mover channel's peak exceeds the budget"));
+        assert!(
+            logs.contains("SH base working-set gate refused before patch shading")
+                && logs.contains(&format!("estimated peak {peak} bytes"))
+                && logs.contains("mover bounce"),
+            "{flags:?}\n{logs}"
+        );
+        assert!(
+            !logs.contains("[MoverLight] probe channel bounce: mover"),
+            "{flags:?}: no posed bounce ray before the refusal\n{logs}"
+        );
+    }
 }

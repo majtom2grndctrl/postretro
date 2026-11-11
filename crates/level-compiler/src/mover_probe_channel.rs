@@ -19,6 +19,7 @@ mod domain;
 mod gather;
 mod lights;
 mod mid_pose;
+mod mid_pose_only;
 mod near_field;
 mod near_field_bounce;
 mod pose_bake;
@@ -69,6 +70,7 @@ pub(crate) use gather::PosedGather;
 #[cfg(test)]
 pub(crate) use gather::{DomainProbe, compact_slots};
 pub(crate) use lights::{ChannelLightSources, channel_lights};
+pub(crate) use mid_pose_only::mid_pose_only_lights;
 pub(crate) use near_field::NearFieldDomain;
 #[cfg(test)]
 pub(crate) use pose_bake::PosedBounce;

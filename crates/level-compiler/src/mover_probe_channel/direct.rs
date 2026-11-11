@@ -52,6 +52,9 @@ pub(crate) struct ChannelLight<'a> {
     pub(crate) baked: MapLight,
     /// The authored light, which the reach decomposition reads.
     pub(crate) authored: &'a MapLight,
+    /// Its position in the map's light list (authored entity order), which
+    /// the mover light gate's report names it by.
+    pub(crate) source_index: usize,
     /// Its soft-visibility seed axis in its section's bake.
     pub(crate) seed_axis: u64,
     pub(crate) early_out: ProbeEarlyOut,

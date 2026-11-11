@@ -5,6 +5,7 @@
 use postretro_level_format::SectionId;
 
 use super::lights::GateLights;
+use super::mid_pose_only::MidPoseOnlyLights;
 use super::pose::MoverPoses;
 use super::side_count::SideCount;
 use super::tally::GateTally;
@@ -34,6 +35,9 @@ pub(crate) struct MoverLightSummary {
     other_lights: usize,
     every_gated_bytes: u64,
     differing_only_bytes: u64,
+    /// Per mover with lights only a mid pose gates, its label and count, in
+    /// mover id order. The rows above stay terminus-only.
+    mid_pose_only: Vec<(String, usize)>,
 }
 
 impl MoverLightSummary {
@@ -42,11 +46,18 @@ impl MoverLightSummary {
         lights: &GateLights<'_>,
         tally: &GateTally,
         side_counts: &[SideCount],
+        mid_pose_only: &MidPoseOnlyLights,
     ) -> Self {
         let mut summary = Self {
             movers_analysed: poses.analysed.len(),
             movers_not_analysed: poses.not_analysed.len(),
             lights_not_analysed: lights.not_analysed.len(),
+            mid_pose_only: mid_pose_only
+                .movers()
+                .filter_map(|(mover_id, lights)| {
+                    Some((poses.label(mover_id)?.to_string(), lights.len()))
+                })
+                .collect(),
             ..Self::default()
         };
         for (_, row) in tally.rows() {
@@ -65,13 +76,14 @@ impl MoverLightSummary {
         summary
     }
 
-    /// The block's lines, given the PRL's packed lightmap-family bytes. A
-    /// level without movers gets one line.
+    /// The block's lines, given the PRL's packed lightmap-family bytes, then
+    /// one per mover with lights only a mid pose gates. A level without
+    /// movers gets one line.
     pub(crate) fn lines(&self, lightmap_family_bytes: u64) -> Vec<String> {
         if self.movers_analysed + self.movers_not_analysed == 0 {
             return vec!["Mover lighting: 0 movers".to_string()];
         }
-        vec![
+        let mut lines = vec![
             format!(
                 "Mover lighting: {} mover(s) analysed, {} not analysed; {} row(s); \
                  {} baked light(s) not analysed",
@@ -99,7 +111,11 @@ impl MoverLightSummary {
                 self.differing_only_bytes,
                 share(self.differing_only_bytes, lightmap_family_bytes),
             ),
-        ]
+        ];
+        lines.extend(self.mid_pose_only.iter().map(|(label, count)| {
+            format!("  {label}: {count} baked light(s) gated only at a mid pose")
+        }));
+        lines
     }
 }
 
@@ -130,6 +146,7 @@ mod tests {
             other_lights: 2,
             every_gated_bytes: 1_000,
             differing_only_bytes: 240,
+            mid_pose_only: Vec::new(),
         }
     }
 
@@ -157,6 +174,26 @@ mod tests {
             lines[3].contains("1000 B every gated (n/a), 240 B differing only (n/a) of 0 B"),
             "{}",
             lines[3]
+        );
+    }
+
+    // The per-terminus lines are unchanged; each mover a mid pose alone
+    // gates lights for adds one line after them, in mover id order.
+    #[test]
+    fn each_mover_with_mid_pose_only_lights_adds_one_line_after_the_totals() {
+        let without = summary().lines(8_000);
+        let with = MoverLightSummary {
+            mid_pose_only: vec![("lift".to_string(), 2), ("door".to_string(), 1)],
+            ..summary()
+        }
+        .lines(8_000);
+        assert_eq!(with[..4], without[..]);
+        assert_eq!(
+            with[4..],
+            [
+                "  lift: 2 baked light(s) gated only at a mid pose",
+                "  door: 1 baked light(s) gated only at a mid pose",
+            ]
         );
     }
 

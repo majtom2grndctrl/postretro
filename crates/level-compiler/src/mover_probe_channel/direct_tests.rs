@@ -315,6 +315,7 @@ fn static_light(light: &MapLight, index: u32) -> ChannelLight<'_> {
         light_index: index,
         baked: light.clone(),
         authored: light,
+        source_index: index as usize,
         seed_axis: u64::from(index) + 3,
         early_out: ProbeEarlyOut::Agreed,
         policy: AffinityReachPolicy::DIRECT,
@@ -826,6 +827,7 @@ fn an_animated_lights_own_tile_equals_its_id_45_tile() {
         light_index: 0,
         baked,
         authored: &authored,
+        source_index: 0,
         seed_axis: 0,
         early_out: ProbeEarlyOut::Agreed,
         policy: AffinityReachPolicy::DIRECT,
@@ -1536,8 +1538,9 @@ fn crossing_slab(ramp: (f32, f32)) -> (MapKinematicMover, PosedMovers, MoverPose
 // A light only a mid pose blocks is gated: its reach misses both termini
 // and meets the middle pose, so the channel names it for the mover, and the
 // probe under the slab keeps q below 255 at that pose and 255 at both
-// termini. The term record masks it, and the mover's record carries the
-// three knots.
+// termini. The gate's report counts it for the mover as gated only at a mid
+// pose. The term record masks it, and the mover's record carries the three
+// knots.
 #[test]
 fn a_light_only_a_mid_pose_blocks_is_gated_at_that_pose_alone() {
     let world = world();
@@ -1578,6 +1581,12 @@ fn a_light_only_a_mid_pose_blocks_is_gated_at_that_pose_alone() {
     assert_eq!(q.len(), 3);
     assert!(q[1] < 255, "the middle pose blocks the light: {q:?}");
     assert_eq!([q[0], q[2]], [255, 255], "neither terminus blocks it");
+    let reported = super::mid_pose_only_lights(&bake, std::slice::from_ref(&channel));
+    assert_eq!(
+        reported.movers().collect::<Vec<_>>(),
+        [(slab.mover_id, &[0usize][..])],
+        "the report counts the light for the slab alone"
+    );
 
     let section = channel_section(
         &bake,

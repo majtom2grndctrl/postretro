@@ -694,3 +694,6 @@ mod mover_channel_modes;
 
 #[path = "renderer_tests/mover_channel_lag.rs"]
 mod mover_channel_lag;
+
+#[path = "renderer_tests/mover_closed_pose_ledger.rs"]
+mod mover_closed_pose_ledger;

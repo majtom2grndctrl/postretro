@@ -103,6 +103,7 @@ impl Scene {
                 light_index: index as u32,
                 baked: light.clone(),
                 authored: light,
+                source_index: index,
                 seed_axis: index as u64,
                 early_out: ProbeEarlyOut::Agreed,
                 policy: AffinityReachPolicy::DIRECT,

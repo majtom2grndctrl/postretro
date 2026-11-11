@@ -133,3 +133,18 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 Execution is sequential on the main checkout's warm `target/`. Every task crosses the compiler ↔ format ↔ renderer seam, so worktree workers would each build the engine cold for little parallelism. Tasks 3 and 4 touch disjoint crates once task 2 lands, and may run as one worktree worker if disk stays above 15 GB plus a debug build.
 
 Hot paths: compose is still one dispatch per moved row per pass. The interval lookup runs once per (entry, probe), never per texel, from install-expanded tables. Live-tile writes allocate nothing per frame. The 0.2 ms budget is proved manually (M7).
+
+## Review panel, round 1 (2026-11-11, read-only; fixes wait for a free machine)
+
+Panel: 7 depth (opus: 2 contract verifiers, 4 correctness tracers, 2 adversarial testers — format, renderer) + 4 hygiene (sonnet) over 83dfb5317..eda72b376. Verdict: request changes. No IP-rule findings.
+
+Fix list:
+- 🔴 `level-format` `streamed.rs:56` `expect("one cell's payload fits u32")` is reachable from a ~290 KB crafted PRL (N = 65,536, 1,024 streamed records); refuse a cell's streamed direct or bounce row over u32 with `SizeOverflow` at decode; test a large-N streamed cell and N = u32::MAX.
+- 🟡 Bake: tile-range stop judged before skipping but the failure check after (`bake.rs:260-280`, `mover_bounce_stage.rs:202`); a squeezed-out ramp can silently drop movers past `stopped_at` from id 57. Fail by name whenever the bake stopped or cut a mover.
+- 🟡 `light_poses` up to u32::MAX allocates all poses in placement before the SH gate (OOM, not the named error; knots collide past ~2^24). Refuse an over-large count before placement allocates, by name; docs errors table to match. Also bounds the shader's linear knot scan.
+- 🟡 Absent memo not marked used on warm builds that don't read it (`surface_radiance/stage.rs:270`): evictable, costing an id-34 later-bounce pass on the next mover edit. Mark it used on every volume hit where some job reads the layers.
+- 🟡 Stale contract comments: an enclosed mid pose "reads the base" in `level-format poses.rs:19` (`PoseMark::Base`), `states.rs:199`, `posed_scene.rs:103`, `posed_solid.rs:146`; `level_geometry.rs:100` "two termini"; `gpu.rs:191` "ramps"; `pose_bake.rs:28`; `cost.rs:139`; `path_fraction.rs:2`; `mover_light_gate.rs:1`; `wire/across.rs:3` ("tight"); `mover_probe_channel.rs:195` (q scale).
+- 🟢 Mechanical: drop owner/date and AC/MP tags from code comments; "12c"/"today's" wording; `mid_pose.rs:19` reflow; WGSL bounce entry field constants; `depth.rs` shadowed `stated`; renderer `knots.rs` pass-through; `debug_assert` in compiler `across.rs` parts that marked poses hold no bounce state; mid-pose key gates patches on `bounces > 1`; id-34 bake time excludes mover-cache I/O; progress units per slot count; `pose_lookup.rs:66` comment (id-34 miss ignores stored poses); loader accepts −0.0 first knot (compare bits); subnormal ramp span (runtime and `ramped_knot`); GPU test for a probe ≥ 32 at pose ≥ 2; ignore-reason commands; split test files past 800 lines where touched.
+- Landing (context/lib): `build_pipeline.md` id-57 paragraph and section-table row rewritten to epoch 5 (direct, bounce, depth, mover records, placement, every epoch-5 load error), step 12 Poses/Bounce/Depth per pose, "too large" `light_poses`, §CLI flags; `rendering_pipeline.md` §4 Poses, Direct/Bounce/Depth compose, Not reached, IP masks wording; skip doc note on id-59 trim.
+- Open hypothesis: the 0.2–0.5 luma knot dips are the per-interval through-base depth returning to the base mid-interval (owner rule); check with a capture.
+- Pending: C10 frame bar per AC 3 restated (partial edit saved at scratchpad `c10-partial.diff`).

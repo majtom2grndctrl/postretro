@@ -44,47 +44,56 @@ read at: 3f851eff1 (no `crates/` change since the brief's b215170, so the brief'
 
 Row ids: R = resolver and reservation, C = client stand-in, M = frontend menu, A = arming, W = wire, X = manual.
 
-| AC | Proof | Status |
-|---|---|---|
-| R1 install: Relevel then hint before promotion; pawn eye within 1 cm, rotation carries yaw and pitch (O8) | host harness test, install send order + promotion pose | achievable as stated |
-| R2 unbacked test pose: hint, stand-in and pawn use it; no reservation; later seat takes lowest free | host harness test with test resolver source | achievable as stated |
-| R3 respawn never takes another seat's reservation while one is free; seat with none takes first free | respawn placement test after resolution republish | achievable as stated |
-| R4 single-use source consumed → re-promotion and rejoin re-resolve to a player start, reserve, hint before marker (O6) | host harness test, single-use source | achievable as stated |
-| R5 spawn stays at hinted pose when another seat takes/frees a placement between hint and promotion | host harness test | achievable as stated |
-| R6 live pawn on reserved start at promotion → free placement clear of live pawns + fresh hint | host harness test | achievable as stated |
-| R7 two seats resolved before spawn get distinct placements, not host's or held seat's; overflow round-robin warns once each | seat/resolver test with log capture | achievable as stated |
-| R8 demoted and held seats keep reservation; joiner skips it; returning seat spawns at hinted pose; demoted-without-reload gets no fresh hint (O10) | host harness test | achievable as stated |
-| R9 admission while installed (Running and Settling): Relevel then hint; uncatalogued: hint alone | host harness tests, both poll paths | achievable as stated |
-| R10 admission while host loading: no hint; at install Relevel then hint against new level (O3) | host harness test | achievable as stated |
-| R11 client revealing after admission: hint precedes participation marker on Control (catalog and uncatalogued) | transport-order test over Control | achievable as stated |
-| R12 pre-connect uncatalogued reveal promoted in admission batch: hint after marker, applied unarmed (O11) | host+client harness test | achievable as stated |
-| R13 level with no `player_spawn`: no hint, join as today | host harness test | achievable as stated |
-| R14 host pawn keeps install's first-player spawn; no joiner assigned it | host harness test | achievable as stated |
-| C1 matching hint: install, settle, reveal at hinted eye/yaw/pitch; nonzero pitch fixture | client install/presented-pose test | achievable as stated |
-| C2 local `player_spawn` order differs from host's → still host pose | client test | achievable as stated |
-| C3 hint in same Control drain as Relevel applies to the new level after unload | client drain test | achievable as stated |
-| C4 holding notice after hint (revealed hold included) leaves hint; settles at it (O4) | client test | achievable as stated |
-| C5 hint naming other identity or earlier life ignored; stand-in at first spawn | client test | achievable as stated |
-| C6 host same-map restart: reload, settle at hint naming new life | client test | achievable as stated |
-| C7 hint during Settling retargets; Settling timer not reset | settling test | achievable as stated |
-| C8 hint first arriving on reveal frame: that frame at settled pose; moves later while unarmed (O7) | client frame test | achievable as stated |
-| C9 Running unarmed fresh hint moves camera before arming | client test | achievable as stated |
-| C10 hint after arming moves neither position nor yaw/pitch, incl. overlap re-resolution (O5) | client test | achievable as stated |
-| C11 no hint → first-spawn stand-in, no added hold | client test | achievable as stated |
-| C12 non-finite component rejected before apply | client hint-store unit test | achievable as stated |
-| M1 frontend menu up at host-level install → reveal at hint, menu gone; `--connect` no map arg and replaced map arg | client boot-destination/install test | achievable as stated |
-| M2 submenu over frontend menu → both cleared (O15) | client test | achievable as stated |
-| M3 in-flight backdrop of host's catalog level adopted → host's level, menu gone, hint (O2) | client test | achievable as stated |
-| M4 installed backdrop (Settling or Running) reloads on relevel, settles at hint (O1, O12, O13) | client test | achievable as stated |
-| M5 host-named load with no matching hint → first-spawn stand-in, not menu pose (O14) | client test | achievable as stated |
-| M6 failed host load or unknown catalog id → frontend menu, no backdrop load; first and later loads (O9, O16, O18) | client test | achievable as stated |
-| M7 self-initiated backdrop keeps the menu even if it is the host's last-named level (O17) | client test | achievable as stated |
-| M8 host at frontend: no Relevel, no hint, no promotion; on host level start Relevel then hint (O19) | host harness test | achievable as stated |
-| M9 un-named backdrop and single-player menu install present the menu pose | presented-pose test | achievable as stated |
-| A1 with hint applied, arming frame camera within 1 cm, yaw/pitch unchanged; single-spawn and non-first placement | client arm test | achievable as stated |
-| A2 regression: unarmed view turn keeps yaw/pitch at arm | client arm test | achievable as stated |
-| W1 round trip; previous app protocol refused at gate 1; no shipped Control encoding changes; net has no internal dep | `crates/net` wire + handshake tests; `layering_invariants_hold` | achievable as stated |
-| X1 loopback co-op on `coop-presentation-test` with distinct client yaw, with and without client map arg | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| R1 install: Relevel then hint before promotion; pawn eye within 1 cm, rotation carries yaw and pitch (O8) | host harness test, install send order + promotion pose | achievable as stated | pass — `host_install_sends_relevel_then_hint_and_promotion_spawns_at_the_hinted_pose`, `commit_sends_spawn_pose_hints_after_relevel_host_bind_and_spawn_points` |
+| R2 unbacked test pose: hint, stand-in and pawn use it; no reservation; later seat takes lowest free | host harness test with test resolver source | achievable as stated | pass — `unbacked_test_pose_reserves_nothing_and_its_pawn_spawns_there`, `unbacked_test_pose_drives_the_stand_in_and_the_arming_frame_single_use_or_not` |
+| R3 respawn never takes another seat's reservation while one is free; seat with none takes first free | respawn placement test after resolution republish | achievable as stated | pass — `respawn_skips_a_resolved_unpromoted_seats_start_and_a_seat_holding_none_takes_the_first_free` |
+| R4 single-use source consumed → re-promotion and rejoin re-resolve to a player start, reserve, hint before marker (O6) | host harness test, single-use source | achievable as stated | pass — `single_use_pose_consumed_by_its_spawn_hints_a_start_at_demotion_before_re_promotion`, `single_use_pose_consumed_by_its_spawn_resolves_a_start_when_its_client_rejoins_within_the_hold` |
+| R5 spawn stays at hinted pose when another seat takes/frees a placement between hint and promotion | host harness test | achievable as stated | pass — `spawn_stays_at_its_hinted_pose_when_other_seats_free_and_take_starts_before_promotion` |
+| R6 live pawn on reserved start at promotion → free placement clear of live pawns + fresh hint | host harness test | achievable as stated | pass — `promotion_moves_off_a_reserved_start_a_live_pawn_stands_on_and_rehints_it`, `placement_with_nothing_free_never_keeps_a_start_a_live_pawn_stands_on` |
+| R7 two seats resolved before spawn get distinct placements, not host's or held seat's; overflow round-robin warns once each | seat/resolver test with log capture | achievable as stated | pass — `seats_resolved_before_spawning_take_distinct_starts_past_the_host_and_a_held_seat`, `overflowing_seats_share_starts_round_robin_and_each_warns_once`, `placement_for_an_overflowing_seat_shares_an_unoccupied_spawn_and_warns_once` |
+| R8 demoted and held seats keep reservation; joiner skips it; returning seat spawns at hinted pose; demoted-without-reload gets no fresh hint (O10) | host harness test | achievable as stated | pass — `demoted_seats_keep_their_starts_and_return_to_their_hinted_pose_with_no_fresh_hint`, `held_seat_keeps_its_start_and_rejoins_at_its_hinted_pose`, `placement_overflow_shares_a_vacated_start_before_a_held_seats_reservation` |
+| R9 admission while installed (Running and Settling): Relevel then hint; uncatalogued: hint alone | host harness tests, both poll paths | achievable as stated | pass — `seat_admitted_into_a_running_catalog_level_receives_relevel_then_its_hint`, `seat_admitted_while_the_host_settles_receives_relevel_then_its_hint`, `seat_admitted_into_an_uncatalogued_level_receives_the_hint_alone` |
+| R10 admission while host loading: no hint; at install Relevel then hint against new level (O3) | host harness test | achievable as stated | pass — `seat_admitted_while_the_host_loads_is_hinted_at_install_as_a_later_admission_would_be` |
+| R11 client revealing after admission: hint precedes participation marker on Control (catalog and uncatalogued) | transport-order test over Control | achievable as stated | pass — `hint_precedes_the_participation_marker_for_a_client_that_reveals_after_admission` |
+| R12 pre-connect uncatalogued reveal promoted in admission batch: hint after marker, applied unarmed (O11) | host+client harness test | achievable as stated | pass — `client_revealed_before_connecting_is_promoted_in_its_admission_batch_and_hinted_after_the_marker` (host), `client_revealed_before_connecting_applies_its_post_marker_hint_while_unarmed_or_not_at_all_once_armed` (client) |
+| R13 level with no `player_spawn`: no hint, join as today | host harness test | achievable as stated | pass — `level_without_player_spawn_sends_no_hint_and_its_joiners_spawn_as_today` |
+| R14 host pawn keeps install's first-player spawn; no joiner assigned it | host harness test | achievable as stated | pass — `host_install_sends_relevel_then_hint_and_promotion_spawns_at_the_hinted_pose`, `joiners_never_take_the_hosts_install_spawn` |
+| C1 matching hint: install, settle, reveal at hinted eye/yaw/pitch; nonzero pitch fixture | client install/presented-pose test | achievable as stated | pass — `matching_hint_installs_settles_and_reveals_the_client_at_the_hinted_eye_yaw_and_pitch` |
+| C2 local `player_spawn` order differs from host's → still host pose | client test | achievable as stated | pass — `client_whose_player_spawn_order_differs_from_the_hosts_settles_at_the_hosts_pose` |
+| C3 hint in same Control drain as Relevel applies to the new level after unload | client drain test | achievable as stated | pass — `hint_in_the_same_drain_as_relevel_applies_to_the_new_level_after_the_old_one_unloads` |
+| C4 holding notice after hint (revealed hold included) leaves hint; settles at it (O4) | client test | achievable as stated | pass — `holding_notice_after_the_hint_leaves_it_and_the_client_settles_at_it` |
+| C5 hint naming other identity or earlier life ignored; stand-in at first spawn | client test | achievable as stated | pass — `hint_naming_another_level_or_an_earlier_life_is_ignored_and_the_stand_in_stays_at_the_first_spawn`, `hint_matches_only_the_install_it_names` |
+| C6 host same-map restart: reload, settle at hint naming new life | client test | achievable as stated | pass — `host_same_map_restart_reloads_the_client_and_settles_it_at_the_new_lifes_hint` |
+| C7 hint during Settling retargets; Settling timer not reset | settling test | achievable as stated | pass — `hint_during_settling_retargets_the_settle_view_without_resetting_the_settling_timer` |
+| C8 hint first arriving on reveal frame: that frame at settled pose; moves later while unarmed (O7) | client frame test | achievable as stated | pass — `hint_first_arriving_on_the_reveal_frame_leaves_it_at_the_settled_pose_and_moves_the_camera_on_a_later_unarmed_frame` |
+| C9 Running unarmed fresh hint moves camera before arming | client test | achievable as stated | pass — `fresh_hint_moves_a_running_unarmed_client_before_its_pawn_arms_there` |
+| C10 hint after arming moves neither position nor yaw/pitch, incl. overlap re-resolution (O5) | client test | achievable as stated | pass — `hint_after_the_pawn_arms_moves_neither_the_camera_position_nor_its_facing` |
+| C11 no hint → first-spawn stand-in, no added hold | client test | achievable as stated | pass — `client_with_no_hint_reveals_at_the_first_spawn_stand_in_with_no_added_hold` |
+| C12 non-finite component rejected before apply | client hint-store unit test | achievable as stated | pass — `non_finite_hint_is_rejected_before_it_moves_the_stand_in`, `non_finite_hint_is_refused_and_the_latest_finite_one_stays`, `spawn_pose_hint_finite_check_rejects_every_non_finite_component` |
+| M1 frontend menu up at host-level install → reveal at hint, menu gone; `--connect` no map arg and replaced map arg | client boot-destination/install test | achievable as stated | pass — `connected_client_booting_to_its_menu_or_a_replaced_map_reveals_the_host_level_at_the_hint_with_the_menu_gone` |
+| M2 submenu over frontend menu → both cleared (O15) | client test | achievable as stated | pass — `submenu_over_the_frontend_menu_is_cleared_with_it_at_the_host_level_install` |
+| M3 in-flight backdrop of host's catalog level adopted → host's level, menu gone, hint (O2) | client test | achievable as stated | pass — `backdrop_load_of_the_host_level_still_in_flight_is_adopted_and_installs_as_the_host_level` |
+| M4 installed backdrop (Settling or Running) reloads on relevel, settles at hint (O1, O12, O13) | client test | achievable as stated | pass — `installed_backdrop_of_the_host_level_reloads_as_the_host_level_whether_settling_or_running` |
+| M5 host-named load with no matching hint → first-spawn stand-in, not menu pose (O14) | client test | achievable as stated | pass — `host_named_load_with_no_matching_hint_takes_the_first_spawn_stand_in_not_the_menu_pose` |
+| M6 failed host load or unknown catalog id → frontend menu, no backdrop load; first and later loads (O9, O16, O18) | client test | achievable as stated | pass — `first_host_named_load_that_fails_returns_to_the_menu_with_no_backdrop_load`, `later_host_named_load_that_fails_puts_the_cleared_menu_back_with_no_backdrop_load`, `relevel_naming_an_unknown_id_unloads_the_followed_level_to_the_menu_with_no_backdrop_load`, `host_level_gone_from_the_catalog_at_its_drain_unloads_the_followed_level_to_the_menu`, `relevel_naming_an_unknown_id_on_the_host_levels_commit_frame_keeps_the_menu_through_the_unload`, `a_host_level_the_client_lacks_named_before_boot_clears_leaves_the_menu_with_no_backdrop_load` |
+| M7 self-initiated backdrop keeps the menu even if it is the host's last-named level (O17) | client test | achievable as stated | pass — `backdrop_the_client_loads_of_its_own_accord_keeps_the_menu_even_when_it_is_the_host_level` |
+| M8 host at frontend: no Relevel, no hint, no promotion; on host level start Relevel then hint (O19) | host harness test | achievable as stated | pass — `host_frontend_backdrop_names_no_level_and_promotes_no_one_until_the_host_starts_one`, `a_connected_clients_backdrop_still_publishes_its_level_identity` |
+| M9 un-named backdrop and single-player menu install present the menu pose | presented-pose test | achievable as stated | pass — `backdrop_the_host_has_not_named_and_single_player_menu_install_present_the_menu_pose` |
+| A1 with hint applied, arming frame camera within 1 cm, yaw/pitch unchanged; single-spawn and non-first placement | client arm test | achievable as stated | pass — `arming_with_an_applied_hint_keeps_the_camera_within_a_centimetre_and_its_facing` (arm emulated via `ClientView::arm`, see Corrections) |
+| A2 regression: unarmed view turn keeps yaw/pitch at arm | client arm test | achievable as stated | pass — `view_turned_while_unarmed_keeps_its_yaw_and_pitch_when_the_pawn_arms` |
+| W1 round trip; previous app protocol refused at gate 1; no shipped Control encoding changes; net has no internal dep | `crates/net` wire + handshake tests; `layering_invariants_hold` | achievable as stated | pass — `control_envelopes_round_trip`, `spawn_pose_hint_append_preserves_shipped_control_encodings`, `spawn_pose_hint_refuses_the_previous_protocol_id`, `netcode_handshake_*` (PRLC / 39 refused), `layering_invariants_hold` |
+| X1 loopback co-op on `coop-presentation-test` with distinct client yaw, with and without client map arg | owner, in-engine | manual | outstanding — owner, in-engine (see manual note below) |
+
+Gate (final, at c7161a739): `cargo fmt --check` ✓ · `cargo clippy --target-dir target/preflight-clippy -- -D warnings` ✓ (0 warnings) · `cargo test --workspace --no-fail-fast` ✓ 15,525 passed, 0 failed, 121 ignored · `cargo check --release` ✓ · `crate-graph --check` ✓.
+
+Manual X1 note: `coop-presentation-test`'s spawns now face east, 30° left, and 30° right with a slight pitch. A host launched with a `.prl` path is uncatalogued and sends no Relevel, so the "no client map argument" half needs the host on a catalog id for that map, if one exists; otherwise only the documented two-path launch runs.
+
+## Review
+- Round 1: 7 reviewers (3 tracers, 1 contract verifier, 2 adversarial, 1 hygiene). Acted on F1–F9 and D1–D6 (`96f2f8bcb`): overflow spawning inside a live pawn (🔴, 2x), hint dropped with the arming baseline, single-use re-hint timing, no-`player_spawn` gate, two request-queue holes, backdrop life and promotion, backdrop predicate, drain resolve miss, doc and comment drift.
+- Round 2: 2 reviewers on the fix diff. Acted on 2 (`1e2b0c6a3`): a restart hint applying to the old install (a regression from F2), and overflow sparing held seats' reservations. Recorded 2 as accepted (Corrections).
+- Deliberately left: the main.rs promotion arm's size (a helper means re-threading the host poll's disjoint borrows); the crouch-posture eye on a re-promotion carrying a crouch life state (E18's posture, a respawn non-goal); hold expiry leaving the released start in the respawn snapshot until the next publish (pre-existing, mild); `--start-pose` vs hint precedence by timing (dev probe); drafts citing the protocol (`drafts/E25--map-transitions` plans PRLC to PRLD, now taken, so it moves to PRLE; `drafts/E10--enemy-stances-and-telegraphs/research.md` cites PRLC as current); a suspended-then-resumed client not re-following its host (pre-existing).
 
 ## Tasks
 

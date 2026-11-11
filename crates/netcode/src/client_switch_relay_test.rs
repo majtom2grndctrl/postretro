@@ -179,6 +179,7 @@ impl SwitchRelay {
             next_switch_declaration_id: 0,
             pending_switch_declarations: std::collections::VecDeque::new(),
             session_status: ClientSessionStatus::default(),
+            spawn_pose_hint: Default::default(),
         };
         let mut relay = Self {
             server,

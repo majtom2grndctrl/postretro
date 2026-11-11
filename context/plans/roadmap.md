@@ -93,7 +93,7 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
 
 - [ ] **coop--pre-arm-fire-resolves-slot-zero** — before a connected client's pawn arms, its Input carries `firing_slot` 0, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot. Traced in source, not yet seen in play. Trace: `context/plans/done/coop--client-inventory-awaits-tuning/research.md`. Needs a draft session.
 
-- [ ] **coop--client-spawn-view-handoff** — a joining client settles, reveals and arms at the spawn pose its host resolves and hints before promotion, and a connected client following its host's level clears the frontend menu instead of sitting stuck behind it. Prerequisite of Epic 25 U2. Brief: `context/plans/ready/coop--client-spawn-view-handoff/`.
+- [x] **coop--client-spawn-view-handoff** — a joining client settles, reveals and arms at the spawn pose its host resolves and hints before promotion, and a connected client following its host's level clears the frontend menu instead of sitting stuck behind it. Prerequisite of Epic 25 U2. Brief: `context/plans/done/coop--client-spawn-view-handoff/`.
 
 - [ ] **Client respawn view** — candidate draft: what a connected client's camera presents at a mid-level respawn. Untraced; split out of `coop--client-spawn-view-handoff`. Respawns happen many times a session, so it may matter more to players than the join view. Needs a draft session.
 

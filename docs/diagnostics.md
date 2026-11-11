@@ -118,6 +118,12 @@ must run the same mod as the host, though. `postretro-tool run` already passes
 the project's mod. When you start the engine yourself, add `--mod <folder>`,
 naming the folder under `content/` that holds the host's mod.
 
+A joining client settles at the spawn its host picked for it, facing the way
+that spawn faces. One case moves the view once: both peers launched with the
+same map file, as above, and the client finished loading before its connection
+came up. It shows the map's first spawn until the host's choice arrives, then
+moves there as its player appears.
+
 On Windows PowerShell, set the variable first with
 `$env:POSTRETRO_NET_LAG = "75,30,5"`, then run the client command without the
 prefix. The variable stays set for the rest of that PowerShell window, so a

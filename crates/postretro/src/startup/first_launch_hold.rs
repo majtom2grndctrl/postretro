@@ -69,7 +69,7 @@ mod tests {
 
     use crate::App;
     use crate::startup::lifecycle::tests::test_app;
-    use crate::startup::{BootDestination, BootState, LevelRequest, LevelSource};
+    use crate::startup::{BootDestination, BootState, LevelRequest};
 
     fn map(id: &str) -> ModMapEntry {
         ModMapEntry {
@@ -188,9 +188,7 @@ mod tests {
             );
             assert_eq!(
                 app.level_requests,
-                [LevelRequest::Load(LevelSource::Catalog(
-                    "host_map".to_string()
-                ))]
+                [LevelRequest::HostLevel("host_map".to_string())]
             );
 
             close_panel(&mut app);
@@ -236,6 +234,58 @@ mod tests {
         app.follow_relevel_catalog("host_map".to_string(), 1);
         app.start_boot_destination(BootDestination::Frontend);
         assert_eq!(loading_catalog_id(&app).as_deref(), Some("host_map"));
+        stop_worker(&mut app);
+    }
+
+    /// The boot reached Frontend at its menu with nothing loading.
+    #[track_caller]
+    fn assert_at_menu_with_no_load(app: &App, context: &str) {
+        assert_eq!(app.boot_state, BootState::Frontend, "{context}");
+        assert!(app.frontend_menu_is_present(), "{context}: the menu is up");
+        assert!(app.level_load.is_none(), "{context}: no backdrop load");
+        assert!(app.level_requests.is_empty(), "{context}: nothing queued");
+    }
+
+    // M6: the first host-named level is one this client lacks, named before
+    // boot cleared, on the splash clear and on the first-launch hold's exit.
+    #[test]
+    fn a_host_level_the_client_lacks_named_before_boot_clears_leaves_the_menu_with_no_backdrop_load()
+     {
+        let mut splash = first_launch_app();
+        splash
+            .session
+            .as_mut()
+            .unwrap()
+            .player_options
+            .accessibility_panel_shown = true;
+        crate::startup::lifecycle::lifecycle_test_fixtures::connect_test_app_as_client(&mut splash);
+        splash.follow_relevel_catalog("missing_map".to_string(), 1);
+        splash.start_boot_destination(BootDestination::Frontend);
+        assert_at_menu_with_no_load(&splash, "splash clear");
+
+        let mut hold = first_launch_app();
+        crate::startup::lifecycle::lifecycle_test_fixtures::connect_test_app_as_client(&mut hold);
+        hold.enter_first_launch_hold(BootDestination::Frontend);
+        hold.follow_relevel_catalog("missing_map".to_string(), 1);
+        assert!(hold.level_requests.is_empty(), "nothing to load");
+        close_panel(&mut hold);
+        assert_at_menu_with_no_load(&hold, "hold exit");
+    }
+
+    // Regression guard: a `--connect` boot the host named nothing before
+    // still loads its frontend backdrop.
+    #[test]
+    fn a_connect_boot_with_no_relevel_still_populates_its_backdrop() {
+        let mut app = first_launch_app();
+        app.session
+            .as_mut()
+            .unwrap()
+            .player_options
+            .accessibility_panel_shown = true;
+        crate::startup::lifecycle::lifecycle_test_fixtures::connect_test_app_as_client(&mut app);
+        app.start_boot_destination(BootDestination::Frontend);
+        assert!(app.frontend_menu_is_present());
+        assert_eq!(loading_catalog_id(&app).as_deref(), Some("backdrop"));
         stop_worker(&mut app);
     }
 }

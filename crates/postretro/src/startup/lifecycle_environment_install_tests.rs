@@ -457,6 +457,7 @@ fn connect_as_client(app: &mut App) {
             tags: Vec::new(),
             loading_tree: Vec::new(),
         },
+        host_named: false,
     });
     app.session
         .as_mut()

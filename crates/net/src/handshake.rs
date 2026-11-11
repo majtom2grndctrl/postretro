@@ -12,8 +12,9 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// counter byte continues as a hex digit: protocol 10 is "PRLA". Player-addressed
 /// presentation commands advance it to protocol 11, "PRLB". The gameplay
 /// channel layout, with weapon switches moving from Control to Input, advances
-/// it to protocol 12, "PRLC". Independent of the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
+/// it to protocol 12, "PRLC". The appended spawn-pose hint advances it to
+/// protocol 13, "PRLD". Independent of the baked PRL file format.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C44; // "PRLD"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -105,6 +106,15 @@ mod tests {
         Divergence(DivergenceReason),
         Tuning(Vec<u8>),
         Relevel { catalog_id: String, level_life: u64 },
+    }
+
+    /// Server Control variants before `SpawnPoseHint`, in the current layout.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreSpawnPoseHintServerControlMessage {
+        Divergence(DivergenceReason),
+        Tuning(Vec<u8>),
+        Relevel { catalog_id: String, level_life: u64 },
+        SessionRoster(crate::wire::SessionRosterMessage),
     }
 
     /// Client Control variants before `JoinSeed`, in the current layout (the
@@ -252,6 +262,82 @@ mod tests {
                 "appending SessionRoster changed a shipped control encoding; bump WIRE_VERSION"
             );
         }
+    }
+
+    #[test]
+    fn spawn_pose_hint_append_preserves_shipped_control_encodings() {
+        use crate::wire::{RosterEntry, ServerControlMessage, SessionId, SessionRosterMessage};
+
+        let holding = DivergenceReason::Holding(HoldingCause::ClientNotRevealed {
+            identity: "campaign-test".to_owned(),
+        });
+        let roster = SessionRosterMessage {
+            session_id: SessionId([0x31; 16]),
+            your_seat: Some(2),
+            open_seats: 5,
+            entries: vec![RosterEntry {
+                seat: 2,
+                connected: true,
+            }],
+        };
+        let cases = [
+            (
+                PreSpawnPoseHintServerControlMessage::Divergence(holding.clone()),
+                ServerControlMessage::Divergence(holding),
+            ),
+            (
+                PreSpawnPoseHintServerControlMessage::Tuning(vec![4, 5, 6]),
+                ServerControlMessage::Tuning(vec![4, 5, 6]),
+            ),
+            (
+                PreSpawnPoseHintServerControlMessage::Relevel {
+                    catalog_id: "campaign-test".to_owned(),
+                    level_life: 9,
+                },
+                ServerControlMessage::Relevel {
+                    catalog_id: "campaign-test".to_owned(),
+                    level_life: 9,
+                },
+            ),
+            (
+                PreSpawnPoseHintServerControlMessage::SessionRoster(roster.clone()),
+                ServerControlMessage::SessionRoster(roster),
+            ),
+        ];
+
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending SpawnPoseHint changed a shipped control encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    // A previous-build peer cannot decode the spawn-pose hint, so gate 1 must
+    // refuse it before any decode.
+    #[test]
+    fn spawn_pose_hint_refuses_the_previous_protocol_id() {
+        const PRE_HINT_PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
+        const {
+            assert!(
+                PROTOCOL_ID > PRE_HINT_PROTOCOL_ID,
+                "the spawn-pose hint advances the application protocol"
+            );
+        };
+        let previous = ProtocolVersion {
+            app_protocol_id: PRE_HINT_PROTOCOL_ID,
+            wire_version: WIRE_VERSION,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PRE_HINT_PROTOCOL_ID as u64) << 32) | u64::from(WIRE_VERSION),
+            "gate 1 refuses a peer that predates the spawn-pose hint"
+        );
     }
 
     #[test]
@@ -645,7 +731,7 @@ mod switch_tick_epoch_tests {
 
     // A wire-33 peer cannot decode the ghost-link record riding entity
     // records, so both gates refuse it across the bump; the vocabulary did not
-    // change, so the application protocol stays PRLC.
+    // change, so the application protocol stayed at that bump's PRLC.
     #[test]
     fn ghost_link_record_refuses_wire_33_peers_and_admits_current_wire() {
         const PRE_GHOST_WIRE_VERSION: u32 = 33;
@@ -653,10 +739,12 @@ mod switch_tick_epoch_tests {
             assert!(WIRE_VERSION >= 34);
             assert!(crate::wire::SNAPSHOT_VERSION >= 22);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let peer = |wire_version| ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version,
@@ -689,7 +777,7 @@ mod switch_tick_epoch_tests {
         const {
             assert!(WIRE_VERSION >= 35);
         }
-        assert_eq!(PROTOCOL_ID, 0x_5052_4C43);
+        const { assert!(PROTOCOL_ID >= 0x_5052_4C43) };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_KIND_WIRE_VERSION,
@@ -715,7 +803,8 @@ mod switch_tick_epoch_tests {
 
     // A wire-35 snapshot envelope lacks the host level tick, so a client
     // cannot land `levelLoad` tails on the host's fixed ticks: both gates
-    // refuse it across the bump, and the application protocol stays PRLC.
+    // refuse it across the bump, and the application protocol stayed at that
+    // bump's PRLC.
     #[test]
     fn level_tick_refuses_wire_35_peers_and_admits_current_wire() {
         const PRE_LEVEL_TICK_WIRE_VERSION: u32 = 35;
@@ -726,10 +815,12 @@ mod switch_tick_epoch_tests {
             );
         };
         const { assert!(crate::wire::SNAPSHOT_VERSION >= 23) };
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_LEVEL_TICK_WIRE_VERSION,
@@ -764,10 +855,12 @@ mod switch_tick_epoch_tests {
             assert!(WIRE_VERSION > PRE_LEVEL_LIFE_WIRE_VERSION);
             assert!(crate::wire::SNAPSHOT_VERSION >= 23);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_LEVEL_LIFE_WIRE_VERSION,
@@ -801,10 +894,12 @@ mod switch_tick_epoch_tests {
             assert!(WIRE_VERSION > PRE_LIFE_STATE_WIRE_VERSION);
             assert!(crate::wire::SNAPSHOT_VERSION >= 24);
         }
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_LIFE_STATE_WIRE_VERSION,
@@ -836,10 +931,12 @@ mod switch_tick_epoch_tests {
         const PRE_ASSIST_WIRE_VERSION: u32 = 38;
         assert_eq!(WIRE_VERSION, 39);
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
-        assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C43,
-            "no vocabulary change: still PRLC"
-        );
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "no vocabulary change at this bump: PRLC or later"
+            );
+        };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_ASSIST_WIRE_VERSION,
@@ -878,18 +975,17 @@ mod switch_tick_epoch_tests {
     fn gameplay_channel_layout_refuses_prlb_and_wire_32_peers() {
         const PRE_LAYOUT_PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
         const PRE_LAYOUT_WIRE_VERSION: u32 = 32;
-        assert_eq!(PROTOCOL_ID, 0x_5052_4C43, "the layout is protocol 12, PRLC");
+        const {
+            assert!(
+                PROTOCOL_ID >= 0x_5052_4C43,
+                "the layout is protocol 12, PRLC, or later"
+            );
+        };
         const { assert!(WIRE_VERSION > PRE_LAYOUT_WIRE_VERSION) };
         assert_eq!(
-            validate_handshake(
-                protocol_version(),
-                ProtocolVersion {
-                    app_protocol_id: 0x_5052_4C43,
-                    wire_version: WIRE_VERSION,
-                },
-            ),
+            validate_handshake(protocol_version(), protocol_version()),
             Ok(()),
-            "a PRLC peer at the current wire version is admitted"
+            "a current peer at the current wire version is admitted"
         );
         for (app_protocol_id, wire_version) in [
             (PRE_LAYOUT_PROTOCOL_ID, WIRE_VERSION),

@@ -287,8 +287,12 @@ impl App {
                 .modal_stack
                 .clear_script_tree_tier(postretro_ui::modal_stack::ScopeTier::Level);
         }
+        // Recorded spawn poses are level-scoped, like the placement
+        // assignments the unload clear above dropped.
+        self.spawn_poses.clear_for_level_unload();
         self.active_level_tags.clear();
         self.active_level_source = None;
+        self.active_level_host_named = false;
 
         self.pending_level_log = false;
         // An unload during Settling abandons the settle: no reveal edge fires,
@@ -346,23 +350,37 @@ impl App {
         }
     }
 
+    /// The host level life of the installed level: the life of the last
+    /// relevel naming it, when that relevel loaded it (a host-named install).
+    /// `None` on an uncatalogued level, and on a level the client loaded of
+    /// its own accord, such as its frontend backdrop, even when its id is the
+    /// host's last-named level: a backdrop never serves as the host's level,
+    /// so its reveal never promotes. With the published identity, it names
+    /// the install a reveal declares and a spawn-pose hint must match.
+    pub(crate) fn followed_level_life(&self) -> Option<u64> {
+        if !self.active_level_host_named {
+            return None;
+        }
+        match (&self.active_level_source, &self.last_relevel) {
+            (Some(LevelSource::Catalog(active)), Some((id, life))) if active == id => Some(*life),
+            _ => None,
+        }
+    }
+
     /// The reveal edge's net half: publish that this peer has revealed the
     /// installed level. A host records its own reveal, which may promote
     /// revealed, parity-matched clients; the world poll later this frame
     /// consumes that promotion and spawns their pawns. A client declares
     /// its reveal to the host, naming the host level life it followed when
-    /// the last relevel named the installed map. A timed-out reveal publishes
-    /// the same.
+    /// the host's relevel loaded the installed map. A timed-out reveal
+    /// publishes the same.
     pub(crate) fn publish_net_reveal(&mut self) {
         // The identity install published as parity, so the two match by
         // construction.
         let Some(identity) = self.published_level_identity.clone() else {
             return;
         };
-        let level_life = match (&self.active_level_source, &self.last_relevel) {
-            (Some(LevelSource::Catalog(active)), Some((id, life))) if active == id => Some(*life),
-            _ => None,
-        };
+        let level_life = self.followed_level_life();
         let Some(endpoint) = self
             .session
             .as_mut()

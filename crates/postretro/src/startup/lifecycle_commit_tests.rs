@@ -721,6 +721,7 @@ fn host_level_change(app: &mut App, map: &Path) {
             tags: vec!["next".to_string()],
             loading_tree: Vec::new(),
         },
+        host_named: false,
     });
 }
 

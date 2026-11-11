@@ -28,11 +28,13 @@ fn played(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// The client installs the catalog map as the production install does: the
-/// in-flight entry becomes the active source, then segment B fires `levelLoad`.
-/// The reveal edge follows: Running, and the reveal declared to the host.
+/// The client installs the catalog map its host's relevel loaded, as the
+/// production install does: the in-flight host-named entry becomes the active
+/// source, then segment B fires `levelLoad`. The reveal edge follows: Running,
+/// and the reveal declared to the host.
 fn install_and_reveal_e1m1(app: &mut App) {
     app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+    app.active_level_host_named = true;
     install_capture_world(app, &level_world("e1m1", 1));
     app.published_level_identity = Some("e1m1".to_string());
     app.boot_state = BootState::Running;
@@ -94,12 +96,21 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
         scripting.scheduler.clone()
     };
 
+    // Admission names the life the client joins; the client loads it.
+    app.follow_relevel_catalog("e1m1".to_string(), 1);
+    assert_eq!(
+        app.level_requests,
+        VecDeque::from([LevelRequest::HostLevel("e1m1".to_string())]),
+    );
+    app.drain_level_requests();
+    // The load cannot read a fixture path; install its payload directly.
+    drop_in_flight_load(&mut app);
     install_and_reveal_e1m1(&mut app);
     assert_eq!(played(&app), ["intro"], "the first life's levelLoad");
     assert_eq!(
         declared_reveal(&app),
-        Some(RevealedLevel::new("e1m1", None)),
-        "revealed before the host named a life"
+        Some(RevealedLevel::new("e1m1", Some(1))),
+        "the reveal names the life the client followed"
     );
     assert_eq!(scheduler.pending_len(), 1, "the klaxon tail parks");
     for _ in 0..3 {
@@ -109,24 +120,17 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
     assert_eq!(scheduler.level_tick(), 3);
     assert_eq!(scheduler.join_host_tick(), Some(100));
 
-    // Admission names the life the client joined; it already runs that map.
-    app.follow_relevel_catalog("e1m1".to_string(), 1);
     app.follow_relevel_catalog("e1m1".to_string(), 1);
     assert!(
         app.level_requests.is_empty(),
-        "the joined life and its duplicate keep the active map"
-    );
-    assert_eq!(
-        declared_reveal(&app),
-        Some(RevealedLevel::new("e1m1", Some(1))),
-        "keeping the map re-declares the reveal with the adopted life"
+        "a duplicate of the joined life keeps the active map"
     );
 
     // The host restarts the same map: a new life of it.
     app.follow_relevel_catalog("e1m1".to_string(), 2);
     assert_eq!(
         app.level_requests,
-        VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+        VecDeque::from([LevelRequest::HostLevel("e1m1".to_string())]),
         "a host restart reloads the active map"
     );
     app.drain_level_requests();
@@ -181,12 +185,13 @@ fn host_restart_during_settling_reloads_the_settling_life() {
     app.follow_relevel_catalog("e1m1".to_string(), 1);
     app.level_requests.clear();
     app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+    app.active_level_host_named = true;
     app.boot_state = BootState::Settling;
 
     app.follow_relevel_catalog("e1m1".to_string(), 2);
     assert_eq!(
         app.level_requests,
-        VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+        VecDeque::from([LevelRequest::HostLevel("e1m1".to_string())]),
     );
     app.drain_level_requests();
     assert_eq!(

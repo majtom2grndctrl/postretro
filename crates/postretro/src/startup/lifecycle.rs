@@ -2,6 +2,11 @@
 //! declares the `lifecycle_*` siblings that load, install, finish and rebuild a level.
 //! See: context/lib/boot_sequence.md §1 · §4
 
+#[path = "host_named_level.rs"]
+mod host_named_level;
+#[cfg(test)]
+#[path = "host_named_level_tests.rs"]
+mod host_named_level_tests;
 #[path = "lifecycle_beside.rs"]
 mod lifecycle_beside;
 #[path = "lifecycle_boot_state.rs"]
@@ -73,6 +78,23 @@ mod lifecycle_unload_tests;
 mod lifecycle_world_cpu;
 #[path = "lifecycle_world_handles.rs"]
 mod lifecycle_world_handles;
+#[cfg(test)]
+#[path = "spawn_pose_handoff_fixtures.rs"]
+mod spawn_pose_handoff_fixtures;
+#[cfg(test)]
+#[path = "spawn_pose_handoff_tests.rs"]
+mod spawn_pose_handoff_tests;
+#[cfg(test)]
+#[path = "spawn_pose_reservation_tests.rs"]
+mod spawn_pose_reservation_tests;
+#[path = "spawn_pose_stand_in.rs"]
+mod spawn_pose_stand_in;
+#[cfg(test)]
+#[path = "spawn_pose_stand_in_fixtures.rs"]
+mod spawn_pose_stand_in_fixtures;
+#[cfg(test)]
+#[path = "spawn_pose_stand_in_tests.rs"]
+mod spawn_pose_stand_in_tests;
 
 #[cfg(test)]
 pub(crate) use lifecycle_model_sweep::parse_sweep_models;
@@ -202,6 +224,7 @@ impl App {
                         tags: entry.tags,
                         loading_tree: entry.loading_tree,
                     },
+                    host_named: false,
                 })
             }
             LevelSource::Path(map_path) => {
@@ -220,6 +243,7 @@ impl App {
                         loading_tree: Vec::new(),
                     },
                     map_path,
+                    host_named: false,
                 })
             }
         }
@@ -238,6 +262,7 @@ impl App {
             return;
         }
         self.retire_active_level_load();
+        let host_named = self.level_load.as_ref().is_some_and(|load| load.host_named);
         let level = self
             .level_load
             .take()
@@ -266,6 +291,12 @@ impl App {
             renderer.clear_splash();
         }
         self.boot_state = BootState::Frontend;
+        // A connected client's failed host-named load puts the menu back,
+        // whose install would have cleared it, with no backdrop load: the
+        // backdrop may be the very level that failed.
+        if host_named {
+            self.present_frontend_menu();
+        }
         self.request_redraw();
     }
 }

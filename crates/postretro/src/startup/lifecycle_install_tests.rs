@@ -1161,6 +1161,7 @@ fn trap_pool_app(
             tags: vec!["trap-pools".to_string()],
             loading_tree: Vec::new(),
         },
+        host_named: false,
     });
     Some((app, case))
 }

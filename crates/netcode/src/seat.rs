@@ -125,6 +125,10 @@ pub struct SeatTable {
     /// Round-robin position for joiners beyond the spawn count, which share a
     /// spawn. Level-scoped, like the assignments.
     overflow_cursor: usize,
+    /// Seats that have warned about sharing a spawn on this level, so a seat
+    /// moved off a shared spawn by a live pawn shares again without a second
+    /// warning. Level-scoped, like the assignments.
+    overflow_warned: HashSet<Seat>,
     /// Coalesces all roster-affecting mutations in one transport poll into one
     /// publication after its lifecycle batch completes.
     roster_dirty: bool,
@@ -163,6 +167,7 @@ impl SeatTable {
             next_hold_order: 0,
             hold_clock: Duration::ZERO,
             overflow_cursor: 0,
+            overflow_warned: HashSet::new(),
             roster_dirty: true,
         }
     }
@@ -416,6 +421,7 @@ impl SeatTable {
             "a held seat has already had its pawn binding cleared"
         );
         self.placement_assignments.remove(&seat);
+        self.overflow_warned.remove(&seat);
         self.connect_claims.remove(&seat);
         self.hold_deadlines.remove(&seat);
         self.hold_order.remove(&seat);
@@ -488,6 +494,12 @@ impl SeatTable {
     /// The original map placement assigned to this durable seat.
     pub fn placement_for_seat(&self, seat: Seat) -> Option<usize> {
         self.placement_assignments.get(&seat).copied()
+    }
+
+    /// Drop `seat`'s placement assignment: its spawn pose no longer comes from
+    /// a `player_spawn`, so it holds none.
+    pub fn release_placement(&mut self, seat: Seat) {
+        self.placement_assignments.remove(&seat);
     }
 
     /// Current and held-seat placement assignments, without a seat-count guess.
@@ -675,6 +687,7 @@ impl SeatTable {
         self.placement_assignments.clear();
         self.level_spawn_placements.clear();
         self.overflow_cursor = 0;
+        self.overflow_warned.clear();
     }
 
     /// Placements held for seats other than `seat`: every other seat's
@@ -699,7 +712,9 @@ impl SeatTable {
     /// The `player_spawn` a participating joiner's pawn materializes at, judged
     /// by the occupancy rule respawn shares: its seat's earlier assignment while
     /// no live pawn overlaps it, else the lowest `sites` placement that is free.
-    /// With none free, joiners share them round-robin, with a warning.
+    /// With none free, joiners share them round-robin, with one warning per
+    /// seat: a seat already sharing keeps its spawn while no live pawn stands
+    /// on it.
     ///
     /// `sites` is in map order and holds only spawns that can materialize a
     /// pawn; the caller owns that resolution, so this table never reads the
@@ -729,22 +744,57 @@ impl SeatTable {
             return Some(site.map_index);
         }
 
-        let placement = match sites
-            .iter()
-            .find(|site| occupancy.is_free(site.map_index, site.foot_anchor, site.capsule.as_ref()))
-        {
-            Some(free) => free.map_index,
-            None => {
-                let shared = sites[self.overflow_cursor % sites.len()].map_index;
-                self.overflow_cursor = self.overflow_cursor.wrapping_add(1);
-                log::warn!(
-                    "[Net] every player_spawn placement is occupied; sharing index {shared}"
-                );
-                shared
-            }
+        let free = sites.iter().find(|site| {
+            occupancy.is_free(site.map_index, site.foot_anchor, site.capsule.as_ref())
+        });
+        let placement = match free {
+            Some(site) => site.map_index,
+            None => self.share_overflow_placement(seat, &occupancy, sites),
         };
         self.placement_assignments.insert(seat, placement);
         Some(placement)
+    }
+
+    /// With no spawn free, the next spawn round-robin that no live pawn stands
+    /// on, even one another seat holds: a reserved spawn is still empty, and
+    /// sharing it beats arriving inside a pawn. Among those, a start whose
+    /// holder's pawn already spawned comes before one reserved for a seat still
+    /// to arrive. Only when a live pawn stands on
+    /// every spawn does the seat take one anyway. Each seat warns once per
+    /// level, however often a live pawn moves it on.
+    fn share_overflow_placement(
+        &mut self,
+        seat: Seat,
+        occupancy: &PlacementOccupancy<'_>,
+        sites: &[PlacementSite],
+    ) -> usize {
+        // Starts reserved for another seat whose pawn has not arrived (resolved
+        // but unpromoted, or held after a disconnect). Sharing one of those
+        // displaces that seat's own spawn, so a start whose holder already
+        // spawned and walked off is the better share.
+        let awaiting_arrival: HashSet<usize> = self
+            .placement_assignments
+            .iter()
+            .filter(|(other, _)| **other != seat && !self.pawn_bindings.contains_key(other))
+            .map(|(_, placement)| *placement)
+            .collect();
+        let start = self.overflow_cursor;
+        let site_at = |offset: usize| &sites[start.wrapping_add(offset) % sites.len()];
+        let unoccupied = |offset: &usize| {
+            let site = site_at(*offset);
+            !occupancy.live_pawn_overlaps(site.foot_anchor, site.capsule.as_ref())
+        };
+        let offset = (0..sites.len())
+            .filter(unoccupied)
+            .find(|&offset| !awaiting_arrival.contains(&site_at(offset).map_index))
+            .or_else(|| (0..sites.len()).find(unoccupied))
+            .unwrap_or(0);
+        let shared = site_at(offset).map_index;
+        self.overflow_cursor = start.wrapping_add(offset + 1);
+        if self.overflow_warned.insert(seat) {
+            log::warn!("[Net] every player_spawn placement is occupied; sharing index {shared}");
+        }
+        shared
     }
 
     #[cfg(test)]

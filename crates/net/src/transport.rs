@@ -260,6 +260,14 @@ impl NetServer {
         self.revealed_level.as_deref()
     }
 
+    /// The level life of the installed catalog level: the life a client's
+    /// `Revealed` must name. `None` on an uncatalogued install and with no
+    /// level installed.
+    #[must_use]
+    pub fn installed_level_life(&self) -> Option<u64> {
+        self.relevel.as_ref().map(|(_, level_life)| *level_life)
+    }
+
     /// Install the catalog id clients should follow, or `None` at unload and
     /// suspend. This is intentionally separate from level parity: the net
     /// crate cannot distinguish a catalog id from a raw-path fallback inside
@@ -1004,6 +1012,14 @@ fn parity_cause(
 /// retry: a denial (full host) or an expired token ends the connect.
 pub const CONNECT_ATTEMPTS: u32 = 4;
 
+/// One server Control frame as the client drained it: an engine message, or
+/// the payload-less marker that arms a participation epoch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControlArrival {
+    ParticipationMarker { epoch: u64 },
+    Message(ServerControlMessage),
+}
+
 /// Synchronous client transport. It declares values but never compares them.
 pub struct NetClient {
     client: RenetClient,
@@ -1445,6 +1461,24 @@ impl NetClient {
     /// Route returned lifecycle controls before draining snapshots: epoch filtering
     /// keeps a later same-batch promotion's snapshots available.
     pub fn drain_control(&mut self) -> Vec<ServerControlMessage> {
+        self.drain_control_arrivals()
+            .into_iter()
+            .filter_map(|arrival| match arrival {
+                ControlArrival::Message(message) => Some(message),
+                ControlArrival::ParticipationMarker { .. } => None,
+            })
+            .collect()
+    }
+
+    /// [`Self::drain_control`] with each participation marker kept in its
+    /// place, for tests asserting Control order around promotion. Applies the
+    /// same epoch effects.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub fn drain_control_with_markers(&mut self) -> Vec<ControlArrival> {
+        self.drain_control_arrivals()
+    }
+
+    fn drain_control_arrivals(&mut self) -> Vec<ControlArrival> {
         drain_client_channel(&mut self.client, Channel::Control)
             .into_iter()
             .filter_map(|bytes| {
@@ -1456,12 +1490,12 @@ impl NetClient {
                     }
                 };
                 let Some(payload) = frame.payload else {
-                    if let Some(epoch) = frame.participation_epoch {
-                        self.activate_participation(epoch);
-                    } else {
+                    let Some(epoch) = frame.participation_epoch else {
                         log::warn!("[Net] dropping participation marker without an epoch");
-                    }
-                    return None;
+                        return None;
+                    };
+                    self.activate_participation(epoch);
+                    return Some(ControlArrival::ParticipationMarker { epoch });
                 };
                 let message: ServerControlMessage = match wire::decode(&payload) {
                     Ok(message) => message,
@@ -1477,7 +1511,7 @@ impl NetClient {
                 {
                     self.retire_participation(epoch);
                 }
-                Some(message)
+                Some(ControlArrival::Message(message))
             })
             .collect()
     }
@@ -2579,16 +2613,23 @@ mod tests {
     // declaration kind, a wire-35 peer the snapshot's host level tick, and a
     // wire-36 peer the host level life on `Relevel` and `Revealed`, a wire-37
     // peer the player life-state record, and a wire-38 peer the assist fields.
-    // The admission gate refuses each declaration with a typed cause and admits
-    // a PRLC / 39 one.
+    // A PRLC peer predates the spawn-pose hint. The admission gate refuses each
+    // declaration with a typed cause and admits a PRLD / 39 one.
     #[test]
-    fn admission_refuses_prlb_or_wire_32_to_38_and_admits_prlc_39() {
+    fn admission_refuses_prlb_prlc_or_wire_32_to_38_and_admits_prld_39() {
         let current = wire::ProtocolVersion {
-            app_protocol_id: 0x_5052_4C43,
+            app_protocol_id: 0x_5052_4C44,
             wire_version: 39,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C43,
+                    ..current
+                },
+                false,
+            ),
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C42,

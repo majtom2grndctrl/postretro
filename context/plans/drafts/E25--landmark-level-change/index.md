@@ -2,7 +2,7 @@
 
 Brief · compact · Epic 25 U2 · reads: `context/lib/movement.md` §6 (Teleport) · `context/lib/entity_model.md` §7, §7d · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/boot_sequence.md` §3, §4 · `context/lib/networking.md` §Slot lifecycle, §Session-state ledger · `context/lib/scripting.md` §12 · `plans/done/E18--player-life-states/` · `plans/done/E18--coop-activation-policy/` · hub `drafts/E25--map-transitions/` (D4, D5, D9–D11, AC 3–9, U2 pins, Boundary inventory) · read at ab08438
 
-**Sequence:** after `coop--client-spawn-view-handoff` (drafts), whose host-side spawn-pose resolver this brief extends. Concurrent with U1.
+**Sequence:** after `coop--client-spawn-view-handoff` (ready), whose host-side spawn-pose resolver this brief extends. Concurrent with U1.
 
 ## Problem
 Owner-raised, as Epic 25's second unit. A level change today is a hard cut to a player start: `loadLevel` carries a catalog id and nothing else, every pawn spawns at `player_spawn`, and only the seat's carried loadout survives. Nothing lets an author join two maps so a player walks out of one and into the other where they left off. When done, an author places a **seam** — a volume built at the same spot in both maps, with a shared name — and a player who activates it crosses behind a loading screen into the next map at the same place relative to the seam's landmark, facing the same way, moving the same way, with loadout carried. Other players arrive at player starts. This is the seam's author surface and transition contract; U3 later removes the loading screen without changing either.

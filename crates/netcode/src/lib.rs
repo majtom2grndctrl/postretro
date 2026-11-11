@@ -34,6 +34,7 @@ extern crate self as netcode;
 use std::collections::VecDeque;
 
 mod client;
+mod client_spawn_pose_hint;
 mod client_switch;
 mod command_queue;
 #[cfg(any(test, feature = "test-support"))]
@@ -187,6 +188,7 @@ pub use client::{
     AssistPairEntry, AssistProgressSample, ClientPresentationInputs, ClientReplication,
     GhostLinkUpdate, MoverCorrection, RemoteAssistFacts,
 };
+pub use client_spawn_pose_hint::ClientSpawnPoseHint;
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
 pub use client_switch::{

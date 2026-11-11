@@ -210,6 +210,7 @@ impl RelayHarness {
             next_switch_declaration_id: 0,
             pending_switch_declarations: VecDeque::new(),
             session_status: ClientSessionStatus::default(),
+            spawn_pose_hint: Default::default(),
         };
 
         Self {

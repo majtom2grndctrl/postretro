@@ -1302,3 +1302,6 @@ fn actionless_engaged_slot_verbs_yield_to_rest_animation_at_standstill() {
 
 #[path = "engaged_motion_alloc_tests.rs"]
 mod alloc;
+
+#[path = "replan_stress_tests.rs"]
+mod replan_stress;

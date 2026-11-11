@@ -13,16 +13,25 @@ use std::path::Path;
 
 use image::RgbaImage;
 
+// Shared by every capture target; the mover rows compile through
+// `compile_dev_map_with` alone.
+#[allow(dead_code)]
 mod capture_support;
 // Shared by two targets, each using part of it.
 #[allow(dead_code)]
 mod mover_capture_support;
 
-use capture_support::compile_dev_map;
+use capture_support::compile_dev_map_with;
 use mover_capture_support::{
     Pose, Run, Scene, ScreenBox, frame_mean, luma, masked_mean, max_channel_delta, read_map,
     sibling_map, staticize, with_entity, without_channel,
 };
+
+/// Mover rows judge `--release` builds: the cold, `high`-fidelity bake that
+/// ships.
+fn compile_release(workspace: &Path, map_name: &str) -> tempfile::TempPath {
+    compile_dev_map_with(workspace, map_name, &["--release"])
+}
 
 const RESOLUTION: [u32; 2] = [960, 540];
 
@@ -150,8 +159,8 @@ fn closet_pool_pixels(pose: Pose) -> impl Fn(u32, u32) -> bool {
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
 fn k1_closet_closed_reads_as_dark_as_the_static_door_and_open_reads_as_stripped() {
     let run = Run::new();
-    let closet = compile_dev_map(&run.workspace, "mover-closet");
-    let reference = compile_dev_map(&run.workspace, "mover-closet-static-door");
+    let closet = compile_release(&run.workspace, "mover-closet");
+    let reference = compile_release(&run.workspace, "mover-closet-static-door");
     let stripped = without_channel(&run.workspace, &closet, "mover-closet-no-id57", false);
     let mut misses = Vec::new();
 
@@ -268,9 +277,9 @@ impl Setpiece {
                 .to_owned()
         };
         Self {
-            receiver: compile_dev_map(workspace, &stem(&receiver_map)),
-            reference: compile_dev_map(workspace, &stem(&reference_map)),
-            backdrop: compile_dev_map(workspace, "mover-setpiece"),
+            receiver: compile_release(workspace, &stem(&receiver_map)),
+            reference: compile_release(workspace, &stem(&reference_map)),
+            backdrop: compile_release(workspace, "mover-setpiece"),
             _sources: [receiver_map, reference_map],
         }
     }
@@ -367,8 +376,8 @@ fn k2_setpiece_wall_closed_darkens_the_held_receiver_like_the_static_wall() {
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
 fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
     let run = Run::new();
-    let closet = compile_dev_map(&run.workspace, "mover-closet");
-    let setpiece = compile_dev_map(&run.workspace, "mover-setpiece");
+    let closet = compile_release(&run.workspace, "mover-closet");
+    let setpiece = compile_release(&run.workspace, "mover-setpiece");
     let both = vec![(SETPIECE_WALL, 0.5), (SETPIECE_ROOM, 0.5)];
     let cases: [MidTravel; 5] = [
         (
@@ -473,7 +482,7 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
 fn d2_no_section_is_byte_identical_and_no_state_is_within_two_levels_of_no_depth() {
     let run = Run::new();
-    let closet = compile_dev_map(&run.workspace, "mover-closet");
+    let closet = compile_release(&run.workspace, "mover-closet");
     let stripped = without_channel(&run.workspace, &closet, "mover-closet-no-id57", false);
     let no_depth = without_channel(&run.workspace, &closet, "mover-closet-no-depth", true);
     let plain = scene(Vec::new());

@@ -1,17 +1,23 @@
 //! Renderer half, on the compiled `mover-closet`, whole-loaded: the door's
 //! t′ sequence the game half hands over (rising, a reversal just past
 //! mid-travel, closing, held), each frame composing the indirect atlas and
-//! writing the door's live depth tiles. At every t′ the composed atlas
-//! equals, texel by texel, the linear mix of the frames at t′ = 0 and t′ = 1:
-//! the affected probes compose lerp(S^b₀, S^b₁, t′). The tile texture blends
-//! through the frame at t′ = 0.5, where each live tile holds its probe's base
-//! (the D-rows prove that bit for bit): lerp(D₀, base, 2t′) up to 0.5, then
-//! lerp(base, D₁, 2t′ − 1). Every other texel holds still. The closet gates
-//! no direct light (its id 57 has no direct block), so no direct atlas moves.
+//! writing the door's live depth tiles. At every t′ the composed atlas and
+//! the tile texture equal, texel by texel, the piecewise mix of reference
+//! frames rendered at every t′ where some probe's compose can bend: each of
+//! the door's knots, where a stored or base-reading pose reads exactly, and
+//! the midpoint of every pair of knots, where a depth interval between two
+//! such poses reaches its base. Between two neighbouring references every
+//! probe's compose is linear in t′: bounce lerps between the poses around
+//! t′ (a skipped pose blended across), and depth runs D_lo → base → D_hi.
+//! So the mix of the neighbouring references is that probe's piecewise mix,
+//! whichever poses it stores. Every other texel holds still. The closet
+//! gates no direct light (its id 57 has no direct block), so no direct atlas
+//! moves.
 //! See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 use super::*;
 use crate::render::MoverTravel;
 use crate::render::composed_tiles::{f16_to_f32, read_halves};
+use postretro_level_format::mover_probe_channel::Knot;
 
 /// The door's t′ per frame: first hand-over at 0, rising through the
 /// midpoint, held across two frames, reversed just past mid-travel, closing
@@ -22,6 +28,8 @@ struct Closet {
     renderer: Renderer,
     font: postretro_ui::text::FontSystem,
     door: u32,
+    /// The door's knots through its ramp.
+    knots: Vec<Knot>,
 }
 
 impl Closet {
@@ -40,6 +48,10 @@ impl Closet {
         );
         assert!(!channel.depth_records.is_empty(), "and a depth block");
         let door = world.kinematic_geometry.movers[0].mover_id;
+        let knots = channel
+            .mover_record(door)
+            .expect("the door has a mover record")
+            .effective_knots();
         let materials: Vec<_> = world
             .texture_names
             .iter()
@@ -63,6 +75,7 @@ impl Closet {
             renderer,
             font: postretro_ui::text::build_font_system(),
             door,
+            knots,
         })
     }
 
@@ -106,44 +119,73 @@ fn read_values(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<f32> {
         .collect()
 }
 
-/// Texels that move with t′, each checked against its mix at `t` within the
-/// texel's f16 spacing: the linear mix of `at0` and `at1`, or with `mid`,
-/// the blend through it (`at0` → `mid` over the first half, `mid` → `at1`
-/// over the second). A texel every reference holds alike must hold still.
+/// The t′ where some probe's compose can bend, ascending: every knot, and
+/// the midpoint of every pair of knots, since any two may bound one probe's
+/// interval once the poses between them are skipped for it.
+fn breakpoints(knots: &[Knot]) -> Vec<f32> {
+    let mut at: Vec<f32> = knots.iter().map(|knot| knot.t).collect();
+    for (i, lo) in knots.iter().enumerate() {
+        for hi in &knots[i + 1..] {
+            at.push(0.5 * (lo.t + hi.t));
+        }
+    }
+    at.sort_by(f32::total_cmp);
+    at.dedup();
+    at
+}
+
+/// One reference frame: its t′ and both readbacks.
+struct Reference {
+    t: f32,
+    atlas: Vec<f32>,
+    tiles: Vec<f32>,
+}
+
+/// Texels that move with t′, each checked against the mix of the two
+/// references around `t` (`refs` ascending by t′, `pick` the readback),
+/// within one f16 step at the larger magnitude: the store's rounding, plus
+/// at most half a step a reference carries where it is itself a mix. A
+/// texel every reference holds alike must hold still.
 fn check_mix(
     found: &[f32],
-    at0: &[f32],
-    mid: Option<&[f32]>,
-    at1: &[f32],
+    refs: &[Reference],
+    pick: impl Fn(&Reference) -> &[f32],
     t: f32,
     what: &str,
 ) -> usize {
-    assert_eq!(found.len(), at0.len(), "{what}: same layout");
+    let hi = refs
+        .iter()
+        .position(|reference| reference.t >= t)
+        .expect("references span t′ 0 to 1");
+    let lo = if refs[hi].t == t { hi } else { hi - 1 };
+    let s = if lo == hi {
+        0.0
+    } else {
+        (t - refs[lo].t) / (refs[hi].t - refs[lo].t)
+    };
+    let (below, above) = (pick(&refs[lo]), pick(&refs[hi]));
+    assert_eq!(found.len(), below.len(), "{what}: same layout");
     let mut moving = 0;
-    for (index, ((&got, &a0), &b1)) in found.iter().zip(at0).zip(at1).enumerate() {
-        let (a, b, s) = match mid.map(|mid| mid[index]) {
-            Some(m) if t <= 0.5 => (a0, m, 2.0 * t),
-            Some(m) => (m, b1, 2.0 * t - 1.0),
-            None => (a0, b1, t),
-        };
-        let still = a0 == b1 && mid.is_none_or(|mid| mid[index] == a0);
-        if !still {
-            moving += 1;
-        } else {
+    for (index, &got) in found.iter().enumerate() {
+        let first = pick(&refs[0])[index];
+        if refs.iter().all(|reference| pick(reference)[index] == first) {
             assert_eq!(
                 got.to_bits(),
-                a0.to_bits(),
+                first.to_bits(),
                 "{what} t′ {t}: half {index} no reference moves changed"
             );
             continue;
         }
+        moving += 1;
+        let (a, b) = (below[index], above[index]);
         let expected = a + (b - a) * s;
-        // One f16 step at the larger magnitude, for the store's rounding,
-        // plus the mix's own f32 rounding.
         let step = a.abs().max(b.abs()).max(6.1e-5) * 2f32.powi(-10);
         assert!(
             (got - expected).abs() <= 1.01 * step,
-            "{what} t′ {t}: half {index} holds {got}, the mix of {a} and {b} is {expected}"
+            "{what} t′ {t}: half {index} holds {got}, the mix of {a} (t′ {}) and {b} (t′ {}) is \
+             {expected}",
+            refs[lo].t,
+            refs[hi].t,
         );
     }
     moving
@@ -152,39 +194,33 @@ fn check_mix(
 #[test]
 #[ignore = "requires MOVER_CLOSET_PRL (content/dev/maps/mover-closet.map compiled) and \
             POSTRETRO_SH_STREAMING=off"]
-fn c9_the_closet_composes_and_writes_the_mix_at_every_handed_t() {
+fn c9_the_closet_composes_and_writes_the_piecewise_mix_at_every_handed_t() {
     let path = std::env::var("MOVER_CLOSET_PRL").expect("set MOVER_CLOSET_PRL");
     let Some(mut closet) = Closet::load(&path) else {
         return;
     };
-    let (atlas_open, tiles_open) = closet.frame(1.0);
-    let (_, tiles_base) = closet.frame(0.5);
-    let (atlas_closed, tiles_closed) = closet.frame(0.0);
+    let at = breakpoints(&closet.knots);
+    let refs: Vec<Reference> = at
+        .iter()
+        .map(|&t| {
+            let (atlas, tiles) = closet.frame(t);
+            Reference { t, atlas, tiles }
+        })
+        .collect();
     let mut moving = (0, 0);
     for t in SEQUENCE {
         let (atlas, tiles) = closet.frame(t);
         moving = (
-            check_mix(
-                &atlas,
-                &atlas_closed,
-                None,
-                &atlas_open,
-                t,
-                "indirect atlas",
-            ),
-            check_mix(
-                &tiles,
-                &tiles_closed,
-                Some(&tiles_base),
-                &tiles_open,
-                t,
-                "depth tiles",
-            ),
+            check_mix(&atlas, &refs, |r| &r.atlas, t, "indirect atlas"),
+            check_mix(&tiles, &refs, |r| &r.tiles, t, "depth tiles"),
         );
     }
     eprintln!(
-        "C9 closet: {} indirect-atlas halves and {} depth-tile halves move with t′, \
-         every one at the mix over {} frames",
+        "C9 closet: {} knot(s) {:?}, {} reference frame(s); {} indirect-atlas halves and {} \
+         depth-tile halves move with t′, every one at its piecewise mix over {} frames",
+        closet.knots.len(),
+        closet.knots.iter().map(|knot| knot.t).collect::<Vec<_>>(),
+        refs.len(),
         moving.0,
         moving.1,
         SEQUENCE.len()

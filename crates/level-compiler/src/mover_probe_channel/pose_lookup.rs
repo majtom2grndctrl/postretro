@@ -20,6 +20,11 @@ pub(crate) struct MoverPoseBounces {
     pub(crate) label: String,
     pub(crate) high_bounces: u32,
     pub(crate) poses: Vec<u32>,
+    /// The static patches inside the mover's near-field domain, which each
+    /// of its mid poses traces its later bounces over; 0 with no mid pose.
+    pub(crate) domain_patches: usize,
+    /// Every static patch: the share's denominator.
+    pub(crate) static_patches: usize,
 }
 
 /// What a lookup reduces a mover with when every pose of it hits: the
@@ -38,6 +43,12 @@ pub(crate) struct PoseLookup<'r, 'c> {
     found: Vec<Option<MoverBounceStates>>,
     /// Per job, each pose's key and whether the memo held it.
     poses: Vec<Vec<PoseSlot>>,
+    /// Per job, the static patches inside its domain
+    /// ([`super::NearFieldDomain::static_patches`]), counted for a job with
+    /// mid poses: the Build Summary's projection reads them.
+    domain_patches: Vec<usize>,
+    /// Every static patch.
+    static_patches: usize,
     /// The jobs with some pose left to bake.
     pub(crate) pending: Vec<&'r MoverBounceJob>,
 }
@@ -69,11 +80,20 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             memo,
             found: Vec::with_capacity(request.jobs.len()),
             poses: Vec::with_capacity(request.jobs.len()),
+            domain_patches: Vec::with_capacity(request.jobs.len()),
+            static_patches: patches.len(),
             pending: Vec::new(),
         };
         let (mut probed, mut missed) = (0, 0);
         for job in &request.jobs {
             let Some(memo) = lookup.memo.as_ref() else {
+                // No key reads the domain's patches here; count them alone,
+                // a point-in-box test per patch and no ray.
+                lookup.domain_patches.push(if job.has_mid_poses() {
+                    job.domain.static_patches(patches).len()
+                } else {
+                    0
+                });
                 lookup.found.push(None);
                 lookup.poses.push(
                     (0..job.scenes.len())
@@ -93,6 +113,7 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             } else {
                 Vec::new()
             };
+            lookup.domain_patches.push(domain_patches.len());
             let mut slots = Vec::with_capacity(count);
             let mut states = Vec::with_capacity(count);
             #[cfg(test)]
@@ -167,17 +188,21 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
     }
 
     /// Every job's poses in request order, at the count each resolves at:
-    /// the count it was served at or bakes at.
+    /// the count it was served at or bakes at, with its domain's static
+    /// patches against every static patch.
     pub(crate) fn pose_bounces(&self, request: &MoverBounceRequest) -> Vec<MoverPoseBounces> {
         request
             .jobs
             .iter()
             .zip(&self.poses)
-            .map(|(job, slots)| MoverPoseBounces {
+            .zip(&self.domain_patches)
+            .map(|((job, slots), &domain_patches)| MoverPoseBounces {
                 mover_id: job.mover_id,
                 label: job.label.clone(),
                 high_bounces: job.high_bounces,
                 poses: slots.iter().map(|slot| slot.bounces).collect(),
+                domain_patches,
+                static_patches: self.static_patches,
             })
             .collect()
     }

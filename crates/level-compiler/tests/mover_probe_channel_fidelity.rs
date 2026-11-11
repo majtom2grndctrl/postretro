@@ -111,6 +111,19 @@ fn low_caps_every_mover_at_one_bounce_high_bakes_its_own_and_release_is_high_on_
         "{released}"
     );
     assert!(!summary(released, "plate").contains('—'), "{released}");
+    // AC 29: the projection adds each mid pose's share of the static patches,
+    // its domain's, counted alike with no memo (`--release`) and with one.
+    let share = |logs: &str| {
+        let line = summary(logs, "plate");
+        let from = line.find("(2 termini + ").expect("a mid-pose term");
+        let to = line.find(" of static patches)").expect("the share's end");
+        line[from..to].to_string()
+    };
+    assert!(
+        share(released).starts_with("(2 termini + 4 mid pose(s) × "),
+        "{released}"
+    );
+    assert_eq!(share(released), share(&high_on_empty.logs));
     // A `light_bounces 1` mover shows what `high` shows, at either fidelity.
     assert!(summary(&capped_high.logs, "plate").starts_with("6 pose(s), high;"));
 }

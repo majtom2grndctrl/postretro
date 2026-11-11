@@ -9,9 +9,8 @@ use crate::bake_fidelity::BakeMode;
 use crate::mover_probe_channel::{MoverPoseBounces, SkipCounts};
 
 /// One terminus costs about one id-34 bake (research §Cost), so a mover's
-/// `--release` bounce bake projects as its two termini; a mid pose costs a
-/// domain-sized trace, left out.
-const PROJECTED_ID34_BAKES: u32 = 2;
+/// two termini project as two id-34 bakes.
+const TERMINUS_ID34_BAKES: f64 = 2.0;
 
 /// The block's lines, or none when no mover re-bakes. `movers` holds each
 /// mover's poses at the counts they resolved at; `skips` each mover with
@@ -87,20 +86,38 @@ fn shown_fidelity(mover: &MoverPoseBounces) -> String {
     }
 }
 
-/// Id 34's recorded bake time × the mover's two termini, labelled an
-/// estimate; "—" with none recorded, and none for a mover baking no bounce.
+/// Id 34's recorded bake time T × 2 for the mover's termini, plus T × the
+/// share of static patches its near-field domain holds for each mid pose,
+/// which traces its later bounces over that domain alone (owner,
+/// 2026-11-11). Labelled an estimate; "—" with none recorded, and none for
+/// a mover baking no bounce.
 fn projected_release_time(mover: &MoverPoseBounces, sh_base_bake_time: Option<Duration>) -> String {
     if mover.high_bounces == 0 {
         return "none (light_bounces 0)".to_owned();
     }
-    match sh_base_bake_time {
-        Some(time) => format!(
-            "est. {:.1} s (id 34's recorded {:.1} s × {PROJECTED_ID34_BAKES})",
-            (time * PROJECTED_ID34_BAKES).as_secs_f64(),
+    let Some(time) = sh_base_bake_time else {
+        return "est. — (no id 34 bake time recorded)".to_owned();
+    };
+    let mid_poses = mover.poses.len().saturating_sub(2);
+    let share = if mover.static_patches == 0 {
+        0.0
+    } else {
+        mover.domain_patches as f64 / mover.static_patches as f64
+    };
+    let id34_bakes = TERMINUS_ID34_BAKES + mid_poses as f64 * share;
+    let projected = time.as_secs_f64() * id34_bakes;
+    if mid_poses == 0 {
+        return format!(
+            "est. {projected:.1} s (id 34's recorded {:.1} s × 2 termini)",
             time.as_secs_f64(),
-        ),
-        None => "est. — (no id 34 bake time recorded)".to_owned(),
+        );
     }
+    format!(
+        "est. {projected:.1} s (id 34's recorded {:.1} s × (2 termini + {mid_poses} mid pose(s) × \
+         {:.1}% of static patches))",
+        time.as_secs_f64(),
+        100.0 * share,
+    )
 }
 
 #[cfg(test)]
@@ -108,18 +125,23 @@ mod tests {
     use super::*;
     use crate::bake_fidelity::BakeFidelity;
 
-    fn mover(id: u32, high: u32, poses: &[u32]) -> MoverPoseBounces {
+    /// A mover whose domain holds `domain` of 1,000 static patches.
+    fn mover(id: u32, high: u32, poses: &[u32], domain: usize) -> MoverPoseBounces {
         MoverPoseBounces {
             mover_id: id,
             label: format!("kinematic_mover 'm{id}'"),
             high_bounces: high,
             poses: poses.to_vec(),
+            domain_patches: domain,
+            static_patches: 1_000,
         }
     }
 
     // AC 29: per mover its pose count, its fidelity and its projected
-    // `--release` bounce-bake time, id 34's recorded time × 2 and labelled
-    // an estimate. Approximate only where what it shows differs from high:
+    // `--release` bounce-bake time, labelled an estimate: id 34's recorded
+    // time × 2 for the termini, plus, per mid pose, id 34's time × the share
+    // of static patches the mover's domain holds (restated by the owner,
+    // 2026-11-11). Approximate only where what it shows differs from high:
     // served entirely from `high` entries, or at `light_bounces` 1, it
     // prints `high`; some pose baked low past 1, `low, approximate`.
     #[test]
@@ -127,10 +149,11 @@ mod tests {
         let lines = fidelity_lines(
             BakeMode::Interactive(BakeFidelity::Low),
             &[
-                mover(1, 5, &[5, 5, 5, 5]),
-                mover(2, 5, &[5, 1, 1, 5]),
-                mover(3, 1, &[1, 1, 1]),
-                mover(4, 0, &[0, 0]),
+                mover(1, 5, &[5, 5, 5, 5], 100),
+                mover(2, 5, &[5, 1, 1, 5], 240),
+                mover(3, 1, &[1, 1, 1], 80),
+                mover(4, 0, &[0, 0], 0),
+                mover(5, 5, &[5, 5], 0),
             ],
             &[(
                 2,
@@ -147,27 +170,35 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "Mover bounce fidelity: low build; 1 of 4 mover(s) approximate",
-                "  kinematic_mover 'm1' (#1): 4 pose(s), high; --release bounce bake est. 25.0 s (id 34's \
-                 recorded 12.5 s × 2)",
+                "Mover bounce fidelity: low build; 1 of 5 mover(s) approximate",
+                "  kinematic_mover 'm1' (#1): 4 pose(s), high; --release bounce bake est. 27.5 s (id 34's \
+                 recorded 12.5 s × (2 termini + 2 mid pose(s) × 10.0% of static patches))",
                 "  kinematic_mover 'm2' (#2): 4 pose(s), low, approximate: 2 of 4 pose(s) at 1 of 5 posed \
-                 bounce(s); --release bounce bake est. 25.0 s (id 34's recorded 12.5 s × 2); \
-                 mid-pose states skipped: bounce 10 of 40, depth 3 of 10",
-                "  kinematic_mover 'm3' (#3): 3 pose(s), high; --release bounce bake est. 25.0 s (id 34's \
-                 recorded 12.5 s × 2)",
+                 bounce(s); --release bounce bake est. 31.0 s (id 34's recorded 12.5 s × (2 termini + 2 \
+                 mid pose(s) × 24.0% of static patches)); mid-pose states skipped: bounce 10 of 40, depth \
+                 3 of 10",
+                "  kinematic_mover 'm3' (#3): 3 pose(s), high; --release bounce bake est. 26.0 s (id 34's \
+                 recorded 12.5 s × (2 termini + 1 mid pose(s) × 8.0% of static patches))",
                 "  kinematic_mover 'm4' (#4): 2 pose(s), high; --release bounce bake none (light_bounces 0)",
+                "  kinematic_mover 'm5' (#5): 2 pose(s), high; --release bounce bake est. 25.0 s (id 34's \
+                 recorded 12.5 s × 2 termini)",
             ]
         );
     }
 
     #[test]
     fn with_no_recorded_id_34_time_the_projection_reads_a_dash() {
-        let lines = fidelity_lines(BakeMode::Release, &[mover(7, 5, &[5, 5])], &[], None);
+        let lines = fidelity_lines(
+            BakeMode::Release,
+            &[mover(7, 5, &[5, 5, 5], 300)],
+            &[],
+            None,
+        );
         assert_eq!(
             lines,
             [
                 "Mover bounce fidelity: high (--release) build; 0 of 1 mover(s) approximate",
-                "  kinematic_mover 'm7' (#7): 2 pose(s), high; --release bounce bake est. — (no id 34 bake \
+                "  kinematic_mover 'm7' (#7): 3 pose(s), high; --release bounce bake est. — (no id 34 bake \
                  time recorded)",
             ]
         );

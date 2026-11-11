@@ -6,8 +6,13 @@
 //! Sampled-row compose, Mover state lighting)
 use super::*;
 use crate::render::MoverTravel;
-use crate::render::composed_tiles::{ComposedAtlases, ComposedReadback};
-use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
+use crate::render::composed_tiles::{ComposedAtlases, ComposedReadback, read_depth_tiles};
+use postretro_level_format::mover_probe_channel::{
+    Knot, MoverProbeChannelSection, PoseMark, pose_interval,
+};
+use postretro_level_format::probe_depth_tiles::{
+    PROBE_DEPTH_TILE_BORDERED_EDGE, PROBE_DEPTH_TILE_TEXELS,
+};
 use postretro_level_loader::{PreparedShCluster, ShStreamManifest, ShStreamingMode};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -20,6 +25,44 @@ pub(super) enum Gate {
     /// No row: no visible cell, a fog set naming only an absent cell (an
     /// empty one would gate every row), and no moving region.
     None,
+}
+
+/// One mover's bounce at one probe: what each pose holds there, and the
+/// knots compose reads them at.
+#[derive(Clone, Debug)]
+pub(super) struct BounceAtProbe {
+    pub(super) marks: Vec<PoseMark>,
+    pub(super) knots: Vec<Knot>,
+}
+
+impl BounceAtProbe {
+    /// Whether pose `pose` reads the probe's base: a terminus storing no
+    /// state, or a mid pose marked base.
+    pub(super) fn reads_base(&self, pose: u32) -> bool {
+        let last = self.marks.len() - 1;
+        match self.marks[pose as usize] {
+            PoseMark::Stored => false,
+            PoseMark::Base => true,
+            PoseMark::Unmarked => pose == 0 || pose as usize == last,
+        }
+    }
+
+    /// The weight this mover's compose puts on the base at `t`: each end of
+    /// the interval compose reads ([`pose_interval`]) that reads the base,
+    /// by its lerp weight. An unmarked mid pose is blended across.
+    pub(super) fn base_weight(&self, t: f32) -> f32 {
+        let interval = pose_interval(&self.knots, t, |pose| {
+            self.marks[pose as usize] != PoseMark::Unmarked
+        });
+        let mut weight = 0.0;
+        if self.reads_base(interval.lo) {
+            weight += 1.0 - interval.weight;
+        }
+        if interval.weight > 0.0 && self.reads_base(interval.hi) {
+            weight += interval.weight;
+        }
+        weight
+    }
 }
 
 /// The out-of-range cell id the empty gate names; the gate skips it.
@@ -322,15 +365,20 @@ impl RealLevel {
         probes
     }
 
-    /// Probes id 57 carries a bounce state at, each with the stored termini
-    /// of every mover that carries one there: `[S^b₀, S^b₁]` stored.
-    pub(super) fn bounce_probes(&self) -> BTreeMap<u32, Vec<[bool; 2]>> {
-        let mut probes: BTreeMap<u32, Vec<[bool; 2]>> = BTreeMap::new();
+    /// Probes id 57 carries a bounce state at, each with every mover that
+    /// carries one there: what each of its poses holds for the probe, and
+    /// its knots through its ramp.
+    pub(super) fn bounce_probes(&self) -> BTreeMap<u32, Vec<BounceAtProbe>> {
+        let mut probes: BTreeMap<u32, Vec<BounceAtProbe>> = BTreeMap::new();
         for (listed, cell) in self.channel.cells.iter().enumerate() {
             let entries = &self.channel.bounce_entries[self.channel.bounce_offsets[listed] as usize
                 ..self.channel.bounce_offsets[listed + 1] as usize];
             for entry in entries {
-                let last = entry.pose_count() - 1;
+                let knots = self
+                    .channel
+                    .mover_record(entry.mover_id)
+                    .expect("a bounce entry's mover has a record")
+                    .effective_knots();
                 for bit in 0..64 {
                     if entry.affected_probe_mask() & (1 << bit) == 0 {
                         continue;
@@ -338,11 +386,62 @@ impl RealLevel {
                     probes
                         .entry(self.cell_probe(cell.cell, bit))
                         .or_default()
-                        .push([0, last].map(|pose| entry.tile_index(pose, bit).is_some()));
+                        .push(BounceAtProbe {
+                            marks: (0..entry.pose_count())
+                                .map(|pose| entry.mark(pose, bit))
+                                .collect(),
+                            knots: knots.clone(),
+                        });
                 }
             }
         }
         probes
+    }
+
+    /// Probes id 57 carries closed-pose depth at only through mid poses:
+    /// every record there stores no tile at either terminus.
+    pub(super) fn mid_pose_only_depth_probes(&self) -> BTreeSet<u32> {
+        let mut at_terminus = BTreeSet::new();
+        let mut probes = BTreeSet::new();
+        for record in &self.channel.depth_records {
+            let last = record.marks.len() - 1;
+            probes.insert(record.probe_index);
+            if record.marks[0] == PoseMark::Stored || record.marks[last] == PoseMark::Stored {
+                at_terminus.insert(record.probe_index);
+            }
+        }
+        probes.difference(&at_terminus).copied().collect()
+    }
+
+    /// Whole load only: the bordered moment set each of `probes` samples
+    /// now, as f16 bits: the tile its reference names (id 59's, or its live
+    /// tile), else its averaged id-34 moments in every texel.
+    pub(super) fn sampled_depth(&self, probes: &BTreeSet<u32>) -> BTreeMap<u32, Vec<[u16; 2]>> {
+        let tiles = &self.renderer.level().sh_volume_resources.depth_tiles;
+        let halves = read_depth_tiles(&self.renderer);
+        let edge = PROBE_DEPTH_TILE_BORDERED_EDGE as usize;
+        probes
+            .iter()
+            .map(|&probe| {
+                let moments = match (tiles.references().tile_of(probe), tiles.layout()) {
+                    (Some(tile), Some(layout)) => {
+                        let width = layout.extent()[0] as usize;
+                        let [ox, oy] = layout.tile_origin(u32::from(tile)).map(|o| o as usize);
+                        (0..edge)
+                            .flat_map(|row| (0..edge).map(move |col| (oy + row) * width + ox + col))
+                            .map(|texel| [halves[2 * texel], halves[2 * texel + 1]])
+                            .collect()
+                    }
+                    _ => {
+                        let texel = tiles
+                            .whole_load_texel(probe, 0)
+                            .expect("a whole load keeps each probe's moments");
+                        vec![[texel[0], texel[1]]; PROBE_DEPTH_TILE_TEXELS]
+                    }
+                };
+                (probe, moments)
+            })
+            .collect()
     }
 
     /// Probes id 57 carries closed-pose depth at.

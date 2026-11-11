@@ -3,8 +3,9 @@
 //! stores a bounce state for composes that state or id 34, and the two composes are compared in
 //! display levels, with their sign. Direct and depth never depend on fidelity.
 //!
-//! Opt-in and `#[ignore]`: a measurement for the owner's bound (manual row M2). It prints the
-//! largest difference per map and terminus and asserts only that probes were compared.
+//! The gate fails past the owner's bound, [`LOW_AGAINST_HIGH_BOUND_LEVELS`], and prints the
+//! largest difference per map, mover and terminus, with its sign and where it falls. `#[ignore]`:
+//! it bakes `mover-closet` and `mover-setpiece` cold at both fidelities.
 //! See: context/lib/build_pipeline.md §Build Cache (Bake fidelity)
 
 mod mover_bounce_support;
@@ -17,6 +18,10 @@ use mover_bounce_support::{
     with_worldspawn_key,
 };
 use postretro_level_format::SectionId;
+
+/// The owner's bound on `low` against `high` at rest, in display levels either way (2026-11-11,
+/// from the first measurement, manual row M2): `low` is an iteration preview, judged in-engine.
+const LOW_AGAINST_HIGH_BOUND_LEVELS: f32 = 12.0;
 
 /// The largest signed difference over every compared probe: `low` shown minus `high` shown.
 #[derive(Default)]
@@ -46,9 +51,14 @@ impl Worst {
     }
 }
 
+// AC 28: low against high at rest, on `mover-closet` and `mover-setpiece`: the largest
+// per-probe display-level difference and its sign are reported, and the test fails past the
+// owner's bound.
 #[test]
-#[ignore = "measurement (M2): low against high at rest, for the owner's bound; prints its result"]
-fn low_against_high_at_rest_reports_the_largest_display_difference_and_its_sign() {
+#[ignore = "bakes mover-closet and mover-setpiece cold at low and high (about a minute); run with \
+            `--ignored`"]
+fn low_against_high_at_rest_stays_within_the_owners_bound_and_reports_the_largest_difference() {
+    let mut misses = Vec::new();
     for name in ["mover-closet", "mover-setpiece"] {
         // Uniform L0, so id 34 reads back per probe.
         let map = with_worldspawn_key(&dev_map(&format!("{name}.map")), "_sh_coarsen", "0");
@@ -104,7 +114,7 @@ fn low_against_high_at_rest_reports_the_largest_display_difference_and_its_sign(
                         .map(|axis| (axis * 10.0).round() / 10.0)
                 };
                 eprintln!(
-                    "M2 {name} mover #{mover} {label}: {} probe(s) compared; low darker by up to \
+                    "AC 28 {name} mover #{mover} {label}: {} probe(s) compared; low darker by up to \
                      {:.2} levels at probe {} {:?}, brighter by up to {:.2} at probe {} {:?}; {} \
                      past 1 level, {} past 3",
                     worst.compared,
@@ -118,7 +128,27 @@ fn low_against_high_at_rest_reports_the_largest_display_difference_and_its_sign(
                     worst.past_three,
                 );
                 assert!(worst.compared > 0, "{name} mover #{mover}: probes compared");
+                for (difference, probe) in [worst.darker, worst.brighter] {
+                    if difference.abs() > LOW_AGAINST_HIGH_BOUND_LEVELS {
+                        misses.push(format!(
+                            "{name} mover #{mover} {label}: low {} by {:.2} levels at probe \
+                             {probe} {:?}",
+                            if difference < 0.0 {
+                                "darker"
+                            } else {
+                                "brighter"
+                            },
+                            difference.abs(),
+                            at(probe),
+                        ));
+                    }
+                }
             }
         }
     }
+    assert!(
+        misses.is_empty(),
+        "low against high at rest past the owner's {LOW_AGAINST_HIGH_BOUND_LEVELS} levels:\n{}",
+        misses.join("\n")
+    );
 }

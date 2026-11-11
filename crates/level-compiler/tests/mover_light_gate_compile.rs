@@ -873,10 +873,14 @@ fn an_unnamed_movers_info_line_names_it_by_its_brush_bounds_centre() {
     );
 }
 
+// The per-terminus report poses a three-waypoint mover at its first and last
+// waypoints only. A light only a mid pose blocks is gated (brief: the
+// enclosing rule, a light any pose blocks), and the report counts it apart,
+// on the mover's mid-pose-only line, never in a terminus row.
 #[test]
-fn a_three_waypoint_mover_is_posed_at_its_first_and_last_waypoints_only() {
+fn a_three_waypoint_movers_terminus_rows_pose_its_ends_and_a_mid_pose_gate_counts_apart() {
     // `corner` lights the floor 72 u under it, 96 u at most; only the plate
-    // parked at `tour_b`, just above the floor there, lies in its reach.
+    // passing `tour_b`, just above the floor there, lies in its reach.
     let overhead = [0, 0, 224];
     let corner = [-176, -176, 72];
     let plate = || box_brush([-48, -48, 96], [48, 48, 104]);
@@ -903,16 +907,35 @@ fn a_three_waypoint_mover_is_posed_at_its_first_and_last_waypoints_only() {
         1,
         "parked at the middle pose, the plate gates the corner light\n{logs}"
     );
-    let tour_lines: Vec<&str> = logs
+    let terminus_lines: Vec<&str> = logs
         .lines()
-        .filter(|line| line.contains("[MoverLight] kinematic_mover 'tour' "))
+        .filter(|line| {
+            line.contains("[MoverLight] kinematic_mover 'tour' at first waypoint")
+                || line.contains("[MoverLight] kinematic_mover 'tour' at last waypoint")
+        })
         .collect();
+    assert!(!terminus_lines.is_empty(), "{logs}");
     assert!(
-        !tour_lines
+        !terminus_lines
             .iter()
             .any(|line| line.contains(&at_origin(corner)) || line.contains("'tour_b'")),
-        "the middle waypoint is never posed:\n{}",
-        tour_lines.join("\n")
+        "no terminus row poses the middle waypoint:\n{}",
+        terminus_lines.join("\n")
+    );
+    let mid_pose_only: Vec<&str> = logs
+        .lines()
+        .filter(|line| {
+            line.starts_with("[INFO")
+                && line.contains("[MoverLight] kinematic_mover 'tour' gates ")
+                && line.contains(" only at a mid pose: ")
+        })
+        .collect();
+    assert_eq!(mid_pose_only.len(), 1, "{logs}");
+    assert!(
+        mid_pose_only[0].contains(&at_origin(corner))
+            && !mid_pose_only[0].contains(&at_origin(overhead)),
+        "the corner light alone is gated only at a mid pose: {}",
+        mid_pose_only[0]
     );
     for prefix in [
         "kinematic_mover 'tour' at first waypoint 'tour_a'",

@@ -15,22 +15,24 @@
 //! - Direct atlases: the gated term replaces the light's mover-absent term,
 //!   so the output is (with state − no state), equal across modes up to the
 //!   two f16 stores' rounding.
-//! - Indirect, at a probe n movers carry bounce at: compose writes
-//!   Σ lerp(S^b₀, S^b₁, t′) − (n − 1) × base, plus id 27's deltas, which the
-//!   no-state frame also carries. A terminus a mover stores no state for
-//!   reads the base there, so its lerp puts weight w = (1 − t′)
-//!   or t′ on the base: the compose writes Σ stored parts + (Σ w − (n − 1))
-//!   × base + deltas. With c = n − 1 − Σ w, (with state) + c × (no state)
-//!   is Σ stored parts + (1 + c) × deltas, the same in both modes. Where c
-//!   is 0 (one mover reading no base) that is the composed tile itself, bit
-//!   for bit; at n = 0 the indirect does not move; elsewhere the two f16
-//!   stores' rounding bounds it.
+//! - Indirect, at a probe n movers carry bounce at: compose writes, per
+//!   mover, the lerp between the two stored or base-reading poses around t′
+//!   (an unmarked mid pose blended across), summed, − (n − 1) × base, plus
+//!   id 27's deltas, which the no-state frame also carries. A terminus a
+//!   mover stores no state for, or a mid pose marked base, reads the base,
+//!   so each lerp puts weight w on the base (its weight on each such end):
+//!   the compose writes Σ stored parts + (Σ w − (n − 1)) × base + deltas.
+//!   With c = n − 1 − Σ w, (with state) + c × (no state) is Σ stored
+//!   parts plus (1 + c) × deltas, the same in both modes. Where c is 0 (one
+//!   mover reading no base) that is the composed tile itself, bit for bit;
+//!   at n = 0 the indirect does not move; elsewhere the two f16 stores'
+//!   rounding bounds it.
 //!
 //! Under `--uncompressed-irradiance` both loads hold the same bases, and
 //! every comparison is bit for bit.
 //! See: context/lib/rendering_pipeline.md §4 (Mover state lighting, Cluster
 //! SH residency)
-use super::real_level::{Gate, RealLevel};
+use super::real_level::{BounceAtProbe, Gate, RealLevel};
 use crate::render::composed_tiles::{
     ATLAS_NAMES, ComposedReadback, TILE_HALVES, f16_step, f16_to_f32, read_depth_tiles,
 };
@@ -171,23 +173,12 @@ const CLASS_NAMES: [&str; 4] = [
 ];
 
 /// The weight the no-state frame takes in the mode-independent indirect
-/// output at a probe whose movers store `stored` termini, all at `t`:
-/// c = n − 1 − Σ w, w being each lerp's weight on an unstored terminus.
-fn base_weight(stored: &[[bool; 2]], t: f32) -> f32 {
-    let reads_base: f32 = stored
-        .iter()
-        .map(|&[s0, s1]| {
-            let mut w = 0.0;
-            if !s0 {
-                w += 1.0 - t;
-            }
-            if !s1 {
-                w += t;
-            }
-            w
-        })
-        .sum();
-    stored.len() as f32 - 1.0 - reads_base
+/// output at a probe carried by `movers`, all at `t`: c = n − 1 − Σ w, w
+/// being each mover's lerp weight on the base
+/// ([`BounceAtProbe::base_weight`]).
+pub(super) fn base_weight(movers: &[BounceAtProbe], t: f32) -> f32 {
+    let reads_base: f32 = movers.iter().map(|mover| mover.base_weight(t)).sum();
+    movers.len() as f32 - 1.0 - reads_base
 }
 
 /// The per-map numbers, printed and asserted by the caller.
@@ -210,7 +201,11 @@ struct MapGaps {
     depth: Vec<(usize, usize)>,
 }
 
-fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, Vec<[bool; 2]>>) -> MapGaps {
+fn compare(
+    off: &ModeTiles,
+    sync: &ModeTiles,
+    bounce: &BTreeMap<u32, Vec<BounceAtProbe>>,
+) -> MapGaps {
     let mut baseline: [Gap; 3] = Default::default();
     assert_eq!(
         off.stored.keys().collect::<Vec<_>>(),
@@ -341,23 +336,27 @@ fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, Vec<[bool; 
 /// The f16 stores' rounding, in steps at the largest magnitude involved:
 /// each composed half lies within half a step of the f32 the compose
 /// computed, and an output combines two halves per mode, one of them
-/// weighted c (|c| ≤ 1 for at most two movers) at a probe movers carry
-/// bounce at. One step covers the direct atlases, one mover reading id 34
-/// and two movers, the most any fixture puts on a probe.
+/// weighted c at a probe movers carry bounce at. The step is taken at the
+/// largest of |a|, |b| and |c| × the bases, so the weighted half's rounding
+/// scales with the step rather than adding to it. One step holds the direct
+/// atlases, one mover reading id 34, and two or three movers at one probe
+/// (`enemy-movers` puts three on some).
 const ROUNDING_STEPS: f32 = 1.0;
 
 /// Each map named by `MOVER_C10_PRLS` (`:`-separated compiled PRLs,
 /// each with id 50 and id 57). The channel's output at every probe it
 /// touches equals across `off` and `sync-proof`, base taken out as the
-/// module docs derive: indirect bit for bit where one mover carries bounce
-/// and unmoved where none does; within [`ROUNDING_STEPS`] where two do, and
-/// in the direct atlases. A half either mode clamped at zero differs from
-/// its counterpart by no more than the weighted bases ([`Clamped`]). Where the two loads' bases agree (an
-/// uncompressed build), every comparison is bit for bit. The depth-tile
-/// texture is bit-identical between the modes at every t′.
+/// module docs derive: indirect bit for bit where one mover reading no base
+/// carries bounce and unmoved where none does; within [`ROUNDING_STEPS`]
+/// where one reads the base or several carry it, at any mover count and
+/// pose count, and in the direct atlases. A half either mode clamped at
+/// zero differs from its counterpart by no more than the weighted bases
+/// ([`Clamped`]). Where the two loads' bases agree (an uncompressed build),
+/// every comparison is bit for bit. The depth-tile texture is bit-identical
+/// between the modes at every t′.
 #[test]
 #[ignore = "requires MOVER_C10_PRLS: `:`-separated compiled PRLs (mover-closet, mover-setpiece, \
-            mover-setpiece built with --mover-payload-resident-bar 0)"]
+            mover-setpiece built with --mover-payload-resident-bar 0, enemy-movers)"]
 fn c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe() {
     let paths = std::env::var("MOVER_C10_PRLS").expect("set MOVER_C10_PRLS");
     let mut misses = Vec::new();
@@ -385,17 +384,14 @@ fn c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe() {
             .and_then(|stem| stem.to_str())
             .unwrap_or(path);
         let several = bounce.values().filter(|movers| movers.len() > 1).count();
-        let one_sided = bounce
+        let most = bounce.values().map(Vec::len).max().unwrap_or(0);
+        let reading_base = bounce
             .values()
             .flatten()
-            .filter(|stored| **stored != [true, true])
+            .filter(|mover| (0..mover.marks.len() as u32).any(|pose| mover.reads_base(pose)))
             .count();
-        assert!(
-            bounce.values().all(|movers| movers.len() <= 2),
-            "{name}: ROUNDING_STEPS covers at most two movers at a probe"
-        );
         eprintln!(
-            "[C10] {name}: {} channel probes (direct {}, bounce {} of which {several} under several movers, {one_sided} (probe, mover) pair(s) storing one terminus, depth {})",
+            "[C10] {name}: {} channel probes (direct {}, bounce {} of which {several} under several movers, at most {most} at one probe, {reading_base} (probe, mover) pair(s) reading the base at some pose, depth {})",
             probes.len(),
             direct.len(),
             bounce.len(),

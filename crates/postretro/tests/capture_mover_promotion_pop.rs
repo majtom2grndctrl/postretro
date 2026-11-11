@@ -19,16 +19,25 @@ use image::RgbaImage;
 use postretro_level_format::SectionId;
 use postretro_level_format::mover_probe_channel::{MoverLightNamespace, MoverProbeChannelSection};
 
+// Shared by every capture target; the mover rows compile through
+// `compile_dev_map_with` alone.
+#[allow(dead_code)]
 mod capture_support;
 // Shared by two targets, each using part of it.
 #[allow(dead_code)]
 mod mover_capture_support;
 
-use capture_support::compile_dev_map;
+use capture_support::compile_dev_map_with;
 use mover_capture_support::{
     Pose, Run, Scene, ScreenBox, read_map, read_sections, rgb_sum, sibling_map, with_entity,
     without_channel,
 };
+
+/// Mover rows judge `--release` builds: the cold, `high`-fidelity bake that
+/// ships.
+fn compile_release(workspace: &Path, map_name: &str) -> tempfile::TempPath {
+    compile_dev_map_with(workspace, map_name, &["--release"])
+}
 
 const RESOLUTION: [u32; 2] = [960, 540];
 /// Allowed summed-RGB drift between promotion endpoints, as
@@ -138,7 +147,7 @@ fn pop_misses(run: &Run, case: PopCase) -> Vec<String> {
         .and_then(|stem| stem.to_str())
         .expect("generated map stem")
         .to_owned();
-    let map = compile_dev_map(&run.workspace, &stem);
+    let map = compile_release(&run.workspace, &stem);
     if let Some(namespace) = case.gated_namespace {
         let channel = channel_of(&map);
         assert!(

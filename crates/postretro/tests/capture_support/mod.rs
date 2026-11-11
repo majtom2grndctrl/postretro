@@ -25,6 +25,15 @@ pub(super) fn workspace_root() -> PathBuf {
 /// the wrong tree and silently replaces materials with placeholders — a
 /// specular slot, for one, turns black.
 pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::TempPath {
+    compile_dev_map_with(workspace, map_name, &[])
+}
+
+/// [`compile_dev_map`] with `flags` passed to `prl-build`, e.g. `--release`.
+pub(super) fn compile_dev_map_with(
+    workspace: &Path,
+    map_name: &str,
+    flags: &[&str],
+) -> tempfile::TempPath {
     let source_map = workspace.join(format!("content/dev/maps/{map_name}.map"));
     assert!(
         source_map.is_file(),
@@ -51,6 +60,7 @@ pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::Tem
         .arg("-o")
         .arg(&map)
         .arg("--no-tui")
+        .args(flags)
         // The lightmap reach cull's verify mode, on in every test bake. Keep
         // this literal in sync with `REACH_VERIFY_ENV` in level-compiler's
         // `tests/prl_build_support/mod.rs` and with `reach_verify.rs`; a

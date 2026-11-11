@@ -692,6 +692,9 @@ mod real_level;
 #[path = "renderer_tests/mover_channel_modes.rs"]
 mod mover_channel_modes;
 
+#[path = "renderer_tests/mover_channel_rest.rs"]
+mod mover_channel_rest;
+
 #[path = "renderer_tests/mover_channel_lag.rs"]
 mod mover_channel_lag;
 

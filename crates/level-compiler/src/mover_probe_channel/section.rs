@@ -99,13 +99,18 @@ impl MoverRecords {
         Self(records)
     }
 
-    fn of(&self, mover_id: u32) -> anyhow::Result<MoverRecord> {
+    /// Mover `mover_id`'s record, when the map has the mover.
+    pub(crate) fn get(&self, mover_id: u32) -> Option<&MoverRecord> {
         self.0
             .binary_search_by_key(&mover_id, |record| record.mover_id)
-            .map(|at| self.0[at].clone())
-            .map_err(|_| {
-                anyhow::anyhow!("mover probe channel names mover {mover_id}, which the map lacks")
-            })
+            .ok()
+            .map(|at| &self.0[at])
+    }
+
+    fn of(&self, mover_id: u32) -> anyhow::Result<MoverRecord> {
+        self.get(mover_id).cloned().ok_or_else(|| {
+            anyhow::anyhow!("mover probe channel names mover {mover_id}, which the map lacks")
+        })
     }
 }
 

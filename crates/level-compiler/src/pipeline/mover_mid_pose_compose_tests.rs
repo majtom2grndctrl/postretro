@@ -1,6 +1,7 @@
 // The swept-face residue, read as the renderer composes it: the probes just
 // past a face the mover sweeps, composed on the CPU from the assembled id-57
-// section by the renderer's piecewise rule, against a static-brush reference
+// section (redundant mid poses skipped, as the pipeline skips them) by the
+// renderer's piecewise rule, against a static-brush reference
 // bake with the mover's brushes made static at that position. A
 // termini-only build (`light_poses 2`) is composed the same way.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting) ·
@@ -12,13 +13,14 @@ use std::path::Path;
 use glam::DVec3;
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::mover_probe_channel::{
-    MoverLightNamespace, MoverProbeChannelSection, MoverRecord, PoseMark,
+    Knot, MoverLightNamespace, MoverProbeChannelSection, PoseMark, pose_interval,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 
+use super::super::skip_mid_poses;
 use super::{CONFIG, bake_base, plan_half, with_ctx};
 use crate::bc6h::f16_bits_to_f32;
 use crate::fixture_pipeline::{fixture_path, load_map};
@@ -37,68 +39,12 @@ const BAR_LEVELS: f32 = 3.0;
 /// Quake map units per engine metre.
 const QUAKE_PER_METRE: f64 = 1.0 / 0.0254;
 
-/// `clamp((t − s) / (e − s), 0, 1)`: the renderer's `knots::ramped`.
-fn ramped(t: f32, start: f32, end: f32) -> f32 {
-    let span = end - start;
-    let ramped = if span.is_finite() && span > 0.0 && start.is_finite() {
-        (t - start) / span
-    } else {
-        t
-    };
-    if ramped.is_finite() {
-        ramped.clamp(0.0, 1.0) + 0.0
-    } else {
-        0.0
-    }
-}
-
-/// `(t′, pose)` of every knot compose reads: the renderer's
-/// `knots::effective_knots`.
-fn effective_knots(record: &MoverRecord) -> Vec<(f32, usize)> {
-    let last = record.knots.len() - 1;
-    let mut knots = vec![(0.0, 0)];
-    for (pose, &knot) in record.knots.iter().enumerate().take(last).skip(1) {
-        let t = ramped(knot, record.ramp_start, record.ramp_end);
-        if t < 1.0 && t > knots[knots.len() - 1].0 {
-            knots.push((t, pose));
-        }
-    }
-    knots.push((1.0, last));
-    knots
-}
-
-/// `(lo pose, hi pose, weight)`: the renderer's `knots::interval`. The
-/// termini are always defined; `defined` says whether a mid pose is.
-fn interval(
-    knots: &[(f32, usize)],
-    t: f32,
-    defined: impl Fn(usize) -> bool,
-) -> (usize, usize, f32) {
-    let last = knots.len() - 1;
-    if t >= 1.0 {
-        return (knots[last].1, knots[last].1, 0.0);
-    }
-    if t <= 0.0 || t.is_nan() {
-        return (knots[0].1, knots[0].1, 0.0);
-    }
-    let is_defined = |at: usize| at == 0 || at == last || defined(knots[at].1);
-    let at = knots.partition_point(|knot| knot.0 <= t) - 1;
-    let mut lo = at;
-    while !is_defined(lo) {
-        lo -= 1;
-    }
-    if knots[lo].0 >= t {
-        return (knots[lo].1, knots[lo].1, 0.0);
-    }
-    let mut hi = at + 1;
-    while !is_defined(hi) {
-        hi += 1;
-    }
-    (
-        knots[lo].1,
-        knots[hi].1,
-        (t - knots[lo].0) / (knots[hi].0 - knots[lo].0),
-    )
+/// `(lo pose, hi pose, weight)`: the interval rule compose and the bake's
+/// skipping share. The termini are always defined; `defined` says whether
+/// a mid pose is.
+fn interval(knots: &[Knot], t: f32, defined: impl Fn(usize) -> bool) -> (usize, usize, f32) {
+    let span = pose_interval(knots, t, |pose| defined(pose as usize));
+    (span.lo as usize, span.hi as usize, span.weight)
 }
 
 /// WGSL `mix`.
@@ -126,7 +72,7 @@ struct Build {
     /// Dense probe index → (cell, local bit).
     local: HashMap<usize, (u32, u32)>,
     mover_id: u32,
-    knots: Vec<(f32, usize)>,
+    knots: Vec<Knot>,
     pose_count: usize,
 }
 
@@ -149,7 +95,15 @@ impl Build {
             let mut plan = plan_half(&scene.fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
             let mut request = std::mem::take(&mut plan.request);
             request.jobs.retain(|job| job.mover_id == mover_id);
-            let (_, base, outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
+            let (_, base, mut outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
+            skip_mid_poses(
+                &mut outcome.movers,
+                &scene.fixture.kinematic_movers,
+                poses,
+                &base.section,
+                &base.depth_tiles,
+                request.uncompressed,
+            );
             let blocks = BounceBlocks::new(&outcome.movers, &cells);
             let section = channel_section(
                 &direct,
@@ -174,7 +128,7 @@ impl Build {
             }
         }
         let record = section.mover_record(mover_id).expect("the mover's record");
-        let (knots, pose_count) = (effective_knots(record), record.pose_count());
+        let (knots, pose_count) = (record.effective_knots(), record.pose_count());
         let slots = compact_slots(&scene.layout);
         Self {
             scene,
@@ -313,7 +267,7 @@ impl Build {
         }
         format!(
             "knots {:?}; direct interval poses {}..{} weight {:.3}; bounce marks [{}]; q {}",
-            self.knots.iter().map(|knot| knot.0).collect::<Vec<_>>(),
+            self.knots.iter().map(|knot| knot.t).collect::<Vec<_>>(),
             span.0,
             span.1,
             span.2,

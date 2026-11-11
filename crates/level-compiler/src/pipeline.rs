@@ -905,7 +905,7 @@ fn run_after_parsing(
             section: mut sh_volume_section,
             depth_tiles: mut probe_depth_tiles,
         },
-        mover_bounce,
+        mut mover_bounce,
     ) = surface_radiance::bake_sh_base_with_movers(
         &sh_ctx,
         &sh_config,
@@ -915,6 +915,16 @@ fn run_after_parsing(
         &sh_control,
         probe_depth_tile_cap,
         &bounce_plan.request,
+    );
+    // Every mover's states have resolved, from its memo or its bake; the
+    // redundant mid-pose skips read each mover's ramp, which no memo keys.
+    mover_bounce_stage::skip_mid_poses(
+        &mut mover_bounce.movers,
+        &map_data.kinematic_movers,
+        &mover_poses,
+        &sh_volume_section,
+        &probe_depth_tiles,
+        bounce_plan.request.uncompressed,
     );
     let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
         &mover_bounce.movers,

@@ -26,6 +26,7 @@ mod pose_bake;
 mod posed_scene;
 mod posed_solid;
 mod section;
+mod skip;
 mod state_memo;
 mod states;
 mod visibility;
@@ -56,7 +57,7 @@ pub(crate) use bake::{
 pub(crate) use blocks::BounceBlocks;
 pub(crate) use bounce_memo::BounceMemo;
 pub(crate) use cost::MoverChannelCost;
-pub(crate) use depth::{CarriedDepth, DepthReservation, reserve_mover_tiles};
+pub(crate) use depth::{CarriedDepth, DepthReservation, MoverAbsentDepth, reserve_mover_tiles};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 #[cfg(test)]
 pub(crate) use domain::direct_display_levels;
@@ -76,6 +77,7 @@ pub(crate) use posed_solid::PosedMovers;
 #[cfg(test)]
 pub(crate) use posed_solid::enclosure_inset;
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
+pub(crate) use skip::{SkipBars, skip_redundant_mid_poses};
 #[cfg(test)]
 pub(crate) use states::BounceProbe;
 pub(crate) use states::MoverBounceStates;

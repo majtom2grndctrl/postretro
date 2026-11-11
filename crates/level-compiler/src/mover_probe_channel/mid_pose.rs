@@ -9,9 +9,7 @@ use postretro_level_format::octahedral::{
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 use rayon::prelude::*;
 
-use super::domain::{
-    BOUNCE_FLOOR_LEVELS, compact_tile, display_levels, max_abs_difference, round_trip_error,
-};
+use super::domain::{clears_bounce_bars, compact_tile, round_trip_error};
 use super::gather::DomainProbe;
 use super::states::{MidPoseStates, MidState};
 use crate::bake_control::BakeControl;
@@ -39,9 +37,7 @@ pub(crate) fn classify(
         DEFAULT_IRRADIANCE_TILE_DIMENSION,
         DEFAULT_IRRADIANCE_TILE_BORDER,
     );
-    let clears =
-        max_abs_difference(&tile, base) > bar && display_levels(&tile, base) > BOUNCE_FLOOR_LEVELS;
-    Some(if clears {
+    Some(if clears_bounce_bars(&tile, base, bar) {
         MidState::Stored(tile)
     } else {
         MidState::Base

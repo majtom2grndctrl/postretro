@@ -5,6 +5,7 @@
 
 mod assemble;
 mod error;
+mod knots;
 mod poses;
 mod streamed;
 mod views;
@@ -14,6 +15,9 @@ pub use assemble::{
     AcrossEntryParts, BounceEntryParts, DepthRecordParts, DirectRecordParts, MoverProbeChannelParts,
 };
 pub use error::MoverProbeChannelError;
+pub use knots::{
+    DepthLeg, Knot, PoseInterval, depth_leg, effective_knots, pose_interval, ramped_knot,
+};
 pub use poses::{
     BouncePoseMasks, MoverAcrossEntry, MoverBounceEntry, MoverDepthRecord, MoverRecord, PoseMark,
     is_terminus,

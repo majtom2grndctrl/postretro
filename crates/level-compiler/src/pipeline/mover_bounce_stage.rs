@@ -14,9 +14,10 @@ use crate::geometry::GeometryResult;
 use crate::map_data::{MapKinematicMover, MapLight};
 use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
-    BounceBlocks, CarriedDepth, DepthReservation, MoverBounceJob, MoverBounceRequest,
-    MoverBounceStates, MoverChannelCost, NearFieldDomain, PosedMovers, PosedScene, ProbeCells,
-    reserve_mover_tiles, sh_base_bounce_count,
+    BounceBlocks, CarriedDepth, DepthReservation, MoverAbsentDepth, MoverBounceJob,
+    MoverBounceRequest, MoverBounceStates, MoverChannelCost, MoverRecords, NearFieldDomain,
+    PosedMovers, PosedScene, ProbeCells, SkipBars, reserve_mover_tiles, sh_base_bounce_count,
+    skip_redundant_mid_poses,
 };
 use crate::partition::BspTree;
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
@@ -127,6 +128,48 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
         depth_cap,
     };
     Ok(BounceHalfPlan { request, cost })
+}
+
+/// Skip every mover's redundant mid-pose bounce and depth states once all
+/// of them have resolved, from the memo or the bake: each mover's knots run
+/// through its author ramp first, which no memo keys, so a ramp edit
+/// re-decides skips over the memoized states. `base` is id 34 and
+/// `depth_tiles` id 59 before mover tiles reserve their range, the bases
+/// the bars read. Logs one line per mover with mid poses.
+pub(super) fn skip_mid_poses(
+    states: &mut [MoverBounceStates],
+    movers: &[MapKinematicMover],
+    poses: &MoverPoses,
+    base: &OctahedralShVolumeSection,
+    depth_tiles: &ProbeDepthTiles,
+    uncompressed: bool,
+) {
+    if states.iter().all(|states| states.pose_count <= 2) {
+        return;
+    }
+    let records = MoverRecords::new(movers, poses);
+    let bars = SkipBars::new(base, MoverAbsentDepth::new(base, depth_tiles), uncompressed);
+    for states in states.iter_mut().filter(|states| states.pose_count > 2) {
+        let record = records
+            .get(states.mover_id)
+            .expect("a mover with states is a map mover");
+        debug_assert_eq!(record.pose_count(), states.pose_count);
+        let started = std::time::Instant::now();
+        let counts = skip_redundant_mid_poses(states, &record.effective_knots(), &bars);
+        log::info!(
+            "[MoverLight] probe channel skipping: mover `{}` (#{}): bounce keeps {} and skips \
+             {} (probe, mid pose) state(s); depth keeps {} and skips {}; {} of the skipped \
+             never read past the ramp; {:.2} s",
+            poses.label(states.mover_id).unwrap_or("?"),
+            states.mover_id,
+            counts.bounce_stored,
+            counts.bounce_skipped,
+            counts.depth_stored,
+            counts.depth_skipped,
+            counts.squeezed,
+            started.elapsed().as_secs_f64(),
+        );
+    }
 }
 
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved

@@ -238,6 +238,24 @@ impl MoverBounceStates {
         }
     }
 
+    /// Replace the stored states with `bounce` and `depth`, the same probes
+    /// less those left with no stored state; `dropped_depth` depth probes
+    /// left that way no longer carry depth.
+    pub(crate) fn replace(
+        &mut self,
+        bounce: Vec<BounceProbe>,
+        depth: Vec<DepthProbe>,
+        dropped_depth: usize,
+    ) {
+        self.bounce = bounce;
+        self.depth = depth;
+        self.depth_carried -= dropped_depth;
+        #[cfg(test)]
+        {
+            self.held = crate::live_bytes::hold("mover bounce states", self.heap_bytes());
+        }
+    }
+
     #[cfg(test)]
     fn heap_bytes(&self) -> u64 {
         let bounce: usize = self

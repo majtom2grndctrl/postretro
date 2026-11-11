@@ -9,6 +9,7 @@
 // one. It never flags a probe occluded, zeroes a weight or excludes a probe.
 
 use postretro_level_format::lightmap::f32_to_f16_bits;
+use postretro_level_format::mover_probe_channel::{DepthLeg, depth_leg};
 use postretro_level_format::probe_depth_tiles::{
     PROBE_DEPTH_TILE_TEXEL_BYTES, PROBE_DEPTH_TILE_TEXELS, f16_bits_to_f32,
 };
@@ -34,7 +35,8 @@ const F16_MAX: f64 = 65504.0;
 /// two defined poses around `t` runs through `base`: D_lo → base → D_hi,
 /// reaching the base at the interval's midpoint (owner, 2026-11-10), so a
 /// termini-to-termini interval keeps 12c's through-base blend. Exact at
-/// every read knot. Weights are exact: doubling, and 2w − 1 over [0.5, 1].
+/// every read knot. The leg is the format's [`depth_leg`], which the
+/// compiler's skipping judges by too.
 pub(super) fn segment<'a>(
     tiles: &'a [[f32; 2]],
     poses: &[u32],
@@ -49,13 +51,10 @@ pub(super) fn segment<'a>(
         &tiles[at as usize..at as usize + PROBE_DEPTH_TILE_TEXELS]
     };
     let lo = tile(span.lo);
-    if span.weight <= 0.0 {
-        return (lo, lo, 0.0);
-    }
-    if span.weight <= 0.5 {
-        (lo, base, 2.0 * span.weight)
-    } else {
-        (base, tile(span.hi), 2.0 * span.weight - 1.0)
+    match depth_leg(span.weight) {
+        DepthLeg::Exact => (lo, lo, 0.0),
+        DepthLeg::ToBase(s) => (lo, base, s),
+        DepthLeg::FromBase(s) => (base, tile(span.hi), s),
     }
 }
 

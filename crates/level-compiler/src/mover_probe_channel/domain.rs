@@ -56,6 +56,19 @@ pub(crate) fn max_abs_difference(a: &[OctahedralAtlasTexel], b: &[OctahedralAtla
         .fold(0.0, f32::max)
 }
 
+/// Whether `a` and `b` differ past both of a probe's bounce bars: its id-34
+/// tile's round-trip bar `bar` ([`round_trip_error`]) and the perceptual
+/// floor ([`BOUNCE_FLOOR_LEVELS`]): the two bars the affected-probe rule
+/// applies ([`super::gather::PosedProbe::affected`]). A mid pose's
+/// stored-or-base choice and redundant mid-pose skipping read this test.
+pub(crate) fn clears_bounce_bars(
+    a: &[OctahedralAtlasTexel],
+    b: &[OctahedralAtlasTexel],
+    bar: f32,
+) -> bool {
+    max_abs_difference(a, b) > bar && display_levels(a, b) > BOUNCE_FLOOR_LEVELS
+}
+
 /// The perceptual floor (owner, 2026-11-08): a probe's bounce is
 /// affected only when its change also exceeds this many display levels
 /// ([`display_levels`]). The largest floor that keeps every `mover-closet`

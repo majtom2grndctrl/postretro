@@ -4,7 +4,8 @@
 //! entries but every mover's bounce states; an animated-light edit only its id-45 entries; a
 //! retexture no direct entry but every bounce state; and every warm PRL equals the edited map's
 //! cold PRL. Over one cache, edits and their revert build warm equal to cold, and the revert
-//! hits every memo, with id 57's payloads resident or streamed with id 50's cells.
+//! hits every memo, with id 57's payloads resident or streamed with id 50's cells. A ramp edit
+//! hits every bounce memo and re-decides which mid-pose states skip, warm equal to cold.
 //! See: context/lib/build_pipeline.md §Build Cache, §Compiler pipeline step 12 (Mover probe channel)
 
 mod prl_build_support;
@@ -57,6 +58,8 @@ struct Scene {
     /// so no other light's seed or record index shifts.
     appended_light: bool,
     movers: bool,
+    /// The plate's `light_ramp_start` and `light_ramp_end`, when authored.
+    plate_ramp: Option<(&'static str, &'static str)>,
 }
 
 impl Default for Scene {
@@ -69,6 +72,7 @@ impl Default for Scene {
             animated_range: 256,
             appended_light: false,
             movers: true,
+            plate_ramp: None,
         }
     }
 }
@@ -82,9 +86,14 @@ fn light(origin: [i32; 3], range: u32, extra: &str) -> String {
 }
 
 fn mover(name: &str, path: &str, brush: String) -> String {
+    mover_with(name, path, "", brush)
+}
+
+/// [`mover`] with `extra` keys.
+fn mover_with(name: &str, path: &str, extra: &str, brush: String) -> String {
     format!(
         "{{\n\"classname\" \"kinematic_mover\"\n\"name\" \"{name}\"\n\"path\" \"{path}\"\n\
-         \"speed\" \"2\"\n{brush}\n}}"
+         \"speed\" \"2\"\n{extra}{brush}\n}}"
     )
 }
 
@@ -133,9 +142,12 @@ fn map(scene: &Scene) -> String {
     ];
     if scene.movers {
         entities.extend([
-            mover(
+            mover_with(
                 "plate",
                 "plate_a",
+                &scene.plate_ramp.map_or(String::new(), |(start, end)| {
+                    format!("\"light_ramp_start\" \"{start}\"\n\"light_ramp_end\" \"{end}\"\n")
+                }),
                 box_brush([-64, -64, 96], [64, 64, 112], 1),
             ),
             waypoint("plate_a", "plate_b", [0, 0, 104]),
@@ -567,6 +579,42 @@ fn retexturing_a_static_surface_rebakes_every_movers_bounce() {
     for stage in [MOVER_DIRECT, ENTITY_SHADOW_DIRECT, ANIMATED_DIRECT] {
         assert_all_hit(&warm, stage);
     }
+}
+
+/// The plate's skip line: its kept and skipped (probe, mid pose) states.
+fn plate_skips(logs: &str) -> &str {
+    logs.lines()
+        .find(|line| line.contains("probe channel skipping: mover `kinematic_mover 'plate'`"))
+        .unwrap_or_else(|| panic!("a skip line for the plate\n{logs}"))
+}
+
+// Skipping: the plate bakes mid poses, and its redundant mid-pose states
+// skip after every memo read, judged after its ramp. Authoring ramp (0.6,
+// 0.9) changes no memo key, so every bounce memo hits, yet the skips are
+// re-decided (poses the ramp squeezes out are never read), and the warm PRL
+// equals the edited map's cold PRL byte for byte (MP9).
+#[test]
+fn a_ramp_edit_re_decides_skips_over_the_memoized_states_and_warm_equals_cold() {
+    let ramped = Scene {
+        plate_ramp: Some(("0.6", "0.9")),
+        ..Scene::default()
+    };
+    let warm = warm_equals_cold(&ramped);
+    assert_eq!(bounce_share(&warm), (0, MOVERS), "{warm}");
+    let (before, after) = (plate_skips(&base().1.logs), plate_skips(&warm));
+    let counts = |line: &str| {
+        let from = line.find("bounce keeps").expect("the skip counts");
+        line[from..line.rfind("; ").expect("the timing")].to_string()
+    };
+    assert_ne!(
+        counts(before),
+        counts(after),
+        "the ramp re-decides the plate's skips"
+    );
+    assert!(
+        !after.contains("; 0 of the skipped never read past the ramp"),
+        "the ramp squeezes stored poses out: {after}"
+    );
 }
 
 // Over one cache, a mover edit, then a static-light edit

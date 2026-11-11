@@ -59,15 +59,44 @@ impl<'a> MoverAbsentDepth<'a> {
     pub(crate) fn score(&self, probe: u32, tile: &[[u16; 2]]) -> f32 {
         let averaged = self.averaged(probe);
         let own = self.tiles.get(&probe).copied();
+        self.change(probe, tile, |offset| {
+            own.map_or(averaged, |own| sample_tile_moments(own, offset))
+        })
+    }
+
+    /// The same score for `tile` against another bordered tile `reference`
+    /// at `probe`, in place of the mover-absent moments.
+    pub(crate) fn score_against(
+        &self,
+        probe: u32,
+        reference: &[[u16; 2]],
+        tile: &[[u16; 2]],
+    ) -> f32 {
+        self.change(probe, tile, |offset| sample_tile_moments(reference, offset))
+    }
+
+    fn change(&self, probe: u32, tile: &[[u16; 2]], before: impl Fn([f32; 3]) -> [f32; 2]) -> f32 {
         visibility_change(
             self.section.grid_dimensions,
             self.section.cell_size,
             &self.validity,
             self.bias,
             probe as usize,
-            |offset| own.map_or(averaged, |own| sample_tile_moments(own, offset.to_array())),
+            |offset| before(offset.to_array()),
             tile,
         )
+    }
+
+    /// What compose reads as `probe`'s base, texel by texel: its id-59 tile
+    /// where id 59 keeps one, else its averaged id-34 moments in every texel.
+    pub(crate) fn base_moments(&self, probe: u32) -> Vec<[f32; 2]> {
+        match self.tiles.get(&probe) {
+            Some(tile) => tile
+                .iter()
+                .map(|&[mean, mean_sq]| [f16_bits_to_f32(mean), f16_bits_to_f32(mean_sq)])
+                .collect(),
+            None => vec![self.averaged(probe); PROBE_DEPTH_TILE_TEXELS],
+        }
     }
 }
 

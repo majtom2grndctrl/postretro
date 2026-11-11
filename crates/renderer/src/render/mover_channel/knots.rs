@@ -1,7 +1,7 @@
-// Mover pose knots after the author ramp, and the interval rule every mover
-// state consumer blends by: install-time knot expansion, the GPU knot block
-// both channel tables carry, and the CPU lookup depth uses (the WGSL mirrors
-// it in `mover_channel.wgsl` and `mover_bounce.wgsl`).
+// Mover pose knots after the author ramp, expanded at install: the GPU knot
+// block both channel tables carry, and the CPU lookup depth uses (the WGSL
+// mirrors the shared interval rule in `mover_channel.wgsl` and
+// `mover_bounce.wgsl`).
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 //
 // Knots are mover position only: no light, probe or residency reaches them.
@@ -14,115 +14,20 @@ use super::layout::MoverChannelError;
 /// knot count. `(t′ bits, pose)` pairs follow.
 const RUN_HEADER_WORDS: usize = 2;
 
-/// One pose compose can read, at its t′.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::render) struct Knot {
-    pub(in crate::render) t: f32,
-    pub(in crate::render) pose: u32,
-}
+// The knot expansion and the interval rule live with the format, shared with
+// the compiler's redundant-pose skipping so the bake judges exactly what
+// compose reads.
+pub(in crate::render) use postretro_level_format::mover_probe_channel::{
+    Knot, pose_interval as interval,
+};
+#[cfg(test)]
+use postretro_level_format::mover_probe_channel::{
+    PoseInterval as Interval, ramped_knot as ramped,
+};
 
-/// `clamp((t − s) / (e − s), 0, 1)`: the game's ramp
-/// (`runtime_movers::travel::ramped_travel_fraction`), mirrored operation
-/// for operation so a knot lands on the very t′ the game hands over at that
-/// path position. −0.0 reads as 0, as the hand-over stores it.
-fn ramped(t: f32, start: f32, end: f32) -> f32 {
-    let span = end - start;
-    let ramped = if span.is_finite() && span > 0.0 && start.is_finite() {
-        (t - start) / span
-    } else {
-        t
-    };
-    if ramped.is_finite() {
-        ramped.clamp(0.0, 1.0) + 0.0
-    } else {
-        0.0
-    }
-}
-
-/// `record`'s effective knots: pose 0 at t′ 0, every pose whose ramped knot
-/// falls strictly inside (0, 1), and the last pose at t′ 1. A knot the ramp
-/// squeezes onto 0 or 1 is never read, so the first or last pose's state
-/// holds across each ramp edge; t′ strictly ascends.
+/// `record`'s effective knots ([`MoverRecord::effective_knots`]).
 pub(in crate::render) fn effective_knots(record: &MoverRecord) -> Vec<Knot> {
-    let last = record.knots.len().saturating_sub(1);
-    let mut knots = vec![Knot { t: 0.0, pose: 0 }];
-    for (pose, &knot) in record.knots.iter().enumerate().take(last).skip(1) {
-        let t = ramped(knot, record.ramp_start, record.ramp_end);
-        // Strictly above the previous knot: a squeezed pose, or one rounding
-        // onto its neighbour's t′, would open an empty interval.
-        if t < 1.0 && t > knots[knots.len() - 1].t {
-            knots.push(Knot {
-                t,
-                pose: pose as u32,
-            });
-        }
-    }
-    knots.push(Knot {
-        t: 1.0,
-        pose: last as u32,
-    });
-    knots
-}
-
-/// Where a mover's t′ falls among the poses one probe defines: blend pose
-/// `lo`'s state toward pose `hi`'s by `weight`. `weight == 0` reads pose
-/// `lo` exactly (`hi == lo` there).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::render) struct Interval {
-    pub(in crate::render) lo: u32,
-    pub(in crate::render) hi: u32,
-    pub(in crate::render) weight: f32,
-}
-
-impl Interval {
-    fn exact(pose: u32) -> Self {
-        Self {
-            lo: pose,
-            hi: pose,
-            weight: 0.0,
-        }
-    }
-}
-
-/// The interval rule: the defined poses around `t` (a stated t′, ≥ 0) among
-/// `knots`, and the blend weight between them. The termini always define a
-/// state (stored, or the base); `defined(pose)` says whether a mid pose
-/// does, and an undefined one is blended across. At a defined knot the
-/// state reads exactly; t′ ≤ 0 reads the first pose and t′ ≥ 1 the last.
-/// The lookup is a function of t′ alone, so out and back to one t′ reads
-/// alike. The shaders' `mc_interval` and `mb_entry_blend` mirror it.
-pub(in crate::render) fn interval(
-    knots: &[Knot],
-    t: f32,
-    defined: impl Fn(u32) -> bool,
-) -> Interval {
-    let last = knots.len() - 1;
-    if t >= 1.0 {
-        return Interval::exact(knots[last].pose);
-    }
-    if t <= 0.0 || t.is_nan() {
-        return Interval::exact(knots[0].pose);
-    }
-    let is_defined = |at: usize| at == 0 || at == last || defined(knots[at].pose);
-    // The last knot at or below t′: knot 0 sits at 0 < t′, knot `last` at
-    // 1 > t′.
-    let at = knots.partition_point(|knot| knot.t <= t) - 1;
-    let mut lo = at;
-    while !is_defined(lo) {
-        lo -= 1;
-    }
-    if knots[lo].t >= t {
-        return Interval::exact(knots[lo].pose);
-    }
-    let mut hi = at + 1;
-    while !is_defined(hi) {
-        hi += 1;
-    }
-    Interval {
-        lo: knots[lo].pose,
-        hi: knots[hi].pose,
-        weight: (t - knots[lo].t) / (knots[hi].t - knots[lo].t),
-    }
+    record.effective_knots()
 }
 
 /// Every mover slot's effective knots and pose count, expanded once at

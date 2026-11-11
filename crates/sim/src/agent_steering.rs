@@ -478,14 +478,14 @@ fn tick_impl(
     // will, so the two passes agree on each agent's verdict. Agents the ride code
     // will move this tick are left out, so every slot goes to an agent that
     // replans. Total admissions stay ≤ REPLAN_BUDGET_PER_TICK.
-    let admitted = admit_replans(registry, &snapshot, nav_graph, gate, collision, dt);
+    let admission = admit_replans(registry, &snapshot, nav_graph, gate, collision, dt);
 
     let mut replans = 0u32;
 
     // Drive each agent. The snapshot holds the ids in slot order; we mutate one
     // agent at a time, reading its live component (set/clear destination may have
     // mutated it after the snapshot, which is fine — only positions are frozen).
-    for current in &snapshot {
+    for (index, current) in snapshot.iter().enumerate() {
         let Ok(component) = registry.get_component::<AgentComponent>(current.id) else {
             continue;
         };
@@ -513,6 +513,13 @@ fn tick_impl(
 
         // Tick down the staleness cooldown regardless of what happens below.
         agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(1);
+        // A drifted agent the budget passed over waits one tick longer, which
+        // moves it up the drift tier; anything else owes no drift wait.
+        agent.drift_wait_ticks = if admission.drift_waiting[index] {
+            agent.drift_wait_ticks.saturating_add(1)
+        } else {
+            0
+        };
         // A gate change this agent's route ahead never touched is settled at once.
         if !gate_change_owes_replan(&agent, position, nav_graph, gate) {
             agent.gate_generation = gate.generation();
@@ -521,7 +528,7 @@ fn tick_impl(
         // only if the two ever disagree. An admitted agent then still takes the
         // live generation, or it would keep the head of the gate tier, which is
         // served longest owed first, while never replanning.
-        let admitted_here = admitted.contains(&current.id);
+        let admitted_here = admission.admitted.contains(&current.id);
         let settle_if_diverted = |agent: &mut AgentComponent| {
             if admitted_here {
                 agent.gate_generation = gate.generation();
@@ -623,7 +630,7 @@ fn tick_impl(
         // admission pass above (gate-owed, then drift-driven, then
         // staleness-only, capped at the budget) — the ONLY place the path is
         // (re)built. An agent that WANTED a replan but lost the prioritized race
-        // is simply not in `admitted`.
+        // is simply not in `admission.admitted`.
         if admitted_here {
             // Admitted: rebuild the path now.
             replans += 1;
@@ -910,7 +917,8 @@ fn move_without_path(
 }
 
 /// Decide which agents replan this tick under the per-tick budget. Returns the
-/// admitted ids, at most [`REPLAN_BUDGET_PER_TICK`], tier by tier:
+/// admitted ids, at most [`REPLAN_BUDGET_PER_TICK`], and the drift-driven agents
+/// it passed over. Admission runs tier by tier:
 ///
 /// 1. GATE-owed: a dock change closed a crossing still ahead on the agent's
 ///    route, or the agent is latched `blocked` and a gate or link has opened
@@ -919,7 +927,11 @@ fn move_without_path(
 /// 2. DRIFT-driven: no plan yet (`planned_destination` is `None`), the live
 ///    destination has drifted more than [`REPLAN_DEST_THRESHOLD`] (XZ) from the
 ///    position the plan was built for, it resolves to different nav topology,
-///    or a blocked agent's destination now shares its start region. Slot order.
+///    or a blocked agent's destination now shares its start region. Served
+///    longest waiting first: descending `drift_wait_ticks`, slot order within
+///    one. Without that, a crowd whose demand fills the budget every tick (a
+///    strafing wave re-aims constantly) served the same low slots each tick
+///    and held a late-spawned chaser on a stale route for seconds.
 /// 3. STALENESS-only: the cooldown elapsed (`replan_cooldown_ticks == 0` after
 ///    this tick's decrement) and nothing above holds. Slot order.
 ///
@@ -947,12 +959,12 @@ fn admit_replans(
     gate: NavGate<'_>,
     collision: &CombinedCollisionWorld<'_>,
     dt: f32,
-) -> Vec<EntityId> {
+) -> ReplanAdmission {
     // Classify each snapshot agent once into a tier, or none. The cooldown is
     // decremented exactly as the apply loop will, so both passes see the same
     // verdict.
     let mut gate_driven: Vec<(u64, EntityId)> = Vec::new();
-    let mut drift_driven: Vec<EntityId> = Vec::new();
+    let mut drift_driven: Vec<(u32, usize, EntityId)> = Vec::new();
     let mut staleness_only: Vec<EntityId> = Vec::new();
     let world = mover_link::RideWorld {
         gate,
@@ -960,7 +972,7 @@ fn admit_replans(
         dt,
     };
 
-    for current in snapshot {
+    for (index, current) in snapshot.iter().enumerate() {
         let Ok(agent) = registry.get_component::<AgentComponent>(current.id) else {
             continue;
         };
@@ -988,7 +1000,7 @@ fn admit_replans(
         if gate_change_owes_replan(agent, current.position, nav_graph, gate) {
             gate_driven.push((agent.gate_generation, current.id));
         } else if drifted {
-            drift_driven.push(current.id);
+            drift_driven.push((agent.drift_wait_ticks, index, current.id));
         } else if cooldown_elapsed {
             staleness_only.push(current.id);
         }
@@ -1002,11 +1014,32 @@ fn admit_replans(
         .take(budget)
         .map(|(_, id)| id)
         .collect();
+    // Longest waiting first, slot order within a wait (the sort is stable).
+    drift_driven.sort_by_key(|&(wait, _, _)| std::cmp::Reverse(wait));
     let remaining = budget - admitted.len();
-    admitted.extend(drift_driven.into_iter().take(remaining));
+    let mut drift_waiting = vec![false; snapshot.len()];
+    for (rank, &(_, index, id)) in drift_driven.iter().enumerate() {
+        if rank < remaining {
+            admitted.push(id);
+        } else {
+            drift_waiting[index] = true;
+        }
+    }
     let remaining = budget - admitted.len();
     admitted.extend(staleness_only.into_iter().take(remaining));
-    admitted
+    ReplanAdmission {
+        admitted,
+        drift_waiting,
+    }
+}
+
+/// One tick's replan admission.
+struct ReplanAdmission {
+    /// The agents that replan this tick, at most [`REPLAN_BUDGET_PER_TICK`].
+    admitted: Vec<EntityId>,
+    /// Per snapshot index: drift-driven but passed over this tick, so its
+    /// `drift_wait_ticks` grows.
+    drift_waiting: Vec<bool>,
 }
 
 /// Whether a gate change still owes `agent`, standing at `position`, a replan,

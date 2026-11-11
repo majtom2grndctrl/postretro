@@ -2990,6 +2990,80 @@ fn drift_driven_replan_beats_staleness_refreshers_for_budget() {
     );
 }
 
+/// Point `id`'s destination well past the drift threshold from whatever it last
+/// planned for, so it is drift-owed every tick until admitted — the demand a
+/// strafing enemy re-aiming its orbit makes.
+fn keep_drifting(registry: &mut EntityRegistry, id: EntityId, params: &NavAgentParams) {
+    let mut agent = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .clone();
+    let x = match agent.planned_destination {
+        Some(planned) if planned.x < 4.0 => 6.0,
+        _ => 2.0,
+    };
+    agent.destination = Some(Vec3::new(x, rest_y(params), 6.0));
+    registry.set_component(id, agent).unwrap();
+}
+
+#[test]
+fn drift_tier_serves_longest_waiter_before_earlier_slots() {
+    // A crowd earlier in slot order is drift-owed every tick and alone fills
+    // the budget twice over. Slot-order admission served the first slots each
+    // tick and never reached the late agent; longest-waiting-first must admit
+    // it within ⌈agents / budget⌉ + 1 ticks, and leave no crowd agent unserved.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let crowd_count = REPLAN_BUDGET_PER_TICK * 2;
+    let crowd: Vec<EntityId> = (0..crowd_count)
+        .map(|i| spawn_agent(&mut registry, 1.0 + i as f32 * 0.5, 6.0, &params))
+        .collect();
+    let late = spawn_agent(&mut registry, 1.0, 5.0, &params);
+
+    let bound = (crowd_count + 1).div_ceil(REPLAN_BUDGET_PER_TICK) + 1;
+    let mut late_admitted_at = None;
+    let mut crowd_served = vec![false; crowd.len()];
+    for tick_index in 0..bound * 3 {
+        for &id in crowd.iter().chain(std::iter::once(&late)) {
+            keep_drifting(&mut registry, id, &params);
+        }
+        let result = tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+        assert_eq!(
+            result.replans, REPLAN_BUDGET_PER_TICK,
+            "the crowd fills the budget"
+        );
+        let admitted = |id: EntityId| {
+            let agent = registry.get_component::<AgentComponent>(id).unwrap();
+            agent.planned_destination == agent.destination
+        };
+        for (served, &id) in crowd_served.iter_mut().zip(&crowd) {
+            *served |= admitted(id);
+        }
+        if late_admitted_at.is_none() && admitted(late) {
+            late_admitted_at = Some(tick_index + 1);
+        }
+    }
+    let admitted_at = late_admitted_at.expect("the late agent is never starved");
+    assert!(
+        admitted_at <= bound,
+        "the late agent waited {admitted_at} ticks, past the {bound}-tick bound"
+    );
+    assert!(
+        crowd_served.iter().all(|&served| served),
+        "every crowd agent is served: {crowd_served:?}"
+    );
+}
+
 #[test]
 fn topology_changed_destination_replans_below_euclidean_threshold() {
     // Regression: a stopped chase target can move only a few centimeters across

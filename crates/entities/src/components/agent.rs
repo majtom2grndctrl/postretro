@@ -217,6 +217,12 @@ pub struct AgentComponent {
     /// admission cost one.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub gate_generation: u64,
+    /// Consecutive ticks this agent has been owed a drift-driven replan without
+    /// being admitted. The drift tier serves the longest waiter first, so a
+    /// crowd that saturates the replan budget cannot hold the same late-slot
+    /// agents back tick after tick. Zero while nothing is owed.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub drift_wait_ticks: u32,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -253,6 +259,7 @@ impl AgentComponent {
             ride: None,
             ride_airborne_ticks: 0,
             gate_generation: 0,
+            drift_wait_ticks: 0,
             path: Vec::new(),
             mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,

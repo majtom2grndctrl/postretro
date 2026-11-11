@@ -3,9 +3,10 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
 use glam::{DVec3, Vec3};
+use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_physics::kinematic_mover::MoverPathArcLengths;
 
-use super::pose::{MoverPoses, Pose, PosedBrush};
+use super::pose::{MoverPoses, Pose, Terminus};
 use crate::map_data::MapKinematicMover;
 
 /// The most poses automatic placement bakes. A longer path spreads them over
@@ -74,29 +75,9 @@ pub(crate) fn knot(k: u32, last: u32) -> f32 {
     k as f32 / last as f32
 }
 
-/// The least bytes one placed pose of `mover` holds before the SH base gate
-/// prices the channel: its knot, and twice its [`Pose`] with each bounded
-/// brush's posed copy and planes, once as placed and once as the posed
-/// solid's own copy (`mover_probe_channel::PosedSolid`), which resolves for
-/// every pose ahead of the gate. A floor: the solid's sides and geometry, the
-/// bounce plan's per-pose scenes, and every later state and payload come on
-/// top, so a count whose floor passes the budget cannot fit the gate's peak.
-pub(super) fn pose_bytes_floor(mover: &MapKinematicMover) -> u64 {
-    let brushes: u64 = mover
-        .brush_volumes
-        .iter()
-        .filter(|brush| brush.aabb.is_valid())
-        .map(|brush| {
-            (std::mem::size_of::<PosedBrush>()
-                + brush.planes.len() * std::mem::size_of::<(DVec3, f64)>()) as u64
-        })
-        .sum();
-    let pose = std::mem::size_of::<Pose>() as u64 + brushes;
-    std::mem::size_of::<f32>() as u64 + 2 * pose
-}
-
-/// One authored `light_poses` count and its floor, for the refusal's list.
-struct AuthoredFloor<'a> {
+/// One authored `light_poses` count and what its poses hold, for the
+/// refusal's list.
+struct AuthoredPoses<'a> {
     label: &'a str,
     count: u32,
     bytes: u64,
@@ -105,19 +86,23 @@ struct AuthoredFloor<'a> {
 impl MoverPoses {
     /// Refuse authored `light_poses` counts placement cannot honour, naming
     /// the movers, before [`Self::place_poses`] allocates anything in
-    /// proportion to them: a count past [`MAX_POSES`], or counts whose poses
-    /// alone, priced at their floor and summed over every authored mover,
-    /// pass `working_set_max_bytes`. Every mover's poses live together until
-    /// the gate, so the floors sum; the refusal is the SH base gate's, in its
-    /// words, and lists each contributing mover, largest first. Never places
-    /// fewer poses. An automatic count is at most [`AUTO_POSE_CAP`] and is
-    /// priced by the SH base gate with the rest of the channel.
+    /// proportion to them: a count past [`MAX_POSES`], or counts whose poses'
+    /// own working set, summed over every authored mover, passes
+    /// `working_set_max_bytes`. Each pose is priced from the mover's first
+    /// terminus ([`crate::mover_probe_channel::pose_held_bytes`]): its knot,
+    /// the pose as placed, its posed solid and the bounce plan's posed scene,
+    /// all held before the SH base gate runs. Every mover's poses live
+    /// together until then, so the movers' bytes sum; the refusal lists each
+    /// contributing mover, largest first. Never places fewer poses. An
+    /// automatic count is at most [`AUTO_POSE_CAP`] and is priced by the SH
+    /// base gate with the rest of the channel.
     pub(crate) fn admit_pose_counts(
         &self,
         movers: &[MapKinematicMover],
+        texture_names: &TextureNamesSection,
         working_set_max_bytes: u64,
     ) -> anyhow::Result<()> {
-        let mut floors: Vec<AuthoredFloor<'_>> = Vec::new();
+        let mut authored: Vec<AuthoredPoses<'_>> = Vec::new();
         for analysed in &self.analysed {
             let Some(mover) = movers.iter().find(|m| m.mover_id == analysed.mover_id) else {
                 continue;
@@ -133,35 +118,40 @@ impl MoverPoses {
                     analysed.label,
                 );
             }
-            floors.push(AuthoredFloor {
+            let per_pose = crate::mover_probe_channel::pose_held_bytes(
+                mover,
+                analysed.pose(Terminus::First),
+                texture_names,
+            );
+            authored.push(AuthoredPoses {
                 label: &analysed.label,
                 count,
-                bytes: pose_bytes_floor(mover).saturating_mul(u64::from(count)),
+                bytes: per_pose.saturating_mul(u64::from(count)),
             });
         }
-        let total = floors
+        let total = authored
             .iter()
-            .fold(0u64, |sum, floor| sum.saturating_add(floor.bytes));
+            .fold(0u64, |sum, poses| sum.saturating_add(poses.bytes));
         if total <= working_set_max_bytes {
             return Ok(());
         }
-        // Stable, so equal floors keep mover-id order.
-        floors.sort_by_key(|floor| std::cmp::Reverse(floor.bytes));
-        let named = floors
+        // Stable, so equal costs keep mover-id order.
+        authored.sort_by_key(|poses| std::cmp::Reverse(poses.bytes));
+        let named = authored
             .iter()
-            .map(|floor| {
+            .map(|poses| {
                 format!(
-                    "{} ({} poses, at least {} bytes)",
-                    floor.label, floor.count, floor.bytes
+                    "{} ({} poses, {} bytes)",
+                    poses.label, poses.count, poses.bytes
                 )
             })
             .collect::<Vec<_>>()
             .join(", ");
         anyhow::bail!(
-            "SH base working-set gate refused before patch shading: estimated peak at least \
-             {total} bytes exceeds budget {working_set_max_bytes} bytes, from the authored \
-             `light_poses` poses alone: {named}. Lower `light_poses`, or raise \
-             `--working-set-max-size`"
+            "mover poses' working set refused before the SH base gate: the authored \
+             `light_poses` poses hold an estimated {total} bytes, past the \
+             `--working-set-max-size` budget of {working_set_max_bytes} bytes: {named}. \
+             Lower `light_poses`, or raise `--working-set-max-size`"
         );
     }
 

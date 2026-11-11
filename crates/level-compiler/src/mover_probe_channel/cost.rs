@@ -3,18 +3,22 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline (working-set gate)
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use postretro_level_format::mover_probe_channel::{MOVER_IRRADIANCE_TILE_F16_COUNT, PoseMark};
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
+use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::absent_bounces::AbsentLaterBounces;
 use super::bake::MoverBounceJob;
 use super::direct::{DirectEntry, ProbeCells, light_movers};
 use super::gather::{DomainProbe, PosedProbe};
-use super::posed_solid::PosedMovers;
+use super::posed_scene::PosedScene;
+use super::posed_solid::{PosedMovers, PosedSolid};
 use super::states::{BounceProbe, ChangedProbe, DepthProbe, MidState};
-use crate::map_data::{LightType, MapLight};
+use crate::map_data::{LightType, MapKinematicMover, MapLight};
+use crate::mover_light_gate::Pose;
 use crate::sh_bake::{ProbeGridLayout, vec3_from};
 
 /// One gathered tile, border included, as the posed gather holds it.
@@ -238,6 +242,35 @@ fn mid_pose_bytes(mids: u64, domain: u64) -> u64 {
         + DEPTH_TILE_BYTES;
     let gather = size_of::<DomainProbe>() as u64 + DEPTH_TILE_BYTES + GATHERED_TILE_BYTES + state;
     domain * (mids * state + gather)
+}
+
+/// What one pose of `mover` holds from placement until the SH base gate,
+/// priced at `pose`: its knot; the pose as placed; its posed solid as
+/// [`PosedMovers::resolve`] builds it, with the `Arc` that holds it, the
+/// solid's own copy of the pose, its sides' geometry and face bounds; and
+/// the posed scene the bounce plan builds over those sides, with its patch
+/// set. Every pose of a mover is the same brushes translated, so one pose
+/// prices them all; a translated side can cover a few more or fewer patch
+/// cells, so this is an estimate. The scene is priced even on a map with no
+/// probe grid, which builds none. Sides past the patch cap price no patches:
+/// the bounce plan refuses them by name.
+pub(crate) fn pose_held_bytes(
+    mover: &MapKinematicMover,
+    pose: &Pose,
+    texture_names: &TextureNamesSection,
+) -> u64 {
+    let knot = size_of::<f32>() as u64;
+    let placed = size_of::<Pose>() as u64 + pose.brush_heap_bytes();
+    let solid = PosedSolid::new(mover, pose, texture_names);
+    // The pose's slot in the mover's solids, and the `Arc`'s two counts
+    // beside the solid on the heap.
+    let solid_bytes =
+        (size_of::<Arc<PosedSolid>>() + 2 * size_of::<usize>() + size_of::<PosedSolid>()) as u64
+            + solid.pose().brush_heap_bytes()
+            + solid.heap_bytes();
+    let patches = PosedScene::new(Arc::new(solid), 0).map_or(0, |scene| scene.patches.heap_bytes());
+    let scene = size_of::<PosedScene>() as u64 + patches;
+    knot + placed + solid_bytes + scene
 }
 
 /// The SH base's own later bounces the jobs keep: every one, when some job

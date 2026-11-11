@@ -66,6 +66,16 @@ impl Pose {
                 .any(|brush| segment_touches_brush(start, end, brush))
     }
 
+    /// Heap bytes the posed brushes and their planes hold.
+    pub(crate) fn brush_heap_bytes(&self) -> u64 {
+        let planes: usize = self
+            .brushes
+            .iter()
+            .map(|brush| brush.planes.capacity() * size_of::<(DVec3, f64)>())
+            .sum();
+        (self.brushes.capacity() * size_of::<PosedBrush>() + planes) as u64
+    }
+
     pub(super) fn new(name: &str, brushes: &[BrushVolume], offset: DVec3) -> Self {
         // A brush without bounds has no face, so it covers nothing.
         let brushes: Vec<PosedBrush> = brushes

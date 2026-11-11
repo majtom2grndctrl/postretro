@@ -169,3 +169,10 @@ Panel: correctness tracer + adversarial tester (opus) + hygiene (sonnet), read-o
 - 🟢 fixed: compiler refuses a streamed id-57 row past u32 by name before packing (`mover_rows.rs`); `light_ramp_start "-0"` stored as +0.0; comment rewraps; `level_geometry.rs` residency list.
 - Noted, unchanged: the recorded id-34 time includes layer-cache reads on a volume miss with cached layers (the projection is labelled an estimate).
 - Gates: fmt; clippy `-D warnings` (workspace, and `postretro --features capture`); full `cargo test --workspace` (GPU) 15,827 passed, 0 failed; parity 3/3; AC 7/8 references 2/2; release check; crate graph.
+
+### Round 3 (review of 25b0e0277..870d41b40, then fixes)
+
+One reviewer (opus, tracer + adversarial), read-only. No 🔴; round-2 fixes confirmed (parse boundary, ramp −0, order-independent tile-range verdict with no false refusal and warm = cold, compiler row sum = `row_lens`).
+- 🟡 fixed: authored `light_poses` are priced per pose from the mover's first terminus as the bake actually allocates it before the SH base gate (knot, placed pose, `PosedSolid` with its sides' geometry, `PosedScene` patches; `cost.rs` `pose_held_bytes`): a unit box costs 4,784 B a pose, so `MAX_POSES` on one is refused at the 16 GiB default. The refusal is worded as the mover poses' own working set, before the SH base gate.
+- 🟢 fixed: `finish_bounce_half`'s tile-range refusal documented as an unreachable backstop.
+- Gates: fmt; clippy (workspace and `postretro --features capture`); full `cargo test --workspace` (GPU) 15,828 passed, 0 failed; parity 3/3; release check; crate graph. Review loop closed: round 3 raised no new defect class.

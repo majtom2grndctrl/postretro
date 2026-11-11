@@ -57,7 +57,7 @@ pub(crate) use bake::{
     poses_progress_units, sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
-pub(crate) use cost::MoverChannelCost;
+pub(crate) use cost::{MoverChannelCost, pose_held_bytes};
 pub(crate) use depth::{
     CarriedDepth, DepthReservation, MoverAbsentDepth, refuse_cut_short, reserve_mover_tiles,
 };
@@ -81,7 +81,7 @@ pub(crate) use pose_memo::PoseMemo;
 pub(crate) use posed_scene::PosedScene;
 pub(crate) use posed_solid::PosedMovers;
 #[cfg(test)]
-pub(crate) use posed_solid::enclosure_inset;
+pub(crate) use posed_solid::{PosedSolid, box_brush as sided_box_brush, enclosure_inset};
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
 pub(crate) use skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
 pub(crate) use states::MoverBounceStates;

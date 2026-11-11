@@ -193,10 +193,11 @@ pub(super) fn skip_mid_poses(
 
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved
 /// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room and
-/// logs its counts once against the shrunk cap. Live tiles alone past the
-/// range fail the build by name. A bake past the range has already failed,
-/// before skipping ([`skip_mid_poses`]), so every mover's depth is whole here
-/// and the count exact.
+/// logs its counts once against the shrunk cap. A bake past the range has
+/// already failed, before skipping ([`skip_mid_poses`]), and skipping only
+/// removes records, so every mover's depth is whole here and the count exact.
+/// The reservation's own refusal of live tiles past the range is a backstop
+/// that earlier refusal makes unreachable.
 pub(super) fn finish_bounce_half(
     movers: &[MoverBounceStates],
     base: &OctahedralShVolumeSection,

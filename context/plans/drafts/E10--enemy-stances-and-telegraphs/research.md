@@ -1,6 +1,6 @@
 # E10--enemy-stances-and-telegraphs — research
 
-Read at 5932287f. Findings that inform the brief but do not decide it.
+Read at 5932287f; refreshed at 2cb88013. Findings that inform the brief but do not decide it.
 
 ## Telegraphs today
 - A windup is an authored activity left by a `timeInActivityMs` guard. Shipped examples:
@@ -25,7 +25,7 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 - **Behavior-entry sounds** play in the frame loop's Audio stage from `pending_ai_events`. That queue is always empty on a client, because clients never run `simulate_tick`.
 - **Melee is silent on clients.** `publish_observer_weapon_cues` skips emissions without a `shot_id`, so a contact attack's sound never reaches a client. A weapon attack's sound rides `WeaponCue.additional_sound`.
 - **Observer cues** (`freeze_observer_weapon_cue`) anchor to an entity `NetworkId` and go to all participating clients except the owner. An enemy has no owner, so every client receives them.
-- **Version gates.** A new message bumps `PROTOCOL_ID` ("PRLC"). `WIRE_VERSION` (39) bumps only when an append-layout guard shows a shipped encoding changed. `SNAPSHOT_VERSION` (25) bumps for snapshot-record changes.
+- **Version gates.** A new message bumps `PROTOCOL_ID` ("PRLD" at 2cb88013). `WIRE_VERSION` (39) bumps only when an append-layout guard shows a shipped encoding changed. `SNAPSHOT_VERSION` (25) bumps for snapshot-record changes.
 
 ## Stagger without engine work
 - **What works today:**
@@ -76,6 +76,18 @@ Read at 5932287f. Findings that inform the brief but do not decide it.
 | P14 | Stance entered on a client's join tick | On tick N an enemy enters its stance; the client begins participating that frame, before or after the host publishes tick N's cue. | A cue published after participation began plays once, at the captured position if the enemy is not yet materialized (P9). One published before is never delivered. Materializing the enemy mid-stance plays no sound. |
 
 ## Review round 2 corrections
-- `WeaponCuesMessage` sends one cue per message and carries a `participation_epoch`. `MAX_WEAPON_CUES` is 64, and an invalid (over-cap) message is silently not sent (`crates/net/src/transport.rs`). So the enemy cue goes one per message.
+- `WeaponCuesMessage` sends one cue per message and carries a `participation_epoch`. `MAX_WEAPON_CUES` is 64 (`WeaponCuesMessage::is_valid`, `crates/net/src/wire.rs`), and `send_weapon_cues` silently skips an invalid (over-cap) message. So the enemy cue goes one per message.
 - `MAX_DELAY_MICROS` (250 ms) is `pub(crate)` in `crates/netcode/src/interpolation.rs`, and netcode depends on sim. So the floor constant lives outside netcode, guarded by a netcode test (precedent: `SPAWN_ATTACK_WINDUP_MS`, `enemy_replication_harness_test.rs`).
 - `"*"` rows evaluate before every activity's own rows at that level (`graph_eval.rs`). So they can leave a release and win a tie with the break row.
+
+## Refresh at 2cb88013 (after combat movement)
+- **Turn timing.** Compute, then arbitration, then apply (`run_ai_tick_with_host`). A mark entered on tick N requests and can be granted in tick N's `arbitrate_attack_turns`; `attackTurnHeld` reads it on N+1. The hold's one-tick turn-lost exit holds.
+- **Firing is gated.** A drawn attack under a mark fires only with its turn; a dropped proposal keeps the once-per-entry fire open, so a release entered while still waiting fires on its first granted tick. Only the hold's exit row keeps an ungranted enemy out of `_release`. Undrawn attacks are exempt.
+- **No turn time limit.** `retain_held` keeps a turn while the path's mark names its attack, so a same-attack chain holds it indefinitely (owner: allowed, documented). A token is consumed on grant, and its refresh starts when the turn ends, fired or not (`roster.ended_for` → refresh ledger).
+- **Self-edges.** `first_enabled_target` skips a row whose `to` is the current activity, `"*"` included.
+- **Damage sum.** `points_dealt` = absorbed + health loss (`drain_layers`).
+- **Stage order.** Remote hits already authorized land in Projectiles, before AI; local and freshly commanded remote hitscan land in Weapons, after AI.
+- **Brain serde.** `BrainComponent` derives serde with defaulted fields; the only production consumer serializes (the observability dump). Deserialization is test-only.
+- **Content drift.** The limitator's `aim` was replaced by `close` / `wait` (strafe) / `burst` (`attackTurn: "shoot"`) / `move` (reposition). The brute's slam cycle carries `attackTurn: "slam"` marks and a windup turn-lost exit at 250 ms. Tests pinning it: `reference_behavior_graph` and its `reference_enemy_*` users (`crates/ai/src/ai_tests.rs`), `the_shipped_reference_enemy_graph_is_identical_in_both_authorings`, `dev_mod_budget_paces_reference_enemies_and_troopers`.
+- **Speed.** No per-activity speed exists; `move_speed` is per archetype, copied onto the agent at spawn.
+- **Naming.** `LocomotionStance` (player, `crates/sim/src/sim/player_locomotion/jump.rs`) is engine-internal, not modder-facing.

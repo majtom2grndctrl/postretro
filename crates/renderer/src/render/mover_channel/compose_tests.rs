@@ -11,7 +11,10 @@
 // selected light (selection 0) contributes T = 0.25 there, and id 45's
 // animated light 0.125 × base colour red 2.0.
 
-use postretro_level_format::mover_probe_channel::{MoverLightNamespace, MoverProbeChannelSection};
+use postretro_level_format::mover_probe_channel::{
+    DirectRecordParts, MoverDirectRecord, MoverLightNamespace, MoverProbeChannelParts,
+    MoverProbeChannelSection, MoverRecord,
+};
 use postretro_render_cpu::frame_uniforms::{LightTermMask, UNIFORM_SIZE};
 use wgpu::util::DeviceExt;
 
@@ -297,7 +300,16 @@ fn a_single_terminus_gate_composes_s0_ungated_and_their_mix() {
     );
     let mut scene = build_scene(&ctx, Some(&section), false);
     let (ungated, _) = compose(&ctx, &mut scene, frame(&[]));
-    for (t, expected) in [(0.0, 0.0), (1.0, 0.25), (0.5, 0.125)] {
+    // AC 2 (compose half): a two-pose mover composes today's linear blend
+    // of q₀ and q₁ at every t′.
+    for (t, expected) in [
+        (0.0, 0.0),
+        (1.0, 0.25),
+        (0.5, 0.125),
+        (0.1, 0.025),
+        (0.3, 0.075),
+        (0.7, 0.175),
+    ] {
         let (free, handoff) = compose(&ctx, &mut scene, frame(&[state(7, t), state(9, 1.0)]));
         assert_near(
             probe_0(&free),
@@ -546,7 +558,9 @@ fn an_animated_record_without_id_45_composes_ungated_and_subtracts_nothing() {
 /// bounce-only one lays out no direct record and composes today's atlases.
 #[test]
 fn a_bounce_only_section_composes_todays_direct_atlases() {
-    use postretro_level_format::mover_probe_channel::{MoverBounceEntry, MoverChannelCell};
+    use postretro_level_format::mover_probe_channel::{
+        MoverBounceEntry, MoverChannelCell, MoverRecord,
+    };
     let Some(ctx) = gpu("a_bounce_only_section_composes_todays_direct_atlases") else {
         return;
     };
@@ -559,6 +573,7 @@ fn a_bounce_only_section_composes_todays_direct_atlases() {
     bounce_only.bounce_offsets = vec![0, 1];
     bounce_only.bounce_entries = vec![MoverBounceEntry::termini(7, [1, 1])];
     bounce_only.bounce_tiles = vec![0; 2 * 108];
+    bounce_only.mover_records = vec![MoverRecord::termini(7, 0.0, 1.0)];
     let mut stripped = build_scene(&ctx, None, false);
     let mut scene = build_scene(&ctx, Some(&bounce_only), false);
     assert_eq!(scene.channel.layout().record_count(), 0);
@@ -566,6 +581,175 @@ fn a_bounce_only_section_composes_todays_direct_atlases() {
         compose(&ctx, &mut stripped, frame(&[])),
         compose(&ctx, &mut scene, frame(&[state(7, 0.0)])),
     );
+}
+
+/// One mover gating the selected light at probe 0 with any number of
+/// poses: id, ramp `(s, e)`, knots, and its q at each pose.
+type PosedGate = (u32, (f32, f32), Vec<f32>, Vec<u8>);
+
+/// The selected light at probe 0, its term from id 41, gated by `movers`.
+fn posed_light(movers: &[PosedGate]) -> MoverProbeChannelSection {
+    MoverProbeChannelSection::assemble(
+        MoverProbeChannelParts {
+            affinity_dims: [1, 1, 1],
+            direct: vec![DirectRecordParts {
+                cell: 0,
+                record: MoverDirectRecord {
+                    namespace: MoverLightNamespace::StaticLight,
+                    carries_own_tile: false,
+                    light_index: SELECTED_LIGHT,
+                    probe_mask: 0b1,
+                },
+                movers: movers
+                    .iter()
+                    .map(|(mover, _, _, q)| (*mover, q.clone()))
+                    .collect(),
+                own_tiles: Vec::new(),
+            }],
+            bounce: Vec::new(),
+            depth: Vec::new(),
+        },
+        |_| u64::MAX,
+        |mover_id| {
+            let (_, (ramp_start, ramp_end), knots, _) = movers
+                .iter()
+                .find(|mover| mover.0 == mover_id)
+                .expect("a listed mover");
+            Ok::<_, ()>(MoverRecord {
+                mover_id,
+                ramp_start: *ramp_start,
+                ramp_end: *ramp_end,
+                knots: knots.clone(),
+            })
+        },
+    )
+    .unwrap()
+    .expect("the fixture holds a record")
+}
+
+/// Probe 0's red where the light's surviving visibility is `q`: id 41's
+/// T = 0.25 scaled by it.
+fn gated(q: f32) -> f32 {
+    0.25 * q
+}
+
+/// AC 15 (direct half): at each pose's t′ the light keeps that pose's q
+/// exactly; between knots the byte lerp of the two poses around t′; out and
+/// back to one t′ composes alike, in both direct atlases.
+#[test]
+fn piecewise_direct_reads_each_poses_q_and_lerps_between() {
+    let Some(ctx) = gpu("piecewise_direct_reads_each_poses_q_and_lerps_between") else {
+        return;
+    };
+    let q = [0u8, 255, 51, 204];
+    let section = posed_light(&[(7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0], q.to_vec())]);
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    let byte = |pose: usize| f32::from(q[pose]) / 255.0;
+    for (pose, t) in [0.0, 0.25, 0.5, 1.0].into_iter().enumerate() {
+        let (free, handoff) = compose(&ctx, &mut scene, frame(&[state(7, t)]));
+        assert_near(probe_0(&free), gated(byte(pose)), &format!("pose {pose}"));
+        assert_near(
+            probe_0(&handoff),
+            gated(byte(pose)),
+            &format!("handoff, pose {pose}"),
+        );
+    }
+    for (t, lo, hi, w) in [(0.125, 0, 1, 0.5), (0.375, 1, 2, 0.5), (0.875, 2, 3, 0.75)] {
+        let (free, _) = compose(&ctx, &mut scene, frame(&[state(7, t)]));
+        let expected = byte(lo) + (byte(hi) - byte(lo)) * w;
+        assert_near(probe_0(&free), gated(expected), &format!("between, t′ {t}"));
+    }
+    let out = compose(&ctx, &mut scene, frame(&[state(7, 0.375)]));
+    let _ = compose(&ctx, &mut scene, frame(&[state(7, 0.9)]));
+    assert_eq!(
+        compose(&ctx, &mut scene, frame(&[state(7, 0.375)])),
+        out,
+        "out and back to one t′ composes alike"
+    );
+}
+
+/// AC 16 (direct half): two movers with different pose counts on one light,
+/// each between its knots, multiply their blended q.
+#[test]
+fn two_posed_movers_on_one_light_multiply_their_blended_q() {
+    let Some(ctx) = gpu("two_posed_movers_on_one_light_multiply_their_blended_q") else {
+        return;
+    };
+    let section = posed_light(&[
+        (
+            7,
+            (0.0, 1.0),
+            vec![0.0, 0.25, 0.5, 1.0],
+            vec![0, 255, 51, 204],
+        ),
+        (9, (0.0, 1.0), vec![0.0, 0.5, 1.0], vec![255, 0, 102]),
+    ]);
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    // (t7, t9, mover 7's q, mover 9's q).
+    for (t7, t9, q7, q9) in [(0.125, 0.25, 0.5, 0.5), (0.75, 0.75, 0.5, 0.2)] {
+        let (free, _) = compose(&ctx, &mut scene, frame(&[state(7, t7), state(9, t9)]));
+        assert_near(probe_0(&free), gated(q7 * q9), &format!("t′ ({t7}, {t9})"));
+    }
+}
+
+/// AC 17 (direct half) / MP1, MP10, and AC 14 (compose half) / MP11: with
+/// ramp (0.6, 0.9) the game hands t′ = ramp(t). The light reads the first
+/// pose's q for t < 0.6 and the last's for t > 0.9, a mid knot's at
+/// ramp(t_k), and poses squeezed onto t′ 0 or 1 are never read. A mover
+/// whose only blocking pose is squeezed out leaves the light unblocked at
+/// every t′. No state is ungated.
+#[test]
+fn a_ramped_movers_direct_reads_its_end_poses_and_never_a_squeezed_one() {
+    let Some(ctx) = gpu("a_ramped_movers_direct_reads_its_end_poses_and_never_a_squeezed_one")
+    else {
+        return;
+    };
+    let ramp = |t: f32| ((t - 0.6) / (0.9 - 0.6)).clamp(0.0, 1.0);
+    let knots = vec![0.0, 0.2, 0.4, 0.6, 0.8, 0.95, 1.0];
+    let section = posed_light(&[
+        (
+            7,
+            (0.6, 0.9),
+            knots.clone(),
+            vec![0, 153, 153, 153, 102, 153, 255],
+        ),
+        (9, (0.6, 0.9), knots, vec![255, 0, 255, 255, 255, 0, 255]),
+    ]);
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    let (ungated, _) = compose(&ctx, &mut scene, frame(&[]));
+    assert_near(probe_0(&ungated), 0.25, "no state is ungated");
+    for (t, q7) in [(0.3, 0.0), (0.6, 0.0), (0.8, 0.4), (0.9, 1.0), (0.97, 1.0)] {
+        let (free, _) = compose(
+            &ctx,
+            &mut scene,
+            frame(&[state(7, ramp(t)), state(9, ramp(t))]),
+        );
+        assert_near(probe_0(&free), gated(q7), &format!("t {t}"));
+    }
+    let mid = ramp(0.8);
+    for (t, expected) in [
+        (0.61, 0.4 * ramp(0.61) / mid),
+        (0.89, 0.4 + 0.6 * (ramp(0.89) - mid) / (1.0 - mid)),
+    ] {
+        let (free, _) = compose(
+            &ctx,
+            &mut scene,
+            frame(&[state(7, ramp(t)), state(9, ramp(t))]),
+        );
+        assert_near(
+            probe_0(&free),
+            gated(expected),
+            &format!("near a ramp edge, t {t}"),
+        );
+    }
+    for t in [0.0, 0.2, 0.61, 0.7, 0.95, 1.0] {
+        let (free, _) = compose(&ctx, &mut scene, frame(&[state(9, ramp(t))]));
+        assert_near(
+            probe_0(&free),
+            0.25,
+            &format!("blocked only when squeezed, t {t}"),
+        );
+    }
 }
 
 /// Legacy half: a t′ change alone dispatches the whole-load compose

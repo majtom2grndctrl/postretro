@@ -6,8 +6,8 @@
 // source at pipeline build time.
 //
 // Mover state lighting: at a probe an id-57 record masks, a gated light's
-// term T becomes the lerp of its two terminus states, so each output loses
-// (1 − Q) × T, Q being the product of the gating movers' lerp(q₀, q₁, t′).
+// term T becomes the blend of its two pose states around t′, so each output
+// loses (1 − Q) × T, Q being the product of the gating movers' blended q.
 // Animated-baked lights lose it under their curve, the handoff only in its
 // (1 − w) arm. Gated static lights lose it here in the promotion-free output
 // only; Pass A already took the handoff's share from the intermediate.

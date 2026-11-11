@@ -597,7 +597,7 @@ mod tests {
             bounce_tiles: Vec::new(),
             depth_records: Vec::new(),
             depth_tiles: Vec::new(),
-            ramps: Vec::new(),
+            mover_records: Vec::new(),
         };
         let (_, _, selection) = capture_static_lights_and_shadow_selection(&lights, &[], &[1, 3]);
         let moved = capture_mover_probe_channel(&lights, Some(&section)).expect("section");

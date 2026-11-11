@@ -3,10 +3,11 @@
 //
 // The including shader binds `mover_channel: array<u32>`, the renderer-built
 // table of `render/mover_channel/layout.rs`: listed affinity cells, one term
-// record per (cell, gated light) with its probe mask, its gating movers, and
-// one t′ per mover (negative while the game hands over no state). Each listed
-// cell's payload (the light's term T per masked probe, then each mover's
-// q₀/q₁ bytes) is one run its base word points at. A streamed level places
+// record per (cell, gated light) with its probe mask, its gating movers, each
+// mover's knots through its ramp, and one t′ per mover (negative while the
+// game hands over no state). Each listed cell's payload (the light's term T
+// per masked probe, then each mover's q at each of its N poses) is one run
+// its base word points at. A streamed level places
 // that run per resident cell; while it is not resident the base reads
 // `MC_NONE` and the cell composes as with no section. That is residency, not
 // a visibility switch: a row composes only with its cluster resident, and
@@ -25,6 +26,10 @@ const MC_HEADER_MOVER_T: u32 = 5u;
 const MC_HEADER_DESCRIPTORS: u32 = 6u;
 const MC_HEADER_DESCRIPTOR_COUNT: u32 = 7u;
 const MC_HEADER_CELL_BASES: u32 = 8u;
+// Word per mover slot: the absolute word of its knot run, `[N, E, (t′ bits,
+// pose) × E]`, E effective knots strictly ascending from (0, pose 0) to
+// (1, pose N − 1) (`render/mover_channel/knots.rs`).
+const MC_HEADER_KNOTS: u32 = 9u;
 const MC_RECORD_WORDS: u32 = 8u;
 const MC_RECORD_MASK_LOW: u32 = 0u;
 const MC_RECORD_MASK_HIGH: u32 = 1u;
@@ -115,9 +120,52 @@ fn mc_byte(index: u32) -> u32 {
     return (mover_channel[index / 4u] >> ((index % 4u) * 8u)) & 0xffu;
 }
 
+fn mc_knot_t(run: u32, knot: u32) -> f32 {
+    return bitcast<f32>(mover_channel[run + 2u + 2u * knot]);
+}
+
+fn mc_knot_pose(run: u32, knot: u32) -> u32 {
+    return mover_channel[run + 3u + 2u * knot];
+}
+
+/// Poses `lo` and `hi` around a stated `t` (≥ 0) in the knot run at `run`,
+/// and the weight of `hi`: zero reads `lo` exactly. Direct stores q at
+/// every pose, so every knot is defined. Mirrors `knots::interval`.
+struct McInterval {
+    lo: u32,
+    hi: u32,
+    weight: f32,
+}
+
+fn mc_interval(run: u32, t: f32) -> McInterval {
+    let last = mover_channel[run + 1u] - 1u;
+    if (t >= 1.0) {
+        let pose = mc_knot_pose(run, last);
+        return McInterval(pose, pose, 0.0);
+    }
+    var at = 0u;
+    for (var knot = 1u; knot < last; knot = knot + 1u) {
+        if (mc_knot_t(run, knot) > t) {
+            break;
+        }
+        at = knot;
+    }
+    let lo = mc_knot_pose(run, at);
+    let t_lo = mc_knot_t(run, at);
+    if (t <= t_lo) {
+        return McInterval(lo, lo, 0.0);
+    }
+    return McInterval(
+        lo,
+        mc_knot_pose(run, at + 1u),
+        (t - t_lo) / (mc_knot_t(run, at + 1u) - t_lo),
+    );
+}
+
 /// The light's surviving visibility at the record's masked `slot`: the
-/// product over its gating movers of lerp(q₀, q₁, t′). A mover the game
-/// handed over no state for leaves the light ungated (factor 1).
+/// product over its gating movers of each one's q, blended between the two
+/// poses around its t′ (exact at a knot). A mover the game handed over no
+/// state for leaves the light ungated (factor 1).
 fn mc_record_visibility(record: u32, slot: u32) -> f32 {
     let entries = mover_channel[MC_HEADER_MOVER_ENTRIES];
     let mover_t = mover_channel[MC_HEADER_MOVER_T];
@@ -126,15 +174,21 @@ fn mc_record_visibility(record: u32, slot: u32) -> f32 {
     let end = mc_record_word(record, MC_RECORD_MOVERS_END);
     for (var entry = mc_record_word(record, MC_RECORD_MOVERS_START); entry < end; entry = entry + 1u) {
         let at = entries + entry * MC_MOVER_ENTRY_WORDS;
-        let t = bitcast<f32>(mover_channel[mover_t + mover_channel[at]]);
+        let mover = mover_channel[at];
+        let t = bitcast<f32>(mover_channel[mover_t + mover]);
         // Negative (or non-finite) t: no state handed over this frame.
         if (!(t >= 0.0)) {
             continue;
         }
-        let q_byte = base_byte + mover_channel[at + 1u] + slot * 2u;
-        let q0 = f32(mc_byte(q_byte)) / 255.0;
-        let q1 = f32(mc_byte(q_byte + 1u)) / 255.0;
-        visibility = visibility * mix(q0, q1, min(t, 1.0));
+        let run = mover_channel[mover_channel[MC_HEADER_KNOTS] + mover];
+        let span = mc_interval(run, t);
+        // N q bytes per masked probe, probe-major.
+        let q_byte = base_byte + mover_channel[at + 1u] + slot * mover_channel[run];
+        var q = f32(mc_byte(q_byte + span.lo)) / 255.0;
+        if (span.weight > 0.0) {
+            q = mix(q, f32(mc_byte(q_byte + span.hi)) / 255.0, span.weight);
+        }
+        visibility = visibility * q;
     }
     return visibility;
 }

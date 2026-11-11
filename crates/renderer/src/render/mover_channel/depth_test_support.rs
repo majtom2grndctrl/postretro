@@ -5,7 +5,7 @@
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::mover_probe_channel::{
     DepthRecordParts, MoverDepthRecord, MoverProbeChannelParts, MoverProbeChannelSection,
-    MoverRecord,
+    MoverRecord, PoseMark,
 };
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
@@ -68,6 +68,78 @@ pub(in crate::render) fn stored_depth_section(
         },
         |_| u64::MAX,
         |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.0, 1.0)),
+    )
+    .unwrap()
+    .expect("depth records make a section")
+}
+
+/// What one pose of a posed depth record holds for its probe.
+#[derive(Clone)]
+pub(in crate::render) enum PosedDepth {
+    Tile(Vec<[u16; 2]>),
+    /// A mid pose marked base (or an unstored terminus): the probe's base.
+    Base,
+    /// An unmarked mid pose: blended across.
+    Across,
+}
+
+/// A mover's pose table for a posed fixture: id, ramp `(s, e)`, knots.
+pub(in crate::render) type PosedMover = (u32, (f32, f32), Vec<f32>);
+
+/// An id-57 section carrying only depth over movers with any number of
+/// poses: each record is `(mover, probe, one PosedDepth per pose)`.
+pub(in crate::render) fn posed_depth_section(
+    movers: &[PosedMover],
+    records: Vec<(u32, u32, Vec<PosedDepth>)>,
+) -> MoverProbeChannelSection {
+    MoverProbeChannelSection::assemble(
+        MoverProbeChannelParts {
+            affinity_dims: [1, 1, 1],
+            direct: Vec::new(),
+            bounce: Vec::new(),
+            depth: records
+                .into_iter()
+                .map(|(mover_id, probe_index, poses)| {
+                    let last = poses.len() - 1;
+                    DepthRecordParts {
+                        record: MoverDepthRecord {
+                            mover_id,
+                            probe_index,
+                            marks: poses
+                                .iter()
+                                .enumerate()
+                                .map(|(pose, state)| match state {
+                                    PosedDepth::Tile(_) => PoseMark::Stored,
+                                    PosedDepth::Base if pose != 0 && pose != last => PoseMark::Base,
+                                    _ => PoseMark::Unmarked,
+                                })
+                                .collect(),
+                        },
+                        tiles: poses
+                            .into_iter()
+                            .filter_map(|state| match state {
+                                PosedDepth::Tile(tile) => Some(tile),
+                                _ => None,
+                            })
+                            .flatten()
+                            .collect(),
+                    }
+                })
+                .collect(),
+        },
+        |_| u64::MAX,
+        |mover_id| {
+            let &(_, (ramp_start, ramp_end), ref knots) = movers
+                .iter()
+                .find(|mover| mover.0 == mover_id)
+                .expect("every record's mover is listed");
+            Ok::<_, ()>(MoverRecord {
+                mover_id,
+                ramp_start,
+                ramp_end,
+                knots: knots.clone(),
+            })
+        },
     )
     .unwrap()
     .expect("depth records make a section")

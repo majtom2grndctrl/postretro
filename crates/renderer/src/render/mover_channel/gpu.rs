@@ -238,6 +238,7 @@ impl MoverChannelResources {
             inputs.section,
             inputs.indirect_descriptor_indices,
             layout.mover_ids(),
+            layout.knots(),
             pooled_bounce,
         )?;
         let mut direct_words = layout.initial_words().to_vec();
@@ -360,8 +361,7 @@ impl MoverChannelResources {
     /// No level: both table headers, no descriptors.
     pub(in crate::render) fn empty(device: &wgpu::Device) -> Self {
         let layout = MoverChannelLayout::empty(&[]);
-        let bounce_layout =
-            BounceLayout::build(None, &[], &[], false).expect("an empty bounce table lays out");
+        let bounce_layout = BounceLayout::empty();
         Self {
             direct: ChannelTable::new(
                 device,
@@ -425,9 +425,7 @@ impl MoverChannelResources {
             Some(_) => stand_in(
                 "Mover Probe Channel Bounce Table (whole-load, streamed level)",
                 ShAllocationKind::MoverBounceTable,
-                BounceLayout::build(None, &[], &[], false)
-                    .expect("an empty bounce table lays out")
-                    .initial_words(),
+                BounceLayout::empty().initial_words(),
             ),
         };
         [direct, bounce]
@@ -479,7 +477,7 @@ impl MoverChannelResources {
     }
 
     /// Bind the depth block's live tiles to the installed tile texture;
-    /// `bases` gives the moment set an unstored terminus blends toward. A
+    /// `bases` gives the moment set a pose with no tile reads. A
     /// probe with no base there refuses the install.
     pub(in crate::render) fn bind_depth(
         &mut self,

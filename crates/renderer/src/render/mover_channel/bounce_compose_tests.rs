@@ -19,9 +19,9 @@ use postretro_level_format::delta_sh_volumes::{
 };
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::mover_probe_channel::{
-    BounceEntryParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverChannelBlock,
-    MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection, MoverRecord,
-    MoverStreamedRow,
+    BounceEntryParts, BouncePoseMasks, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry,
+    MoverChannelBlock, MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverRecord, MoverStreamedRow,
 };
 use postretro_level_format::sh_volume::{
     AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe, OctahedralShVolumeSection,
@@ -164,6 +164,86 @@ fn channel_section(bounces: &[Bounce], streamed: bool) -> MoverProbeChannelSecti
         section.bounce_placement = MoverPayloadPlacement::Streamed;
     }
     section
+}
+
+/// One mover with any number of poses: its ramp and knots, and per pose
+/// `(stored, base, value)`: the probes storing a state (every channel of
+/// every texel `value`) and, at a mid pose, the probes reading id 34.
+struct PosedBounce {
+    mover_id: u32,
+    ramp: (f32, f32),
+    knots: Vec<f32>,
+    poses: Vec<(u64, u64, f32)>,
+}
+
+fn posed_section(bounces: &[PosedBounce]) -> MoverProbeChannelSection {
+    let parts = MoverProbeChannelParts {
+        affinity_dims: [1, 1, 1],
+        direct: Vec::new(),
+        bounce: bounces
+            .iter()
+            .map(|bounce| BounceEntryParts {
+                cell: 0,
+                entry: MoverBounceEntry {
+                    mover_id: bounce.mover_id,
+                    poses: bounce
+                        .poses
+                        .iter()
+                        .map(|&(stored, base, _)| BouncePoseMasks { stored, base })
+                        .collect(),
+                },
+                // Pose after pose, each stored probe's tile by rank.
+                tiles: bounce
+                    .poses
+                    .iter()
+                    .flat_map(|&(stored, _, value)| {
+                        std::iter::repeat_n(
+                            f16(value),
+                            stored.count_ones() as usize * MOVER_IRRADIANCE_TILE_F16_COUNT,
+                        )
+                    })
+                    .collect(),
+            })
+            .collect(),
+        depth: Vec::new(),
+    };
+    MoverProbeChannelSection::assemble(
+        parts,
+        |_| u64::MAX,
+        |mover_id| {
+            let bounce = bounces
+                .iter()
+                .find(|bounce| bounce.mover_id == mover_id)
+                .expect("a listed mover");
+            Ok::<_, ()>(MoverRecord {
+                mover_id,
+                ramp_start: bounce.ramp.0,
+                ramp_end: bounce.ramp.1,
+                knots: bounce.knots.clone(),
+            })
+        },
+    )
+    .unwrap()
+    .expect("the fixture holds bounce entries")
+}
+
+/// The static bounce half alone: id 27's delta off, so a probe's red reads
+/// its composed base.
+fn static_only() -> LightTermMask {
+    let mut mask = LightTermMask::ALL;
+    mask.set_enabled(LightTermMask::INDIRECT_ANIMATED, false);
+    mask
+}
+
+/// Every texel of probe `p`'s tile reads exactly `expected` red.
+fn assert_tile_exact(atlas: &[u8], p: u32, expected: f32, what: &str) {
+    let origin = (TILE * (p % TILES_PER_ROW), TILE * (p / TILES_PER_ROW));
+    for y in 0..TILE {
+        for x in 0..TILE {
+            let found = red(atlas, origin.0 + x, origin.1 + y);
+            assert_eq!(found, expected, "{what}: probe {p} texel ({x}, {y})");
+        }
+    }
 }
 
 struct Scene {
@@ -354,7 +434,10 @@ fn c3_bounce_replaces_id_34_with_the_lerp_of_its_states_and_deltas_still_add() {
     let mut scene = build_scene(&ctx, Some(&section), false);
     let stateless = compose(&ctx, &mut scene, &[]);
     assert_eq!(stateless, today, "no mover state composes today's atlas");
-    for (t, expected) in [(0.0, 0.5), (1.0, 0.125), (0.5, 0.3125)] {
+    // AC 2 (compose half): a two-pose mover composes today's linear blend
+    // at every t′, (1 − t′)·S^b₀ + t′·S^b₁.
+    for t in [0.0, 1.0, 0.5, 0.1, 0.3, 0.7, 0.95] {
+        let expected = 0.5 + (0.125 - 0.5) * t;
         let atlas = compose(&ctx, &mut scene, &[state(7, t)]);
         assert_tile(&atlas, 0, expected + DELTA_RED, &format!("t′ = {t}"));
         assert_eq!(
@@ -548,6 +631,218 @@ fn an_unstored_terminus_composes_id_34_and_adds_no_difference() {
             &format!("probe 1, mover 9 at S^b₀, t7 = {t7}"),
         );
     }
+}
+
+/// AC 15 (bounce half): at each stored pose's t′ the probe reads that state
+/// exactly; between two defined states it reads their mix within one f16
+/// step; an unmarked mid pose is blended across and a mid pose marked base
+/// reads id 34 exactly; out and back to one t′ composes the same bytes; an
+/// unaffected probe composes id 34 exactly throughout.
+#[test]
+fn piecewise_bounce_reads_each_state_exactly_and_mixes_between() {
+    let Some(ctx) = bc_gpu_or_skip("piecewise_bounce_reads_each_state_exactly_and_mixes_between")
+    else {
+        return;
+    };
+    let today = compose_masked(
+        &ctx,
+        &mut build_scene(&ctx, None, false),
+        &[],
+        static_only(),
+    );
+    // Probe 0 stores every pose; probe 1 stores the termini, is unmarked at
+    // pose 1 (blended across) and reads id 34 at pose 2.
+    let section = posed_section(&[PosedBounce {
+        mover_id: 7,
+        ramp: (0.0, 1.0),
+        knots: vec![0.0, 0.25, 0.5, 1.0],
+        poses: vec![
+            (0b11, 0, 0.5),
+            (0b01, 0, 1.0),
+            (0b01, 0b10, 0.125),
+            (0b11, 0, 0.75),
+        ],
+    }]);
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    let mut at = |t: f32| compose_masked(&ctx, &mut scene, &[state(7, t)], static_only());
+    for (t, probe_0, probe_1) in [
+        (0.0, 0.5, 0.5),
+        (0.25, 1.0, 0.375),
+        (0.5, 0.125, BASE),
+        (1.0, 0.75, 0.75),
+    ] {
+        let atlas = at(t);
+        assert_tile_exact(&atlas, 0, probe_0, &format!("probe 0 at its knot {t}"));
+        assert_tile(&atlas, 1, probe_1, &format!("probe 1 at t′ {t}"));
+        if t == 0.5 {
+            assert_tile_exact(&atlas, 1, BASE, "a mid pose marked base reads id 34");
+        }
+        assert_eq!(
+            outside_probes_0_and_1(&atlas),
+            outside_probes_0_and_1(&today),
+            "t′ {t}: unaffected probes compose id 34 exactly"
+        );
+    }
+    for (t, probe_0, probe_1) in [
+        (0.0625, 0.625, 0.46875),
+        (0.125, 0.75, 0.4375),
+        (0.375, 0.5625, 0.3125),
+        (0.75, 0.4375, 0.5),
+    ] {
+        let atlas = at(t);
+        assert_tile(
+            &atlas,
+            0,
+            probe_0,
+            &format!("probe 0 between knots, t′ {t}"),
+        );
+        assert_tile(
+            &atlas,
+            1,
+            probe_1,
+            &format!("probe 1 between knots, t′ {t}"),
+        );
+    }
+    let out = at(0.375);
+    let _ = at(0.9);
+    assert_eq!(at(0.375), out, "out and back to one t′ composes alike");
+}
+
+/// AC 16 (bounce half): two movers at one probe with different pose
+/// counts and unmarked poses, each between its knots, combine as today: the
+/// first's blend replaces id 34 and the second adds its blend minus id 34.
+#[test]
+fn two_posed_movers_at_one_probe_add_their_blended_differences() {
+    let Some(ctx) = bc_gpu_or_skip("two_posed_movers_at_one_probe_add_their_blended_differences")
+    else {
+        return;
+    };
+    let section = posed_section(&[
+        PosedBounce {
+            mover_id: 7,
+            ramp: (0.0, 1.0),
+            knots: vec![0.0, 0.25, 0.5, 1.0],
+            poses: vec![(0b1, 0, 0.5), (0, 0, 0.0), (0b1, 0, 1.0), (0b1, 0, 0.75)],
+        },
+        PosedBounce {
+            mover_id: 9,
+            ramp: (0.0, 1.0),
+            knots: vec![0.0, 0.5, 1.0],
+            poses: vec![(0b1, 0, 0.375), (0b1, 0, 1.25), (0, 0, 0.0)],
+        },
+    ]);
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    // (t7, t9, mover 7's blend, mover 9's blend): mover 7 at 0.375 blends
+    // across its unmarked pose 1 (poses 0 → 2 at 0.75); mover 9's last pose
+    // stores nothing and reads id 34.
+    for (t7, t9, blend7, blend9) in [
+        (0.375, 0.25, 0.875, 0.8125),
+        (0.75, 0.75, 0.875, 0.75),
+        (0.125, 0.875, 0.625, 0.5),
+    ] {
+        let atlas = compose_masked(
+            &ctx,
+            &mut scene,
+            &[state(7, t7), state(9, t9)],
+            static_only(),
+        );
+        assert_tile(
+            &atlas,
+            0,
+            blend7 + (blend9 - BASE),
+            &format!("probe 0 at t′ ({t7}, {t9})"),
+        );
+    }
+}
+
+/// AC 17 (bounce half) / MP1, MP10: with ramp (0.6, 0.9) the game hands
+/// t′ = ramp(t). The probe reads the first pose for t < 0.6 and the last for
+/// t > 0.9, each exactly, and a mid knot its pose at ramp(t_k); poses the
+/// ramp squeezes onto t′ 0 or 1 are never read, so t just past 0.6 blends
+/// from the first pose and t just under 0.9 into the last, and a probe
+/// stored only at squeezed poses composes id 34. No state stays ungated.
+#[test]
+fn a_ramped_movers_bounce_reads_its_end_poses_past_the_ramp_edges() {
+    let Some(ctx) =
+        bc_gpu_or_skip("a_ramped_movers_bounce_reads_its_end_poses_past_the_ramp_edges")
+    else {
+        return;
+    };
+    // The game's ramp, mirrored.
+    let ramp = |t: f32| ((t - 0.6) / (0.9 - 0.6)).clamp(0.0, 1.0);
+    let today = compose_masked(
+        &ctx,
+        &mut build_scene(&ctx, None, false),
+        &[],
+        static_only(),
+    );
+    let section = posed_section(&[PosedBounce {
+        mover_id: 7,
+        ramp: (0.6, 0.9),
+        knots: vec![0.0, 0.2, 0.4, 0.6, 0.8, 0.95, 1.0],
+        poses: vec![
+            (0b01, 0, 0.5),
+            (0b11, 0, 2.0),
+            (0b11, 0, 2.0),
+            (0b11, 0, 2.0),
+            (0b01, 0, 1.0),
+            (0b11, 0, 2.0),
+            (0b01, 0, 0.75),
+        ],
+    }]);
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    assert_eq!(
+        compose_masked(&ctx, &mut scene, &[], static_only()),
+        today,
+        "no state composes today's atlas"
+    );
+    for (t, expected) in [
+        (0.3, 0.5),
+        (0.6, 0.5),
+        (0.8, 1.0),
+        (0.9, 0.75),
+        (0.97, 0.75),
+    ] {
+        let atlas = compose_masked(&ctx, &mut scene, &[state(7, ramp(t))], static_only());
+        assert_tile_exact(&atlas, 0, expected, &format!("t {t}"));
+        assert_tile_exact(&atlas, 1, BASE, "a probe stored only at squeezed poses");
+    }
+    let mid = ramp(0.8);
+    for t in [0.61, 0.7] {
+        let w = ramp(t) / mid;
+        let atlas = compose_masked(&ctx, &mut scene, &[state(7, ramp(t))], static_only());
+        assert_tile(
+            &atlas,
+            0,
+            0.5 + (1.0 - 0.5) * w,
+            &format!("just past 0.6, t {t}"),
+        );
+    }
+    for t in [0.85, 0.89] {
+        let w = (ramp(t) - mid) / (1.0 - mid);
+        let atlas = compose_masked(&ctx, &mut scene, &[state(7, ramp(t))], static_only());
+        assert_tile(
+            &atlas,
+            0,
+            1.0 + (0.75 - 1.0) * w,
+            &format!("just under 0.9, t {t}"),
+        );
+    }
+}
+
+/// Every texel outside probes 0 and 1, byte for byte.
+fn outside_probes_0_and_1(atlas: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for y in 0..ATLAS[1] {
+        for x in 0..ATLAS[0] {
+            if x < 2 * TILE && y < TILE {
+                continue;
+            }
+            let at = ((y * ATLAS[0] + x) * 8) as usize;
+            bytes.extend_from_slice(&atlas[at..at + 8]);
+        }
+    }
+    bytes
 }
 
 /// Every texel outside probe 1's tile, byte for byte.

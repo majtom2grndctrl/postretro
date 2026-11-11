@@ -10,8 +10,8 @@
 //
 // Mover state lighting (`mover_channel.wgsl`, concatenated after this
 // source): at a probe an id-57 record masks, a gated static light's term T
-// becomes the lerp of its two terminus states, so each output loses
-// (1 − Q) × T, Q being the product of the gating movers' lerp(q₀, q₁, t′).
+// becomes the blend of its two pose states around t′, so each output loses
+// (1 − Q) × T, Q being the product of the gating movers' blended q.
 // The handoff keeps that loss in the baked arm only: (1 − w) × (1 − Q) × T.
 
 struct GridDims {

@@ -7,7 +7,8 @@
 use super::*;
 use crate::render::MoverTravel;
 use crate::render::mover_channel::depth_test_support::{
-    depth_section, ramp_tile, stored_depth_section, through_base, uniform_tile,
+    PosedDepth, depth_section, posed_depth_section, ramp_tile, stored_depth_section, through_base,
+    uniform_tile,
 };
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_volume::OctahedralShProbe;
@@ -715,6 +716,279 @@ fn fast_f16_conversions_match_the_shared_converters() {
     }
     for special in [0.0, -0.0, 65504.0, 65519.0, 65520.0, f32::INFINITY] {
         assert_eq!(f32_to_f16(special), f32_to_f16_bits(special), "{special}");
+    }
+}
+
+/// `a + s·(b − a)` in f32, the blend's own arithmetic.
+fn mix(a: f32, b: f32, s: f32) -> f32 {
+    a + s * (b - a)
+}
+
+/// One `(mean, mean_sq)` moment set, as a uniform tile.
+type Moments = (f32, f32);
+
+fn tile_of(moments: Moments) -> Vec<[u16; 2]> {
+    uniform_tile(moments.0, moments.1)
+}
+
+/// What one mover's blend between `lo` and `hi` at weight `w` holds under
+/// `blend`, with `termini` marking an interval whose ends are both termini.
+fn expected_segment(
+    blend: DepthBlend,
+    lo: Moments,
+    base: Moments,
+    hi: Moments,
+    w: f32,
+    termini: bool,
+) -> Moments {
+    let pair = |a: Moments, b: Moments, s: f32| (mix(a.0, b.0, s), mix(a.1, b.1, s));
+    if w <= 0.0 {
+        lo
+    } else if blend == DepthBlend::Lerp && !termini {
+        pair(lo, hi, w)
+    } else if w <= 0.5 {
+        pair(lo, base, 2.0 * w)
+    } else {
+        pair(base, hi, 2.0 * w - 1.0)
+    }
+}
+
+/// AC 15 (depth half): at each stored pose's t′ the live tile holds that
+/// pose's tile bit for bit; between two stored poses it holds each capture
+/// candidate's blend (plain lerp, or through the base at the interval's
+/// midpoint); out and back to one t′ writes the same bytes.
+#[test]
+fn piecewise_depth_reads_each_stored_pose_exactly_and_blends_by_either_rule() {
+    let knots = vec![0.0, 0.25, 0.5, 1.0];
+    let poses: [Moments; 4] = [(1.0, 2.0), (2.0, 5.0), (4.0, 17.0), (3.0, 10.0)];
+    let base: Moments = (8.0, 65.0);
+    let section = posed_depth_section(
+        &[(1, (0.0, 1.0), knots.clone())],
+        vec![(
+            1,
+            3,
+            poses
+                .iter()
+                .map(|&pose| PosedDepth::Tile(tile_of(pose)))
+                .collect(),
+        )],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 4];
+    probes[3] = averaged(base.0, base.1);
+    for blend in [DepthBlend::ThroughBase, DepthBlend::Lerp] {
+        let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+        plan.depth.set_blend(blend);
+        for (pose, &t) in knots.iter().enumerate() {
+            plan.frame(&[(0, t)], &[0]);
+            assert_eq!(
+                plan.tile(0),
+                &tile_of(poses[pose])[..],
+                "{blend:?}: pose {pose} at its knot"
+            );
+        }
+        // (t′, lo, hi, w): the interval [0.5, 1] ends at a mid pose and a
+        // terminus, so it follows the candidate rule too.
+        for (t, lo, hi, w) in [
+            (0.0625, 0, 1, 0.25),
+            (0.125, 0, 1, 0.5),
+            (0.375, 1, 2, 0.5),
+            (0.625, 2, 3, 0.25),
+            (0.875, 2, 3, 0.75),
+        ] {
+            plan.frame(&[(0, t)], &[0]);
+            let expected = expected_segment(blend, poses[lo], base, poses[hi], w, false);
+            assert_eq!(
+                plan.tile(0),
+                &tile_of(expected)[..],
+                "{blend:?}: t′ {t} blends poses {lo}–{hi}"
+            );
+        }
+        plan.frame(&[(0, 0.375)], &[0]);
+        let out = plan.tile(0).to_vec();
+        plan.frame(&[(0, 0.9)], &[0]);
+        plan.frame(&[(0, 0.375)], &[0]);
+        assert_eq!(
+            plan.tile(0),
+            &out[..],
+            "{blend:?}: out and back reads alike"
+        );
+    }
+}
+
+/// AC 18 (compose half) / MP8 and AC 2 (depth half): a probe whose mid
+/// poses are all unmarked (outside the near-field domain, or every one
+/// skipped) composes today's through-base blend at every t′ under either
+/// candidate, as a two-pose mover's probe does.
+#[test]
+fn termini_to_termini_depth_runs_through_the_base_under_either_rule() {
+    let (d0, d1, base): (Moments, Moments, Moments) = ((1.0, 2.0), (3.0, 10.0), (8.0, 65.0));
+    let section = posed_depth_section(
+        &[
+            (1, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0]),
+            (2, (0.0, 1.0), vec![0.0, 1.0]),
+        ],
+        vec![
+            (
+                1,
+                3,
+                vec![
+                    PosedDepth::Tile(tile_of(d0)),
+                    PosedDepth::Across,
+                    PosedDepth::Across,
+                    PosedDepth::Tile(tile_of(d1)),
+                ],
+            ),
+            (
+                2,
+                5,
+                vec![PosedDepth::Tile(tile_of(d0)), PosedDepth::Tile(tile_of(d1))],
+            ),
+        ],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 6];
+    probes[3] = averaged(base.0, base.1);
+    probes[5] = averaged(base.0, base.1);
+    for blend in [DepthBlend::ThroughBase, DepthBlend::Lerp] {
+        let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+        plan.depth.set_blend(blend);
+        for t in [0.0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0] {
+            plan.frame(&[(0, t), (1, t)], &[0, 1]);
+            let expected = (
+                through_base(d0.0, base.0, d1.0, t),
+                through_base(d0.1, base.1, d1.1, t),
+            );
+            for live in [0, 1] {
+                assert_eq!(
+                    plan.tile(live),
+                    &tile_of(expected)[..],
+                    "{blend:?}: live tile {live} at t′ {t} runs through the base"
+                );
+            }
+        }
+    }
+}
+
+/// AC 16 (depth half): two movers at one probe, with different pose counts
+/// and an unmarked mid pose, add their blended differences from the base
+/// at t′ between knots for both, then clamp to a valid moment set.
+#[test]
+fn two_posed_movers_at_one_probe_add_their_blended_differences() {
+    let base: Moments = (8.0, 65.0);
+    let (a0, a2, a3): (Moments, Moments, Moments) = ((6.0, 37.0), (2.0, 5.0), (7.0, 50.0));
+    let (b0, b1): (Moments, Moments) = ((9.0, 82.0), (10.0, 101.0));
+    let section = posed_depth_section(
+        &[
+            (1, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0]),
+            (2, (0.0, 1.0), vec![0.0, 0.5, 1.0]),
+        ],
+        vec![
+            (
+                1,
+                3,
+                vec![
+                    PosedDepth::Tile(tile_of(a0)),
+                    PosedDepth::Across,
+                    PosedDepth::Tile(tile_of(a2)),
+                    PosedDepth::Tile(tile_of(a3)),
+                ],
+            ),
+            (
+                2,
+                3,
+                vec![
+                    PosedDepth::Tile(tile_of(b0)),
+                    PosedDepth::Tile(tile_of(b1)),
+                    PosedDepth::Base,
+                ],
+            ),
+        ],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 4];
+    probes[3] = averaged(base.0, base.1);
+    for blend in [DepthBlend::ThroughBase, DepthBlend::Lerp] {
+        let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+        plan.depth.set_blend(blend);
+        // Mover 1 at 0.375 blends across its unmarked pose 1, poses 0 → 2 at
+        // w 0.75; mover 2 at 0.25 blends poses 0 → 1 at w 0.5.
+        plan.frame(&[(0, 0.375), (1, 0.25)], &[0, 1]);
+        let first = expected_segment(blend, a0, base, a2, 0.75, false);
+        let second = expected_segment(blend, b0, base, b1, 0.5, false);
+        let sum = |moment: fn(Moments) -> f32| {
+            f64::from(moment(base))
+                + (f64::from(moment(first)) - f64::from(moment(base)))
+                + (f64::from(moment(second)) - f64::from(moment(base)))
+        };
+        let mean = sum(|m| m.0).clamp(0.0, 65504.0);
+        let mean_sq = sum(|m| m.1).max(mean * mean).min(65504.0);
+        assert_eq!(
+            plan.tile(0),
+            &tile_of((mean as f32, mean_sq as f32))[..],
+            "{blend:?}: base plus both movers' differences"
+        );
+    }
+}
+
+/// AC 17 (depth half) / MP1, MP10: with ramp (0.6, 0.9) the game hands
+/// t′ = ramp(t). Every probe reads the first pose for t < 0.6 and the last
+/// for t > 0.9; a mid knot reads its pose at ramp(t_k); poses squeezed onto
+/// t′ 0 or 1 are never read, so t just past 0.6 and just under 0.9 blend
+/// from the first pose and into the last. No state returns the probe to its
+/// base reference.
+#[test]
+fn a_ramped_movers_depth_reads_its_end_poses_past_the_ramp_edges() {
+    // The game's ramp, mirrored.
+    let ramp = |t: f32| ((t - 0.6) / (0.9 - 0.6)).clamp(0.0, 1.0);
+    let knots = vec![0.0, 0.2, 0.4, 0.6, 0.8, 0.95, 1.0];
+    let (first, mid, last, squeezed): (Moments, Moments, Moments, Moments) =
+        ((1.0, 2.0), (2.0, 5.0), (3.0, 10.0), (40.0, 1700.0));
+    let base: Moments = (8.0, 65.0);
+    let pose = |moments: Moments| PosedDepth::Tile(tile_of(moments));
+    let section = posed_depth_section(
+        &[(1, (0.6, 0.9), knots)],
+        vec![(
+            1,
+            3,
+            vec![
+                pose(first),
+                pose(squeezed),
+                pose(squeezed),
+                pose(squeezed),
+                pose(mid),
+                pose(squeezed),
+                pose(last),
+            ],
+        )],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 4];
+    probes[3] = averaged(base.0, base.1);
+    for blend in [DepthBlend::ThroughBase, DepthBlend::Lerp] {
+        let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+        plan.depth.set_blend(blend);
+        for (t, expected) in [
+            (0.3, first),
+            (0.6, first),
+            (0.8, mid),
+            (0.9, last),
+            (0.97, last),
+        ] {
+            plan.frame(&[(0, ramp(t))], &[0]);
+            assert_eq!(plan.tile(0), &tile_of(expected)[..], "{blend:?}: t {t}");
+        }
+        let mid_t = ramp(0.8);
+        for t in [0.61, 0.7] {
+            let w = ramp(t) / mid_t;
+            plan.frame(&[(0, ramp(t))], &[0]);
+            let expected = expected_segment(blend, first, base, mid, w, false);
+            assert_eq!(plan.tile(0), &tile_of(expected)[..], "{blend:?}: t {t}");
+        }
+        for t in [0.85, 0.89] {
+            let w = (ramp(t) - mid_t) / (1.0 - mid_t);
+            plan.frame(&[(0, ramp(t))], &[0]);
+            let expected = expected_segment(blend, mid, base, last, w, false);
+            assert_eq!(plan.tile(0), &tile_of(expected)[..], "{blend:?}: t {t}");
+        }
+        plan.frame(&[(0, -1.0)], &[0]);
+        assert_eq!(plan.references, [(3, None)], "no state reads the base");
     }
 }
 

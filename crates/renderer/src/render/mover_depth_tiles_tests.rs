@@ -18,7 +18,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::render::gpu_test_harness::offscreen_renderer_or_skip;
 use crate::render::mover_channel::depth_test_support::{
-    depth_section, ramp_tile, through_base, uniform_tile,
+    PosedDepth, depth_section, posed_depth_section, ramp_tile, through_base, uniform_tile,
 };
 use crate::render::sh_depth_tiles::tests::{fixture_moments, second, whole_texels};
 use crate::render::{MoverTravel, Renderer};
@@ -554,6 +554,53 @@ fn tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level()
         host.bytes,
         (5 * 2 + 4) * PROBE_DEPTH_TILE_TEXELS as u64 * 8,
         "decoded f32 pairs: ten closed-pose tiles, and one base tile per probe carrying mover depth"
+    );
+    renderer.release_level_resources();
+    assert!(
+        renderer.sh_residency_report().is_none(),
+        "nothing after unload"
+    );
+}
+
+/// AC 31: the host row counts every stored pose's closed-pose tile, mid
+/// poses included (a base-reading or blended-across pose holds none), plus
+/// one base tile per probe; a frame mid-travel writes the movers' live
+/// tiles; the row leaves with the level.
+#[test]
+fn mid_pose_closed_pose_tiles_are_ledgered_and_leave_with_the_level() {
+    let test = "mid_pose_closed_pose_tiles_are_ledgered_and_leave_with_the_level";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
+        return;
+    };
+    let tile = |pose: u32| PosedDepth::Tile(ramp_tile(0.5 + pose as f32));
+    let channel = posed_depth_section(
+        &[
+            (4, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0]),
+            (6, (0.0, 1.0), vec![0.0, 0.5, 1.0]),
+        ],
+        vec![
+            (4, 3, vec![tile(0), tile(1), PosedDepth::Base, tile(3)]),
+            (4, 5, vec![tile(0), PosedDepth::Across, tile(2), tile(3)]),
+            (6, 9, vec![tile(0), tile(1), tile(2)]),
+        ],
+    );
+    install(&mut renderer, &lattice(), Some(&id59()), Some(&channel));
+    let host = renderer
+        .sh_residency_report()
+        .expect("an SH report")
+        .host_rows;
+    assert_eq!(host.len(), 1);
+    assert_eq!(host[0].name, "mover_closed_pose_depth_tiles");
+    assert_eq!(
+        host[0].bytes,
+        (9 + 3) * PROBE_DEPTH_TILE_TEXELS as u64 * 8,
+        "nine stored pose tiles, mid poses included, and three base tiles"
+    );
+    frame(&mut renderer, &[state(4, 0.375), state(6, 0.75)]);
+    assert_eq!(
+        tiles_written(&renderer),
+        3,
+        "every probe's live tile mid-travel"
     );
     renderer.release_level_resources();
     assert!(

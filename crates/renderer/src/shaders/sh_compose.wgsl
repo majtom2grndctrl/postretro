@@ -472,16 +472,18 @@ fn compose_main(
     }
 
     // Mover state lighting, bounce half. At a probe a mover affects, the
-    // base is the lerp of that mover's two absolute static bounce states in
-    // place of id 34; several movers at one probe add their lerped
-    // differences from id 34. A terminus the mover leaves unchanged stores no
-    // state and reads id 34's own texel, the one this pass composes with no
-    // section, so the lerp runs toward id 34 by the mover's t′ alone (owner,
-    // 2026-11-09). The summed tile then clamps per texel at zero, before
-    // id-27 deltas add: the sampler's octahedral taps and probe weights are
-    // convex, so non-negative texels evaluate non-negative irradiance in
-    // every direction. Only mover state and residency reach this; no light's
-    // state does, and the states sum static lights only.
+    // base is the blend of that mover's two absolute static bounce states
+    // around its t′ (`mb_entry_blend`, once per entry, outside the texel
+    // loop) in place of id 34; several movers at one probe add their blended
+    // differences from id 34. A pose that stores no state for the probe reads
+    // id 34's own texel, the one this pass composes with no section (a
+    // terminus, or a mid pose marked base), so a mover resting there adds
+    // exactly nothing (owner, 2026-11-09). The summed tile then clamps per
+    // texel at zero, before id-27 deltas add: the sampler's octahedral taps
+    // and probe weights are convex, so non-negative texels evaluate
+    // non-negative irradiance in every direction. Only mover state and
+    // residency reach this; no light's state does, and the states sum static
+    // lights only.
     if (output_is_stored && stored_slot.valid && use_indirect_static && brick_indirection.level == 0u) {
         let position = mb_listed_position(cell_index);
         if (position != MB_NONE) {
@@ -493,8 +495,8 @@ fn compose_main(
                 if (!(t >= 0.0)) {
                     continue;
                 }
-                let tiles = mb_entry_tiles(cell_entries, entry, local_probe);
-                if (tiles.x == MB_NONE && tiles.y == MB_NONE) {
+                let blend = mb_entry_blend(cell_entries, entry, local_probe, t);
+                if (!blend.affected) {
                     continue;
                 }
                 for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
@@ -503,22 +505,19 @@ fn compose_main(
                         texel_index / RUNTIME_TILE_DIMENSION,
                     );
                     let base = sample_compact_base_atlas(stored_slot.slot, tile_texel).rgb;
-                    var state0 = base;
-                    if (tiles.x != MB_NONE) {
-                        state0 = mb_tile_texel(tiles.x, texel_index);
+                    var state = base;
+                    if (blend.lo != MB_NONE) {
+                        state = mb_tile_texel(blend.lo, texel_index);
                     }
-                    var state1 = base;
-                    if (tiles.y != MB_NONE) {
-                        state1 = mb_tile_texel(tiles.y, texel_index);
-                    }
-                    // Exact at both termini, so a mover resting at a
-                    // terminus it stores no state for composes id 34's texel
-                    // bit for bit, and adds exactly nothing beside another.
-                    var state = mix(state0, state1, t);
-                    if (t >= 1.0) {
-                        state = state1;
-                    } else if (t <= 0.0) {
-                        state = state0;
+                    // Exact at every read knot, so a mover resting where it
+                    // stores no state composes id 34's texel bit for bit,
+                    // and adds exactly nothing beside another.
+                    if (blend.weight > 0.0) {
+                        var state1 = base;
+                        if (blend.hi != MB_NONE) {
+                            state1 = mb_tile_texel(blend.hi, texel_index);
+                        }
+                        state = mix(state, state1, blend.weight);
                     }
                     if (touched) {
                         accum[texel_index] = accum[texel_index] + (state - base);

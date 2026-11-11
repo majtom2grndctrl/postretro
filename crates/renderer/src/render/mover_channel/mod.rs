@@ -10,10 +10,13 @@
 
 mod bounce;
 mod depth;
+mod depth_blend;
 mod gpu;
+mod knots;
 mod layout;
 mod pool;
 mod state;
+mod terms;
 
 #[cfg(test)]
 mod bounce_compose_tests;

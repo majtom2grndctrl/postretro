@@ -4,7 +4,7 @@
 //! See: context/lib/networking.md §Slot lifecycle
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use glam::Vec3;
 use postretro_entities::{EntityRegistry, EntityTypeDescriptor};
@@ -35,8 +35,9 @@ pub(crate) struct SpawnPose {
 pub(crate) struct UnbackedSpawn {
     pub(crate) pose: SpawnPose,
     pub(crate) entity_class: String,
-    /// Consumed by the seat's spawn: the seat then resolves afresh, to a
-    /// player start unless the source offers again.
+    /// Consumed by the seat's spawn: the seat then resolves afresh when it
+    /// next leaves participation, to a player start unless the source offers
+    /// again.
     pub(crate) single_use: bool,
 }
 
@@ -69,6 +70,18 @@ pub(crate) struct SpawnPlacements<'a> {
 }
 
 impl<'a> SpawnPlacements<'a> {
+    /// The installed level's starts, or `None` for a level with no
+    /// `player_spawn`. Its joiners spawn by the slot's default accept, which
+    /// reads no resolved pose, so no seat resolves there and no hint is sent:
+    /// every site that names a level or promotes a seat gates on this.
+    pub(crate) fn of_level(
+        spawn_points: &'a [MapEntity],
+        descriptors: &'a [EntityTypeDescriptor],
+        agent_params: Option<NavAgentParams>,
+    ) -> Option<Self> {
+        (!spawn_points.is_empty()).then(|| Self::joinable(spawn_points, descriptors, agent_params))
+    }
+
     /// Every spawn whose class resolves, in map order.
     pub(crate) fn joinable(
         spawn_points: &'a [MapEntity],
@@ -163,6 +176,9 @@ impl ResolvedSpawn {
 #[derive(Default)]
 pub(crate) struct SpawnPoseResolver {
     resolved: BTreeMap<Seat, ResolvedSpawn>,
+    /// Seats whose spawn consumed a single-use pose and that have not resolved
+    /// since. Level-scoped, like `resolved`.
+    awaiting_resolution: BTreeSet<Seat>,
     unbacked_source: Option<Box<dyn UnbackedSpawnSource>>,
 }
 
@@ -223,6 +239,7 @@ impl SpawnPoseResolver {
         registry: &EntityRegistry,
         placements: &SpawnPlacements<'_>,
     ) -> Option<ResolvedSpawn> {
+        self.awaiting_resolution.remove(&seat);
         if let Some(unbacked) = self
             .unbacked_source
             .as_ref()
@@ -238,7 +255,8 @@ impl SpawnPoseResolver {
 
     /// Resolve `seat` on `level`, republish respawn's reservations and send
     /// its client the hint: every site that first names an installed level to
-    /// a seat, and a seat whose spawn consumed its single-use pose.
+    /// a seat, and a seat whose spawn consumed its single-use pose once it is
+    /// demoted.
     pub(crate) fn resolve_and_hint(
         &mut self,
         level: &NamedLevel<'_>,
@@ -304,52 +322,68 @@ impl SpawnPoseResolver {
     }
 
     /// `seat`'s pawn spawned from its recorded pose. A single-use pose is
-    /// consumed: its source stops offering it and the record goes. Returns
-    /// whether it was, so the caller resolves the seat afresh and hints it
-    /// before any later promotion.
-    pub(crate) fn spawned(&mut self, seat: Seat) -> bool {
+    /// consumed: its source stops offering it, the record goes, and the seat
+    /// awaits a fresh resolution.
+    pub(crate) fn spawned(&mut self, seat: Seat) {
         let Some(ResolvedSpawn::Unbacked(UnbackedSpawn {
             single_use: true, ..
         })) = self.resolved.get(&seat)
         else {
-            return false;
+            return;
         };
         self.resolved.remove(&seat);
+        self.awaiting_resolution.insert(seat);
         if let Some(source) = self.unbacked_source.as_mut() {
             source.consume(seat);
         }
-        true
     }
 
     /// After promotion spawned and bound `seat`'s pawn: a single-use pose is
-    /// consumed, and the seat resolves afresh and its client is hinted before
-    /// any later promotion; a promotion that resolved the seat only now, or
-    /// moved it off a start a live pawn stood on, hints that spawn. Both hints
-    /// follow this promotion's marker. With no level named, nothing is sent.
-    #[allow(clippy::too_many_arguments)]
+    /// consumed, and a promotion that resolved the seat only now, or moved it
+    /// off a start a live pawn stood on, hints that spawn after this
+    /// promotion's marker. With no level named, nothing is sent.
+    ///
+    /// A consumed seat's next spawn is not resolved here: its client is still
+    /// unarmed, and a hint now would move its view off the pose its pawn
+    /// spawned at. [`Self::demoted`] resolves and hints it when the seat is
+    /// demoted, and a rejoin within the hold resolves it at admission.
     pub(crate) fn finish_promotion(
         &mut self,
         promotion: &PromotionSpawn,
         level: Option<&NamedLevel<'_>>,
+        server: &mut NetServer,
+        seat: Seat,
+        client_id: u64,
+    ) {
+        self.spawned(seat);
+        if let Some(level) = level
+            && promotion.rehint
+        {
+            level.send_hint(server, client_id, &promotion.spawn);
+        }
+    }
+
+    /// `seat`, still connected as `client_id`, was demoted. A seat whose spawn
+    /// consumed its single-use pose resolves afresh now, reserving its next
+    /// spawn, and its client is hinted before any re-promotion's marker. Any
+    /// other seat keeps its record and is sent nothing.
+    pub(crate) fn demoted(
+        &mut self,
+        level: &NamedLevel<'_>,
         server: &mut NetServer,
         seats: &mut SeatTable,
         registry: &EntityRegistry,
         seat: Seat,
         client_id: u64,
     ) {
-        let consumed = self.spawned(seat);
-        let Some(level) = level else {
-            return;
-        };
-        if consumed {
+        if self.awaiting_resolution.contains(&seat) {
             self.resolve_and_hint(level, server, seats, registry, seat, client_id);
-        } else if promotion.rehint {
-            level.send_hint(server, client_id, &promotion.spawn);
         }
     }
 
     pub(crate) fn clear_for_level_unload(&mut self) {
         self.resolved.clear();
+        self.awaiting_resolution.clear();
     }
 
     /// No production source exists until a consumer supplies one; tests
@@ -381,11 +415,13 @@ impl crate::App {
         let ctx = &session.scripting.script_ctx;
         let data_registry = ctx.data_registry.borrow();
         let registry = ctx.registry.borrow();
-        let placements = SpawnPlacements::joinable(
+        let Some(placements) = SpawnPlacements::of_level(
             &self.host_spawn_points,
             &data_registry.entities,
             self.nav_graph.as_ref().map(|graph| graph.agent_params()),
-        );
+        ) else {
+            return;
+        };
         let level = NamedLevel {
             placements: &placements,
             level_identity,

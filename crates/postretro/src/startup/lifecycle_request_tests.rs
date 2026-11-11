@@ -630,19 +630,18 @@ fn queued_unload_after_a_load_keeps_the_trailing_unload() {
 }
 
 #[test]
-fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
+fn relevel_does_not_restart_the_followed_life_or_an_already_selected_catalog_load() {
     let mut app = test_app();
     script_ctx(&app)
         .data_registry
         .borrow_mut()
         .replace_maps(vec![catalog_map("e1m1", "maps/e1m1.prl", "Entryway", &[])]);
 
-    app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+    // The followed life, installed as the host's level.
     app.follow_relevel_catalog("e1m1".to_string(), 1);
-    assert!(
-        app.level_requests.is_empty(),
-        "a relevel naming the active catalog map must not restart it"
-    );
+    app.level_requests.clear();
+    app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+    app.active_level_host_named = true;
     app.follow_relevel_catalog("e1m1".to_string(), 1);
     assert!(
         app.level_requests.is_empty(),
@@ -650,6 +649,7 @@ fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
     );
 
     app.active_level_source = None;
+    app.active_level_host_named = false;
     app.level_load = Some(InFlightLevelLoad {
         map_path: PathBuf::from("content/dev/maps/e1m1.prl"),
         content_root: PathBuf::from("content/dev"),

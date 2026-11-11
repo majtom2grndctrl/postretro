@@ -9,6 +9,7 @@ use super::spawn_pose_handoff_fixtures::{
 use super::*;
 use crate::spawn_pose::{SpawnPose, UnbackedSpawn};
 use postretro_entities::RespawnRequest;
+use postretro_foundation::Seat;
 use postretro_net::wire::SpawnPoseHint;
 use postretro_sim::scripting::map_entity::MapEntity;
 use std::time::Duration;
@@ -98,11 +99,14 @@ fn respawn_skips_a_resolved_unpromoted_seats_start_and_a_seat_holding_none_takes
     );
 }
 
-// R4, O6.
-#[test]
-fn single_use_pose_consumed_by_its_spawn_rehints_a_start_before_re_promotion_and_rejoin() {
-    let mut relay = Relay::admitted(&[41]);
-    let seat = relay.seat(41).unwrap();
+/// Admit `client_id`, offer its seat a single-use pose, install and promote
+/// it there, and return its seat, the install's starts and the pose's hint.
+fn spawn_at_a_single_use_pose(
+    relay: &mut Relay,
+    client_id: u64,
+) -> (Seat, Vec<MapEntity>, SpawnPoseHint) {
+    relay.admit(&[client_id]);
+    let seat = relay.seat(client_id).unwrap();
     relay
         .app
         .spawn_poses
@@ -113,22 +117,36 @@ fn single_use_pose_consumed_by_its_spawn_rehints_a_start_before_re_promotion_and
         })));
     let points = spawn_points(3);
     relay.install(points.clone());
-    let unbacked = relay.await_hint(41);
+    let unbacked = relay.await_hint(client_id);
     assert_eq!(pose(&unbacked).0, scout_pose(true).pose.eye.to_array());
-    relay.reveal(41);
+    relay.reveal(client_id);
     relay.host_reveal();
-    let pawn = relay.await_pawn(41);
+    let pawn = relay.await_pawn(client_id);
     relay.assert_pawn_at_hint(pawn, &unbacked);
+    (seat, points, unbacked)
+}
 
-    // The spawn consumed the pose: the seat resolves to a start, reserves
-    // it, and its client is told before any later promotion.
+// R4, O6: re-promotion.
+#[test]
+fn single_use_pose_consumed_by_its_spawn_hints_a_start_at_demotion_before_re_promotion() {
+    let mut relay = Relay::host();
+    let (_, points, unbacked) = spawn_at_a_single_use_pose(&mut relay, 41);
+
+    // The spawn consumed the pose while its client is still unarmed there: a
+    // start hinted now would move that client's view off its pawn.
+    relay.settle();
+    assert_eq!(relay.hints(41), [unbacked]);
+    assert_eq!(relay.placement(41), None);
+
+    // Leaving participation resolves the seat to a start, reserves it and
+    // tells its client.
+    relay.demote_by_mod_digest(&[41]);
     relay.pump_until(|relay| relay.hints(41).len() == 2);
     let start = relay.hints(41).pop().unwrap();
     assert_hint_names(&start, &points, 1);
     assert_eq!(relay.placement(41), Some(1));
 
     // Re-promotion without reload: the start's hint precedes its marker.
-    relay.demote_by_mod_digest(&[41]);
     relay.restore_mod_digest();
     let repromoted = relay.await_pawn(41);
     relay.pump_until(|relay| {
@@ -151,17 +169,33 @@ fn single_use_pose_consumed_by_its_spawn_rehints_a_start_before_re_promotion_and
         2,
         "a sticky start needs no fresh hint"
     );
+}
 
-    // Rejoin within the hold resolves to the same start.
+// R4, O6: rejoin within the hold.
+#[test]
+fn single_use_pose_consumed_by_its_spawn_resolves_a_start_when_its_client_rejoins_within_the_hold()
+{
+    let mut relay = Relay::host();
+    let (seat, points, _) = spawn_at_a_single_use_pose(&mut relay, 41);
+
     relay.disconnect(41);
     relay.connect_as(43, 41);
     relay.pump_until(|relay| relay.seat(43) == Some(seat));
     let rejoin = relay.await_hint(43);
-    assert_eq!(pose(&rejoin), pose(&start));
-    relay.reveal(43);
-    let rejoined = relay.await_pawn(43);
-    relay.assert_pawn_at_hint(rejoined, &rejoin);
+    assert_hint_names(&rejoin, &points, 1);
     assert_eq!(relay.placement(43), Some(1));
+    relay.reveal(43);
+    let pawn = relay.await_pawn(43);
+    relay.pump_until(|relay| relay.naming(43).iter().any(is_marker));
+
+    let naming = relay.naming(43);
+    assert!(
+        last_position(&naming, |naming| *naming == Naming::Hint(rejoin.clone()))
+            < last_position(&naming, is_marker),
+        "{naming:?}"
+    );
+    relay.assert_pawn_at_hint(pawn, &rejoin);
+    assert_eq!(relay.hints(43), [rejoin]);
 }
 
 // R5.

@@ -240,8 +240,8 @@ fn append_tick_weapon_script_events(
 /// transport state and registry replication; level following, input latches,
 /// presentation pools, and client-local UI state remain above that boundary.
 fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
-    // A spawn-pose hint from an earlier drain moves a Running, unarmed stand-in
-    // before this drain and its snapshots.
+    // A spawn-pose hint the reveal frame held moves a Running, unarmed
+    // stand-in before this drain and its snapshots.
     app.apply_held_spawn_pose_hint();
     for control in controls {
         match control {
@@ -389,6 +389,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             }
         }
     }
+    // The reveal frame drains Control once, after the reveal edge, so a hint
+    // that drain brought waits for the next one.
+    app.end_reveal_frame_spawn_pose_hold();
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -2848,15 +2851,14 @@ impl App {
                 // names it to the seat: Relevel went out in the transport's
                 // handshake, so the hint follows. With no level installed,
                 // the next install's send covers the seat.
+                let data_registry = script_ctx.data_registry.borrow();
                 if let Some(level_identity) = self.published_level_identity.as_deref()
-                    && !self.host_spawn_points.is_empty()
-                {
-                    let data_registry = script_ctx.data_registry.borrow();
-                    let placements = crate::spawn_pose::SpawnPlacements::joinable(
+                    && let Some(placements) = crate::spawn_pose::SpawnPlacements::of_level(
                         &self.host_spawn_points,
                         &data_registry.entities,
                         self.nav_graph.as_ref().map(|graph| graph.agent_params()),
-                    );
+                    )
+                {
                     self.spawn_poses.resolve_and_hint(
                         &crate::spawn_pose::NamedLevel {
                             placements: &placements,
@@ -2932,6 +2934,9 @@ impl App {
                     postretro_net::slots::SlotEvent::Closed { client_id, .. } => {
                         join_seed_state.remove_client(*client_id);
                     }
+                    // Only the Running poll's demotion re-resolves a seat: here
+                    // unload and suspend have cleared the level identity, and a
+                    // Settling host promotes no one.
                     postretro_net::slots::SlotEvent::Demoted { .. } => {}
                     postretro_net::slots::SlotEvent::Participating { client_id } => {
                         if !server.is_current_participation_entry(event) {
@@ -4148,14 +4153,13 @@ impl App {
                                         // the seat: the transport's handshake
                                         // sent its Relevel, so the hint follows.
                                         if let Some(level_identity) = published_level_identity
-                                            && !host_spawn_points.is_empty()
-                                        {
-                                            let placements =
-                                                crate::spawn_pose::SpawnPlacements::joinable(
+                                            && let Some(placements) =
+                                                crate::spawn_pose::SpawnPlacements::of_level(
                                                     &host_spawn_points,
                                                     &net_descriptors,
                                                     host_agent_params,
-                                                );
+                                                )
+                                        {
                                             spawn_poses.resolve_and_hint(
                                                 &crate::spawn_pose::NamedLevel {
                                                     placements: &placements,
@@ -4256,7 +4260,36 @@ impl App {
                                     } => {
                                         join_seed_state.remove_client(*client_id);
                                     }
-                                    postretro_net::slots::SlotEvent::Demoted { .. } => {}
+                                    postretro_net::slots::SlotEvent::Demoted {
+                                        client_id, ..
+                                    } => {
+                                        // A seat whose spawn consumed its
+                                        // single-use pose is hinted its next
+                                        // spawn now, before any re-promotion.
+                                        if let Some(seats) = seat_table.as_deref_mut()
+                                            && let Some(seat) = seats.seat_for_client(*client_id)
+                                            && let Some(level_identity) = published_level_identity
+                                            && let Some(placements) =
+                                                crate::spawn_pose::SpawnPlacements::of_level(
+                                                    &host_spawn_points,
+                                                    &net_descriptors,
+                                                    host_agent_params,
+                                                )
+                                        {
+                                            spawn_poses.demoted(
+                                                &crate::spawn_pose::NamedLevel {
+                                                    placements: &placements,
+                                                    level_identity,
+                                                    script_ctx: &script_ctx,
+                                                },
+                                                server,
+                                                seats,
+                                                &registry,
+                                                seat,
+                                                *client_id,
+                                            );
+                                        }
+                                    }
                                     postretro_net::slots::SlotEvent::Participating { .. } => {}
                                 }
                                 let postretro_net::slots::SlotEvent::Participating { client_id } =
@@ -4299,13 +4332,11 @@ impl App {
                                         "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
                                     ),
                                 }
-                                let placements = (!host_spawn_points.is_empty()).then(|| {
-                                    crate::spawn_pose::SpawnPlacements::joinable(
-                                        &host_spawn_points,
-                                        &net_descriptors,
-                                        host_agent_params,
-                                    )
-                                });
+                                let placements = crate::spawn_pose::SpawnPlacements::of_level(
+                                    &host_spawn_points,
+                                    &net_descriptors,
+                                    host_agent_params,
+                                );
                                 let mut promotion = None;
                                 let pawn = match placements.as_ref() {
                                     None => {
@@ -4409,8 +4440,6 @@ impl App {
                                             promotion,
                                             level.as_ref(),
                                             server,
-                                            seats,
-                                            &registry,
                                             seat,
                                             *client_id,
                                         );

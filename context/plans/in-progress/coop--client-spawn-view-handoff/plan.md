@@ -13,22 +13,25 @@ read at: 3f851eff1 (no `crates/` change since the brief's b215170, so the brief'
 - The host level life lived only in `NetServer`'s private `relevel` → added read-only `NetServer::installed_level_life()`; net stays glam-free and postretro-free.
 - The App relay harness cannot run `install_level_segment_b` (needs a renderer) → the harness stands in for it, and a source-order guard on `commit_level_bundle_source()` pins production's Relevel → host bind → spawn points → hint order.
 
-- Path assumed resolving at install and again at promotion keeps today's overflow behavior → `assign_joiner_placement` re-rolled and warned twice per overflowing seat; a seat already sharing now keeps its shared spawn when none is free (one warning per seat, R7).
+- Path assumed resolving at install and again at promotion keeps today's overflow behavior → `assign_joiner_placement` re-rolled and warned twice per overflowing seat. Now (after review F1): with nothing free, sharing goes round-robin over starts no live pawn stands on, even another seat's; a sharing seat keeps its start while no live pawn stands on it; a level-scoped `overflow_warned` set keeps R7's one warning per seat per level.
 - Hint-before-marker was unobservable: `NetClient::drain_control` swallows participation markers → test/dev-tools-gated `NetClient::drain_control_with_markers` + `ControlArrival`.
 - Path said the host's backdrop install publishes parity and the relevel id → a host install under the frontend root now publishes neither and sets no `published_level_identity`, which also gates every hint send (M8). Client backdrops unchanged.
 - Decision "a seat whose pose no placement backs holds none" → added `SeatTable::release_placement`, called when a seat resolves unbacked.
 
 - "Client hint store on the endpoint" → `NetEndpoint` lives in netcode, so the store type `ClientSpawnPoseHint` does too (beside `ClientSessionStatus`); the apply logic is `startup/spawn_pose_stand_in.rs`.
 - The presented-pose chokepoint gains no hint term: every apply site writes the hint to the camera, then calls `place_camera_at_presented_pose()`, so the menu pose still wins while the menu is present.
-- O7 needs no reveal-frame flag: a Running client applies a held hint at the start of the next drain, before its snapshots. A hint arriving in the same drain as the arming snapshot is never applied, which the brief allows.
+- O7: the reveal edge sets a hold on the hint store for that frame's drain only; otherwise a Running unarmed client applies a hint on arrival (review F2). Control drains before snapshot apply, so a hint arriving with the arming baseline sets the arming facing (O11, O5).
 - A1/A2/C10 arm through `ClientView::arm`, which copies the host pawn's promotion transform and movement and marks it local the way `maybe_arm_local_pawn` does, then runs the real `run_client_predicted_tick` follow: no relay harness exists for a client App, and wiring one does real socket I/O. The hints are real host output.
 
 - The host-named marker rides the request as `LevelRequest::HostLevel(String)` → `InFlightLevelLoad.host_named` → `App.active_level_host_named`, not a bool on `Load`; relevel test expectations now name `HostLevel`.
-- "A backdrop already installed when the relevel names it" is detected at relevel time by the frontend menu being present: a host-named install always clears it, so an installed level under the menu can only be a backdrop.
+- "A backdrop already installed when the relevel names it" is detected as an installed catalog level that is not host-named (review F7; a mod `popTree` can pop the menu). Path's "Adoption is the `active && first` branch" → that branch is removed: under this predicate it was reachable only for backdrops, which the Decision reloads. A backdrop's reveal names no host life (review F6), so the host never promotes into it.
 - The menu clear runs inside `install_level_identity` (shared by commit and test oracle), before any presented-pose read, rather than at the camera step.
 
 - M6 "a catalog id the client lacks" on the first host-named load also covers one named during the splash or first-launch hold → boot flag `boot_host_level_missing` sends the `Frontend` boot destination to `present_frontend_menu` with no backdrop. A `--connect` boot with its own CLI map still loads that map (not a backdrop, so outside M6).
 - The ledger already says placement assignments and the overflow position are level-scoped (research's "docs disagree" was fixed before this build); no ledger change beyond dropping the marker.
+
+- Single-use consumption (review F3): the seat re-resolves and is hinted when it next leaves participation (`SpawnPoseResolver::demoted`), not right after the consuming promotion, so the next start's hint never moves the client before it arms at the consumed pose; a rejoin within the hold re-resolves at admission. A consumed seat holds no start during the hold, as an unbacked seat holds none.
+- A level with no `player_spawn` (review F8): `SpawnPlacements::of_level` gates install, both admission sites, promotion and demotion alike.
 
 ## Delegated answers
 - Which descriptor class and key bag a pose that no placement backs spawns with — the test substitution names the class beside its pose (an empty key bag); production never yields an unbacked pose until E25 U2 pins its own.

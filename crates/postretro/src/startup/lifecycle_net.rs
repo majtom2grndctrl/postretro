@@ -351,10 +351,16 @@ impl App {
     }
 
     /// The host level life of the installed level: the life of the last
-    /// relevel naming it, `None` on an uncatalogued level or one no relevel
-    /// named. With the published identity, it names the install a reveal
-    /// declares and a spawn-pose hint must match.
+    /// relevel naming it, when that relevel loaded it (a host-named install).
+    /// `None` on an uncatalogued level, and on a level the client loaded of
+    /// its own accord, such as its frontend backdrop, even when its id is the
+    /// host's last-named level: a backdrop never serves as the host's level,
+    /// so its reveal never promotes. With the published identity, it names
+    /// the install a reveal declares and a spawn-pose hint must match.
     pub(crate) fn followed_level_life(&self) -> Option<u64> {
+        if !self.active_level_host_named {
+            return None;
+        }
         match (&self.active_level_source, &self.last_relevel) {
             (Some(LevelSource::Catalog(active)), Some((id, life))) if active == id => Some(*life),
             _ => None,
@@ -366,8 +372,8 @@ impl App {
     /// revealed, parity-matched clients; the world poll later this frame
     /// consumes that promotion and spawns their pawns. A client declares
     /// its reveal to the host, naming the host level life it followed when
-    /// the last relevel named the installed map. A timed-out reveal publishes
-    /// the same.
+    /// the host's relevel loaded the installed map. A timed-out reveal
+    /// publishes the same.
     pub(crate) fn publish_net_reveal(&mut self) {
         // The identity install published as parity, so the two match by
         // construction.

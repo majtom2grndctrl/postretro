@@ -11,6 +11,8 @@ impl App {
     /// Mark a load of `catalog_id` already in flight or queued as host-named,
     /// returning whether one was. Either installs a fresh life, so a relevel
     /// never restarts it; adopting it makes its install the host's level.
+    /// The latest relevel wins: every request queued behind the adopted load
+    /// would supersede or cancel it, so each is dropped.
     pub(super) fn adopt_selected_relevel_load(&mut self, catalog_id: &str) -> bool {
         if let Some(load) = self
             .level_load
@@ -18,20 +20,21 @@ impl App {
             .filter(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
         {
             load.host_named = true;
+            self.level_requests.clear();
             return true;
         }
-        let mut adopted = false;
-        for request in &mut self.level_requests {
-            match request {
-                LevelRequest::HostLevel(id) if id == catalog_id => adopted = true,
-                LevelRequest::Load(LevelSource::Catalog(id)) if id == catalog_id => {
-                    *request = LevelRequest::HostLevel(catalog_id.to_string());
-                    adopted = true;
-                }
-                _ => {}
-            }
-        }
-        adopted
+        let Some(adopted) = self.level_requests.iter().position(|request| {
+            matches!(
+                request,
+                LevelRequest::HostLevel(id) | LevelRequest::Load(LevelSource::Catalog(id))
+                    if id == catalog_id
+            )
+        }) else {
+            return false;
+        };
+        self.level_requests[adopted] = LevelRequest::HostLevel(catalog_id.to_string());
+        self.level_requests.truncate(adopted + 1);
+        true
     }
 
     /// A host-named install is the host's level, never a backdrop: clear the
@@ -53,6 +56,8 @@ impl App {
     /// it was following (installed, loading or queued) is stale: it unloads,
     /// and the frontend menu is presented with no backdrop load. A level that
     /// is not host-named (the client's own backdrop, a level it booted) stays.
+    /// A load in flight stops being host-named: should it commit before the
+    /// unload drains, it installs under the menu, which the unload keeps.
     /// Before boot clears, no level exists yet: a queued host level is
     /// dropped, and the boot-destination step presents the menu instead of
     /// populating the frontend.
@@ -77,6 +82,9 @@ impl App {
         }
         self.level_requests
             .retain(|request| !matches!(request, LevelRequest::HostLevel(_)));
+        if let Some(load) = self.level_load.as_mut() {
+            load.host_named = false;
+        }
         self.enqueue_level_request(LevelRequest::Unload);
         self.present_frontend_menu();
     }

@@ -125,14 +125,15 @@ impl App {
     ///
     /// `level_life` names the host install. A repeat of the last life changes
     /// nothing, and a load already in flight or queued for the id serves any
-    /// life, adopted as host-named. The connection's first relevel naming a
-    /// known id keeps a matching active map and adopts its life, re-declaring
-    /// the reveal if already revealed, unless that map is the frontend's
-    /// backdrop, which reloads as the host's level. Any later life naming the
-    /// active map is a host reinstall: the client reloads, so `levelLoad`
-    /// fires again and teardown clears the previous life's level state. What
-    /// the client loads here is host-named (`LevelRequest::HostLevel`). An id
-    /// the client lacks leaves a host-named level it was following.
+    /// life, adopted as host-named; the latest relevel wins over requests
+    /// queued behind it. An installed level of the id that no relevel loaded
+    /// is the frontend's backdrop, the only catalog level a client installs
+    /// of its own accord (its level verbs are refused): it reloads as the
+    /// host's level. Any later life naming a host-named active map is a host
+    /// reinstall: the client reloads, so `levelLoad` fires again and teardown
+    /// clears the previous life's level state. What the client loads here is
+    /// host-named (`LevelRequest::HostLevel`). An id the client lacks leaves
+    /// a host-named level it was following.
     pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String, level_life: u64) {
         let catalog_has_id = self.session.as_ref().is_some_and(|session| {
             session
@@ -151,7 +152,6 @@ impl App {
         }
 
         let previous = self.last_relevel.replace((catalog_id.clone(), level_life));
-        let first = previous.is_none();
         if previous.is_some_and(|(_, life)| life == level_life)
             || self.adopt_selected_relevel_load(&catalog_id)
         {
@@ -162,17 +162,9 @@ impl App {
             Some(LevelSource::Catalog(id)) if *id == catalog_id
         );
         // A backdrop carries only what the menu needs, so it never serves as
-        // the host's level.
-        let backdrop = active && self.frontend_menu_is_present();
-        if active && first && !backdrop {
-            self.active_level_host_named = true;
-            // A reveal declared before the host named a life cannot promote
-            // into a catalog level; declare the adopted one.
-            if self.boot_state == BootState::Running {
-                self.publish_net_reveal();
-            }
-            return;
-        }
+        // the host's level. Keyed on how the level was loaded, not on the
+        // menu: a mod's `popTree` can pop the frontend root over a backdrop.
+        let backdrop = active && !self.active_level_host_named;
         if backdrop {
             log::info!(
                 "[Net] host named `{catalog_id}` (level life {level_life}), the installed frontend backdrop; reloading it as the host's level"
@@ -223,7 +215,8 @@ impl App {
     /// load starts, and the load only queues; its stages dispatch once
     /// nothing older still runs (pin P12). Any request that resolves
     /// supersedes a load beside the running level: it is cancelled first,
-    /// then the request takes its ordinary path.
+    /// then the request takes its ordinary path. A host-named request that
+    /// no longer resolves leaves the host level the client was following.
     pub(in crate::startup) fn drain_level_requests(&mut self) {
         if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             return;
@@ -238,6 +231,13 @@ impl App {
             match source {
                 Some(source) => {
                     let Some(mut load) = self.resolve_level_source(source) else {
+                        // The host's level is gone from the catalog since
+                        // the relevel named it: a host-named level this
+                        // client still follows is stale, as for an id it
+                        // never had. Its unload drains in this loop.
+                        if host_named {
+                            self.leave_stale_host_level();
+                        }
                         continue;
                     };
                     load.host_named = host_named;

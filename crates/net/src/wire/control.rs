@@ -351,11 +351,12 @@ pub struct SpawnPoseHint {
     pub level_identity: String,
     /// The host level life on a catalog level; `None` on an uncatalogued one.
     pub level_life: Option<u64>,
-    /// Eye position: standing position plus the descriptor's eye height.
+    /// The pawn's eye at spawn: its standing position plus its descriptor's
+    /// eye height.
     pub eye: [f32; 3],
-    /// Radians, engine convention (the placement's `angles.y`).
+    /// Radians, engine convention (YXZ; a `player_spawn`'s `angles.y`).
     pub yaw: f32,
-    /// Radians, engine convention (the placement's `angles.x`).
+    /// Radians, engine convention (YXZ; a `player_spawn`'s `angles.x`).
     pub pitch: f32,
 }
 

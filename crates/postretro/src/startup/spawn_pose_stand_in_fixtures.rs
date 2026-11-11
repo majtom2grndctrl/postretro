@@ -17,7 +17,7 @@ use crate::startup::presented_pose::PresentedPose;
 use postretro_entities::{EntityId, Transform};
 use postretro_foundation::PlayerMovementComponent;
 use postretro_level_format::map_entity::MapEntityRecord;
-use postretro_net::wire::{ServerControlMessage, SpawnPoseHint};
+use postretro_net::wire::{RevealedLevel, ServerControlMessage, SpawnPoseHint};
 use postretro_scripting_core::runtime::{Frontend, MenuCamera};
 use postretro_sim::scripting::map_entity::MapEntity;
 use std::time::Instant;
@@ -26,7 +26,7 @@ use std::time::Instant;
 pub(super) const OTHER_LEVEL: &str = "other-arena";
 
 /// What a settle check reports for a level that streams nothing: settled.
-pub(super) const SETTLED: SettleReport = SettleReport {
+const SETTLED: SettleReport = SettleReport {
     sh: ResourceSettle::NotStreamed,
     lightmap: ResourceSettle::NotStreamed,
 };
@@ -213,14 +213,21 @@ impl ClientView {
         self.drain(messages);
     }
 
-    /// Install the level a relevel requested, as a load's commit runs it: the
-    /// queued request unloads any installed level and starts the load, whose
-    /// stages the fixture stands in for. With no relevel, the uncatalogued
-    /// level the relay host installs, as a client booted on it would.
+    /// Install the level a relevel requested: the queued request unloads any
+    /// installed level and starts the load, then [`Self::commit`].
     pub(super) fn install(&mut self) {
         if !self.app.level_requests.is_empty() {
             self.app.drain_level_requests();
         }
+        self.commit();
+    }
+
+    /// The load in flight commits, as a Loading frame's commit step runs it
+    /// after that frame's transport poll; the fixture stands in for its
+    /// stages. Requests queued since stay queued for the next frame's drain.
+    /// With no load in flight, the uncatalogued level the relay host
+    /// installs, as a client booted on it would.
+    pub(super) fn commit(&mut self) {
         let load = self
             .app
             .level_load
@@ -248,8 +255,16 @@ impl ClientView {
         }
     }
 
-    /// A settled check, then the reveal edge on the next redraw.
+    /// A settled check, then the reveal frame on the next redraw: the reveal
+    /// edge and that frame's Control drain, which brings nothing.
     pub(super) fn reveal(&mut self) {
+        self.reveal_edge();
+        self.drain(Vec::new());
+    }
+
+    /// A settled check, then the reveal edge on the next redraw, without its
+    /// frame's Control drain.
+    pub(super) fn reveal_edge(&mut self) {
         assert_eq!(self.app.boot_state, BootState::Settling);
         self.app.advance_settle(SETTLED, Instant::now());
         assert!(self.app.reveal_if_released(), "a settled level reveals");
@@ -291,6 +306,14 @@ impl ClientView {
             .client_spawn_pose_hint()?
             .latest()
             .cloned()
+    }
+
+    /// The install this client last declared revealed to its host.
+    pub(super) fn declared_reveal(&self) -> Option<RevealedLevel> {
+        match self.app.session.as_ref()?.net_endpoint.as_ref()? {
+            crate::netcode::NetEndpoint::Client { client, .. } => client.revealed_level().cloned(),
+            crate::netcode::NetEndpoint::Host { .. } => None,
+        }
     }
 
     /// The host's first baseline for `host_pawn` arms this client's pawn:

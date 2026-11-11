@@ -731,7 +731,7 @@ mod switch_tick_epoch_tests {
 
     // A wire-33 peer cannot decode the ghost-link record riding entity
     // records, so both gates refuse it across the bump; the vocabulary did not
-    // change, so the application protocol stays PRLC.
+    // change, so the application protocol stayed at that bump's PRLC.
     #[test]
     fn ghost_link_record_refuses_wire_33_peers_and_admits_current_wire() {
         const PRE_GHOST_WIRE_VERSION: u32 = 33;
@@ -803,7 +803,8 @@ mod switch_tick_epoch_tests {
 
     // A wire-35 snapshot envelope lacks the host level tick, so a client
     // cannot land `levelLoad` tails on the host's fixed ticks: both gates
-    // refuse it across the bump, and the application protocol stays PRLC.
+    // refuse it across the bump, and the application protocol stayed at that
+    // bump's PRLC.
     #[test]
     fn level_tick_refuses_wire_35_peers_and_admits_current_wire() {
         const PRE_LEVEL_TICK_WIRE_VERSION: u32 = 35;

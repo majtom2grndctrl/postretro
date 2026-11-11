@@ -1,15 +1,16 @@
 //! A connected client's unarmed stand-in takes its host's spawn-pose hint: at
-//! install, on arrival during Settling, and on a later Running frame while its
-//! pawn is unarmed. The hint never gates anything, and arming moves position
-//! only. Hints come from the real host over relay; the client App drains them
-//! through its Control router.
+//! install, and on arrival during Settling or while Running with its pawn
+//! unarmed, except on the reveal frame, which holds it for the next frame.
+//! The hint never gates anything, and arming moves position only. Hints come
+//! from the real host over relay; the client App drains them through its
+//! Control router, one drain per frame, before that frame's snapshots.
 //! See: context/lib/networking.md §Slot lifecycle · context/lib/boot_sequence.md §1
 
 use super::spawn_pose_handoff_fixtures::{
     LEVEL, OfferOne, Relay, hint_pose_of, spawn_points, standing_on,
 };
 use super::spawn_pose_stand_in_fixtures::{
-    ClientView, OTHER_LEVEL, SETTLED, assert_pose, hint_pose, host_reinstalls, without_hints,
+    ClientView, OTHER_LEVEL, assert_pose, hint_pose, host_reinstalls, without_hints,
 };
 use super::*;
 use crate::session::level_streaming::settle::{ResourceSettle, SettleReport};
@@ -45,13 +46,6 @@ fn joined(points: Vec<MapEntity>) -> (Relay, ClientView, SpawnPoseHint) {
     let mut client = ClientView::new(points);
     client.follow(&mut relay, CLIENT);
     (relay, client, hint)
-}
-
-fn declared_reveal(client: &ClientView) -> Option<RevealedLevel> {
-    match client.app.session.as_ref()?.net_endpoint.as_ref()? {
-        crate::netcode::NetEndpoint::Client { client, .. } => client.revealed_level().cloned(),
-        crate::netcode::NetEndpoint::Host { .. } => None,
-    }
 }
 
 // C1, nonzero pitch.
@@ -276,7 +270,7 @@ fn host_same_map_restart_reloads_the_client_and_settles_it_at_the_new_lifes_hint
     client.reveal();
     client.assert_at(hint_pose(&new_life), "the new life's reveal");
     assert_eq!(
-        declared_reveal(&client),
+        client.declared_reveal(),
         Some(RevealedLevel::new(LEVEL, new_life.level_life)),
         "the reveal names the life the hint named"
     );
@@ -339,11 +333,11 @@ fn hint_first_arriving_on_the_reveal_frame_leaves_it_at_the_settled_pose_and_mov
 
     // The deciding Settling frame, then the reveal edge on the next redraw,
     // whose world poll brings the (resent) hint.
-    client.app.advance_settle(SETTLED, Instant::now());
-    assert!(client.app.reveal_if_released());
+    client.reveal_edge();
     client.drain(vec![ServerControlMessage::SpawnPoseHint(hint.clone())]);
     client.assert_at(settled, "the reveal frame presents the settled pose");
 
+    // The next frame's drain brings nothing new.
     client.drain(Vec::new());
     client.assert_at(hint_pose(&hint), "a later unarmed frame");
 }
@@ -367,18 +361,23 @@ fn fresh_hint_moves_a_running_unarmed_client_before_its_pawn_arms_there() {
     let pawn = relay.await_pawn(CLIENT);
     relay.pump_until(|relay| relay.hints(CLIENT).len() == 2);
     let moved = relay.hints(CLIENT).pop().unwrap();
-    client.follow(&mut relay, CLIENT);
-    client.drain(Vec::new());
-    client.assert_at(
-        hint_pose(&moved),
-        "unarmed, the camera takes the fresh hint",
+    assert!(
+        (moved.yaw, moved.pitch) != (reserved.yaw, reserved.pitch),
+        "fixture: the fresh hint faces another way"
     );
 
+    // One frame brings the fresh hint and the arming baseline: its Control
+    // drain runs first, then the snapshot that arms the pawn.
+    client.follow(&mut relay, CLIENT);
+    client.assert_at(
+        hint_pose(&moved),
+        "unarmed, the drain moves the camera to the fresh hint",
+    );
     client.arm(&relay, pawn);
     assert_pose(
         client.camera(),
         hint_pose(&moved),
-        "the arming frame stays at the fresh hint",
+        "the pawn arms at the fresh hint's eye, yaw and pitch",
     );
 }
 
@@ -444,11 +443,22 @@ fn client_revealed_before_connecting_applies_its_post_marker_hint_while_unarmed_
     let hint = relay.await_hint(CLIENT);
     let after_marker = relay.forward(CLIENT);
 
+    let first_spawn = unarmed.first_spawn_pose();
+    assert!(
+        (hint.yaw, hint.pitch) != (first_spawn.yaw, first_spawn.pitch),
+        "fixture: the hint faces another way than the first spawn"
+    );
+
+    // The post-marker hint and the arming baseline land in one frame: its
+    // Control drain runs first, then the snapshot that arms the pawn.
     unarmed.drain(after_marker.clone());
-    unarmed.drain(Vec::new());
-    unarmed.assert_at(hint_pose(&hint), "applied while unarmed");
+    unarmed.assert_at(hint_pose(&hint), "the drain moves the unarmed stand-in");
     unarmed.arm(&relay, pawn);
-    assert_pose(unarmed.camera(), hint_pose(&hint), "and armed there");
+    assert_pose(
+        unarmed.camera(),
+        hint_pose(&hint),
+        "the pawn arms at the hint's eye, yaw and pitch",
+    );
 
     armed.arm(&relay, pawn);
     let at_arm = armed.camera();
@@ -536,7 +546,6 @@ fn arming_with_an_applied_hint_keeps_the_camera_within_a_centimetre_and_its_faci
         // Any hint promotion sends lands while the client is unarmed.
         relay.settle();
         client.follow(&mut relay, CLIENT);
-        client.drain(Vec::new());
         let stand_in = client.camera();
 
         client.arm(&relay, pawn);
@@ -566,7 +575,6 @@ fn view_turned_while_unarmed_keeps_its_yaw_and_pitch_when_the_pawn_arms() {
     relay.host_reveal();
     let pawn = relay.await_pawn(CLIENT);
     client.follow(&mut relay, CLIENT);
-    client.drain(Vec::new());
     client.arm(&relay, pawn);
     assert_pose(
         client.camera(),
@@ -579,47 +587,65 @@ fn view_turned_while_unarmed_keeps_its_yaw_and_pitch_when_the_pawn_arms() {
     );
 }
 
-// R2: the client half. A pose no placement backs drives the stand-in.
+// R2 and R4: the client half. A pose no placement backs, single-use or not,
+// drives the stand-in, and the pawn arms there with its yaw and pitch. A
+// single-use pose's seat re-resolves only once it leaves participation, so no
+// hint naming its next start reaches the client before the pawn arms.
 #[test]
-fn unbacked_test_pose_drives_the_clients_stand_in_camera() {
-    let scout = UnbackedSpawn {
-        pose: SpawnPose {
-            eye: Vec3::new(20.0, 3.0, -9.0),
-            yaw: 0.8,
-            pitch: 0.25,
-        },
-        entity_class: "scout".into(),
-        single_use: false,
-    };
-    let points = spawn_points(3);
-    let mut relay = Relay::admitted(&[CLIENT]);
-    let seat = relay.seat(CLIENT).unwrap();
-    relay
-        .app
-        .spawn_poses
-        .set_unbacked_source(Some(Box::new(OfferOne {
-            seat,
-            spawn: scout.clone(),
-            consumed: Default::default(),
-        })));
-    relay.install(points.clone());
-    relay.await_hint(CLIENT);
-    let mut client = ClientView::new(points);
-    client.follow(&mut relay, CLIENT);
-    let scout_pose = PresentedPose {
-        position: scout.pose.eye,
-        yaw: scout.pose.yaw,
-        pitch: scout.pose.pitch,
-    };
+fn unbacked_test_pose_drives_the_stand_in_and_the_arming_frame_single_use_or_not() {
+    for single_use in [false, true] {
+        let scout = UnbackedSpawn {
+            pose: SpawnPose {
+                eye: Vec3::new(20.0, 3.0, -9.0),
+                yaw: 0.8,
+                pitch: 0.25,
+            },
+            entity_class: "scout".into(),
+            single_use,
+        };
+        let points = spawn_points(3);
+        let mut relay = Relay::admitted(&[CLIENT]);
+        let seat = relay.seat(CLIENT).unwrap();
+        relay
+            .app
+            .spawn_poses
+            .set_unbacked_source(Some(Box::new(OfferOne {
+                seat,
+                spawn: scout.clone(),
+                consumed: Default::default(),
+            })));
+        relay.install(points.clone());
+        let offered = relay.await_hint(CLIENT);
+        let mut client = ClientView::new(points);
+        client.follow(&mut relay, CLIENT);
+        let scout_pose = PresentedPose {
+            position: scout.pose.eye,
+            yaw: scout.pose.yaw,
+            pitch: scout.pose.pitch,
+        };
+        let what = |step: &str| format!("single use {single_use}: {step}");
 
-    client.install();
-    client.assert_at(scout_pose, "the stand-in takes the unbacked pose");
-    client.reveal();
-    relay.reveal(CLIENT);
-    relay.host_reveal();
-    let pawn = relay.await_pawn(CLIENT);
-    client.follow(&mut relay, CLIENT);
-    client.drain(Vec::new());
-    client.arm(&relay, pawn);
-    assert_pose(client.camera(), scout_pose, "the scout pawn arms there");
+        client.install();
+        client.assert_at(scout_pose, &what("the stand-in takes the unbacked pose"));
+        client.reveal();
+        relay.reveal(CLIENT);
+        relay.host_reveal();
+        let pawn = relay.await_pawn(CLIENT);
+        // Any hint promotion sends lands before the first baseline.
+        relay.settle();
+        assert_eq!(
+            relay.hints(CLIENT),
+            vec![offered.clone()],
+            "{}",
+            what("no hint follows promotion while the seat participates")
+        );
+        client.follow(&mut relay, CLIENT);
+        client.assert_at(scout_pose, &what("the stand-in stays at the unbacked pose"));
+        client.arm(&relay, pawn);
+        assert_pose(
+            client.camera(),
+            scout_pose,
+            &what("the scout pawn arms there, with its yaw and pitch"),
+        );
+    }
 }

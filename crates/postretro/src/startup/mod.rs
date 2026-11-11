@@ -118,7 +118,8 @@ pub(crate) enum LevelRequest {
     /// A catalog level a connected client's host named in a relevel. Its load
     /// is host-named: its install is the host's level, which clears every
     /// frontend menu layer, and its failure presents the menu with no
-    /// backdrop load. Only `follow_relevel_catalog` makes one.
+    /// backdrop load. Only the relevel-following path makes one:
+    /// `follow_relevel_catalog`, including its adoption of a queued load.
     HostLevel(String),
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     Unload,
@@ -148,7 +149,8 @@ pub(crate) struct InFlightLevelLoad {
     pub(crate) content_root: PathBuf,
     pub(crate) entry: LevelLoadEntry,
     /// The host's relevel requested this load, or adopted it in flight: a
-    /// connected client's host-named level. An id match alone never sets it.
+    /// connected client's host-named level. An id match alone never sets it,
+    /// and a relevel naming an id the client lacks clears it.
     pub(crate) host_named: bool,
 }
 

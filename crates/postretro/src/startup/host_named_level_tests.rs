@@ -4,13 +4,14 @@
 //! host has not named, and single-player, keep the menu pose.
 //! See: context/lib/boot_sequence.md §1 (Presented pose) · context/lib/networking.md §Slot lifecycle
 
+use super::lifecycle_test_fixtures::{catalog_map, script_ctx};
 use super::spawn_pose_handoff_fixtures::{LEVEL, Relay, spawn_points};
 use super::spawn_pose_stand_in_fixtures::{
     ClientView, OTHER_LEVEL, assert_pose, hint_pose, host_reinstalls, menu_pose, without_hints,
 };
 use super::*;
 use crate::startup::{BootDestination, LevelRequest};
-use postretro_net::wire::SpawnPoseHint;
+use postretro_net::wire::{RevealedLevel, ServerControlMessage, SpawnPoseHint};
 use postretro_sim::scripting::map_entity::MapEntity;
 
 const CLIENT: u64 = 41;
@@ -40,6 +41,18 @@ fn client_at_menu(points: Vec<MapEntity>) -> ClientView {
     client.app.present_frontend_menu();
     assert!(client.menu_is_present());
     client
+}
+
+/// The latest hint among `messages`.
+fn latest_hint(messages: &[ServerControlMessage]) -> SpawnPoseHint {
+    messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            ServerControlMessage::SpawnPoseHint(hint) => Some(hint.clone()),
+            _ => None,
+        })
+        .expect("a hint arrived")
 }
 
 /// Neither a backdrop nor any other load is queued or in flight.
@@ -184,13 +197,14 @@ fn backdrop_load_of_the_host_level_still_in_flight_is_adopted_and_installs_as_th
     }
 }
 
-// M4, O1, O12, O13.
+// M4, O1, O12, O13. A backdrop is known by how it loaded, not by the menu
+// over it: one whose frontend root a mod `popTree` popped still reloads.
 #[test]
 fn installed_backdrop_of_the_host_level_reloads_as_the_host_level_whether_settling_or_running() {
     let points = spawn_points(3);
     let (mut relay, hint) = hosted(&points);
     let arrivals = relay.forward(CLIENT);
-    for running in [false, true] {
+    for (running, menu_popped) in [(false, false), (true, false), (true, true)] {
         let mut client = ClientView::new(points.clone()).with_frontend();
         client.app.populate_frontend();
         client.install();
@@ -199,12 +213,19 @@ fn installed_backdrop_of_the_host_level_reloads_as_the_host_level_whether_settli
         }
         assert!(client.menu_is_present(), "the backdrop keeps the menu");
         client.assert_at(menu_pose(), "the backdrop presents the menu pose");
+        if menu_popped {
+            client.app.session.as_mut().unwrap().modal_stack.pop();
+            assert!(
+                !client.menu_is_present(),
+                "fixture: the frontend root popped"
+            );
+        }
 
         client.drain(arrivals.clone());
         assert_eq!(
             client.app.level_requests,
             [LevelRequest::HostLevel(LEVEL.to_string())],
-            "running {running}: the backdrop reloads as the host's level"
+            "running {running}, menu popped {menu_popped}: the backdrop reloads as the host's level"
         );
         client.install();
         assert_menu_gone(&mut client);
@@ -300,6 +321,143 @@ fn relevel_naming_an_unknown_id_unloads_the_followed_level_to_the_menu_with_no_b
     assert_no_load(&client);
 }
 
+// M6, O16: the host's next level is gone from the catalog by the time its
+// request drains, as a mod reload can leave it.
+#[test]
+fn host_level_gone_from_the_catalog_at_its_drain_unloads_the_followed_level_to_the_menu() {
+    let points = spawn_points(3);
+    let (mut relay, _hint) = hosted(&points);
+    let mut client = client_at_menu(points.clone());
+    client.follow(&mut relay, CLIENT);
+    client.install();
+    client.reveal();
+    assert!(!client.menu_is_present());
+
+    let moved = host_reinstalls(&mut relay, CLIENT, OTHER_LEVEL, &points);
+    client.drain(moved);
+    assert_eq!(
+        client.app.level_requests,
+        [LevelRequest::HostLevel(OTHER_LEVEL.to_string())]
+    );
+    script_ctx(&client.app)
+        .data_registry
+        .borrow_mut()
+        .replace_maps(vec![catalog_map(
+            LEVEL,
+            "maps/spawn-arena.prl",
+            "Spawn arena",
+            &[],
+        )]);
+    client.app.drain_level_requests();
+
+    assert_eq!(client.app.boot_state, BootState::Frontend);
+    assert!(
+        !client.app.has_installed_level(),
+        "the stale level unloaded"
+    );
+    assert!(client.menu_is_present(), "the menu is back");
+    assert_no_load(&client);
+}
+
+// M6, O16: the unknown id lands on the frame whose commit installs the host
+// level still loading, and a load the host moved to may be queued behind it.
+// The stale load installs under the menu, and the next frame's unload keeps
+// the menu.
+#[test]
+fn relevel_naming_an_unknown_id_on_the_host_levels_commit_frame_keeps_the_menu_through_the_unload()
+{
+    for queued_behind in [false, true] {
+        let points = spawn_points(3);
+        let (mut relay, _hint) = hosted(&points);
+        let mut client = client_at_menu(points.clone());
+        client.follow(&mut relay, CLIENT);
+        client.app.drain_level_requests();
+        assert!(
+            client
+                .app
+                .level_load
+                .as_ref()
+                .is_some_and(|load| load.host_named),
+            "the host's level is loading"
+        );
+        if queued_behind {
+            let moved = host_reinstalls(&mut relay, CLIENT, OTHER_LEVEL, &points);
+            client.drain(moved);
+            assert_eq!(
+                client.app.level_requests,
+                [LevelRequest::HostLevel(OTHER_LEVEL.to_string())]
+            );
+        }
+
+        // The commit frame's transport poll, then its commit.
+        client
+            .app
+            .follow_relevel_catalog("missing-map".to_string(), 99);
+        assert!(client.menu_is_present(), "the menu is presented at once");
+        assert_eq!(client.app.level_requests, [LevelRequest::Unload]);
+        client.commit();
+        assert!(
+            client.menu_is_present(),
+            "queued behind {queued_behind}: the stale load installs under the menu"
+        );
+        assert_pose(
+            client.app.presented_pose(),
+            menu_pose(),
+            "it holds at the menu pose",
+        );
+
+        // The next frame's drain.
+        client.app.drain_level_requests();
+        assert_eq!(client.app.boot_state, BootState::Frontend);
+        assert!(
+            !client.app.has_installed_level(),
+            "the stale level unloaded"
+        );
+        assert!(client.menu_is_present(), "the unload keeps the menu");
+        assert_no_load(&client);
+    }
+}
+
+// M3, O2: the latest relevel wins. The host moves away and back while its
+// level's load is still in flight; what the move away queued, another
+// level's load or an unknown id's unload, is dropped, and the load in flight
+// installs as the host's level.
+#[test]
+fn relevel_back_to_the_level_still_loading_drops_what_the_move_away_queued() {
+    for away in [OTHER_LEVEL, "missing-map"] {
+        let points = spawn_points(3);
+        let (mut relay, _hint) = hosted(&points);
+        let mut client = client_at_menu(points.clone());
+        client.follow(&mut relay, CLIENT);
+        client.app.drain_level_requests();
+
+        let mut arrivals = host_reinstalls(&mut relay, CLIENT, away, &points);
+        arrivals.extend(host_reinstalls(&mut relay, CLIENT, LEVEL, &points));
+        let latest = latest_hint(&arrivals);
+        assert_eq!(latest.level_identity, LEVEL);
+        client.drain(arrivals);
+        assert!(
+            client.app.level_requests.is_empty(),
+            "away to {away}: nothing queued supersedes the load in flight: {:?}",
+            client.app.level_requests
+        );
+        let load = client
+            .app
+            .level_load
+            .as_ref()
+            .expect("the load stays in flight");
+        assert_eq!(load.entry.catalog_id.as_deref(), Some(LEVEL));
+        assert!(
+            load.host_named,
+            "away to {away}: the load is the host's level"
+        );
+
+        client.install();
+        assert_menu_gone(&mut client);
+        client.assert_at(hint_pose(&latest), "the latest life's hint");
+    }
+}
+
 // M7, O17.
 #[test]
 fn backdrop_the_client_loads_of_its_own_accord_keeps_the_menu_even_when_it_is_the_host_level() {
@@ -310,6 +468,11 @@ fn backdrop_the_client_loads_of_its_own_accord_keeps_the_menu_even_when_it_is_th
     client.install();
     client.reveal();
     assert!(!client.menu_is_present());
+    assert_eq!(
+        client.declared_reveal(),
+        Some(RevealedLevel::new(LEVEL, hint.level_life)),
+        "the host's level declares the life it followed"
+    );
 
     // The player quits to the menu; its backdrop is the host's level, and the
     // last relevel and the stored hint still name it.
@@ -326,6 +489,20 @@ fn backdrop_the_client_loads_of_its_own_accord_keeps_the_menu_even_when_it_is_th
     client.reveal();
     assert!(client.menu_is_present());
     client.assert_at(menu_pose(), "the backdrop's reveal");
+
+    // The backdrop's reveal names no host life, so the host never promotes
+    // it, though it would promote a reveal of its life.
+    let backdrop = client.declared_reveal().expect("the backdrop revealed");
+    assert_eq!(backdrop, RevealedLevel::new(LEVEL, None));
+    relay.host_reveal();
+    relay.reveal_as(CLIENT, &backdrop.identity, backdrop.level_life);
+    relay.settle();
+    assert!(
+        !relay.participating(CLIENT),
+        "the backdrop's reveal promotes nothing"
+    );
+    relay.reveal(CLIENT);
+    relay.await_pawn(CLIENT);
 }
 
 // M9: an un-named backdrop on a connected client, and a single-player

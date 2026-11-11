@@ -18,6 +18,10 @@ pub struct ClientSpawnPoseHint {
     /// The latest hint has not yet reached a stand-in camera, and no armed
     /// pawn has made it moot.
     fresh: bool,
+    /// The reveal edge fired and its frame's Control drain has not ended: a
+    /// hint arriving now waits for a later frame, so the reveal frame
+    /// presents the settled pose.
+    reveal_frame: bool,
 }
 
 impl ClientSpawnPoseHint {
@@ -60,6 +64,23 @@ impl ClientSpawnPoseHint {
     /// stored for a later install it matches.
     pub fn spend(&mut self) {
         self.fresh = false;
+    }
+
+    /// The reveal edge: hold every hint, stored but unapplied, until this
+    /// frame's Control drain ends.
+    pub fn hold_through_reveal_frame(&mut self) {
+        self.reveal_frame = true;
+    }
+
+    /// Whether the reveal frame is holding hints back.
+    #[must_use]
+    pub fn holds_for_reveal_frame(&self) -> bool {
+        self.reveal_frame
+    }
+
+    /// A Control drain ended: the reveal frame's hold, if any, is over.
+    pub fn end_reveal_frame(&mut self) {
+        self.reveal_frame = false;
     }
 }
 

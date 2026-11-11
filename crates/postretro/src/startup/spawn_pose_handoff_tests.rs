@@ -336,10 +336,20 @@ fn client_revealed_before_connecting_is_promoted_in_its_admission_batch_and_hint
     relay.assert_pawn_at_hint(pawn, &hint);
 }
 
-// R13.
+// R13. A seat an unbacked source would place gets no hint either: its pawn
+// spawns by the default accept, never at that pose.
 #[test]
 fn level_without_player_spawn_sends_no_hint_and_its_joiners_spawn_as_today() {
     let mut relay = Relay::admitted(&[41]);
+    let offered = relay.seat(41).unwrap();
+    relay
+        .app
+        .spawn_poses
+        .set_unbacked_source(Some(Box::new(OfferOne {
+            seat: offered,
+            spawn: scout_pose(),
+            consumed: Default::default(),
+        })));
     relay.install(Vec::new());
     relay.host_reveal();
     relay.admit(&[42]);

@@ -583,12 +583,12 @@ fn seats_resolved_before_spawning_take_distinct_starts_past_the_host_and_a_held_
     assert_eq!(fixture.seats.placement_for_seat(second), Some(3));
 }
 
-// R7: every start taken.
+// R7: every start taken. Sharing skips the start the host's pawn stands on.
 #[test]
 fn overflowing_seats_share_starts_round_robin_and_each_warns_once() {
-    let mut fixture = Fixture::with_points(row_of_starts(2));
+    let mut fixture = Fixture::with_points(row_of_starts(3));
     let mut resolver = SpawnPoseResolver::default();
-    let seats: Vec<Seat> = (7..=9).map(|client| fixture.admit(client)).collect();
+    let seats: Vec<Seat> = (7..=10).map(|client| fixture.admit(client)).collect();
     let capture = postretro_test_log_capture::LogCapture::start();
 
     for &seat in &seats {
@@ -607,8 +607,8 @@ fn overflowing_seats_share_starts_round_robin_and_each_warns_once() {
         .collect();
     assert_eq!(
         placements,
-        [Some(1), Some(0), Some(1)],
-        "round-robin shares"
+        [Some(1), Some(2), Some(1), Some(2)],
+        "round-robin shares, past the host's occupied start"
     );
     let warnings = capture
         .records()

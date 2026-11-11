@@ -2008,6 +2008,49 @@ Use named `components.faction` declarations and `sentiment(...)` rows for
 relationships. Write retention guards through `brain.targetHostile`, rather
 than testing a numeric faction value.
 
+### Infighting
+
+Infighting is the engine's retaliation rule: an enemy hit hard enough by a
+non-hostile peer turns on that peer. It needs two things, and either one turns
+it off:
+
+- **A tolerance the hits can cross.** Tolerance is damage from one attacker
+  inside the retaliation window. The enemy's own `components.tolerance` wins,
+  and applies to every attacker. Otherwise the `sentiment(...)` row from the
+  enemy's faction toward the attacker's faction supplies it. With neither, the
+  tolerance is unreachable and the enemy never retaliates.
+- **A retaliation window.** The `components.behavior` root's
+  `retaliation.windowMs` sets how long a hit counts. Omitting the `retaliation`
+  block uses 1500 ms. `windowMs: 0` disables retaliation for every enemy on
+  that behavior, whatever its tolerance.
+
+```typescript
+// Brutes infight: more than 10 damage from one brute inside 1.5 s starts a fight.
+sentiment("brutes", "brutes", { sentiment: 0, tolerance: 10 }),
+
+// Troopers never infight, whatever their faction rows say.
+defineEntity({
+  canonicalName: "trooper",
+  components: {
+    faction: "brutes",
+    behavior: { /* initial, activities, transitions ... */ retaliation: { windowMs: 0 } },
+  },
+});
+```
+
+A high tolerance is a threshold, not an off switch: one large enough hit, such
+as a rocket, still crosses it. Use `windowMs: 0` to rule infighting out.
+
+Every `sentiment(...)` row takes a `tolerance`, so declaring a same-faction or
+cross-faction relationship also decides whether those enemies retaliate. To
+keep a relationship without infighting, give the row a tolerance above any
+damage your weapons deal in 1.5 s, or set `windowMs: 0` on the behavior.
+
+Separate factions do not need infighting to fight: an unlisted pair of
+different factions is hostile by default. A new faction attacks every other
+faction, the built-in enemy faction included, until a `sentiment(...)` row says
+otherwise.
+
 ### The no-target trap
 
 **This is the single most important thing in this section.**

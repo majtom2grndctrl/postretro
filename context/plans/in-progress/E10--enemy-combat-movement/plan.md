@@ -280,5 +280,5 @@ Hot paths touched: the per-tick AI pass (arbitration adds one batch pass; no per
   - Correct `entity_model.md:301`'s strafe wording.
   - Add the held-ownership exception (a drawn kept burst is cancelled on drop).
   - Add the pool-request save constraint.
-  - Record the drift tier's longest-waiter order (`entity_model.md` agent steering) and the retaliation off-switches (`docs/scripting-reference.md`).
+  - Record the drift tier's longest-waiter order (`entity_model.md` agent steering). The infighting recipe is already in `docs/scripting-reference.md` §Infighting; the optional faction-row tolerance went to the roadmap (owner, 2026-11-10).
 

@@ -267,7 +267,10 @@ fn placement_overflow_shares_a_vacated_start_before_a_held_seats_reservation() {
         seats.assign_joiner_placement(&registry, walked_off, &sites),
         Some(1)
     );
-    assert_eq!(seats.assign_joiner_placement(&registry, held, &sites), Some(2));
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, held, &sites),
+        Some(2)
+    );
     assert_eq!(
         seats.assign_joiner_placement(&registry, standing, &sites),
         Some(3)

@@ -34,10 +34,16 @@ pub(crate) fn sh_base_bounce_count(fill: f32) -> u32 {
 pub(crate) struct MoverBounceJob {
     pub(crate) mover_id: u32,
     pub(crate) label: String,
-    /// Bounces re-baked posed, bounce one first, at most the SH base's
-    /// count: later bounces past them are id 34's own. 0 bakes no bounce
-    /// and traces only the poses' probe depth.
+    /// Bounces a pose this build bakes re-bakes posed, bounce one first:
+    /// `high_bounces` at the build's fidelity
+    /// ([`crate::bake_fidelity::BakeFidelity::bounces`]). Later bounces past
+    /// them are id 34's own. 0 bakes no bounce and traces only the poses'
+    /// probe depth.
     pub(crate) bounces: u32,
+    /// The mover's own count, its `light_bounces` clamped to the SH base's:
+    /// what a `high` build bakes, and the memo entry a `low` build serves
+    /// before baking. Equals `bounces` at high, and wherever it is at most 1.
+    pub(crate) high_bounces: u32,
     /// The mover posed at each pose, in path order: the first and last are
     /// its termini.
     pub(crate) scenes: Vec<PosedScene>,
@@ -148,8 +154,12 @@ impl MoverBounceRequest {
 
 /// How one pose of a job resolves.
 pub(crate) struct PoseSlot {
-    /// Its memo key, when a cache is open: a baked pose is written there.
+    /// Its memo key, when a cache is open: the entry it was served from, or
+    /// the one a baked pose is written to.
     pub(crate) key: Option<CacheKey>,
+    /// The posed bounces its state holds: the job's `high_bounces` when a
+    /// `high` entry served it, else the job's `bounces`, at which it bakes.
+    pub(crate) bounces: u32,
     /// Its memo held it at lookup: the bake reads it there again, and bakes
     /// it only when that read fails.
     pub(crate) held: bool,
@@ -289,7 +299,8 @@ pub(crate) fn bake_mover_bounce(
             valid: &valid,
         };
         let held = read_held_poses(job, pose_slots, memo, inputs.layout);
-        let Some(resolved) = baker.bake(held, &mut out.poses) else {
+        let bounces: Vec<u32> = pose_slots.iter().map(|slot| slot.bounces).collect();
+        let Some(resolved) = baker.bake(held, &bounces, &mut out.poses) else {
             continue;
         };
         let baked = resolved.baked;
@@ -308,7 +319,7 @@ pub(crate) fn bake_mover_bounce(
              closed-pose depth, {:.1} s",
             job.label,
             job.mover_id,
-            job.bounces,
+            baked_bounces(&bounces, &baked),
             baked.iter().filter(|&&baked| baked).count(),
             job.scenes.len(),
             job.domain_probes.len(),
@@ -320,6 +331,27 @@ pub(crate) fn bake_mover_bounce(
         out.movers.push(states);
     }
     out
+}
+
+/// The posed bounces the baked poses re-baked: one count, or each distinct
+/// one where a pose whose `high` entry failed to read baked at it.
+fn baked_bounces(bounces: &[u32], baked: &[bool]) -> String {
+    let mut counts: Vec<u32> = bounces
+        .iter()
+        .zip(baked)
+        .filter(|(_, baked)| **baked)
+        .map(|(bounces, _)| *bounces)
+        .collect();
+    counts.sort_unstable();
+    counts.dedup();
+    if counts.is_empty() {
+        return "no".to_owned();
+    }
+    counts
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Progress units `job`'s poses that no memo held advance

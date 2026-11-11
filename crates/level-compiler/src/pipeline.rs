@@ -33,6 +33,7 @@ use delta_working_set::*;
 mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
 mod mover_bounce_stage;
+mod mover_fidelity_summary;
 mod mover_light_stage;
 mod mover_probe_stage;
 pub(crate) mod runtime_cells;
@@ -777,6 +778,7 @@ fn run_after_parsing(
             direct_lights: &direct_lights,
             uncompressed: args.uncompressed_irradiance,
             tile_cap: probe_depth_tile_cap,
+            mode: args.bake_mode(),
         })?
     };
     // The SH base gate prices the patch cache, the later bounces at the
@@ -918,7 +920,7 @@ fn run_after_parsing(
     );
     // Every mover's states have resolved, from its memo or its bake; the
     // redundant mid-pose skips read each mover's ramp, which no memo keys.
-    mover_bounce_stage::skip_mid_poses(
+    let mover_skips = mover_bounce_stage::skip_mid_poses(
         &mut mover_bounce.movers,
         &map_data.kinematic_movers,
         &mover_poses,
@@ -933,9 +935,17 @@ fn run_after_parsing(
         &mut probe_depth_tiles,
         probe_depth_tile_cap,
     )?;
-    let mover_bounce_summary = (mover_bounce_blocks
+    let mut mover_bounce_summary: Vec<String> = (mover_bounce_blocks
         != crate::mover_probe_channel::BounceBlocks::default())
-    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation));
+    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation))
+    .into_iter()
+    .collect();
+    mover_bounce_summary.extend(mover_fidelity_summary::fidelity_lines(
+        args.bake_mode(),
+        &mover_bounce.pose_bounces,
+        &mover_skips,
+        mover_bounce.sh_base_bake_time,
+    ));
     drop(mover_bounce);
     drop(bounce_plan);
     // SH bake stages use raw MapData source indices so bake-only animated

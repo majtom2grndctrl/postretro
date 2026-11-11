@@ -13,7 +13,7 @@ use super::layer::SH_PATCH_LAYER_STAGE_ID;
 use super::patches::PatchSet;
 use super::reach::PatchReachIndex;
 use super::sum::PatchRadiance;
-use super::test_scene::{Scene, animated, annex_light, entries, point, room_lights};
+use super::test_scene::{Scene, animated, annex_light, baked_entries, point, room_lights};
 use super::volume::SH_BASE_VOLUME_STAGE_ID;
 use crate::bake_control::BakeControl;
 use crate::bake_counters::{BakeCounts, counted};
@@ -177,7 +177,8 @@ fn a_removed_or_corrupt_layer_reshades_alone_to_its_lost_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let (cold, _) = scene.bake(&lights, None, 4);
     scene.bake(&lights, Some(&open(dir.path())), 4);
-    let snapshot = entries(dir.path());
+    let volume_key = scene.volume_key(&lights);
+    let snapshot = baked_entries(dir.path(), &volume_key);
     let entry = |light: &MapLight| dir.path().join(scene.key(light).as_filename());
 
     std::fs::remove_file(entry(&lights[1])).unwrap();
@@ -194,7 +195,7 @@ fn a_removed_or_corrupt_layer_reshades_alone_to_its_lost_bytes() {
         let expected = if lost == "none" { (0, 4) } else { (3, 1) };
         assert_eq!(shaded_and_cached(&counts), expected, "{lost}: {counts:?}");
         assert_eq!(
-            entries(dir.path()),
+            baked_entries(dir.path(), &volume_key),
             snapshot,
             "{lost}: re-shaded and re-gathered bytes repeat"
         );

@@ -231,14 +231,17 @@ fn is_normal_component(component: &str) -> bool {
 /// Arguments a recipe may never supply, because the tool owns them.
 ///
 /// `-o`, `--release`, and the TUI switches decide *what kind of bake* a
-/// distribution runs, and `--release` is the only shippable one. `--baked-root`
+/// distribution runs, and `--release` is the only shippable one; it always
+/// bakes high fidelity, and prl-build refuses `--bake-fidelity` beside it, so
+/// a recipe naming that flag fails here, by name, before any bake. `--baked-root`
 /// and `--cache-dir` are the pair that must stay consistent across the compiler
 /// and the engine: prl-build reads the last occurrence of each, so a recipe
 /// naming one would silently override the tool's and reintroduce exactly the
 /// placeholder degradation the flags exist to close.
-const TOOL_OWNED_ARGS: [&str; 6] = [
+const TOOL_OWNED_ARGS: [&str; 7] = [
     "-o",
     "--release",
+    "--bake-fidelity",
     "--tui",
     "--no-tui",
     "--baked-root",
@@ -489,13 +492,21 @@ args = ["--lightmap-density", "0.02"]
 
     #[test]
     fn rejects_reserved_bake_arguments() {
-        for arg in ["-o", "--release", "--tui", "--no-tui"] {
+        for arg in [
+            "-o",
+            "--release",
+            "--bake-fidelity",
+            "--bake-fidelity=high",
+            "--tui",
+            "--no-tui",
+        ] {
             let input = format!(
                 "{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\nargs = [\"{arg}\"]\n"
             );
             let error = Manifest::parse(&input).unwrap_err();
             assert!(error.contains("recipe `maps/a.prl`"), "{error}");
-            assert!(error.contains(arg), "{error}");
+            let flag = arg.split_once('=').map_or(arg, |(flag, _)| flag);
+            assert!(error.contains(&format!("`{flag}`")), "{error}");
         }
     }
 

@@ -1,6 +1,7 @@
 // Bake-only surface radiance cache: patches on static faces that the SH probe gather reads.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+mod bake_time;
 mod bounce;
 mod gather;
 mod layer;

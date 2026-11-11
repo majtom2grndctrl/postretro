@@ -12,6 +12,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
+use crate::bake_fidelity::BakeFidelity;
 use crate::{
     Args, lightmap_bake, logger::LogSink, resolve_lightmap_density, resolve_sh_density_fidelity,
     sh_bake, sh_density,
@@ -54,9 +55,11 @@ impl BuildMode {
     fn guidance(self) -> &'static str {
         match self {
             Self::IncrementalBuild => {
-                "Warm cache: reuses unchanged bakes, same lighting (fast, not shippable)."
+                "Warm cache: reuses unchanged bakes at the mover fidelity below (fast, not shippable)."
             }
-            Self::Production => "Every stage baked, no cache read or written (slow, shippable).",
+            Self::Production => {
+                "Every stage baked, movers at high fidelity, no cache read or written (slow, shippable)."
+            }
         }
     }
 }
@@ -69,20 +72,22 @@ enum ConfigField {
     SoftShadowSamples,
     DirectionTexelScale,
     BuildMode,
+    BakeFidelity,
 }
 
 impl ConfigField {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::ProbeSpacing,
         Self::LightmapDensity,
         Self::ShDensityFidelity,
         Self::SoftShadowSamples,
         Self::DirectionTexelScale,
         Self::BuildMode,
+        Self::BakeFidelity,
     ];
 
     fn is_numeric(self) -> bool {
-        self != Self::BuildMode
+        !matches!(self, Self::BuildMode | Self::BakeFidelity)
     }
 
     fn next(self, delta: isize) -> Self {
@@ -127,6 +132,9 @@ struct FormState {
     density_source: DensitySource,
     sh_density_fidelity_source: DensitySource,
     build_mode: BuildMode,
+    /// The mover-bounce fidelity an incremental build bakes; Production
+    /// always bakes high and names none.
+    fidelity: BakeFidelity,
     selected: ConfigField,
     editing: Option<ConfigField>,
     validation_error: Option<String>,
@@ -175,11 +183,14 @@ impl FormState {
             sh_density_fidelity_touched: args.sh_density_fidelity.is_some(),
             density_source,
             sh_density_fidelity_source,
-            build_mode: if args.release || args.no_cache {
+            // `--no-cache` bypasses the cache without asking for a ship bake,
+            // so only `--release` starts the form in Production.
+            build_mode: if args.release {
                 BuildMode::Production
             } else {
                 BuildMode::IncrementalBuild
             },
+            fidelity: args.bake_mode().fidelity(),
             selected: ConfigField::ProbeSpacing,
             editing: None,
             validation_error: None,
@@ -209,7 +220,7 @@ impl FormState {
             ConfigField::ShDensityFidelity => Some(&self.sh_density_fidelity),
             ConfigField::SoftShadowSamples => Some(&self.soft_shadow_samples),
             ConfigField::DirectionTexelScale => Some(&self.direction_texel_scale),
-            ConfigField::BuildMode => None,
+            ConfigField::BuildMode | ConfigField::BakeFidelity => None,
         }
     }
 
@@ -220,7 +231,7 @@ impl FormState {
             ConfigField::ShDensityFidelity => Some(&mut self.sh_density_fidelity),
             ConfigField::SoftShadowSamples => Some(&mut self.soft_shadow_samples),
             ConfigField::DirectionTexelScale => Some(&mut self.direction_texel_scale),
-            ConfigField::BuildMode => None,
+            ConfigField::BuildMode | ConfigField::BakeFidelity => None,
         }
     }
 
@@ -366,7 +377,9 @@ fn validate_field(field: ConfigField, value: &str) -> Result<ValidatedField, Str
             }
             Ok(ValidatedField::DirectionTexelScale(parsed))
         }
-        ConfigField::BuildMode => unreachable!("build mode has no numeric buffer"),
+        ConfigField::BuildMode | ConfigField::BakeFidelity => {
+            unreachable!("build mode and fidelity have no numeric buffer")
+        }
     }
 }
 
@@ -416,14 +429,18 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
         .transpose()?;
     match form.build_mode {
         BuildMode::IncrementalBuild => {
+            // A CLI `--no-cache` stays: it bypasses the cache at the chosen
+            // fidelity, never a ship bake.
             args.release = false;
-            args.no_cache = false;
+            args.bake_fidelity = Some(form.fidelity);
         }
         BuildMode::Production => {
-            // `release` alone selects the exact ship path; preserve `no_cache`
-            // as the distinct CLI-only cache-bypass choice.
+            // `release` alone selects the exact ship path, which bypasses
+            // the cache itself and always bakes high, so it names no
+            // fidelity and needs no `no_cache`.
             args.release = true;
             args.no_cache = false;
+            args.bake_fidelity = None;
         }
     }
     Ok(())
@@ -520,6 +537,19 @@ fn handle_key(form: &mut FormState, key: KeyEvent) -> Option<FormOutcome> {
             if form.selected == ConfigField::BuildMode =>
         {
             form.build_mode.toggle();
+            form.validation_error = None;
+            None
+        }
+        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+            if form.selected == ConfigField::BakeFidelity =>
+        {
+            // Production always bakes high; the field reads it and holds.
+            if form.build_mode == BuildMode::IncrementalBuild {
+                form.fidelity = match form.fidelity {
+                    BakeFidelity::Low => BakeFidelity::High,
+                    BakeFidelity::High => BakeFidelity::Low,
+                };
+            }
             form.validation_error = None;
             None
         }
@@ -637,6 +667,16 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
         form.build_mode.label().to_owned(),
         form.build_mode.guidance().to_owned(),
     );
+    append_field(
+        &mut lines,
+        form,
+        ConfigField::BakeFidelity,
+        "Mover bounce fidelity",
+        fidelity_value(form).to_owned(),
+        "Low: every mover bakes one posed bounce and keeps the SH base's later ones \
+         (fast, approximate). High: each mover's own light_bounces, as shipped (slow)."
+            .to_owned(),
+    );
     if let Some(error) = &form.validation_error {
         lines.push(Line::from(Span::styled(
             format!("Invalid value: {error}"),
@@ -646,11 +686,19 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), rows[0]);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "[Up/Down] field  [Left/Right] mode  [Enter] start  [Esc/q] cancel",
+            "[Up/Down] field  [Left/Right] choose  [Enter] start  [Esc/q] cancel",
             Style::default().fg(Color::DarkGray),
         ))),
         rows[1],
     );
+}
+
+/// The fidelity field as the form shows it: Production bakes high.
+fn fidelity_value(form: &FormState) -> &'static str {
+    match form.build_mode {
+        BuildMode::IncrementalBuild => form.fidelity.label(),
+        BuildMode::Production => "high (Production)",
+    }
 }
 
 fn section_heading(label: &str) -> Line<'static> {
@@ -823,6 +871,90 @@ mod tests {
         apply_outcome(&mut args, &form).unwrap();
         assert!(!args.release);
         assert!(!args.no_cache);
+    }
+
+    fn args_from(flags: &[&str]) -> Args {
+        crate::parse_args_from(
+            std::iter::once("input.map")
+                .chain(flags.iter().copied())
+                .map(str::to_owned),
+        )
+        .unwrap()
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    // AC 22 (MP6): a `--no-cache` launch confirmed unchanged stays an
+    // incremental build at the fidelity it names (low when none), with its
+    // cache bypass kept, and never becomes a release bake.
+    #[test]
+    fn a_no_cache_launch_confirmed_unchanged_bakes_its_fidelity_and_never_releases() {
+        use crate::bake_fidelity::BakeMode;
+        for (flags, fidelity) in [
+            (&["--no-cache"][..], BakeFidelity::Low),
+            (
+                &["--no-cache", "--bake-fidelity", "low"][..],
+                BakeFidelity::Low,
+            ),
+            (
+                &["--no-cache", "--bake-fidelity", "high"][..],
+                BakeFidelity::High,
+            ),
+        ] {
+            let mut args = args_from(flags);
+            let form = FormState::from_args(&args, None, None);
+            assert_eq!(form.build_mode, BuildMode::IncrementalBuild, "{flags:?}");
+            assert_eq!(form.fidelity, fidelity, "{flags:?}");
+
+            apply_outcome(&mut args, &form).unwrap();
+            assert!(!args.release, "{flags:?}");
+            assert!(args.no_cache, "{flags:?} keeps its cache bypass");
+            assert_eq!(
+                args.bake_mode(),
+                BakeMode::Interactive(fidelity),
+                "{flags:?}"
+            );
+        }
+    }
+
+    // AC 22: the build mode carries fidelity. An incremental build writes
+    // the field's fidelity back; Production names none and bakes high, so
+    // no build fails on a flag pair the author did not type.
+    #[test]
+    fn the_build_mode_carries_fidelity_and_production_names_none() {
+        use crate::bake_fidelity::BakeMode;
+        let mut args = default_args();
+        let mut form = FormState::from_args(&args, None, None);
+        assert_eq!(form.fidelity, BakeFidelity::Low);
+        assert_eq!(fidelity_value(&form), "low");
+
+        form.selected = ConfigField::BakeFidelity;
+        assert_eq!(handle_key(&mut form, key(KeyCode::Right)), None);
+        assert_eq!(form.fidelity, BakeFidelity::High);
+        apply_outcome(&mut args, &form).unwrap();
+        assert_eq!(args.bake_mode(), BakeMode::Interactive(BakeFidelity::High));
+        assert_eq!(args.bake_fidelity, Some(BakeFidelity::High));
+
+        form.build_mode = BuildMode::Production;
+        assert_eq!(fidelity_value(&form), "high (Production)");
+        handle_key(&mut form, key(KeyCode::Right));
+        assert_eq!(
+            form.fidelity,
+            BakeFidelity::High,
+            "Production holds the field"
+        );
+        apply_outcome(&mut args, &form).unwrap();
+        assert!(args.release);
+        assert_eq!(args.bake_fidelity, None, "Production names no fidelity");
+        assert_eq!(args.bake_mode(), BakeMode::Release);
+
+        let mut released = args_from(&["--release"]);
+        let form = FormState::from_args(&released, None, None);
+        assert_eq!(form.build_mode, BuildMode::Production);
+        apply_outcome(&mut released, &form).unwrap();
+        assert_eq!(released.bake_mode(), BakeMode::Release);
     }
 
     #[test]

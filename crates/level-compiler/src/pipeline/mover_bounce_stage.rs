@@ -10,14 +10,15 @@ use std::sync::Arc;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use crate::bake_fidelity::BakeMode;
 use crate::geometry::GeometryResult;
 use crate::map_data::{MapKinematicMover, MapLight};
 use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
     BounceBlocks, CarriedDepth, DepthReservation, MoverAbsentDepth, MoverBounceJob,
     MoverBounceRequest, MoverBounceStates, MoverChannelCost, MoverRecords, NearFieldDomain,
-    PosedMovers, PosedScene, ProbeCells, SkipBars, reserve_mover_tiles, sh_base_bounce_count,
-    skip_redundant_mid_poses,
+    PosedMovers, PosedScene, ProbeCells, SkipBars, SkipCounts, reserve_mover_tiles,
+    sh_base_bounce_count, skip_redundant_mid_poses,
 };
 use crate::partition::BspTree;
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
@@ -38,6 +39,9 @@ pub(super) struct BouncePlanInputs<'a> {
     pub(super) direct_lights: &'a [&'a MapLight],
     pub(super) uncompressed: bool,
     pub(super) tile_cap: u32,
+    /// What the build bakes, from the flags: its fidelity caps each mover's
+    /// posed bounces.
+    pub(super) mode: BakeMode,
 }
 
 /// The bounce half's request and what the SH gate prices for the channel.
@@ -47,7 +51,8 @@ pub(super) struct BounceHalfPlan {
 }
 
 /// Pose every analysed mover at each of its poses, its `light_bounces`
-/// clamped to the SH base's bounce count, with its near-field domain and the
+/// clamped to the SH base's bounce count and capped by the build's fidelity
+/// (`low` bakes at most 1), with its near-field domain and the
 /// valid probes inside it, and price the channel: the scenes, the probe
 /// grid's valid probes (classified now, with no ray), the domains and the
 /// direct half's bound. No analysed mover or no probe grid, no job.
@@ -81,12 +86,14 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let domain = NearFieldDomain::new(analysed, inputs.probe_spacing);
+            let high_bounces = mover
+                .light_bounces
+                .map_or(count, |bounces| bounces.min(count));
             jobs.push(MoverBounceJob {
                 mover_id: mover.mover_id,
                 label: analysed.label.clone(),
-                bounces: mover
-                    .light_bounces
-                    .map_or(count, |bounces| bounces.min(count)),
+                bounces: inputs.mode.fidelity().bounces(high_bounces),
+                high_bounces,
                 scenes,
                 domain_probes: domain.valid_probes(&layout),
                 domain,
@@ -134,7 +141,8 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
 /// through its author ramp first, which no memo keys, so a ramp edit
 /// re-decides skips over the memoized states. `base` is id 34 and
 /// `depth_tiles` id 59 before mover tiles reserve their range, the bases
-/// the bars read. Logs one line per mover with mid poses.
+/// the bars read. Logs one line per mover with mid poses, and hands back
+/// each such mover's counts by id.
 pub(super) fn skip_mid_poses(
     states: &mut [MoverBounceStates],
     movers: &[MapKinematicMover],
@@ -142,10 +150,11 @@ pub(super) fn skip_mid_poses(
     base: &OctahedralShVolumeSection,
     depth_tiles: &ProbeDepthTiles,
     uncompressed: bool,
-) {
+) -> Vec<(u32, SkipCounts)> {
     if states.iter().all(|states| states.pose_count <= 2) {
-        return;
+        return Vec::new();
     }
+    let mut skipped = Vec::new();
     let records = MoverRecords::new(movers, poses);
     let bars = SkipBars::new(base, MoverAbsentDepth::new(base, depth_tiles), uncompressed);
     for states in states.iter_mut().filter(|states| states.pose_count > 2) {
@@ -168,7 +177,9 @@ pub(super) fn skip_mid_poses(
             counts.squeezed,
             started.elapsed().as_secs_f64(),
         );
+        skipped.push((states.mover_id, counts));
     }
+    skipped
 }
 
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved

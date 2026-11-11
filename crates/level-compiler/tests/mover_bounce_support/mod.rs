@@ -493,10 +493,9 @@ pub fn round_trip_error(tile: &[[f32; 3]]) -> f32 {
     error
 }
 
-/// The bounce floor's measure: the largest change, in 8-bit sRGB levels, of
-/// a mid-grey receiver lit by one texel through the renderer's indirect
-/// scale and soft-knee tonemap.
-pub fn display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
+/// A texel as shown on a mid-grey receiver: 8-bit sRGB levels through the
+/// renderer's indirect scale and soft-knee tonemap.
+fn shown(rgb: [f32; 3]) -> [f32; 3] {
     let encode = |linear: f32| {
         let x = linear.clamp(0.0, 1.0);
         if x <= 0.003_130_8 {
@@ -505,16 +504,32 @@ pub fn display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
             1.055 * x.powf(1.0 / 2.4) - 0.055
         }
     };
-    let shown = |rgb: [f32; 3]| {
-        soft_knee_tonemap(rgb.map(|c| 0.5 * DEFAULT_INDIRECT_SCALE * c)).map(|c| 255.0 * encode(c))
-    };
+    soft_knee_tonemap(rgb.map(|c| 0.5 * DEFAULT_INDIRECT_SCALE * c)).map(|c| 255.0 * encode(c))
+}
+
+/// The bounce floor's measure: the largest change, in 8-bit sRGB levels, of
+/// a mid-grey receiver lit by one texel through the renderer's indirect
+/// scale and soft-knee tonemap.
+pub fn display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
+    signed_display_levels(a, b).abs()
+}
+
+/// [`display_levels`] with its sign: `a` shown minus `b` shown at the texel
+/// and channel where they differ most, negative where `a` reads darker.
+pub fn signed_display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
     a.iter()
         .zip(b)
         .flat_map(|(a, b)| {
             let (a, b) = (shown(*a), shown(*b));
-            (0..3).map(move |c| (a[c] - b[c]).abs())
+            (0..3).map(move |c| a[c] - b[c])
         })
-        .fold(0.0, f32::max)
+        .fold(0.0, |worst: f32, difference| {
+            if difference.abs() > worst.abs() {
+                difference
+            } else {
+                worst
+            }
+        })
 }
 
 /// Whether two f16 depth moments agree within f16 rounding: one unit in the

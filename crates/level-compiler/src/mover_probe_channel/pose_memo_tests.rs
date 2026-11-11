@@ -38,6 +38,7 @@ fn a_pose_key_folds_what_its_kind_bakes_from_and_nothing_else() {
         mover_id,
         label: analysed.label.clone(),
         bounces: 5,
+        high_bounces: 5,
         scenes: keep
             .iter()
             .enumerate()

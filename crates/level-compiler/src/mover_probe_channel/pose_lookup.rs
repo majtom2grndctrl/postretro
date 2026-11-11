@@ -1,6 +1,7 @@
-// The bounce half's memo lookup: every pose of every mover keyed, the
-// movers whose every pose hits reduced at once, and the poses left to bake.
-// See: context/lib/build_pipeline.md §Build Cache
+// The bounce half's memo lookup: every pose of every mover keyed, its `high`
+// entry served before the build's own count, the movers whose every pose
+// hits reduced at once, and the poses left to bake.
+// See: context/lib/build_pipeline.md §Build Cache (Bake fidelity)
 
 use super::bake::{MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, PoseSlot};
 use super::depth::MoverAbsentDepth;
@@ -9,6 +10,17 @@ use super::states::{MoverBounceStates, MoverPoseStates, reduce_poses};
 use crate::sh_bake::ProbeGridLayout;
 use crate::surface_materials::stats::BounceMaterials;
 use crate::surface_radiance::PatchSet;
+
+/// How one mover's poses resolved, for the Build Summary: per pose, in
+/// path order, the posed bounces its state holds, served from the memo or
+/// baked. A pose short of `high_bounces` shows less than a `high` build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MoverPoseBounces {
+    pub(crate) mover_id: u32,
+    pub(crate) label: String,
+    pub(crate) high_bounces: u32,
+    pub(crate) poses: Vec<u32>,
+}
 
 /// What a lookup reduces a mover with when every pose of it hits: the
 /// gathered id 34 and its depth tiles, which the depth floor reads, and
@@ -31,15 +43,19 @@ pub(crate) struct PoseLookup<'r, 'c> {
 }
 
 impl<'r, 'c> PoseLookup<'r, 'c> {
-    /// Key every pose of every job of `request` under `memo`, at its
-    /// effective bounce count, a mid pose over its domain's probes in
-    /// `layout` and static patches in `patches`. With `reduce`, read each
-    /// pose: a job whose every pose hits reduces at once, its raw poses
-    /// dropped; a job with a miss keeps only which poses hit, and the bake
-    /// reads those again when it reaches the job, so no raw pose is held
-    /// across movers. Without it (id 34 itself is baking, so no state to
-    /// reduce against exists yet, and no pose under its key was stored),
-    /// every pose bakes. Logs one `[cache]` line and one line per mover.
+    /// Key every pose of every job of `request` under `memo`, a mid pose
+    /// over its domain's probes in `layout` and static patches in
+    /// `patches`. With `reduce`, read each pose: first its entry at the
+    /// job's `high_bounces`, so the cache serves the best fidelity it holds,
+    /// then, where the build bakes fewer, its entry at the job's `bounces`.
+    /// A `high` build reads only `high`. A job whose every pose hits reduces
+    /// at once, its raw poses dropped; a job with a miss keeps only which
+    /// poses hit and at what count, and the bake reads those again when it
+    /// reaches the job, so no raw pose is held across movers. Without
+    /// `reduce` (id 34 itself is baking, so no state to reduce against
+    /// exists yet, and no pose under its key was stored), every pose bakes
+    /// at the job's `bounces`. Logs one `[cache]` line and one line per
+    /// mover.
     pub(crate) fn new(
         request: &'r MoverBounceRequest,
         memo: Option<PoseMemo<'c>>,
@@ -63,6 +79,7 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
                     (0..job.scenes.len())
                         .map(|_| PoseSlot {
                             key: None,
+                            bounces: job.bounces,
                             held: false,
                         })
                         .collect(),
@@ -81,10 +98,29 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             #[cfg(test)]
             let mut _held = Vec::new();
             for pose in 0..count {
-                let key = memo.key(job, pose, job.bounces, materials, &domain_patches);
-                let state = reduce.and_then(|_| {
-                    memo.get(&key, PoseKind::of(pose, count), layout, &job.domain_probes)
-                });
+                let kind = PoseKind::of(pose, count);
+                let read = |bounces: u32| {
+                    let key = memo.key(job, pose, bounces, materials, &domain_patches);
+                    let state = memo.get(&key, kind, layout, &job.domain_probes);
+                    (key, bounces, state)
+                };
+                // Best fidelity first: a `low` build serves a cached `high`
+                // pose before its own count, and bakes at its own on a miss.
+                let (key, bounces, state) = match reduce {
+                    Some(_) => {
+                        let high = read(job.high_bounces);
+                        if high.2.is_some() || job.bounces == job.high_bounces {
+                            high
+                        } else {
+                            read(job.bounces)
+                        }
+                    }
+                    None => (
+                        memo.key(job, pose, job.bounces, materials, &domain_patches),
+                        job.bounces,
+                        None,
+                    ),
+                };
                 #[cfg(test)]
                 if let Some(state) = &state {
                     _held.push(crate::live_bytes::hold(
@@ -94,6 +130,7 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
                 }
                 slots.push(PoseSlot {
                     key: Some(key),
+                    bounces,
                     held: state.is_some(),
                 });
                 states.push(state);
@@ -127,6 +164,22 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             PoseMemo::log_outcome(probed, missed, request.jobs.len(), lookup.pending.len());
         }
         lookup
+    }
+
+    /// Every job's poses in request order, at the count each resolves at:
+    /// the count it was served at or bakes at.
+    pub(crate) fn pose_bounces(&self, request: &MoverBounceRequest) -> Vec<MoverPoseBounces> {
+        request
+            .jobs
+            .iter()
+            .zip(&self.poses)
+            .map(|(job, slots)| MoverPoseBounces {
+                mover_id: job.mover_id,
+                label: job.label.clone(),
+                high_bounces: job.high_bounces,
+                poses: slots.iter().map(|slot| slot.bounces).collect(),
+            })
+            .collect()
     }
 
     /// The memo the bake reads held poses from and writes baked ones to.
@@ -196,9 +249,23 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
 }
 
 /// One line per mover: `hit` when every pose hit, else the poses that
-/// re-bake and what the termini did.
+/// re-bake and what the termini did; and, in a build baking fewer bounces
+/// than the mover's own, how many poses a `high` entry served.
 fn log_mover(job: &MoverBounceJob, slots: &[PoseSlot]) {
     let count = slots.len();
+    let served_high = if job.bounces == job.high_bounces {
+        0
+    } else {
+        slots
+            .iter()
+            .filter(|slot| slot.held && slot.bounces == job.high_bounces)
+            .count()
+    };
+    let served = if served_high == 0 {
+        String::new()
+    } else {
+        format!(", {served_high} served from high")
+    };
     let missed: Vec<String> = slots
         .iter()
         .enumerate()
@@ -207,7 +274,8 @@ fn log_mover(job: &MoverBounceJob, slots: &[PoseSlot]) {
         .collect();
     if missed.is_empty() {
         log::info!(
-            "[MoverLight] probe channel bounce memo: mover `{}` (#{}) hit ({count} pose(s))",
+            "[MoverLight] probe channel bounce memo: mover `{}` (#{}) hit ({count} \
+             pose(s){served})",
             job.label,
             job.mover_id,
         );
@@ -221,7 +289,7 @@ fn log_mover(job: &MoverBounceJob, slots: &[PoseSlot]) {
     };
     log::info!(
         "[MoverLight] probe channel bounce memo: mover `{}` (#{}) miss: {termini}; re-bakes \
-         pose(s) {} of {count}",
+         pose(s) {} of {count}{served}",
         job.label,
         job.mover_id,
         missed.join(", "),

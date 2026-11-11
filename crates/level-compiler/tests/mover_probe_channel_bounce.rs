@@ -2,7 +2,8 @@
 //! static brush at its pose and against an animated light added to the
 //! bright room. Every SH base here is stored at uniform L0 (`_sh_coarsen "0"`),
 //! so id 34 reads back per probe; the references and today's id 34 build uncompressed, so they
-//! read the gathered tile itself, and the channel builds BC6H, as production does.
+//! read the gathered tile itself, and the channel builds BC6H `--release`, as production ships:
+//! each mover's own `light_bounces`, as the references' static brushes bounce.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 mod mover_bounce_support;
@@ -19,6 +20,8 @@ use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
 const UNCOMPRESSED: &[&str] = &["--uncompressed-irradiance"];
+/// The ship bake: high fidelity, whatever the interactive default.
+const RELEASE: &[&str] = &["--release"];
 
 fn uniform(map: &str) -> String {
     with_worldspawn_key(map, "_sh_coarsen", "0")
@@ -50,7 +53,7 @@ fn closet() -> &'static Closet {
     BUILT.get_or_init(|| {
         let map = uniform(&dev_map("mover-closet.map"));
         Closet {
-            channel: build(&map, "mover-closet", Cache::Cold, &[]),
+            channel: build(&map, "mover-closet", Cache::Cold, RELEASE),
             today: build(&map, "mover-closet", Cache::Cold, UNCOMPRESSED),
             reference: build(
                 &uniform(&dev_map("mover-closet-static-door.map")),
@@ -234,7 +237,7 @@ fn setpiece() -> &'static Setpiece {
         let map = uniform(&dev_map("mover-setpiece.map"));
         let raised = staticize(&map, "setpiece_room", "setpiece_room_raised");
         Setpiece {
-            channel: build(&map, "mover-setpiece", Cache::Cold, &[]),
+            channel: build(&map, "mover-setpiece", Cache::Cold, RELEASE),
             today: build(&map, "mover-setpiece", Cache::Cold, UNCOMPRESSED),
             reference: build(
                 &raised,
@@ -329,7 +332,7 @@ fn an_animated_light_leaves_the_bounce_and_depth_blocks_unchanged() {
     let animated = "{\n\"classname\" \"light\"\n\"origin\" \"320 224 200\"\n\"light\" \
                     \"200\"\n\"_falloff_range\" \"600\"\n\"style\" \"1\"\n}\n";
     let map = format!("{}\n{animated}", uniform(&dev_map("mover-closet.map")));
-    let with_animated = build(&map, "mover-closet", Cache::Cold, &[]);
+    let with_animated = build(&map, "mover-closet", Cache::Cold, RELEASE);
     let (before, after) = (
         channel(&closet.channel.prl).expect("id 57"),
         channel(&with_animated.prl).expect("id 57"),

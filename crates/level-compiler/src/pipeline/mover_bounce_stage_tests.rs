@@ -10,6 +10,7 @@ use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 
 use super::{BounceHalfPlan, BouncePlanInputs, plan_bounce_half};
 use crate::bake_control::BakeControl;
+use crate::bake_fidelity::{BakeFidelity, BakeMode};
 use crate::cache::StageCache;
 use crate::fixture_pipeline::{FixturePipeline, fixture_path, load_map};
 use crate::governor::Governor;
@@ -64,12 +65,30 @@ fn with_ctx<R>(fixture: &FixturePipeline, f: impl FnOnce(&ShBakeCtx<'_>, &MoverP
 
 const CONFIG: ShConfig = ShConfig { probe_spacing: 1.0 };
 
-/// The bounce half's plan as the pipeline makes it.
+/// The bounce half's plan as the pipeline makes it, at high fidelity: each
+/// mover's own `light_bounces`.
 fn plan_half(
     fixture: &FixturePipeline,
     ctx: &ShBakeCtx<'_>,
     poses: &MoverPoses,
     fill: f32,
+) -> BounceHalfPlan {
+    plan_half_at(
+        fixture,
+        ctx,
+        poses,
+        fill,
+        BakeMode::Interactive(BakeFidelity::High),
+    )
+}
+
+/// [`plan_half`] for a build baking `mode`.
+fn plan_half_at(
+    fixture: &FixturePipeline,
+    ctx: &ShBakeCtx<'_>,
+    poses: &MoverPoses,
+    fill: f32,
+    mode: BakeMode,
 ) -> BounceHalfPlan {
     let direct_lights: Vec<_> = ctx
         .static_lights
@@ -101,6 +120,7 @@ fn plan_half(
         direct_lights: &direct_lights,
         uncompressed: false,
         tile_cap: MAX_PROBE_DEPTH_TILES,
+        mode,
     })
     .expect("the bounce half plans")
 }

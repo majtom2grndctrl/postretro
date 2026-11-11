@@ -72,14 +72,14 @@ pub(crate) use lights::{ChannelLightSources, channel_lights};
 pub(crate) use near_field::NearFieldDomain;
 #[cfg(test)]
 pub(crate) use pose_bake::PosedBounce;
-pub(crate) use pose_lookup::{HitReduction, PoseLookup};
+pub(crate) use pose_lookup::{HitReduction, MoverPoseBounces, PoseLookup};
 pub(crate) use pose_memo::PoseMemo;
 pub(crate) use posed_scene::PosedScene;
 pub(crate) use posed_solid::PosedMovers;
 #[cfg(test)]
 pub(crate) use posed_solid::enclosure_inset;
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
-pub(crate) use skip::{SkipBars, skip_redundant_mid_poses};
+pub(crate) use skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
 #[cfg(test)]
 pub(crate) use states::BounceProbe;
 pub(crate) use states::MoverBounceStates;

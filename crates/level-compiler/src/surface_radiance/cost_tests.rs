@@ -8,7 +8,7 @@ use super::layer::SH_PATCH_LAYER_STAGE_ID;
 use super::layer_set::LayerPlan;
 use super::patches::{PatchSet, Side};
 use super::sum::PatchRadiance;
-use super::test_scene::{Scene, entries, point, room_lights};
+use super::test_scene::{Scene, baked_entries, point, room_lights};
 use crate::bake_control::BakeControl;
 use crate::bake_counters::counted;
 use crate::cache::StageCache;
@@ -298,7 +298,10 @@ fn layer_entries_and_id_34_are_byte_identical_at_one_worker_and_many() {
         let cache = StageCache::new(dir.path()).unwrap();
         let (section, counts) = scene.bake(&lights, Some(&cache), threads);
         assert_eq!(counts.layers_shaded, 4, "{counts:?}");
-        (section, entries(dir.path()))
+        (
+            section,
+            baked_entries(dir.path(), &scene.volume_key(&lights)),
+        )
     };
     let (one, one_entries) = bake(1);
     let (many, many_entries) = bake(8);

@@ -3,6 +3,7 @@
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::bake_time::BakeTimeRecord;
 use super::bounce::{add_later_bounces_keeping, later_bounce_layers, later_bounce_progress_units};
 use super::gather::{PatchGather, PatchLookup};
 use super::layer::LayerKeys;
@@ -18,8 +19,8 @@ use crate::light_namespaces::StaticBakedLights;
 use crate::mover_probe_channel::PosedBounce;
 use crate::mover_probe_channel::{
     AbsentBounceMemo, AbsentLaterBounces, HitReduction, MoverAbsentDepth, MoverBounceBake,
-    MoverBounceJob, MoverBounceRequest, MoverBounceStates, PoseLookup, PoseMemo, StaticBounce,
-    bake_mover_bounce, held_progress_units,
+    MoverBounceJob, MoverBounceRequest, MoverBounceStates, MoverPoseBounces, PoseLookup, PoseMemo,
+    StaticBounce, bake_mover_bounce, held_progress_units,
 };
 use crate::sh_bake::{
     GatheredVolume, ProbeDepthTiles, RadianceSource, ShBakeCtx, ShConfig, animation_tables,
@@ -62,6 +63,12 @@ pub(crate) struct MoverBounceOutcome {
     /// The bake stopped past the tile range before every job ran: the jobs
     /// from there on hold no states, so the depth they carry is unknown.
     pub(crate) stopped: bool,
+    /// One per production job, in request order: the posed bounces each
+    /// pose holds, served or baked.
+    pub(crate) pose_bounces: Vec<MoverPoseBounces>,
+    /// Id 34's bake time: this build's own when it baked id 34, else the
+    /// time recorded under its volume key, else `None`.
+    pub(crate) sh_base_bake_time: Option<std::time::Duration>,
     /// Each pose's re-bake, when the request keeps them: the full re-bake.
     #[cfg(test)]
     pub(crate) poses: Vec<PosedBounce>,
@@ -99,12 +106,16 @@ fn outcome(
     lookup: PoseLookup<'_, '_>,
     movers: &MoverBounceRequest,
     baked: MoverBounceBake,
+    sh_base_bake_time: Option<std::time::Duration>,
 ) -> MoverBounceOutcome {
     let stopped = baked.stopped_at.is_some();
+    let pose_bounces = lookup.pose_bounces(movers);
     let (states, _baked) = lookup.finish(movers, baked);
     MoverBounceOutcome {
         movers: states,
         stopped,
+        pose_bounces,
+        sh_base_bake_time,
         #[cfg(test)]
         poses: _baked.poses,
     }
@@ -160,6 +171,11 @@ fn hold_absent(absent: Option<&AbsentLaterBounces>) -> Option<crate::live_bytes:
 /// later bounces from their memo, gathering them afresh only on its miss. A
 /// mover at `light_bounces` 0 needs neither. An empty request keeps nothing
 /// extra and bakes today's bytes.
+///
+/// A build that bakes id 34 times it, layers to gather without the movers,
+/// and records that time under the volume's key ([`BakeTimeRecord`]); a
+/// volume hit reads the recorded time. Either is handed on for the Build
+/// Summary's `--release` projection.
 // `bake_sh_base`'s inputs plus the request.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_sh_base_with_movers(
@@ -335,7 +351,8 @@ pub(crate) fn bake_sh_base_with_movers(
         if !movers.is_empty() {
             stage_events::record(stage_events::MOVER_BOUNCE_DONE);
         }
-        let outcome = outcome(lookup, movers, baked);
+        let recorded = BakeTimeRecord::new(volume.cache, &volume.key).get();
+        let outcome = outcome(lookup, movers, baked, recorded);
         return (
             ShBase {
                 section,
@@ -345,6 +362,9 @@ pub(crate) fn bake_sh_base_with_movers(
         );
     }
 
+    // Id 34's own bake, from its layers to its gather, without the movers':
+    // the time a mover's `--release` bounce bake is projected from.
+    let id34_started = std::time::Instant::now();
     let layers = resolve_layers(
         &ctx.ray_ctx(),
         &patches,
@@ -422,6 +442,10 @@ pub(crate) fn bake_sh_base_with_movers(
         ),
         crate::live_bytes::hold("probe depth tiles", depth_tiles.heap_bytes()),
     ];
+    let id34_time = id34_started.elapsed();
+    if let Some((_, volume)) = &caches {
+        BakeTimeRecord::new(volume.cache, &volume.key).put(id34_time);
+    }
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
     let baked = {
@@ -457,7 +481,7 @@ pub(crate) fn bake_sh_base_with_movers(
     if let Some((_, volume)) = &caches {
         volume.store(&mut section, &depth_tiles);
     }
-    let outcome = outcome(lookup, movers, baked);
+    let outcome = outcome(lookup, movers, baked, Some(id34_time));
     #[cfg(test)]
     crate::live_bytes::phase("volume store");
     (

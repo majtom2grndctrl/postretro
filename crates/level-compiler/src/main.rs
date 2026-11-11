@@ -9,6 +9,7 @@ pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub(crate) mod bake_content_keys;
 pub mod bake_control;
+pub(crate) mod bake_fidelity;
 pub mod bc5;
 pub mod bc6h;
 pub mod billboard_direct_scatter_bake;
@@ -800,6 +801,9 @@ pub struct Args {
     /// the warm/cold branches need no change — both flags route the stage cache
     /// to `None`. Passing both is fine (identical effect, no conflict).
     release: bool,
+    /// `--bake-fidelity` as typed; `None` when not named. The parser refuses
+    /// it beside `--release`, and the TUI's Production mode clears it.
+    bake_fidelity: Option<bake_fidelity::BakeFidelity>,
     /// True when any quality-setting flag was supplied explicitly. The TUI
     /// configuration screen only appears for the unqualified interactive path.
     quality_flag_supplied: bool,
@@ -846,6 +850,15 @@ pub struct Args {
     sh_density_force_scale: Option<u8>,
 }
 
+impl Args {
+    /// What the build bakes: the stages read this, never whether a stage
+    /// cache opened (a cache directory that cannot be created bakes the
+    /// interactive fidelity, not the ship bake).
+    pub(crate) fn bake_mode(&self) -> bake_fidelity::BakeMode {
+        bake_fidelity::BakeMode::of(self.release, self.bake_fidelity)
+    }
+}
+
 fn parse_args() -> anyhow::Result<Args> {
     parse_args_from(std::env::args().skip(1))
 }
@@ -881,7 +894,8 @@ fn help_text() -> String {
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
          --working-set-max-size <SIZE> Per-stage host-RAM ceiling for the SH base, SH-delta and lightmap bakes; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
-         --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache). The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \
+         --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache) and movers bake high fidelity. The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \
+         --bake-fidelity <low|high> Interactive mover lighting fidelity: low is fast and the Build Summary marks each mover it shortens; high bakes every mover as --release does; not allowed with --release, which always bakes high (default: low)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          --probe-depth-tile-cap <N> Probe depth tiles (id 59's and the movers' live tiles together) a level may hold, at most {probe_depth_tile_max}; lower only to test the tile trim and range error (default: {probe_depth_tile_max})\n    \
          --mover-payload-resident-bar <SIZE> Bytes of each mover probe channel payload block kept resident in id 57 before it streams with id 50's cells, at most {mover_payload_bar}; lower only to test streamed placement (default: {mover_payload_bar})\n    \
@@ -966,6 +980,7 @@ where
     let mut working_set_max_bytes = working_set::DEFAULT_MAX_BYTES;
     let mut no_cache = false;
     let mut release = false;
+    let mut bake_fidelity = None;
     let mut quality_flag_supplied = false;
     let mut uncompressed_irradiance = false;
     let mut probe_depth_tile_cap = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
@@ -1116,6 +1131,11 @@ where
                 release = true;
                 quality_flag_supplied = true;
             }
+            "--bake-fidelity" => {
+                let value = flag_value(&mut args, "--bake-fidelity")?;
+                bake_fidelity = Some(bake_fidelity::BakeFidelity::parse(&value)?);
+                quality_flag_supplied = true;
+            }
             "--uncompressed-irradiance" => {
                 uncompressed_irradiance = true;
             }
@@ -1209,10 +1229,17 @@ where
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
              [--sh-density-fidelity <MULTIPLIER>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--working-set-max-size <SIZE>] [--no-cache] [--release]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--working-set-max-size <SIZE>] [--no-cache] [--release] [--bake-fidelity <low|high>]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
+
+    // Read from the flags as typed, before the TUI can change either, so a
+    // ship bake never reads as low and no build fails on a pair the author
+    // did not type.
+    if release && bake_fidelity.is_some() {
+        anyhow::bail!("--release always bakes high fidelity; remove --bake-fidelity or --release");
+    }
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
 
@@ -1234,6 +1261,7 @@ where
         working_set_max_bytes,
         no_cache,
         release,
+        bake_fidelity,
         quality_flag_supplied,
         uncompressed_irradiance,
         probe_depth_tile_cap,
@@ -2709,6 +2737,7 @@ mod tests {
             &["--direction-texel-scale", "4"],
             &["--release"],
             &["--no-cache"],
+            &["--bake-fidelity", "high"],
         ];
 
         for quality_args in cases {
@@ -2721,6 +2750,82 @@ mod tests {
                 parsed.quality_flag_supplied,
                 "{quality_args:?} must suppress the pre-bake screen"
             );
+        }
+    }
+
+    fn parse(args: &[&str]) -> anyhow::Result<Args> {
+        parse_args_from(
+            std::iter::once("input.map")
+                .chain(args.iter().copied())
+                .map(str::to_owned),
+        )
+    }
+
+    // AC 21: `--release` beside `--bake-fidelity`, either value and either
+    // order, fails at parse, before any stage, naming both flags.
+    #[test]
+    fn release_beside_bake_fidelity_is_a_usage_error_naming_both_flags() {
+        use bake_fidelity::{BakeFidelity, BakeMode};
+        for value in ["low", "high"] {
+            for args in [
+                ["--release", "--bake-fidelity", value],
+                ["--bake-fidelity", value, "--release"],
+            ] {
+                let error = parse(&args).expect_err("a usage error").to_string();
+                assert!(
+                    error.contains("--release") && error.contains("--bake-fidelity"),
+                    "{args:?}: {error}"
+                );
+            }
+        }
+        assert_eq!(
+            parse(&["--release"]).unwrap().bake_mode(),
+            BakeMode::Release
+        );
+        assert_eq!(
+            parse(&["--release", "--no-cache"]).unwrap().bake_mode(),
+            BakeMode::Release
+        );
+        for (args, fidelity) in [
+            (&["--bake-fidelity", "low"][..], BakeFidelity::Low),
+            (&["--bake-fidelity", "high"][..], BakeFidelity::High),
+            (
+                &["--no-cache", "--bake-fidelity", "high"][..],
+                BakeFidelity::High,
+            ),
+        ] {
+            assert_eq!(
+                parse(args).unwrap().bake_mode(),
+                BakeMode::Interactive(fidelity),
+                "{args:?}"
+            );
+        }
+        for invalid in [&["--bake-fidelity", "medium"][..], &["--bake-fidelity"][..]] {
+            assert!(parse(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(help_text().contains("--bake-fidelity <low|high>"));
+    }
+
+    // AC 21: with no fidelity named, an interactive build bakes low, whether
+    // or not its cache is read: `--no-cache` alone, a cache directory, or
+    // none named. The mode reads the flags, never the cache handle, so a
+    // cache directory that cannot be created (`construct_stage_cache`
+    // returns `None`, as for `--release`) still bakes low.
+    #[test]
+    fn an_interactive_build_with_no_fidelity_named_bakes_low_whatever_its_cache() {
+        use bake_fidelity::{BakeFidelity, BakeMode};
+        for args in [
+            &[][..],
+            &["--no-cache"][..],
+            &["--cache-dir", "/nonexistent/prl-cache"][..],
+        ] {
+            let parsed = parse(args).unwrap();
+            assert_eq!(
+                parsed.bake_mode(),
+                BakeMode::Interactive(BakeFidelity::Low),
+                "{args:?}"
+            );
+            assert!(!parsed.release, "{args:?}");
         }
     }
 

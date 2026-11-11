@@ -109,7 +109,9 @@ fn parity_maps(dir: &Path) -> Vec<PathBuf> {
     vec![no_movers, unchanged]
 }
 
-/// Compile `map` cold with `compiler` into `out`.
+/// Compile `map` with `compiler` into `out` as the ship bake, `--release`: cold, and at high
+/// bake fidelity on this branch. The parent bakes every mover's own `light_bounces` cold, as
+/// `--release` does here, and takes `--release` as its own cold bake, so both name it.
 fn compile(compiler: &Path, map: &Path, out: &Path) -> PathBuf {
     std::fs::create_dir_all(out).expect("create output directory");
     let prl = out
@@ -119,7 +121,7 @@ fn compile(compiler: &Path, map: &Path, out: &Path) -> PathBuf {
         .arg(map)
         .arg("-o")
         .arg(&prl)
-        .args(["--no-cache", "--no-tui", "--jobs", PARITY_JOBS])
+        .args(["--release", "--no-tui", "--jobs", PARITY_JOBS])
         .arg("--baked-root")
         .arg(out.join("baked"))
         .env(REACH_VERIFY_ENV, "0")

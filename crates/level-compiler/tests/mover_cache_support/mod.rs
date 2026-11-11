@@ -56,6 +56,8 @@ pub struct Scene {
     /// The plate's `light_poses` and `light_bounces`, when authored.
     pub plate_poses: Option<&'static str>,
     pub plate_bounces: Option<&'static str>,
+    /// The shutter's `light_bounces`, when authored.
+    pub shutter_bounces: Option<&'static str>,
     /// A waypoint between the shutter's two, when its path has three.
     pub shutter_middle: Option<[i32; 3]>,
 }
@@ -73,6 +75,7 @@ impl Default for Scene {
             plate_ramp: None,
             plate_poses: None,
             plate_bounces: None,
+            shutter_bounces: None,
             shutter_middle: None,
         }
     }
@@ -162,9 +165,12 @@ pub fn map(scene: &Scene) -> String {
             ),
             waypoint("plate_a", "plate_b", [0, 0, 104]),
             waypoint("plate_b", "", scene.plate_last),
-            mover(
+            mover_with(
                 "shutter",
                 "shutter_a",
+                &scene.shutter_bounces.map_or(String::new(), |bounces| {
+                    format!("\"light_bounces\" \"{bounces}\"\n")
+                }),
                 box_brush([128, -96, 16], [144, 96, 160], 1),
             ),
         ]);
@@ -263,7 +269,8 @@ pub fn section(prl: &Path, id: SectionId) -> Option<Vec<u8>> {
 
 pub const JOBS: u32 = 6;
 
-/// The base map's cold build with a cache: what every warm edit starts from.
+/// The base map's cold build with a cache, at the interactive default
+/// (`low`) fidelity: what every warm edit starts from.
 pub fn base() -> &'static (tempfile::TempDir, Built) {
     static BASE: OnceLock<(tempfile::TempDir, Built)> = OnceLock::new();
     BASE.get_or_init(|| {
@@ -271,6 +278,36 @@ pub fn base() -> &'static (tempfile::TempDir, Built) {
         let built = build(&Scene::default(), CacheMode::Fill(cache.path()), JOBS);
         (cache, built)
     })
+}
+
+/// `--bake-fidelity high`: each mover's own `light_bounces`.
+pub const HIGH: &[&str] = &["--bake-fidelity", "high"];
+
+/// [`base`] built `--bake-fidelity high`: its cache holds `high` entries.
+pub fn high_base() -> &'static (tempfile::TempDir, Built) {
+    static BASE: OnceLock<(tempfile::TempDir, Built)> = OnceLock::new();
+    BASE.get_or_init(|| {
+        let cache = tempfile::tempdir().expect("create high base cache");
+        let built = build_with(&Scene::default(), CacheMode::Fill(cache.path()), JOBS, HIGH);
+        (cache, built)
+    })
+}
+
+/// The whole packed PRL.
+pub fn prl_bytes(built: &Built) -> Vec<u8> {
+    std::fs::read(&built.prl).expect("read the packed PRL")
+}
+
+/// Assert two PRLs are byte-identical, naming the first difference.
+pub fn assert_same_prl(a: &Built, b: &Built, what: &str) {
+    let (a, b) = (prl_bytes(a), prl_bytes(b));
+    assert!(
+        a == b,
+        "{what}: {} B against {} B, first difference at byte {:?}",
+        a.len(),
+        b.len(),
+        a.iter().zip(&b).position(|(a, b)| a != b)
+    );
 }
 
 pub fn copy_dir(from: &Path, to: &Path) {
@@ -304,17 +341,10 @@ pub fn warm_over(scene: &Scene, cache: &Path) -> String {
 pub fn warm_over_with(scene: &Scene, cache: &Path, flags: &[&str]) -> String {
     let warm = build_with(scene, CacheMode::Warm(cache), JOBS, flags);
     let cold = build_with(scene, CacheMode::Cold, JOBS, flags);
-    let (warm_bytes, cold_bytes) = (
-        std::fs::read(&warm.prl).expect("read warm PRL"),
-        std::fs::read(&cold.prl).expect("read cold PRL"),
-    );
-    assert!(
-        warm_bytes == cold_bytes,
-        "the warm PRL equals the edited map's cold PRL: {} B against {} B, first difference \
-         at byte {:?}",
-        warm_bytes.len(),
-        cold_bytes.len(),
-        warm_bytes.iter().zip(&cold_bytes).position(|(a, b)| a != b)
+    assert_same_prl(
+        &warm,
+        &cold,
+        "the warm PRL equals the edited map's cold PRL",
     );
     assert!(
         section(&cold.prl, SectionId::MoverProbeChannel).is_some(),

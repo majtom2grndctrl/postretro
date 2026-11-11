@@ -256,7 +256,10 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
 
         let owed_now: Vec<bool> = agents
             .iter()
-            .map(|&(id, _)| reg.exists(id) && owed(&enemy_agent(&reg, id)))
+            .map(|&(id, _)| {
+                // Steering skips the dead, so a corpse's last request is not a wait.
+                reg.exists(id) && player_hp(&reg, id) > 0.0 && owed(&enemy_agent(&reg, id))
+            })
             .collect();
 
         let steer_start = Instant::now();
@@ -318,39 +321,6 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
                 open_wait[slot] = None;
             }
         }
-    }
-    // The longest open wait's agent state, to tell a steering exemption or a
-    // measurement artifact (steering sees no drift: `drift_wait_ticks` 0) from
-    // a drift waiter the fair queue never reached (`drift_wait_ticks` large).
-    if let Some((slot, wait)) = open_wait
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, wait)| wait.map(|wait| (slot, wait)))
-        .max_by_key(|&(_, wait)| wait)
-        .filter(|&(_, wait)| wait > 60)
-    {
-        let (id, class) = agents[slot];
-        let agent = enemy_agent(&reg, id);
-        let brain = reg.get_component::<BrainComponent>(id).unwrap();
-        eprintln!(
-            "[ReplanStress] longest open wait {wait} ticks: slot {slot} class {class} | drift_wait_ticks {} cooldown {} blocked {} arrived {} pin_escape {} ride {} path {} cursor {} stuck {} unstick {} | dest {:?} planned {:?} | pos {:?} | target {:?} slot {:?} hp {}",
-            agent.drift_wait_ticks,
-            agent.replan_cooldown_ticks,
-            agent.blocked,
-            agent.arrived,
-            agent.pin_escape.is_some(),
-            agent.ride.is_some(),
-            agent.path.len(),
-            agent.waypoint_cursor,
-            agent.stuck_ticks,
-            agent.unstick_window_remaining,
-            agent.destination,
-            agent.planned_destination,
-            reg.get_component::<Transform>(id).unwrap().position,
-            enemy_acquired_target(&reg, id),
-            brain.combat_slot,
-            player_hp(&reg, id),
-        );
     }
     for (slot, &(_, class)) in agents.iter().enumerate() {
         if let Some(wait) = open_wait[slot] {
@@ -427,6 +397,39 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
         percentile(&steer_times, 0.95).as_secs_f64() * 1e6,
         steer_times.last().unwrap().as_secs_f64() * 1e6,
     );
+    // The longest open wait's agent state, to tell a steering exemption or a
+    // measurement artifact (steering sees no drift: `drift_wait_ticks` 0) from
+    // a drift waiter the fair queue never reached (`drift_wait_ticks` large).
+    if let Some((slot, wait)) = open_wait
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, wait)| wait.map(|wait| (slot, wait)))
+        .max_by_key(|&(_, wait)| wait)
+        .filter(|&(_, wait)| wait > 60)
+    {
+        let (id, class) = agents[slot];
+        let agent = enemy_agent(&reg, id);
+        let brain = reg.get_component::<BrainComponent>(id).unwrap();
+        eprintln!(
+            "[ReplanStress] longest open wait {wait} ticks: slot {slot} class {class} | drift_wait_ticks {} cooldown {} blocked {} arrived {} pin_escape {} ride {} path {} cursor {} stuck {} unstick {} | dest {:?} planned {:?} | pos {:?} | target {:?} slot {:?} hp {}",
+            agent.drift_wait_ticks,
+            agent.replan_cooldown_ticks,
+            agent.blocked,
+            agent.arrived,
+            agent.pin_escape.is_some(),
+            agent.ride.is_some(),
+            agent.path.len(),
+            agent.waypoint_cursor,
+            agent.stuck_ticks,
+            agent.unstick_window_remaining,
+            agent.destination,
+            agent.planned_destination,
+            reg.get_component::<Transform>(id).unwrap().position,
+            enemy_acquired_target(&reg, id),
+            brain.combat_slot,
+            player_hp(&reg, id),
+        );
+    }
 }
 
 #[test]

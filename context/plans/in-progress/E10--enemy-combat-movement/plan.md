@@ -258,7 +258,6 @@ Hot paths touched: the per-tick AI pass (arbitration adds one batch pass; no per
   - The B20 and B38 assertions were tightened.
 - **Deliberately left** (owner call or follow-up):
   - **Client walk rate includes knockback.** The host's walk rate excludes knockback; the client's interpolated speed includes it, so a shove quickens a client's stride. Fixing it needs enemy velocity on the wire. Documented at both sites.
-  - **Strafe replan demand.** Strafe re-aims its goal every tick, so a strafer earns a drift replan about every 0.13 s. At about 30 strafers the 4-per-tick drift tier saturates and chasers fall to staleness replans. A fix changes the feel of the orbit, so it is an owner call.
   - **Reloads cancel windups.** Any reload cancels every projectile windup, because the weapon refresh runs on each generation bump. That predates the branch, and P29 accepts the refresh it spends.
   - **Removed token fails open.** A reload that removes a token an attack still draws via the spawn-time fallback leaves that attack drawing nothing. It warns once per process.
   - **Removed profile is silent.** A reload removing a running pool's profile falls back to `default` without a warning; only the level-load warning exists.
@@ -269,9 +268,17 @@ Hot paths touched: the per-tick AI pass (arbitration adds one batch pass; no per
   - **Validation nits.** Profile overrides that name no field are accepted; types are wider than validation for `with` placement; TS and Luau differ on non-table arguments.
   - **The latched P15 rule counts from the frame-end drain under catch-up frames.** This is engine-wide and shared with traps.
   - **The pool request list is not saved.** It is unreachable today because no save exists. `AttackPoolRequest` derives serde, and the constraint goes into `entity_model.md` §7c at landing.
+- **Replan stress row (post-review, owner-requested).** `replan_stress_row` (`crates/ai/src/replan_stress_tests.rs`, `#[ignore]`) runs a wave of 0–128 enemies plus 8 later-spawned chasers around a moving player for 600 ticks, and prints replan waits and AI and steering tick cost. Run on the owner's Windows desktop (GTX 1660 Super, release, Defender active), because the Mac was busy:
+  - **Starvation found and fixed.** Strafe demand fills the 4-per-tick budget from about 30 strafers, and the drift tier admitted in slot order. With 128 strafers a late chaser waited up to 360 ticks (6 s) on a stale route. The drift tier now serves the longest waiter first (`AgentComponent::drift_wait_ticks`; `drift_tier_serves_longest_waiter_before_earlier_slots`). The same wave's worst wait is now 3 ticks.
+  - **AI cost predates strafe.** Median AI tick, strafe vs plain chase: 32 enemies 0.58 vs 1.05 ms; 64, 1.43 vs 3.05 ms; 128, 4.0 vs 8.8 ms. The superlinear growth is the engaged-wave cost, not strafe. That belongs to the `perf-ai-tick-cost` draft, not this branch. Strafe is cheaper partly because few strafers hold a ring slot: 17 of 128 at the end of the run.
+  - **The fair budget is a linear wait.** A chase wave whose demand always exceeds the budget waits about N/4 ticks each: 24 ticks (0.4 s) at 128. That is the budget's ceiling, also for the perf draft.
+  - **Infighting vs focused.** Peer hits every 0.5 s on one wave enemy in eight. With retaliation, 128 enemies spread over 70 targets, 94 hold a slot and move, waits reach 15 ticks at most, and AI cost is unchanged (3.9 vs 4.0 ms). A focused wave's counts match plain strafe.
+  - **Authoring trap, for docs at landing.** An omitted `retaliation` block is the default window, not off. A faction pair's authored tolerance outranks the archetype tolerance. An author who wants enemies to ignore friendly fire must raise the tolerance.
+  - **Measurement notes.** Dead enemies keep their last destination; steering skips them, and the row now excludes them. Waits and counts are deterministic across runs; only tick timings vary, by under 10%.
 - **Landing docs** (`context/lib`):
   - Flip the "decided, not yet built" markers: `entity_model.md` §7c Engaged motion and Attack budget, `scripting.md` §2 tokens, attack-turn facts, the attack pool member row, and `build_pipeline.md` for `ai_attack_pool`.
   - Correct `entity_model.md:301`'s strafe wording.
   - Add the held-ownership exception (a drawn kept burst is cancelled on drop).
   - Add the pool-request save constraint.
+  - Record the drift tier's longest-waiter order (`entity_model.md` agent steering) and the friendly-fire tolerance trap (`docs/scripting-reference.md`).
 

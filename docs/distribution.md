@@ -192,7 +192,7 @@ Some arguments are refused in `args` because the tool supplies them itself:
 
 | Refused in `args` | Why |
 |---|---|
-| `-o`, `--release`, `--tui`, `--no-tui` | The tool decides what kind of bake a distribution runs. `--release` is the only shippable one. |
+| `-o`, `--release`, `--bake-fidelity`, `--tui`, `--no-tui` | The tool decides what kind of bake a distribution runs. `--release` is the only shippable one, and it always bakes mover lighting at `high` fidelity. |
 | `--baked-root`, `--cache-dir` | These two must stay consistent between the compiler and the engine. The compiler reads the last occurrence of each, so a recipe naming one would override the tool's and silently send the sidecars somewhere the engine does not look. |
 
 `--lightmap-density` must be written as two tokens (`"--lightmap-density",

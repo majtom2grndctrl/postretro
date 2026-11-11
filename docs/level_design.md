@@ -31,6 +31,8 @@ bin/prl-build <content-root>/maps/input.map \
 | `--cache-dir <DIR>` | `.build-caches/prl-cache` beside the map | Disposable compiler scratch. Name it, or it lands among your `.map` sources. |
 | `--lightmap-density <METERS>` | `0.025` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. The worldspawn key `_lightmap_density` (meters per texel, smaller = finer) sets the same thing per map; the flag overrides it. |
 | `--sh-probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
+| `--bake-fidelity <low\|high>` | `low` | How fully movers re-bake their bounced light in an everyday build. `low` is fast and re-bakes one bounce per pose; `high` re-bakes each mover's `light_bounces`, as a shipped map does. Not allowed beside `--release`, which always bakes `high`. See Movers: Lighting. |
+| `--release` | off | Build the map to ship: every stage bakes fresh, the cache is neither read nor written, and movers bake at `high`. Slow. `bin/postretro-tool dist` passes it for you. |
 | `-v`, `--verbose` | off | Prints each compilation step — useful when something goes wrong |
 
 **`--baked-root` is worth getting right.** It names the directory that *contains* `materials/` — `baked`, not `baked/materials` — and the engine takes a flag of the same name meaning the same thing. If the compiler writes its texture sidecars somewhere the engine does not read them, nothing fails: the engine substitutes a placeholder for every world material and logs a warning, so the level loads with every surface flat grey. `bin/postretro-tool run` points the engine at the right directory for you, and `bin/postretro-tool dist` points the compiler at it. The only time you supply it yourself is a direct `prl-build` call like the one above. See [docs/external-projects.md](external-projects.md).
@@ -505,7 +507,7 @@ Outside `crush`, the engine guarantees only that a mover never leaves a player s
 
 ### Lighting
 
-A mover changes the baked lighting around it as it travels. The compiler bakes what each mover does to the level's baked light with the mover at each end of its path, its first and last waypoint, and the engine blends between the two by how far along its path the mover is. Close a door and the light that spilled through the doorway fades out, the dark room behind it stays dark, and a character behind the door goes dark. Open it again and the light ramps back in with the door's travel. Raising a room out of the floor works the same way: its interior stops taking the arena's light as its walls rise.
+A mover changes the baked lighting around it as it travels. The compiler bakes what each mover does to the level's baked light with the mover at a series of **poses** along its path: one at each end, its first and last waypoint, and more between them, about one probe spacing apart. As the mover travels, the engine blends between the two poses either side of it. Close a door and the light that spilled through the doorway fades out, the dark room behind it stays dark, and a character behind the door goes dark. Open it again and the light ramps back in with the door's travel. Raising a room out of the floor works the same way: its interior stops taking the arena's light as its walls rise.
 
 What follows the mover:
 
@@ -518,7 +520,8 @@ What does not, yet:
 - Lightmaps on static walls and floors. A character on the floor behind a closed sliding wall goes dark, but the lightmapped floor under them stays lit by the same light.
 - Bounced light from animated lights.
 - Water reflections, which show the level with every mover absent: a pool behind a closed door still mirrors the lit doorway.
-- Positions other than the two ends of the path. A path through a middle waypoint blends straight from the first waypoint's lighting to the last's, by distance travelled. A mover with a `spin_axis` changes no lighting.
+- Exact lighting between poses. Between two poses the lighting blends, so a change the mover makes spreads over about one pose spacing of travel. A mover that stops partway along its path shows the blend of the poses either side, not a bake at that exact spot.
+- Spinning. A mover with a `spin_axis` changes no lighting.
 
 Movers in co-op light the same on every machine, with nothing extra sent over the network. A mover that changes no lighting adds nothing to the compiled map. **Rebuild the map** after you change a mover, its path or the level around it.
 
@@ -526,17 +529,43 @@ Movers in co-op light the same on every machine, with nothing extra sent over th
 |-----|------|---------|-------------|
 | `light_ramp_start` | float | `0` | Fraction of the path, from `0` (first waypoint) to `1` (last waypoint), where the lighting starts to change. Until the mover passes it, the first waypoint's lighting holds. |
 | `light_ramp_end` | float | `1` | Fraction of the path where the lighting finishes changing. Past it, the last waypoint's lighting holds. Must be greater than `light_ramp_start`. |
-| `light_bounces` | integer | every bounce | How many bounces of static light the compiler re-bakes with this mover in place. `0` re-bakes no bounce. Leave it off to re-bake every bounce the level bakes; a larger number does the same. |
+| `light_bounces` | integer | every bounce | How many bounces of static light the compiler re-bakes with this mover in place. `0` re-bakes no bounce. Leave it off to re-bake every bounce the level bakes; a larger number does the same. `--bake-fidelity low` re-bakes at most `1`. |
+| `light_poses` | integer | one per probe spacing, 2 to 16 | How many poses the compiler bakes along the path, counting both ends. `2` bakes only the two ends. Leave it off and the compiler picks the count; a number you set may go past 16. |
 
-**Shaping the ramp.** The ramp measures distance along the whole path. Use it when only part of the travel changes how much light gets through. A door whose first 60% of travel slides inside a wall pocket and which seals only near the end of its travel might use `light_ramp_start` `0.6` and `light_ramp_end` `0.9`. Both keys must lie between `0` and `1`, with the start below the end. Anything else, or a value that is not a number, stops the build with an error naming the mover.
+**How many poses.** Without `light_poses`, a mover bakes one pose per probe spacing of path length, plus one: ⌈L ÷ s⌉ + 1, where L is the length of its whole path and s is the level's probe spacing (`--sh-probe-spacing`, 1 m by default; 1 m is about 39 map units). It bakes at least 2 and at most 16. A door that slides 128 units (about 3.25 m) bakes 5 poses at the default spacing. The poses sit evenly by distance along the path, wherever its middle waypoints fall, and the ends always sit on the first and last waypoint. A path with no length bakes its two ends, both in the same place.
 
-**Bake cost and `light_bounces`.** Re-baking bounced light is the expensive part. Each end of each mover's path costs about as much as baking the level's whole bounced lighting once, however small the mover. A map with a few movers can take several times longer to compile than the same map without them, and a large map with many movers far longer. After the first build, editing one mover re-bakes only that mover; editing a static light or static geometry re-bakes every mover's bounce. `light_bounces` is your lever:
+A path that would need more than 16 poses bakes 16, spread over the whole trip further apart, so its lighting changes blend over more travel. The compiler warns, naming the mover, how far apart its poses ended up and `light_poses`. Set `light_poses` to choose the count yourself: higher for a long lift whose lighting you want to follow closely, or `2` for a mover whose lighting only matters at its ends. More poses cost bake time. Where a pose adds nothing over the blend of the poses either side of it, the compiler leaves most of it out of the compiled map, so extra poses over steady lighting cost little space.
+
+`light_poses` must be a whole number, `2` or more; `0`, `1`, a negative, fractional or non-numeric value stops the build with an error naming the mover, as does one too large to count. To return to the automatic count, remove the key or leave its value empty.
+
+**Shaping the ramp.** Most movers need no ramp: the poses already place each change where it happens along the path. The ramp overrides that. Until the mover passes `light_ramp_start`, the first waypoint's lighting holds, whatever the poses there would show. Past `light_ramp_end`, the last waypoint's lighting holds. Between the two, the lighting runs from the first waypoint's through the poses baked inside that stretch to the last waypoint's. A mover whose first-waypoint lighting should hold until late in its travel might use `light_ramp_start` `0.8`. The ramp measures distance along the whole path. Both keys must lie between `0` and `1`, with the start below the end. Anything else, or a value that is not a number, stops the build with an error naming the mover.
+
+**Bake cost.** Re-baking bounced light is the expensive part. At `high` fidelity (below), each end of each mover's path costs about as much as baking the level's whole bounced lighting once, however small the mover. Each pose between the ends re-bakes only the region around the mover's path, so it costs less than an end, but a long path has many. A map with a few movers can take several times longer to compile than the same map without them, and a large map with many movers far longer. After the first build, editing one mover re-bakes only that mover, and changing its `light_poses` or moving one of its middle waypoints keeps the bake of its two ends. Editing a static light or static geometry re-bakes every mover's bounce. You have two levers: bake fidelity for the whole build, and `light_bounces` per mover.
+
+**Bake fidelity.** `--bake-fidelity` sets how fully movers re-bake their bounced light:
+
+- `low`, the default for everyday builds, re-bakes only the first bounce at every pose, as if every mover had `light_bounces 1`, and keeps the later bounces from the level with the mover absent. It is much faster, and it is a preview. Where a mover's lighting depends on light bouncing more than once, such as the dark side of a closed door or the inside of a sealed room, `low` can read noticeably brighter or darker than the shipped map.
+- `high` re-bakes each mover's `light_bounces`, exactly as the shipped map will. Build with it before judging a mover's bounce lighting.
+- `--release` always bakes `high`. Naming `--bake-fidelity` beside `--release` stops the build with an error, so a shipped map never bakes `low`.
+
+A `low` build reuses a mover's `high` bake from the cache when that mover and the level around it have not changed. After one `high` build, everyday `low` builds show `high` lighting on every mover you have not touched, and preview only the ones you edit. When `prl-build` opens its setup screen, its **Mover bounce fidelity** field sets the same thing, and the **Production** build mode always bakes `high`.
+
+**`light_bounces`.** Pick it per mover:
 
 - Leave it off for a mover whose bounce you can see: a door sealing a lit room from a dark one, or a room that rises in the middle of a lit space.
 - `1` keeps the first bounce, light bouncing once off the mover and the surfaces around it, which is most of what you see, for less than half the cost.
-- `0` skips bounce for that mover entirely. Its direct light and how the lighting sees past it still follow the mover, but the bounce around it stays as if the mover were absent, so a closed door can still let a faint glow of bounced light through. Use it for small or out-of-the-way movers.
+- `0` skips bounce for that mover entirely, at either fidelity. Its direct light and how the lighting sees past it still follow the mover, but the bounce around it stays as if the mover were absent, so a closed door can still let a faint glow of bounced light through. Use it for small or out-of-the-way movers.
 
 `light_bounces` must be a whole number, `0` or more; a negative, fractional or non-numeric value stops the build with an error naming the mover, as does one too large to count. To return to the default, remove the key or leave its value empty.
+
+**What the Build Summary shows.** A build that re-bakes mover lighting prints a mover fidelity block: the build's fidelity, how many movers it shows short of `high`, and one line per mover with:
+
+- its pose count;
+- `high`, or `low, approximate` with how many of its poses baked fewer bounces than its `light_bounces`. A mover reads `high` whenever it looks as it would in a `high` build: reused from a cached `high` bake, or at `light_bounces` `1` or `0`;
+- an estimate of how long its bounced light takes to bake in a `--release` build, `none` at `light_bounces 0`, or `—` while the compiler has no record of how long this level's bounced lighting took to bake;
+- for a mover with poses between its ends, how many of the lighting states baked at those poses the compiler left out because they matched the blend of their neighbours.
+
+The Build Summary's `Mover lighting` lines also name each mover that blocks a light only partway along its path, not at either end, with a count of those lights. That light still follows the mover.
 
 ---
 
@@ -841,6 +870,11 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | `light_ramp_start` (or `light_ramp_end`) value … is not a valid float, or … is not finite | A mover's ramp key is not a number, or is `nan` or `inf` | Write a number between `0` and `1`, or remove the key |
 | `light_bounces` must be an integer of at least 0 | A mover's `light_bounces` is negative, fractional or not a number | Use a whole number, `0` or more, or remove the key or leave it empty |
 | `light_bounces` … is too large | A mover's `light_bounces` is past 4294967295 | Use a smaller whole number: any count past the level's bounces already re-bakes them all |
+| `light_poses` must be an integer of at least 2 | A mover's `light_poses` is `0`, `1`, negative, fractional or not a number | Use a whole number, `2` or more, or remove the key or leave it empty for the automatic count |
+| `light_poses` … is too large | A mover's `light_poses` is past 4294967295 | Use a smaller whole number |
+| `--release` always bakes high fidelity; remove `--bake-fidelity` or `--release` | The build names both flags | Drop `--bake-fidelity` to ship, or drop `--release` for an everyday build |
+| `--bake-fidelity` must be `low` or `high` | Any other value after `--bake-fidelity` | Use `low` or `high`, or leave the flag off for `low` |
+| SH base working-set gate refused before patch shading: estimated peak … exceeds budget … | The indirect lighting bake, including every pose of every mover, needs more memory than `--working-set-max-size` allows (16 GiB by default) | Raise `--working-set-max-size` if the machine has the memory. Movers with many poses add to it, so a smaller `light_poses` on a long mover also helps |
 | Probes carry closed-pose depth, past the probe depth tile range | Movers reach into the lighting of more probes than the level can track | Use fewer movers, or move them where they block less of the level's light |
 | PNG color-space validation failed | An `_s.png`, `_n.png`, or `_h.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
 | `_h.png` dimensions must match diffuse | A height map is a different resolution from its diffuse texture | Re-export the height map at the diffuse's exact dimensions |

@@ -2,7 +2,7 @@
 
 Brief · resumable · Epic 10 · reads: `context/lib/entity_model.md` §7, §7c · `context/lib/scripting.md` §1, §11, §12 · `context/lib/build_pipeline.md` §Navigation bake, §Build Cache, §Ray traversal, §Custom FGD, §PRL section IDs · `context/lib/networking.md` §Combat authority, §World-LOS-only validation, §Version gates · read at 7ee9389f
 
-Depends on `ready/E10--enemy-combat-movement`: `reposition` with `arc` and `minTravel`, the slot scorer's per-query constraints, directional clip resolution, and attack turns.
+Depends on `done/E10--enemy-combat-movement`: `reposition` with `arc` and `minTravel`, the slot scorer's per-query constraints, directional clip resolution, and attack turns.
 
 ## Problem
 The owner wants "smarter" enemies that take cover, crouch behind low cover, fire from it, and relocate when flanked. Today none of it is possible: the combat-slot scorer rejects any slot the target cannot see, the navmesh carries no cover data, and enemies cannot crouch. This is a requested capability. It overrides the prior exclusion of protective cover, which `plans/done/E10--enemy-line-of-sight-cover` deferred until player shots became rays; hitscan now resolves as a ray against the world and posed hit zones.

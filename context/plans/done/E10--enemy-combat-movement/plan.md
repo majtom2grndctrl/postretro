@@ -1,7 +1,7 @@
 # E10--enemy-combat-movement — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: d29ac3a5f
 
 Source re-read at `d29ac3a5f` (106 commits past the brief's `5932287f`). Only the Mixamo brute and shadow-hunter swaps (`22d29d530`, `2bfc3afa2`, `a9e4dcd6d`) touch the cited paths, and they change content and one doc comment, not logic. Every Decision premise holds. The corrections below are Path claims and clarifications that keep each Decision's meaning.
@@ -95,7 +95,7 @@ Source re-read at `d29ac3a5f` (106 commits past the brief's `5932287f`). Only th
 
 Test homes: `crates/ai/src/attack_turns/tests/` (budget, arbitration and facts), `crates/ai/src/ai_tests/` (motion, facing and knockback through the tick), `crates/scripting-core` (twin-runtime validation), `crates/level-compiler` (`--bin prl-build`, FGD validation), and `crates/sim` (pool commands and spawner). Test names are proposals.
 
-Results are from the final full workspace run at `e568c0181`: 15,636 passed, 0 failed. The polish commit reruns `-p postretro-ai`.
+Results are from the final full workspace run at `e568c0181`: 15,636 passed, 0 failed. The polish commit reruns `-p postretro-ai`. Landing preflight after merging `origin/main` (`8ab3e5ce8`, Mac): `cargo fmt --check` clean, `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test --workspace` 15,717 passed, 0 failed, 122 ignored.
 
 **Motion and facing**
 

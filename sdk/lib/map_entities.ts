@@ -5,6 +5,7 @@
 // See: context/lib/scripting.md §12 (Entity addressing)
 
 import type {
+  AttackPoolEntity,
   EmitterEntity,
   FogVolumeEntity,
   LightEntity,
@@ -29,6 +30,8 @@ import { wrapSpawnerEntity } from "./entities/spawners";
 import type { SpawnerEntityHandle } from "./entities/spawners";
 import { wrapTrapEntity } from "./entities/traps";
 import type { TrapEntityHandle } from "./entities/traps";
+import { wrapAttackPoolEntity } from "./entities/attack_pools";
+import type { AttackPoolEntityHandle } from "./entities/attack_pools";
 
 // The raw engine query stays out of the author-facing typedefs: its kindless
 // component spelling is what `getMapEntities` replaces. The runtime installs
@@ -45,7 +48,8 @@ export type MapEntityKind =
   | "fog"
   | "emitter"
   | "spawner"
-  | "trap";
+  | "trap"
+  | "attackPool";
 
 /** The member handle each map kind yields. */
 export type MapEntityForKind<K extends MapEntityKind> =
@@ -58,6 +62,7 @@ export type MapEntityForKind<K extends MapEntityKind> =
   K extends "emitter" ? EmitterEntity :
   K extends "spawner" ? SpawnerEntityHandle :
   K extends "trap" ? TrapEntityHandle :
+  K extends "attackPool" ? AttackPoolEntityHandle :
   never;
 
 /** Narrows a member query to instances carrying `tag`. */
@@ -74,6 +79,7 @@ const MAP_KIND_COMPONENTS: Readonly<Record<MapEntityKind, string>> = Object.free
   emitter: "emitter",
   spawner: "spawner",
   trap: "projectile_trap",
+  attackPool: "attack_pool",
 });
 
 function projectEmitter(snapshot: EmitterEntity): EmitterEntity {
@@ -123,6 +129,8 @@ export function getMapEntities<K extends MapEntityKind>(
         return (raw as ReadonlyArray<SpawnerEntity>).map(wrapSpawnerEntity);
       case "trap":
         return (raw as ReadonlyArray<TrapEntity>).map(wrapTrapEntity);
+      case "attackPool":
+        return (raw as ReadonlyArray<AttackPoolEntity>).map(wrapAttackPoolEntity);
     }
   })();
   return members as MapEntityForKind<K>[];

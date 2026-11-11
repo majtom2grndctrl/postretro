@@ -94,6 +94,9 @@ pub struct StagedManifest {
     pub store_declarations: StoreDeclarationSet,
     /// The registered damage vocabulary; see `ModManifestResult::defense`.
     pub defense: postretro_foundation::defense::DefenseVocabulary,
+    /// The registered attack tokens and profiles; see
+    /// `ModManifestResult::attack_budgets`.
+    pub attack_budgets: postretro_foundation::attack_budget::AttackBudgetVocabulary,
     /// Canonical mod-init source dependencies carried across the worker→main
     /// thread boundary. The descriptor registry write and watcher classifier
     /// update both happen on the main thread in `commit_staged_manifest_result`,

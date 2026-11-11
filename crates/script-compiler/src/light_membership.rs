@@ -83,6 +83,11 @@ const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
         include_str!("../../../sdk/lib/entities/traps.luau"),
         "sdk/lib/entities/traps.luau",
     ),
+    (
+        "wrapAttackPoolEntity",
+        include_str!("../../../sdk/lib/entities/attack_pools.luau"),
+        "sdk/lib/entities/attack_pools.luau",
+    ),
 ];
 const MAP_ENTITIES_LUAU: &str = include_str!("../../../sdk/lib/map_entities.luau");
 const GRAVITY_LUAU: &str = include_str!("../../../sdk/lib/gravity.luau");
@@ -97,6 +102,11 @@ const DATA_SCRIPT_LUAU: &str = include_str!("../../../sdk/lib/data_script.luau")
 /// `player_events` comes first because `commands.luau` reads
 /// `__postretroDataScriptParts.playerEvents` at load.
 const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
+    (
+        "attackBudget",
+        include_str!("../../../sdk/lib/data_script/attack_budget.luau"),
+        "sdk/lib/data_script/attack_budget.luau",
+    ),
     (
         "playerEvents",
         include_str!("../../../sdk/lib/data_script/player_events.luau"),
@@ -390,6 +400,8 @@ const STUBBED_PRIMITIVES: &[(&str, StubReturn)] = &[
     ("fireTrap", StubReturn::Null),
     ("startTrap", StubReturn::Null),
     ("stopTrap", StubReturn::Null),
+    ("startAttackPool", StubReturn::Null),
+    ("stopAttackPool", StubReturn::Null),
 ];
 
 fn install_js_determinism(ctx: &JsCtx<'_>) -> Result<()> {
@@ -526,6 +538,16 @@ fn install_lua_determinism(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Behavior-graph guard-input helpers `brain.luau` exports.
+const BRAIN_LUAU_FIELDS: &[&str] = &[
+    "brain",
+    "candidate",
+    "defense",
+    "state",
+    "attackTurnHeld",
+    "attackTurnFree",
+];
+
 fn install_lua_game_state(lua: &Lua) -> mlua::Result<()> {
     let bridge = json_to_lua(lua, &game_state_refs_json())?;
     let install: LuaFunction = lua.load(LUAU_INSTALL_BY_PLAYER.as_str()).eval()?;
@@ -607,6 +629,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineStore",
     "defineDefenseLayer",
     "defineDamageType",
+    "defineAttackToken",
+    "defaultToken",
     "read",
     "fromRuntime",
     "set",
@@ -695,18 +719,14 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     globals.set("runtime", runtime.clone())?;
 
     let brain = eval_lua_table(lua, BRAIN_LUAU, "sdk/lib/brain.luau")?;
-    copy_lua_fields(
-        &globals,
-        &brain,
-        &["brain", "candidate", "defense", "state"],
-    )?;
+    copy_lua_fields(&globals, &brain, BRAIN_LUAU_FIELDS)?;
 
     let root = lua.create_table()?;
     copy_lua_fields(&root, &map_entities, MAP_ENTITIES_FIELDS)?;
     copy_lua_fields(&root, &gravity, GRAVITY_FIELDS)?;
     root.set("runtime", runtime)?;
     copy_lua_fields(&root, &game_state, &["getGameState"])?;
-    copy_lua_fields(&root, &brain, &["brain", "candidate", "defense", "state"])?;
+    copy_lua_fields(&root, &brain, BRAIN_LUAU_FIELDS)?;
     copy_lua_fields(&root, &keyframes, &["timeline", "sequence"])?;
     copy_lua_fields(
         &root,
@@ -1090,6 +1110,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "ghost_link",
     "spawner",
     "projectile_trap",
+    "attack_pool",
     "particle",
     "sprite_visual",
 ];
@@ -1352,9 +1373,9 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     // players resolved at runtime: it is a legal step that reserves no light
     // slot, so it must not make the caller skip the sequence. Mirror the
     // runtime parser's rejections — an unknown kind, an `id` beside `kind`, a
-    // non-string tag, a control primitive, `spawnFromSpawner`, the trap verbs
-    // and a ghost-link step (spawners, traps and links are map members, never
-    // a group).
+    // non-string tag, a control primitive, `spawnFromSpawner`, the trap verbs,
+    // a ghost-link step and an attack-pool verb (spawners, traps, links and
+    // pools are map members, never a group).
     match step.get("kind") {
         None | Some(JsonValue::Null) => {}
         Some(JsonValue::String(kind)) => {
@@ -1367,7 +1388,8 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
                 && !control
                 && primitive != "spawnFromSpawner"
                 && !matches!(primitive, "fireTrap" | "startTrap" | "stopTrap")
-                && !postretro_foundation::is_ghost_link_primitive(primitive);
+                && !postretro_foundation::is_ghost_link_primitive(primitive)
+                && !postretro_foundation::is_attack_pool_primitive(primitive);
         }
         Some(_) => return false,
     }
@@ -1410,8 +1432,11 @@ fn subject_token_carries(target: &str, primitive: &str) -> bool {
     }
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
-    // A ghost-link step addresses one link member; no token carries it.
-    if postretro_foundation::is_ghost_link_primitive(primitive) {
+    // A ghost-link or attack-pool step addresses one member; no token
+    // carries it.
+    if postretro_foundation::is_ghost_link_primitive(primitive)
+        || postretro_foundation::is_attack_pool_primitive(primitive)
+    {
         return false;
     }
     match target {

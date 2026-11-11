@@ -285,6 +285,9 @@ impl App {
         // window from before the reveal.
         self.cpu_timer.level_changed();
         self.publish_net_reveal();
+        // The reveal frame presents the settled pose: a spawn-pose hint its
+        // Control drain brings moves the stand-in on the next frame.
+        self.hold_spawn_pose_hint_through_reveal_frame();
         self.boot_state = BootState::Running;
         // Defer log line C until after the reveal frame's render returns, so
         // `first_level_frame` captures GPU work the user actually sees.

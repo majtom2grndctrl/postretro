@@ -50,9 +50,11 @@ impl App {
         if let Some(load) = self.level_load.as_ref() {
             self.active_level_tags = load.entry.tags.clone();
             self.active_level_source = Some(level_source_for_load_entry(&load.entry));
+            self.active_level_host_named = load.host_named;
         } else {
             self.active_level_tags.clear();
             self.active_level_source = None;
+            self.active_level_host_named = false;
         }
     }
 
@@ -164,6 +166,7 @@ impl App {
             models,
         );
         let first_spawn = self.install_level_post_load_passes(script_ctx, products);
+        self.send_install_spawn_pose_hints();
         self.install_level_camera_pose(first_spawn);
         self.install_level_fog_masks(fog_masks);
         let sprite_created =
@@ -191,6 +194,12 @@ impl App {
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
         self.retain_active_level_tags_for_install();
+        // The host's level, never a backdrop: every frontend menu layer goes
+        // before anything reads the presented pose, so the stand-in is what
+        // Settling streams from and the reveal presents.
+        if self.active_level_host_named {
+            self.clear_frontend_menu_for_host_level();
+        }
         let join_seed = {
             let session = self
                 .session
@@ -201,6 +210,16 @@ impl App {
                 session.player_options.player_id,
             )
         };
+        // A host's frontend backdrop names no level to its clients: no parity,
+        // no Relevel and so no reveal, and no spawn-pose hint. Joiners wait at
+        // their own menu until the host starts a level.
+        let host_backdrop = self.frontend_menu_is_present()
+            && matches!(
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.net_endpoint.as_ref()),
+                Some(crate::netcode::NetEndpoint::Host { .. })
+            );
         if let Some(endpoint) = self
             .session
             .as_mut()
@@ -208,6 +227,12 @@ impl App {
             .net_endpoint
             .as_mut()
         {
+            if host_backdrop {
+                self.published_level_identity = None;
+                endpoint.set_level_parity(None);
+                endpoint.set_relevel_catalog_id(None);
+                return;
+            }
             let level_content_digest =
                 crate::runtime_movers::level_content_digest(&world.kinematic_geometry, world);
             let source = self

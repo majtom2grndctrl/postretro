@@ -1098,6 +1098,38 @@ pub(crate) mod tests {
         );
     }
 
+    // A13: two levels differing only in an `ai_attack_pool`'s
+    // `budget_profile` produce the same level content digest. The pool is a
+    // host-only budget, never a prediction input.
+    #[test]
+    fn level_content_digest_ignores_attack_pool_profile() {
+        let geometry = KinematicGeometry::default();
+        let with_profile = |profile: &str| {
+            let mut world = single_cell_world(geometry.clone());
+            world
+                .map_entities
+                .push(postretro_level_format::map_entity::MapEntityRecord {
+                    classname: "ai_attack_pool".to_string(),
+                    origin: [0.0, 0.0, 0.0],
+                    key_values: vec![
+                        ("budget_profile".to_string(), profile.to_string()),
+                        ("member_tag".to_string(), "arena_guard".to_string()),
+                    ],
+                    tags: vec!["arena".to_string()],
+                    ..Default::default()
+                });
+            world
+        };
+        assert_eq!(
+            level_content_digest(&geometry, &with_profile("arena")),
+            level_content_digest(&geometry, &with_profile("frenzy")),
+        );
+        assert_eq!(
+            level_content_digest(&geometry, &with_profile("")),
+            level_content_digest(&geometry, &with_profile("arena")),
+        );
+    }
+
     fn environment_volume(
         source_entity: u32,
         min: [f32; 3],

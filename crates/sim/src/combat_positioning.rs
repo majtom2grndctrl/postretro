@@ -17,8 +17,10 @@ use postretro_foundation::GroundRef;
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, distance_xz};
 
+mod rotated_ring;
 mod scoring;
 
+pub use rotated_ring::{KeepAway, RING_SLOT_COUNT, SlotRing, arc_slot_mask, slot_spacing};
 #[cfg(test)]
 use scoring::tactically_direct_path_length_limit;
 use scoring::{capsule_placement, dynamic_min_spacing, score_candidate};
@@ -60,6 +62,11 @@ pub struct CombatQuery<'a> {
     pub mover_nav: crate::nav::MoverNav<'a>,
     pub collision_world: &'a CollisionWorld,
     pub path_length_score_weight: f32,
+    /// A per-query rotated ring and its constraints. When present it replaces
+    /// the shared world-axis ring, its radial multipliers and the incumbent
+    /// hysteresis: `combat_slot` and `scan_challengers` are not read. `None`
+    /// is the chase query.
+    pub ring: Option<SlotRing>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,6 +219,9 @@ pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate>
         Some(placement) => placement,
         None => return Vec::new(),
     };
+    if let Some(ring) = query.ring.as_ref() {
+        return rotated_ring::ring_candidates(query, ring, placement);
+    }
 
     let mut challengers = Vec::new();
     if query.scan_challengers {
@@ -503,6 +513,7 @@ mod tests {
             mover_nav: crate::nav::MoverNav::none(),
             collision_world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
+            ring: None,
         }
     }
 
@@ -531,6 +542,7 @@ mod tests {
             mover_nav: crate::nav::MoverNav::none(),
             collision_world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
+            ring: None,
         }
     }
 
@@ -608,6 +620,7 @@ mod tests {
             mover_nav: crate::nav::MoverNav::none(),
             collision_world: &world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
+            ring: None,
         });
 
         assert!(

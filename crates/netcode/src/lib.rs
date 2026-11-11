@@ -34,6 +34,7 @@ extern crate self as netcode;
 use std::collections::VecDeque;
 
 mod client;
+mod client_spawn_pose_hint;
 mod client_switch;
 mod command_queue;
 #[cfg(any(test, feature = "test-support"))]
@@ -187,6 +188,7 @@ pub use client::{
     AssistPairEntry, AssistProgressSample, ClientPresentationInputs, ClientReplication,
     GhostLinkUpdate, MoverCorrection, RemoteAssistFacts,
 };
+pub use client_spawn_pose_hint::ClientSpawnPoseHint;
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
 pub use client_switch::{
@@ -748,6 +750,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::ProjectileTrap => postretro_net::wire::COMPONENT_KIND_PROJECTILE_TRAP,
         ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
         ComponentKind::DefenseLayers => postretro_net::wire::COMPONENT_KIND_DEFENSE_LAYERS,
+        ComponentKind::AttackPool => postretro_net::wire::COMPONENT_KIND_ATTACK_POOL,
     }
 }
 
@@ -7287,7 +7290,8 @@ mod tests {
                 ComponentKind::Teleporter => Some(ComponentKind::ProjectileTrap),
                 ComponentKind::ProjectileTrap => Some(ComponentKind::GhostLink),
                 ComponentKind::GhostLink => Some(ComponentKind::DefenseLayers),
-                ComponentKind::DefenseLayers => None,
+                ComponentKind::DefenseLayers => Some(ComponentKind::AttackPool),
+                ComponentKind::AttackPool => None,
             }
         }
 
@@ -7526,7 +7530,11 @@ mod tests {
         resolve_pending_animation_stamps(&mut registry, 0.0);
         replication.cache_remote_enemy_walk_playback(
             NetworkId(7),
-            Some((60.0, "locomotion".to_string(), None)),
+            Some(client::RemoteEnemyWalkPlayback::base(
+                60.0,
+                "locomotion",
+                None,
+            )),
         );
 
         let time_sync = ClientTimeSync::new();

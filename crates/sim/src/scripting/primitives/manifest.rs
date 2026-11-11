@@ -368,6 +368,16 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies.",
         )
         .field(
+            "attackTokens?",
+            "Vec<AttackToken>",
+            "Attack tokens from `defineAttackToken(...)`, each carrying its default budget. Optional; the SDK's `defaultToken` is always registered and is never listed. An attack's `draws` name only a listed token or `defaultToken`; two entries with one name, a token named `default`, an entry that is not a token handle, or a `limit` that is not an integer of at least 1 or a `refreshMs` that is not a finite number of at least 0 fails load.",
+        )
+        .field(
+            "attackBudgets?",
+            "AttackBudgetProfiles",
+            "Budget profiles keyed by name, each a list of overrides made with the token's `with({ limit?, refreshMs? })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load.",
+        )
+        .field(
             "stores?",
             "Vec<StoreDeclaration>",
             "Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical.",
@@ -669,6 +679,7 @@ mod tests {
             trigger_pools: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
             defense: Default::default(),
+            attack_budgets: Default::default(),
             player_events: Vec::new(),
         };
         let expected_fields: &[&str] = &[
@@ -706,6 +717,8 @@ mod tests {
             "defenseLayers",
             "damageTypes",
             "defaultDamageType",
+            "attackTokens",
+            "attackBudgets",
         ];
 
         let mut registry = PrimitiveRegistry::new();

@@ -11,6 +11,7 @@ use postretro_scripting_core::group_resolution::{group_commands_apply_here, reso
 use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::store_bridge::{apply_store_slot_batch, validate_slot_value};
 
+use crate::attack_pools::AttackPoolVerb;
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
 use crate::mover_commands::{MoverCommandDiagnostics, apply_mover_command_to_targets};
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
@@ -99,6 +100,12 @@ pub(crate) enum BoundTriggerCommand {
         target: BoundTarget,
         request: TrapRequest,
     },
+    /// An attack-pool member step: host-only; queues a request for the drain
+    /// before the next AI tick, this tick's when a trigger issues it.
+    AttackPool {
+        target: BoundTarget,
+        verb: AttackPoolVerb,
+    },
 }
 
 /// The trigger-owned form of a `setState` value. Literal writes keep the
@@ -176,6 +183,7 @@ pub(crate) enum BoundTriggerCommandKind {
     UpdateNpcState,
     Spawn,
     Trap,
+    AttackPool,
 }
 
 impl BoundTriggerCommand {
@@ -275,8 +283,11 @@ impl BoundTriggerCommand {
                     state.as_deref(),
                 );
             }
-            Self::Trap { .. } if !group_commands_apply_here(script_ctx) => {
-                // Every trap step is host-only; a client latches nothing.
+            Self::Trap { .. } | Self::AttackPool { .. }
+                if !group_commands_apply_here(script_ctx) =>
+            {
+                // Every trap and attack-pool step is host-only; a client
+                // latches nothing.
             }
             Self::TeleporterArmed { target, armed } => {
                 let targets = target.resolve(registry, fire_context);
@@ -525,6 +536,16 @@ impl BoundTriggerCommand {
                 }
                 _ => log::warn!("[Trigger] a trap step requires a trap member target; skipping"),
             },
+            Self::AttackPool { target, verb } => match target {
+                BoundTarget::Entity(_) => {
+                    if let Some(&id) = target.resolve(registry, fire_context).as_slice().first() {
+                        crate::attack_pools::issue_attack_pool_request(registry, id, *verb);
+                    }
+                }
+                _ => log::warn!(
+                    "[Trigger] an attack-pool step requires an attack pool member target; skipping"
+                ),
+            },
             Self::TeleporterArmed { .. } => {
                 log::warn!("[Teleport] bound command requires a live ScriptCtx queue; skipped")
             }
@@ -555,7 +576,8 @@ impl BoundTriggerCommand {
             | Self::AnimationState { target, .. }
             | Self::UpdateNpcState { target, .. }
             | Self::Spawn { target }
-            | Self::Trap { target, .. } => target,
+            | Self::Trap { target, .. }
+            | Self::AttackPool { target, .. } => target,
             Self::StoreSlot { .. } => return None,
         };
         match target {
@@ -584,6 +606,7 @@ impl BoundTriggerCommand {
             Self::UpdateNpcState { .. } => BoundTriggerCommandKind::UpdateNpcState,
             Self::Spawn { .. } => BoundTriggerCommandKind::Spawn,
             Self::Trap { .. } => BoundTriggerCommandKind::Trap,
+            Self::AttackPool { .. } => BoundTriggerCommandKind::AttackPool,
         }
     }
 }

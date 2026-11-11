@@ -67,6 +67,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::ProjectileTrap,
     ComponentKind::GhostLink,
     ComponentKind::DefenseLayers,
+    ComponentKind::AttackPool,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -106,6 +107,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::ProjectileTrap => "projectile_trap",
         ComponentKind::GhostLink => "ghost_link",
         ComponentKind::DefenseLayers => "defense_layers",
+        ComponentKind::AttackPool => "attack_pool",
     }
 }
 
@@ -357,6 +359,9 @@ mod tests {
                                 motion: Some(MotionVerb::Hold),
                                 action: Some(ActionVerb::Attack("attack".to_string())),
                                 on_enter: None,
+                                facing: None,
+                                reposition: None,
+                                attack_turn: None,
                                 layers: Default::default(),
                             },
                         )]),
@@ -376,6 +381,7 @@ mod tests {
                             engagement_radius: None,
                             standoff_distance: None,
                             damage_type: None,
+                            draws: None,
                         },
                     )]),
                     engagement_radius: None,
@@ -466,6 +472,12 @@ mod tests {
             }
             ComponentKind::DefenseLayers => ComponentValue::DefenseLayers(
                 postretro_entities::components::defense_layers::DefenseLayersComponent::default(),
+            ),
+            ComponentKind::AttackPool => ComponentValue::AttackPool(
+                postretro_entities::components::attack_pool::AttackPoolComponent::new(
+                    "arena_guard".to_string(),
+                    "arena".to_string(),
+                ),
             ),
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },

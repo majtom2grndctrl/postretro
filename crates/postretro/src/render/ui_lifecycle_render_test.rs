@@ -122,6 +122,7 @@ fn staged_manifest_result(
             loading: Default::default(),
             store_declarations: Default::default(),
             defense: Default::default(),
+            attack_budgets: Default::default(),
             dependency_paths: Vec::new(),
             player_events: Vec::new(),
         })),

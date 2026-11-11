@@ -205,6 +205,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -677,6 +678,7 @@ fn step_graph(
             target_reachable: true,
             target_visible: true,
             attacks_fired_in_activity: 0,
+            has_attack_turn: false,
         },
     );
 
@@ -4595,6 +4597,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -7119,6 +7122,9 @@ fn authored_state(
         motion: Some(motion),
         action,
         on_enter: None,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
         layers: BTreeMap::new(),
     }
 }
@@ -7629,6 +7635,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: None,
@@ -8079,6 +8086,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
             engagement_radius: None,
             standoff_distance: None,
             damage_type: None,
+            draws: None,
         },
     );
 
@@ -8279,6 +8287,9 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                     motion: None,
                     action: None,
                     on_enter: None,
+                    facing: None,
+                    reposition: None,
+                    attack_turn: None,
                     layers: BTreeMap::new(),
                 },
             ),
@@ -8290,6 +8301,9 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                     motion: None,
                     action: None,
                     on_enter: Some("secondEntered".to_string()),
+                    facing: None,
+                    reposition: None,
+                    attack_turn: None,
                     layers: BTreeMap::new(),
                 },
             ),
@@ -8320,6 +8334,9 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 motion: None,
                 action: None,
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: BTreeMap::from([
                     ("offense".to_string(), offense),
                     ("phase".to_string(), BehaviorLayerDescriptor::Graph(phase)),
@@ -8341,6 +8358,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: None,
@@ -9043,6 +9061,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
             (
@@ -9056,6 +9075,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
         ]),
@@ -9085,6 +9105,8 @@ fn reference_single_attack_graph() -> BehaviorGraphDescriptor {
 /// `content/dev/scripts/reference-enemy.{ts,luau}`. The twin parser guard and
 /// the Luau oracle below keep this executable fixture honest.
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
+    use postretro_foundation::attack_budget::TokenDraw;
+
     const DETECTION_RANGE: f32 = 16.0;
     const ALERT_MS: f32 = 4000.0;
     const SEARCH_AFTER_MS: f32 = 800.0;
@@ -9093,101 +9115,156 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const STARTLE_MS: f32 = 200.0;
     const JAB_RANGE: f32 = 2.0;
     const SLAM_RANGE: f32 = 3.5;
+    const CLOSE_STANDOFF: f32 = 1.5;
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
     const SLAM_WINDUP_MS: f32 = 250.0;
     const SLAM_COMMIT_MS: f32 = 150.0;
     const SLAM_RECOVER_MS: f32 = 1450.0;
+    const JAB_STRIKE_MS: f32 = 450.0;
+    const JAB_REST_MS: f32 = 750.0;
+    const PRESS_MS: f32 = 5000.0;
 
-    let leaf = |animation: &str, action: Option<ActionVerb>| BehaviorActivityDescriptor {
-        sound: None,
-        animation: Some(animation.to_string()),
-        motion: None,
-        action,
-        on_enter: None,
-        layers: BTreeMap::new(),
+    let activity = |animation: Option<&str>,
+                    action: Option<&str>,
+                    attack_turn: Option<&str>,
+                    layers: BTreeMap<String, BehaviorLayerDescriptor>| {
+        BehaviorActivityDescriptor {
+            sound: None,
+            animation: animation.map(str::to_string),
+            motion: None,
+            action: action.map(|attack| ActionVerb::Attack(attack.to_string())),
+            on_enter: None,
+            facing: None,
+            reposition: None,
+            attack_turn: attack_turn.map(str::to_string),
+            layers,
+        }
     };
+    let leaf = |animation: &str, action: Option<&str>, attack_turn: Option<&str>| {
+        activity(Some(animation), action, attack_turn, BTreeMap::new())
+    };
+    let and = |a: IrNode, b: IrNode| IrNode::And {
+        a: Box::new(a),
+        b: Box::new(b),
+    };
+    let at_least = |input: &str, value: f32| IrNode::Ge {
+        a: Box::new(brain_input(input)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(value),
+        }),
+    };
+    let in_activity_ms = |ms: f32| at_least(BRAIN_TIME_IN_ACTIVITY_MS_INPUT, ms);
+    let turn_read = |prefix: &str, attack: &str| brain_input(&format!("{prefix}{attack}"));
+
     let move_selector = BehaviorLayerDescriptor::Selector(vec![
         BehaviorSelectorEntry::Row(BehaviorSelectorRow {
-            when: Some(target_within(SLAM_RANGE)),
+            when: Some(target_within(JAB_RANGE)),
             motion: Some(MotionVerb::Hold),
             action: None,
         }),
         BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget),
     ]);
-    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
-        initial: "approach".to_string(),
+    let jabs = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "stalk".to_string(),
         activities: BTreeMap::from([
-            ("approach".to_string(), leaf("walk", None)),
+            ("stalk".to_string(), leaf("walk", None, None)),
             (
                 "jab".to_string(),
-                leaf("attack_jab", Some(ActionVerb::Attack("jab".to_string()))),
+                leaf("attack_jab", Some("jab"), Some("jab")),
             ),
-            ("windup".to_string(), leaf("attack_slam", None)),
-            (
-                "commit".to_string(),
-                leaf("attack_slam", Some(ActionVerb::Attack("slam".to_string()))),
-            ),
-            ("recover".to_string(), leaf("attack_slam", None)),
         ]),
         transitions: BTreeMap::from([
             (
-                "approach".to_string(),
-                vec![
-                    edge("jab", target_within(JAB_RANGE)),
-                    edge("windup", target_within(SLAM_RANGE)),
-                ],
+                "stalk".to_string(),
+                vec![edge(
+                    "jab",
+                    and(
+                        and(target_within(JAB_RANGE), in_activity_ms(JAB_REST_MS)),
+                        turn_read(postretro_foundation::ATTACK_TURN_FREE_INPUT_PREFIX, "jab"),
+                    ),
+                )],
             ),
             (
                 "jab".to_string(),
+                vec![
+                    edge(
+                        "stalk",
+                        and(
+                            at_least(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, 1.0),
+                            in_activity_ms(JAB_STRIKE_MS),
+                        ),
+                    ),
+                    edge("stalk", target_beyond(JAB_RANGE)),
+                ],
+            ),
+        ]),
+    });
+    let jabbing = || {
+        activity(
+            None,
+            None,
+            None,
+            BTreeMap::from([("offense".to_string(), jabs.clone())]),
+        )
+    };
+    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "hunt".to_string(),
+        activities: BTreeMap::from([
+            ("hunt".to_string(), jabbing()),
+            ("press".to_string(), jabbing()),
+            (
+                "windup".to_string(),
+                leaf("attack_slam", None, Some("slam")),
+            ),
+            (
+                "commit".to_string(),
+                leaf("attack_slam", Some("slam"), Some("slam")),
+            ),
+            (
+                "recover".to_string(),
+                leaf("attack_slam", None, Some("slam")),
+            ),
+        ]),
+        transitions: BTreeMap::from([
+            (
+                "hunt".to_string(),
                 vec![edge(
                     "windup",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(1.0),
-                        }),
-                    },
+                    and(
+                        target_within(SLAM_RANGE),
+                        turn_read(postretro_foundation::ATTACK_TURN_FREE_INPUT_PREFIX, "slam"),
+                    ),
                 )],
             ),
             (
                 "windup".to_string(),
-                vec![edge(
-                    "commit",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(SLAM_WINDUP_MS),
-                        }),
-                    },
-                )],
+                vec![
+                    edge(
+                        "commit",
+                        and(
+                            in_activity_ms(SLAM_WINDUP_MS),
+                            turn_read(postretro_foundation::ATTACK_TURN_HELD_INPUT_PREFIX, "slam"),
+                        ),
+                    ),
+                    edge("hunt", in_activity_ms(SLAM_WINDUP_MS)),
+                ],
             ),
             (
                 "commit".to_string(),
-                vec![edge(
-                    "recover",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(SLAM_COMMIT_MS),
-                        }),
-                    },
-                )],
+                vec![edge("recover", in_activity_ms(SLAM_COMMIT_MS))],
             ),
             (
                 "recover".to_string(),
-                vec![edge(
-                    "approach",
-                    IrNode::Ge {
-                        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(SLAM_RECOVER_MS),
-                        }),
-                    },
-                )],
+                vec![edge("press", in_activity_ms(SLAM_RECOVER_MS))],
+            ),
+            (
+                "press".to_string(),
+                vec![edge("hunt", in_activity_ms(PRESS_MS))],
             ),
         ]),
     });
+    let token = |name: &str| serde_json::json!({ "kind": "attackToken", "name": name });
 
     BehaviorGraphDescriptor {
         knockback: Default::default(),
@@ -9210,6 +9287,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                         motion: None,
                         action: None,
                         on_enter: None,
+                        facing: None,
+                        reposition: None,
+                        attack_turn: None,
                         layers: BTreeMap::from([
                             ("move".to_string(), move_selector),
                             ("offense".to_string(), offense),
@@ -9405,6 +9485,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: Some(vec![TokenDraw(token("melee"))]),
                 },
             ),
             (
@@ -9415,9 +9496,13 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     damage: Some(14.0),
                     max_range: Some(SLAM_RANGE),
                     cooldown_ms: Some(1800.0),
-                    engagement_radius: Some(SLAM_RANGE),
+                    engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: Some(vec![
+                        TokenDraw(serde_json::json!({ "token": token("melee"), "cost": 2 })),
+                        TokenDraw(token("heavy")),
+                    ]),
                 },
             ),
             (
@@ -9434,10 +9519,11 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                         "kind": "damageType",
                         "name": "corrosive",
                     }))),
+                    draws: None,
                 },
             ),
         ]),
-        engagement_radius: Some(JAB_RANGE),
+        engagement_radius: Some(CLOSE_STANDOFF),
         move_speed: 3.0,
     }
 }
@@ -9485,13 +9571,30 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     globals.set("brain", brain).unwrap();
     globals.set("candidate", candidate).unwrap();
     globals.set("defense", defense).unwrap();
+    for read in ["attackTurnFree", "attackTurnHeld"] {
+        let function: mlua::Function = brain_sdk
+            .get(read)
+            .unwrap_or_else(|_| panic!("brain.luau exports `{read}`"));
+        globals.set(read, function).unwrap();
+    }
     globals.set("defineEntity", define_entity).unwrap();
-    // No prelude, so no `require`: the enemy's two vocabulary modules resolve
-    // to tables of name-carrying handles, as the real modules return.
+    // A token handle's `with` lives on its metatable, off the wire, as the
+    // SDK's does.
+    let token_methods: mlua::Table = lua
+        .load(
+            "return { __index = { with = function(self, fields) \
+             local reference = table.clone(fields) reference.token = self \
+             return reference end } }",
+        )
+        .eval()
+        .expect("token handle methods");
+    // No prelude, so no `require`: the enemy's three vocabulary modules
+    // resolve to tables of name-carrying handles, as the real modules return.
     let require = lua
-        .create_function(|lua, path: String| {
+        .create_function(move |lua, path: String| {
             let handles = lua.create_table()?;
             let (kind, names): (&str, &[&str]) = match path.as_str() {
+                "./scripts/attack-tokens.luau" => ("attackToken", &["melee", "ranged", "heavy"]),
                 "./scripts/defenses.luau" => ("defenseLayer", &["shield", "armor"]),
                 "./scripts/damage-types.luau" => (
                     "damageType",
@@ -9514,6 +9617,9 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 let handle = lua.create_table()?;
                 handle.set("kind", kind)?;
                 handle.set("name", *name)?;
+                if kind == "attackToken" {
+                    handle.set_metatable(Some(token_methods.clone()))?;
+                }
                 handles.set(*name, handle)?;
             }
             Ok(handles)
@@ -9602,6 +9708,7 @@ fn step_reference_enemy_graph_with_hostility(
 ) -> String {
     let graph = reference_behavior_graph();
     let mut registry = EntityRegistry::new();
+    install_dev_attack_tokens(&mut registry);
     let enemy = registry.spawn(Transform::default());
     registry
         .set_component(enemy, BrainComponent::from_graph(&graph))
@@ -9629,6 +9736,7 @@ fn step_reference_enemy_graph_with_hostility(
             target_reachable: true,
             target_visible,
             attacks_fired_in_activity: 0,
+            has_attack_turn: false,
         },
     );
 
@@ -9953,13 +10061,14 @@ struct BrainTrace {
 }
 
 /// Where the player stands on `tick` — out of detection, inside detection,
-/// in contact, backing off, and finally past its authored stand-down range.
+/// in contact long enough for a slam and the jabs that follow it, backing off,
+/// and finally past its authored stand-down range.
 fn reference_player_x(tick: u32) -> f32 {
     match tick {
         0..=9 => 30.0,
         10..=39 => 10.0,
-        40..=139 => 1.5,
-        140..=169 => 6.0,
+        40..=239 => 1.5,
+        240..=269 => 6.0,
         _ => 80.0,
     }
 }
@@ -9991,9 +10100,12 @@ fn give_reference_armor(registry: &mut EntityRegistry, enemy: EntityId) {
 }
 
 fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
-    const TICKS: u32 = 200;
+    const TICKS: u32 = 300;
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
+    // The shipped draws, under the dev mod's tokens: alone on its target, the
+    // brute is granted every turn it asks for.
+    install_dev_attack_tokens(&mut reg);
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     give_reference_armor(&mut reg, enemy);
@@ -10039,7 +10151,10 @@ fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
     let authored = trace_reference_fixture(BrainComponent::from_graph(&reference_behavior_graph()));
 
     // The fixture has to visit the nested phases, or the full-path assertion is
-    // vacuous. A committed slam appears after the counter-driven jab rotation.
+    // vacuous. The slam comes first, as soon as its turn is free; the jabs
+    // follow while the brute presses.
+    const HUNT_STALK: &str = "engage/offense/hunt/offense/stalk";
+    const PRESS_JAB: &str = "engage/offense/press/offense/jab";
     let states: Vec<&str> = authored
         .iter()
         .map(|row| row.state.as_str())
@@ -10049,9 +10164,10 @@ fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
     assert_eq!(
         states,
         vec![
-            "engage/offense/approach",
             "engage/offense/commit",
-            "engage/offense/jab",
+            HUNT_STALK,
+            PRESS_JAB,
+            "engage/offense/press/offense/stalk",
             "engage/offense/recover",
             "engage/offense/windup",
             "patrol",
@@ -10066,23 +10182,24 @@ fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
         .collect();
     assert!(
         damage_ticks.len() >= 2,
-        "the jab and committed slam must both fire: {damage_ticks:?}"
+        "the committed slam and a jab must both fire: {damage_ticks:?}"
     );
+    let first_animation = |name: &str| authored.iter().position(|row| row.animation == name);
     assert!(
-        authored.iter().any(|row| row.animation == "attack_jab")
-            && authored.iter().any(|row| row.animation == "attack_slam"),
-        "the fixture must switch from the jab to the committed slam clip"
-    );
-    assert!(
-        authored
-            .iter()
-            .any(|row| row.state == "engage/offense/approach" && row.has_destination),
-        "the engage.move fallback chases while the target is outside the slam standoff"
+        first_animation("attack_slam") < first_animation("attack_jab")
+            && first_animation("attack_jab").is_some(),
+        "the fixture must switch from the committed slam clip to the jab"
     );
     assert!(
         authored
             .iter()
-            .any(|row| row.state == "engage/offense/jab" && !row.has_destination),
+            .any(|row| row.state == HUNT_STALK && row.has_destination),
+        "the engage.move fallback chases while the target is outside jab reach"
+    );
+    assert!(
+        authored
+            .iter()
+            .any(|row| row.state == PRESS_JAB && !row.has_destination),
         "the engage.move selector holds at the authored combat range"
     );
 }
@@ -10094,6 +10211,8 @@ fn reference_enemy_routes_slam_only_and_jab_ranges_to_their_named_attacks() {
     let mut runtime = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "alert"), 50.0);
+    // Routing, not pacing: the slam's held turn would space the jab out.
+    opt_out_of_attack_budget(&mut reg, &mut runtime, enemy);
 
     run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "attack_slam");
@@ -10351,6 +10470,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
             (
@@ -10364,6 +10484,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     engagement_radius: Some(3.5),
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
         ]),
@@ -10819,6 +10940,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: None,
@@ -10839,6 +10961,7 @@ fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescripto
             engagement_radius: None,
             standoff_distance: None,
             damage_type: None,
+            draws: None,
         },
     );
     graph
@@ -10984,6 +11107,9 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 motion: None,
                 action: None,
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: BTreeMap::from([
                     (
                         "move".to_string(),
@@ -11017,6 +11143,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 engagement_radius: Some(5.0),
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: Some(5.0),
@@ -12237,6 +12364,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: None,
@@ -12705,6 +12833,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: Some(ATTACK_RANGE),
@@ -12815,6 +12944,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         );
         assert!(matches!(
@@ -12854,6 +12984,9 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                 motion: None,
                 action: None,
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: BTreeMap::from([
                     (
                         "move".to_string(),
@@ -12889,6 +13022,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         )]),
         engagement_radius: None,
@@ -13384,6 +13518,45 @@ fn an_arrival_guard_below_the_engine_epsilon_leaves_a_position_goal_wedged() {
 
 /// The addresses a tick's enemy emissions fire, in order. Entry emissions for
 /// activities that author no `on_enter` fire nothing and are skipped.
+/// Bind `enemy`'s graph now and make every one of its attacks draw nothing,
+/// as `draws: []` does: always granted, never counted.
+/// Register the dev mod's attack tokens (`content/dev/scripts/attack-tokens.ts`),
+/// which the shipped reference enemy's `draws` name, as its manifest does.
+fn install_dev_attack_tokens(reg: &mut EntityRegistry) {
+    let declare = |name: &str, budget: serde_json::Value| serde_json::json!({ "kind": "attackToken", "name": name, "budget": budget });
+    let vocabulary = postretro_foundation::attack_budget::AttackBudgetVocabulary::from_manifest(
+        Some(&serde_json::json!([
+            declare("melee", serde_json::json!({ "limit": 3 })),
+            declare("ranged", serde_json::json!({ "limit": 2 })),
+            declare(
+                "heavy",
+                serde_json::json!({ "limit": 1, "refreshMs": 4000 })
+            ),
+        ])),
+        None,
+    )
+    .expect("the dev tokens register");
+    reg.set_attack_budgets(std::sync::Arc::new(vocabulary));
+}
+
+fn opt_out_of_attack_budget(reg: &mut EntityRegistry, runtime: &mut AiRuntime, enemy: EntityId) {
+    let mut warned = HashSet::new();
+    runtime.programs.sync(reg, &[], 0, &mut warned);
+    let attacks = reg
+        .get_component::<BrainComponent>(enemy)
+        .expect("the enemy carries a brain")
+        .graph
+        .attacks
+        .len();
+    for attack in 0..attacks {
+        runtime.programs.set_attack_draws_for_test(
+            enemy,
+            attack as u16,
+            postretro_entities::components::brain::ResolvedDraws::NONE,
+        );
+    }
+}
+
 fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static, str>> {
     events
         .iter()
@@ -13393,6 +13566,12 @@ fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static
 
 #[path = "held_world_participation_tests.rs"]
 mod held_world_participation;
+
+#[path = "engaged_motion_tests.rs"]
+mod engaged_motion;
+
+#[path = "attack_turns/tests/tick/mod.rs"]
+mod attack_turn_ticks;
 
 #[test]
 fn contact_attack_deals_its_damage_type() {
@@ -13432,4 +13611,319 @@ fn contact_attack_deals_its_damage_type() {
         100.0 - 2.0 * TEST_ATTACK_DAMAGE,
         "a heavy contact attack is ×2 on health"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Knockback launch: facing and stride read steering velocity alone; a launch
+// holds its impact yaw and plays `jump_loop` after the player's fall delay.
+// ---------------------------------------------------------------------------
+
+/// `enemy_mesh` plus a resolved `jump_loop` state.
+fn enemy_mesh_with_jump_loop() -> MeshComponent {
+    let mut mesh = enemy_mesh();
+    mesh.animation
+        .as_mut()
+        .unwrap()
+        .states
+        .insert("jump_loop".to_string(), usable_state("jump_loop_clip", 4));
+    mesh
+}
+
+fn enemy_agent(reg: &EntityRegistry, enemy: EntityId) -> AgentComponent {
+    reg.get_component::<AgentComponent>(enemy).unwrap().clone()
+}
+
+/// Land a knockback impulse on the enemy through the agent's own entry point, as
+/// the damage chokepoint does before the AI tick reads it.
+fn launch_enemy(reg: &mut EntityRegistry, enemy: EntityId, impulse: Vec3) {
+    let mut agent = enemy_agent(reg, enemy);
+    assert!(agent.add_knockback(impulse), "the impulse must apply");
+    reg.set_component(enemy, agent).unwrap();
+}
+
+/// One fixed tick in sim order: the AI pass, then steering.
+fn ai_then_steering_tick(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    graph: &NavGraph,
+) {
+    run_ai_tick_with_navigation(reg, runtime, STEER_DT, Some(graph), Some(world));
+    agent_steering::tick(
+        reg,
+        world,
+        Some(graph),
+        postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+        STEER_DT,
+    );
+}
+
+/// A grounded chaser pursuing a player far ahead along +Z, already travelling
+/// and facing its travel.
+fn travelling_chaser(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    graph: &NavGraph,
+    mesh: MeshComponent,
+) -> EntityId {
+    spawn_player(reg, Vec3::new(10.0, chaser_rest_y(), 26.0));
+    let enemy = spawn_chaser(reg, 10.0, 10.0);
+    reg.set_component(enemy, mesh).unwrap();
+    set_enemy_yaw(reg, enemy, 0.0);
+    for _ in 0..30 {
+        ai_then_steering_tick(reg, runtime, world, graph);
+    }
+    let agent = enemy_agent(reg, enemy);
+    assert!(
+        agent.is_grounded(),
+        "fixture: the chaser settles on the floor"
+    );
+    assert!(
+        LocomotionIntent::from_velocity(agent.velocity).moving,
+        "fixture: the chaser travels"
+    );
+    assert_eq!(enemy_state_name(reg, enemy), TEST_ALERT_STATE);
+    assert_eq!(enemy_animation(reg, enemy), "locomotion");
+    enemy
+}
+
+#[test]
+fn launched_enemy_holds_impact_yaw_while_steering_runs() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = travelling_chaser(&mut reg, &mut runtime, &world, &graph, enemy_mesh());
+
+    // A sideways rocket hit: the flight path points along +X while the chase
+    // travels +Z, so facing the combined velocity would turn the enemy.
+    launch_enemy(&mut reg, enemy, Vec3::new(9.0, 6.0, 0.0));
+    let impact_yaw = enemy_yaw(&reg, enemy);
+    let launch_x = reg.get_component::<Transform>(enemy).unwrap().position.x;
+
+    let mut launched_ticks = 0;
+    while enemy_agent(&reg, enemy).knockback_velocity != Vec3::ZERO {
+        assert!(launched_ticks < 600, "the knockback must end on the floor");
+        ai_then_steering_tick(&mut reg, &mut runtime, &world, &graph);
+        launched_ticks += 1;
+        assert!(
+            yaw_distance(enemy_yaw(&reg, enemy), impact_yaw) <= 1.0e-5,
+            "launched tick {launched_ticks}: yaw {} left the impact yaw {impact_yaw}",
+            enemy_yaw(&reg, enemy),
+        );
+        let agent = enemy_agent(&reg, enemy);
+        assert!(
+            agent.destination.is_some() && agent.steer_velocity.length() > 0.1,
+            "launched tick {launched_ticks}: steering keeps running under the launch",
+        );
+        assert_eq!(enemy_state_name(&reg, enemy), TEST_ALERT_STATE);
+    }
+    assert!(
+        launched_ticks > 1,
+        "fixture: the launch lasts several ticks"
+    );
+    assert!(
+        reg.get_component::<Transform>(enemy).unwrap().position.x - launch_x > 1.0,
+        "fixture: the hit carried the enemy sideways off its +Z chase",
+    );
+
+    // Once the knockback ends, facing follows steering travel again.
+    let held = enemy_yaw(&reg, enemy);
+    ai_then_steering_tick(&mut reg, &mut runtime, &world, &graph);
+    let travel = enemy_agent(&reg, enemy).steer_velocity;
+    let travel_yaw = travel.x.atan2(travel.z);
+    if yaw_distance(held, travel_yaw) > 1.0e-3 {
+        assert!(
+            yaw_distance(enemy_yaw(&reg, enemy), held) > 1.0e-4,
+            "after the knockback ends the enemy turns toward its travel again",
+        );
+    }
+}
+
+#[test]
+fn launched_target_facing_enemy_slews_at_facing_rate() {
+    // An engaged chaser whose steering stands still faces its target. Every
+    // bit of its velocity here is knockback pointing away from the target, so
+    // reading the combined velocity would turn it toward the flight.
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_ALERT_STATE),
+        50.0,
+    );
+    set_enemy_yaw(&mut reg, enemy, 0.0);
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+    launch_enemy(&mut reg, enemy, Vec3::new(-6.0, 0.0, 0.0));
+
+    let target_yaw = std::f32::consts::FRAC_PI_2;
+    let step = FACING_TURN_RATE * STEER_DT;
+    let mut remaining = yaw_distance(enemy_yaw(&reg, enemy), target_yaw);
+    let mut ticks = 0;
+    while remaining > 1.0e-5 {
+        assert!(ticks < 60, "the enemy must reach its target heading");
+        let before = enemy_yaw(&reg, enemy);
+        run_ai_tick(&mut reg, &mut runtime, STEER_DT);
+        ticks += 1;
+        assert_ne!(
+            enemy_agent(&reg, enemy).knockback_velocity,
+            Vec3::ZERO,
+            "fixture: the enemy stays launched"
+        );
+        let after = enemy_yaw(&reg, enemy);
+        assert!(
+            yaw_distance(before, after) <= step + 1.0e-5,
+            "tick {ticks}: one tick turns no farther than the facing rate",
+        );
+        let now = yaw_distance(after, target_yaw);
+        assert!(
+            (now - (remaining - step).max(0.0)).abs() <= 1.0e-4,
+            "tick {ticks}: the launched enemy re-aims at the full facing rate \
+             (remaining {remaining} -> {now})",
+        );
+        remaining = now;
+    }
+    assert!(
+        ticks > 1,
+        "a quarter turn spans several ticks at the facing rate"
+    );
+}
+
+/// Drive one launch from the impact tick to landing and return the clip the AI
+/// requested on each tick, paired with whether the body was airborne when the
+/// tick began.
+fn clips_through_vertical_launch(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    graph: &NavGraph,
+    enemy: EntityId,
+) -> Vec<(bool, String)> {
+    launch_enemy(reg, enemy, Vec3::new(0.0, 7.0, 0.0));
+    let mut clips = Vec::new();
+    for _ in 0..240 {
+        let airborne = !enemy_agent(reg, enemy).is_grounded();
+        run_ai_tick_with_navigation(reg, runtime, STEER_DT, Some(graph), Some(world));
+        assert_eq!(
+            enemy_state_name(reg, enemy),
+            TEST_ALERT_STATE,
+            "the activity stays unchanged through the launch"
+        );
+        clips.push((airborne, enemy_animation(reg, enemy)));
+        if !airborne {
+            return clips;
+        }
+        agent_steering::tick(
+            reg,
+            world,
+            Some(graph),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            STEER_DT,
+        );
+    }
+    panic!("the launched enemy must land");
+}
+
+#[test]
+fn airborne_launch_plays_jump_loop_after_fall_delay_then_lands() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = travelling_chaser(
+        &mut reg,
+        &mut runtime,
+        &world,
+        &graph,
+        enemy_mesh_with_jump_loop(),
+    );
+
+    let clips = clips_through_vertical_launch(&mut reg, &mut runtime, &world, &graph, enemy);
+    let air_ticks = clips.iter().filter(|(airborne, _)| *airborne).count() as u32;
+    assert!(
+        air_ticks > crate::sim::FALL_DELAY_TICKS,
+        "fixture: the flight outlasts the fall delay ({air_ticks} ticks)"
+    );
+    for (tick, (airborne, clip)) in clips.iter().enumerate() {
+        let air_tick = tick as u32 + 1;
+        let expected = if !airborne {
+            // Landing returns to the activity's resolved clip: still travelling.
+            "locomotion"
+        } else if air_tick >= crate::sim::FALL_DELAY_TICKS {
+            "jump_loop"
+        } else {
+            "locomotion"
+        };
+        assert_eq!(clip, expected, "AI tick {air_tick} after the launch");
+    }
+    assert!(
+        !clips.last().unwrap().0,
+        "the last tick reads the landed body"
+    );
+}
+
+#[test]
+fn airborne_launch_without_jump_loop_keeps_current_clip() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = travelling_chaser(&mut reg, &mut runtime, &world, &graph, enemy_mesh());
+
+    let clips = clips_through_vertical_launch(&mut reg, &mut runtime, &world, &graph, enemy);
+    assert!(clips.len() as u32 > crate::sim::FALL_DELAY_TICKS);
+    assert!(
+        clips.iter().all(|(_, clip)| clip == "locomotion"),
+        "a mesh without `jump_loop` keeps its clip through the launch: {clips:?}"
+    );
+    assert!(
+        !runtime.warned.contains("anim:jump_loop"),
+        "an undeclared airborne clip is never requested, so nothing warns"
+    );
+}
+
+#[test]
+fn horizontal_shove_keeps_ground_clip() {
+    // A stopped chaser rests on its graph's rest clip. A grounded horizontal
+    // shove moves it fast, but knockback never picks a stride: the clip and the
+    // locomotion latch stay put, and a grounded launch never plays `jump_loop`.
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_ALERT_STATE),
+        50.0,
+    );
+    reg.set_component(enemy, enemy_mesh_with_jump_loop())
+        .unwrap();
+    let mut agent = enemy_agent(&reg, enemy);
+    agent.ground = postretro_foundation::GroundRef::World;
+    agent.velocity = Vec3::ZERO;
+    reg.set_component(enemy, agent).unwrap();
+
+    run_ai_tick(&mut reg, &mut runtime, STEER_DT);
+    assert_eq!(enemy_animation(&reg, enemy), "idle", "fixture: rest clip");
+
+    launch_enemy(&mut reg, enemy, Vec3::new(6.0, 0.0, 0.0));
+    for tick in 0..(2 * crate::sim::FALL_DELAY_TICKS) {
+        run_ai_tick(&mut reg, &mut runtime, STEER_DT);
+        assert!(enemy_agent(&reg, enemy).is_grounded());
+        assert_eq!(
+            enemy_animation(&reg, enemy),
+            "idle",
+            "tick {tick}: a shove keeps the ground clip"
+        );
+        assert!(
+            !enemy_locomotion_moving(&reg, enemy),
+            "tick {tick}: knockback never sets the stride latch"
+        );
+    }
 }

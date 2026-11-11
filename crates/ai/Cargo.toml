@@ -25,6 +25,9 @@ postretro-level-format.workspace = true
 postretro-net.workspace = true
 postretro-physics = { workspace = true, features = ["test-support"] }
 postretro-scripting-core.workspace = true
+# Bundles the shipped `content/dev` start script, as `scripts-build` does, for
+# the pacing proofs over the dev mod's own descriptors and budgets.
+postretro-script-compiler = { path = "../script-compiler" }
 postretro-sim = { workspace = true, features = ["test-support"] }
 postretro-test-log-capture.workspace = true
 rquickjs.workspace = true

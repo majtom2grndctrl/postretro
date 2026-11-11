@@ -92,7 +92,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("clip", "String", "Clip name this state plays. Must be non-empty; resolved against the model's clips at level load.")
         .field("loop?", "bool", "Whether the clip loops. Optional; defaults to false.")
         .field("crossfadeMs?", "f32", "Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.")
-        .field("travelSpeed?", "f32", "Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and the AI alert-mapped locomotion state; player `crouch_idle` and jump states play at the authored rate and ignore it.")
+        .field("travelSpeed?", "f32", "Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and for the AI alert-mapped locomotion state and its `_left`, `_right` and `_backward` variants; player `crouch_idle` and jump states play at the authored rate and ignore it.")
         .field("interrupt?", "InterruptPolicy", "How a fade into this state takes over an in-flight fade. Optional; defaults to \"smooth\".")
         .finish();
     registry
@@ -109,7 +109,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "animations?",
             "MeshAnimationStates",
-            "Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when standing idle; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs turned against travel, toward the aim; a missing or unresolved backward state plays its tier's forward state instead, and `run_backward` needs a run forward state beside it. Crouching, not speed, selects `crouch_idle` when still and `crouch_forward` or `crouch_backward` when moving, rate-scaled against `travelSpeed`, falling back to `.crouch`; a slide holds `crouch_idle` at its authored rate. A missing `crouch_backward` plays `crouch_forward`, a missing `crouch_idle` plays `defaultState`, and without a resolved `crouch_forward` crouching and sliding select as standing does. In the air, `jump_up` plays from a jump's takeoff until the apex or its clip ends, then `jump_loop`; a fall without a jump keeps the ground stride for about 0.15 s first. An air jump after takeoff keeps `jump_loop`; a launch without a jump (knockback, a push) falls into `jump_loop` after the delay. A landing at or below `.walk` plays `jump_down` until its clip ends, the player speeds up, or jumps again; a faster landing returns straight to the stride. Swim, vault, dash and slide never play jump states. A missing `jump_up` takes off into `jump_loop`, a missing `jump_down` lands straight into the ground states, and without a resolved `jump_loop` there is no jump sequence. `loop` defaults to false: declare `loop: true` on the repeating states (walk, run, crouch and `jump_loop`); `jump_up` and `jump_down` play once. Without `walk_forward` or `walk` the engine drives none of these.",
+            "Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when standing idle; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs turned against travel, toward the aim; a missing or unresolved backward state plays its tier's forward state instead, and `run_backward` needs a run forward state beside it. Crouching, not speed, selects `crouch_idle` when still and `crouch_forward` or `crouch_backward` when moving, rate-scaled against `travelSpeed`, falling back to `.crouch`; a slide holds `crouch_idle` at its authored rate. A missing `crouch_backward` plays `crouch_forward`, a missing `crouch_idle` plays `defaultState`, and without a resolved `crouch_forward` crouching and sliding select as standing does. In the air, `jump_up` plays from a jump's takeoff until the apex or its clip ends, then `jump_loop`; a fall without a jump keeps the ground stride for about 0.15 s first. An air jump after takeoff keeps `jump_loop`; a launch without a jump (knockback, a push) falls into `jump_loop` after the delay. A landing at or below `.walk` plays `jump_down` until its clip ends, the player speeds up, or jumps again; a faster landing returns straight to the stride. Swim, vault, dash and slide never play jump states. A missing `jump_up` takes off into `jump_loop`, a missing `jump_down` lands straight into the ground states, and without a resolved `jump_loop` there is no jump sequence. `loop` defaults to false: declare `loop: true` on the repeating states (walk, run, crouch and `jump_loop`); `jump_up` and `jump_down` play once. Without `walk_forward` or `walk` the engine drives none of these. On an enemy, a launch into the air plays `jump_loop` after the same fall delay, and under target facing an activity clip `X` resolves to `X_left`, `X_right` or `X_backward` by travel direction, falling back to `X`.",
         )
         .field(
             "defaultState?",
@@ -128,7 +128,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "speedScale?",
             "bool",
-            "Whether V1 rate-scales engine-selected player locomotion and the AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.",
+            "Whether the engine rate-scales engine-selected player locomotion and the brain graph's locomotion state, with its `_left`, `_right` and `_backward` variants. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.",
         )
         .finish();
     registry
@@ -633,6 +633,30 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "freeze",
             "Touch neither destination nor steering — terminal presentation.",
         )
+        .variant(
+            "strafe",
+            "Engaged: circle the target at standoff in one direction as a continuous orbit, reversing when the way ahead is unreachable, occupied or out of sight. Faces the target by default. Takes no parameters.",
+        )
+        .variant(
+            "reposition",
+            "Engaged: claim a combat slot at least one slot spacing from the slot held at entry, within the activity's `reposition` bounds, and hold on arrival or when none qualifies. Never backs straight off. Faces the target by default.",
+        )
+        .finish();
+    registry
+        .register_enum("FacingPolicy")
+        .doc("Which heading an enemy faces while an activity is active.")
+        .variant("target", "Turn toward the selected target.")
+        .variant(
+            "travel",
+            "Turn toward the direction of travel; hold the heading while stopped.",
+        )
+        .finish();
+    registry
+        .register_type("RepositionParams")
+        .doc("Bounds a `reposition` activity fixes at entry, so its goal never chases itself.")
+        // `RepositionArc` is the typedef-only name for the runtime `[f32; 2]`.
+        .field("arc?", "RepositionArc", "`[min, max]` degrees around the target, measured from the bearing from the target to the enemy at entry: 0 is straight back toward its start, 90 lateral, 180 the far side. Either side qualifies. Must lie within 0 to 180 with min <= max and contain a multiple of 45, since the ring steps in 45° slots. Defaults to `[0, 180]`.")
+        .field("minTravel?", "f32", "Metres the slot must lie from the enemy's position at entry. Must be finite and >= 0. Defaults to one slot spacing, the distance between neighboring ring slots at standoff.")
         .finish();
     registry
         .register_type("ActionVerb")
@@ -641,10 +665,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("AttackParams")
-        .doc("One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds.")
+        .doc("One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once.")
         .alias(
-            "{ weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string }",
-            "{ weapon: never?, damage: number, damageType: DamageType?, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, damageType: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }",
+            "{ weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] }",
+            "{ weapon: never?, damage: number, damageType: DamageType?, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string?, draws: {AttackToken | AttackTokenRef}? } | { weapon: string, damage: never?, damageType: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string?, draws: {AttackToken | AttackTokenRef}? }",
         )
         .finish();
     registry
@@ -715,6 +739,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("action?", "ActionVerb", "Leaf sugar for a single-entry `offense` layer; the attack name resolves against the root `attacks` map.")
         .field("onEnter?", "String", "Optional named event fired when a leaf activity is entered.")
         .field("sound?", "String", "Optional sound key played at the enemy when a leaf activity is entered, whether or not it authors `onEnter`.")
+        .field("facing?", "FacingPolicy", "Which heading the enemy faces while this activity is active, covering the motion its own `move` layer supplies. Omitted, the motion's default applies: `strafe` and `reposition` face the target, and other verbs keep their usual rule.")
+        .field("reposition?", "RepositionParams", "Bounds for this activity's own `reposition` motion. Valid only when `motion` is `\"reposition\"`; a `move` selector's `reposition` uses the defaults.")
+        .field("attackTurn?", "String", "Marks this activity for one of the root `attacks`: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: the name must be declared, and a mark nested inside a mark for another attack, or an action under a mark that fires another attack, rejects.")
         .field("layers?", "BehaviorLayers", "Composite-only orthogonal layers.")
         .finish();
     registry

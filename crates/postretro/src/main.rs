@@ -23,6 +23,7 @@ mod life_state_eye;
 #[cfg(test)]
 mod presentation_budget_measurement_tests;
 mod respawn_placements;
+mod spawn_pose;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -239,6 +240,9 @@ fn append_tick_weapon_script_events(
 /// transport state and registry replication; level following, input latches,
 /// presentation pools, and client-local UI state remain above that boundary.
 fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
+    // A spawn-pose hint the reveal frame held moves a Running, unarmed
+    // stand-in before this drain and its snapshots.
+    app.apply_held_spawn_pose_hint();
     for control in controls {
         match control {
             ServerControlMessage::Relevel {
@@ -330,6 +334,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 // this frame reads them with the payload's viscosities.
                 app.refresh_environment_fluids();
             }
+            ServerControlMessage::SpawnPoseHint(hint) => app.receive_spawn_pose_hint(hint),
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;
@@ -384,6 +389,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             }
         }
     }
+    // The reveal frame drains Control once, after the reveal edge, so a hint
+    // that drain brought waits for the next one.
+    app.end_reveal_frame_spawn_pose_hold();
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -1117,6 +1125,8 @@ pub(crate) struct App {
     /// (spawn-point / built-in-handled / remaining-entity bookkeeping) now lives
     /// as locals inside `install_world_cpu`; only this host copy outlives install.
     host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+    /// Each remote seat's resolved spawn pose on the installed level.
+    spawn_poses: crate::spawn_pose::SpawnPoseResolver,
 
     /// Seconds since level load, not wall clock. Resets to zero on level unload
     /// and during level install. Maintained for future engine consumers that need a
@@ -1176,6 +1186,16 @@ pub(crate) struct App {
     /// Source for the installed level, retained after `level_load` is consumed so
     /// `restartLevel()` can requeue the same catalog id or raw dev path.
     active_level_source: Option<LevelSource>,
+
+    /// The installed level is a connected client's host-named level: its
+    /// load was requested or adopted by the host's relevel. Set at install
+    /// with `active_level_source`, cleared with it.
+    active_level_host_named: bool,
+
+    /// Before boot left the splash or the first-launch hold, the host named
+    /// a catalog level this client lacks. The boot-destination step consumes
+    /// it: a frontend boot presents the menu with no backdrop load.
+    boot_host_level_missing: bool,
 
     /// The level load in flight, if any: its generation, whether its stages
     /// were dispatched, and its progress. See: `startup::level_loads`.
@@ -2827,6 +2847,31 @@ impl App {
                 if admission.reclaimed {
                     join_seed_state.mark_reclaimed(*client_id);
                 }
+                // Admission while a level is installed (the host Settling)
+                // names it to the seat: Relevel went out in the transport's
+                // handshake, so the hint follows. With no level installed,
+                // the next install's send covers the seat.
+                let data_registry = script_ctx.data_registry.borrow();
+                if let Some(level_identity) = self.published_level_identity.as_deref()
+                    && let Some(placements) = crate::spawn_pose::SpawnPlacements::of_level(
+                        &self.host_spawn_points,
+                        &data_registry.entities,
+                        self.nav_graph.as_ref().map(|graph| graph.agent_params()),
+                    )
+                {
+                    self.spawn_poses.resolve_and_hint(
+                        &crate::spawn_pose::NamedLevel {
+                            placements: &placements,
+                            level_identity,
+                            script_ctx: &script_ctx,
+                        },
+                        server,
+                        seats,
+                        &registry,
+                        admission.seat,
+                        *client_id,
+                    );
+                }
             }
             for (client_id, arrival) in
                 join_seed_state.route_poll(host_poll, |id| server.is_participating(id))
@@ -2889,6 +2934,9 @@ impl App {
                     postretro_net::slots::SlotEvent::Closed { client_id, .. } => {
                         join_seed_state.remove_client(*client_id);
                     }
+                    // Only the Running poll's demotion re-resolves a seat: here
+                    // unload and suspend have cleared the level identity, and a
+                    // Settling host promotes no one.
                     postretro_net::slots::SlotEvent::Demoted { .. } => {}
                     postretro_net::slots::SlotEvent::Participating { client_id } => {
                         if !server.is_current_participation_entry(event) {
@@ -3957,6 +4005,8 @@ impl App {
         // the client arm (disjoint `self` fields from `self.session`).
         let environment_volumes = &self.environment_volumes;
         let collision_world = &self.collision_world;
+        let spawn_poses = &mut self.spawn_poses;
+        let published_level_identity = self.published_level_identity.as_deref();
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
         // so the client arm's `mesh_clip_tables` read does not re-borrow the
@@ -4099,6 +4149,30 @@ impl App {
                                         if admission.reclaimed {
                                             join_seed_state.mark_reclaimed(*client_id);
                                         }
+                                        // Admission names the installed level to
+                                        // the seat: the transport's handshake
+                                        // sent its Relevel, so the hint follows.
+                                        if let Some(level_identity) = published_level_identity
+                                            && let Some(placements) =
+                                                crate::spawn_pose::SpawnPlacements::of_level(
+                                                    &host_spawn_points,
+                                                    &net_descriptors,
+                                                    host_agent_params,
+                                                )
+                                        {
+                                            spawn_poses.resolve_and_hint(
+                                                &crate::spawn_pose::NamedLevel {
+                                                    placements: &placements,
+                                                    level_identity,
+                                                    script_ctx: &script_ctx,
+                                                },
+                                                server,
+                                                seats,
+                                                &registry,
+                                                admission.seat,
+                                                *client_id,
+                                            );
+                                        }
                                         log::info!(
                                             "[Net] client {client_id} admitted; awaiting content parity and both reveals"
                                         );
@@ -4186,7 +4260,36 @@ impl App {
                                     } => {
                                         join_seed_state.remove_client(*client_id);
                                     }
-                                    postretro_net::slots::SlotEvent::Demoted { .. } => {}
+                                    postretro_net::slots::SlotEvent::Demoted {
+                                        client_id, ..
+                                    } => {
+                                        // A seat whose spawn consumed its
+                                        // single-use pose is hinted its next
+                                        // spawn now, before any re-promotion.
+                                        if let Some(seats) = seat_table.as_deref_mut()
+                                            && let Some(seat) = seats.seat_for_client(*client_id)
+                                            && let Some(level_identity) = published_level_identity
+                                            && let Some(placements) =
+                                                crate::spawn_pose::SpawnPlacements::of_level(
+                                                    &host_spawn_points,
+                                                    &net_descriptors,
+                                                    host_agent_params,
+                                                )
+                                        {
+                                            spawn_poses.demoted(
+                                                &crate::spawn_pose::NamedLevel {
+                                                    placements: &placements,
+                                                    level_identity,
+                                                    script_ctx: &script_ctx,
+                                                },
+                                                server,
+                                                seats,
+                                                &registry,
+                                                seat,
+                                                *client_id,
+                                            );
+                                        }
+                                    }
                                     postretro_net::slots::SlotEvent::Participating { .. } => {}
                                 }
                                 let postretro_net::slots::SlotEvent::Participating { client_id } =
@@ -4229,67 +4332,84 @@ impl App {
                                         "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
                                     ),
                                 }
-                                let pawn = if host_spawn_points.is_empty() {
-                                    netcode::host_handle_accept(
-                                        &mut registry,
-                                        allocator,
-                                        replicable,
-                                        slot_pawns,
-                                        *client_id,
-                                    );
-                                    slot_pawns.pawn_for(*client_id)
-                                } else {
-                                    let joinable =
-                                        crate::scripting::builtins::player_spawn::joinable_sites(
-                                            &host_spawn_points,
-                                            &net_descriptors,
+                                let placements = crate::spawn_pose::SpawnPlacements::of_level(
+                                    &host_spawn_points,
+                                    &net_descriptors,
+                                    host_agent_params,
+                                );
+                                let mut promotion = None;
+                                let pawn = match placements.as_ref() {
+                                    None => {
+                                        netcode::host_handle_accept(
+                                            &mut registry,
+                                            allocator,
+                                            replicable,
+                                            slot_pawns,
+                                            *client_id,
                                         );
-                                    let Some(placement_index) =
-                                        seat_table.as_deref_mut().and_then(|seats| {
-                                            let placement = seats.assign_joiner_placement(
-                                                &registry, seat, &joinable,
+                                        slot_pawns.pawn_for(*client_id)
+                                    }
+                                    // Promotion spawns at the seat's recorded
+                                    // pose, the one its hint named.
+                                    Some(placements) => {
+                                        let Some(promoted) =
+                                            seat_table.as_deref_mut().and_then(|seats| {
+                                                let promoted = spawn_poses.resolve_for_promotion(
+                                                    seat, seats, &registry, placements,
+                                                );
+                                                crate::respawn_placements::publish(
+                                                    &script_ctx,
+                                                    &host_spawn_points,
+                                                    &net_descriptors,
+                                                    Some(seats),
+                                                    None,
+                                                );
+                                                promoted
+                                            })
+                                        else {
+                                            log::warn!(
+                                                "[Net] participating client {client_id} could not receive a player_spawn placement; closing inconsistent slot"
                                             );
-                                            crate::respawn_placements::publish(
-                                                &script_ctx,
+                                            let _ = server.close_relay_connection(
+                                                *client_id,
+                                                postretro_net::slots::CloseCause::Disconnect,
+                                            );
+                                            continue;
+                                        };
+                                        let carried_loadout = seat_table
+                                            .as_deref()
+                                            .and_then(|seats| seats.carried_state(seat))
+                                            .cloned();
+                                        let pawn = promoted
+                                            .spawn
+                                            .spawn_placement(
                                                 &host_spawn_points,
                                                 &net_descriptors,
-                                                Some(seats),
-                                                None,
-                                            );
-                                            placement
-                                        })
-                                    else {
-                                        log::warn!(
-                                            "[Net] participating client {client_id} could not receive a player_spawn placement; closing inconsistent slot"
-                                        );
-                                        let _ = server.close_relay_connection(
-                                            *client_id,
-                                            postretro_net::slots::CloseCause::Disconnect,
-                                        );
-                                        continue;
-                                    };
-                                    let carried_loadout = seat_table
-                                        .as_deref()
-                                        .and_then(|seats| seats.carried_state(seat))
-                                        .cloned();
-                                    netcode::host_handle_accept_descriptor_at_placement(
-                                        &mut registry,
-                                        allocator,
-                                        replicable,
-                                        slot_pawns,
-                                        command_queues,
-                                        owners,
-                                        weapon_owners,
-                                        open_shots,
-                                        pending_hit_declarations,
-                                        weaponless_fire_logged,
-                                        *client_id,
-                                        &host_spawn_points,
-                                        placement_index,
-                                        &net_descriptors,
-                                        host_agent_params,
-                                        carried_loadout.as_ref(),
-                                    )
+                                                host_agent_params,
+                                            )
+                                            .and_then(|placement| {
+                                                netcode::host_handle_accept_descriptor_at_placement(
+                                                    &mut registry,
+                                                    allocator,
+                                                    replicable,
+                                                    slot_pawns,
+                                                    command_queues,
+                                                    owners,
+                                                    weapon_owners,
+                                                    open_shots,
+                                                    pending_hit_declarations,
+                                                    weaponless_fire_logged,
+                                                    *client_id,
+                                                    std::slice::from_ref(placement.as_ref()),
+                                                    0,
+                                                    &net_descriptors,
+                                                    host_agent_params,
+                                                    carried_loadout.as_ref(),
+                                                )
+                                            });
+                                        promotion = Some(promoted);
+                                        pawn
+                                    }
                                 };
                                 let Some(pawn) = pawn else {
                                     log::warn!(
@@ -4305,6 +4425,25 @@ impl App {
                                 state_slots.register_client(*client_id);
                                 if let Some(seats) = seat_table.as_deref_mut() {
                                     seats.bind_pawn(&mut registry, seat, pawn);
+                                    if let Some(promotion) = promotion.as_ref() {
+                                        let level = placements
+                                            .as_ref()
+                                            .zip(published_level_identity)
+                                            .map(|(placements, level_identity)| {
+                                                crate::spawn_pose::NamedLevel {
+                                                    placements,
+                                                    level_identity,
+                                                    script_ctx: &script_ctx,
+                                                }
+                                            });
+                                        spawn_poses.finish_promotion(
+                                            promotion,
+                                            level.as_ref(),
+                                            server,
+                                            seat,
+                                            *client_id,
+                                        );
+                                    }
                                 }
                                 resolve_accepted_host_pawn_presentation(
                                     &mut registry,
@@ -11413,6 +11552,7 @@ mod tests {
                     loading: Default::default(),
                     store_declarations: Default::default(),
                     defense: Default::default(),
+                    attack_budgets: Default::default(),
                     dependency_paths: Vec::new(),
                 },
             )),

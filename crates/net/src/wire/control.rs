@@ -150,7 +150,8 @@ pub struct RevealedLevel {
     pub identity: String,
     /// The host level life (`ServerControlMessage::Relevel`) this install
     /// followed, or `None` for a level the host never named: an uncatalogued
-    /// one, or a reveal before the first relevel. On a catalog level the host
+    /// one, a reveal before the first relevel, or a level the client loaded of
+    /// its own accord (its frontend backdrop). On a catalog level the host
     /// promotes only a reveal of its current life, so a reveal from before a
     /// restart of the same map never counts.
     pub level_life: Option<u64>,
@@ -308,8 +309,9 @@ fn digest_hex(digest: &[u8; 32]) -> String {
 }
 
 /// Tagged server -> client Control envelope for divergence causes, opaque
-/// engine-serialized tuning, and host-selected catalog map ids.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+/// engine-serialized tuning, host-selected catalog map ids, the session
+/// roster, and the spawn-pose hint. `PartialEq` only: the hint carries `f32`.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerControlMessage {
     Divergence(DivergenceReason),
     /// Opaque engine-serialized tuning. Net is a registry-blind courier and must
@@ -331,6 +333,43 @@ pub enum ServerControlMessage {
     /// New variants must be appended. bitcode encodes enum tags positionally, so
     /// inserting this before an existing variant would renumber shipped messages.
     SessionRoster(SessionRosterMessage),
+    /// The pose the host resolved for this client's seat on one install, sent
+    /// to that client alone so it settles at its own spawn view. Advisory: the
+    /// first baseline stays the only authority on the pawn's pose.
+    SpawnPoseHint(SpawnPoseHint),
+}
+
+/// Host-resolved spawn pose for one seat on one host install.
+///
+/// A pose, not a placement index: the level content digest does not hash
+/// `player_spawn` placements, and the hint arrives before parity is proven, so
+/// an index could name a different spawn on the client. Tagged with the pair
+/// `ClientControlMessage::Revealed` declares, so a client applies it only to the
+/// install it describes.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct SpawnPoseHint {
+    /// The parity identity of the install this pose belongs to.
+    pub level_identity: String,
+    /// The host level life on a catalog level; `None` on an uncatalogued one.
+    pub level_life: Option<u64>,
+    /// The pawn's eye at spawn: its standing position plus its descriptor's
+    /// eye height.
+    pub eye: [f32; 3],
+    /// Radians, engine convention (YXZ; a `player_spawn`'s `angles.y`).
+    pub yaw: f32,
+    /// Radians, engine convention (YXZ; a `player_spawn`'s `angles.x`).
+    pub pitch: f32,
+}
+
+impl SpawnPoseHint {
+    /// Whether every pose component is finite. A client rejects a hint that
+    /// fails this before applying it.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
+        self.eye.iter().all(|value| value.is_finite())
+            && self.yaw.is_finite()
+            && self.pitch.is_finite()
+    }
 }
 
 /// One seat's session-visible connection state.
@@ -560,6 +599,48 @@ mod tests {
                 }],
             }
         )));
+        let hint = SpawnPoseHint {
+            level_identity: "campaign-test".to_string(),
+            level_life: Some(4),
+            eye: [1.5, 2.25, -3.0],
+            yaw: 1.25,
+            pitch: -0.5,
+        };
+        assert!(round_trips(&ServerControlMessage::SpawnPoseHint(hint)));
+        assert!(round_trips(&ServerControlMessage::SpawnPoseHint(
+            SpawnPoseHint {
+                level_identity: "maps/path-level.prl".to_string(),
+                level_life: None,
+                eye: [0.0; 3],
+                yaw: 0.0,
+                pitch: 0.0,
+            }
+        )));
+    }
+
+    #[test]
+    fn spawn_pose_hint_finite_check_rejects_every_non_finite_component() {
+        let finite = SpawnPoseHint {
+            level_identity: "map-a".to_string(),
+            level_life: Some(1),
+            eye: [1.0, 2.0, 3.0],
+            yaw: 0.5,
+            pitch: 0.25,
+        };
+        assert!(finite.is_finite());
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for axis in 0..3 {
+                let mut hint = finite.clone();
+                hint.eye[axis] = bad;
+                assert!(!hint.is_finite(), "eye[{axis}] = {bad}");
+            }
+            let mut hint = finite.clone();
+            hint.yaw = bad;
+            assert!(!hint.is_finite(), "yaw = {bad}");
+            let mut hint = finite.clone();
+            hint.pitch = bad;
+            assert!(!hint.is_finite(), "pitch = {bad}");
+        }
     }
 
     #[test]

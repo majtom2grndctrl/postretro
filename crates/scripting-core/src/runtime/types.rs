@@ -344,13 +344,18 @@ pub struct ModManifestResult {
     /// `defaultDamageType`. Every descriptor's layer and resist names were
     /// checked against it before this result was returned.
     pub defense: postretro_foundation::defense::DefenseVocabulary,
+    /// The registered attack tokens and budget profiles: `attackTokens` and
+    /// `attackBudgets`. Every attack's `draws` were checked against it
+    /// before this result was returned.
+    pub attack_budgets: postretro_foundation::attack_budget::AttackBudgetVocabulary,
 }
 
-/// Check every descriptor's layer and resist names against the registered
-/// vocabulary, naming the failing key path.
+/// Check every descriptor's layer and resist names, and every attack's
+/// `draws`, against the registered vocabularies, naming the failing key path.
 pub(crate) fn check_entity_defense_references(
     entities: &[EntityTypeDescriptor],
     vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+    attack_budgets: &postretro_foundation::attack_budget::AttackBudgetVocabulary,
 ) -> Result<(), String> {
     for (index, descriptor) in entities.iter().enumerate() {
         let components = format!("entities[{index}].components");
@@ -368,6 +373,13 @@ pub(crate) fn check_entity_defense_references(
             // A brain guard's `defense(h)` reads the entity's own layer by name.
             if let Ok(graph) = serde_json::to_value(behavior) {
                 check_guard_layer_reads(&graph, &format!("{components}.behavior"), vocabulary)?;
+                // `attackTurnHeld(a)` and `attackTurnFree(a)` name one of the
+                // archetype's own attacks.
+                check_guard_attack_turn_reads(
+                    &graph,
+                    &format!("{components}.behavior"),
+                    &behavior.attacks,
+                )?;
             }
             for (name, attack) in &behavior.attacks {
                 if let Some(handle) = &attack.damage_type {
@@ -376,6 +388,10 @@ pub(crate) fn check_entity_defense_references(
                         handle,
                     )?;
                 }
+                attack_budgets.check_draws(
+                    &format!("{components}.behavior.attacks.{name}.draws"),
+                    attack.draws.as_deref(),
+                )?;
             }
         }
     }
@@ -412,6 +428,40 @@ fn check_guard_layer_reads(
         serde_json::Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
                 check_guard_layer_reads(child, &format!("{path}[{index}]"), vocabulary)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Fail load, naming the key path, on an `@attackTurnHeld.<attack>` or
+/// `@attackTurnFree.<attack>` guard input whose attack the archetype's
+/// `behavior.attacks` does not declare.
+fn check_guard_attack_turn_reads(
+    value: &serde_json::Value,
+    path: &str,
+    attacks: &std::collections::BTreeMap<String, postretro_foundation::AttackParams>,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.get("op").and_then(serde_json::Value::as_str) == Some("input")
+                && let Some(name) = object.get("name").and_then(serde_json::Value::as_str)
+                && let Some(attack) = postretro_foundation::attack_turn_input(name)
+                && !attacks.contains_key(attack)
+            {
+                return Err(format!(
+                    "`{path}` reads `{name}`, which names no attack in this archetype's `behavior.attacks`"
+                ));
+            }
+            for (key, child) in object {
+                check_guard_attack_turn_reads(child, &format!("{path}.{key}"), attacks)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                check_guard_attack_turn_reads(child, &format!("{path}[{index}]"), attacks)?;
             }
             Ok(())
         }
@@ -827,6 +877,53 @@ mod tests {
         .expect_err("undeclared faction names must not reach descriptor storage");
 
         assert!(error.contains("undeclared"));
+    }
+}
+
+#[cfg(test)]
+mod guard_attack_turn_read_tests {
+    use super::check_guard_attack_turn_reads;
+    use postretro_foundation::AttackParams;
+    use std::collections::BTreeMap;
+
+    // `attackTurnHeld(a)` / `attackTurnFree(a)` naming no attack of the
+    // archetype fails load naming the key path.
+    #[test]
+    fn attack_turn_reads_naming_no_archetype_attack_fail_load() {
+        let attacks = BTreeMap::from([(
+            "slam".to_string(),
+            AttackParams {
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1000.0),
+                engagement_radius: None,
+                standoff_distance: None,
+                sound: None,
+                damage_type: None,
+                draws: None,
+            },
+        )]);
+        let guard = |name: &str| {
+            serde_json::json!({ "transitions": { "idle": [
+                { "when": { "op": "and", "a": { "op": "input", "name": "@brain.hasTarget" }, "b": { "op": "input", "name": name } } }
+            ] } })
+        };
+        for name in ["@attackTurnHeld.slam", "@attackTurnFree.slam"] {
+            assert_eq!(
+                check_guard_attack_turn_reads(&guard(name), "behavior", &attacks),
+                Ok(())
+            );
+        }
+        for name in ["@attackTurnHeld.jab", "@attackTurnFree.jab"] {
+            let error =
+                check_guard_attack_turn_reads(&guard(name), "behavior", &attacks).unwrap_err();
+            assert!(
+                error.starts_with("`behavior.transitions.idle[0].when.b` reads"),
+                "{error}"
+            );
+            assert!(error.contains(name), "{error}");
+        }
     }
 }
 

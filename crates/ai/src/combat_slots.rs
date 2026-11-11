@@ -8,7 +8,7 @@ use postretro_entities::EntityRegistry;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_foundation::GroundRef;
 
-use super::EnemyOutcome;
+use super::{EnemyOutcome, engaged_motion};
 use crate::collision::CollisionWorld;
 use crate::combat_positioning::{
     CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
@@ -37,6 +37,9 @@ pub(super) fn resolve_combat_slots(
     let (Some(nav_graph), Some(collision_world)) = (nav_graph, collision_world) else {
         for outcome in outcomes.iter_mut() {
             clear_combat_slot(outcome);
+            if outcome.engaged_ring.is_some() {
+                engaged_motion::settle(outcome, None);
+            }
         }
         return;
     };
@@ -64,7 +67,13 @@ pub(super) fn resolve_combat_slots(
         let Some(target_aim) = outcome.target_aim else {
             continue;
         };
-        let retained_slot = retained_combat_slot(outcome);
+        // The engaged slot verbs leave the shared ring for their own rotated
+        // one and pick afresh each tick, so they present no incumbent.
+        let retained_slot = outcome
+            .engaged_ring
+            .is_none()
+            .then(|| retained_combat_slot(outcome))
+            .flatten();
         // Steering routes from the agent's ground; scoring a slot from the
         // floor under a lift would price a route the agent cannot walk.
         let (agent_ground, agent_height) =
@@ -90,6 +99,7 @@ pub(super) fn resolve_combat_slots(
             mover_nav,
             collision_world,
             path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
+            ring: outcome.engaged_ring,
         });
     }
 
@@ -105,7 +115,11 @@ pub(super) fn resolve_combat_slots(
             continue;
         }
 
-        match assignments.get(&outcome.id.to_raw()).copied().flatten() {
+        let claim = assignments.get(&outcome.id.to_raw()).copied().flatten();
+        if outcome.engaged_ring.is_some() {
+            engaged_motion::settle(outcome, claim);
+        }
+        match claim {
             Some(candidate) => {
                 outcome.combat_slot = Some(candidate.position);
                 outcome.brain.combat_slot = Some(candidate.position);

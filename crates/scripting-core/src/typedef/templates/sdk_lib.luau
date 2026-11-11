@@ -186,9 +186,29 @@ export type TrapEntityHandle = {
   stop: (self: TrapEntityHandle) -> {StopTrapStep},
 }
 
+--- Snapshot of a map-placed `ai_attack_pool`: id, position and tags. Its
+--- member tag and budget profile stay on the map entity.
+export type AttackPoolEntity = { id: EntityId, position: Vec3, tags: {string} }
+
+--- Attack pool member returned by `getMapEntities("attackPool")`. Every step
+--- is host-only.
+export type AttackPoolEntityHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  --- Start the pool: every enemy carrying its member tag takes turns in it,
+  --- under its budget profile, and a spawn carrying the tag joins while it
+  --- runs. On a running pool, re-assigns its current tag holders; turns,
+  --- waits and refreshing counts stand.
+  start: (self: AttackPoolEntityHandle) -> {StartAttackPoolStep},
+  --- Stop the pool: its members return to the default pool and its
+  --- refreshing counts drop. A no-op on a stopped pool.
+  stop: (self: AttackPoolEntityHandle) -> {StopAttackPoolStep},
+}
+
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -208,6 +228,7 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
   & ((kind: "trap", filter: MapEntityFilter?) -> {TrapEntityHandle})
+  & ((kind: "attackPool", filter: MapEntityFilter?) -> {AttackPoolEntityHandle})
 
 --- Level default gravity in m/s² (negative = downward; positive = upward):
 --- the gravity outside every gravity volume. Seeded from the worldspawn
@@ -541,6 +562,19 @@ export type StopTrapStep = {
   primitive: "stopTrap",
 }
 
+--- Sequence step that starts one attack pool member, or re-assigns its tag
+--- holders while it runs (`p:start()`).
+export type StartAttackPoolStep = {
+  id: EntityId,
+  primitive: "startAttackPool",
+}
+
+--- Sequence step that stops one attack pool member (`p:stop()`).
+export type StopAttackPoolStep = {
+  id: EntityId,
+  primitive: "stopAttackPool",
+}
+
 --- Control-step payload for `WaitStep`. `interruptible` defaults to `false`
 --- when omitted by the author.
 export type WaitArgs = { durationMs: number, interruptible: boolean }
@@ -565,7 +599,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A
@@ -1393,6 +1427,8 @@ export type ModManifestInput = {
   defenseLayers: {DefenseLayer}?,
   damageTypes: {DamageType}?,
   defaultDamageType: DamageType?,
+  attackTokens: {AttackToken}?,
+  attackBudgets: { [string]: {AttackToken | AttackTokenRef} }?,
 }
 
 --- Build a frozen state-store handle. Pure: calling it performs no FFI and
@@ -1426,6 +1462,32 @@ declare function defineDefenseLayer(name: string, options: {}?): DefenseLayer
 --- Declare a damage type by its matrix. Luau passes the name explicitly.
 --- Register it with `defineMod({ damageTypes = { type } })`. `options` is reserved.
 declare function defineDamageType(name: string, matrix: DamageTypeMatrix, options: {}?): DamageType
+--- A token's default budget on one target. `limit`: how much of it may be
+--- drawn on one target at once, an integer of at least 1 (default 3).
+--- `refreshMs`: how long a spent draw stays counted after its turn ends, a
+--- finite number of at least 0 (default 0).
+export type AttackTokenBudget = { limit: number?, refreshMs: number? }
+--- Fields a token reference carries: `cost` in an attack's `draws` (an integer
+--- of at least 1, default 1); `limit` and `refreshMs` in an `attackBudgets`
+--- profile. A field in the other place rejects load.
+export type AttackTokenFields = { cost: number?, limit: number?, refreshMs: number? }
+--- A registered attack token. It crosses the manifest as `{ kind, name }`; its
+--- budget rides the declaration `defineMod` resolves. `token:with({ ... })`
+--- builds a reference carrying fields.
+export type AttackToken = {
+  kind: "attackToken",
+  name: string,
+  with: (self: AttackToken, fields: AttackTokenFields) -> AttackTokenRef,
+}
+--- A token reference with fields, built by `token:with({ ... })`.
+export type AttackTokenRef = { token: AttackToken, cost: number?, limit: number?, refreshMs: number? }
+--- The SDK's attack token at the default budget: what an attack without
+--- `draws` draws. Every mod has it and never lists it in `attackTokens`; a
+--- profile may override it.
+declare defaultToken: AttackToken
+--- Declare an attack token by its default budget. Luau passes the name
+--- explicitly. Register it with `defineMod({ attackTokens = { token } })`.
+declare function defineAttackToken(name: string, budget: AttackTokenBudget?): AttackToken
 
 --- Lift a number or boolean state ref into the fluent impact-expression algebra.
 declare read: ((ref: StateRef<number>) -> NumberRef) & ((ref: StateRef<boolean>) -> BoolRef)
@@ -1957,6 +2019,8 @@ export type BrainInputs = {
   --- position. Pair this with damage recency before treating shared memory or
   --- bearing as belonging to that hit (boolean).
   damageSourceKnown: RuntimeGuardNode,
+  --- `true` while the enemy holds an attack turn, for any attack, as of the previous tick: it reads true from the tick after the grant (boolean).
+  hasAttackTurn: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.
@@ -1990,6 +2054,12 @@ declare function state(name: string): RuntimeGuardNode
 
 --- Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current:le(0)`. An entity without the layer reads `0`; a bad reference fails load.
 declare function defense(layer: DefenseLayer): { current: RuntimeGuardNode, capacity: RuntimeGuardNode }
+
+--- `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load.
+declare function attackTurnHeld(attack: string): RuntimeGuardNode
+
+--- `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load.
+declare function attackTurnFree(attack: string): RuntimeGuardNode
 
 -- UI navigation intents — the closed gamepad-first nav vocabulary the input
 -- stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that UI

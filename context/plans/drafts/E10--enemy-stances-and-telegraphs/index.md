@@ -29,7 +29,7 @@ When this is done:
   - **Where the constant lives.** The floor is an engine constant outside netcode, exported to both SDKs. A netcode test fails if the floor falls below the buffer ceiling, as with `SPAWN_ATTACK_WINDUP_MS`.
   - **What it doesn't cover.** Network transit has no load-time bound, so the floor leaves it out.
   - **Where it's checked.** `stance()` warns through the script log when a stance's minimum hold falls below the floor. The engine cannot tell a stance's hold from any other activity.
-- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` with the release's attack (`ready/E10--enemy-combat-movement`), so one turn for that attack spans the cycle and holds its draws.
+- **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` with the release's attack (`done/E10--enemy-combat-movement`), so one turn for that attack spans the cycle and holds its draws.
   - A tell must never promise an attack that cannot come. So the builder's hold also exits to `then` when `attackTurnHeld(attack)` for the release's attack is false one tick after entry, the facts' lag.
   - Authors gate stance entry on `attackTurnFree(attack)` with the release's attack.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**

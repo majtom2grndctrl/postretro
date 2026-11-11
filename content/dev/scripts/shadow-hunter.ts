@@ -11,6 +11,7 @@
 // Map-placeable via `"classname" "shadow_hunter"`.
 
 import { brain, defineEntity } from "postretro";
+import { melee } from "./attack-tokens";
 
 const DETECTION_RANGE = 30;
 // The snarl before the sprint: the start of the roar, cut short.
@@ -72,7 +73,9 @@ export const shadowHunterEntity = defineEntity({
       initial: "idle",
       moveSpeed: 5,
       attacks: {
-        claw: { damage: 6, maxRange: CLAW_RANGE, cooldownMs: 600 },
+        // One `melee` draw: claws take turns with the brutes' jabs and slams
+        // on one target.
+        claw: { draws: [melee], damage: 6, maxRange: CLAW_RANGE, cooldownMs: 600 },
       },
       engagementRadius: CLAW_RANGE,
       activities: {

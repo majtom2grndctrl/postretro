@@ -176,6 +176,9 @@ pub enum NetEndpoint {
         /// Latest status-only roster received from the host. This survives level
         /// changes with the endpoint and feeds the client-local UI projection.
         session_status: ClientSessionStatus,
+        /// The latest spawn-pose hint. Session state: the level-scoped reset
+        /// and demotion leave it, and it goes with the endpoint.
+        spawn_pose_hint: crate::ClientSpawnPoseHint,
     },
 }
 
@@ -585,6 +588,7 @@ impl NetEndpoint {
                     next_switch_declaration_id: 0,
                     pending_switch_declarations: VecDeque::new(),
                     session_status: ClientSessionStatus::default(),
+                    spawn_pose_hint: Default::default(),
                 }))
             }
         }

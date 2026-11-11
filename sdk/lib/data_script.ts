@@ -46,6 +46,8 @@ export type {
   PlayerEventReaction,
 } from "./data_script/player_events";
 export { defineTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
+import { attackTokenDeclarationOf } from "./data_script/attack_budget";
+export { defaultToken, defineAttackToken } from "./data_script/attack_budget";
 export type {
   TriggerEventDescriptor,
   TriggerEventReaction,
@@ -167,6 +169,8 @@ export type SpawnFromSpawnerStep = import("postretro").SpawnFromSpawnerStep;
 export type FireTrapStep = import("postretro").FireTrapStep;
 export type StartTrapStep = import("postretro").StartTrapStep;
 export type StopTrapStep = import("postretro").StopTrapStep;
+export type StartAttackPoolStep = import("postretro").StartAttackPoolStep;
+export type StopAttackPoolStep = import("postretro").StopAttackPoolStep;
 export type WaitStep = import("postretro").WaitStep;
 export type FireStep = import("postretro").FireStep;
 
@@ -199,6 +203,8 @@ export type SequenceStep =
   | FireTrapStep
   | StartTrapStep
   | StopTrapStep
+  | StartAttackPoolStep
+  | StopAttackPoolStep
   | GroupCommand
   | SubjectTokenCommand
   | SystemReactionStep<any>
@@ -848,6 +854,9 @@ export function defineMod(
   }
   if (config.damageTypes !== undefined) {
     manifest.damageTypes = config.damageTypes.map((entry) => declarationOf(damageTypeDeclarations, entry));
+  }
+  if (config.attackTokens !== undefined) {
+    manifest.attackTokens = config.attackTokens.map(attackTokenDeclarationOf);
   }
   return manifest as import("postretro").ModManifest;
 }

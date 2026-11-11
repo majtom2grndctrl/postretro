@@ -96,6 +96,9 @@ export interface BrainInputs {
    * position. Pair this with damage recency before treating shared memory or
    * bearing as belonging to that hit (boolean). */
   readonly damageSourceKnown: RuntimeGuardNode;
+  /** `true` while the enemy holds an attack turn, for any attack, as of the
+   * previous tick: it reads true from the tick after the grant (boolean). */
+  readonly hasAttackTurn: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -145,6 +148,7 @@ export const brain: BrainInputs = Object.freeze({
   distanceToLastKnown: input("@brain.distanceToLastKnown"),
   damageBearing: input("@brain.damageBearing"),
   damageSourceKnown: input("@brain.damageSourceKnown"),
+  hasAttackTurn: input("@brain.hasAttackTurn"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */
@@ -187,4 +191,19 @@ export function defense(
     current: runtime.read(defenseInput(layer, false)) as RuntimeGuardNode,
     capacity: runtime.read(defenseInput(layer, true)) as RuntimeGuardNode,
   });
+}
+
+/** `true` while the enemy holds a turn for `attack`, one of its archetype's
+ * attacks, as of the previous tick. Naming another attack fails load. */
+export function attackTurnHeld(attack: string): RuntimeGuardNode {
+  return runtime.read("@attackTurnHeld." + attack) as RuntimeGuardNode;
+}
+
+/** `true` when a request for `attack`, one of its archetype's attacks, would be
+ * granted now against the previous tick's counts and reservations, leaving out
+ * the enemy's own pending request. False with no target, and for an attack
+ * sharing a token with a turn the enemy holds. Naming another attack fails
+ * load. */
+export function attackTurnFree(attack: string): RuntimeGuardNode {
+  return runtime.read("@attackTurnFree." + attack) as RuntimeGuardNode;
 }

@@ -128,3 +128,219 @@ fn placement_for_a_fresh_join_skips_a_live_occupied_unheld_spawn() {
         Some(2)
     );
 }
+
+/// A pawn standing on `sites[stands_on]`, bound to `seat`.
+fn seat_pawn_on(
+    seats: &mut SeatTable,
+    registry: &mut EntityRegistry,
+    sites: &[PlacementSite],
+    seat: Seat,
+    stands_on: usize,
+) -> EntityId {
+    let movement = crate::predict_reconcile_harness_test_fixtures::component();
+    let position = standing_centre(sites[stands_on].foot_anchor, &movement.capsule);
+    let pawn = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    registry.set_component(pawn, movement).unwrap();
+    seats.bind_pawn(registry, seat, pawn);
+    pawn
+}
+
+fn move_pawn_onto(
+    registry: &mut EntityRegistry,
+    sites: &[PlacementSite],
+    pawn: EntityId,
+    onto: usize,
+) {
+    let capsule = sites[onto].capsule.clone().unwrap();
+    registry
+        .set_component(
+            pawn,
+            Transform {
+                position: standing_centre(sites[onto].foot_anchor, &capsule),
+                ..Transform::default()
+            },
+        )
+        .unwrap();
+}
+
+// R7: a seat with no free spawn shares one no live pawn stands on, never the
+// host's occupied start; it keeps that spawn without a second warning, and a
+// live pawn arriving there moves it on, still without one.
+#[test]
+fn placement_for_an_overflowing_seat_shares_an_unoccupied_spawn_and_warns_once() {
+    let mut seats = SeatTable::from_test_session_id([24; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1, 2]);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let first = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    let second = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+    let sharing = seats.admit_or_reclaim(63, None, false).unwrap().seat;
+    let capture = postretro_test_log_capture::LogCapture::start();
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, first, &sites),
+        Some(1)
+    );
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, second, &sites),
+        Some(2)
+    );
+
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, sharing, &sites),
+        Some(1),
+        "past the host's occupied start to a reserved but empty one"
+    );
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, sharing, &sites),
+        Some(1),
+        "the seat keeps the spawn it already shares"
+    );
+    // `first` promotes onto its start: the sharing seat moves on.
+    seat_pawn_on(&mut seats, &mut registry, &sites, first, 1);
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, sharing, &sites),
+        Some(2)
+    );
+
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "every player_spawn placement is occupied; sharing index 1",
+    );
+    capture.assert_not_logged(
+        log::Level::Warn,
+        "every player_spawn placement is occupied; sharing index 2",
+    );
+}
+
+// Regression: with nothing free, a seat whose reserved start a respawned pawn
+// stood on kept it and spawned inside that pawn, with no warning.
+#[test]
+fn placement_with_nothing_free_never_keeps_a_start_a_live_pawn_stands_on() {
+    let mut seats = SeatTable::from_test_session_id([26; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1, 2]);
+    let host = host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let resolved = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    let walker = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, resolved, &sites),
+        Some(1)
+    );
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, walker, &sites),
+        Some(2)
+    );
+    // The walker promotes at 2 and walks onto 0; the host respawns onto 1.
+    let walker_pawn = seat_pawn_on(&mut seats, &mut registry, &sites, walker, 2);
+    move_pawn_onto(&mut registry, &sites, walker_pawn, 0);
+    move_pawn_onto(&mut registry, &sites, host, 1);
+    let capture = postretro_test_log_capture::LogCapture::start();
+
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, resolved, &sites),
+        Some(2),
+        "the only start no live pawn stands on, though the walker holds it"
+    );
+    assert_eq!(seats.placement_for_seat(resolved), Some(2));
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "every player_spawn placement is occupied; sharing index 2",
+    );
+}
+
+// Overflow sharing prefers a start whose holder already spawned and walked off
+// over one reserved for a seat still to arrive, so a held seat keeps its spawn.
+#[test]
+fn placement_overflow_shares_a_vacated_start_before_a_held_seats_reservation() {
+    let mut seats = SeatTable::from_test_session_id([28; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1, 2, 3]);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let walked_off = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    let held = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+    let standing = seats.admit_or_reclaim(63, None, false).unwrap().seat;
+    let joiner = seats.admit_or_reclaim(64, None, false).unwrap().seat;
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, walked_off, &sites),
+        Some(1)
+    );
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, held, &sites),
+        Some(2)
+    );
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, standing, &sites),
+        Some(3)
+    );
+    // Start 1's pawn walks onto the host's start; start 2's seat never arrives;
+    // start 3's pawn stays put.
+    let walker = seat_pawn_on(&mut seats, &mut registry, &sites, walked_off, 1);
+    move_pawn_onto(&mut registry, &sites, walker, 0);
+    seat_pawn_on(&mut seats, &mut registry, &sites, standing, 3);
+    // Start the round-robin at the held seat's start.
+    seats.overflow_cursor = 2;
+
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, joiner, &sites),
+        Some(1),
+        "the vacated start, not the held seat's reservation"
+    );
+    assert_eq!(seats.placement_for_seat(held), Some(2));
+}
+
+// The warning is level-scoped: the next level's overflow warns afresh.
+#[test]
+fn placement_overflow_warns_again_on_the_next_level() {
+    let mut seats = SeatTable::from_test_session_id([27; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1]);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let first = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    let sharing = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+    let capture = postretro_test_log_capture::LogCapture::start();
+    seats.assign_joiner_placement(&registry, first, &sites);
+    seats.assign_joiner_placement(&registry, sharing, &sites);
+
+    registry.clear_for_level_unload();
+    seats.clear_pawn_bindings_for_level_unload(&mut registry);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    seats.assign_joiner_placement(&registry, first, &sites);
+    seats.assign_joiner_placement(&registry, sharing, &sites);
+
+    let warnings = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn
+                && record
+                    .message
+                    .contains("every player_spawn placement is occupied")
+        })
+        .count();
+    assert_eq!(warnings, 2, "one per level");
+}
+
+#[test]
+fn released_placement_is_free_for_the_next_joiner() {
+    let mut seats = SeatTable::from_test_session_id([25; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1, 2]);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let released = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, released, &sites),
+        Some(1)
+    );
+
+    seats.release_placement(released);
+    let next = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+
+    assert_eq!(seats.placement_for_seat(released), None);
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, next, &sites),
+        Some(1)
+    );
+}

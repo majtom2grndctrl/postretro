@@ -377,6 +377,9 @@ fn spawn_resolved_spawners(
                 }
                 let _ = registry.set_component(enemy, brain);
             }
+            // A tagged spawn joins the latest-started running pool whose
+            // member tag it carries, in issue order beside pool requests.
+            crate::attack_pools::queue_spawn_join(registry, enemy);
         }
     }
 }
@@ -663,6 +666,7 @@ mod tests {
                 engagement_radius: None,
                 standoff_distance: None,
                 damage_type: None,
+                draws: None,
             },
         );
         behavior
@@ -679,6 +683,9 @@ mod tests {
                 motion: Some(MotionVerb::ChaseTarget),
                 action: Some(ActionVerb::Attack("slam".to_string())),
                 on_enter: None,
+                facing: None,
+                reposition: None,
+                attack_turn: None,
                 layers: Default::default(),
             },
         );

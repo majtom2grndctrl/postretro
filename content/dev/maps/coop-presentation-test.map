@@ -116,14 +116,14 @@
 {
 "classname" "player_spawn"
 "origin" "128 288 24"
-"angles" "0 0 0"
+"angles" "0 30 0"
 "_tags" "player"
 }
 // A third placement supports a host and two observing/owning clients.
 {
 "classname" "player_spawn"
 "origin" "128 352 24"
-"angles" "0 0 0"
+"angles" "-10 330 0"
 "_tags" "player"
 }
 // West stations: pickup, one-use damage pad, and heat weapon.

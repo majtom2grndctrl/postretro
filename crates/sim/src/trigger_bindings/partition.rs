@@ -42,6 +42,8 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "fireTrap",
     "startTrap",
     "stopTrap",
+    postretro_foundation::START_ATTACK_POOL,
+    postretro_foundation::STOP_ATTACK_POOL,
 ];
 
 const LIFECYCLE_PRIMITIVES: &[&str] = &["loadLevel", "restartLevel", "returnToFrontend"];

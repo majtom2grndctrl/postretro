@@ -27,12 +27,19 @@ pub(super) enum LevelSounds {
 }
 
 impl App {
-    /// Camera at the first spawn, the `--start-pose` probe, then the presented
+    /// Camera at the stand-in (a connected client's matching spawn-pose hint,
+    /// else the first spawn), the `--start-pose` probe, then the presented
     /// pose.
     pub(super) fn install_level_camera_pose(&mut self, first_spawn: Option<(Vec3, Vec3)>) {
-        // Teleport the camera to the first player spawn (or the geometry center
-        // when the map has none). Independent of spawn success.
-        if let Some((pos, angles)) = first_spawn {
+        // A connected client's hint naming this install is the eye, yaw and
+        // pitch its pawn spawns with, so it replaces the first spawn. Else
+        // teleport the camera to the first player spawn (or the geometry
+        // center when the map has none). Independent of spawn success.
+        if let Some(hint) = self.take_install_spawn_pose_hint() {
+            self.camera.position = hint.position;
+            self.camera.yaw = hint.yaw;
+            self.camera.pitch = hint.pitch;
+        } else if let Some((pos, angles)) = first_spawn {
             self.camera.position = pos;
             // angles is engine-convention radians (YXZ): x=pitch, y=yaw.
             self.camera.yaw = angles.y;

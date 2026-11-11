@@ -12,6 +12,7 @@ import {
 } from "postretro";
 import { onStateCrossing } from "postretro/ui";
 import { armor, shield } from "./scripts/defenses";
+import { heavy, melee, ranged } from "./scripts/attack-tokens";
 import {
   ballistic,
   corrosive,
@@ -45,7 +46,7 @@ import { targetDummyEntity } from "./scripts/target-dummy";
 import { cyberpunkWarriorEntity } from "./scripts/cyberpunk-warrior";
 import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEnemyEntity } from "./scripts/reference-enemy";
-import { enemyRifleEntity } from "./scripts/enemy-rifle";
+import { enemyRifleBurstEntity, enemyRifleEntity } from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
 import { shadowHunterEntity } from "./scripts/shadow-hunter";
 import {
@@ -247,6 +248,14 @@ export default defineMod({
   defenseLayers: [shield, armor],
   damageTypes: [ballistic, plasma, explosive, shock, corrosive, flechette],
   defaultDamageType: ballistic,
+  // Attack tokens: three melee draws, two rifle bursts and one heavy attack
+  // per target at once (scripts/attack-tokens.ts). An `ai_attack_pool` whose
+  // `budget_profile` is `arena` gives its members one melee and one ranged
+  // attacker at a time on each player.
+  attackTokens: [melee, ranged, heavy],
+  attackBudgets: {
+    arena: [melee.with({ limit: 1 }), ranged.with({ limit: 1 })],
+  },
   // Ghost styles a map's `ghost_link` names through its `ghost_style` key. The
   // ghost-link fixture (maps/ghost-links.map) names `echo`, which carries the
   // partner's sounds through the Ghost bus above.
@@ -376,6 +385,7 @@ export default defineMod({
     arcRifleEntity,
     acidRifleEntity,
     enemyRifleEntity,
+    enemyRifleBurstEntity,
     limitatorEntity,
     // Fast melee skirmisher: `"classname" "shadow_hunter"`.
     shadowHunterEntity,

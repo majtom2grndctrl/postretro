@@ -7,15 +7,18 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use postretro_entities::components::brain::ResolvedDraws;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor,
 };
+use postretro_foundation::attack_budget::AttackBudgetVocabulary;
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
     BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType, ResolutionMode,
     bind,
 };
 
+use super::attack_turns::{ATTACK_DRAW_WARNING, live_behavior, resolve_graph_draws};
 use super::brain_scope::BrainScope;
 use super::candidate_scope::CandidateScope;
 
@@ -93,6 +96,8 @@ pub(crate) struct BrainEntityPrograms {
     envelopes: Vec<BoundEnvelope>,
     candidate_filter: Option<BoundProgram<CandidateScope>>,
     resolved_projectile_attacks: HashMap<String, ResolvedProjectileAttack>,
+    /// Each attack's resolved draws, in the graph's attack-name order.
+    attack_draws: Vec<ResolvedDraws>,
 }
 
 impl BrainEntityPrograms {
@@ -116,10 +121,18 @@ impl BrainEntityPrograms {
     ) -> Option<&ResolvedProjectileAttack> {
         self.resolved_projectile_attacks.get(attack_name)
     }
+
+    /// What the attack at `attack` (its index in the graph's attacks) draws.
+    pub(crate) fn attack_draws(&self, attack: u16) -> Option<ResolvedDraws> {
+        self.attack_draws.get(attack as usize).copied()
+    }
 }
 
 /// The evaluator's programs and reusable live binding scopes.
 pub(crate) struct BrainPrograms {
+    /// The committed attack-token vocabulary every entry's draws resolved
+    /// against. A new commit re-resolves them without reseating any brain.
+    attack_budgets: Arc<AttackBudgetVocabulary>,
     scope: BrainScope,
     candidate_scope: CandidateScope,
     entries: HashMap<EntityId, BrainEntityPrograms>,
@@ -132,6 +145,7 @@ pub(crate) struct BrainPrograms {
 impl BrainPrograms {
     pub(crate) fn new() -> Self {
         Self {
+            attack_budgets: AttackBudgetVocabulary::shared_default(),
             scope: BrainScope::for_validation(),
             candidate_scope: CandidateScope::for_validation(),
             entries: HashMap::new(),
@@ -160,6 +174,18 @@ impl BrainPrograms {
         entries.get(&entity).map(|entry| evaluate(entry, scope))
     }
 
+    /// Override what one attack draws, standing in for authored `draws`.
+    #[cfg(test)]
+    pub(crate) fn set_attack_draws_for_test(
+        &mut self,
+        entity: EntityId,
+        attack: u16,
+        draws: ResolvedDraws,
+    ) {
+        let entry = self.entries.get_mut(&entity).expect("the entity is bound");
+        entry.attack_draws[attack as usize] = draws;
+    }
+
     pub(crate) fn take_reseat(&mut self, entity: EntityId) -> bool {
         self.pending_reseats.remove(&entity)
     }
@@ -178,6 +204,10 @@ impl BrainPrograms {
     /// Bind changed graphs, refresh descriptor-derived attacks, and release
     /// dead entries. All growth happens here, outside the hot evaluator and
     /// its zero-allocation probe window.
+    ///
+    /// A reload reseats no live brain, so its `graph` keeps the spawn-time
+    /// attacks. Draws therefore resolve from the live descriptor the entity
+    /// was materialized from, on a new descriptor generation or vocabulary.
     pub(crate) fn sync(
         &mut self,
         registry: &EntityRegistry,
@@ -185,6 +215,14 @@ impl BrainPrograms {
         descriptor_generation: u64,
         warned: &mut HashSet<String>,
     ) {
+        let committed = registry.attack_budgets();
+        let budgets_changed = !Arc::ptr_eq(&self.attack_budgets, committed);
+        if budgets_changed {
+            self.attack_budgets = Arc::clone(committed);
+            // A reload that drops a token warns again for every attack still
+            // drawing it, though an earlier vocabulary already warned.
+            warned.retain(|key| !key.starts_with(ATTACK_DRAW_WARNING));
+        }
         self.live.clear();
         for (entity, value) in registry.iter_with_kind(ComponentKind::Brain) {
             let ComponentValue::Brain(brain) = value else {
@@ -205,17 +243,31 @@ impl BrainPrograms {
                         &self.scope,
                         &self.candidate_scope,
                         Arc::clone(&brain.graph),
+                        live_behavior(registry, entity, descriptors),
                         descriptors,
                         descriptor_generation,
+                        &self.attack_budgets,
                         warned,
                     ),
                 );
-            } else if let Some(entry) = self.entries.get_mut(&entity)
-                && entry.descriptor_generation != descriptor_generation
-            {
+                continue;
+            }
+            let Some(entry) = self.entries.get_mut(&entity) else {
+                continue;
+            };
+            let generation_changed = entry.descriptor_generation != descriptor_generation;
+            if generation_changed {
                 entry.resolved_projectile_attacks =
                     resolve_projectile_attacks(&brain.graph, descriptors, warned);
                 entry.descriptor_generation = descriptor_generation;
+            }
+            if generation_changed || budgets_changed {
+                entry.attack_draws = resolve_graph_draws(
+                    &brain.graph,
+                    live_behavior(registry, entity, descriptors),
+                    &self.attack_budgets,
+                    warned,
+                );
             }
         }
         self.entries.retain(|entity, _| self.live.contains(entity));
@@ -224,12 +276,15 @@ impl BrainPrograms {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // each derived table names its own source.
 pub(super) fn bind_graph(
     scope: &BrainScope,
     candidate_scope: &CandidateScope,
     graph: Arc<BehaviorGraphDescriptor>,
+    live: Option<&BehaviorGraphDescriptor>,
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
+    attack_budgets: &AttackBudgetVocabulary,
     warned: &mut HashSet<String>,
 ) -> BrainEntityPrograms {
     let mut envelopes = Vec::new();
@@ -239,12 +294,14 @@ pub(super) fn bind_graph(
         .as_ref()
         .and_then(|filter| bind_candidate_filter(scope, candidate_scope, filter, warned));
     let resolved_projectile_attacks = resolve_projectile_attacks(&graph, descriptors, warned);
+    let attack_draws = resolve_graph_draws(&graph, live, attack_budgets, warned);
     BrainEntityPrograms {
         graph,
         descriptor_generation,
         envelopes,
         candidate_filter,
         resolved_projectile_attacks,
+        attack_draws,
     }
 }
 
@@ -470,6 +527,7 @@ mod tests {
             engagement_radius: None,
             standoff_distance: None,
             damage_type: None,
+            draws: None,
         }
     }
 
@@ -486,6 +544,9 @@ mod tests {
                         motion: None,
                         action: None,
                         on_enter: None,
+                        facing: None,
+                        reposition: None,
+                        attack_turn: None,
                         layers: BTreeMap::new(),
                     },
                 )]),

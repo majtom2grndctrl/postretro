@@ -15,6 +15,7 @@ use thiserror::Error;
 
 use crate::components::agent::AgentComponent;
 use crate::components::ammo_reserve::AmmoReserve;
+use crate::components::attack_pool::{AttackPoolComponent, AttackPoolRequest};
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
 use crate::components::defense_layers::DefenseLayersComponent;
@@ -176,6 +177,10 @@ pub enum ComponentKind {
     /// Host-owned defense-layer stack. Never replicated as a component; a
     /// player's layer values reach its owner through owner-private slots.
     DefenseLayers = 27,
+    /// Map-authored attack pool: its member tag, budget profile and run
+    /// state. Host-owned and never replicated; scripts address it through
+    /// member handles.
+    AttackPool = 28,
 }
 
 impl ComponentKind {
@@ -213,6 +218,7 @@ impl ComponentKind {
             ComponentKind::ProjectileTrap,
             ComponentKind::GhostLink,
             ComponentKind::DefenseLayers,
+            ComponentKind::AttackPool,
         ];
         VARIANTS.len()
     };
@@ -290,6 +296,7 @@ pub enum ComponentValue {
     ProjectileTrap(ProjectileTrapComponent),
     GhostLink(GhostLinkComponent),
     DefenseLayers(DefenseLayersComponent),
+    AttackPool(AttackPoolComponent),
 }
 
 impl ComponentValue {
@@ -323,6 +330,7 @@ impl ComponentValue {
             ComponentValue::ProjectileTrap(_) => ComponentKind::ProjectileTrap,
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
             ComponentValue::DefenseLayers(_) => ComponentKind::DefenseLayers,
+            ComponentValue::AttackPool(_) => ComponentKind::AttackPool,
         }
     }
 }
@@ -635,6 +643,21 @@ impl Component for SpawnerComponent {
     }
 }
 
+impl Component for AttackPoolComponent {
+    const KIND: ComponentKind = ComponentKind::AttackPool;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::AttackPool(pool) => Some(pool),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::AttackPool(self)
+    }
+}
+
 impl Component for ProjectileTrapComponent {
     const KIND: ComponentKind = ComponentKind::ProjectileTrap;
 
@@ -895,6 +918,9 @@ pub struct EntityRegistry {
     /// The committed damage vocabulary the chokepoint scales hits by. Empty
     /// until a mod registers one, which leaves every hit untyped.
     defense_vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    /// The committed attack tokens and budget profiles the AI's attack
+    /// budget arbitrates under. The SDK default until a mod commits one.
+    attack_budgets: std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary>,
     /// The host's expression-parameter evaluator; `None` on a connected client
     /// and until the simulation binds one.
     defense_parameters:
@@ -917,6 +943,12 @@ pub struct EntityRegistry {
     /// per frame after presentation/reaction work; game logic never removes an
     /// entity inline through this channel.
     end_of_frame_removals: Vec<EntityId>,
+    /// Attack-pool starts, stops and spawn joins awaiting the drain that runs
+    /// immediately before the next AI tick, in issue order. One list across
+    /// every pool, because a later start re-ranks its pool and a shared member
+    /// takes the later-issued assignment. Ownership returns after each drain
+    /// so the allocation is reused.
+    attack_pool_requests: Vec<AttackPoolRequest>,
     /// A test-only artificial slot ceiling. Production still has exactly the
     /// `u16::MAX` registry capacity promised by `try_spawn`.
     #[cfg(any(test, feature = "test-support"))]
@@ -940,6 +972,8 @@ impl EntityRegistry {
             impact_dispatches: Vec::new(),
             host_tick: 0,
             defense_vocabulary: Default::default(),
+            attack_budgets:
+                postretro_foundation::attack_budget::AttackBudgetVocabulary::shared_default(),
             defense_parameters: None,
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             impact_particle_requests: Vec::with_capacity(MAX_PENDING_IMPACT_PARTICLE_REQUESTS),
@@ -948,6 +982,7 @@ impl EntityRegistry {
             routed_presentation_spawns: 0,
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
+            attack_pool_requests: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             test_capacity_limit: None,
         }
@@ -1382,6 +1417,22 @@ impl EntityRegistry {
         self.defense_vocabulary = vocabulary;
     }
 
+    /// The committed attack-budget vocabulary.
+    pub fn attack_budgets(
+        &self,
+    ) -> &std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary> {
+        &self.attack_budgets
+    }
+
+    /// Install the committed attack-budget vocabulary; the AI resolves draws
+    /// and budgets from it when the pointer changes.
+    pub fn set_attack_budgets(
+        &mut self,
+        vocabulary: std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary>,
+    ) {
+        self.attack_budgets = vocabulary;
+    }
+
     /// The host's expression-parameter evaluator, when one is installed.
     pub fn defense_parameters(
         &self,
@@ -1650,6 +1701,29 @@ impl EntityRegistry {
         self.last_impact_particle_warning = None;
         self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
+        self.attack_pool_requests.clear();
+    }
+
+    /// Queue one attack-pool request for the drain before the next AI tick.
+    /// The issuer owns the host-only gate.
+    pub fn queue_attack_pool_request(&mut self, request: AttackPoolRequest) {
+        self.attack_pool_requests.push(request);
+    }
+
+    /// Take the queued attack-pool requests, in issue order, for the drain.
+    /// Hand the emptied list back with [`Self::return_attack_pool_requests`]
+    /// so its allocation is reused.
+    pub fn take_attack_pool_requests(&mut self) -> Vec<AttackPoolRequest> {
+        std::mem::take(&mut self.attack_pool_requests)
+    }
+
+    /// Return a drained request list's allocation. Nothing queues during a
+    /// drain, so the live list is empty and takes the buffer back.
+    pub fn return_attack_pool_requests(&mut self, mut drained: Vec<AttackPoolRequest>) {
+        drained.clear();
+        if self.attack_pool_requests.is_empty() {
+            self.attack_pool_requests = drained;
+        }
     }
 
     fn validate(&self, id: EntityId) -> Result<usize, RegistryError> {

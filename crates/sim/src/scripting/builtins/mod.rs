@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use postretro_entities::registry::EntityId;
 use postretro_entities::registry::EntityRegistry;
 
+pub(crate) mod attack_pool;
 pub(crate) mod billboard_emitter;
 pub mod data_archetype;
 #[cfg(not(feature = "test-support"))]
@@ -156,6 +157,10 @@ pub fn register_builtins(dispatch: &mut ClassnameDispatch) {
         projectile_trap::CLASSNAME,
         projectile_trap::handle as ClassnameHandler,
     );
+    dispatch.register(
+        attack_pool::CLASSNAME,
+        attack_pool::handle as ClassnameHandler,
+    );
 }
 
 /// Walk `entities` and dispatch each one through the built-in classname
@@ -268,9 +273,13 @@ mod tests {
             dispatch.lookup("projectile_trap").is_some(),
             "projectile_trap should be registered"
         );
+        assert!(
+            dispatch.lookup("ai_attack_pool").is_some(),
+            "ai_attack_pool should be registered"
+        );
         // Lock the count so adding a new built-in is a deliberate, reviewed
         // change rather than an accidental fall-through.
-        assert_eq!(dispatch.len(), 4);
+        assert_eq!(dispatch.len(), 5);
     }
 
     #[test]

@@ -1307,7 +1307,7 @@ fn same_frame_transport_relevel_handled_after_commit() {
     );
     assert_eq!(
         app.level_requests.front(),
-        Some(&LevelRequest::Load(LevelSource::Catalog("relevel".into()))),
+        Some(&LevelRequest::HostLevel("relevel".into())),
         "the relevel waits for the next frame's drain"
     );
     // Next frame: the ordinary unload, then the relevel's load, dispatched

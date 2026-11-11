@@ -1,7 +1,8 @@
-// Pure-JSON payload checks for consequential player primitives and trap verbs.
+// Pure-JSON payload checks for consequential player primitives and member verbs.
 // See: context/lib/scripting.md §12 (Entity addressing)
 
 use super::super::DescriptorError;
+use super::super::types::{START_ATTACK_POOL, STOP_ATTACK_POOL};
 use super::foundation::validate_ascii_identifier;
 
 /// The value a respawn step's non-finite `health` lowers to before JSON,
@@ -20,7 +21,7 @@ pub fn is_consequential_primitive(primitive: &str) -> bool {
     )
 }
 
-/// Validate a consequential primitive's or trap verb's `args` at `site`
+/// Validate a consequential primitive's, trap verb's or attack-pool verb's `args` at `site`
 /// (`"primitive"`, `"sequence step 2"`). Every other primitive passes
 /// unchecked. The reason names the reaction so the caller's skip or reject
 /// points at it.
@@ -40,7 +41,7 @@ pub fn validate_consequential_args(
             return validate_start_trap_args(args)
                 .map_err(|detail| format!("reaction `{reaction}` {site}: {detail}"));
         }
-        "fireTrap" | "stopTrap" => {
+        "fireTrap" | "stopTrap" | START_ATTACK_POOL | STOP_ATTACK_POOL => {
             return validate_no_args(primitive, args)
                 .map_err(|detail| format!("reaction `{reaction}` {site}: {detail}"));
         }
@@ -158,8 +159,9 @@ fn validate_start_trap_args(args: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-/// `fireTrap` and `stopTrap` take no options: absent `args` lowers to null or
-/// an empty object, and anything else is an authoring mistake.
+/// `fireTrap`, `stopTrap` and the attack-pool verbs take no options: absent
+/// `args` lowers to null or an empty object, and anything else is an
+/// authoring mistake.
 fn validate_no_args(primitive: &str, args: &serde_json::Value) -> Result<(), String> {
     let empty = match args {
         serde_json::Value::Null => true,

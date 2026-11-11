@@ -19,6 +19,14 @@ For a checkout build, use `target/debug/prl-build` and
 Build the authoring engine, compiler and tool first. A remote peer uses the
 host's address in place of `127.0.0.1`. Both peers need the same built content.
 
+## Joining
+
+The three spawns face different ways: the first (host) faces east, the second
+turns 30° left and the third 30° right with a slight pitch. A joining
+client's first world frame is at its own spawn's eye, facing that spawn's
+direction, and its view does not jump when its player appears. Check it with
+and without a map on the client command line.
+
 ## Stations
 
 Coordinates below are TrenchBroom editor units, with Z up.

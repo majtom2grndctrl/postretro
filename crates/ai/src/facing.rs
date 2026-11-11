@@ -1,7 +1,11 @@
-// Enemy visual-facing yaw helpers for brain-driven movement and actions.
+// Enemy visual facing: the facing policy, its direction, and yaw helpers.
 // See: context/lib/entity_model.md §7c (enemy brain component)
 
 use glam::{Quat, Vec3};
+use postretro_foundation::{FacingPolicy, MotionVerb};
+
+use super::LocomotionIntent;
+use super::engine_floor::SteeringIntent;
 
 /// Maximum enemy-facing yaw rotation, in radians/sec. Higher than path steering
 /// so visual facing catches up quickly without snapping.
@@ -21,6 +25,64 @@ const ATTACK_FACING_COMPARISON_EPSILON: f32 = 2.0 * f32::EPSILON;
 /// This is the opposite of the engine camera/view forward (`-Z`). Facing code
 /// orients a rendered mesh, so it must aim the mesh's authored front (`+Z`).
 const MESH_FORWARD: Vec3 = Vec3::Z;
+
+/// The facing policy each verb implies when the activity names none. `None`
+/// writes no heading. A position goal faces travel only. An engaged path faces
+/// travel while steering moves and the target once it stops; a committed aim
+/// always faces the target.
+pub(super) fn verb_facing_policy(
+    steering: SteeringIntent,
+    engaged: bool,
+    committed_aim: bool,
+    steering_moving: bool,
+) -> Option<FacingPolicy> {
+    match steering {
+        SteeringIntent::MoveTo(_) => Some(FacingPolicy::Travel),
+        _ if committed_aim => Some(FacingPolicy::Target),
+        _ if engaged && steering_moving => Some(FacingPolicy::Travel),
+        _ if engaged => Some(FacingPolicy::Target),
+        _ => None,
+    }
+}
+
+/// The facing this tick follows: the active path's authored `facing`, else
+/// the verb's default. `strafe` and `reposition` face the target; every other
+/// verb keeps [`verb_facing_policy`], read only when nothing above decides.
+/// Resolving first matters: that rule faces travel for any `MoveTo`, which
+/// both engaged slot verbs steer by.
+pub(super) fn resolve_facing_policy(
+    authored: Option<FacingPolicy>,
+    motion: Option<MotionVerb>,
+    verb_policy: impl FnOnce() -> Option<FacingPolicy>,
+) -> Option<FacingPolicy> {
+    authored
+        .or_else(|| {
+            matches!(motion, Some(MotionVerb::Strafe | MotionVerb::Reposition))
+                .then_some(FacingPolicy::Target)
+        })
+        .or_else(verb_policy)
+}
+
+/// Resolve the one direction this tick's facing slews toward, for compute's
+/// post-slew attack gate and apply's transform write alike.
+///
+/// `steering_velocity` excludes knockback. While launched (`impact_yaw` is
+/// `Some`), travel facing holds the impact yaw; target facing keeps re-aiming
+/// at the normal slew rate.
+pub(super) fn facing_direction(
+    policy: Option<FacingPolicy>,
+    steering_velocity: Option<Vec3>,
+    aim_direction: Option<Vec3>,
+    impact_yaw: Option<f32>,
+) -> Option<Vec3> {
+    match (policy?, impact_yaw) {
+        (FacingPolicy::Target, _) => aim_direction,
+        (FacingPolicy::Travel, Some(yaw)) => Some(Quat::from_rotation_y(yaw) * MESH_FORWARD),
+        (FacingPolicy::Travel, None) => {
+            steering_velocity.filter(|velocity| LocomotionIntent::from_velocity(*velocity).moving)
+        }
+    }
+}
 
 /// A yaw-only rotation that aims the mesh's visual forward at a horizontal
 /// direction. Returns `None` for negligible or NaN XZ headings so callers leave

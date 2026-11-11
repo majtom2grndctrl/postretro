@@ -10,17 +10,22 @@ use std::{borrow::Cow, cell::RefCell};
 use glam::{Quat, Vec3};
 
 mod apply;
+mod attack_turns;
 mod brain_programs;
 mod brain_scope;
 mod candidate_scope;
 mod combat_slots;
 mod compute;
+mod engaged_motion;
 mod engine_floor;
 mod facing;
 mod graph_eval;
+mod heading;
+mod launch;
 mod perception;
 mod steering;
 mod targeting;
+mod travel_variants;
 mod weapon_controller;
 
 #[cfg(test)]
@@ -178,7 +183,13 @@ pub(crate) struct EnemyOutcome {
     /// Carrying it across the pass boundary lets the fire gate inspect this
     /// tick's exact post-slew heading rather than the previous tick's rotation.
     facing_direction: Option<Vec3>,
+    /// The directional travel clip this tick's facing and travel ask for,
+    /// before the mesh is checked for it.
+    travel_variant: postretro_entities::components::brain::TravelVariant,
     pub(crate) combat_slot: Option<Vec3>,
+    /// The rotated ring an engaged `strafe` or `reposition` proposes in place
+    /// of the shared ring. Its steering resolves from the claim.
+    pub(crate) engaged_ring: Option<crate::combat_positioning::SlotRing>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
     pub(crate) prior_acquired_target: Option<EntityId>,
@@ -202,6 +213,9 @@ pub(crate) struct EnemyOutcome {
     /// The activity entered this tick, present only on the tick the brain
     /// entered it.
     entered: Option<EnteredActivity>,
+    /// An unmarked turn granted this tick, by attack index. Released in apply
+    /// unless that attack starts this tick.
+    fresh_unmarked_grant: Option<u16>,
 }
 
 /// An activity the brain entered this tick: its authored `on_enter` address,
@@ -275,6 +289,9 @@ pub struct AiRuntime {
     los_grace: HashMap<EntityId, LosGraceState>,
     /// Canonical weapon components retained across attacks and descriptor sync.
     weapons: weapon_controller::AiWeaponControllers,
+    /// The attack-turn tick clock, budgets and arbitration scratch. Turns
+    /// themselves live on brains.
+    turns: attack_turns::AttackTurnRuntime,
 }
 
 impl AiRuntime {
@@ -282,6 +299,13 @@ impl AiRuntime {
     /// installed tuning, paid resources and recovery already owed.
     pub fn cancel_weapon_activations(&mut self) {
         self.weapons.cancel_activations();
+    }
+
+    /// Drop the state that names the unloading level's entities: refreshing
+    /// attack-turn counts, the turn roster, and the running attack pools'
+    /// budgets. Call on level unload, before the next level's first tick.
+    pub fn clear_level_state(&mut self) {
+        self.turns.clear_level_state();
     }
 
     pub fn new() -> Self {
@@ -292,6 +316,7 @@ impl AiRuntime {
             programs: BrainPrograms::new(),
             los_grace: HashMap::new(),
             weapons: weapon_controller::AiWeaponControllers::default(),
+            turns: attack_turns::AttackTurnRuntime::default(),
         }
     }
 }
@@ -381,9 +406,17 @@ macro_rules! test_tick_runner {
 /// 3. On entry, reset the entered path suffix. Raise its leaf `onEnter` unless
 ///    this is the fresh spawn's initial seating.
 /// 4. Latch-fire an active leaf's action on its first dwell tick that passes its
-///    cooldown, range, live-target, LOS, and post-slew-facing gates.
-/// 5. On an activity change or locomotion stop/resume, request the one animation
-///    state resolved from the active nested path.
+///    cooldown, range, live-target, LOS, and post-slew-facing gates. An
+///    unmarked attack ready to fire requests an attack turn; the hard gate
+///    drops any drawn attack whose enemy holds no turn for it.
+/// 5. On an activity change, locomotion stop/resume, or an airborne launch's
+///    `jump_loop` starting or ending, request the one animation state resolved
+///    from the active nested path, or `jump_loop` while it plays.
+///
+/// Between compute and apply run the batch stages, across all enemies: combat
+/// slots, then attack-turn arbitration (releases, requests, grants, the hard
+/// gate). Apply then commits each outcome and releases an unmarked grant whose
+/// attack did not start.
 #[cfg(any(test, feature = "test-support"))]
 pub fn run_ai_tick(
     registry: &mut EntityRegistry,
@@ -467,7 +500,10 @@ where
         programs,
         los_grace,
         weapons,
+        turns,
     } = runtime;
+    turns.begin_tick(dt_ms, registry);
+    turns.sync_pools(attack_turns::running_attack_pools(registry));
     programs.sync(registry, descriptors, descriptor_generation, warned);
     weapons.sync(registry, programs, |actor| {
         host.is_quiescent(registry, actor)
@@ -498,14 +534,34 @@ where
                 return None;
             };
             let transform = registry.get_component::<Transform>(id).ok()?;
+            let mut brain = brain.clone();
+            attack_turns::admit(&mut brain.attack_turns, turns.tick);
+            turns.remap_brain(&mut brain.attack_turns);
             Some(EnemySnapshot {
                 id,
                 position: transform.position,
                 rotation: transform.rotation,
-                brain: brain.clone(),
+                brain,
             })
         })
         .collect();
+    // The turn facts guards read this tick describe the line as it stood
+    // after the previous tick.
+    let attack_turns::AttackTurnRuntime {
+        budgets, previous, ..
+    } = &mut *turns;
+    previous.rebuild(
+        budgets,
+        snapshots
+            .iter()
+            .enumerate()
+            .map(|(slot, snapshot)| attack_turns::LineEntry {
+                entity: snapshot.id,
+                slot: slot as u32,
+                pool: attack_turns::attack_pool_of(budgets, &snapshot.brain),
+                turns: &snapshot.brain.attack_turns,
+            }),
+    );
 
     // The live view exists only for compute. `apply_outcomes` can invoke an
     // impact policy which mutates the overlay, so retaining this Ref across the
@@ -525,6 +581,7 @@ where
             mover_nav.gate,
             collision_world,
             &live_factions,
+            turns,
         )
     };
 
@@ -536,6 +593,8 @@ where
         collision_world,
     );
 
+    attack_turns::arbitrate_attack_turns(&mut outcomes, programs, turns, weapons);
+
     apply::apply_outcomes(
         registry,
         outcomes,
@@ -543,6 +602,7 @@ where
         warned,
         blocked_warned,
         weapons,
+        turns,
         host,
     )
 }

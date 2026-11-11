@@ -390,10 +390,28 @@ pub(crate) fn bake_cell(
         let statics = StaticSamples::default();
         for (mover, gate) in movers.iter().enumerate() {
             let pose_count = gate.poses.len();
+            // DIAGNOSTIC (task 5b): remove before landing. Mid poses that
+            // enclose the probe, for the `POSTRETRO_DIAG_MID_ENCLOSED` switch.
+            let mut enclosed_mids: Vec<usize> = Vec::new();
             for (pose, occluder) in gate.poses.iter().enumerate() {
                 let Some(occluder) = occluder else {
                     continue;
                 };
+                // DIAGNOSTIC (task 5b): remove before landing.
+                if occluder.encloses(point) && pose > 0 && pose + 1 < pose_count {
+                    match super::mid_pose::diag_mid_enclosed() {
+                        Some("dark") => {
+                            visibility[mover][slot * pose_count + pose] = 0;
+                            met[mover] = true;
+                            continue;
+                        }
+                        Some("blend") => {
+                            enclosed_mids.push(pose);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
                 if occluder.encloses(point) || !occluder.may_meet(point, &light.baked) {
                     continue;
                 }
@@ -409,6 +427,25 @@ pub(crate) fn bake_cell(
                 );
                 if joint.meets_mover() {
                     visibility[mover][slot * pose_count + pose] = joint.surviving_byte();
+                    met[mover] = true;
+                }
+            }
+            // DIAGNOSTIC (task 5b): remove before landing. `blend`: an
+            // enclosed mid pose takes the lerp of the nearest non-enclosed
+            // poses' q around it (poses evenly spaced, as on both fixtures),
+            // as an unmarked bounce pose blends across.
+            for &pose in &enclosed_mids {
+                let defined = |k: usize| k == 0 || k + 1 == pose_count || !enclosed_mids.contains(&k);
+                let lo = (0..pose).rev().find(|&k| defined(k)).expect("terminus");
+                let hi = (pose + 1..pose_count).find(|&k| defined(k)).expect("terminus");
+                let w = (pose - lo) as f32 / (hi - lo) as f32;
+                let (a, b) = (
+                    f32::from(visibility[mover][slot * pose_count + lo]),
+                    f32::from(visibility[mover][slot * pose_count + hi]),
+                );
+                let q = ((1.0 - w) * a + w * b).round() as u8;
+                visibility[mover][slot * pose_count + pose] = q;
+                if q < u8::MAX {
                     met[mover] = true;
                 }
             }

@@ -16,7 +16,23 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
   - A path past the cap spreads its 16 poses over the full trip at a coarser spacing. The build warns, naming the mover, its spacing and `light_poses`.
   - Termini are the first and last poses, so a path with no length bakes its two coincident termini, as today.
   - Why the cap: `--release` always bakes cold, long lifts are ordinary in the genre, and a coarser spacing still shrinks the residue against today's whole-trip blend.
-- **`light_poses` key (owner).** An optional `kinematic_mover` integer ≥ 2 that sets the pose count, past the cap if the author chooses; 2 means termini only. Blank reads as absent, and absent means automatic. Any other value fails the build naming the mover, like `light_bounces`. Documented in `docs/level_design.md` and the FGD.
+- **Geometry knots (owner, 2026-11-11, after the motion captures).** Adds to the even placement above, without replacing it.
+  - **What gets added.** With no `light_poses` key, a mover's knots are its even poses plus its geometry knots. Take each near-field domain probe that the mover's brushes enclose somewhere along the path, by the bake's own enclosing rule. At each end of each such enclosure interval, a pose goes just outside the interval and one just inside it.
+  - **Exact placement.** The bake places geometry knots where its enclosure test changes, never on a grid. Knots closer than a merge tolerance merge; the tolerance is pinned by the build, below the slack the evidence shows fails.
+  - **Kinds and limits.** An outside knot is a full pose. An inside knot may store depth only, with values blended across it (delegated, by measured bytes and bake time). The cap of 16 counts even poses only.
+  - **No silent fallback.** No geometry knot is ever dropped to meet a count. Their cost is priced by the SH memory gate before any ray (overage is the named error) and by the Build Summary's projected time. The Build Summary prints each mover's even and geometry knot counts.
+  - **Why.**
+    - Dense motion captures showed two effects (`captures/motion-results.md`):
+      - depth acts only within ±0.001–0.003 t′ of a knot, which gives a one-frame dark flash at each knot on the rising room's ceiling and a probe-lattice dot leak between knots;
+      - em_sweeper's east face has a 5.7–10 luma value sawtooth at the knot period.
+    - **Cause:** the probe layer behind a moving surface is enclosed by the thin slab mid-interval, so no even knot stores that state. Its values meanwhile switch from lit to shadowed across a whole interval while it is still in front of the face.
+    - **Offline evidence** against a 41/57-pose truth bake (`captures/advice-results.md`):
+      - ceiling far-side share 0.119 → 0.020 (truth 0.016);
+      - east face 0.127 → 0.049 (truth 0.046);
+      - east-face value error, worst, ~13 → ~0.5 display levels.
+    - One knot per enclosure, or knots one fine step loose, fall short.
+  - **Scale.** Knot counts are measured on every map and the stress hallway before the bake work lands. If a realistic mover's count makes the cost blow up, sparse per-probe storage and per-pose sub-domain bakes join this brief: the owner's check.
+- **`light_poses` key (owner).** An optional `kinematic_mover` integer ≥ 2 that sets the pose count, past the cap if the author chooses; 2 means termini only. An authored count places exactly that many even poses and no geometry knots (owner, 2026-11-11): the author's explicit trade of exactness for cost. Blank reads as absent, and absent means automatic. Any other value fails the build naming the mover, like `light_bounces`. Documented in `docs/level_design.md` and the FGD.
 - **Termini are full states; mid poses are near-field (owner).**
   - Termini bake as today.
   - At a mid pose, direct q bakes at every probe a gated light reaches.
@@ -31,7 +47,15 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
 - **Mover light gate report (owner).** Its per-terminus columns stay as they are: they size the world-surface channel, which picks its own spacing. Each mover gains one count: the lights only a mid pose gates.
 - **Redundant mid poses are skipped (owner).** A mid pose stores no bounce or depth state for a probe where the blend of its neighbouring states is already within that probe's bars: the round-trip bar and perceptual floor for bounce, the significance floor for depth. A skipped mid pose blends across; a terminus with no stored state still reads the base. Direct q is one byte per pose and is never skipped.
 - **Compose is piecewise between stored states.** Each consumer finds the stored or base-reading states around t′ and blends them as it blends termini today, several movers included.
-- **Depth between poses: through the base, per interval (owner, 2026-11-10, from first-slice captures).** Each interval between the two stored or base-reading states around t′ blends D_i → base → D_{i+1}, the base at the interval's midpoint, carrying 12c's fix. An interval whose ends are both termini, as on a two-pose mover or where every mid pose skips for a probe, keeps today's through-base blend. Plain lerp captured nearly the same (`captures/t5-results.md`).
+- **Depth between poses: mean and variance (owner, 2026-11-11, after the motion captures).** Supersedes "through the base, per interval" (2026-11-10).
+  - **Mixed intervals.** An interval between the two stored or base-reading states around t′, unless both are termini, blends each texel's mean and variance linearly. It then rebuilds E[d²] = σ² + μ² from the f16-rounded mean, with σ² clamped at 0, and is exact at either end.
+  - **Termini-only intervals.** An interval whose ends are both termini keeps today's raw through-base blend, carrying 12c's fix. That covers a two-pose mover, and a probe where every mid pose skips.
+  - **Several movers.** Each mover blends this way, then the existing difference sum combines them.
+  - **One function.** The rule is a single compose function beside the format's interval rule. Skipping judges exactly what compose reads.
+  - **Why.**
+    - Lerping raw moments adds s(1−s)·Δμ² of variance, so Chebyshev passes everything just past a knot (`captures/motion-results.md`).
+    - A hit distance on a translating surface moves linearly in t, so the mean lerp is exact wherever a texel sees the same surface at both ends.
+    - Running through the base under this rule would slide every occluder out to the base each midpoint.
 - **The author ramp applies first (owner).** Knots map through the mover's ramp: t′_k = ramp(t_k). `MoverTravel` is unchanged. `docs/level_design.md`'s "until the mover passes `light_ramp_start`, the first waypoint's lighting holds" stays true for every probe. Knots squeezed onto t′ = 0 or 1 carry the first or last pose's state, so lighting is continuous across both ramp edges; poses squeezed out are never read, and the bake may skip them.
 - **Bake fidelity: a build-time cap on `light_bounces` (owner).**
   - `prl-build --bake-fidelity low|high`, default `low`, for interactive builds.
@@ -46,12 +70,14 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
   - An automated gate compares `low` against `high` at rest and reports the error's sign. Its bound is set by the owner from the first measurement.
   - The Build Summary marks a mover approximate only where what it shows differs from `high`: its effective bounce count (`light_bounces`, clamped to id 34's) exceeds 1 and some state was baked `low` rather than served from `high`. It projects each mover's `--release` bounce-bake time as id 34's last recorded bake time on the map × the mover's two termini, since one terminus costs about one id-34 bake (§M1), plus each mid pose's domain-sized trace: id 34's time scaled by the share of static patches the pose's domain holds (owner, 2026-11-11: × 2 alone projected 2.2 s per setpiece mover against ~3.3 s measured, the mid poses uncounted). It is labelled an estimate and reads "—" until a build has recorded that time. The gate covers the same movers.
 - **IP rules bind unchanged.** N absolute states blended by mover position is the shape accepted for two (`ip-check.md` §Piece 7, §Tencent US12293451B2). Depth blends moment sets, the domain and masks are storage sparsity, and nothing sets a per-probe flag, zeroes a weight or excludes a probe (`ip-372` levers 2, 7). The counsel packet gains one line: states per pose, not per terminus; an enclosed terminus reads the base; an enclosed or skipped mid pose blends across. The direct block's across marks are storage sparsity: compose blends between neighbouring stored states and never zeroes a weight.
+  - **Counsel wording, updated (owner, 2026-11-11).** `ip-372` question 9 reads: a live tile is a blend, by mover position, of the two neighbouring stored tiles' mean and variance, raw-linear between termini. The mover's knots, shared by every probe, are chosen at compile time from geometry. Probes now sit at the 0.03 floor mid-travel as well as at rest, which bears on question 7. Lever 7 is unchanged: the blend still runs between moment sets, with no per-probe flag and no zeroed weight.
 - **Memory.** Every pose's resident bake output is charged to the SH memory gate before any ray. Overage is the named error, never fewer poses (`build_pipeline.md` step 12; `development_guide.md` §1.4).
 - **Per-frame cost unchanged (owner, 2026-11-11).** Mid poses add no measurable frame cost over the pre-brief build. Triggers stay per mover on t′. The 0.2 ms per travelling mover budget (`rendering_pipeline.md` §4) is a follow-up brief's: M7 measured the pre-brief build at 1.7–2.7 ms per travelling mover on the 5300M, so the cost predates this brief.
 - **Non-goals.**
   - Spinners: still not analysed.
   - Poses at authored waypoints or rest stops. A mover resting mid-path reads the blend of poses about one step apart; the stored knots leave room for exact rest poses later.
   - Any runtime geometric or half-space test against the posed mover: `ip-372` lever 6, and per-probe GPU cost.
+  - Per-probe knot sets. Knots stay per mover, shared by every probe. Per-probe sparsity is the existing skip and marks.
   - Animated lights' bounce (id 27).
   - Far-field bounce changes mid-travel: they follow the blend. A mid pose's later bounces past its near-field domain read the mover-absent bake.
   - The world-surface channel. It picks its own state spacing: lattice spacing suits probes, which already blur over one step, not dense lightmap texels.
@@ -66,8 +92,8 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
 - [ ] K1, K2, K3, C7 and C10 pass on `--release` builds. C10's frame-level capture case is judged per station against the pre-brief build's own streaming-mode gap at the same pose plus 4 levels, since BC6H already separates the modes there (owner, 2026-11-11; `drafts/sh-streaming-mode-bc6h-parity.md`). C9's renderer half passes, with each moved half checked against its piecewise mix. Regression guard.
 
 **Placement and key**
-- [ ] With the key absent, a mover bakes min(16, max(2, ceil(L / s) + 1)) poses at even arc length. Covered: a path of unequal segments, a path with a degenerate segment (it adds no length), and a zero-length path (two coincident termini, as today). Pose positions match the runtime's t at each knot.
-- [ ] A path that needs exactly 16 poses bakes 16 and does not warn. One that needs 17 bakes 16 spread over the full path and warns, naming the mover, its spacing and `light_poses`. An authored `light_poses` of 20 bakes 20 and does not warn.
+- [ ] With the key absent, a mover's even poses number min(16, max(2, ceil(L / s) + 1)) at even arc length, and its geometry knots join them. Covered: a path of unequal segments, a path with a degenerate segment (it adds no length), and a zero-length path (two coincident termini, as today). Pose positions match the runtime's t at each knot. (Restated 2026-11-11 for geometry knots.)
+- [ ] A path that needs exactly 16 even poses bakes 16 and does not warn. One that needs 17 bakes 16 spread over the full path and warns, naming the mover, its spacing and `light_poses`. Geometry knots are not counted against the cap. An authored `light_poses` of 20 bakes exactly 20 even poses and no geometry knots, and does not warn.
 - [ ] `light_poses` accepts integers ≥ 2 and blank (as absent). It rejects 0, 1, negative, fractional and non-numeric values, and values too large for the field, naming the mover.
 
 **Bake**
@@ -81,10 +107,10 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
 - [ ] A ramped mover whose only pose blocking a light is squeezed out builds a PRL that loads, and that light composes as if unblocked at every t. (research pin MP11)
 
 **Compose**
-- [ ] At each stored pose's t′, bounce, direct and depth read that state exactly. Between stored states each reads the mix: bounce within one f16 step, direct exactly, depth by the rule the owner picks. Out and back to the same t′ reads alike.
+- [ ] At each stored pose's t′, bounce, direct and depth read that state exactly. Between stored states each reads the mix: bounce within one f16 step, direct exactly. Depth reads the mean-and-variance blend, or the raw through-base blend between termini. Out and back to the same t′ reads alike.
 - [ ] Two movers at one probe, with different pose counts and skipped poses, combine as today (direct multiplies, bounce and depth add differences from the base) at t′ between knots for both.
 - [ ] With ramp (0.6, 0.9), every probe reads the first pose for t < 0.6 and the last for t > 0.9. Knots between map to ramp(t_k). On a mover with mid poses before 0.6 and between 0.9 and 1, t just past 0.6 reads within one step of the first pose, and t just under 0.9 within one step of the last. A mover with no supplied state stays ungated. (research pins MP1, MP10)
-- [ ] On a mover with mid poses, a depth probe outside the near-field domain, and a probe where every mid pose skips its depth, compose today's through-base depth at every t′, whichever rule the capture picks. Each such skipped pose's tile is within the significance floor of that through-base blend at its t′. (research pin MP8)
+- [ ] On a mover with mid poses, a depth probe outside the near-field domain, and a probe where every mid pose skips its depth, compose today's through-base depth at every t′. Each such skipped pose's tile is within the significance floor of the blend compose reads at its t′. (research pin MP8)
 - [ ] On em_sweeper at t′ 0.30, the probes just west of the slab's west face compose bounce and direct within 3 display levels of a static-brush reference bake at the mover's position. So do the probes just above `mover-setpiece`'s roof top at t′ 0.4 and 0.6. Today's build fails this. (Restated by the owner, 2026-11-10: t′ 0.25 is dropped, because those probes sit inside the slab until t 0.232 and pose states one lattice step apart cannot describe that crossing.)
 
 **Fidelity and cache**
@@ -105,6 +131,23 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
 - [ ] The loader refuses an epoch-5 section by name for each of: a pose count below 2; knots out of order, outside 0–1, not finite, or not running from 0 to 1; a block naming a pose at or past its mover's count; a probe marked both stored and base at one pose. Epoch 4 is refused.
 - [ ] `light_poses` appears in the FGD and in `docs/level_design.md`'s mover lighting table. `--bake-fidelity` appears in both build-flag tables. `postretro-tool dist` with a recipe naming `--bake-fidelity` fails, naming the recipe and the flag.
 
+**Motion (owner, 2026-11-11, after the motion captures)**
+- [ ] **Geometry knots.** For every domain probe a mover's brushes enclose along its path, a pose lies just outside and one just inside each end of each enclosure interval, within the pinned tolerance, by the bake's own enclosing rule. Covered: a slab moving along a lattice axis; a slab off the lattice phase; a two-brush mover; a bent two-segment path; and a ramped mover, whose knots map through the ramp. An authored `light_poses` places none.
+- [ ] **Depth blend.** Unit tests on the shared compose function cover:
+  - an interval reads each end exactly;
+  - one occluder translating along a texel's ray composes its linearly moved mean with no added variance;
+  - σ² never goes negative and saturated f16 texels return exactly;
+  - an interval between two termini equals today's through-base blend bit for bit;
+  - several movers combine by the difference sum.
+
+  Skipping and the renderer call the same function.
+- [ ] **Motion proof.** CPU check against a fine bake on `mover-setpiece`'s rising room ceiling and floor layers and on em_sweeper's east and west faces. The truth is `light_poses 41` on the room and `57` on the sweeper, at every one of their knots. Bars:
+  - far-side Chebyshev share within 0.01 of the truth on the mean and within 0.05 at worst;
+  - composed values within 3 display levels of the truth at worst.
+
+  The pre-amendment build fails. Run under `--ignored`.
+- [ ] **No silent fallback.** No geometry knot is ever dropped to meet a count. The SH memory gate prices every geometry pose and refuses by name below it. The Build Summary prints each mover's even and geometry knot counts.
+
 ### Manual
 
 - [ ] Depth candidates, captured in the first slice: the rising room floor at t′ 0.50–1.00 (12c metric) and the sweeper faces, plain lerp against per-interval through-base. Owner picks.
@@ -115,6 +158,10 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
 - [ ] Rising room interior mean luma against t′, before and after, at `low` and `high`, for the owner's eye. The expectation is darker mid-travel.
 - [ ] 5300M, Metal System Trace, passes grouped by label, every mover travelling minus all docked. On `mover-setpiece`'s room and wall, a travelling mover's compose passes plus its live-tile writes cost no more than on the pre-brief build under the same harness, within run-to-run noise. (Restated by the owner, 2026-11-11: both builds miss the 0.2 ms budget by 8–13×, and a follow-up brief owns it.)
 - [ ] Cold and warm bake times, and id-57 bytes per block, on `mover-closet`, `mover-setpiece` and `enemy-movers` at `low` and `high`, plus the hallway measured or projected. Owner judges.
+- [ ] **In motion (owner, 2026-11-11).**
+  - In-engine on a `--release` bake, watch the rising room's floor and ceiling and em_sweeper's faces in motion. There should be no knot flashes, no lattice dots, and no pulsing or stepping that reads as unnatural.
+  - The dense t′ motion series before and after, and charts against the truth bake, are there for the owner's eye.
+  - M7's frame-cost A/B is re-run with geometry knots.
 
 ## Path
 

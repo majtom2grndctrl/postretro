@@ -20,8 +20,8 @@
 // - `chase`: the same wave on plain chase, to tell strafe's cost from the
 //   engaged-wave cost that predates it.
 // - `strafe+hits focus`: strafers take peer hits (friendly fire stand-in:
-//   every 0.5 s, one wave enemy in eight is hit by another for 5) but carry no
-//   retaliation, so they keep the player.
+//   every 0.5 s, one wave enemy in eight is hit by another for 5) under a
+//   tolerance no hit reaches, so they keep the player.
 // - `strafe+hits infight`: the same hits, with retaliation on and a tolerance
 //   the hits cross, so struck enemies turn on the peer that hit them.
 
@@ -193,13 +193,17 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
         let distance = 6.0 + (index / 16) as f32;
         let position = center + Vec3::new(yaw.sin(), 0.0, yaw.cos()) * distance;
         let enemy = spawn_engaged(&mut reg, position, &graph, "engage");
-        if scenario.hits != PeerHits::None {
-            set_crossfire_faction(&mut reg, enemy, CROSSFIRE_RAIDER_FACTION);
-            let tolerance = match scenario.hits {
-                PeerHits::Infight => CROSSFIRE_LOW_TOLERANCE,
-                _ => f32::MAX,
-            };
-            set_crossfire_tolerance(&mut reg, enemy, tolerance);
+        match scenario.hits {
+            PeerHits::None => {}
+            // An omitted `retaliation` block is the default window, not off, and
+            // the raider pair's authored tolerance outranks the archetype field;
+            // so a focused wave keeps the default faction, whose pair declares
+            // no tolerance, and an unreachable archetype tolerance.
+            PeerHits::Focus => set_crossfire_tolerance(&mut reg, enemy, f32::MAX),
+            PeerHits::Infight => {
+                set_crossfire_faction(&mut reg, enemy, CROSSFIRE_RAIDER_FACTION);
+                set_crossfire_tolerance(&mut reg, enemy, CROSSFIRE_LOW_TOLERANCE);
+            }
         }
         wave.push(enemy);
     }
@@ -314,6 +318,39 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
                 open_wait[slot] = None;
             }
         }
+    }
+    // The longest open wait's agent state, to tell a steering exemption or a
+    // measurement artifact (steering sees no drift: `drift_wait_ticks` 0) from
+    // a drift waiter the fair queue never reached (`drift_wait_ticks` large).
+    if let Some((slot, wait)) = open_wait
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, wait)| wait.map(|wait| (slot, wait)))
+        .max_by_key(|&(_, wait)| wait)
+        .filter(|&(_, wait)| wait > 60)
+    {
+        let (id, class) = agents[slot];
+        let agent = enemy_agent(&reg, id);
+        let brain = reg.get_component::<BrainComponent>(id).unwrap();
+        eprintln!(
+            "[ReplanStress] longest open wait {wait} ticks: slot {slot} class {class} | drift_wait_ticks {} cooldown {} blocked {} arrived {} pin_escape {} ride {} path {} cursor {} stuck {} unstick {} | dest {:?} planned {:?} | pos {:?} | target {:?} slot {:?} hp {}",
+            agent.drift_wait_ticks,
+            agent.replan_cooldown_ticks,
+            agent.blocked,
+            agent.arrived,
+            agent.pin_escape.is_some(),
+            agent.ride.is_some(),
+            agent.path.len(),
+            agent.waypoint_cursor,
+            agent.stuck_ticks,
+            agent.unstick_window_remaining,
+            agent.destination,
+            agent.planned_destination,
+            reg.get_component::<Transform>(id).unwrap().position,
+            enemy_acquired_target(&reg, id),
+            brain.combat_slot,
+            player_hp(&reg, id),
+        );
     }
     for (slot, &(_, class)) in agents.iter().enumerate() {
         if let Some(wait) = open_wait[slot] {

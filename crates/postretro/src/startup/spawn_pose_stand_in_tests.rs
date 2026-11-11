@@ -264,6 +264,10 @@ fn host_same_map_restart_reloads_the_client_and_settles_it_at_the_new_lifes_hint
         !client.app.level_requests.is_empty(),
         "the restart reloads the client"
     );
+    client.assert_at(
+        hint_pose(&first_life),
+        "the old install never takes the new life's hint before it unloads",
+    );
 
     client.install();
     client.assert_at(hint_pose(&new_life), "the new life's stand-in");

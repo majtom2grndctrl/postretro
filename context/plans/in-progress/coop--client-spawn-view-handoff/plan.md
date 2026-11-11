@@ -33,6 +33,10 @@ read at: 3f851eff1 (no `crates/` change since the brief's b215170, so the brief'
 - Single-use consumption (review F3): the seat re-resolves and is hinted when it next leaves participation (`SpawnPoseResolver::demoted`), not right after the consuming promotion, so the next start's hint never moves the client before it arms at the consumed pose; a rejoin within the hold re-resolves at admission. A consumed seat holds no start during the hold, as an unbacked seat holds none.
 - A level with no `player_spawn` (review F8): `SpawnPlacements::of_level` gates install, both admission sites, promotion and demotion alike.
 
+- Overflow sharing (review round 2) prefers a start whose holder's pawn already spawned over one reserved for a seat still to arrive (resolved-unpromoted or held), so a held seat keeps its spawn where an alternative exists (R8).
+- A hint never applies while a host-named load is queued (review round 2): a same-map restart's relevel names the new life before the old install unloads.
+- Accepted, not fixed: if one host poll carries both the demotion and the re-promotion of a consumed single-use seat, its hint follows the marker and the view moves once before arming (latent until E25 U2; same class as the overlap re-hint). A released seat's `awaiting_resolution` / recorded pose entries linger until unload; seats are never reused, so nothing reads them.
+
 ## Delegated answers
 - Which descriptor class and key bag a pose that no placement backs spawns with — the test substitution names the class beside its pose (an empty key bag); production never yields an unbacked pose until E25 U2 pins its own.
 

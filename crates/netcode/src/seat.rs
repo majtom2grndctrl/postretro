@@ -757,7 +757,9 @@ impl SeatTable {
 
     /// With no spawn free, the next spawn round-robin that no live pawn stands
     /// on, even one another seat holds: a reserved spawn is still empty, and
-    /// sharing it beats arriving inside a pawn. Only when a live pawn stands on
+    /// sharing it beats arriving inside a pawn. Among those, a start whose
+    /// holder's pawn already spawned comes before one reserved for a seat still
+    /// to arrive. Only when a live pawn stands on
     /// every spawn does the seat take one anyway. Each seat warns once per
     /// level, however often a live pawn moves it on.
     fn share_overflow_placement(
@@ -766,13 +768,26 @@ impl SeatTable {
         occupancy: &PlacementOccupancy<'_>,
         sites: &[PlacementSite],
     ) -> usize {
+        // Starts reserved for another seat whose pawn has not arrived (resolved
+        // but unpromoted, or held after a disconnect). Sharing one of those
+        // displaces that seat's own spawn, so a start whose holder already
+        // spawned and walked off is the better share.
+        let awaiting_arrival: HashSet<usize> = self
+            .placement_assignments
+            .iter()
+            .filter(|(other, _)| **other != seat && !self.pawn_bindings.contains_key(other))
+            .map(|(_, placement)| *placement)
+            .collect();
         let start = self.overflow_cursor;
         let site_at = |offset: usize| &sites[start.wrapping_add(offset) % sites.len()];
+        let unoccupied = |offset: &usize| {
+            let site = site_at(*offset);
+            !occupancy.live_pawn_overlaps(site.foot_anchor, site.capsule.as_ref())
+        };
         let offset = (0..sites.len())
-            .find(|&offset| {
-                let site = site_at(offset);
-                !occupancy.live_pawn_overlaps(site.foot_anchor, site.capsule.as_ref())
-            })
+            .filter(unoccupied)
+            .find(|&offset| !awaiting_arrival.contains(&site_at(offset).map_index))
+            .or_else(|| (0..sites.len()).find(unoccupied))
             .unwrap_or(0);
         let shared = site_at(offset).map_index;
         self.overflow_cursor = start.wrapping_add(offset + 1);

@@ -150,7 +150,8 @@ pub struct RevealedLevel {
     pub identity: String,
     /// The host level life (`ServerControlMessage::Relevel`) this install
     /// followed, or `None` for a level the host never named: an uncatalogued
-    /// one, or a reveal before the first relevel. On a catalog level the host
+    /// one, a reveal before the first relevel, or a level the client loaded of
+    /// its own accord (its frontend backdrop). On a catalog level the host
     /// promotes only a reveal of its current life, so a reveal from before a
     /// restart of the same map never counts.
     pub level_life: Option<u64>,

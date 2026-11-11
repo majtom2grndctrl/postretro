@@ -109,9 +109,19 @@ impl App {
     /// Move the camera to a fresh hint naming the installed level, during
     /// Settling or Running and outside the reveal frame's hold. Once the
     /// local pawn has armed, a matching hint is spent unapplied: it moves
-    /// nothing. A hint naming another install stays fresh, untouched.
+    /// nothing. A hint naming another install stays fresh, untouched, and so
+    /// does every hint while a host-named load is queued: a same-map restart's
+    /// relevel names the new life before the old install unloads, and the old
+    /// install would otherwise read that life as its own.
     fn apply_fresh_spawn_pose_hint(&mut self) {
         if !matches!(self.boot_state, BootState::Settling | BootState::Running) {
+            return;
+        }
+        if self
+            .level_requests
+            .iter()
+            .any(|request| matches!(request, crate::startup::LevelRequest::HostLevel(_)))
+        {
             return;
         }
         let level_life = self.followed_level_life();

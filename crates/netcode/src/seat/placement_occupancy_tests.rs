@@ -251,6 +251,43 @@ fn placement_with_nothing_free_never_keeps_a_start_a_live_pawn_stands_on() {
     );
 }
 
+// Overflow sharing prefers a start whose holder already spawned and walked off
+// over one reserved for a seat still to arrive, so a held seat keeps its spawn.
+#[test]
+fn placement_overflow_shares_a_vacated_start_before_a_held_seats_reservation() {
+    let mut seats = SeatTable::from_test_session_id([28; 16]);
+    let mut registry = EntityRegistry::new();
+    let sites = movement_sites(&[0, 1, 2, 3]);
+    host_pawn_on(&mut seats, &mut registry, &sites, 0, 0);
+    let walked_off = seats.admit_or_reclaim(61, None, false).unwrap().seat;
+    let held = seats.admit_or_reclaim(62, None, false).unwrap().seat;
+    let standing = seats.admit_or_reclaim(63, None, false).unwrap().seat;
+    let joiner = seats.admit_or_reclaim(64, None, false).unwrap().seat;
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, walked_off, &sites),
+        Some(1)
+    );
+    assert_eq!(seats.assign_joiner_placement(&registry, held, &sites), Some(2));
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, standing, &sites),
+        Some(3)
+    );
+    // Start 1's pawn walks onto the host's start; start 2's seat never arrives;
+    // start 3's pawn stays put.
+    let walker = seat_pawn_on(&mut seats, &mut registry, &sites, walked_off, 1);
+    move_pawn_onto(&mut registry, &sites, walker, 0);
+    seat_pawn_on(&mut seats, &mut registry, &sites, standing, 3);
+    // Start the round-robin at the held seat's start.
+    seats.overflow_cursor = 2;
+
+    assert_eq!(
+        seats.assign_joiner_placement(&registry, joiner, &sites),
+        Some(1),
+        "the vacated start, not the held seat's reservation"
+    );
+    assert_eq!(seats.placement_for_seat(held), Some(2));
+}
+
 // The warning is level-scoped: the next level's overflow warns afresh.
 #[test]
 fn placement_overflow_warns_again_on_the_next_level() {

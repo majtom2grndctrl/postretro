@@ -33,7 +33,7 @@ pub use blocking::{
 pub use command::apply_mover_command;
 pub use dock::{MoverDockTable, mover_docked_waypoint, mover_moves_on_its_own};
 pub use forced_phase::{ForcedPhaseError, set_mover_phase_at_path_fraction};
-pub use path_fraction::{MoverPathArcLengths, mover_path_fraction};
+pub use path_fraction::{MoverPathArcLengths, PathPoint, mover_path_fraction};
 pub use pin::run_mover_pin_pretest;
 pub use pin_escape::find_mover_clear_point;
 

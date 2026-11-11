@@ -110,7 +110,7 @@ mod tests {
 
     fn one_mover() -> MoverPoses {
         let pose = |name: &str| Pose {
-            waypoint: name.to_string(),
+            name: name.to_string(),
             brushes: Vec::new(),
             bounds: Aabb::empty(),
         };
@@ -118,8 +118,11 @@ mod tests {
             analysed: vec![AnalysedMover {
                 mover_id: 7,
                 label: "kinematic_mover 'test'".to_string(),
-                poses: [pose("a"), pose("b")],
+                poses: vec![pose("a"), pose("b")],
+                knots: vec![0.0, 1.0],
                 swept: Aabb::empty(),
+                brush_sweeps: Vec::new(),
+                path: Vec::new(),
             }],
             not_analysed: Vec::new(),
         }

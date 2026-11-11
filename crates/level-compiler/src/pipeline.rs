@@ -737,10 +737,11 @@ fn run_after_parsing(
     // Mover poses depend only on map data. They resolve ahead of the SH
     // gates and every SH bake, so the probe channel's bakes, and the storage
     // classifiers its cells cap, all read one set.
-    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
+    let mut mover_poses = crate::mover_light_gate::MoverPoses::resolve(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
     );
+    mover_poses.place_poses(&map_data.kinematic_movers, sh_config.probe_spacing);
     // Every analysed mover posed at both termini, once: the bounce half's
     // scenes and the direct half's occluders share these solids.
     let posed_movers = crate::mover_probe_channel::PosedMovers::resolve(

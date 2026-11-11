@@ -16,6 +16,7 @@ mod direct_memo;
 mod domain;
 mod gather;
 mod lights;
+mod near_field;
 mod posed_scene;
 mod posed_solid;
 mod section;
@@ -52,6 +53,7 @@ pub(crate) use gather::PosedGather;
 #[cfg(test)]
 pub(crate) use gather::compact_slots;
 pub(crate) use lights::{ChannelLightSources, channel_lights};
+pub(crate) use near_field::NearFieldDomain;
 pub(crate) use posed_scene::PosedScene;
 pub(crate) use posed_solid::PosedMovers;
 #[cfg(test)]

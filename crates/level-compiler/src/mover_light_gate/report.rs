@@ -49,7 +49,7 @@ pub(crate) fn log_rows(
         let Some(mover) = poses.mover(key.mover_id) else {
             continue;
         };
-        let at = terminus_phrase(&mover.pose(key.terminus).waypoint, key.terminus);
+        let at = terminus_phrase(&mover.pose(key.terminus).name, key.terminus);
         log::info!(
             "[MoverLight] {} {at} gates {} baked light(s): {}",
             mover.label,

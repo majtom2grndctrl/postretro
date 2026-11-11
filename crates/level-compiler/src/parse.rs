@@ -147,6 +147,7 @@ struct PendingKinematicMover {
     light_ramp_start: f32,
     light_ramp_end: f32,
     light_bounces: Option<u32>,
+    light_poses: Option<u32>,
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
@@ -510,6 +511,7 @@ fn parse_kinematic_mover(
     let crush_damage_type = optional_event("crush_damage_type");
     let (light_ramp_start, light_ramp_end) = parse_kinematic_light_ramp(props, &name)?;
     let light_bounces = parse_kinematic_light_bounces(props, &name)?;
+    let light_poses = parse_kinematic_light_poses(props, &name)?;
 
     let move_mode = match props
         .get("move_mode")
@@ -569,6 +571,7 @@ fn parse_kinematic_mover(
         light_ramp_start,
         light_ramp_end,
         light_bounces,
+        light_poses,
         move_mode,
         start_on_spawn,
         brush_ids,
@@ -627,6 +630,38 @@ fn parse_kinematic_light_bounces(
     };
     match raw.parse::<i64>() {
         Ok(value) if value < 0 => Err(not_a_count()),
+        Ok(value) => u32::try_from(value).map(Some).map_err(|_| too_large()),
+        Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => Err(too_large()),
+        Err(_) => Err(not_a_count()),
+    }
+}
+
+/// The mover's `light_poses` key: how many poses the mover probe channel
+/// bakes along its path, termini included, an integer of at least 2. Absent
+/// or blank places them automatically, about one probe spacing apart. Reads
+/// as `light_bounces` does, with an optional sign; anything else fails the
+/// build naming the mover, as does a count past the id-57 field's `u32`.
+fn parse_kinematic_light_poses(
+    props: &HashMap<String, String>,
+    name: &str,
+) -> anyhow::Result<Option<u32>> {
+    let Some(raw) = non_blank(props, "light_poses") else {
+        return Ok(None);
+    };
+    let too_large = || {
+        anyhow::anyhow!(
+            "kinematic_mover `{name}` `light_poses` `{raw}` is too large: it must be at most {}",
+            u32::MAX
+        )
+    };
+    let not_a_count = || {
+        anyhow::anyhow!(
+            "kinematic_mover `{name}` `light_poses` must be an integer of at least 2 (2 bakes \
+             only the path's two ends), got `{raw}`"
+        )
+    };
+    match raw.parse::<i64>() {
+        Ok(value) if value < 2 => Err(not_a_count()),
         Ok(value) => u32::try_from(value).map(Some).map_err(|_| too_large()),
         Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => Err(too_large()),
         Err(_) => Err(not_a_count()),
@@ -2498,6 +2533,7 @@ fn resolve_kinematic_movers(
             light_ramp_start: pending.light_ramp_start,
             light_ramp_end: pending.light_ramp_end,
             light_bounces: pending.light_bounces,
+            light_poses: pending.light_poses,
             move_mode: pending.move_mode,
             start_on_spawn: pending.start_on_spawn,
             brush_volumes,
@@ -4496,6 +4532,7 @@ mod tests {
             "light_ramp_start(float) : \"Travel fraction (0 to 1) where baked light starts changing as the mover leaves its first waypoint; below it the first waypoint's lighting holds\" : \"0\"",
             "light_ramp_end(float) : \"Travel fraction (0 to 1, above light_ramp_start) where baked light reaches its last-waypoint state\" : \"1\"",
             "light_bounces(integer) : \"Static light bounces this mover's poses re-bake (0 or more); blank re-bakes every bounce, 0 re-bakes no bounce; its direct light and probe depth still follow the mover\"",
+            "light_poses(integer) : \"Lighting states baked along this mover's path (2 or more, 2 = its two ends only); blank places about one per probe spacing, up to 16\"",
         ] {
             assert!(
                 mover_class.contains(property),
@@ -6119,6 +6156,50 @@ mod tests {
             let map = parse_inline_map(&kinematic_test_map_with_keys(&[("light_bounces", value)]))
                 .unwrap_or_else(|err| panic!("light_bounces {value} must parse: {err:#}"));
             assert_eq!(map.kinematic_movers[0].light_bounces, Some(expected));
+        }
+    }
+
+    #[test]
+    fn kinematic_mover_light_poses_is_absent_by_default_and_parses_counts_of_two_or_more() {
+        let absent = parse_inline_map(&kinematic_test_map("wp_b")).expect("no pose key");
+        assert_eq!(absent.kinematic_movers[0].light_poses, None);
+        for blank in ["", "  "] {
+            let map = parse_inline_map(&kinematic_test_map_with_keys(&[("light_poses", blank)]))
+                .unwrap_or_else(|err| panic!("blank light_poses must parse: {err:#}"));
+            assert_eq!(
+                map.kinematic_movers[0].light_poses, None,
+                "a blank key is absent: automatic placement"
+            );
+        }
+        for (value, expected) in [("2", 2), ("20", 20), ("+3", 3), ("4294967295", u32::MAX)] {
+            let map = parse_inline_map(&kinematic_test_map_with_keys(&[("light_poses", value)]))
+                .unwrap_or_else(|err| panic!("light_poses {value} must parse: {err:#}"));
+            assert_eq!(map.kinematic_movers[0].light_poses, Some(expected));
+        }
+    }
+
+    #[test]
+    fn kinematic_mover_rejects_light_poses_below_two_or_not_a_count_naming_the_mover() {
+        for (value, says) in [
+            ("0", "must be an integer of at least 2"),
+            ("1", "must be an integer of at least 2"),
+            ("-3", "must be an integer of at least 2"),
+            ("-99999999999999999999", "must be an integer of at least 2"),
+            ("2.5", "must be an integer of at least 2"),
+            ("many", "must be an integer of at least 2"),
+            ("4294967296", "is too large"),
+            ("99999999999999999999", "is too large"),
+        ] {
+            let err = parse_inline_map(&kinematic_test_map_with_keys(&[("light_poses", value)]))
+                .expect_err(&format!("light_poses `{value}` must be rejected"));
+            let message = format!("{err:#}");
+            assert!(
+                message.contains("kinematic_mover `lift_a`")
+                    && message.contains("light_poses")
+                    && message.contains(says),
+                "`{value}`: the error must name the mover and the key and say `{says}`, got: \
+                 {message}"
+            );
         }
     }
 

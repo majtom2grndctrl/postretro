@@ -68,6 +68,73 @@ impl MoverPathArcLengths {
     pub(super) fn at_waypoint(&self, index: usize) -> f32 {
         self.cumulative.get(index).copied().unwrap_or(0.0)
     }
+
+    /// The point at travel fraction `t` along this path: 0 the first
+    /// waypoint, 1 the last, a fraction between that far along by arc length
+    /// on the last non-degenerate segment starting at or before it. The one
+    /// rule the runtime's forced phase and the compiler's mover poses share,
+    /// so a pose baked at `t` is where the mover stands when it hands `t`
+    /// over. `None` for a fraction outside `[0, 1]` or not finite, and for a
+    /// fraction strictly between the termini on a path with no length.
+    pub fn point_at(&self, t: f32) -> Option<PathPoint> {
+        if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+            return None;
+        }
+        let waypoints = &self.waypoints;
+        let last = waypoints.len().saturating_sub(1);
+        if t == 0.0 || waypoints.len() < 2 {
+            let position = waypoints.first().copied().unwrap_or(Vec3::ZERO);
+            return Some(PathPoint::at_waypoint(0, position));
+        }
+        if t == 1.0 {
+            return Some(PathPoint::at_waypoint(last, waypoints[last]));
+        }
+        let total = self.total_length();
+        if !total.is_finite() || total <= 0.0 {
+            return None;
+        }
+        let target = t * total;
+        // A degenerate segment adds no length, so it is never chosen.
+        let segment = (0..last).rev().find(|&index| {
+            let length = (waypoints[index + 1] - waypoints[index]).length();
+            length.is_finite()
+                && length > KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH
+                && self.at_waypoint(index) <= target
+        })?;
+        let (from, to) = (waypoints[segment], waypoints[segment + 1]);
+        let length = (to - from).length();
+        let fraction = ((target - self.at_waypoint(segment)) / length).clamp(0.0, 1.0);
+        Some(PathPoint {
+            segment,
+            segment_fraction: fraction,
+            segment_length: length,
+            position: from.lerp(to, fraction),
+        })
+    }
+}
+
+/// Where travel fraction `t` lands on a path ([`MoverPathArcLengths::point_at`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathPoint {
+    /// The segment index, the runtime's `segment_index`: the point lies on
+    /// waypoint `segment` → `segment + 1`, or at waypoint `segment` itself.
+    pub segment: usize,
+    /// How far along that segment, in `[0, 1]`; 0 at a waypoint.
+    pub segment_fraction: f32,
+    /// That segment's length; 0 at a waypoint.
+    pub segment_length: f32,
+    pub position: Vec3,
+}
+
+impl PathPoint {
+    fn at_waypoint(index: usize, position: Vec3) -> Self {
+        Self {
+            segment: index,
+            segment_fraction: 0.0,
+            segment_length: 0.0,
+            position,
+        }
+    }
 }
 
 /// The mover's travel fraction t from its current phase: 0 at the first
@@ -421,6 +488,52 @@ mod tests {
         runaway.speed_mps = f32::NAN;
         runaway.segment_elapsed_ms = 10.0;
         assert!(fraction(&runaway).is_finite());
+    }
+
+    #[test]
+    fn point_at_lands_by_arc_length_and_reads_back_the_same_fraction() {
+        // Unequal segments with a degenerate one between them: 1 m along +x,
+        // a repeated waypoint, then 3 m along +y.
+        let waypoints = vec![Vec3::ZERO, Vec3::X, Vec3::X, Vec3::new(1.0, 3.0, 0.0)];
+        let lengths = MoverPathArcLengths::from_waypoints(&waypoints);
+        let cases = [
+            (0.0, 0, Vec3::ZERO),
+            (0.125, 0, Vec3::new(0.5, 0.0, 0.0)),
+            (0.25, 2, Vec3::X),
+            (0.5, 2, Vec3::new(1.0, 1.0, 0.0)),
+            (1.0, 3, Vec3::new(1.0, 3.0, 0.0)),
+        ];
+        for (t, segment, position) in cases {
+            let point = lengths.point_at(t).expect("a fraction in [0, 1]");
+            assert_eq!(point.segment, segment, "segment at t = {t}");
+            assert!(
+                point.position.distance(position) <= EPSILON,
+                "t = {t}: {point:?}"
+            );
+            // The runtime reads the same t back from a mover resting there.
+            let mut resting = mover(waypoints.clone(), KinematicMoverMode::Once, 0.0);
+            let forced = super::super::set_mover_phase_at_path_fraction(&mut resting, t, &lengths)
+                .expect("a travelling mover rests anywhere");
+            assert_eq!(
+                forced, point.position,
+                "forced phase shares the rule at t = {t}"
+            );
+            assert_fraction(&resting, t, "read back");
+        }
+        assert_eq!(lengths.point_at(-0.1), None);
+        assert_eq!(lengths.point_at(f32::NAN), None);
+
+        // A zero-length path has its termini and nothing between.
+        let still = MoverPathArcLengths::from_waypoints(&[Vec3::ONE, Vec3::ONE]);
+        assert_eq!(
+            still.point_at(0.0).map(|point| point.position),
+            Some(Vec3::ONE)
+        );
+        assert_eq!(
+            still.point_at(1.0).map(|point| point.position),
+            Some(Vec3::ONE)
+        );
+        assert_eq!(still.point_at(0.5), None);
     }
 
     #[test]

@@ -83,6 +83,7 @@ fn mover(id: u32, brushes: Vec<BrushVolume>, spin: bool) -> MapKinematicMover {
         light_ramp_start: 0.25,
         light_ramp_end: 0.75,
         light_bounces: None,
+        light_poses: None,
     }
 }
 

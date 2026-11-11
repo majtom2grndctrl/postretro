@@ -87,6 +87,7 @@ fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> Ma
         light_ramp_start: 0.0,
         light_ramp_end: 1.0,
         light_bounces: None,
+        light_poses: None,
     }
 }
 
@@ -125,10 +126,7 @@ fn last_terminus_poses_the_authored_brushes_moved_by_the_waypoint_offset() {
     let door = &poses.analysed[0];
     let first = door.pose(Terminus::First);
     let last = door.pose(Terminus::Last);
-    assert_eq!(
-        (first.waypoint.as_str(), last.waypoint.as_str()),
-        ("a", "b")
-    );
+    assert_eq!((first.name.as_str(), last.name.as_str()), ("a", "b"));
     assert_eq!(last.bounds.min, DVec3::new(3.0, 0.0, 0.0));
     assert_eq!(last.bounds.max, DVec3::new(4.0, 2.0, 0.25));
 
@@ -155,8 +153,8 @@ fn termini_are_the_first_and_last_waypoints_of_a_three_waypoint_chain() {
     ];
     let poses = MoverPoses::resolve(&movers, &waypoints);
     let lift = &poses.analysed[0];
-    assert_eq!(lift.pose(Terminus::First).waypoint, "bottom");
-    assert_eq!(lift.pose(Terminus::Last).waypoint, "top");
+    assert_eq!(lift.pose(Terminus::First).name, "bottom");
+    assert_eq!(lift.pose(Terminus::Last).name, "top");
     assert_eq!(
         lift.pose(Terminus::Last).bounds.min,
         DVec3::new(0.0, 5.0, 0.0)
@@ -955,4 +953,179 @@ fn the_gate_anchors_and_lifts_each_texel_where_the_bake_walk_does() {
             assert_eq!(gated, expected, "chart {chart} on layer {layer}");
         }
     }
+}
+
+// ---- Mid-travel pose placement (mover probe channel) ----
+
+use super::placement::{AUTO_POSE_CAP, even_knots, pose_count};
+use crate::mover_probe_channel::NearFieldDomain;
+use postretro_physics::kinematic_mover::MoverPathArcLengths;
+use postretro_test_log_capture::LogCapture;
+
+/// A 1 m cube on a path of `points`, waypoints `w0`, `w1`, ….
+fn cube_on_path(points: &[DVec3], light_poses: Option<u32>) -> MoverPoses {
+    let mut cube = mover(0, "lift", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    cube.light_poses = light_poses;
+    let waypoints: Vec<MapKinematicWaypoint> = points
+        .iter()
+        .enumerate()
+        .map(|(index, &origin)| {
+            let next = if index + 1 < points.len() {
+                format!("w{}", index + 1)
+            } else {
+                String::new()
+            };
+            waypoint(&format!("w{index}"), &next, origin)
+        })
+        .collect();
+    let mut poses = MoverPoses::resolve(std::slice::from_ref(&cube), &waypoints);
+    poses.place_poses(std::slice::from_ref(&cube), 1.0);
+    poses
+}
+
+#[test]
+fn automatic_pose_count_is_one_per_probe_spacing_plus_one_capped_at_sixteen() {
+    for (length, count, capped_from) in [
+        (0.0, 2, None),
+        (0.4, 2, None),
+        (1.0, 2, None),
+        (4.4704, 6, None),
+        (6.5024, 8, None),
+        (15.0, 16, None),
+        (15.5, AUTO_POSE_CAP, Some(17)),
+        (50.0, AUTO_POSE_CAP, Some(51)),
+    ] {
+        let placed = pose_count(length, 1.0, None);
+        assert_eq!(placed.count, count, "path {length} m");
+        assert_eq!(placed.capped_from, capped_from, "path {length} m");
+    }
+    let authored = pose_count(50.0, 1.0, Some(20));
+    assert_eq!((authored.count, authored.capped_from), (20, None));
+    assert_eq!(
+        pose_count(50.0, 1.0, Some(2)).count,
+        2,
+        "2 bakes the termini only"
+    );
+    assert_eq!(even_knots(5), vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+}
+
+#[test]
+fn mid_poses_sit_at_even_arc_length_by_the_runtimes_rule_and_termini_are_unchanged() {
+    // Unequal segments with a degenerate one between: 1 m along +x, a
+    // repeated waypoint, then 3 m along +y. Four metres want five poses.
+    let points = [
+        DVec3::new(2.0, 0.0, 0.0),
+        DVec3::new(3.0, 0.0, 0.0),
+        DVec3::new(3.0, 0.0, 0.0),
+        DVec3::new(3.0, 3.0, 0.0),
+    ];
+    let placed = cube_on_path(&points, None);
+    let termini_only = cube_on_path(&points, Some(2));
+    let lift = &placed.analysed[0];
+    assert_eq!(lift.knots, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+    assert_eq!(lift.poses.len(), 5);
+    let reference = &termini_only.analysed[0];
+    assert_eq!(reference.poses.len(), 2);
+    for terminus in Terminus::BOTH {
+        let (placed_bounds, reference_bounds) = (
+            &lift.pose(terminus).bounds,
+            &reference.pose(terminus).bounds,
+        );
+        assert_eq!(
+            (placed_bounds.min, placed_bounds.max),
+            (reference_bounds.min, reference_bounds.max),
+            "{} terminus keeps its exact pose",
+            terminus.label()
+        );
+        assert_eq!(lift.pose(terminus).name, reference.pose(terminus).name);
+    }
+    let runtime_path: Vec<Vec3> = points.iter().map(|p| p.as_vec3()).collect();
+    let arc = MoverPathArcLengths::from_waypoints(&runtime_path);
+    for (index, &t) in lift.knots.iter().enumerate().skip(1).take(3) {
+        let at = arc
+            .point_at(t)
+            .expect("a mid fraction on a path with length")
+            .position;
+        let offset = (at - runtime_path[0]).as_dvec3();
+        assert_eq!(
+            lift.poses[index].bounds.min, offset,
+            "pose {index} at t {t}"
+        );
+        assert_eq!(lift.poses[index].name, format!("t {t:.2}"));
+        assert_eq!(lift.terminus_at(index), None);
+    }
+    // t 0.25 is the end of the 1 m leg, past the degenerate segment; t 0.5
+    // is 1 m up the 3 m leg.
+    assert_eq!(lift.poses[1].bounds.min, DVec3::new(1.0, 0.0, 0.0));
+    assert!((lift.poses[2].bounds.min - DVec3::new(1.0, 1.0, 0.0)).length() < 1.0e-6);
+
+    // A zero-length path bakes its two coincident termini, as before.
+    let still = cube_on_path(&[DVec3::ONE, DVec3::ONE], None);
+    assert_eq!(still.analysed[0].poses.len(), 2);
+    assert_eq!(still.analysed[0].knots, vec![0.0, 1.0]);
+}
+
+#[test]
+fn a_path_past_the_cap_spreads_sixteen_poses_and_warns_once_naming_the_mover() {
+    let capture = LogCapture::start();
+    let exactly = cube_on_path(&[DVec3::ZERO, DVec3::new(15.0, 0.0, 0.0)], None);
+    assert_eq!(exactly.analysed[0].poses.len(), 16);
+    capture.assert_not_logged(log::Level::Warn, "light_poses");
+
+    let long = cube_on_path(&[DVec3::ZERO, DVec3::new(15.5, 0.0, 0.0)], None);
+    assert_eq!(long.analysed[0].poses.len(), 16);
+    assert_eq!(
+        *long.analysed[0].knots.last().unwrap(),
+        1.0,
+        "spread over the full path"
+    );
+    capture.assert_logged_once(log::Level::Warn, "kinematic_mover 'lift'");
+    capture.assert_logged_once(log::Level::Warn, "1.03 m apart");
+    capture.assert_logged_once(log::Level::Warn, "`light_poses`");
+    capture.clear();
+
+    let authored = cube_on_path(&[DVec3::ZERO, DVec3::new(15.5, 0.0, 0.0)], Some(20));
+    assert_eq!(authored.analysed[0].poses.len(), 20);
+    capture.assert_not_logged(log::Level::Warn, "light_poses");
+}
+
+#[test]
+fn near_field_domain_is_the_swept_brushes_widened_by_lift_and_one_spacing() {
+    // The cube sweeps x 0..4 (1 m cube over a 3 m leg), y and z 0..1.
+    let poses = cube_on_path(&[DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)], None);
+    let domain = NearFieldDomain::new(&poses.analysed[0], 1.0);
+    for inside in [
+        Vec3::new(2.0, 0.5, 0.5),
+        Vec3::new(-0.9, 0.5, 0.5),
+        Vec3::new(4.9, 1.9, 1.9),
+        Vec3::new(2.0, -1.0, 0.5),
+    ] {
+        assert!(domain.contains(inside), "{inside} is near the sweep");
+    }
+    for outside in [
+        Vec3::new(5.1, 0.5, 0.5),
+        Vec3::new(2.0, 2.1, 0.5),
+        Vec3::new(2.0, 0.5, -1.1),
+    ] {
+        assert!(
+            !domain.contains(outside),
+            "{outside} is past the near field"
+        );
+    }
+    // A bent path sweeps its legs, not their joint bounds: the corner's far
+    // side stays outside.
+    let bent = cube_on_path(
+        &[
+            DVec3::ZERO,
+            DVec3::new(4.0, 0.0, 0.0),
+            DVec3::new(4.0, 4.0, 0.0),
+        ],
+        None,
+    );
+    let domain = NearFieldDomain::new(&bent.analysed[0], 1.0);
+    assert!(domain.contains(Vec3::new(4.5, 4.5, 0.5)));
+    assert!(
+        !domain.contains(Vec3::new(0.5, 4.5, 0.5)),
+        "inside the hull, far from both legs"
+    );
 }

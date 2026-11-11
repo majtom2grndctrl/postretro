@@ -221,6 +221,10 @@ pub struct MapKinematicMover {
     /// the SH base's. `None` (absent) re-bakes every bounce; 0 re-bakes none
     /// and keeps only the posed probe depth.
     pub light_bounces: Option<u32>,
+    /// FGD `light_poses`: how many poses the mover probe channel bakes along
+    /// the path, termini included, at least 2. `None` (absent) places them
+    /// about one probe spacing apart, up to a cap.
+    pub light_poses: Option<u32>,
     pub move_mode: KinematicMoveMode,
     pub start_on_spawn: bool,
     pub brush_volumes: Vec<BrushVolume>,

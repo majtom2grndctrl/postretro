@@ -195,7 +195,7 @@ Results are from the final full workspace run at `e568c0181`: 15,636 passed, 0 f
 
 | AC | Proof | Status | Result |
 |---|---|---|---|
-| MAN1 `movement-feel` rifle squad relocate/strafe/take over; `closet-reveal` payload without a pile-on; rocket-launched reference enemy keeps facing | owner, in-engine | manual | outstanding: owner, in-engine |
+| MAN1 `movement-feel` rifle squad relocate/strafe/take over; `closet-reveal` payload without a pile-on; rocket-launched reference enemy keeps facing | owner, in-engine | manual | pass (owner, in-engine, 2026-11-11): combat reads as more fun; a melee crowd holds to the token limits, rotates turns, and alternates slams |
 | MAN2 co-op loopback shows the same strafing, directional clips and launch facing | owner, two instances on loopback | manual | outstanding: owner, loopback co-op |
 
 **Not an AC: perf row** (Path: "Add a wave-scale stress row for arbitration"). An `#[ignore]`-gated measurement times `arbitrate_attack_turns` at 64 and 128 engaged agents on one target with three tokens, plus a zero-allocation probe on the steady-state pass (`alloc_probe`). It records its numbers in this plan beside the `perf-ai-tick-cost` draft's `sim_ai` baseline, which has no engaged-agent row yet.

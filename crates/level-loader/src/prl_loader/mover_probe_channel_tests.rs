@@ -3,7 +3,7 @@ use postretro_level_format::mover_probe_channel::MoverPayloadPlacement::{Residen
 use postretro_level_format::mover_probe_channel::{
     BounceEntryParts, DepthRecordParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT,
     MOVER_PROBE_CHANNEL_EPOCH, MoverBounceEntry, MoverChannelCell, MoverDepthRecord,
-    MoverDirectRecord, MoverLightRampRecord, MoverProbeChannelParts,
+    MoverDirectRecord, MoverProbeChannelParts, MoverRecord,
 };
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_format::{SectionBlob, SectionId};
@@ -24,8 +24,10 @@ const AFFINITY: [u32; 3] = [2, 1, 1];
 const LATTICE: u32 = 8 * 4 * 4;
 /// Header (16 B), then the listed cell count and two 12-byte cell records.
 const CELLS_AT: usize = 16 + 4;
+/// Then the mover records: a count, then movers 3 and 9, two poses each.
+const MOVERS_AT: usize = CELLS_AT + 2 * 12;
 /// Then the three direct offsets, then the first 16-byte term record.
-const DIRECT_OFFSETS_AT: usize = CELLS_AT + 2 * 12;
+const DIRECT_OFFSETS_AT: usize = MOVERS_AT + 4 + 2 * 24;
 const FIRST_RECORD_AT: usize = DIRECT_OFFSETS_AT + 3 * 4;
 
 fn light(is_dynamic: bool, shadow_type: ShadowType, animated_slot: Option<u32>) -> MapLight {
@@ -80,10 +82,7 @@ fn direct(cell: u32, record: MoverDirectRecord, movers: Vec<(u32, Vec<u8>)>) -> 
 fn bounce(cell: u32, mover_id: u32, affected_probe_mask: u64) -> BounceEntryParts {
     BounceEntryParts {
         cell,
-        entry: MoverBounceEntry {
-            mover_id,
-            stored_probe_masks: [affected_probe_mask; 2],
-        },
+        entry: MoverBounceEntry::termini(mover_id, [affected_probe_mask; 2]),
         tiles: vec![
             0x3800;
             affected_probe_mask.count_ones() as usize * 2 * MOVER_IRRADIANCE_TILE_F16_COUNT
@@ -93,27 +92,19 @@ fn bounce(cell: u32, mover_id: u32, affected_probe_mask: u64) -> BounceEntryPart
 
 fn depth(mover_id: u32, probe_index: u32) -> DepthRecordParts {
     DepthRecordParts {
-        record: MoverDepthRecord {
-            mover_id,
-            probe_index,
-            stored_termini: [true; 2],
-        },
+        record: MoverDepthRecord::termini(mover_id, probe_index, [true; 2]),
         tiles: vec![[0x3c00, 0x4000]; 2 * PROBE_DEPTH_TILE_TEXELS],
     }
 }
 
 /// Ramps (0, 1) except mover 9's (0.6, 0.9).
-fn ramp(mover_id: u32) -> Result<MoverLightRampRecord, ()> {
+fn ramp(mover_id: u32) -> Result<MoverRecord, ()> {
     let (start, end) = if mover_id == 9 {
         (0.6, 0.9)
     } else {
         (0.0, 1.0)
     };
-    Ok(MoverLightRampRecord {
-        mover_id,
-        start,
-        end,
-    })
+    Ok(MoverRecord::termini(mover_id, start, end))
 }
 
 /// The rest of the level id 57 is checked against: every probe valid at L0;
@@ -267,18 +258,21 @@ fn a_record_borrowing_from_an_absent_family_is_refused_naming_the_family() {
     );
 }
 
+// Epoch 4 stored termini only; its bytes are refused by name, not read.
 #[test]
 fn a_wrong_epoch_is_refused_by_name() {
     let level = Level::new();
-    let mut bytes = level.sample().to_bytes();
-    bytes[0] += 1;
-    assert_eq!(
-        level.decode(&bytes),
-        Err(Error::EpochMismatch {
-            found: MOVER_PROBE_CHANNEL_EPOCH + 1,
-            expected: MOVER_PROBE_CHANNEL_EPOCH
-        })
-    );
+    for epoch in [4, MOVER_PROBE_CHANNEL_EPOCH + 1] {
+        let mut bytes = level.sample().to_bytes();
+        bytes[0] = epoch;
+        assert_eq!(
+            level.decode(&bytes),
+            Err(Error::EpochMismatch {
+                found: epoch,
+                expected: MOVER_PROBE_CHANNEL_EPOCH
+            })
+        );
+    }
 }
 
 #[test]
@@ -290,7 +284,7 @@ fn a_truncated_section_is_refused_by_name() {
         matches!(
             level.decode(&bytes),
             Err(Error::Truncated {
-                what: "ramp records",
+                what: "depth tiles",
                 ..
             })
         ),
@@ -323,7 +317,7 @@ fn a_section_with_no_entry_is_refused_as_empty() {
     empty.bounce_offsets = vec![0];
     empty.bounce_entries.clear();
     empty.bounce_tiles.clear();
-    empty.ramps.clear();
+    empty.mover_records.clear();
     assert_eq!(level.refusal(&empty), Error::Empty);
 }
 
@@ -512,7 +506,13 @@ fn a_set_reserved_bit_is_refused_by_name() {
     );
 
     let parts = section.byte_breakdown();
-    let bounce_entry_at = parts.header + parts.cell_index + parts.direct_block() + 3 * 4;
+    // The bounce block's three cell offsets, then its two entry byte offsets.
+    let bounce_entry_at = parts.header
+        + parts.cell_index
+        + parts.mover_records
+        + parts.direct_block()
+        + 3 * 4
+        + 2 * 4;
     let mut reserved_u32 = bytes;
     reserved_u32[bounce_entry_at + 4] = 1;
     assert_eq!(
@@ -778,18 +778,22 @@ fn a_mover_entry_that_gates_nothing_is_refused_by_name() {
     );
 }
 
+// Every block's per-pose lengths follow its movers' records: a mover the
+// blocks name with no record is refused, and so is a record no block names.
 #[test]
-fn a_ramp_record_naming_the_wrong_mover_is_refused_by_name() {
+fn a_mover_record_naming_the_wrong_mover_is_refused_by_name() {
     let level = Level::new();
-    let mut section = level.sample();
-    section.ramps[1].mover_id = 10;
+    let bytes = level.sample().to_bytes();
+    let mover9 = MOVERS_AT + 4 + 24;
+    assert_eq!(&bytes[mover9..mover9 + 4], &9u32.to_le_bytes());
+    let mut renamed = bytes;
+    renamed[mover9..mover9 + 4].copy_from_slice(&10u32.to_le_bytes());
     assert_eq!(
-        level.refusal(&section),
-        Error::RampMover {
-            record: 1,
-            found: 10,
-            expected: 9,
-        }
+        level.decode(&renamed),
+        Err(Error::MoverRecordMissing {
+            block: "direct",
+            mover_id: 9,
+        })
     );
 }
 
@@ -805,11 +809,7 @@ fn a_ramp_outside_zero_to_one_or_not_ascending_is_refused_by_name() {
         (0.0, f32::INFINITY),
     ] {
         let mut section = level.sample();
-        section.ramps[1] = MoverLightRampRecord {
-            mover_id: 9,
-            start,
-            end,
-        };
+        section.mover_records[1] = MoverRecord::termini(9, start, end);
         match level.refusal(&section) {
             Error::RampRange { mover_id: 9, .. } => {}
             other => panic!("({start}, {end}): {other:?}"),
@@ -1051,13 +1051,7 @@ fn fixture_section() -> MoverProbeChannelSection {
             depth: vec![depth(7, 17)],
         },
         |_| u64::MAX,
-        |mover_id| {
-            Ok::<_, ()>(MoverLightRampRecord {
-                mover_id,
-                start: 0.25,
-                end: 0.75,
-            })
-        },
+        |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.25, 0.75)),
     )
     .unwrap()
     .expect("the fixture holds entries")
@@ -1108,6 +1102,101 @@ fn the_loaded_section_and_its_ramp_reach_the_level_on_every_id_34_path() {
     }
 }
 
+/// Mover 7 with three poses (knots 0, 0.5, 1): it gates static light 0 at
+/// its mid pose alone, stores bounce at a terminus and the last pose with
+/// the probe reading the base between, and stores depth at its mid pose.
+fn three_pose_section(knots: Vec<f32>) -> MoverProbeChannelSection {
+    use postretro_level_format::mover_probe_channel::{BouncePoseMasks, PoseMark};
+    let entry = MoverBounceEntry {
+        mover_id: 7,
+        poses: vec![
+            BouncePoseMasks { stored: 1, base: 0 },
+            BouncePoseMasks { stored: 0, base: 1 },
+            BouncePoseMasks { stored: 1, base: 0 },
+        ],
+    };
+    MoverProbeChannelSection::assemble(
+        MoverProbeChannelParts {
+            affinity_dims: [4, 4, 1],
+            direct: vec![direct(
+                0,
+                record(MoverLightNamespace::StaticLight, 0, false, 1),
+                vec![(7, vec![255, 128, 255])],
+            )],
+            bounce: vec![BounceEntryParts {
+                cell: 5,
+                entry,
+                tiles: vec![0x3800; 2 * MOVER_IRRADIANCE_TILE_F16_COUNT],
+            }],
+            depth: vec![DepthRecordParts {
+                record: MoverDepthRecord {
+                    mover_id: 7,
+                    probe_index: 17,
+                    marks: vec![PoseMark::Unmarked, PoseMark::Stored, PoseMark::Unmarked],
+                },
+                tiles: vec![[0x3c00, 0x4000]; PROBE_DEPTH_TILE_TEXELS],
+            }],
+        },
+        |_| u64::MAX,
+        |mover_id| {
+            Ok::<_, ()>(MoverRecord {
+                knots: knots.clone(),
+                ..MoverRecord::termini(mover_id, 0.25, 0.75)
+            })
+        },
+    )
+    .unwrap()
+    .expect("the fixture holds entries")
+}
+
+// A mover's knots stay with the section for the renderer; the game side
+// takes its ramp alone, whatever its pose count.
+#[test]
+fn a_section_with_mid_poses_loads_and_hands_the_mover_its_ramp_alone() {
+    let section = three_pose_section(vec![0.0, 0.5, 1.0]);
+    for world in load_every_way(Some(section.to_bytes())) {
+        let world = world.unwrap();
+        let loaded = world.mover_probe_channel().expect("id 57 loads");
+        assert_eq!(loaded, &section);
+        assert_eq!(loaded.mover_record(7).unwrap().knots, [0.0, 0.5, 1.0]);
+        assert_eq!(
+            world.kinematic_geometry.movers[0].light_ramp,
+            MoverLightRamp {
+                start: 0.25,
+                end: 0.75
+            }
+        );
+    }
+}
+
+// A malformed pose table, and an epoch-4 section, fail the whole load by
+// name on every id-34 path.
+#[test]
+fn a_malformed_pose_table_or_epoch_4_fails_the_load_by_name_on_every_id_34_path() {
+    let reversed = three_pose_section(vec![0.0, 0.5, 0.25]);
+    for result in load_every_way(Some(reversed.to_bytes())) {
+        match result {
+            Err(PrlLoadError::MoverProbeChannel(Error::KnotOrder {
+                mover_id: 7,
+                knot: 2,
+                ..
+            })) => {}
+            other => panic!("expected the knot order refusal, got {other:?}"),
+        }
+    }
+    let mut epoch4 = fixture_section().to_bytes();
+    epoch4[0] = 4;
+    for result in load_every_way(Some(epoch4)) {
+        match result {
+            Err(PrlLoadError::MoverProbeChannel(Error::EpochMismatch {
+                found: 4,
+                expected: 5,
+            })) => {}
+            other => panic!("expected the epoch refusal, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn a_level_without_the_section_loads_identity_ramps_and_no_channel() {
     for world in load_every_way(None) {
@@ -1123,8 +1212,8 @@ fn a_level_without_the_section_loads_identity_ramps_and_no_channel() {
 #[test]
 fn an_unresolved_section_fails_the_load_by_name_on_every_id_34_path() {
     let mut unresolved_mover = fixture_section();
-    for ramp in &mut unresolved_mover.ramps {
-        ramp.mover_id = 8;
+    for record in &mut unresolved_mover.mover_records {
+        record.mover_id = 8;
     }
     unresolved_mover.direct_movers[0] = 8;
     unresolved_mover.bounce_entries[0].mover_id = 8;
@@ -1265,23 +1354,13 @@ fn a_prl_whose_id_59_and_live_tiles_fill_the_range_exactly_loads_and_one_more_is
                     .map(|probe_index| DepthRecordParts {
                         // One stored terminus: the range counts live tiles,
                         // one per probe, however many termini it stores.
-                        record: MoverDepthRecord {
-                            mover_id: 7,
-                            probe_index,
-                            stored_termini: [true, false],
-                        },
+                        record: MoverDepthRecord::termini(7, probe_index, [true, false]),
                         tiles: vec![[0x3c00, 0x4000]; PROBE_DEPTH_TILE_TEXELS],
                     })
                     .collect(),
             },
             |_| u64::MAX,
-            |mover_id| {
-                Ok::<_, ()>(MoverLightRampRecord {
-                    mover_id,
-                    start: 0.0,
-                    end: 1.0,
-                })
-            },
+            |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.0, 1.0)),
         )
         .unwrap()
         .expect("depth records make a section")

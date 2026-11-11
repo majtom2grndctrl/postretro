@@ -1085,6 +1085,6 @@ fn structure(section: &MoverProbeChannelSection) -> MoverProbeChannelSection {
         bounce_tiles: Vec::new(),
         depth_records: Vec::new(),
         depth_tiles: Vec::new(),
-        ramps: section.ramps.clone(),
+        mover_records: section.mover_records.clone(),
     }
 }

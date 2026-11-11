@@ -27,7 +27,7 @@ use super::direct::{
 use super::direct_memo::{DirectMemo, MemoPrefix, decode, encode};
 use super::lights::{ChannelLightSources, channel_lights};
 use super::posed_solid::{PosedMovers, box_brush};
-use super::section::{EmittedDirectEntries, MoverRamps, channel_section};
+use super::section::{EmittedDirectEntries, MoverRecords, channel_section};
 use super::visibility::{PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{AffinityReachInputs, AffinityReachPolicy};
 use crate::bake_control::BakeControl;
@@ -511,7 +511,7 @@ fn an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask() {
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| false,
         |_| true,
@@ -862,7 +862,7 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| false,
         |_| true,
@@ -885,7 +885,7 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         .direct_record_views()
         .find_map(|view| Some((view, masked_slot(&world, &view, under)?)))
         .expect("the probe is masked in its cell's record");
-    assert_eq!(view.movers().next().unwrap().q(slot), [first, last]);
+    assert_eq!(view.movers().next().unwrap().probe_q(slot), [first, last]);
     assert_eq!(view.own_tile(slot).expect("its own tile"), tile);
     assert_eq!(
         MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
@@ -931,7 +931,7 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
         |_| true,
@@ -959,7 +959,7 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
                 let (pair, tile) = probe_payload(&world, gated, mover.mover_id, probe)
                     .expect("each mover's entry covers the probe");
                 assert_eq!(
-                    mover.q(slot),
+                    mover.probe_q(slot),
                     pair,
                     "mover {} probe {probe}",
                     mover.mover_id
@@ -1001,7 +1001,7 @@ fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
         |_| true,
@@ -1019,7 +1019,7 @@ fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
             let slot = masked_slot(&world, &view, probe);
             assert_eq!(slot.is_some(), changed, "probe {probe}");
             if let Some(slot) = slot {
-                assert!(view.movers().any(|mover| mover.q(slot) != [255, 255]));
+                assert!(view.movers().any(|mover| mover.probe_q(slot) != [255, 255]));
             } else {
                 excluded += 1;
             }
@@ -1196,7 +1196,7 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
             },
         ],
     };
-    let ramps = MoverRamps::new(&[mover(4, Vec::new(), false), mover(2, Vec::new(), false)]);
+    let ramps = MoverRecords::new(&[mover(4, Vec::new(), false), mover(2, Vec::new(), false)]);
     let section = channel_section(
         &bake,
         &BounceBlocks::default(),
@@ -1231,11 +1231,19 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
     assert_eq!(section.own_tiles, vec![2; DEFAULT_DELTA_PROBE_F16_STRIDE]);
     assert_eq!(
         section
-            .ramps
+            .mover_records
             .iter()
-            .map(|ramp| (ramp.mover_id, ramp.start, ramp.end))
+            .map(|record| (
+                record.mover_id,
+                record.ramp_start,
+                record.ramp_end,
+                record.knots.clone()
+            ))
             .collect::<Vec<_>>(),
-        vec![(2, 0.25, 0.75), (4, 0.25, 0.75)]
+        vec![
+            (2, 0.25, 0.75, vec![0.0, 1.0]),
+            (4, 0.25, 0.75, vec![0.0, 1.0])
+        ]
     );
     let decoded = MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes");
     assert_eq!(decoded, section);
@@ -1271,7 +1279,7 @@ fn with_no_id_45_no_animated_baked_record_is_written() {
             bake,
             &BounceBlocks::default(),
             &two_cells(),
-            &MoverRamps::new(&[mover(2, Vec::new(), false)]),
+            &MoverRecords::new(&[mover(2, Vec::new(), false)]),
             &super::section::MoverPayloadBars::default(),
             |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
             |ns| emitted.composes_gated(ns),
@@ -1333,7 +1341,7 @@ fn a_bake_with_no_entry_makes_no_section() {
         &MoverDirectBake::default(),
         &BounceBlocks::default(),
         &two_cells(),
-        &MoverRamps::new(&[]),
+        &MoverRecords::new(&[]),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
         |_| true,

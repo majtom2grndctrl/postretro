@@ -12,8 +12,8 @@ use crate::render::fluid_surface_frame_test::f16_rgb;
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use crate::render::{ShSampleRegion, ShSampleRegionSets};
 use postretro_level_format::mover_probe_channel::{
-    MoverChannelCell, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
-    MoverPayloadPlacement, MoverProbeChannelSection,
+    MoverChannelCell, MoverDirectRecord, MoverLightNamespace, MoverPayloadPlacement,
+    MoverProbeChannelSection, MoverRecord,
 };
 use postretro_render_cpu::frame_uniforms::{LightTermMask, UNIFORM_SIZE};
 
@@ -52,11 +52,7 @@ fn channel() -> MoverProbeChannelSection {
         bounce_tiles: Vec::new(),
         depth_records: Vec::new(),
         depth_tiles: Vec::new(),
-        ramps: vec![MoverLightRampRecord {
-            mover_id: 7,
-            start: 0.0,
-            end: 1.0,
-        }],
+        mover_records: vec![MoverRecord::termini(7, 0.0, 1.0)],
     }
 }
 

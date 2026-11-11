@@ -557,10 +557,7 @@ fn a_bounce_only_section_composes_todays_direct_atlases() {
     }];
     bounce_only.direct_offsets = vec![0, 0];
     bounce_only.bounce_offsets = vec![0, 1];
-    bounce_only.bounce_entries = vec![MoverBounceEntry {
-        mover_id: 7,
-        stored_probe_masks: [1, 1],
-    }];
+    bounce_only.bounce_entries = vec![MoverBounceEntry::termini(7, [1, 1])];
     bounce_only.bounce_tiles = vec![0; 2 * 108];
     let mut stripped = build_scene(&ctx, None, false);
     let mut scene = build_scene(&ctx, Some(&bounce_only), false);

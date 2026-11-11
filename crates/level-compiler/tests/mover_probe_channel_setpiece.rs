@@ -148,7 +148,10 @@ fn gates() -> (Vec<Gate>, Vec<(String, u32)>) {
                 }
                 let q = if view.record.probe_mask & (1 << local) != 0 {
                     slot += 1;
-                    mover.q(slot - 1)
+                    [
+                        mover.q(slot - 1, 0),
+                        mover.q(slot - 1, mover.pose_count - 1),
+                    ]
                 } else {
                     [255, 255]
                 };
@@ -195,7 +198,7 @@ fn the_setpiece_channel_loads() {
         .expect("the runtime loads the packed channel");
     let channel = world.mover_probe_channel().expect("id 57 is present");
     assert!(!channel.direct_records.is_empty());
-    assert_eq!(channel.ramps.len(), 2, "both movers gate a light");
+    assert_eq!(channel.mover_records.len(), 2, "both movers gate a light");
 }
 
 // `setpiece_wall` closed stores q < 1 at back-room probes for

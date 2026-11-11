@@ -658,10 +658,10 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
         let blocks = BounceBlocks::new(std::slice::from_ref(states), &cells);
         assert!(!blocks.bounce.is_empty(), "the door still changes bounce");
         for part in &blocks.bounce {
-            let [m0, m1] = part.entry.stored_probe_masks;
+            let affected = part.entry.affected_probe_mask();
             let valid = cells.valid_masks[part.cell as usize];
             assert!(
-                m0 | m1 != 0 && (m0 | m1) & !valid == 0,
+                affected != 0 && affected & !valid == 0,
                 "cell {}",
                 part.cell
             );
@@ -670,7 +670,7 @@ fn an_enclosing_terminus_stores_no_bounce_state_and_keeps_its_dark_depth() {
             &MoverDirectBake::default(),
             &blocks,
             &cells,
-            &crate::mover_probe_channel::MoverRamps::new(&fixture.kinematic_movers),
+            &crate::mover_probe_channel::MoverRecords::new(&fixture.kinematic_movers),
             &crate::mover_probe_channel::MoverPayloadBars::default(),
             |_, _, _| false,
             |_| true,

@@ -153,6 +153,19 @@ Id 57 moves to epoch 5, exact match, little-endian, as epoch 4. Everything below
 
 Loader rejects: a pose count below 2; knots out of order, out of [0, 1], non-finite, or not starting at 0 and ending at 1; any block naming a pose at or past its mover's N; a probe marked both stored and base at one pose; anything epoch 4 already rejects. Fidelity is not in the section: the bytes are the states.
 
+**Pinned at the format task (plan task 2).** Little-endian, epoch 5 in the first byte, exact match.
+
+| Part | Epoch 5 bytes |
+|---|---|
+| Header, cell index | Unchanged from epoch 4. |
+| Mover records | Right after the cell index, before the direct block, because every block's lengths depend on N. u32 count, then per mover ascending by id: `mover_id u32, ramp_start f32, ramp_end f32, pose_count u32 (N ≥ 2)`, then N `f32` knots. Exactly the movers with entries in some block. |
+| Direct | Record and mover-entry CSR unchanged. N `u8` q per masked probe per mover entry, probe-major (`slot·N + k`). |
+| Bounce | Per-cell entry-count CSR unchanged, then `u32 × (E+1)` entry byte offsets from 0, ascending (an entry spans `8 + 16N` bytes). Entry: `mover_id u32, reserved u32 = 0`, then N `(stored u64, base u64)`. Base is 0 at a terminus, and every base bit lies inside the entry's stored union. Tiles pose-major, then probe by `stored` rank. |
+| Depth | u32 record count. Records by (mover, probe): `mover_id u32, probe_index u32`, then `4·⌈N/16⌉` bytes of two-bit marks low-first (bit 0 stored, bit 1 base), padding bits 0. Tiles per record, its stored poses in pose order. |
+| Streaming | Unchanged; lengths come from each mover's N. |
+
+The loader also refuses a base mark at a terminus, a base mark outside the entry's stored union (it would only restate the blend), a mover record that no block names, and a block naming a mover with no record.
+
 ## Boundary inventory
 
 | Name | Rust | Wire | FGD KVP / CLI | Docs |

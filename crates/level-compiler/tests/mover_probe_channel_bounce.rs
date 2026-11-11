@@ -162,14 +162,14 @@ fn closed_door_depth_tiles_match_the_static_door_references_tiles() {
     for (index, &probe) in reference.probe_indices.iter().enumerate() {
         let expected = reference.tile(index);
         let record = channel
-            .depth_record_tiles()
-            .find(|(record, _)| record.mover_id == door && record.probe_index == probe);
-        let actual = match record {
-            Some((_, [Some(closed), _])) => {
+            .depth_record_views()
+            .find(|view| view.record.mover_id == door && view.record.probe_index == probe);
+        let actual = match record.and_then(|view| view.pose_tile(0)) {
+            Some(closed) => {
                 met += 1;
                 closed
             }
-            Some((_, [None, _])) | None => {
+            None => {
                 let tile = today.tile_of_probe(probe).unwrap_or_else(|| {
                     panic!("reference-tiled probe {probe} carries neither mover depth nor id 59")
                 });

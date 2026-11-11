@@ -157,9 +157,15 @@ impl MoverDepthTiles {
             per_probe[k].push(record);
         }
         let records = section.depth_records.len();
+        // Each record's termini: its first and last poses' tiles.
         let stored: Vec<[Option<&[[u16; 2]]>; 2]> = section
-            .depth_record_tiles()
-            .map(|(_, tiles)| tiles)
+            .depth_record_views()
+            .map(|view| {
+                [
+                    view.pose_tile(0),
+                    view.pose_tile(view.record.pose_count() - 1),
+                ]
+            })
             .collect();
         let stored_texels = section.depth_tiles.len();
         let mut probe_offsets = Vec::with_capacity(probes.len() + 1);

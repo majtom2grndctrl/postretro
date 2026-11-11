@@ -20,7 +20,7 @@ use postretro_level_format::delta_sh_volumes::{
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::mover_probe_channel::{
     BounceEntryParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverChannelBlock,
-    MoverLightRampRecord, MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection, MoverRecord,
     MoverStreamedRow,
 };
 use postretro_level_format::sh_volume::{
@@ -137,19 +137,16 @@ fn channel_section(bounces: &[Bounce], streamed: bool) -> MoverProbeChannelSecti
             .iter()
             .map(|bounce| BounceEntryParts {
                 cell: 0,
-                entry: MoverBounceEntry {
-                    mover_id: bounce.mover_id,
-                    stored_probe_masks: bounce.masks,
-                },
-                // Probe after probe, x-fastest: S^b₀ where stored, then S^b₁.
-                tiles: (0..64u32)
-                    .flat_map(|local| {
-                        [(bounce.masks[0], bounce.s0), (bounce.masks[1], bounce.s1)]
-                            .into_iter()
-                            .filter(move |&(mask, _)| mask & (1 << local) != 0)
-                    })
-                    .flat_map(|(_, value)| {
-                        std::iter::repeat_n(f16(value), MOVER_IRRADIANCE_TILE_F16_COUNT)
+                entry: MoverBounceEntry::termini(bounce.mover_id, bounce.masks),
+                // Pose after pose: S^b₀ at its stored probes, x-fastest, then
+                // S^b₁ at its.
+                tiles: [(bounce.masks[0], bounce.s0), (bounce.masks[1], bounce.s1)]
+                    .into_iter()
+                    .flat_map(|(mask, value)| {
+                        std::iter::repeat_n(
+                            f16(value),
+                            mask.count_ones() as usize * MOVER_IRRADIANCE_TILE_F16_COUNT,
+                        )
                     })
                     .collect(),
             })
@@ -159,13 +156,7 @@ fn channel_section(bounces: &[Bounce], streamed: bool) -> MoverProbeChannelSecti
     let mut section = MoverProbeChannelSection::assemble(
         parts,
         |_| u64::MAX,
-        |mover_id| {
-            Ok::<_, ()>(MoverLightRampRecord {
-                mover_id,
-                start: 0.0,
-                end: 1.0,
-            })
-        },
+        |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.0, 1.0)),
     )
     .unwrap()
     .expect("the fixture holds bounce entries");

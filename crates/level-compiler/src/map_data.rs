@@ -213,7 +213,7 @@ pub struct MapKinematicMover {
     /// FGD `light_ramp_start` and `light_ramp_end`: the travel window, as path
     /// fractions with `0 <= start < end <= 1`, that the mover's light state
     /// ramps across (defaults 0 and 1). They reach runtime through the probe
-    /// channel's ramp record (id 57), never through id 43.
+    /// channel's mover record (id 57), never through id 43.
     pub light_ramp_start: f32,
     pub light_ramp_end: f32,
     /// FGD `light_bounces`: how many static bounces the mover probe channel

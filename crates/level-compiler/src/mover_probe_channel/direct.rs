@@ -9,7 +9,7 @@ use std::sync::Arc;
 use glam::Vec3;
 use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
 use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE, MoverLightNamespace,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverLightNamespace,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -99,12 +99,18 @@ pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightM
         .collect()
 }
 
+/// Poses the channel bakes per mover: its two termini, first then last.
+/// Id 57 stores them as a two-pose mover record (knots 0 and 1), so a
+/// direct entry holds [`BAKED_POSES`] `q` bytes per probe in pose order.
+pub(crate) const BAKED_POSES: usize = Terminus::BOTH.len();
+
 /// One mover's gate on one light at one affinity cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectEntry {
     pub(crate) cell: u32,
     pub(crate) mover_id: u32,
-    /// `q₀, q₁` per valid probe of the cell, x-fastest; `q = byte / 255`.
+    /// Per valid probe of the cell, x-fastest, `q` at each baked pose
+    /// (byte `slot · BAKED_POSES + pose`); `q = byte / 255`.
     pub(crate) visibility: Vec<u8>,
     /// The light's own term T per valid probe, x-fastest, in id 41's compact
     /// RGB f16 tile: what the section carries where no per-probe id-41 or
@@ -355,8 +361,7 @@ pub(crate) fn bake_cell(
         return Vec::new();
     }
     let layout = scene.layout;
-    let mut visibility =
-        vec![vec![u8::MAX; probes.len() * MOVER_VISIBILITY_BYTES_PER_PROBE]; movers.len()];
+    let mut visibility = vec![vec![u8::MAX; probes.len() * BAKED_POSES]; movers.len()];
     let mut met = vec![false; movers.len()];
     for (slot, &probe) in probes.iter().enumerate() {
         let point = vec3_from(layout.probe_positions[probe]);
@@ -387,7 +392,7 @@ pub(crate) fn bake_cell(
                     |from, to| occluder.blocks(from, to),
                 );
                 if joint.meets_mover() {
-                    visibility[mover][slot * MOVER_VISIBILITY_BYTES_PER_PROBE + terminus.index()] =
+                    visibility[mover][slot * BAKED_POSES + terminus.index()] =
                         joint.surviving_byte();
                     met[mover] = true;
                 }

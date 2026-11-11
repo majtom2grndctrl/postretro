@@ -261,6 +261,7 @@ impl MoverProbeChannelSection {
                 &self.mover_offsets,
                 &self.direct_movers,
                 &visibility,
+                |mover| self.pose_count_of(mover),
             )?;
             self.visibility = visibility;
             self.own_tiles = own_tiles;

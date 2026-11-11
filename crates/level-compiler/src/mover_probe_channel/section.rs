@@ -1,21 +1,21 @@
 // Assembling id 57 from the channel's bakes: one term record per (cell,
 // light) with its probe mask and, where ids 41 and 45 as emitted hold no
 // per-probe entry, its own tile once; each gating mover's visibility under
-// it; the bake-only roster; and the per-mover ramp records.
+// it; the bake-only roster; and the per-mover records of ramp and knots.
 // See: context/lib/build_pipeline.md §PRL section IDs, §Compiler pipeline step 12
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::mover_probe_channel::{
-    DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-    MoverChannelBlock, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
-    MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection,
+    DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverChannelBlock, MoverDirectRecord,
+    MoverLightNamespace, MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverRecord,
 };
 use postretro_level_format::sh_reconstruct::Level;
 
 use super::blocks::BounceBlocks;
-use super::direct::{DirectEntry, MoverDirectBake, ProbeCells};
+use super::direct::{BAKED_POSES, DirectEntry, MoverDirectBake, ProbeCells};
 use crate::map_data::MapKinematicMover;
 
 /// The resident byte bar each payload block is held against: level-format's
@@ -70,27 +70,33 @@ impl MoverPayloadBars {
     }
 }
 
-/// Every mover's author ramp, ascending by id.
-pub(crate) struct MoverRamps(Vec<MoverLightRampRecord>);
+/// Every mover's id-57 record, ascending by id: its author ramp, and the
+/// knots of the poses the channel stores. The bake stores the termini alone,
+/// so each record is a two-pose record (knots 0 and 1), matching the
+/// [`BAKED_POSES`] states every block holds per mover.
+pub(crate) struct MoverRecords(Vec<MoverRecord>);
 
-impl MoverRamps {
+impl MoverRecords {
     pub(crate) fn new(movers: &[MapKinematicMover]) -> Self {
-        let mut ramps: Vec<MoverLightRampRecord> = movers
+        let mut records: Vec<MoverRecord> = movers
             .iter()
-            .map(|mover| MoverLightRampRecord {
-                mover_id: mover.mover_id,
-                start: mover.light_ramp_start,
-                end: mover.light_ramp_end,
+            .map(|mover| {
+                MoverRecord::termini(mover.mover_id, mover.light_ramp_start, mover.light_ramp_end)
             })
             .collect();
-        ramps.sort_by_key(|ramp| ramp.mover_id);
-        Self(ramps)
+        debug_assert!(
+            records
+                .iter()
+                .all(|record| record.pose_count() == BAKED_POSES)
+        );
+        records.sort_by_key(|record| record.mover_id);
+        Self(records)
     }
 
-    fn of(&self, mover_id: u32) -> anyhow::Result<MoverLightRampRecord> {
+    fn of(&self, mover_id: u32) -> anyhow::Result<MoverRecord> {
         self.0
-            .binary_search_by_key(&mover_id, |ramp| ramp.mover_id)
-            .map(|at| self.0[at])
+            .binary_search_by_key(&mover_id, |record| record.mover_id)
+            .map(|at| self.0[at].clone())
             .map_err(|_| {
                 anyhow::anyhow!("mover probe channel names mover {mover_id}, which the map lacks")
             })
@@ -180,7 +186,7 @@ pub(crate) fn channel_section(
     direct: &MoverDirectBake,
     bounce: &BounceBlocks,
     cells: &ProbeCells,
-    ramps: &MoverRamps,
+    mover_records: &MoverRecords,
     bars: &MoverPayloadBars,
     own_tile: impl Fn(usize, MoverLightNamespace, u32) -> bool,
     gated: impl Fn(MoverLightNamespace) -> bool,
@@ -217,7 +223,7 @@ pub(crate) fn channel_section(
             depth: bounce.depth.clone(),
         },
         |cell| cells.valid_masks[cell as usize],
-        |mover_id| ramps.of(mover_id),
+        |mover_id| mover_records.of(mover_id),
     )?;
     if let Some(section) = &mut section {
         bars.place(section);
@@ -227,7 +233,7 @@ pub(crate) fn channel_section(
 
 /// One light's term record at one cell from its movers' entries there, each
 /// holding every valid probe. The mask keeps the probes where some mover's
-/// `q` is below 255 at either terminus; every other probe composes exactly
+/// `q` is below 255 at some pose; every other probe composes exactly
 /// as with no section, so it stores nothing. The tile is the light's, the
 /// same in every mover's entry, so it is stored once. `None` when no mover
 /// changes the term at any probe.
@@ -237,8 +243,7 @@ fn term_record(
     mut record: MoverDirectRecord,
 ) -> Option<DirectRecordParts> {
     fn pair(entry: &DirectEntry, slot: usize) -> &[u8] {
-        &entry.visibility[slot * MOVER_VISIBILITY_BYTES_PER_PROBE..]
-            [..MOVER_VISIBILITY_BYTES_PER_PROBE]
+        &entry.visibility[slot * BAKED_POSES..][..BAKED_POSES]
     }
     let gates = |entry: &DirectEntry, slot: usize| pair(entry, slot).iter().any(|&q| q < u8::MAX);
     let mut kept_slots = Vec::new();

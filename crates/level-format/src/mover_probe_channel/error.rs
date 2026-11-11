@@ -131,7 +131,7 @@ pub enum MoverProbeChannelError {
         valid: u64,
     },
     #[error(
-        "MoverProbeChannelProbeMaskNotTight: direct record {record} in cell {cell} masks local probe {probe}, where every mover stores 255 at both termini; a record's mask is exactly its movers' q < 255 probes"
+        "MoverProbeChannelProbeMaskNotTight: direct record {record} in cell {cell} masks local probe {probe}, where every mover stores 255 at every pose; a record's mask is exactly its movers' q < 255 probes"
     )]
     ProbeMaskNotTight {
         cell: usize,
@@ -151,7 +151,7 @@ pub enum MoverProbeChannelError {
         entry: usize,
     },
     #[error(
-        "MoverProbeChannelMoverGatesNothing: mover entry {entry} (mover {mover_id}) of direct record {record} in cell {cell} stores 255 at every masked probe"
+        "MoverProbeChannelMoverGatesNothing: mover entry {entry} (mover {mover_id}) of direct record {record} in cell {cell} stores 255 at every masked probe and pose"
     )]
     MoverGatesNothing {
         cell: usize,
@@ -184,22 +184,109 @@ pub enum MoverProbeChannelError {
     )]
     DepthRecordOrder { record: usize },
     #[error(
-        "MoverProbeChannelDepthRecordStoresNothing: depth record {record} stores neither terminus; a probe whose depth the mover changes at neither terminus carries no record"
+        "MoverProbeChannelDepthRecordStoresNothing: depth record {record} stores no pose; a probe whose depth the mover changes at no pose carries no record"
     )]
     DepthRecordStoresNothing { record: usize },
     #[error(
-        "MoverProbeChannelRampMover: ramp record {record} names mover {found}, expected {expected}; ramp records cover exactly the movers with entries, ascending"
+        "MoverProbeChannelMoverRecordOrder: mover record {record} does not follow its predecessor; mover records ascend by id with no repeats"
     )]
-    RampMover {
-        record: usize,
-        found: u32,
-        expected: u32,
-    },
+    MoverRecordOrder { record: usize },
+    #[error(
+        "MoverProbeChannelMoverRecordMissing: the {block} block names mover {mover_id}, which has no mover record, so none of its poses exists"
+    )]
+    MoverRecordMissing { block: &'static str, mover_id: u32 },
+    #[error(
+        "MoverProbeChannelMoverRecordUnused: mover {mover_id} has a mover record but no entry in any block; mover records cover exactly the movers with entries"
+    )]
+    MoverRecordUnused { mover_id: u32 },
     #[error(
         "MoverProbeChannelRampRange: mover {mover_id} ramp ({start}, {end}) is not finite with 0 <= start < end <= 1"
     )]
     RampRange { mover_id: u32, start: f32, end: f32 },
-    #[error("MoverProbeChannelTrailingBytes: {count} byte(s) follow the ramp records")]
+    #[error(
+        "MoverProbeChannelPoseCount: mover {mover_id} stores {count} pose(s); every mover stores at least its two termini"
+    )]
+    PoseCount { mover_id: u32, count: u32 },
+    #[error("MoverProbeChannelKnotNotFinite: mover {mover_id} knot {knot} is {value}, not finite")]
+    KnotNotFinite {
+        mover_id: u32,
+        knot: usize,
+        value: f32,
+    },
+    #[error(
+        "MoverProbeChannelKnotOutOfRange: mover {mover_id} knot {knot} is {value}, outside 0 to 1"
+    )]
+    KnotOutOfRange {
+        mover_id: u32,
+        knot: usize,
+        value: f32,
+    },
+    #[error(
+        "MoverProbeChannelKnotOrder: mover {mover_id} knot {knot} is {value} after {previous}; knots ascend strictly"
+    )]
+    KnotOrder {
+        mover_id: u32,
+        knot: usize,
+        value: f32,
+        previous: f32,
+    },
+    #[error(
+        "MoverProbeChannelKnotEnds: mover {mover_id} knots run from {first} to {last}; they run exactly from 0 to 1, the termini"
+    )]
+    KnotEnds {
+        mover_id: u32,
+        first: f32,
+        last: f32,
+    },
+    #[error(
+        "MoverProbeChannelPoseOutOfRange: {block} {what} {index} (mover {mover_id}) names a pose at or past the mover's {pose_count} pose(s)"
+    )]
+    PoseOutOfRange {
+        block: &'static str,
+        what: &'static str,
+        index: usize,
+        mover_id: u32,
+        pose_count: usize,
+    },
+    #[error(
+        "MoverProbeChannelBounceEntryLength: bounce entry {entry} (mover {mover_id}) spans {bytes} byte(s); its mover's {pose_count} pose(s) need {expected}"
+    )]
+    BounceEntryLength {
+        entry: usize,
+        mover_id: u32,
+        pose_count: usize,
+        bytes: usize,
+        expected: usize,
+    },
+    #[error(
+        "MoverProbeChannelStoredAndBase: {block} {what} {index} marks local probe {probe} both stored and base at pose {pose}"
+    )]
+    StoredAndBase {
+        block: &'static str,
+        what: &'static str,
+        index: usize,
+        pose: usize,
+        probe: u32,
+    },
+    #[error(
+        "MoverProbeChannelBaseAtTerminus: {block} {what} {index} marks base at terminus pose {pose}; an unmarked probe already reads the base there"
+    )]
+    BaseAtTerminus {
+        block: &'static str,
+        what: &'static str,
+        index: usize,
+        pose: usize,
+    },
+    #[error(
+        "MoverProbeChannelBaseOutsideAffected: bounce entry {entry} in cell {cell} marks base at pose {pose} for probes {mask:#018x} that store no state at any pose"
+    )]
+    BaseOutsideAffected {
+        cell: usize,
+        entry: usize,
+        pose: usize,
+        mask: u64,
+    },
+    #[error("MoverProbeChannelTrailingBytes: {count} byte(s) follow the depth block")]
     TrailingBytes { count: usize },
     #[error(
         "MoverProbeChannelUnresolvedMover: mover {mover_id} is not in KinematicGeometry (id 43)"

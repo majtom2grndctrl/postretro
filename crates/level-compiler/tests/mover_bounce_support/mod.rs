@@ -436,10 +436,12 @@ pub fn bounce_states_in(
         }
         let cell = view.cell as usize;
         let (cx, cy, cz) = (cell % ax, cell / ax % ay, cell / (ax * ay));
+        let last = view.entry.pose_count() - 1;
         for local in 0..64u32 {
-            let Some(tiles) = view.probe_tiles(local) else {
+            if view.entry.affected_probe_mask() & (1 << local) == 0 {
                 continue;
-            };
+            }
+            let tiles = [view.pose_tile(0, local), view.pose_tile(last, local)];
             let local = local as usize;
             let (x, y, z) = (
                 cx * 4 + local % 4,

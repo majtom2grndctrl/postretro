@@ -4,7 +4,10 @@
 // direct table). Per listed cell: its bounce entries (mover slot, one stored
 // mask per terminus, first tile half), and one payload run of the stored
 // S^b₀/S^b₁ tiles its base word points at: fixed in a whole table, placed
-// per resident cell in a pooled one. wgpu-free; `gpu.rs` owns the buffer.
+// per resident cell in a pooled one. The termini are each entry's first and
+// last poses; their tiles are reordered at install from the section's pose-
+// major run into the probe-major run the compose reads. wgpu-free; `gpu.rs`
+// owns the buffer.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 //
 // The masks are storage sparsity only: an unmasked probe composes id 34
@@ -14,7 +17,7 @@
 // zeroes or excludes a probe.
 
 use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverCellPayload, MoverProbeChannelSection,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverCellPayload, MoverProbeChannelSection,
 };
 
 use super::layout::{CellWrite, MoverChannelError, MoverRows, NO_BASE, NO_STATE, first_non_finite};
@@ -34,8 +37,25 @@ struct BounceCellPlan {
     cell: u32,
     /// Position in the section's `cells`.
     position: usize,
-    /// f16 halves of the cell's tiles (a multiple of `TILE_HALVES`, so even).
+    /// f16 halves of the cell's terminus tiles in the table (a multiple of
+    /// `TILE_HALVES`, so even).
     halves: usize,
+    /// f16 halves of the cell's tiles in the section, every pose's.
+    section_halves: usize,
+}
+
+/// The termini's stored masks of `entry`: its first and last poses'.
+fn terminus_masks(entry: &MoverBounceEntry) -> [u64; 2] {
+    let last = entry.pose_count() - 1;
+    [entry.poses[0].stored, entry.poses[last].stored]
+}
+
+/// Tiles the table holds for `entry`: one per stored (probe, terminus).
+fn terminus_tile_count(entry: &MoverBounceEntry) -> usize {
+    terminus_masks(entry)
+        .iter()
+        .map(|mask| mask.count_ones() as usize)
+        .sum()
 }
 
 /// The laid-out bounce table.
@@ -70,14 +90,18 @@ impl BounceLayout {
                     continue;
                 }
                 entry_count += entries.len();
-                let halves = section.bounce_entries[entries]
-                    .iter()
-                    .map(|entry| entry.stored_tile_count() * TILE_HALVES)
-                    .sum();
+                let entries = &section.bounce_entries[entries];
                 cells.push(BounceCellPlan {
                     cell: listed.cell,
                     position,
-                    halves,
+                    halves: entries
+                        .iter()
+                        .map(|entry| terminus_tile_count(entry) * TILE_HALVES)
+                        .sum(),
+                    section_halves: entries
+                        .iter()
+                        .map(|entry| entry.stored_tile_count() * TILE_HALVES)
+                        .sum(),
                 });
             }
         }
@@ -135,14 +159,14 @@ impl BounceLayout {
                         )));
                     };
                     let at = entries_word + entry * ENTRY_WORDS;
-                    let [m0, m1] = bounce.stored_probe_masks;
+                    let [m0, m1] = terminus_masks(bounce);
                     words[at] = slot as u32;
                     words[at + 1] = m0 as u32;
                     words[at + 2] = (m0 >> 32) as u32;
                     words[at + 3] = m1 as u32;
                     words[at + 4] = (m1 >> 32) as u32;
                     words[at + 5] = half as u32;
-                    half += bounce.stored_tile_count() * TILE_HALVES;
+                    half += terminus_tile_count(bounce) * TILE_HALVES;
                     rows[slot].push(plan.cell);
                     entry += 1;
                 }
@@ -214,7 +238,9 @@ impl BounceLayout {
 
     /// Cell `plan`'s payload words from `payload`. The bytes are id 57's
     /// tiles, checked as they arrive: the run must cover every entry (the
-    /// payload view checked its length) and hold only finite radiance.
+    /// payload view checked its length) and hold only finite radiance at
+    /// every pose. Each entry's terminus tiles are written probe after
+    /// probe, `S^b₀` before `S^b₁`.
     pub(in crate::render) fn cell_write(
         &self,
         section: &MoverProbeChannelSection,
@@ -222,12 +248,12 @@ impl BounceLayout {
         payload: MoverCellPayload<'_>,
     ) -> Result<CellWrite, MoverChannelError> {
         let cell = &self.cells[plan];
-        if payload.bounce_tiles.len() != cell.halves {
+        if payload.bounce_tiles.len() != cell.section_halves {
             return Err(MoverChannelError(format!(
                 "affinity cell {}'s bounce payload holds {} half(s), expected {}",
                 cell.cell,
                 payload.bounce_tiles.len(),
-                cell.halves
+                cell.section_halves
             )));
         }
         let mut words = Vec::with_capacity(cell.halves / 2);
@@ -238,12 +264,24 @@ impl BounceLayout {
                     cell.cell
                 ))
             })?;
-            let halves = tiles.to_vec();
-            if let Some(bad) = first_non_finite(halves.iter().copied()) {
+            if let Some(bad) = first_non_finite(tiles.iter()) {
                 return Err(MoverChannelError(format!(
                     "affinity cell {}'s bounce state for mover {} holds a non-finite value ({bad:#06x})",
                     cell.cell, entry.entry.mover_id
                 )));
+            }
+            let last = entry.entry.pose_count() - 1;
+            let [m0, m1] = terminus_masks(entry.entry);
+            let mut probes = m0 | m1;
+            let mut halves = Vec::with_capacity(terminus_tile_count(entry.entry) * TILE_HALVES);
+            while probes != 0 {
+                let local = probes.trailing_zeros();
+                probes &= probes - 1;
+                for pose in [0, last] {
+                    if let Some(tile) = entry.pose_tile(pose, local) {
+                        halves.extend(tile.iter());
+                    }
+                }
             }
             words.extend(
                 halves
@@ -253,6 +291,7 @@ impl BounceLayout {
                     .map(|pair| u32::from(pair[0]) | (u32::from(pair[1]) << 16)),
             );
         }
+        debug_assert_eq!(words.len(), cell.halves / 2);
         Ok(CellWrite { plan, words })
     }
 }

@@ -4,14 +4,12 @@
 
 use std::collections::HashSet;
 
-use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-};
+use postretro_level_format::mover_probe_channel::MOVER_IRRADIANCE_TILE_F16_COUNT;
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 
 use super::bake::MoverBounceJob;
-use super::direct::{DirectEntry, ProbeCells, light_movers};
+use super::direct::{BAKED_POSES, DirectEntry, ProbeCells, light_movers};
 use super::gather::PosedProbe;
 use super::posed_solid::PosedMovers;
 use super::states::{BounceProbe, DepthProbe};
@@ -179,7 +177,7 @@ pub(crate) fn direct_entry_bound(
         return 0;
     }
     let cells = ProbeCells::of_layout(layout);
-    let per_probe = (MOVER_VISIBILITY_BYTES_PER_PROBE + MOVER_IRRADIANCE_TILE_F16_COUNT * 2) as u64;
+    let per_probe = (BAKED_POSES + MOVER_IRRADIANCE_TILE_F16_COUNT * 2) as u64;
     let entry_bytes = |cell: usize| {
         u64::from(cells.valid_masks[cell].count_ones()) * per_probe
             + size_of::<DirectEntry>() as u64

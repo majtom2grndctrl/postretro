@@ -4,7 +4,7 @@
 
 use postretro_level_format::mover_probe_channel::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MoverChannelCell, MoverDirectRecord, MoverLightNamespace,
-    MoverLightRampRecord, MoverPayloadPlacement, MoverProbeChannelSection,
+    MoverPayloadPlacement, MoverProbeChannelSection, MoverRecord,
 };
 
 use super::layout::{
@@ -57,7 +57,7 @@ pub(super) fn fixture_section(
         bounce_tiles: Vec::new(),
         depth_records: Vec::new(),
         depth_tiles: Vec::new(),
-        ramps: Vec::new(),
+        mover_records: Vec::new(),
     };
     for &cell in &cells {
         for record in records.iter().filter(|record| record.cell == cell) {
@@ -89,13 +89,9 @@ pub(super) fn fixture_section(
     }
     let mut movers = section.mover_ids();
     movers.dedup();
-    section.ramps = movers
+    section.mover_records = movers
         .into_iter()
-        .map(|mover_id| MoverLightRampRecord {
-            mover_id,
-            start: 0.0,
-            end: 1.0,
-        })
+        .map(|mover_id| MoverRecord::termini(mover_id, 0.0, 1.0))
         .collect();
     section
 }
@@ -456,12 +452,8 @@ fn a_direct_cell_writes_while_its_bounce_payload_streams() {
     );
     section.bounce_placement = MoverPayloadPlacement::Streamed;
     section.bounce_offsets = vec![0, 1];
-    section.bounce_entries = vec![
-        postretro_level_format::mover_probe_channel::MoverBounceEntry {
-            mover_id: 7,
-            stored_probe_masks: [0b1, 0],
-        },
-    ];
+    section.bounce_entries =
+        vec![postretro_level_format::mover_probe_channel::MoverBounceEntry::termini(7, [0b1, 0])];
     let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
     let writes = layout
         .held_writes(&section, &section.cell_slices(), |_, _| None)
@@ -919,10 +911,7 @@ mod arrival {
         section.bounce_placement = MoverPayloadPlacement::Streamed;
         section.bounce_offsets = vec![0, 1];
         section.bounce_entries = vec![
-            postretro_level_format::mover_probe_channel::MoverBounceEntry {
-                mover_id: 7,
-                stored_probe_masks: [0b1, 0],
-            },
+            postretro_level_format::mover_probe_channel::MoverBounceEntry::termini(7, [0b1, 0]),
         ];
         section
     }

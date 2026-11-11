@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use postretro_level_format::mover_probe_channel::{
-    DirectRecordView, MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-    MoverCellPayload, MoverCellSlices, MoverChannelBlock, MoverHalves, MoverLightNamespace,
-    MoverProbeChannelSection, MoverStreamedRow,
+    DirectRecordView, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverCellPayload, MoverCellSlices,
+    MoverChannelBlock, MoverHalves, MoverLightNamespace, MoverProbeChannelSection,
+    MoverStreamedRow,
 };
 use postretro_level_format::sh_reconstruct::{Level, kept_mask, stored_delta_tiles};
 
@@ -25,6 +25,9 @@ const RECORD_WORDS: usize = 8;
 /// Words per (record, mover) entry: mover slot, then its first q byte
 /// within the cell's payload.
 const MOVER_ENTRY_WORDS: usize = 2;
+/// q bytes per (mover entry, masked probe) in the table: the mover's first
+/// and last poses, `q₀` then `q₁`, which the compose blends by t′.
+const TERMINUS_Q_BYTES: usize = 2;
 /// A cell base word while its payload is not resident: the cell composes as
 /// with no section.
 pub(super) const NO_BASE: u32 = u32::MAX;
@@ -462,9 +465,7 @@ impl MoverChannelLayout {
                     };
                     let probes = record.masked_probe_count();
                     tile_halves += probes * TILE_HALVES;
-                    q_bytes += probes
-                        * MOVER_VISIBILITY_BYTES_PER_PROBE
-                        * section.record_movers(index).len();
+                    q_bytes += probes * TERMINUS_Q_BYTES * section.record_movers(index).len();
                     records.push(RecordPlan {
                         section_record: index,
                         term,
@@ -570,7 +571,7 @@ impl MoverChannelLayout {
                     let at_entry = entries_word + entry * MOVER_ENTRY_WORDS;
                     words[at_entry] = slot;
                     words[at_entry + 1] = q_at as u32;
-                    q_at += probes * MOVER_VISIBILITY_BYTES_PER_PROBE;
+                    q_at += probes * TERMINUS_Q_BYTES;
                     entry += 1;
                     if at < static_ends[index] {
                         static_rows[slot as usize].push(cell.cell);
@@ -745,7 +746,13 @@ impl MoverChannelLayout {
         let mut q_bytes = Vec::with_capacity(cell.q_bytes);
         for record in &self.records[cell.records.clone()] {
             let view = &views[record.section_record - wire_start];
-            q_bytes.extend_from_slice(view.visibility);
+            // The section stores a q per pose; the table holds the termini.
+            for mover in view.movers() {
+                for slot in 0..record.probe_mask.count_ones() as usize {
+                    let q = mover.probe_q(slot);
+                    q_bytes.extend_from_slice(&[q[0], q[q.len() - 1]]);
+                }
+            }
             let mut mask = record.probe_mask;
             let mut slot = 0usize;
             while mask != 0 {
@@ -905,14 +912,14 @@ pub(in crate::render) fn check_direct_cell(
 }
 
 /// A record's probe mask must be exactly the probes where some gating mover
-/// leaves q below 255 at a terminus, and each mover must store one such q.
+/// leaves q below 255 at some pose, and each mover must store one such q.
 fn check_tight(
     record: usize,
     cell: u32,
     view: &DirectRecordView<'_>,
 ) -> Result<(), MoverChannelError> {
     let probes = view.record.masked_probe_count();
-    let expected = probes * MOVER_VISIBILITY_BYTES_PER_PROBE * view.mover_ids.len();
+    let expected = view.visibility_len();
     if view.visibility.len() != expected {
         return fail(format!(
             "affinity cell {cell}'s direct record {record} holds {} visibility byte(s), expected {expected}",
@@ -923,7 +930,7 @@ fn check_tight(
     for mover in view.movers() {
         let mut stores = false;
         for slot in 0..probes {
-            if mover.q(slot).iter().any(|&q| q < u8::MAX) {
+            if mover.probe_q(slot).iter().any(|&q| q < u8::MAX) {
                 touched |= 1 << slot;
                 stores = true;
             }

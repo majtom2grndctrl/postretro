@@ -21,7 +21,7 @@ use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights};
 use crate::map_data::MapKinematicMover;
 use crate::mover_probe_channel::{
     BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
-    MoverPayloadBars, MoverRamps, PosedMovers, ProbeCells, bake_direct, channel_lights,
+    MoverPayloadBars, MoverRecords, PosedMovers, ProbeCells, bake_direct, channel_lights,
     channel_section,
 };
 use crate::portals::Portal;
@@ -59,7 +59,7 @@ pub(super) struct DirectHalf {
     bake: MoverDirectBake,
     bounce: BounceBlocks,
     cells: ProbeCells,
-    ramps: MoverRamps,
+    mover_records: MoverRecords,
     payload_bars: MoverPayloadBars,
 }
 
@@ -134,7 +134,7 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
         bake,
         bounce: inputs.bounce,
         cells,
-        ramps: MoverRamps::new(inputs.movers),
+        mover_records: MoverRecords::new(inputs.movers),
         payload_bars: inputs.payload_bars,
     }))
 }
@@ -153,7 +153,7 @@ impl DirectHalf {
             &self.bake,
             &self.bounce,
             &self.cells,
-            &self.ramps,
+            &self.mover_records,
             &self.payload_bars,
             |_, _, _| false,
             |_| true,
@@ -181,7 +181,7 @@ impl DirectHalf {
             &self.bake,
             &self.bounce,
             &self.cells,
-            &self.ramps,
+            &self.mover_records,
             &self.payload_bars,
             |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
             |ns| emitted.composes_gated(ns),
@@ -205,12 +205,12 @@ impl DirectHalf {
                  entr(y/ies) over {} mover(s); {} masked probe(s); direct block {} B: {} B of \
                  cell index, {} B of direct index, {} B of records and mover ids, {} B of \
                  visibility, {} B of own tiles; bounce block {} B: {} B of index, {} B of \
-                 payload; depth block {} B; section {} B",
+                 payload; depth block {} B; mover records {} B; section {} B",
                 counts.records,
                 counts.cells,
                 section.bake_only_light_count(),
                 counts.mover_entries,
-                section.ramps.len(),
+                section.mover_records.len(),
                 counts.masked_probes,
                 bytes.cell_index + bytes.direct_block(),
                 bytes.cell_index,
@@ -222,6 +222,7 @@ impl DirectHalf {
                 bytes.bounce_index,
                 bytes.bounce_payload,
                 bytes.depth,
+                bytes.mover_records,
                 bytes.total(),
             );
             log::info!(

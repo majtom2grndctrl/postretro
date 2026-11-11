@@ -5,8 +5,8 @@
 
 use postretro_level_format::mover_probe_channel::{
     BounceEntryParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry,
-    MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord, MoverProbeChannelParts,
-    MoverProbeChannelSection,
+    MoverDirectRecord, MoverLightNamespace, MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverRecord,
 };
 
 use super::*;
@@ -38,10 +38,7 @@ fn channel(
             .iter()
             .map(|&cell| BounceEntryParts {
                 cell: cell as u32,
-                entry: MoverBounceEntry {
-                    mover_id: 0,
-                    stored_probe_masks: [1, 1],
-                },
+                entry: MoverBounceEntry::termini(0, [1, 1]),
                 tiles: vec![0; 2 * MOVER_IRRADIANCE_TILE_F16_COUNT],
             })
             .collect(),
@@ -50,13 +47,7 @@ fn channel(
     MoverProbeChannelSection::assemble(
         parts,
         |_| u64::MAX,
-        |mover_id| {
-            Ok::<_, ()>(MoverLightRampRecord {
-                mover_id,
-                start: 0.0,
-                end: 1.0,
-            })
-        },
+        |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.0, 1.0)),
     )
     .unwrap()
     .expect("the fixture holds entries")

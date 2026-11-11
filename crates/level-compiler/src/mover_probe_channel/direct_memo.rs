@@ -2,14 +2,12 @@
 // alone, and its payload of one light's entries.
 // See: context/lib/build_pipeline.md §Build Cache
 
-use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-};
+use postretro_level_format::mover_probe_channel::MOVER_IRRADIANCE_TILE_F16_COUNT;
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
 
-use super::direct::{ChannelLight, DirectEntry, DirectScene, LightMover, ProbeCells};
+use super::direct::{BAKED_POSES, ChannelLight, DirectEntry, DirectScene, LightMover, ProbeCells};
 use crate::bake_content_keys::{fold_occluding_geometry, fold_probe_grid_layout};
 use crate::cache::{CacheKey, StageCache};
 use crate::direct_sh_bake::DIRECT_SH_STAGE_VERSION;
@@ -155,7 +153,7 @@ pub(crate) fn encode(entries: &[DirectEntry]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for entry in entries {
-        let probes = entry.visibility.len() / MOVER_VISIBILITY_BYTES_PER_PROBE;
+        let probes = entry.visibility.len() / BAKED_POSES;
         out.extend_from_slice(&entry.cell.to_le_bytes());
         out.extend_from_slice(&entry.mover_id.to_le_bytes());
         out.extend_from_slice(&(probes as u32).to_le_bytes());
@@ -192,9 +190,7 @@ pub(crate) fn decode(
         {
             return None;
         }
-        let visibility = reader
-            .take(probes * MOVER_VISIBILITY_BYTES_PER_PROBE)?
-            .to_vec();
+        let visibility = reader.take(probes * BAKED_POSES)?.to_vec();
         let tiles = reader
             .take(probes * MOVER_IRRADIANCE_TILE_F16_COUNT * 2)?
             .as_chunks::<2>()

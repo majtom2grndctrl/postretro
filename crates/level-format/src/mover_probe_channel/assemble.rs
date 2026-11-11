@@ -1,11 +1,12 @@
 // MoverProbeChannel (id 57) assembly: lay a producer's records, bounce
-// entries and depth records out in wire order over the sparse cell list.
+// entries and depth records out in wire order over the sparse cell list,
+// with a mover record for every mover they name.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry,
-    MoverChannelCell, MoverDepthRecord, MoverDirectRecord, MoverLightRampRecord,
-    MoverPayloadPlacement, MoverProbeChannelSection, bounce_entry_f16_count,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverChannelCell, MoverDepthRecord,
+    MoverDirectRecord, MoverPayloadPlacement, MoverProbeChannelSection, MoverRecord,
+    bounce_entry_f16_count,
 };
 use crate::delta_sh_volumes::AFFINITY_FACTOR;
 use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
@@ -16,14 +17,15 @@ pub struct DirectRecordParts {
     /// Dense affinity cell index.
     pub cell: u32,
     pub record: MoverDirectRecord,
-    /// Each gating mover with `q₀, q₁` per masked probe, in any order.
+    /// Each gating mover with, per masked probe, its `q` at each of its
+    /// poses, in any order.
     pub movers: Vec<(u32, Vec<u8>)>,
     /// One tile per masked probe when the record carries its own; else empty.
     pub own_tiles: Vec<u16>,
 }
 
-/// One bounce entry and its payload: per affected probe, x-fastest, its
-/// stored `S^b₀` then its stored `S^b₁`.
+/// One bounce entry and its payload: pose after pose, each stored probe's
+/// tile by `stored` rank.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BounceEntryParts {
     pub cell: u32,
@@ -31,7 +33,7 @@ pub struct BounceEntryParts {
     pub tiles: Vec<u16>,
 }
 
-/// One depth record and its stored `D₀` then its stored `D₁`.
+/// One depth record and its stored tiles in pose order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DepthRecordParts {
     pub record: MoverDepthRecord,
@@ -54,16 +56,17 @@ impl MoverProbeChannelSection {
     /// (namespace, light) within a cell, movers by id within a record,
     /// bounce entries by mover, depth records by (mover, probe). Every cell
     /// a record or bounce entry names is listed, with `valid_probe_mask`'s
-    /// mask; `ramp_of` gives each named mover's ramp. `None` when no block
-    /// holds anything: the section is never written empty.
+    /// mask; `mover_record` gives each named mover's ramp and knots. `None`
+    /// when no block holds anything: the section is never written empty.
     ///
     /// The canonical content is the producer's: each record's mask must be
-    /// exactly its movers' `q < 255` probes, and no record, mover entry or
-    /// bounce entry may repeat. Decoding refuses a section that breaks them.
+    /// exactly its movers' `q < 255` probes, every entry must store per pose
+    /// of its mover's record, and no record, mover entry or bounce entry may
+    /// repeat. Decoding refuses a section that breaks them.
     pub fn assemble<E>(
         parts: MoverProbeChannelParts,
         valid_probe_mask: impl Fn(u32) -> u64,
-        mut ramp_of: impl FnMut(u32) -> Result<MoverLightRampRecord, E>,
+        mover_record: impl FnMut(u32) -> Result<MoverRecord, E>,
     ) -> Result<Option<Self>, E> {
         let MoverProbeChannelParts {
             affinity_dims,
@@ -110,8 +113,20 @@ impl MoverProbeChannelSection {
             bounce_tiles: Vec::new(),
             depth_records: Vec::with_capacity(depth.len()),
             depth_tiles: Vec::new(),
-            ramps: Vec::new(),
+            mover_records: Vec::new(),
         };
+        let mut mover_ids: Vec<u32> = direct
+            .iter()
+            .flat_map(|part| part.movers.iter().map(|(mover_id, _)| *mover_id))
+            .chain(bounce.iter().map(|part| part.entry.mover_id))
+            .chain(depth.iter().map(|part| part.record.mover_id))
+            .collect();
+        mover_ids.sort_unstable();
+        mover_ids.dedup();
+        section.mover_records = mover_ids
+            .into_iter()
+            .map(mover_record)
+            .collect::<Result<_, E>>()?;
         for mut part in direct {
             let probes = part.record.masked_probe_count();
             debug_assert_eq!(
@@ -125,7 +140,11 @@ impl MoverProbeChannelSection {
             );
             part.movers.sort_by_key(|(mover_id, _)| *mover_id);
             for (mover_id, visibility) in &part.movers {
-                debug_assert_eq!(visibility.len(), probes * MOVER_VISIBILITY_BYTES_PER_PROBE);
+                debug_assert_eq!(
+                    visibility.len(),
+                    probes * section.pose_count_of(*mover_id),
+                    "a q per masked probe per pose of the mover"
+                );
                 section.direct_movers.push(*mover_id);
                 section.visibility.extend_from_slice(visibility);
             }
@@ -137,6 +156,10 @@ impl MoverProbeChannelSection {
         }
         for part in bounce {
             debug_assert_eq!(part.tiles.len(), bounce_entry_f16_count(&part.entry));
+            debug_assert_eq!(
+                part.entry.pose_count(),
+                section.pose_count_of(part.entry.mover_id)
+            );
             section.bounce_tiles.extend_from_slice(&part.tiles);
             section.bounce_entries.push(part.entry);
         }
@@ -145,14 +168,13 @@ impl MoverProbeChannelSection {
                 part.tiles.len(),
                 part.record.stored_tile_count() * PROBE_DEPTH_TILE_TEXELS
             );
+            debug_assert_eq!(
+                part.record.pose_count(),
+                section.pose_count_of(part.record.mover_id)
+            );
             section.depth_tiles.extend_from_slice(&part.tiles);
             section.depth_records.push(part.record);
         }
-        section.ramps = section
-            .mover_ids()
-            .into_iter()
-            .map(&mut ramp_of)
-            .collect::<Result<_, E>>()?;
         Ok(Some(section))
     }
 }

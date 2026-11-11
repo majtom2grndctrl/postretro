@@ -325,14 +325,15 @@ impl RealLevel {
             let entries = &self.channel.bounce_entries[self.channel.bounce_offsets[listed] as usize
                 ..self.channel.bounce_offsets[listed + 1] as usize];
             for entry in entries {
+                let last = entry.pose_count() - 1;
                 for bit in 0..64 {
-                    let Some(tiles) = entry.probe_tiles(bit) else {
+                    if entry.affected_probe_mask() & (1 << bit) == 0 {
                         continue;
-                    };
+                    }
                     probes
                         .entry(self.cell_probe(cell.cell, bit))
                         .or_default()
-                        .push(tiles.map(|tile| tile.is_some()));
+                        .push([0, last].map(|pose| entry.tile_index(pose, bit).is_some()));
                 }
             }
         }

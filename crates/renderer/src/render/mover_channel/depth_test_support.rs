@@ -4,8 +4,8 @@
 
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::mover_probe_channel::{
-    DepthRecordParts, MoverDepthRecord, MoverLightRampRecord, MoverProbeChannelParts,
-    MoverProbeChannelSection,
+    DepthRecordParts, MoverDepthRecord, MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverRecord,
 };
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
@@ -57,23 +57,17 @@ pub(in crate::render) fn stored_depth_section(
             depth: records
                 .into_iter()
                 .map(|(mover_id, probe_index, tiles)| DepthRecordParts {
-                    record: MoverDepthRecord {
+                    record: MoverDepthRecord::termini(
                         mover_id,
                         probe_index,
-                        stored_termini: tiles.each_ref().map(Option::is_some),
-                    },
+                        tiles.each_ref().map(Option::is_some),
+                    ),
                     tiles: tiles.into_iter().flatten().flatten().collect(),
                 })
                 .collect(),
         },
         |_| u64::MAX,
-        |mover_id| {
-            Ok::<_, ()>(MoverLightRampRecord {
-                mover_id,
-                start: 0.0,
-                end: 1.0,
-            })
-        },
+        |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.0, 1.0)),
     )
     .unwrap()
     .expect("depth records make a section")

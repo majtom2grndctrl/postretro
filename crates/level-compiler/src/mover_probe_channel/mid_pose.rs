@@ -18,10 +18,9 @@ use crate::sh_bake::pack_octahedral_irradiance_tile;
 /// What a mid pose holds for one near-field probe from its posed gather
 /// `coefficients`, against the probe's id-34 tile `base` and that tile's
 /// round-trip bar: its state, as id 27's compact RGB tile, where it clears
-/// both bars against id 34 (the
-/// round-trip bar and the perceptual floor, as an affected terminus's
-/// must); the base where it stays within them; nothing, so it blends
-/// across, where the pose encloses the probe (owner, 2026-11-10: the
+/// both bars against id 34 (the round-trip bar and the perceptual floor, as
+/// an affected terminus's must); the base where it stays within them; and
+/// nothing, so it blends across, where the pose encloses the probe (the
 /// section marks it across for direct too).
 pub(crate) fn classify(
     coefficients: &[f32; 27],

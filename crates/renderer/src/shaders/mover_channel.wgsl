@@ -5,10 +5,10 @@
 // table of `render/mover_channel/layout.rs`: listed affinity cells, one term
 // record per (cell, gated light) with its probe mask, its gating movers, each
 // mover's knots through its ramp, each (cell, mover)'s across marks, and one
-// t′ per mover (negative while the game hands over no state). Each listed cell's payload (the light's term T
-// per masked probe, then each mover's q at each of its N poses) is one run
-// its base word points at. A streamed level places
-// that run per resident cell; while it is not resident the base reads
+// t′ per mover (negative while the game hands over no state). Each listed
+// cell's payload (the light's term T per masked probe, then each mover's q at
+// each of its N poses) is one run its base word points at. A streamed level
+// places that run per resident cell; while it is not resident the base reads
 // `MC_NONE` and the cell composes as with no section. That is residency, not
 // a visibility switch: a row composes only with its cluster resident, and
 // every cluster covering a cell carries its payload.

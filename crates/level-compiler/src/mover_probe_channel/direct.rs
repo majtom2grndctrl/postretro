@@ -370,8 +370,8 @@ impl StaticSamples {
 /// static-clear sample at some valid probe at some pose. A probe where the
 /// light's term is zero keeps q = 1, as does one no pose can meet, and one
 /// a pose encloses keeps q = 1 at that pose: at a terminus it reads the
-/// light's mover-absent term there (owner, 2026-11-09); at a mid pose the
-/// section marks it across and compose never reads it (owner, 2026-11-10).
+/// light's mover-absent term there; at a mid pose the
+/// section marks it across and compose never reads it.
 /// Every pose bakes, mid poses included, and wherever the light reaches:
 /// never only the near-field domain, and never skipping a pose the author
 /// ramp squeezes out.

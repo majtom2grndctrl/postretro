@@ -20,7 +20,7 @@ use crate::mover_probe_channel::PosedBounce;
 use crate::mover_probe_channel::{
     AbsentBounceMemo, AbsentLaterBounces, HitReduction, MoverAbsentDepth, MoverBounceBake,
     MoverBounceJob, MoverBounceRequest, MoverBounceStates, MoverPoseBounces, PoseLookup, PoseMemo,
-    StaticBounce, bake_mover_bounce, held_progress_units,
+    StaticBounce, bake_mover_bounce, poses_progress_units,
 };
 use crate::sh_bake::{
     GatheredVolume, ProbeDepthTiles, RadianceSource, ShBakeCtx, ShConfig, animation_tables,
@@ -147,8 +147,10 @@ fn hold_absent(absent: Option<&AbsentLaterBounces>) -> Option<crate::live_bytes:
 /// of each layer's reach, then one per patch chunk of each later bounce,
 /// then one per probe, then each mover job's own units
 /// ([`MoverBounceJob::progress_units`]). A volume hit advances id 34's units
-/// at once, less the layers and later bounces the movers re-run; a pose
-/// memo hit advances that pose's.
+/// at once, less the layers and later bounces the movers re-run, and
+/// re-publishes the total with each pose at the count its memo lookup
+/// resolves; a mover whose every pose hits advances at once, and a held pose
+/// of a mover with a miss as it reads back.
 ///
 /// The gather's hits also bin into each valid probe's depth tile, kept when
 /// it changes the probe's visibility, at most `tile_cap` per level
@@ -210,8 +212,8 @@ pub(crate) fn bake_sh_base_with_movers(
     let volume_units = shading_units + bounce_units + layout.total_probes();
     let valid_probes = layout.validity.iter().filter(|&&valid| valid != 0).count();
     let job_units = |job: &MoverBounceJob| job.progress_units(valid_probes, &patches, bounce_fill);
-    let held_units = |job: &MoverBounceJob, poses: &[_]| {
-        held_progress_units(job, poses, valid_probes, &patches, bounce_fill)
+    let slot_units = |job: &MoverBounceJob, poses: &[_]| {
+        poses_progress_units(job, poses, valid_probes, &patches, bounce_fill, |_| true)
     };
     control.publish_total(volume_units + movers.jobs.iter().map(job_units).sum::<usize>());
 
@@ -267,9 +269,18 @@ pub(crate) fn bake_sh_base_with_movers(
                 depth_cap: movers.depth_cap,
             }),
         );
-        let absent_memo = (lookup.needs_radiance()
-            && AbsentLaterBounces::needed_by(lookup.pending.iter().copied(), bounce_fill))
-        .then(|| AbsentBounceMemo::new(volume.cache, &volume.key));
+        // The mover-absent later bounces are read only when a pending job
+        // re-bakes radiance and needs them. Where some job reads them but
+        // none is pending, their memo is still marked used, so eviction
+        // spares it for the next mover edit.
+        let absent_memo = AbsentLaterBounces::needed_by(&movers.jobs, bounce_fill)
+            .then(|| AbsentBounceMemo::new(volume.cache, &volume.key));
+        let reads_absent = lookup.needs_radiance()
+            && AbsentLaterBounces::needed_by(lookup.pending.iter().copied(), bounce_fill);
+        if let Some(memo) = absent_memo.as_ref().filter(|_| !reads_absent) {
+            memo.mark_used();
+        }
+        let absent_memo = absent_memo.filter(|_| reads_absent);
         // The movers re-run the layers for bounce one, and id 34's later
         // bounces when they read them, and those advance as they run; a
         // memo hit on the later bounces advances theirs at once.
@@ -283,7 +294,10 @@ pub(crate) fn bake_sh_base_with_movers(
         } else {
             0
         };
-        control.advance(volume_units - rerun + lookup.held_units(movers, held_units));
+        // A pose a `high` entry serves holds more bounces than the build
+        // bakes: the total counts each pose at the count it resolves at.
+        control.publish_total(volume_units + lookup.total_units(movers, slot_units));
+        control.advance(volume_units - rerun + lookup.held_units(movers, slot_units));
         let baked = {
             let bounce_one = lookup.needs_radiance().then(|| {
                 let layer_cache = caches.as_ref().map(|(layers, _)| layers);
@@ -379,6 +393,9 @@ pub(crate) fn bake_sh_base_with_movers(
     #[cfg(test)]
     crate::live_bytes::phase("sum");
     drop(layers);
+    // The pose lookup and the movers' copy of bounce one are mover work:
+    // id 34's recorded time leaves them out.
+    let id34_before_movers = id34_started.elapsed();
     let lookup = PoseLookup::new(
         movers,
         caches
@@ -392,6 +409,7 @@ pub(crate) fn bake_sh_base_with_movers(
     let bounce_one = lookup.needs_radiance().then(|| radiance.clone());
     let keeps_absent = lookup.needs_radiance()
         && AbsentLaterBounces::needed_by(lookup.pending.iter().copied(), bounce_fill);
+    let id34_resumed = std::time::Instant::now();
     let kept = add_later_bounces_keeping(
         &ctx.ray_ctx(),
         &patches,
@@ -408,9 +426,6 @@ pub(crate) fn bake_sh_base_with_movers(
             absent.layers.len(),
             patches.len()
         );
-    }
-    if let (Some(absent), Some((_, volume))) = (&absent, &caches) {
-        AbsentBounceMemo::new(volume.cache, &volume.key).put(absent, patches.len());
     }
     #[cfg(test)]
     let _absent = hold_absent(absent.as_ref());
@@ -442,9 +457,12 @@ pub(crate) fn bake_sh_base_with_movers(
         ),
         crate::live_bytes::hold("probe depth tiles", depth_tiles.heap_bytes()),
     ];
-    let id34_time = id34_started.elapsed();
+    let id34_time = id34_before_movers + id34_resumed.elapsed();
     if let Some((_, volume)) = &caches {
         BakeTimeRecord::new(volume.cache, &volume.key).put(id34_time);
+        if let Some(absent) = &absent {
+            AbsentBounceMemo::new(volume.cache, &volume.key).put(absent, patch_cache.patches.len());
+        }
     }
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");

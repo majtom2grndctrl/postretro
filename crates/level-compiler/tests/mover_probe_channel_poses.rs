@@ -34,7 +34,7 @@ fn mid_marks(channel: &MoverProbeChannelSection, mover: u32) -> Vec<PoseMark> {
     marks
 }
 
-// MP11 (bake and load half): the closet door with ramp (0.6, 0.9) and five
+// Bake and load half: the closet door with ramp (0.6, 0.9) and five
 // poses. The ramp squeezes its mid poses at t 0.25 and 0.5 onto t′ 0, so
 // compose never reads them, yet the bake bakes them and the PRL loads
 // through the level loader. The record keeps the knots as path fractions.

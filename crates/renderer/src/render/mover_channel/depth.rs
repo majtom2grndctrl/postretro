@@ -5,8 +5,8 @@
 // tile or averaged id-34 moments); an unmarked mid pose is blended across.
 // Every such interval runs through the base, reaching it at the interval's
 // midpoint (owner, 2026-11-10): closed-pose depth describes a surface only
-// where the mover rests. A pose with no tile is one the mover
-// leaves unchanged or encloses: it is the base, so there the live tile holds
+// where the mover rests. A pose with no tile is one the mover leaves
+// unchanged or encloses: it is the base, so there the live tile holds
 // exactly what the probe reads with no section. Several movers at one probe
 // add their blended differences from that base, per moment, clamped to a
 // valid moment set (owner, 2026-11-09).
@@ -402,14 +402,14 @@ impl MoverDepthTiles {
             let (tiles, poses, offsets) =
                 (&self.tiles, &self.record_poses, &self.record_pose_offsets);
             let (slots, knots) = (&self.record_slots, &self.knots);
-            let stated = records.filter_map(|record| {
+            let blends = records.filter_map(|record| {
                 let slot = slots[record] as usize;
                 (t[slot] >= 0.0).then(|| {
                     let poses = &poses[offsets[record] as usize..offsets[record + 1] as usize];
                     segment(tiles, poses, knots.slot(slot), base, t[slot])
                 })
             });
-            blend_probe(base, stated, &mut self.run_tiles);
+            blend_probe(base, blends, &mut self.run_tiles);
             run_len += 1;
             if !self.pointed[k as usize] || self.unsure[k as usize] {
                 self.pointed[k as usize] = true;

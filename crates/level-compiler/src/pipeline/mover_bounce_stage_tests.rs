@@ -858,10 +858,10 @@ fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
 }
 
 // A tile range the closet door's depth alone passes, well past it: the
-// bake keeps exactly one record past it, the reservation fails by name with
-// the door's whole count, exact, and the cut states are never memoized, so a
-// full-range build over that cache bakes the door's whole depth. A hit
-// stored under the full range is cut the same way.
+// bake keeps exactly one record past it, the build fails by name before any
+// state skips, with the door's whole count, exact, and the cut states are
+// never memoized, so a full-range build over that cache bakes the door's
+// whole depth. A hit stored under the full range is cut the same way.
 #[test]
 fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
     let maps = tempfile::tempdir().expect("maps dir");
@@ -883,7 +883,7 @@ fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
         narrow.request.depth_cap = cap;
 
         let check = |mode: &str, cache: Option<&StageCache>| {
-            let (_, mut base, outcome) =
+            let (_, base, mut outcome) =
                 bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
             assert_eq!(
                 outcome.movers[0].depth[..],
@@ -891,11 +891,13 @@ fn a_mover_past_the_tile_range_keeps_one_record_past_it_and_fails_by_name() {
                 "{mode}: one record past the range, the full bake's first"
             );
             assert_eq!(outcome.movers[0].depth_carried, carried, "{mode}");
-            let error = super::finish_bounce_half(
-                &outcome.movers,
-                outcome.stopped,
+            let error = super::skip_mid_poses(
+                &mut outcome,
+                &fixture.kinematic_movers,
+                poses,
                 &base.section,
-                &mut base.depth_tiles,
+                &base.depth_tiles,
+                false,
                 cap,
             )
             .expect_err("the door alone passes the range")
@@ -954,13 +956,15 @@ fn warm_and_cold_stop_at_the_same_mover_past_the_tile_range() {
         narrow.request.depth_cap = cap;
 
         let run = |cache: Option<&StageCache>| {
-            let (_, mut base, outcome) =
+            let (_, base, mut outcome) =
                 bake_base(ctx, &narrow, &narrow.request, DEFAULT_BOUNCE_FILL, cache);
-            let error = super::finish_bounce_half(
-                &outcome.movers,
-                outcome.stopped,
+            let error = super::skip_mid_poses(
+                &mut outcome,
+                &fixture.kinematic_movers,
+                poses,
                 &base.section,
-                &mut base.depth_tiles,
+                &base.depth_tiles,
+                false,
                 cap,
             )
             .expect_err("the first door alone passes the range")
@@ -988,6 +992,199 @@ fn warm_and_cold_stop_at_the_same_mover_past_the_tile_range() {
                 "{mode}: the same stop and error"
             );
         }
+    });
+}
+
+// Regression: a warm build whose id 34 and every pose hit read no
+// mover-absent later bounces, so their memo left its use set and a prune
+// could evict it, re-tracing id 34's later bounces at the next mover edit.
+// The closet door bakes mid poses, so it reads them: a volume hit marks their
+// memo used without reading it, and every entry the cold-cache build wrote
+// stays in the warm build's use set.
+#[test]
+fn a_volume_hit_that_reads_no_absent_bounces_still_marks_their_memo_used() {
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet(maps.path(), None));
+    let cache = tempfile::tempdir().expect("cache");
+    with_ctx(&fixture, |ctx, poses| {
+        let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        assert!(
+            plan.request.jobs[0].scenes.len() > 2,
+            "the door bakes mid poses"
+        );
+        let first = open(cache.path());
+        bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, Some(&first));
+        let wrote_absent = first
+            .test_accesses_by_stage()
+            .get("mover_absent_bounces")
+            .is_some_and(|access| access.writes + access.streamed_writes > 0);
+        assert!(
+            wrote_absent,
+            "the cold-cache build memoizes the later bounces"
+        );
+        let mut written: Vec<String> = std::fs::read_dir(cache.path())
+            .expect("list the cache")
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| !name.ends_with(".tmp"))
+            .collect();
+        written.sort();
+
+        let warm = open(cache.path());
+        bake_base(ctx, &plan, &plan.request, DEFAULT_BOUNCE_FILL, Some(&warm));
+        let accesses = warm.test_accesses_by_stage();
+        assert!(
+            accesses
+                .get("mover_absent_bounces")
+                .is_none_or(|access| access.read_attempts == 0),
+            "every pose hits, so nothing reads the later bounces"
+        );
+        let used = warm.test_live_entry_names();
+        let unused: Vec<&String> = written
+            .iter()
+            .filter(|name| !used.contains(*name))
+            .collect();
+        assert!(
+            unused.is_empty(),
+            "{} of {} entries left the warm build's use set: {unused:?}",
+            unused.len(),
+            written.len()
+        );
+    });
+}
+
+/// The closet door baking four poses (`light_poses`) under a ramp that
+/// squeezes both mid poses onto t′ 0, so compose never reads them.
+fn squeezed_door(text: String) -> String {
+    text.replace(
+        "\"name\" \"closet_door\"",
+        "\"name\" \"closet_door\"\n\"light_poses\" \"4\"\n\"light_ramp_start\" \"0.7\"\n\
+         \"light_ramp_end\" \"0.75\"",
+    )
+}
+
+// Regression: a bake the tile range stopped or cut, whose skips then dropped
+// mid-pose-only depth records, came back within the range and built, the
+// movers past the stop and the cut records silently losing their states.
+// Every depth record here stores at the door's mid poses alone, which its
+// ramp squeezes out: skipping drops them all. Past a range of 3, a bake that
+// stopped before a later mover fails by name with a lower bound, and one
+// whose range cut the door's records fails with the door's whole count,
+// exact; both before any record skips.
+#[test]
+fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
+    use postretro_level_format::mover_probe_channel::PoseMark;
+    use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
+
+    use crate::mover_probe_channel::{DepthProbe, MoverBounceStates};
+
+    let maps = tempfile::tempdir().expect("maps dir");
+    let fixture = load_map(&closet_edited(
+        maps.path(),
+        Some(0),
+        "squeezed",
+        squeezed_door,
+    ));
+    with_ctx(&fixture, |ctx, poses| {
+        let plan = plan_half(&fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
+        let [job] = plan.request.jobs.as_slice() else {
+            panic!("one door");
+        };
+        assert_eq!(
+            job.scenes.len(),
+            4,
+            "the door bakes its authored four poses"
+        );
+        let (_, base, _) = bake_base(
+            ctx,
+            &plan,
+            &MoverBounceRequest::default(),
+            DEFAULT_BOUNCE_FILL,
+            None,
+        );
+        let cap = 3u32;
+        let probes: Vec<u32> = (0..base.section.probes.len() as u32)
+            .filter(|&probe| base.section.probes[probe as usize].validity != 0)
+            .take(cap as usize + 1)
+            .collect();
+        assert_eq!(probes.len(), cap as usize + 1, "the closet's valid probes");
+        // One record past the range, as the bake keeps it, each stored at
+        // both mid poses and neither terminus.
+        let outcome = |stopped: bool, carried: usize| {
+            let depth: Vec<DepthProbe> = probes
+                .iter()
+                .map(|&probe| DepthProbe {
+                    probe,
+                    marks: vec![
+                        PoseMark::Unmarked,
+                        PoseMark::Stored,
+                        PoseMark::Stored,
+                        PoseMark::Unmarked,
+                    ],
+                    tiles: vec![[0u16; 2]; 2 * PROBE_DEPTH_TILE_TEXELS],
+                })
+                .collect();
+            let mut states = MoverBounceStates::new(job.mover_id, 4, Vec::new(), depth);
+            states.depth_carried = carried;
+            MoverBounceOutcome {
+                movers: vec![states],
+                stopped,
+                ..MoverBounceOutcome::default()
+            }
+        };
+        let skip = |bake: &mut MoverBounceOutcome, tile_cap: u32| {
+            super::skip_mid_poses(
+                bake,
+                &fixture.kinematic_movers,
+                poses,
+                &base.section,
+                &base.depth_tiles,
+                false,
+                tile_cap,
+            )
+        };
+
+        let mut whole = outcome(false, cap as usize + 1);
+        skip(&mut whole, MAX_PROBE_DEPTH_TILES).expect("within the full range");
+        assert!(
+            whole.movers[0].depth.is_empty() && whole.movers[0].depth_carried == 0,
+            "skipping alone drops every record the squeezed poses store"
+        );
+
+        let mut stopped = outcome(true, cap as usize + 1);
+        let error = skip(&mut stopped, cap)
+            .expect_err("a bake that stopped fails")
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "MoverProbeChannel (id 57): at least {} probes carry closed-pose depth",
+                cap + 1
+            )),
+            "a lower bound: {error}"
+        );
+        assert_eq!(
+            stopped.movers[0].depth.len(),
+            cap as usize + 1,
+            "no record skips before the refusal"
+        );
+
+        let mut cut = outcome(false, cap as usize + 5);
+        let error = skip(&mut cut, cap)
+            .expect_err("a cut mover fails")
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "MoverProbeChannel (id 57): {} probes carry closed-pose depth",
+                cap + 5
+            )),
+            "the door's whole count, exact: {error}"
+        );
+        assert_eq!(
+            cut.movers[0].depth.len(),
+            cap as usize + 1,
+            "no record skips before the refusal"
+        );
     });
 }
 

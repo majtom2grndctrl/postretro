@@ -21,7 +21,9 @@ pub struct Knot {
 /// `clamp((t − s) / (e − s), 0, 1)`: the game's ramp
 /// (`runtime_movers::travel::ramped_travel_fraction`), mirrored operation
 /// for operation so a knot lands on the very t′ the game hands over at that
-/// path position. −0.0 reads as 0, as the hand-over stores it.
+/// path position. −0.0 reads as 0, as the hand-over stores it. A subnormal
+/// span overflows the quotient past the window's end: +∞ reads 1, and −∞ or
+/// NaN reads 0.
 pub fn ramped_knot(t: f32, start: f32, end: f32) -> f32 {
     let span = end - start;
     let ramped = if span.is_finite() && span > 0.0 && start.is_finite() {
@@ -31,6 +33,8 @@ pub fn ramped_knot(t: f32, start: f32, end: f32) -> f32 {
     };
     if ramped.is_finite() {
         ramped.clamp(0.0, 1.0) + 0.0
+    } else if ramped > 0.0 {
+        1.0
     } else {
         0.0
     }
@@ -129,8 +133,7 @@ pub fn pose_interval(knots: &[Knot], t: f32, defined: impl Fn(u32) -> bool) -> P
 
 /// Which leg of a depth interval a blend weight falls on. Depth runs
 /// through the base: D_lo → base → D_hi, reaching the base at the interval's
-/// midpoint (owner, 2026-11-10), so a termini-to-termini interval keeps
-/// 12c's through-base blend.
+/// midpoint.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DepthLeg {
     /// `weight == 0`: pose `lo`'s moments exactly.

@@ -436,8 +436,8 @@ fn c3_bounce_replaces_id_34_with_the_lerp_of_its_states_and_deltas_still_add() {
     let mut scene = build_scene(&ctx, Some(&section), false);
     let stateless = compose(&ctx, &mut scene, &[]);
     assert_eq!(stateless, today, "no mover state composes today's atlas");
-    // AC 2 (compose half): a two-pose mover composes today's linear blend
-    // at every t′, (1 − t′)·S^b₀ + t′·S^b₁.
+    // A two-pose mover composes the plain lerp(q₀, q₁, t′) at every t′,
+    // (1 − t′)·S^b₀ + t′·S^b₁, so mid poses change nothing for it.
     for t in [0.0, 1.0, 0.5, 0.1, 0.3, 0.7, 0.95] {
         let expected = 0.5 + (0.125 - 0.5) * t;
         let atlas = compose(&ctx, &mut scene, &[state(7, t)]);
@@ -710,8 +710,8 @@ fn piecewise_bounce_reads_each_state_exactly_and_mixes_between() {
     assert_eq!(at(0.375), out, "out and back to one t′ composes alike");
 }
 
-/// AC 16 (bounce half): two movers at one probe with different pose
-/// counts and unmarked poses, each between its knots, combine as today: the
+/// Two movers at one probe with different pose counts and unmarked poses,
+/// each between its knots, combine additively: the
 /// first's blend replaces id 34 and the second adds its blend minus id 34.
 #[test]
 fn two_posed_movers_at_one_probe_add_their_blended_differences() {

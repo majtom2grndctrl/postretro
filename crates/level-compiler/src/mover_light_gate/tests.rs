@@ -957,13 +957,23 @@ fn the_gate_anchors_and_lifts_each_texel_where_the_bake_walk_does() {
 
 // ---- Mid-travel pose placement (mover probe channel) ----
 
-use super::placement::{AUTO_POSE_CAP, even_knots, pose_count};
+use super::placement::{AUTO_POSE_CAP, MAX_POSES, even_knots, knot, pose_count};
 use crate::mover_probe_channel::NearFieldDomain;
 use postretro_physics::kinematic_mover::MoverPathArcLengths;
 use postretro_test_log_capture::LogCapture;
 
 /// A 1 m cube on a path of `points`, waypoints `w0`, `w1`, ….
 fn cube_on_path(points: &[DVec3], light_poses: Option<u32>) -> MoverPoses {
+    let (mut poses, cube) = unplaced_cube_on_path(points, light_poses);
+    poses.place_poses(std::slice::from_ref(&cube), 1.0);
+    poses
+}
+
+/// [`cube_on_path`] resolved to its termini, before placement.
+fn unplaced_cube_on_path(
+    points: &[DVec3],
+    light_poses: Option<u32>,
+) -> (MoverPoses, MapKinematicMover) {
     let mut cube = mover(0, "lift", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
     cube.light_poses = light_poses;
     let waypoints: Vec<MapKinematicWaypoint> = points
@@ -978,9 +988,8 @@ fn cube_on_path(points: &[DVec3], light_poses: Option<u32>) -> MoverPoses {
             waypoint(&format!("w{index}"), &next, origin)
         })
         .collect();
-    let mut poses = MoverPoses::resolve(std::slice::from_ref(&cube), &waypoints);
-    poses.place_poses(std::slice::from_ref(&cube), 1.0);
-    poses
+    let poses = MoverPoses::resolve(std::slice::from_ref(&cube), &waypoints);
+    (poses, cube)
 }
 
 #[test]
@@ -1127,4 +1136,74 @@ fn near_field_domain_is_the_swept_brushes_widened_by_lift_and_one_spacing() {
         !domain.contains(Vec3::new(0.5, 4.5, 0.5)),
         "inside the hull, far from both legs"
     );
+}
+
+#[test]
+fn knots_stay_strictly_ascending_up_to_the_most_poses_and_one_more_collapses_the_last_two() {
+    // Knots crowd closest below 1, where the f32 spacing is widest.
+    let last = MAX_POSES - 1;
+    assert_eq!(last, 1 << 24);
+    assert!(knot(last - 1, last) < knot(last, last));
+    assert_eq!(knot(last, last), 1.0);
+    let past = MAX_POSES;
+    assert_eq!(
+        knot(past - 1, past),
+        knot(past, past),
+        "one more pose rounds its last two knots onto 1"
+    );
+}
+
+#[test]
+fn a_light_poses_past_the_most_poses_fails_by_name_before_placement() {
+    let path = [DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)];
+    for count in [MAX_POSES + 1, u32::MAX] {
+        let (poses, cube) = unplaced_cube_on_path(&path, Some(count));
+        // The check reads the count alone, so it refuses at once whatever
+        // the budget, and nothing is placed.
+        let error = poses
+            .admit_pose_counts(std::slice::from_ref(&cube), u64::MAX)
+            .expect_err("past the most poses")
+            .to_string();
+        let wanted: [&str; 4] = [
+            "kinematic_mover 'lift'",
+            &format!("`light_poses` {count}"),
+            &MAX_POSES.to_string(),
+            "Lower `light_poses`",
+        ];
+        for named in wanted {
+            assert!(error.contains(named), "{named:?} in {error}");
+        }
+        assert_eq!(poses.analysed[0].poses.len(), 2);
+    }
+    // The most poses itself is not this check's to refuse.
+    let (poses, cube) = unplaced_cube_on_path(&path, Some(MAX_POSES));
+    poses
+        .admit_pose_counts(std::slice::from_ref(&cube), u64::MAX)
+        .expect("the most poses keeps its knots apart");
+}
+
+#[test]
+fn an_authored_count_whose_poses_alone_pass_the_budget_fails_the_sh_base_gate_by_name() {
+    let path = [DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)];
+    let (poses, cube) = unplaced_cube_on_path(&path, Some(100));
+    let error = poses
+        .admit_pose_counts(std::slice::from_ref(&cube), 1024)
+        .expect_err("100 posed cubes hold more than 1 KiB")
+        .to_string();
+    for named in [
+        "SH base working-set gate refused before patch shading: estimated peak at least",
+        "exceeds budget 1024 bytes",
+        "kinematic_mover 'lift'",
+        "`light_poses`",
+    ] {
+        assert!(error.contains(named), "{named:?} in {error}");
+    }
+    poses
+        .admit_pose_counts(std::slice::from_ref(&cube), 16 << 30)
+        .expect("a default budget holds 100 poses");
+    // An automatic count is the SH base gate's to price, after placement.
+    let (automatic, cube) = unplaced_cube_on_path(&path, None);
+    automatic
+        .admit_pose_counts(std::slice::from_ref(&cube), 0)
+        .expect("an automatic count is not refused here");
 }

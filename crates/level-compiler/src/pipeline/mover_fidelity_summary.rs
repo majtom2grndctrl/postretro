@@ -8,8 +8,8 @@ use std::time::Duration;
 use crate::bake_fidelity::BakeMode;
 use crate::mover_probe_channel::{MoverPoseBounces, SkipCounts};
 
-/// One terminus costs about one id-34 bake (research §Cost), so a mover's
-/// two termini project as two id-34 bakes.
+/// A terminus re-bakes the bounce over every static patch, which costs about
+/// one id-34 bake, so a mover's two termini project as two id-34 bakes.
 const TERMINUS_ID34_BAKES: f64 = 2.0;
 
 /// The block's lines, or none when no mover re-bakes. `movers` holds each
@@ -88,8 +88,7 @@ fn shown_fidelity(mover: &MoverPoseBounces) -> String {
 
 /// Id 34's recorded bake time T × 2 for the mover's termini, plus T × the
 /// share of static patches its near-field domain holds for each mid pose,
-/// which traces its later bounces over that domain alone (owner,
-/// 2026-11-11). Labelled an estimate; "—" with none recorded, and none for
+/// which traces its later bounces over that domain alone. Labelled an estimate; "—" with none recorded, and none for
 /// a mover baking no bounce.
 fn projected_release_time(mover: &MoverPoseBounces, sh_base_bake_time: Option<Duration>) -> String {
     if mover.high_bounces == 0 {
@@ -137,11 +136,11 @@ mod tests {
         }
     }
 
-    // AC 29: per mover its pose count, its fidelity and its projected
-    // `--release` bounce-bake time, labelled an estimate: id 34's recorded
-    // time × 2 for the termini, plus, per mid pose, id 34's time × the share
-    // of static patches the mover's domain holds (restated by the owner,
-    // 2026-11-11). Approximate only where what it shows differs from high:
+    // Per mover its pose count, its fidelity and its projected `--release`
+    // bounce-bake time, labelled an estimate: id 34's recorded bake time ×
+    // (2 termini + mid poses × the share of static patches each mid pose's
+    // domain holds). It is an estimate because it scales one recorded bake
+    // rather than timing the mover's own. Approximate only where what it shows differs from high:
     // served entirely from `high` entries, or at `light_bounces` 1, it
     // prints `high`; some pose baked low past 1, `low, approximate`.
     #[test]

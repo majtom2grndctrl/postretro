@@ -19,8 +19,8 @@ use mover_bounce_support::{
 };
 use postretro_level_format::SectionId;
 
-/// The owner's bound on `low` against `high` at rest, in display levels either way (2026-11-11,
-/// from the first measurement, manual row M2): `low` is an iteration preview, judged in-engine.
+/// The owner's bound on `low` against `high` at rest, in display levels either way, set
+/// from a first measurement: `low` is an iteration preview, judged in-engine.
 const LOW_AGAINST_HIGH_BOUND_LEVELS: f32 = 12.0;
 
 /// The largest signed difference over every compared probe: `low` shown minus `high` shown.
@@ -51,12 +51,13 @@ impl Worst {
     }
 }
 
-// AC 28: low against high at rest, on `mover-closet` and `mover-setpiece`: the largest
+// Low against high at rest, on `mover-closet` and `mover-setpiece`: the largest
 // per-probe display-level difference and its sign are reported, and the test fails past the
 // owner's bound.
 #[test]
-#[ignore = "bakes mover-closet and mover-setpiece cold at low and high (about a minute); run with \
-            `--ignored`"]
+#[ignore = "bakes mover-closet and mover-setpiece cold at low and high (about a minute); run \
+            `cargo test -p postretro-level-compiler --test mover_probe_channel_fidelity_rest -- \
+            --ignored`"]
 fn low_against_high_at_rest_stays_within_the_owners_bound_and_reports_the_largest_difference() {
     let mut misses = Vec::new();
     for name in ["mover-closet", "mover-setpiece"] {
@@ -114,7 +115,7 @@ fn low_against_high_at_rest_stays_within_the_owners_bound_and_reports_the_larges
                         .map(|axis| (axis * 10.0).round() / 10.0)
                 };
                 eprintln!(
-                    "AC 28 {name} mover #{mover} {label}: {} probe(s) compared; low darker by up to \
+                    "{name} mover #{mover} {label}: {} probe(s) compared; low darker by up to \
                      {:.2} levels at probe {} {:?}, brighter by up to {:.2} at probe {} {:?}; {} \
                      past 1 level, {} past 3",
                     worst.compared,

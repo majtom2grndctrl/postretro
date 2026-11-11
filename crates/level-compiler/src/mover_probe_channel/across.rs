@@ -118,6 +118,23 @@ impl EnclosedMidPoses {
                 }
             }
             if mid_poses.iter().any(|&marks| marks != 0) {
+                // An enclosing mid pose stores no bounce state and reads no
+                // base, so bounce blends across where these marks make
+                // direct blend across. A bake that breaks it fails here,
+                // not when the section loads.
+                debug_assert!(
+                    bounce
+                        .iter()
+                        .filter(|part| part.cell == cell && part.entry.mover_id == mover_id)
+                        .all(|part| {
+                            mid_poses.iter().enumerate().all(|(mid, &marks)| {
+                                let masks = part.entry.poses[mid + 1];
+                                (masks.stored | masks.base) & marks == 0
+                            })
+                        }),
+                    "cell {cell}, mover {mover_id}: a bounce entry stores or reads the base at \
+                     a mid pose it marks across"
+                );
                 parts.push(AcrossEntryParts {
                     cell,
                     mover_id,

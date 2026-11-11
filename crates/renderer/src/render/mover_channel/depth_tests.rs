@@ -799,10 +799,9 @@ fn piecewise_depth_reads_each_stored_pose_exactly_and_blends_each_interval_throu
     assert_eq!(plan.tile(0), &out[..], "out and back reads alike");
 }
 
-/// AC 18 (compose half) / MP8 and AC 2 (depth half): a probe whose mid
-/// poses are all unmarked (outside the near-field domain, or every one
-/// skipped) composes today's through-base blend at every t′, as a two-pose
-/// mover's probe does.
+/// A probe whose mid poses are all unmarked (outside the near-field domain,
+/// or every one skipped) composes the plain through-base blend at every t′,
+/// as a two-pose mover's probe does.
 #[test]
 fn termini_to_termini_depth_runs_through_the_base() {
     let (d0, d1, base): (Moments, Moments, Moments) = ((1.0, 2.0), (3.0, 10.0), (8.0, 65.0));

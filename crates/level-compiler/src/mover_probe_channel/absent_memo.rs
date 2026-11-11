@@ -57,6 +57,12 @@ impl<'c> AbsentBounceMemo<'c> {
         found
     }
 
+    /// Keep the entry in this build's record without reading it, so a warm
+    /// build that needs no layers still holds them for the next mover edit.
+    pub(crate) fn mark_used(&self) {
+        self.cache.mark_used(&self.key);
+    }
+
     /// Store `bounces` over `patch_count` static patches, streamed. Runs
     /// outside any governor permit.
     pub(crate) fn put(&self, bounces: &AbsentLaterBounces, patch_count: usize) {

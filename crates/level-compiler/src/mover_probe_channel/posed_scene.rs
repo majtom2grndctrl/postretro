@@ -101,9 +101,8 @@ impl PosedScene {
 
     /// Whether the pose encloses `probe`: inside one posed brush by at
     /// least the gather's lift ([`PosedSolid::encloses`]), so every lifted
-    /// gather ray starts in solid. Such a pose stores no bounce state for
-    /// the probe and reads the base; its depth still bakes, as the dark
-    /// tile.
+    /// gather ray starts in solid. A terminus reads the base there; a mid
+    /// pose blends across. Its depth still bakes, as the dark tile.
     pub(crate) fn encloses(&self, probe: Vec3) -> bool {
         self.solid.encloses(probe)
     }

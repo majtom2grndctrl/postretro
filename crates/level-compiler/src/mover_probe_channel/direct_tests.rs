@@ -478,7 +478,7 @@ fn a_light_whose_samples_never_meet_the_pose_stores_no_entry() {
     assert!(bake.lights.is_empty(), "{:?}", bake.lights);
 }
 
-// Enclosing terminus (owner, 2026-11-09): a valid probe inside a posed
+// Enclosing terminus: a valid probe inside a posed
 // brush stores q = 255 for that pose and reads the light's mover-absent
 // term, though every segment from it starts in solid. With q = 255 at both
 // termini it leaves the record's probe mask, which stays tight: exactly the
@@ -546,7 +546,7 @@ fn an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask() {
     );
 }
 
-// AC 12, direct half (owner, 2026-11-10): a mid pose that encloses a probe
+// Direct half: a mid pose that encloses a probe
 // stores no value state there. Its q is 255, never read: the section marks
 // that (mover, probe, mid pose) across, once for the (cell, mover), and
 // compose blends across it between the termini's q. The termini keep their

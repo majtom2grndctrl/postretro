@@ -75,8 +75,8 @@ impl MoverPayloadBars {
 /// Every mover's id-57 record, ascending by id: its author ramp, and the
 /// knots of the poses the channel stores. An analysed mover's knots are its
 /// poses' path fractions t, not ramped: the renderer maps them through the
-/// ramp. A mover the channel does not pose keeps its two termini; no block
-/// names it, so assembly writes no record for it.
+/// ramp. A mover the channel does not analyse has no mid poses and keeps its
+/// two termini; no block names it, so assembly writes no record for it.
 pub(crate) struct MoverRecords(Vec<MoverRecord>);
 
 impl MoverRecords {

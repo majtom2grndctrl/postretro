@@ -263,6 +263,9 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         .collect();
     let mut visibility_len = 0usize;
     let mut own_tile_halves = 0usize;
+    // Each listed cell's direct payload bytes: its id-50 row when the block
+    // streams.
+    let mut direct_row_bytes = vec![0u64; listed];
     for (index, (position, record)) in entry_positions(&direct_offsets)
         .zip(&direct_records)
         .enumerate()
@@ -291,14 +294,17 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
                         what: "visibility payload",
                     })?;
             visibility_len = checked_add(visibility_len, len, "visibility payload")?;
+            direct_row_bytes[position] = direct_row_bytes[position].saturating_add(len as u64);
         }
         if record.carries_own_tile {
-            own_tile_halves = checked_add(
-                own_tile_halves,
-                probes * MOVER_IRRADIANCE_TILE_F16_COUNT,
-                "own-tile payload",
-            )?;
+            let halves = probes * MOVER_IRRADIANCE_TILE_F16_COUNT;
+            own_tile_halves = checked_add(own_tile_halves, halves, "own-tile payload")?;
+            direct_row_bytes[position] =
+                direct_row_bytes[position].saturating_add(2 * halves as u64);
         }
+    }
+    if direct_placement == MoverPayloadPlacement::Streamed {
+        check_streamed_row_lens(MoverChannelBlock::Direct, &cells, direct_row_bytes)?;
     }
     // Across marks stay resident: the q payload they qualify may stream.
     let across_entries = read_across_entries(&mut reader, &cells, &mover_records, pose_count)?;
@@ -313,6 +319,8 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
                 &direct_movers,
                 &visibility,
                 &across_entries,
+                // The visibility-length pass resolved every mover a
+                // record names, or returned its missing-record error.
                 |mover| pose_count("direct", mover).expect("checked above"),
             )?;
             let own_tiles = reader.halves(own_tile_halves, "own-tile payload")?;
@@ -382,7 +390,17 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
                 block: MoverChannelBlock::Bounce,
             });
         }
-        MoverPayloadPlacement::Streamed => Vec::new(),
+        MoverPayloadPlacement::Streamed => {
+            let rows = (0..listed).map(|position| {
+                bounce_entries
+                    [bounce_offsets[position] as usize..bounce_offsets[position + 1] as usize]
+                    .iter()
+                    .map(|entry| 2 * bounce_entry_f16_count(entry) as u64)
+                    .sum::<u64>()
+            });
+            check_streamed_row_lens(MoverChannelBlock::Bounce, &cells, rows)?;
+            Vec::new()
+        }
     };
 
     // Every listed cell holds a direct record or a bounce entry.
@@ -461,6 +479,28 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         return Err(Error::TrailingBytes { count: trailing });
     }
     Ok(section)
+}
+
+/// An id-50 row carries each listed cell's streamed payload length as a
+/// `u32`, so a cell whose `block` payload passes `u32::MAX` bytes is refused
+/// here, before any load path sizes its row from the section's structure.
+fn check_streamed_row_lens(
+    block: MoverChannelBlock,
+    cells: &[MoverChannelCell],
+    row_bytes: impl IntoIterator<Item = u64>,
+) -> Result<(), Error> {
+    match cells
+        .iter()
+        .zip(row_bytes)
+        .find(|&(_, bytes)| bytes > u64::from(u32::MAX))
+    {
+        Some((cell, bytes)) => Err(Error::StreamedRowOverflow {
+            block,
+            cell: cell.cell,
+            bytes,
+        }),
+        None => Ok(()),
+    }
 }
 
 /// The listed cells: strictly ascending, each inside the affinity grid.

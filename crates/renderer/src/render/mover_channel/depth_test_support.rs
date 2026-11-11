@@ -147,9 +147,9 @@ pub(in crate::render) fn posed_depth_section(
     .expect("depth records make a section")
 }
 
-/// One moment of a mover's live-tile blend, exactly: `D₀` toward the probe's
-/// base over t′ ∈ [0, 0.5], the base toward `D₁` over [0.5, 1] (owner,
-/// 2026-11-09).
+/// One moment of a two-pose (termini-only) mover's live-tile blend, exactly,
+/// not a mid-pose interval: `D₀` toward the probe's base over t′ ∈ [0, 0.5],
+/// the base toward `D₁` over [0.5, 1] (owner, 2026-11-09).
 pub(in crate::render) fn through_base(d0: f32, base: f32, d1: f32, t: f32) -> f32 {
     if t <= 0.5 {
         d0 + 2.0 * t * (base - d0)

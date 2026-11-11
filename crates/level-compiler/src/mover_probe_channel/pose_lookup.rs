@@ -63,10 +63,13 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
     /// at once, its raw poses dropped; a job with a miss keeps only which
     /// poses hit and at what count, and the bake reads those again when it
     /// reaches the job, so no raw pose is held across movers. Without
-    /// `reduce` (id 34 itself is baking, so no state to reduce against
-    /// exists yet, and no pose under its key was stored), every pose bakes
-    /// at the job's `bounces`. Logs one `[cache]` line and one line per
-    /// mover.
+    /// `reduce` (an id-34 volume miss: id 34 itself is baking, so no state
+    /// to reduce against exists yet), no pose entry is read and every pose
+    /// bakes at the job's `bounces`. Poses are written inside the mover
+    /// bake, before the volume entry, so poses under this key may exist: a
+    /// build killed or failed after writing them, or a volume entry evicted
+    /// alone. Re-baking them costs time only; the bytes are the same. Logs
+    /// one `[cache]` line and one line per mover.
     pub(crate) fn new(
         request: &'r MoverBounceRequest,
         memo: Option<PoseMemo<'c>>,
@@ -233,8 +236,9 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             .collect()
     }
 
-    /// Progress units the poses the memo held advance at once.
-    pub(crate) fn held_units(
+    /// Progress units of every job's poses, each at the count its slot
+    /// resolves at: what the stage publishes once the lookup has run.
+    pub(crate) fn total_units(
         &self,
         request: &MoverBounceRequest,
         units: impl Fn(&MoverBounceJob, &[PoseSlot]) -> usize,
@@ -244,6 +248,24 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             .iter()
             .zip(&self.poses)
             .map(|(job, poses)| units(job, poses))
+            .sum()
+    }
+
+    /// Progress units the jobs the memo held whole advance at once: each
+    /// pose of a job the lookup reduced. A job with a miss advances its held
+    /// poses as the bake reads them back.
+    pub(crate) fn held_units(
+        &self,
+        request: &MoverBounceRequest,
+        units: impl Fn(&MoverBounceJob, &[PoseSlot]) -> usize,
+    ) -> usize {
+        request
+            .jobs
+            .iter()
+            .zip(&self.poses)
+            .zip(&self.found)
+            .filter(|(_, found)| found.is_some())
+            .map(|((job, poses), _)| units(job, poses))
             .sum()
     }
 

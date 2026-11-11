@@ -23,7 +23,7 @@ fn assert_base_bakes_every_plate_pose() {
     );
 }
 
-// AC 23 (before fidelity exists): two cold builds are byte-identical
+// Two cold builds are byte-identical
 // (`the_section_is_identical_across_cold_builds_and_worker_counts`), and an
 // unedited warm build reads every pose of every mover from the memo, re-bakes
 // none and equals the `--no-cache` build byte for byte.
@@ -37,7 +37,7 @@ fn an_unedited_warm_build_hits_every_pose_and_equals_cold() {
     assert_eq!(mover_memo(&warm, "shutter"), "hit (3 pose(s))", "{warm}");
 }
 
-// AC 25 (MP5): the plate's `light_poses` goes from its automatic six (t 0,
+// The plate's `light_poses` goes from its automatic six (t 0,
 // 0.2 … 1) to eleven (t 0, 0.1 … 1). Its termini hit, as do its old mid
 // poses at t 0.2, 0.4, 0.6 and 0.8, which the new count keeps in place; only
 // the five new mid poses bake. Skipping and the depth floor run after every
@@ -63,7 +63,7 @@ fn a_light_poses_change_keeps_both_termini_and_bakes_only_the_new_poses() {
     assert_logged(&warm, "re-baked 1 posed bounce(s) at 5 of 11 pose(s)");
 }
 
-// AC 26 (MP7): the shutter's path gains a middle waypoint on its line, then
+// The shutter's path gains a middle waypoint on its line, then
 // that waypoint moves off the line with both ends where they were. The
 // near-field domain, the swept brushes along the whole path, grows, so every
 // mid pose re-bakes over the new domain; neither terminus gathers over the
@@ -100,7 +100,7 @@ fn moving_a_middle_waypoint_changes_the_domain_keeps_the_termini_and_equals_cold
     assert_eq!(bounce_share(&warm), (1, MOVERS), "{warm}");
 }
 
-// AC 27, cache half: built `high`, setting the plate's `light_bounces` to 2
+// Cache half: built `high`, setting the plate's `light_bounces` to 2
 // re-bakes every one of its poses, termini included, and no other mover's;
 // warm equals cold at `high`. A count past id 34's bakes id 34's, so it keys
 // alike and every pose hits: the key folds the effective count.

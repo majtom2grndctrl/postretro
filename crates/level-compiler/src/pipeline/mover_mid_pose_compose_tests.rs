@@ -18,6 +18,7 @@ use postretro_level_format::mover_probe_channel::{
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
+use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 
 use super::super::skip_mid_poses;
@@ -97,13 +98,15 @@ impl Build {
             request.jobs.retain(|job| job.mover_id == mover_id);
             let (_, base, mut outcome) = bake_base(ctx, &plan, &request, DEFAULT_BOUNCE_FILL, None);
             skip_mid_poses(
-                &mut outcome.movers,
+                &mut outcome,
                 &scene.fixture.kinematic_movers,
                 poses,
                 &base.section,
                 &base.depth_tiles,
                 request.uncompressed,
-            );
+                MAX_PROBE_DEPTH_TILES,
+            )
+            .expect("within the tile range");
             let blocks = BounceBlocks::new(&outcome.movers, &cells);
             let section = channel_section(
                 &direct,

@@ -9,19 +9,19 @@
 // Means are Rec. 709 luma of the post-tonemap sRGB capture (0–255). Captures
 // compare on one adapter; no golden images.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
 
 // Shared by every capture target; the mover rows compile through
-// `compile_dev_map_with` alone.
+// `compile_dev_map_with` and `compile_dev_map_using` alone.
 #[allow(dead_code)]
 mod capture_support;
 // Shared by two targets, each using part of it.
 #[allow(dead_code)]
 mod mover_capture_support;
 
-use capture_support::compile_dev_map_with;
+use capture_support::{compile_dev_map_using, compile_dev_map_with};
 use mover_capture_support::{
     Pose, Run, Scene, ScreenBox, frame_mean, luma, masked_mean, max_channel_delta, read_map,
     sibling_map, staticize, with_entity, without_channel,
@@ -33,11 +33,49 @@ fn compile_release(workspace: &Path, map_name: &str) -> tempfile::TempPath {
     compile_dev_map_with(workspace, map_name, &["--release"])
 }
 
+/// Names the baseline compiler C10's frame row judges against: a `prl-build`
+/// from before mid-travel light poses, the same binary
+/// `mover_probe_channel_prl_parity` takes. The engine refuses older PRL
+/// epochs, so the baseline is a compiler whose bake matches that build's and
+/// writes the current epoch.
+const BASELINE_ENV: &str = "POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN";
+
+/// The baseline compiler, or a failure naming the variable.
+fn baseline_compiler() -> PathBuf {
+    let path = std::env::var_os(BASELINE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "set {BASELINE_ENV} to the baseline prl-build; \
+                 `c10_streaming_off_and_sync_proof_compose_the_same_channel_output` gives the \
+                 commands"
+            )
+        });
+    assert!(
+        path.is_file(),
+        "baseline compiler missing: {}",
+        path.display()
+    );
+    path
+}
+
+/// [`compile_release`] through the baseline compiler.
+fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> tempfile::TempPath {
+    compile_dev_map_using(compiler, workspace, map_name, &["--release"])
+}
+
 const RESOLUTION: [u32; 2] = [960, 540];
 
-/// A mid-travel case: a map, its label, the pose, the movers forced mid-travel, and
-/// the light-term mask.
-type MidTravel<'a> = (&'a Path, &'static str, Pose, Vec<(&'static str, f32)>, u32);
+/// A mid-travel case: a map, the baseline compiler's build of it, its label,
+/// the pose, the movers forced mid-travel, and the light-term mask.
+type MidTravel<'a> = (
+    &'a Path,
+    &'a Path,
+    &'static str,
+    Pose,
+    Vec<(&'static str, f32)>,
+    u32,
+);
 /// The brief's capture bar: no brighter than the reference plus 0.02 mean luma.
 const BAR: f64 = 0.02;
 
@@ -366,22 +404,40 @@ fn k2_setpiece_wall_closed_darkens_the_held_receiver_like_the_static_wall() {
 // slot-pooled streamed compose, whose rows enter residency over preload
 // frames with the state already handed over) are captured per pass: baked
 // static direct alone (mask 8) and static indirect alone (mask 2). The two
-// modes' frames already differ with id 57 stripped (their bases disagree by
-// a few levels on part of each view), so byte identity is not a frame-level
-// claim. The row holds the channel to two things: it is live in both modes,
-// and it adds no disagreement between them past the stripped frames' own.
-// The compose inputs themselves are proven equal per cell
-// (`streamed_mover_channel`).
+// modes' frames already differ with id 57 stripped: BC6H decodes their bases
+// differently (drafts/sh-streaming-mode-bc6h-parity.md), so byte identity is
+// not a frame-level claim. The row holds the channel to two things: it is
+// live in both modes, and the modes' gap with it (the frames' max channel
+// delta) stays within a per-case bar, the larger of:
+// - the stripped frames' own gap + 2;
+// - the baseline build's gap at the same station, mover poses and mask + 4.
+//   The channel's mid-travel output weights the base difference by however
+//   its poses blend, so BC6H already separates the modes there.
+// The baseline build is this checkout's map baked `--release` by the
+// compiler `POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN` names, captured by
+// this engine in both modes. The compose inputs themselves are proven equal
+// per cell (`streamed_mover_channel`).
+//
+// Run it with the baseline `prl-build` built as
+// `mover_probe_channel_prl_parity`'s module doc shows:
+//
+//   POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN="$BASE/prl-build-parent" \
+//     cargo test -p postretro --features capture --test capture_mover_probe_channel \
+//     c10_streaming_off_and_sync_proof -- --ignored
 #[test]
-#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
+#[ignore = "requires a GPU adapter, a local prl-build bake and POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN naming the baseline prl-build; run with `POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN=<prl-build> cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
 fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
     let run = Run::new();
+    let compiler = baseline_compiler();
     let closet = compile_release(&run.workspace, "mover-closet");
     let setpiece = compile_release(&run.workspace, "mover-setpiece");
+    let closet_base = compile_release_using(&compiler, &run.workspace, "mover-closet");
+    let setpiece_base = compile_release_using(&compiler, &run.workspace, "mover-setpiece");
     let both = vec![(SETPIECE_WALL, 0.5), (SETPIECE_ROOM, 0.5)];
     let cases: [MidTravel; 5] = [
         (
             &closet,
+            &closet_base,
             "closet-st2",
             STATION_2,
             vec![(CLOSET_DOOR, 0.5)],
@@ -389,6 +445,7 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
         ),
         (
             &setpiece,
+            &setpiece_base,
             "setpiece-st2",
             SETPIECE_STATION_2,
             both.clone(),
@@ -396,6 +453,7 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
         ),
         (
             &setpiece,
+            &setpiece_base,
             "setpiece-st3",
             SETPIECE_STATION_3,
             both.clone(),
@@ -403,6 +461,7 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
         ),
         (
             &setpiece,
+            &setpiece_base,
             "setpiece-st2",
             SETPIECE_STATION_2,
             both.clone(),
@@ -410,6 +469,7 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
         ),
         (
             &setpiece,
+            &setpiece_base,
             "setpiece-st3",
             SETPIECE_STATION_3,
             both,
@@ -417,7 +477,7 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
         ),
     ];
     let mut misses = Vec::new();
-    for (map, name, pose, force, mask) in cases {
+    for (map, base, name, pose, force, mask) in cases {
         let stripped = without_channel(&run.workspace, map, &format!("{name}-no-id57"), false);
         let sync = Scene {
             light_term_mask: Some(mask),
@@ -440,28 +500,39 @@ fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
             shot(&stripped, &off, "off-stripped"),
             shot(&stripped, &sync, "sync-stripped"),
         );
+        let (off_base, sync_base) = (
+            shot(base, &off, "off-baseline"),
+            shot(base, &sync, "sync-baseline"),
+        );
         let pixels = off_on.width() * off_on.height();
         let agree = off_bare
             .pixels()
             .zip(sync_bare.pixels())
             .filter(|(a, b)| a == b)
             .count();
-        let (baseline, with_channel) = (
+        let (stripped_gap, baseline_gap, with_channel) = (
             max_channel_delta(&off_bare, &sync_bare),
+            max_channel_delta(&off_base, &sync_base),
             max_channel_delta(&off_on, &sync_on),
         );
+        let bar = stripped_gap
+            .saturating_add(2)
+            .max(baseline_gap.saturating_add(4));
         let (live_off, live_sync) = (
             max_channel_delta(&off_on, &off_bare),
             max_channel_delta(&sync_on, &sync_bare),
         );
         eprintln!(
             "C10 {name} mask {mask}: off against sync-proof, max channel delta {with_channel} \
-             with id 57 and {baseline} stripped (stripped frames agree at {agree} of {pixels} px); \
-             the channel moves off by up to {live_off} and sync-proof by up to {live_sync}"
+             with id 57, {stripped_gap} stripped (stripped frames agree at {agree} of {pixels} px) \
+             and {baseline_gap} on the baseline build, so bar {bar}; the channel moves off by up \
+             to {live_off} and sync-proof by up to {live_sync}"
         );
-        if with_channel > baseline.saturating_add(2) {
+        if with_channel > bar {
             misses.push(format!(
-                "{name} mask {mask}: the modes differ by {with_channel} with id 57, past {baseline} stripped + 2"
+                "{name} mask {mask}: the modes differ by {with_channel} with id 57, past {bar}, \
+                 the larger of {stripped_gap} stripped + 2 and {baseline_gap} on the baseline \
+                 build + 4"
             ));
         }
         if live_off <= 2 || live_sync <= 2 {

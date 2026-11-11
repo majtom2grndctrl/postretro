@@ -74,6 +74,14 @@ pub enum MoverProbeChannelError {
         cell: u32,
         detail: String,
     },
+    #[error(
+        "MoverProbeChannelStreamedRowOverflow: the {block} payload of affinity cell {cell} is {bytes} byte(s), past the u32 length its ClusterShPayloads (id 50) row carries"
+    )]
+    StreamedRowOverflow {
+        block: MoverChannelBlock,
+        cell: u32,
+        bytes: u64,
+    },
     #[error("MoverProbeChannelStreamedRows: an id-50 row block {detail}")]
     StreamedRows { detail: String },
     #[error(

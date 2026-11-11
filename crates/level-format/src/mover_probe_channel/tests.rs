@@ -1663,3 +1663,156 @@ fn an_across_pose_storing_q_below_255_is_refused_by_name() {
         Err(expected)
     );
 }
+
+// −0.0 equals 0.0 as a value but is another encoding of the first knot, so
+// it is refused: one section has one byte encoding.
+#[test]
+fn a_negative_zero_first_knot_is_refused_by_name() {
+    let section = posed_sample();
+    let bytes = section.to_bytes();
+    let refused = decode(&with_f32(&bytes, mover3_knot(&section, 0), -0.0));
+    assert!(
+        matches!(
+            refused,
+            Err(MoverProbeChannelError::KnotEnds { mover_id: 3, first, last })
+                if first.to_bits() == (-0.0f32).to_bits() && last == 1.0
+        ),
+        "{refused:?}"
+    );
+}
+
+// A pose count at the field's top is refused by the length check on its
+// knots, before anything is allocated for them.
+#[test]
+fn a_pose_count_past_the_sections_bytes_is_refused_without_allocating() {
+    let section = posed_sample();
+    let bytes = section.to_bytes();
+    let count = offsets(&section).movers + 4 + 12;
+    let refused = decode(&with_u32(&bytes, count, u32::MAX));
+    assert!(
+        matches!(
+            refused,
+            Err(MoverProbeChannelError::Truncated {
+                what: "mover knots",
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+}
+
+/// One listed cell of 64 valid probes and one mover of `pose_count` evenly
+/// spaced poses, both blocks empty and resident. A test fills one block.
+fn one_mover_section(pose_count: usize) -> MoverProbeChannelSection {
+    let last = (pose_count - 1) as f32;
+    MoverProbeChannelSection {
+        affinity_factor: AFFINITY_FACTOR,
+        affinity_dims: [1, 1, 1],
+        direct_placement: MoverPayloadPlacement::Resident,
+        bounce_placement: MoverPayloadPlacement::Resident,
+        cells: vec![MoverChannelCell {
+            cell: 0,
+            valid_probe_mask: ALL_VALID,
+        }],
+        mover_records: vec![MoverRecord {
+            mover_id: 1,
+            ramp_start: 0.0,
+            ramp_end: 1.0,
+            knots: (0..pose_count).map(|pose| pose as f32 / last).collect(),
+        }],
+        direct_offsets: vec![0, 0],
+        direct_records: Vec::new(),
+        mover_offsets: vec![0],
+        direct_movers: Vec::new(),
+        across_entries: Vec::new(),
+        visibility: Vec::new(),
+        own_tiles: Vec::new(),
+        bounce_offsets: vec![0, 0],
+        bounce_entries: Vec::new(),
+        bounce_tiles: Vec::new(),
+        depth_records: Vec::new(),
+        depth_tiles: Vec::new(),
+    }
+}
+
+// An id-50 row carries a cell's streamed payload length as a u32. Decode
+// refuses a cell past it from the section's lengths alone, as no streamed
+// payload is in id 57, so no load path sizes such a row. Direct: 1,024
+// bake-only lights, each with its own tile at all 64 probes, gated by one
+// 65,536-pose mover, put 2³² bytes of q in the cell.
+#[test]
+fn a_streamed_direct_row_past_u32_is_refused_by_name_from_lengths_alone() {
+    use MoverLightNamespace::BakeOnlyStaticLight;
+    const LIGHTS: u32 = 1024;
+    let mut section = one_mover_section(65_536);
+    section.direct_placement = MoverPayloadPlacement::Streamed;
+    section.direct_offsets = vec![0, LIGHTS];
+    section.direct_records = (0..LIGHTS)
+        .map(|light| record(BakeOnlyStaticLight, light, true, ALL_VALID))
+        .collect();
+    section.mover_offsets = (0..=LIGHTS).collect();
+    section.direct_movers = vec![1; LIGHTS as usize];
+    // Stands in for the payload so the encoder sees it held; a streamed
+    // payload is never written to id 57.
+    section.visibility = vec![255];
+    let expected = 64 * 65_536 * u64::from(LIGHTS)
+        + 2 * 64 * MOVER_IRRADIANCE_TILE_F16_COUNT as u64 * u64::from(LIGHTS);
+
+    let bytes = section.to_bytes();
+    assert!(bytes.len() < 1 << 20, "the section holds lengths, not q");
+    assert_eq!(
+        decode(&bytes),
+        Err(MoverProbeChannelError::StreamedRowOverflow {
+            block: MoverChannelBlock::Direct,
+            cell: 0,
+            bytes: expected,
+        })
+    );
+}
+
+// Bounce: one entry storing all 64 probes at every pose of a mover with
+// enough poses that its tiles pass 2³² bytes.
+#[test]
+fn a_streamed_bounce_row_past_u32_is_refused_by_name_from_lengths_alone() {
+    let pose_bytes = 64 * MOVER_IRRADIANCE_TILE_F16_COUNT * 2;
+    let pose_count = u32::MAX as usize / pose_bytes + 1;
+    let mut section = one_mover_section(pose_count);
+    section.bounce_placement = MoverPayloadPlacement::Streamed;
+    section.bounce_offsets = vec![0, 1];
+    section.bounce_entries = vec![MoverBounceEntry {
+        mover_id: 1,
+        poses: vec![
+            BouncePoseMasks {
+                stored: ALL_VALID,
+                base: 0
+            };
+            pose_count
+        ],
+    }];
+    // Stands in for the payload so the encoder sees it held; a streamed
+    // payload is never written to id 57.
+    section.bounce_tiles = vec![0];
+
+    assert_eq!(
+        decode(&section.to_bytes()),
+        Err(MoverProbeChannelError::StreamedRowOverflow {
+            block: MoverChannelBlock::Bounce,
+            cell: 0,
+            bytes: (pose_count * pose_bytes) as u64,
+        })
+    );
+}
+
+// The ramp's knot mirror of the game's hand-over: a subnormal span
+// overflows the quotient past the window's end, which reads 1, not 0; the
+// window's start still reads 0, and −0.0 still reads +0.0.
+#[test]
+fn a_subnormal_ramp_span_reads_one_past_its_end() {
+    let end = f32::from_bits(1);
+    assert_eq!(ramped_knot(1.0, 0.0, end), 1.0);
+    assert_eq!(ramped_knot(0.5, 0.0, end), 1.0);
+    assert_eq!(ramped_knot(end, 0.0, end), 1.0);
+    assert_eq!(ramped_knot(0.0, 0.0, end).to_bits(), 0.0f32.to_bits());
+    assert_eq!(ramped_knot(-0.0, 0.0, 1.0).to_bits(), 0.0f32.to_bits());
+    assert_eq!(ramped_knot(f32::NAN, 0.0, end), 0.0, "never NaN");
+}

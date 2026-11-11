@@ -25,9 +25,9 @@ const SUN_CONE_SLACK_RAD: f64 = 1.0e-3;
 /// brush starts in solid and is blocked: a probe a hair off a face loses
 /// only the samples whose lift crosses it. A probe the pose encloses, by at
 /// least the lift ([`Self::encloses`]), stores no q for that pose: it keeps
-/// 255 and reads the light's mover-absent term there (owner, 2026-11-09).
-/// A dark enclosed state, lerped over the whole travel, stayed mostly black
-/// once the face swept past the probe.
+/// 255 and reads the light's mover-absent term there at a terminus; at a mid pose the
+/// section marks it across. A dark enclosed state, lerped over the whole
+/// travel, would stay mostly black once the face swept past the probe.
 #[derive(Clone)]
 pub(crate) struct PosedOccluder {
     solid: Arc<PosedSolid>,

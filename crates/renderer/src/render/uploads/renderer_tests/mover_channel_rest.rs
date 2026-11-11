@@ -1,8 +1,8 @@
 //! Compiled maps: at rest, mid poses change no probe's channel contribution.
 //! Each pair names a map built `--release` with two poses per mover by the
-//! parity baseline compiler (`mover_probe_channel_prl_parity`: today's
-//! terminus states as epoch 5, since the loader refuses the pre-change
-//! epoch 4) and by this one, with mid poses. Each build loads
+//! parity baseline compiler (`mover_probe_channel_prl_parity`: the two-pose
+//! parent compiler, writing the same bake as epoch 5 because the loader
+//! refuses epoch 4) and by this one, with mid poses. Each build loads
 //! under `off` and under `sync-proof` with every cluster resident, hands
 //! every mover no state, then t′ = 0 and t′ = 1, and reads back every probe
 //! either build's channel touches.

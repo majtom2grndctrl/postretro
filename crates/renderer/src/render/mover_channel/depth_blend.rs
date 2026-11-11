@@ -34,7 +34,7 @@ const F16_MAX: f64 = 65504.0;
 /// tile, the probe's bound base, or [`ACROSS`]). Every interval between the
 /// two defined poses around `t` runs through `base`: D_lo → base → D_hi,
 /// reaching the base at the interval's midpoint (owner, 2026-11-10), so a
-/// termini-to-termini interval keeps 12c's through-base blend. Exact at
+/// termini-to-termini interval keeps the two-pose through-base blend. Exact at
 /// every read knot. The leg is the format's [`depth_leg`], which the
 /// compiler's skipping judges by too.
 pub(super) fn segment<'a>(

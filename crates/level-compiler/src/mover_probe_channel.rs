@@ -54,11 +54,13 @@ pub(crate) use absent_memo::AbsentBounceMemo;
 pub(crate) use across::EnclosedMidPoses;
 pub(crate) use bake::{
     MoverBounceBake, MoverBounceJob, MoverBounceRequest, StaticBounce, bake_mover_bounce,
-    held_progress_units, sh_base_bounce_count,
+    poses_progress_units, sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
 pub(crate) use cost::MoverChannelCost;
-pub(crate) use depth::{CarriedDepth, DepthReservation, MoverAbsentDepth, reserve_mover_tiles};
+pub(crate) use depth::{
+    CarriedDepth, DepthReservation, MoverAbsentDepth, refuse_cut_short, reserve_mover_tiles,
+};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
 #[cfg(test)]
 pub(crate) use domain::direct_display_levels;
@@ -82,7 +84,7 @@ pub(crate) use posed_solid::PosedMovers;
 pub(crate) use posed_solid::enclosure_inset;
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
 pub(crate) use skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
-#[cfg(test)]
-pub(crate) use states::BounceProbe;
 pub(crate) use states::MoverBounceStates;
+#[cfg(test)]
+pub(crate) use states::{BounceProbe, DepthProbe};
 pub(crate) use visibility::{JointVisibility, PosedOccluder, joint_soft_visibility};

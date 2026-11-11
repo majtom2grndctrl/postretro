@@ -195,9 +195,10 @@ impl MoverPoseStates {
 
 /// One affected probe: what each pose holds for it, and its stored states
 /// in pose order, each id 27's compact RGB tile. A terminus whose state is
-/// within the round-trip bar of id 34 stores none and composes id 34 (owner,
-/// 2026-11-09); a mid pose reads id 34 where it encloses the probe or
-/// leaves it within its bars, and blends across where it lists nothing.
+/// within the round-trip bar of id 34 stores none and composes id 34; a mid
+/// pose reads id 34 where it leaves the probe within its bars, and blends
+/// across where it lists nothing. An enclosing mid pose stores nothing and
+/// blends across.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BounceProbe {
     pub(crate) probe: u32,
@@ -270,6 +271,13 @@ impl MoverBounceStates {
     /// never memoized.
     pub(crate) fn depth_past_range(&self, depth_cap: u32) -> bool {
         self.depth.len() > depth_cap as usize
+    }
+
+    /// Whether the tile range cut the mover's depth records: it carries
+    /// depth at more probes than it keeps. Skipping drops a record and its
+    /// count together, so a cut still shows after it.
+    pub(crate) fn depth_cut(&self) -> bool {
+        self.depth_carried > self.depth.len()
     }
 
     /// Replace the stored states with `bounce` and `depth`, the same probes

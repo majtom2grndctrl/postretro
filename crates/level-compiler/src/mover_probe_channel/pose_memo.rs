@@ -40,7 +40,9 @@ const STAGE_ID: &str = "mover_probe_bounce";
 /// blended later shares.
 /// 10: one entry per pose holding its raw states, before its mover's poses
 /// reduce; the depth floor and the tile range apply after every read.
-const STAGE_VERSION: u32 = 10;
+/// 11: a mid pose folds its domain's static patches only where it traces a
+/// posed later bounce over them.
+const STAGE_VERSION: u32 = 11;
 
 /// What a pose bakes: a terminus gathers every valid probe, a mid pose its
 /// mover's near-field domain. Folded into the key, so the two never share
@@ -101,8 +103,9 @@ impl<'c> PoseMemo<'c> {
     /// bounce count, its solid (bounds, brush planes and side triangles),
     /// each side's texture index and the albedo of every texture those
     /// sides name; and, at a mid pose only, what it reads of the near-field
-    /// domain: the probes it gathers (`job.domain_probes`) and, re-baking
-    /// bounce, the static patches its later bounces trace
+    /// domain: the probes it gathers (`job.domain_probes`) and, where it
+    /// re-bakes a later bounce posed (`bounces` past 1, which a fill of 0
+    /// never allows), the static patches those bounces trace
     /// (`domain_patches`, [`super::NearFieldDomain::static_patches`]). The
     /// domain is read as nothing else, so a domain edit that moves neither
     /// list keeps the pose. A terminus gathers every valid probe and traces
@@ -128,7 +131,7 @@ impl<'c> PoseMemo<'c> {
         }]);
         hasher.update(&bounces.to_le_bytes());
         if kind == PoseKind::Mid {
-            let patches = if bounces > 0 { domain_patches } else { &[] };
+            let patches = if bounces > 1 { domain_patches } else { &[] };
             for list in [job.domain_probes.as_slice(), patches] {
                 hasher.update(&(list.len() as u64).to_le_bytes());
                 for index in list {

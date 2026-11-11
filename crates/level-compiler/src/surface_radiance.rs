@@ -33,7 +33,6 @@ pub(crate) use patches::{Patch, PatchCountExceeded, PatchSet, Side};
 pub(crate) use reach::PatchReachIndex;
 #[cfg(test)]
 pub(crate) use reach::REACH_INDEX_BYTES_PER_PATCH;
-#[cfg(test)]
 pub(crate) use stage::MoverBounceOutcome;
 #[cfg(test)]
 pub(crate) use stage::bake_sh_base;

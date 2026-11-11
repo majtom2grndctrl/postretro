@@ -163,10 +163,10 @@ impl PosedProbe {
     /// Past the round-trip bar alone, at a probe the pose does not enclose:
     /// at an affected probe, whether this terminus stores its state. One
     /// within the bar is id 34 as the encoding already holds it, so the
-    /// terminus stores nothing and composes id 34 (owner, 2026-11-09). An
+    /// terminus stores nothing and composes id 34. An
     /// enclosed probe's dark state is never stored either, and composes id
-    /// 34 as an unchanged terminus does (owner, 2026-11-09): lerped over the
-    /// whole travel, it stayed mostly black once the face swept past.
+    /// 34 as an unchanged terminus does: lerped over the whole travel, a dark
+    /// state would stay mostly black once the face swept past.
     pub(crate) fn changed(&self) -> bool {
         !self.enclosed && self.difference > self.bar
     }

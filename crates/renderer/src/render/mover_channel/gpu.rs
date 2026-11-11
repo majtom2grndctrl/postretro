@@ -188,7 +188,7 @@ fn table_buffer(
 }
 
 /// Id 57's structure a streamed level keeps to write cells as clusters
-/// arrive: indexes, records, masks, mover entries and ramps, and each
+/// arrive: indexes, mover entries, across marks and mover records, and each
 /// resident block's payload. Bounce entries stay only while the bounce
 /// payload streams; the depth block is never kept here.
 #[derive(Debug)]

@@ -69,7 +69,7 @@ pub(crate) fn clears_bounce_bars(
     max_abs_difference(a, b) > bar && display_levels(a, b) > BOUNCE_FLOOR_LEVELS
 }
 
-/// The perceptual floor (owner, 2026-11-08): a probe's bounce is
+/// The perceptual floor (an owner value): a probe's bounce is
 /// affected only when its change also exceeds this many display levels
 /// ([`display_levels`]). The largest floor that keeps every `mover-closet`
 /// probe the closed door darkens, whose smallest change is 2.30 levels.

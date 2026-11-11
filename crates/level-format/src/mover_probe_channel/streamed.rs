@@ -53,6 +53,9 @@ impl MoverCellSlices {
     /// The cell's row lengths for `section`'s placements.
     pub fn row_lens(&self, section: &MoverProbeChannelSection) -> MoverStreamedRowLens {
         let streamed = |block| section.placement(block) == MoverPayloadPlacement::Streamed;
+        // Decode refuses a listed cell whose streamed payload passes u32
+        // (`check_streamed_row_lens` in wire.rs), so a loaded section's rows
+        // always fit.
         let bytes = |len: usize| u32::try_from(len).expect("one cell's payload fits u32");
         MoverStreamedRowLens {
             direct: if streamed(MoverChannelBlock::Direct) {

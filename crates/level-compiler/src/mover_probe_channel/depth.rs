@@ -2,7 +2,7 @@
 // range they reserve ahead of id 59's own tiles.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel) · §PRL section IDs
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use postretro_level_format::probe_depth_tiles::{
@@ -14,7 +14,7 @@ use thiserror::Error;
 use super::states::MoverBounceStates;
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_depth_bias, visibility_change};
 
-/// The significance floor (owner, 2026-11-08): a probe carries a
+/// The significance floor (an owner value): a probe carries a
 /// mover's closed-pose depth only when id 59's own visibility-change score
 /// of a closed-pose tile, against the probe's mover-absent moments, is at
 /// least this. The largest round value that keeps every probe the static-door
@@ -89,6 +89,10 @@ impl<'a> MoverAbsentDepth<'a> {
 
     /// What compose reads as `probe`'s base, texel by texel: its id-59 tile
     /// where id 59 keeps one, else its averaged id-34 moments in every texel.
+    /// The skip judges against id 59 before the mover-tile reservation trims
+    /// it, so where the trim drops a probe's tile compose blends through the
+    /// averaged moments instead. The difference is small: a trimmed tile is,
+    /// by ranking, the closest to them.
     pub(crate) fn base_moments(&self, probe: u32) -> Vec<[f32; 2]> {
         match self.tiles.get(&probe) {
             Some(tile) => tile
@@ -118,7 +122,7 @@ pub(crate) struct CarriedDepth {
 }
 
 impl CarriedDepth {
-    #[cfg(test)]
+    /// `probes` distinct probes, every mover's depth held whole.
     pub(crate) fn exact(probes: usize) -> Self {
         Self {
             probes,
@@ -132,9 +136,7 @@ impl CarriedDepth {
     /// the cut is unknown. Then the larger of `live` and the most one mover
     /// carries, a lower bound.
     pub(crate) fn new(live: usize, movers: &[MoverBounceStates], stopped: bool) -> Self {
-        let cut = movers
-            .iter()
-            .any(|states| states.depth_carried > states.depth.len());
+        let cut = movers.iter().any(MoverBounceStates::depth_cut);
         let carrying = movers
             .iter()
             .filter(|states| !states.depth.is_empty())
@@ -171,6 +173,39 @@ impl fmt::Display for CarriedDepth {
 pub(crate) struct MoverTileRangeExceeded {
     pub(crate) carried: CarriedDepth,
     pub(crate) cap: u32,
+}
+
+/// Refuse a bake the tile range cut short: one that `stopped` before every
+/// mover ran, or whose range cut a mover's depth records
+/// ([`super::states::reduce_poses`]). The movers from the stop on hold no
+/// states, and a cut mover's records past the range are gone, so the build
+/// fails by name whatever count would remain. Judged before any mid pose
+/// skips: skipping drops depth records and can bring the count back within
+/// the range, and the lost states would then ship as if the movers changed
+/// nothing. The count is the one the bake saw, past the range by
+/// construction: the bake stops only once more distinct probes than the
+/// range carry depth, and a cut keeps one record past it.
+pub(crate) fn refuse_cut_short(
+    movers: &[MoverBounceStates],
+    stopped: bool,
+    tile_cap: u32,
+) -> Result<(), MoverTileRangeExceeded> {
+    if !stopped && !movers.iter().any(MoverBounceStates::depth_cut) {
+        return Ok(());
+    }
+    let live = movers
+        .iter()
+        .flat_map(|states| states.depth.iter().map(|probe| probe.probe))
+        .collect::<BTreeSet<_>>()
+        .len();
+    let carried = CarriedDepth::new(live, movers, stopped);
+    let cap = effective_tile_cap(tile_cap);
+    debug_assert!(
+        carried.probes > cap as usize,
+        "a bake cut short saw {} probes carrying depth, within the {cap}-tile range",
+        carried.probes
+    );
+    Err(MoverTileRangeExceeded { carried, cap })
 }
 
 /// What reserving the mover tiles left of id 59.

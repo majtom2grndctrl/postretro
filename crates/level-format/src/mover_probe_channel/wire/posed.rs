@@ -164,7 +164,8 @@ fn check_knots(mover_id: u32, knots: &[f32]) -> Result<(), Error> {
         }
     }
     let (first, last) = (knots[0], knots[knots.len() - 1]);
-    if first != 0.0 || last != 1.0 {
+    // Bits, not value: −0.0 equals 0.0, and one section has one encoding.
+    if first.to_bits() != 0.0f32.to_bits() || last != 1.0 {
         return Err(Error::KnotEnds {
             mover_id,
             first,

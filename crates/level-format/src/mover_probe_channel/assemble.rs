@@ -73,11 +73,16 @@ impl MoverProbeChannelSection {
     /// the section is never written empty.
     ///
     /// The canonical content is the producer's: each record's mask must be
-    /// exactly its movers' `q < 255` probes, every entry must store per pose
-    /// of its mover's record, an across mark must name a probe the mover's
-    /// records or bounce entry name at its cell (q 255 and no bounce state
-    /// at the marked pose), and no record, mover entry, across entry or
+    /// exactly its movers' `q < 255` probes, every bounce, depth and
+    /// visibility entry holds one state per pose of its mover's record, an
+    /// across mark must name a probe the mover's records or bounce entry name
+    /// at its cell (q 255 and no bounce state at the marked pose), and no record, mover entry, across entry or
     /// bounce entry may repeat. Decoding refuses a section that breaks them.
+    ///
+    /// # Panics
+    /// If a producer invariant is broken: an across entry whose cell holds
+    /// neither a direct record nor a bounce entry, or a named cell missing
+    /// from the listed cells, or more mover entries than fit a `u32`.
     pub fn assemble<E>(
         parts: MoverProbeChannelParts,
         valid_probe_mask: impl Fn(u32) -> u64,

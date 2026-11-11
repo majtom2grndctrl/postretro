@@ -742,6 +742,10 @@ fn run_after_parsing(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
     );
+    // An authored `light_poses` too large to place, or whose poses alone
+    // pass the working-set budget, fails by the mover's name before
+    // placement allocates for it.
+    mover_poses.admit_pose_counts(&map_data.kinematic_movers, args.working_set_max_bytes)?;
     mover_poses.place_poses(&map_data.kinematic_movers, sh_config.probe_spacing);
     // Every analysed mover posed at each of its poses, once: the bounce
     // half's scenes and the direct half's occluders share these solids.
@@ -751,7 +755,7 @@ fn run_after_parsing(
         &geo_result.texture_names,
     )?;
     // The probe channel's bounce half poses every analysed mover at each of
-    // its poses now, so the SH base gate prices its scenes, its states and
+    // its poses, so the SH base gate prices its scenes, its states and
     // the direct half's entries before any SH ray.
     let probe_depth_tile_cap = args.probe_depth_tile_cap;
     let bounce_plan = {
@@ -919,18 +923,19 @@ fn run_after_parsing(
         &bounce_plan.request,
     );
     // Every mover's states have resolved, from its memo or its bake; the
-    // redundant mid-pose skips read each mover's ramp, which no memo keys.
+    // redundant mid-pose skips read each mover's ramp, which no memo keys. A
+    // bake the tile range cut short fails by name before any state skips.
     let mover_skips = mover_bounce_stage::skip_mid_poses(
-        &mut mover_bounce.movers,
+        &mut mover_bounce,
         &map_data.kinematic_movers,
         &mover_poses,
         &sh_volume_section,
         &probe_depth_tiles,
         bounce_plan.request.uncompressed,
-    );
+        probe_depth_tile_cap,
+    )?;
     let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
         &mover_bounce.movers,
-        mover_bounce.stopped,
         &sh_volume_section,
         &mut probe_depth_tiles,
         probe_depth_tile_cap,

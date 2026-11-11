@@ -17,11 +17,12 @@ use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
     BounceBlocks, CarriedDepth, DepthReservation, MoverAbsentDepth, MoverBounceJob,
     MoverBounceRequest, MoverBounceStates, MoverChannelCost, MoverRecords, NearFieldDomain,
-    PosedMovers, PosedScene, ProbeCells, SkipBars, SkipCounts, reserve_mover_tiles,
-    sh_base_bounce_count, skip_redundant_mid_poses,
+    PosedMovers, PosedScene, ProbeCells, SkipBars, SkipCounts, refuse_cut_short,
+    reserve_mover_tiles, sh_base_bounce_count, skip_redundant_mid_poses,
 };
 use crate::partition::BspTree;
 use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
+use crate::surface_radiance::MoverBounceOutcome;
 
 /// What the bounce half reads before the SH gates.
 pub(super) struct BouncePlanInputs<'a> {
@@ -143,16 +144,24 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
 /// `depth_tiles` id 59 before mover tiles reserve their range, the bases
 /// the bars read. Logs one line per mover with mid poses, and hands back
 /// each such mover's counts by id.
+///
+/// A bake the tile range `tile_cap` cut short fails by name first, before
+/// any state skips ([`refuse_cut_short`]): skipping can bring the count back
+/// within the range while the movers past the stop or the cut have lost
+/// their states.
 pub(super) fn skip_mid_poses(
-    states: &mut [MoverBounceStates],
+    outcome: &mut MoverBounceOutcome,
     movers: &[MapKinematicMover],
     poses: &MoverPoses,
     base: &OctahedralShVolumeSection,
     depth_tiles: &ProbeDepthTiles,
     uncompressed: bool,
-) -> Vec<(u32, SkipCounts)> {
+    tile_cap: u32,
+) -> anyhow::Result<Vec<(u32, SkipCounts)>> {
+    refuse_cut_short(&outcome.movers, outcome.stopped, tile_cap)?;
+    let states = &mut outcome.movers;
     if states.iter().all(|states| states.pose_count <= 2) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut skipped = Vec::new();
     let records = MoverRecords::new(movers, poses);
@@ -179,26 +188,30 @@ pub(super) fn skip_mid_poses(
         );
         skipped.push((states.mover_id, counts));
     }
-    skipped
+    Ok(skipped)
 }
 
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved
 /// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room and
 /// logs its counts once against the shrunk cap. Live tiles alone past the
-/// range fail the build by name, with the count a lower bound once the bake
-/// `stopped` short of a job or the range cut a mover sharing the range.
+/// range fail the build by name. A bake the range cut short has already
+/// failed, before skipping ([`skip_mid_poses`]), so every mover's depth is
+/// whole here and the count exact.
 pub(super) fn finish_bounce_half(
     movers: &[MoverBounceStates],
-    stopped: bool,
     base: &OctahedralShVolumeSection,
     depth_tiles: &mut ProbeDepthTiles,
     tile_cap: u32,
 ) -> anyhow::Result<(BounceBlocks, DepthReservation)> {
+    debug_assert!(
+        !movers.iter().any(MoverBounceStates::depth_cut),
+        "a bake the tile range cut short fails before skipping"
+    );
     let cells = ProbeCells::new(base.grid_dimensions, |probe| {
         base.probes[probe].validity != 0
     });
     let blocks = BounceBlocks::new(movers, &cells);
-    let carried = CarriedDepth::new(blocks.live_tile_count(), movers, stopped);
+    let carried = CarriedDepth::exact(blocks.live_tile_count());
     let reservation = reserve_mover_tiles(depth_tiles, base, carried, tile_cap)?;
     if reservation.live > 0 {
         log::info!(

@@ -55,7 +55,7 @@ fn summary(logs: &str, mover: &str) -> String {
     line[line.find("): ").expect("the id's end") + 3..].to_string()
 }
 
-// AC 20: `low` bakes every mover as its `light_bounces` capped at 1 (the
+// `low` bakes every mover as its `light_bounces` capped at 1 (the
 // default map at `low` packs exactly as the map with both movers at
 // `light_bounces 1` at `high`); `high` bakes each mover's own (the default
 // map's id 57 differs between them); `--release` equals an interactive
@@ -111,7 +111,7 @@ fn low_caps_every_mover_at_one_bounce_high_bakes_its_own_and_release_is_high_on_
         "{released}"
     );
     assert!(!summary(released, "plate").contains('—'), "{released}");
-    // AC 29: the projection adds each mid pose's share of the static patches,
+    // The projection adds each mid pose's share of the static patches,
     // its domain's, counted alike with no memo (`--release`) and with one.
     let share = |logs: &str| {
         let line = summary(logs, "plate");
@@ -128,7 +128,7 @@ fn low_caps_every_mover_at_one_bounce_high_bakes_its_own_and_release_is_high_on_
     assert!(summary(&capped_high.logs, "plate").starts_with("6 pose(s), high;"));
 }
 
-// AC 20: `light_bounces 0` stores no bounce entry at either fidelity.
+// `light_bounces 0` stores no bounce entry at either fidelity.
 #[test]
 fn light_bounces_zero_stores_no_bounce_at_either_fidelity() {
     let dark = Scene {
@@ -161,7 +161,7 @@ fn light_bounces_zero_stores_no_bounce_at_either_fidelity() {
     }
 }
 
-// AC 21: `--release` beside `--bake-fidelity` fails before any stage,
+// `--release` beside `--bake-fidelity` fails before any stage,
 // naming both flags.
 #[test]
 fn release_beside_bake_fidelity_fails_before_any_stage_naming_both_flags() {
@@ -195,7 +195,7 @@ fn release_beside_bake_fidelity_fails_before_any_stage_naming_both_flags() {
     }
 }
 
-// AC 21: a cache directory that cannot be created leaves the build with no
+// A cache directory that cannot be created leaves the build with no
 // cache, as `--release` and `--no-cache` do, yet it bakes `low`: the mode
 // comes from the flags. It packs exactly as the `--no-cache` build.
 #[test]
@@ -220,7 +220,7 @@ fn a_cache_directory_that_cannot_be_created_bakes_low() {
     );
 }
 
-// AC 23: per fidelity, with no higher entries cached, a warm build equals a
+// Per fidelity, with no higher entries cached, a warm build equals a
 // `--no-cache` build byte for byte; `low` fills and reads its own entries,
 // `high` its own. Two `low` builds with the same inputs and the same cache,
 // that cache holding `high` entries, are byte-identical.
@@ -252,7 +252,7 @@ fn per_fidelity_warm_equals_no_cache_and_two_low_builds_over_one_cache_are_alike
     assert_same_prl(&builds[0], &builds[1], "two low builds over one cache");
 }
 
-// AC 24 and AC 27's low half. After a `high` build, a `low` build serves
+// After a `high` build, a `low` build serves
 // `high` states for every pose it can: the unchanged shutter wholly, and for
 // the plate after a `light_poses` edit its termini and the mid poses the edit
 // keeps, baking only the new ones `low`; a mover edited all over bakes `low`.

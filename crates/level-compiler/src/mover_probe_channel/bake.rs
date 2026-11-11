@@ -66,19 +66,21 @@ impl MoverBounceJob {
         self.scenes.len() > 2
     }
 
-    /// Progress units the bake of pose `pose` advances over `valid_probes`
-    /// valid probes, `patches` static patches and `domain_patches` of them
-    /// inside the near-field domain ([`Self::domain_patch_count`]) at
-    /// `fill`: at a terminus, one per valid probe (the posed gather, or the
-    /// depth-only trace) and one per patch chunk of each posed later bounce
-    /// over every static patch; at a mid pose, one per domain probe (its
-    /// gather, or its depth-only trace) and one per patch chunk of each
-    /// posed later bounce over the static patches in its domain. Each posed
-    /// later bounce also counts the pose's own patch chunks. Posed bounce
-    /// one counts none. A memo hit advances them at once.
+    /// Progress units the bake of pose `pose` at `bounces` posed bounces
+    /// advances over `valid_probes` valid probes, `patches` static patches
+    /// and `domain_patches` of them inside the near-field domain
+    /// ([`Self::domain_patch_count`]) at `fill`: at a terminus, one per
+    /// valid probe (the posed gather, or the depth-only trace) and one per
+    /// patch chunk of each posed later bounce over every static patch; at a
+    /// mid pose, one per domain probe (its gather, or its depth-only trace)
+    /// and one per patch chunk of each posed later bounce over the static
+    /// patches in its domain. Each posed later bounce also counts the pose's
+    /// own patch chunks. Posed bounce one counts none. A memo hit advances
+    /// them at once.
     pub(crate) fn pose_progress_units(
         &self,
         pose: usize,
+        bounces: u32,
         valid_probes: usize,
         patches: usize,
         domain_patches: usize,
@@ -90,26 +92,26 @@ impl MoverBounceJob {
         } else {
             self.domain_probes.len()
         };
-        if self.bounces == 0 || fill == 0.0 {
+        if bounces == 0 || fill == 0.0 {
             return gathered;
         }
         let world = if terminus { patches } else { domain_patches };
-        gathered
-            + posed_later_progress_units(self.bounces - 1, world, self.scenes[pose].patches.len())
+        gathered + posed_later_progress_units(bounces - 1, world, self.scenes[pose].patches.len())
     }
 
     /// The static patches inside the near-field domain a mid pose's later
-    /// bounces trace, counted only where some mid pose traces one.
+    /// bounces trace, counted only where some mid pose may trace one: at
+    /// the mover's own count, which a pose a `high` entry serves holds.
     pub(crate) fn domain_patch_count(&self, patches: &PatchSet, fill: f32) -> usize {
-        if fill != 0.0 && self.bounces > 1 && self.has_mid_poses() {
+        if fill != 0.0 && self.high_bounces > 1 && self.has_mid_poses() {
             self.domain.static_patches(patches).len()
         } else {
             0
         }
     }
 
-    /// Progress units every pose of the job advances
-    /// ([`Self::pose_progress_units`]).
+    /// Progress units every pose of the job advances at the build's count
+    /// ([`Self::pose_progress_units`]), before any memo lookup.
     pub(crate) fn progress_units(
         &self,
         valid_probes: usize,
@@ -119,7 +121,14 @@ impl MoverBounceJob {
         let domain_patches = self.domain_patch_count(patches, fill);
         (0..self.scenes.len())
             .map(|pose| {
-                self.pose_progress_units(pose, valid_probes, patches.len(), domain_patches, fill)
+                self.pose_progress_units(
+                    pose,
+                    self.bounces,
+                    valid_probes,
+                    patches.len(),
+                    domain_patches,
+                    fill,
+                )
             })
             .sum()
     }
@@ -138,10 +147,10 @@ pub(crate) struct MoverBounceRequest {
     pub(crate) keep_poses: bool,
     /// The tile range mover depth may fill: once the movers met so far,
     /// baked or held from the memo, carry depth at more probes, the bake
-    /// stops, and the build fails by name when it reserves their tiles. No
-    /// mover keeps more than one depth record past it
-    /// ([`super::states::reduce_poses`]), and a mover past it has none of
-    /// its poses memoized.
+    /// stops, and the build fails by name before any mid pose skips
+    /// ([`super::depth::refuse_cut_short`]). No mover keeps more than one
+    /// depth record past it ([`super::states::reduce_poses`]), and a mover
+    /// past it has none of its poses memoized.
     pub(crate) depth_cap: u32,
 }
 
@@ -161,7 +170,9 @@ pub(crate) struct PoseSlot {
     /// `high` entry served it, else the job's `bounces`, at which it bakes.
     pub(crate) bounces: u32,
     /// Its memo held it at lookup: the bake reads it there again, and bakes
-    /// it only when that read fails.
+    /// it only when that read fails. A held pose of a mover with a miss
+    /// advances its progress when it reads back, so one that fails to read
+    /// back advances only as it bakes.
     pub(crate) held: bool,
 }
 
@@ -258,19 +269,21 @@ pub(crate) fn bake_mover_bounce(
     let mut depth_probes = std::collections::BTreeSet::new();
     for (at, slot) in slots.iter().enumerate() {
         if depth_probes.len() > request.depth_cap as usize {
-            // The build fails by name when it reserves these tiles; the
-            // jobs left never run, so their progress lands at once. A held
-            // slot's progress landed with its memo hit.
+            // The build fails by name before any mid pose skips; the jobs
+            // left never run, so their progress lands at once, their held
+            // poses' included. A held slot's progress landed with its memo
+            // hit.
             control.advance(
                 slots[at..]
                     .iter()
                     .filter_map(|slot| match slot {
-                        MoverSlot::Bake { job, poses } => Some(pending_progress_units(
+                        MoverSlot::Bake { job, poses } => Some(poses_progress_units(
                             job,
                             poses,
                             valid.len(),
                             inputs.patches,
                             inputs.bounce_fill,
+                            |_| true,
                         )),
                         MoverSlot::Held(_) => None,
                     })
@@ -299,6 +312,16 @@ pub(crate) fn bake_mover_bounce(
             valid: &valid,
         };
         let held = read_held_poses(job, pose_slots, memo, inputs.layout);
+        // A pose read back advances now; one whose read fails bakes, and
+        // advances as it bakes.
+        control.advance(poses_progress_units(
+            job,
+            pose_slots,
+            valid.len(),
+            inputs.patches,
+            inputs.bounce_fill,
+            |pose| held[pose].is_some(),
+        ));
         let bounces: Vec<u32> = pose_slots.iter().map(|slot| slot.bounces).collect();
         let Some(resolved) = baker.bake(held, &bounces, &mut out.poses) else {
             continue;
@@ -354,47 +377,34 @@ fn baked_bounces(bounces: &[u32], baked: &[bool]) -> String {
         .join("/")
 }
 
-/// Progress units `job`'s poses that no memo held advance
+/// Progress units the poses of `job` that `counted` picks advance, each at
+/// the count its slot in `poses` resolves at
 /// ([`MoverBounceJob::pose_progress_units`]).
-fn pending_progress_units(
+pub(crate) fn poses_progress_units(
     job: &MoverBounceJob,
     poses: &[PoseSlot],
     valid_probes: usize,
     patches: &PatchSet,
     fill: f32,
+    counted: impl Fn(usize) -> bool,
 ) -> usize {
-    pose_progress_units(job, poses, valid_probes, patches, fill, false)
-}
-
-/// Progress units `job`'s poses a memo held advance at once.
-pub(crate) fn held_progress_units(
-    job: &MoverBounceJob,
-    poses: &[PoseSlot],
-    valid_probes: usize,
-    patches: &PatchSet,
-    fill: f32,
-) -> usize {
-    pose_progress_units(job, poses, valid_probes, patches, fill, true)
-}
-
-fn pose_progress_units(
-    job: &MoverBounceJob,
-    poses: &[PoseSlot],
-    valid_probes: usize,
-    patches: &PatchSet,
-    fill: f32,
-    held: bool,
-) -> usize {
-    if !poses.iter().any(|slot| slot.held == held) {
+    if !(0..poses.len()).any(&counted) {
         return 0;
     }
     let domain_patches = job.domain_patch_count(patches, fill);
     poses
         .iter()
         .enumerate()
-        .filter(|(_, slot)| slot.held == held)
-        .map(|(pose, _)| {
-            job.pose_progress_units(pose, valid_probes, patches.len(), domain_patches, fill)
+        .filter(|(pose, _)| counted(*pose))
+        .map(|(pose, slot)| {
+            job.pose_progress_units(
+                pose,
+                slot.bounces,
+                valid_probes,
+                patches.len(),
+                domain_patches,
+                fill,
+            )
         })
         .sum()
 }

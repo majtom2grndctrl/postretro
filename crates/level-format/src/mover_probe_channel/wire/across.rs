@@ -1,7 +1,8 @@
 // MoverProbeChannel (id 57) across marks: per (listed cell, mover), the
 // probes each mid pose encloses, which direct compose blends across. Read
-// against each mover's pose count, and checked tight against the probes the
-// mover's direct records and bounce entry name at that cell.
+// against each mover's pose count, and checked to name only probes the
+// mover's direct records or bounce entry name at that cell, and to carry no
+// bounce state there.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::reader::{Reader, le_u32, le_u64, put_u32s};
@@ -14,8 +15,8 @@ const ACROSS_ENTRY_HEAD_BYTES: usize = 12;
 const MASK_BYTES: usize = 8;
 
 /// Whether the across block is written: exactly when some mover has a mid
-/// pose. With none, no probe can be marked across, so a section of two-pose
-/// movers packs exactly as it did before across marks existed.
+/// pose. With no mid pose nothing can be marked across, so the block is
+/// omitted.
 pub(super) fn has_across_block(movers: &[MoverRecord]) -> bool {
     movers.iter().any(|record| record.pose_count() > 2)
 }

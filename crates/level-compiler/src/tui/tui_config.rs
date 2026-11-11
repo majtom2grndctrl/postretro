@@ -886,7 +886,7 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    // AC 22 (MP6): a `--no-cache` launch confirmed unchanged stays an
+    // A `--no-cache` launch confirmed unchanged stays an
     // incremental build at the fidelity it names (low when none), with its
     // cache bypass kept, and never becomes a release bake.
     #[test]
@@ -919,7 +919,7 @@ mod tests {
         }
     }
 
-    // AC 22: the build mode carries fidelity. An incremental build writes
+    // The build mode carries fidelity. An incremental build writes
     // the field's fidelity back; Production names none and bakes high, so
     // no build fails on a flag pair the author did not type.
     #[test]

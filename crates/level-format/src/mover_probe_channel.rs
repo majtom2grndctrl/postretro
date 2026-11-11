@@ -49,9 +49,7 @@ pub fn depth_tile_texture_count(
 /// Epoch 2: sparse cell list, per-(cell, light) term records with a probe
 /// mask and one own tile, per-(record, mover) visibility. Epoch 3: a
 /// placement byte for the direct payload beside the bounce payload's.
-/// Epoch 4: per-terminus storage. A bounce entry carries one probe mask per
-/// terminus and a depth record one bit per terminus; a terminus the mover
-/// leaves unchanged stores no tile and reads the probe's base. Epoch 5: N
+/// Epoch 4: two-pose (terminus-only) storage. Epoch 5: N
 /// poses per mover. Mover records carry each mover's ramp and pose knots;
 /// direct, bounce and depth store per pose, and a mid pose marks a probe as
 /// stored, reading the base, or blending across; per (cell, mover) across
@@ -195,7 +193,8 @@ pub struct MoverDirectRecord {
     /// Storage sparsity mask: local x-fastest bits, a non-empty subset of the
     /// cell's valid probes, set exactly where some mover's `q` is below 255
     /// at some pose. A probe outside it stores nothing because every mover
-    /// leaves the light's term there unchanged (q = 1 at every pose), so it
+    /// leaves the light's term there unchanged (q = 255, i.e. 1.0, at every
+    /// pose), so it
     /// composes exactly as with no section. It is never a runtime exclusion
     /// or occlusion flag: mover state never marks a probe occluded, forces a
     /// probe weight to zero or drops a probe from the blend.

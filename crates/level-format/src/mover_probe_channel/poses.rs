@@ -16,9 +16,10 @@ pub enum PoseMark {
     Unmarked,
     /// The pose stores a state: one tile in its block's payload.
     Stored,
-    /// A mid pose reads the probe's base: the pose encloses the probe or
-    /// leaves it unchanged. Never at a terminus, where an unmarked probe
-    /// already reads the base.
+    /// A mid pose reads the probe's base: the pose leaves the probe within
+    /// its bars. An enclosing mid pose is never `Base`: it is `Unmarked` in
+    /// bounce and marked across in direct, and stores its dark depth tile.
+    /// Never at a terminus, where an unmarked probe already reads the base.
     Base,
 }
 
@@ -214,7 +215,7 @@ impl MoverDepthRecord {
 /// probes the pose's brushes enclose. Enclosure is geometric, a function of
 /// (mover, probe, pose) alone, so it is recorded once per (cell, mover)
 /// rather than per direct record. Direct compose blends across a marked
-/// pose, between the nearest unmarked poses around t′, exactly as bounce
+/// pose, between the nearest poses not marked across around t′, exactly as bounce
 /// blends across an unmarked mid pose; the `q` stored there is 255 and never
 /// read. Termini are never marked: an enclosing terminus reads the base.
 ///

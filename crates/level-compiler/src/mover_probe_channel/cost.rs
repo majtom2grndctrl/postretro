@@ -136,7 +136,7 @@ impl MoverChannelCost {
     /// Depth is counted per mover, never over distinct probes: several
     /// movers over the same probes each keep a record there. Each mover's
     /// records are bounded by its own reduction: below-floor probes drop as
-    /// its two poses reduce, and it keeps at most one record past the range
+    /// its poses reduce, and it keeps at most one record past the range
     /// ([`super::states::reduce_poses`]), since one mover past the range
     /// fails the build by name. The memo holds each pose's raw states and
     /// every mover reduces once its poses resolve, from the memo or baked, so

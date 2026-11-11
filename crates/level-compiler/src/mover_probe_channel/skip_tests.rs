@@ -1,7 +1,8 @@
 // Redundant mid-pose skipping on synthetic per-pose curves over one probe of
 // a 3×3×3 grid: what skips, what stores, and that compose at every skipped
 // pose's t′, after the ramp and every other skip, stays within the probe's
-// bars (brief ACs 10, 11, 18; research pins MP2, MP8, MP9).
+// bars. Covers skipping a redundant pose, keeping one that exceeds the bars,
+// and the ramp and neighbouring skips compounding.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
 use postretro_level_format::mover_probe_channel::{

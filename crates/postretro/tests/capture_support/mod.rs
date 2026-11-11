@@ -34,6 +34,41 @@ pub(super) fn compile_dev_map_with(
     map_name: &str,
     flags: &[&str],
 ) -> tempfile::TempPath {
+    let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    cargo.args([
+        "run",
+        "--quiet",
+        "-p",
+        "postretro-level-compiler",
+        "--bin",
+        "prl-build",
+        "--",
+    ]);
+    compile_dev_map_by(cargo, workspace, map_name, flags)
+}
+
+/// [`compile_dev_map_with`] through a prebuilt `prl-build` at `compiler`, e.g.
+/// another commit's, run from this checkout on this checkout's map.
+// Only the mover capture rows compare against another compiler; the other
+// targets that share this module would otherwise warn on it.
+#[allow(dead_code)]
+pub(super) fn compile_dev_map_using(
+    compiler: &Path,
+    workspace: &Path,
+    map_name: &str,
+    flags: &[&str],
+) -> tempfile::TempPath {
+    compile_dev_map_by(Command::new(compiler), workspace, map_name, flags)
+}
+
+/// Runs `compile`, a `prl-build` launch with any leading arguments set, on
+/// `map_name`'s source.
+fn compile_dev_map_by(
+    mut compile: Command,
+    workspace: &Path,
+    map_name: &str,
+    flags: &[&str],
+) -> tempfile::TempPath {
     let source_map = workspace.join(format!("content/dev/maps/{map_name}.map"));
     assert!(
         source_map.is_file(),
@@ -46,16 +81,7 @@ pub(super) fn compile_dev_map_with(
         .tempfile_in(workspace.join("content/dev/maps"))
         .expect("reserve capture PRL path in content/dev/maps")
         .into_temp_path();
-    let compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let compile = compile
         .arg(&source_map)
         .arg("-o")
         .arg(&map)

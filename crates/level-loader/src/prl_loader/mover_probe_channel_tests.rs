@@ -739,7 +739,7 @@ fn a_probe_mask_naming_a_non_valid_probe_is_refused_by_name() {
 }
 
 // The mask is exactly the union of the movers' q < 255 probes: a masked
-// probe where every mover stores 255 at both termini is refused.
+// probe where every mover stores 255 at every pose is refused.
 #[test]
 fn a_masked_probe_no_mover_gates_is_refused_by_name() {
     let level = Level::new();

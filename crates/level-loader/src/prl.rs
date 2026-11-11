@@ -677,7 +677,7 @@ pub struct LevelWorld {
     /// its poses, validated against id 34's grid and validity, id 18's
     /// lights, the animated-baked roster, id 43's movers and id 59's tile
     /// count. Whole-resident in both SH storage modes; its mover records'
-    /// ramps already rode into `kinematic_geometry`. `None` composes today's frame.
+    /// ramps already rode into `kinematic_geometry`. `None` composes the mover-absent frame.
     #[cfg(feature = "load-prl")]
     pub mover_probe_channel: Option<MoverProbeChannelSection>,
     /// Id-22 cell-block index: header plus one record per block. `None` or

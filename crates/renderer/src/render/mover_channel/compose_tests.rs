@@ -300,8 +300,8 @@ fn a_single_terminus_gate_composes_s0_ungated_and_their_mix() {
     );
     let mut scene = build_scene(&ctx, Some(&section), false);
     let (ungated, _) = compose(&ctx, &mut scene, frame(&[]));
-    // AC 2 (compose half): a two-pose mover composes today's linear blend
-    // of q₀ and q₁ at every t′.
+    // A two-pose mover composes the plain lerp(q₀, q₁, t′) at every t′, so
+    // mid poses change nothing for it.
     for (t, expected) in [
         (0.0, 0.0),
         (1.0, 0.25),
@@ -331,10 +331,10 @@ fn a_single_terminus_gate_composes_s0_ungated_and_their_mix() {
 }
 
 /// Stripping the section composes exactly what supplying no mover state
-/// does, and both equal today's atlases.
+/// does, and both equal the static atlases.
 #[test]
-fn a_stripped_section_and_no_state_both_compose_todays_atlases() {
-    let Some(ctx) = gpu("a_stripped_section_and_no_state_both_compose_todays_atlases") else {
+fn a_stripped_section_and_no_state_both_compose_the_static_atlases() {
+    let Some(ctx) = gpu("a_stripped_section_and_no_state_both_compose_the_static_atlases") else {
         return;
     };
     for animated in [false, true] {
@@ -555,13 +555,13 @@ fn an_animated_record_without_id_45_composes_ungated_and_subtracts_nothing() {
 }
 
 /// A direct-only section composes (every case above); a
-/// bounce-only one lays out no direct record and composes today's atlases.
+/// bounce-only one lays out no direct record and composes the static atlases.
 #[test]
-fn a_bounce_only_section_composes_todays_direct_atlases() {
+fn a_bounce_only_section_composes_the_static_direct_atlases() {
     use postretro_level_format::mover_probe_channel::{
         MoverBounceEntry, MoverChannelCell, MoverRecord,
     };
-    let Some(ctx) = gpu("a_bounce_only_section_composes_todays_direct_atlases") else {
+    let Some(ctx) = gpu("a_bounce_only_section_composes_the_static_direct_atlases") else {
         return;
     };
     let mut bounce_only = fixture_section([1, 1, 1], &[]);
@@ -597,6 +597,16 @@ fn posed_light_across(
     movers: &[PosedGate],
     across: &[(u32, Vec<u64>)],
 ) -> MoverProbeChannelSection {
+    posed_light_masked(0b1, movers, across)
+}
+
+/// [`posed_light_across`] over the probes `probe_mask` names. Each mover's q
+/// bytes run probe-major: every masked probe's poses, in x-fastest probe order.
+fn posed_light_masked(
+    probe_mask: u64,
+    movers: &[PosedGate],
+    across: &[(u32, Vec<u64>)],
+) -> MoverProbeChannelSection {
     MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
             affinity_dims: [1, 1, 1],
@@ -606,7 +616,7 @@ fn posed_light_across(
                     namespace: MoverLightNamespace::StaticLight,
                     carries_own_tile: false,
                     light_index: SELECTED_LIGHT,
-                    probe_mask: 0b1,
+                    probe_mask,
                 },
                 movers: movers
                     .iter()
@@ -649,7 +659,7 @@ fn gated(q: f32) -> f32 {
     0.25 * q
 }
 
-/// AC 15 (direct half): at each pose's t′ the light keeps that pose's q
+/// At each pose's t′ the light keeps that pose's q
 /// exactly; between knots the byte lerp of the two poses around t′; out and
 /// back to one t′ composes alike, in both direct atlases.
 #[test]
@@ -684,7 +694,7 @@ fn piecewise_direct_reads_each_poses_q_and_lerps_between() {
     );
 }
 
-/// AC 12 (compose half): a mid pose the across marks name for the probe
+/// A mid pose the across marks name for the probe
 /// encloses it and is never read: direct blends between the defined poses
 /// around it, exact at each defined knot, as bounce blends across an
 /// unmarked pose. Under ramp (0.3, 1) a defined neighbour of the marked pose
@@ -755,7 +765,77 @@ fn direct_blends_across_a_pose_the_across_marks_name() {
     }
 }
 
-/// AC 16 (direct half): two movers with different pose counts on one light,
+/// Probes with local index 32 or more keep their across marks in the high
+/// word of each mid pose's mask pair, so the shader reads
+/// `across + 2 * (pose - 1) + 1` for them. Five poses at t′ 0, 0.25, 0.5,
+/// 0.75, 1; the record masks local probes 5, 33 and 63. Probe 33 is marked at
+/// pose 2 and probe 63 at pose 3, each blending across its marked pose between
+/// the defined poses around it; probe 5, in the low word and unmarked, reads
+/// its own q at every pose. Were the high-word term dropped, probes 33 and 63
+/// would test bits 1 and 31 of the low word of their pose's pair, find no mark,
+/// and read the sentinel q stored at their marked pose, which is far from the
+/// blend and fails the exact comparisons at t′ 0.5 and 0.75.
+#[test]
+fn direct_blends_across_marked_poses_for_probes_in_the_high_mask_word() {
+    let Some(ctx) = gpu("direct_blends_across_marked_poses_for_probes_in_the_high_mask_word")
+    else {
+        return;
+    };
+    // Per masked probe, q at each of the 5 poses, in local probe order
+    // (5, 33, 63). The marked poses hold 255, never read.
+    let q5: [u8; 5] = [0, 51, 255, 102, 204];
+    let q33: [u8; 5] = [255, 102, 255, 204, 0];
+    let q63: [u8; 5] = [0, 255, 51, 255, 153];
+    let q: Vec<u8> = [q5, q33, q63].concat();
+    let section = posed_light_masked(
+        (1 << 5) | (1 << 33) | (1 << 63),
+        &[(7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 0.75, 1.0], q)],
+        &[(7, vec![0, 1 << 33, 1 << 63])],
+    );
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    let (ungated, ungated_handoff) = compose(&ctx, &mut scene, frame(&[]));
+    // Probe `p` stores at slot `p`: its tile origin in the 8-tile-wide atlas.
+    let origin = |probe: u32| ((probe % 8) * TILE, (probe / 8) * TILE);
+    let lerp = |q: &[u8; 5], lo: usize, hi: usize, w: f32| {
+        let (lo, hi) = (f32::from(q[lo]) / 255.0, f32::from(q[hi]) / 255.0);
+        lo + (hi - lo) * w
+    };
+    // Per t′: each probe's (lo pose, hi pose, weight of hi), probes 5, 33, 63.
+    // A defined knot reads its pose exactly (weight 0).
+    type Read = (usize, usize, f32);
+    let rows: [(f32, [Read; 3]); 9] = [
+        (0.0, [(0, 0, 0.0); 3]),
+        (0.125, [(0, 1, 0.5); 3]),
+        (0.25, [(1, 1, 0.0); 3]),
+        (0.375, [(1, 2, 0.5), (1, 3, 0.25), (1, 2, 0.5)]),
+        (0.5, [(2, 2, 0.0), (1, 3, 0.5), (2, 2, 0.0)]),
+        (0.625, [(2, 3, 0.5), (1, 3, 0.75), (2, 4, 0.25)]),
+        (0.75, [(3, 3, 0.0), (3, 3, 0.0), (2, 4, 0.5)]),
+        (0.875, [(3, 4, 0.5), (3, 4, 0.5), (2, 4, 0.75)]),
+        (1.0, [(4, 4, 0.0); 3]),
+    ];
+    for (t, reads) in rows {
+        let (free, handoff) = compose(&ctx, &mut scene, frame(&[state(7, t)]));
+        for ((probe, q), (lo, hi, w)) in [(5, &q5), (33, &q33), (63, &q63)].into_iter().zip(reads) {
+            let (x, y) = origin(probe);
+            // The static light's term T = 0.25 at the tile origin is scaled by
+            // the surviving visibility: base - T * (1 - q).
+            let expected = |atlas: &[u8]| red(atlas, x, y) - 0.25 * (1.0 - lerp(q, lo, hi, w));
+            assert_near(
+                red(&free, x, y),
+                expected(&ungated),
+                &format!("probe {probe}, t′ {t}"),
+            );
+            assert_near(
+                red(&handoff, x, y),
+                expected(&ungated_handoff),
+                &format!("handoff, probe {probe}, t′ {t}"),
+            );
+        }
+    }
+}
+
+/// Two movers with different pose counts on one light,
 /// each between its knots, multiply their blended q.
 #[test]
 fn two_posed_movers_on_one_light_multiply_their_blended_q() {
@@ -779,8 +859,7 @@ fn two_posed_movers_on_one_light_multiply_their_blended_q() {
     }
 }
 
-/// AC 17 (direct half) / MP1, MP10, and AC 14 (compose half) / MP11: with
-/// ramp (0.6, 0.9) the game hands t′ = ramp(t). The light reads the first
+/// With ramp (0.6, 0.9) the game hands t′ = ramp(t). The light reads the first
 /// pose's q for t < 0.6 and the last's for t > 0.9, a mid knot's at
 /// ramp(t_k), and poses squeezed onto t′ 0 or 1 are never read. A mover
 /// whose only blocking pose is squeezed out leaves the light unblocked at

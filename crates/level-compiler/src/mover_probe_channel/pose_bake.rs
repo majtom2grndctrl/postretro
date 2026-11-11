@@ -25,9 +25,10 @@ use crate::sh_bake::{RaytracingCtx, ShBakeCtx};
 
 /// One pose's bounce and depth state, before its mover's poses reduce.
 pub(crate) struct PosedBounce {
-    /// Which pose this is, for the full re-bake.
+    /// The id of the mover this pose belongs to.
     #[cfg(test)]
     pub(crate) mover_id: u32,
+    /// Which of the mover's poses this is, for the full re-bake.
     #[cfg(test)]
     pub(crate) pose: usize,
     /// At a terminus, the valid probes that differ from id 34 or whose rays

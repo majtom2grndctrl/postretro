@@ -36,8 +36,17 @@ const MB_HEADER_KNOTS: u32 = 7u;
 const MB_DESCRIPTORS: u32 = 8u;
 // Mover slot, pose block word, read-stored mask (two words), first tile half.
 const MB_ENTRY_WORDS: u32 = 5u;
+const MB_ENTRY_SLOT: u32 = 0u;
+// Absolute word of the entry's pose block.
+const MB_ENTRY_POSES: u32 = 1u;
+// Read-stored mask low word; the high word follows.
+const MB_ENTRY_READ_MASK: u32 = 2u;
+const MB_ENTRY_FIRST_HALF: u32 = 4u;
 // Per pose: stored mask (two words), base mask (two words), first tile rank.
 const MB_POSE_WORDS: u32 = 5u;
+const MB_POSE_STORED_MASK: u32 = 0u;
+const MB_POSE_BASE_MASK: u32 = 2u;
+const MB_POSE_RANK: u32 = 4u;
 // One compact 6×6 RGB f16 tile: id 27's stride.
 const MB_TILE_HALVES: u32 = 108u;
 const MB_NONE: u32 = 0xffffffffu;
@@ -102,7 +111,7 @@ fn mb_entry_word(entry: u32, field: u32) -> u32 {
 
 /// The entry's mover t′; negative (or non-finite) while it has no state.
 fn mb_entry_t(entry: u32) -> f32 {
-    return bitcast<f32>(mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + mb_entry_word(entry, 0u)]);
+    return bitcast<f32>(mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + mb_entry_word(entry, MB_ENTRY_SLOT)]);
 }
 
 /// Whether `local_probe`'s bit is set in the 64-bit mask at table words
@@ -140,11 +149,11 @@ fn mb_pose_state(
     first_half: u32,
 ) -> u32 {
     let at = poses + pose * MB_POSE_WORDS;
-    let stored = mb_mask_bit(at, local_probe);
+    let stored = mb_mask_bit(at + MB_POSE_STORED_MASK, local_probe);
     if (stored.hit) {
-        return first_half + (mover_bounce[at + 4u] + stored.below) * MB_TILE_HALVES;
+        return first_half + (mover_bounce[at + MB_POSE_RANK] + stored.below) * MB_TILE_HALVES;
     }
-    if (terminus || mb_mask_bit(at + 2u, local_probe).hit) {
+    if (terminus || mb_mask_bit(at + MB_POSE_BASE_MASK, local_probe).hit) {
         return MB_NONE;
     }
     return MB_ACROSS;
@@ -167,13 +176,13 @@ struct MbBlend {
 /// mid pose where it stores a state or reads id 34) and the blend weight.
 /// Mirrors `knots::interval`.
 fn mb_entry_blend(cell: MbCellEntries, entry: u32, local_probe: u32, t: f32) -> MbBlend {
-    if (!mb_mask_bit(mover_bounce[MB_HEADER_ENTRIES] + entry * MB_ENTRY_WORDS + 2u, local_probe).hit) {
+    if (!mb_mask_bit(mover_bounce[MB_HEADER_ENTRIES] + entry * MB_ENTRY_WORDS + MB_ENTRY_READ_MASK, local_probe).hit) {
         return MbBlend(false, MB_NONE, MB_NONE, 0.0);
     }
-    let run = mover_bounce[mover_bounce[MB_HEADER_KNOTS] + mb_entry_word(entry, 0u)];
+    let run = mover_bounce[mover_bounce[MB_HEADER_KNOTS] + mb_entry_word(entry, MB_ENTRY_SLOT)];
     let last = mover_bounce[run + 1u] - 1u;
-    let poses = mb_entry_word(entry, 1u);
-    let first_half = cell.base_half + mb_entry_word(entry, 4u);
+    let poses = mb_entry_word(entry, MB_ENTRY_POSES);
+    let first_half = cell.base_half + mb_entry_word(entry, MB_ENTRY_FIRST_HALF);
     if (t >= 1.0) {
         let state = mb_pose_state(poses, mover_bounce[run] - 1u, true, local_probe, first_half);
         return MbBlend(true, state, state, 0.0);

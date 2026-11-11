@@ -1,4 +1,4 @@
-//! Mover light gate: the baked lights each kinematic mover blocks at either end of its travel.
+//! Mover light gate: the baked lights each kinematic mover blocks at its termini, plus the lights only a mid pose gates.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 mod animated;

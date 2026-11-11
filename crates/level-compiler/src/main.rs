@@ -2761,7 +2761,7 @@ mod tests {
         )
     }
 
-    // AC 21: `--release` beside `--bake-fidelity`, either value and either
+    // `--release` beside `--bake-fidelity`, either value and either
     // order, fails at parse, before any stage, naming both flags.
     #[test]
     fn release_beside_bake_fidelity_is_a_usage_error_naming_both_flags() {
@@ -2806,7 +2806,7 @@ mod tests {
         assert!(help_text().contains("--bake-fidelity <low|high>"));
     }
 
-    // AC 21: with no fidelity named, an interactive build bakes low, whether
+    // With no fidelity named, an interactive build bakes low, whether
     // or not its cache is read: `--no-cache` alone, a cache directory, or
     // none named. The mode reads the flags, never the cache handle, so a
     // cache directory that cannot be created (`construct_stage_cache`

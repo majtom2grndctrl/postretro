@@ -216,7 +216,7 @@ fn plate_skips(logs: &str) -> &str {
 // skip after every memo read, judged after its ramp. Authoring ramp (0.6,
 // 0.9) changes no memo key, so every bounce memo hits, yet the skips are
 // re-decided (poses the ramp squeezes out are never read), and the warm PRL
-// equals the edited map's cold PRL byte for byte (MP9).
+// equals the edited map's cold PRL byte for byte.
 #[test]
 fn a_ramp_edit_re_decides_skips_over_the_memoized_states_and_warm_equals_cold() {
     let ramped = Scene {

@@ -17,8 +17,9 @@ const PATCHES: [u32; 3] = [4, 5, 6];
 // terminus key ignores the near-field domain, the pose count, the pose's
 // index and the mover id, so the door's termini key alike as its only two
 // poses, under other domain probes or patches and under another id. A mid
-// pose's key folds the domain's probes and, re-baking bounce, its static
-// patches, so another list re-keys every one. Every pose re-keys under
+// pose's key folds the domain's probes and, re-baking a later bounce posed,
+// its static patches, so another list re-keys every one; at one posed
+// bounce or none it traces no later bounce, and another patch list keeps it. Every pose re-keys under
 // another bounce count, round-trip bar or id-34 volume key.
 #[test]
 fn a_pose_key_folds_what_its_kind_bakes_from_and_nothing_else() {
@@ -106,6 +107,16 @@ fn a_pose_key_folds_what_its_kind_bakes_from_and_nothing_else() {
             key_over(&memo, &full, pose, 5, &[4, 5]),
             key(&full, pose, 5),
             "a mid pose's patches"
+        );
+        assert_ne!(
+            key_over(&memo, &full, pose, 2, &[4, 5]),
+            key(&full, pose, 2),
+            "a mid pose tracing one later bounce posed reads its patches"
+        );
+        assert_eq!(
+            key_over(&memo, &full, pose, 1, &[4, 5]),
+            key(&full, pose, 1),
+            "a mid pose re-baking bounce one alone traces no patch"
         );
         assert_eq!(
             key_over(&memo, &full, pose, 0, &[4, 5]),

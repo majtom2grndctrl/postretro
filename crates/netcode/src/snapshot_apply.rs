@@ -1,6 +1,7 @@
 //! Descriptor-aware remote snapshot materialization, after descriptor-blind apply.
 //! See: context/lib/networking.md
 
+use postretro_entities::components::brain::TravelVariant;
 use postretro_entities::{EntityRegistry, EntityTypeDescriptor};
 use postretro_foundation::NavAgentParams;
 
@@ -58,26 +59,17 @@ pub(super) fn materialize_remote_entities(
                     .state_names()
                     .filter_map(|state_name| {
                         let state = mesh.animations.get(state_name)?;
-                        let speed = model?
-                            .clips
-                            .iter()
-                            .find(|clip| clip.name == state.clip)?
-                            .travel_speed?;
+                        let speed = model?.state_clip(None, &state.clip)?.travel_speed?;
                         Some((state_name.to_string(), speed))
                     })
                     .collect();
-                // Equivalent to the host fixed tick's clip lookup, which tries the
-                // resolved clip index first and the clip name after, so both peers
-                // end a jump one-shot after the same length.
+                // The host's clip lookup with no resolved index (a descriptor has
+                // none), so both peers end a jump one-shot after the same length.
                 let clip_durations = states
                     .one_shot_names()
                     .filter_map(|state_name| {
                         let state = mesh.animations.get(state_name)?;
-                        let duration = model?
-                            .clips
-                            .iter()
-                            .find(|clip| clip.name == state.clip)?
-                            .duration;
+                        let duration = model?.state_clip(None, &state.clip)?.duration;
                         Some((state_name.to_string(), duration))
                     })
                     .collect();
@@ -114,25 +106,30 @@ pub(super) fn materialize_remote_entities(
             // animation substitution uses: the graph's locomotion state, which chases
             // without an action of its own. The brain's graph is the descriptor's
             // authored `behavior` block, so both ends agree on what this enemy carries.
+            // Its directional variants scale too, each against its own clip.
             let walk_reference = descriptor.and_then(|descriptor| {
                 let mesh = descriptor.mesh.as_ref()?;
                 let graph = descriptor.behavior.as_ref()?;
                 let locomotion = postretro_foundation::locomotion_animation(graph)?;
-                let state = mesh.animations.get(locomotion)?;
-                let derived_travel_speed = hit_zone_store
-                    .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
-                    .and_then(|model| {
-                        model
-                            .clips
-                            .iter()
-                            .find(|clip| clip.name == state.clip)
-                            .and_then(|clip| clip.travel_speed)
-                    });
-                Some((
-                    graph.move_speed,
-                    locomotion.to_string(),
-                    derived_travel_speed,
-                ))
+                // Bails when the mesh never declares the graph's locomotion
+                // state: no walk reference, so this client leaves the enemy's
+                // playback rate alone.
+                mesh.animations.get(locomotion)?;
+                let model =
+                    hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
+                // The same clip pick as the host's `effective_travel_speed`; a
+                // descriptor state has no resolved clip index.
+                let derived_travel_speeds = TravelVariant::ALL.map(|variant| {
+                    let state = mesh
+                        .animations
+                        .get(&format!("{locomotion}{}", variant.suffix()))?;
+                    model?.state_clip(None, &state.clip)?.travel_speed
+                });
+                Some(client::RemoteEnemyWalkPlayback {
+                    move_speed: graph.move_speed,
+                    walk_state: locomotion.to_string(),
+                    derived_travel_speeds,
+                })
             });
             replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
             remote_materialize::materialize_armed_remote_enemy(

@@ -1,4 +1,5 @@
 pub mod activation;
+pub mod attack_pool_verbs;
 pub mod behavior;
 pub mod behavior_lints;
 pub mod combat;
@@ -15,6 +16,7 @@ pub mod view_pose;
 pub mod weapon_resource;
 
 pub use activation::*;
+pub use attack_pool_verbs::*;
 pub use behavior::*;
 pub use behavior_lints::*;
 pub use combat::*;

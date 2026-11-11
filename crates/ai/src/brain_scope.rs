@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 
+use crate::attack_turns::AttackTurnRead;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent};
 use postretro_foundation::{
@@ -79,6 +80,8 @@ pub(crate) struct BrainFacts {
     /// statechart evaluator re-points this scope-relative snapshot to each
     /// active depth before evaluating that envelope's rows.
     pub attacks_fired_in_activity: u32,
+    /// Whether the enemy held any attack turn as of the previous tick.
+    pub has_attack_turn: bool,
 }
 
 /// A resolved read handle: an index into one of the scope's two snapshots.
@@ -90,6 +93,8 @@ pub(crate) enum BrainInputHandle {
     State(usize),
     /// Index into the bound `@defense.*` reads of the brain's own layers.
     Defense(usize),
+    /// Index into the interned named attack-turn reads.
+    AttackTurn(usize),
 }
 
 /// Values whose meaning changes with the activity level currently being
@@ -151,6 +156,10 @@ pub(crate) struct BrainScope {
     state_values: RefCell<Vec<f32>>,
     /// The brain entity's own layer reads, refreshed in place like state.
     defense: postretro_entities::components::defense_layers::DefenseReads,
+    /// Interned `@attackTurnHeld.*` / `@attackTurnFree.*` reads, appended at
+    /// bind. Parallel to `attack_turn_values`, refreshed per enemy.
+    attack_turn_reads: RefCell<Vec<(String, AttackTurnRead)>>,
+    attack_turn_values: RefCell<Vec<bool>>,
 }
 
 impl BrainScope {
@@ -170,6 +179,8 @@ impl BrainScope {
             state_names: RefCell::new(Vec::new()),
             state_values: RefCell::new(Vec::new()),
             defense: Default::default(),
+            attack_turn_reads: RefCell::new(Vec::new()),
+            attack_turn_values: RefCell::new(Vec::new()),
         }
     }
 
@@ -222,6 +233,7 @@ impl BrainScope {
             IrValue::Number(facts.distance_to_last_known),
             IrValue::Number(facts.damage_bearing),
             IrValue::Bool(facts.damage_source_known),
+            IrValue::Bool(facts.has_attack_turn),
         ];
 
         self.defense.seed(registry, Some(entity));
@@ -240,6 +252,37 @@ impl BrainScope {
         for slot in SCOPE_RELATIVE_SLOTS {
             self.fixed[slot.fixed_index] = (slot.project)(values);
         }
+    }
+
+    /// Repopulate the named attack-turn reads for the enemy about to be
+    /// evaluated. Writes existing slots only, so it allocates nothing.
+    pub(crate) fn refresh_attack_turns(
+        &mut self,
+        mut read: impl FnMut(&str, AttackTurnRead) -> bool,
+    ) {
+        let reads = self.attack_turn_reads.get_mut();
+        for (value, (attack, kind)) in self
+            .attack_turn_values
+            .get_mut()
+            .iter_mut()
+            .zip(reads.iter())
+        {
+            *value = read(attack, *kind);
+        }
+    }
+
+    /// Intern one named attack-turn read, returning its stable snapshot index.
+    fn intern_attack_turn_read(&self, attack: &str, kind: AttackTurnRead) -> usize {
+        let mut reads = self.attack_turn_reads.borrow_mut();
+        if let Some(index) = reads
+            .iter()
+            .position(|(bound, bound_kind)| bound == attack && *bound_kind == kind)
+        {
+            return index;
+        }
+        reads.push((attack.to_string(), kind));
+        self.attack_turn_values.borrow_mut().push(false);
+        reads.len() - 1
     }
 
     /// Intern one `@state.*` field name, returning its stable snapshot index.
@@ -278,6 +321,18 @@ impl BindingScope for BrainScope {
                 handle: BrainInputHandle::Defense(self.defense.bind(layer, capacity)),
                 ir_type: IrType::Number,
             }),
+            BrainInputRef::AttackTurnHeld(attack) => Some(ResolvedInput {
+                handle: BrainInputHandle::AttackTurn(
+                    self.intern_attack_turn_read(attack, AttackTurnRead::Held),
+                ),
+                ir_type: IrType::Bool,
+            }),
+            BrainInputRef::AttackTurnFree(attack) => Some(ResolvedInput {
+                handle: BrainInputHandle::AttackTurn(
+                    self.intern_attack_turn_read(attack, AttackTurnRead::Free),
+                ),
+                ir_type: IrType::Bool,
+            }),
         }
     }
 
@@ -297,6 +352,9 @@ impl BindingScope for BrainScope {
             BrainInputHandle::Defense(index) => {
                 IrValue::Number(self.defense.get(*index).unwrap_or(0.0))
             }
+            BrainInputHandle::AttackTurn(index) => {
+                IrValue::Bool(self.attack_turn_values.borrow()[*index])
+            }
         }
     }
 
@@ -315,13 +373,13 @@ mod tests {
         BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
         BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, BRAIN_DAMAGE_BEARING_INPUT,
         BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
-        BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT,
-        BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
-        BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
-        BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
-        BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr,
-        BindError, BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind,
-        bind_brain_guard, eval_value,
+        BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_ATTACK_TURN_INPUT, BRAIN_HAS_TARGET_INPUT,
+        BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT,
+        BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT,
+        BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TARGET_VISIBLE_INPUT,
+        BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BRAIN_TIME_SINCE_DAMAGE_MS_INPUT,
+        BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr, BindError, BoundProgram,
+        BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -403,6 +461,7 @@ mod tests {
             target_reachable: true,
             target_visible: true,
             attacks_fired_in_activity: 3,
+            has_attack_turn: true,
         }
     }
 
@@ -532,6 +591,7 @@ mod tests {
             BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT => IrValue::Number(facts.distance_to_last_known),
             BRAIN_DAMAGE_BEARING_INPUT => IrValue::Number(facts.damage_bearing),
             BRAIN_DAMAGE_SOURCE_KNOWN_INPUT => IrValue::Bool(facts.damage_source_known),
+            BRAIN_HAS_ATTACK_TURN_INPUT => IrValue::Bool(facts.has_attack_turn),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"

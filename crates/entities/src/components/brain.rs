@@ -31,6 +31,12 @@ use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
 
 use super::mesh::MeshComponent;
 
+mod attack_turns;
+pub use attack_turns::{
+    AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
+    MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
+};
+
 /// Maximum number of distinct damagers remembered by one brain. Entries age to
 /// the shared damage-recency sentinel and remain until this bounded ledger must
 /// make room for another attacker.
@@ -44,6 +50,111 @@ pub struct RecentAttacker {
     pub attacker: EntityId,
     pub accumulated_damage: f32,
     pub time_since_damage_ms: f32,
+}
+
+/// A brain's memory of a knockback launch, which "launched" means for as long as
+/// knockback velocity remains. Storage only; the AI tick owns the rules.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct LaunchState {
+    /// Yaw held while launched, latched on the first launched tick. `None` when
+    /// not launched.
+    #[serde(default)]
+    pub impact_yaw: Option<f32>,
+    /// Consecutive airborne ticks of a stretch a launch began; `0` on the ground.
+    #[serde(default)]
+    pub air_ticks: u32,
+    /// Whether the airborne clip was last requested for this launch: the
+    /// animation latch that switches back to the activity's clip on landing.
+    #[serde(default)]
+    pub airborne_presented: bool,
+}
+
+/// Directional travel clip a target-facing mover presents: activity animation
+/// `X` plays as `X_left`, `X_right` or `X_backward`, or `X` itself (`Base`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TravelVariant {
+    #[default]
+    Base,
+    Left,
+    Right,
+    Backward,
+}
+
+impl TravelVariant {
+    /// Every variant, in [`Self::index`] order.
+    pub const ALL: [TravelVariant; 4] = [
+        TravelVariant::Base,
+        TravelVariant::Left,
+        TravelVariant::Right,
+        TravelVariant::Backward,
+    ];
+
+    /// The state-name suffix this variant appends to an activity animation.
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            TravelVariant::Base => "",
+            TravelVariant::Left => "_left",
+            TravelVariant::Right => "_right",
+            TravelVariant::Backward => "_backward",
+        }
+    }
+
+    /// This variant's position in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        match self {
+            TravelVariant::Base => 0,
+            TravelVariant::Left => 1,
+            TravelVariant::Right => 2,
+            TravelVariant::Backward => 3,
+        }
+    }
+
+    /// The variant `state` presents of activity animation `base`: `base`
+    /// itself, or `base` with one directional suffix. `None` for any other
+    /// state. Compares without composing a name.
+    pub fn of_state(base: &str, state: &str) -> Option<Self> {
+        let suffix = state.strip_prefix(base)?;
+        Self::ALL
+            .into_iter()
+            .find(|variant| variant.suffix() == suffix)
+    }
+}
+
+/// What an engaged `strafe` or `reposition` recorded on entry. Storage only;
+/// the AI tick owns the rules. Transient: a restored brain re-enters fresh.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum EngagedMotionMemory {
+    #[default]
+    None,
+    Strafe(StrafeMemory),
+    Reposition(RepositionMemory),
+}
+
+/// A strafer's travel direction around its target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrafeMemory {
+    pub target: EntityId,
+    /// `1` counter-clockwise seen from above (+yaw), `-1` clockwise, `0` not
+    /// yet picked: the entry tick picks by score.
+    pub direction: i8,
+}
+
+/// A repositioner's bounds, fixed at entry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RepositionMemory {
+    pub target: EntityId,
+    /// Unit XZ direction from the target of the ring's index 0: the entry
+    /// bearing, or the bearing to the held slot when there was none.
+    pub ring_bearing: Vec3,
+    /// Qualifying ring indices as a bitmask (bit `i` is index `i`).
+    pub ring_slots: u8,
+    pub entry_position: Vec3,
+    pub min_travel: f32,
+    /// The combat slot held at entry, if any.
+    pub entry_slot: Option<Vec3>,
+    /// One slot spacing at the entry standoff.
+    pub slot_spacing: f32,
 }
 
 /// Engine-internal AI brain: the retained behavior graph plus the live state it
@@ -114,6 +225,31 @@ pub struct BrainComponent {
     /// instead of re-requesting the same animation every tick.
     #[serde(default)]
     pub locomotion_moving: bool,
+    /// Presentation memory of a knockback launch, advanced by the AI tick.
+    /// Serialized beside `locomotion_moving` for the same reason: a restored
+    /// brain must not strand its airborne clip. Old brains default to grounded.
+    #[serde(default)]
+    pub launch: LaunchState,
+    /// The directional travel variant last requested for the activity's clip:
+    /// the latch that switches `walk_left` to `walk_right` with no activity or
+    /// stop/resume edge. Serialized beside `locomotion_moving` so a restored
+    /// brain never strands a variant clip.
+    #[serde(default)]
+    pub presented_travel_variant: TravelVariant,
+    /// Entry memory of an engaged `strafe` or `reposition`. Transient: a
+    /// restore re-enters fresh, recording new bounds and re-picking direction.
+    #[serde(skip)]
+    pub engaged_motion: EngagedMotionMemory,
+    /// Attack turns held, the pending request and the wait clock. Transient:
+    /// a restored brain holds nothing and arbitrates from scratch.
+    #[serde(skip)]
+    pub attack_turns: AttackTurnState,
+    /// The `ai_attack_pool` this enemy takes turns in, assigned by a pool's
+    /// start or a tagged spawn's join and cleared by its stop. `None` is the
+    /// default pool. Serialized: a restored enemy keeps its assignment rather
+    /// than re-deriving it from tags.
+    #[serde(default)]
+    pub attack_pool: Option<EntityId>,
     /// Whether this brain may acquire and pursue a target. This is
     /// host-authoritative simulation state: it deliberately has no snapshot
     /// field, because a closed brain's stationary Idle transform is already the
@@ -227,6 +363,11 @@ impl BrainComponent {
             attack_cooldown_remaining_ms: BTreeMap::new(),
             think_stride_counter: 0,
             locomotion_moving: false,
+            launch: LaunchState::default(),
+            presented_travel_variant: TravelVariant::Base,
+            engaged_motion: EngagedMotionMemory::None,
+            attack_turns: AttackTurnState::default(),
+            attack_pool: None,
             aggro_armed: true,
             target_reachable: false,
             acquired_target: None,
@@ -848,6 +989,24 @@ mod tests {
     use crate::registry::Transform;
     use std::collections::HashMap;
 
+    // The walk-cycle rate scaling on host and client reads a state as the
+    // locomotion clip's variant only by this naming rule.
+    #[test]
+    fn travel_variant_of_state_names_only_the_base_and_its_three_suffixes() {
+        assert_eq!(
+            TravelVariant::of_state("walk", "walk"),
+            Some(TravelVariant::Base)
+        );
+        for variant in TravelVariant::ALL {
+            let state = format!("walk{}", variant.suffix());
+            assert_eq!(TravelVariant::of_state("walk", &state), Some(variant));
+            assert_eq!(TravelVariant::ALL[variant.index()], variant);
+        }
+        for other in ["walking", "walk_forward", "walk_left_", "run_left", "wal"] {
+            assert_eq!(TravelVariant::of_state("walk", other), None, "{other}");
+        }
+    }
+
     fn declared_state(clip: &str) -> AnimationState {
         AnimationState {
             clip: clip.into(),
@@ -878,6 +1037,9 @@ mod tests {
                             motion: Some(MotionVerb::Hold),
                             action: None,
                             on_enter: None,
+                            facing: None,
+                            reposition: None,
+                            attack_turn: None,
                             layers: std::collections::BTreeMap::new(),
                         },
                     ),
@@ -889,6 +1051,9 @@ mod tests {
                             motion: Some(MotionVerb::ChaseTarget),
                             action: None,
                             on_enter: None,
+                            facing: None,
+                            reposition: None,
+                            attack_turn: None,
                             layers: std::collections::BTreeMap::new(),
                         },
                     ),
@@ -923,6 +1088,7 @@ mod tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             )]),
             engagement_radius: None,

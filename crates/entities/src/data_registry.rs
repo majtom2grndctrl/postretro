@@ -705,6 +705,10 @@ pub struct DataRegistry {
     /// The mod's registered damage vocabulary: layer kinds, damage types and
     /// the default type. Engine-global; a staged reload replaces it whole.
     pub defense: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    /// The mod's registered attack tokens and budget profiles. Engine-global;
+    /// a staged reload replaces it whole. Host-only, outside the compatibility
+    /// digest.
+    pub attack_budgets: std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary>,
     /// Active reactions for this level after composing matching mod-global
     /// definitions with level-local definitions. Existing dispatch reads here.
     pub reactions: Vec<NamedReaction>,

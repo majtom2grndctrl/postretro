@@ -386,6 +386,24 @@
     ]
 ]
 
+// Attack pool: a placement-free logic entity giving an arena its own attack
+// budget. While it runs, enemies it assigned take turns under the mod's
+// `budget_profile` instead of the default pool. A trigger's `start` or `stop`
+// command on its `_tags` drives it with no script, or a level script drives it
+// as `getMapEntities("attackPool")`. Starting it assigns every enemy carrying
+// `member_tag`; while it runs, a spawn whose `spawned_tags` carry the tag
+// joins. A start on a running pool re-assigns its current tag holders. Stopping
+// it returns its members to the default pool. None runs when a level starts.
+// An empty `member_tag`, or two pools sharing a `_tags` tag, fails the build.
+@PointClass base(EntitySpawn)
+    color(200 60 200)
+    size(-8 -8 -8, 8 8 8)
+    = ai_attack_pool : "AI Attack Pool"
+[
+    member_tag(string) : "One tag its members carry, no spaces (required). A start assigns every enemy carrying it; a spawn carrying it joins while the pool runs" : ""
+    budget_profile(string) : "Mod budget profile (`attackBudgets`) its members take turns under. Blank means `default`; an undeclared name warns at level load and uses `default`" : ""
+]
+
 @SolidClass
     color(220 180 60)
     = kinematic_mover : "Kinematic moving brush"
@@ -510,10 +528,10 @@
         "touch" : "Touch"
         "use" : "Use"
     ]
-    target_tag(string) : "Target tag: movers, projectile traps and spawners carrying it take the command" : ""
+    target_tag(string) : "Target tag: movers, projectile traps, spawners and attack pools carrying it take the command" : ""
     on_fire(string) : "Reaction on activation" : "" : "Name of the reaction fired when this trigger activates."
     on_exit(string) : "Reaction on exit" : "" : "Name of the reaction fired when a player leaves after activating this trigger."
-    command(choices) : "Command on enter: movers take start/stop/reverse/go_to_path_node, projectile traps fire/start/stop, spawners fire" : "start" =
+    command(choices) : "Command on enter: movers take start/stop/reverse/go_to_path_node, projectile traps fire/start/stop, spawners fire, attack pools start/stop" : "start" =
     [
         "start" : "Start"
         "stop" : "Stop"
@@ -598,10 +616,10 @@
 //
 // Everything else matches `trigger_volume`: `on_fire` / `on_exit` named
 // reactions, `target_tag` + `command` / `command_arg` direct commands (movers,
-// traps, spawners), and the same `fire_mode` / `rearm_ms` / `enabled_on_spawn`
-// firing rules. Clearing any
-// of those fields — or `use_reach` — means "unset": the compiler falls back to
-// the default rather than failing.
+// traps, spawners, attack pools), and the same `fire_mode` / `rearm_ms` /
+// `enabled_on_spawn` firing rules. Clearing any of those fields — or
+// `use_reach` — means "unset": the compiler falls back to the default rather
+// than failing.
 //
 // The `use_reach` default and the ceiling stated in its help text below are
 // hand-copied from `DEFAULT_SWITCH_USE_REACH` and `MAX_SWITCH_USE_REACH` in
@@ -615,10 +633,10 @@
 [
     name(string) : "Switch name" : ""
     use_reach(float) : "Press reach in map units — how far each face of the use volume grows into the space in front of it, or up to the nearest solid standing there, whichever is less. Must clear the compiler's flush-tolerance floor (a few hundredths of a unit — a margin below it grows no face at all) and be no more than 128; outside that range is a compile error, and the error names the floor. Blank falls back to the default, about 0.61 m" : "24"
-    target_tag(string) : "Target tag: movers, projectile traps and spawners carrying it take the command" : ""
+    target_tag(string) : "Target tag: movers, projectile traps, spawners and attack pools carrying it take the command" : ""
     on_fire(string) : "Reaction on activation" : "" : "Name of the reaction fired when this switch is pressed."
     on_exit(string) : "Reaction on exit" : "" : "Name of the reaction fired when a player leaves after pressing this switch."
-    command(choices) : "Command on enter: movers take start/stop/reverse/go_to_path_node, projectile traps fire/start/stop, spawners fire" : "start" =
+    command(choices) : "Command on enter: movers take start/stop/reverse/go_to_path_node, projectile traps fire/start/stop, spawners fire, attack pools start/stop" : "start" =
     [
         "start" : "Start"
         "stop" : "Stop"

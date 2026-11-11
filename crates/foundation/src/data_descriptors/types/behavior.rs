@@ -18,16 +18,25 @@ pub enum MotionVerb {
     Patrol,
     Hold,
     Freeze,
+    /// Engaged: circle the target at standoff in one direction as a
+    /// continuous orbit, aiming one 45° ring step ahead and re-aiming every
+    /// tick; reverses when the way ahead is unusable. Takes no parameters.
+    Strafe,
+    /// Engaged: claim a combat slot at least one spacing from the entry slot,
+    /// within the activity's `reposition` bounds.
+    Reposition,
 }
 
 impl MotionVerb {
-    pub const ALL: [MotionVerb; 6] = [
+    pub const ALL: [MotionVerb; 8] = [
         MotionVerb::ChaseTarget,
         MotionVerb::MoveToAnchor,
         MotionVerb::MoveToLastKnown,
         MotionVerb::Patrol,
         MotionVerb::Hold,
         MotionVerb::Freeze,
+        MotionVerb::Strafe,
+        MotionVerb::Reposition,
     ];
 
     /// Fixed-world-position motion is non-engaged even when selected from a
@@ -82,6 +91,15 @@ pub struct AttackParams {
     /// so naming one beside `weapon` rejects load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub damage_type: Option<crate::AuthoredHandle>,
+    /// The attack tokens this attack draws, each a handle or
+    /// `token.with({ cost })`. `None` draws `defaultToken`; an empty list
+    /// opts out of the attack budget.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::attack_budget::deserialize_draws"
+    )]
+    pub draws: Option<Vec<crate::attack_budget::TokenDraw>>,
 }
 
 /// How an authored patrol route moves when it reaches an endpoint.
@@ -151,14 +169,24 @@ where
     deserializer.deserialize_any(PatrolPointsVisitor)
 }
 
+mod activity_motion;
+mod attack_turn_marks;
 mod recursive;
 
+pub use activity_motion::{
+    COMBAT_RING_STEP_DEG, DEFAULT_REPOSITION_ARC_DEG, FacingPolicy, RepositionParams,
+};
 pub use recursive::*;
 
 /// Whether an activity represents locomotion rather than an action-bearing
-/// combat phase.
+/// combat phase. An engaged verb that moves without acting (`chaseTarget`,
+/// `strafe`, `reposition`) is locomotion: its animation is a travel cycle, so
+/// it yields to the rest animation at a standstill.
 pub fn is_locomotion_activity(activity: &BehaviorActivityDescriptor) -> bool {
-    matches!(activity.motion, Some(MotionVerb::ChaseTarget)) && activity.action.is_none()
+    matches!(
+        activity.motion,
+        Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
+    ) && activity.action.is_none()
         || activity.motion.is_some_and(MotionVerb::is_position_goal)
 }
 

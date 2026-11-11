@@ -123,8 +123,19 @@
     stop(): SequenceStep[];
   }
 
+  /** Snapshot of a map-placed `ai_attack_pool`: id, position and tags. Its member tag and budget profile stay on the map entity. */
+  export type AttackPoolEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+
+  /** Attack pool member returned by `getMapEntities("attackPool")`. Every step is host-only. */
+  export interface AttackPoolEntityHandle extends AttackPoolEntity {
+    /** Start the pool: every enemy carrying its member tag takes turns in it, under its budget profile, and a spawn carrying the tag joins while it runs. On a running pool, re-assigns its current tag holders; turns, waits and refreshing counts stand. */
+    start(): SequenceStep[];
+    /** Stop the pool: its members return to the default pool and its refreshing counts drop. A no-op on a stopped pool. */
+    stop(): SequenceStep[];
+  }
+
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -137,6 +148,7 @@
     K extends "emitter" ? EmitterEntity :
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
+    K extends "attackPool" ? AttackPoolEntityHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -303,6 +315,10 @@
   export type StartTrapStep = { id: EntityId; primitive: "startTrap"; args?: TrapStartOptions };
   /** Sequence step that stops one projectile trap member's repeats (`t.stop()`). */
   export type StopTrapStep = { id: EntityId; primitive: "stopTrap"; args?: never };
+  /** Sequence step that starts one attack pool member, or re-assigns its tag holders while it runs (`p.start()`). */
+  export type StartAttackPoolStep = { id: EntityId; primitive: "startAttackPool"; args?: never };
+  /** Sequence step that stops one attack pool member (`p.stop()`). */
+  export type StopAttackPoolStep = { id: EntityId; primitive: "stopAttackPool"; args?: never };
 
   /** Control-step payload for `WaitStep`. `interruptible` defaults to `false` when omitted by the author. */
   export interface WaitArgs { readonly durationMs: number; readonly interruptible: boolean; }
@@ -341,6 +357,8 @@
     | FireTrapStep
     | StartTrapStep
     | StopTrapStep
+    | StartAttackPoolStep
+    | StopAttackPoolStep
     | GroupCommand
     | SubjectTokenCommand
     | SystemReactionStep<any>
@@ -829,6 +847,24 @@
   /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+
+  /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
+  export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
+  /** Fields a token reference carries. In an attack's `draws`: `cost`, an integer of at least 1 (default 1). In an `attackBudgets` profile: `limit` and `refreshMs`, overriding the declared budget. A field in the other place rejects load. */
+  export type AttackTokenFields = { readonly cost?: number; readonly limit?: number; readonly refreshMs?: number };
+  /** A registered attack token. It crosses the manifest as `{ kind, name }`; its budget rides the declaration `defineMod` resolves. `with` builds a reference carrying fields. */
+  export type AttackToken = {
+    readonly kind: "attackToken";
+    readonly name: string;
+    with(fields: AttackTokenFields): AttackTokenRef;
+  };
+  /** A token reference with fields, built by `token.with({ ... })`. It crosses as `{ token, ...fields }`. */
+  export type AttackTokenRef = { readonly token: AttackToken } & AttackTokenFields;
+  /** The SDK's attack token at the default budget: what an attack without `draws` draws. Every mod has it and never lists it in `attackTokens`; a profile may override it. */
+  export const defaultToken: AttackToken;
+  /** Declare an attack token by its default budget. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ attackTokens: [token] })`, then draw it from attacks' `draws`. */
+  export function defineAttackToken(budget?: AttackTokenBudget): AttackToken;
+  export function defineAttackToken(name: string, budget?: AttackTokenBudget): AttackToken;
 
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
@@ -1322,6 +1358,8 @@
      * position. Pair this with damage recency before treating shared memory or
      * bearing as belonging to that hit (boolean). */
     readonly damageSourceKnown: RuntimeGuardNode;
+    /** `true` while the enemy holds an attack turn, for any attack, as of the previous tick: it reads true from the tick after the grant (boolean). */
+    readonly hasAttackTurn: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -1355,6 +1393,12 @@
 
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
+  /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load. */
+  export function attackTurnHeld(attack: string): RuntimeGuardNode;
+
+  /** `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load. */
+  export function attackTurnFree(attack: string): RuntimeGuardNode;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

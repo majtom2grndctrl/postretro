@@ -8,7 +8,7 @@ pub use postretro_foundation::data_descriptors::validate::consequential::*;
 use super::super::DescriptorError;
 
 /// Validate a consequential reaction body: exactly one recipient form, then
-/// its `args`. A trap verb is never a body. Errors name the reaction.
+/// its `args`. A trap or attack-pool verb is never a body. Errors name the reaction.
 pub fn validate_consequential_reaction(
     reaction: &str,
     primitive: &str,
@@ -23,6 +23,14 @@ pub fn validate_consequential_reaction(
         return Err(DescriptorError::InvalidShape {
             reason: format!(
                 "reaction `{reaction}` primitive: `{primitive}` addresses one projectile trap member by id, so it runs only as a sequence step"
+            ),
+        });
+    }
+    // So does an attack-pool verb.
+    if postretro_foundation::is_attack_pool_primitive(primitive) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "reaction `{reaction}` primitive: `{primitive}` addresses one attack pool member by id, so it runs only as a sequence step"
             ),
         });
     }

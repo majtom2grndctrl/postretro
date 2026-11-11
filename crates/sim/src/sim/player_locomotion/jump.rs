@@ -8,14 +8,17 @@ use postretro_foundation::{MovementStateKind, PlayerMovementComponent};
 use super::{LocomotionInput, LocomotionPosture};
 
 const JUMP_UP_STATE: &str = "jump_up";
-const JUMP_LOOP_STATE: &str = "jump_loop";
+/// The airborne loop. Enemy brains play it on a knockback launch too
+/// (`postretro-ai`), after the same fall delay.
+pub const JUMP_LOOP_STATE: &str = "jump_loop";
 const JUMP_DOWN_STATE: &str = "jump_down";
 
 /// Airborne ticks without a jump before the body leaves its ground stride for
 /// `jump_loop`: 0.15 s at the 60 Hz fixed tick. Step-downs and ground-stick gaps
 /// last a tick or two; a walk off a ledge outlasts this. Whole ticks, so the
-/// threshold never rests on float rounding.
-const FALL_DELAY_TICKS: u32 = 9;
+/// threshold never rests on float rounding. Shared with enemy brains, which use
+/// it on a knockback launch.
+pub const FALL_DELAY_TICKS: u32 = 9;
 /// Round-off allowance on the walking-pace landing test, so a pawn landing at
 /// its capped walk speed still counts as walking.
 const WALK_PACE_TOLERANCE: f32 = 1.0e-3;

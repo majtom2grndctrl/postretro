@@ -2030,6 +2030,53 @@ fn teleport_manifests_keep_member_events_and_reject_other_scopes_in_both_vms() {
     assert_eq!(js.teleport_events[0].teleporter, EntityId::from_raw(65536));
 }
 
+// An attack-pool verb takes no `args` and addresses one member from a
+// sequence step: never a group, a subject token or a reaction body. Both
+// runtimes reject each with the same pathed diagnostic.
+#[test]
+fn attack_pool_steps_reject_args_and_non_member_addressing_in_both_vms() {
+    let cases = [
+        (
+            (
+                r#"({ name: "bad", sequence: [{ id: 7, primitive: "startAttackPool", args: { profile: "arena" } }] })"#,
+                r#"return { name = "bad", sequence = { { id = 7, primitive = "startAttackPool", args = { profile = "arena" } } } }"#,
+            ),
+            "reaction `bad` sequence step 0: `startAttackPool` takes no `args`",
+        ),
+        (
+            (
+                r#"({ name: "bad", primitive: "stopAttackPool", tag: "arena" })"#,
+                r#"return { name = "bad", primitive = "stopAttackPool", tag = "arena" }"#,
+            ),
+            "`stopAttackPool` addresses one attack pool member by id, so it runs only as a sequence step",
+        ),
+        (
+            (
+                r#"({ name: "bad", sequence: [{ kind: "npc", tag: "arena", primitive: "startAttackPool" }] })"#,
+                r#"return { name = "bad", sequence = { { kind = "npc", tag = "arena", primitive = "startAttackPool" } } }"#,
+            ),
+            "`startAttackPool` addresses one attack pool member, so it cannot carry a group `kind`",
+        ),
+        (
+            (
+                r#"({ name: "bad", sequence: [{ target: "@trigger", primitive: "stopAttackPool" }] })"#,
+                r#"return { name = "bad", sequence = { { target = "@trigger", primitive = "stopAttackPool" } } }"#,
+            ),
+            "`stopAttackPool` addresses one attack pool member from `getMapEntities(\"attackPool\")`; no subject token carries it",
+        ),
+    ];
+    for ((js_source, lua_source), expected) in cases {
+        let error = identical_rejection(js_source, lua_source);
+        assert!(error.contains(expected), "unexpected diagnostic: {error}");
+    }
+    // A member step with no args, or empty args, installs identically.
+    let js = r#"({ name: "go", sequence: [{ id: 7, primitive: "startAttackPool" }, { id: 7, primitive: "stopAttackPool", args: {} }] })"#;
+    let lua = r#"return { name = "go", sequence = { { id = 7, primitive = "startAttackPool" }, { id = 7, primitive = "stopAttackPool", args = {} } } }"#;
+    let js_reaction = eval_js(js, |ctx, value| named_reaction_from_js(ctx, value).unwrap());
+    let lua_reaction = eval_lua(lua, |value| named_reaction_from_lua(value).unwrap());
+    assert_eq!(js_reaction, lua_reaction);
+}
+
 // A trap `start`'s literal options reject the reaction at install in both
 // runtimes: a non-positive interval, a negative phase, a non-number, an
 // unknown option; `fire` and `stop` take none. A trap verb addresses one

@@ -56,7 +56,7 @@ the manifest lacks any required field.
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType` and `defineDefenseLayer` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
+**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer` and `defineAttackToken` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -648,6 +648,130 @@ armor with a `corrosive` one (`{ armor: 2 }`) to give each weapon a job.
 
 ---
 
+## Attack tokens and budgets
+
+An enemy attack starts only while its enemy holds a turn for it, so a group
+takes turns instead of piling on. An **attack token** is what a turn draws:
+each target allows so much of each token at once. You declare tokens, list
+them in `defineMod`, and say what each attack draws.
+
+### Declaring and registering
+
+```typescript
+// scripts/budget.ts — each object is the token's default budget
+import { defineAttackToken } from "postretro";
+export const melee  = defineAttackToken({ limit: 3 });
+export const ranged = defineAttackToken({ limit: 2 });
+export const heavy  = defineAttackToken({ limit: 1, refreshMs: 4000 });
+
+// start-script.ts
+export default defineMod({
+  /* … */
+  attackTokens: [melee, ranged, heavy],
+  attackBudgets: {
+    arena: [melee.with({ limit: 1 }), ranged.with({ limit: 1 })],
+  },
+});
+```
+
+Luau passes each name explicitly and calls `with` as a method:
+`Postretro.defineAttackToken("heavy", { limit = 1, refreshMs = 4000 })`,
+`melee:with({ limit = 1 })`.
+
+- **`limit`** (default 3) is how much of the token may be drawn on one target
+  at once: an integer of at least 1. Every target has its own allowance, so
+  each co-op player, NPC ally and infighting monster counts separately.
+- **`refreshMs`** (default 0) is how long a spent draw stays counted after
+  its turn ends, however it ends: a finite number of at least 0. `heavy` above
+  lands one heavy attack, then stays shut 4 s while lighter attacks keep
+  drawing `melee`.
+- **`defaultToken`** is the SDK's token at the default budget. An attack
+  without `draws` draws it, so enemies take turns with no setup. Every mod has
+  it: never list it in `attackTokens`, and never declare a token named
+  `default`.
+- **Names** follow the damage-type rules: from the `const` binding in
+  TypeScript, 1–64 bytes of ASCII letters, digits, `_` and `-`. A handle
+  crosses as `{ kind, name }`; a bare string (`"melee"`) is not a token.
+
+### Draws
+
+An attack's `draws` lists the tokens it takes. A token alone draws one;
+`token.with({ cost })` draws `cost` (an integer of at least 1).
+
+```typescript
+attacks: {
+  jab:  { draws: [melee], damage: 8, maxRange: 2, cooldownMs: 1200 },
+  slam: { draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800 },
+  chip: { draws: [], damage: 2, maxRange: 2, cooldownMs: 400 },
+}
+```
+
+The slam counts two against `melee` and one against `heavy`, while jabs keep
+queuing beside it. A request is granted only when every token it draws has
+room; the enemy that has waited longest goes first. `draws: []` opts out: the
+attack is never counted and never waits, which suits fodder that chips while
+heavies take turns. It still holds a turn while it runs, so
+`brain.hasAttackTurn` reads `true`; an enemy has room for 4 such turns apart
+from its 4 drawn ones. Past that it fires holding no turn, so
+`attackTurnHeld` can read `false` while it fires. An attack draws at most 8
+tokens, each once.
+
+### Profiles
+
+`attackBudgets` declares named profiles, each a list of overrides in the same
+shape: `token.with({ limit, refreshMs })`. A profile changes only the fields it
+names, and a token it leaves out keeps its declared budget. A map's attack
+pools (`ai_attack_pool`, [Attack pool members](#attack-pool-members)) select a
+profile by name; enemies in no running pool use `default`, which is the
+declared budgets unless you declare it. A pool naming a profile you do not
+declare warns when the level loads and uses `default`. A profile may override
+`defaultToken` too.
+
+A profile name matches `[A-Za-z0-9_-]{1,64}`, the same rule as token names, and
+a name outside it fails load. A map's `budget_profile` must name a profile in
+that form.
+
+Guards read a turn through `brain.hasAttackTurn`, `attackTurnHeld(attack)` and
+`attackTurnFree(attack)`; see [Attack turn reads](#attack-turn-reads).
+
+### Refresh
+
+When a turn ends, its draws stay counted for each token that sets
+`refreshMs`, for that long, exactly as a held turn counts: a waiting enemy
+gets no room from them, and one that has waited longest still goes first once
+they lapse. This holds however the turn ends. Cutting off a slam, killing its
+enemy or pulling its target away buys the same 4 s as surviving it.
+
+The delay is measured each tick against the token's current `refreshMs` in
+that pool, so lowering it frees counts sooner. A count stays with the target
+and pool it was counted in. It is gone when that target leaves the world,
+when its attack pool stops, and on every level change.
+
+### Hot reload
+
+A mod reload applies its budgets from the next tick and takes no turn away.
+Lowering a `limit` below what is held lets those turns end by their own rules,
+and nothing more is granted until the count fits. A reload that changes what
+an attack draws ends that attack's turns, which spend their refresh, and its
+enemies ask again under the new draws. Draws compare after resolution, so a
+change from no `draws` to `[defaultToken]` ends nothing. A reload removing a
+profile a running pool uses moves that pool to `default`.
+
+### Load errors
+
+Each of these fails load and names the key path: a `limit` or `cost` that is
+not an integer of at least 1; a `refreshMs` that is negative or not finite; a
+field in the wrong place (`cost` in a profile, `limit` or `refreshMs` in a
+draw); one token drawn twice by one attack or overridden twice by one profile;
+a bare string, a handle of another kind, or a token `attackTokens` does not
+list; two tokens with one name; `defaultToken`, or a token named `default`, in
+`attackTokens`; an attack drawing more than 8 tokens; and an
+`attackTurnHeld` or `attackTurnFree` guard that names no attack in its
+archetype's `behavior.attacks` (the error names the guard's key path and the
+read, and says it "names no attack in this archetype's `behavior.attacks`").
+
+---
+
 ## `components.weapon`
 
 Attach a `weapon` block to an entity descriptor to define a weapon archetype.
@@ -1104,6 +1228,13 @@ Gravity and collision still act normally. Character movement preserves the
 external impulse separately so ordinary speed caps and enemy navigation do not
 erase it. Multiplayer resolves hits and pushes on the host; authoritative
 movement updates carry the resulting momentum through client reconciliation.
+
+A pushed enemy never turns toward its flight or breaks into a stride. While push
+remains it keeps the facing it had when hit, though an enemy aiming at its target
+keeps turning toward it. Its walk cycle follows only its own steering. A push
+that lifts it plays its mesh's `jump_loop` after the same delay as a player's
+fall, and it returns to its activity's clip on landing. A mesh without `jump_loop`
+keeps its current clip.
 
 ### Reserved engine-fired reaction addresses
 
@@ -1592,6 +1723,9 @@ An activity is either a leaf or a composite:
 | `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
+| `facing` | `"target"` \| `"travel"` (optional) | Which way the enemy faces while this activity is active, including the motion its own `move` layer picks. Omitted, the motion's default applies. |
+| `reposition` | `{ arc?, minTravel? }` (optional) | Bounds for this activity's own `"reposition"` motion; see below. Only valid when `motion` is `"reposition"`. |
+| `attackTurn` | `string` (optional) | Marks the activity for one of `attacks`. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a windup → commit → recover chain holds a single turn. Checked at load: the name must be declared, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
 
 A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
 activity in its own envelope. Unknown sources or destinations, cross-boundary
@@ -1609,6 +1743,9 @@ slam: { damage: 8, damageType: ballistic, maxRange: 2, cooldownMs: 1200 }
 
 `damageType` is an optional damage-type handle beside `damage`; omitted, the
 hit takes the mod's `defaultDamageType`.
+
+Either form may list `draws`, the attack tokens a turn for it takes; omitted,
+it draws `defaultToken`. See [Attack tokens and budgets](#attack-tokens-and-budgets).
 
 Use the weapon form when the attack should use a weapon descriptor, including a
 traveling projectile. `weapon` supplies the damage, range, and cooldown; keep
@@ -1640,6 +1777,27 @@ an action or no action. A nested offense graph has its own active activity path.
 | `"patrol"` | Steer through the graph-wide anchor-relative route, advancing its persistent cursor in `"loop"` or `"pingPong"` order. |
 | `"hold"` | Stand still by **clearing** the navigation destination. |
 | `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
+| `"strafe"` | Circle the target at combat-slot distance in one direction as a continuous orbit, aiming one 45° ring step ahead of the enemy's current bearing and re-aiming every tick. It turns back when the next slot is blocked, taken or out of sight. Takes no parameters. |
+| `"reposition"` | Move to a combat slot at least one slot spacing (the gap between neighboring slots) from the one held on entry, then hold. It never backs straight off, and holds when no slot qualifies. |
+
+`strafe` and `reposition` engage the target, face it unless the activity sets
+`facing: "travel"`, and can fire an `action` mid-move. An activity whose own
+`motion` is `"reposition"` may bound it, both measured once on entry:
+
+```typescript
+move: { animation: "run", motion: "reposition", facing: "travel",
+        reposition: { arc: [60, 120], minTravel: 4 } },   // flank sideways
+```
+
+- `arc: [min, max]` — degrees around the target from the bearing between the
+  target and the enemy at entry: `0` back where it started, `90` to the side,
+  `180` the far side. Either side counts. Default `[0, 180]`. It must lie within
+  0–180 with `min <= max` and include a multiple of 45, because slots sit 45°
+  apart.
+- `minTravel` — metres the slot must be from where the enemy stood at entry.
+  Finite and `>= 0`; default one slot spacing.
+
+A `reposition` picked by a `move` selector row uses the defaults.
 
 The `hold`/`freeze` distinction is easy to get backwards. `hold` is the one that
 stops the agent: it clears the destination, so the agent settles in place.
@@ -1668,7 +1826,7 @@ has fired. A later firing-leaf dwell can fire again only after cooldown permits
 it. A graph with no `attacks` entries never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is a selected
-`"chaseTarget"` motion or any active action. This current-tick engagement
+`"chaseTarget"`, `"strafe"` or `"reposition"` motion or any active action. This current-tick engagement
 controls combat-slot participation and target facing. Target retention follows
 active-path engagement capability, so it continues through a committed,
 actionless selector-held phase. Idle, patrol, and position-goal paths drop a
@@ -1679,7 +1837,11 @@ activity stands its ground and swings while keeping its target and slot.
 active offense leaf that supplies `animation` wins; otherwise the active
 composite's optional locomotion `animation` wins. This sole `current_state`
 replicates; layers do not blend clips. Set `components.mesh.defaultState` to a
-suitable root initial animation.
+suitable root initial animation. While an enemy faces its target, an activity
+animation `X` plays `X_left`, `X_right` or `X_backward` when it travels that way,
+and plays `X` when the mesh declares no such state. A directional state's walk
+cycle follows the enemy's speed exactly as `X`'s does, against its own
+`travelSpeed`.
 
 ### Evaluation rules
 
@@ -1731,6 +1893,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.distanceToLastKnown` | `@brain.distanceToLastKnown` | `number` | XZ distance in metres to the remembered last-known target position, or the `1e9` no-memory sentinel. A bare `gt`/`ge` is true with no memory, so pair an investigate-distance guard with recent sight, or with both recent damage and `damageSourceKnown`. |
 | `brain.damageBearing` | `@brain.damageBearing` | `number` | Signed XZ yaw in radians from this enemy's visual `+Z` forward toward the attacker that landed its most recent damage. `0` is ahead and the two sides have opposite signs. Meaningful only when damage is recent **and** `damageSourceKnown` is true. |
 | `brain.damageSourceKnown` | `@brain.damageSourceKnown` | `boolean` | Whether the most recent damaging hit supplied an attacker world position. Pair it with damage recency before treating shared last-known-position memory or bearing as belonging to that hit. |
+| `brain.hasAttackTurn` | `@brain.hasAttackTurn` | `boolean` | Whether the enemy holds an attack turn for any attack, as of the previous tick: it reads `true` from the tick after the grant. See [Attack turn reads](#attack-turn-reads) for `attackTurnHeld` and `attackTurnFree`. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;
@@ -1743,6 +1906,38 @@ policies are a separate authoring surface from `components.behavior` — this fi
 does not document them.
 
 Reading any other name is a load error.
+
+### Attack turn reads
+
+Three guard reads report an enemy's attack turns (see
+[Attack tokens and budgets](#attack-tokens-and-budgets)). All three read the
+previous tick, so each reads `true` from the tick after a grant, never the same
+tick.
+
+| Read | Type | Meaning |
+|------|------|---------|
+| `brain.hasAttackTurn` | `boolean` | `true` while the enemy holds an attack turn for any attack. |
+| `attackTurnHeld(attack)` | `boolean` | `true` while the enemy holds a turn for `attack`, one of its archetype's attacks. |
+| `attackTurnFree(attack)` | `boolean` | `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. |
+
+`attackTurnFree` is `false` with no target, and `false` for an attack that
+shares a token with a turn the enemy already holds. It is also `false` for an
+attack that draws tokens while the enemy already holds its maximum of 4 drawn
+turns. It predicts a grant; it does not take one. `brain.hasAttackTurn` is a
+property of `brain`. `attackTurnHeld` and `attackTurnFree` are functions:
+TypeScript imports them from `"postretro"`, and Luau data scripts call them as
+globals. Naming an attack the archetype does not declare fails load (see
+[Load errors](#load-errors)).
+
+```typescript
+import { attackTurnFree, brain } from "postretro";
+
+// A waiting activity leaves for the firing one once a "shoot" turn is free.
+const waiting = { animation: "idle", motion: "hold" };
+const transitions = {
+  wait: [{ to: "fire", when: attackTurnFree("shoot").and(brain.targetVisible) }],
+};
+```
 
 ### Faction and hostility
 
@@ -1812,6 +2007,49 @@ and targeting the active untargeted state prevents an idle/patrol oscillation.
 Use named `components.faction` declarations and `sentiment(...)` rows for
 relationships. Write retention guards through `brain.targetHostile`, rather
 than testing a numeric faction value.
+
+### Infighting
+
+Infighting is the engine's retaliation rule: an enemy hit hard enough by a
+non-hostile peer turns on that peer. It needs two things, and either one turns
+it off:
+
+- **A tolerance the hits can cross.** Tolerance is damage from one attacker
+  inside the retaliation window. The enemy's own `components.tolerance` wins,
+  and applies to every attacker. Otherwise the `sentiment(...)` row from the
+  enemy's faction toward the attacker's faction supplies it. With neither, the
+  tolerance is unreachable and the enemy never retaliates.
+- **A retaliation window.** The `components.behavior` root's
+  `retaliation.windowMs` sets how long a hit counts. Omitting the `retaliation`
+  block uses 1500 ms. `windowMs: 0` disables retaliation for every enemy on
+  that behavior, whatever its tolerance.
+
+```typescript
+// Brutes infight: more than 10 damage from one brute inside 1.5 s starts a fight.
+sentiment("brutes", "brutes", { sentiment: 0, tolerance: 10 }),
+
+// Troopers never infight, whatever their faction rows say.
+defineEntity({
+  canonicalName: "trooper",
+  components: {
+    faction: "brutes",
+    behavior: { /* initial, activities, transitions ... */ retaliation: { windowMs: 0 } },
+  },
+});
+```
+
+A high tolerance is a threshold, not an off switch: one large enough hit, such
+as a rocket, still crosses it. Use `windowMs: 0` to rule infighting out.
+
+Every `sentiment(...)` row takes a `tolerance`, so declaring a same-faction or
+cross-faction relationship also decides whether those enemies retaliate. To
+keep a relationship without infighting, give the row a tolerance above any
+damage your weapons deal in 1.5 s, or set `windowMs: 0` on the behavior.
+
+Separate factions do not need infighting to fight: an unlisted pair of
+different factions is hostile by default. A new faction attacks every other
+faction, the built-in enemy faction included, until a `sentiment(...)` row says
+otherwise.
 
 ### The no-target trap
 
@@ -2302,7 +2540,7 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
 - **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
@@ -2318,6 +2556,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
+| attack pool member | `getMapEntities("attackPool")` | `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
 | player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
@@ -2350,6 +2589,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
 | `"spawner"` | `SpawnerEntityHandle` | `id`, `position`, `tags`, `spawnedTags` |
 | `"trap"` | `TrapEntityHandle` | `id`, `position`, `tags` |
+| `"attackPool"` | `AttackPoolEntityHandle` | `id`, `position`, `tags` |
 
 - Fields are a snapshot taken when the query runs. Member methods build reaction steps; they never change the entity during setup.
 - Only map-placed entities appear. A light or emitter carried by a spawned NPC, or by a player, never does.
@@ -2439,6 +2679,33 @@ for i, t in ipairs(traps) do
   table.insert(steps, t:start({ intervalMs = periodMs, phaseMs = (i - 1) * 250 }))
 end
 local loopOn = Postretro.defineReaction("wave.loopOn", steps) -- nested tables flatten
+```
+
+### Attack pool members
+
+An `ai_attack_pool` gives an arena its own attack budget (see [level_design.md](level_design.md#attack-pools) and [Attack tokens and budgets](#attack-tokens-and-budgets)). Its member has two verbs, each returning steps:
+
+- `start()` runs the pool. Every enemy carrying its `member_tag` then takes turns in it, under its `budget_profile`, and while it runs an enemy a spawner releases with the tag in its `spawned_tags` joins on spawning. `start` on a running pool assigns its current tag holders again and leaves turns, waiting enemies and refreshing counts as they are, so one step returns a group from "frenzy" to "calm".
+- `stop()` returns the pool's members to the default pool and drops its refreshing counts. `stop` on a stopped pool does nothing.
+
+Each enemy is in one pool at a time, and the latest assignment wins: starting a second pool over the same members moves them to it, and stopping that pool returns them to the default pool, not the first. An enemy spawned with tags matching two running pools joins the one started or restarted latest. Changing an enemy's tags later moves no one. A pool's members keep the turns they hold when they change pool; those turns count against the new pool until they end.
+
+Every pool step acts on the host only, and no pool runs when a level starts or restarts. A step that runs during a trigger's or teleporter's own tick acts before that tick's attacks are decided; every other step — after a `wait`, from a named or `levelLoad` reaction, or from a player event — acts on the next tick. Steps on one tick apply in the order they were issued, beside any spawns between them.
+
+```typescript
+// A trigger with `target_tag arena` and `command start` does the same with no script.
+defineReaction("arena.start", {
+  sequence: getMapEntities("attackPool", { tag: "arena" }).flatMap((p) => p.start()),
+});
+defineReaction("arena.cleared", getMapEntities("attackPool", { tag: "arena" }).map((p) => p.stop()));
+```
+
+```lua
+local steps = {}
+for _, p in ipairs(Postretro.getMapEntities("attackPool", { tag = "arena" })) do
+  table.insert(steps, p:start())
+end
+Postretro.defineReaction("arena.start", { sequence = steps }) -- nested tables flatten
 ```
 
 ### LightEntityHandle

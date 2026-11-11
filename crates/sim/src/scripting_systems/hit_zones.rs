@@ -107,6 +107,18 @@ impl ModelHitZones {
         }
     }
 
+    /// The clip a mesh animation state plays, for its load-derived stride and
+    /// length: the resolved `clip_index` when it has one, else the declared
+    /// clip name. A runtime spawn holds no index until its install-time queue
+    /// drains, and a remote client resolves from the descriptor, which has
+    /// none. Host and client both read clips through here so they cannot pick
+    /// different ones.
+    pub fn state_clip(&self, clip_index: Option<usize>, clip_name: &str) -> Option<&AnimationClip> {
+        clip_index
+            .and_then(|clip_index| self.clips.get(clip_index))
+            .or_else(|| self.clips.iter().find(|clip| clip.name == clip_name))
+    }
+
     /// True when this model carries at least one authored joint zone. A derived
     /// bound may still be absent when the zone set is untrustworthy, in which
     /// case consumers degrade to the coarse authored fallback.

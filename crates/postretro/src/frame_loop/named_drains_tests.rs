@@ -170,6 +170,9 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
         motion: Some(MotionVerb::Hold),
         action: None,
         on_enter,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
         layers: BTreeMap::new(),
     };
     let edge = |to: &str| GuardedRow {

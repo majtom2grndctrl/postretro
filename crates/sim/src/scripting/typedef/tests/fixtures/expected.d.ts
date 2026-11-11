@@ -42,7 +42,7 @@ declare module "postretro" {
     loop?: boolean;
     /** Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms. */
     crossfadeMs?: number;
-    /** Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and the AI alert-mapped locomotion state; player `crouch_idle` and jump states play at the authored rate and ignore it. */
+    /** Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and for the AI alert-mapped locomotion state and its `_left`, `_right` and `_backward` variants; player `crouch_idle` and jump states play at the authored rate and ignore it. */
     travelSpeed?: number;
     /** How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth". */
     interrupt?: InterruptPolicy;
@@ -58,7 +58,7 @@ declare module "postretro" {
     shadowBiasScale?: number;
     /** When true, hides this mesh from the main view: it renders only into shadow-depth passes and, at Reflection quality very high and ultra, the water mirror. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward. */
     shadowOnly?: boolean;
-    /** Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when standing idle; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs turned against travel, toward the aim; a missing or unresolved backward state plays its tier's forward state instead, and `run_backward` needs a run forward state beside it. Crouching, not speed, selects `crouch_idle` when still and `crouch_forward` or `crouch_backward` when moving, rate-scaled against `travelSpeed`, falling back to `.crouch`; a slide holds `crouch_idle` at its authored rate. A missing `crouch_backward` plays `crouch_forward`, a missing `crouch_idle` plays `defaultState`, and without a resolved `crouch_forward` crouching and sliding select as standing does. In the air, `jump_up` plays from a jump's takeoff until the apex or its clip ends, then `jump_loop`; a fall without a jump keeps the ground stride for about 0.15 s first. An air jump after takeoff keeps `jump_loop`; a launch without a jump (knockback, a push) falls into `jump_loop` after the delay. A landing at or below `.walk` plays `jump_down` until its clip ends, the player speeds up, or jumps again; a faster landing returns straight to the stride. Swim, vault, dash and slide never play jump states. A missing `jump_up` takes off into `jump_loop`, a missing `jump_down` lands straight into the ground states, and without a resolved `jump_loop` there is no jump sequence. `loop` defaults to false: declare `loop: true` on the repeating states (walk, run, crouch and `jump_loop`); `jump_up` and `jump_down` play once. Without `walk_forward` or `walk` the engine drives none of these. */
+    /** Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. On a player descriptor the engine selects locomotion by state name: `defaultState` when standing idle; `walk_forward` (or `walk`) and `walk_backward` at walking speed; `run_forward` (or `run`) and `run_backward` once speed passes the midpoint between `movement.ground.speed.walk` and `.run`, with a band either side so the clip does not flicker. Backward states play when travel points behind the aim, with the legs turned against travel, toward the aim; a missing or unresolved backward state plays its tier's forward state instead, and `run_backward` needs a run forward state beside it. Crouching, not speed, selects `crouch_idle` when still and `crouch_forward` or `crouch_backward` when moving, rate-scaled against `travelSpeed`, falling back to `.crouch`; a slide holds `crouch_idle` at its authored rate. A missing `crouch_backward` plays `crouch_forward`, a missing `crouch_idle` plays `defaultState`, and without a resolved `crouch_forward` crouching and sliding select as standing does. In the air, `jump_up` plays from a jump's takeoff until the apex or its clip ends, then `jump_loop`; a fall without a jump keeps the ground stride for about 0.15 s first. An air jump after takeoff keeps `jump_loop`; a launch without a jump (knockback, a push) falls into `jump_loop` after the delay. A landing at or below `.walk` plays `jump_down` until its clip ends, the player speeds up, or jumps again; a faster landing returns straight to the stride. Swim, vault, dash and slide never play jump states. A missing `jump_up` takes off into `jump_loop`, a missing `jump_down` lands straight into the ground states, and without a resolved `jump_loop` there is no jump sequence. `loop` defaults to false: declare `loop: true` on the repeating states (walk, run, crouch and `jump_loop`); `jump_up` and `jump_down` play once. Without `walk_forward` or `walk` the engine drives none of these. On an enemy, a launch into the air plays `jump_loop` after the same fall delay, and under target facing an activity clip `X` resolves to `X_left`, `X_right` or `X_backward` by travel direction, falling back to `X`. */
     animations?: { readonly [state: string]: AnimationStateDescriptor };
     /** The state entered at spawn. Required exactly when `animations` is present; must name a declared state. */
     defaultState?: string;
@@ -68,7 +68,7 @@ declare module "postretro" {
 
   /** Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override. */
   export type LocomotionDescriptor = {
-    /** Whether V1 rate-scales engine-selected player locomotion and the AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled. */
+    /** Whether the engine rate-scales engine-selected player locomotion and the brain graph's locomotion state, with its `_left`, `_right` and `_backward` variants. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled. */
     speedScale?: boolean;
   };
 
@@ -760,7 +760,7 @@ declare module "postretro" {
     resist?: { readonly [damageType: string]: NumberValue };
   };
 
-  /** What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`. */
+  /** What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`, `strafe`, `reposition`. */
   export type MotionVerb =
     /** Steer toward the selected target's combat slot. */
     | "chaseTarget"
@@ -773,7 +773,26 @@ declare module "postretro" {
     /** Clear the navigation destination and stand still. */
     | "hold"
     /** Touch neither destination nor steering — terminal presentation. */
-    | "freeze";
+    | "freeze"
+    /** Engaged: circle the target at standoff in one direction as a continuous orbit, reversing when the way ahead is unreachable, occupied or out of sight. Faces the target by default. Takes no parameters. */
+    | "strafe"
+    /** Engaged: claim a combat slot at least one slot spacing from the slot held at entry, within the activity's `reposition` bounds, and hold on arrival or when none qualifies. Never backs straight off. Faces the target by default. */
+    | "reposition";
+
+  /** Which heading an enemy faces while an activity is active. Valid values: `target`, `travel`. */
+  export type FacingPolicy =
+    /** Turn toward the selected target. */
+    | "target"
+    /** Turn toward the direction of travel; hold the heading while stopped. */
+    | "travel";
+
+  /** Bounds a `reposition` activity fixes at entry, so its goal never chases itself. */
+  export type RepositionParams = {
+    /** `[min, max]` degrees around the target, measured from the bearing from the target to the enemy at entry: 0 is straight back toward its start, 90 lateral, 180 the far side. Either side qualifies. Must lie within 0 to 180 with min <= max and contain a multiple of 45, since the ring steps in 45° slots. Defaults to `[0, 180]`. */
+    arc?: readonly [number, number];
+    /** Metres the slot must lie from the enemy's position at entry. Must be finite and >= 0. Defaults to one slot spacing, the distance between neighboring ring slots at standoff. */
+    minTravel?: number;
+  };
 
   /** What a behavior activity does besides moving. Omit the key for an activity with no action. */
   export type ActionVerb = {
@@ -781,8 +800,8 @@ declare module "postretro" {
     attack: string;
   };
 
-  /** One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. */
-  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };
+  /** One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once. */
+  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] };
 
   /** How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`. */
   export type PatrolMode =
@@ -841,6 +860,12 @@ declare module "postretro" {
     onEnter?: string;
     /** Optional sound key played at the enemy when a leaf activity is entered, whether or not it authors `onEnter`. */
     sound?: string;
+    /** Which heading the enemy faces while this activity is active, covering the motion its own `move` layer supplies. Omitted, the motion's default applies: `strafe` and `reposition` face the target, and other verbs keep their usual rule. */
+    facing?: FacingPolicy;
+    /** Bounds for this activity's own `reposition` motion. Valid only when `motion` is `"reposition"`; a `move` selector's `reposition` uses the defaults. */
+    reposition?: RepositionParams;
+    /** Marks this activity for one of the root `attacks`: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: the name must be declared, and a mark nested inside a mark for another attack, or an action under a mark that fires another attack, rejects. */
+    attackTurn?: string;
     /** Composite-only orthogonal layers. */
     layers?: BehaviorLayers;
   };
@@ -1689,6 +1714,10 @@ declare module "postretro" {
     damageTypes?: ReadonlyArray<DamageType>;
     /** The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies. */
     defaultDamageType?: DamageType;
+    /** Attack tokens from `defineAttackToken(...)`, each carrying its default budget. Optional; the SDK's `defaultToken` is always registered and is never listed. An attack's `draws` name only a listed token or `defaultToken`; two entries with one name, a token named `default`, an entry that is not a token handle, or a `limit` that is not an integer of at least 1 or a `refreshMs` that is not a finite number of at least 0 fails load. */
+    attackTokens?: ReadonlyArray<AttackToken>;
+    /** Budget profiles keyed by name, each a list of overrides made with the token's `with({ limit?, refreshMs? })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load. */
+    attackBudgets?: { readonly [profile: string]: ReadonlyArray<AttackToken | AttackTokenRef> };
     /** Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
@@ -2017,8 +2046,19 @@ declare module "postretro" {
     stop(): SequenceStep[];
   }
 
+  /** Snapshot of a map-placed `ai_attack_pool`: id, position and tags. Its member tag and budget profile stay on the map entity. */
+  export type AttackPoolEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+
+  /** Attack pool member returned by `getMapEntities("attackPool")`. Every step is host-only. */
+  export interface AttackPoolEntityHandle extends AttackPoolEntity {
+    /** Start the pool: every enemy carrying its member tag takes turns in it, under its budget profile, and a spawn carrying the tag joins while it runs. On a running pool, re-assigns its current tag holders; turns, waits and refreshing counts stand. */
+    start(): SequenceStep[];
+    /** Stop the pool: its members return to the default pool and its refreshing counts drop. A no-op on a stopped pool. */
+    stop(): SequenceStep[];
+  }
+
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -2031,6 +2071,7 @@ declare module "postretro" {
     K extends "emitter" ? EmitterEntity :
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
+    K extends "attackPool" ? AttackPoolEntityHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -2197,6 +2238,10 @@ declare module "postretro" {
   export type StartTrapStep = { id: EntityId; primitive: "startTrap"; args?: TrapStartOptions };
   /** Sequence step that stops one projectile trap member's repeats (`t.stop()`). */
   export type StopTrapStep = { id: EntityId; primitive: "stopTrap"; args?: never };
+  /** Sequence step that starts one attack pool member, or re-assigns its tag holders while it runs (`p.start()`). */
+  export type StartAttackPoolStep = { id: EntityId; primitive: "startAttackPool"; args?: never };
+  /** Sequence step that stops one attack pool member (`p.stop()`). */
+  export type StopAttackPoolStep = { id: EntityId; primitive: "stopAttackPool"; args?: never };
 
   /** Control-step payload for `WaitStep`. `interruptible` defaults to `false` when omitted by the author. */
   export interface WaitArgs { readonly durationMs: number; readonly interruptible: boolean; }
@@ -2235,6 +2280,8 @@ declare module "postretro" {
     | FireTrapStep
     | StartTrapStep
     | StopTrapStep
+    | StartAttackPoolStep
+    | StopAttackPoolStep
     | GroupCommand
     | SubjectTokenCommand
     | SystemReactionStep<any>
@@ -2724,6 +2771,24 @@ declare module "postretro" {
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
 
+  /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
+  export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
+  /** Fields a token reference carries. In an attack's `draws`: `cost`, an integer of at least 1 (default 1). In an `attackBudgets` profile: `limit` and `refreshMs`, overriding the declared budget. A field in the other place rejects load. */
+  export type AttackTokenFields = { readonly cost?: number; readonly limit?: number; readonly refreshMs?: number };
+  /** A registered attack token. It crosses the manifest as `{ kind, name }`; its budget rides the declaration `defineMod` resolves. `with` builds a reference carrying fields. */
+  export type AttackToken = {
+    readonly kind: "attackToken";
+    readonly name: string;
+    with(fields: AttackTokenFields): AttackTokenRef;
+  };
+  /** A token reference with fields, built by `token.with({ ... })`. It crosses as `{ token, ...fields }`. */
+  export type AttackTokenRef = { readonly token: AttackToken } & AttackTokenFields;
+  /** The SDK's attack token at the default budget: what an attack without `draws` draws. Every mod has it and never lists it in `attackTokens`; a profile may override it. */
+  export const defaultToken: AttackToken;
+  /** Declare an attack token by its default budget. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ attackTokens: [token] })`, then draw it from attacks' `draws`. */
+  export function defineAttackToken(budget?: AttackTokenBudget): AttackToken;
+  export function defineAttackToken(name: string, budget?: AttackTokenBudget): AttackToken;
+
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
   export function read(ref: StateRef<boolean>): BoolRef;
@@ -3027,6 +3092,8 @@ declare module "postretro" {
      * position. Pair this with damage recency before treating shared memory or
      * bearing as belonging to that hit (boolean). */
     readonly damageSourceKnown: RuntimeGuardNode;
+    /** `true` while the enemy holds an attack turn, for any attack, as of the previous tick: it reads true from the tick after the grant (boolean). */
+    readonly hasAttackTurn: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -3060,6 +3127,12 @@ declare module "postretro" {
 
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
+  /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load. */
+  export function attackTurnHeld(attack: string): RuntimeGuardNode;
+
+  /** `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load. */
+  export function attackTurnFree(attack: string): RuntimeGuardNode;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

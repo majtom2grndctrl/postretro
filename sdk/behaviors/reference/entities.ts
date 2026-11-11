@@ -4,7 +4,7 @@
 //
 // See: context/lib/scripting.md §2
 
-import { brain, candidate, defineEntity } from "postretro";
+import { brain, candidate, defaultToken, defineEntity } from "postretro";
 import type { EntityTypeDescriptor } from "postretro";
 
 /** Classname for entities driven by `rotator_driver.{ts,luau}`. */
@@ -51,7 +51,10 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
       initial: "idle",
       moveSpeed: 3,
       attacks: {
-        jab: { damage: 8, maxRange: JAB_RANGE, cooldownMs: 1200 },
+        // `draws` names the attack tokens a turn for the jab takes from its
+        // target's allowance. `defaultToken` is what an attack without `draws`
+        // draws; a mod declares its own with `defineAttackToken`.
+        jab: { draws: [defaultToken], damage: 8, maxRange: JAB_RANGE, cooldownMs: 1200 },
       },
       engagementRadius: JAB_RANGE,
       candidateFilter: candidate.died.not().and(

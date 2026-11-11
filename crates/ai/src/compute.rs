@@ -1,34 +1,11 @@
+// AI compute pass: evaluate each enemy snapshot into an outcome — target
+// selection, guard facts, transitions, steering and the attack proposal.
+// See: context/lib/entity_model.md §7c · context/lib/scripting.md §11
+
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment};
 
-use super::{FACTION_STATE_FIELD, LocomotionIntent, perception};
-
-/// Resolve the one direction this tick's apply pass will slew toward. A
-/// committed aim holds its movement destination but still turns toward the
-/// shared eye-to-target vector; other engaged states keep the established
-/// velocity-first facing behavior.
-pub(super) fn facing_direction(
-    steering: SteeringIntent,
-    engaged: bool,
-    committed_aim: bool,
-    target_perception: Option<perception::EnemyTargetPerception>,
-    path_state: Option<crate::agent_steering::AgentPathState>,
-) -> Option<Vec3> {
-    let moving_velocity = path_state
-        .map(|path| path.velocity)
-        .filter(|velocity| LocomotionIntent::from_velocity(*velocity).moving);
-    let aim_facing =
-        target_perception.map(|perception| perception.target_aim - perception.enemy_eye);
-    match steering {
-        // Moving toward a destination faces the movement velocity, else nothing.
-        SteeringIntent::MoveTo(_) => moving_velocity,
-        // A committed aim turns toward the eye-to-target vector.
-        _ if committed_aim => aim_facing,
-        // Other engaged states face velocity first, falling back to the aim vector.
-        _ if engaged => moving_velocity.or(aim_facing),
-        _ => None,
-    }
-}
+use super::{FACTION_STATE_FIELD, heading, perception};
 
 pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32 {
     registry
@@ -38,11 +15,8 @@ pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32
 
 use super::brain_scope::BrainFacts;
 use super::engine_floor::SteeringIntent;
-use super::facing::{
-    FACING_TURN_RATE, slewed_yaw_toward, yaw_from_rotation, yaw_within_attack_tolerance,
-};
 use super::graph_eval::{
-    action_for_path, engages_active, engages_path, motion_for_path, select_transition_path,
+    action_for_path, engages_active, engages_path, resolved_motion, select_transition_path,
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
@@ -50,7 +24,7 @@ use super::targeting::{
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
-use crate::agent_steering;
+use super::{attack_turns, engaged_motion};
 use crate::nav::{NavStart, find_path_from};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_entities::components::agent::AgentComponent;
@@ -70,9 +44,10 @@ pub(super) fn evaluate(
     gate: crate::nav::NavGate<'_>,
     collision_world: Option<&crate::collision::CollisionWorld>,
     factions: &LiveFactionSentiment<'_>,
+    turns: &attack_turns::AttackTurnRuntime,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
-    for snap in snapshots {
+    for (slot, snap) in snapshots.into_iter().enumerate() {
         let mut brain = snap.brain;
         let mut graph_reseated = programs.take_reseat(snap.id);
         if graph_reseated {
@@ -92,6 +67,11 @@ pub(super) fn evaluate(
                 );
             }
             graph_reseated |= brain.reseat_to_initial();
+        }
+        // A reseat takes the enemy out of the AI set: its turns, request and
+        // clock name attacks of the graph it left.
+        if graph_reseated {
+            brain.attack_turns.clear();
         }
         // Candidate refresh runs during selection below, before the established
         // brain damage-fact aging site. Advance the paired attacker ledger here
@@ -341,7 +321,7 @@ pub(super) fn evaluate(
         };
         let selected_distance = selected_target.map(|(_, distance, _)| distance);
         let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
-        let (transitioned, motion, steering) = if !brain.aggro_armed {
+        let (transitioned, resolved, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
             // selection nor its guards, and standing down clears steering outright
@@ -363,6 +343,24 @@ pub(super) fn evaluate(
             // armed brain evaluates its whole guard set whether or not it has a
             // pawn: that is how an interrupt reaches an enemy nobody is standing
             // in front of.
+            // Turn facts read the previous tick's turns and line, against the
+            // target selected now.
+            let has_attack_turn = brain.attack_turns.holds_any();
+            programs.with_entry_scope(snap.id, |bound, scope| {
+                let reader = attack_turns::TurnFactReader {
+                    line: &turns.previous,
+                    budgets: &turns.budgets,
+                    refresh: turns.previous_refresh(),
+                    entity: snap.id,
+                    slot: slot as u32,
+                    pool: attack_turns::attack_pool_of(&turns.budgets, &brain),
+                    target: target.map(|target| target.entity),
+                    turns: &brain.attack_turns,
+                    graph: &brain.graph,
+                    programs: bound,
+                };
+                scope.refresh_attack_turns(|attack, read| reader.read(attack, read));
+            });
             // Selector guards may choose the current action, but their input
             // snapshot has not yet been refreshed for this enemy. Seed a
             // type-correct zero cooldown first, resolve that action without
@@ -385,6 +383,7 @@ pub(super) fn evaluate(
                     target_reachable,
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                    has_attack_turn,
                 },
             );
             let attack_cooldown_ms = programs
@@ -414,6 +413,7 @@ pub(super) fn evaluate(
                     target_reachable,
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                    has_attack_turn,
                 },
             );
             prior_standoff_distance = programs
@@ -428,13 +428,13 @@ pub(super) fn evaluate(
                     select_transition_path(bound, scope, &mut brain)
                 })
                 .unwrap_or(false);
-            let motion = programs
+            let resolved = programs
                 .with_entry_scope(snap.id, |bound, scope| {
-                    motion_for_path(bound, scope, &brain)
+                    resolved_motion(bound, scope, &brain)
                 })
                 .flatten();
-            let steering = motion
-                .map(|motion| position_goal_steering(motion, &mut brain, snap.position))
+            let steering = resolved
+                .map(|motion| position_goal_steering(motion.verb, &mut brain, snap.position))
                 .unwrap_or(SteeringIntent::Clear);
             // A chase with nothing to chase degrades to a stand-down: with no
             // target there is nothing to move relative to, and leaving the intent
@@ -444,8 +444,9 @@ pub(super) fn evaluate(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
-            (transitioned, motion, steering)
+            (transitioned, resolved, steering)
         };
+        let motion = resolved.map(|motion| motion.verb);
 
         // The acquired id is the cross-tick retention marker. Keep it while the
         // active path remains capable of engagement, even when an in-range move
@@ -469,36 +470,28 @@ pub(super) fn evaluate(
         };
 
         // Resolved engagement remains the facing policy for ordinary chase and
-        // action paths. Committed actionless aim is handled separately below.
+        // action paths. Committed actionless aim is handled in `heading`.
         let engaged = target.is_some()
             && !resolved_position_goal
             && programs
                 .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
                 .unwrap_or(false);
 
-        // A nested offense phase can intentionally hold at an authored standoff
-        // before its leaf exposes an action. It is still committed to the
-        // target: keep its aim moving even though its resolved current verb is
-        // `hold`, which `engages_path` correctly leaves false.
-        let committed_aim = retains_target && matches!(motion, Some(MotionVerb::Hold));
-        let facing_direction = facing_direction(
-            steering,
-            engaged,
-            committed_aim,
-            target_perception,
-            agent_steering::path_state(registry, snap.id),
+        let tick_heading = heading::resolve(
+            registry,
+            &mut brain,
+            heading::HeadingQuery {
+                id: snap.id,
+                rotation: snap.rotation,
+                motion,
+                steering,
+                engaged,
+                retains_target,
+                aim_direction: target_perception
+                    .map(|perception| perception.target_aim - perception.enemy_eye),
+                tick_dt,
+            },
         );
-        // If no horizontal yaw is derivable (for example, melee contact's
-        // vertical eye-to-aim segment), apply leaves the transform untouched;
-        // the firing check therefore reads that unchanged heading.
-        let post_slew_yaw = facing_direction
-            .and_then(|direction| {
-                slewed_yaw_toward(snap.rotation, direction, FACING_TURN_RATE * tick_dt)
-            })
-            .unwrap_or_else(|| yaw_from_rotation(snap.rotation));
-        let post_slew_facing_is_within_tolerance = target_perception.is_some_and(|perception| {
-            yaw_within_attack_tolerance(post_slew_yaw, perception.target_aim - perception.enemy_eye)
-        });
         let weapon_aim = target_perception.and_then(|perception| {
             Some(WeaponAim {
                 origin: perception.enemy_eye,
@@ -518,14 +511,14 @@ pub(super) fn evaluate(
         // Gating on the selected target's damage eligibility stops attack/event
         // spam against an already-dead or removal-committed pawn and prevents
         // damaging a different co-op pawn than the one this enemy chose.
-        let entered = brain.take_entry_pending();
+        let entry_depth = brain.take_entry_pending();
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && let (Some(target), Some(distance)) = (target, selected_distance)
             && brain.activity_attack_count(firing_leaf_depth) == Some(0)
             && selected_target_alive(registry, target.entity)
             && perception::fire_gate(target_perception)
-            && post_slew_facing_is_within_tolerance
+            && tick_heading.within_attack_tolerance
             && let Some((attack_name, cooldown_ms, outcome)) = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     let action = action_for_path(bound, scope, &brain)?;
@@ -595,8 +588,8 @@ pub(super) fn evaluate(
             });
         }
 
-        let state_changed = graph_reseated || transitioned || entered.is_some();
-        let announce_entry = brain.take_entry_event_pending() && entered.is_some();
+        let state_changed = graph_reseated || transitioned || entry_depth.is_some();
+        let announce_entry = brain.take_entry_event_pending() && entry_depth.is_some();
         // An announced entry is an emission even without an authored
         // `on_enter`: the activity's entry sound plays regardless. The path
         // names the entered leaf in the graph the brain holds now.
@@ -615,6 +608,14 @@ pub(super) fn evaluate(
             })
             .flatten()
             .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
+        let engaged_ring = engaged_motion::plan(
+            &mut brain,
+            resolved.filter(|_| engaged),
+            entry_depth,
+            target,
+            snap.position,
+            standoff_distance,
+        );
         outcomes.push(EnemyOutcome {
             id: snap.id,
             position: snap.position,
@@ -631,8 +632,11 @@ pub(super) fn evaluate(
             entered,
             steering,
             engaged,
-            facing_direction,
+            facing_direction: tick_heading.facing_direction,
+            travel_variant: tick_heading.travel_variant,
             combat_slot: None,
+            engaged_ring,
+            fresh_unmarked_grant: None,
             brain,
         });
     }

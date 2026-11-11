@@ -837,6 +837,7 @@ fn combat_positioning_never_picks_a_slot_overlapping_a_docked_door() {
             mover_nav,
             collision_world: &rig.world,
             path_length_score_weight: 0.1,
+            ring: None,
         })
     };
     let in_the_door = |position: Vec3| {

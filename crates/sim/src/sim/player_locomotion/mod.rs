@@ -11,7 +11,9 @@ use postretro_entities::components::mesh::{
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::MovementStateKind;
 
-pub use jump::{JumpStates, LocomotionFooting, LocomotionStance};
+pub use jump::{
+    FALL_DELAY_TICKS, JUMP_LOOP_STATE, JumpStates, LocomotionFooting, LocomotionStance,
+};
 
 /// Travel farther than this from aim switches a forward-facing body to backward.
 const BACKWARD_ENTER_ANGLE: f32 = 105.0_f32.to_radians();

@@ -306,6 +306,18 @@ export type StopTrapStep = {
   primitive: "stopTrap",
 }
 
+--- Member steps on one attack pool (`p:start()`, `p:stop()`). Every attack
+--- pool step is host-only.
+export type StartAttackPoolStep = {
+  id: number,
+  primitive: "startAttackPool",
+}
+
+export type StopAttackPoolStep = {
+  id: number,
+  primitive: "stopAttackPool",
+}
+
 export type WaitArgs = { durationMs: number, interruptible: boolean }
 export type FireArgs = { event: string }
 
@@ -330,7 +342,7 @@ export type FireStep = {
 --- Ordered member, group, subject-token, system and control steps. Steps
 --- begin in array order; `fire` queues a named dispatch, while `wait` stops
 --- the current drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A
@@ -1046,8 +1058,13 @@ end
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
-function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any? }): T
-  if config.stores == nil and config.defenseLayers == nil and config.damageTypes == nil then
+function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any?, attackTokens: any? }): T
+  if
+    config.stores == nil
+    and config.defenseLayers == nil
+    and config.damageTypes == nil
+    and config.attackTokens == nil
+  then
     return config
   end
 
@@ -1069,6 +1086,13 @@ function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: a
   manifest.stores = resolve(config.stores, storeDeclarations)
   manifest.defenseLayers = resolve(config.defenseLayers, defenseLayerDeclarations)
   manifest.damageTypes = resolve(config.damageTypes, damageTypeDeclarations)
+  if config.attackTokens ~= nil then
+    local resolved = {}
+    for key, entry in pairs(config.attackTokens) do
+      resolved[key] = dataScriptParts.attackBudget.attackTokenDeclarationOf(entry)
+    end
+    manifest.attackTokens = resolved
+  end
   return manifest
 end
 
@@ -1308,6 +1332,7 @@ end
 -- builders declared above; `data_script_export_inventory_matches_returned_sdk_fields`
 -- pins the merged set.
 for _, part in ipairs({
+  dataScriptParts.attackBudget,
   dataScriptParts.playerEvents,
   dataScriptParts.commands,
   dataScriptParts.reactions,

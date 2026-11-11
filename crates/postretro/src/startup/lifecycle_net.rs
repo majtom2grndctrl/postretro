@@ -84,6 +84,9 @@ impl App {
 
     pub(crate) fn clear_surface_lifetime_level_state(&mut self) {
         self.ai_runtime.cancel_weapon_activations();
+        // Refreshing attack-turn counts and running attack pools name this
+        // level's entities; none carries into the next install.
+        self.ai_runtime.clear_level_state();
         // Fog- and trigger-volume entities live in the script registry;
         // clearing their bridge id tables and trigger state prevents stale
         // slots or bindings if a future surface re-creation re-runs

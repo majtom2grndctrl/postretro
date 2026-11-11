@@ -529,17 +529,17 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
         };
 
         // The arity-keyed definers take one argument fewer than their named
-        // form. The defense definers end in an optional options object, so
-        // arity cannot tell `(matrix, options)` from `(name, matrix)`; they
-        // key on an object-literal first argument instead, and any other
-        // first argument is the explicit form.
+        // form. The defense and attack-token definers end in an optional
+        // object, so arity cannot tell `(matrix, options)` from
+        // `(name, matrix)`; they key on an object-literal first argument
+        // instead, and any other first argument is the explicit form.
         let qualifies = match callee.sym.as_ref() {
             "defineStore" | "definePresentationTemplate" => call.args.len() == 1,
             "defineImpactEvent" => call.args.len() == 2,
             "defineDamageType" => {
                 (1..=2).contains(&call.args.len()) && first_arg_is_object_literal(&call.args)
             }
-            "defineDefenseLayer" => {
+            "defineDefenseLayer" | "defineAttackToken" => {
                 call.args.is_empty()
                     || (call.args.len() == 1 && first_arg_is_object_literal(&call.args))
             }
@@ -1460,6 +1460,47 @@ mod tests {
             assert!(
                 js.contains(&format!("{call}(\"{name}\"")),
                 "bundle should name `{name}` by its binding: {js}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // `defineAttackToken` names a token by its binding when called with no
+    // argument or an object-literal budget; a string first argument is the
+    // explicit form and a held budget object stays unnamed.
+    #[test]
+    fn binding_name_sugar_names_attack_tokens() {
+        let dir = unique_tempdir("binding-name-sugar-attack-token");
+        let entry = dir.join("entry.ts");
+        fs::write(
+            &entry,
+            r#"
+            export const melee = defineAttackToken({ limit: 3 });
+            const heavy = defineAttackToken({ limit: 1, refreshMs: 4000 });
+            export const ranged = defineAttackToken();
+            const explicitToken = defineAttackToken("lobber", { limit: 1 });
+            const budget = { limit: 2 };
+            const held = defineAttackToken(budget);
+            "#,
+        )
+        .unwrap();
+
+        let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
+        for name in ["melee", "heavy", "ranged"] {
+            assert!(
+                js.contains(&format!("defineAttackToken(\"{name}\"")),
+                "bundle should name `{name}` by its binding: {js}"
+            );
+        }
+        assert!(
+            js.contains("defineAttackToken(\"lobber\""),
+            "explicit name stays: {js}"
+        );
+        for name in ["explicitToken", "held"] {
+            assert!(
+                !js.contains(&format!("\"{name}\"")),
+                "non-qualifying call must not receive `{name}`: {js}"
             );
         }
 

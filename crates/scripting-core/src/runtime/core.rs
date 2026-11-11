@@ -779,6 +779,11 @@ impl ScriptRuntime {
                 _ => Default::default(),
             };
             crate::defense_vocabulary::commit_defense_vocabulary(ctx, next_defense);
+            let next_attack_budgets = match &result.status {
+                StagedManifestBuildStatus::Built(manifest) => manifest.attack_budgets.clone(),
+                _ => Default::default(),
+            };
+            crate::attack_budget_vocabulary::commit_attack_budgets(ctx, next_attack_budgets);
             let previous_life_state_names = ctx.data_registry.borrow().life_state_names.clone();
             // One mutable registry borrow commits the staged whole snapshot, so
             // a render frame cannot observe new descriptors without their

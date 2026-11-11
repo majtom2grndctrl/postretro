@@ -11,25 +11,30 @@
 // socket that mixamo_to_gltf.py tagged on the skeleton, with its grip-relative
 // orientation re-tuned for this skeleton bake so the barrel points forward.
 //
+// In a fight it takes turns with its squad on the `ranged` token: it strafes
+// around its target while it waits, fires a three-shot burst when a turn is
+// free, then runs to a flanking slot before it waits again.
+//
 // Map-placeable via `"classname" "limitator"`.
 
-import { brain, defineEntity } from "postretro";
+import { attackTurnFree, brain, defineEntity } from "postretro";
+import { ranged } from "./attack-tokens";
 
 // Ranged-combat tuning. Unlike the melee `reference_enemy`, the limitator wants
 // to hold a firing standoff rather than close to contact.
 const DETECTION_RANGE = 50;
-// Firing threshold: at or inside this distance the move layer releases movement
-// and the enemy plants to shoot. Kept well below DETECTION_RANGE so there is a
-// wide band (FIRE..DETECTION) in which he actively runs the target down —
-// otherwise, engaging already-in-range, he never visibly chases.
+// Firing threshold: at or inside this distance, with a clear sightline, the
+// enemy stops running the target down and starts its strafe-and-burst cycle.
+// Kept well below DETECTION_RANGE so there is a wide band (FIRE..DETECTION) in
+// which he actively runs the target down — otherwise, engaging already-in-range,
+// he never visibly chases.
 const FIRE_RANGE = 8;
 // Break-off distance (hysteresis): once firing, only re-close after the target
 // pulls past this. The FIRE..BREAK band keeps a target dancing on the boundary
-// from endlessly resetting the aim timer.
+// from endlessly restarting the cycle.
 const BREAK_RANGE = 9;
-// The action-specific combat-slot standoff — held strictly INSIDE FIRE_RANGE.
-// This is explicit per-attack positioning rather than relying on a reduced
-// engagementRadius to work around the fire guard's boundary.
+// The combat-slot standoff the squad strafes, fires and repositions at — held
+// strictly INSIDE FIRE_RANGE.
 const STANDOFF_DISTANCE = 6;
 // Leash: abandon the chase and walk home once dragged this far from the spawn
 // anchor, then stand down. Set above DETECTION_RANGE so a target acquired near
@@ -37,16 +42,21 @@ const STANDOFF_DISTANCE = 6;
 const LEASH_RANGE = 70;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// Firing rhythm: alternate aim -> fire. A `fire` dwell latches at most one shot,
-// rechecking LOS, facing, and cooldown until the first eligible tick. AIM_MS +
-// FIRE_MS sits just above the cooldown so it paces re-entry and firing cycles.
+// Firing rhythm: strafe at least WAIT_MS, then burst when a `ranged` turn is
+// free. The burst activity holds the turn; BURST_MS covers the weapon's three
+// shots (240 ms), so none spills into `move`. Then reposition to a slot 60-120
+// degrees around the target from where it fired, for MOVE_MS. BURST_MS + MOVE_MS
+// outlasts the weapon's 1 s recovery, so the next burst is ready to fire.
 // No reload beat — the available reload clip
 // is a crouching animation that swings the right hand through a wide arc, which
 // tips the rigidly-mounted rifle upside-down and into the chest. A reload that
 // reads correctly needs a clip that keeps the gun hand steady, or a weapon
 // animated as a skinned part rather than a rigid socket attachment.
-const AIM_MS = 550;
-const FIRE_MS = 250;
+const WAIT_MS = 400;
+const BURST_MS = 450;
+const MOVE_MS = 1500;
+// A burst whose turn went to a squadmate asking on the same tick gives up.
+const TURN_LOST_MS = 100;
 
 export const limitatorEntity = defineEntity({
   canonicalName: "limitator",
@@ -76,8 +86,29 @@ export const limitatorEntity = defineEntity({
       animations: {
         idle: { clip: "idle", loop: true },
         idle_aiming: { clip: "idle_aiming", loop: true },
+        // The strafe's walk. Facing its target, the engine plays the
+        // directional state matching its travel; each clip's stride matches
+        // the forward walk's.
         walk: {
           clip: "walk_forward",
+          loop: true,
+          crossfadeMs: 200,
+          travelSpeed: 1.5,
+        },
+        walk_left: {
+          clip: "walk_left",
+          loop: true,
+          crossfadeMs: 200,
+          travelSpeed: 1.5,
+        },
+        walk_right: {
+          clip: "walk_right",
+          loop: true,
+          crossfadeMs: 200,
+          travelSpeed: 1.5,
+        },
+        walk_backward: {
+          clip: "walk_backward",
           loop: true,
           crossfadeMs: 200,
           travelSpeed: 1.5,
@@ -88,8 +119,8 @@ export const limitatorEntity = defineEntity({
           crossfadeMs: 200,
           travelSpeed: 4,
         },
-        // Attack pose (Basic Shooter Pack): a fast recoil kick. Looped so a fire
-        // state re-entered every cooldown restarts the kick with a quick blend.
+        // Attack pose (Basic Shooter Pack): a fast recoil kick, looped through
+        // the burst.
         shoot: {
           clip: "firing_rifle",
           loop: true,
@@ -121,9 +152,11 @@ export const limitatorEntity = defineEntity({
         },
       },
       defaultState: "idle",
-      // Scale the travel clips to actual XZ speed so the run cycle reads at the
-      // agent's real pace. Required alongside `behavior` to materialize the nav
-      // agent that grounds and moves the entity.
+      // Scale the locomotion clip, the strafe's walk and its directional
+      // variants, to actual XZ speed so the stride reads at the agent's real
+      // pace; the run's authored stride already matches `moveSpeed`. Required
+      // alongside `behavior` to materialize the nav agent that grounds and
+      // moves the entity.
       locomotion: { speedScale: true },
     },
     // The behavior graph is what materializes the engine brain AND the nav
@@ -133,25 +166,27 @@ export const limitatorEntity = defineEntity({
       moveSpeed: 4,
       attacks: {
         // The weapon owns damage, reach, and cooldown; this entry keeps only AI
-        // positioning. Its 12 m reach covers the fire band (entered inside
-        // FIRE_RANGE and held to BREAK_RANGE) with a small safety margin.
+        // positioning and its draw. Its 12 m reach covers the fire band
+        // (entered inside FIRE_RANGE and held to BREAK_RANGE) with a small
+        // safety margin.
         shoot: {
-          weapon: "enemy_rifle",
+          draws: [ranged],
+          weapon: "enemy_rifle_burst",
           standoffDistance: STANDOFF_DISTANCE,
         },
       },
-      // `close` has no action of its own, so it keeps the same pre-fire slot
-      // radius while it approaches the action-specific shoot standoff.
+      // The strafe ring and reposition slots sit at this radius, the shoot
+      // standoff, so the squad circles at its firing distance.
       engagementRadius: STANDOFF_DISTANCE,
       activities: {
         idle: { animation: "idle", motion: "hold" },
+        // The composite's `walk` names the graph's locomotion clip, so the
+        // strafe's walk and its directional variants scale to its speed.
         engage: {
-          animation: "run",
+          animation: "walk",
           layers: {
-            // Plant on the firing line once inside FIRE_RANGE with a clear
-            // sightline; otherwise chase a combat slot that can reacquire it.
-            // This is authored presentation and repositioning policy; the
-            // engine fire gate remains the damage/event authority.
+            // Only `close` takes its motion from here: run the target down
+            // until it is inside FIRE_RANGE with a clear sightline.
             move: [
               {
                 when: brain.targetDistance
@@ -164,38 +199,63 @@ export const limitatorEntity = defineEntity({
             offense: {
               initial: "close",
               activities: {
-                // Run in until within FIRE_RANGE with the shared, debounced LOS
-                // fact, then alternate aim/fire. Each `fire` dwell retries its
-                // LOS, facing, and cooldown gates until it fires once. Losing
-                // visibility returns to `close`, where the move layer repositions
-                // to reacquire.
                 close: { animation: "run" },
-                aim: { animation: "idle_aiming" },
-                fire: { animation: "shoot", action: { attack: "shoot" } },
+                // Strafe around the target, facing it, while a squadmate shoots.
+                wait: { animation: "walk", motion: "strafe" },
+                // Holds the `ranged` turn for the whole burst.
+                burst: {
+                  animation: "shoot",
+                  motion: "hold",
+                  action: { attack: "shoot" },
+                  attackTurn: "shoot",
+                },
+                // Fire, then relocate: a slot to the side of where it fired.
+                move: {
+                  animation: "run",
+                  motion: "reposition",
+                  facing: "travel",
+                  reposition: { arc: [60, 120] },
+                },
               },
               transitions: {
-                // Enter the firing cycle only inside FIRE_RANGE with the shared
-                // LOS fact. Loss returns to `close` after the grace window;
-                // distance hysteresis still prevents threshold churn.
                 close: [
                   {
-                    to: "aim",
-                    when: brain
-                      .targetDistance
+                    to: "wait",
+                    when: brain.targetDistance
                       .le(FIRE_RANGE)
                       .and(brain.targetVisible),
                   },
                 ],
-                aim: [
+                // Losing the sightline or the range returns to `close`, after
+                // the LOS grace window; distance hysteresis keeps a target on
+                // the boundary from churning.
+                wait: [
                   { to: "close", when: brain.targetVisible.not() },
                   { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
-                  { to: "fire", when: brain.timeInActivityMs.ge(AIM_MS) },
+                  {
+                    to: "burst",
+                    when: brain.timeInActivityMs
+                      .ge(WAIT_MS)
+                      .and(attackTurnFree("shoot")),
+                  },
                 ],
-                fire: [
+                burst: [
+                  {
+                    to: "move",
+                    when: brain.attacksFiredInActivity
+                      .ge(1)
+                      .and(brain.timeInActivityMs.ge(BURST_MS)),
+                  },
+                  {
+                    to: "wait",
+                    when: brain.hasAttackTurn
+                      .not()
+                      .and(brain.timeInActivityMs.ge(TURN_LOST_MS)),
+                  },
                   { to: "close", when: brain.targetVisible.not() },
                   { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
-                  { to: "aim", when: brain.timeInActivityMs.ge(FIRE_MS) },
                 ],
+                move: [{ to: "wait", when: brain.timeInActivityMs.ge(MOVE_MS) }],
               },
             },
           },

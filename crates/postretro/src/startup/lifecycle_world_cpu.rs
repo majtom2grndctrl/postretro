@@ -466,6 +466,13 @@ pub(crate) fn install_world_cpu_with_models(
         // Every map placement now exists, so a trigger whose command reaches
         // no member carrying its tag can say so once.
         postretro_sim::trigger_direct_commands::warn_unaccepted_trigger_commands(&registry);
+        // Attack pools arbitrate on the host only; a profile the mod does not
+        // declare runs as `default` and says so once here.
+        if !suppress_host_replicated {
+            postretro_scripting_core::attack_budget_vocabulary::warn_undeclared_budget_profiles(
+                &registry,
+            );
+        }
     }
     // Pool arming is host-only and occurs after every trigger/spawner binding
     // exists, but before `levelLoad` so level-load reactions can override it.

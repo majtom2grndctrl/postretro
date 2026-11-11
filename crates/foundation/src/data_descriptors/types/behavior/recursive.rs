@@ -11,7 +11,11 @@ use std::fmt;
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{ActionVerb, AttackParams, MotionVerb, PatrolDescriptor};
+use super::activity_motion::validate_reposition;
+use super::attack_turn_marks::validate_attack_turn_marks;
+use super::{
+    ActionVerb, AttackParams, FacingPolicy, MotionVerb, PatrolDescriptor, RepositionParams,
+};
 use crate::brain::bind_brain_guard;
 use crate::candidate::bind_candidate_filter;
 use crate::data_descriptors::types::behavior_lints;
@@ -57,6 +61,20 @@ pub struct BehaviorActivityDescriptor {
     /// entered, whether or not it authors `on_enter`.
     #[serde(default)]
     pub sound: Option<String>,
+    /// Which heading the enemy faces while this activity is active, covering
+    /// the motion its own selector layer supplies. Omitted, the motion verb's
+    /// default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facing: Option<FacingPolicy>,
+    /// Bounds for this activity's own `reposition` motion; valid only when
+    /// `motion` is `reposition`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reposition: Option<RepositionParams>,
+    /// Marks the activity for one of the graph's attacks: a turn for it is
+    /// requested on entry and held while any activity marked for it is on
+    /// the active path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attack_turn: Option<String>,
     #[serde(default)]
     pub layers: BTreeMap<String, BehaviorLayerDescriptor>,
 }
@@ -325,6 +343,7 @@ impl BehaviorGraphDescriptor {
             &self.attacks,
             self.patrol.as_ref(),
         )?;
+        validate_attack_turn_marks(&self.envelope, "components.behavior", &self.attacks)?;
 
         for lint in behavior_lints::inspect(&self) {
             match lint.kind {
@@ -438,6 +457,7 @@ fn validate_activity(
     if let Some(sound) = activity.sound.as_deref() {
         validate_sound_key(&format!("{path}.sound"), sound)?;
     }
+    validate_reposition(activity, path)?;
     if !activity.layers.is_empty() {
         if activity.motion.is_some() {
             return Err(DescriptorError::InvalidShape {
@@ -878,6 +898,13 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
         if let Some(sound) = attack.sound.as_deref() {
             validate_sound_key(&format!("components.behavior.attacks.{name}.sound"), sound)?;
         }
+        if let Some(draws) = &attack.draws {
+            crate::attack_budget::check_draw_shapes(
+                &format!("components.behavior.attacks.{name}.draws"),
+                draws,
+            )
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+        }
     }
     Ok(())
 }
@@ -963,6 +990,7 @@ mod tests {
                     engagement_radius: Some(3.0),
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             )]),
             engagement_radius: Some(2.0),
@@ -1042,6 +1070,7 @@ mod tests {
                 engagement_radius: None,
                 standoff_distance: Some(0.0),
                 damage_type: None,
+                draws: None,
             },
         )]);
 
@@ -1107,6 +1136,7 @@ mod tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
             (
@@ -1120,6 +1150,7 @@ mod tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
             (
@@ -1133,6 +1164,7 @@ mod tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             ),
         ] {

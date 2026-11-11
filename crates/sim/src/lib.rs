@@ -9,6 +9,7 @@ pub mod agent_steering;
 pub mod ai_host;
 #[cfg(any(test, feature = "test-support"))]
 pub mod alloc_probe;
+pub mod attack_pools;
 pub mod combat_positioning;
 pub mod emission;
 mod fx;

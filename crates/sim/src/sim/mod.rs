@@ -76,16 +76,16 @@ use crate::weapon::FireButtonState;
 pub use descriptor_health::install_descriptor_player_health_range;
 pub use mesh_bindings::{resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities};
 pub use player_locomotion::{
-    CrouchTier, JumpStates, LocomotionFooting, LocomotionInput, LocomotionPosture,
-    LocomotionStance, LocomotionTier, LocomotionTierKind, PlayerLocomotionStates,
-    classify_locomotion_direction, player_travel_heading_yaw, store_locomotion_direction,
-    store_locomotion_memory,
+    CrouchTier, FALL_DELAY_TICKS, JUMP_LOOP_STATE, JumpStates, LocomotionFooting, LocomotionInput,
+    LocomotionPosture, LocomotionStance, LocomotionTier, LocomotionTierKind,
+    PlayerLocomotionStates, classify_locomotion_direction, player_travel_heading_yaw,
+    store_locomotion_direction, store_locomotion_memory,
 };
 use postretro_collision::EnvironmentView;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::brain::{BrainComponent, TravelVariant};
 #[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{
@@ -941,6 +941,11 @@ where
     let stage = cpu.scope(SimStage::Ai);
     let ai_result = {
         let mut registry = registry.borrow_mut();
+        // Attack-pool requests apply after this tick's triggers fired and
+        // before arbitration: a trigger-bound start acts on this tick, and
+        // every request issued since the last drain applies first, all in
+        // issue order.
+        crate::attack_pools::apply_attack_pool_requests(&mut registry);
         let mut host = SimAiHost::new(&mut on_impact);
         run_ai(
             &mut registry,
@@ -1338,6 +1343,12 @@ pub fn update_player_animation_locomotion(
 /// the renderer. The AI pass's locomotion intent is deliberately not reused: it
 /// is a pre-steering, squared-speed read from the prior tick, while this path
 /// must match the motion the steering system actually produced.
+///
+/// The rate reads steering velocity, which excludes knockback, so a shove never
+/// quickens the stride; that is the contract the client mirrors. The client's
+/// remote walk rate (netcode `update_remote_enemy_walk_playback_rate`) feeds
+/// interpolated displacement speed instead, which includes knockback: a known
+/// divergence until enemies carry velocity on the wire.
 fn update_brain_animation_playback_rates(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -1355,7 +1366,10 @@ fn update_brain_animation_playback_rates(
         let Some(path_state) = agent_steering::path_state(registry, id) else {
             continue;
         };
-        let speed_xz = Vec3::new(path_state.velocity.x, 0.0, path_state.velocity.z).length();
+        // The stride cadence follows the agent's own travel; a knockback slide
+        // or launch never quickens the walk cycle.
+        let travel = path_state.steering_velocity();
+        let speed_xz = Vec3::new(travel.x, 0.0, travel.z).length();
 
         let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
             continue;
@@ -1365,13 +1379,17 @@ fn update_brain_animation_playback_rates(
         };
 
         // Rate-scale only the graph's locomotion state — the one that chases
-        // without an action of its own — and only while the archetype leaves
+        // without an action of its own — or a directional variant of it
+        // (`_left`, `_right`, `_backward`), and only while the archetype leaves
         // `speedScale` on. Every other case rests at the authored rate (1.0).
-        // Calibration is `measured_ground_speed / effective_travel_speed`; a
-        // state with neither an override nor a derived clip stride falls back to
+        // Calibration is `measured_ground_speed / effective_travel_speed`, each
+        // variant against its own clip's stride; a state with neither an
+        // override nor a derived clip stride falls back to
         // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
-        let is_locomotion = postretro_foundation::locomotion_animation(&brain.graph)
-            .is_some_and(|locomotion| animation.current_state == locomotion);
+        let is_locomotion =
+            postretro_foundation::locomotion_animation(&brain.graph).is_some_and(|locomotion| {
+                TravelVariant::of_state(locomotion, &animation.current_state).is_some()
+            });
         let rate_input = if is_locomotion && animation.speed_scale {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);
             MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)
@@ -1401,10 +1419,9 @@ fn update_brain_animation_playback_rates(
 /// Resolve the effective travel speed for a locomotion state's speed-scaled
 /// playback: the active state's authored `travelSpeed` override wins, else the
 /// model clip's load-derived stride (via [`HitZoneStore`], keyed by the mesh's
-/// model handle and active state's clip). Runtime spawns may still have a pending
-/// clip index during their first rate pass, so the declared clip name is the
-/// equivalent lookup fallback. `None` when neither is calibrated — the
-/// degenerate reference (`speed_xz / move_speed`) that keeps the shipped
+/// model handle, with the clip picked by `ModelHitZones::state_clip`, which the
+/// client's remote walk reference shares). `None` when neither is calibrated —
+/// the degenerate reference (`speed_xz / move_speed`) that keeps the shipped
 /// in-place walk byte-for-byte unchanged.
 fn effective_travel_speed(
     animation: &MeshAnimation,
@@ -1412,16 +1429,10 @@ fn effective_travel_speed(
     hit_zone_store: &HitZoneStore,
 ) -> Option<f32> {
     let state = animation.states.get(&animation.current_state)?;
-    let derived = hit_zone_store.get_by_name(&mesh.model).and_then(|model| {
-        state
-            .clip_index
-            .and_then(|clip_index| model.clips.get(clip_index))
-            // Runtime spawns reach this pass before their install-time clip-index
-            // queue drains. Resolve by declared clip name for that first tick so
-            // derived calibration does not temporarily fall back to move_speed.
-            .or_else(|| model.clips.iter().find(|clip| clip.name == state.clip))
-            .and_then(|clip| clip.travel_speed)
-    });
+    let derived = hit_zone_store
+        .get_by_name(&mesh.model)
+        .and_then(|model| model.state_clip(state.clip_index, &state.clip))
+        .and_then(|clip| clip.travel_speed);
     state.effective_travel_speed(derived)
 }
 
@@ -1434,11 +1445,9 @@ fn clip_duration(
     state: &str,
 ) -> Option<f32> {
     let state = animation.states.get(state)?;
-    let model = hit_zone_store.get_by_name(&mesh.model)?;
-    state
-        .clip_index
-        .and_then(|clip_index| model.clips.get(clip_index))
-        .or_else(|| model.clips.iter().find(|clip| clip.name == state.clip))
+    hit_zone_store
+        .get_by_name(&mesh.model)?
+        .state_clip(state.clip_index, &state.clip)
         .map(|clip| clip.duration)
 }
 
@@ -2064,9 +2073,13 @@ pub use movement_overlap::report_static_overlap;
 // Hosts `SimHarness` (`frame`/`new`/`tick`/`record`); the tick-driven
 // timed-reaction ordering tests live in its child module.
 #[cfg(test)]
+mod attack_pool_tick_tests;
+#[cfg(test)]
 pub(crate) mod determinism_tests;
 #[cfg(test)]
 mod divergence_spike_tests;
+#[cfg(test)]
+mod member_tick_test_fixtures;
 #[cfg(test)]
 mod mover_pin_tick_tests;
 #[cfg(test)]
@@ -2193,6 +2206,9 @@ mod tests {
                             motion: Some(MotionVerb::Hold),
                             action: None,
                             on_enter: None,
+                            facing: None,
+                            reposition: None,
+                            attack_turn: None,
                             layers: BTreeMap::new(),
                         },
                     ),
@@ -2204,6 +2220,9 @@ mod tests {
                             motion: Some(MotionVerb::ChaseTarget),
                             action: None,
                             on_enter: None,
+                            facing: None,
+                            reposition: None,
+                            attack_turn: None,
                             layers: BTreeMap::new(),
                         },
                     ),

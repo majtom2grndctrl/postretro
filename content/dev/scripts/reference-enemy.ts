@@ -4,8 +4,16 @@
 // scripting-core twin parser test keeps their descriptors byte-for-byte equal
 // after canonical conversion.
 
-import { brain, defense, defineEntity, runtime } from "postretro";
-import type { EntityTypeDescriptor } from "postretro";
+import {
+  attackTurnFree,
+  attackTurnHeld,
+  brain,
+  defense,
+  defineEntity,
+  runtime,
+} from "postretro";
+import type { BehaviorGraphEnvelope, EntityTypeDescriptor } from "postretro";
+import { heavy, melee } from "./attack-tokens";
 import { corrosive } from "./damage-types";
 import { armor } from "./defenses";
 
@@ -20,24 +28,71 @@ const HALF_PI = Math.PI / 2;
 const STARTLE_MS = 200;
 const JAB_RANGE = 2;
 const SLAM_RANGE = 3.5;
+// Combat slots sit inside jab reach, so the brute fights close enough to jab.
+const CLOSE_STANDOFF = 1.5;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
 
 // The committed slam cycle is 1,850 ms, longer than the slam's 1,800 ms
-// cooldown. A successful commit therefore leaves the counter-driven rotation
-// able to fire on its next visit instead of permanently observing cooldown.
+// cooldown, so a slam is always ready when its turn comes round.
 const SLAM_WINDUP_MS = 250;
 const SLAM_COMMIT_MS = 150;
 const SLAM_RECOVER_MS = 1450;
+// A jab plays its punch, whose strike lands about 250 ms in, then rests;
+// strike plus rest covers the jab's 1,200 ms cooldown.
+const JAB_STRIKE_MS = 450;
+const JAB_REST_MS = 750;
+// After its own slam the brute only jabs, longer than `heavy`'s 4 s refresh,
+// so a second brute on the same target takes the next slam.
+const PRESS_MS = 5000;
+
+// The jab loop both fighting phases run: close to jab reach, jab when a
+// `melee` turn is free, recover the punch, rest, and jab again. The jab
+// activity is marked, so its turn ends as it returns to `stalk`.
+const jabs: BehaviorGraphEnvelope = {
+  initial: "stalk",
+  activities: {
+    stalk: { animation: "walk" },
+    jab: {
+      animation: "attack_jab",
+      action: { attack: "jab" },
+      attackTurn: "jab",
+    },
+  },
+  transitions: {
+    stalk: [
+      {
+        to: "jab",
+        when: brain.targetDistance
+          .le(JAB_RANGE)
+          .and(brain.timeInActivityMs.ge(JAB_REST_MS))
+          .and(attackTurnFree("jab")),
+      },
+    ],
+    jab: [
+      {
+        to: "stalk",
+        when: brain.attacksFiredInActivity
+          .ge(1)
+          .and(brain.timeInActivityMs.ge(JAB_STRIKE_MS)),
+      },
+      { to: "stalk", when: brain.targetDistance.gt(JAB_RANGE) },
+    ],
+  },
+};
 
 /**
- * The reference enemy exercises the full recursive statechart path:
+ * The reference enemy exercises the full recursive statechart path and the
+ * attack budget:
  *
  * - `engage` runs a selector movement layer and a nested offense graph.
- * - offense approaches, jabs once, then enters a committed slam
- *   windup → commit → recover cycle.
- * - entering `jab` or `commit` edge-fires its action; the jab's successful
- *   fire advances `attacksFiredInActivity`, which selects the next slam.
+ * - `hunt` and `press` each nest the jab loop. `hunt` starts a slam the
+ *   moment `attackTurnFree("slam")` says its turn would be granted.
+ * - the slam is a marked windup → commit → recover chain holding one turn;
+ *   it draws two `melee` and the `heavy`, so jabs keep drawing the third
+ *   `melee` while one brute slams.
+ * - after its slam the brute presses with jabs only, so with two brutes on
+ *   one target the slams alternate as `heavy` refreshes.
  */
 export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: REFERENCE_ENEMY_CLASSNAME,
@@ -105,16 +160,16 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
       initial: "idle",
       moveSpeed: 3,
       attacks: {
-        jab: { damage: 8, maxRange: JAB_RANGE, cooldownMs: 1200 },
+        jab: { draws: [melee], damage: 8, maxRange: JAB_RANGE, cooldownMs: 1200 },
         slam: {
+          draws: [melee.with({ cost: 2 }), heavy],
           damage: 14,
           maxRange: SLAM_RANGE,
           cooldownMs: 1800,
-          engagementRadius: SLAM_RANGE,
         },
         claw: { damage: 15, damageType: corrosive, maxRange: 2, cooldownMs: 800 },
       },
-      engagementRadius: JAB_RANGE,
+      engagementRadius: CLOSE_STANDOFF,
       patrol: {
         mode: "pingPong",
         points: [[0, 0], [6, 0], [6, 6]],
@@ -125,51 +180,54 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         engage: {
           animation: "walk",
           layers: {
-            // At the slam standoff, release movement but retain the selected
-            // target for offense; outside it, the fallback chases the target.
+            // In jab reach, release movement but retain the selected target
+            // for offense; outside it, the fallback chases the target.
             move: [
               {
-                when: brain.targetDistance.le(SLAM_RANGE),
+                when: brain.targetDistance.le(JAB_RANGE),
                 motion: "hold",
               },
               "chaseTarget",
             ],
             offense: {
-              initial: "approach",
+              initial: "hunt",
               activities: {
-                approach: { animation: "walk" },
-                jab: {
-                  animation: "attack_jab",
-                  action: { attack: "jab" },
-                },
-                windup: { animation: "attack_slam" },
+                hunt: { layers: { offense: jabs } },
+                press: { layers: { offense: jabs } },
+                windup: { animation: "attack_slam", attackTurn: "slam" },
                 commit: {
                   animation: "attack_slam",
                   action: { attack: "slam" },
+                  attackTurn: "slam",
                 },
-                recover: { animation: "attack_slam" },
+                recover: { animation: "attack_slam", attackTurn: "slam" },
               },
               transitions: {
-                approach: [
-                  { to: "jab", when: brain.targetDistance.le(JAB_RANGE) },
-                  { to: "windup", when: brain.targetDistance.le(SLAM_RANGE) },
-                ],
-                // The counter is read next tick, after the entry-edge jab fire.
-                jab: [
+                hunt: [
                   {
                     to: "windup",
-                    when: brain.attacksFiredInActivity.ge(1),
+                    when: brain.targetDistance
+                      .le(SLAM_RANGE)
+                      .and(attackTurnFree("slam")),
                   },
                 ],
                 windup: [
-                  { to: "commit", when: brain.timeInActivityMs.ge(SLAM_WINDUP_MS) },
+                  {
+                    to: "commit",
+                    when: brain.timeInActivityMs
+                      .ge(SLAM_WINDUP_MS)
+                      .and(attackTurnHeld("slam")),
+                  },
+                  // Another brute asked on the same tick and won the turn.
+                  { to: "hunt", when: brain.timeInActivityMs.ge(SLAM_WINDUP_MS) },
                 ],
                 commit: [
                   { to: "recover", when: brain.timeInActivityMs.ge(SLAM_COMMIT_MS) },
                 ],
                 recover: [
-                  { to: "approach", when: brain.timeInActivityMs.ge(SLAM_RECOVER_MS) },
+                  { to: "press", when: brain.timeInActivityMs.ge(SLAM_RECOVER_MS) },
                 ],
+                press: [{ to: "hunt", when: brain.timeInActivityMs.ge(PRESS_MS) }],
               },
             },
           },

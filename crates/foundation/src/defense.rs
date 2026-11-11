@@ -47,9 +47,9 @@ pub fn defense_input(name: &str) -> Option<(&str, bool)> {
     (!layer.is_empty() && !layer.contains('.')).then_some((layer, capacity))
 }
 
-/// A layer or damage-type handle as it crosses from either SDK: exactly its
-/// `kind` and `name`. A bare string fails this parse; the other `kind`
-/// parses, and each surface then checks the variant it expects.
+/// A declared handle as it crosses from either SDK: exactly its `kind` and
+/// `name`. A bare string fails this parse; another `kind` parses, and each
+/// surface then checks the variant it expects.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum HandleRef {
@@ -57,12 +57,26 @@ pub enum HandleRef {
     DefenseLayer { name: String },
     #[serde(rename = "damageType")]
     DamageType { name: String },
+    /// An attack token (`entity_model.md` §7c, Attack budget).
+    #[serde(rename = "attackToken")]
+    AttackToken { name: String },
 }
 
 impl HandleRef {
     pub fn name(&self) -> &str {
         match self {
-            HandleRef::DefenseLayer { name } | HandleRef::DamageType { name } => name,
+            HandleRef::DefenseLayer { name }
+            | HandleRef::DamageType { name }
+            | HandleRef::AttackToken { name } => name,
+        }
+    }
+
+    /// What this handle is, as a diagnostic names it.
+    fn describe(&self) -> String {
+        match self {
+            HandleRef::DefenseLayer { name } => format!("defense layer `{name}`"),
+            HandleRef::DamageType { name } => format!("damage type `{name}`"),
+            HandleRef::AttackToken { name } => format!("attack token `{name}`"),
         }
     }
 
@@ -70,8 +84,9 @@ impl HandleRef {
     pub fn expect_layer(&self) -> Result<&str, String> {
         match self {
             HandleRef::DefenseLayer { name } => Ok(name),
-            HandleRef::DamageType { name } => Err(format!(
-                "expected a defense layer handle, got damage type `{name}`"
+            other => Err(format!(
+                "expected a defense layer handle, got {}",
+                other.describe()
             )),
         }
     }
@@ -80,8 +95,20 @@ impl HandleRef {
     pub fn expect_damage_type(&self) -> Result<&str, String> {
         match self {
             HandleRef::DamageType { name } => Ok(name),
-            HandleRef::DefenseLayer { name } => Err(format!(
-                "expected a damage type handle, got defense layer `{name}`"
+            other => Err(format!(
+                "expected a damage type handle, got {}",
+                other.describe()
+            )),
+        }
+    }
+
+    /// The attack-token name, or a diagnostic naming what was found instead.
+    pub fn expect_attack_token(&self) -> Result<&str, String> {
+        match self {
+            HandleRef::AttackToken { name } => Ok(name),
+            other => Err(format!(
+                "expected an attack token handle, got {}",
+                other.describe()
             )),
         }
     }
@@ -95,7 +122,7 @@ impl HandleRef {
             ));
         }
         serde_json::from_value(value.clone())
-            .map_err(|error| format!("not a defense layer or damage type handle: {error}"))
+            .map_err(|error| format!("not a declared handle: {error}"))
     }
 }
 

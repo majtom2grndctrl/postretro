@@ -7,7 +7,8 @@ use postretro_entities::components::brain::BrainComponent;
 use postretro_foundation::BehaviorGraphDescriptor;
 use postretro_foundation::{
     ActionVerb, BehaviorActivityDescriptor, BehaviorLayerDescriptor, BehaviorSelectorEntry,
-    IrValue, MotionVerb, eval_value, is_locomotion_activity, rest_animation,
+    FacingPolicy, IrValue, MotionVerb, RepositionParams, eval_value, is_locomotion_activity,
+    rest_animation,
 };
 
 use super::brain_programs::{BoundLayer, BrainEntityPrograms};
@@ -106,16 +107,54 @@ pub(super) fn motion_for_path(
     scope: &mut BrainScope,
     brain: &BrainComponent,
 ) -> Option<MotionVerb> {
+    resolved_motion(bound, scope, brain).map(|motion| motion.verb)
+}
+
+/// The path's motion and where it came from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct ResolvedMotion {
+    pub(super) verb: MotionVerb,
+    /// Depth of the activity that supplied it, by its own `motion` or its
+    /// `move` selector. An entry at or above it re-enters the motion.
+    pub(super) depth: usize,
+    /// `reposition` bounds: the supplying activity's own, or the defaults for
+    /// a selector-supplied `reposition`.
+    pub(super) reposition: RepositionParams,
+}
+
+/// [`motion_for_path`] plus the supplying depth and `reposition` bounds.
+pub(super) fn resolved_motion(
+    bound: &BrainEntityPrograms,
+    scope: &mut BrainScope,
+    brain: &BrainComponent,
+) -> Option<ResolvedMotion> {
     for depth in (0..brain.active_depth()).rev() {
         let (_, activity) = brain.activity_at_depth(depth)?;
-        if let Some(motion) = activity.motion {
-            return Some(motion);
+        if let Some(verb) = activity.motion {
+            return Some(ResolvedMotion {
+                verb,
+                depth,
+                reposition: activity.reposition.unwrap_or_default(),
+            });
         }
-        if let Some(motion) = selector_motion(bound, scope, brain, depth, activity) {
-            return Some(motion);
+        if let Some(verb) = selector_motion(bound, scope, brain, depth, activity) {
+            return Some(ResolvedMotion {
+                verb,
+                depth,
+                reposition: RepositionParams::default(),
+            });
         }
     }
     None
+}
+
+/// The authored `facing` of the deepest active activity that declares one. An
+/// activity's `facing` covers the motion its own selector layer supplies, and
+/// any deeper activity that names none.
+pub(super) fn authored_facing(brain: &BrainComponent) -> Option<FacingPolicy> {
+    (0..brain.active_depth())
+        .rev()
+        .find_map(|depth| brain.activity_at_depth(depth)?.1.facing)
 }
 
 pub(super) fn action_for_path<'a>(
@@ -154,10 +193,17 @@ pub(super) fn engages_path(
     scope: &mut BrainScope,
     brain: &BrainComponent,
 ) -> bool {
+    motion_for_path(bound, scope, brain).is_some_and(is_engaged_motion)
+        || action_for_path(bound, scope, brain).is_some()
+}
+
+/// Motion that engages the target by itself, with or without an action:
+/// pursuit and the two combat-slot verbs.
+fn is_engaged_motion(motion: MotionVerb) -> bool {
     matches!(
-        motion_for_path(bound, scope, brain),
-        Some(MotionVerb::ChaseTarget)
-    ) || action_for_path(bound, scope, brain).is_some()
+        motion,
+        MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition
+    )
 }
 
 /// Target retention follows the active path's engagement capability, not the
@@ -181,7 +227,7 @@ fn activity_can_engage(activity: &BehaviorActivityDescriptor) -> bool {
         return false;
     }
 
-    matches!(activity.motion, Some(MotionVerb::ChaseTarget))
+    activity.motion.is_some_and(is_engaged_motion)
         || activity.action.is_some()
         || activity
             .layers
@@ -193,11 +239,8 @@ fn selector_can_engage(name: &str, layer: &BehaviorLayerDescriptor) -> bool {
     match (name, layer) {
         ("move", BehaviorLayerDescriptor::Selector(entries)) => {
             entries.iter().any(|entry| match entry {
-                BehaviorSelectorEntry::Row(row) => {
-                    matches!(row.motion, Some(MotionVerb::ChaseTarget))
-                }
-                BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget) => true,
-                BehaviorSelectorEntry::Motion(_) => false,
+                BehaviorSelectorEntry::Row(row) => row.motion.is_some_and(is_engaged_motion),
+                BehaviorSelectorEntry::Motion(motion) => is_engaged_motion(*motion),
             })
         }
         ("offense", BehaviorLayerDescriptor::Selector(entries)) => entries
@@ -332,6 +375,10 @@ pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
         | MotionVerb::Patrol
         | MotionVerb::Hold => SteeringIntent::Clear,
         MotionVerb::Freeze => SteeringIntent::Hold,
+        // Their goal is a slot the combat-slot batch claims, after compute:
+        // `engaged_motion::settle` replaces this with `MoveTo` that slot, or
+        // leaves it standing when none is claimed.
+        MotionVerb::Strafe | MotionVerb::Reposition => SteeringIntent::Clear,
     }
 }
 
@@ -363,6 +410,9 @@ mod statechart_tests {
             motion,
             action,
             on_enter: None,
+            facing: None,
+            reposition: None,
+            attack_turn: None,
             layers,
         }
     }
@@ -485,6 +535,7 @@ mod statechart_tests {
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
+                    draws: None,
                 },
             )]),
             engagement_radius: None,
@@ -548,8 +599,10 @@ mod statechart_tests {
             &scope,
             &candidate_scope,
             Arc::new(graph.clone()),
+            None,
             &[],
             0,
+            &postretro_foundation::attack_budget::AttackBudgetVocabulary::default(),
             &mut HashSet::new(),
         );
         (programs, scope)

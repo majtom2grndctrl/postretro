@@ -20,7 +20,7 @@ export type { Activation, ActivationShotOptions, ActivationShotScale } from "./a
 export { activation } from "./activation";
 
 export type { BrainInputs, CandidateInputs } from "./brain";
-export { brain, candidate, defense, state } from "./brain";
+export { attackTurnFree, attackTurnHeld, brain, candidate, defense, state } from "./brain";
 
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 
@@ -39,6 +39,8 @@ export type { GhostLinkEntity, GhostLinkHandle } from "./entities/ghost_links";
 export type { SpawnerEntityHandle } from "./entities/spawners";
 
 export type { TrapEntityHandle } from "./entities/traps";
+
+export type { AttackPoolEntityHandle } from "./entities/attack_pools";
 
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
@@ -152,6 +154,8 @@ export {
   defineStore,
   defineDefenseLayer,
   defineDamageType,
+  defineAttackToken,
+  defaultToken,
   read,
   fromRuntime,
   set,

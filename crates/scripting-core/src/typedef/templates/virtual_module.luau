@@ -146,7 +146,7 @@ export type PostretroModule = {
   runtime: Runtime,
   --- Pure bounded weapon-action data builders with read-only normalized charge.
   activation: Activation,
-  --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`, `trap`), as handles.
+  --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`, `trap`, `attackPool`), as handles.
   --- Callable only inside a level's data script (module evaluation or `setupLevel`).
   getMapEntities: typeof(getMapEntities),
   --- Level default gravity in m/s² (negative = downward): the gravity outside every gravity volume. Inside a `gravity_volume` the volume's own value holds; this still returns the level default.
@@ -200,6 +200,10 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   defineDefenseLayer: typeof(defineDefenseLayer),
   defineDamageType: typeof(defineDamageType),
+  --- Declare an attack token by its default budget.
+  defineAttackToken: typeof(defineAttackToken),
+  --- The SDK's attack token at the default budget; every mod has it.
+  defaultToken: AttackToken,
   --- Read a state ref into an expression value.
   read: typeof(read),
   --- Read whether the evaluated player (or local crossing's own pawn) is in an authored life state.
@@ -222,6 +226,10 @@ export type PostretroModule = {
   state: typeof(state),
   --- Build `@defense.<name>` guard input leaves for the brain's own layer.
   defense: typeof(defense),
+  --- Build an `@attackTurnHeld.<attack>` guard input leaf for one of the archetype's attacks.
+  attackTurnHeld: typeof(attackTurnHeld),
+  --- Build an `@attackTurnFree.<attack>` guard input leaf for one of the archetype's attacks.
+  attackTurnFree: typeof(attackTurnFree),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

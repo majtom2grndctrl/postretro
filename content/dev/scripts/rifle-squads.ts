@@ -1,10 +1,11 @@
 // DEMO CONTENT — rifle squads on the shared Mixamo clip library.
 //
-// Two enemies that reuse the limitator's statechart and rifle attack, each with
+// Two enemies that reuse the limitator's statechart and burst rifle, each with
 // a faction of its own, so a dev map can stage groups that hold separate ground
-// and then meet. Their models ship with no clips; the animations they inherit
-// from the limitator bind from `models/clip_libraries/mixamo_rifle/library.gltf`
-// at load.
+// and then meet. A squad on one target takes turns on the `ranged` token: two
+// fire while the rest strafe. Their models ship with no clips; the animations
+// they inherit from the limitator, the directional walks included, bind from
+// `models/clip_libraries/mixamo_rifle/library.gltf` at load.
 //
 // Each carries its own AR_4 bake: a rigid mount is solved against one
 // character's `hand_r` frame, and these rigs differ from the limitator's.

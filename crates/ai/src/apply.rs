@@ -2,10 +2,13 @@ pub(super) fn should_switch_animation(state_changed: bool, moving: bool, latch: 
     state_changed || moving != latch
 }
 
+use super::attack_turns;
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
 use super::graph_eval::animation_for_path;
+use super::launch;
 use super::targeting::selected_target_alive;
+use super::travel_variants;
 use super::{
     AiTickResult, AttackOutcome, ENEMY_ATTACK_EVENT, ENEMY_ATTACK_SOURCE_ID, LocomotionIntent,
 };
@@ -15,7 +18,7 @@ use crate::emission::entity_emitter;
 use crate::sim::EnemyProjectilePresentationSpawn;
 use crate::weapon_controller::AiWeaponControllers;
 use glam::Quat;
-use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::brain::{BrainComponent, TravelVariant};
 use postretro_entities::components::health::{DamageContext, DamageProducer};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_entities::{AiCue, AiEmission, Transform};
@@ -40,6 +43,7 @@ fn commit_attack_fire(
 }
 
 /// Pass 3: mutate the registry from resolved enemy outcomes.
+#[allow(clippy::too_many_arguments)] // orchestration keeps each apply-stage input explicit.
 pub(super) fn apply_outcomes<H>(
     registry: &mut postretro_entities::EntityRegistry,
     outcomes: Vec<super::EnemyOutcome>,
@@ -47,6 +51,7 @@ pub(super) fn apply_outcomes<H>(
     warned: &mut std::collections::HashSet<String>,
     blocked_warned: &mut std::collections::HashSet<postretro_entities::EntityId>,
     weapons: &mut AiWeaponControllers,
+    turns: &mut attack_turns::AttackTurnRuntime,
     host: &mut H,
 ) -> super::AiTickResult
 where
@@ -82,7 +87,7 @@ where
             outcome.weapon_aim = None;
             outcome.facing_direction = None;
             outcome.combat_slot = None;
-            if matches!(outcome.steering, SteeringIntent::Chase) {
+            if matches!(outcome.steering, SteeringIntent::Chase) || outcome.engaged_ring.is_some() {
                 outcome.steering = SteeringIntent::Clear;
             }
         }
@@ -116,10 +121,11 @@ where
         }
 
         let path_state = agent_steering::path_state(registry, outcome.id);
+        // The stride reads steering velocity alone: knockback never picks it.
         let locomotion_intent = if outcome.brain.aggro_armed {
             path_state
                 .as_ref()
-                .map(|path| LocomotionIntent::from_velocity(path.velocity))
+                .map(|path| LocomotionIntent::from_velocity(path.steering_velocity()))
                 .unwrap_or(LocomotionIntent::STOPPED)
         } else {
             LocomotionIntent::STOPPED
@@ -216,6 +222,11 @@ where
         // materialize a host-owned flight entity; the shared projectile stage
         // resolves its later contact through that same chokepoint.
         let mut weapon_request = None;
+        // A fresh unmarked grant holds only if its attack starts this tick.
+        let granted_attack = outcome
+            .fresh_unmarked_grant
+            .and_then(|attack| attack_turns::attack_name(&outcome.brain.graph, attack));
+        let mut grant_started = false;
         if let (Some(pending), Some(target)) = (outcome.attack.take(), outcome.target)
             && !invalidated_entities.contains(&target.entity)
             && selected_target_alive(registry, target.entity)
@@ -267,6 +278,7 @@ where
                     false
                 }
             };
+            grant_started |= attack_fired;
             if attack_fired {
                 events.push(AiEmission {
                     sounds: None,
@@ -296,19 +308,27 @@ where
                     && !host.is_quiescent(registry, target.entity)
             })
         });
-        if let Some(fire) = weapons.advance_actor(
+        let fire = weapons.advance_actor(
             registry,
             outcome.id,
             weapon_request,
             weapon_aim,
             tick_dt.max(0.0) * 1000.0,
             host,
-        ) && commit_attack_fire(
-            registry,
-            outcome.id,
-            fire.attack_name.clone(),
-            fire.recovery_ms,
-        ) {
+        );
+        grant_started |= granted_attack.is_some_and(|granted| {
+            fire.as_ref()
+                .is_some_and(|fire| fire.attack_name == granted)
+                || weapons.executing_attack(outcome.id) == Some(granted)
+        });
+        if let Some(fire) = fire
+            && commit_attack_fire(
+                registry,
+                outcome.id,
+                fire.attack_name.clone(),
+                fire.recovery_ms,
+            )
+        {
             projectile_spawns.push(EnemyProjectilePresentationSpawn {
                 projectile: fire.projectile,
                 descriptor_class: fire.canonical_weapon,
@@ -330,19 +350,40 @@ where
             continue;
         }
 
-        // Animation: on a state change or locomotion stop/resume, request the
-        // selected animation name for the new graph/locomotion state. A failed
-        // switch (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and
-        // keeps the prior animation — it never aborts the tick. The locomotion
-        // latch is still persisted after failures so unresolved clips do not
-        // re-request the same switch every tick.
+        // Animation: on a state change, locomotion stop/resume, an airborne
+        // launch's clip starting or ending, or a directional travel variant
+        // changing, request the selected animation name for the new
+        // graph/locomotion state. A failed switch
+        // (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and keeps
+        // the prior animation — it never aborts the tick. The latches are still
+        // persisted after failures so unresolved clips do not re-request the
+        // same switch every tick.
+        let airborne_clip = launch::airborne_clip(registry, outcome.id, &outcome.brain.launch);
+        let animation_name =
+            airborne_clip.or_else(|| animation_for_path(&outcome.brain, locomotion_intent.moving));
+        let travel_variant = if airborne_clip.is_some() {
+            TravelVariant::Base
+        } else {
+            travel_variants::presentable(
+                registry,
+                outcome.id,
+                animation_name,
+                outcome.travel_variant,
+            )
+        };
         if should_switch_animation(
             outcome.state_changed,
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
-        ) {
-            let animation_name = animation_for_path(&outcome.brain, locomotion_intent.moving);
-            if let Some(name) = animation_name {
+        ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
+            || travel_variant != outcome.brain.presented_travel_variant
+        {
+            // Only a variant the mesh declares is requested, so a missing
+            // `X_left` plays `X` without warning.
+            let variant_name = animation_name
+                .filter(|_| travel_variant != TravelVariant::Base)
+                .map(|name| format!("{name}{}", travel_variant.suffix()));
+            if let Some(name) = variant_name.as_deref().or(animation_name) {
                 match switch_animation_state(registry, outcome.id, name) {
                     SwitchResult::Switched | SwitchResult::AlreadyInState => {}
                     SwitchResult::UnknownState | SwitchResult::NotAnimated => {
@@ -357,18 +398,25 @@ where
                 }
             }
         }
-        // Fold the locomotion latch into whatever the component NOW holds. The
+        // Fold the animation latches into whatever the component NOW holds. The
         // damage chokepoint and `on_impact` ran since the publish above, and
         // either can mutate this entity's brain (`apply_update_npc_state_to_brain`
         // writes exactly this component); writing the pre-callback snapshot back
-        // would silently discard that. The latch is the only field this pass
-        // still owns. A missing component means the entity did not survive the
-        // callbacks, and there is nothing to update.
+        // would silently discard that. The animation latches are the only
+        // fields this pass still owns. A missing component means the entity did
+        // not survive the callbacks, and there is nothing to update.
         if let Ok(mut brain) = registry
             .get_component::<BrainComponent>(outcome.id)
             .cloned()
         {
+            if let Some(attack) = outcome.fresh_unmarked_grant
+                && !grant_started
+            {
+                turns.release_unstarted_grant(outcome.id, &mut brain.attack_turns, attack);
+            }
             brain.locomotion_moving = locomotion_intent.moving;
+            brain.launch.airborne_presented = airborne_clip.is_some();
+            brain.presented_travel_variant = travel_variant;
             let _ = registry.set_component(outcome.id, brain);
         }
     }

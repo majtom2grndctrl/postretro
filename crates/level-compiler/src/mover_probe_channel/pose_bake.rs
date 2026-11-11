@@ -1,19 +1,25 @@
-// One mover's poses baked from the SH base's patches: at a terminus, posed
-// bounce one, posed later bounces up to the mover's `light_bounces`, the SH
-// base's own later bounces past them, and the posed gather; at a mid pose,
-// posed bounce one gathered over the near-field domain, with the termini's
-// later shares blended in.
+// One mover's poses baked from the SH base's patches: posed bounce one,
+// posed later bounces up to the mover's `light_bounces` (over every static
+// patch at a terminus, over the near-field domain's at a mid pose, rays
+// leaving it reading the mover-absent bake), the SH base's own later bounces
+// past them, and the posed gather (every valid probe at a terminus, the
+// domain's at a mid pose).
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
+use std::time::Instant;
+
+use super::absent_bounces::AbsentLaterBounces;
 use super::bake::{MoverBounceJob, MoverBounceRequest, PoseShared, StaticBounce};
-use super::bounce::{PosedLaterBounces, add_posed_later_bounces, posed_bounce_one};
+use super::bounce::{
+    LaterReach, PosedLaterBounces, PosedRadiance, add_posed_later_bounces, posed_bounce_one,
+};
 use super::gather::{
     DomainProbe, PosedGather, PosedProbe, compact_slots, gather_domain_probes, gather_posed_probes,
     trace_posed_depth,
 };
-use super::mid_pose::{DomainShares, classify_mid_pose, depth_only_mid_pose};
+use super::mid_pose::{classify_mid_pose, depth_only_mid_pose};
 use super::posed_scene::PosedScene;
-use super::states::{ChangedProbe, MoverPoseStates, PoseStates, terminus_stores};
+use super::states::{ChangedProbe, MoverPoseStates, PoseStates};
 use crate::bake_control::BakeControl;
 use crate::sh_bake::{RaytracingCtx, ShBakeCtx};
 
@@ -27,11 +33,15 @@ pub(crate) struct PosedBounce {
     /// At a terminus, the valid probes that differ from id 34 or whose rays
     /// meet the pose, ascending by probe index.
     pub(crate) probes: Vec<PosedProbe>,
-    /// Handed back by the full re-bake: every domain probe's posed bounce
-    /// one, with its depth at a mid pose. Empty at a terminus of a mover with
-    /// no mid pose.
+    /// Handed back by the full re-bake at a mid pose: every domain probe's
+    /// full posed bounce, with its depth. Empty at a terminus.
     #[cfg(test)]
     pub(crate) domain: Vec<DomainProbe>,
+    /// Handed back by the full re-bake at a mid pose: every domain probe's
+    /// posed bounce one alone, gathered before the later bounces join.
+    /// Empty at a terminus.
+    #[cfg(test)]
+    pub(crate) domain_bounce_one: Vec<DomainProbe>,
 }
 
 impl PosedBounce {
@@ -77,18 +87,23 @@ pub(super) struct PoseBaker<'b, 'a> {
     pub(super) valid: &'b [u32],
 }
 
+/// A mid pose's two near-field gathers: its full posed bounce, with depth,
+/// and, for the full re-bake, its bounce one alone.
+struct MidGather {
+    full: Vec<DomainProbe>,
+    #[cfg(test)]
+    bounce_one: Vec<DomainProbe>,
+}
+
 impl PoseBaker<'_, '_> {
-    /// Every pose of the job, termini first: a mid pose's bounce blends the
-    /// termini's later shares, so they resolve before it. `None` when the
-    /// request keeps each pose's re-bake (into `kept`) instead of reducing.
+    /// Every pose of the job in path order. `None` when the request keeps
+    /// each pose's re-bake (into `kept`) instead of reducing.
     pub(super) fn bake(&self, kept: &mut Vec<PosedBounce>) -> Option<MoverPoseStates> {
         let job = self.job;
         let last = job.scenes.len() - 1;
         let mut poses = MoverPoseStates::default();
         #[cfg(test)]
         let mut _held = Vec::new();
-        // Each terminus's posed bounce one over the domain, for its shares.
-        let mut bounce_one: [Vec<DomainProbe>; 2] = Default::default();
         for (k, pose) in [0, last].into_iter().enumerate() {
             let scene = &job.scenes[pose];
             if job.bounces == 0 {
@@ -103,27 +118,17 @@ impl PoseBaker<'_, '_> {
                     ),
                 };
             } else {
-                #[cfg_attr(
-                    not(test),
-                    expect(unused_mut, reason = "only the full re-bake keeps it")
-                )]
-                let (mut posed, one) = self.terminus(scene);
+                let started = Instant::now();
+                let posed = self.terminus(scene);
+                log::debug!(
+                    "[MoverLight] probe channel bounce: mover #{} terminus pose {pose}: {:.2} s",
+                    job.mover_id,
+                    started.elapsed().as_secs_f64()
+                );
                 if self.request.keep_poses {
-                    // The full re-bake hands the terminus's bounce one over
-                    // the domain back beside its state.
-                    #[cfg(test)]
-                    {
-                        posed.domain = one;
-                    }
                     kept.push(posed);
                     continue;
                 }
-                bounce_one[k] = one;
-                #[cfg(test)]
-                _held.push(crate::live_bytes::hold(
-                    "mover terminus bounce one",
-                    (bounce_one[k].capacity() * size_of::<DomainProbe>()) as u64,
-                ));
                 poses.termini[k] = posed.into_states();
             }
             #[cfg(test)]
@@ -132,21 +137,23 @@ impl PoseBaker<'_, '_> {
                 poses.termini[k].heap_bytes(),
             ));
         }
-        let shares =
-            (job.bounces > 0 && !self.request.keep_poses && job.has_mid_poses()).then(|| {
-                DomainShares::new(
-                    &job.domain_probes,
-                    &poses.termini,
-                    &terminus_stores(&poses.termini),
-                    &bounce_one,
-                    self.inputs.base,
-                    &compact_slots(self.inputs.layout),
-                    self.request.uncompressed,
-                    self.control,
-                )
-            });
-        drop(bounce_one);
-        for (pose, scene) in job.scenes.iter().enumerate().take(last).skip(1) {
+        let bounce_mids = job.bounces > 0 && job.has_mid_poses();
+        let domain_patches = if bounce_mids {
+            job.domain.static_patches(self.inputs.patches)
+        } else {
+            Vec::new()
+        };
+        let slots = if bounce_mids {
+            compact_slots(self.inputs.layout)
+        } else {
+            Vec::new()
+        };
+        #[cfg(test)]
+        _held.push(crate::live_bytes::hold(
+            "mover near-field patches and slots",
+            ((domain_patches.capacity() + slots.capacity()) * size_of::<u32>()) as u64,
+        ));
+        for scene in job.scenes.iter().take(last).skip(1) {
             let mid = if job.bounces == 0 {
                 let met = trace_posed_depth(
                     &self.ctx,
@@ -157,21 +164,28 @@ impl PoseBaker<'_, '_> {
                 );
                 depth_only_mid_pose(&job.domain_probes, met)
             } else {
-                let gathered = self.mid_bounce_one(scene);
+                let gathered = self.mid_gather(scene, &domain_patches);
                 if self.request.keep_poses {
                     kept.push(PosedBounce {
                         #[cfg(test)]
                         mover_id: job.mover_id,
                         #[cfg(test)]
-                        pose,
+                        pose: scene.pose,
                         probes: Vec::new(),
                         #[cfg(test)]
-                        domain: gathered,
+                        domain: gathered.full,
+                        #[cfg(test)]
+                        domain_bounce_one: gathered.bounce_one,
                     });
                     continue;
                 }
-                let shares = shares.as_ref().expect("a bounce-baking mover's shares");
-                classify_mid_pose(shares, gathered, job.knots[pose], self.control)
+                classify_mid_pose(
+                    gathered.full,
+                    self.inputs.base,
+                    &slots,
+                    self.request.uncompressed,
+                    self.control,
+                )
             };
             #[cfg(test)]
             _held.push(crate::live_bytes::hold("mover mid poses", mid.heap_bytes()));
@@ -180,12 +194,36 @@ impl PoseBaker<'_, '_> {
         (!self.request.keep_poses || job.bounces == 0).then_some(poses)
     }
 
-    /// One terminus's bounce: posed bounce one, gathered over the near-field
-    /// domain for the terminus's later shares; then the job's posed later
-    /// bounces with id 34's own past them, and every valid probe's posed
-    /// gather.
-    fn terminus(&self, scene: &PosedScene) -> (PosedBounce, Vec<DomainProbe>) {
-        let (inputs, job) = (self.inputs, self.job);
+    /// The posed later bounces `reach` gathers over, with id 34's own past
+    /// them, added to `radiance`.
+    fn later_bounces(&self, scene: &PosedScene, radiance: &mut PosedRadiance, reach: LaterReach) {
+        let empty = AbsentLaterBounces::default();
+        let absent = self.inputs.absent.unwrap_or(&empty);
+        debug_assert!(
+            self.inputs.absent.is_some()
+                || !AbsentLaterBounces::needed_by([self.job], self.inputs.bounce_fill),
+            "a job reading id 34's later bounces has them"
+        );
+        add_posed_later_bounces(
+            &self.ctx,
+            self.inputs.patches,
+            scene,
+            radiance,
+            self.inputs.bounce_fill,
+            PosedLaterBounces {
+                posed: self.job.bounces - 1,
+                absent,
+                reach,
+            },
+            self.control,
+        );
+    }
+
+    /// One terminus's bounce: posed bounce one, the job's posed later
+    /// bounces over every static patch with id 34's own past them, and every
+    /// valid probe's posed gather.
+    fn terminus(&self, scene: &PosedScene) -> PosedBounce {
+        let inputs = self.inputs;
         let mut radiance = posed_bounce_one(
             &self.ctx,
             inputs.patches,
@@ -195,34 +233,7 @@ impl PoseBaker<'_, '_> {
             scene,
             self.control,
         );
-        let bounce_one = if job.has_mid_poses() {
-            gather_domain_probes(
-                self.sh_ctx,
-                inputs.layout,
-                &PosedGather::new(inputs.patches, &radiance, scene),
-                &job.domain_probes,
-                false,
-                self.control,
-            )
-        } else {
-            Vec::new()
-        };
-        let static_tail = job
-            .static_tail_from(inputs.bounce_fill)
-            .zip(inputs.static_tail)
-            .map_or(&[][..], |(from, tail)| tail.layers_from(from));
-        add_posed_later_bounces(
-            &self.ctx,
-            inputs.patches,
-            scene,
-            &mut radiance,
-            inputs.bounce_fill,
-            PosedLaterBounces {
-                posed: job.bounces - 1,
-                static_tail,
-            },
-            self.control,
-        );
+        self.later_bounces(scene, &mut radiance, LaterReach::Everywhere);
         let gather = PosedGather::new(inputs.patches, &radiance, scene);
         let probes = gather_posed_probes(
             self.sh_ctx,
@@ -233,24 +244,28 @@ impl PoseBaker<'_, '_> {
             self.request.keep_every_tile,
             self.control,
         );
-        let posed = PosedBounce {
+        PosedBounce {
             #[cfg(test)]
-            mover_id: job.mover_id,
+            mover_id: self.job.mover_id,
             #[cfg(test)]
             pose: scene.pose,
             probes,
             #[cfg(test)]
             domain: Vec::new(),
-        };
-        (posed, bounce_one)
+            #[cfg(test)]
+            domain_bounce_one: Vec::new(),
+        }
     }
 
-    /// A mid pose's posed bounce one, gathered over the near-field domain
-    /// with its depth binned from the same rays. Its later bounces come from
-    /// the termini's shares, never re-traced.
-    fn mid_bounce_one(&self, scene: &PosedScene) -> Vec<DomainProbe> {
+    /// A mid pose's posed bounce, gathered over the near-field domain's
+    /// probes with its depth binned from the same rays: posed bounce one,
+    /// the posed later bounces over `domain_patches` (the static patches in
+    /// the domain) and the posed sides, rays leaving the domain reading the
+    /// mover-absent bake, and id 34's own past them.
+    fn mid_gather(&self, scene: &PosedScene, domain_patches: &[u32]) -> MidGather {
         let inputs = self.inputs;
-        let radiance = posed_bounce_one(
+        let started = Instant::now();
+        let mut radiance = posed_bounce_one(
             &self.ctx,
             inputs.patches,
             &self.shared.reach,
@@ -259,20 +274,51 @@ impl PoseBaker<'_, '_> {
             scene,
             self.control,
         );
-        let gathered = gather_domain_probes(
-            self.sh_ctx,
-            inputs.layout,
-            &PosedGather::new(inputs.patches, &radiance, scene),
-            &self.job.domain_probes,
-            true,
-            self.control,
+        let gather = |radiance: &PosedRadiance, bin_depth: bool| {
+            gather_domain_probes(
+                self.sh_ctx,
+                inputs.layout,
+                &PosedGather::new(inputs.patches, radiance, scene),
+                &self.job.domain_probes,
+                bin_depth,
+                self.control,
+            )
+        };
+        #[cfg(test)]
+        let bounce_one = if self.request.keep_poses {
+            gather(&radiance, false)
+        } else {
+            Vec::new()
+        };
+        let one_done = Instant::now();
+        self.later_bounces(scene, &mut radiance, LaterReach::NearField(domain_patches));
+        let later_done = Instant::now();
+        let full = gather(&radiance, true);
+        log::debug!(
+            "[MoverLight] probe channel bounce: mover #{} mid pose {}: bounce one {:.2} s, {} \
+             later bounce(s) over {} of {} static patch(es) and {} posed {:.2} s, gather of {} \
+             probe(s) {:.2} s",
+            self.job.mover_id,
+            scene.pose,
+            (one_done - started).as_secs_f64(),
+            self.job.bounces.saturating_sub(1),
+            domain_patches.len(),
+            inputs.patches.len(),
+            scene.patches.len(),
+            (later_done - one_done).as_secs_f64(),
+            self.job.domain_probes.len(),
+            later_done.elapsed().as_secs_f64(),
         );
         #[cfg(test)]
         let _held = crate::live_bytes::hold(
             "mover mid pose gather",
-            (gathered.capacity() * size_of::<DomainProbe>()) as u64
-                + gathered.iter().map(DomainProbe::heap_bytes).sum::<u64>(),
+            (full.capacity() * size_of::<DomainProbe>()) as u64
+                + full.iter().map(DomainProbe::heap_bytes).sum::<u64>(),
         );
-        gathered
+        MidGather {
+            full,
+            #[cfg(test)]
+            bounce_one,
+        }
     }
 }

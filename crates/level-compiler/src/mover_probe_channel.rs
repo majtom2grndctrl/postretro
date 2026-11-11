@@ -5,6 +5,8 @@
 // closed-pose depth tiles (id 57's depth block).
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
+mod absent_bounces;
+mod absent_memo;
 mod across;
 mod bake;
 mod blocks;
@@ -19,6 +21,7 @@ mod gather;
 mod lights;
 mod mid_pose;
 mod near_field;
+mod near_field_bounce;
 mod pose_bake;
 mod posed_scene;
 mod posed_solid;
@@ -34,16 +37,20 @@ mod fixture_cost_tests;
 #[cfg(test)]
 pub(crate) mod fixture_scene;
 #[cfg(test)]
+mod later_bounce_tests;
+#[cfg(test)]
 mod raised_room_tests;
 #[cfg(test)]
 pub(crate) mod reference_maps;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use absent_bounces::AbsentLaterBounces;
+pub(crate) use absent_memo::AbsentBounceMemo;
 #[cfg(test)]
 pub(crate) use across::EnclosedMidPoses;
 pub(crate) use bake::{
-    MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, StaticBounce, StaticTail,
+    MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, StaticBounce,
     bake_mover_bounce, sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
@@ -59,7 +66,7 @@ pub(crate) use domain::{
 };
 pub(crate) use gather::PosedGather;
 #[cfg(test)]
-pub(crate) use gather::compact_slots;
+pub(crate) use gather::{DomainProbe, compact_slots};
 pub(crate) use lights::{ChannelLightSources, channel_lights};
 pub(crate) use near_field::NearFieldDomain;
 #[cfg(test)]

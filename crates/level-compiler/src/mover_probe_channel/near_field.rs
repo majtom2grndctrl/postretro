@@ -1,5 +1,5 @@
 // The mover probe channel's near-field domain: the probes a mid pose gathers
-// bounce one and depth for.
+// bounce and depth for, and the static patches its later bounces gather.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
 use glam::{DVec3, Vec3};
@@ -8,10 +8,12 @@ use crate::lightmap_bake::RAY_EPSILON;
 use crate::mover_light_gate::AnalysedMover;
 use crate::partition::Aabb;
 use crate::sh_bake::{ProbeGridLayout, vec3_from};
+use crate::surface_radiance::PatchSet;
 
 /// The mover's brushes swept along its path, widened by the gather's lift
 /// plus one probe spacing. A probe inside gathers at every mid pose; one
-/// outside stores no mid-pose bounce or depth and blends across. Why the
+/// outside stores no mid-pose bounce or depth and blends across. A static
+/// patch whose centre lies inside gathers a mid pose's later bounces posed. Why the
 /// spacing: a probe one lattice step off the sweep still reads the mover in
 /// its rays, and probes already blur over one step.
 #[derive(Debug, Clone)]
@@ -53,6 +55,14 @@ impl NearFieldDomain {
     /// The probe spacing the boxes are widened by, for cache keys.
     pub(crate) fn probe_spacing(&self) -> f32 {
         self.probe_spacing
+    }
+
+    /// The static patches whose centre lies inside the domain, ascending:
+    /// the ones a mid pose's later bounces gather posed.
+    pub(crate) fn static_patches(&self, patches: &PatchSet) -> Vec<u32> {
+        (0..patches.len() as u32)
+            .filter(|&patch| self.contains(patches.patches()[patch as usize].centroid))
+            .collect()
     }
 
     /// The valid probes of `layout` inside the domain, ascending by dense

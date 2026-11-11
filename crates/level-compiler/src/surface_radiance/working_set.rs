@@ -77,8 +77,7 @@ pub(crate) struct ShBaseWorkingSetProjection {
 impl ShBaseWorkingSetProjection {
     /// Price the mover probe channel into every phase it outlives: the posed
     /// scenes from the gate on; the summed bounce one kept for the posed
-    /// bakes and id 34's later bounces kept past the movers' posed ones from
-    /// the sum on; the movers' accumulated states (memo hits included) from
+    /// bakes and id 34's later bounces kept for them from the sum on; the movers' accumulated states (memo hits included) from
     /// the later bounces on; and its own two phases. The peak is re-taken.
     pub(crate) fn price_movers(&mut self, cost: &MoverChannelCost) {
         if *cost == MoverChannelCost::default() {
@@ -104,12 +103,13 @@ impl ShBaseWorkingSetProjection {
         let resident = patch_cache + self.reach_index_bytes + self.section_bytes + scenes + states;
         // Cold: the patch cache's radiance beside one pose. Warm on an id-34
         // hit: the layers resolving, then id 34's later bounces gathered for
-        // the kept ones, then one pose.
+        // the kept ones or read from their memo (the payload beside the
+        // decoded layers), then one pose.
         let pose =
             resident + bounce_one + kept + cost.pose_bytes(patch_count, self.light_reach_total);
         let cold = pose + self.sum_bytes;
         let resolve = self.layer_phase_bytes + self.section_bytes + states;
-        let warm_tail = resident + bounce_one + kept + self.bounce_buffer_bytes;
+        let warm_tail = resident + bounce_one + kept + self.bounce_buffer_bytes.max(kept);
         self.mover_bounce_phase_bytes = cold.max(resolve).max(warm_tail).max(pose);
         self.mover_direct_phase_bytes = self.resident_bytes
             + self.section_bytes

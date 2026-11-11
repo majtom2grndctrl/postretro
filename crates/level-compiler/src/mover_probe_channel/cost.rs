@@ -8,10 +8,10 @@ use postretro_level_format::mover_probe_channel::{MOVER_IRRADIANCE_TILE_F16_COUN
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 
+use super::absent_bounces::AbsentLaterBounces;
 use super::bake::MoverBounceJob;
 use super::direct::{DirectEntry, ProbeCells, light_movers};
 use super::gather::{DomainProbe, PosedProbe};
-use super::mid_pose::ProbeShares;
 use super::posed_solid::PosedMovers;
 use super::states::{BounceProbe, ChangedProbe, DepthProbe, MidState};
 use crate::map_data::{LightType, MapLight};
@@ -23,8 +23,6 @@ const GATHERED_TILE_BYTES: u64 = 36 * size_of::<OctahedralAtlasTexel>() as u64;
 const DEPTH_TILE_BYTES: u64 = (PROBE_DEPTH_TILE_TEXELS * size_of::<[u16; 2]>()) as u64;
 /// One stored bounce state, id 27's compact RGB tile.
 const STATE_TILE_BYTES: u64 = (MOVER_IRRADIANCE_TILE_F16_COUNT * size_of::<u16>()) as u64;
-/// One `f32` RGB tile, border included: a later share.
-const RGB_TILE_BYTES: u64 = 36 * size_of::<[f32; 3]>() as u64;
 const MARK_BYTES: u64 = size_of::<PoseMark>() as u64;
 
 /// What the mover probe channel adds to the SH working set, from the map's
@@ -43,8 +41,9 @@ pub(crate) struct MoverChannelCost {
     pub(crate) solid_bytes: u64,
     /// The most patches any one pose's sides carry.
     pub(crate) max_mover_patches: u64,
-    /// Id 34's later bounces the bake keeps apart for movers whose
-    /// `light_bounces` stops short.
+    /// Id 34's later bounces the bake keeps apart: past the posed ones of
+    /// movers whose `light_bounces` stops short, and past the near-field
+    /// domain of movers with mid poses.
     pub(crate) kept_later_bounces: u64,
     pub(crate) valid_probes: u64,
     pub(crate) total_probes: u64,
@@ -65,10 +64,13 @@ pub(crate) struct MoverChannelCost {
     pub(crate) depth_mid_tiles: u64,
     /// The most any one mover's states hold at their bound.
     pub(crate) max_mover_states_bytes: u64,
-    /// The most any one mover's mid poses hold while it bakes: its termini's
-    /// bounce one and later shares over the domain, every mid pose's states,
-    /// and one mid pose's gather.
+    /// The most any one mover's mid poses hold while it bakes: every mid
+    /// pose's states and one mid pose's gather.
     pub(crate) max_mid_pose_bytes: u64,
+    /// Whether some mover re-baking radiance has a mid pose: its posed
+    /// later bounces then gather the domain's static patches apart before
+    /// they scatter.
+    pub(crate) near_field_later: bool,
 }
 
 impl MoverChannelCost {
@@ -123,6 +125,7 @@ impl MoverChannelCost {
                 .map(|job| mid_pose_bytes(mids(job), domain(job)))
                 .max()
                 .unwrap_or(0),
+            near_field_later: fill != 0.0 && radiance().any(|job| mids(job) > 0),
         }
     }
 
@@ -161,9 +164,10 @@ impl MoverChannelCost {
     /// its posed copy of the static patch radiance and its own sides', the
     /// re-shaded (patch, light) pairs, the later-bounce buffers over both
     /// patch sets, its gathered probes, the mover's other terminus, its mid
-    /// poses' near-field work, and one mover's memo write. Id 34's kept
-    /// later bounces add in place ([`Self::kept_later_bytes`]), so no tail
-    /// sum is held.
+    /// poses' near-field work (the domain's static patches, each with its
+    /// gathered bounce before the scatter, and the compact slots), and one
+    /// mover's memo write. Id 34's kept later bounces add in place
+    /// ([`Self::kept_later_bytes`]), so no tail sum is held.
     pub(crate) fn pose_bytes(&self, patch_count: u64, light_reach_total: u64) -> u64 {
         if self.movers == 0 {
             return 0;
@@ -181,7 +185,13 @@ impl MoverChannelCost {
                 + size_of::<ChangedProbe>() as u64
                 + size_of::<(u32, Vec<[u16; 2]>)>() as u64);
         let tables = self.total_probes * 4 + 256 * size_of::<[f32; 3]>() as u64;
+        let near_field = if self.near_field_later {
+            patch_count * (size_of::<u32>() as u64 + side) + self.total_probes * 4
+        } else {
+            0
+        };
         radiance
+            + near_field
             + pairs
             + later
             + gathered
@@ -214,34 +224,33 @@ fn mover_states_bytes(valid: u64, poses: u64, domain: u64) -> u64 {
 }
 
 /// What one mover's `mids` mid poses hold over its `domain` near-field
-/// probes while it bakes: the termini's bounce one there and the later
-/// shares built from it, each mid pose's classified states (a stored tile
-/// and a depth tile per probe at most), and one mid pose's gather in
-/// flight with its classification. Nothing without a mid pose: the termini
-/// then gather no bounce one over the domain.
+/// probes while it bakes: each mid pose's classified states (a stored tile
+/// and a depth tile per probe at most), and one mid pose's gather in flight
+/// with its classification (the probe's id-34 tile beside its packed one).
+/// Nothing without a mid pose.
 fn mid_pose_bytes(mids: u64, domain: u64) -> u64 {
     if mids == 0 {
         return 0;
     }
-    let bounce_one = 2 * size_of::<DomainProbe>() as u64;
-    let shares = size_of::<ProbeShares>() as u64 + GATHERED_TILE_BYTES + 2 * RGB_TILE_BYTES;
     let state = size_of::<(u32, MidState<Vec<OctahedralAtlasTexel>>)>() as u64
         + GATHERED_TILE_BYTES
         + size_of::<(u32, MidState<Vec<[u16; 2]>>)>() as u64
         + DEPTH_TILE_BYTES;
-    let gather = size_of::<DomainProbe>() as u64 + DEPTH_TILE_BYTES + RGB_TILE_BYTES + state;
-    domain * (bounce_one + shares + mids * state + gather)
+    let gather = size_of::<DomainProbe>() as u64 + DEPTH_TILE_BYTES + GATHERED_TILE_BYTES + state;
+    domain * (mids * state + gather)
 }
 
-/// The SH base's own later bounces the jobs keep: from the first a job
-/// keeps to the last.
+/// The SH base's own later bounces the jobs keep: every one, when some job
+/// reads them ([`AbsentLaterBounces::needed_by`]).
 pub(crate) fn kept_later_bounces<'j>(
     jobs: impl IntoIterator<Item = &'j MoverBounceJob>,
     fill: f32,
 ) -> u64 {
-    super::MoverBounceRequest::static_tail_from(jobs, fill).map_or(0, |first| {
-        u64::from(crate::surface_radiance::LATER_BOUNCE_COUNT.saturating_sub(first))
-    })
+    if AbsentLaterBounces::needed_by(jobs, fill) {
+        u64::from(crate::surface_radiance::LATER_BOUNCE_COUNT)
+    } else {
+        0
+    }
 }
 
 /// The direct half's entries at their bound, priced with the bake's own

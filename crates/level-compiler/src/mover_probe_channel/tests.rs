@@ -26,7 +26,7 @@ fn occluder(brushes: Vec<BrushVolume>) -> PosedOccluder {
 }
 
 /// [`occluder`]'s mover posed at its first waypoint, as a solid.
-fn solid(brushes: Vec<BrushVolume>) -> PosedSolid {
+pub(super) fn solid(brushes: Vec<BrushVolume>) -> PosedSolid {
     let mover = MapKinematicMover {
         mover_id: 0,
         name: "mover".to_string(),
@@ -682,78 +682,6 @@ fn a_probe_within_the_lift_of_a_face_keeps_the_per_ray_rule_and_one_past_it_is_e
             posed.depth.as_ref(),
             Some(&traced[0].1),
             "{depth_m} m: the gather bins the depth-only trace's tile"
-        );
-    }
-}
-
-// Id 34's kept later bounces join a pose's running sum one by one, in bounce
-// order, as id 34 adds them. With every `light_bounces` that keeps a tail,
-// 1 (every later bounce is id 34's: the tail alone) through 4 (only id 34's
-// last layer), a patch the pose never meets (here every static patch: the
-// pose sits far outside the closet) sums id 34's later bounces bit for bit.
-// Pre-summing the kept layers reassociates the float sum and misses.
-#[test]
-fn a_patch_the_pose_never_meets_sums_id_34s_later_bounces_bit_for_bit() {
-    use super::bounce::{PosedLaterBounces, PosedRadiance, add_posed_later_bounces};
-    use super::posed_scene::PosedScene;
-    use crate::bake_control::BakeControl;
-    use crate::surface_radiance::{
-        LATER_BOUNCE_COUNT, PatchRadiance, PatchSet, Side, add_later_bounces_keeping,
-    };
-
-    let fixture = crate::fixture_pipeline::load_fixture("mover-closet");
-    let ctx = RaytracingCtx {
-        bounce_materials: None,
-        bvh: &fixture.bvh,
-        primitives: &fixture.primitives,
-        geometry: &fixture.geometry,
-    };
-    let patches = PatchSet::try_build(&fixture.geometry).expect("static patches");
-    // Every side lit differently, so the later bounces carry values whose
-    // float sum depends on its order.
-    let mut bounce_one = PatchRadiance::zeroed(patches.len());
-    for patch in 0..patches.len() as u32 {
-        for side in Side::BOTH {
-            let seed = patch as f32 * 0.618_034 + side as usize as f32 * 0.414_213;
-            bounce_one.add_side(
-                patch,
-                side,
-                Vec3::new(seed.fract(), (seed * 1.7).fract(), (seed * 2.3).fract()) * 3.0,
-            );
-        }
-    }
-    let far = solid(vec![box_brush(DVec3::splat(500.0), DVec3::splat(501.0))]);
-    let scene = PosedScene::new(Arc::new(far), 0).expect("posed patches");
-    let control = BakeControl::unrestricted();
-    let fill = 0.7;
-    for bounces in 1..=LATER_BOUNCE_COUNT {
-        let from = bounces - 1;
-        let mut id34 = bounce_one.clone();
-        let kept = add_later_bounces_keeping(&ctx, &patches, &mut id34, fill, Some(from), &control);
-        assert_eq!(
-            kept.len() as u32,
-            LATER_BOUNCE_COUNT - from,
-            "light_bounces {bounces} keeps id 34's later bounces from {from} on"
-        );
-        let mut posed = PosedRadiance {
-            world: bounce_one.clone(),
-            mover: PatchRadiance::zeroed(scene.patches.len()),
-        };
-        add_posed_later_bounces(
-            &ctx,
-            &patches,
-            &scene,
-            &mut posed,
-            fill,
-            PosedLaterBounces {
-                posed: from,
-                static_tail: &kept,
-            },
-            &control,
-        );
-        assert!(
-            posed.world == id34,
-            "light_bounces {bounces}: an untouched patch sums id 34's later bounces bit for bit"
         );
     }
 }

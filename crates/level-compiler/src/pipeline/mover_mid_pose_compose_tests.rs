@@ -571,14 +571,7 @@ fn assert_mid_poses_pass_and_termini_miss(map: &str, rows: &[(f32, Worst, Worst)
 // probes still lerp from their t = 0 shadow. t′ 0.25 is not held (owner,
 // 2026-11-10): those probes sit inside the slab until t 0.232, and pose
 // states one lattice step apart cannot describe that crossing.
-//
-// Known to fail (task 6a, 2026-11-10, enclosed mid poses blending across).
-// Termini only: bounce 19.5, direct 58.6 levels. Mid poses: bounce 4.2,
-// direct 0.0; the bounce miss is the later bounces blended from the
-// termini (plan task 6b). The bar is the owner's.
 #[test]
-#[ignore = "cold bakes of enemy-movers twice and its static-sweeper reference at one position; \
-            run on demand. Known to fail the three-level bar mid-poses: see the comment"]
 fn the_sweepers_west_face_probes_compose_within_three_levels_of_a_static_slab() {
     let rows = swept_face_against_reference("enemy-movers", "em_sweeper", Face::West, &[0.30]);
     assert_mid_poses_pass_and_termini_miss("enemy-movers", &rows);
@@ -589,17 +582,7 @@ fn the_sweepers_west_face_probes_compose_within_three_levels_of_a_static_slab() 
 // direct within three display levels of a build with the room static
 // there. The same map with `light_poses 2` misses: those probes lerp toward
 // their dark raised-room state.
-//
-// Known to fail (task 5, 2026-11-10; unchanged at task 6a). Termini only:
-// bounce 11.1 / 14.5 and direct 23.3 / 39.7 levels at t′ 0.4 / 0.6. Mid
-// poses: direct 0.0 (both t′ sit on stored knots), bounce 3.6 / 6.0. Bounce one there matches the
-// reference's first bounce within 0.04 levels; the miss is the later
-// bounces blended from the termini, which the raised terminus, dark inside
-// the room, pulls low. The bar is the owner's to restate.
 #[test]
-#[ignore = "cold bakes of mover-setpiece twice and its static-room reference at two positions; \
-            run on demand. Known to fail the three-level bar on blended later bounces: see the \
-            comment"]
 fn the_roof_tops_probes_compose_within_three_levels_of_a_static_room() {
     let rows =
         swept_face_against_reference("mover-setpiece", "setpiece_room", Face::Top, &[0.4, 0.6]);

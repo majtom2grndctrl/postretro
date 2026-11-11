@@ -35,7 +35,10 @@ const STAGE_ID: &str = "mover_probe_bounce";
 /// the near-field domain with the termini's later shares blended in.
 /// 8: a mid pose that encloses the probe stores no bounce state and blends
 /// across; its depth still bakes dark.
-const STAGE_VERSION: u32 = 8;
+/// 9: a mid pose traces its own posed later bounces over its near-field
+/// domain, rays leaving it reading id 34's, in place of the termini's
+/// blended later shares.
+const STAGE_VERSION: u32 = 9;
 
 /// The per-mover memo over one stage cache, under one id-34 volume key: an
 /// edit that re-bakes id 34 re-keys every mover.
@@ -68,10 +71,11 @@ impl<'c> BounceMemo<'c> {
         Self { cache, prefix }
     }
 
-    /// The prefix, then the mover's posed bounce count, its knots (a mid
-    /// pose blends the termini's shares to its own), its near-field domain
-    /// (the boxes and the probe spacing that widened them: what a mid pose
-    /// and the termini's bounce one gather over) and each pose: its index,
+    /// The prefix, then the mover's posed bounce count, its knots (each
+    /// pose's path fraction), its near-field domain (the boxes and the probe
+    /// spacing that widened them: the probes a mid pose gathers and the
+    /// static patches its later bounces trace; id 34's later bounces it
+    /// reads past them fold through the volume key) and each pose: its index,
     /// its solid (bounds, brush planes and side triangles), each side's
     /// texture index and the albedo of every texture those sides name. The
     /// mover id is not folded: the payload never names it. One key holds

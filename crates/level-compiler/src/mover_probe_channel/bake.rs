@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::absent_bounces::AbsentLaterBounces;
 use super::bounce::{light_terms, posed_later_progress_units};
 use super::depth::MoverAbsentDepth;
 use super::gather::valid_probes;
@@ -40,64 +41,61 @@ pub(crate) struct MoverBounceJob {
     pub(crate) scenes: Vec<PosedScene>,
     /// Each pose's path fraction t, 0 first and 1 last.
     pub(crate) knots: Vec<f32>,
-    /// The probes a mid pose gathers over, and the termini gather their
-    /// bounce one over: the swept brushes widened by the gather's lift and
-    /// one probe spacing.
+    /// What a mid pose gathers over: the swept brushes widened by the
+    /// gather's lift and one probe spacing. Its probes take the mid pose's
+    /// gather, its static patches the mid pose's posed later bounces.
     pub(crate) domain: NearFieldDomain,
     /// The valid probes inside `domain`, ascending by dense index.
     pub(crate) domain_probes: Vec<u32>,
 }
 
 impl MoverBounceJob {
-    /// Index of the first of id 34's later bounces this mover keeps, when
-    /// it keeps any: the later bounces past its posed ones.
-    pub(super) fn static_tail_from(&self, fill: f32) -> Option<u32> {
-        let count = sh_base_bounce_count(fill);
-        (self.bounces >= 1 && self.bounces < count).then(|| self.bounces - 1)
-    }
-
     /// Whether pose `pose` is a terminus: the first or the last.
     fn is_terminus(&self, pose: usize) -> bool {
         pose == 0 || pose + 1 == self.scenes.len()
     }
 
-    /// Whether the mover has a pose between its termini: only then do the
-    /// termini gather their bounce one over the domain, for the shares a
-    /// mid pose blends.
+    /// Whether the mover has a pose between its termini.
     pub(super) fn has_mid_poses(&self) -> bool {
         self.scenes.len() > 2
     }
 
     /// Progress units this job's bake advances over `valid_probes` valid
-    /// probes and `patch_count` static patches at `fill`: per terminus, one
-    /// per valid probe (the posed gather, or the depth-only trace), one per
-    /// domain probe of its bounce one when it bakes bounce and has a mid
-    /// pose, and one per patch chunk of each posed later bounce; per mid
-    /// pose, one per domain probe (its gather, or its depth-only trace).
-    /// Posed bounce one counts none. A memo hit advances them all at once.
+    /// probes and the static `patches` at `fill`: per terminus, one per
+    /// valid probe (the posed gather, or the depth-only trace) and one per
+    /// patch chunk of each posed later bounce over every static patch; per
+    /// mid pose, one per domain probe (its gather, or its depth-only trace)
+    /// and one per patch chunk of each posed later bounce over the static
+    /// patches in its domain. Each posed later bounce also counts the pose's
+    /// own patch chunks. Posed bounce one counts none. A memo hit advances
+    /// them all at once.
     pub(crate) fn progress_units(
         &self,
         valid_probes: usize,
-        patch_count: usize,
+        patches: &PatchSet,
         fill: f32,
     ) -> usize {
         let domain = self.domain_probes.len();
+        let later = self.bounces.saturating_sub(1);
+        let domain_patches = if fill != 0.0 && later > 0 && self.has_mid_poses() {
+            self.domain.static_patches(patches).len()
+        } else {
+            0
+        };
         self.scenes
             .iter()
             .map(|scene| {
-                if !self.is_terminus(scene.pose) {
-                    return domain;
+                let terminus = self.is_terminus(scene.pose);
+                let gathered = if terminus { valid_probes } else { domain };
+                if self.bounces == 0 || fill == 0.0 {
+                    return gathered;
                 }
-                if self.bounces == 0 {
-                    return valid_probes;
-                }
-                let later = if fill == 0.0 {
-                    0
+                let world = if terminus {
+                    patches.len()
                 } else {
-                    posed_later_progress_units(self.bounces - 1, patch_count, scene.patches.len())
+                    domain_patches
                 };
-                let shares = if self.has_mid_poses() { domain } else { 0 };
-                valid_probes + shares + later
+                gathered + posed_later_progress_units(later, world, scene.patches.len())
             })
             .sum()
     }
@@ -127,17 +125,6 @@ impl MoverBounceRequest {
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.jobs.is_empty()
-    }
-
-    /// The first of id 34's later bounces any job keeps past its posed ones:
-    /// the static later bounces the bake holds apart for them.
-    pub(crate) fn static_tail_from<'j>(
-        jobs: impl IntoIterator<Item = &'j MoverBounceJob>,
-        fill: f32,
-    ) -> Option<u32> {
-        jobs.into_iter()
-            .filter_map(|job| job.static_tail_from(fill))
-            .min()
     }
 }
 
@@ -187,30 +174,11 @@ impl<'a> PoseShared<'a> {
     }
 }
 
-/// Id 34's later bounces from some index on, one front side per static
-/// patch each, held apart for movers whose `light_bounces` stops short.
-pub(crate) struct StaticTail {
-    /// Later-bounce index of `layers[0]`.
-    pub(crate) first: u32,
-    pub(crate) layers: Vec<Vec<[f32; 3]>>,
-}
-
-impl StaticTail {
-    /// Id 34's later bounces from index `from` on, in bounce order; empty
-    /// when none is kept there. The pose adds them one by one, as id 34 does:
-    /// pre-summing them would reassociate the float sum.
-    pub(super) fn layers_from(&self, from: u32) -> &[Vec<[f32; 3]>] {
-        from.checked_sub(self.first)
-            .and_then(|skip| self.layers.get(skip as usize..))
-            .unwrap_or(&[])
-    }
-}
-
 /// What every pose of one SH base bake reads: the gate's patches, their
 /// static bounce one (before later bounces), the plan's light order, the
 /// gathered id 34 the bar compares against and its depth tiles before mover
-/// tiles reserve their range, and id 34's own later bounces past the
-/// shortest posed run.
+/// tiles reserve their range, and id 34's own later bounces, when a job
+/// reads them ([`AbsentLaterBounces::needed_by`]).
 pub(crate) struct StaticBounce<'a> {
     pub(crate) patches: &'a PatchSet,
     pub(crate) bounce_one: &'a PatchRadiance,
@@ -220,7 +188,7 @@ pub(crate) struct StaticBounce<'a> {
     pub(crate) layout: &'a ProbeGridLayout,
     pub(crate) base: &'a OctahedralShVolumeSection,
     pub(crate) depth_tiles: &'a ProbeDepthTiles,
-    pub(crate) static_tail: Option<&'a StaticTail>,
+    pub(crate) absent: Option<&'a AbsentLaterBounces>,
 }
 
 /// Re-bake id 34 per pose of each baked slot, each mover posed alone, and
@@ -229,9 +197,9 @@ pub(crate) struct StaticBounce<'a> {
 /// warm and cold stop at the same slot past the tile range. A pose holds one
 /// posed copy of the patch radiance and the later-bounce buffers while it
 /// runs, and drops them before the next; a mover holds its termini's
-/// gathered probes, their bounce one and later shares over the domain, and
-/// its mid poses' states until it reduces them, and the reduction drops its
-/// depth below the significance floor before the next mover runs.
+/// gathered probes and its mid poses' states until it reduces them, and the
+/// reduction drops its depth below the significance floor before the next
+/// mover runs.
 pub(crate) fn bake_mover_bounce(
     sh_ctx: &ShBakeCtx<'_>,
     inputs: &StaticBounce<'_>,
@@ -254,7 +222,7 @@ pub(crate) fn bake_mover_bounce(
                     .filter_map(|slot| match slot {
                         MoverSlot::Bake(job) => Some(job.progress_units(
                             valid.len(),
-                            inputs.patches.len(),
+                            inputs.patches,
                             inputs.bounce_fill,
                         )),
                         MoverSlot::Held(_) => None,

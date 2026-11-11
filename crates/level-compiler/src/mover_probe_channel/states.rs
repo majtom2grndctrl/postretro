@@ -274,7 +274,7 @@ fn compact_rgb(tile: &[OctahedralAtlasTexel]) -> impl Iterator<Item = u16> + '_ 
 /// stores its state where it leaves the round-trip bar of id 34. Decided
 /// from the termini alone, so a mid pose never moves what a terminus
 /// stores.
-pub(crate) fn terminus_stores(termini: &[PoseStates; 2]) -> BTreeMap<u32, [bool; 2]> {
+fn terminus_stores(termini: &[PoseStates; 2]) -> BTreeMap<u32, [bool; 2]> {
     let mut changed: BTreeMap<u32, [Option<&ChangedProbe>; 2]> = BTreeMap::new();
     for (terminus, pose) in termini.iter().enumerate() {
         for probe in &pose.changed {

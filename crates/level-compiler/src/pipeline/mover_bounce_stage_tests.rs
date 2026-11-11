@@ -548,8 +548,8 @@ fn fat_door(text: String) -> String {
 // At a mid pose it is unmarked too, so it blends across, and the section's
 // across marks name exactly those enclosed (probe, mid pose) pairs among
 // the probes the mover's entries name, so direct blends across them alike.
-// A probe enclosed at both termini joins no bounce entry: neither terminus
-// lends a later share, so no mid pose stores one either. Enclosure is
+// A probe enclosed at every pose joins no bounce entry; one enclosed at
+// both termini stores, if anything, only a mid pose's own state. Enclosure is
 // recomputed here from the solids' own half-spaces, never read from the
 // bake. Every lifted ray of an enclosed probe starts inside the pose, so
 // its depth is the dark tile (every ray at distance 0) at that pose, stored
@@ -654,8 +654,8 @@ fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
             if enclosed[0] && enclosed[last] {
                 both += 1;
                 assert!(
-                    !bounce.contains_key(&probe),
-                    "probe {probe}: enclosed at both termini joins no bounce entry"
+                    !(enclosed.iter().all(|&e| e) && bounce.contains_key(&probe)),
+                    "probe {probe}: enclosed at every pose joins no bounce entry"
                 );
             } else if enclosed[0] || enclosed[last] {
                 one += 1;

@@ -282,8 +282,7 @@ pub(crate) fn gather_posed_probes(
 pub(crate) struct DomainProbe {
     /// Dense probe index.
     pub(crate) probe: u32,
-    /// The gather's SH coefficients, before any packing: a later share
-    /// subtracts and adds these exactly up to `f32`.
+    /// The gather's SH coefficients, before any packing.
     pub(crate) coefficients: [f32; 27],
     /// The closed-pose bordered depth tile, when a gather ray meets the pose
     /// and depth is binned.

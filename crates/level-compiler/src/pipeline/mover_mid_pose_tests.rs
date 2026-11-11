@@ -1,6 +1,6 @@
 // Mid-travel poses at the bounce half's seam: the near-field domain a mid
 // pose gathers over, and a mid pose against a static-brush reference bake
-// of the mover at that pose (direct q, bounce one and depth).
+// of the mover at that pose (direct q, bounce one, full bounce and depth).
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,11 +18,11 @@ use crate::fixture_pipeline::{fixture_path, load_map};
 use crate::mover_probe_channel::fixture_scene::Scene;
 use crate::mover_probe_channel::reference_maps::{quake_offset, staticize_at};
 use crate::mover_probe_channel::{
-    MoverBounceRequest, ProbeCells, compact_slots, compact_tile, display_levels,
+    DomainProbe, MoverBounceRequest, ProbeCells, compact_slots, compact_tile, display_levels,
     max_abs_difference, round_trip_error,
 };
 use crate::sh_bake::{pack_octahedral_irradiance_tile, vec3_from};
-use crate::surface_radiance::DEFAULT_BOUNCE_FILL;
+use crate::surface_radiance::{DEFAULT_BOUNCE_FILL, ShBase};
 
 /// Whether two f16 depth moments agree within f16 rounding: one unit in the
 /// last place of the larger.
@@ -178,18 +178,60 @@ fn a_mid_pose_gathers_its_domain_alone_and_direct_reaches_past_it() {
     assert!(outside > 0, "direct reaches past the near-field domain");
 }
 
+/// One bounce comparison against the reference: domain probes compared,
+/// those within the reference tile's BC6H bar, the worst excess past it,
+/// the worst display-level difference, and the probes the patch-grid
+/// exception sets aside with their worst difference.
+#[derive(Default)]
+struct BounceMatch {
+    compared: usize,
+    within_bar: usize,
+    worst_bar: f32,
+    worst_levels: f32,
+    excepted: usize,
+    worst_excepted: f32,
+}
+
 /// What one mid pose's bake reads against the static-brush reference.
 struct MidPoseReference {
     direct: (usize, f32),
-    bounce: (usize, usize, f32, f32),
+    bounce_one: BounceMatch,
+    full_bounce: BounceMatch,
     depth: (usize, usize),
+}
+
+/// Static patches are this wide, on an absolute plane grid.
+const PATCH_M: f64 = 0.5;
+
+/// AC 7's patch-grid exception (owner, 2026-11-10): whether `probe` lies
+/// within one patch of a face of `brushes` (posed, axis-aligned bounds) whose
+/// plane lands off the static patch grid. There the posed bake's partly
+/// buried floor patch differs from the reference's floor cut at the face.
+fn near_an_off_grid_face(brushes: &[crate::mover_pose::PosedBrush], probe: DVec3) -> bool {
+    let off_grid = |plane: f64| {
+        let cells = plane / PATCH_M;
+        (cells - cells.round()).abs() > 1.0e-4
+    };
+    brushes.iter().any(|brush| {
+        let (lo, hi) = (brush.bounds.min, brush.bounds.max);
+        (0..3).any(|axis| {
+            let beside = (0..3).filter(|&other| other != axis).all(|other| {
+                probe[other] >= lo[other] - PATCH_M && probe[other] <= hi[other] + PATCH_M
+            });
+            beside
+                && [lo[axis], hi[axis]]
+                    .into_iter()
+                    .any(|plane| off_grid(plane) && (probe[axis] - plane).abs() <= PATCH_M)
+        })
+    })
 }
 
 /// Bake `mover` of dev map `map` at its middle mid pose and the map with the
 /// mover made static there, then compare: direct q at every probe a light
-/// reaches, valid in both, within one q step (B7's direct bar); the mid
-/// pose's bounce one at each domain probe valid in both and not enclosed
-/// against the reference's first bounce alone (`_bounce_fill 0`); and its
+/// reaches, valid in both, within one q step (B7's direct bar); at each
+/// domain probe valid in both and not enclosed, the mid pose's bounce one
+/// against the reference's first bounce alone (`_bounce_fill 0`, AC 7) and
+/// its full bounce against the reference's full bake (AC 8); and its
 /// closed-pose depth tile against the reference's id-59 tile where both
 /// exist, texel by texel within f16 (B4's bar).
 fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
@@ -278,8 +320,8 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
         misses.join("\n")
     );
 
-    // Bounce one and depth: the mid pose's near-field gather.
-    let gathered = with_ctx(&today.fixture, |ctx, poses| {
+    // Bounce and depth: the mid pose's near-field gathers.
+    let kept = with_ctx(&today.fixture, |ctx, poses| {
         let mut plan = plan_half(&today.fixture, ctx, poses, DEFAULT_BOUNCE_FILL);
         let mut request = std::mem::take(&mut plan.request);
         request.jobs.retain(|job| job.mover_id == posed.mover_id);
@@ -290,56 +332,80 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
             .into_iter()
             .find(|baked| baked.mover_id == posed.mover_id && baked.pose == pose)
             .expect("the mid pose's gather")
-            .domain
     });
-    let reference_base = with_ctx(&reference.fixture, |ctx, poses| {
-        let plan = plan_half(&reference.fixture, ctx, poses, 0.0);
-        bake_base(ctx, &plan, &MoverBounceRequest::default(), 0.0, None).1
-    });
+    let reference_base = |fill: f32| {
+        with_ctx(&reference.fixture, |ctx, poses| {
+            let plan = plan_half(&reference.fixture, ctx, poses, fill);
+            bake_base(ctx, &plan, &MoverBounceRequest::default(), fill, None).1
+        })
+    };
+    let (reference_one, reference_full) =
+        (reference_base(0.0), reference_base(DEFAULT_BOUNCE_FILL));
     let slots = compact_slots(&reference.layout);
-    let dim = reference_base.section.tile_dimension as usize;
-    let reference_depth: BTreeMap<u32, &[[u16; 2]]> = reference_base
+    let excepted = |probe: usize| {
+        near_an_off_grid_face(
+            &posed.poses[pose].brushes,
+            today.layout.probe_positions[probe],
+        )
+    };
+    let compare = |gathered: &[DomainProbe], reference: &ShBase, label: &str| {
+        let dim = reference.section.tile_dimension as usize;
+        let mut matched = BounceMatch::default();
+        for probe in gathered {
+            let at = probe.probe as usize;
+            if probe.enclosed || !both_valid(at) {
+                continue;
+            }
+            let tile = pack_octahedral_irradiance_tile(
+                &probe.coefficients,
+                true,
+                DEFAULT_IRRADIANCE_TILE_DIMENSION,
+                DEFAULT_IRRADIANCE_TILE_BORDER,
+            );
+            let reference_tile = compact_tile(&reference.section, slots[at] as usize);
+            let levels = display_levels(&tile, &reference_tile);
+            if excepted(at) {
+                matched.excepted += 1;
+                matched.worst_excepted = matched.worst_excepted.max(levels);
+                continue;
+            }
+            let difference = max_abs_difference(&tile, &reference_tile);
+            let bar = round_trip_error(&reference_tile, dim, false);
+            matched.compared += 1;
+            matched.within_bar += usize::from(difference <= bar);
+            matched.worst_bar = matched.worst_bar.max(difference - bar);
+            matched.worst_levels = matched.worst_levels.max(levels);
+            if levels > 2.0 {
+                eprintln!(
+                    "  {label} probe {} at quake {:?}: {levels:.2} levels, |Δ| {difference:.4} \
+                     bar {bar:.4}",
+                    probe.probe,
+                    quake_offset(today.layout.probe_positions[at])
+                );
+            }
+        }
+        matched
+    };
+    let bounce_one = compare(&kept.domain_bounce_one, &reference_one, "bounce one");
+    let full_bounce = compare(&kept.domain, &reference_full, "full bounce");
+    let reference_depth: BTreeMap<u32, &[[u16; 2]]> = reference_one
         .depth_tiles
         .section
         .probe_indices
         .iter()
         .copied()
         .zip(
-            reference_base
+            reference_one
                 .depth_tiles
                 .section
                 .texels
                 .chunks(PROBE_DEPTH_TILE_TEXELS),
         )
         .collect();
-    let (mut bounce_compared, mut within_bar, mut worst_bar, mut worst_levels) =
-        (0, 0, 0.0f32, 0.0f32);
     let (mut depth_compared, mut depth_misses) = (0, 0);
-    for probe in &gathered {
-        let at = probe.probe as usize;
-        if probe.enclosed || !both_valid(at) {
+    for probe in &kept.domain {
+        if probe.enclosed || !both_valid(probe.probe as usize) {
             continue;
-        }
-        let one = pack_octahedral_irradiance_tile(
-            &probe.coefficients,
-            true,
-            DEFAULT_IRRADIANCE_TILE_DIMENSION,
-            DEFAULT_IRRADIANCE_TILE_BORDER,
-        );
-        let reference_tile = compact_tile(&reference_base.section, slots[at] as usize);
-        let difference = max_abs_difference(&one, &reference_tile);
-        let bar = round_trip_error(&reference_tile, dim, false);
-        bounce_compared += 1;
-        within_bar += usize::from(difference <= bar);
-        worst_bar = worst_bar.max(difference - bar);
-        let levels = display_levels(&one, &reference_tile);
-        worst_levels = worst_levels.max(levels);
-        if levels > 2.0 {
-            eprintln!(
-                "  probe {} at quake {:?}: {levels:.2} levels, |Δ| {difference:.4} bar {bar:.4}",
-                probe.probe,
-                quake_offset(today.layout.probe_positions[at])
-            );
         }
         if let (Some(tile), Some(reference_tile)) =
             (&probe.depth, reference_depth.get(&probe.probe))
@@ -352,16 +418,31 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
             depth_misses += usize::from(!close);
         }
     }
+    let line = |label: &str, matched: &BounceMatch| {
+        format!(
+            "{label} {} of {} domain probe(s) within the reference tile's BC6H bar, worst {:.5} \
+             past it, worst {:.2} display levels; {} probe(s) by an off-grid face set aside, \
+             worst {:.2} levels",
+            matched.within_bar,
+            matched.compared,
+            matched.worst_bar,
+            matched.worst_levels,
+            matched.excepted,
+            matched.worst_excepted
+        )
+    };
     eprintln!(
         "{map} {mover} pose {pose} of {}: direct {compared} reached pair(s), worst {worst:.3} q \
-         steps; bounce one {within_bar} of {bounce_compared} domain probe(s) within the reference \
-         tile's BC6H bar, worst {worst_bar:.5} past it, worst {worst_levels:.2} display levels; \
-         depth {depth_compared} tile(s) against the reference's id 59, {depth_misses} past f16",
-        posed.poses.len()
+         steps; {}; {}; depth {depth_compared} tile(s) against the reference's id 59, \
+         {depth_misses} past f16",
+        posed.poses.len(),
+        line("bounce one", &bounce_one),
+        line("full bounce", &full_bounce),
     );
     MidPoseReference {
         direct: (compared, worst),
-        bounce: (bounce_compared, within_bar, worst_bar, worst_levels),
+        bounce_one,
+        full_bounce,
         depth: (depth_compared, depth_misses),
     }
 }
@@ -369,41 +450,47 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
 fn assert_mid_pose_matches(map: &str, mover: &str) {
     let MidPoseReference {
         direct,
-        bounce,
+        bounce_one,
+        full_bounce,
         depth,
     } = mid_pose_against_its_reference(map, mover);
     assert!(direct.0 > 0, "{map}: direct compares reached probes");
-    let (compared, within, _, worst_levels) = bounce;
-    assert!(compared > 0, "{map}: the domain holds probes valid in both");
     // B7's base bar: the reference's own patch seeds differ from the posed
     // sides', so its BC6H bar alone is noise-bound (probe-channel research
-    // §B7 investigation); the restated bar is three display levels.
-    assert!(
-        worst_levels <= 3.0,
-        "{map} {mover}: bounce one {worst_levels} display levels from the reference ({within} \
-         of {compared} within its BC6H bar)"
-    );
+    // §B7 investigation); the restated bar is three display levels, outside
+    // the patch-grid exception.
+    for (label, matched) in [("bounce one", &bounce_one), ("full bounce", &full_bounce)] {
+        assert!(
+            matched.compared > 0,
+            "{map}: the domain holds probes valid in both"
+        );
+        assert!(
+            matched.worst_levels <= 3.0,
+            "{map} {mover}: {label} {} display levels from the reference ({} of {} within its \
+             BC6H bar)",
+            matched.worst_levels,
+            matched.within_bar,
+            matched.compared
+        );
+    }
     assert!(depth.0 > 0, "{map}: depth compares tiles");
     assert_eq!(depth.1, 0, "{map} {mover}: every depth tile within f16");
 }
 
+// AC 7 (bounce one, direct, depth) and AC 8 (full bounce) at the rising
+// room's middle mid pose.
 #[test]
-#[ignore = "cold bakes of mover-setpiece and its static-room reference; run on demand"]
+#[ignore = "cold bakes of mover-setpiece and its static-room reference at two fills; run on demand"]
 fn the_rising_rooms_mid_pose_matches_its_static_brush_reference() {
     assert_mid_pose_matches("mover-setpiece", "setpiece_room");
 }
 
-// Known to fail (task 3, 2026-11-10): the sweeper's middle pose puts its
-// west face 0.23 m into a 0.5 m floor patch, which the posed slab buries part
-// way where the reference's floor is cut at the face; the column of probes
-// 0.21 m in front of it reads bounce one up to 4.7 display levels off. The
-// error follows each pose's edge phase in the patch grid (1.7 to 4.7 levels
-// over the six mid poses; termini, on patch boundaries, 1.8 and 2.0), and a
-// path snapped to whole metres brings every mid pose to 2.2 to 3.6. The
-// bar is the owner's to restate.
+// AC 7 and AC 8 at the sweeper's middle mid pose. Its west face lands
+// part-way into a 0.5 m floor patch, which the posed slab buries part way
+// where the reference's floor is cut at the face; the probes within one
+// patch of that face are the patch-grid exception (owner, 2026-11-10).
 #[test]
-#[ignore = "cold bakes of enemy-movers and its static-sweeper reference; run on demand. Known to \
-            fail B7's three-level bounce bar on floor-patch phase: see the comment"]
+#[ignore = "cold bakes of enemy-movers and its static-sweeper reference at two fills; run on demand"]
 fn the_sweepers_mid_pose_matches_its_static_brush_reference() {
     assert_mid_pose_matches("enemy-movers", "em_sweeper");
 }

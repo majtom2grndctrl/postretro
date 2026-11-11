@@ -104,7 +104,7 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 | M4 em_sweeper faces within 3 levels, no pits | owner | manual |
 | M5 Rising room floor, no dots or diamonds | owner | manual |
 | M6 Rising room mean luma against t′ | owner | manual |
-| M7 5300M trace ≤ 0.2 ms per travelling mover | owner, Metal System Trace | manual |
+| M7 5300M trace ≤ 0.2 ms per travelling mover | owner, Metal System Trace | manual — **measured 2026-11-11, fails; cause predates this brief.** 937ba607d `--release`, 2560×1440 windowed, clock 1228 MHz, async streaming, 3 valid rounds per config: room 1.73 ms, wall 2.68 ms, both 1.48 ms per mover (bounce compose ~1.0–1.4, Pass A ~0.6–1.2, uploads ~0.1). Same harness on HEAD at `light_poses 2`: 1.65 / 2.63; on pre-brief 83dfb5317: 1.69 / 2.69. Mid poses add nothing measurable to compose (< 0.1 ms, mixed sign); uploads possibly +0.05 ms (within noise). Cost does not scale with affected probes (wall 3.4× probes, 1.55× cost); stripped id 57 → 0. Owner decision pending on the row. Harness and data: scratchpad `m7/` (`runs/ab-table.md`) |
 | M8 Cold and warm bake times, id-57 bytes per block, hallway | owner judges; executor measures | manual |
 
 ## Tasks

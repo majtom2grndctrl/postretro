@@ -19,7 +19,7 @@ use super::gather::{
 };
 use super::mid_pose::{classify_mid_pose, depth_only_mid_pose};
 use super::posed_scene::PosedScene;
-use super::states::{ChangedProbe, MoverPoseStates, PoseStates};
+use super::states::{ChangedProbe, PoseState, PoseStates, compact_rgb};
 use crate::bake_control::BakeControl;
 use crate::sh_bake::{RaytracingCtx, ShBakeCtx};
 
@@ -60,7 +60,7 @@ impl PosedBounce {
             if let (true, Some(tile)) = (probe.changed(), probe.tile) {
                 states.changed.push(ChangedProbe {
                     probe: probe.probe,
-                    tile,
+                    tile: compact_rgb(&tile),
                     affected,
                 });
             }
@@ -95,103 +95,172 @@ struct MidGather {
     bounce_one: Vec<DomainProbe>,
 }
 
+/// One job's poses, each resolved from its memo or baked, in path order.
+pub(super) struct ResolvedPoses {
+    pub(super) poses: Vec<PoseState>,
+    /// Per pose, whether this bake baked it: only those are written back.
+    pub(super) baked: Vec<bool>,
+}
+
+/// What every baked mid pose of one job shares: the domain's static patches
+/// its later bounces trace, and the compact slots its classification reads.
+struct NearField {
+    patches: Vec<u32>,
+    slots: Vec<u32>,
+}
+
 impl PoseBaker<'_, '_> {
-    /// Every pose of the job in path order. `None` when the request keeps
-    /// each pose's re-bake (into `kept`) instead of reducing.
-    pub(super) fn bake(&self, kept: &mut Vec<PosedBounce>) -> Option<MoverPoseStates> {
+    /// Every pose of the job in path order: `held[k]`, read from its memo,
+    /// where it holds one, else baked. `None` when the request keeps each
+    /// baked pose's re-bake (into `kept`) instead of reducing.
+    pub(super) fn bake(
+        &self,
+        held: Vec<Option<PoseState>>,
+        kept: &mut Vec<PosedBounce>,
+    ) -> Option<ResolvedPoses> {
         let job = self.job;
-        let last = job.scenes.len() - 1;
-        let mut poses = MoverPoseStates::default();
+        debug_assert_eq!(held.len(), job.scenes.len());
+        let mut resolved = ResolvedPoses {
+            poses: Vec::with_capacity(held.len()),
+            baked: Vec::with_capacity(held.len()),
+        };
+        let mut near_field: Option<NearField> = None;
         #[cfg(test)]
         let mut _held = Vec::new();
-        for (k, pose) in [0, last].into_iter().enumerate() {
-            let scene = &job.scenes[pose];
-            if job.bounces == 0 {
-                poses.termini[k] = PoseStates {
-                    changed: Vec::new(),
-                    depth: trace_posed_depth(
-                        &self.ctx,
-                        self.inputs.layout,
-                        scene,
-                        self.valid,
-                        self.control,
-                    ),
-                };
-            } else {
-                let started = Instant::now();
-                let posed = self.terminus(scene);
-                log::debug!(
-                    "[MoverLight] probe channel bounce: mover #{} terminus pose {pose}: {:.2} s",
-                    job.mover_id,
-                    started.elapsed().as_secs_f64()
-                );
-                if self.request.keep_poses {
-                    kept.push(posed);
-                    continue;
+        for (pose, held) in held.into_iter().enumerate() {
+            resolved.baked.push(held.is_none());
+            let state = match held {
+                Some(state) => state,
+                None => {
+                    let scene = &job.scenes[pose];
+                    let baked = if job.is_terminus(pose) {
+                        self.terminus_states(scene, kept)
+                    } else {
+                        let near_field = match &mut near_field {
+                            Some(near_field) => near_field,
+                            None => {
+                                let built = self.near_field();
+                                #[cfg(test)]
+                                _held.push(crate::live_bytes::hold(
+                                    "mover near-field patches and slots",
+                                    ((built.patches.capacity() + built.slots.capacity())
+                                        * size_of::<u32>())
+                                        as u64,
+                                ));
+                                near_field.insert(built)
+                            }
+                        };
+                        self.mid_states(scene, near_field, kept)
+                    };
+                    let Some(state) = baked else {
+                        continue;
+                    };
+                    state
                 }
-                poses.termini[k] = posed.into_states();
-            }
+            };
             #[cfg(test)]
             _held.push(crate::live_bytes::hold(
                 "mover posed probes",
-                poses.termini[k].heap_bytes(),
+                state.heap_bytes(),
             ));
+            resolved.poses.push(state);
         }
-        let bounce_mids = job.bounces > 0 && job.has_mid_poses();
-        let domain_patches = if bounce_mids {
-            job.domain.static_patches(self.inputs.patches)
-        } else {
-            Vec::new()
-        };
-        let slots = if bounce_mids {
-            compact_slots(self.inputs.layout)
-        } else {
-            Vec::new()
-        };
-        #[cfg(test)]
-        _held.push(crate::live_bytes::hold(
-            "mover near-field patches and slots",
-            ((domain_patches.capacity() + slots.capacity()) * size_of::<u32>()) as u64,
-        ));
-        for scene in job.scenes.iter().take(last).skip(1) {
-            let mid = if job.bounces == 0 {
-                let met = trace_posed_depth(
+        (!self.request.keep_poses || job.bounces == 0).then_some(resolved)
+    }
+
+    /// The near-field inputs a mid pose re-baking bounce reads; none at
+    /// `light_bounces` 0, where a mid pose traces depth alone.
+    fn near_field(&self) -> NearField {
+        if self.job.bounces == 0 {
+            return NearField {
+                patches: Vec::new(),
+                slots: Vec::new(),
+            };
+        }
+        NearField {
+            patches: self.job.domain.static_patches(self.inputs.patches),
+            slots: compact_slots(self.inputs.layout),
+        }
+    }
+
+    /// One terminus's states: its posed bounce gathered over every valid
+    /// probe, or at `light_bounces` 0 its depth-only trace. `None` when the
+    /// request keeps the re-bake instead (into `kept`).
+    fn terminus_states(
+        &self,
+        scene: &PosedScene,
+        kept: &mut Vec<PosedBounce>,
+    ) -> Option<PoseState> {
+        let job = self.job;
+        if job.bounces == 0 {
+            return Some(PoseState::Terminus(PoseStates {
+                changed: Vec::new(),
+                depth: trace_posed_depth(
                     &self.ctx,
                     self.inputs.layout,
                     scene,
-                    &job.domain_probes,
+                    self.valid,
                     self.control,
-                );
-                depth_only_mid_pose(&job.domain_probes, met)
-            } else {
-                let gathered = self.mid_gather(scene, &domain_patches);
-                if self.request.keep_poses {
-                    kept.push(PosedBounce {
-                        #[cfg(test)]
-                        mover_id: job.mover_id,
-                        #[cfg(test)]
-                        pose: scene.pose,
-                        probes: Vec::new(),
-                        #[cfg(test)]
-                        domain: gathered.full,
-                        #[cfg(test)]
-                        domain_bounce_one: gathered.bounce_one,
-                    });
-                    continue;
-                }
-                classify_mid_pose(
-                    gathered.full,
-                    self.inputs.base,
-                    &slots,
-                    self.request.uncompressed,
-                    self.control,
-                )
-            };
-            #[cfg(test)]
-            _held.push(crate::live_bytes::hold("mover mid poses", mid.heap_bytes()));
-            poses.mids.push(mid);
+                ),
+            }));
         }
-        (!self.request.keep_poses || job.bounces == 0).then_some(poses)
+        let started = Instant::now();
+        let posed = self.terminus(scene);
+        log::debug!(
+            "[MoverLight] probe channel bounce: mover #{} terminus pose {}: {:.2} s",
+            job.mover_id,
+            scene.pose,
+            started.elapsed().as_secs_f64()
+        );
+        if self.request.keep_poses {
+            kept.push(posed);
+            return None;
+        }
+        Some(PoseState::Terminus(posed.into_states()))
+    }
+
+    /// One mid pose's states over the near-field domain: its posed gather
+    /// classified, or at `light_bounces` 0 its depth-only trace. `None` when
+    /// the request keeps the re-bake instead (into `kept`).
+    fn mid_states(
+        &self,
+        scene: &PosedScene,
+        near_field: &NearField,
+        kept: &mut Vec<PosedBounce>,
+    ) -> Option<PoseState> {
+        let job = self.job;
+        if job.bounces == 0 {
+            let met = trace_posed_depth(
+                &self.ctx,
+                self.inputs.layout,
+                scene,
+                &job.domain_probes,
+                self.control,
+            );
+            return Some(PoseState::Mid(depth_only_mid_pose(&job.domain_probes, met)));
+        }
+        let gathered = self.mid_gather(scene, &near_field.patches);
+        if self.request.keep_poses {
+            kept.push(PosedBounce {
+                #[cfg(test)]
+                mover_id: job.mover_id,
+                #[cfg(test)]
+                pose: scene.pose,
+                probes: Vec::new(),
+                #[cfg(test)]
+                domain: gathered.full,
+                #[cfg(test)]
+                domain_bounce_one: gathered.bounce_one,
+            });
+            return None;
+        }
+        Some(PoseState::Mid(classify_mid_pose(
+            gathered.full,
+            self.inputs.base,
+            &near_field.slots,
+            self.request.uncompressed,
+            self.control,
+        )))
     }
 
     /// The posed later bounces `reach` gathers over, with id 34's own past

@@ -10,7 +10,7 @@ use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 
 use super::classify;
 use crate::mover_probe_channel::domain::{BOUNCE_FLOOR_LEVELS, display_levels, max_abs_difference};
-use crate::mover_probe_channel::states::MidState;
+use crate::mover_probe_channel::states::{MidState, compact_rgb};
 use crate::sh_bake::pack_octahedral_irradiance_tile;
 
 /// L0-only coefficients: a tile constant over every direction.
@@ -40,7 +40,7 @@ fn a_mid_pose_stores_its_gather_past_the_bars_reads_the_base_within_and_blends_a
     let bright = dc(4.0);
     assert_eq!(
         classify(&bright, false, &base, 0.0),
-        Some(MidState::Stored(tile(&bright))),
+        Some(MidState::Stored(compact_rgb(&tile(&bright)))),
         "past both bars: its own gather, packed"
     );
     assert_eq!(

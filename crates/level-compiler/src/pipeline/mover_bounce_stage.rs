@@ -88,7 +88,6 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
                     .light_bounces
                     .map_or(count, |bounces| bounces.min(count)),
                 scenes,
-                knots: analysed.knots.clone(),
                 domain_probes: domain.valid_probes(&layout),
                 domain,
             });

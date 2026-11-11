@@ -11,7 +11,6 @@ mod across;
 mod bake;
 mod blocks;
 mod bounce;
-mod bounce_memo;
 mod cost;
 mod depth;
 mod direct;
@@ -23,11 +22,13 @@ mod mid_pose;
 mod near_field;
 mod near_field_bounce;
 mod pose_bake;
+mod pose_lookup;
+mod pose_memo;
+mod pose_payload;
 mod posed_scene;
 mod posed_solid;
 mod section;
 mod skip;
-mod state_memo;
 mod states;
 mod visibility;
 
@@ -51,11 +52,10 @@ pub(crate) use absent_memo::AbsentBounceMemo;
 #[cfg(test)]
 pub(crate) use across::EnclosedMidPoses;
 pub(crate) use bake::{
-    MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, StaticBounce,
-    bake_mover_bounce, sh_base_bounce_count,
+    MoverBounceBake, MoverBounceJob, MoverBounceRequest, StaticBounce, bake_mover_bounce,
+    held_progress_units, sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
-pub(crate) use bounce_memo::BounceMemo;
 pub(crate) use cost::MoverChannelCost;
 pub(crate) use depth::{CarriedDepth, DepthReservation, MoverAbsentDepth, reserve_mover_tiles};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
@@ -72,6 +72,8 @@ pub(crate) use lights::{ChannelLightSources, channel_lights};
 pub(crate) use near_field::NearFieldDomain;
 #[cfg(test)]
 pub(crate) use pose_bake::PosedBounce;
+pub(crate) use pose_lookup::{HitReduction, PoseLookup};
+pub(crate) use pose_memo::PoseMemo;
 pub(crate) use posed_scene::PosedScene;
 pub(crate) use posed_solid::PosedMovers;
 #[cfg(test)]

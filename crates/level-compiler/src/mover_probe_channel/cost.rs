@@ -138,11 +138,11 @@ impl MoverChannelCost {
     /// records are bounded by its own reduction: below-floor probes drop as
     /// its two poses reduce, and it keeps at most one record past the range
     /// ([`super::states::reduce_poses`]), since one mover past the range
-    /// fails the build by name. The range rides id 34's volume key, so no
-    /// memo is read under another range; the cut on read handles entries
-    /// written before past-range movers stopped being memoized. The raw
-    /// traced tiles a mover's poses hold before the reduction are one
-    /// mover's at a time, priced in [`Self::pose_bytes`].
+    /// fails the build by name. The memo holds each pose's raw states and
+    /// every mover reduces once its poses resolve, from the memo or baked, so
+    /// the cut is the reduction's on either path. The raw states a mover's
+    /// poses hold before the reduction, traced or read, are one mover's at a
+    /// time, priced in [`Self::pose_bytes`].
     ///
     /// Per pose: every probe's marks run one per pose, the termini store at
     /// most one tile each per probe, and a mid pose stores tiles only over
@@ -166,7 +166,7 @@ impl MoverChannelCost {
     /// patch sets, its gathered probes, the mover's other terminus, its mid
     /// poses' near-field work (the domain's static patches, each with its
     /// gathered bounce before the scatter, and the compact slots), and one
-    /// mover's memo write. Id 34's kept later bounces add in place
+    /// pose's memo read or write. Id 34's kept later bounces add in place
     /// ([`Self::kept_later_bytes`]), so no tail sum is held.
     pub(crate) fn pose_bytes(&self, patch_count: u64, light_reach_total: u64) -> u64 {
         if self.movers == 0 {

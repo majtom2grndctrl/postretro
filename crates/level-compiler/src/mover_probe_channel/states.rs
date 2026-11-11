@@ -10,9 +10,11 @@ use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use super::depth::{DEPTH_SIGNIFICANCE_FLOOR, MoverAbsentDepth};
 
 /// One probe whose posed state leaves its id-34 tile's round-trip bar.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ChangedProbe {
     pub(crate) probe: u32,
-    pub(crate) tile: Vec<OctahedralAtlasTexel>,
+    /// The posed state as id 27's compact RGB tile ([`compact_rgb`]).
+    pub(crate) tile: Vec<u16>,
     /// Past the perceptual floor too: the probe joins the bounce domain.
     pub(crate) affected: bool,
 }
@@ -20,7 +22,7 @@ pub(crate) struct ChangedProbe {
 /// What one terminus's gather over every valid probe leaves: the probes
 /// whose state leaves the round-trip bar, with their tiles, and the depth
 /// tile of every probe a gather ray of which met the pose.
-#[derive(Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PoseStates {
     /// Ascending by probe.
     pub(crate) changed: Vec<ChangedProbe>,
@@ -34,7 +36,7 @@ impl PoseStates {
         let changed: usize = self
             .changed
             .iter()
-            .map(|probe| probe.tile.capacity() * size_of::<OctahedralAtlasTexel>())
+            .map(|probe| probe.tile.capacity() * size_of::<u16>())
             .sum();
         let depth: usize = self
             .depth
@@ -69,11 +71,12 @@ pub(crate) enum MidState<T> {
 /// What one mid pose's near-field gather leaves, each list ascending by
 /// probe. Storage sparsity only: a listed base or an unlisted probe says
 /// which state compose blends from, never a flag or a weight.
-#[derive(Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct MidPoseStates {
-    /// The domain probes whose bounce the pose stores or reads from the
-    /// base; any other blends across.
-    pub(crate) bounce: Vec<(u32, MidState<Vec<OctahedralAtlasTexel>>)>,
+    /// The domain probes whose bounce the pose stores, as id 27's compact
+    /// RGB tile ([`compact_rgb`]), or reads from the base; any other blends
+    /// across.
+    pub(crate) bounce: Vec<(u32, MidState<Vec<u16>>)>,
     /// Every domain probe: its closed-pose tile where some gather ray met
     /// the pose, else its base.
     pub(crate) depth: Vec<(u32, MidState<Vec<[u16; 2]>>)>,
@@ -86,7 +89,7 @@ impl MidPoseStates {
             .bounce
             .iter()
             .map(|(_, state)| match state {
-                MidState::Stored(tile) => tile.capacity() * size_of::<OctahedralAtlasTexel>(),
+                MidState::Stored(tile) => tile.capacity() * size_of::<u16>(),
                 MidState::Base => 0,
             })
             .sum();
@@ -100,8 +103,29 @@ impl MidPoseStates {
             .sum();
         (bounce
             + depth
-            + self.bounce.capacity() * size_of::<(u32, MidState<Vec<OctahedralAtlasTexel>>)>()
+            + self.bounce.capacity() * size_of::<(u32, MidState<Vec<u16>>)>()
             + self.depth.capacity() * size_of::<(u32, MidState<Vec<[u16; 2]>>)>()) as u64
+    }
+}
+
+/// One pose's raw states, as its own bake leaves them and its memo keeps
+/// them: a terminus's full gather or a mid pose's near-field one. Nothing
+/// in it depends on another pose, so every cross-pose rule (which probes a
+/// mover stores, skipping, the depth floor and range) runs after each pose
+/// resolves.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PoseState {
+    Terminus(PoseStates),
+    Mid(MidPoseStates),
+}
+
+impl PoseState {
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        match self {
+            Self::Terminus(states) => states.heap_bytes(),
+            Self::Mid(states) => states.heap_bytes(),
+        }
     }
 }
 
@@ -115,6 +139,32 @@ pub(crate) struct MoverPoseStates {
 }
 
 impl MoverPoseStates {
+    /// Every pose in path order, at least two: a terminus first and last
+    /// and a mid pose between.
+    pub(crate) fn from_poses(poses: Vec<PoseState>) -> Self {
+        let last = poses.len() - 1;
+        let mut states = Self::default();
+        for (pose, state) in poses.into_iter().enumerate() {
+            match state {
+                PoseState::Terminus(terminus) if pose == 0 || pose == last => {
+                    states.termini[usize::from(pose == last)] = terminus;
+                }
+                PoseState::Mid(mid) if pose != 0 && pose != last => states.mids.push(mid),
+                _ => unreachable!("pose {pose} of {} has the wrong kind", last + 1),
+            }
+        }
+        states
+    }
+
+    /// Every pose in path order, as [`Self::from_poses`] took them.
+    pub(crate) fn into_poses(self) -> Vec<PoseState> {
+        let [first, last] = self.termini;
+        std::iter::once(PoseState::Terminus(first))
+            .chain(self.mids.into_iter().map(PoseState::Mid))
+            .chain(std::iter::once(PoseState::Terminus(last)))
+            .collect()
+    }
+
     fn pose_count(&self) -> usize {
         self.mids.len() + 2
     }
@@ -169,7 +219,7 @@ pub(crate) struct DepthProbe {
     pub(crate) tiles: Vec<[u16; 2]>,
 }
 
-/// One mover's states, as id 57 stores them and its memo keeps them.
+/// One mover's states, as id 57 stores them: its poses reduced.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MoverBounceStates {
     pub(crate) mover_id: u32,
@@ -216,26 +266,10 @@ impl MoverBounceStates {
     }
 
     /// Whether the mover alone carries depth at more probes than the tile
-    /// range `depth_cap`: the build then fails by name, so its states are
+    /// range `depth_cap`: the build then fails by name, so its poses are
     /// never memoized.
     pub(crate) fn depth_past_range(&self, depth_cap: u32) -> bool {
         self.depth.len() > depth_cap as usize
-    }
-
-    /// Keep at most one depth record past the tile range `depth_cap`, as
-    /// [`reduce_poses`] does, and the count it carried. The range rides id
-    /// 34's volume key, so no memo is read under another range: this cuts
-    /// entries written before past-range movers stopped being memoized.
-    pub(crate) fn stop_depth_past_range(&mut self, depth_cap: u32) {
-        if self.depth.len() <= depth_cap as usize + 1 {
-            return;
-        }
-        self.depth.truncate(depth_cap as usize + 1);
-        self.depth.shrink_to_fit();
-        #[cfg(test)]
-        {
-            self.held = crate::live_bytes::hold("mover bounce states", self.heap_bytes());
-        }
     }
 
     /// Replace the stored states with `bounce` and `depth`, the same probes
@@ -281,10 +315,12 @@ impl MoverBounceStates {
     }
 }
 
-/// A tile's RGB, texel by texel: id 27's compact tile.
-fn compact_rgb(tile: &[OctahedralAtlasTexel]) -> impl Iterator<Item = u16> + '_ {
+/// A tile's RGB, texel by texel: id 27's compact tile, the form every
+/// stored bounce state takes from its pose's bake on.
+pub(crate) fn compact_rgb(tile: &[OctahedralAtlasTexel]) -> Vec<u16> {
     tile.iter()
         .flat_map(|texel| [texel.rgba[0], texel.rgba[1], texel.rgba[2]])
+        .collect()
 }
 
 /// Which termini store a bounce state, per probe the termini affect: a
@@ -372,7 +408,7 @@ pub(crate) fn reduce_poses(
         .map(|probe| {
             let stored = stores.get(&probe).copied().unwrap_or([false; 2]);
             let mut marks = Vec::with_capacity(pose_count);
-            let mut texels: Vec<OctahedralAtlasTexel> = Vec::new();
+            let mut tiles: Vec<u16> = Vec::new();
             for pose in 0..pose_count {
                 let state = poses.lookup(
                     pose,
@@ -388,9 +424,8 @@ pub(crate) fn reduce_poses(
                     },
                     |mid| &mid.bounce,
                 );
-                mark(state, &mut marks, &mut texels);
+                mark(state, &mut marks, &mut tiles);
             }
-            let tiles: Vec<u16> = compact_rgb(&texels).collect();
             debug_assert_eq!(
                 tiles.len(),
                 marks.iter().filter(|&&m| m == PoseMark::Stored).count()

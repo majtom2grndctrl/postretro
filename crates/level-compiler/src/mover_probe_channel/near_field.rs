@@ -19,7 +19,6 @@ use crate::surface_radiance::PatchSet;
 #[derive(Debug, Clone)]
 pub(crate) struct NearFieldDomain {
     boxes: Vec<Aabb>,
-    probe_spacing: f32,
 }
 
 impl NearFieldDomain {
@@ -33,10 +32,7 @@ impl NearFieldDomain {
                 max: sweep.max + margin,
             })
             .collect();
-        Self {
-            boxes,
-            probe_spacing,
-        }
+        Self { boxes }
     }
 
     /// Inclusive: a probe on the boundary is inside.
@@ -45,16 +41,6 @@ impl NearFieldDomain {
         self.boxes
             .iter()
             .any(|b| p.cmpge(b.min).all() && p.cmple(b.max).all())
-    }
-
-    /// The widened boxes, in brush-then-segment order, for cache keys.
-    pub(crate) fn boxes(&self) -> &[Aabb] {
-        &self.boxes
-    }
-
-    /// The probe spacing the boxes are widened by, for cache keys.
-    pub(crate) fn probe_spacing(&self) -> f32 {
-        self.probe_spacing
     }
 
     /// The static patches whose centre lies inside the domain, ascending:

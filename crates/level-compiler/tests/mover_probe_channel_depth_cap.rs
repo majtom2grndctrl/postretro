@@ -83,8 +83,8 @@ fn a_lowered_range_trims_id_59_for_mover_tiles_and_a_mover_edit_retrims_warm() {
         warm.logs
     );
     assert!(
-        warm.logs
-            .contains("[cache] mover_probe_bounce miss (1 of 1 mover(s) re-bake)"),
+        warm.logs.contains("[cache] mover_probe_bounce miss (")
+            && warm.logs.contains("re-bake, over 1 of 1 mover(s))"),
         "{}",
         warm.logs
     );

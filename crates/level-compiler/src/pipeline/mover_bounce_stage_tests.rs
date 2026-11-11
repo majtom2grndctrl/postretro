@@ -226,7 +226,8 @@ fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
                 full_hit
                     .logs
                     .iter()
-                    .any(|line| line.contains("mover_probe_bounce hit (1 mover(s))")),
+                    .any(|line| line.contains("mover_probe_bounce hit (")
+                        && line.ends_with("of 1 mover(s))")),
                 "{:?}",
                 full_hit.logs
             );
@@ -241,7 +242,8 @@ fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
                     && memo_miss
                         .logs
                         .iter()
-                        .any(|line| line.contains("mover_probe_bounce miss (1 of 1")),
+                        .any(|line| line.contains("mover_probe_bounce miss (")
+                            && line.ends_with("over 1 of 1 mover(s))")),
                 "an id-34 hit whose door re-bakes: {:?}",
                 memo_miss.logs
             );

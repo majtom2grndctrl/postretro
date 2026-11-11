@@ -11,13 +11,14 @@ use rayon::prelude::*;
 
 use super::domain::{clears_bounce_bars, compact_tile, round_trip_error};
 use super::gather::DomainProbe;
-use super::states::{MidPoseStates, MidState};
+use super::states::{MidPoseStates, MidState, compact_rgb};
 use crate::bake_control::BakeControl;
 use crate::sh_bake::pack_octahedral_irradiance_tile;
 
 /// What a mid pose holds for one near-field probe from its posed gather
 /// `coefficients`, against the probe's id-34 tile `base` and that tile's
-/// round-trip bar: its state where it clears both bars against id 34 (the
+/// round-trip bar: its state, as id 27's compact RGB tile, where it clears
+/// both bars against id 34 (the
 /// round-trip bar and the perceptual floor, as an affected terminus's
 /// must); the base where it stays within them; nothing, so it blends
 /// across, where the pose encloses the probe (owner, 2026-11-10: the
@@ -27,7 +28,7 @@ pub(crate) fn classify(
     enclosed: bool,
     base: &[OctahedralAtlasTexel],
     bar: f32,
-) -> Option<MidState<Vec<OctahedralAtlasTexel>>> {
+) -> Option<MidState<Vec<u16>>> {
     if enclosed {
         return None;
     }
@@ -38,7 +39,7 @@ pub(crate) fn classify(
         DEFAULT_IRRADIANCE_TILE_BORDER,
     );
     Some(if clears_bounce_bars(&tile, base, bar) {
-        MidState::Stored(tile)
+        MidState::Stored(compact_rgb(&tile))
     } else {
         MidState::Base
     })

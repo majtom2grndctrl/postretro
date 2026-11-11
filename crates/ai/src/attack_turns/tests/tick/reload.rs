@@ -286,6 +286,38 @@ fn reload_changing_resolved_draws_releases_holders() {
     assert_eq!(requested(&reg, chipper).as_deref(), Some("chip"));
 }
 
+// A reload that removes a token an attack still draws drops the draw, so the
+// token no longer limits that attack; the author hears it on that reload and
+// on every later one that still lacks the token, naming attack and token.
+#[test]
+fn reload_removing_a_drawn_token_warns_on_each_reload() {
+    let graph = marked_graph(vec![("slam", held_attack(vec![token("heavy")]))]);
+    let mut reg = EntityRegistry::new();
+    commit(
+        &mut reg,
+        json!([declare("melee", 1, 0.0), declare("heavy", 1, 4000.0)]),
+        json!({}),
+    );
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, player_spot());
+    spawn_brute(&mut reg, 0, &graph, "slam_act");
+    let descriptors = vec![brute(&graph)];
+    let capture = postretro_test_log_capture::LogCapture::start();
+    tick_at(&mut reg, &mut runtime, &descriptors, 0);
+    capture.assert_not_logged(log::Level::Warn, "is not a registered attack token");
+
+    let warning = "attack `slam` draws `heavy`, which is not a registered attack token; the draw is ignored, so `heavy` no longer limits this attack";
+    commit(&mut reg, json!([declare("melee", 1, 0.0)]), json!({}));
+    tick_at(&mut reg, &mut runtime, &descriptors, 0);
+    tick_at(&mut reg, &mut runtime, &descriptors, 0);
+    capture.assert_logged_once(log::Level::Warn, warning);
+
+    capture.clear();
+    commit(&mut reg, json!([declare("melee", 1, 0.0)]), json!({}));
+    tick_at(&mut reg, &mut runtime, &descriptors, 0);
+    capture.assert_logged_once(log::Level::Warn, warning);
+}
+
 // B27, compared resolved: a reload that only reorders an attack's draws is
 // no draws change, so its turn stands and `heavy` starts no refresh.
 // Regression: draws compared in list order, so a reorder released holders.

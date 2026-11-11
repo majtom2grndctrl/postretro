@@ -469,7 +469,9 @@ pub(crate) fn install_world_cpu_with_models(
         // Attack pools arbitrate on the host only; a profile the mod does not
         // declare runs as `default` and says so once here.
         if !suppress_host_replicated {
-            postretro_sim::attack_pools::install::warn_undeclared_budget_profiles(&registry);
+            postretro_scripting_core::attack_budget_vocabulary::warn_undeclared_budget_profiles(
+                &registry,
+            );
         }
     }
     // Pool arming is host-only and occurs after every trigger/spawner binding

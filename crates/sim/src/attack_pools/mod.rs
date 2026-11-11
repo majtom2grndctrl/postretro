@@ -2,7 +2,6 @@
 //! See: context/lib/entity_model.md §7c (Attack budget, Attack pools) · context/lib/scripting.md §12
 
 pub mod commands;
-pub mod install;
 
 use postretro_entities::components::attack_pool::{AttackPoolComponent, AttackPoolRequest};
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};

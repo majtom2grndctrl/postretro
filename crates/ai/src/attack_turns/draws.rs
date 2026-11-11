@@ -32,6 +32,10 @@ pub(crate) fn live_behavior<'a>(
     .as_ref()
 }
 
+/// Prefix of the warn-once keys for draws naming no registered token. A newly
+/// committed vocabulary drops them, so each reload warns afresh.
+pub(crate) const ATTACK_DRAW_WARNING: &str = "attack-draw:";
+
 /// Each attack's draws, in `graph`'s attack-name order: the turn identity.
 /// An attack the live behavior still declares resolves from it; otherwise
 /// from `graph`, the brain's spawn-time copy.
@@ -48,7 +52,7 @@ pub(crate) fn resolve_graph_draws(
             let attack = live
                 .and_then(|live| live.attacks.get(name))
                 .unwrap_or(attack);
-            resolve_attack_draws(attack, attack_budgets, warned)
+            resolve_attack_draws(name, attack, attack_budgets, warned)
         })
         .collect()
 }
@@ -56,18 +60,21 @@ pub(crate) fn resolve_graph_draws(
 /// THE draw-resolution chokepoint: what one attack draws, as token ids in the
 /// registered vocabulary. An attack without `draws` draws one `defaultToken`.
 /// Runs at bind time and on a reload, never per tick. A reference naming no
-/// registered token (stale content load validation never saw) warns once and
-/// is left out.
+/// registered token (stale content load validation never saw, such as a reload
+/// that removed the token) is left out, so that token no longer limits the
+/// attack. It warns once per attack and token for each committed vocabulary
+/// (keys under [`ATTACK_DRAW_WARNING`]).
 fn resolve_attack_draws(
+    attack_name: &str,
     attack: &AttackParams,
     vocabulary: &AttackBudgetVocabulary,
     warned: &mut HashSet<String>,
 ) -> ResolvedDraws {
     let resolved: Vec<ResolvedDraw> = vocabulary
         .resolve_draws(attack.draws.as_deref(), |token| {
-            if warned.insert(format!("attack-draw:{token}")) {
+            if warned.insert(format!("{ATTACK_DRAW_WARNING}{attack_name}:{token}")) {
                 log::warn!(
-                    "[AI] an attack draws unregistered attack token `{token}`; the draw is ignored"
+                    "[AI] attack `{attack_name}` draws `{token}`, which is not a registered attack token; the draw is ignored, so `{token}` no longer limits this attack"
                 );
             }
         })

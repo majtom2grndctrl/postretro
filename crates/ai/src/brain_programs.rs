@@ -18,7 +18,7 @@ use postretro_foundation::{
     bind,
 };
 
-use super::attack_turns::{live_behavior, resolve_graph_draws};
+use super::attack_turns::{ATTACK_DRAW_WARNING, live_behavior, resolve_graph_draws};
 use super::brain_scope::BrainScope;
 use super::candidate_scope::CandidateScope;
 
@@ -219,6 +219,9 @@ impl BrainPrograms {
         let budgets_changed = !Arc::ptr_eq(&self.attack_budgets, committed);
         if budgets_changed {
             self.attack_budgets = Arc::clone(committed);
+            // A reload that drops a token warns again for every attack still
+            // drawing it, though an earlier vocabulary already warned.
+            warned.retain(|key| !key.starts_with(ATTACK_DRAW_WARNING));
         }
         self.live.clear();
         for (entity, value) in registry.iter_with_kind(ComponentKind::Brain) {

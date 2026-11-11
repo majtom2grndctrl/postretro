@@ -145,10 +145,10 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
 /// the bars read. Logs one line per mover with mid poses, and hands back
 /// each such mover's counts by id.
 ///
-/// A bake the tile range `tile_cap` cut short fails by name first, before
-/// any state skips ([`refuse_cut_short`]): skipping can bring the count back
-/// within the range while the movers past the stop or the cut have lost
-/// their states.
+/// A bake whose depth passed the tile range `tile_cap` fails by name first,
+/// before any state skips ([`refuse_cut_short`]): skipping can bring the
+/// count back within the range, while movers past a stop or a cut have lost
+/// their states, and the verdict would hang on job order.
 pub(super) fn skip_mid_poses(
     outcome: &mut MoverBounceOutcome,
     movers: &[MapKinematicMover],
@@ -194,9 +194,9 @@ pub(super) fn skip_mid_poses(
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved
 /// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room and
 /// logs its counts once against the shrunk cap. Live tiles alone past the
-/// range fail the build by name. A bake the range cut short has already
-/// failed, before skipping ([`skip_mid_poses`]), so every mover's depth is
-/// whole here and the count exact.
+/// range fail the build by name. A bake past the range has already failed,
+/// before skipping ([`skip_mid_poses`]), so every mover's depth is whole here
+/// and the count exact.
 pub(super) fn finish_bounce_half(
     movers: &[MoverBounceStates],
     base: &OctahedralShVolumeSection,

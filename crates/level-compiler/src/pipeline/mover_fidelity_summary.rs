@@ -88,8 +88,8 @@ fn shown_fidelity(mover: &MoverPoseBounces) -> String {
 
 /// Id 34's recorded bake time T × 2 for the mover's termini, plus T × the
 /// share of static patches its near-field domain holds for each mid pose,
-/// which traces its later bounces over that domain alone. Labelled an estimate; "—" with none recorded, and none for
-/// a mover baking no bounce.
+/// which traces its later bounces over that domain alone. Labelled an
+/// estimate; "—" with none recorded, and none for a mover baking no bounce.
 fn projected_release_time(mover: &MoverPoseBounces, sh_base_bake_time: Option<Duration>) -> String {
     if mover.high_bounces == 0 {
         return "none (light_bounces 0)".to_owned();
@@ -140,9 +140,10 @@ mod tests {
     // bounce-bake time, labelled an estimate: id 34's recorded bake time ×
     // (2 termini + mid poses × the share of static patches each mid pose's
     // domain holds). It is an estimate because it scales one recorded bake
-    // rather than timing the mover's own. Approximate only where what it shows differs from high:
-    // served entirely from `high` entries, or at `light_bounces` 1, it
-    // prints `high`; some pose baked low past 1, `low, approximate`.
+    // rather than timing the mover's own. Approximate only where what it
+    // shows differs from high: served entirely from `high` entries, or at
+    // `light_bounces` 1, it prints `high`; some pose baked low past 1,
+    // `low, approximate`.
     #[test]
     fn each_mover_prints_its_poses_its_shown_fidelity_and_its_projected_release_time() {
         let lines = fidelity_lines(

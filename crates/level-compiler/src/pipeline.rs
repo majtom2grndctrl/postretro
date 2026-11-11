@@ -742,9 +742,9 @@ fn run_after_parsing(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
     );
-    // An authored `light_poses` too large to place, or whose poses alone
-    // pass the working-set budget, fails by the mover's name before
-    // placement allocates for it.
+    // An authored `light_poses` too large to place, or authored counts whose
+    // poses together pass the working-set budget, fail by the movers' names
+    // before placement allocates for them.
     mover_poses.admit_pose_counts(&map_data.kinematic_movers, args.working_set_max_bytes)?;
     mover_poses.place_poses(&map_data.kinematic_movers, sh_config.probe_spacing);
     // Every analysed mover posed at each of its poses, once: the bounce

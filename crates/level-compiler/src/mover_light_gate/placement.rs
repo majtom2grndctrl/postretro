@@ -74,11 +74,14 @@ pub(crate) fn knot(k: u32, last: u32) -> f32 {
     k as f32 / last as f32
 }
 
-/// The least bytes one placed pose of `mover` holds: its knot, its [`Pose`],
-/// and each bounded brush's posed copy with its planes. Every later stage's
-/// per-pose solids, states and payloads come on top, so a count whose poses
-/// alone pass the budget cannot fit the SH base gate's peak.
-fn pose_bytes_floor(mover: &MapKinematicMover) -> u64 {
+/// The least bytes one placed pose of `mover` holds before the SH base gate
+/// prices the channel: its knot, and twice its [`Pose`] with each bounded
+/// brush's posed copy and planes, once as placed and once as the posed
+/// solid's own copy (`mover_probe_channel::PosedSolid`), which resolves for
+/// every pose ahead of the gate. A floor: the solid's sides and geometry, the
+/// bounce plan's per-pose scenes, and every later state and payload come on
+/// top, so a count whose floor passes the budget cannot fit the gate's peak.
+pub(super) fn pose_bytes_floor(mover: &MapKinematicMover) -> u64 {
     let brushes: u64 = mover
         .brush_volumes
         .iter()
@@ -88,22 +91,33 @@ fn pose_bytes_floor(mover: &MapKinematicMover) -> u64 {
                 + brush.planes.len() * std::mem::size_of::<(DVec3, f64)>()) as u64
         })
         .sum();
-    (std::mem::size_of::<f32>() + std::mem::size_of::<Pose>()) as u64 + brushes
+    let pose = std::mem::size_of::<Pose>() as u64 + brushes;
+    std::mem::size_of::<f32>() as u64 + 2 * pose
+}
+
+/// One authored `light_poses` count and its floor, for the refusal's list.
+struct AuthoredFloor<'a> {
+    label: &'a str,
+    count: u32,
+    bytes: u64,
 }
 
 impl MoverPoses {
-    /// Refuse an authored `light_poses` placement cannot honour, naming the
-    /// mover and the count, before [`Self::place_poses`] allocates anything
-    /// in proportion to it: a count past [`MAX_POSES`], or one whose poses
-    /// alone, priced at their least, pass `working_set_max_bytes` (the SH
-    /// base gate's budget, refused in its words). Never places fewer poses.
-    /// An automatic count is at most [`AUTO_POSE_CAP`] and is priced by the
-    /// SH base gate with the rest of the channel.
+    /// Refuse authored `light_poses` counts placement cannot honour, naming
+    /// the movers, before [`Self::place_poses`] allocates anything in
+    /// proportion to them: a count past [`MAX_POSES`], or counts whose poses
+    /// alone, priced at their floor and summed over every authored mover,
+    /// pass `working_set_max_bytes`. Every mover's poses live together until
+    /// the gate, so the floors sum; the refusal is the SH base gate's, in its
+    /// words, and lists each contributing mover, largest first. Never places
+    /// fewer poses. An automatic count is at most [`AUTO_POSE_CAP`] and is
+    /// priced by the SH base gate with the rest of the channel.
     pub(crate) fn admit_pose_counts(
         &self,
         movers: &[MapKinematicMover],
         working_set_max_bytes: u64,
     ) -> anyhow::Result<()> {
+        let mut floors: Vec<AuthoredFloor<'_>> = Vec::new();
         for analysed in &self.analysed {
             let Some(mover) = movers.iter().find(|m| m.mover_id == analysed.mover_id) else {
                 continue;
@@ -119,18 +133,36 @@ impl MoverPoses {
                     analysed.label,
                 );
             }
-            let floor = pose_bytes_floor(mover).saturating_mul(u64::from(count));
-            if floor > working_set_max_bytes {
-                anyhow::bail!(
-                    "SH base working-set gate refused before patch shading: estimated peak at \
-                     least {floor} bytes exceeds budget {working_set_max_bytes} bytes, from the \
-                     {count} poses of {} alone (`light_poses`). Lower `light_poses`, or raise \
-                     `--working-set-max-size`",
-                    analysed.label,
-                );
-            }
+            floors.push(AuthoredFloor {
+                label: &analysed.label,
+                count,
+                bytes: pose_bytes_floor(mover).saturating_mul(u64::from(count)),
+            });
         }
-        Ok(())
+        let total = floors
+            .iter()
+            .fold(0u64, |sum, floor| sum.saturating_add(floor.bytes));
+        if total <= working_set_max_bytes {
+            return Ok(());
+        }
+        // Stable, so equal floors keep mover-id order.
+        floors.sort_by_key(|floor| std::cmp::Reverse(floor.bytes));
+        let named = floors
+            .iter()
+            .map(|floor| {
+                format!(
+                    "{} ({} poses, at least {} bytes)",
+                    floor.label, floor.count, floor.bytes
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "SH base working-set gate refused before patch shading: estimated peak at least \
+             {total} bytes exceeds budget {working_set_max_bytes} bytes, from the authored \
+             `light_poses` poses alone: {named}. Lower `light_poses`, or raise \
+             `--working-set-max-size`"
+        );
     }
 
     /// Add each analysed mover's mid poses between its termini, at even arc

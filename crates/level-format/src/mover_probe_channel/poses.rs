@@ -215,9 +215,9 @@ impl MoverDepthRecord {
 /// probes the pose's brushes enclose. Enclosure is geometric, a function of
 /// (mover, probe, pose) alone, so it is recorded once per (cell, mover)
 /// rather than per direct record. Direct compose blends across a marked
-/// pose, between the nearest poses not marked across around t′, exactly as bounce
-/// blends across an unmarked mid pose; the `q` stored there is 255 and never
-/// read. Termini are never marked: an enclosing terminus reads the base.
+/// pose, between the nearest poses not marked across around t′, exactly as
+/// bounce blends across an unmarked mid pose; the `q` stored there is 255 and
+/// never read. Termini are never marked: an enclosing terminus reads the base.
 ///
 /// Storage sparsity only: a mark never flags a probe occluded, zeroes a
 /// weight or excludes a probe. Compose still blends between stored states.

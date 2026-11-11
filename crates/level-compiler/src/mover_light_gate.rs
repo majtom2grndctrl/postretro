@@ -25,6 +25,7 @@ pub(crate) use cache::{
 };
 pub(crate) use lights::{GateLight, GateLights};
 pub(crate) use mid_pose_only::MidPoseOnlyLights;
+pub(crate) use placement::MAX_POSES;
 #[cfg(test)]
 pub(crate) use pose::Terminus;
 pub(crate) use pose::{AnalysedMover, MoverPoses, Pose};

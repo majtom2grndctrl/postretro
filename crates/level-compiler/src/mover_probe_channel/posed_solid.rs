@@ -145,9 +145,9 @@ impl PosedSolid {
     /// at [`enclosure_inset`], so every lifted gather ray from the probe
     /// starts in solid and its depth is the dark tile. A terminus that
     /// encloses a probe stores no value state for it and reads the base; a
-    /// mid pose blends across. A probe on a face or less than the inset inside it is
-    /// not enclosed: its rays keep the per-ray rule, and those whose lift
-    /// escapes read past the face.
+    /// mid pose blends across. A probe on a face or less than the inset inside
+    /// it is not enclosed: its rays keep the per-ray rule, and those whose
+    /// lift escapes read past the face.
     ///
     /// The inset holds inside one brush. Where the mover's brushes touch, a
     /// probe within the inset of the seam is not enclosed even though each

@@ -175,34 +175,38 @@ pub(crate) struct MoverTileRangeExceeded {
     pub(crate) cap: u32,
 }
 
-/// Refuse a bake the tile range cut short: one that `stopped` before every
-/// mover ran, or whose range cut a mover's depth records
-/// ([`super::states::reduce_poses`]). The movers from the stop on hold no
-/// states, and a cut mover's records past the range are gone, so the build
-/// fails by name whatever count would remain. Judged before any mid pose
-/// skips: skipping drops depth records and can bring the count back within
-/// the range, and the lost states would then ship as if the movers changed
-/// nothing. The count is the one the bake saw, past the range by
-/// construction: the bake stops only once more distinct probes than the
-/// range carry depth, and a cut keeps one record past it.
+/// Refuse a bake whose depth passed the tile range, judged on the count the
+/// bake saw before any mid pose skips: the distinct probes the movers' depth
+/// records carry, past the range. That covers a bake that `stopped` before
+/// every mover ran and one whose range cut a mover's records
+/// ([`super::states::reduce_poses`]), where the movers from the stop on hold
+/// no states and a cut mover's records past the range are gone, and a mover
+/// that keeps exactly one record past it, neither stopped nor cut. Skipping
+/// drops depth records and can bring the count back within the range, so a
+/// verdict after it would hang on job order: the last job could pass where
+/// any earlier one stops the bake. The count is exact unless a stop or a cut
+/// made it a lower bound ([`CarriedDepth::new`]).
 pub(crate) fn refuse_cut_short(
     movers: &[MoverBounceStates],
     stopped: bool,
     tile_cap: u32,
 ) -> Result<(), MoverTileRangeExceeded> {
-    if !stopped && !movers.iter().any(MoverBounceStates::depth_cut) {
-        return Ok(());
-    }
+    let cap = effective_tile_cap(tile_cap);
     let live = movers
         .iter()
         .flat_map(|states| states.depth.iter().map(|probe| probe.probe))
         .collect::<BTreeSet<_>>()
         .len();
+    let cut = movers.iter().any(MoverBounceStates::depth_cut);
+    if !stopped && !cut && live <= cap as usize {
+        return Ok(());
+    }
     let carried = CarriedDepth::new(live, movers, stopped);
-    let cap = effective_tile_cap(tile_cap);
+    // The bake stops only once more distinct probes than the range carry
+    // depth, and a cut keeps one record past it.
     debug_assert!(
         carried.probes > cap as usize,
-        "a bake cut short saw {} probes carrying depth, within the {cap}-tile range",
+        "a refused bake saw {} probes carrying depth, within the {cap}-tile range",
         carried.probes
     );
     Err(MoverTileRangeExceeded { carried, cap })

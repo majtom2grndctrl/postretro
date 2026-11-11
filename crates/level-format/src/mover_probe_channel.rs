@@ -194,10 +194,9 @@ pub struct MoverDirectRecord {
     /// cell's valid probes, set exactly where some mover's `q` is below 255
     /// at some pose. A probe outside it stores nothing because every mover
     /// leaves the light's term there unchanged (q = 255, i.e. 1.0, at every
-    /// pose), so it
-    /// composes exactly as with no section. It is never a runtime exclusion
-    /// or occlusion flag: mover state never marks a probe occluded, forces a
-    /// probe weight to zero or drops a probe from the blend.
+    /// pose), so it composes exactly as with no section. It is never a runtime
+    /// exclusion or occlusion flag: mover state never marks a probe occluded,
+    /// forces a probe weight to zero or drops a probe from the blend.
     pub probe_mask: u64,
 }
 

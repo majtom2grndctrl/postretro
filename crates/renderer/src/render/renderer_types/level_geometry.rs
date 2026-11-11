@@ -97,9 +97,12 @@ pub struct LevelGeometry<'a> {
     pub animated_billboard_direct_scatter_delta_volumes: Option<
         &'a postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection,
     >,
-    /// Id 57: what each mover changes in the probe data at each of its poses (termini plus mid poses).
-    /// Its indexes, records, masks and mover entries are whole-resident in
-    /// either SH storage mode; a streamed payload arrives with id 50's cells.
+    /// Id 57: what each mover changes in the probe data at each of its poses
+    /// (termini plus mid poses). Its cell indexes, direct records and their
+    /// probe masks, mover entries, across marks, mover records, bounce entry
+    /// masks and depth records are whole-resident in either SH storage mode;
+    /// only the q, own-tile and bounce-tile payloads stream, arriving with
+    /// id 50's cells.
     /// Namespace-0 light indices name `lights`' order, as
     /// `entity_shadow_lights` does, so a record finds its selection slot.
     pub mover_probe_channel:

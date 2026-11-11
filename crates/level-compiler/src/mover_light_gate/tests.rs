@@ -957,7 +957,7 @@ fn the_gate_anchors_and_lifts_each_texel_where_the_bake_walk_does() {
 
 // ---- Mid-travel pose placement (mover probe channel) ----
 
-use super::placement::{AUTO_POSE_CAP, MAX_POSES, even_knots, knot, pose_count};
+use super::placement::{AUTO_POSE_CAP, MAX_POSES, even_knots, knot, pose_bytes_floor, pose_count};
 use crate::mover_probe_channel::NearFieldDomain;
 use postretro_physics::kinematic_mover::MoverPathArcLengths;
 use postretro_test_log_capture::LogCapture;
@@ -1206,4 +1206,105 @@ fn an_authored_count_whose_poses_alone_pass_the_budget_fails_the_sh_base_gate_by
     automatic
         .admit_pose_counts(std::slice::from_ref(&cube), 0)
         .expect("an automatic count is not refused here");
+}
+
+#[test]
+fn a_pose_floor_counts_the_placed_pose_and_its_posed_solid_copy() {
+    let (_, cube) = unplaced_cube_on_path(&[DVec3::ZERO, DVec3::X], Some(2));
+    let brush =
+        (std::mem::size_of::<PosedBrush>() + 6 * std::mem::size_of::<(DVec3, f64)>()) as u64;
+    let pose = std::mem::size_of::<super::pose::Pose>() as u64 + brush;
+    assert_eq!(
+        pose_bytes_floor(&cube),
+        std::mem::size_of::<f32>() as u64 + 2 * pose,
+    );
+}
+
+// Regression: each mover's authored count was checked alone against the
+// whole budget, so several large counts together passed and then ran out of
+// memory before any named error.
+#[test]
+fn authored_counts_that_each_fit_alone_but_not_together_fail_naming_every_mover() {
+    let count = 100;
+    let names = ["lift_a", "lift_b", "lift_c"];
+    let movers: Vec<MapKinematicMover> = names
+        .iter()
+        .enumerate()
+        .map(|(id, name)| {
+            let mut cube = mover(
+                id as u32,
+                name,
+                "w0",
+                vec![box_brush(DVec3::ZERO, DVec3::ONE)],
+            );
+            cube.light_poses = Some(count);
+            cube
+        })
+        .collect();
+    let waypoints = [
+        waypoint("w0", "w1", DVec3::ZERO),
+        waypoint("w1", "", DVec3::new(3.0, 0.0, 0.0)),
+    ];
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    assert_eq!(poses.analysed.len(), 3);
+    let each = pose_bytes_floor(&movers[0]) * u64::from(count);
+    // Room for two movers' floors and a half, so any one alone fits.
+    let budget = each * 5 / 2;
+    for single in &movers {
+        poses
+            .admit_pose_counts(std::slice::from_ref(single), budget)
+            .expect("one mover's poses fit the budget alone");
+    }
+    poses
+        .admit_pose_counts(&movers[..2], budget)
+        .expect("two movers' poses fit together");
+    let error = poses
+        .admit_pose_counts(&movers, budget)
+        .expect_err("three movers' poses together pass the budget")
+        .to_string();
+    let total = (each * 3).to_string();
+    let budget_named = format!("exceeds budget {budget} bytes");
+    let mut wanted = vec![
+        "SH base working-set gate refused before patch shading: estimated peak at least",
+        total.as_str(),
+        budget_named.as_str(),
+        "`light_poses`",
+        "--working-set-max-size",
+    ];
+    let labels: Vec<String> = names
+        .iter()
+        .map(|name| format!("kinematic_mover '{name}' ({count} poses"))
+        .collect();
+    wanted.extend(labels.iter().map(String::as_str));
+    for named in wanted {
+        assert!(error.contains(named), "{named:?} in {error}");
+    }
+    // Equal floors keep mover-id order.
+    let first = error.find("lift_a").expect("lift_a named");
+    let last = error.find("lift_c").expect("lift_c named");
+    assert!(first < last, "{error}");
+}
+
+#[test]
+fn the_largest_authored_floor_is_named_first() {
+    let waypoints = [
+        waypoint("w0", "w1", DVec3::ZERO),
+        waypoint("w1", "", DVec3::new(3.0, 0.0, 0.0)),
+    ];
+    let mut small = mover(0, "small", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    small.light_poses = Some(10);
+    let mut large = mover(1, "large", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    large.light_poses = Some(1000);
+    // An automatic mover contributes no floor and is not named.
+    let automatic = mover(2, "auto", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    let movers = [small, large, automatic];
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    let error = poses
+        .admit_pose_counts(&movers, 0)
+        .expect_err("any authored floor passes a zero budget")
+        .to_string();
+    let large_at = error.find("'large'").expect("large named");
+    let small_at = error.find("'small'").expect("small named");
+    assert!(large_at < small_at, "{error}");
+    assert!(!error.contains("'auto'"), "{error}");
 }

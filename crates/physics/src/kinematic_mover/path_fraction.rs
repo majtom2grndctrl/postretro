@@ -1,6 +1,7 @@
 //! A mover's travel fraction: how far along its waypoint path its phase is, by
 //! arc length. Mover state lighting bakes states at N poses along the path,
-//! placed and blended by this fraction, so every peer derives it from the replicated phase alone.
+//! placed and blended by this fraction, so every peer derives it from the
+//! replicated phase alone.
 //! See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
 use glam::Vec3;

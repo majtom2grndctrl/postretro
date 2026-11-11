@@ -4,7 +4,11 @@
 
 use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 
-use super::{CarriedDepth, MoverTileRangeExceeded, reserve_mover_tiles};
+use postretro_level_format::mover_probe_channel::PoseMark;
+use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
+
+use super::{CarriedDepth, MoverTileRangeExceeded, refuse_cut_short, reserve_mover_tiles};
+use crate::mover_probe_channel::{DepthProbe, MoverBounceStates};
 use crate::sh_bake::depth_tiles_test_fixtures::DepthTileFixture;
 
 /// The static-door closet: id 59 tiles its door probes.
@@ -101,4 +105,58 @@ fn the_tile_range_holds_live_tiles_first_and_refuses_them_past_it_by_name() {
         refused, full.depth_tiles,
         "a refused reservation changes nothing"
     );
+}
+
+/// A three-pose mover whose depth records store at its mid pose alone, one
+/// per probe in `probes`, held whole.
+fn mid_pose_depth(mover_id: u32, probes: std::ops::Range<u32>) -> MoverBounceStates {
+    let depth = probes
+        .map(|probe| DepthProbe {
+            probe,
+            marks: vec![PoseMark::Unmarked, PoseMark::Stored, PoseMark::Unmarked],
+            tiles: vec![[0u16; 2]; PROBE_DEPTH_TILE_TEXELS],
+        })
+        .collect();
+    MoverBounceStates::new(mover_id, 3, Vec::new(), depth)
+}
+
+// Regression: a mover carrying exactly one depth record past the range, the
+// last job, was neither stopped nor cut, so its skips could bring the count
+// back within the range and the build passed, where any later job would
+// have stopped the bake and refused it.
+#[test]
+fn depth_past_the_tile_range_is_refused_before_skips_whatever_the_job_order() {
+    let cap = 3u32;
+    let one_past = [mid_pose_depth(0, 0..cap + 1)];
+    assert!(
+        !one_past[0].depth_cut(),
+        "one record past the range is no cut"
+    );
+    let error = refuse_cut_short(&one_past, false, cap).expect_err("one record past the range");
+    let carried = CarriedDepth::exact(cap as usize + 1);
+    assert_eq!(error, MoverTileRangeExceeded { carried, cap });
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!(": {} probes carry", cap + 1)) && !message.contains("at least"),
+        "the whole count, exact: {message}"
+    );
+
+    // Two movers each within the range whose union passes it: refused with
+    // the union, exact, in either job order.
+    let first = mid_pose_depth(0, 0..2);
+    let second = mid_pose_depth(1, 2..4);
+    for movers in [[first.clone(), second.clone()], [second, first]] {
+        let error = refuse_cut_short(&movers, false, cap).expect_err("the union passes the range");
+        assert_eq!(
+            error,
+            MoverTileRangeExceeded {
+                carried: CarriedDepth::exact(4),
+                cap
+            }
+        );
+    }
+
+    // Overlapping movers whose union fills the range exactly pass.
+    let at_range = [mid_pose_depth(0, 0..cap), mid_pose_depth(1, 0..cap)];
+    refuse_cut_short(&at_range, false, cap).expect("the union fills the range exactly");
 }

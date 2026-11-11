@@ -111,7 +111,7 @@ pub(super) fn build_cluster_payload_spool(
     let plan = ChunkPlan::new(
         validation_inputs,
         sparse_sources,
-        MoverRows::of(emission.mover_channel),
+        MoverRows::of(emission.mover_channel)?,
     )?;
     let storage_demand = plan.storage_demand()?;
     let mut spool = create_spool(output)?;

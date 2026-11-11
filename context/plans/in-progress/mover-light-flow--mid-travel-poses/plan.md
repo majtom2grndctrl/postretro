@@ -155,8 +155,17 @@ Fix list:
 - 🟡 fixed: a bake the tile range stopped or cut fails by name before any skip (`refuse_cut_short`; `a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips`).
 - 🟡 fixed: authored `light_poses` past 16,777,217 (knot precision) or whose poses alone pass `--working-set-max-size` is refused by name before placement allocates (`MoverPoses::admit_pose_counts`); docs and step 12 updated.
 - 🟡 fixed: the mover-absent memo is marked used on warm volume hits that don't read it (`a_volume_hit_that_reads_no_absent_bounces_still_marks_their_memo_used`).
-- 🟡 fixed: stale contract comments (enclosed mid pose blends across; N poses), owner/date and plan tags in code.
+- 🟡 fixed: stale contract comments (enclosed mid pose blends across; N poses), and the owner/date and plan tags the panel named (the "(owner, date)" pattern elsewhere is a repo-wide convention and stays).
 - 🟢 fixed: mid-pose key folds domain patches only past one bounce (`mover_probe_bounce` v11); id-34 bake time excludes mover-cache I/O; progress per slot; `debug_assert` that across marks hold no bounce state; −0.0 first knot refused; subnormal ramp span reads 1 past its end in `ramped_knot` and the runtime's `ramped_travel_fraction`; WGSL bounce field constants; GPU test `direct_blends_across_marked_poses_for_probes_in_the_high_mask_word`.
 - C10 frame bar per AC 3 restated: bar = max(stripped gap + 2, parent-build gap + 4); setpiece st3 mask 8 reads 21 against 22 (parent 18); needs `POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN`.
 - Skipped: splitting test files already past 800 lines before this branch (churn on files only grown here); the renderer `knots.rs` pass-through (its tests call it); remaining AC tags in test comments (a repo-wide convention).
 - Gates: fmt; clippy `-D warnings` (with and without `--features postretro/capture`); full `cargo test --workspace` (GPU) 15,820 passed, 0 failed; release check; crate graph; parity 3/3; AC 7/8 references 2/2; C10 frames pass.
+
+### Round 2 (review of 5aa17c2a4..25b0e0277, then fixes)
+
+Panel: correctness tracer + adversarial tester (opus) + hygiene (sonnet), read-only. No 🔴.
+- 🟡 fixed: `light_poses` admission sums every authored mover's floor (knot plus the placed pose and its posed-solid copy) against `--working-set-max-size` and names every contributor, largest first; parse refuses counts past 16,777,217 citing the reason (one "too large" docs row).
+- 🟡 fixed (rule made order-independent): the tile range is judged before skips on the distinct probes the movers carry; a mover exactly one past the range is refused whatever the job order, as before skipping existed. Owner may prefer judging after skips — flagged in the report.
+- 🟢 fixed: compiler refuses a streamed id-57 row past u32 by name before packing (`mover_rows.rs`); `light_ramp_start "-0"` stored as +0.0; comment rewraps; `level_geometry.rs` residency list.
+- Noted, unchanged: the recorded id-34 time includes layer-cache reads on a volume miss with cached layers (the projection is labelled an estimate).
+- Gates: fmt; clippy `-D warnings` (workspace, and `postretro --features capture`); full `cargo test --workspace` (GPU) 15,827 passed, 0 failed; parity 3/3; AC 7/8 references 2/2; release check; crate graph.

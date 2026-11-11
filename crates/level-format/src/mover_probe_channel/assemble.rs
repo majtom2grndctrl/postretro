@@ -76,8 +76,9 @@ impl MoverProbeChannelSection {
     /// exactly its movers' `q < 255` probes, every bounce, depth and
     /// visibility entry holds one state per pose of its mover's record, an
     /// across mark must name a probe the mover's records or bounce entry name
-    /// at its cell (q 255 and no bounce state at the marked pose), and no record, mover entry, across entry or
-    /// bounce entry may repeat. Decoding refuses a section that breaks them.
+    /// at its cell (q 255 and no bounce state at the marked pose), and no
+    /// record, mover entry, across entry or bounce entry may repeat. Decoding
+    /// refuses a section that breaks them.
     ///
     /// # Panics
     /// If a producer invariant is broken: an across entry whose cell holds

@@ -1069,9 +1069,10 @@ fn squeezed_door(text: String) -> String {
 // movers past the stop and the cut records silently losing their states.
 // Every depth record here stores at the door's mid poses alone, which its
 // ramp squeezes out: skipping drops them all. Past a range of 3, a bake that
-// stopped before a later mover fails by name with a lower bound, and one
-// whose range cut the door's records fails with the door's whole count,
-// exact; both before any record skips.
+// stopped before a later mover fails by name with a lower bound; one whose
+// range cut the door's records, and the last job keeping exactly one record
+// past the range, fail with the door's whole count, exact; all before any
+// record skips.
 #[test]
 fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
     use postretro_level_format::mover_probe_channel::PoseMark;
@@ -1150,6 +1151,26 @@ fn a_bake_cut_short_past_the_tile_range_fails_by_name_before_its_skips() {
         assert!(
             whole.movers[0].depth.is_empty() && whole.movers[0].depth_carried == 0,
             "skipping alone drops every record the squeezed poses store"
+        );
+
+        // Exactly one record past the range, the last job: neither stopped
+        // nor cut, and its skips would bring it under, yet it fails with its
+        // whole count, exact, as any earlier job would have.
+        let mut one_past = outcome(false, cap as usize + 1);
+        let error = skip(&mut one_past, cap)
+            .expect_err("one record past the range fails")
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "MoverProbeChannel (id 57): {} probes carry closed-pose depth",
+                cap + 1
+            )),
+            "the door's whole count, exact: {error}"
+        );
+        assert_eq!(
+            one_past.movers[0].depth.len(),
+            cap as usize + 1,
+            "no record skips before the refusal"
         );
 
         let mut stopped = outcome(true, cap as usize + 1);

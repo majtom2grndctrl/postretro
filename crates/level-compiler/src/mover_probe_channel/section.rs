@@ -1,7 +1,8 @@
 // Assembling id 57 from the channel's bakes: one term record per (cell,
 // light) with its probe mask and, where ids 41 and 45 as emitted hold no
 // per-probe entry, its own tile once; each gating mover's visibility under
-// it; the bake-only roster; and the per-mover records of ramp and knots.
+// it; per (cell, mover) its across marks; the bake-only roster; and the
+// per-mover records of ramp and knots.
 // See: context/lib/build_pipeline.md §PRL section IDs, §Compiler pipeline step 12
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
@@ -178,7 +179,9 @@ impl EmittedDirectEntries<'_> {
 /// Id 57 holding `direct`'s entries and `bounce`'s blocks, or `None` when
 /// there are none: the section is never written empty. Each light's entries
 /// at one cell become one term record, masked to the probes where some
-/// mover's `q` is below 255 at some pose. `own_tile(cell, namespace, light)`
+/// mover's `q` is below 255 at some pose. Each (cell, mover) the records or
+/// bounce entries name carries its across marks: the named probes each mid
+/// pose encloses, which direct compose blends across. `own_tile(cell, namespace, light)`
 /// says whether the record carries its light's tile at those probes; a
 /// namespace that requires one always does. `gated(namespace)` says whether
 /// that namespace's records gate anything once loaded; a light in one that
@@ -220,10 +223,12 @@ pub(crate) fn channel_section(
         part.record.light_index =
             bake_only_roster.wire_index(part.record.namespace, part.record.light_index);
     }
+    let across = direct.enclosed.parts(&records, &bounce.bounce, cells);
     let mut section = MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
             affinity_dims: cells.affinity_dims,
             direct: records,
+            across,
             bounce: bounce.bounce.clone(),
             depth: bounce.depth.clone(),
         },

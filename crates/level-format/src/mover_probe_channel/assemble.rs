@@ -1,12 +1,12 @@
-// MoverProbeChannel (id 57) assembly: lay a producer's records, bounce
-// entries and depth records out in wire order over the sparse cell list,
-// with a mover record for every mover they name.
+// MoverProbeChannel (id 57) assembly: lay a producer's records, across
+// marks, bounce entries and depth records out in wire order over the sparse
+// cell list, with a mover record for every mover they name.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverChannelCell, MoverDepthRecord,
-    MoverDirectRecord, MoverPayloadPlacement, MoverProbeChannelSection, MoverRecord,
-    bounce_entry_f16_count,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverAcrossEntry, MoverBounceEntry, MoverChannelCell,
+    MoverDepthRecord, MoverDirectRecord, MoverPayloadPlacement, MoverProbeChannelSection,
+    MoverRecord, bounce_entry_f16_count,
 };
 use crate::delta_sh_volumes::AFFINITY_FACTOR;
 use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
@@ -33,6 +33,17 @@ pub struct BounceEntryParts {
     pub tiles: Vec<u16>,
 }
 
+/// One mover's across marks at one cell: per mid pose (1 to N − 2), the
+/// probes that pose encloses. Only a (cell, mover) pair with some mark, at
+/// a cell a direct record or bounce entry lists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcrossEntryParts {
+    /// Dense affinity cell index.
+    pub cell: u32,
+    pub mover_id: u32,
+    pub mid_poses: Vec<u64>,
+}
+
 /// One depth record and its stored tiles in pose order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DepthRecordParts {
@@ -47,6 +58,7 @@ pub struct DepthRecordParts {
 pub struct MoverProbeChannelParts {
     pub affinity_dims: [u32; 3],
     pub direct: Vec<DirectRecordParts>,
+    pub across: Vec<AcrossEntryParts>,
     pub bounce: Vec<BounceEntryParts>,
     pub depth: Vec<DepthRecordParts>,
 }
@@ -54,15 +66,18 @@ pub struct MoverProbeChannelParts {
 impl MoverProbeChannelSection {
     /// Lay `parts` out in wire order: cells ascending, records by
     /// (namespace, light) within a cell, movers by id within a record,
-    /// bounce entries by mover, depth records by (mover, probe). Every cell
-    /// a record or bounce entry names is listed, with `valid_probe_mask`'s
-    /// mask; `mover_record` gives each named mover's ramp and knots. `None`
-    /// when no block holds anything: the section is never written empty.
+    /// bounce entries by mover, across entries by (cell, mover), depth
+    /// records by (mover, probe). Every cell a record or bounce entry names
+    /// is listed, with `valid_probe_mask`'s mask; `mover_record` gives each
+    /// named mover's ramp and knots. `None` when no block holds anything:
+    /// the section is never written empty.
     ///
     /// The canonical content is the producer's: each record's mask must be
     /// exactly its movers' `q < 255` probes, every entry must store per pose
-    /// of its mover's record, and no record, mover entry or bounce entry may
-    /// repeat. Decoding refuses a section that breaks them.
+    /// of its mover's record, an across mark must name a probe the mover's
+    /// records or bounce entry name at its cell (q 255 and no bounce state
+    /// at the marked pose), and no record, mover entry, across entry or
+    /// bounce entry may repeat. Decoding refuses a section that breaks them.
     pub fn assemble<E>(
         parts: MoverProbeChannelParts,
         valid_probe_mask: impl Fn(u32) -> u64,
@@ -71,6 +86,7 @@ impl MoverProbeChannelSection {
         let MoverProbeChannelParts {
             affinity_dims,
             mut direct,
+            across,
             mut bounce,
             mut depth,
         } = parts;
@@ -107,6 +123,7 @@ impl MoverProbeChannelSection {
             direct_records: Vec::with_capacity(direct.len()),
             mover_offsets: vec![0],
             direct_movers: Vec::new(),
+            across_entries: Vec::with_capacity(across.len()),
             visibility: Vec::new(),
             own_tiles: Vec::new(),
             bounce_entries: Vec::with_capacity(bounce.len()),
@@ -154,6 +171,24 @@ impl MoverProbeChannelSection {
             section.own_tiles.extend_from_slice(&part.own_tiles);
             section.direct_records.push(part.record);
         }
+        for part in across {
+            let listed = listed
+                .binary_search(&part.cell)
+                .expect("an across entry's cell holds a direct record or bounce entry");
+            debug_assert_eq!(
+                part.mid_poses.len() + 2,
+                section.pose_count_of(part.mover_id),
+                "one mask per mid pose of the mover"
+            );
+            section.across_entries.push(MoverAcrossEntry {
+                listed: listed as u32,
+                mover_id: part.mover_id,
+                mid_poses: part.mid_poses,
+            });
+        }
+        section
+            .across_entries
+            .sort_by_key(MoverAcrossEntry::order_key);
         for part in bounce {
             debug_assert_eq!(part.tiles.len(), bounce_entry_f16_count(&part.entry));
             debug_assert_eq!(

@@ -133,6 +133,7 @@ fn channel_section(bounces: &[Bounce], streamed: bool) -> MoverProbeChannelSecti
     let parts = MoverProbeChannelParts {
         affinity_dims: [1, 1, 1],
         direct: Vec::new(),
+        across: Vec::new(),
         bounce: bounces
             .iter()
             .map(|bounce| BounceEntryParts {
@@ -180,6 +181,7 @@ fn posed_section(bounces: &[PosedBounce]) -> MoverProbeChannelSection {
     let parts = MoverProbeChannelParts {
         affinity_dims: [1, 1, 1],
         direct: Vec::new(),
+        across: Vec::new(),
         bounce: bounces
             .iter()
             .map(|bounce| BounceEntryParts {

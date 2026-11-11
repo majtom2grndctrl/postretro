@@ -12,8 +12,8 @@
 // animated light 0.125 × base colour red 2.0.
 
 use postretro_level_format::mover_probe_channel::{
-    DirectRecordParts, MoverDirectRecord, MoverLightNamespace, MoverProbeChannelParts,
-    MoverProbeChannelSection, MoverRecord,
+    AcrossEntryParts, DirectRecordParts, MoverDirectRecord, MoverLightNamespace,
+    MoverProbeChannelParts, MoverProbeChannelSection, MoverRecord,
 };
 use postretro_render_cpu::frame_uniforms::{LightTermMask, UNIFORM_SIZE};
 use wgpu::util::DeviceExt;
@@ -589,6 +589,14 @@ type PosedGate = (u32, (f32, f32), Vec<f32>, Vec<u8>);
 
 /// The selected light at probe 0, its term from id 41, gated by `movers`.
 fn posed_light(movers: &[PosedGate]) -> MoverProbeChannelSection {
+    posed_light_across(movers, &[])
+}
+
+/// [`posed_light`] with across marks: per (mover, its mid-pose masks).
+fn posed_light_across(
+    movers: &[PosedGate],
+    across: &[(u32, Vec<u64>)],
+) -> MoverProbeChannelSection {
     MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
             affinity_dims: [1, 1, 1],
@@ -606,6 +614,14 @@ fn posed_light(movers: &[PosedGate]) -> MoverProbeChannelSection {
                     .collect(),
                 own_tiles: Vec::new(),
             }],
+            across: across
+                .iter()
+                .map(|(mover_id, mid_poses)| AcrossEntryParts {
+                    cell: 0,
+                    mover_id: *mover_id,
+                    mid_poses: mid_poses.clone(),
+                })
+                .collect(),
             bounce: Vec::new(),
             depth: Vec::new(),
         },
@@ -666,6 +682,77 @@ fn piecewise_direct_reads_each_poses_q_and_lerps_between() {
         out,
         "out and back to one t′ composes alike"
     );
+}
+
+/// AC 12 (compose half): a mid pose the across marks name for the probe
+/// encloses it and is never read: direct blends between the defined poses
+/// around it, exact at each defined knot, as bounce blends across an
+/// unmarked pose. Under ramp (0.3, 1) a defined neighbour of the marked pose
+/// is squeezed onto t′ 0, so the blend runs from the first pose. A second
+/// mover on the light, unmarked, still reads its own poses.
+#[test]
+fn direct_blends_across_a_pose_the_across_marks_name() {
+    let Some(ctx) = gpu("direct_blends_across_a_pose_the_across_marks_name") else {
+        return;
+    };
+    let byte = |q: u8| f32::from(q) / 255.0;
+    // Mover 7: pose 1 (t′ 0.25) encloses probe 0 and stores 255, never read.
+    let q7 = [0u8, 255, 51, 204];
+    let section = posed_light_across(
+        &[(7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0], q7.to_vec())],
+        &[(7, vec![0b1, 0])],
+    );
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    for (t, expected) in [
+        (0.0, byte(0)),
+        (0.125, byte(51) * 0.25),
+        (0.25, byte(51) * 0.5),
+        (0.375, byte(51) * 0.75),
+        (0.5, byte(51)),
+        (0.875, byte(51) + (byte(204) - byte(51)) * 0.75),
+        (1.0, byte(204)),
+    ] {
+        let (free, handoff) = compose(&ctx, &mut scene, frame(&[state(7, t)]));
+        assert_near(probe_0(&free), gated(expected), &format!("t′ {t}"));
+        assert_near(
+            probe_0(&handoff),
+            gated(expected),
+            &format!("handoff, t′ {t}"),
+        );
+    }
+
+    // Ramp (0.3, 1): knots t 0, 0.2, 0.5, 0.8, 1 map to t′ 0, 0 (squeezed),
+    // 2/7, 5/7, 1. Pose 2 is marked, so t′ in (0, 5/7) blends pose 0 → 3;
+    // the squeezed pose 1 is never read. Mover 9 shares the light unmarked.
+    let ramp = |t: f32| ((t - 0.3) / (1.0 - 0.3)).clamp(0.0, 1.0);
+    let knots = vec![0.0, 0.2, 0.5, 0.8, 1.0];
+    let section = posed_light_across(
+        &[
+            (7, (0.3, 1.0), knots.clone(), vec![0, 153, 255, 102, 255]),
+            (9, (0.3, 1.0), knots, vec![255, 255, 255, 255, 51]),
+        ],
+        &[(7, vec![0, 0b1, 0])],
+    );
+    let mut scene = build_scene(&ctx, Some(&section), false);
+    let pose3 = ramp(0.8);
+    for (t, q7, q9) in [
+        (0.2, 0.0, 1.0),
+        (0.5, 0.4 * ramp(0.5) / pose3, 1.0),
+        (0.65, 0.4 * ramp(0.65) / pose3, 1.0),
+        (0.8, 0.4, 1.0),
+        (
+            0.9,
+            0.4 + 0.6 * (ramp(0.9) - pose3) / (1.0 - pose3),
+            1.0 - 0.8 * (ramp(0.9) - pose3) / (1.0 - pose3),
+        ),
+    ] {
+        let (free, _) = compose(
+            &ctx,
+            &mut scene,
+            frame(&[state(7, ramp(t)), state(9, ramp(t))]),
+        );
+        assert_near(probe_0(&free), gated(q7 * q9), &format!("ramped, t {t}"));
+    }
 }
 
 /// AC 16 (direct half): two movers with different pose counts on one light,

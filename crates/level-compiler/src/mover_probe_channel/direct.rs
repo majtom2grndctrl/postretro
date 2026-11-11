@@ -17,6 +17,7 @@ use postretro_level_format::octahedral::{
 use postretro_level_format::sh_reconstruct::local_xyz;
 use rayon::prelude::*;
 
+use super::across::EnclosedMidPoses;
 use super::direct_memo::{DirectMemo, MemoPrefix};
 use super::posed_solid::PosedMovers;
 use super::visibility::{PosedOccluder, joint_soft_visibility};
@@ -130,10 +131,12 @@ pub(crate) struct LightEntries {
     pub(crate) entries: Vec<DirectEntry>,
 }
 
-/// The direct half of a build: every gated light's entries.
+/// The direct half of a build: every gated light's entries, and the probes
+/// each mover's mid poses enclose, which the section marks across.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MoverDirectBake {
     pub(crate) lights: Vec<LightEntries>,
+    pub(crate) enclosed: EnclosedMidPoses,
 }
 
 impl DirectEntry {
@@ -183,11 +186,14 @@ impl ProbeCells {
 
     /// The dense index of each valid probe in `cell`, x-fastest.
     pub(crate) fn valid_probes(&self, cell: usize) -> Vec<usize> {
+        self.valid_locals(cell).map(|(_, probe)| probe).collect()
+    }
+
+    /// `(local bit, dense index)` of each valid probe in `cell`, x-fastest.
+    pub(crate) fn valid_locals(&self, cell: usize) -> impl Iterator<Item = (usize, usize)> {
         let mask = self.valid_masks[cell];
         cell_probes(self.dims, self.affinity_dims, cell)
-            .filter(|&(local, _)| mask & (1 << local) != 0)
-            .map(|(_, probe)| probe)
-            .collect()
+            .filter(move |&(local, _)| mask & (1 << local) != 0)
     }
 }
 
@@ -231,6 +237,7 @@ pub(crate) fn bake_direct(
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<MoverDirectBake> {
+    let enclosed = EnclosedMidPoses::find(movers, scene.layout);
     let movers: Vec<Vec<LightMover>> = lights
         .iter()
         .map(|light| light_movers(&light.baked, movers))
@@ -323,6 +330,7 @@ pub(crate) fn bake_direct(
     }
 
     Ok(MoverDirectBake {
+        enclosed,
         lights: lights
             .iter()
             .zip(baked)
@@ -358,10 +366,12 @@ impl StaticSamples {
 /// `light`'s entries at `cell`: one per mover whose posed brushes meet a
 /// static-clear sample at some valid probe at some pose. A probe where the
 /// light's term is zero keeps q = 1, as does one no pose can meet, and one
-/// a pose encloses keeps q = 1 at that pose: it reads the light's
-/// mover-absent term there (owner, 2026-11-09). Every pose bakes, mid poses
-/// included, and wherever the light reaches: never only the near-field
-/// domain, and never skipping a pose the author ramp squeezes out.
+/// a pose encloses keeps q = 1 at that pose: at a terminus it reads the
+/// light's mover-absent term there (owner, 2026-11-09); at a mid pose the
+/// section marks it across and compose never reads it (owner, 2026-11-10).
+/// Every pose bakes, mid poses included, and wherever the light reaches:
+/// never only the near-field domain, and never skipping a pose the author
+/// ramp squeezes out.
 pub(crate) fn bake_cell(
     light: &ChannelLight<'_>,
     movers: &[LightMover],
@@ -390,28 +400,10 @@ pub(crate) fn bake_cell(
         let statics = StaticSamples::default();
         for (mover, gate) in movers.iter().enumerate() {
             let pose_count = gate.poses.len();
-            // DIAGNOSTIC (task 5b): remove before landing. Mid poses that
-            // enclose the probe, for the `POSTRETRO_DIAG_MID_ENCLOSED` switch.
-            let mut enclosed_mids: Vec<usize> = Vec::new();
             for (pose, occluder) in gate.poses.iter().enumerate() {
                 let Some(occluder) = occluder else {
                     continue;
                 };
-                // DIAGNOSTIC (task 5b): remove before landing.
-                if occluder.encloses(point) && pose > 0 && pose + 1 < pose_count {
-                    match super::mid_pose::diag_mid_enclosed() {
-                        Some("dark") => {
-                            visibility[mover][slot * pose_count + pose] = 0;
-                            met[mover] = true;
-                            continue;
-                        }
-                        Some("blend") => {
-                            enclosed_mids.push(pose);
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
                 if occluder.encloses(point) || !occluder.may_meet(point, &light.baked) {
                     continue;
                 }
@@ -427,25 +419,6 @@ pub(crate) fn bake_cell(
                 );
                 if joint.meets_mover() {
                     visibility[mover][slot * pose_count + pose] = joint.surviving_byte();
-                    met[mover] = true;
-                }
-            }
-            // DIAGNOSTIC (task 5b): remove before landing. `blend`: an
-            // enclosed mid pose takes the lerp of the nearest non-enclosed
-            // poses' q around it (poses evenly spaced, as on both fixtures),
-            // as an unmarked bounce pose blends across.
-            for &pose in &enclosed_mids {
-                let defined = |k: usize| k == 0 || k + 1 == pose_count || !enclosed_mids.contains(&k);
-                let lo = (0..pose).rev().find(|&k| defined(k)).expect("terminus");
-                let hi = (pose + 1..pose_count).find(|&k| defined(k)).expect("terminus");
-                let w = (pose - lo) as f32 / (hi - lo) as f32;
-                let (a, b) = (
-                    f32::from(visibility[mover][slot * pose_count + lo]),
-                    f32::from(visibility[mover][slot * pose_count + hi]),
-                );
-                let q = ((1.0 - w) * a + w * b).round() as u8;
-                visibility[mover][slot * pose_count + pose] = q;
-                if q < u8::MAX {
                     met[mover] = true;
                 }
             }

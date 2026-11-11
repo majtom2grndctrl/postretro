@@ -33,7 +33,9 @@ const STAGE_ID: &str = "mover_probe_bounce";
 /// less than the lift inside it keeps the per-ray rule.
 /// 7: states at every pose along the path: per-pose marks, mid poses over
 /// the near-field domain with the termini's later shares blended in.
-const STAGE_VERSION: u32 = 7;
+/// 8: a mid pose that encloses the probe stores no bounce state and blends
+/// across; its depth still bakes dark.
+const STAGE_VERSION: u32 = 8;
 
 /// The per-mover memo over one stage cache, under one id-34 volume key: an
 /// edit that re-bakes id 34 re-keys every mover.

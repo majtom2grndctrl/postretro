@@ -154,11 +154,11 @@ fn an_enclosing_terminus_lends_no_share_and_the_others_holds_across() {
     );
 }
 
-// A mid pose that encloses the probe stores no value state there and reads
-// the base, share or no share; one whose state stays within the probe's bars
-// against id 34 reads the base too.
+// AC 12: a mid pose that encloses the probe stores no value state there and
+// blends across, share or no share (owner, 2026-11-10); one whose state
+// stays within the probe's bars against id 34 reads the base.
 #[test]
-fn an_enclosing_or_unchanged_mid_pose_reads_the_base() {
+fn an_enclosing_mid_pose_blends_across_and_an_unchanged_one_reads_the_base() {
     let base = flat(0.5);
     let shares = ProbeShares::new(
         PROBE,
@@ -169,8 +169,8 @@ fn an_enclosing_or_unchanged_mid_pose_reads_the_base() {
     );
     assert_eq!(
         shares.classify(&dc([7.0; 3]), true, 0.5),
-        Some(MidState::Base),
-        "enclosed"
+        None,
+        "enclosed: blends across"
     );
     // Both termini unchanged with no bounce one: each share is id 34
     // itself, so a mid pose with no bounce one of its own is id 34.

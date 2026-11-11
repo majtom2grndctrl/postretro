@@ -1068,6 +1068,7 @@ fn structure(section: &MoverProbeChannelSection) -> MoverProbeChannelSection {
         direct_records: section.direct_records.clone(),
         mover_offsets: section.mover_offsets.clone(),
         direct_movers: section.direct_movers.clone(),
+        across_entries: section.across_entries.clone(),
         visibility: section.visibility.clone(),
         own_tiles: section.own_tiles.clone(),
         bounce_offsets: if bounce_streams {

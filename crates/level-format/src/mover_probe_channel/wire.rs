@@ -2,10 +2,15 @@
 // pins every count, order, mask, reserved field and length of the layout.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
+mod across;
 mod checks;
 mod posed;
 mod reader;
 
+pub(super) use across::across_entry;
+use across::{
+    NamingBlocks, across_block_bytes, check_across_named, put_across_entries, read_across_entries,
+};
 pub(super) use checks::check_masks_are_tight;
 use checks::{check_cell_order, check_mask};
 use posed::{
@@ -60,6 +65,7 @@ impl MoverProbeChannelSection {
             direct_index: (self.direct_offsets.len() + self.mover_offsets.len()) * 4,
             direct_records: self.direct_records.len() * DIRECT_RECORD_BYTES
                 + self.direct_movers.len() * MOVER_ID_BYTES,
+            across: across_block_bytes(&self.mover_records, &self.across_entries),
             visibility: if direct_resident { visibility } else { 0 },
             own_tiles: if direct_resident { own_tiles } else { 0 },
             bounce_index: self.bounce_offsets.len() * 4
@@ -163,6 +169,7 @@ pub(super) fn to_bytes(section: &MoverProbeChannelSection) -> Vec<u8> {
     }
     put_u32s(&mut out, &section.mover_offsets);
     put_u32s(&mut out, &section.direct_movers);
+    put_across_entries(&mut out, &section.mover_records, &section.across_entries);
     if direct_resident {
         out.extend_from_slice(&section.visibility);
         put_halves(&mut out, &section.own_tiles);
@@ -293,6 +300,8 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
             )?;
         }
     }
+    // Across marks stay resident: the q payload they qualify may stream.
+    let across_entries = read_across_entries(&mut reader, &cells, &mover_records, pose_count)?;
     let (visibility, own_tiles) = match direct_placement {
         MoverPayloadPlacement::Resident => {
             let visibility = reader.take(visibility_len, "visibility payload")?.to_vec();
@@ -303,6 +312,7 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
                 &mover_offsets,
                 &direct_movers,
                 &visibility,
+                &across_entries,
                 |mover| pose_count("direct", mover).expect("checked above"),
             )?;
             let own_tiles = reader.halves(own_tile_halves, "own-tile payload")?;
@@ -348,6 +358,18 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
             });
         }
     }
+    check_across_named(
+        &NamingBlocks {
+            cells: &cells,
+            direct_offsets: &direct_offsets,
+            direct_records: &direct_records,
+            mover_offsets: &mover_offsets,
+            direct_movers: &direct_movers,
+            bounce_offsets: &bounce_offsets,
+            bounce_entries: &bounce_entries,
+        },
+        &across_entries,
+    )?;
     let bounce_tiles = match bounce_placement {
         MoverPayloadPlacement::Resident => {
             let halves = bounce_entries.iter().try_fold(0usize, |total, entry| {
@@ -411,6 +433,7 @@ pub(super) fn from_bytes(data: &[u8]) -> Result<MoverProbeChannelSection, Error>
         direct_records,
         mover_offsets,
         direct_movers,
+        across_entries,
         visibility,
         own_tiles,
         bounce_offsets,

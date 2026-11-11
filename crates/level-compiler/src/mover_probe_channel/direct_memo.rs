@@ -26,7 +26,9 @@ const STAGE_ID: &str = "mover_probe_direct";
 /// less than the lift inside it keeps the per-ray rule.
 /// 6: q at every pose along the path, mid poses included; the payload
 /// names each entry's pose count.
-const STAGE_VERSION: u32 = 6;
+/// 7: a mid pose that encloses the probe keeps q = 255, never read: the
+/// section marks it across.
+const STAGE_VERSION: u32 = 7;
 
 /// What every light's key shares: the occluding world, the probe grid and
 /// the reach decomposition's inputs. Only occlusion enters: vertex

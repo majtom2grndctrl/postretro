@@ -206,6 +206,7 @@ impl Level {
                     vec![(3, vec![1, 2, 3, 4])],
                 ),
             ],
+            across: Vec::new(),
             bounce: vec![bounce(1, 3, 0b11)],
             depth: vec![depth(9, 4), depth(9, 70)],
         }
@@ -1047,6 +1048,7 @@ fn fixture_section() -> MoverProbeChannelSection {
                 record(MoverLightNamespace::StaticLight, 0, false, 1),
                 vec![(7, vec![128, 128])],
             )],
+            across: Vec::new(),
             bounce: vec![bounce(5, 7, 1)],
             depth: vec![depth(7, 17)],
         },
@@ -1123,6 +1125,7 @@ fn three_pose_section(knots: Vec<f32>) -> MoverProbeChannelSection {
                 record(MoverLightNamespace::StaticLight, 0, false, 1),
                 vec![(7, vec![255, 128, 255])],
             )],
+            across: Vec::new(),
             bounce: vec![BounceEntryParts {
                 cell: 5,
                 entry,
@@ -1349,6 +1352,7 @@ fn a_prl_whose_id_59_and_live_tiles_fill_the_range_exactly_loads_and_one_more_is
             MoverProbeChannelParts {
                 affinity_dims: expected_affinity_dims(grid, AFFINITY_FACTOR),
                 direct: Vec::new(),
+                across: Vec::new(),
                 bounce: Vec::new(),
                 depth: (0..live)
                     .map(|probe_index| DepthRecordParts {

@@ -8,8 +8,6 @@
 // sets, and several movers combine by adding differences, never by selecting
 // one. It never flags a probe occluded, zeroes a weight or excludes a probe.
 
-use std::sync::OnceLock;
-
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::probe_depth_tiles::{
     PROBE_DEPTH_TILE_TEXEL_BYTES, PROBE_DEPTH_TILE_TEXELS, f16_bits_to_f32,
@@ -30,63 +28,19 @@ pub(super) const ACROSS: u32 = u32::MAX - 1;
 /// encode as infinity, which the sampler turns into NaN.
 const F16_MAX: f64 = 65504.0;
 
-/// Temporary capture switch, `POSTRETRO_MOVER_DEPTH_BLEND=lerp|through-base`
-/// (default through-base): how depth blends between two stored poses while
-/// the owner picks a rule from first-slice captures. Plan task 6 keeps the
-/// pick and removes the switch. An interval whose ends are both termini runs
-/// through the base under either.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in crate::render) enum DepthBlend {
-    /// Each interval runs D_lo → base → D_hi, the base at its midpoint.
-    #[default]
-    ThroughBase,
-    /// Plain lerp D_lo → D_hi; termini-to-termini intervals still run
-    /// through the base.
-    Lerp,
-}
-
-impl DepthBlend {
-    const ENV: &str = "POSTRETRO_MOVER_DEPTH_BLEND";
-
-    /// The process's switch, read once. A malformed value warns once and
-    /// keeps the default.
-    pub(super) fn from_env() -> Self {
-        static BLEND: OnceLock<DepthBlend> = OnceLock::new();
-        *BLEND.get_or_init(|| {
-            let value = std::env::var(Self::ENV).ok();
-            Self::parse(value.as_deref()).unwrap_or_else(|value| {
-                log::warn!(
-                    "[Renderer] {}={value:?} is not `lerp` or `through-base`; mover depth blends through the base",
-                    Self::ENV
-                );
-                Self::default()
-            })
-        })
-    }
-
-    fn parse(value: Option<&str>) -> Result<Self, &str> {
-        match value.map(str::trim) {
-            None | Some("") | Some("through-base") => Ok(Self::ThroughBase),
-            Some("lerp") => Ok(Self::Lerp),
-            Some(other) => Err(other),
-        }
-    }
-}
-
 /// The two moment sets one record blends at `t` (a stated t′), and the
 /// weight of the second: `poses` holds each pose's tile in `tiles` (a stored
-/// tile, the probe's bound base, or [`ACROSS`]). Between two defined poses
-/// the interval rule picks the sets; an interval whose ends are both termini,
-/// or any interval under [`DepthBlend::ThroughBase`], runs through `base`,
-/// reaching it at the interval's midpoint (owner, 2026-11-09). Exact at every
-/// read knot. Weights are exact: doubling, and 2w − 1 over [0.5, 1].
+/// tile, the probe's bound base, or [`ACROSS`]). Every interval between the
+/// two defined poses around `t` runs through `base`: D_lo → base → D_hi,
+/// reaching the base at the interval's midpoint (owner, 2026-11-10), so a
+/// termini-to-termini interval keeps 12c's through-base blend. Exact at
+/// every read knot. Weights are exact: doubling, and 2w − 1 over [0.5, 1].
 pub(super) fn segment<'a>(
     tiles: &'a [[f32; 2]],
     poses: &[u32],
     knots: &[Knot],
     base: &'a [[f32; 2]],
     t: f32,
-    blend: DepthBlend,
 ) -> (&'a [[f32; 2]], &'a [[f32; 2]], f32) {
     let span = interval(knots, t, |pose| poses[pose as usize] != ACROSS);
     let tile = |pose: u32| {
@@ -98,14 +52,10 @@ pub(super) fn segment<'a>(
     if span.weight <= 0.0 {
         return (lo, lo, 0.0);
     }
-    let hi = tile(span.hi);
-    let termini = span.lo == 0 && span.hi as usize + 1 == poses.len();
-    if blend == DepthBlend::Lerp && !termini {
-        (lo, hi, span.weight)
-    } else if span.weight <= 0.5 {
+    if span.weight <= 0.5 {
         (lo, base, 2.0 * span.weight)
     } else {
-        (base, hi, 2.0 * span.weight - 1.0)
+        (base, tile(span.hi), 2.0 * span.weight - 1.0)
     }
 }
 
@@ -204,23 +154,4 @@ pub(super) fn f32_to_f16(value: f32) -> u16 {
         return (sign | rounded.wrapping_sub(112 << 10)) as u16;
     }
     f32_to_f16_bits(value)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::DepthBlend;
-
-    /// The capture switch reads its two values and the default; anything
-    /// else is refused so the caller keeps the default and warns.
-    #[test]
-    fn the_depth_blend_switch_reads_lerp_through_base_and_defaults() {
-        assert_eq!(DepthBlend::parse(None), Ok(DepthBlend::ThroughBase));
-        assert_eq!(DepthBlend::parse(Some("")), Ok(DepthBlend::ThroughBase));
-        assert_eq!(
-            DepthBlend::parse(Some("through-base")),
-            Ok(DepthBlend::ThroughBase)
-        );
-        assert_eq!(DepthBlend::parse(Some(" lerp ")), Ok(DepthBlend::Lerp));
-        assert_eq!(DepthBlend::parse(Some("linear")), Err("linear"));
-    }
 }

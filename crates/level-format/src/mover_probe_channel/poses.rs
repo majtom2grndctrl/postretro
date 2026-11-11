@@ -209,3 +209,48 @@ impl MoverDepthRecord {
         })
     }
 }
+
+/// One mover's across marks at one listed cell: per mid pose, the local
+/// probes the pose's brushes enclose. Enclosure is geometric, a function of
+/// (mover, probe, pose) alone, so it is recorded once per (cell, mover)
+/// rather than per direct record. Direct compose blends across a marked
+/// pose, between the nearest unmarked poses around t′, exactly as bounce
+/// blends across an unmarked mid pose; the `q` stored there is 255 and never
+/// read. Termini are never marked: an enclosing terminus reads the base.
+///
+/// Storage sparsity only: a mark never flags a probe occluded, zeroes a
+/// weight or excludes a probe. Compose still blends between stored states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoverAcrossEntry {
+    /// Position of the entry's cell in the section's listed cells.
+    pub listed: u32,
+    pub mover_id: u32,
+    /// One mask per mid pose, poses 1 to N − 2 in order: local x-fastest
+    /// bits of the probes that pose encloses.
+    pub mid_poses: Vec<u64>,
+}
+
+impl MoverAcrossEntry {
+    /// Entries ascend by this key, with no repeats.
+    pub fn order_key(&self) -> (u32, u32) {
+        (self.listed, self.mover_id)
+    }
+
+    /// Probes marked at pose `pose`; 0 at a terminus or past the poses.
+    pub fn marks(&self, pose: usize) -> u64 {
+        pose.checked_sub(1)
+            .and_then(|mid| self.mid_poses.get(mid))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Whether pose `pose` is marked across for local probe `local`.
+    pub fn is_across(&self, pose: usize, local: u32) -> bool {
+        self.marks(pose) & 1u64.checked_shl(local).unwrap_or(0) != 0
+    }
+
+    /// Probes marked at some pose.
+    pub fn marked_probes(&self) -> u64 {
+        self.mid_poses.iter().fold(0, |mask, &pose| mask | pose)
+    }
+}

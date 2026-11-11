@@ -10,10 +10,13 @@ mod streamed;
 mod views;
 mod wire;
 
-pub use assemble::{BounceEntryParts, DepthRecordParts, DirectRecordParts, MoverProbeChannelParts};
+pub use assemble::{
+    AcrossEntryParts, BounceEntryParts, DepthRecordParts, DirectRecordParts, MoverProbeChannelParts,
+};
 pub use error::MoverProbeChannelError;
 pub use poses::{
-    BouncePoseMasks, MoverBounceEntry, MoverDepthRecord, MoverRecord, PoseMark, is_terminus,
+    BouncePoseMasks, MoverAcrossEntry, MoverBounceEntry, MoverDepthRecord, MoverRecord, PoseMark,
+    is_terminus,
 };
 pub use streamed::{
     MOVER_STREAMED_BLOCK_HEADER_BYTES, MOVER_STREAMED_ROW_BYTES, MoverCellSlices, MoverStreamedRow,
@@ -47,7 +50,8 @@ pub fn depth_tile_texture_count(
 /// leaves unchanged stores no tile and reads the probe's base. Epoch 5: N
 /// poses per mover. Mover records carry each mover's ramp and pose knots;
 /// direct, bounce and depth store per pose, and a mid pose marks a probe as
-/// stored, reading the base, or blending across.
+/// stored, reading the base, or blending across; per (cell, mover) across
+/// marks name the probes each mid pose encloses, which direct blends across.
 pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 5;
 
 /// Term-record flag bit 0: the record carries its light's own tile per
@@ -242,6 +246,14 @@ impl MoverDirectRecord {
 ///   u32 × (R + 1)                         mover_offsets (mover entries per
 ///                                         record, CSR; last = M)
 ///   u32 × M                               direct_movers (mover ids)
+///   u32                                   A (across entry count; present
+///                                         only when some mover record has
+///                                         N > 2, as A is 0 otherwise)
+///   per across entry, 12 + 8(N − 2) bytes: u32 listed cell position, u32
+///                                         mover_id, u32 mid-pose count
+///                                         (= N − 2), u64 × (N − 2) masks of
+///                                         the probes each mid pose 1 ..
+///                                         N − 2 encloses
 ///   u8 × Σ entries N × popcount(mask)     visibility (per mover entry, per
 ///                                         masked probe, q at each pose:
 ///                                         byte slot·N + k; resident only)
@@ -277,9 +289,13 @@ impl MoverDirectRecord {
 /// record's mask is exactly the union of its movers' `q < 255` probes over
 /// every pose, and a bounce entry's base marks fall inside its stored union.
 /// Namespace-2 records always set the own-tile flag. Bounce entries ascend
-/// by mover, depth records by (mover, probe); none repeats. No pose marks a
-/// probe both stored and base, and no terminus marks base. No sentinels:
-/// every reserved field is zero and every byte is accounted for.
+/// by mover, depth records by (mover, probe), across entries by (listed
+/// cell, mover); none repeats. No pose marks a probe both stored and base,
+/// and no terminus marks base. An across entry marks some probe, marks only
+/// probes a direct record or the bounce entry of its mover names at its
+/// cell, where that bounce entry holds nothing at the marked pose and every
+/// direct record stores q 255. No sentinels: every reserved field is zero
+/// and every byte is accounted for.
 ///
 /// A pose the mover leaves unchanged stores nothing (owner, 2026-11-09): a
 /// bounce state within the probe's round-trip bar of id 34, or a depth pose
@@ -310,6 +326,9 @@ pub struct MoverProbeChannelSection {
     pub mover_offsets: Vec<u32>,
     /// Each mover entry's id 43 `mover_id`.
     pub direct_movers: Vec<u32>,
+    /// Per (listed cell, mover), ascending: the probes each mid pose
+    /// encloses, which direct compose blends across. Always resident.
+    pub across_entries: Vec<MoverAcrossEntry>,
     /// Mover entry after mover entry: per masked probe of its record, the
     /// mover's `q` at each of its poses. Empty while a streamed direct
     /// payload is not held.
@@ -379,6 +398,11 @@ impl MoverProbeChannelSection {
             at += len;
             view
         })
+    }
+
+    /// `mover_id`'s across marks at listed cell `position`, if it has any.
+    pub fn across_entry(&self, position: usize, mover_id: u32) -> Option<&MoverAcrossEntry> {
+        wire::across_entry(&self.across_entries, position, mover_id)
     }
 
     /// The mover record of `mover_id`, if the section names that mover.

@@ -45,6 +45,7 @@ fn channel() -> MoverProbeChannelSection {
         }],
         mover_offsets: vec![0, 1],
         direct_movers: vec![7],
+        across_entries: Vec::new(),
         visibility: vec![0, 255],
         own_tiles: vec![0x3000; 108],
         bounce_offsets: vec![0, 0],

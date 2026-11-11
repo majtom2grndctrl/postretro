@@ -1,5 +1,6 @@
 // Mid-pose states: the termini's later shares over the near-field domain,
-// and what each mid pose stores, reads from the base or blends across.
+// and what each mid pose stores, reads from the base or blends across (an
+// enclosed probe's bounce blends across; its depth keeps the dark tile).
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
 use std::collections::BTreeMap;
@@ -126,8 +127,9 @@ impl ProbeShares {
     /// own posed bounce one `bounce_one` there: its state, bounce one plus
     /// the blended shares, where that clears both of the probe's bars
     /// against id 34 (the round-trip bar and the perceptual floor, as an
-    /// affected terminus's must); the base where the pose encloses the probe
-    /// or its state stays within them; nothing, so it blends across, where
+    /// affected terminus's must); the base where its state stays within
+    /// them; nothing, so it blends across, where the pose encloses the probe
+    /// (owner, 2026-11-10: the section marks it across for direct too) or
     /// neither terminus lends a share.
     pub(crate) fn classify(
         &self,
@@ -136,18 +138,7 @@ impl ProbeShares {
         t: f32,
     ) -> Option<MidState<Vec<OctahedralAtlasTexel>>> {
         if enclosed {
-            // DIAGNOSTIC (task 5b): remove before landing.
-            match diag_mid_enclosed() {
-                Some("blend") => return None,
-                Some("dark") => {
-                    return Some(MidState::Stored(pack_rgb_tile(&vec![
-                        [0.0; 3];
-                        self.base.len()
-                    ])));
-                }
-                _ => {}
-            }
-            return Some(MidState::Base);
+            return None;
         }
         let share = blended_share(self.shares[0].as_ref(), self.shares[1].as_ref(), t)?;
         let state: RgbTile = rgb_tile(bounce_one)
@@ -161,33 +152,9 @@ impl ProbeShares {
         Some(if clears {
             MidState::Stored(tile)
         } else {
-            // DIAGNOSTIC (task 5b): remove before landing.
-            if diag_mid_base() == Some("unmarked") {
-                return None;
-            }
             MidState::Base
         })
     }
-}
-
-// DIAGNOSTIC (task 5b): remove before landing. Experiment switches read once
-// per process: `POSTRETRO_DIAG_MID_ENCLOSED=blend|dark` (an enclosed mid pose
-// blends across, or stores its posed dark state, instead of reading the base
-// with q = 255), `POSTRETRO_DIAG_MID_BASE=unmarked` (a within-bars mid pose
-// blends across instead of reading the base).
-pub(crate) fn diag_mid_enclosed() -> Option<&'static str> {
-    static VALUE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    VALUE
-        .get_or_init(|| std::env::var("POSTRETRO_DIAG_MID_ENCLOSED").ok())
-        .as_deref()
-}
-
-// DIAGNOSTIC (task 5b): remove before landing.
-pub(crate) fn diag_mid_base() -> Option<&'static str> {
-    static VALUE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    VALUE
-        .get_or_init(|| std::env::var("POSTRETRO_DIAG_MID_BASE").ok())
-        .as_deref()
 }
 
 /// Every near-field probe's shares, in the domain's ascending order.
@@ -262,7 +229,8 @@ impl DomainShares {
 /// (aligned with the domain), the shares blended to `t`: each probe's
 /// bounce by [`ProbeShares::classify`], and its depth tile where some ray
 /// met the pose, else its base. A probe the pose encloses meets every ray
-/// at distance 0, so it stores the dark tile.
+/// at distance 0, so it stores the dark tile while its bounce blends
+/// across.
 pub(crate) fn classify_mid_pose(
     shares: &DomainShares,
     gathered: Vec<DomainProbe>,

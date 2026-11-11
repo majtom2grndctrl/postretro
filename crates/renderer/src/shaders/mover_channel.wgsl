@@ -4,8 +4,8 @@
 // The including shader binds `mover_channel: array<u32>`, the renderer-built
 // table of `render/mover_channel/layout.rs`: listed affinity cells, one term
 // record per (cell, gated light) with its probe mask, its gating movers, each
-// mover's knots through its ramp, and one t′ per mover (negative while the
-// game hands over no state). Each listed cell's payload (the light's term T
+// mover's knots through its ramp, each (cell, mover)'s across marks, and one
+// t′ per mover (negative while the game hands over no state). Each listed cell's payload (the light's term T
 // per masked probe, then each mover's q at each of its N poses) is one run
 // its base word points at. A streamed level places
 // that run per resident cell; while it is not resident the base reads
@@ -14,8 +14,9 @@
 // every cluster covering a cell carries its payload.
 //
 // A record's probe mask is storage sparsity only: an unmasked probe composes
-// as with no section. Mover state blends visibility; it never flags, zeroes
-// or excludes a probe.
+// as with no section. So are across marks: a mid pose that encloses the probe
+// is blended across, between the defined poses around t′. Mover state blends
+// visibility; it never flags, zeroes or excludes a probe.
 
 const MC_HEADER_CELL_COUNT: u32 = 0u;
 const MC_HEADER_CELLS: u32 = 1u;
@@ -40,7 +41,10 @@ const MC_RECORD_MOVERS_END: u32 = 4u;
 const MC_RECORD_TILE_HALF: u32 = 5u;
 // The record's listed cell, whose base word locates its payload.
 const MC_RECORD_POSITION: u32 = 6u;
-const MC_MOVER_ENTRY_WORDS: u32 = 2u;
+// Mover entry: slot, first q byte within the cell's payload, and the
+// absolute word of its (cell, mover) across run or `MC_NONE`. A run holds,
+// per mid pose 1 to N − 2, its mask's low word then its high word.
+const MC_MOVER_ENTRY_WORDS: u32 = 3u;
 // One compact 6×6 RGB f16 tile: id 41's stride.
 const MC_TILE_HALVES: u32 = 108u;
 const MC_NONE: u32 = 0xffffffffu;
@@ -128,16 +132,29 @@ fn mc_knot_pose(run: u32, knot: u32) -> u32 {
     return mover_channel[run + 3u + 2u * knot];
 }
 
+/// Whether the across run at `across` (`MC_NONE`: none) marks knot `knot`
+/// of the knot run at `run` for `local_probe`: a mid pose that encloses the
+/// probe, which compose blends across. Termini are never marked.
+fn mc_across(run: u32, knot: u32, across: u32, local_probe: u32) -> bool {
+    let pose = mc_knot_pose(run, knot);
+    if (across == MC_NONE || pose == 0u || pose + 1u >= mover_channel[run]) {
+        return false;
+    }
+    let word = mover_channel[across + 2u * (pose - 1u) + select(0u, 1u, local_probe >= 32u)];
+    return ((word >> (local_probe % 32u)) & 1u) != 0u;
+}
+
 /// Poses `lo` and `hi` around a stated `t` (≥ 0) in the knot run at `run`,
 /// and the weight of `hi`: zero reads `lo` exactly. Direct stores q at
-/// every pose, so every knot is defined. Mirrors `knots::interval`.
+/// every pose, but a pose the across run marks for `local_probe` is not
+/// defined: the interval blends across it. Mirrors `knots::interval`.
 struct McInterval {
     lo: u32,
     hi: u32,
     weight: f32,
 }
 
-fn mc_interval(run: u32, t: f32) -> McInterval {
+fn mc_interval(run: u32, t: f32, across: u32, local_probe: u32) -> McInterval {
     let last = mover_channel[run + 1u] - 1u;
     if (t >= 1.0) {
         let pose = mc_knot_pose(run, last);
@@ -150,23 +167,39 @@ fn mc_interval(run: u32, t: f32) -> McInterval {
         }
         at = knot;
     }
-    let lo = mc_knot_pose(run, at);
-    let t_lo = mc_knot_t(run, at);
+    // Knot 0 and knot `last` are the termini, always defined.
+    var lo = at;
+    loop {
+        if (lo == 0u || !mc_across(run, lo, across, local_probe)) {
+            break;
+        }
+        lo = lo - 1u;
+    }
+    let lo_pose = mc_knot_pose(run, lo);
+    let t_lo = mc_knot_t(run, lo);
     if (t <= t_lo) {
-        return McInterval(lo, lo, 0.0);
+        return McInterval(lo_pose, lo_pose, 0.0);
+    }
+    var hi = at + 1u;
+    loop {
+        if (hi >= last || !mc_across(run, hi, across, local_probe)) {
+            break;
+        }
+        hi = hi + 1u;
     }
     return McInterval(
-        lo,
-        mc_knot_pose(run, at + 1u),
-        (t - t_lo) / (mc_knot_t(run, at + 1u) - t_lo),
+        lo_pose,
+        mc_knot_pose(run, hi),
+        (t - t_lo) / (mc_knot_t(run, hi) - t_lo),
     );
 }
 
-/// The light's surviving visibility at the record's masked `slot`: the
-/// product over its gating movers of each one's q, blended between the two
-/// poses around its t′ (exact at a knot). A mover the game handed over no
-/// state for leaves the light ungated (factor 1).
-fn mc_record_visibility(record: u32, slot: u32) -> f32 {
+/// The light's surviving visibility at the record's masked `slot`, local
+/// probe `local_probe`: the product over its gating movers of each one's q,
+/// blended between the two defined poses around its t′ (exact at a knot). A
+/// mover the game handed over no state for leaves the light ungated (factor
+/// 1). Runs once per (record, probe), never per texel.
+fn mc_record_visibility(record: u32, slot: u32, local_probe: u32) -> f32 {
     let entries = mover_channel[MC_HEADER_MOVER_ENTRIES];
     let mover_t = mover_channel[MC_HEADER_MOVER_T];
     let base_byte = mc_record_base(record) * 4u;
@@ -181,7 +214,7 @@ fn mc_record_visibility(record: u32, slot: u32) -> f32 {
             continue;
         }
         let run = mover_channel[mover_channel[MC_HEADER_KNOTS] + mover];
-        let span = mc_interval(run, t);
+        let span = mc_interval(run, t, mover_channel[at + 2u], local_probe);
         // N q bytes per masked probe, probe-major.
         let q_byte = base_byte + mover_channel[at + 1u] + slot * mover_channel[run];
         var q = f32(mc_byte(q_byte + span.lo)) / 255.0;

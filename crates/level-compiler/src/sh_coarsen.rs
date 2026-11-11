@@ -1055,6 +1055,7 @@ mod tests {
                     })
                     .into_iter()
                     .collect(),
+                across: Vec::new(),
                 bounce: (!direct)
                     .then(|| BounceEntryParts {
                         cell: 0,

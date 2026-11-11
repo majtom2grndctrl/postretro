@@ -34,6 +34,7 @@ fn channel(
                 own_tiles: Vec::new(),
             })
             .collect(),
+        across: Vec::new(),
         bounce: bounce
             .iter()
             .map(|&cell| BounceEntryParts {

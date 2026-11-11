@@ -208,8 +208,9 @@ impl DirectHalf {
                  carrying their own tile, {bake_only} naming {} bake-only light(s); {} mover \
                  entr(y/ies) over {} mover(s); {} masked probe(s); direct block {} B: {} B of \
                  cell index, {} B of direct index, {} B of records and mover ids, {} B of \
-                 visibility, {} B of own tiles; bounce block {} B: {} B of index, {} B of \
-                 payload; depth block {} B; mover records {} B; section {} B",
+                 across marks over {} (cell, mover) pair(s), {} B of visibility, {} B of own \
+                 tiles; bounce block {} B: {} B of index, {} B of payload; depth block {} B; \
+                 mover records {} B; section {} B",
                 counts.records,
                 counts.cells,
                 section.bake_only_light_count(),
@@ -220,6 +221,8 @@ impl DirectHalf {
                 bytes.cell_index,
                 bytes.direct_index,
                 bytes.direct_records,
+                bytes.across,
+                section.across_entries.len(),
                 bytes.visibility,
                 bytes.own_tiles,
                 bytes.bounce_index + bytes.bounce_payload,

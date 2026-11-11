@@ -545,6 +545,110 @@ fn an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask() {
     );
 }
 
+// AC 12, direct half (owner, 2026-11-10): a mid pose that encloses a probe
+// stores no value state there. Its q is 255, never read: the section marks
+// that (mover, probe, mid pose) across, once for the (cell, mover), and
+// compose blends across it between the termini's q. The termini keep their
+// own: here the box shadows the probe at the first pose and has sunk below
+// it at the last. Every mark is an enclosed mid pose of a probe the
+// mover's record masks, and every such pair is marked.
+#[test]
+fn a_probe_a_mid_pose_encloses_stores_q_255_and_is_marked_across() {
+    let world = world();
+    let light = point_light(DVec3::new(0.0, 3.5, 0.0), 10.0, 0.6);
+    let mut sinker = mover(
+        0,
+        vec![box_brush(
+            DVec3::new(1.0, 0.5, 1.0),
+            DVec3::new(3.0, 1.5, 3.0),
+        )],
+        false,
+    );
+    sinker.light_poses = Some(3);
+    let movers = [sinker];
+    let mut mover_poses = MoverPoses::resolve(&movers, &waypoints(0, DVec3::new(0.0, -2.0, 0.0)));
+    mover_poses.place_poses(&movers, 1.0);
+    let poses = PosedMovers::resolve(
+        &mover_poses,
+        &movers,
+        &TextureNamesSection { names: Vec::new() },
+    )
+    .expect("the sinker poses");
+    let solids = &poses.movers()[0].solids;
+    assert_eq!(solids.len(), 3, "light_poses 3");
+    let inside = world.probe_at([2.0, 0.0, 2.0]);
+    let point = vec3_from(world.layout.probe_positions[inside]);
+    assert_eq!(
+        solids
+            .iter()
+            .map(|solid| solid.encloses(point))
+            .collect::<Vec<_>>(),
+        [false, true, false],
+        "only the mid pose encloses the probe"
+    );
+
+    let bake = world.bake(&poses, &[static_light(&light, 0)]);
+    assert!(bake.enclosed.encloses(0, inside as u32, 1));
+    let entry = bake.lights[0]
+        .entries
+        .iter()
+        .find(|entry| {
+            world
+                .cells
+                .valid_probes(entry.cell as usize)
+                .contains(&inside)
+        })
+        .expect("the sinker gates the probe's cell");
+    let slot = world
+        .cells
+        .valid_probes(entry.cell as usize)
+        .iter()
+        .position(|&probe| probe == inside)
+        .unwrap();
+    let q = entry.poses_at(slot);
+    assert!(
+        q[0] < 255,
+        "the box shadows the probe at the first pose: {q:?}"
+    );
+    assert_eq!((q[1], q[2]), (255, 255), "enclosed, then sunk below it");
+
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &MoverRecords::new(&movers, &mover_poses),
+        &super::section::MoverPayloadBars::default(),
+        |_, _, _| false,
+        |_| true,
+    )
+    .unwrap()
+    .expect("the sinker gates the light");
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
+        section
+    );
+    let mut marked = 0;
+    for view in section.direct_record_views() {
+        let position = section.listed_position(view.cell as usize).expect("listed");
+        let across = section.across_entry(position, 0);
+        assert_eq!(view.movers().next().unwrap().across, across);
+        for (local, probe) in world.cells.valid_locals(view.cell as usize) {
+            let point = vec3_from(world.layout.probe_positions[probe]);
+            let expected = view.record.probe_mask & (1 << local) != 0 && solids[1].encloses(point);
+            assert_eq!(
+                across.is_some_and(|across| across.is_across(1, local as u32)),
+                expected,
+                "probe {probe}: marked exactly where masked and enclosed at the mid pose"
+            );
+            marked += usize::from(expected);
+            if probe == inside {
+                assert!(expected, "the enclosed probe is masked and marked");
+            }
+        }
+    }
+    assert!(marked > 0);
+}
+
 // A probe a hair off a posed face, outside it, is not enclosed: its q is
 // still the joint ratio, the samples that cross into the brush blocked and
 // the rest clear. (The lift rule itself, one verdict per ray in every posed
@@ -1196,6 +1300,7 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
                 entries: vec![entry(1, 2)],
             },
         ],
+        ..MoverDirectBake::default()
     };
     let ramps = MoverRecords::new(
         &[mover(4, Vec::new(), false), mover(2, Vec::new(), false)],
@@ -1277,6 +1382,7 @@ fn with_no_id_45_no_animated_baked_record_is_written() {
                 entries: vec![entry(1, 2)],
             })
             .collect(),
+        ..MoverDirectBake::default()
     };
     let section = |bake: &MoverDirectBake, emitted: &EmittedDirectEntries<'_>| {
         channel_section(

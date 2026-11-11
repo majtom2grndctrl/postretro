@@ -56,6 +56,7 @@ fn parts() -> MoverProbeChannelParts {
                 own_tiles: Vec::new(),
             },
         ],
+        across: Vec::new(),
         bounce: vec![BounceEntryParts {
             cell: 1,
             entry: MoverBounceEntry::termini(3, [(1 << 1) | (1 << 40), 1 << 1]),
@@ -416,7 +417,7 @@ const ALL_PLACEMENTS: [(MoverPayloadPlacement, MoverPayloadPlacement); 4] = {
 // bytes exactly.
 #[test]
 fn both_placements_of_both_blocks_round_trip_and_attach_back_to_the_resident_payload() {
-    for resident in [sample(), posed_sample()] {
+    for resident in [sample(), posed_sample(), across_section(across_parts())] {
         placements_round_trip_and_attach_back(&resident);
     }
 }
@@ -808,6 +809,7 @@ fn posed_parts() -> MoverProbeChannelParts {
                 own_tiles: Vec::new(),
             },
         ],
+        across: Vec::new(),
         bounce: vec![
             bounce(9, &[(0, 0), (1 << 5, 1 << 40), (1 << 40, 0)], 0x5000),
             bounce(
@@ -1366,5 +1368,298 @@ fn mover_records_out_of_order_are_refused_by_name() {
     assert_eq!(
         decode(&with_u32(&bytes, second, 3)),
         Err(MoverProbeChannelError::MoverRecordOrder { record: 1 })
+    );
+}
+
+/// The posed sample with across marks for mover 3 (four poses, mid poses 1
+/// and 2). Cell 0: its direct record names probes 0 and 3, where mover 3
+/// stores 255 at pose 2 for probe 0 and at every pose for probe 3; pose 1
+/// encloses probe 3 and pose 2 probe 0. Cell 1: its bounce entry names
+/// probes 1 and 40 and holds nothing at pose 2, which encloses probe 40.
+fn across_parts() -> MoverProbeChannelParts {
+    MoverProbeChannelParts {
+        across: vec![
+            AcrossEntryParts {
+                cell: 1,
+                mover_id: 3,
+                mid_poses: vec![0, 1 << 40],
+            },
+            AcrossEntryParts {
+                cell: 0,
+                mover_id: 3,
+                mid_poses: vec![1 << 3, 1 << 0],
+            },
+        ],
+        ..posed_parts()
+    }
+}
+
+fn across_section(parts: MoverProbeChannelParts) -> MoverProbeChannelSection {
+    MoverProbeChannelSection::assemble(
+        parts,
+        |cell| if cell == 0 { ALL_VALID } else { CELL1_VALID },
+        posed_record,
+    )
+    .unwrap()
+    .expect("the across sample holds entries")
+}
+
+/// Byte offset of the across block: right after the direct block's mover
+/// ids, before its payload.
+fn across_offset(section: &MoverProbeChannelSection) -> usize {
+    let parts = section.byte_breakdown();
+    offsets(section).movers + parts.mover_records + parts.direct_index + parts.direct_records
+}
+
+// Across marks round-trip, once per (cell, mover), resident whatever the
+// direct payload's placement, and sit where the epoch-5 layout pins them:
+// a count, then per entry its listed cell, mover, mid-pose count and one
+// mask per mid pose, ascending by (cell, mover).
+#[test]
+fn across_marks_round_trip_and_sit_at_their_pinned_offsets() {
+    let section = across_section(across_parts());
+    let bytes = section.to_bytes();
+    assert_eq!(section.encoded_len(), bytes.len());
+    let restored = decode(&bytes).unwrap();
+    assert_eq!(restored, section);
+    assert_eq!(
+        restored
+            .across_entries
+            .iter()
+            .map(MoverAcrossEntry::order_key)
+            .collect::<Vec<_>>(),
+        [(0, 3), (1, 3)]
+    );
+    let cell0 = restored.across_entry(0, 3).unwrap();
+    assert!(cell0.is_across(1, 3) && cell0.is_across(2, 0));
+    assert!(
+        !cell0.is_across(0, 3) && !cell0.is_across(3, 0),
+        "termini never"
+    );
+    assert_eq!(restored.across_entry(0, 9), None);
+    // The direct view hands each mover its marks at the record's cell.
+    let record = restored.direct_record_views().next().unwrap();
+    let marks: Vec<_> = record.movers().map(|mover| mover.across).collect();
+    assert_eq!(marks, [Some(cell0), None]);
+    assert_eq!(restored.byte_breakdown().across, 4 + 2 * (12 + 2 * 8));
+
+    let a = across_offset(&section);
+    assert_eq!(&bytes[a..a + 4], &2u32.to_le_bytes());
+    assert_eq!(
+        &bytes[a + 4..a + 16],
+        &[0u32, 3, 2].map(u32::to_le_bytes).concat()[..]
+    );
+    assert_eq!(&bytes[a + 16..a + 24], &(1u64 << 3).to_le_bytes());
+    assert_eq!(&bytes[a + 24..a + 32], &1u64.to_le_bytes());
+    assert_eq!(
+        &bytes[a + 32..a + 44],
+        &[1u32, 3, 2].map(u32::to_le_bytes).concat()[..]
+    );
+    assert_eq!(&bytes[a + 52..a + 60], &(1u64 << 40).to_le_bytes());
+
+    // A streamed direct payload leaves the marks resident.
+    use MoverPayloadPlacement::{Resident, Streamed};
+    let streamed = placed(section.clone(), Streamed, Resident);
+    let loaded = decode(&streamed.to_bytes()).unwrap();
+    assert_eq!(loaded.across_entries, section.across_entries);
+}
+
+// With no mover holding a mid pose, nothing can be marked across, so the
+// across block is absent: a section of two-pose movers packs exactly as it
+// did before across marks existed (`light_poses 2` parity). One mid pose
+// anywhere writes the count, zero or not.
+#[test]
+fn a_section_of_two_pose_movers_writes_no_across_block() {
+    let section = sample();
+    assert_eq!(section.byte_breakdown().across, 0);
+    let bytes = section.to_bytes();
+    let a = across_offset(&section);
+    let parts = section.byte_breakdown();
+    assert_eq!(
+        &bytes[a..a + parts.visibility],
+        &section.visibility[..],
+        "the q payload follows the mover ids"
+    );
+    assert_eq!(decode(&bytes).unwrap(), section);
+    assert_eq!(posed_sample().byte_breakdown().across, 4, "a zero count");
+}
+
+#[test]
+fn an_across_entry_whose_mask_count_is_not_its_movers_mid_poses_is_refused_by_name() {
+    let section = across_section(across_parts());
+    let bytes = section.to_bytes();
+    let count = across_offset(&section) + 4 + 8;
+    for found in [0, 3, 4] {
+        assert_eq!(
+            decode(&with_u32(&bytes, count, found)),
+            Err(MoverProbeChannelError::AcrossMidPoseCount {
+                entry: 0,
+                mover_id: 3,
+                found,
+                expected: 2
+            })
+        );
+    }
+}
+
+#[test]
+fn an_across_entry_naming_a_cell_past_the_listed_cells_is_refused_by_name() {
+    let section = across_section(across_parts());
+    let bytes = section.to_bytes();
+    let second = across_offset(&section) + 4 + 28;
+    assert_eq!(
+        decode(&with_u32(&bytes, second, 2)),
+        Err(MoverProbeChannelError::AcrossCellOutOfRange {
+            entry: 1,
+            listed: 2,
+            cells: 2
+        })
+    );
+}
+
+#[test]
+fn across_entries_out_of_order_or_repeated_are_refused_by_name() {
+    let section = across_section(across_parts());
+    let bytes = section.to_bytes();
+    let second = across_offset(&section) + 4 + 28;
+    // (0, 3) then (0, 3): repeated.
+    assert_eq!(
+        decode(&with_u32(&bytes, second, 0)),
+        Err(MoverProbeChannelError::AcrossOrder { entry: 1 })
+    );
+    // (0, 3) then (0, 2): out of order.
+    let out_of_order = with_u32(&with_u32(&bytes, second, 0), second + 4, 2);
+    assert_eq!(
+        decode(&out_of_order),
+        Err(MoverProbeChannelError::AcrossOrder { entry: 1 })
+    );
+}
+
+#[test]
+fn an_across_entry_naming_a_mover_without_a_record_is_refused_by_name() {
+    let section = across_section(across_parts());
+    let bytes = section.to_bytes();
+    let first = across_offset(&section) + 4;
+    assert_eq!(
+        decode(&with_u32(&bytes, first + 4, 4)),
+        Err(MoverProbeChannelError::MoverRecordMissing {
+            block: "across",
+            mover_id: 4
+        })
+    );
+}
+
+#[test]
+fn an_across_entry_marking_nothing_is_refused_by_name() {
+    let mut parts = across_parts();
+    parts.across[0].mid_poses = vec![0, 0];
+    let bytes = across_section(parts).to_bytes();
+    assert_eq!(
+        decode(&bytes),
+        Err(MoverProbeChannelError::AcrossEntryEmpty {
+            entry: 1,
+            mover_id: 3
+        })
+    );
+}
+
+#[test]
+fn an_across_mark_outside_the_cells_valid_probes_is_refused_by_name() {
+    let mut parts = across_parts();
+    // Cell 1's valid probes are 1, 5 and 40.
+    parts.across[0].mid_poses = vec![1 << 2, 1 << 40];
+    let bytes = across_section(parts).to_bytes();
+    assert_eq!(
+        decode(&bytes),
+        Err(MoverProbeChannelError::AcrossMarkNotValid {
+            cell: 1,
+            entry: 1,
+            pose: 1,
+            mask: 1 << 2,
+            valid: CELL1_VALID
+        })
+    );
+}
+
+// Tightness: a mark names only a probe a direct record or the bounce entry
+// of its mover names at its cell. Probe 5 of cell 0 is valid but no record
+// masks it; mover 9 stores probe 5 in cell 1, but mover 3 does not.
+#[test]
+fn an_across_mark_on_a_probe_its_mover_names_nowhere_at_the_cell_is_refused_by_name() {
+    for (cell, mid_poses, entry, probe) in [
+        (0, vec![(1 << 3) | (1 << 5), 1 << 0], 0, 5),
+        (1, vec![1 << 5, 1 << 40], 1, 5),
+    ] {
+        let mut parts = across_parts();
+        let at = parts
+            .across
+            .iter()
+            .position(|part| part.cell == cell)
+            .unwrap();
+        parts.across[at].mid_poses = mid_poses;
+        let bytes = across_section(parts).to_bytes();
+        assert_eq!(
+            decode(&bytes),
+            Err(MoverProbeChannelError::AcrossMarkNotNamed {
+                cell: cell as usize,
+                entry,
+                pose: 1,
+                probe,
+                mover_id: 3
+            })
+        );
+    }
+}
+
+// An enclosed mid pose holds no bounce state: a mark where the mover's
+// bounce entry stores a tile or reads the base at that pose is refused.
+#[test]
+fn an_across_mark_where_the_bounce_entry_holds_a_state_is_refused_by_name() {
+    // Mover 3 in cell 1 at pose 1: probe 1 reads the base, probe 40 stores.
+    for probe in [1u32, 40] {
+        let mut parts = across_parts();
+        parts.across[0].mid_poses = vec![1 << probe, 1 << 40];
+        let bytes = across_section(parts).to_bytes();
+        assert_eq!(
+            decode(&bytes),
+            Err(MoverProbeChannelError::AcrossBounceState {
+                cell: 1,
+                entry: 1,
+                pose: 1,
+                probe,
+                mover_id: 3
+            })
+        );
+    }
+}
+
+// An across pose's q is never read, so it holds 255 and the bytes stay
+// canonical; anything else is refused at decode, and on attach when the
+// direct payload streams.
+#[test]
+fn an_across_pose_storing_q_below_255_is_refused_by_name() {
+    use MoverPayloadPlacement::{Resident, Streamed};
+    let mut parts = across_parts();
+    // Mover 3 at cell 0 stores q 20 for probe 0 at pose 1: mark it there.
+    parts.across[1].mid_poses = vec![(1 << 3) | (1 << 0), 1 << 0];
+    let section = across_section(parts);
+    let expected = MoverProbeChannelError::AcrossVisibility {
+        cell: 0,
+        record: 0,
+        mover_id: 3,
+        probe: 0,
+        pose: 1,
+        q: 20,
+    };
+    assert_eq!(decode(&section.to_bytes()), Err(expected.clone()));
+
+    let streamed = placed(section, Streamed, Resident);
+    let mut loaded = decode(&streamed.to_bytes()).expect("q is checked when it attaches");
+    let slices = streamed.cell_slices();
+    let chunk =
+        streamed.encode_streamed_rows(&slices, &streamed.streamed_rows_for(&slices, [0, 1]));
+    assert_eq!(
+        loaded.attach_streamed_payload(parse_streamed_rows(&chunk).unwrap()),
+        Err(expected)
     );
 }

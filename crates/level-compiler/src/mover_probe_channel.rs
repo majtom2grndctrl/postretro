@@ -5,6 +5,7 @@
 // closed-pose depth tiles (id 57's depth block).
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
+mod across;
 mod bake;
 mod blocks;
 mod bounce;
@@ -39,6 +40,8 @@ pub(crate) mod reference_maps;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use across::EnclosedMidPoses;
 pub(crate) use bake::{
     MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, StaticBounce, StaticTail,
     bake_mover_bounce, sh_base_bounce_count,

@@ -50,6 +50,7 @@ pub(super) fn fixture_section(
         direct_records: Vec::new(),
         mover_offsets: vec![0],
         direct_movers: Vec::new(),
+        across_entries: Vec::new(),
         visibility: Vec::new(),
         own_tiles: Vec::new(),
         bounce_offsets: vec![0; cells.len() + 1],
@@ -377,6 +378,90 @@ fn a_cell_whose_mask_is_not_tight_is_refused_at_write() {
         .held_writes(&section, &section.cell_slices(), |_, _| None)
         .unwrap_err();
     assert!(error.to_string().contains("not tight"), "{error}");
+}
+
+/// A three-pose bake-only light at local probes 0 and 33 of cell 0, gated
+/// by mover 7 with q `q` (probe-major, three poses a probe), its mid pose
+/// marked across at `across`.
+fn across_section(q: Vec<u8>, across: u64) -> MoverProbeChannelSection {
+    use postretro_level_format::mover_probe_channel::{
+        AcrossEntryParts, DirectRecordParts, MoverProbeChannelParts,
+    };
+    MoverProbeChannelSection::assemble(
+        MoverProbeChannelParts {
+            affinity_dims: [1, 1, 1],
+            direct: vec![DirectRecordParts {
+                cell: 0,
+                record: MoverDirectRecord {
+                    namespace: MoverLightNamespace::BakeOnlyStaticLight,
+                    carries_own_tile: true,
+                    light_index: 0,
+                    probe_mask: 1 | 1 << 33,
+                },
+                movers: vec![(7, q)],
+                own_tiles: vec![F16_QUARTER; 2 * TILE],
+            }],
+            // A (cell, mover) with no mark writes no entry.
+            across: (across != 0)
+                .then(|| AcrossEntryParts {
+                    cell: 0,
+                    mover_id: 7,
+                    mid_poses: vec![across],
+                })
+                .into_iter()
+                .collect(),
+            bounce: Vec::new(),
+            depth: Vec::new(),
+        },
+        |_| u64::MAX,
+        |mover_id| {
+            Ok::<_, ()>(MoverRecord {
+                mover_id,
+                ramp_start: 0.0,
+                ramp_end: 1.0,
+                knots: vec![0.0, 0.5, 1.0],
+            })
+        },
+    )
+    .unwrap()
+    .expect("a record")
+}
+
+/// The across marks reach the table once per (cell, mover): the mover entry
+/// points at its run of mid-pose mask words. A streamed cell is checked as
+/// it arrives, as a decode checks a resident one: a pose its across marks
+/// name stores 255, never read, so any other q there is refused.
+#[test]
+fn across_marks_reach_the_table_and_an_across_pose_storing_q_is_refused_at_write() {
+    // Probe 33 is enclosed at the mid pose.
+    let section = across_section(vec![0, 40, 255, 0, 255, 255], 1 << 33);
+    let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
+    let words = layout.initial_words();
+    let entry = words[4] as usize;
+    let run = words[entry + 2] as usize;
+    assert_eq!(&words[run..run + 2], &[0, 1 << 1], "low word, then high");
+    layout
+        .held_writes(&section, &section.cell_slices(), |_, _| None)
+        .expect("255 at the across pose writes");
+
+    let stored = across_section(vec![0, 40, 255, 0, 30, 255], 1 << 33);
+    let layout = MoverChannelLayout::build(&inputs(&stored, None), false).unwrap();
+    let error = layout
+        .held_writes(&stored, &stored.cell_slices(), |_, _| None)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("which its across marks name"),
+        "{error}"
+    );
+
+    let unmarked = across_section(vec![0, 40, 255, 0, 255, 255], 0);
+    let layout = MoverChannelLayout::build(&inputs(&unmarked, None), false).unwrap();
+    let words = layout.initial_words();
+    assert_eq!(
+        words[words[4] as usize + 2],
+        super::across::NO_ACROSS,
+        "an entry with no marks points nowhere"
+    );
 }
 
 /// Every direct term is checked finite, as bounce tiles are: an own tile

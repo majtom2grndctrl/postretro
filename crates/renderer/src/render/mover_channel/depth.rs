@@ -3,10 +3,9 @@
 // that mover's closed-pose tiles blended by its t′ between the two poses
 // around it that store a tile or read the probe's base moment set (its id-59
 // tile or averaged id-34 moments); an unmarked mid pose is blended across.
-// An interval whose ends are both termini runs through the base, reaching it
-// at the interval's midpoint (owner, 2026-11-09): closed-pose depth describes
-// a surface only where the mover rests. Between other poses the rule is the
-// capture switch's (`depth_blend.rs`). A pose with no tile is one the mover
+// Every such interval runs through the base, reaching it at the interval's
+// midpoint (owner, 2026-11-10): closed-pose depth describes a surface only
+// where the mover rests. A pose with no tile is one the mover
 // leaves unchanged or encloses: it is the base, so there the live tile holds
 // exactly what the probe reads with no section. Several movers at one probe
 // add their blended differences from that base, per moment, clamped to a
@@ -38,7 +37,7 @@ use postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences;
 
 #[cfg(test)]
 use super::depth_blend::f32_to_f16;
-use super::depth_blend::{ACROSS, DepthBlend, UNBOUND_BASE, blend_probe, f16_to_f32, segment};
+use super::depth_blend::{ACROSS, UNBOUND_BASE, blend_probe, f16_to_f32, segment};
 use super::knots::MoverKnots;
 use super::layout::{MoverChannelError, first_non_finite};
 
@@ -93,8 +92,6 @@ pub(in crate::render) struct MoverDepthTiles {
     record_poses: Vec<u32>,
     /// Each mover slot's knots through its ramp.
     knots: MoverKnots,
-    /// The capture switch's rule between two stored poses.
-    blend: DepthBlend,
     /// The CPU-held tiles, decoded once from f16 (exactly) so a frame's blend
     /// converts only its result: every stored closed-pose tile, every pose's,
     /// then, from [`Self::bind`], one base tile per probe.
@@ -217,7 +214,6 @@ impl MoverDepthTiles {
             record_pose_offsets,
             record_poses,
             knots: MoverKnots::new(Some(section), mover_ids)?,
-            blend: DepthBlend::from_env(),
             base_tiles: vec![UNBOUND_BASE; probe_count],
             tiles,
             slot_offsets,
@@ -405,12 +401,12 @@ impl MoverDepthTiles {
             let base = &self.tiles[base_at..base_at + PROBE_DEPTH_TILE_TEXELS];
             let (tiles, poses, offsets) =
                 (&self.tiles, &self.record_poses, &self.record_pose_offsets);
-            let (slots, knots, blend) = (&self.record_slots, &self.knots, self.blend);
+            let (slots, knots) = (&self.record_slots, &self.knots);
             let stated = records.filter_map(|record| {
                 let slot = slots[record] as usize;
                 (t[slot] >= 0.0).then(|| {
                     let poses = &poses[offsets[record] as usize..offsets[record + 1] as usize];
-                    segment(tiles, poses, knots.slot(slot), base, t[slot], blend)
+                    segment(tiles, poses, knots.slot(slot), base, t[slot])
                 })
             });
             blend_probe(base, stated, &mut self.run_tiles);
@@ -450,12 +446,6 @@ impl MoverDepthTiles {
         }
         self.changed_live.clear();
         self.reference_changes.clear();
-    }
-
-    /// Override the capture switch for one test.
-    #[cfg(test)]
-    pub(in crate::render) fn set_blend(&mut self, blend: DepthBlend) {
-        self.blend = blend;
     }
 
     #[cfg(test)]

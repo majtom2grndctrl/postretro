@@ -8,13 +8,17 @@
 // only the direct rows carrying its term, through the passes' existing triggers.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
+mod across;
 mod bounce;
+mod cell_writes;
 mod depth;
 mod depth_blend;
+mod direct_checks;
 mod gpu;
 mod knots;
 mod layout;
 mod pool;
+mod rows;
 mod state;
 mod terms;
 

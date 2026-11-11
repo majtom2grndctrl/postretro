@@ -63,7 +63,7 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
 **Rest is unchanged at high fidelity**
 - [ ] On `mover-closet`, `mover-setpiece` and `enemy-movers`, built `--release`, at t′ = 0 and t′ = 1: every probe's channel contribution equals the pre-change build's, compared build against build with the base taken out as in C10, including `enemy-movers`' three-mover probes. Cells mid poses newly pin are judged within the base's round-trip bar. A probe whose live tile comes only from a mid pose reads its base. Regression guard.
 - [ ] A mover with `light_poses 2`, built `high`, stores today's terminus states and composes today's blend at every t′: linear for bounce and direct, through the base for depth. Regression guard.
-- [ ] K1, K2, K3, C7 and C10 pass on `--release` builds. C9's renderer half passes, with each moved half checked against its piecewise mix. Regression guard.
+- [ ] K1, K2, K3, C7 and C10 pass on `--release` builds. C10's frame-level capture case is judged per station against the pre-brief build's own streaming-mode gap at the same pose plus 4 levels, since BC6H already separates the modes there (owner, 2026-11-11; `drafts/sh-streaming-mode-bc6h-parity.md`). C9's renderer half passes, with each moved half checked against its piecewise mix. Regression guard.
 
 **Placement and key**
 - [ ] With the key absent, a mover bakes min(16, max(2, ceil(L / s) + 1)) poses at even arc length. Covered: a path of unequal segments, a path with a degenerate segment (it adds no length), and a zero-length path (two coincident termini, as today). Pose positions match the runtime's t at each knot.

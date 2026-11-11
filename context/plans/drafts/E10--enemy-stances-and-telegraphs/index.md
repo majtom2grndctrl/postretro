@@ -32,6 +32,7 @@ When this is done:
   - **Where it's checked.** `stance()` warns through the script log when a stance's minimum hold falls below the floor. The engine cannot tell a stance's hold from any other activity.
 - **A release can move.** `release` takes an optional `motion`, any motion verb, and an optional `speed`; omitted, the release holds. A roar can release into a charge: a fast `chaseTarget` whose contact attack fires on reach.
 - **Per-activity speed is an engine field.** Any activity takes an optional `speed`, a positive multiplier on the archetype's `moveSpeed` while it is the innermost activity that sets one. Omitted everywhere, it is 1. The builder writes `release.speed` onto the release only.
+  - **Witting divergence.** `done/E10--hierarchical-behavior-statecharts` and `done/E10--enemy-behavior-descriptor-syntax/sample.ts` placed an absolute per-activity `speed` that graph-wide `moveSpeed` would migrate into. A multiplier lets one SDK stance serve archetypes of different speeds, so the owner chose it (2026-11-11) and gave up that endpoint.
 - **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` with the release's attack (`done/E10--enemy-combat-movement`), so one turn for that attack spans the cycle and holds its draws.
   - A tell must never promise an attack that cannot come. So the builder's hold also exits to `then` when `attackTurnHeld(attack)` for the release's attack is false one tick after entry, the facts' lag.
   - Authors gate stance entry on `attackTurnFree(attack)` with the release's attack.
@@ -51,9 +52,11 @@ When this is done:
   - On a long activity the sum grows without limit, so this brief does not offer stagger mid-chase.
   - This supersedes the deleted `E10--enemy-stagger` draft.
 - **Telegraph sounds reach every peer.**
-  - An activity's `sound` field and a contact attack's `sound` play once on each participating client, anchored to the enemy like the observer weapon cue. The host plays its own as today.
-  - This takes the enemy slice of roadmap E12 step 4.
-  - `onEnter` reactions are unchanged: a reaction's `playSound` already reaches every peer.
+  - An activity's `sound` field and a contact attack's `sound` reach each participating client as a positioned `PlaySound` presentation command at the enemy's host-captured origin: the route an `onEnter` `playSound` already takes. The host plays its own once, as today.
+  - Presentation is unreliable, so a dropped packet can lose a sound. The pose replicates as animation state and still tells. No new message kind and no version bump.
+  - This takes the enemy slice of roadmap E12 step 4, on the payload that step extends.
+  - `onEnter` reactions are unchanged.
+- **Release clips wait on Clip-timed attacks.** A release must play the rest of its attack clip, not replay the windup from frame 0, and strike on the clip's moment rather than on entry. Both belong to the roadmap's Clip-timed attacks, which builds first. The overhead, lunge and jab content waits on it; the builder, the facts, the sounds, the limitator's aim and the roar do not, since their holds and releases are separate clips.
 - **Clients match the host on clips.** The host restarts nothing when the next activity names the clip already playing, and neither does a client. No re-entry signal is replicated.
 - **Shipped content adopts the vocabulary in this brief.**
   - The reference brute (`models/mutant`, library `mixamo_brute`) telegraphs every attack with a stance, one attack each:
@@ -173,11 +176,11 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - [ ] On a loopback client, an activity's `sound` and a contact attack's `sound` play exactly once per host event, and the host plays each exactly once.
 - [ ] An enemy weapon attack's sound still plays exactly once (pin P10).
 - [ ] An A → B → A sequence inside one snapshot interval plays A's sound twice on each peer (pin P7).
-- [ ] A cue for an entity the client lacks plays once at the host-captured position and never replays (pin P9).
+- [ ] A sound for an enemy the client lacks plays once at the host-captured position and never replays (pin P9).
 - [ ] An enemy killed in the apply pass that enters its stance plays no stance sound on any peer (pin P11).
-- [ ] A client receiving a cue runs no `onEnter` reaction.
-- [ ] A client that begins participating on the tick an enemy enters its stance plays that stance's sound at most once, and only from a cue. Materializing an enemy mid-stance plays no sound (pin P14).
-- [ ] A previous-protocol client is refused.
+- [ ] A client receiving the sound runs no `onEnter` reaction.
+- [ ] A client that begins participating on the tick an enemy enters its stance plays that stance's sound at most once, and only from its command. Materializing an enemy mid-stance plays no sound (pin P14).
+- [ ] Grep gate: no server message variant is added, and `PROTOCOL_ID` and `WIRE_VERSION` are unchanged.
 - [ ] Entering an activity whose clip is already playing restarts nothing on host or client.
 
 ### Manual
@@ -194,6 +197,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
   - **Damage.** `apply_damage_with_context` already writes the brain for every producer, through `record_damage_perception` on a live target. Its `drain.points_dealt` is layer-absorbed plus health loss (`drain_layers`). A same-level row naming the current activity is skipped (`first_enabled_target`), so an activity re-enters only through a sibling or an ancestor.
   - **Seeding.** `pellet_rng_seed` / `SplitMix64` salt with a per-instance counter rather than `EntityId`. The initial activity is seated before spawn state is set (pin P13).
   - **Melee is silent on clients** because `publish_observer_weapon_cues` skips emissions without a `shot_id`.
+  - **Sound route.** `SystemReactionCommand::PlaySound` maps to `PresentationCommand::PlaySound` (`crates/netcode/src/presentation_commands.rs`) and goes out through `broadcast_presentation`; `resolve_recipients` sends a host-only sound with no audience to Everyone.
   - **The determinism gate's** single enemy spawns after both pawns, so today's reversal cannot catch an `EntityId` seed.
 - **Shape.** A fragment builder plus `merge()`. The rival, a composite activity with a nested graph, needs an engine "nested graph finished" fact to exit, and can't hold a turn across siblings.
 - **First slice.** The roll fact, its seed, and the extended determinism gate: the one-way door, falsified fastest.
@@ -205,6 +209,7 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 - The seeded hold and recovery defaults, and the floor's reaction budget — **delegated**: tune on `movement-feel` under the lag profile and report.
 - The brute's new lunge and charge attacks (names, damage, draws), the charge speed, and how its offense graph nests the four stances — **delegated**: tune on `movement-feel` and report.
 - `punch_windup` — **blocks build** of the jab stance only: the owner re-exports `mixamo_brute` from the Mixamo sources with a `--trim punch_windup=punch:<ms>` cut at the cocked fist. The other stances build without it.
+- Clip-timed attacks — **blocks build** of the overhead, lunge and jab releases: that brief's clip ranges and event-timed strike land first. The owner may fold the strike cuts into the same `mixamo_brute` re-export as `punch_windup`.
 
 ## Boundary inventory
 
@@ -222,14 +227,4 @@ The Luau twin calls the same builders with Luau syntax (`brain.targetDistance:le
 These facts append after `hasAttackTurn` (slot 20).
 
 ## Wire format
-**Enemy cue message, host to clients.** It follows `WeaponCuesMessage`:
-- the same codec and the same reliable-ordered channel;
-- one cue per message, sent when the host event fires, so no batch cap can drop one;
-- sent to every participating client.
-
-Fields, in order:
-- **participation epoch:** as `WeaponCuesMessage` carries it;
-- **anchor:** the enemy's `NetworkId` with the captured origin, or the captured origin alone when the enemy has no network id. No contact list;
-- **sound:** required, encoded as `WeaponCue.sound`'s string.
-
-Weapon attack sounds stay on `WeaponCue`. The new message is appended to the server message enum under an append-layout guard, and bumps `PROTOCOL_ID`. No snapshot record changes.
+**No new message.** Telegraph and melee sounds ride the existing `PresentationCommand::PlaySound { sound, bus, at }` on the Presentation channel, `at` set to the host-captured origin, to every participating client. Weapon attack sounds stay on `WeaponCue`. No `PROTOCOL_ID`, `WIRE_VERSION` or `SNAPSHOT_VERSION` change.

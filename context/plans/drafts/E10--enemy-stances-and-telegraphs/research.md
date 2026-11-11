@@ -91,3 +91,7 @@ Read at 5932287f; refreshed at 2cb88013. Findings that inform the brief but do n
 - **Content drift.** The limitator's `aim` was replaced by `close` / `wait` (strafe) / `burst` (`attackTurn: "shoot"`) / `move` (reposition). The brute's slam cycle carries `attackTurn: "slam"` marks and a windup turn-lost exit at 250 ms. Tests pinning it: `reference_behavior_graph` and its `reference_enemy_*` users (`crates/ai/src/ai_tests.rs`), `the_shipped_reference_enemy_graph_is_identical_in_both_authorings`, `dev_mod_budget_paces_reference_enemies_and_troopers`.
 - **Speed.** No per-activity speed exists; `move_speed` is per archetype, copied onto the agent at spawn.
 - **Naming.** `LocomotionStance` (player, `crates/sim/src/sim/player_locomotion/jump.rs`) is engine-internal, not modder-facing.
+- **Direction review (validate-plan, 2026-11-11): Under-scoped**, resolved by the owner:
+  - Release clips replay the windup from frame 0 (`smash_windup` and `swipe_windup` are prefix cuts) while damage fires on entry. Clip-timed attacks (roadmap) builds first; three brute releases block on it.
+  - Per-activity `speed` stays a multiplier, recorded as a witting divergence from the statecharts brief and `sample.ts`. Owner: much ms-timed API predates clip awareness; expect to pay it down toward clip-referenced timing.
+  - Sounds reuse `PresentationCommand::PlaySound` rather than a new reliable message, one route with `onEnter` and E12 step 4. The pose remains the tell when a packet drops.

@@ -19,11 +19,16 @@
 // - `strafe`: the wave strafes. The row the replan budget was measured on.
 // - `chase`: the same wave on plain chase, to tell strafe's cost from the
 //   engaged-wave cost that predates it.
-// - `strafe+hits focus`: strafers take peer hits (friendly fire stand-in:
-//   every 0.5 s, one wave enemy in eight is hit by another for 5) under a
-//   tolerance no hit reaches, so they keep the player.
-// - `strafe+hits infight`: the same hits, with retaliation on and a tolerance
-//   the hits cross, so struck enemies turn on the peer that hit them.
+// - `strafe+hits …`: strafers take peer hits (friendly fire stand-in: every
+//   0.5 s, one wave enemy in eight is hit by another for 5). The wave and the
+//   chasers share one faction, since different factions are hostile by
+//   default and the wave would otherwise turn on the chasers.
+//   - `infight`: tolerance 4 and a 1.5 s retaliation window, so a struck
+//     enemy turns on the peer that hit it.
+//   - `window 0`: tolerance 4, but `retaliation.windowMs` 0, which disables
+//     retaliation outright.
+//   - `tolerance 100`: the default 1.5 s window, but a tolerance no damage
+//     inside one window reaches.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -44,8 +49,9 @@ const HIT_DAMAGE: f32 = 5.0;
 #[derive(Clone, Copy, PartialEq)]
 enum PeerHits {
     None,
-    Focus,
     Infight,
+    WindowZero,
+    Tolerance100,
 }
 
 struct Scenario {
@@ -55,7 +61,7 @@ struct Scenario {
     counts: &'static [usize],
 }
 
-const SCENARIOS: [Scenario; 4] = [
+const SCENARIOS: [Scenario; 5] = [
     Scenario {
         label: "strafe",
         motion: MotionVerb::Strafe,
@@ -69,15 +75,21 @@ const SCENARIOS: [Scenario; 4] = [
         counts: &[16, 32, 64, 128],
     },
     Scenario {
-        label: "strafe+hits focus",
-        motion: MotionVerb::Strafe,
-        hits: PeerHits::Focus,
-        counts: &[32, 64, 128],
-    },
-    Scenario {
         label: "strafe+hits infight",
         motion: MotionVerb::Strafe,
         hits: PeerHits::Infight,
+        counts: &[32, 64, 128],
+    },
+    Scenario {
+        label: "strafe+hits window 0",
+        motion: MotionVerb::Strafe,
+        hits: PeerHits::WindowZero,
+        counts: &[32, 64, 128],
+    },
+    Scenario {
+        label: "strafe+hits tolerance 100",
+        motion: MotionVerb::Strafe,
+        hits: PeerHits::Tolerance100,
         counts: &[32, 64, 128],
     },
 ];
@@ -173,9 +185,15 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
         "engage",
         vec![("engage", activity("walk", scenario.motion, None))],
     );
-    if scenario.hits == PeerHits::Infight {
+    // `Tolerance100` keeps the graph's omitted block: the default window.
+    let window_ms = match scenario.hits {
+        PeerHits::Infight => Some(1_500.0),
+        PeerHits::WindowZero => Some(0.0),
+        PeerHits::None | PeerHits::Tolerance100 => None,
+    };
+    if let Some(window_ms) = window_ms {
         graph.retaliation = Some(RetaliationDescriptor {
-            window_ms: 1_500.0,
+            window_ms,
             damage_weight: 1.0,
             recency_weight: 0.001,
         });
@@ -193,24 +211,26 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
         let distance = 6.0 + (index / 16) as f32;
         let position = center + Vec3::new(yaw.sin(), 0.0, yaw.cos()) * distance;
         let enemy = spawn_engaged(&mut reg, position, &graph, "engage");
-        match scenario.hits {
-            PeerHits::None => {}
-            // An omitted `retaliation` block is the default window, not off, and
-            // the raider pair's authored tolerance outranks the archetype field;
-            // so a focused wave keeps the default faction, whose pair declares
-            // no tolerance, and an unreachable archetype tolerance.
-            PeerHits::Focus => set_crossfire_tolerance(&mut reg, enemy, f32::MAX),
-            PeerHits::Infight => {
-                set_crossfire_faction(&mut reg, enemy, CROSSFIRE_RAIDER_FACTION);
-                set_crossfire_tolerance(&mut reg, enemy, CROSSFIRE_LOW_TOLERANCE);
-            }
+        // The per-enemy (archetype) tolerance outranks the faction pair's.
+        let tolerance = match scenario.hits {
+            PeerHits::None => None,
+            PeerHits::Infight | PeerHits::WindowZero => Some(CROSSFIRE_LOW_TOLERANCE),
+            PeerHits::Tolerance100 => Some(100.0),
+        };
+        if let Some(tolerance) = tolerance {
+            set_crossfire_faction(&mut reg, enemy, CROSSFIRE_RAIDER_FACTION);
+            set_crossfire_tolerance(&mut reg, enemy, tolerance);
         }
         wave.push(enemy);
     }
     let mut agents: Vec<(EntityId, usize)> = wave.iter().map(|&id| (id, 0)).collect();
     for index in 0..CHASERS {
         let x = center.x - 4.0 + index as f32 * 1.1;
-        agents.push((spawn_chaser(&mut reg, x, center.z - 15.5), 1));
+        let chaser = spawn_chaser(&mut reg, x, center.z - 15.5);
+        if scenario.hits != PeerHits::None {
+            set_crossfire_faction(&mut reg, chaser, CROSSFIRE_RAIDER_FACTION);
+        }
+        agents.push((chaser, 1));
     }
 
     let mut open_wait: Vec<Option<u32>> = vec![None; agents.len()];

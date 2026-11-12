@@ -1,0 +1,8 @@
+{"sweepfix/face": {"rect": [8, 148, 952, 392]},
+ "sweepwest/face": {"rect": [8, 148, 952, 392]},
+ "walledge/end": {"rect": [478, 10, 535, 530]},
+ "walledge/north": {"rect": [250, 30, 465, 520]},
+ "sweeper_east/face": {"rect": [150, 205, 715, 352]},
+ "east/frame": {"rect": [0, 0, 960, 540]},
+ "west/frame": {"rect": [0, 0, 960, 540]},
+ "floor/frame": {"rect": [0, 0, 960, 540]}}

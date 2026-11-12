@@ -1,0 +1,27 @@
+# Floor eighth-power metric (task 12c), max excess / peaks; head = today, dark = POSTRETRO_PROTO_ENCLOSED_DARK=1, dtruth = dense truth under the dark rule
+t           head/ cur      head/ r40      dark/ cur      dark/ r40    dtruth/ cur    dtruth/ r40
+0.500       8.7 /   8      6.3 /   6      8.7 /   8      6.3 /   6      8.5 /   8      6.3 /   6 (blocks 5304)
+0.700       9.9 /   9      5.4 /   2      9.9 /   9      5.4 /   2      9.9 /   8      5.4 /   2 (blocks 5304)
+0.800       7.3 /   3      6.0 /   4      7.3 /   8      6.0 /   6      7.2 /   6      6.0 /   5 (blocks 5304)
+0.860       9.4 /   9      7.5 /   6      9.4 /   9      7.5 /   5      9.3 /  10      7.2 /   3 (blocks 5304)
+0.900      10.3 /   8      8.1 /   4     10.3 /   8      8.1 /   4     10.3 /   8      8.0 /   4 (blocks 5304)
+0.950       9.2 /   8      6.5 /   6      9.2 /   8      6.5 /   6      9.3 /   8      6.3 /   7 (blocks 5304)
+1.000       6.7 /   5      5.6 /   7      6.7 /   5      5.6 /   7      6.7 /   5      5.6 /   7 (blocks 5304)
+
+# Paired cold --release bake times (fresh cache dirs), switch off (h) vs on (d)
+baked tim1-h-enemy-movers (src head, dark=0) rc 0 in 29s
+baked tim1-d-enemy-movers (src head, dark=1) rc 0 in 15s
+baked tim1-h-mover-setpiece (src head, dark=0) rc 0 in 51s
+baked tim1-d-mover-setpiece (src head, dark=1) rc 0 in 51s
+baked tim2-h-enemy-movers (src head, dark=0) rc 0 in 15s
+baked tim2-d-enemy-movers (src head, dark=1) rc 0 in 14s
+baked tim2-h-mover-setpiece (src head, dark=0) rc 0 in 51s
+baked tim2-d-mover-setpiece (src head, dark=1) rc 0 in 51s
+bake-tim1-d-enemy-movers.log:   Total            14.29s
+bake-tim1-d-mover-setpiece.log:   Total            51.23s
+bake-tim1-h-enemy-movers.log:   Total            14.45s
+bake-tim1-h-mover-setpiece.log:   Total            51.11s
+bake-tim2-d-enemy-movers.log:   Total            14.33s
+bake-tim2-d-mover-setpiece.log:   Total            50.65s
+bake-tim2-h-enemy-movers.log:   Total            14.35s
+bake-tim2-h-mover-setpiece.log:   Total            51.16s

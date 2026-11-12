@@ -292,3 +292,137 @@ Rules: `index.md` "IP rules bind unchanged"; `ip-372` levers 2, 3, 5 and 7. Ever
   - `crates/renderer/src/render/kinematic_brush.rs`: `amend2_proto_source`, applied in `shader_source`.
 
   No test was run against these edits. The existing source-text tests look for the eighth-power lines and the floor constant, both still present, but `cargo test` was not run.
+
+## Ruling B option (ii), prototyped (Windows, 2026-11-12)
+
+Prototype and measurement only: nothing is committed or made the default. Same machine and settings as above (GTX 1660 SUPER, Vulkan, offscreen 960×540, `sync-proof`, one forced mover).
+
+### Answers first
+
+- **(ii) removes the in-wall band, and the dense truth agrees.** Under `r40`, segment B (static indirect) falls from 5.3 / 6.6 to **0.77 / 2.34** mean (t′ 0.10–0.56 / 0.56–0.94), max 4.1. That matches the lattice-shift reference (0.63 / 2.33) and the earlier estimate (0.5 / 2.5). Against a dense truth baked under the same dark rule, the knotted build is within 0.02 mean, 1.0 worst.
+- **Without ruling A's ramp it paints dark spheres.** Under today's backface, the sweeper's west face gets a row of lattice-spaced dark blotches, the worst block −16.9 at t′ 0.078. The east face reaches −7.8 and the wall's end face −9.2. The dense dark-rule truth shows them too, so the dark rule causes them, not interpolation. Under `r40` the worst darkening on any mover face is 2.2, and no frame has a block darker by more than 3.
+- **Static receivers are untouched.** The arena floor and walls in the fixed sweeper views, and the room-floor eighth-power metric, are unchanged.
+- **Rest is unchanged.** Every terminus state is byte-identical, and all 28 rest frames match today's bake pixel for pixel.
+- **New residue: the band re-lights into rest.** Termini still read the base, so the band climbs from 4.4 to 6.3 over the last 0.04 of travel. Above the door, the largest step at t′ 0.98 is 8.7, against 4.65 for `r40` alone. The dense dark truth steps 4.6 there, so a stored pose closer to the terminus would halve it.
+- **Cost.** id 57 grows 1.8 % on `mover-setpiece` and 3.5 % on `enemy-movers`. Bake time does not change.
+
+### What "dark" means
+
+The switch removes the enclosed-mid-pose exception. An enclosed mid pose stores the state its own posed bake gives, like any other mid pose. Enclosure no longer decides anything at a mid pose. Termini keep today's rule.
+
+| Term | Stored at an enclosed mid pose | Why |
+|---|---|---|
+| Bounce | The posed gather's own tile. Every lifted ray starts in solid and reads black, so it is zero radiance. It is stored where it leaves the probe's bars against id 34, and reads the base where id 34 is already within them | Measured: the largest \|SH coefficient\| over every enclosed (probe, pose) is exactly 0. That covers 713 pairs on `enemy-movers`, 8,672 on `mover-setpiece` and 2,233 in the dense sweeper. So "what the bake gathers" and "an explicit zero-radiance SH" are the same definition. On the setpiece, 8,017 pairs store dark and 655 read a base already within the bars of zero |
+| Direct | The traced q. Every lifted segment starts in solid, so q is 0 wherever the light is statically clear | The same joint trace every pose runs; no special value |
+| Depth | Unchanged: the dark tile | The inside-brush rule, as today |
+| Across marks | None written | Nothing blends across any more (19 → 0 entries on `enemy-movers`, 31 → 0 on the setpiece; 13,744 B → 4 B) |
+
+- **Switch.** `POSTRETRO_PROTO_ENCLOSED_DARK=1`, read once by `prl-build` and logged as `[AMEND2-PROTO-B]`. Unset, the build is byte-identical to HEAD on both maps. It is not folded into any memo key, so bake with `--release` only.
+- **No wire, loader or renderer change.** The states are ordinary stored states, and the loader accepts the sections. The renderer has not changed; the `AMEND2-PROTO` backface switch is ruling A's.
+- **A bounce-only variant was not built.** That would mean bounce dark and direct blending across. It conflicts with a loader refusal: `MoverProbeChannelAcrossBounceState` refuses an across-marked probe whose bounce entry stores a state. It would need a wire change, or a baked interpolated q.
+
+### Numbers
+
+Columns are today's bake and the dark bake, each under today's backface (`cur`) and `r40`. The truths are dense: room `light_poses 76`, wall 267, sweeper 113. "today's rule" is the earlier truth bake. "dark rule" is the same truth maps baked with the switch. Full output: `dark-analyze.txt`.
+
+**Segment B, static indirect (mask 0x02), t′ 0.10–0.94**
+
+| Column | Mean, 0.10–0.56 / 0.56–0.94 | Max | Largest mean step |
+|---|---|---|---|
+| Today | 10.84 / 10.94 | 15.8 | 4.39 |
+| `r40` alone | 5.27 / 6.55 | 6.8 | 2.05 |
+| Dark, today's backface | 2.19 / 3.69 | 7.4 | 6.88 (the above-roof pulse remains) |
+| **Dark + `r40`** | **0.77 / 2.34** | **4.1** | **0.42** |
+| Dense truth, dark rule, `r40` | 0.75 / 2.30 | 4.1 | 0.39 |
+| Lattice shifted 32 u + `r40` (option i) | 0.63 / 2.33 | 3.6 | 0.37 |
+
+**Per-frame steps (largest 8×8-block |Δluma| between 60 fps frames; frames over 3 in brackets)**
+
+| View | Today | `r40` | Dark, today's backface | Dark + `r40` | Dark + `r40` vs dark-rule truth (mean / worst) |
+|---|---|---|---|---|---|
+| Ceiling B, t′ 0.1–0.6 | 4.71 (12) | 1.19 (0) | 5.91 (8) | **1.00 (0)** | 0.02 / 1.0 |
+| Ceiling A, t′ 0.1–0.6 | 5.52 (7) | 4.90 (1) | 5.07 (8) | 4.29 (1) | 0.11 / 2.6 |
+| Ceiling B, whole trip (0.01 steps) | 9.63 | 3.02 | 10.83 | 1.74 (at t′ 1.0, the re-light) | 0.03 / 1.3 |
+| Ceiling A, whole trip (0.01 steps) | 7.39 | 4.65 | 9.14 | **8.70 (at t′ 0.98, the re-light)** | 0.15 / 5.5 |
+| Sweeper east face | 11.23 (23) | 4.34 (12) | 11.23 (23) | 4.34 (12) | 0.67 / 9.2 (the truth's own t′ 0.027 artifact; `r40` alone reads the same) |
+| Sweeper west face | 13.43 (20) | 6.95 (25) | **20.35 (21)** | 7.38 (26) | 0.10 / 4.8 |
+| Wall end face | 19.89 (18) | 8.73 (12) | 19.87 (22) | 8.72 (13) | 0.37 / 4.1 |
+| Wall north face | 7.37 (11) | 6.53 (4) | 7.39 (10) | 6.53 (4) | 0.11 / 9.6 (`r40` alone reads the same) |
+
+**Dark spheres.** Worst 8×8-block darkening of the dark bake against today's bake under the same backface, with its t′ and the number of frames with any block darker by more than 3. Charts: `a2-ruling-b-dark-blotch.png` and `a2-ruling-b-dark-sheet.png`, each view at its worst t′ with an ×8 difference map.
+
+| View | Today's backface | `r40` |
+|---|---|---|
+| Sweeper east face (rides the slab) | −7.8 at 0.414 (3 frames) | −1.0 (0) |
+| Sweeper west face (rides the slab) | **−16.9 at 0.078** (5 frames) | −2.2 at 0.231 (0) |
+| Sweeper, fixed camera east (face, floor, walls) | −6.7 at 0.26 (4) | −1.9 (0) |
+| Sweeper, fixed camera west | −13.8 at 0.54 (6) | −2.4 at 0.54 (0) |
+| Wall end + north faces | −9.2 at 0.440 (a vertical stripe) | −1.6 (0) |
+| Room floor view | −4.2 at 0.80 (1) | −2.2 (0) |
+| Ceiling band B / A | −34.2 / −19.9 | −15.2 / −8.2: the band going away, as intended |
+
+- The blotches sit on the mover's own faces, one per probe column behind the face. Floors and static walls show no difference.
+- Under `r40` the west face still dips about 0.8 mean luma for a few frames at each lattice crossing (t′ 0.08, 0.23, 0.38; `a2-ruling-b-dark-sweeper.png`). The dense dark-rule truth dips the same way.
+- **Floor, eighth power** (task 12c, `dark-floor-timing.txt`): max excess identical at every t′ under both forms. Peak counts move by at most ±2.
+
+### Rest, bytes and time
+
+- **Termini unchanged.** A temporary `#[cfg(test)]` check decoded both builds' id 57 and compared every terminus state. It passed for today against dark on both maps, and for the today-rule truths against the dark-rule truths:
+  - direct q at both termini: 3,950 (cell, light, mover, probe) on `enemy-movers`, 14,560 on the setpiece;
+  - bounce: terminus masks and tiles of every entry (202 and 412);
+  - depth: terminus marks and tiles of every record.
+
+  The only mid-pose q changes are 255 → 0: 4,121 on `enemy-movers` and 33,208 on the setpiece. The check has been removed.
+- **Rest frames.** At t′ 0 and 1, every view under both forms (28 frames) is pixel-identical between today's bake and the dark bake.
+
+| | `enemy-movers` | `mover-setpiece` |
+|---|---|---|
+| id 57 | 4,515,849 → 4,673,165 B (+3.5 %) | 12,030,273 → 12,247,988 B (+1.8 %) |
+| Direct payload | 657,097 → 697,929 B; records 201 → 208 | 3,134,893 → 3,259,212 B |
+| Bounce payload | 1,930,608 → 2,051,136 B | 4,175,496 → 4,282,632 B |
+| Bounce states kept after skipping | sweeper 1,382 → 1,627; lift 184 → 284; crushers 335 → 415, 423 → 556 | wall 1,781 → 1,968; room 1,376 → 1,685 |
+| Depth | unchanged | unchanged |
+| Cold `--release` bake, paired runs | 14.45 / 14.35 s → 14.29 / 14.33 s | 51.11 / 51.16 s → 51.23 / 50.65 s |
+
+Both payloads stay resident, under their 8 MiB bars. A run of dark states skips cleanly, since a dark state between dark neighbours is within the bars. Only the transitions add states.
+
+### Wall truth 267, by the exact predicate
+
+A temporary `#[cfg(test)]` check placed `light_poses 267` on `setpiece_wall` and called `mover_light_gate::poses_in_band` on its even knots. It found **0** mid poses in a band, and the placed knots equal the even knots bit for bit, so task 23's nudge moved none. The same check gives 0 for room 76 and sweeper 113. The check has been removed.
+
+### IP reading
+
+- **The shape is unchanged.** Each pose stores an absolute value state, and compose blends neighbouring states by mover position (`ip-check.md` §Piece 7, §Tencent). The renderer and every weight are untouched. Each valid probe keeps trilinear × validity × backface × Chebyshev, floored at 0.03, and depth still blends moment sets.
+- **Not a flag.** q is the traced surviving fraction, stored as at every pose; q = 0 already occurs wherever a pose fully shadows a probe. The bounce tile is the gathered irradiance. Neither is precomputed from a threshold (lever 2). At a mid pose the prototype removes the one place enclosure chose behaviour; enclosure now decides storage only at the termini.
+- **Could it be read as "a per-probe occluded flag" or "a weight forced to zero when a door closes" (lever 7)?** The weight is not touched. The probe's *value* goes to zero because its rays start inside the solid.
+  - An excluded probe would drop out of the normaliser, and its neighbours' light would fill in. A dark-valued probe stays in at ≥ 0.03 and pulls the result darker, so it is the opposite of exclusion.
+  - The risk to name: a reader may see "the probe goes black when the slab passes over it" as a door-state verdict. That is an argument to make, not a mechanism the code has.
+- **Counsel-packet line** would become: "states per pose, not per terminus; an enclosed terminus reads the base; an enclosed mid pose stores the state its own posed bake gives (zero bounce, its traced direct q, the dark depth tile); a skipped mid pose blends across."
+  - The across-marks sentence goes, since no across marks remain.
+  - Question 9's wording is unaffected.
+  - Question 7 gains a note: probes at the 0.03 floor now carry dark values mid-travel.
+
+### Recommendation
+
+- **Adopt (ii) only together with ruling A's `r40`, never alone.**
+  - With `r40` it removes the in-wall level the warning could only ask authors to fix. Band B goes to 0.77 / 2.34, matching both the lattice-shift reference and its own dense truth.
+  - It needs no author action on maps where no lattice phase clears (the setpiece's y axis, `ghost-links` x).
+  - It costs 2–4 % of id 57 and no bake time, and leaves rest bytes and frames exactly as they are.
+- **With today's backface it is worse than today.** Dark spheres reach −17 and the sweeper west-face step grows 13.4 → 20.4.
+- **Owner calls:**
+  - the reversal of the 2026-11-10 enclosing rule;
+  - the counsel-packet line above;
+  - the re-light into rest: a step of 8.7 above the door at t′ 0.98, against 4.65 for `r40` alone. A follow-up could add a geometry knot just inside the terminus where an enclosure interval reaches it. The dense truth's 4.6 there suggests that halves the step.
+- Keep (i)'s warning only if the owner wants authors told about in-slab layers anyway. With (ii) and `r40`, it no longer has to carry the fix.
+
+### Files (option ii)
+
+- **Here:**
+  - PNGs: `a2-ruling-b-dark-band.png`, `a2-ruling-b-dark-sweeper.png`, `a2-ruling-b-dark-blotch.png`, `a2-ruling-b-dark-sheet.png`;
+  - clips: `clips/a2-ruling-b-dark-ceiling-band.mp4`, `clips/a2-ruling-b-dark-sweeper-east.mp4`, `clips/a2-ruling-b-dark-sweeper-west.mp4`. Each is H.264, 2 × 3 panels: today | `r40` alone | dark + `r40`; dense truth (today's rule) + `r40` | dense truth (dark rule) + `r40` | dark + today's backface;
+  - tables: `dark-analyze.txt`, `dark-floor-timing.txt`;
+  - tools: `tools/dcap.py`, `danalyze.py`, `dcharts.py`, `dclips.py`, `dregions.json`, `dbake.sh`, `dbakes.sh`, `dcaps.sh`. They extend `acap.py` with the sweeper west-face and fixed views, and take the scratch root from `A2_ROOT`.
+- **Prototype code** (marked `AMEND2-PROTO-B`, LF, uncommitted; remove before landing): `crates/level-compiler/src/mover_probe_channel/`:
+  - `mid_pose.rs`: the switch, and enclosed probes classifying their own gathered state;
+  - `direct.rs`: enclosed mid poses traced;
+  - `across.rs`: no across marks under the switch.

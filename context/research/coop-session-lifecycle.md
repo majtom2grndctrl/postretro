@@ -166,6 +166,10 @@ stateDiagram-v2
 
 - **Transitions:** clients follow the host's navigation; the ledger carries across level changes. A client's `leaveSession`, an eviction, a refusal, a lost host, and the host's `endSession` all land the client at a single-player frontend. Hosting and joining happen in-app.
 - **Decided:** direct connect only (no discovery, relay or matchmaking); the engine owns admission, seats and map authority; the mod owns lobby policy (`coop-session-lobby.md` §2). The lobby is optional (owner, this session).
+- **Decided (owner, this session): a host can protect its session with a password.** Admission checks it after the mod id. A wrong or missing password is refused like a mod-id mismatch and lands the client at its frontend with a notice.
+  - **Leaning:** the password is an engine admission gate, not part of the mod's join predicate. A secret never enters a store slot, a replicated value, or a save.
+  - **Leaning:** never send it in the clear. The transport runs netcode `Unsecure` (`NetServer` setup in `crates/net/src/transport.rs`), so admission uses challenge and response: the host sends a fresh nonce, and the client answers with a keyed hash of password and nonce. This gates access only; it is not identity authentication or anti-cheat, which stay non-goals (`coop-session-lobby.md` §6).
+  - **Open:** where the host sets it (in-app hosting, a CLI flag for command-line hosts, or both), and whether the client may retry a wrong password without reconnecting.
 - **Leaning:** session phase is a mod-declared slot. A lobby is a scene the host navigates to, not a new app state.
 - **Open:** what a lobby declaration holds (menu tree, backdrop, whether players have pawns there), and whether a host can sit in a lobby with no level installed.
 
@@ -230,8 +234,9 @@ sequenceDiagram
 |---|---|---|---|
 | 1 | `coop--client-leave-session` (reshape) | `leaveSession()` and `endSession()`; `ui.quitToMenu` resolving by role; exit to desktop disconnecting; any host-side ending landing at a single-player frontend; on leave, saving the character and then reloading the player's own world; inside a session, `returnToFrontend` refused with a warning (G1–G5) | none |
 | 2 | Optional lobby and navigation (new) | the mod-declared lobby; the generalized `navigate(destination)` that replaces `returnToFrontend`; clients following the host's navigation | leave |
-| 3 | Phase 3.75 lobby authoring surface | in-app hosting, session phase, join predicate, joined, left and phase-changed reactions, `evictPlayer` and its policy | optional lobby |
-| 3 | In-app join (new, small) | direct-connect UI: address entry, connecting and refused states, notice on a host-side ending | leave |
+| 3 | Phase 3.75 lobby authoring surface | in-app hosting, including setting a session password; session phase, join predicate, joined, left and phase-changed reactions, `evictPlayer` and its policy | optional lobby |
+| 3 | In-app join (new, small) | direct-connect UI: address and password entry, connecting and refused states, notice on a host-side ending | leave |
+| 3 | Session password (new, small) | the engine admission gate and its challenge and response, a refusal cause, and a CLI flag for command-line hosts and joiners | leave, for the refusal path |
 | 4 | Character and world saves (new) | separate files, level-boundary world saves (G7), the author's gear-scope parameter, run state and Continue | none |
 
 Ending a session with `endSession` closes G2 for games without a lobby, so brief 1 no longer leaves clients stranded. Brief 2 adds the stay-together path.

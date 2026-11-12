@@ -68,8 +68,11 @@ fn a_ramped_mover_whose_mid_poses_the_ramp_squeezes_out_builds_a_prl_that_loads(
     );
 }
 
-// Automatic placement on `enemy-movers`: every mover's record carries
-// min(16, ⌈L / s⌉ + 1) knots at even arc length, mid poses store states,
+// Automatic placement on `enemy-movers`: every mover's record carries its
+// min(16, ⌈L / s⌉ + 1) even knots at even arc length and the geometry knots
+// placed where its slab starts or stops enclosing a probe, strictly
+// ascending from 0 to 1. An even knot leaves only where it merged into a
+// geometry knot within the 2.5 cm merge tolerance. Mid poses store states,
 // and the PRL loads.
 #[test]
 fn enemy_movers_bake_their_placed_poses_and_load() {
@@ -80,13 +83,26 @@ fn enemy_movers_bake_their_placed_poses_and_load() {
         &[],
     );
     let channel = channel(&built.prl).expect("the movers change the probes");
+    // Per mover id: its even pose count and path length in metres.
+    let even = [(4, 2.44), (8, 6.50), (6, 4.88), (9, 7.32)];
+    assert_eq!(channel.mover_records.len(), even.len());
     for record in &channel.mover_records {
-        let n = record.knots.len();
-        assert!(n > 2, "mover {} places mid poses", record.mover_id);
-        for (k, &knot) in record.knots.iter().enumerate() {
+        let (count, length) = even[record.mover_id as usize];
+        let knots = &record.knots;
+        assert!(
+            knots.len() > count,
+            "mover {}: geometry knots join its {count} even poses: {knots:?}",
+            record.mover_id
+        );
+        assert_eq!((knots[0], knots[knots.len() - 1]), (0.0, 1.0));
+        assert!(knots.windows(2).all(|pair| pair[0] < pair[1]), "{knots:?}");
+        let tolerance = 0.026 / length;
+        for k in 0..count {
+            let t = k as f32 / (count - 1) as f32;
             assert!(
-                (knot - k as f32 / (n - 1) as f32).abs() < 1.0e-6,
-                "mover {} knot {k}: {knot}",
+                knots.iter().any(|&knot| (knot - t).abs() < 1.0e-6)
+                    || knots.iter().any(|&knot| (knot - t).abs() <= tolerance),
+                "mover {} even knot {t} is placed or merged: {knots:?}",
                 record.mover_id
             );
         }

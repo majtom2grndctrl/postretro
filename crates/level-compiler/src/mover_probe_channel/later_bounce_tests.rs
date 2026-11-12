@@ -15,7 +15,6 @@ use super::posed_solid::box_brush;
 use super::tests::solid;
 use crate::bake_control::BakeControl;
 use crate::fixture_pipeline::FixturePipeline;
-use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::PosedMovers;
 use crate::sh_bake::RaytracingCtx;
 use crate::surface_radiance::{
@@ -88,11 +87,7 @@ impl Closet {
     /// The closet door at its first pose, its sides lit front only, as
     /// posed bounce one lights them.
     fn door(&self) -> (PosedScene, PatchRadiance) {
-        let mut poses = MoverPoses::resolve(
-            &self.fixture.kinematic_movers,
-            &self.fixture.kinematic_waypoints,
-        );
-        poses.place_poses(&self.fixture.kinematic_movers, 1.0);
+        let poses = self.fixture.placed_mover_poses(1.0);
         let posed = PosedMovers::resolve(
             &poses,
             &self.fixture.kinematic_movers,

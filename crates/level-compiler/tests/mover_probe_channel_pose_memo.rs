@@ -32,9 +32,9 @@ fn an_unedited_warm_build_hits_every_pose_and_equals_cold() {
     assert_base_bakes_every_plate_pose();
     let warm = warm_equals_cold(&Scene::default());
     assert_eq!(bounce_share(&warm), (0, MOVERS), "{warm}");
-    assert_eq!(pose_share(&warm), (0, 6 + 3), "{warm}");
+    assert_eq!(pose_share(&warm), (0, 6 + 9), "{warm}");
     assert_eq!(mover_memo(&warm, "plate"), "hit (6 pose(s))", "{warm}");
-    assert_eq!(mover_memo(&warm, "shutter"), "hit (3 pose(s))", "{warm}");
+    assert_eq!(mover_memo(&warm, "shutter"), "hit (9 pose(s))", "{warm}");
 }
 
 // The plate's `light_poses` goes from its automatic six (t 0,
@@ -56,8 +56,8 @@ fn a_light_poses_change_keeps_both_termini_and_bakes_only_the_new_poses() {
         "miss: termini hit; re-bakes pose(s) 1, 3, 5, 7, 9 of 11",
         "{warm}"
     );
-    assert_eq!(mover_memo(&warm, "shutter"), "hit (3 pose(s))", "{warm}");
-    assert_eq!(pose_share(&warm), (5, 11 + 3), "{warm}");
+    assert_eq!(mover_memo(&warm, "shutter"), "hit (9 pose(s))", "{warm}");
+    assert_eq!(pose_share(&warm), (5, 11 + 9), "{warm}");
     assert_eq!(bounce_share(&warm), (1, MOVERS), "{warm}");
     // At the interactive default, `low`: one posed bounce.
     assert_logged(&warm, "re-baked 1 posed bounce(s) at 5 of 11 pose(s)");
@@ -126,8 +126,8 @@ fn a_light_bounces_change_rebakes_every_pose_of_that_mover_and_warm_equals_cold(
         "miss: termini miss; re-bakes pose(s) 0, 1, 2, 3, 4, 5 of 6",
         "{warm}"
     );
-    assert_eq!(mover_memo(&warm, "shutter"), "hit (3 pose(s))", "{warm}");
-    assert_eq!(pose_share(&warm), (6, 6 + 3), "{warm}");
+    assert_eq!(mover_memo(&warm, "shutter"), "hit (9 pose(s))", "{warm}");
+    assert_eq!(pose_share(&warm), (6, 6 + 9), "{warm}");
 
     let clamped = warm_high(&Scene {
         plate_bounces: Some("99"),

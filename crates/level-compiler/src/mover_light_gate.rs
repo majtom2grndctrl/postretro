@@ -3,6 +3,9 @@
 
 mod animated;
 mod cache;
+#[cfg(test)]
+mod geometry_knot_tests;
+mod geometry_knots;
 mod lights;
 mod mid_pose_only;
 mod placement;
@@ -15,6 +18,7 @@ mod side_count;
 mod summary;
 mod tally;
 mod texels;
+mod travel;
 
 #[cfg(test)]
 mod tests;
@@ -25,7 +29,7 @@ pub(crate) use cache::{
 };
 pub(crate) use lights::{GateLight, GateLights};
 pub(crate) use mid_pose_only::MidPoseOnlyLights;
-pub(crate) use placement::MAX_POSES;
+pub(crate) use placement::{KnotCounts, MAX_POSES};
 #[cfg(test)]
 pub(crate) use pose::Terminus;
 pub(crate) use pose::{AnalysedMover, MoverPoses, Pose};

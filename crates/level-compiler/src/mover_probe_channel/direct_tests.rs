@@ -568,7 +568,9 @@ fn a_probe_a_mid_pose_encloses_stores_q_255_and_is_marked_across() {
     sinker.light_poses = Some(3);
     let movers = [sinker];
     let mut mover_poses = MoverPoses::resolve(&movers, &waypoints(0, DVec3::new(0.0, -2.0, 0.0)));
-    mover_poses.place_poses(&movers, 1.0);
+    mover_poses
+        .place_poses(&movers, 1.0, &ProbeGridLayout::no_probes())
+        .expect("authored poses place");
     let poses = PosedMovers::resolve(
         &mover_poses,
         &movers,
@@ -1524,7 +1526,13 @@ fn crossing_slab(ramp: (f32, f32)) -> (MapKinematicMover, PosedMovers, MoverPose
     (slab.light_ramp_start, slab.light_ramp_end) = ramp;
     let waypoints = waypoints(0, DVec3::new(20.0, 0.0, 0.0));
     let mut poses = MoverPoses::resolve(std::slice::from_ref(&slab), &waypoints);
-    poses.place_poses(std::slice::from_ref(&slab), 1.0);
+    poses
+        .place_poses(
+            std::slice::from_ref(&slab),
+            1.0,
+            &ProbeGridLayout::no_probes(),
+        )
+        .expect("authored poses place");
     assert_eq!(poses.analysed[0].knots, vec![0.0, 0.5, 1.0]);
     let posed = PosedMovers::resolve(
         &poses,

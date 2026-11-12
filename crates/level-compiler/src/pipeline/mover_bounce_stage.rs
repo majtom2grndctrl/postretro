@@ -5,13 +5,11 @@
 //! laid out, with the mover tiles reserved ahead of id 59's.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::bake_fidelity::BakeMode;
-use crate::geometry::GeometryResult;
 use crate::map_data::{MapKinematicMover, MapLight};
 use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
@@ -20,8 +18,7 @@ use crate::mover_probe_channel::{
     PosedMovers, PosedScene, ProbeCells, SkipBars, SkipCounts, refuse_cut_short,
     reserve_mover_tiles, sh_base_bounce_count, skip_redundant_mid_poses,
 };
-use crate::partition::BspTree;
-use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
+use crate::sh_bake::{ProbeDepthTiles, ProbeGridLayout, effective_tile_cap};
 use crate::surface_radiance::MoverBounceOutcome;
 
 /// What the bounce half reads before the SH gates.
@@ -31,9 +28,8 @@ pub(super) struct BouncePlanInputs<'a> {
     /// bounce scenes and the direct half's occluders share these solids.
     pub(super) posed: &'a PosedMovers,
     pub(super) movers: &'a [MapKinematicMover],
-    pub(super) geometry: &'a GeometryResult,
-    pub(super) tree: &'a BspTree,
-    pub(super) exterior_leaves: &'a HashSet<usize>,
+    /// The probe grid, laid out once for placement and this half.
+    pub(super) layout: &'a ProbeGridLayout,
     pub(super) probe_spacing: f32,
     pub(super) bounce_fill: f32,
     /// Every static and animated baked light, for the direct half's bound.
@@ -59,12 +55,7 @@ pub(super) struct BounceHalfPlan {
 /// direct half's bound. No analysed mover or no probe grid, no job.
 pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<BounceHalfPlan> {
     let count = sh_base_bounce_count(inputs.bounce_fill);
-    let layout = probe_grid_layout_of(
-        inputs.geometry,
-        inputs.tree,
-        inputs.exterior_leaves,
-        inputs.probe_spacing,
-    );
+    let layout = inputs.layout;
     let posed = inputs.posed;
     let mut jobs = Vec::new();
     if !layout.is_empty() {
@@ -96,7 +87,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
                 bounces: inputs.mode.fidelity().bounces(high_bounces),
                 high_bounces,
                 scenes,
-                domain_probes: domain.valid_probes(&layout),
+                domain_probes: domain.valid_probes(layout),
                 domain,
             });
         }
@@ -104,7 +95,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
     let depth_cap = effective_tile_cap(inputs.tile_cap);
     let cost = MoverChannelCost::new(
         &jobs,
-        &layout,
+        layout,
         inputs.bounce_fill,
         depth_cap,
         inputs.direct_lights,

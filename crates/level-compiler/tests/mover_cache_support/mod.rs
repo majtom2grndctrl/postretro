@@ -116,7 +116,10 @@ pub const FIRST_POSE_LIGHT: [i32; 3] = [0, -160, 104];
 /// A sealed 512 u room, interior z 0 to 256: three static lights, one of
 /// them coloured by the scene, an animated one and a bake-only one; a plate
 /// sliding under the lights and a shutter rising beside them. One static
-/// light reaches only the plate's first pose.
+/// light reaches only the plate's first pose. Automatic placement gives the
+/// plate six even poses and no geometry knot, and the shutter three even
+/// poses and six geometry knots, where its slab starts or stops enclosing
+/// probes: nine.
 pub fn map(scene: &Scene) -> String {
     let world = [
         box_brush_textured(

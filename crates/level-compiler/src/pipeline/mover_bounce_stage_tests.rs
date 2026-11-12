@@ -58,8 +58,7 @@ fn with_ctx<R>(fixture: &FixturePipeline, f: impl FnOnce(&ShBakeCtx<'_>, &MoverP
         animated_lights: &animated_lights,
         total_light_count: fixture.lights.len(),
     };
-    let mut poses = MoverPoses::resolve(&fixture.kinematic_movers, &fixture.kinematic_waypoints);
-    poses.place_poses(&fixture.kinematic_movers, CONFIG.probe_spacing);
+    let poses = fixture.placed_mover_poses(CONFIG.probe_spacing);
     f(&ctx, &poses)
 }
 
@@ -112,9 +111,7 @@ fn plan_half_at(
         poses,
         posed: &posed,
         movers: &fixture.kinematic_movers,
-        geometry: &fixture.geometry,
-        tree: &fixture.tree,
-        exterior_leaves: &fixture.exterior_leaves,
+        layout: &fixture.probe_layout(CONFIG.probe_spacing),
         probe_spacing: CONFIG.probe_spacing,
         bounce_fill: fill,
         direct_lights: &direct_lights,
@@ -411,6 +408,83 @@ fn a_budget_the_mover_channel_exceeds_refuses_with_the_sh_base_gates_error() {
         assert!(
             message.contains("SH base working-set gate refused before patch shading")
                 && message.contains(&format!("estimated peak {mover_peak} bytes"))
+                && message.contains("mover bounce"),
+            "{message}"
+        );
+    });
+}
+
+// No geometry knot is dropped to meet a count: each one is a pose the
+// bounce half plans a scene for, and the SH base gate prices it, refusing
+// by name a budget the geometry knots alone push the mover channel past.
+#[test]
+fn the_sh_base_gate_prices_every_geometry_knot_and_refuses_by_name_below_it() {
+    let fixture = load_map(&fixture_path("enemy-movers"));
+    with_ctx(&fixture, |ctx, placed| {
+        let geometry: u32 = placed
+            .analysed
+            .iter()
+            .map(|mover| mover.knot_counts.geometry)
+            .sum();
+        assert!(
+            geometry > 0,
+            "the sweeper and crushers place geometry knots"
+        );
+        // The same placement with no probes to enclose: even poses alone.
+        let mut even_only =
+            MoverPoses::resolve(&fixture.kinematic_movers, &fixture.kinematic_waypoints);
+        even_only
+            .place_poses(
+                &fixture.kinematic_movers,
+                CONFIG.probe_spacing,
+                &crate::sh_bake::ProbeGridLayout::no_probes(),
+            )
+            .expect("even poses place");
+        let with_knots = plan_half(&fixture, ctx, placed, DEFAULT_BOUNCE_FILL);
+        let without = plan_half(&fixture, ctx, &even_only, DEFAULT_BOUNCE_FILL);
+        for (job, mover) in with_knots.request.jobs.iter().zip(&placed.analysed) {
+            assert_eq!(
+                job.scenes.len(),
+                mover.poses.len(),
+                "{}: a scene for every pose, geometry knots included",
+                mover.label
+            );
+            assert_eq!(
+                mover.poses.len() as u32,
+                mover.knot_counts.even + mover.knot_counts.geometry
+            );
+        }
+        let gate = |plan: &BounceHalfPlan, budget: u64| {
+            let mut projection = plan_sh_base(
+                &fixture.geometry,
+                &static_light_refs(ctx),
+                animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+                1.0,
+                DEFAULT_BOUNCE_FILL,
+                budget,
+            )
+            .expect("priced")
+            .1;
+            projection.price_movers(&plan.cost);
+            projection
+        };
+        let knotted_peak = gate(&with_knots, u64::MAX).estimated_peak_bytes;
+        let even_peak = gate(&without, u64::MAX).estimated_peak_bytes;
+        assert!(
+            knotted_peak > even_peak,
+            "geometry knots are priced: {even_peak} → {knotted_peak}"
+        );
+        let budget = knotted_peak - 1;
+        gate(&without, budget)
+            .admit()
+            .expect("the even poses alone fit the budget");
+        let message = gate(&with_knots, budget)
+            .admit()
+            .expect_err("the geometry knots pass the budget")
+            .to_string();
+        assert!(
+            message.contains("SH base working-set gate refused before patch shading")
+                && message.contains(&format!("estimated peak {knotted_peak} bytes"))
                 && message.contains("mover bounce"),
             "{message}"
         );

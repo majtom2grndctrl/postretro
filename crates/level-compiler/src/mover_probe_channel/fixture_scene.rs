@@ -73,12 +73,7 @@ impl Scene {
     /// The map's analysed movers, each placed at its poses along its path
     /// as the pipeline places them.
     pub(crate) fn mover_poses(&self) -> MoverPoses {
-        let mut poses = MoverPoses::resolve(
-            &self.fixture.kinematic_movers,
-            &self.fixture.kinematic_waypoints,
-        );
-        poses.place_poses(&self.fixture.kinematic_movers, SPACING);
-        poses
+        self.fixture.placed_mover_poses(SPACING)
     }
 
     /// The map's analysed movers posed as solids at every pose.

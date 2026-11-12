@@ -93,7 +93,9 @@ fn low_caps_every_mover_at_one_bounce_high_bakes_its_own_and_release_is_high_on_
         "Mover bounce fidelity: low build; 2 of 2 mover(s) approximate",
     );
     assert!(
-        summary(low, "plate").starts_with("6 pose(s), low, approximate: 6 of 6 pose(s) at 1 of 5"),
+        summary(low, "plate").starts_with(
+            "6 pose(s) (6 even, 0 geometry), low, approximate: 6 of 6 pose(s) at 1 of 5"
+        ),
         "{low}"
     );
     let released = &release().logs;
@@ -102,7 +104,7 @@ fn low_caps_every_mover_at_one_bounce_high_bakes_its_own_and_release_is_high_on_
         "Mover bounce fidelity: high (--release) build; 0 of 2 mover(s) approximate",
     );
     assert!(
-        summary(released, "plate").starts_with("6 pose(s), high;"),
+        summary(released, "plate").starts_with("6 pose(s) (6 even, 0 geometry), high;"),
         "{released}"
     );
     // The release build baked id 34 itself, so it projects from its own time.
@@ -125,7 +127,9 @@ fn low_caps_every_mover_at_one_bounce_high_bakes_its_own_and_release_is_high_on_
     );
     assert_eq!(share(released), share(&high_on_empty.logs));
     // A `light_bounces 1` mover shows what `high` shows, at either fidelity.
-    assert!(summary(&capped_high.logs, "plate").starts_with("6 pose(s), high;"));
+    assert!(
+        summary(&capped_high.logs, "plate").starts_with("6 pose(s) (6 even, 0 geometry), high;")
+    );
 }
 
 // `light_bounces 0` stores no bounce entry at either fidelity.
@@ -235,7 +239,7 @@ fn per_fidelity_warm_equals_no_cache_and_two_low_builds_over_one_cache_are_alike
             flags,
         );
         let warm = warm_over_with(&Scene::default(), cache.path(), flags);
-        assert_eq!(pose_share(&warm), (0, 6 + 3), "{flags:?}\n{warm}");
+        assert_eq!(pose_share(&warm), (0, 6 + 9), "{flags:?}\n{warm}");
     }
 
     let edited = Scene {
@@ -267,10 +271,10 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
     };
 
     let unchanged = warm_low_over_high(&Scene::default());
-    assert_eq!(pose_share(&unchanged), (0, 6 + 3), "{unchanged}");
+    assert_eq!(pose_share(&unchanged), (0, 6 + 9), "{unchanged}");
     assert_eq!(
         mover_memo(&unchanged, "shutter"),
-        "hit (3 pose(s), 3 served from high)",
+        "hit (9 pose(s), 9 served from high)",
         "{unchanged}"
     );
     assert_logged(
@@ -278,7 +282,7 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
         "Mover bounce fidelity: low build; 0 of 2 mover(s) approximate",
     );
     assert!(
-        summary(&unchanged, "plate").starts_with("6 pose(s), high;"),
+        summary(&unchanged, "plate").starts_with("6 pose(s) (6 even, 0 geometry), high;"),
         "{unchanged}"
     );
 
@@ -293,17 +297,18 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
     );
     assert_eq!(
         mover_memo(&more_poses, "shutter"),
-        "hit (3 pose(s), 3 served from high)",
+        "hit (9 pose(s), 9 served from high)",
         "{more_poses}"
     );
     assert_logged(&more_poses, "re-baked 1 posed bounce(s) at 5 of 11 pose(s)");
     assert!(
-        summary(&more_poses, "plate")
-            .starts_with("11 pose(s), low, approximate: 5 of 11 pose(s) at 1 of 5"),
+        summary(&more_poses, "plate").starts_with(
+            "11 pose(s) (11 even, 0 geometry), low, approximate: 5 of 11 pose(s) at 1 of 5",
+        ),
         "{more_poses}"
     );
     assert!(
-        summary(&more_poses, "shutter").starts_with("3 pose(s), high;"),
+        summary(&more_poses, "shutter").starts_with("9 pose(s) (3 even, 6 geometry), high;"),
         "{more_poses}"
     );
 
@@ -320,8 +325,9 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
         "{moved}"
     );
     assert!(
-        summary(&moved, "plate")
-            .starts_with("6 pose(s), low, approximate: 5 of 6 pose(s) at 1 of 5"),
+        summary(&moved, "plate").starts_with(
+            "6 pose(s) (6 even, 0 geometry), low, approximate: 5 of 6 pose(s) at 1 of 5"
+        ),
         "{moved}"
     );
 
@@ -330,7 +336,7 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
     let high_after_low = build_with(&Scene::default(), CacheMode::Warm(cache.path()), JOBS, HIGH);
     assert_eq!(
         pose_share(&high_after_low.logs),
-        (6 + 3, 6 + 3),
+        (6 + 9, 6 + 9),
         "{}",
         high_after_low.logs
     );

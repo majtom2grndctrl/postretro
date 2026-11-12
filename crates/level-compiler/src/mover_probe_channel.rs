@@ -79,9 +79,9 @@ pub(crate) use pose_bake::PosedBounce;
 pub(crate) use pose_lookup::{HitReduction, MoverPoseBounces, PoseLookup};
 pub(crate) use pose_memo::PoseMemo;
 pub(crate) use posed_scene::PosedScene;
-pub(crate) use posed_solid::PosedMovers;
+pub(crate) use posed_solid::{PosedMovers, enclosure_inset};
 #[cfg(test)]
-pub(crate) use posed_solid::{PosedSolid, box_brush as sided_box_brush, enclosure_inset};
+pub(crate) use posed_solid::{PosedSolid, box_brush as sided_box_brush};
 pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
 pub(crate) use skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
 pub(crate) use states::MoverBounceStates;

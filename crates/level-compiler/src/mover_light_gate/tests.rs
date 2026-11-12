@@ -31,7 +31,7 @@ use crate::partition::Aabb;
 use crate::ray_traversal::RAY_EPSILON;
 use crate::sh_bake::ProbeGridLayout;
 
-fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
+pub(super) fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
     let planes = [
         (DVec3::X, max.x),
         (DVec3::NEG_X, -min.x),
@@ -54,7 +54,12 @@ fn posed(min: DVec3, max: DVec3) -> PosedBrush {
     PosedBrush::translated(&box_brush(min, max), DVec3::ZERO)
 }
 
-fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> MapKinematicMover {
+pub(super) fn mover(
+    mover_id: u32,
+    name: &str,
+    path: &str,
+    brushes: Vec<BrushVolume>,
+) -> MapKinematicMover {
     MapKinematicMover {
         mover_id,
         name: name.to_string(),
@@ -91,7 +96,7 @@ fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> Ma
     }
 }
 
-fn waypoint(name: &str, next: &str, origin: DVec3) -> MapKinematicWaypoint {
+pub(super) fn waypoint(name: &str, next: &str, origin: DVec3) -> MapKinematicWaypoint {
     MapKinematicWaypoint {
         name: name.to_string(),
         next: next.to_string(),
@@ -972,7 +977,13 @@ const NO_TEXTURES: TextureNamesSection = TextureNamesSection { names: Vec::new()
 /// A 1 m cube on a path of `points`, waypoints `w0`, `w1`, ….
 fn cube_on_path(points: &[DVec3], light_poses: Option<u32>) -> MoverPoses {
     let (mut poses, cube) = unplaced_cube_on_path(points, light_poses);
-    poses.place_poses(std::slice::from_ref(&cube), 1.0);
+    poses
+        .place_poses(
+            std::slice::from_ref(&cube),
+            1.0,
+            &ProbeGridLayout::no_probes(),
+        )
+        .expect("a cube with no probes places");
     poses
 }
 

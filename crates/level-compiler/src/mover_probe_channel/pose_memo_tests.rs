@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use super::*;
 use crate::fixture_pipeline::{fixture_path, load_map};
-use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::posed_solid::PosedMovers;
 use crate::mover_probe_channel::{NearFieldDomain, PosedScene};
 
@@ -24,8 +23,7 @@ const PATCHES: [u32; 3] = [4, 5, 6];
 #[test]
 fn a_pose_key_folds_what_its_kind_bakes_from_and_nothing_else() {
     let fixture = load_map(&fixture_path("mover-closet"));
-    let mut poses = MoverPoses::resolve(&fixture.kinematic_movers, &fixture.kinematic_waypoints);
-    poses.place_poses(&fixture.kinematic_movers, 1.0);
+    let poses = fixture.placed_mover_poses(1.0);
     let posed = PosedMovers::resolve(
         &poses,
         &fixture.kinematic_movers,

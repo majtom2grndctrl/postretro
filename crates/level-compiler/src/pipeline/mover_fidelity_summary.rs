@@ -1,11 +1,13 @@
 //! The Build Summary's mover bounce fidelity block: per analysed mover, its
-//! pose count, the fidelity its states show, its projected `--release`
-//! bounce-bake time and its skipped mid-pose states.
+//! pose count with its even and geometry knots, the fidelity its states
+//! show, its projected `--release` bounce-bake time and its skipped mid-pose
+//! states.
 //! See: context/lib/build_pipeline.md §Build Cache (Bake fidelity)
 
 use std::time::Duration;
 
 use crate::bake_fidelity::BakeMode;
+use crate::mover_light_gate::KnotCounts;
 use crate::mover_probe_channel::{MoverPoseBounces, SkipCounts};
 
 /// A terminus re-bakes the bounce over every static patch, which costs about
@@ -13,8 +15,9 @@ use crate::mover_probe_channel::{MoverPoseBounces, SkipCounts};
 const TERMINUS_ID34_BAKES: f64 = 2.0;
 
 /// The block's lines, or none when no mover re-bakes. `movers` holds each
-/// mover's poses at the counts they resolved at; `skips` each mover with
-/// mid poses by id; `sh_base_bake_time` id 34's recorded bake time.
+/// mover's poses at the counts they resolved at; `knots` each analysed
+/// mover's even and geometry knot counts by id; `skips` each mover with mid
+/// poses by id; `sh_base_bake_time` id 34's recorded bake time.
 ///
 /// A mover reads `high` unless some pose holds fewer posed bounces than its
 /// own `light_bounces` (clamped to id 34's): only then does what it shows
@@ -24,6 +27,7 @@ const TERMINUS_ID34_BAKES: f64 = 2.0;
 pub(super) fn fidelity_lines(
     mode: BakeMode,
     movers: &[MoverPoseBounces],
+    knots: &[(u32, KnotCounts)],
     skips: &[(u32, SkipCounts)],
     sh_base_bake_time: Option<Duration>,
 ) -> Vec<String> {
@@ -37,8 +41,14 @@ pub(super) fn fidelity_lines(
         movers.len(),
     )];
     for mover in movers {
+        let placed = knots
+            .iter()
+            .find(|(id, _)| *id == mover.mover_id)
+            .map_or_else(String::new, |(_, counts)| {
+                format!(" ({} even, {} geometry)", counts.even, counts.geometry)
+            });
         let mut line = format!(
-            "  {} (#{}): {} pose(s), {}; --release bounce bake {}",
+            "  {} (#{}): {} pose(s){placed}, {}; --release bounce bake {}",
             mover.label,
             mover.mover_id,
             mover.poses.len(),
@@ -136,7 +146,8 @@ mod tests {
         }
     }
 
-    // Per mover its pose count, its fidelity and its projected `--release`
+    // Per mover its pose count, with its even and geometry knots where
+    // placement counted them, its fidelity and its projected `--release`
     // bounce-bake time, labelled an estimate: id 34's recorded bake time ×
     // (2 termini + mid poses × the share of static patches each mid pose's
     // domain holds). It is an estimate because it scales one recorded bake
@@ -145,7 +156,7 @@ mod tests {
     // `light_bounces` 1, it prints `high`; some pose baked low past 1,
     // `low, approximate`.
     #[test]
-    fn each_mover_prints_its_poses_its_shown_fidelity_and_its_projected_release_time() {
+    fn each_mover_prints_its_poses_and_knots_its_shown_fidelity_and_its_projected_release_time() {
         let lines = fidelity_lines(
             BakeMode::Interactive(BakeFidelity::Low),
             &[
@@ -154,6 +165,22 @@ mod tests {
                 mover(3, 1, &[1, 1, 1], 80),
                 mover(4, 0, &[0, 0], 0),
                 mover(5, 5, &[5, 5], 0),
+            ],
+            &[
+                (
+                    1,
+                    KnotCounts {
+                        even: 2,
+                        geometry: 2,
+                    },
+                ),
+                (
+                    2,
+                    KnotCounts {
+                        even: 4,
+                        geometry: 0,
+                    },
+                ),
             ],
             &[(
                 2,
@@ -171,9 +198,9 @@ mod tests {
             lines,
             [
                 "Mover bounce fidelity: low build; 1 of 5 mover(s) approximate",
-                "  kinematic_mover 'm1' (#1): 4 pose(s), high; --release bounce bake est. 27.5 s (id 34's \
+                "  kinematic_mover 'm1' (#1): 4 pose(s) (2 even, 2 geometry), high; --release bounce bake est. 27.5 s (id 34's \
                  recorded 12.5 s × (2 termini + 2 mid pose(s) × 10.0% of static patches))",
-                "  kinematic_mover 'm2' (#2): 4 pose(s), low, approximate: 2 of 4 pose(s) at 1 of 5 posed \
+                "  kinematic_mover 'm2' (#2): 4 pose(s) (4 even, 0 geometry), low, approximate: 2 of 4 pose(s) at 1 of 5 posed \
                  bounce(s); --release bounce bake est. 31.0 s (id 34's recorded 12.5 s × (2 termini + 2 \
                  mid pose(s) × 24.0% of static patches)); mid-pose states skipped: bounce 10 of 40, depth \
                  3 of 10",
@@ -192,6 +219,7 @@ mod tests {
             BakeMode::Release,
             &[mover(7, 5, &[5, 5, 5], 300)],
             &[],
+            &[],
             None,
         );
         assert_eq!(
@@ -202,6 +230,6 @@ mod tests {
                  time recorded)",
             ]
         );
-        assert!(fidelity_lines(BakeMode::Release, &[], &[], None).is_empty());
+        assert!(fidelity_lines(BakeMode::Release, &[], &[], &[], None).is_empty());
     }
 }

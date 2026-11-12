@@ -751,7 +751,21 @@ fn run_after_parsing(
         &geo_result.texture_names,
         args.working_set_max_bytes,
     )?;
-    mover_poses.place_poses(&map_data.kinematic_movers, sh_config.probe_spacing);
+    // The probe grid is laid out from geometry, the BSP and the spacing
+    // alone, with no ray, so placement reads it ahead of the SH gates:
+    // geometry knots sit where a mover's brushes start or stop enclosing a
+    // near-field probe. The bounce half reads the same layout.
+    let probe_layout = crate::sh_bake::probe_grid_layout_of(
+        &geo_result,
+        &runtime.cells.tree,
+        &runtime.cells.exterior_cells,
+        sh_config.probe_spacing,
+    );
+    mover_poses.place_poses(
+        &map_data.kinematic_movers,
+        sh_config.probe_spacing,
+        &probe_layout,
+    )?;
     // Every analysed mover posed at each of its poses, once: the bounce
     // half's scenes and the direct half's occluders share these solids.
     let posed_movers = crate::mover_probe_channel::PosedMovers::resolve(
@@ -779,9 +793,7 @@ fn run_after_parsing(
             poses: &mover_poses,
             posed: &posed_movers,
             movers: &map_data.kinematic_movers,
-            geometry: &geo_result,
-            tree: &runtime.cells.tree,
-            exterior_leaves: &runtime.cells.exterior_cells,
+            layout: &probe_layout,
             probe_spacing: sh_config.probe_spacing,
             bounce_fill: map_data.bounce_fill,
             direct_lights: &direct_lights,
@@ -790,6 +802,9 @@ fn run_after_parsing(
             mode: args.bake_mode(),
         })?
     };
+    // The SH bake lays the grid out again for itself; this copy was only
+    // placement's and the plan's, so it holds no memory past the gates.
+    drop(probe_layout);
     // The SH base gate prices the patch cache, the later bounces at the
     // map's `_bounce_fill` and the id-34 volume from the patch set, the
     // static lights' ranges and the probe grid's dimensions, and the mover
@@ -950,9 +965,15 @@ fn run_after_parsing(
     .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation))
     .into_iter()
     .collect();
+    let mover_knots: Vec<_> = mover_poses
+        .analysed
+        .iter()
+        .map(|mover| (mover.mover_id, mover.knot_counts))
+        .collect();
     mover_bounce_summary.extend(mover_fidelity_summary::fidelity_lines(
         args.bake_mode(),
         &mover_bounce.pose_bounces,
+        &mover_knots,
         &mover_skips,
         mover_bounce.sh_base_bake_time,
     ));

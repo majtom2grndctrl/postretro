@@ -138,7 +138,7 @@ impl PosedSolid {
     /// half-space test with each plane moved `inset` inward. An inset of 0
     /// is the inside-brush rule itself.
     pub(crate) fn contains_by(&self, point: Vec3, inset: f64) -> bool {
-        self.contains_point(point.as_dvec3(), inset)
+        self.pose.contains_by(point.as_dvec3(), inset)
     }
 
     /// Whether the pose encloses the probe at `probe`: [`Self::contains_by`]
@@ -154,14 +154,7 @@ impl PosedSolid {
     /// lifted ray may land in one brush or the other; it keeps the per-ray
     /// rule. So enclosure always implies every lifted ray starts in solid.
     pub(crate) fn encloses(&self, probe: Vec3) -> bool {
-        self.contains_by(probe, enclosure_inset(probe))
-    }
-
-    fn contains_point(&self, point: DVec3, inset: f64) -> bool {
-        self.pose
-            .brushes
-            .iter()
-            .any(|brush| in_half_spaces(point, brush, inset))
+        self.pose.encloses(probe)
     }
 
     /// Whether the unbounded ray from `origin` along `dir` can come near
@@ -239,7 +232,7 @@ impl PosedSolid {
         if !ray_may_touch_box(o, d, reach, &self.pose.bounds) {
             return false;
         }
-        if self.contains_point(o, 0.0) {
+        if self.pose.contains_by(o, 0.0) {
             return true;
         }
         self.faces.iter().any(|face| {
@@ -353,16 +346,6 @@ impl PosedMovers {
             .map(|solid| solid.heap_bytes())
             .sum()
     }
-}
-
-/// Whether `point` lies inside `brush` by at least `inset` on every plane:
-/// at 0, inside or on its surface, with no band. Plane normals are unit, as
-/// parse builds them, so `inset` is metres.
-fn in_half_spaces(point: DVec3, brush: &PosedBrush, inset: f64) -> bool {
-    brush
-        .planes
-        .iter()
-        .all(|&(normal, distance)| normal.dot(point) - distance <= -inset)
 }
 
 /// How deep inside one posed brush a probe must lie for the pose to enclose

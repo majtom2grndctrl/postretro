@@ -1,15 +1,18 @@
 // Mover poses along the authored path and the brushes posed at each.
-// Termini are the first and last poses; mid poses sit at even arc length.
+// Termini are the first and last poses; mid poses sit at even arc length
+// and at geometry knots.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use std::collections::HashMap;
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 
+use super::placement::KnotCounts;
 use super::segment::{segment_may_touch_box, segment_touches_brush};
 use crate::map_data::{BrushVolume, MapKinematicMover, MapKinematicWaypoint};
 pub(crate) use crate::mover_pose::PosedBrush;
 use crate::mover_pose::{BROKEN_PATH_REASON, path_waypoints};
+use crate::mover_probe_channel::enclosure_inset;
 use crate::partition::Aabb;
 
 /// One end of a mover's travel: its path's first or last waypoint. Ordered
@@ -66,6 +69,25 @@ impl Pose {
                 .any(|brush| segment_touches_brush(start, end, brush))
     }
 
+    /// Whether `point` lies inside one posed brush by at least `inset`
+    /// metres on every one of that brush's planes; an inset of 0 is the
+    /// inside-brush rule, inside or on the surface with no band. The one
+    /// half-space test behind the probe channel's posed solid
+    /// (`mover_probe_channel::PosedSolid`) and geometry-knot placement.
+    pub(crate) fn contains_by(&self, point: DVec3, inset: f64) -> bool {
+        self.brushes
+            .iter()
+            .any(|brush| in_half_spaces(point, brush, inset))
+    }
+
+    /// Whether the pose encloses the probe at `probe`: inside one posed
+    /// brush by the probe channel's enclosure inset
+    /// ([`enclosure_inset`]), so every lifted gather ray starts in solid.
+    /// Every bake read of enclosure and geometry-knot placement read this.
+    pub(crate) fn encloses(&self, probe: Vec3) -> bool {
+        self.contains_by(probe.as_dvec3(), enclosure_inset(probe))
+    }
+
     /// Heap bytes the posed brushes and their planes hold.
     pub(crate) fn brush_heap_bytes(&self) -> u64 {
         let planes: usize = self
@@ -95,6 +117,16 @@ impl Pose {
     }
 }
 
+/// Whether `point` lies inside `brush` by at least `inset` on every plane:
+/// at 0, inside or on its surface, with no band. Plane normals are unit, as
+/// parse builds them, so `inset` is metres.
+fn in_half_spaces(point: DVec3, brush: &PosedBrush, inset: f64) -> bool {
+    brush
+        .planes
+        .iter()
+        .all(|&(normal, distance)| normal.dot(point) - distance <= -inset)
+}
+
 /// A mover the gate and the probe channel pose, alone: every other mover is
 /// absent, as in the bake.
 #[derive(Debug, Clone)]
@@ -108,6 +140,8 @@ pub(crate) struct AnalysedMover {
     /// Each pose's travel fraction t, the runtime's arc-length fraction
     /// ([`super::placement`]): 0 first, 1 last, strictly ascending.
     pub(crate) knots: Vec<f32>,
+    /// How many of the knots are even poses and how many geometry knots.
+    pub(crate) knot_counts: KnotCounts,
     /// Union of the posed brush bounds at every waypoint on the path, not
     /// only the termini.
     pub(crate) swept: Aabb,
@@ -222,6 +256,7 @@ impl MoverPoses {
                     Pose::new(&last.name, &mover.brush_volumes, last.origin - first.origin),
                 ],
                 knots: vec![0.0, 1.0],
+                knot_counts: KnotCounts::TERMINI,
                 swept,
                 brush_sweeps: brush_sweeps(&mover.brush_volumes, &path),
                 path: path.iter().map(|waypoint| waypoint.origin).collect(),

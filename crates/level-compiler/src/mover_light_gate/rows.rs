@@ -120,6 +120,7 @@ mod tests {
                 label: "kinematic_mover 'test'".to_string(),
                 poses: vec![pose("a"), pose("b")],
                 knots: vec![0.0, 1.0],
+                knot_counts: crate::mover_light_gate::KnotCounts::TERMINI,
                 swept: Aabb::empty(),
                 brush_sweeps: Vec::new(),
                 path: Vec::new(),

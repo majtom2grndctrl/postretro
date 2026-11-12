@@ -159,7 +159,8 @@ fn variance_never_goes_negative_and_saturated_texels_return_exactly() {
     }
 }
 
-/// The epoch-5 depth leg, restated: D_lo → base → D_hi with exact weights.
+/// The terminus-to-terminus depth rule, restated: D_lo → base → D_hi with
+/// exact weights.
 fn through_base(lo: [f32; 2], base: [f32; 2], hi: [f32; 2], w: f32) -> [f32; 2] {
     let lerp = |a: [f32; 2], b: [f32; 2], s: f32| {
         if s >= 1.0 {
@@ -220,7 +221,23 @@ fn rounding_to_f16_matches_the_shared_converters() {
         }
         value *= 1.0007;
     }
-    for special in [0.0, -0.0, 65504.0, 65519.0, 65520.0] {
+    // Each range's edges: the subnormal ties at 2^-25 and 3·2^-25, the
+    // smallest normal and the f32 below it, and the overflow edge at 65520
+    // with the f32 below it.
+    let edges = [
+        0.0,
+        -0.0,
+        f32::from_bits(0x3300_0000),
+        f32::from_bits(0x33c0_0000),
+        f32::from_bits(0x3880_0000),
+        f32::from_bits(0x387f_ffff),
+        65504.0,
+        65519.0,
+        f32::from_bits(0x477f_efff),
+        65520.0,
+        f32::INFINITY,
+    ];
+    for special in edges.into_iter().flat_map(|edge| [edge, -edge]) {
         assert_eq!(
             round_to_f16(special).to_bits(),
             f16_bits_to_f32(f32_to_f16_bits(special)).to_bits(),

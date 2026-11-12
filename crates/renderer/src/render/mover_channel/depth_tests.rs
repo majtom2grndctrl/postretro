@@ -717,7 +717,23 @@ fn fast_f16_conversions_match_the_shared_converters() {
         }
         value *= 1.0007;
     }
-    for special in [0.0, -0.0, 65504.0, 65519.0, 65520.0, f32::INFINITY] {
+    // Each range's edges: the subnormal ties at 2^-25 and 3·2^-25, the
+    // smallest normal and the f32 below it, and the overflow edge at 65520
+    // with the f32 below it.
+    let edges = [
+        0.0,
+        -0.0,
+        f32::from_bits(0x3300_0000),
+        f32::from_bits(0x33c0_0000),
+        f32::from_bits(0x3880_0000),
+        f32::from_bits(0x387f_ffff),
+        65504.0,
+        65519.0,
+        f32::from_bits(0x477f_efff),
+        65520.0,
+        f32::INFINITY,
+    ];
+    for special in edges.into_iter().flat_map(|edge| [edge, -edge]) {
         assert_eq!(f32_to_f16(special), f32_to_f16_bits(special), "{special}");
     }
 }

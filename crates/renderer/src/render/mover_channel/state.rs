@@ -69,6 +69,7 @@ pub(super) struct MoverTBlock {
 impl MoverTBlock {
     /// The block of the movers `ids` (slot order), whose knots are `knots`.
     pub(super) fn new(ids: &[u32], knots: &MoverKnots) -> Self {
+        debug_assert_eq!(knots.slot_count(), ids.len(), "one knot slot per mover id");
         let none = vec![NO_STATE.to_bits(); ids.len()];
         let mut words = vec![0; ids.len() * T_SLOT_WORDS];
         write_no_state(&mut words);
@@ -232,7 +233,23 @@ impl MoverTBlock {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{MOVER_BOUNCE_WGSL, MOVER_CHANNEL_WGSL};
     use super::*;
+    use crate::render::gpu_test_harness::wgsl_const_line;
+
+    /// Both shaders step the t′ block by the stride the block is written at.
+    #[test]
+    fn the_wgsl_t_slot_stride_is_the_blocks() {
+        for (source, name) in [
+            (MOVER_CHANNEL_WGSL, "MC_T_SLOT_WORDS"),
+            (MOVER_BOUNCE_WGSL, "MB_T_SLOT_WORDS"),
+        ] {
+            assert_eq!(
+                wgsl_const_line(source, name),
+                format!("const {name}: u32 = {T_SLOT_WORDS}u;")
+            );
+        }
+    }
 
     /// A block of two-pose movers `ids`.
     fn block_of(ids: &[u32]) -> MoverTBlock {

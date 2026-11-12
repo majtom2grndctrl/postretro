@@ -961,10 +961,10 @@ fn a_section_of_movers_with_different_pose_counts_round_trips_every_pose() {
     assert_eq!(restored.live_tile_count(), 3);
 }
 
-// The epoch-5 layout's per-pose parts sit where it pins them: mover records
-// after the cell index, bounce entries behind byte offsets with a (stored,
-// base) pair per pose, and depth marks two bits a pose, low first, padded
-// to whole words.
+// The per-pose parts sit where the layout epochs 5 and 6 share pins them:
+// mover records after the cell index, bounce entries behind byte offsets
+// with a (stored, base) pair per pose, and depth marks two bits a pose, low
+// first, padded to whole words.
 #[test]
 fn per_pose_storage_sits_at_its_pinned_offsets() {
     let section = posed_sample();
@@ -1412,9 +1412,9 @@ fn across_offset(section: &MoverProbeChannelSection) -> usize {
 }
 
 // Across marks round-trip, once per (cell, mover), resident whatever the
-// direct payload's placement, and sit where the epoch-5 layout pins them:
-// a count, then per entry its listed cell, mover, mid-pose count and one
-// mask per mid pose, ascending by (cell, mover).
+// direct payload's placement, and sit where the layout epochs 5 and 6
+// share pins them: a count, then per entry its listed cell, mover, mid-pose
+// count and one mask per mid pose, ascending by (cell, mover).
 #[test]
 fn across_marks_round_trip_and_sit_at_their_pinned_offsets() {
     let section = across_section(across_parts());

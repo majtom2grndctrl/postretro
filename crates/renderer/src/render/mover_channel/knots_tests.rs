@@ -1,6 +1,9 @@
 // CPU proofs of the knot expansion and the interval rule every mover state
-// consumer blends by. GPU proofs are in `pose_compose_tests.rs`.
+// consumer blends by. GPU proofs are in `compose_tests.rs` and
+// `bracket_tests.rs`.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
+
+use postretro_level_format::mover_probe_channel::MoverRecord;
 
 use super::*;
 
@@ -23,7 +26,7 @@ fn poses(knots: &[Knot]) -> Vec<u32> {
 /// t′ 1, only the last is read.
 #[test]
 fn knots_map_through_the_ramp_and_squeezed_poses_are_never_read() {
-    let mp1 = effective_knots(&record(&[0.0, 0.2, 0.4, 0.6, 0.8, 1.0], (0.6, 0.9)));
+    let mp1 = record(&[0.0, 0.2, 0.4, 0.6, 0.8, 1.0], (0.6, 0.9)).effective_knots();
     assert_eq!(poses(&mp1), [0, 4, 5]);
     assert_eq!(mp1[0].t, 0.0);
     assert_eq!(mp1[1].t, ramped(0.8, 0.6, 0.9));
@@ -31,7 +34,7 @@ fn knots_map_through_the_ramp_and_squeezed_poses_are_never_read() {
     assert_eq!(mp1[2].t, 1.0);
 
     let knots: Vec<f32> = (0..21).map(|k| k as f32 / 20.0).collect();
-    let mp10 = effective_knots(&record(&knots, (0.6, 0.9)));
+    let mp10 = record(&knots, (0.6, 0.9)).effective_knots();
     // t 0.65 .. 0.85 land inside (0, 1); 0.9 .. 0.95 squeeze onto 1.
     assert_eq!(poses(&mp10), [0, 13, 14, 15, 16, 17, 20]);
     for knot in &mp10[1..mp10.len() - 1] {
@@ -45,7 +48,7 @@ fn knots_map_through_the_ramp_and_squeezed_poses_are_never_read() {
     }
 
     // No ramp: knots are their own t′, bit for bit.
-    let plain = effective_knots(&record(&[0.0, 0.25, 0.5, 1.0], (0.0, 1.0)));
+    let plain = record(&[0.0, 0.25, 0.5, 1.0], (0.0, 1.0)).effective_knots();
     assert_eq!(
         plain,
         [
@@ -62,7 +65,7 @@ fn knots_map_through_the_ramp_and_squeezed_poses_are_never_read() {
 /// termini always defined, and t′ ≤ 0 / ≥ 1 reading the first / last pose.
 #[test]
 fn the_interval_rule_reads_defined_knots_exactly_and_blends_across_the_rest() {
-    let knots = effective_knots(&record(&[0.0, 0.25, 0.5, 0.75, 1.0], (0.0, 1.0)));
+    let knots = record(&[0.0, 0.25, 0.5, 0.75, 1.0], (0.0, 1.0)).effective_knots();
     let all = |_: u32| true;
     assert_eq!(interval(&knots, 0.5, all), Interval::exact(2));
     assert_eq!(interval(&knots, 0.0, all), Interval::exact(0));

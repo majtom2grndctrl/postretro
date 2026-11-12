@@ -495,7 +495,7 @@ fn compose_main(
                 if (!(t >= 0.0)) {
                     continue;
                 }
-                let blend = mb_entry_blend(cell_entries, entry, local_probe, t);
+                let blend = mb_entry_blend(cell_entries, entry, local_probe, t, mb_entry_bracket(entry));
                 if (!blend.affected) {
                     continue;
                 }

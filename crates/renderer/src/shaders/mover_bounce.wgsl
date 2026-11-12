@@ -28,13 +28,15 @@ const MB_HEADER_CELLS: u32 = 2u;
 const MB_HEADER_CELL_ENTRIES: u32 = 3u;
 const MB_HEADER_CELL_BASES: u32 = 4u;
 const MB_HEADER_ENTRIES: u32 = 5u;
-// Two words per mover slot: its t′ bits, then its knot bracket, the knot
-// the interval walk starts from (`MoverKnots::bracket`), found once per mover
-// per frame on the CPU so no probe scans the knots.
+// `MB_T_SLOT_WORDS` words per mover slot: its t′ bits, then its knot
+// bracket, the knot the interval walk starts from (`MoverKnots::bracket`),
+// found once per mover per frame on the CPU so no probe scans the knots.
 const MB_HEADER_MOVER_T: u32 = 6u;
 // Word per mover slot: the absolute word of its knot run, `[N, E, (t′ bits,
 // pose) × E]` (`render/mover_channel/knots.rs`).
 const MB_HEADER_KNOTS: u32 = 7u;
+// Rust's `state::T_SLOT_WORDS`.
+const MB_T_SLOT_WORDS: u32 = 2u;
 // Id 27's descriptor map starts right after the header.
 const MB_DESCRIPTORS: u32 = 8u;
 // Mover slot, pose block word, read-stored mask (two words), first tile half.
@@ -114,13 +116,13 @@ fn mb_entry_word(entry: u32, field: u32) -> u32 {
 
 /// The entry's mover t′; negative (or non-finite) while it has no state.
 fn mb_entry_t(entry: u32) -> f32 {
-    return bitcast<f32>(mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + 2u * mb_entry_word(entry, MB_ENTRY_SLOT)]);
+    return bitcast<f32>(mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + MB_T_SLOT_WORDS * mb_entry_word(entry, MB_ENTRY_SLOT)]);
 }
 
 /// The entry's mover knot bracket at its t′: below t′ 1, the last knot at
 /// or below it.
 fn mb_entry_bracket(entry: u32) -> u32 {
-    return mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + 2u * mb_entry_word(entry, MB_ENTRY_SLOT) + 1u];
+    return mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + MB_T_SLOT_WORDS * mb_entry_word(entry, MB_ENTRY_SLOT) + 1u];
 }
 
 /// Whether `local_probe`'s bit is set in the 64-bit mask at table words
@@ -183,10 +185,10 @@ struct MbBlend {
 /// The interval lookup, once per (entry, probe), never per texel: the
 /// defined poses around t′ among the mover's knots (the termini always; a
 /// mid pose where it stores a state or reads id 34) and the blend weight.
-/// It starts from the mover's knot bracket (`mb_entry_bracket`), so its cost
-/// is flat in knot count, and walks outward only across poses blended
+/// `at` is the mover's knot bracket at `t` (`mb_entry_bracket`), so its cost
+/// is flat in knot count; it walks outward only across poses blended
 /// across. Mirrors `knots::interval`.
-fn mb_entry_blend(cell: MbCellEntries, entry: u32, local_probe: u32, t: f32) -> MbBlend {
+fn mb_entry_blend(cell: MbCellEntries, entry: u32, local_probe: u32, t: f32, at: u32) -> MbBlend {
     if (!mb_mask_bit(mover_bounce[MB_HEADER_ENTRIES] + entry * MB_ENTRY_WORDS + MB_ENTRY_READ_MASK, local_probe).hit) {
         return MbBlend(false, MB_NONE, MB_NONE, 0.0);
     }
@@ -198,7 +200,6 @@ fn mb_entry_blend(cell: MbCellEntries, entry: u32, local_probe: u32, t: f32) -> 
         let state = mb_pose_state(poses, mover_bounce[run] - 1u, true, local_probe, first_half);
         return MbBlend(true, state, state, 0.0);
     }
-    let at = mb_entry_bracket(entry);
     var lo = at;
     var lo_state = mb_pose_state(poses, mover_bounce[run + 3u + 2u * lo], lo == 0u, local_probe, first_half);
     while (lo > 0u && lo_state == MB_ACROSS) {

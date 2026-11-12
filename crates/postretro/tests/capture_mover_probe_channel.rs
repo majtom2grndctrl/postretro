@@ -13,8 +13,10 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
-use postretro_level_format::mover_probe_channel::MOVER_PROBE_CHANNEL_EPOCH;
-use postretro_level_format::{SectionId, read_container};
+use postretro_level_format::mover_probe_channel::{
+    MOVER_PROBE_CHANNEL_EPOCH, MoverProbeChannelSection,
+};
+use postretro_level_format::{SectionId, read_container, read_section_data};
 
 // Shared by every capture target; the mover rows compile through
 // `compile_dev_map_with` and `compile_dev_map_using` alone.
@@ -40,8 +42,8 @@ fn compile_release(workspace: &Path, map_name: &str) -> tempfile::TempPath {
 /// from before mid-travel light poses, the same binary
 /// `mover_probe_channel_prl_parity` takes. Its bake matches that build's;
 /// it writes id 57 at epoch 5, which the engine refuses, so each baseline
-/// PRL has that one byte rewritten to the current epoch, as the parity test
-/// does.
+/// PRL has that one byte relabelled to the current epoch, which the parity
+/// test's module doc shows is safe for a two-pose section only.
 const BASELINE_ENV: &str = "POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN";
 
 /// The baseline compiler, or a failure naming the variable.
@@ -63,12 +65,14 @@ fn baseline_compiler() -> PathBuf {
     path
 }
 
-/// The baseline compiler's id-57 epoch: epoch 6's bytes, read under the
-/// through-base depth rule.
+/// The epoch the baseline compiler writes id 57 at, whose byte layout the
+/// current epoch shares.
 const BASELINE_EPOCH: u8 = 5;
 
 /// [`compile_release`] through the baseline compiler, id 57's epoch byte
-/// rewritten from [`BASELINE_EPOCH`] to the current epoch.
+/// relabelled from [`BASELINE_EPOCH`] to the current epoch. Fails unless
+/// every mover record stores two poses, the one case the relabel preserves
+/// (`mover_probe_channel_prl_parity`'s `at_this_epoch`).
 fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> tempfile::TempPath {
     let prl = compile_dev_map_using(compiler, workspace, map_name, &["--release"]);
     let mut bytes = std::fs::read(&prl).expect("read the baseline PRL");
@@ -80,6 +84,22 @@ fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> t
             "the baseline compiler writes id 57 at epoch 5"
         );
         bytes[at] = MOVER_PROBE_CHANNEL_EPOCH;
+        let data = read_section_data(
+            &mut Cursor::new(bytes.as_slice()),
+            &meta,
+            SectionId::MoverProbeChannel as u32,
+        )
+        .expect("read the section table")
+        .expect("id 57");
+        let channel = MoverProbeChannelSection::from_bytes(&data).expect("id 57 decodes");
+        for record in &channel.mover_records {
+            assert_eq!(
+                record.pose_count(),
+                2,
+                "{map_name} mover #{}: the baseline relabels to this epoch only with two poses",
+                record.mover_id
+            );
+        }
     }
     std::fs::write(&prl, bytes).expect("write the baseline PRL");
     prl

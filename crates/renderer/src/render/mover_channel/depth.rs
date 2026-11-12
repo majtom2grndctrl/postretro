@@ -84,7 +84,7 @@ pub(in crate::render) struct MoverDepthTiles {
     record_slots: Vec<u32>,
     /// Each probe's base tile as an offset into `tiles` once bound,
     /// [`UNBOUND_BASE`] before: a blend between two termini passes through
-    /// it.
+    /// it, and a pose that reads the base reads it.
     base_tiles: Vec<u32>,
     /// Each record's poses (CSR over `record_poses`, in `record_slots`
     /// order), each an offset into `tiles`: its stored tile, or once

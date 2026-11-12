@@ -365,6 +365,15 @@ impl RealLevel {
         probes
     }
 
+    /// Each mover record's id and pose count.
+    pub(super) fn mover_pose_counts(&self) -> Vec<(u32, usize)> {
+        self.channel
+            .mover_records
+            .iter()
+            .map(|record| (record.mover_id, record.pose_count()))
+            .collect()
+    }
+
     /// Probes id 57 carries a bounce state at, each with every mover that
     /// carries one there: what each of its poses holds for the probe, and
     /// its knots through its ramp.

@@ -133,7 +133,7 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     results[out + 5u] = bitcast<u32>(linear.weight);
     let cell = MbCellEntries(0u, 0u, 0u);
     let bounce_t = mb_entry_t(slot);
-    let blend = mb_entry_blend(cell, slot, probe, bounce_t);
+    let blend = mb_entry_blend(cell, slot, probe, bounce_t, mb_entry_bracket(slot));
     let scan = linear_mb_entry_blend(cell, slot, probe, bounce_t);
     results[out + 6u] = select(0u, 1u, blend.affected);
     results[out + 7u] = blend.lo;

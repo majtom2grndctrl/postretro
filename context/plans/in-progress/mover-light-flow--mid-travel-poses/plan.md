@@ -374,3 +374,14 @@ One reviewer (opus, tracer + adversarial), read-only. No 🔴; round-2 fixes con
 
 **Left:** the zigzag skip worst case (follow-up candidate); the trim warning instead of a refusal; the `build_pipeline.md` trim note at landing; and old test names cited in `captures/`.
 
+### Fix pass B (format, renderer, engine tests)
+- **One f16 ceiling:** `PROBE_DEPTH_MOMENT_MAX` in level-format `probe_depth_tiles.rs`, used by `knots.rs` and the renderer's `depth_blend.rs`.
+- **f16 rounding:** pinned on both sides through `f32_to_f16_bits`, with a shared edge list (subnormal ties, smallest normal, 65519.996, 65520, ∞, both signs). The docs say "written as selects"; `mix_depth_tile` zips its slices.
+- **WGSL:**
+  - `MC_T_SLOT_WORDS` and `MB_T_SLOT_WORDS`, pinned to `T_SLOT_WORDS` without a GPU (`the_wgsl_t_slot_stride_is_the_blocks`);
+  - `mb_entry_blend` takes the bracket explicitly;
+  - `debug_assert` on the slot count in `MoverTBlock::new`.
+- **Harnesses:** the engine C10 harness and the renderer rest harness assert two poses per baseline record and point at the parity test's doc.
+- **Comment drift** fixed; the renderer's `effective_knots` passthrough removed.
+- **Gates:** fmt, clippy (with and without capture), renderer GPU mover 127 plus the full renderer suite 1377, level-format 764, loader 52, compiler mover 194 and `tests/mover_*`, parity 3/3, C10 frames.
+

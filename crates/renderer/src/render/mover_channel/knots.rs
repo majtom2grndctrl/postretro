@@ -6,7 +6,7 @@
 //
 // Knots are mover position only: no light, probe or residency reaches them.
 
-use postretro_level_format::mover_probe_channel::{MoverProbeChannelSection, MoverRecord};
+use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 
 use super::layout::MoverChannelError;
 
@@ -24,11 +24,6 @@ pub(in crate::render) use postretro_level_format::mover_probe_channel::{
 use postretro_level_format::mover_probe_channel::{
     PoseInterval as Interval, ramped_knot as ramped,
 };
-
-/// `record`'s effective knots ([`MoverRecord::effective_knots`]).
-pub(in crate::render) fn effective_knots(record: &MoverRecord) -> Vec<Knot> {
-    record.effective_knots()
-}
 
 /// Every mover slot's effective knots and pose count, expanded once at
 /// install from id 57's mover records.
@@ -57,11 +52,16 @@ impl MoverKnots {
                     "mover {mover} has entries but no mover record"
                 )));
             };
-            knots.knots.extend(effective_knots(record));
+            knots.knots.extend(record.effective_knots());
             knots.offsets.push(knots.knots.len() as u32);
             knots.pose_counts.push(record.pose_count() as u32);
         }
         Ok(knots)
+    }
+
+    /// Mover slots the knots cover.
+    pub(in crate::render) fn slot_count(&self) -> usize {
+        self.pose_counts.len()
     }
 
     /// Slot `slot`'s effective knots.
@@ -76,15 +76,15 @@ impl MoverKnots {
 
     /// Slot `slot`'s knot bracket at `t`: how many of its interior knots (1
     /// to E − 2) sit at or below `t`. For a stated `t` below 1 that is the
-    /// index of the last knot at or below it, where the linear scan
-    /// `mc_interval` and `mb_entry_blend` once ran per probe stopped; the
-    /// shaders read it from the t′ block and walk outward from it only
-    /// across poses a probe blends across. Always below E − 1, so the knot
-    /// above it exists. A per-mover lookup acceleration: no probe, light or
-    /// residency reaches it. The compare is the scan's, so it matches a GPU
-    /// that flushes subnormals for every t′ while no interior knot's t′ is
-    /// itself subnormal, which knot placement (merged within centimetres of
-    /// travel) never produces.
+    /// index of the last knot at or below it. Found once per mover per frame
+    /// and carried in the t′ block, so the shaders' interval walk
+    /// (`mc_interval`, `mb_entry_blend`) starts there and steps outward only
+    /// across poses a probe blends across, at a cost flat in knot count.
+    /// Always below E − 1, so the knot above it exists. A per-mover lookup,
+    /// never a per-probe flag: no probe, light or residency reaches it. A
+    /// subnormal t′ gets the same bracket whether or not a GPU flushes it to
+    /// zero, while no interior knot's t′ is itself subnormal, which knot
+    /// placement (merged within centimetres of travel) never produces.
     pub(in crate::render) fn bracket(&self, slot: usize, t: f32) -> u32 {
         let knots = self.slot(slot);
         knots[1..knots.len() - 1].partition_point(|knot| knot.t <= t) as u32

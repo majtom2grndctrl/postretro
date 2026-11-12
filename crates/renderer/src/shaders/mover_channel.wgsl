@@ -10,9 +10,9 @@
 // then each mover's q at each of its N poses) is one run its base word
 // points at. A streamed level places that run per resident cell; while it is
 // not resident the base reads `MC_NONE` and the cell composes as with no
-// section. That is residency, not
-// a visibility switch: a row composes only with its cluster resident, and
-// every cluster covering a cell carries its payload.
+// section. That is residency, not a visibility switch: a row composes only
+// with its cluster resident, and every cluster covering a cell carries its
+// payload.
 //
 // A record's probe mask is storage sparsity only: an unmasked probe composes
 // as with no section. So are across marks: a mid pose that encloses the probe
@@ -24,9 +24,9 @@ const MC_HEADER_CELLS: u32 = 1u;
 const MC_HEADER_CELL_RECORDS: u32 = 2u;
 const MC_HEADER_RECORDS: u32 = 3u;
 const MC_HEADER_MOVER_ENTRIES: u32 = 4u;
-// Two words per mover slot: its t′ bits, then its knot bracket, the knot
-// the interval walk starts from (`MoverKnots::bracket`), found once per mover
-// per frame on the CPU so no probe scans the knots.
+// `MC_T_SLOT_WORDS` words per mover slot: its t′ bits, then its knot
+// bracket, the knot the interval walk starts from (`MoverKnots::bracket`),
+// found once per mover per frame on the CPU so no probe scans the knots.
 const MC_HEADER_MOVER_T: u32 = 5u;
 const MC_HEADER_DESCRIPTORS: u32 = 6u;
 const MC_HEADER_DESCRIPTOR_COUNT: u32 = 7u;
@@ -35,6 +35,8 @@ const MC_HEADER_CELL_BASES: u32 = 8u;
 // pose) × E]`, E effective knots strictly ascending from (0, pose 0) to
 // (1, pose N − 1) (`render/mover_channel/knots.rs`).
 const MC_HEADER_KNOTS: u32 = 9u;
+// Rust's `state::T_SLOT_WORDS`.
+const MC_T_SLOT_WORDS: u32 = 2u;
 const MC_RECORD_WORDS: u32 = 8u;
 const MC_RECORD_MASK_LOW: u32 = 0u;
 const MC_RECORD_MASK_HIGH: u32 = 1u;
@@ -150,13 +152,13 @@ fn mc_across(run: u32, knot: u32, across: u32, local_probe: u32) -> bool {
 
 /// Slot `mover`'s t′: negative (or non-finite) while it has no state.
 fn mc_mover_t(mover: u32) -> f32 {
-    return bitcast<f32>(mover_channel[mover_channel[MC_HEADER_MOVER_T] + 2u * mover]);
+    return bitcast<f32>(mover_channel[mover_channel[MC_HEADER_MOVER_T] + MC_T_SLOT_WORDS * mover]);
 }
 
 /// Slot `mover`'s knot bracket at its t′: below t′ 1, the last knot at or
 /// below it.
 fn mc_mover_bracket(mover: u32) -> u32 {
-    return mover_channel[mover_channel[MC_HEADER_MOVER_T] + 2u * mover + 1u];
+    return mover_channel[mover_channel[MC_HEADER_MOVER_T] + MC_T_SLOT_WORDS * mover + 1u];
 }
 
 /// Poses `lo` and `hi` around a stated `t` (≥ 0) in the knot run at `run`,

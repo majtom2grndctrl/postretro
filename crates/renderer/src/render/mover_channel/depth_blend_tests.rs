@@ -78,8 +78,7 @@ const ROOM_PROBES: usize = 843;
 
 /// The epoch-5 single-mover blend loop over interleaved moment pairs, kept
 /// as a timing baseline: each moment lerped, `a + s·(b − a)`, then packed
-/// by today's conversion (the epoch-5 build's own converter branched per
-/// texel, so this is a lower bound on its cost).
+/// by the current converter.
 fn epoch_5_blend(from: &[[f32; 2]], to: &[[f32; 2]], s: f32, out: &mut Vec<u8>) {
     let at = out.len();
     out.resize(at + TILE_BYTES, 0);

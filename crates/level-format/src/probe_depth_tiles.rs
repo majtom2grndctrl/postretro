@@ -22,6 +22,11 @@ pub const PROBE_DEPTH_TILE_TEXELS: usize =
     (PROBE_DEPTH_TILE_BORDERED_EDGE * PROBE_DEPTH_TILE_BORDERED_EDGE) as usize;
 /// Bytes of one `[f16 E[d], f16 E[d²]]` texel (`Rg16Float`).
 pub const PROBE_DEPTH_TILE_TEXEL_BYTES: u64 = 4;
+/// The largest finite binary16, the most a texel's moment may hold: the bake
+/// saturates a far texel's `E[d²]` to it, and a moment past it would encode
+/// as infinity, which the sampler turns into NaN. The renderer's mover live
+/// tiles and the compiler's skip judge both cap at this one value.
+pub const PROBE_DEPTH_MOMENT_MAX: f32 = 65504.0;
 /// Most tiles one level carries: the 15 bits a sign-flagged reference holds
 /// in the moment texel's 16-bit second channel.
 pub const MAX_PROBE_DEPTH_TILES: u32 = 1 << 15;

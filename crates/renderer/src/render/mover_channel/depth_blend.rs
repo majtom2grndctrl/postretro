@@ -13,7 +13,7 @@ use postretro_level_format::mover_probe_channel::{
     DepthMix, DepthSource, depth_segment, mix_depth_tile,
 };
 use postretro_level_format::probe_depth_tiles::{
-    PROBE_DEPTH_TILE_TEXEL_BYTES, PROBE_DEPTH_TILE_TEXELS, f16_bits_to_f32,
+    PROBE_DEPTH_MOMENT_MAX, PROBE_DEPTH_TILE_TEXEL_BYTES, PROBE_DEPTH_TILE_TEXELS, f16_bits_to_f32,
 };
 
 use super::knots::{Knot, interval};
@@ -29,10 +29,8 @@ pub(super) const TILE_MOMENTS: usize = 2 * PROBE_DEPTH_TILE_TEXELS;
 pub(super) const UNBOUND_BASE: u32 = u32::MAX;
 /// A mid pose the record leaves unmarked: blended across.
 pub(super) const ACROSS: u32 = u32::MAX - 1;
-/// The largest finite binary16, the most a live-tile moment may hold: the
-/// bake saturates a far texel's `E[d²]` to it, and a sum past it would
-/// encode as infinity, which the sampler turns into NaN.
-const F16_MAX: f64 = 65504.0;
+/// [`PROBE_DEPTH_MOMENT_MAX`], where the several-mover sum runs.
+const MOMENT_MAX: f64 = PROBE_DEPTH_MOMENT_MAX as f64;
 
 /// One stated mover's depth blend at a probe: `from` toward `to` by
 /// `weight`, each texel mixed by `mix` ([`mix_depth_tile`]).
@@ -127,10 +125,10 @@ pub(super) fn blend_probe<'a>(
     let (mean_sums, second_sums) = sum.split_at(PROBE_DEPTH_TILE_TEXELS);
     let (base_means, base_second) = base.split_at(PROBE_DEPTH_TILE_TEXELS);
     for (texel, i) in tile.iter_mut().zip(0..) {
-        let mean = (f64::from(base_means[i]) + mean_sums[i]).clamp(0.0, F16_MAX);
+        let mean = (f64::from(base_means[i]) + mean_sums[i]).clamp(0.0, MOMENT_MAX);
         let mean_sq = (f64::from(base_second[i]) + second_sums[i])
             .max(mean * mean)
-            .min(F16_MAX);
+            .min(MOMENT_MAX);
         *texel = texel_bytes([mean as f32, mean_sq as f32]);
     }
 }
@@ -153,9 +151,9 @@ pub(super) fn f16_to_f32(bits: u16) -> f32 {
     )
 }
 
-/// f32 → binary16 bits, round to nearest even, branch-free so the live
-/// tile's texel loops vectorise: each range is computed and the right one
-/// selected. The normal range by integer rounding of the f32 bits; below
+/// f32 → binary16 bits, round to nearest even, written as selects so the
+/// live tile's texel loops vectorise: each range is computed and the right
+/// one selected. The normal range by integer rounding of the f32 bits; below
 /// 2^-14, adding 0.5 (whose f32 step is 2^-24, the subnormal step) leaves
 /// the subnormal mantissa in the low bits; past 65520 infinity, NaN quiet.
 pub(super) fn f32_to_f16(value: f32) -> u16 {

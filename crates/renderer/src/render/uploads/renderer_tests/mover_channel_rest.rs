@@ -1,13 +1,11 @@
 //! Compiled maps: at rest, mid poses change no probe's channel contribution.
 //! Each pair names a map built `--release` with two poses per mover by the
-//! parity baseline compiler (`mover_probe_channel_prl_parity`: the two-pose
-//! parent compiler, writing the same bake at epoch 5 because the loader
-//! refuses epoch 4; the loader now refuses epoch 5 too, so rewrite that
-//! PRL's id-57 epoch byte to 6, the one byte the parity test lets differ)
-//! and by this one, with mid poses. Each build loads
-//! under `off` and under `sync-proof` with every cluster resident, hands
-//! every mover no state, then t′ = 0 and t′ = 1, and reads back every probe
-//! either build's channel touches.
+//! parity baseline compiler, its id-57 epoch byte rewritten from 5 to 6
+//! (safe for a two-pose section only, which the test asserts; why:
+//! `mover_probe_channel_prl_parity`'s module doc), and by this one, with mid
+//! poses. Each build loads under `off` and under `sync-proof` with every
+//! cluster resident, hands every mover no state, then t′ = 0 and t′ = 1, and
+//! reads back every probe either build's channel touches.
 //!
 //! The channel's contribution is compared build against build with the base
 //! taken out as C10 takes it out ([`super::mover_channel_modes`]): the
@@ -42,6 +40,8 @@ struct Channel {
     probes: BTreeSet<u32>,
     bounce: BTreeMap<u32, Vec<BounceAtProbe>>,
     mid_only_depth: BTreeSet<u32>,
+    /// Each mover record's id and pose count.
+    pose_counts: Vec<(u32, usize)>,
 }
 
 fn channel(path: &str) -> Option<Channel> {
@@ -57,6 +57,7 @@ fn channel(path: &str) -> Option<Channel> {
         probes,
         bounce,
         mid_only_depth: level.mid_pose_only_depth_probes(),
+        pose_counts: level.mover_pose_counts(),
     })
 }
 
@@ -147,6 +148,12 @@ fn rest_channel_output_equals_the_pre_change_build() {
         let Some(old) = channel(old_path) else {
             return;
         };
+        for &(mover, poses) in &old.pose_counts {
+            assert_eq!(
+                poses, 2,
+                "{old_path} mover #{mover}: the baseline relabels to epoch 6 only with two poses"
+            );
+        }
         let new = channel(new_path).expect("adapter present");
         let probes: BTreeSet<u32> = old.probes.union(&new.probes).copied().collect();
         let most = new.bounce.values().map(Vec::len).max().unwrap_or(0);

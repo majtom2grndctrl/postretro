@@ -178,6 +178,9 @@ fn mode_gap_bound([a, a0, b, b0]: [f32; 4], weight: f32) -> f32 {
 #[derive(Default, Debug)]
 struct Gap {
     halves: usize,
+    /// Halves NaN or infinite in either mode: a miss under any bar, which
+    /// the `f32::max` folds below would otherwise drop.
+    non_finite: usize,
     differing: usize,
     /// Worst difference in f16 steps at the half's scale, for the report.
     worst_steps: f32,
@@ -192,6 +195,10 @@ impl Gap {
     /// the report's steps are taken at, `bound` the half's allowed gap.
     fn add(&mut self, a: f32, b: f32, scale: f32, bound: f32) {
         self.halves += 1;
+        if !(a.is_finite() && b.is_finite()) {
+            self.non_finite += 1;
+            return;
+        }
         if a.to_bits() == b.to_bits() || a == b {
             return;
         }
@@ -209,6 +216,15 @@ impl Gap {
             self.add(a, b, a.abs().max(b.abs()), f32::INFINITY);
         }
     }
+
+    /// Whether every half holds `bar`, and none is NaN or infinite.
+    fn holds(&self, bar: Bar) -> bool {
+        self.non_finite == 0
+            && match bar {
+                Bar::BitForBit => self.differing == 0,
+                Bar::Derived => self.worst_of_bound <= 1.0,
+            }
+    }
 }
 
 /// Halves a compose clamped at zero in either mode. A clamp is 1-Lipschitz,
@@ -218,6 +234,8 @@ impl Gap {
 #[derive(Default, Debug)]
 struct Clamped {
     halves: usize,
+    /// Halves with any of the four values NaN or infinite: a miss.
+    non_finite: usize,
     differing: usize,
     /// Worst amount past |c|·|a₀ − b₀|, as a fraction of the half's
     /// [`mode_gap_bound`]; past 1 is a miss.
@@ -227,6 +245,10 @@ struct Clamped {
 impl Clamped {
     fn add(&mut self, [a, a0, b, b0]: [f32; 4], weight: f32) {
         self.halves += 1;
+        if ![a, a0, b, b0, weight].iter().all(|value| value.is_finite()) {
+            self.non_finite += 1;
+            return;
+        }
         if a.to_bits() == b.to_bits() {
             return;
         }
@@ -234,6 +256,15 @@ impl Clamped {
         let excess = (a - b).abs() - weight * (a0 - b0).abs();
         let bound = mode_gap_bound([a, a0, b, b0], weight);
         self.worst_of_bound = self.worst_of_bound.max(excess / bound);
+    }
+
+    /// Whether every half holds `bar`, and none is NaN or infinite.
+    fn holds(&self, bar: Bar) -> bool {
+        self.non_finite == 0
+            && match bar {
+                Bar::BitForBit => self.differing == 0,
+                Bar::Derived => self.worst_of_bound <= 1.0,
+            }
     }
 }
 
@@ -472,7 +503,10 @@ fn c10_misses(var: &str, bar: Bar) -> Option<Vec<String>> {
                 ATLAS_NAMES[atlas]
             );
         }
-        let same_bases = gaps.baseline.iter().all(|gap| gap.differing == 0);
+        let same_bases = gaps
+            .baseline
+            .iter()
+            .all(|gap| gap.differing == 0 && gap.non_finite == 0);
         if bar == Bar::BitForBit && !same_bases {
             misses.push(format!(
                 "{name}: the loads' bases differ with no state; build it \
@@ -480,12 +514,13 @@ fn c10_misses(var: &str, bar: Bar) -> Option<Vec<String>> {
             ));
         }
         let check = |misses: &mut Vec<String>, what: String, gap: &Gap| {
-            let held = match bar {
-                Bar::BitForBit => gap.differing == 0,
-                Bar::Derived => gap.worst_of_bound <= 1.0,
-            };
             eprintln!("[C10] {name} {what}: {gap:?}");
-            if !held {
+            if gap.non_finite > 0 {
+                misses.push(format!(
+                    "{name} {what}: {} non-finite half(s) in a mode",
+                    gap.non_finite
+                ));
+            } else if !gap.holds(bar) {
                 misses.push(format!("{name} {what}: {gap:?} past its bar"));
             }
         };
@@ -510,11 +545,12 @@ fn c10_misses(var: &str, bar: Bar) -> Option<Vec<String>> {
                 "[C10] {name} t′ {t}: moved halves (off, sync-proof) {:?}; clamped at zero in a mode: {clamped:?}",
                 gaps.moved[at - 1]
             );
-            let clamped_held = match bar {
-                Bar::BitForBit => clamped.differing == 0,
-                Bar::Derived => clamped.worst_of_bound <= 1.0,
-            };
-            if !clamped_held {
+            if clamped.non_finite > 0 {
+                misses.push(format!(
+                    "{name} t′ {t}: {} clamped half(s) non-finite in a mode",
+                    clamped.non_finite
+                ));
+            } else if !clamped.holds(bar) {
                 misses.push(format!(
                     "{name} t′ {t}: clamped halves differ past their bases: {clamped:?}"
                 ));
@@ -577,4 +613,45 @@ fn c10_uncompressed_builds_compose_bit_for_bit_in_both_modes() {
         return;
     };
     assert!(misses.is_empty(), "C10 misses:\n{}", misses.join("\n"));
+}
+
+// A NaN or infinite half in either mode is a miss by name under either bar,
+// though the folds over worst differences would drop it.
+#[test]
+fn a_non_finite_half_in_either_mode_misses_every_bar() {
+    for (a, b) in [(f32::NAN, 1.0), (1.0, f32::INFINITY), (f32::NAN, f32::NAN)] {
+        let mut gap = Gap::default();
+        gap.add(1.0, 1.0, 1.0, 1.0);
+        gap.add(a, b, 1.0, 1.0);
+        assert_eq!(gap.non_finite, 1, "{a} against {b}");
+        assert!(!gap.holds(Bar::Derived) && !gap.holds(Bar::BitForBit));
+        let mut clamped = Clamped::default();
+        clamped.add([a, 0.5, b, 0.5], 1.0);
+        assert_eq!(clamped.non_finite, 1);
+        assert!(!clamped.holds(Bar::Derived) && !clamped.holds(Bar::BitForBit));
+    }
+    let mut finite = Gap::default();
+    finite.add(1.0, 1.0, 1.0, 1.0);
+    assert!(finite.holds(Bar::BitForBit) && finite.holds(Bar::Derived));
+}
+
+// One f16 step is 2⁻²⁴ through the subnormals and at the least normal half,
+// and 2⁻¹⁰ of the binade above it: the bound never takes a subnormal half's
+// step at half its size.
+#[test]
+fn an_f16_step_is_the_spacing_of_halves_down_through_the_subnormals() {
+    let least_normal = 2f32.powi(-14);
+    for value in [
+        0.0,
+        2f32.powi(-24),
+        3.0e-6,
+        least_normal * 0.999,
+        least_normal,
+    ] {
+        assert_eq!(f16_step(value), 2f32.powi(-24), "at {value}");
+        assert_eq!(f16_step(-value), 2f32.powi(-24), "at −{value}");
+    }
+    assert_eq!(f16_step(1.0), 2f32.powi(-10));
+    assert_eq!(f16_step(1.5), 2f32.powi(-10));
+    assert_eq!(f16_step(2.0), 2f32.powi(-9));
 }

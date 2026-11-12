@@ -20,6 +20,7 @@ use super::states::{BounceProbe, ChangedProbe, DepthProbe, MidState};
 use crate::map_data::{LightType, MapKinematicMover, MapLight};
 use crate::mover_light_gate::Pose;
 use crate::sh_bake::{ProbeGridLayout, vec3_from};
+use crate::surface_radiance::PatchSet;
 
 /// One gathered tile, border included, as the posed gather holds it.
 const GATHERED_TILE_BYTES: u64 = 36 * size_of::<OctahedralAtlasTexel>() as u64;
@@ -253,7 +254,8 @@ fn mid_pose_bytes(mids: u64, domain: u64) -> u64 {
 /// prices them all; a translated side can cover a few more or fewer patch
 /// cells, so this is an estimate. The scene is priced even on a map with no
 /// probe grid, which builds none. Sides past the patch cap price no patches:
-/// the bounce plan refuses them by name.
+/// the bounce plan refuses them by name. The patch bytes are counted, not
+/// built ([`PatchSet::try_heap_bytes`]).
 pub(crate) fn pose_held_bytes(
     mover: &MapKinematicMover,
     pose: &Pose,
@@ -268,7 +270,9 @@ pub(crate) fn pose_held_bytes(
         (size_of::<Arc<PosedSolid>>() + 2 * size_of::<usize>() + size_of::<PosedSolid>()) as u64
             + solid.pose().brush_heap_bytes()
             + solid.heap_bytes();
-    let patches = PosedScene::new(Arc::new(solid), 0).map_or(0, |scene| scene.patches.heap_bytes());
+    // Counted without building the scene's set, so pricing allocates
+    // nothing the bake keeps or frees later.
+    let patches = PatchSet::try_heap_bytes(solid.geometry()).unwrap_or(0);
     let scene = size_of::<PosedScene>() as u64 + patches;
     knot + placed + solid_bytes + scene
 }

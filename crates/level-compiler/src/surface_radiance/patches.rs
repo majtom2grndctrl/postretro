@@ -189,16 +189,7 @@ impl PatchSet {
         for (face, meta) in section.faces.iter().enumerate() {
             let range = geo.face_index_ranges[face];
             face_index_ends.push(range.index_offset + range.index_count);
-            let triangles: Vec<[DVec3; 3]> = (range.index_offset
-                ..range.index_offset + range.index_count)
-                .step_by(3)
-                .map(|tri| {
-                    std::array::from_fn(|k| {
-                        let index = section.indices[tri as usize + k] as usize;
-                        Vec3::from(section.vertices[index].position).as_dvec3()
-                    })
-                })
-                .collect();
+            let triangles = face_triangles(geo, face);
             #[cfg(test)]
             let _triangles_held =
                 crate::live_bytes::hold_vec("patch set face triangles", &triangles);
@@ -244,6 +235,41 @@ impl PatchSet {
             set
         };
         Ok(set)
+    }
+
+    /// The bytes [`Self::try_build`] would hold over `geo` ([`Self::heap_bytes`]
+    /// of the finished set), counted face by face without keeping a set, or
+    /// the same refusal past [`MAX_PATCHES`]. Prices a set the bake builds
+    /// later, before it exists.
+    pub(crate) fn try_heap_bytes(geo: &GeometryResult) -> Result<u64, PatchCountExceeded> {
+        let section = &geo.geometry;
+        let mut count = 0usize;
+        let mut face_patches = Vec::new();
+        for (face, meta) in section.faces.iter().enumerate() {
+            let triangles = face_triangles(geo, face);
+            if let Some(frame) = face_normal(&triangles).map(FaceFrame::new) {
+                face_patches.clear();
+                push_face_patches(
+                    &mut face_patches,
+                    face as u32,
+                    meta.texture_index,
+                    &frame,
+                    &triangles,
+                    PATCH_SIZE_M,
+                );
+                count += face_patches.len();
+            }
+            if count > MAX_PATCHES {
+                return Err(PatchCountExceeded { max: MAX_PATCHES });
+            }
+        }
+        // As built: the patch vector shrunk to its length, the face CSR one
+        // past the faces, and a frame and an index end per face.
+        let faces = section.faces.len();
+        Ok((count * size_of::<Patch>()
+            + (faces + 1) * size_of::<u32>()
+            + faces * size_of::<Option<FaceFrame>>()
+            + faces * size_of::<u32>()) as u64)
     }
 
     pub(crate) fn patches(&self) -> &[Patch] {
@@ -391,6 +417,21 @@ fn face_normal(triangles: &[[DVec3; 3]]) -> Option<DVec3> {
         .sum();
     let normal = sum.normalize_or_zero();
     (normal != DVec3::ZERO).then_some(normal)
+}
+
+/// Face `face`'s triangles, as world-space corners.
+fn face_triangles(geo: &GeometryResult, face: usize) -> Vec<[DVec3; 3]> {
+    let section = &geo.geometry;
+    let range = geo.face_index_ranges[face];
+    (range.index_offset..range.index_offset + range.index_count)
+        .step_by(3)
+        .map(|tri| {
+            std::array::from_fn(|k| {
+                let index = section.indices[tri as usize + k] as usize;
+                Vec3::from(section.vertices[index].position).as_dvec3()
+            })
+        })
+        .collect()
 }
 
 /// Clip each of the face's triangles against the grid cells its bounds

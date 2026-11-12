@@ -412,3 +412,18 @@ One reviewer (opus, tracer + adversarial), read-only. No 🔴; round-2 fixes con
 - **Comment drift** fixed; the renderer's `effective_knots` passthrough removed.
 - **Gates:** fmt, clippy (with and without capture), renderer GPU mover 127 plus the full renderer suite 1377, level-format 764, loader 52, compiler mover 194 and `tests/mover_*`, parity 3/3, C10 frames.
 
+### Re-review of the fix passes and the final preflight (2026-11-12)
+- **Re-review** (1 adversarial reviewer over `e2758fd33..9a414d5a7`): 🔴 a brush whose band grazes a probe without enclosing it could take another enclosure's outside knot, and the build bailed. 🟡 Shallow faces scaled both tuned distances by the face rate (a 1:10 ramp put outside knots 10 u out). 🟡 A NaN or inf half passed task 21's BC6H bound; subnormal f16 steps were understated. 🟡 Task 20's truths don't resolve every 1 u window (owner question). 🟢 A long graze joined like a seam; a fixture-lock PID-reuse race.
+- **Final preflight at `9a414d5a7`:** every gate passed (AC 1, 2, 3 incl. both C10 per-probe runs, 7/8, 19, 28, 36, knot counts; fmt, clippy, release check, crate graph). The full GPU suite had 15,858 passed and 1 failed: `a_warm_volume_hit_frees_the_gates_patch_set_before_the_delta_stage_begins`, an extra patch-set drop from `admit_placed_poses` pricing through a throwaway `PosedScene`.
+
+### Fix pass C
+- **Band clearing:** outside knots are cleared against the complement of **every** brush's band span, clamped into the nearest clear piece, or held by the terminus or neighbour. Test: `a_brush_grazing_a_probe_keeps_another_brushs_outside_knot_out_of_its_band`, with an independent sampled oracle.
+- **Travel units:** outside and inside targets are the tuned distances in travel; the band clearance alone scales with the face rate; the inside knot is kept near termini. Test: a 1:10 ramp. Pass A's rule fails the ramp, slant, bevel and band-gap tests.
+- **Joins:** spans join only across a gap inside the solid grown by 1e-4 m. Test: a lift-wall graze.
+- **Pricing:** `PatchSet::try_heap_bytes` prices patches face by face without building a scene, still equal to a built scene. The preflight failure passes.
+- **Task 21 bound:** non-finite halves fail by name; `f16_step` clamps at 2⁻¹⁴, so subnormals step 2⁻²⁴. Both mutation-checked.
+- **Fixture locks:** reaping happens only while holding the dead process's lock; a new process relocks until its lock file is the one at the path.
+- **Result:** setpiece and enemy-movers `--release` byte-identical to `9a414d5a7`; knot counts unchanged.
+- **Gates:** fmt, clippy (with and without capture), compiler mover 197, `tests/mover_*` 64, `surface_radiance` + geometry knots + AC 19 86, parity 3/3, AC 7/8, knot counts, renderer C10 tests.
+- **Disk:** the agent deleted 9.6 GB of `target/debug/deps` artifacts over 2 days old to stay above 15 GB.
+

@@ -49,12 +49,21 @@ fn process_dir() -> &'static Path {
             .unwrap_or_else(|error| panic!("create fixture root {}: {error}", root.display()));
         let id = std::process::id().to_string();
         let lock_path = root.join(format!("{id}.lock"));
-        let lock = File::create(&lock_path)
-            .unwrap_or_else(|error| panic!("create {}: {error}", lock_path.display()));
-        lock.lock()
-            .unwrap_or_else(|error| panic!("lock {}: {error}", lock_path.display()));
-        // The directory is made only under the lock, so a reaper that took
-        // the lock first found nothing of this process's to remove.
+        // A reaper removes an old lock file only while holding it, so a lock
+        // taken on a file it then unlinked is no lock: take it again until
+        // the file locked is still the one at the path.
+        let lock = loop {
+            let lock = File::create(&lock_path)
+                .unwrap_or_else(|error| panic!("create {}: {error}", lock_path.display()));
+            lock.lock()
+                .unwrap_or_else(|error| panic!("lock {}: {error}", lock_path.display()));
+            if lock_path.exists() {
+                break lock;
+            }
+        };
+        // The directory is made only under the lock, and a reaper removes a
+        // directory only while holding its lock, so a process reusing a dead
+        // one's id never loses its directory to a reaper.
         let dir = root.join(&id);
         clear_dir(&dir);
         reap_stale(&root, &id);
@@ -80,35 +89,46 @@ fn reap_stale(root: &Path, own: &str) {
             continue;
         };
         if path.is_dir() {
-            let live = name == own
-                || (name.parse::<u32>().is_ok() && lock_held(&root.join(format!("{name}.lock"))));
-            if !live {
-                // Best effort: another reaper may be removing it too.
-                let _ = std::fs::remove_dir_all(&path);
+            if name == own {
+                continue;
             }
+            // A directory of an older layout has no lock; a dead process's
+            // is removed under its lock, held until it is gone.
+            let guard = match name.parse::<u32>() {
+                Ok(_) => match take_unheld(&root.join(format!("{name}.lock"))) {
+                    Some(guard) => guard,
+                    None => continue,
+                },
+                Err(_) => None,
+            };
+            // Best effort: another reaper may be removing it too.
+            let _ = std::fs::remove_dir_all(&path);
+            drop(guard);
             continue;
         }
         if let Some(id) = name.strip_suffix(".lock")
             && id != own
-            && !lock_held(&path)
             && entry
                 .metadata()
                 .and_then(|meta| meta.modified())
                 .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > STALE_LOCK_AGE))
+            && let Some(Some(guard)) = take_unheld(&path)
         {
             let _ = std::fs::remove_file(&path);
+            drop(guard);
         }
     }
 }
 
-/// Whether a live process holds the lock at `path`; a missing file is held
-/// by nobody.
-fn lock_held(path: &Path) -> bool {
+/// The lock at `path` taken where no live process holds it, held by the
+/// returned file until it drops (`Some(None)` where no lock file exists),
+/// or `None` where a live process holds it. A lock that cannot be read is
+/// treated as held, so nothing is removed.
+fn take_unheld(path: &Path) -> Option<Option<File>> {
     let Ok(file) = OpenOptions::new().write(true).open(path) else {
-        return false;
+        return Some(None);
     };
-    // A lock that cannot be read is treated as held: nothing is removed.
-    !matches!(file.try_lock(), Ok(()))
+    matches!(file.try_lock(), Ok(())).then_some(Some(file))
 }
 
 fn clear_dir(dir: &Path) {

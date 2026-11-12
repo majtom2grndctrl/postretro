@@ -87,10 +87,11 @@ fn placed(
 /// Where, independently of placement's interval algebra, the posed mover
 /// encloses `probe`: the bake's own predicate ([`Pose::encloses`]) sampled
 /// along the runtime's path rule and each change refined by bisection on
-/// `f32` t, as closed intervals of enclosed t. Two intervals join where no
-/// pose sampled between them leaves the probe clear of the lift band
-/// ([`clear_of_band`]): a seam between two of the mover's brushes, or a
-/// gap too narrow to hold an outside knot.
+/// `f32` t, as closed intervals of enclosed t. Two intervals join only at a
+/// seam: a gap shorter than [`SEAM_GAP_M`] of travel over which every
+/// sampled pose holds the probe inside the mover's solid grown by a tenth of
+/// a millimetre. A longer gap, or one that leaves the solid, keeps its two
+/// ends.
 fn sampled_enclosure(
     mover: &MapKinematicMover,
     travel: &PathTravel,
@@ -138,33 +139,73 @@ fn sampled_enclosure(
     if let Some(start) = start {
         intervals.push((start, 1.0));
     }
-    let clear_between = |a: f32, b: f32| {
-        (1..32).any(|k| clear_of_band(&posed(a + (b - a) * k as f32 / 32.0), probe))
+    let length = f64::from(travel.length());
+    let seam = |a: f32, b: f32| {
+        f64::from(b - a) * length < SEAM_GAP_M
+            && (1..32).all(|k| {
+                posed(a + (b - a) * k as f32 / 32.0).contains_by(probe.as_dvec3(), -1.0e-4)
+            })
     };
     let mut joined: Vec<(f32, f32)> = Vec::new();
     for interval in intervals {
         match joined.last_mut() {
-            Some(last) if !clear_between(last.1, interval.0) => last.1 = interval.1,
+            Some(last) if seam(last.1, interval.0) => last.1 = interval.1,
             _ => joined.push(interval),
         }
     }
     joined
 }
 
+/// The longest gap, in metres of travel, the oracle joins as a seam: far
+/// past the enclosing inset either side of a face met at any slant these
+/// tests use, far short of a wall's height.
+const SEAM_GAP_M: f64 = 0.05;
+
+/// How far, in metres of travel, from `end` toward `far` the probe first
+/// sits clear of the lift band, sampled about every millimetre and refined
+/// by bisection; `None` where it never does.
+fn nearest_clear(
+    mover: &MapKinematicMover,
+    travel: &PathTravel,
+    probe: Vec3,
+    end: f64,
+    far: f64,
+) -> Option<f64> {
+    let length = f64::from(travel.length());
+    let clear = |t: f64| {
+        clear_of_band(
+            &Pose::new("", &mover.brush_volumes, travel.mid_offset(t as f32)),
+            probe,
+        )
+    };
+    let steps = ((far - end).abs() * length / 0.001).clamp(64.0, 8192.0) as u32;
+    let at = |k: u32| end + (far - end) * f64::from(k) / f64::from(steps);
+    let first = (1..=steps).find(|&k| clear(at(k)))?;
+    let (mut held, mut free) = (at(first - 1), at(first));
+    for _ in 0..40 {
+        let middle = 0.5 * (held + free);
+        if clear(middle) {
+            free = middle;
+        } else {
+            held = middle;
+        }
+    }
+    Some((free - end).abs() * length)
+}
+
 /// The knot checks every case shares, for a mover whose faces each probe
 /// crosses at no shallower than `slant`, the least |cos| between the travel
 /// and a crossed face's normal (1 where every crossing is square). For each
 /// near-field probe and each end of each of its enclosure intervals strictly
-/// inside the path, some knot lies just inside, within the inside margin
-/// along the face plus the merge tolerance of travel, and its pose encloses
-/// the probe; and, wherever travel on that side leaves the probe clear of
-/// the lift band, some knot lies outside, near the outside distance along
-/// the face within the merge tolerance (nearer only where a terminus or the
-/// middle of the gap to the next enclosure comes first), and its pose leaves
-/// the probe clear of the band ([`clear_of_band`]). Every geometry knot's
-/// pose either encloses each near-field probe or leaves it clear of the
-/// band: none stores a state the mover's solid half darkens. Returns the
-/// ends checked.
+/// inside the path, some knot lies just inside, within the inside margin of
+/// travel (or the side guard along the face, where farther) plus the merge
+/// tolerance, and its pose encloses the probe; and, wherever travel on that
+/// side short of the neighbouring interval leaves the probe clear of the
+/// lift band, some knot lies there, near the outside distance of travel or
+/// the first clear pose, whichever is farther, within the merge tolerance
+/// (nearer only where a terminus or the middle of the gap to the next
+/// enclosure comes first), and its pose leaves the probe clear of the band
+/// ([`clear_of_band`]). Returns the ends checked.
 fn assert_every_enclosure_end_is_bracketed(
     mover: &MapKinematicMover,
     poses: &MoverPoses,
@@ -176,23 +217,10 @@ fn assert_every_enclosure_end_is_bracketed(
     let length = f64::from(travel.length());
     let knots: Vec<f64> = analysed.knots.iter().map(|&t| f64::from(t)).collect();
     let metres = |a: f64, b: f64| (a - b) * length;
-    let posed = |t: f64| Pose::new("", &mover.brush_volumes, travel.mid_offset(t as f32));
-    let even = even_knots(pose_count(travel.length(), SPACING, mover.light_poses).count);
-    let geometry: Vec<usize> = (1..knots.len() - 1)
-        .filter(|&k| !even.contains(&analysed.knots[k]))
-        .collect();
     let domain = NearFieldDomain::new(analysed, SPACING);
     let mut ends = 0;
     for index in domain.valid_probes(probes) {
         let probe = vec3_from(probes.probe_positions[index as usize]);
-        for &k in &geometry {
-            let pose = &analysed.poses[k];
-            assert!(
-                pose.encloses(probe) || clear_of_band(pose, probe),
-                "probe {probe}: the geometry knot at t {} sits in its lift band",
-                knots[k]
-            );
-        }
         let intervals = sampled_enclosure(mover, &travel, probe);
         for (at, &(a, b)) in intervals.iter().enumerate() {
             let (a, b) = (f64::from(a), f64::from(b));
@@ -212,12 +240,11 @@ fn assert_every_enclosure_end_is_bracketed(
             for (end, inward, room, other_end, far) in checks {
                 ends += 1;
                 let span = metres(other_end, end).abs();
+                let margin = INSIDE_KNOT_MARGIN_M.max(0.001 / slant) + KNOT_MERGE_TOLERANCE_M;
                 let inside = knots.iter().enumerate().any(|(k, &t)| {
                     let depth = inward * metres(t, end);
                     depth >= 0.0
-                        && depth
-                            <= (INSIDE_KNOT_MARGIN_M / slant + KNOT_MERGE_TOLERANCE_M).min(span)
-                                + SLOP_M
+                        && depth <= margin.min(span) + SLOP_M
                         && analysed.poses[k].encloses(probe)
                 });
                 assert!(
@@ -225,23 +252,21 @@ fn assert_every_enclosure_end_is_bracketed(
                     "probe {probe}: no enclosing knot just inside the end at t {end:.6}; knots \
                      {knots:?}"
                 );
-                // A side the band covers all the way to a terminus holds no
-                // outside knot: the terminus holds it.
-                let side_clears = (0..=64)
-                    .map(|k| end + (far - end) * f64::from(k) / 64.0)
-                    .any(|t| clear_of_band(&posed(t), probe));
-                if !side_clears {
+                // A side the band covers all the way to a terminus or the
+                // neighbouring interval holds no outside knot.
+                let Some(clears) = nearest_clear(mover, &travel, probe, end, far) else {
                     continue;
-                }
+                };
                 let (least, most) = (
                     OUTSIDE_KNOT_DISTANCE_M.min(room) - KNOT_MERGE_TOLERANCE_M - SLOP_M,
-                    OUTSIDE_KNOT_DISTANCE_M / slant + KNOT_MERGE_TOLERANCE_M + SLOP_M,
+                    OUTSIDE_KNOT_DISTANCE_M.max(clears) + KNOT_MERGE_TOLERANCE_M + SLOP_M,
                 );
                 let outside = knots.iter().enumerate().any(|(k, &t)| {
                     let distance = -inward * metres(t, end);
                     distance > 0.0
                         && distance >= least
                         && distance <= most
+                        && distance <= metres(far, end).abs()
                         && clear_of_band(&analysed.poses[k], probe)
                 });
                 assert!(
@@ -253,6 +278,36 @@ fn assert_every_enclosure_end_is_bracketed(
         }
     }
     ends
+}
+
+/// For a mover whose every brush crosses whole probe layers square, so
+/// each knot is placed for every probe of a layer alike: every geometry
+/// knot's pose either encloses each near-field probe or leaves it clear of
+/// the lift band, so none stores a state the mover's solid half darkens.
+/// Where brushes graze other layers, a knot one probe needs may sit in
+/// another's band, so the broader cases skip this.
+fn assert_no_geometry_knot_in_a_band(
+    mover: &MapKinematicMover,
+    poses: &MoverPoses,
+    probes: &ProbeGridLayout,
+) {
+    let analysed: &AnalysedMover = &poses.analysed[0];
+    let travel = PathTravel::new(&analysed.path);
+    let even = even_knots(pose_count(travel.length(), SPACING, mover.light_poses).count);
+    let geometry: Vec<usize> = (1..analysed.knots.len() - 1)
+        .filter(|&k| !even.contains(&analysed.knots[k]))
+        .collect();
+    for index in NearFieldDomain::new(analysed, SPACING).valid_probes(probes) {
+        let probe = vec3_from(probes.probe_positions[index as usize]);
+        for &k in &geometry {
+            let pose = &analysed.poses[k];
+            assert!(
+                pose.encloses(probe) || clear_of_band(pose, probe),
+                "probe {probe}: the geometry knot at t {} sits in its lift band",
+                analysed.knots[k]
+            );
+        }
+    }
 }
 
 /// A convex brush of `planes` (`n · p ≤ d`, unit normals) with `bounds`.
@@ -291,6 +346,7 @@ fn a_slab_moving_along_a_lattice_axis_gets_a_knot_inside_and_outside_every_enclo
     );
     let poses = placed(&slab, &waypoints, &probes);
     let ends = assert_every_enclosure_end_is_bracketed(&slab, &poses, &probes, 1.0);
+    assert_no_geometry_knot_in_a_band(&slab, &poses, &probes);
     assert!(
         ends >= 8,
         "every layer the slab crosses has two ends ({ends})"
@@ -370,6 +426,7 @@ fn a_seam_between_two_touching_brushes_places_no_knot_inside_the_mover() {
     let (slab, waypoints) = on_path(brushes, &[DVec3::ZERO, DVec3::new(4.0, 0.0, 0.0)], None);
     let poses = placed(&slab, &waypoints, &probes);
     let ends = assert_every_enclosure_end_is_bracketed(&slab, &poses, &probes, 1.0);
+    assert_no_geometry_knot_in_a_band(&slab, &poses, &probes);
     assert_eq!(ends, 4 * 9 * 2, "two ends per probe of each crossed layer");
     assert_eq!(poses.analysed[0].knot_counts.geometry, 4 * 4);
 }
@@ -524,12 +581,12 @@ fn a_still_or_unbounded_probe_set_places_no_geometry_knot() {
 }
 
 #[test]
-fn a_slab_crossed_at_a_slant_gets_its_outside_knots_one_unit_out_along_its_face() {
+fn a_slab_crossed_at_a_slant_gets_its_outside_knots_one_unit_of_travel_out() {
     // A slab 0.1 m thick along x and 40 m square, moving 4 m along
     // (3, 0, 1)/√10: its faces cross the probe layers at x 0.5 … 3.5 at
     // cos θ = 3/√10. Every probe of a layer shares its crossing, so each
-    // knot sits on its target: one outside distance out along the face's
-    // normal, about 1.054 times as far in travel.
+    // knot sits on its target: one outside distance of travel out, well
+    // clear of the band at this slant.
     let probes = lattice(DVec3::new(-1.5, -1.5, -1.5), [7, 7, 7]);
     let wide = box_brush(DVec3::new(-0.1, -20.0, -20.0), DVec3::new(0.0, 20.0, 20.0));
     let direction = DVec3::new(3.0, 0.0, 1.0).normalize();
@@ -537,14 +594,16 @@ fn a_slab_crossed_at_a_slant_gets_its_outside_knots_one_unit_out_along_its_face(
     let poses = placed(&slab, &waypoints, &probes);
     let slant = 3.0 / 10.0_f64.sqrt();
     let ends = assert_every_enclosure_end_is_bracketed(&slab, &poses, &probes, slant);
+    assert_no_geometry_knot_in_a_band(&slab, &poses, &probes);
     assert!(
         ends >= 4 * 2 * 49,
         "both ends of four crossed layers: {ends}"
     );
     // An end sits the enclosing inset inside the face, so at each crossed
-    // layer's outside knots the probe lies the outside distance less that
-    // inset off the face: ahead of the leading face (x = offset) before the
-    // slab arrives, behind the trailing one (x = offset − 0.1) after it.
+    // layer's outside knots the probe lies the outside distance's share
+    // along x less that inset off the face: ahead of the leading face
+    // (x = offset) before the slab arrives, behind the trailing one
+    // (x = offset − 0.1) after it.
     let analysed = &poses.analysed[0];
     let travel = PathTravel::new(&analysed.path);
     let faces: Vec<f64> = analysed
@@ -553,7 +612,8 @@ fn a_slab_crossed_at_a_slant_gets_its_outside_knots_one_unit_out_along_its_face(
         .map(|&t| travel.mid_offset(t).x)
         .collect();
     for layer in [0.5_f64, 1.5, 2.5, 3.5] {
-        let want = OUTSIDE_KNOT_DISTANCE_M - enclosure_inset(Vec3::new(layer as f32, 0.5, 0.5));
+        let want =
+            OUTSIDE_KNOT_DISTANCE_M * slant - enclosure_inset(Vec3::new(layer as f32, 0.5, 0.5));
         let off = |distance: f64| (distance - want).abs() <= SLOP_M;
         assert!(
             faces.iter().any(|&x| off(layer - x)),
@@ -639,6 +699,7 @@ fn a_seam_split_along_a_diagonal_joins_even_where_its_planes_leave_a_hair_betwee
     );
     let poses = placed(&wedges, &waypoints, &probes);
     let ends = assert_every_enclosure_end_is_bracketed(&wedges, &poses, &probes, 1.0);
+    assert_no_geometry_knot_in_a_band(&wedges, &poses, &probes);
     // Layers x −0.5 … 2.5 cross whole, at the one z layer the box spans and
     // three y layers.
     assert_eq!(ends, 4 * 3 * 2, "two ends per probe of each crossed layer");
@@ -663,15 +724,18 @@ fn a_face_resting_just_short_of_a_probe_layer_at_a_terminus_lets_the_terminus_ho
     );
     let poses = placed(&slab, &waypoints, &probes);
     let ends = assert_every_enclosure_end_is_bracketed(&slab, &poses, &probes, 1.0);
+    assert_no_geometry_knot_in_a_band(&slab, &poses, &probes);
     assert_eq!(ends, 3 * 9 * 2, "two ends per probe of each crossed layer");
     assert_eq!(geometry_count(&poses), 3 + 4 + 3);
 }
 
 #[test]
-fn two_brushes_a_band_apart_blend_across_their_gap() {
+fn two_brushes_a_band_apart_keep_their_inside_knots_and_place_no_outside_knot_between() {
     // Two slabs 2 mm apart along the travel: between them each probe stays
-    // within a millimetre of a face, inside its lift band, so no knot goes
-    // in the gap and each layer gets the four knots of one 0.202 m slab.
+    // within a millimetre of a face, inside its lift band, so no outside
+    // knot goes in the gap. The gap leaves the solid, so it is no seam:
+    // each slab keeps an inside knot at its end beside the gap, and each
+    // layer gets six knots.
     let brushes = vec![
         slab(),
         box_brush(DVec3::new(-0.202, 0.0, 0.0), DVec3::new(-0.102, 3.0, 3.0)),
@@ -680,8 +744,143 @@ fn two_brushes_a_band_apart_blend_across_their_gap() {
     let (pair, waypoints) = on_path(brushes, &[DVec3::ZERO, DVec3::new(4.0, 0.0, 0.0)], None);
     let poses = placed(&pair, &waypoints, &probes);
     let ends = assert_every_enclosure_end_is_bracketed(&pair, &poses, &probes, 1.0);
-    assert_eq!(ends, 4 * 9 * 2, "two ends per probe of each crossed layer");
-    assert_eq!(geometry_count(&poses), 4 * 4);
+    assert_no_geometry_knot_in_a_band(&pair, &poses, &probes);
+    assert_eq!(ends, 4 * 9 * 4, "four ends per probe of each crossed layer");
+    assert_eq!(geometry_count(&poses), 4 * 6);
+}
+
+#[test]
+fn a_brush_grazing_a_probe_keeps_another_brushs_outside_knot_out_of_its_band() {
+    // The mover travels 2 m along −x. Slab A (x 0.50–0.60) encloses the
+    // probe at the origin for t 0.25–0.30. Brush B (x 0.45–0.49) passes
+    // 10 mm ahead of it with its +y face on the probe's layer, so it never
+    // encloses the probe, yet holds it in B's band for t 0.2235–0.2465,
+    // where one outside distance before A's start (t ≈ 0.2378) lands. The
+    // outside knot goes to the clear stretch between B's band and A's.
+    let a = box_brush(DVec3::new(0.50, -1.5, -1.5), DVec3::new(0.60, 1.5, 1.5));
+    let b = box_brush(DVec3::new(0.45, -1.5, -1.5), DVec3::new(0.49, 0.0, 1.5));
+    let probes = lattice(DVec3::new(-2.0, -2.0, -2.0), [5, 5, 5]);
+    let (mover, waypoints) = on_path(vec![a, b], &[DVec3::ZERO, DVec3::new(-2.0, 0.0, 0.0)], None);
+    let poses = placed(&mover, &waypoints, &probes);
+    let ends = assert_every_enclosure_end_is_bracketed(&mover, &poses, &probes, 1.0);
+    assert!(ends > 0);
+    let analysed = &poses.analysed[0];
+    let origin = Vec3::ZERO;
+    let before: Vec<f32> = analysed
+        .knots
+        .iter()
+        .copied()
+        .filter(|&t| t > 0.2465 && t < 0.25)
+        .collect();
+    assert!(
+        before.iter().any(|&t| {
+            let k = analysed
+                .knots
+                .iter()
+                .position(|&knot| knot == t)
+                .expect("a knot");
+            clear_of_band(&analysed.poses[k], origin)
+        }),
+        "an outside knot clear of both bands lies between B's band and A: {:?}",
+        analysed.knots
+    );
+}
+
+#[test]
+fn a_shallow_ramp_keeps_its_knots_one_unit_of_travel_out_and_its_inside_knot_near_a_terminus() {
+    // A slab 0.1 m thick and 40 m wide rising 0.4 m over 4 m of run, so its
+    // faces cross probe layers at about 1:10. The band's clearance along
+    // the face is ten times as long in travel, but the tuned distances stay
+    // in travel: the outside knot sits where the probe first clears the
+    // band, about 40 mm of travel out, not 1 unit along the face (about
+    // 255 mm), and the inside knot about 10 mm in, not 100 mm. The slab's
+    // top starts 0.5 mm above layer y −1, inside the face but short of the
+    // enclosing inset, so that layer's enclosure starts within the side
+    // guard's travel of the first terminus, and still gets its inside knot.
+    let top = -1.0 + 0.0005;
+    let ramp = box_brush(
+        DVec3::new(-20.0, top - 0.1, -20.0),
+        DVec3::new(20.0, top, 20.0),
+    );
+    let probes = lattice(DVec3::new(-2.0, -2.0, -2.0), [5, 5, 5]);
+    let (mover, waypoints) = on_path(vec![ramp], &[DVec3::ZERO, DVec3::new(4.0, 0.4, 0.0)], None);
+    let poses = placed(&mover, &waypoints, &probes);
+    let slant = 0.4 / 4.0_f64.hypot(0.4);
+    let ends = assert_every_enclosure_end_is_bracketed(&mover, &poses, &probes, slant);
+    assert_eq!(ends, 25 * 2, "both ends of every probe of layer y −1");
+    let analysed = &poses.analysed[0];
+    let travel = PathTravel::new(&analysed.path);
+    let length = f64::from(travel.length());
+    // The enclosure: from where the top is the inset above the layer, to
+    // where the bottom is.
+    let inset = enclosure_inset(Vec3::new(0.0, -1.0, 0.0));
+    let (start, end) = ((inset - 0.0005) / 0.4, (0.1 - 0.0005 - inset) / 0.4);
+    let probe = Vec3::new(0.0, -1.0, 0.0);
+    let travel_from = |t: f32, from: f64| (f64::from(t) - from).abs() * length;
+    let inside_start = analysed
+        .knots
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(k, t)| f64::from(t) > start && analysed.poses[k].encloses(probe))
+        .map(|(_, t)| travel_from(t, start))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        inside_start <= 0.015,
+        "inside knot {inside_start:.4} m of travel past the start"
+    );
+    let outside_end = analysed
+        .knots
+        .iter()
+        .copied()
+        .filter(|&t| f64::from(t) > end)
+        .map(|t| travel_from(t, end))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        (OUTSIDE_KNOT_DISTANCE_M..=0.045).contains(&outside_end),
+        "outside knot {outside_end:.4} m of travel past the end"
+    );
+}
+
+#[test]
+fn a_probe_grazing_a_lift_wall_keeps_knots_at_the_floor_and_ceiling_it_passes() {
+    // A lift car travelling 3 m down: a floor slab (y 0.4–0.5) and a ceiling
+    // slab (y 2.25–2.35) reach past the wall (x 0.9–1.0) to x 1.2. The
+    // ceiling sits off the floor's whole-metre phase, so no other probe
+    // layer's crossing lands on this one's. The probe
+    // column at x 1 sits on the wall's outer face, inside its band the whole
+    // way between floor and ceiling, but outside its solid: the floor and
+    // ceiling are two enclosures, and each keeps its inside knot at the end
+    // that faces the other.
+    // Only the probe column at x 1 lies under the floor and ceiling, so no
+    // other column's knots stand in for its own.
+    let reach = |y0: f64| box_brush(DVec3::new(0.5, y0, -1.5), DVec3::new(1.2, y0 + 0.1, 1.5));
+    let wall = box_brush(DVec3::new(0.9, 0.5, -1.5), DVec3::new(1.0, 2.25, 1.5));
+    let probes = lattice(DVec3::new(-2.0, -2.0, -2.0), [5, 5, 5]);
+    let (car, waypoints) = on_path(
+        vec![reach(0.4), wall, reach(2.25)],
+        &[DVec3::ZERO, DVec3::new(0.0, -3.0, 0.0)],
+        None,
+    );
+    let poses = placed(&car, &waypoints, &probes);
+    assert_every_enclosure_end_is_bracketed(&car, &poses, &probes, 1.0);
+    let analysed = &poses.analysed[0];
+    let travel = PathTravel::new(&analysed.path);
+    let probe = Vec3::new(1.0, 0.0, 0.0);
+    // The floor's top passes y 0 at a drop of 0.5 m, the ceiling's bottom at
+    // 2.25 m: each end gets a knot enclosing the probe just inside it.
+    for (drop, inward) in [(0.5_f64, -1.0_f64), (2.25, 1.0)] {
+        let held = analysed.knots.iter().enumerate().any(|(k, &t)| {
+            let travelled = -travel.mid_offset(t).y;
+            let depth = inward * (travelled - drop);
+            depth > 0.0 && depth < 0.04 && analysed.poses[k].encloses(probe)
+        });
+        assert!(
+            held,
+            "no inside knot at the {drop} m end; knots {:?}",
+            analysed.knots
+        );
+    }
 }
 
 #[test]

@@ -242,8 +242,9 @@ pub(crate) fn f16_to_f32(bits: u16) -> f32 {
     }
 }
 
-/// One f16 step at `value`'s magnitude (the spacing of halves there).
+/// One f16 step at `value`'s magnitude (the spacing of halves there):
+/// 2⁻²⁴ through the subnormals, below the least normal half 2⁻¹⁴.
 pub(crate) fn f16_step(value: f32) -> f32 {
-    let magnitude = value.abs().max(6.1e-5);
+    let magnitude = value.abs().max(2f32.powi(-14));
     2f32.powi(magnitude.log2().floor() as i32 - 10)
 }

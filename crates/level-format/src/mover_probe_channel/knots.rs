@@ -131,27 +131,162 @@ pub fn pose_interval(knots: &[Knot], t: f32, defined: impl Fn(u32) -> bool) -> P
     }
 }
 
-/// Which leg of a depth interval a blend weight falls on. Depth runs
-/// through the base: D_lo → base → D_hi, reaching the base at the interval's
-/// midpoint.
+/// One end of a depth blend: a pose's moment set (its stored tile, or the
+/// probe's base where it reads the base) or the probe's base itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DepthLeg {
-    /// `weight == 0`: pose `lo`'s moments exactly.
-    Exact,
-    /// D_lo toward the base by this weight.
-    ToBase(f32),
-    /// The base toward D_hi by this weight.
-    FromBase(f32),
+pub enum DepthSource {
+    Pose(u32),
+    Base,
 }
 
-/// The depth leg an interval weight reads ([`DepthLeg`]). Weights are exact:
-/// doubling, and 2w − 1 over (0.5, 1].
-pub fn depth_leg(weight: f32) -> DepthLeg {
-    if weight <= 0.0 {
-        DepthLeg::Exact
-    } else if weight <= 0.5 {
-        DepthLeg::ToBase(2.0 * weight)
-    } else {
-        DepthLeg::FromBase(2.0 * weight - 1.0)
+/// How a depth blend mixes its two moment sets, texel by texel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DepthMix {
+    /// The raw moments `E[d]` and `E[d²]`, each linearly.
+    Raw,
+    /// The mean and the variance, each linearly, then `E[d²]` rebuilt
+    /// from them.
+    MeanVariance,
+}
+
+/// The depth blend one interval reads at its weight: `from` toward `to` by
+/// `weight`, mixed by `mix`. `weight == 0` reads `from` exactly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthSegment {
+    pub from: DepthSource,
+    pub to: DepthSource,
+    pub weight: f32,
+    pub mix: DepthMix,
+}
+
+impl DepthSegment {
+    /// One texel of this blend ([`mix_depth_moments`]).
+    #[inline]
+    pub fn texel(&self, from: [f32; 2], to: [f32; 2]) -> [f32; 2] {
+        mix_depth_moments(from, to, self.weight, self.mix)
     }
 }
+
+/// The depth rule: what interval `span` of a mover with `pose_count` poses
+/// blends. An interval whose ends are both termini (a two-pose mover, or a
+/// probe whose every mid pose is blended across) runs its raw moments
+/// through the base: D_lo → base → D_hi, reaching the base at the
+/// interval's midpoint, weights exact (doubling, and 2w − 1 over
+/// (0.5, 1]). Every other interval blends its two poses' mean and variance
+/// directly: a hit distance on a translating surface moves linearly with
+/// the mover, so the mean lerp follows it, and mixing raw moments would add
+/// `s(1 − s)·Δμ²` of variance the scene does not hold. The renderer's live
+/// tiles and the compiler's redundant-pose skipping both read depth through
+/// this and [`mix_depth_moments`], so skipping judges exactly what compose
+/// reads.
+pub fn depth_segment(span: PoseInterval, pose_count: usize) -> DepthSegment {
+    let pose = DepthSource::Pose;
+    let weight = span.weight;
+    if weight <= 0.0 {
+        return DepthSegment {
+            from: pose(span.lo),
+            to: pose(span.lo),
+            weight: 0.0,
+            mix: DepthMix::Raw,
+        };
+    }
+    let termini = span.lo == 0 && span.hi as usize + 1 == pose_count;
+    if !termini {
+        return DepthSegment {
+            from: pose(span.lo),
+            to: pose(span.hi),
+            weight,
+            mix: DepthMix::MeanVariance,
+        };
+    }
+    let (from, to, weight) = if weight <= 0.5 {
+        (pose(span.lo), DepthSource::Base, 2.0 * weight)
+    } else {
+        (DepthSource::Base, pose(span.hi), 2.0 * weight - 1.0)
+    };
+    DepthSegment {
+        from,
+        to,
+        weight,
+        mix: DepthMix::Raw,
+    }
+}
+
+/// The largest finite binary16, the most a depth moment may hold: the bake
+/// saturates a far texel's `E[d²]` to it.
+const F16_MAX: f32 = 65504.0;
+
+/// One texel's `[E[d], E[d²]]` blended from `from` toward `to` by `s`, by
+/// `mix`. Exact at `s` 0 and 1, and exactly `from` wherever `to == from`.
+///
+/// [`DepthMix::Raw`] lerps each moment, `a + s·(b − a)`.
+/// [`DepthMix::MeanVariance`] lerps the mean, rounded to binary16 as the
+/// live tile stores it, and the variance `σ² = max(0, E[d²] − E[d]²)` of
+/// each end, then rebuilds `E[d²] = σ² + μ²` from the rounded mean, capped
+/// at the largest finite binary16. So the result's variance is never
+/// negative against the mean it stores, and a saturated far texel (`E[d²]`
+/// stored as 65504, below `E[d]²`) blends to 65504 again. A few flops per
+/// texel: the renderer runs it on every live texel a travelling mover
+/// changes, every frame.
+#[inline]
+pub fn mix_depth_moments(from: [f32; 2], to: [f32; 2], s: f32, mix: DepthMix) -> [f32; 2] {
+    if s <= 0.0 {
+        return from;
+    }
+    if s >= 1.0 {
+        return to;
+    }
+    match mix {
+        DepthMix::Raw => [lerp(from[0], to[0], s), lerp(from[1], to[1], s)],
+        DepthMix::MeanVariance => {
+            if from == to {
+                return from;
+            }
+            // Plain compares rather than `f32::max`/`min`, which spend extra
+            // work on NaN the finite moments never hold: this runs per texel.
+            let variance = |[mean, mean_sq]: [f32; 2]| {
+                let variance = mean_sq - mean * mean;
+                if variance > 0.0 { variance } else { 0.0 }
+            };
+            let mean = round_to_f16(lerp(from[0], to[0], s));
+            // A lerp of two non-negative variances is non-negative.
+            let mean_sq = lerp(variance(from), variance(to), s) + mean * mean;
+            [mean, if mean_sq < F16_MAX { mean_sq } else { F16_MAX }]
+        }
+    }
+}
+
+/// `a + s·(b − a)`, for `s` strictly inside (0, 1).
+#[inline]
+fn lerp(a: f32, b: f32, s: f32) -> f32 {
+    a + s * (b - a)
+}
+
+/// `value` rounded to the nearest binary16 (ties to even), as an f32:
+/// exactly what a live tile's f16 store keeps. The normal binary16 range by
+/// integer rounding of the f32 bits, everything else through the shared
+/// converters.
+#[inline]
+fn round_to_f16(value: f32) -> f32 {
+    let bits = value.to_bits();
+    let magnitude = bits & 0x7fff_ffff;
+    // [2^-14, 65520): normal binary16 results, no overflow to infinity.
+    if (0x3880_0000..0x477f_f000).contains(&magnitude) {
+        let rounded = bits.wrapping_add(0x0fff + ((bits >> 13) & 1)) & !0x1fff;
+        return f32::from_bits(rounded);
+    }
+    round_to_f16_outside_normal(value)
+}
+
+/// [`round_to_f16`] past the normal binary16 range: zero, subnormals,
+/// overflow and non-finite values. Out of line, so the per-texel path stays
+/// small.
+#[cold]
+#[inline(never)]
+fn round_to_f16_outside_normal(value: f32) -> f32 {
+    crate::probe_depth_tiles::f16_bits_to_f32(crate::lightmap::f32_to_f16_bits(value))
+}
+
+#[cfg(test)]
+#[path = "depth_mix_tests.rs"]
+mod depth_mix_tests;

@@ -11,7 +11,7 @@
 
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::mover_probe_channel::{
-    DepthLeg, Knot, MOVER_IRRADIANCE_TILE_F16_COUNT, PoseInterval, PoseMark, depth_leg,
+    DepthSource, Knot, MOVER_IRRADIANCE_TILE_F16_COUNT, PoseInterval, PoseMark, depth_segment,
     pose_interval,
 };
 use postretro_level_format::probe_depth_tiles::{PROBE_DEPTH_TILE_TEXELS, f16_bits_to_f32};
@@ -255,17 +255,6 @@ fn skip_bounce(
     (stores.then_some(probe), counts)
 }
 
-/// `a + s·(b − a)`, exact at both ends: the renderer's live-tile lerp.
-fn lerp(a: f32, b: f32, s: f32) -> f32 {
-    if s <= 0.0 {
-        a
-    } else if s >= 1.0 {
-        b
-    } else {
-        a + s * (b - a)
-    }
-}
-
 /// One probe's depth after skipping, or `None` when it stores no tile any
 /// more (every stored pose was squeezed out by the ramp): its live tile then
 /// reads its base at every t′, so it carries no depth.
@@ -292,20 +281,21 @@ fn skip_depth(
         })
         .collect();
     let state = |pose: u32| moments[pose as usize].as_deref().unwrap_or(&base);
-    let blend = |a: &[[f32; 2]], b: &[[f32; 2]], s: f32| -> Vec<[u16; 2]> {
-        a.iter()
-            .zip(b)
-            .map(|(a, b)| [0, 1].map(|m| f32_to_f16_bits(lerp(a[m], b[m], s))))
-            .collect()
+    let source = |source: DepthSource| match source {
+        DepthSource::Pose(pose) => state(pose),
+        DepthSource::Base => &base,
     };
     let probe_index = probe.probe;
+    let pose_count = probe.marks.len();
     let squeezed = skip_marks(&mut probe.marks, knots, |pose, span| {
-        // The interval runs through the base: D_lo → base → D_hi.
-        let composed = match depth_leg(span.weight) {
-            DepthLeg::Exact => blend(state(span.lo), state(span.lo), 0.0),
-            DepthLeg::ToBase(s) => blend(state(span.lo), &base, s),
-            DepthLeg::FromBase(s) => blend(&base, state(span.hi), s),
-        };
+        // The renderer's live-tile blend of this interval, by the format's
+        // depth rule, packed as the live tile packs it.
+        let segment = depth_segment(span, pose_count);
+        let composed: Vec<[u16; 2]> = source(segment.from)
+            .iter()
+            .zip(source(segment.to))
+            .map(|(&from, &to)| segment.texel(from, to).map(f32_to_f16_bits))
+            .collect();
         let own = by_pose[pose as usize].expect("a skipped pose stored a tile");
         bars.depth.score_against(probe_index, &composed, own) < DEPTH_SIGNIFICANCE_FLOOR
     });

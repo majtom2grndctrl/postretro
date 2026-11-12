@@ -3,13 +3,15 @@
 // that mover's closed-pose tiles blended by its t′ between the two poses
 // around it that store a tile or read the probe's base moment set (its id-59
 // tile or averaged id-34 moments); an unmarked mid pose is blended across.
-// Every such interval runs through the base, reaching it at the interval's
-// midpoint (owner, 2026-11-10): closed-pose depth describes a surface only
-// where the mover rests. A pose with no tile is one the mover leaves
-// unchanged or encloses: it is the base, so there the live tile holds
-// exactly what the probe reads with no section. Several movers at one probe
-// add their blended differences from that base, per moment, clamped to a
-// valid moment set (owner, 2026-11-09).
+// The format's depth rule says how (owner, 2026-11-11): an interval with a
+// mid pose at either end blends its two poses' mean and variance, which
+// follows a surface the mover translates; one between the two termini runs
+// its raw moments through the base, reaching it at the interval's midpoint,
+// as a two-pose mover always has. A pose with no tile is one the mover
+// leaves unchanged or encloses: it is the base, so there the live tile
+// holds exactly what the probe reads with no section. Several movers at one
+// probe add their blended differences from that base, per moment, clamped
+// to a valid moment set (owner, 2026-11-09).
 // This side is wgpu-free: it holds the closed-pose tiles on the CPU, decides
 // which live tiles a frame rewrites and which probe references move, and
 // blends the texels. `crate::render::mover_depth_tiles` stages the writes.
@@ -81,7 +83,8 @@ pub(in crate::render) struct MoverDepthTiles {
     /// Each record's mover slot, in probe order.
     record_slots: Vec<u32>,
     /// Each probe's base tile as a texel offset into `tiles` once bound,
-    /// [`UNBOUND_BASE`] before: a through-base blend passes through it.
+    /// [`UNBOUND_BASE`] before: a blend between two termini passes through
+    /// it.
     base_tiles: Vec<u32>,
     /// Each record's poses (CSR over `record_poses`, in `record_slots`
     /// order), each a texel offset into `tiles`: its stored tile, or once
@@ -247,12 +250,12 @@ impl MoverDepthTiles {
     /// 59's `first_live_tile` tiles in `layout`, and `references` (the load's
     /// table, before any rewrite) gives each probe's reference without mover
     /// state. Every probe carrying mover depth gets one base tile from
-    /// `bases`, which through-base blends pass and base-reading poses read:
-    /// the id-59 tile its reference names, else its averaged id-34 moments
-    /// in every texel, exactly what the probe reads with no section. A level
-    /// whose SH is unusable never binds, and plans nothing. An untiled probe
-    /// outside `bases.probes` has no base to blend through and refuses the
-    /// install, never a silent zero moment set.
+    /// `bases`, which termini-to-termini blends pass and base-reading poses
+    /// read: the id-59 tile its reference names, else its averaged id-34
+    /// moments in every texel, exactly what the probe reads with no section.
+    /// A level whose SH is unusable never binds, and plans nothing. An
+    /// untiled probe outside `bases.probes` has no base to blend through and
+    /// refuses the install, never a silent zero moment set.
     pub(in crate::render) fn bind(
         &mut self,
         first_live_tile: u32,

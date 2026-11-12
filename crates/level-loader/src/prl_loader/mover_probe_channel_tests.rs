@@ -259,11 +259,12 @@ fn a_record_borrowing_from_an_absent_family_is_refused_naming_the_family() {
     );
 }
 
-// Epoch 4 stored termini only; its bytes are refused by name, not read.
+// Epoch 4 stored termini only, and epoch 5 skipped mid poses against the
+// through-base depth rule; their bytes are refused by name, not read.
 #[test]
 fn a_wrong_epoch_is_refused_by_name() {
     let level = Level::new();
-    for epoch in [4, MOVER_PROBE_CHANNEL_EPOCH + 1] {
+    for epoch in [4, 5, MOVER_PROBE_CHANNEL_EPOCH + 1] {
         let mut bytes = level.sample().to_bytes();
         bytes[0] = epoch;
         assert_eq!(
@@ -1172,10 +1173,10 @@ fn a_section_with_mid_poses_loads_and_hands_the_mover_its_ramp_alone() {
     }
 }
 
-// A malformed pose table, and an epoch-4 section, fail the whole load by
-// name on every id-34 path.
+// A malformed pose table, and an epoch-4 or epoch-5 section, fail the whole
+// load by name on every id-34 path.
 #[test]
-fn a_malformed_pose_table_or_epoch_4_fails_the_load_by_name_on_every_id_34_path() {
+fn a_malformed_pose_table_or_an_old_epoch_fails_the_load_by_name_on_every_id_34_path() {
     let reversed = three_pose_section(vec![0.0, 0.5, 0.25]);
     for result in load_every_way(Some(reversed.to_bytes())) {
         match result {
@@ -1187,15 +1188,17 @@ fn a_malformed_pose_table_or_epoch_4_fails_the_load_by_name_on_every_id_34_path(
             other => panic!("expected the knot order refusal, got {other:?}"),
         }
     }
-    let mut epoch4 = fixture_section().to_bytes();
-    epoch4[0] = 4;
-    for result in load_every_way(Some(epoch4)) {
-        match result {
-            Err(PrlLoadError::MoverProbeChannel(Error::EpochMismatch {
-                found: 4,
-                expected: 5,
-            })) => {}
-            other => panic!("expected the epoch refusal, got {other:?}"),
+    for epoch in [4, 5] {
+        let mut old = fixture_section().to_bytes();
+        old[0] = epoch;
+        for result in load_every_way(Some(old)) {
+            match result {
+                Err(PrlLoadError::MoverProbeChannel(Error::EpochMismatch {
+                    found,
+                    expected: MOVER_PROBE_CHANNEL_EPOCH,
+                })) if found == epoch => {}
+                other => panic!("expected the epoch-{epoch} refusal, got {other:?}"),
+            }
         }
     }
 }

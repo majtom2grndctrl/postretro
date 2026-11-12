@@ -732,24 +732,27 @@ fn tile_of(moments: Moments) -> Vec<[u16; 2]> {
 }
 
 /// What one mover's blend between `lo` and `hi` at interval weight `w`
-/// holds: through the base, reaching it at the interval's midpoint.
-fn expected_segment(lo: Moments, base: Moments, hi: Moments, w: f32) -> Moments {
-    let pair = |a: Moments, b: Moments, s: f32| (mix(a.0, b.0, s), mix(a.1, b.1, s));
+/// holds where a mid pose bounds the interval: the mean lerped and rounded
+/// to f16, the variance (`E[d²] − E[d]²`, at least 0 at each end) lerped,
+/// and `E[d²]` rebuilt from the rounded mean, capped at the largest f16.
+fn mean_variance(lo: Moments, hi: Moments, w: f32) -> Moments {
     if w <= 0.0 {
-        lo
-    } else if w <= 0.5 {
-        pair(lo, base, 2.0 * w)
-    } else {
-        pair(base, hi, 2.0 * w - 1.0)
+        return lo;
     }
+    let variance = |m: Moments| (m.1 - m.0 * m.0).max(0.0);
+    let mean = f16(f32_to_f16_bits(mix(lo.0, hi.0, w)));
+    let spread = mix(variance(lo), variance(hi), w).max(0.0);
+    (mean, (spread + mean * mean).min(65504.0))
 }
 
 /// AC 15 (depth half): at each stored pose's t′ the live tile holds that
-/// pose's tile bit for bit; between two stored poses it runs through the
-/// base, reaching it at the interval's midpoint (owner, 2026-11-10); out and
-/// back to one t′ writes the same bytes.
+/// pose's tile bit for bit; between two stored poses, a mid pose bounding
+/// each interval, it blends their mean and variance (owner, 2026-11-11), so
+/// poses sharing one spread compose that spread with no added variance and
+/// never pass through the base; out and back to one t′ writes the same
+/// bytes.
 #[test]
-fn piecewise_depth_reads_each_stored_pose_exactly_and_blends_each_interval_through_the_base() {
+fn piecewise_depth_reads_each_stored_pose_exactly_and_blends_mean_and_variance_between() {
     let knots = vec![0.0, 0.25, 0.5, 1.0];
     let poses: [Moments; 4] = [(1.0, 2.0), (2.0, 5.0), (4.0, 17.0), (3.0, 10.0)];
     let base: Moments = (8.0, 65.0);
@@ -775,8 +778,8 @@ fn piecewise_depth_reads_each_stored_pose_exactly_and_blends_each_interval_throu
             "pose {pose} at its knot"
         );
     }
-    // (t′, lo, hi, w): the interval [0.5, 1] ends at a mid pose and a
-    // terminus, so it follows the candidate rule too.
+    // (t′, lo, hi, w): the intervals [0, 0.25] and [0.5, 1] end at a
+    // terminus and a mid pose, so they blend mean and variance too.
     for (t, lo, hi, w) in [
         (0.0625, 0, 1, 0.25),
         (0.125, 0, 1, 0.5),
@@ -785,11 +788,17 @@ fn piecewise_depth_reads_each_stored_pose_exactly_and_blends_each_interval_throu
         (0.875, 2, 3, 0.75),
     ] {
         plan.frame(&[(0, t)], &[0]);
-        let expected = expected_segment(poses[lo], base, poses[hi], w);
+        let expected = mean_variance(poses[lo], poses[hi], w);
         assert_eq!(
             plan.tile(0),
             &tile_of(expected)[..],
             "t′ {t} blends poses {lo}–{hi}"
+        );
+        let mean = mix(poses[lo].0, poses[hi].0, w);
+        let texel = plan.tile(0)[0].map(f16);
+        assert!(
+            (texel[1] - texel[0] * texel[0] - 1.0).abs() < 0.02 && (texel[0] - mean).abs() < 0.01,
+            "t′ {t}: every pose's spread is 1, and the blend keeps it: {texel:?}"
         );
     }
     plan.frame(&[(0, 0.375)], &[0]);
@@ -849,8 +858,9 @@ fn termini_to_termini_depth_runs_through_the_base() {
 }
 
 /// AC 16 (depth half): two movers at one probe, with different pose counts
-/// and an unmarked mid pose, add their blended differences from the base
-/// at t′ between knots for both, then clamp to a valid moment set.
+/// and an unmarked mid pose, each blend mean and variance between the poses
+/// around their t′, then add their blended differences from the base at t′
+/// between knots for both, and clamp to a valid moment set.
 #[test]
 fn two_posed_movers_at_one_probe_add_their_blended_differences() {
     let base: Moments = (8.0, 65.0);
@@ -889,8 +899,8 @@ fn two_posed_movers_at_one_probe_add_their_blended_differences() {
     // Mover 1 at 0.375 blends across its unmarked pose 1, poses 0 → 2 at
     // w 0.75; mover 2 at 0.25 blends poses 0 → 1 at w 0.5.
     plan.frame(&[(0, 0.375), (1, 0.25)], &[0, 1]);
-    let first = expected_segment(a0, base, a2, 0.75);
-    let second = expected_segment(b0, base, b1, 0.5);
+    let first = mean_variance(a0, a2, 0.75);
+    let second = mean_variance(b0, b1, 0.5);
     let sum = |moment: fn(Moments) -> f32| {
         f64::from(moment(base))
             + (f64::from(moment(first)) - f64::from(moment(base)))
@@ -953,13 +963,13 @@ fn a_ramped_movers_depth_reads_its_end_poses_past_the_ramp_edges() {
     for t in [0.61, 0.7] {
         let w = ramp(t) / mid_t;
         plan.frame(&[(0, ramp(t))], &[0]);
-        let expected = expected_segment(first, base, mid, w);
+        let expected = mean_variance(first, mid, w);
         assert_eq!(plan.tile(0), &tile_of(expected)[..], "t {t}");
     }
     for t in [0.85, 0.89] {
         let w = (ramp(t) - mid_t) / (1.0 - mid_t);
         plan.frame(&[(0, ramp(t))], &[0]);
-        let expected = expected_segment(mid, base, last, w);
+        let expected = mean_variance(mid, last, w);
         assert_eq!(plan.tile(0), &tile_of(expected)[..], "t {t}");
     }
     plan.frame(&[(0, -1.0)], &[0]);

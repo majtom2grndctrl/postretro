@@ -6,7 +6,7 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
 use postretro_level_format::mover_probe_channel::{
-    DepthLeg, Knot, MOVER_IRRADIANCE_TILE_F16_COUNT, PoseMark, depth_leg, effective_knots,
+    DepthSource, Knot, MOVER_IRRADIANCE_TILE_F16_COUNT, PoseMark, depth_segment, effective_knots,
     pose_interval,
 };
 use postretro_level_format::probe_depth_tiles::{PROBE_DEPTH_TILE_TEXELS, ProbeDepthTilesSection};
@@ -365,16 +365,17 @@ fn a_probe_storing_only_at_squeezed_out_poses_leaves_the_states() {
 }
 
 /// The renderer's depth blend over `poses` (each pose's moments, the base
-/// where it stores none) at `t` under `marks`: D_lo → base → D_hi, packed
-/// as the live tile packs it.
+/// where it stores none) at `t` under `marks`, by the format's depth rule:
+/// raw through the base between the termini, mean and variance otherwise,
+/// packed as the live tile packs it.
 fn compose_depth(poses: &[[f32; 2]], marks: &[PoseMark], knots: &[Knot], t: f32) -> Vec<[u16; 2]> {
     let span = pose_interval(knots, t, |pose| marks[pose as usize] != PoseMark::Unmarked);
-    let (a, b, s) = match depth_leg(span.weight) {
-        DepthLeg::Exact => (poses[span.lo as usize], poses[span.lo as usize], 0.0),
-        DepthLeg::ToBase(s) => (poses[span.lo as usize], BASE_DEPTH, s),
-        DepthLeg::FromBase(s) => (BASE_DEPTH, poses[span.hi as usize], s),
+    let segment = depth_segment(span, marks.len());
+    let source = |source: DepthSource| match source {
+        DepthSource::Pose(pose) => poses[pose as usize],
+        DepthSource::Base => BASE_DEPTH,
     };
-    depth_tile([0, 1].map(|m| lerp(a[m], b[m], s)))
+    depth_tile(segment.texel(source(segment.from), source(segment.to)))
 }
 
 /// One texel's moments of a uniform depth tile, as stored.
@@ -384,12 +385,14 @@ fn tile_moments(tile: &[[u16; 2]]) -> [f32; 2] {
 
 // AC 18, MP8: a depth probe whose mid tiles lie on its termini's
 // through-base blend skips every mid pose, so its interval runs terminus to
-// terminus through the base, today's blend at every t′. A probe outside the
-// near-field domain (no mid state) keeps its marks and composes the same
-// blend. A mid tile far off the blend (dark at pose 2) stores, and so does
-// pose 1, which the shorter interval to it would otherwise read as the base.
-// In every case each skipped tile is within the significance floor of what
-// compose reads at its t′.
+// terminus through the base, a two-pose mover's blend at every t′. A probe
+// outside the near-field domain (no mid state) keeps its marks and composes
+// the same blend. A mid tile far off the blend (dark at pose 2) stores, and
+// so do its neighbours: pose 1, which the shorter interval to it would
+// otherwise read as the base, and pose 3, since an interval from a mid pose
+// blends mean and variance straight to its other end, never through the
+// base. In every case each skipped tile is within the significance floor of
+// what compose reads at its t′.
 #[test]
 fn every_mid_pose_skipping_its_depth_composes_the_termini_through_base_blend() {
     let knots = even(6);
@@ -420,7 +423,7 @@ fn every_mid_pose_skipping_its_depth_composes_the_termini_through_base_blend() {
     for (label, marks, raw, stores) in [
         ("on the blend", &all_stored, &on_blend, vec![0, 5]),
         ("outside the domain", &termini_marks, &on_blend, vec![0, 5]),
-        ("dark at pose 2", &all_stored, &dark_2, vec![0, 1, 2, 5]),
+        ("dark at pose 2", &all_stored, &dark_2, vec![0, 1, 2, 3, 5]),
     ] {
         let stored_tiles = (0..6)
             .filter(|&k| marks[k] == PoseMark::Stored)
@@ -441,7 +444,7 @@ fn every_mid_pose_skipping_its_depth_composes_the_termini_through_base_blend() {
             if stores == [0, 5] {
                 assert_eq!(
                     composed, on_blend[knot.pose as usize],
-                    "{label}: today's through-base blend at t′ {}",
+                    "{label}: the termini's through-base blend at t′ {}",
                     knot.t
                 );
             }
@@ -474,4 +477,55 @@ fn a_base_reading_mid_pose_bounds_every_interval() {
     use PoseMark::{Base as B, Stored as S};
     assert_eq!(states.bounce[0].marks, [S, S, B, S, S]);
     assert_eq!(counts.bounce_skipped, 0);
+}
+
+// AC 18 under the mean-and-variance rule: a texel watching one occluder
+// translate along its ray holds a mean moving linearly with the mover and
+// a fixed spread. An interval with a mid pose at either end blends mean and
+// variance, which lands on every state between, so the skip keeps a single
+// mid pose: dropping it too would leave a termini interval, which runs
+// through the base and misses. Each skipped tile is within the
+// significance floor of the blend compose reads at its t′.
+#[test]
+fn a_translating_occluder_keeps_one_mid_pose_and_skips_the_rest_against_mean_and_variance() {
+    let knots = even(6);
+    let read = effective_knots(&knots, 0.0, 1.0);
+    let at = |k: usize| {
+        let mean = 1.0 + 0.25 * k as f32;
+        [mean, mean * mean + 0.0625]
+    };
+    let tiles: Vec<Vec<[u16; 2]>> = (0..6).map(|k| depth_tile(at(k))).collect();
+    let probe = depth_probe(vec![PoseMark::Stored; 6], tiles.clone());
+    let (states, counts) = skip(Vec::new(), vec![probe], &knots, (0.0, 1.0));
+    let [probe] = states.depth.as_slice() else {
+        panic!("the probe keeps its depth");
+    };
+    use PoseMark::{Stored as S, Unmarked as U};
+    assert_eq!(probe.marks, [S, U, U, U, S, S]);
+    assert_eq!((counts.depth_stored, counts.depth_skipped), (1, 3));
+
+    let (section, depth) = fixture();
+    let absent = MoverAbsentDepth::new(&section, &depth);
+    let poses: Vec<[f32; 2]> = tiles.iter().map(|tile| tile_moments(tile)).collect();
+    for knot in &read[1..4] {
+        let composed = compose_depth(&poses, &probe.marks, &read, knot.t);
+        let score = absent.score_against(PROBE, &composed, &tiles[knot.pose as usize]);
+        assert!(
+            score < DEPTH_SIGNIFICANCE_FLOOR,
+            "skipped pose {} scores {score} against compose",
+            knot.pose
+        );
+    }
+    let termini_only = [S, U, U, U, U, S];
+    let worst = read[1..5]
+        .iter()
+        .map(|knot| {
+            let composed = compose_depth(&poses, &termini_only, &read, knot.t);
+            absent.score_against(PROBE, &composed, &tiles[knot.pose as usize])
+        })
+        .fold(0.0, f32::max);
+    assert!(
+        worst >= DEPTH_SIGNIFICANCE_FLOOR,
+        "precondition: the termini's through-base blend misses ({worst})"
+    );
 }

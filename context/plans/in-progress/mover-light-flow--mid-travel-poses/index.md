@@ -201,6 +201,8 @@ Loader rejects: a pose count below 2; knots out of order, out of [0, 1], non-fin
 
 **Pinned at the format task (plan task 2).** Little-endian, epoch 5 in the first byte, exact match.
 
+**Epoch 6 (plan task 14)** is epoch 5's byte layout under the mean-and-variance depth rule; the loader refuses epoch 5 by name, as it does epoch 4.
+
 | Part | Epoch 5 bytes |
 |---|---|
 | Header, cell index | Unchanged from epoch 4. |

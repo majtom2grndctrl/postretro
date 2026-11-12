@@ -173,7 +173,18 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
   - enemy-movers 8.3 → 12.6 s; id 57 3.19 → 4.53 MB.
 • Verdict (executor): bake time and value bytes stay sane, so no stop. Depth bytes are the open cost: skips are still judged against the through-base blend, so re-measure after task 14 before deciding task 16.
 • Gates: fmt, compiler clippy `-D warnings`, `--bin prl-build mover` 185 (+5 ignored), every `tests/mover_*`, parity 3/3. |
-| 14 | **Depth blend.**<br>• Mean and variance in level-format beside `depth_leg`, one compose function given the interval's end poses.<br>• Renderer `depth_blend.rs` and compiler `skip.rs` call it.<br>• Termini ↔ termini stays raw through-base.<br>• id-57 epoch 6, since the depth rule changes meaning; C9 expectation updated.<br>ACs 15, 18, 35. | integrating executor | — | |
+| 14 | **Depth blend.**<br>• Mean and variance in level-format beside `depth_leg`, one compose function given the interval's end poses.<br>• Renderer `depth_blend.rs` and compiler `skip.rs` call it.<br>• Termini ↔ termini stays raw through-base.<br>• id-57 epoch 6, since the depth rule changes meaning; C9 expectation updated.<br>ACs 15, 18, 35. | integrating executor | — | done, with two open items:
+• Code: `level-format` `knots.rs` `depth_segment` and `mix_depth_moments` replace `depth_leg`. Termini ↔ termini stays raw through-base, bit for bit; every other interval mixes mean and variance, rebuilding E[d²] from the f16-rounded mean, clamping σ² at 0 and capping at 65504.
+• Callers: renderer `depth_blend.rs` and compiler `skip.rs` call it.
+• Format: id 57 epoch 6, with epochs 4 and 5 refused. Parity rewrites the parent's epoch byte and compares every other byte (3/3).
+• Tests: C9's renderer half accepts the variance mix. `depth_mix_tests.rs` and `depth_blend_tests.rs` are new; AC 18's skip case now keeps pose 3. Mutation-checked.
+• Bytes, `--release`:
+  - setpiece id 57 18.31 → 11.39 MB (depth 10.82 → 3.90 MB), closed-pose tiles 26,979 → 9,695;
+  - enemy-movers 4.53 → 4.35 MB.
+• Gates: fmt, workspace clippy, format 49, loader 52, compiler mover 186, `tests/mover_*`, renderer GPU 124, parity, AC 19.
+• **Open, CPU cost:** live depth tiles cost 0.53 → 0.70 ms per frame on the setpiece room and 0.26 → 0.29 on the wall, against M7's no-measurable-cost rule (task 14b).
+• **Open, AC 7:** the sweeper reference fails, bounce one 4.01 levels at mid pose 12 of 25 (bar 3). The tested pose moved with task 13's knots; undiagnosed (task 14b). |
+| 14b | **Task 14's open items.** (a) Diagnose the AC 7 sweeper reference failure at the new mid pose: patch-grid exception, or a new error at outside knots? (b) Bring the mean-and-variance CPU mix to the old rule's cost on the setpiece room, or report the floor reached and the levers left. | integrating executor | 14 | |
 | 15 | **Slice proof.**<br>• Bake setpiece and enemy-movers `--release` with tasks 13 and 14.<br>• GPU motion recapture (`captures/motion-harness/`) beside the pre-amendment build and the 41/57 truth bakes.<br>• Port the offline metric to the AC 36 `--ignored` test.<br>• Measure id-57 bytes, bake times and M7's A/B.<br>• From the data, decide whether inside knots become depth-only (task 16) and whether the GPU needs a per-mover bracket (task 17).<br>ACs 36, M8, M9 data. | integrating executor | 13, 14 | |
 | 16 | **(If task 15's bytes or bake time call for it) depth-only inside knots.** A per-pose kind in the mover record; values blend across a depth-only pose for every probe; no direct q or bounce stored there; loader refusals; memos per pose kind; SH gate and Build Summary estimate count it. | integrating executor | 15 | |
 | 17 | **(If M7 shows cost) per-mover knot bracket.** One word per mover slot with the bracketing value-knot index, so `mc_interval` and `mover_bounce.wgsl` skip the linear knot loop. M7 A/B re-run. | integrating executor | 15 | |

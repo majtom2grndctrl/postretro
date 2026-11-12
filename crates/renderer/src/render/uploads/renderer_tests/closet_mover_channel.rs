@@ -5,13 +5,16 @@
 //! the tile texture equal, texel by texel, the piecewise mix of reference
 //! frames rendered at every t′ where some probe's compose can bend: each of
 //! the door's knots, where a stored or base-reading pose reads exactly, and
-//! the midpoint of every pair of knots, where a depth interval between two
-//! such poses reaches its base. Between two neighbouring references every
+//! the midpoint of every pair of knots, where a depth interval between the
+//! two termini reaches its base. Between two neighbouring references every
 //! probe's compose is linear in t′: bounce lerps between the poses around
-//! t′ (a skipped pose blended across), and depth runs D_lo → base → D_hi.
-//! So the mix of the neighbouring references is that probe's piecewise mix,
-//! whichever poses it stores. Every other texel holds still. The closet
-//! gates no direct light (its id 57 has no direct block), so no direct atlas
+//! t′ (a skipped pose blended across); depth between the two termini runs
+//! its raw moments D_lo → base → D_hi, and depth on an interval a mid pose
+//! bounds lerps the mean and the variance, rebuilding `E[d²]` from the
+//! mean. So the mix of the neighbouring references is that probe's
+//! piecewise mix, whichever poses it stores: in the raw moments, or in the
+//! mean and the variance. Every other texel holds still. The closet gates
+//! no direct light (its id 57 has no direct block), so no direct atlas
 //! moves.
 //! See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 use super::*;
@@ -141,18 +144,34 @@ struct Reference {
     tiles: Vec<f32>,
 }
 
+/// How a readback's halves mix between references.
+#[derive(Clone, Copy, PartialEq)]
+enum Halves {
+    /// Every half lerps: the indirect atlas.
+    Linear,
+    /// `(E[d], E[d²])` pairs: the mean lerps, and `E[d²]` lerps either raw
+    /// (between the termini) or as the variance, rebuilt from the mean.
+    Moments,
+}
+
 /// Texels that move with t′, each checked against the mix of the two
 /// references around `t` (`refs` ascending by t′, `pick` the readback),
 /// within one f16 step at the larger magnitude: the store's rounding, plus
 /// at most half a step a reference carries where it is itself a mix. A
-/// texel every reference holds alike must hold still.
+/// depth texel's `E[d²]` passes as the raw mix or as the variance mix
+/// (`max(0, E[d²] − E[d]²)` at each reference, lerped, plus the stored
+/// mean squared) within two steps, since each reference's variance carries
+/// its own `E[d²]` rounding. A texel every reference holds alike must hold
+/// still. Returns the moving halves and, of those, the `E[d²]` halves only
+/// the variance mix fits.
 fn check_mix(
     found: &[f32],
     refs: &[Reference],
     pick: impl Fn(&Reference) -> &[f32],
+    halves: Halves,
     t: f32,
     what: &str,
-) -> usize {
+) -> (usize, usize) {
     let hi = refs
         .iter()
         .position(|reference| reference.t >= t)
@@ -166,6 +185,7 @@ fn check_mix(
     let (below, above) = (pick(&refs[lo]), pick(&refs[hi]));
     assert_eq!(found.len(), below.len(), "{what}: same layout");
     let mut moving = 0;
+    let mut by_variance = 0;
     for (index, &got) in found.iter().enumerate() {
         let first = pick(&refs[0])[index];
         if refs.iter().all(|reference| pick(reference)[index] == first) {
@@ -180,15 +200,26 @@ fn check_mix(
         let (a, b) = (below[index], above[index]);
         let expected = a + (b - a) * s;
         let step = a.abs().max(b.abs()).max(6.1e-5) * 2f32.powi(-10);
+        if (got - expected).abs() <= 1.01 * step {
+            continue;
+        }
+        let rebuilt = (halves == Halves::Moments && index % 2 == 1).then(|| {
+            let variance = |mean_sq: f32, mean: f32| (mean_sq - mean * mean).max(0.0);
+            let (below_var, above_var) =
+                (variance(a, below[index - 1]), variance(b, above[index - 1]));
+            let mean = found[index - 1];
+            (below_var + (above_var - below_var) * s + mean * mean).min(65504.0)
+        });
         assert!(
-            (got - expected).abs() <= 1.01 * step,
+            rebuilt.is_some_and(|rebuilt| (got - rebuilt).abs() <= 2.01 * step),
             "{what} t′ {t}: half {index} holds {got}, the mix of {a} (t′ {}) and {b} (t′ {}) is \
-             {expected}",
+             {expected}, the variance mix {rebuilt:?}",
             refs[lo].t,
             refs[hi].t,
         );
+        by_variance += 1;
     }
-    moving
+    (moving, by_variance)
 }
 
 #[test]
@@ -207,24 +238,40 @@ fn c9_the_closet_composes_and_writes_the_piecewise_mix_at_every_handed_t() {
             Reference { t, atlas, tiles }
         })
         .collect();
-    let mut moving = (0, 0);
+    let (mut atlas_moving, mut tiles_moving, mut by_variance) = (0, 0, 0);
     for t in SEQUENCE {
         let (atlas, tiles) = closet.frame(t);
-        moving = (
-            check_mix(&atlas, &refs, |r| &r.atlas, t, "indirect atlas"),
-            check_mix(&tiles, &refs, |r| &r.tiles, t, "depth tiles"),
+        (atlas_moving, _) = check_mix(
+            &atlas,
+            &refs,
+            |r| &r.atlas,
+            Halves::Linear,
+            t,
+            "indirect atlas",
         );
+        let (moving, variance) = check_mix(
+            &tiles,
+            &refs,
+            |r| &r.tiles,
+            Halves::Moments,
+            t,
+            "depth tiles",
+        );
+        tiles_moving = moving;
+        by_variance += variance;
     }
     eprintln!(
-        "C9 closet: {} knot(s) {:?}, {} reference frame(s); {} indirect-atlas halves and {} \
-         depth-tile halves move with t′, every one at its piecewise mix over {} frames",
+        "C9 closet: {} knot(s) {:?}, {} reference frame(s); {atlas_moving} indirect-atlas halves \
+         and {tiles_moving} depth-tile halves move with t′, every one at its piecewise mix over \
+         {} frames ({by_variance} E[d²] half-frames fit only the variance mix)",
         closet.knots.len(),
         closet.knots.iter().map(|knot| knot.t).collect::<Vec<_>>(),
         refs.len(),
-        moving.0,
-        moving.1,
         SEQUENCE.len()
     );
-    assert!(moving.0 > 0, "the door's bounce moves the indirect atlas");
-    assert!(moving.1 > 0, "the door's live tiles move");
+    assert!(
+        atlas_moving > 0,
+        "the door's bounce moves the indirect atlas"
+    );
+    assert!(tiles_moving > 0, "the door's live tiles move");
 }

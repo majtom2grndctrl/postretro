@@ -628,22 +628,22 @@ fn an_unresolved_or_malformed_streamed_payload_is_refused_by_name() {
 }
 
 // The header's two placement bytes are read per block; any other epoch,
-// epoch 4's per-terminus layout included, is a named re-bake, an unknown
-// placement names its block, and a streamed block with no entry is refused
-// for that block.
+// epoch 4's per-terminus layout and epoch 5's through-base depth rule
+// included, is a named re-bake, an unknown placement names its block, and
+// a streamed block with no entry is refused for that block.
 #[test]
 fn placements_are_read_per_block_and_any_other_epoch_is_refused_by_name() {
     use MoverPayloadPlacement::{Resident, Streamed};
     let bytes = sample().to_bytes();
-    assert_eq!(bytes[0], 5);
-    for epoch in [3, 4, 6] {
+    assert_eq!(bytes[0], 6);
+    for epoch in [3, 4, 5, 7] {
         let mut other = bytes.clone();
         other[0] = epoch;
         assert_eq!(
             MoverProbeChannelSection::from_bytes(&other),
             Err(MoverProbeChannelError::EpochMismatch {
                 found: epoch,
-                expected: 5
+                expected: 6
             })
         );
     }

@@ -16,7 +16,8 @@ pub use assemble::{
 };
 pub use error::MoverProbeChannelError;
 pub use knots::{
-    DepthLeg, Knot, PoseInterval, depth_leg, effective_knots, pose_interval, ramped_knot,
+    DepthMix, DepthSegment, DepthSource, Knot, PoseInterval, depth_segment, effective_knots,
+    mix_depth_moments, pose_interval, ramped_knot,
 };
 pub use poses::{
     BouncePoseMasks, MoverAcrossEntry, MoverBounceEntry, MoverDepthRecord, MoverRecord, PoseMark,
@@ -54,7 +55,12 @@ pub fn depth_tile_texture_count(
 /// direct, bounce and depth store per pose, and a mid pose marks a probe as
 /// stored, reading the base, or blending across; per (cell, mover) across
 /// marks name the probes each mid pose encloses, which direct blends across.
-pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 5;
+/// Epoch 6: epoch 5's bytes under the mean-and-variance depth rule
+/// ([`depth_segment`]): an interval with a mid pose at either end blends its
+/// poses' mean and variance, and redundant mid poses are skipped against
+/// that blend, so an epoch-5 section's skips no longer match what compose
+/// reads.
+pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 6;
 
 /// Term-record flag bit 0: the record carries its light's own tile per
 /// masked probe, because no per-probe id-41 or id-45 entry holds the light's
@@ -213,7 +219,7 @@ impl MoverDirectRecord {
     }
 }
 
-/// MoverProbeChannel section (ID 57), epoch 5. Optional: written only when
+/// MoverProbeChannel section (ID 57), epoch 6. Optional: written only when
 /// the direct, bounce or depth block has an entry; never written empty.
 ///
 /// On-disk layout (all little-endian, f16 as raw `u16` bits). L is the
@@ -222,7 +228,7 @@ impl MoverDirectRecord {
 /// record:
 ///
 /// ```text
-///   u8        epoch                       (= MOVER_PROBE_CHANNEL_EPOCH = 5)
+///   u8        epoch                       (= MOVER_PROBE_CHANNEL_EPOCH = 6)
 ///   u8        affinity_factor             (= AFFINITY_FACTOR = 4)
 ///   u32 × 3   affinity_dims               (id 34's grid / 4, rounded up)
 ///   u8        direct_placement            (0 resident, 1 streamed with id 50)

@@ -147,7 +147,13 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 | M6 Rising room mean luma against t′ | owner | manual | **outstanding: owner, in-engine** (captures: `t6a-luma.png`, `t6b-luma.png`) |
 | M7 5300M trace: mid poses add no frame cost over the pre-brief build (restated 2026-11-11) | executor, Metal System Trace A/B | **pass, 2026-11-11.** Before the restatement it failed the 0.2 ms budget, and the cause predates this brief. 937ba607d `--release`, 2560×1440 windowed, clock 1228 MHz, async streaming, 3 valid rounds per config: room 1.73 ms, wall 2.68 ms, both 1.48 ms per mover (bounce compose ~1.0–1.4, Pass A ~0.6–1.2, uploads ~0.1). Same harness on HEAD at `light_poses 2`: 1.65 / 2.63; on pre-brief 83dfb5317: 1.69 / 2.69. Mid poses add nothing measurable to compose (< 0.1 ms, mixed sign); uploads possibly +0.05 ms (within noise). Cost does not scale with affected probes (wall 3.4× probes, 1.55× cost); stripped id 57 → 0. Owner ruled: follow-up brief. Harness and data: scratchpad `m7/` (`runs/ab-table.md`) | pass (see Status) |
 | M8 Cold and warm bake times, id-57 bytes per block, hallway | owner judges; executor measures | manual | measured (`t6b`–`t9` results; hallway projected); **outstanding: owner judges** (re-measure after task 15) |
-| M9 In motion: room floor and ceiling, sweeper faces, no flashes, dots, pulsing or stepping; dense motion series before and after; M7 A/B re-run | owner in-engine; executor captures | manual | |
+| M9 In motion: room floor and ceiling, sweeper faces, no flashes, dots, pulsing or stepping; dense motion series before and after; M7 A/B re-run | owner in-engine; executor captures | manual | captured (`captures/t15c-results.md`), at HEAD fff783e14 + 977db499a:
+• Mean |final − truth| (pre-amendment): ceiling 0.09 (4.41), floor 0.10 (1.19), interior 0.05 (0.40), east 0.58 (3.87), west 0.08 (0.86).
+• Ceiling knot flash: mean 0.05, worst 0.38 over 43 knots (was 5–6). Ceiling 12c peaks median 9 (pre-amendment 24, truth 1): a faint lattice remains.
+• East peak-to-trough tracks truth; residual east +3.7 at t′ 0.16 and −2.0 at 0.98 from long-interval direct, shared with pre-amendment.
+• **M7 re-run, interleaved with 83df:** per mover minus docked, HEAD/83df: room +1.722/+1.641, wall +2.570/+2.535, both +1.443/+1.534 ms. Wall compose 2.456–2.477 against 83df 2.509–2.608; room within 83df's range. Pass: no measurable cost; the wall's +0.13 ms is gone with the bracket.
+• Bakes: setpiece 44.3 s, 12.03 MB (wall 71, room 45 poses); enemy-movers 14.5 s, 4.52 MB (sweeper 31).
+• **Outstanding: owner, in-engine.** |
 
 ## Tasks
 

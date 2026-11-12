@@ -239,7 +239,7 @@ fn per_fidelity_warm_equals_no_cache_and_two_low_builds_over_one_cache_are_alike
             flags,
         );
         let warm = warm_over_with(&Scene::default(), cache.path(), flags);
-        assert_eq!(pose_share(&warm), (0, 6 + 9), "{flags:?}\n{warm}");
+        assert_eq!(pose_share(&warm), (0, 6 + 8), "{flags:?}\n{warm}");
     }
 
     let edited = Scene {
@@ -271,10 +271,10 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
     };
 
     let unchanged = warm_low_over_high(&Scene::default());
-    assert_eq!(pose_share(&unchanged), (0, 6 + 9), "{unchanged}");
+    assert_eq!(pose_share(&unchanged), (0, 6 + 8), "{unchanged}");
     assert_eq!(
         mover_memo(&unchanged, "shutter"),
-        "hit (9 pose(s), 9 served from high)",
+        "hit (8 pose(s), 8 served from high)",
         "{unchanged}"
     );
     assert_logged(
@@ -297,7 +297,7 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
     );
     assert_eq!(
         mover_memo(&more_poses, "shutter"),
-        "hit (9 pose(s), 9 served from high)",
+        "hit (8 pose(s), 8 served from high)",
         "{more_poses}"
     );
     assert_logged(&more_poses, "re-baked 1 posed bounce(s) at 5 of 11 pose(s)");
@@ -308,7 +308,7 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
         "{more_poses}"
     );
     assert!(
-        summary(&more_poses, "shutter").starts_with("9 pose(s) (3 even, 6 geometry), high;"),
+        summary(&more_poses, "shutter").starts_with("8 pose(s) (2 even, 6 geometry), high;"),
         "{more_poses}"
     );
 
@@ -336,7 +336,7 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
     let high_after_low = build_with(&Scene::default(), CacheMode::Warm(cache.path()), JOBS, HIGH);
     assert_eq!(
         pose_share(&high_after_low.logs),
-        (6 + 9, 6 + 9),
+        (6 + 8, 6 + 8),
         "{}",
         high_after_low.logs
     );

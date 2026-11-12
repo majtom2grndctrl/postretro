@@ -406,6 +406,50 @@ fn combined((bounce, direct): ([f32; 3], [f32; 3])) -> OctahedralAtlasTexel {
     }))
 }
 
+/// Build `b`'s worst receiver value at one truth knot, in display levels
+/// against the truth: combined, then the bounce alone and the direct alone
+/// at that receiver.
+fn worst_value(at: &[Sample], b: usize) -> (f32, f32, f32) {
+    at[b]
+        .values
+        .iter()
+        .zip(&at[0].values)
+        .fold((0.0, 0.0, 0.0), |worst, (candidate, truth)| {
+            let levels = display_levels(&[combined(*candidate)], &[combined(*truth)]);
+            if levels > worst.0 {
+                (
+                    levels,
+                    display_levels(&[texel(candidate.0)], &[texel(truth.0)]),
+                    direct_display_levels(&[texel(candidate.1)], &[texel(truth.1)]),
+                )
+            } else {
+                worst
+            }
+        })
+}
+
+/// Where `t` falls among a build's knots: on a knot, or inside an interval
+/// whose ends are both even poses (fractions of the `even` count), or one
+/// with a geometry knot at either end, with its length in even steps.
+fn interval_kind(knots: &[f32], even: u32, t: f32) -> String {
+    if knots.iter().any(|&knot| (knot - t).abs() < 1e-6) {
+        return "on a knot".into();
+    }
+    let at = knots.partition_point(|&knot| knot <= t);
+    let (lo, hi) = (knots[at - 1], knots[at]);
+    let steps = (even - 1) as f32;
+    let is_even = |knot: f32| (knot * steps - (knot * steps).round()).abs() < 1e-3;
+    let kind = if is_even(lo) && is_even(hi) {
+        "even interval"
+    } else {
+        "geometry interval"
+    };
+    format!(
+        "{kind} {lo:.3}–{hi:.3} ({:.2} of an even step)",
+        (hi - lo) * steps
+    )
+}
+
 /// One candidate's reading of one surface against the truth.
 struct Verdict {
     share_mean: f64,
@@ -565,6 +609,25 @@ fn motion_proof(
         );
         eprintln!("  shipped:       {}", with_knots.line());
         eprintln!("  pre-amendment: {}", pre_amendment.line());
+        let shipped_knots: Vec<f32> = shipped.knots.iter().map(|knot| knot.t).collect();
+        for (&t, at) in knots.iter().zip(&samples) {
+            let miss = worst_value(at, 1);
+            if miss.0 <= VALUE_BAR_LEVELS {
+                continue;
+            }
+            let pre = worst_value(at, 2);
+            eprintln!(
+                "    value miss at t′ {t:.3}, {}: shipped {:.2} (bounce {:.2}, direct {:.2}); \
+                 pre-amendment {:.2} (bounce {:.2}, direct {:.2})",
+                interval_kind(&shipped_knots, even, t),
+                miss.0,
+                miss.1,
+                miss.2,
+                pre.0,
+                pre.1,
+                pre.2,
+            );
+        }
         out.push((surface.name, with_knots, pre_amendment));
     }
     out

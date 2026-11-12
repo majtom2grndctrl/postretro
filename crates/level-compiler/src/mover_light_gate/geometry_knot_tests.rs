@@ -289,12 +289,16 @@ fn a_slab_off_the_lattice_phase_still_brackets_every_enclosure_end() {
 
 #[test]
 fn a_two_brush_mover_brackets_each_brush_and_shares_the_gap_between_them() {
-    // Two slabs 0.15 m apart along x: each probe they pass is enclosed
-    // twice, with a gap shorter than two outside distances, so both outside
-    // knots sit at the gap's middle and merge.
+    // Two slabs 1.5 outside distances apart along x: each probe they pass
+    // is enclosed twice, with a gap shorter than two outside distances, so
+    // both outside knots sit at the gap's middle and merge.
+    let gap = 1.5 * OUTSIDE_KNOT_DISTANCE_M;
     let brushes = vec![
         slab(),
-        box_brush(DVec3::new(-0.35, 0.0, 0.0), DVec3::new(-0.25, 3.0, 3.0)),
+        box_brush(
+            DVec3::new(-0.2 - gap, 0.0, 0.0),
+            DVec3::new(-0.1 - gap, 3.0, 3.0),
+        ),
     ];
     let probes = lattice(DVec3::new(-1.5, -1.5, -1.5), [7, 7, 7]);
     let (slab, waypoints) = on_path(brushes, &[DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)], None);

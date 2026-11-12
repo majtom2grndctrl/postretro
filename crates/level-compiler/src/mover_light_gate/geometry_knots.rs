@@ -12,13 +12,16 @@ use crate::mover_probe_channel::{NearFieldDomain, enclosure_inset};
 use crate::sh_bake::{ProbeGridLayout, vec3_from};
 
 /// How far past each end of an enclosure interval its outside knot sits, in
-/// metres of travel, so the probe is clear of the face there. Source: the
-/// offline evidence (`mover-light-flow--mid-travel-poses`
-/// `captures/advice-results.md`), whose outside knots sat one fine truth-bake
-/// step, 4.4 map units (about s / 9 at the 1 m spacing), past each end and
-/// brought the sweeper's east-face value error from ~13 to ~0.5 display
-/// levels. GPU captures tune it.
-pub(crate) const OUTSIDE_KNOT_DISTANCE_M: f64 = 4.4 / 39.37;
+/// metres of travel: one map unit. An enclosed inside knot blends values
+/// across, so between an outside knot and its inside knot the probe is out
+/// of the mover yet its values are still mid-lerp; this distance is that
+/// window. Source: the task 15b sweep (`mover-light-flow--mid-travel-poses`
+/// `captures/t15b-results.md`) of 4.4, 2, 1 and 0.2 units against the
+/// fine-pose truth bake: the rising room's ceiling residual fell 2.18 →
+/// 1.46 → 0.45 → 0.23 luma and em_sweeper's west face passed from 1 unit
+/// down, while 1 unit keeps the knot 8× clear of the gather lift's band
+/// ([`OUTSIDE_KNOT_CLEARANCE_M`]) and four fewer room knots than 0.2 units.
+pub(crate) const OUTSIDE_KNOT_DISTANCE_M: f64 = 1.0 / 39.37;
 
 /// How far inside each end of an enclosure interval its inside knot sits,
 /// in metres of travel: just inside, so the pose there encloses the probe
@@ -34,6 +37,13 @@ pub(crate) const INSIDE_KNOT_MARGIN_M: f64 = 0.01;
 /// quarter of the 4.4-unit (0.11 m) slack the offline evidence shows fails.
 /// GPU captures tune it.
 pub(crate) const KNOT_MERGE_TOLERANCE_M: f64 = 0.025;
+
+/// The least travel, in metres, by which an outside knot clears its
+/// enclosure interval's end: the enclosing inset (about the gather lift,
+/// `RAY_EPSILON`, 1 mm) plus the lift, so every lifted gather ray of the
+/// probe starts outside the posed brush, plus [`SIDE_GUARD_M`]. Merging
+/// never pulls an outside knot nearer than this.
+pub(crate) const OUTSIDE_KNOT_CLEARANCE_M: f64 = 0.003;
 
 /// The least travel, in metres, by which a knot stays on its side of an
 /// interval end: far above the `f32` rounding of a posed offset, so the
@@ -105,6 +115,7 @@ pub(super) fn geometry_knots(
         inside: INSIDE_KNOT_MARGIN_M / length,
         tolerance: travel.merge_tolerance(),
         guard: SIDE_GUARD_M / length,
+        clearance: OUTSIDE_KNOT_CLEARANCE_M / length,
     };
     // `Pose` keeps the brushes with bounds, so the intervals read the same.
     let brushes: Vec<&BrushVolume> = mover
@@ -190,6 +201,7 @@ struct Scale {
     inside: f64,
     tolerance: f64,
     guard: f64,
+    clearance: f64,
 }
 
 /// One stretch of travel over which a probe stays inside the mover: its
@@ -300,7 +312,8 @@ fn inside_intervals(
 /// interval at that end, and an outside window around
 /// [`OUTSIDE_KNOT_DISTANCE_M`] outside, but no farther than the middle of
 /// the gap to a neighbouring enclosure. Each spans the merge tolerance
-/// either side of its target, cut to stay [`SIDE_GUARD_M`] on its side. A
+/// either side of its target, cut to stay [`SIDE_GUARD_M`] on its side, and
+/// an outside window [`OUTSIDE_KNOT_CLEARANCE_M`] clear of the end. A
 /// side narrower than that guard leaves a zero-width window at its middle,
 /// which the caller checks.
 fn end_windows(enclosures: &[Enclosure], probe: Vec3, scale: &Scale) -> Vec<KnotWindow> {
@@ -334,7 +347,7 @@ fn end_windows(enclosures: &[Enclosure], probe: Vec3, scale: &Scale) -> Vec<Knot
                 } else {
                     before + scale.guard
                 },
-                a - scale.guard,
+                a - scale.clearance,
             );
             let gap_middle = 0.5 * (before + a);
             let (span, middle) = inside(enclosure.first);
@@ -352,7 +365,7 @@ fn end_windows(enclosures: &[Enclosure], probe: Vec3, scale: &Scale) -> Vec<Knot
             let after = enclosures.get(index + 1).map_or(1.0, Enclosure::start);
             let last = index + 1 == enclosures.len();
             let clear = (
-                b + scale.guard,
+                b + scale.clearance,
                 if last { 1.0 } else { after - scale.guard },
             );
             let gap_middle = 0.5 * (b + after);

@@ -86,6 +86,12 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 
   The test stays strict and failing until the owner rules.
 
+- **AC 36 bars (raised 2026-11-11, task 15b).** At the tuned constants, AC 36 fails its value bar on the ceiling (4.52 levels), floor (5.33) and east face (11.98). The east face's share also fails: trip mean 0.0102 against 0.01, worst knot 0.384. The east and floor misses are direct light interpolated over long intervals, and the pre-amendment build misses equally or worse at the same t′ (east t′ 0.982: 11.98 vs 12.30). The ceiling misses are bounce on a near-black surface at the skip bar's scale. The proposed restatement:
+
+  > Far-side share: the trip's mean within 0.01 of the truth's, and within 0.05 at every knot on the room's layers; on the faces the worst knot is reported, not gated. Composed values: at every knot, within 3 display levels of the truth, or within 1.5 levels of the pre-amendment build's miss there. The pre-amendment build fails the share bar. Misses shared with the pre-amendment build go to a follow-up on direct interpolation over long intervals and the skip bar's reach on dark surfaces.
+
+  The 1.5 is fitted to this data; at +1, only ceiling t′ 0.675 misses (4.01 against 3.93).
+
 ## Resolved questions
 
 - **AC 7, em_sweeper bounce one (raised 2026-11-10, task 3; resolved by the restatement above).** At em_sweeper's mid poses, bounce one reads up to 4.69 display levels off the static-brush reference (bar 3), in one probe column 0.21 m before the slab's west face. Cause: the posed bake's existing patch handling. The slab's face lands part-way into a 0.5 m static floor patch, which the posed slab partly buries, while the reference cuts the floor at the face. The error follows each pose's phase in the patch grid (1.72–4.69 levels over mid poses 1–6). The termini read 1.78 and 2.01 only because their offsets land on patch boundaries. A fix in the posed bake would move terminus bytes, which AC 1 forbids. The test stays strict and `#[ignore]`d with the reason.
@@ -217,7 +223,18 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 • **M7, 83df re-run interleaved:** wall compose +0.13 ms over pre-brief (non-overlapping ranges, in `mover_bounce.wgsl`); room +0.13 within noise; both flat. Task 17 triggered.
 • Task 16 not needed: bytes and bake time are fine.
 • Hypothesis for the ceiling bumps and the face share spikes: values lerp across the whole outside-before → outside-after span, so in the 4.4 u window between an inside knot and its outside knot, the probe is out of the slab but still mid-lerp. Task 15b tunes the outside distance. |
-| 15b | **Tune the geometry-knot constants.** Outside distance (and inside margin) against AC 36 and GPU motion frames on the ceiling and the sweeper faces: does a smaller outside distance, still clear of the gather-lift band, remove the per-crossing residuals? Then judge AC 36's bars with the owner if misses remain. | integrating executor | 15 | |
+| 15b | **Tune the geometry-knot constants.** Outside distance (and inside margin) against AC 36 and GPU motion frames on the ceiling and the sweeper faces: does a smaller outside distance, still clear of the gather-lift band, remove the per-crossing residuals? Then judge AC 36's bars with the owner if misses remain. | integrating executor | 15 | done (`captures/t15b-results.md`):
+• **Chosen:** outside distance 4.4 u → **1 u**, plus `OUTSIDE_KNOT_CLEARANCE_M` 3 mm (the 1 mm lift, ~1 mm inset and 1 mm side guard), which caps the outside window short of the band; byte-identical at 4.4 u.
+• Sweep (outside distance → room/wall/sweeper poses, setpiece id 57, cold bake, ceiling GPU |Δ truth| mean/max, AC 36 values ceiling/floor/east/west):
+  - 4.4 u: 32/57/25, 11.39 MB, 39 s, 0.22/2.18, 5.92/4.28/11.98/4.33;
+  - 2 u: 37/71/29, 11.84 MB, 41 s, 0.17/1.46, 4.57/5.77/11.98/2.35;
+  - **1 u: 45/71/31, 12.03 MB, 47 s, 0.09/0.45, 4.52/5.33/11.98/1.13, west passes;**
+  - 5 mm: 49/71/31, 12.03 MB, 0.08/0.23, little further gain.
+• Ceiling bumps confirmed as the outside window, and gone at 1 u.
+• Unmoved: east +3.7 luma at t′ 0.161, east direct misses, ceiling faint lattice (12c median 9–10).
+• The east share spike at t′ 0.107 grows 0.329 → 0.384 (GPU ~−1 luma).
+• **AC 36 at 1 u:** west passes; ceiling, floor and east fail on values (4.52, 5.33, 11.98). East direct misses all sit in long intervals and predate the brief (t′ 0.982: 11.98 vs 12.30 pre-amendment); ceiling bounce 3.3–4.5 vs 2.9–3.7 pre-amendment, one on a stored knot (skip bar). Restatement proposed (owner questions).
+• Gates: fmt, clippy, `--bin prl-build mover` 186, `tests/mover_*` (shutter fixture 9 → 8 poses), parity 3/3. |
 | 16 | **(Not needed per task 15) (If task 15's bytes or bake time call for it) depth-only inside knots.** A per-pose kind in the mover record; values blend across a depth-only pose for every probe; no direct q or bounce stored there; loader refusals; memos per pose kind; SH gate and Build Summary estimate count it. | integrating executor | 15 | |
 | 17 | **(If M7 shows cost) per-mover knot bracket.** One word per mover slot with the bracketing value-knot index, so `mc_interval` and `mover_bounce.wgsl` skip the linear knot loop. M7 A/B re-run. | integrating executor | 15 | done; M7 re-run pending a quiet machine:
 • T-block: 2 words per mover slot, t′ then bracket. `MoverKnots::bracket` is a binary search, computed once per mover per frame in `set_states`.

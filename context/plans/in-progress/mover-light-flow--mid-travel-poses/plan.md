@@ -78,6 +78,17 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 - **New and restated ACs.** New: ACs 34–37 and M9. Restated: AC 4 and AC 5 (even poses plus geometry knots), AC 15 (depth mix rule) and AC 18 (MP8 wording).
 - **Build here, this session** (owner: "once the pause is over, let's build it here").
 
+## Open owner questions
+
+- **AC 36, room truth density (raised 2026-11-12, task 20).** The ruling names `light_poses 113` for the sweeper so the truth resolves each geometry-knot window. The room's truth is still 41, which samples none of its 1 u windows. At 78:
+  - the time-weighted means pass (0.0074, 0.0069);
+  - the room's per-knot share gate fails on single-knot spikes (ceiling 0.44, floor 0.52), which the GPU shows as at most 2.0 luma on one sample;
+  - the floor values fail at t′ 0.831 (7.10 vs 5.35 pre-amendment, 0.25 over the 1.5 clause), the long-interval direct miss that the pre-amendment build shows at the same strength.
+
+  Options:
+  - **(1) Recommended:** room truth at 78; the room's worst knot reported, not gated, like the faces; time-weighted means gated; values gated, except knots inside a stored interval longer than one even step, which are reported and go to the long-interval direct-interpolation follow-up.
+  - **(2)** Keep the room's truth at 41, with the GPU check recorded as the proof of its windows.
+
 ## Owner rulings after review round 4 (2026-11-12)
 
 The owner agreed with all three recommendations ("I agree with your recommendations on the three questions!"):
@@ -260,7 +271,11 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 • The trip mean is a trapezoid integral over the truth's knot t′ on every surface (the unweighted mean is printed beside it); the room keeps its per-knot gate; the faces report their worst knot; the values clause is unchanged; the pre-amendment candidate fails the share bar on all four surfaces (asserted).
 • **Sweeper at truth 113:** passes. East 0.0095 (0.0104 time-weighted at 57), west 0.0050 (0.0037); worst knot reported east 0.384, west 0.149. 4 of 30 shipped intervals still hold no truth knot (12 at 57).
 • **Room at truth 41:** passes (ceiling 0.0018, floor 0.0002; worst 0.0176, 0.0024).
-• **Room at truth 78 (measurement only):** means pass (0.0074, 0.0069), but the per-knot gate fails (ceiling 0.44 at t′ 0.117, floor 0.52 at t′ 0.805), and floor values fail at t′ 0.831 (7.10 vs 5.35 pre-amendment). These are single-knot spikes inside 1 u crossing windows that 41 cannot sample. GPU check under way (`t20-*`). |
+• **Room at truth 78 (measurement only):** means pass (0.0074, 0.0069), but the per-knot gate fails (ceiling 0.44 at t′ 0.117, floor 0.52 at t′ 0.805), and floor values fail at t′ 0.831 (7.10 vs 5.35 pre-amendment). These are single-knot spikes inside 1 u crossing windows that 41 cannot sample.
+• **GPU check of those windows (`captures/t20-*`):** against a 78-pose truth baked and rendered at HEAD (the epoch-5 truth reads 3–4 luma off between its knots under through-base depth; the two agree within 0.01 luma at knots). The room moves at 1 m/s, so one 60 fps frame is 0.0037 t′.
+  - **Ceiling, t′ 0.0975–0.1375:** HEAD crop mean ≤ 0.80 luma, worst block ≤ 2.0, at the spike knot 0.1169; not visible. Pre-amendment reads 6–15 mean and 14–28 block on every sample.
+  - **Floor, t′ 0.785–0.85:** HEAD crop mean ≤ 0.8. One local patch drifts smoothly over the long 0.806–0.892 interval: worst block 10.4 at 0.831, over 5 for about 110 ms (6–7 frames). Pre-amendment shows the same patch at 9.9, over 5 for 200+ ms. This is the known long-interval direct-interpolation miss (the landing follow-up), not a flash.
+• **Open owner question:** the room's truth density (below). |
 | 21 | **C10 per-probe split (owner, 2026-11-12).** Run the per-probe case on `--uncompressed-irradiance` builds, bit for bit in every class, and on BC6H builds within a derived, pinned bound (two f16 roundings of BC6H-differing bases weighted by w). Both pass on the setpiece and closet; mutation-check the derived bound. | integrating executor | 19 | done (`renderer_tests/mover_channel_modes.rs`):
 • `c10_uncompressed_builds_compose_bit_for_bit_in_both_modes` (`MOVER_C10_UNCOMPRESSED_PRLS`): bit for bit on closet, setpiece and enemy-movers.
 • `c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe` (BC6H) is judged against the derived `mode_gap_bound`.

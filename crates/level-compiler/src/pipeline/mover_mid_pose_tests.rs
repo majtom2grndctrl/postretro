@@ -22,7 +22,7 @@ use crate::mover_probe_channel::{
     max_abs_difference, round_trip_error,
 };
 use crate::sh_bake::{pack_octahedral_irradiance_tile, vec3_from};
-use crate::surface_radiance::{DEFAULT_BOUNCE_FILL, ShBase};
+use crate::surface_radiance::{DEFAULT_BOUNCE_FILL, PATCH_SIZE_M, ShBase};
 
 /// Whether two f16 depth moments agree within f16 rounding: one unit in the
 /// last place of the larger.
@@ -180,16 +180,27 @@ fn a_mid_pose_gathers_its_domain_alone_and_direct_reaches_past_it() {
 
 /// One bounce comparison against the reference: domain probes compared,
 /// those within the reference tile's BC6H bar, the worst excess past it,
-/// the worst display-level difference, and the probes the patch-grid
-/// exception sets aside with their worst difference.
+/// the worst display-level difference, and the probes each patch-grid rule
+/// sets aside with their difference.
 #[derive(Default)]
 struct BounceMatch {
     compared: usize,
     within_bar: usize,
     worst_bar: f32,
     worst_levels: f32,
-    excepted: usize,
-    worst_excepted: f32,
+    /// Set aside by a posed face off the patch grid: count, worst levels.
+    by_posed_face: (usize, f32),
+    /// Set aside by a reference floor cut off the patch grid, and by no
+    /// posed face: each probe with its levels.
+    by_floor_cut: Vec<(u32, f32)>,
+}
+
+/// Whether AC 7's second patch-grid rule, the reference's floor cuts, sets
+/// probes aside.
+#[derive(Clone, Copy, PartialEq)]
+enum FloorCuts {
+    SetAside,
+    Compared,
 }
 
 /// What one mid pose's bake reads against the static-brush reference.
@@ -201,17 +212,22 @@ struct MidPoseReference {
 }
 
 /// Static patches are this wide, on an absolute plane grid.
-const PATCH_M: f64 = 0.5;
+const PATCH_M: f64 = PATCH_SIZE_M;
+
+/// Whether a plane at coordinate `plane` on a horizontal axis lands off the
+/// static patch grid. A floor face's patch frame runs along x and −z
+/// (`surface_radiance::patches::FaceFrame`), so its cell edges sit at whole
+/// multiples of the patch on both.
+fn off_grid(plane: f64) -> bool {
+    let cells = plane / PATCH_M;
+    (cells - cells.round()).abs() > 1.0e-4
+}
 
 /// AC 7's patch-grid exception (owner, 2026-11-10): whether `probe` lies
 /// within one patch of a face of `brushes` (posed, axis-aligned bounds) whose
 /// plane lands off the static patch grid. There the posed bake's partly
 /// buried floor patch differs from the reference's floor cut at the face.
 fn near_an_off_grid_face(brushes: &[crate::mover_pose::PosedBrush], probe: DVec3) -> bool {
-    let off_grid = |plane: f64| {
-        let cells = plane / PATCH_M;
-        (cells - cells.round()).abs() > 1.0e-4
-    };
     brushes.iter().any(|brush| {
         let (lo, hi) = (brush.bounds.min, brush.bounds.max);
         (0..3).any(|axis| {
@@ -226,6 +242,127 @@ fn near_an_off_grid_face(brushes: &[crate::mover_pose::PosedBrush], probe: DVec3
     })
 }
 
+/// A plane along which the reference's static slab cuts the floor off the
+/// patch grid past the slab's own footprint: `axis = plane`, cutting floor
+/// faces over `span` along the other horizontal axis.
+#[derive(Debug)]
+struct FloorCut {
+    axis: usize,
+    plane: f64,
+    span: [f64; 2],
+}
+
+impl FloorCut {
+    /// AC 7's second patch-grid exception (owner, 2026-11-11): within one
+    /// patch of the plane, beside the cut.
+    fn sets_aside(&self, probe: DVec3) -> bool {
+        let along = 2 - self.axis;
+        (probe[self.axis] - self.plane).abs() <= PATCH_M
+            && probe[along] >= self.span[0] - PATCH_M
+            && probe[along] <= self.span[1] + PATCH_M
+    }
+}
+
+/// The reference's floor cuts off the patch grid, from its own faces: the
+/// static slab is the reference brush (or brushes) whose faces bound `slab`
+/// (the posed brushes it was made static from). Each of its vertical face
+/// planes off the patch grid that also edges a floor face beyond the slab's
+/// footprint is a cut there: the reference's partition extends the slab's
+/// plane across the floor, splitting static patches into slivers the posed
+/// bake, whose floor stays whole, never has.
+fn reference_floor_cuts(
+    reference: &crate::fixture_pipeline::FixturePipeline,
+    slab: &[crate::mover_pose::PosedBrush],
+) -> Vec<FloorCut> {
+    const EPS: f64 = 1.0e-4;
+    let within = |p: DVec3, brush: &crate::mover_pose::PosedBrush| {
+        (0..3).all(|a| p[a] >= brush.bounds.min[a] - EPS && p[a] <= brush.bounds.max[a] + EPS)
+    };
+    // The slab's reference brushes: every face vertex inside one posed
+    // brush's bounds, the faces together reaching its bounds.
+    let mut by_brush: BTreeMap<usize, Vec<&crate::map_data::Face>> = BTreeMap::new();
+    for face in &reference.faces {
+        by_brush.entry(face.brush_index).or_default().push(face);
+    }
+    let slab_brushes: BTreeSet<usize> = by_brush
+        .iter()
+        .filter(|(_, faces)| {
+            slab.iter().any(|brush| {
+                let (mut lo, mut hi) =
+                    (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+                for p in faces.iter().flat_map(|face| &face.vertices) {
+                    lo = lo.min(*p);
+                    hi = hi.max(*p);
+                }
+                faces
+                    .iter()
+                    .flat_map(|face| &face.vertices)
+                    .all(|&p| within(p, brush))
+                    && lo.abs_diff_eq(brush.bounds.min, EPS)
+                    && hi.abs_diff_eq(brush.bounds.max, EPS)
+            })
+        })
+        .map(|(&brush, _)| brush)
+        .collect();
+    assert!(
+        !slab_brushes.is_empty(),
+        "the reference holds the static slab's faces"
+    );
+    // Its vertical face planes, on x or z, off the patch grid.
+    let mut planes: BTreeSet<(usize, i64)> = BTreeSet::new();
+    for face in slab_brushes.iter().flat_map(|brush| &by_brush[brush]) {
+        for axis in [0, 2] {
+            if face.normal[axis].abs() > 1.0 - 1.0e-9 {
+                let plane = face.distance / face.normal[axis];
+                if off_grid(plane) {
+                    planes.insert((axis, (plane / EPS).round() as i64));
+                }
+            }
+        }
+    }
+    // The parts of `[lo, hi]` along `along` outside every slab brush.
+    let beyond_footprint = |lo: f64, hi: f64, along: usize| {
+        let mut pieces = vec![[lo, hi]];
+        for brush in slab {
+            let (f0, f1) = (brush.bounds.min[along], brush.bounds.max[along]);
+            pieces = pieces
+                .into_iter()
+                .flat_map(|[a, b]| [[a, b.min(f0)], [a.max(f1), b]])
+                .filter(|[a, b]| b - a > EPS)
+                .collect();
+        }
+        pieces
+    };
+    let mut cuts = Vec::new();
+    for (axis, key) in planes {
+        let plane = key as f64 * EPS;
+        let along = 2 - axis;
+        let mut span = [f64::INFINITY, f64::NEG_INFINITY];
+        for face in reference
+            .faces
+            .iter()
+            .filter(|face| face.normal.y > 0.7 && !slab_brushes.contains(&face.brush_index))
+        {
+            let n = face.vertices.len();
+            for k in 0..n {
+                let (a, b) = (face.vertices[k], face.vertices[(k + 1) % n]);
+                if (a[axis] - plane).abs() > EPS || (b[axis] - plane).abs() > EPS {
+                    continue;
+                }
+                // The edge's reach beyond the slab's footprint.
+                let (lo, hi) = (a[along].min(b[along]), a[along].max(b[along]));
+                for [a, b] in beyond_footprint(lo, hi, along) {
+                    span = [span[0].min(a), span[1].max(b)];
+                }
+            }
+        }
+        if span[0] <= span[1] {
+            cuts.push(FloorCut { axis, plane, span });
+        }
+    }
+    cuts
+}
+
 /// Bake `mover` of dev map `map` at its middle mid pose and the map with the
 /// mover made static there, then compare: direct q at every probe a light
 /// reaches, valid in both, within one q step (B7's direct bar); at each
@@ -233,8 +370,14 @@ fn near_an_off_grid_face(brushes: &[crate::mover_pose::PosedBrush], probe: DVec3
 /// against the reference's first bounce alone (`_bounce_fill 0`, AC 7) and
 /// its full bounce against the reference's full bake (AC 8); and its
 /// closed-pose depth tile against the reference's id-59 tile where both
-/// exist, texel by texel within f16 (B4's bar).
-fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
+/// exist, texel by texel within f16 (B4's bar). Bounce probes AC 7's
+/// patch-grid rules cover are set aside from both bounce bars; the
+/// reference's floor cuts only under [`FloorCuts::SetAside`].
+fn mid_pose_against_its_reference(
+    map: &str,
+    mover: &str,
+    floor_cuts: FloorCuts,
+) -> MidPoseReference {
     let text = std::fs::read_to_string(fixture_path(map)).expect("dev map");
     let today = Scene::of(load_map(&fixture_path(map)));
     let analysed = today.mover_poses();
@@ -342,11 +485,29 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
     let (reference_one, reference_full) =
         (reference_base(0.0), reference_base(DEFAULT_BOUNCE_FILL));
     let slots = compact_slots(&reference.layout);
-    let excepted = |probe: usize| {
+    let by_posed_face = |probe: usize| {
         near_an_off_grid_face(
             &posed.poses[pose].brushes,
             today.layout.probe_positions[probe],
         )
+    };
+    let cuts = match floor_cuts {
+        FloorCuts::SetAside => reference_floor_cuts(&reference.fixture, &posed.poses[pose].brushes),
+        FloorCuts::Compared => Vec::new(),
+    };
+    for cut in &cuts {
+        eprintln!(
+            "  reference floor cut off the patch grid: {} = {:.4} m over {} {:.4}–{:.4} m",
+            ["x", "y", "z"][cut.axis],
+            cut.plane,
+            ["x", "y", "z"][2 - cut.axis],
+            cut.span[0],
+            cut.span[1]
+        );
+    }
+    let by_floor_cut = |probe: usize| {
+        cuts.iter()
+            .any(|cut| cut.sets_aside(today.layout.probe_positions[probe]))
     };
     let compare = |gathered: &[DomainProbe], reference: &ShBase, label: &str| {
         let dim = reference.section.tile_dimension as usize;
@@ -364,9 +525,13 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
             );
             let reference_tile = compact_tile(&reference.section, slots[at] as usize);
             let levels = display_levels(&tile, &reference_tile);
-            if excepted(at) {
-                matched.excepted += 1;
-                matched.worst_excepted = matched.worst_excepted.max(levels);
+            if by_posed_face(at) {
+                matched.by_posed_face.0 += 1;
+                matched.by_posed_face.1 = matched.by_posed_face.1.max(levels);
+                continue;
+            }
+            if by_floor_cut(at) {
+                matched.by_floor_cut.push((probe.probe, levels));
                 continue;
             }
             let difference = max_abs_difference(&tile, &reference_tile);
@@ -419,16 +584,32 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
         }
     }
     let line = |label: &str, matched: &BounceMatch| {
+        let cut_worst = matched
+            .by_floor_cut
+            .iter()
+            .fold(0.0f32, |worst, &(_, levels)| worst.max(levels));
         format!(
             "{label} {} of {} domain probe(s) within the reference tile's BC6H bar, worst {:.5} \
-             past it, worst {:.2} display levels; {} probe(s) by an off-grid face set aside, \
-             worst {:.2} levels",
+             past it, worst {:.2} display levels; set aside: {} probe(s) by an off-grid posed \
+             face, worst {:.2} levels; {} more by a reference floor cut{}, worst {:.2} levels \
+             {:?}",
             matched.within_bar,
             matched.compared,
             matched.worst_bar,
             matched.worst_levels,
-            matched.excepted,
-            matched.worst_excepted
+            matched.by_posed_face.0,
+            matched.by_posed_face.1,
+            matched.by_floor_cut.len(),
+            match floor_cuts {
+                FloorCuts::SetAside => "",
+                FloorCuts::Compared => " (rule off)",
+            },
+            cut_worst,
+            matched
+                .by_floor_cut
+                .iter()
+                .map(|&(probe, levels)| format!("{probe}: {levels:.2}"))
+                .collect::<Vec<_>>()
         )
     };
     eprintln!(
@@ -447,19 +628,29 @@ fn mid_pose_against_its_reference(map: &str, mover: &str) -> MidPoseReference {
     }
 }
 
-fn assert_mid_pose_matches(map: &str, mover: &str) {
+/// The sweeper probe task 14b traced to the reference's floor cut: 0.91 m
+/// ahead of the slab's leading face, inside one patch of its north end-face
+/// plane, which the reference extends across the floor into 0.060 and
+/// 0.190 m² slivers. It reads 4.01 levels in bounce one and 3.51 in the full
+/// bounce at the middle mid pose.
+const SWEEPER_FLOOR_CUT_PROBE: u32 = 2267;
+
+/// Assert AC 7 and AC 8 at the mover's middle mid pose; returns the
+/// comparison for the caller's own checks.
+fn assert_mid_pose_matches(map: &str, mover: &str, floor_cuts: FloorCuts) -> MidPoseReference {
+    let reference = mid_pose_against_its_reference(map, mover, floor_cuts);
     let MidPoseReference {
         direct,
         bounce_one,
         full_bounce,
         depth,
-    } = mid_pose_against_its_reference(map, mover);
+    } = &reference;
     assert!(direct.0 > 0, "{map}: direct compares reached probes");
     // B7's base bar: the reference's own patch seeds differ from the posed
     // sides', so its BC6H bar alone is noise-bound (probe-channel research
     // §B7 investigation); the restated bar is three display levels, outside
-    // the patch-grid exception.
-    for (label, matched) in [("bounce one", &bounce_one), ("full bounce", &full_bounce)] {
+    // the patch-grid exceptions.
+    for (label, matched) in [("bounce one", bounce_one), ("full bounce", full_bounce)] {
         assert!(
             matched.compared > 0,
             "{map}: the domain holds probes valid in both"
@@ -475,22 +666,41 @@ fn assert_mid_pose_matches(map: &str, mover: &str) {
     }
     assert!(depth.0 > 0, "{map}: depth compares tiles");
     assert_eq!(depth.1, 0, "{map} {mover}: every depth tile within f16");
+    reference
 }
 
 // AC 7 (bounce one, direct, depth) and AC 8 (full bounce) at the rising
-// room's middle mid pose.
+// room's middle mid pose, with the posed-face exception alone.
 #[test]
 #[ignore = "cold bakes of mover-setpiece and its static-room reference at two fills; run on demand"]
 fn the_rising_rooms_mid_pose_matches_its_static_brush_reference() {
-    assert_mid_pose_matches("mover-setpiece", "setpiece_room");
+    assert_mid_pose_matches("mover-setpiece", "setpiece_room", FloorCuts::Compared);
 }
 
 // AC 7 and AC 8 at the sweeper's middle mid pose. Its west face lands
 // part-way into a 0.5 m floor patch, which the posed slab buries part way
 // where the reference's floor is cut at the face; the probes within one
-// patch of that face are the patch-grid exception (owner, 2026-11-10).
+// patch of that face are the patch-grid exception (owner, 2026-11-10). The
+// reference's static slab also cuts the floor off the patch grid along its
+// own face planes, past its footprint; the probes within one patch of such
+// a cut are the second exception (owner, 2026-11-11), and it must catch the
+// probe that cut was traced to.
 #[test]
 #[ignore = "cold bakes of enemy-movers and its static-sweeper reference at two fills; run on demand"]
 fn the_sweepers_mid_pose_matches_its_static_brush_reference() {
-    assert_mid_pose_matches("enemy-movers", "em_sweeper");
+    let reference = assert_mid_pose_matches("enemy-movers", "em_sweeper", FloorCuts::SetAside);
+    for (label, matched, read) in [
+        ("bounce one", &reference.bounce_one, 4.0),
+        ("full bounce", &reference.full_bounce, 3.5),
+    ] {
+        let caught = matched
+            .by_floor_cut
+            .iter()
+            .find(|(probe, _)| *probe == SWEEPER_FLOOR_CUT_PROBE);
+        assert!(
+            caught.is_some_and(|&(_, levels)| levels >= read),
+            "{label}: the floor-cut rule sets aside probe {SWEEPER_FLOOR_CUT_PROBE} at its \
+             traced {read}+ levels; caught {caught:?}"
+        );
+    }
 }

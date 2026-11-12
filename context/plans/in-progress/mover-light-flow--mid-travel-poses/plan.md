@@ -84,6 +84,11 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
   - **(1) Recommended:** run the per-probe C10 gate on `--uncompressed-irradiance` builds, where it must be bit for bit. BC6H's mode gap stays judged by the frame gate as restated.
   - **(2)** Derive the per-probe bound for base-reading classes (about 2 steps) and pin it.
 
+- **AC 36 east trip-mean share (raised 2026-11-12, task 19).** Implemented faithfully, the sweeper's east face reads a trip-mean far-side share 0.0102 from truth, against the 0.01 bar. One knot dominates it: t′ 0.107, 0.384, where the face crosses a probe layer within about 1 u of travel (≈6 ms at 4.5 m/s, under a frame). The GPU frames read that knot about 1 luma from truth, and the rest of the trip averages about 0.004. Options:
+  - **(1) Recommended:** gate the faces' trip mean excluding the reported worst knot, since that knot is already reported.
+  - **(2)** Accept 0.0102 as a pass within the metric's precision.
+  - **(3)** Investigate the t′ 0.107 crossing first.
+
 ## Owner rulings, AC 7 and AC 36 (2026-11-11)
 
 The owner agreed with both recommendations ("I think I agree with your recommendations on the two questions you asked"). Recorded in the brief:
@@ -248,7 +253,13 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 • Test: GPU `bracket_tests.rs`, `the_knot_bracket_reads_what_the_linear_knot_scan_read`, bit for bit against the old linear WGSL over 1,000+ slots × 64 probes (70-knot, squeezed, MP1, MP10, degenerate ramp, t′ on and around knots). Mutation-checked in the CPU bracket and the bounce shader.
 • Note: Metal flushes subnormal t′, as before; unaffected.
 • Gates: fmt, workspace clippy (with and without capture), renderer GPU 126, loader 52, C9 on the epoch-6 closet PRL. |
-| 19 | **AC 7 and AC 36 per the owner's rulings.** Widen the sweeper reference's set-aside to probes within one patch of a plane along which the reference cuts the floor off the patch grid, and pin it with a check that it catches probe 2267's case. Implement AC 36's restated bars (share mean, room per-knot, faces reported; values within 3 levels or within 1.5 of the pre-amendment miss). Both tests pass `--ignored`. | integrating executor | 18 | |
+| 19 | **AC 7 and AC 36 per the owner's rulings.** Widen the sweeper reference's set-aside to probes within one patch of a plane along which the reference cuts the floor off the patch grid, and pin it with a check that it catches probe 2267's case. Implement AC 36's restated bars (share mean, room per-knot, faces reported; values within 3 levels or within 1.5 of the pre-amendment miss). Both tests pass `--ignored`. | integrating executor | 18 | done, with one marginal miss for the owner:
+• **AC 7/8 sweeper:** passes. The reference's floor cuts are derived from its own static-slab faces: off-grid vertical planes that also edge a floor face beyond the footprint (pose 15 of 31: x −11.379, x −1.626, z −35.299 m). Set aside 40 (posed face, worst 0.18) + 30 (floor cut, worst 4.01, includes probe 2267, asserted). Gated worst: bounce one 1.31, full 2.69, depth within f16. Room unchanged (0.87 / 1.51).
+• **AC 36:** the room passes; **the sweeper fails by a hair: east trip-mean share 0.0102 against 0.01**. West passes; the faces' worst knot is reported (east 0.384 at t′ 0.107, west 0.016). The pre-amendment build fails the share bar on all four surfaces, asserted (0.08–0.10).
+  - Knots passing only by the 1.5 clause (follow-up input): ceiling t′ 0.575–0.700 (3.3–4.5); floor 0.375, 0.725, 0.825; east 0.036, 0.161, 0.179, 0.768–0.839, 0.911–0.982 (up to 11.98 vs 12.30).
+  - Reading: the clause applies at any knot, whether or not the pre-amendment build exceeds 3 there; ceiling t′ 0.600–0.700 pass only by it.
+• **Mutations:** without the floor-cut rule the sweeper reference fails (4.01); without the 1.5 clause the room motion test fails on 9 knots.
+• Gates: fmt, compiler clippy `-D warnings`. |
 | 18 | **Regressions, docs and IP.**<br>• Re-run AC 1, 2, 3 (C9, C10), 7, 8, 19 and 28, plus parity.<br>• `ip-372` question 9 wording.<br>• `docs/level_design.md` and the FGD: `light_poses` places even poses only, geometry knots are automatic.<br>• `build_pipeline.md` and `rendering_pipeline.md` updates queued for landing. | integrating executor | 15, 16, 17 | done, with one owner question:
 • **Docs and IP:** `ip-372` question 9 rewritten; `docs/level_design.md` (`light_poses` table row, extra poses, a set count places even poses only, Build Summary split); FGD help and its pinned test.
 • **Leak fix:** four fixtures held a `TempDir` in a `static OnceLock` (bounce `closet`/`setpiece`, setpiece `setpiece`, `mover_cache_support` `base`/`high_base` plus fidelity `low_cold`/`release`, light-gate cache `base`), leaking 566 dirs (~25 GB) since Nov 10. Now `fixture_dir` under `$CARGO_TARGET_TMPDIR/<binary>/<name>`, recreated at init (`prl_build_support`). The leaked dirs are left for the owner.

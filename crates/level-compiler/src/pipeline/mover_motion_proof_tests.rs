@@ -7,8 +7,10 @@
 // and the truth's weights light the composed bounce and direct of each build.
 // The truth reads its own stored states at its knots, where either depth rule
 // is exact. A pre-amendment build (even poses alone, depth through the base
-// on every interval) is read the same way and must miss. Only the tested
-// mover's channel entries are read; the map's other movers stay absent.
+// on every interval) is read the same way: it must fail the share bar, and
+// its value miss at each knot bounds the shipped build's there (AC 36 as
+// restated by the owner, 2026-11-11). Only the tested mover's channel
+// entries are read; the map's other movers stay absent.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting) ·
 // context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
@@ -34,13 +36,16 @@ use crate::mover_probe_channel::fixture_scene::SPACING;
 use crate::mover_probe_channel::reference_maps::quake_offset;
 use crate::mover_probe_channel::{MoverAbsentDepth, direct_display_levels, display_levels};
 
-/// Far-side share bars (brief AC 36), read per truth knot: the mean over the
-/// trip's knots of |share − truth's| within 0.01, and the largest at any
-/// knot within 0.05.
+/// Far-side share bars (brief AC 36, restated by the owner 2026-11-11), read
+/// per truth knot: the mean over the trip's knots of |share − truth's| within
+/// 0.01, and on the room's layers the largest at any knot within 0.05. On
+/// the sweeper's faces the largest is reported, not gated.
 const SHARE_MEAN_BAR: f64 = 0.01;
 const SHARE_WORST_BAR: f64 = 0.05;
-/// Composed values within three display levels of the truth at worst.
+/// Composed values at every knot within three display levels of the truth,
+/// or within 1.5 levels of the pre-amendment build's miss at that knot.
 const VALUE_BAR_LEVELS: f32 = 3.0;
+const VALUE_SHARED_MISS_LEVELS: f32 = 1.5;
 
 /// The runtime's Chebyshev constants (`sh_sample.wgsl`).
 const MIN_VARIANCE: f32 = 1.0e-4;
@@ -208,12 +213,22 @@ fn toward(tile: &[OctahedralAtlasTexel], normal: [f32; 3]) -> [f32; 3] {
     })
 }
 
+/// Whether a surface's worst far-side share knot is gated or reported.
+#[derive(Clone, Copy, PartialEq)]
+enum WorstShare {
+    /// The room's layers: every knot within [`SHARE_WORST_BAR`].
+    Gated,
+    /// The sweeper's faces: the worst knot is reported.
+    Reported,
+}
+
 /// One swept surface: receivers at t′ = 0, offset along the mover's travel,
 /// and the surface normal, both in Quake units and axes.
 struct Surface {
     name: &'static str,
     receivers: Vec<[f64; 3]>,
     normal: [f64; 3],
+    worst_share: WorstShare,
 }
 
 /// A `RECEIVERS²` grid over `a` × `b` on the plane `axis = at`.
@@ -224,6 +239,7 @@ fn plane(
     a: [f64; 2],
     b: [f64; 2],
     normal: [f64; 3],
+    worst_share: WorstShare,
 ) -> Surface {
     let step = |range: [f64; 2], i: usize| {
         range[0] + (range[1] - range[0]) * i as f64 / (RECEIVERS - 1) as f64
@@ -244,6 +260,7 @@ fn plane(
         name,
         receivers,
         normal,
+        worst_share,
     }
 }
 
@@ -463,30 +480,68 @@ struct Verdict {
 }
 
 impl Verdict {
-    fn passes(&self) -> bool {
+    /// The far-side share bar: the trip's mean, and every knot where `worst`
+    /// gates it.
+    fn share_passes(&self, worst: WorstShare) -> bool {
         self.share_mean <= SHARE_MEAN_BAR
-            && self.share_worst.0 <= SHARE_WORST_BAR
-            && self.values_worst.0 <= VALUE_BAR_LEVELS
+            && (worst == WorstShare::Reported || self.share_worst.0 <= SHARE_WORST_BAR)
     }
 
-    fn line(&self) -> String {
+    fn line(&self, worst: WorstShare) -> String {
         format!(
             "far-side share {:.3} mean | {:.3} worst; |Δ share| from truth {:.4} mean, {:.4} \
-             worst (t′ {:.3}); values worst {:.2} levels (t′ {:.3}; bounce {:.2}, direct {:.2} \
-             at {:?}) → {}",
+             worst (t′ {:.3}, {}); values worst {:.2} levels (t′ {:.3}; bounce {:.2}, direct \
+             {:.2} at {:?}) → share {}",
             self.own_share.0,
             self.own_share.1,
             self.share_mean,
             self.share_worst.0,
             self.share_worst.1,
+            match worst {
+                WorstShare::Gated => "gated",
+                WorstShare::Reported => "reported",
+            },
             self.values_worst.0,
             self.values_worst.1,
             self.values_split.0,
             self.values_split.1,
             self.values_split.2,
-            if self.passes() { "pass" } else { "MISS" }
+            if self.share_passes(worst) {
+                "pass"
+            } else {
+                "MISS"
+            }
         )
     }
+}
+
+/// The value bar at one truth knot: the shipped build's worst receiver
+/// within [`VALUE_BAR_LEVELS`] of the truth, or within
+/// [`VALUE_SHARED_MISS_LEVELS`] of the pre-amendment build's worst there.
+struct KnotValue {
+    t: f32,
+    shipped: f32,
+    pre: f32,
+}
+
+impl KnotValue {
+    fn within_three(&self) -> bool {
+        self.shipped <= VALUE_BAR_LEVELS
+    }
+
+    fn passes(&self) -> bool {
+        self.within_three() || self.shipped <= self.pre + VALUE_SHARED_MISS_LEVELS
+    }
+}
+
+/// One surface's reading: the shipped and pre-amendment verdicts, and the
+/// shipped build's value bar at every truth knot.
+struct Row {
+    surface: &'static str,
+    worst_share: WorstShare,
+    shipped: Verdict,
+    pre_amendment: Verdict,
+    knots: Vec<KnotValue>,
 }
 
 /// Bake the map as authored, with `light_poses truth_poses` on `mover`, and
@@ -499,7 +554,7 @@ fn motion_proof(
     truth_poses: u32,
     surfaces: &[Surface],
     travel_quake: [f64; 3],
-) -> Vec<(&'static str, Verdict, Verdict)> {
+) -> Vec<Row> {
     let text = std::fs::read_to_string(fixture_path(map)).expect("dev map");
     let named = format!("\"name\" \"{mover}\"");
     assert_eq!(text.matches(&named).count(), 1, "{map}: one {mover}");
@@ -607,50 +662,94 @@ fn motion_proof(
             truth_own.1,
             knots.len()
         );
-        eprintln!("  shipped:       {}", with_knots.line());
-        eprintln!("  pre-amendment: {}", pre_amendment.line());
+        eprintln!("  shipped:       {}", with_knots.line(surface.worst_share));
+        eprintln!(
+            "  pre-amendment: {}",
+            pre_amendment.line(surface.worst_share)
+        );
         let shipped_knots: Vec<f32> = shipped.knots.iter().map(|knot| knot.t).collect();
+        let mut values = Vec::new();
         for (&t, at) in knots.iter().zip(&samples) {
-            let miss = worst_value(at, 1);
-            if miss.0 <= VALUE_BAR_LEVELS {
-                continue;
+            let (miss, pre) = (worst_value(at, 1), worst_value(at, 2));
+            let value = KnotValue {
+                t,
+                shipped: miss.0,
+                pre: pre.0,
+            };
+            if !value.within_three() {
+                eprintln!(
+                    "    value past 3 levels at t′ {t:.3}, {}: shipped {:.2} (bounce {:.2}, \
+                     direct {:.2}); pre-amendment {:.2} (bounce {:.2}, direct {:.2}) → {}",
+                    interval_kind(&shipped_knots, even, t),
+                    miss.0,
+                    miss.1,
+                    miss.2,
+                    pre.0,
+                    pre.1,
+                    pre.2,
+                    if value.passes() {
+                        "passes by the shared-miss clause alone"
+                    } else {
+                        "MISS"
+                    }
+                );
             }
-            let pre = worst_value(at, 2);
-            eprintln!(
-                "    value miss at t′ {t:.3}, {}: shipped {:.2} (bounce {:.2}, direct {:.2}); \
-                 pre-amendment {:.2} (bounce {:.2}, direct {:.2})",
-                interval_kind(&shipped_knots, even, t),
-                miss.0,
-                miss.1,
-                miss.2,
-                pre.0,
-                pre.1,
-                pre.2,
-            );
+            values.push(value);
         }
-        out.push((surface.name, with_knots, pre_amendment));
+        out.push(Row {
+            surface: surface.name,
+            worst_share: surface.worst_share,
+            shipped: with_knots,
+            pre_amendment,
+            knots: values,
+        });
     }
     out
 }
 
-fn assert_shipped_passes_and_pre_amendment_misses(
-    map: &str,
-    rows: &[(&'static str, Verdict, Verdict)],
-) {
-    let misses: Vec<String> = rows
-        .iter()
-        .filter(|(_, shipped, _)| !shipped.passes())
-        .map(|(name, shipped, _)| format!("{name}: {}", shipped.line()))
-        .collect();
+fn assert_shipped_passes_and_pre_amendment_misses(map: &str, rows: &[Row]) {
+    // Every knot that passes by the shared-miss clause alone: the follow-up
+    // on direct interpolation over long intervals and the skip bar's reach.
+    for row in rows {
+        for knot in row.knots.iter().filter(|k| !k.within_three() && k.passes()) {
+            eprintln!(
+                "{map} {}: t′ {:.3} passes by the shared-miss clause alone: shipped {:.2} \
+                 levels, pre-amendment {:.2}",
+                row.surface, knot.t, knot.shipped, knot.pre
+            );
+        }
+    }
+    let mut misses = Vec::new();
+    for row in rows {
+        if !row.shipped.share_passes(row.worst_share) {
+            misses.push(format!(
+                "{}: share {}",
+                row.surface,
+                row.shipped.line(row.worst_share)
+            ));
+        }
+        for knot in row.knots.iter().filter(|knot| !knot.passes()) {
+            misses.push(format!(
+                "{}: values at t′ {:.3}: shipped {:.2} levels, pre-amendment {:.2}",
+                row.surface, knot.t, knot.shipped, knot.pre
+            ));
+        }
+    }
     assert!(
         misses.is_empty(),
         "{map}: the shipped build misses the motion proof's bars:\n{}",
         misses.join("\n")
     );
-    assert!(
-        rows.iter().any(|(_, _, pre)| !pre.passes()),
-        "{map}: the pre-amendment build (even poses, depth through the base) must miss"
-    );
+    // The guard: the pre-amendment build (even poses, depth through the
+    // base) fails the share bar on every surface.
+    for row in rows {
+        assert!(
+            !row.pre_amendment.share_passes(row.worst_share),
+            "{map} {}: the pre-amendment build must fail the far-side share bar: {}",
+            row.surface,
+            row.pre_amendment.line(row.worst_share)
+        );
+    }
 }
 
 // The rising room's ceiling underside and floor top, ridden by the room
@@ -669,6 +768,7 @@ fn the_rising_rooms_ceiling_and_floor_read_the_fine_bake_in_motion() {
             [860.0, 1124.0],
             [188.0, 452.0],
             [0.0, 0.0, -1.0],
+            WorstShare::Gated,
         ),
         plane(
             "floor",
@@ -677,6 +777,7 @@ fn the_rising_rooms_ceiling_and_floor_read_the_fine_bake_in_motion() {
             [860.0, 1124.0],
             [188.0, 452.0],
             [0.0, 0.0, 1.0],
+            WorstShare::Gated,
         ),
     ];
     let rows = motion_proof(
@@ -704,6 +805,7 @@ fn the_sweepers_faces_read_the_fine_bake_in_motion() {
             [72.0, 440.0],
             [8.0, 88.0],
             [1.0, 0.0, 0.0],
+            WorstShare::Reported,
         ),
         plane(
             "west face",
@@ -712,6 +814,7 @@ fn the_sweepers_faces_read_the_fine_bake_in_motion() {
             [72.0, 440.0],
             [8.0, 88.0],
             [-1.0, 0.0, 0.0],
+            WorstShare::Reported,
         ),
     ];
     let rows = motion_proof(

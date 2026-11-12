@@ -97,7 +97,7 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
 - [ ] `light_poses` accepts integers ≥ 2 and blank (as absent). It rejects 0, 1, negative, fractional and non-numeric values, and values too large for the field, naming the mover.
 
 **Bake**
-- [ ] At one mid pose on the setpiece room and one on em_sweeper, these match a static-brush reference bake at that pose: direct q at every reached probe, within B7's direct bar; bounce one at probes inside the domain, against the reference's first bounce alone, within B7's base bar, except at probes within one patch (0.5 m) of a posed mover face that lands off the static patch grid, where the posed bake's partly buried patch differs from the reference's cut floor (owner, 2026-11-10; follow-up filed); and depth tiles at probes inside the domain, within f16, as in B4.
+- [ ] At one mid pose on the setpiece room and one on em_sweeper, these match a static-brush reference bake at that pose: direct q at every reached probe, within B7's direct bar; bounce one at probes inside the domain, against the reference's first bounce alone, within B7's base bar, except at probes within one patch (0.5 m) of a posed mover face that lands off the static patch grid, where the posed bake's partly buried patch differs from the reference's cut floor (owner, 2026-11-10; follow-up filed), and at probes within one patch of a plane along which the reference cuts the floor off the patch grid, where the reference's static slab splits the floor past its own footprint (owner, 2026-11-11); and depth tiles at probes inside the domain, within f16, as in B4.
 - [ ] A mid pose's stored bounce equals bounces one through its effective `light_bounces` re-baked with the mover posed, later bounces iterated over the domain's patches with rays leaving the domain reading the mover-absent bake, plus id 34's bounces past them. At the setpiece room's and em_sweeper's mid poses it matches a static-brush reference's full bounce at domain probes within B7's base bar, with AC 7's patch-grid exception. At `low`, a mid pose bakes bounce one posed and keeps id 34's later bounces, as a `low` terminus does. (supersedes research pin MP3)
 - [ ] Near-field domain: a probe inside the widened swept volume gathers at a mid pose, and a probe just outside it stores no mid-pose bounce or depth and blends across. The direct half still covers a reached probe outside the domain.
 - [ ] Skipping: a mid pose whose neighbour blend is within the bars stores nothing for that probe and composes the blend; one that misses the bars by a step stores its state. Where adjacent mid poses skip, compose at each skipped pose's t′ stays within that probe's bars, so a probe whose states curve gently keeps enough of them. (research pin MP2)
@@ -141,11 +141,11 @@ Owner playtest residue on the mover probe channel (id 57). The channel stores ea
   - several movers combine by the difference sum.
 
   Skipping and the renderer call the same function.
-- [ ] **Motion proof.** CPU check against a fine bake on `mover-setpiece`'s rising room ceiling and floor layers and on em_sweeper's east and west faces. The truth is `light_poses 41` on the room and `57` on the sweeper, at every one of their knots. Bars:
-  - far-side Chebyshev share within 0.01 of the truth on the mean and within 0.05 at worst;
-  - composed values within 3 display levels of the truth at worst.
+- [ ] **Motion proof.** CPU check against a fine bake on `mover-setpiece`'s rising room ceiling and floor layers and on em_sweeper's east and west faces. The truth is `light_poses 41` on the room and `57` on the sweeper, at every one of their knots. Bars (restated by the owner, 2026-11-11, after tuning):
+  - far-side share: the trip's mean within 0.01 of the truth's, and within 0.05 at every knot on the room's layers; on the faces the worst knot is reported, not gated;
+  - composed values: at every knot, within 3 display levels of the truth, or within 1.5 levels of the pre-amendment build's miss there.
 
-  The pre-amendment build fails. Run under `--ignored`.
+  The pre-amendment build fails the share bar. Misses shared with the pre-amendment build go to a follow-up on direct interpolation over long intervals and the skip bar's reach on dark surfaces. Run under `--ignored`.
 - [ ] **No silent fallback.** No geometry knot is ever dropped to meet a count. The SH memory gate prices every geometry pose and refuses by name below it. The Build Summary prints each mover's even and geometry knot counts.
 
 ### Manual

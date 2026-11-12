@@ -78,19 +78,13 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 - **New and restated ACs.** New: ACs 34–37 and M9. Restated: AC 4 and AC 5 (even poses plus geometry knots), AC 15 (depth mix rule) and AC 18 (MP8 wording).
 - **Build here, this session** (owner: "once the pause is over, let's build it here").
 
-## Open owner questions
+## Owner rulings, AC 7 and AC 36 (2026-11-11)
 
-- **AC 7, reference floor cut (raised 2026-11-11, task 14b).** The sweeper reference test fails at its middle mid pose: bounce one 4.01 levels (bar 3) at a probe 0.91 m ahead of the slab, which lies beyond the exception's "within one patch of a posed face". The reference's static slab splits the floor along its off-grid north end-face plane, extended 2+ m past the slab; the posed bake keeps whole patches. Options:
-  - **(1) Widen the exception** to probes within one patch of a plane along which the reference cuts the floor off the patch grid. Recommended: the reference is a diagnostic, and it is the outlier here.
-  - **(2) Keep the reference floor uncut** beyond the slab's footprint.
-
-  The test stays strict and failing until the owner rules.
-
-- **AC 36 bars (raised 2026-11-11, task 15b).** At the tuned constants, AC 36 fails its value bar on the ceiling (4.52 levels), floor (5.33) and east face (11.98). The east face's share also fails: trip mean 0.0102 against 0.01, worst knot 0.384. The east and floor misses are direct light interpolated over long intervals, and the pre-amendment build misses equally or worse at the same t′ (east t′ 0.982: 11.98 vs 12.30). The ceiling misses are bounce on a near-black surface at the skip bar's scale. The proposed restatement:
-
-  > Far-side share: the trip's mean within 0.01 of the truth's, and within 0.05 at every knot on the room's layers; on the faces the worst knot is reported, not gated. Composed values: at every knot, within 3 display levels of the truth, or within 1.5 levels of the pre-amendment build's miss there. The pre-amendment build fails the share bar. Misses shared with the pre-amendment build go to a follow-up on direct interpolation over long intervals and the skip bar's reach on dark surfaces.
-
-  The 1.5 is fitted to this data; at +1, only ceiling t′ 0.675 misses (4.01 against 3.93).
+The owner agreed with both recommendations ("I think I agree with your recommendations on the two questions you asked"). Recorded in the brief:
+- **AC 7:** the exception widens to probes within one patch of a plane along which the reference cuts the floor off the patch grid.
+- **AC 36:** restated. The share bar gates the trip mean and the room layers' every knot, while the faces' worst knot is reported. Values pass within 3 levels of truth or within 1.5 of the pre-amendment miss at that knot.
+- **Follow-up to file at landing:** direct interpolation over long intervals, and the skip bar's reach on dark surfaces. These are the misses the pre-amendment build shares (east t′ 0.982, floor t′ 0.825, ceiling bounce at 3.3–4.5 levels).
+- **Test changes** land after task 18's gates. Task 19 implements them.
 
 ## Resolved questions
 
@@ -248,6 +242,7 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 • Test: GPU `bracket_tests.rs`, `the_knot_bracket_reads_what_the_linear_knot_scan_read`, bit for bit against the old linear WGSL over 1,000+ slots × 64 probes (70-knot, squeezed, MP1, MP10, degenerate ramp, t′ on and around knots). Mutation-checked in the CPU bracket and the bounce shader.
 • Note: Metal flushes subnormal t′, as before; unaffected.
 • Gates: fmt, workspace clippy (with and without capture), renderer GPU 126, loader 52, C9 on the epoch-6 closet PRL. |
+| 19 | **AC 7 and AC 36 per the owner's rulings.** Widen the sweeper reference's set-aside to probes within one patch of a plane along which the reference cuts the floor off the patch grid, and pin it with a check that it catches probe 2267's case. Implement AC 36's restated bars (share mean, room per-knot, faces reported; values within 3 levels or within 1.5 of the pre-amendment miss). Both tests pass `--ignored`. | integrating executor | 18 | |
 | 18 | **Regressions, docs and IP.**<br>• Re-run AC 1, 2, 3 (C9, C10), 7, 8, 19 and 28, plus parity.<br>• `ip-372` question 9 wording.<br>• `docs/level_design.md` and the FGD: `light_poses` places even poses only, geometry knots are automatic.<br>• `build_pipeline.md` and `rendering_pipeline.md` updates queued for landing. | integrating executor | 15, 16, 17 | |
 
 Execution is sequential on the main checkout's warm `target/`. Every task crosses the compiler ↔ format ↔ renderer seam, so worktree workers would each build the engine cold for little parallelism. Tasks 3 and 4 touch disjoint crates once task 2 lands, and may run as one worktree worker if disk stays above 15 GB plus a debug build.

@@ -78,16 +78,12 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 - **New and restated ACs.** New: ACs 34–37 and M9. Restated: AC 4 and AC 5 (even poses plus geometry knots), AC 15 (depth mix rule) and AC 18 (MP8 wording).
 - **Build here, this session** (owner: "once the pause is over, let's build it here").
 
-## Open owner questions
+## Owner rulings after review round 4 (2026-11-12)
 
-- **C10 per-probe bar on BC6H builds (raised 2026-11-12, task 18).** The per-probe C10 gate compares streaming-off against sync-proof compose. It now misses its 1-f16-step bar in one class: one mover reading id 34 at t′ 0.5 on the setpiece, worst 1.28 steps over 283,531 of 1,120,023 halves. On an `--uncompressed-irradiance` build the same gate is bit for bit in every class at every t′, so the channel composes identically in both modes. The miss is BC6H's mode difference in the base, carried through two f16 roundings. That is the family of the frame-level restatement and `drafts/sh-streaming-mode-bc6h-parity.md`. Options:
-  - **(1) Recommended:** run the per-probe C10 gate on `--uncompressed-irradiance` builds, where it must be bit for bit. BC6H's mode gap stays judged by the frame gate as restated.
-  - **(2)** Derive the per-probe bound for base-reading classes (about 2 steps) and pin it.
-
-- **AC 36 east trip-mean share (raised 2026-11-12, task 19).** Implemented faithfully, the sweeper's east face reads a trip-mean far-side share 0.0102 from truth, against the 0.01 bar. One knot dominates it: t′ 0.107, 0.384, where the face crosses a probe layer within about 1 u of travel (≈6 ms at 4.5 m/s, under a frame). The GPU frames read that knot about 1 luma from truth, and the rest of the trip averages about 0.004. Options:
-  - **(1) Recommended:** gate the faces' trip mean excluding the reported worst knot, since that knot is already reported.
-  - **(2)** Accept 0.0102 as a pass within the metric's precision.
-  - **(3)** Investigate the t′ 0.107 crossing first.
+The owner agreed with all three recommendations ("I agree with your recommendations on the three questions!"):
+- **IP wording.** `ip-372` question 9 is restored to the owner-approved text with one correction. Between termini, a live tile runs raw moments through the probe's static tile, reaching it at mid-travel; "raw-linear between termini" misstated the code. The brief's counsel line is corrected to match. The Piece 7 row in `ip-check.md` and the original counsel-packet line ("states per pose…") land at landing.
+- **AC 36.** The faces' share is gated on a time-weighted trip mean, integrated over travel against a truth that resolves each geometry-knot window (`light_poses 113` on the sweeper). This replaces the unweighted mean over truth knots, under which a 1 u crossing counted as 1/56 of the trip (0.0102 vs 0.01). Fable's recommendation over the executor's "exclude the worst knot". Task 20.
+- **AC 3, C10 per-probe.** The case runs twice: bit for bit on `--uncompressed-irradiance` builds, and within a bound derived from BC6H's mode difference through two f16 roundings (about 2 steps), pinned in the test, on BC6H builds. Task 21.
 
 ## Owner rulings, AC 7 and AC 36 (2026-11-11)
 
@@ -260,6 +256,8 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
   - Reading: the clause applies at any knot, whether or not the pre-amendment build exceeds 3 there; ceiling t′ 0.600–0.700 pass only by it.
 • **Mutations:** without the floor-cut rule the sweeper reference fails (4.01); without the 1.5 clause the room motion test fails on 9 knots.
 • Gates: fmt, compiler clippy `-D warnings`. |
+| 20 | **AC 36 time-weighted share (owner, 2026-11-12).** Bake the sweeper truth at `light_poses 113`; integrate the far-side share difference over travel (time-weighted) for the trip mean; keep the room's per-knot gate and the faces' reported worst knot; keep the 1.5-level value clause. The sweeper and room tests pass `--ignored`; the pre-amendment candidate still fails. | integrating executor | 19 | |
+| 21 | **C10 per-probe split (owner, 2026-11-12).** Run the per-probe case on `--uncompressed-irradiance` builds, bit for bit in every class, and on BC6H builds within a derived, pinned bound (two f16 roundings of BC6H-differing bases weighted by w). Both pass on the setpiece and closet; mutation-check the derived bound. | integrating executor | 19 | |
 | 18 | **Regressions, docs and IP.**<br>• Re-run AC 1, 2, 3 (C9, C10), 7, 8, 19 and 28, plus parity.<br>• `ip-372` question 9 wording.<br>• `docs/level_design.md` and the FGD: `light_poses` places even poses only, geometry knots are automatic.<br>• `build_pipeline.md` and `rendering_pipeline.md` updates queued for landing. | integrating executor | 15, 16, 17 | done, with one owner question:
 • **Docs and IP:** `ip-372` question 9 rewritten; `docs/level_design.md` (`light_poses` table row, extra poses, a set count places even poses only, Build Summary split); FGD help and its pinned test.
 • **Leak fix:** four fixtures held a `TempDir` in a `static OnceLock` (bounce `closet`/`setpiece`, setpiece `setpiece`, `mover_cache_support` `base`/`high_base` plus fidelity `low_cold`/`release`, light-gate cache `base`), leaking 566 dirs (~25 GB) since Nov 10. Now `fixture_dir` under `$CARGO_TARGET_TMPDIR/<binary>/<name>`, recreated at init (`prl_build_support`). The leaked dirs are left for the owner.

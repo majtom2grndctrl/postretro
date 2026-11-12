@@ -104,56 +104,70 @@ Facts by symbol: `state_path`, `load_persisted_state`, `overlay_persisted_state`
 | G10 | Character and world progress share one `state.json`: per-owner rows under the player id beside the global slots. Character progress already moves between single-player and co-op, because the single-player and host exit save writes the local player's rows and a joining client's `JoinSeed` reads the same rows. The two kinds of progress just have no separate home | `collect_per_owner_state`, `join_seed_from_persisted_state` |
 | G9 | Stale docs: `coop-session-lobby.md` §3 and `research/netcode/index.md` non-goals deny client saves, but per-player persistence shipped | `done/E16--per-player-persistence` |
 
-## 5. Target: verbs say intent
+## 5. Target: navigation and membership are separate verbs
 
-`returnToFrontend` mixes two jobs: **navigating** to the frontend scene and **membership** in a session. The target separates them, so no origin has to guess which one an author meant. Names are working names; the SDK shape is designed in the brief that ships each verb.
+`returnToFrontend` mixes two jobs: **navigating** to a scene and **membership** in a session. The target gives each job its own verbs. Navigation never changes membership. The frontend is outside every session, so inside a session only a membership verb reaches it.
 
-| Verb | Job | Host / single-player | Connected client |
-|---|---|---|---|
-| `returnToFrontend` | navigation | unload to the menu (a host goes to its lobby, and clients follow) | follow the host's lead; never ends the session |
-| `leaveSession` (new) | membership | not offered: a host ends the session instead | close cleanly, then single-player frontend |
-| `ui.quitToMenu` | both | return to the frontend | leave, then frontend |
-| `evictClient` (new, host) | membership | close one player's slot with a cause | lands at single-player frontend |
-| `endSession` (new, host) | membership | close every slot, then frontend | lands at single-player frontend |
+| Verb | Job | Single-player | Host | Connected client |
+|---|---|---|---|---|
+| `navigate(destination)` (working name) | navigation | any destination | session destinations only (the lobby, if declared, and levels), with clients following | dropped and warned: the host leads |
+| `leaveSession()` | membership | warn | warn: a host ends the session instead | close cleanly, then frontend |
+| `endSession()` | membership | warn | close every slot, notify clients, then frontend | dropped and warned |
+| `evictPlayer(player)` | membership | n/a | close that player's slot with a cause | lands at the frontend |
+| `ui.quitToMenu` (engine action) | resolves by role | navigate to the frontend | `endSession()` | `leaveSession()` |
 
-**Decided (owner, this session):** evicting a player and ending the session are host-executed closes, because the host owns admission. "Evict" replaces "kick". **Open:** whether `evictClient` takes a player (`on.player`, as other player-addressed verbs do) under that name or as `evictPlayer`. Also whether a host's `ui.quitToMenu` goes to its lobby or ends the session.
+**Decided (owner, this session):** `leaveSession`, `endSession` and `evictPlayer` are explicit membership verbs. Evicting and ending are host-executed closes, because the host owns admission. Navigation is one generalized function.
 
-## 6. Target: session lifecycle
+**Open, for the brief that ships it:** the navigation function's name and destination shape. Also whether `loadLevel` and `restartLevel` fold into it.
+
+**Leaning:** `navigate(frontend)` inside a session is refused with a warning that names `leaveSession` / `endSession`. Navigation stays explicit, and a mod chooses what its co-op end of run does.
+
+## 6. Target: session lifecycle, with an optional lobby
+
+A lobby is optional and mod-declared, the way a frontend is today. A one-map-one-run game declares one, and players gather there between runs. A game without one goes from level to level, and the session ends at the frontend.
 
 ```mermaid
 stateDiagram-v2
     direction TB
-    state "Frontend<br/>single-player, no endpoint" as F
+    state "Frontend<br/>outside any session" as F
     state "Single-player level" as SP
     state "Hosting" as Hosting {
-        state "Lobby<br/>frontend + live endpoint" as Lobby
+        state start_choice <<choice>>
+        state "Lobby<br/>optional, mod-declared" as Lobby
         state "In level" as HLevel
-        Lobby --> HLevel: start level
-        HLevel --> HLevel: level change
-        HLevel --> Lobby: back to menu [new]
+        [*] --> start_choice
+        start_choice --> Lobby: mod declares a lobby
+        start_choice --> HLevel: no lobby
+        Lobby --> HLevel: navigate(level)
+        HLevel --> HLevel: navigate(level)
+        HLevel --> Lobby: navigate(lobby)
     }
     state "Connected" as Connected {
-        state "Waiting at own menu" as CWait
+        state join_choice <<choice>>
+        state "In lobby" as CLobby
         state "Participating" as CPlay
-        CWait --> CPlay: host starts level
-        CPlay --> CPlay: host level change
-        CPlay --> CWait: host back to menu [new]
+        [*] --> join_choice
+        join_choice --> CLobby: host in lobby
+        join_choice --> CPlay: host in level
+        CLobby --> CPlay: host navigates
+        CPlay --> CLobby: host navigates
+        CPlay --> CPlay: host navigates
     }
     [*] --> F: boot
-    F --> SP: play
-    SP --> F: return to frontend
-    F --> Hosting: host game [3.75]
-    F --> Connected: join [new]
-    Hosting --> F: endSession [new]
+    F --> SP: navigate(level)
+    SP --> F: navigate(frontend)
+    F --> Hosting: host game
+    F --> Connected: join
+    Hosting --> F: endSession
     Connected --> F: leaveSession, evicted, host lost or ended
-    class Lobby,CWait new
+    class Lobby,CLobby new
     classDef new fill:#e0ecff,stroke:#1f4fb4,color:#000
 ```
 
-- **Transitions:** clients follow the host into a level by Relevel, and the ledger carries across level changes. "Back to menu" is a host-sent signal clients follow while staying connected (G2). `endSession` notifies every client. A client's own `leaveSession`, an eviction, a refusal, a lost host and an ended session all land at a single-player frontend through the leave brief. Hosting and joining happen in-app.
-- **Decided:** direct connect only (no discovery, relay or matchmaking); the engine owns admission, seats and map authority; the mod owns lobby policy (`coop-session-lobby.md` §2).
-- **Leaning:** a lobby is the frontend with a live endpoint, not a new app state; session phase is a mod-declared slot.
-- **Open:** whether the host boots into a lobby by default or the mod opts in (`coop-session-lobby.md` §5). Also whether a host's quit-to-menu goes to the lobby or ends the session.
+- **Transitions:** clients follow the host's navigation; the ledger carries across level changes. A client's `leaveSession`, an eviction, a refusal, a lost host, and the host's `endSession` all land the client at a single-player frontend. Hosting and joining happen in-app.
+- **Decided:** direct connect only (no discovery, relay or matchmaking); the engine owns admission, seats and map authority; the mod owns lobby policy (`coop-session-lobby.md` §2). The lobby is optional (owner, this session).
+- **Leaning:** session phase is a mod-declared slot. A lobby is a scene the host navigates to, not a new app state.
+- **Open:** what a lobby declaration holds (menu tree, backdrop, whether players have pawns there), and whether a host can sit in a lobby with no level installed.
 
 ## 7. Target: character and world progress, saved separately
 
@@ -176,14 +190,14 @@ flowchart LR
 
 | | Character save | World save |
 |---|---|---|
-| Holds | the mod's per-owner `persist` slots (XP, unlocks, stats), keyed by player id | global `persist` slots and faction sentiment (shipped). Run state is **open**: current map, carried loadouts, revisited maps |
+| Holds | the mod's per-owner `persist` slots (XP, unlocks, stats), plus the carried loadout when the author chooses, keyed by player id | global `persist` slots and faction sentiment (shipped). Run state is **open**: current map, revisited maps, and carried loadouts the author keeps with the world |
 | Lives | on the player's own device | on the device of whoever runs the world: the single-player machine, or the host |
 | Written by | its owner only, in every role (shipped; a host never writes a guest's character) | the world's runner only. A connected client never writes one |
 | Read | at boot, then sent up to any host in `JoinSeed` (shipped) | at boot. **Open:** a frontend "Continue" also reads run state |
 | Today | rows inside `state.json` | the same `state.json` (G10) |
 
 - **Proposed:** separate files, one per kind. A character file then has an obvious identity (player id and mod) and can be backed up or moved on its own. A world save can grow into save slots without touching characters.
-- **Open, recommended:** the engine's carried loadout (`CarriedState`: health, ammo, weapons) is run state and belongs to the world save. The host validates it, and it already resets when a run does. A mod that wants inventory to travel with the character declares it as per-owner `persist` slots: the engine offers both scopes, and the mod chooses (mechanism vs policy).
+- **Leaning (owner, this session): gear scope is the author's choice.** Players often want to bring gear from one game into another. A mod's parameters say whether the carried loadout (`CarriedState`: health, ammo, weapons, defense) travels with the character or stays with the world's run. Open: whether one switch covers the whole loadout or each part chooses, and how a host vets gear a joining character brings from another world (it must name weapons this host's mod defines, and it is client-asserted like all character progress).
 - **Leaning:** a run save, the revisited-map record (`roadmap.md` Future) and a host-migration handoff (Epic 15) share one serialization of the session-state ledger, decided before any of them ships.
 
 ```mermaid
@@ -214,8 +228,10 @@ sequenceDiagram
 
 | Order | Brief | Owns | Depends on |
 |---|---|---|---|
-| 1 | `coop--client-leave-session` (reshape) | `leaveSession`; `ui.quitToMenu` and exit-to-desktop leave on a client; any host-side ending lands at a single-player frontend; save the character, then reload the player's own world (G1, G3, G4, G5) | none |
-| 2 | Host returns to lobby (new) | host-sent "at frontend" signal: clients follow to their menus and stay connected; `endSession` (G2) | leave: an ended session lands clients through it |
-| 3 | Phase 3.75 lobby authoring surface | in-app hosting, session phase, join predicate, joined, left and phase-changed reactions, `evictClient` and its policy | host returns to lobby |
-| 3 | In-app join (new, small) | direct-connect UI: address entry, connecting and refused states, notice on a host-side ending | leave: the role change back |
-| 4 | Character and world saves (new) | separate files; level-boundary world saves (G7); run state and Continue, if the open run-save decision lands | none; best before saves gain more data |
+| 1 | `coop--client-leave-session` (reshape) | `leaveSession()` and `endSession()`; `ui.quitToMenu` resolving by role; exit to desktop disconnecting; any host-side ending landing at a single-player frontend; on leave, saving the character and then reloading the player's own world; inside a session, `returnToFrontend` refused with a warning (G1–G5) | none |
+| 2 | Optional lobby and navigation (new) | the mod-declared lobby; the generalized `navigate(destination)` that replaces `returnToFrontend`; clients following the host's navigation | leave |
+| 3 | Phase 3.75 lobby authoring surface | in-app hosting, session phase, join predicate, joined, left and phase-changed reactions, `evictPlayer` and its policy | optional lobby |
+| 3 | In-app join (new, small) | direct-connect UI: address entry, connecting and refused states, notice on a host-side ending | leave |
+| 4 | Character and world saves (new) | separate files, level-boundary world saves (G7), the author's gear-scope parameter, run state and Continue | none |
+
+Ending a session with `endSession` closes G2 for games without a lobby, so brief 1 no longer leaves clients stranded. Brief 2 adds the stay-together path.

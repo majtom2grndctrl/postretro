@@ -13,7 +13,7 @@ argument-hint: "[feature-name]"
 
 Explore scope, choose execution weight, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`. The line under the title identifies the document and its execution mode.
 
-A brief is written for a reader with the repo. One integrating executor owns the whole brief, `research.md`, and the source tree; it writes the task split and may delegate bounded slices with the same context. Write for that reader: nothing restated, nothing pre-chewed. The brief records judgment and leaves task decomposition to build time. Target 40–90 lines for compact work, 60–120 for resumable work. Longer material is derivation (`research.md`) or task decomposition (`plan.md`). The target is a guide, not a split rule: a brief that ships a feature with its first consumers stays one unit of work for one orchestrator even when it runs long. Trim restatement and derivation; never split off a feature's consumers for length alone.
+A brief is written for a reader with the repo. One integrating executor owns the whole brief, `research.md`, and the source tree; it writes the task split and may delegate bounded slices with the same context. Write for that reader: nothing restated, nothing pre-chewed. The brief records judgment and leaves task decomposition to build time. Target 40–90 lines for compact work, 60–120 for resumable work. Longer material is derivation (`research.md`) or task decomposition (`plan.md`). The target is not a split rule. A feature and its first consumers stay one brief however long it runs; cut restatement and derivation instead.
 
 ## Current plans
 

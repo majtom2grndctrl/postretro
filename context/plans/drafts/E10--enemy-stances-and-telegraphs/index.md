@@ -39,7 +39,7 @@ When this is done:
 - **Stance cycles take an attack turn.** The builder marks all three activities `attackTurn` with the release's attack (`done/E10--enemy-combat-movement`), so one turn for that attack spans the cycle and holds its draws.
   - A stance never releases without its turn. So the builder's hold also exits to `after` when `attackTurnHeld(attack)` for the release's attack is false one tick after entry, the facts' lag. The turn is the whole promise: cooldown, range, sight and facing still gate the strike, and `docs/` says a release can whiff.
   - Authors gate stance entry on `attackTurnFree(attack)` with the release's attack.
-  - **A stance works wherever it sits.** While an activity marked `attackTurn` is on the path, the enemy keeps its target and committed aim as it does under an engaging ancestor, so a stance placed outside `engage` still releases. Code structure is not the designer's obstacle (`index.md` §2).
+  - **A stance works wherever it sits.** While an activity marked `attackTurn` is on the path, the enemy keeps its target and committed aim as it does under an engaging ancestor, so a stance placed outside `engage` still releases (`index.md` §2, Designers over structure).
   - **No self-chaining.** An `after` naming the stance's own hold or recover rejects load. A self-chain would hold its turn without limit, could not take its turn-lost exit (the engine skips a row to the current activity), and would replay its tell under its attack's cooldown. A combo chains through a gated sibling: an `after` straight into another stance's hold flashes that stance's tell for a tick when its turn cannot come, so `docs/` shows the gate.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
   - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity is left.
@@ -62,7 +62,7 @@ When this is done:
 - **Release clips wait on Clip-timed attacks.** A release must play the rest of its attack clip, not replay the windup from frame 0, and strike on the clip's moment rather than on entry. Both belong to the roadmap's Clip-timed attacks, which builds first. The overhead, lunge and jab content waits on it; the builder, the facts, the sounds, the limitator's aim and the roar do not, since their holds and releases are separate clips.
 - **Clients match the host on clips.** The host restarts nothing when the next activity names the clip already playing, and neither does a client. No re-entry signal is replicated.
 - **Shipped content adopts the vocabulary in this brief.**
-  - Characters use each clip for what it depicts (`index.md` §2). The brute declares an animation state per stance pose and release, each playing its namesake clip. Its locomotion state today plays `run` at every pace; instead it walks on a `walk` state under a `speed` below 1 where it strolls, and runs on a `run` state where it chases and charges.
+  - Characters use each clip for what it depicts (`resource_management.md` §7). The brute declares an animation state per stance pose and release, each playing its namesake clip. Its locomotion state today plays `run` at every pace; instead it walks on a `walk` state under a `speed` below 1 where it strolls, and runs on a `run` state where it chases and charges.
   - The reference brute (`models/mutant`, library `mixamo_brute`) telegraphs every attack with a stance, one attack each:
     - **overhead:** holds `smash_windup`, releases `smash` for `slam`;
     - **lunge:** holds `swipe_windup`, releases `swipe` for a new lunge attack;

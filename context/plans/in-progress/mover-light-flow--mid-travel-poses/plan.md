@@ -105,7 +105,7 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
   - a knot just inside the terminus would put the whole re-light in one frame.
 
   "Re-light into rest" stays as a measured row with a 1.5 bar.
-- **Enclosure-exit dip: investigate in this brief (owner, with Fable weighing in).** At the 0.9716 lintel exit, dark + r40 dips, then rises (worst 4.88 per frame). The ramp alone rises smoothly (worst 2.68). Fable is diagnosing read-only, and the 25b worker is reading the compose code. Fix after both report.
+- **Enclosure-exit dip: investigate in this brief (owner, with Fable weighing in).** At the 0.9716 lintel exit, dark + r40 dips, then rises (worst 4.88 per frame). The ramp alone rises smoothly (worst 2.68). Fable diagnosed it: the depth weight opens concavely while the value comes in linearly. The dense truth has it too, and so does the 0.524 crossing. **Owner (2026-11-12):** build Fable's edge copy (option A), gated on a whole-trip re-measure of the west band, with a bounding dark pose about 1 u inside if the band regresses. The exit and entry row's framing is accepted; its numbers are set after the build. Rejected: B (it needs across marks), C (it needs a per-probe flag), D (margins don't change the dip's depth) and E (accept). Fable's scripts are in scratch `fable-exit\` (`an.py`, `scan.py`).
 - **Tasks 22–23 calls: keep both.** A set count too dense to clear a band fails by name. The long stored-interval exception is read per probe.
 
 ## Owner rulings after the playtest diagnosis (2026-11-12)

@@ -200,8 +200,25 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
   - Cause: the reference's static slab cuts the floor along its off-grid north end-face plane, extended 2+ m past the slab, into 0.060 and 0.190 m² slivers, while the posed bake keeps whole patches. The reference is the outlier, beyond the exception's "within one patch of a posed face".
   - **Owner question below**; nothing loosened.
 • Gates: fmt, workspace clippy, format 50, loader 52, renderer GPU 124, C9 closet, compiler mover 186, `tests/mover_*`, parity 3/3, AC 19 2/2. |
-| 15 | **Slice proof.**<br>• Bake setpiece and enemy-movers `--release` with tasks 13 and 14.<br>• GPU motion recapture (`captures/motion-harness/`) beside the pre-amendment build and the 41/57 truth bakes.<br>• Port the offline metric to the AC 36 `--ignored` test.<br>• Measure id-57 bytes, bake times and M7's A/B.<br>• From the data, decide whether inside knots become depth-only (task 16) and whether the GPU needs a per-mover bracket (task 17).<br>ACs 36, M8, M9 data. | integrating executor | 13, 14 | |
-| 16 | **(If task 15's bytes or bake time call for it) depth-only inside knots.** A per-pose kind in the mover record; values blend across a depth-only pose for every probe; no direct q or bounce stored there; loader refusals; memos per pose kind; SH gate and Build Summary estimate count it. | integrating executor | 15 | |
+| 15 | **Slice proof.**<br>• Bake setpiece and enemy-movers `--release` with tasks 13 and 14.<br>• GPU motion recapture (`captures/motion-harness/`) beside the pre-amendment build and the 41/57 truth bakes.<br>• Port the offline metric to the AC 36 `--ignored` test.<br>• Measure id-57 bytes, bake times and M7's A/B.<br>• From the data, decide whether inside knots become depth-only (task 16) and whether the GPU needs a per-mover bracket (task 17).<br>ACs 36, M8, M9 data. | integrating executor | 13, 14 | done (`captures/t15-results.md`):
+• Bakes, `--release` cold:
+  - setpiece 39.1 s, id 57 11.39 MB, 9,695 closed-pose tiles;
+  - enemy-movers 13.6 s, 4.35 MB;
+  - poses: wall 57, room 32, sweeper 25 (7 + 18: one even knot merged into a geometry knot).
+• **Motion, GPU, 966 new frames.** Mean |X − truth| at the 41/57 truth knots, amend vs pre-amendment: ceiling 0.22 vs 4.41, floor 0.11 vs 1.19, interior 0.06 vs 0.40, east 0.58 vs 3.87, west 0.13 vs 0.86.
+  - Ceiling knot flash: gone (worst 0.31; was 5–6).
+  - Ceiling lattice peaks: median 9 (pre-amendment 24, truth 1).
+  - East sawtooth: gone; peak-to-trough tracks the truth's own layer crossings.
+  - Residuals: ~2-luma ceiling bumps at t′ 0.125, 0.35 and 0.575, one per layer crossing, in short geometry intervals; east +2.9 and +3.7 early in the trip; −1 to −2 in the long last even interval, shared with the pre-amendment build.
+• **AC 36** (`pipeline/mover_motion_proof_tests.rs`, `--ignored`): **fails on HEAD** (pre-amendment fails 7–10× on shares).
+  - Shares: mean within bar except east 0.0104 (bar 0.01); worst east 0.329 and west 0.069, single truth knots inside short geometry intervals while a face crosses a layer.
+  - Values worst: ceiling 5.92 (bounce, t′ 0.575), floor 4.28 (direct), east 11.98 (direct in the last even interval, same as pre-amendment), west 4.33.
+  - Mutation (raw depth on every interval) brings the shares back to pre-amendment levels.
+• **M7, 83df re-run interleaved:** wall compose +0.13 ms over pre-brief (non-overlapping ranges, in `mover_bounce.wgsl`); room +0.13 within noise; both flat. Task 17 triggered.
+• Task 16 not needed: bytes and bake time are fine.
+• Hypothesis for the ceiling bumps and the face share spikes: values lerp across the whole outside-before → outside-after span, so in the 4.4 u window between an inside knot and its outside knot, the probe is out of the slab but still mid-lerp. Task 15b tunes the outside distance. |
+| 15b | **Tune the geometry-knot constants.** Outside distance (and inside margin) against AC 36 and GPU motion frames on the ceiling and the sweeper faces: does a smaller outside distance, still clear of the gather-lift band, remove the per-crossing residuals? Then judge AC 36's bars with the owner if misses remain. | integrating executor | 15 | |
+| 16 | **(Not needed per task 15) (If task 15's bytes or bake time call for it) depth-only inside knots.** A per-pose kind in the mover record; values blend across a depth-only pose for every probe; no direct q or bounce stored there; loader refusals; memos per pose kind; SH gate and Build Summary estimate count it. | integrating executor | 15 | |
 | 17 | **(If M7 shows cost) per-mover knot bracket.** One word per mover slot with the bracketing value-knot index, so `mc_interval` and `mover_bounce.wgsl` skip the linear knot loop. M7 A/B re-run. | integrating executor | 15 | |
 | 18 | **Regressions, docs and IP.**<br>• Re-run AC 1, 2, 3 (C9, C10), 7, 8, 19 and 28, plus parity.<br>• `ip-372` question 9 wording.<br>• `docs/level_design.md` and the FGD: `light_poses` places even poses only, geometry knots are automatic.<br>• `build_pipeline.md` and `rendering_pipeline.md` updates queued for landing. | integrating executor | 15, 16, 17 | |
 

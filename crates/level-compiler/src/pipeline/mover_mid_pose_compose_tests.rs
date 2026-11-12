@@ -545,3 +545,6 @@ fn the_roof_tops_probes_compose_within_three_levels_of_a_static_room() {
         swept_face_against_reference("mover-setpiece", "setpiece_room", Face::Top, &[0.4, 0.6]);
     assert_mid_poses_pass_and_termini_miss("mover-setpiece", &rows);
 }
+
+#[path = "mover_motion_proof_tests.rs"]
+mod motion_proof;

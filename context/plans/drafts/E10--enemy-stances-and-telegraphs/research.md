@@ -121,3 +121,9 @@ Read at 5932287f; refreshed at 2cb88013. Findings that inform the brief but do n
 - **Engaged ancestors.** Target retention and committed aim come from an engaging ancestor; a stance outside one lost its turn to a re-rank or a tick out of sight. Owner direction: the engine should make placements work rather than reject them.
 - **Combos.** An `after` into another stance's hold is unconditional, so with `heavy` refreshing an overhead ↔ jab chain flashed the overhead for a tick before each jab. Owner: chain through a gated sibling.
 - **Position goals.** A leaf with a position-goal motion and an attack rejects load (`recursive.rs`), so `release.motion` excludes them by name.
+
+## Owner reshape (2026-11-12): typed attacks, stance as an attack's prerequisite
+- **Owner direction:** strong typing over string keys in SDK APIs; a stance is mentioned by an attack as its prerequisite, not the other way round, so one stance can lead to several attacks; `defineStance` named by its binding.
+- **Binding-name precedent.** `apply_binding_name_sugar` (`crates/script-compiler/src/lib.rs`) names `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer` and `defineAttackToken`. The last three key on an object-literal first argument. Luau has no compile step and passes names.
+- **Attacks today.** `BehaviorGraphDescriptor::attacks: BTreeMap<String, AttackParams>`; references are strings in `action.attack`, `attackTurn`, and `attackTurnFree` / `attackTurnHeld` (`sdk/lib/brain.ts` builds `"@attackTurnFree." + attack`). About 16 references across 8 shipped scripts.
+- **Why commit on entry.** A drawn attack under a mark fires only with its turn, and the hold must hold it before the tell starts or the tell can promise a strike that cannot come. Picking the attack at release would need the hold to hold every candidate's turn, or an engine stance state; both rejected.

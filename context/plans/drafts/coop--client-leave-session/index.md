@@ -6,18 +6,19 @@ Brief · compact · Epic 15 · reads: `context/lib/networking.md` §Role model, 
 The owner raised this while gating client level verbs. Basis: defects read in source, not yet reported from play. A connected player has no way out of a session, and nothing catches a client when its session ends under it. On a client, `returnToFrontend()` and `ui.quitToMenu` unload the level locally and keep the connection, before a `wait` or after one. The host's next relevel then pulls the client back into play, and its menu's level buttons do nothing. When the host quits to its menu, clients receive only a hold, so they sit in a stale level with no pawn. A client whose host vanishes, refuses it at admission or exits is left disconnected but still a client, until it relaunches. The cause: one verb, `returnToFrontend`, both navigates and decides membership, and no machine can end its own role mid-run. When this is done, a client's quit leaves the session cleanly and a host's quit ends it for everyone. Every client whose session ends, for any reason, stands at a working single-player frontend, and its saves hold only its own character and world.
 
 ## Decisions
-- **Membership has its own verbs.** `leaveSession()` and `endSession()` are system reactions. Navigation never changes membership, and the frontend is outside every session (`research/coop-session-lifecycle.md` §5).
+- **Membership and navigation are separate verbs.** `leaveSession()` and `endSession()` change membership and never navigate. Navigation never changes membership (`research/coop-session-lifecycle.md` §5). `returnToFrontend` stays the navigation verb outside a session until a generalized navigation function replaces it. That function is the optional-lobby brief's, and nothing here assumes a mod has only one frontend. A run's end composes the two kinds, such as `endSession()` then `returnToFrontend()`, and that one sequence runs cleanly in every role.
 
   | Role | `leaveSession` | `endSession` | `returnToFrontend` | `ui.quitToMenu` |
   |---|---|---|---|---|
-  | Single-player | warn | warn | as today | as today |
-  | Host | warn | **end** | refused, warned | `endSession` |
-  | Connected client | **leave** | dropped, warned | refused, warned | `leaveSession` |
+  | Single-player | no-op, debug log | no-op, debug log | as today | as today |
+  | Host | warn: a host ends instead | **end**, staying where it is, now single-player | refused, warned | `endSession`, then frontend |
+  | Connected client | **leave** | no-op, debug log: the host's copy ends it | refused, warned | `leaveSession` |
 
   - Each warning fires once per source and verb. A refused `returnToFrontend` names the membership verbs.
   - Only role decides, never origin: a `wait` tail, a crossing and a UI press all behave alike. This narrows `done/reaction-body-composition`, whose client landing of a post-`wait` `returnToFrontend` unloaded locally. It now refuses.
-- **Leave.** The client closes its connection cleanly, then unloads and presents the frontend as single-player does. The host closes the slot as a disconnect, not a timeout, and the existing seat hold applies (`netcode` `SeatTable::hold_disconnected_client`).
-- **End.** The host closes every slot with a session-ended cause, then drops its endpoint and presents the frontend as single-player does. Closing reuses the admission-refusal path, which sends the cause and disconnects once it is acknowledged (`NetServer::reject`), bounded so a silent client cannot hold the host. Ending holds no seats: the session is gone.
+  - The frontend is outside every session. This narrows `research/coop-session-lobby.md` §2 ("A lobby is the Frontend state with a live endpoint"): a lobby becomes its own optional scene. Until that brief lands, a command-line host still boots to its frontend with an endpoint and admits clients there, and `endSession` from there closes them.
+- **Leave.** The client closes its connection cleanly, then unloads and presents the mod's declared frontend as single-player does. It is the one membership change that lands somewhere, because a client cannot keep a world it never owned. The host closes the slot as a disconnect, not a timeout, and the existing seat hold applies (`netcode` `SeatTable::hold_disconnected_client`).
+- **End.** The host closes every slot with a session-ended cause and drops its endpoint. Its level keeps running as single-player. The role changes at once, so a navigation step after `endSession` in the same reaction runs as single-player, while the closing finishes in the background. Closing reuses the admission-refusal path, which sends the cause and disconnects once it is acknowledged (`NetServer::reject`), bounded so a silent client cannot hold the host. Ending holds no seats: the session is gone.
 - **Any host-side ending leaves.** When an established connection ends, the client takes the leave path, minus the disconnect send. That covers a session-ended cause, a mod-id refusal, a lost host, and any later host close (eviction, password). This narrows `networking.md` §Role model ("Nothing above the transport reacts to that ending") and `scripting.md` §10.4 ("stays a client until relaunch"). A connect that never succeeded keeps its bounded retries.
 - **Exit to desktop takes the same path.** A client leaves and a host ends before the event loop exits, so peers learn at once rather than after the keepalive timeout.
 - **A role moves one way, to single-player.** This narrows `networking.md` §Role model ("selected once at startup"). Hosting or joining again needs a relaunch until in-app hosting and joining land. Those briefs reverse the same derivation.
@@ -34,15 +35,15 @@ The owner raised this while gating client level verbs. Basis: defects read in so
 TypeScript in `sdk/lib/ui/reactions.ts`, beside `returnToFrontend()`, exported from the prelude. The Luau mirror in `reactions.luau` uses the same names.
 
 ```typescript
-import { defineReaction, leaveSession, endSession } from "postretro";
+import { defineReaction, endSession, leaveSession, returnToFrontend } from "postretro";
 
 // A client's "Leave game" button.
 export const leave = defineReaction("pause.leaveSession", leaveSession());
-// A host's "End session" button.
-export const end = defineReaction("pause.endSession", endSession());
+// A run's end on a map-end crossing: every role runs the same steps.
+export const runEnd = defineReaction("run.end", [endSession(), returnToFrontend()]);
 ```
 
-Both take no arguments and return a `SystemReactionStep` (`{ primitive: "leaveSession", args: {} }`, `{ primitive: "endSession", args: {} }`). Both are host consequences in the system-reaction classification, never machine-local.
+Both take no arguments and return a `SystemReactionStep` (`{ primitive: "leaveSession", args: {} }`, `{ primitive: "endSession", args: {} }`). Both are host consequences in the system-reaction classification, never machine-local. Neither navigates on a host or in single-player.
 
 ### Boundary inventory
 
@@ -58,12 +59,15 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "leaveSe
 - [ ] `ui.quitToMenu` leaves on a connected client, ends the session on a host, and in single-player queues exactly what it queues today.
 - [ ] `returnToFrontend` on a connected client and on a host queues nothing, keeps the endpoint, and warns once per source naming the membership verbs, across repeated fires from levelLoad, a crossing and a UI press. In single-player it queues unload, then the backdrop load when one is declared.
 - [ ] A UI press whose reaction waits 300 ms and then runs `returnToFrontend` refuses on a connected client when the step lands. The same press with `leaveSession` leaves when it lands.
-- [ ] `leaveSession` on a host or in single-player, and `endSession` on a client or in single-player, change nothing and warn once per source.
-- [ ] Loopback host and two clients, host runs `endSession`: each client receives the session-ended cause and ends with no endpoint at a frontend whose menu starts a local game. The host ends with no endpoint, and its next `loadLevel` publishes no parity and sends no relevel.
+- [ ] `leaveSession` on a host changes nothing and warns once per source. `leaveSession` in single-player, and `endSession` on a client or in single-player, change nothing and log at debug only.
+- [ ] A reaction running `endSession` then `returnToFrontend`: in single-player it reaches the frontend with no warning. On a host it ends the session and reaches the frontend. On a connected client it keeps the endpoint until the host's session-ended cause arrives, then lands at the frontend.
+- [ ] A host running `endSession` alone stays in its level as single-player, with every client's pawn gone. Its next `loadLevel` publishes no parity and sends no relevel.
+- [ ] Loopback host and two clients, host presses `ui.quitToMenu`: each client receives the session-ended cause and ends with no endpoint at a frontend whose menu starts a local game. The host ends with no endpoint, at its frontend.
 - [ ] Loopback host whose client never acknowledges: `endSession` still finishes within its bound.
 - [ ] A client whose established connection ends unloads to the frontend as single-player, without a relaunch. A client whose first connect is still retrying does not.
 - [ ] A client refused at admission for a mod-id mismatch ends at the frontend as single-player, and its menu starts a local game.
-- [ ] After a client leaves, and after a host ends, every role-bound value equals the value a session built with no network flag holds. One test compares them field by field.
+- [ ] After a client leaves, and after a host ends, every role-bound value equals the value a session built with no network flag holds. One test compares the whole derived role state, so a field added to it later is compared without editing the test.
+- [ ] After a client leaves, nothing it received from the host steers it: its next own load is not host-named, and no relevel record or spawn-pose hint from the session applies.
 - [ ] Loopback: the client leaves. Within one second of host time, the host closes that slot with the disconnect cause, not timeout, and holds the seat. The same player claim reclaims it within the hold window.
 - [ ] A relevel the host sends after the client has left loads nothing on the client.
 - [ ] `ui.exitToDesktop` on a connected client sends the disconnect before exit, and the host's close cause is disconnect. On a host, every client receives the session-ended cause before the host exits.
@@ -84,7 +88,7 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "leaveSe
 - Content: the dev pause menu's quit confirmation already presses `ui.quitToMenu` (`content/dev/scripts/frontend-menu.ts`). `content/dev/scripts/frontend-level-select-fixture.{ts,luau}` binds `returnToFrontend()` to a named reaction and is the natural fixture for the new verbs.
 - Rival direction: one verb whose meaning depends on its origin, so a UI press leaves and game logic follows the host. It was the earlier draft. Validation found it strands clients when the host returns to its menu, and the owner chose explicit verbs.
 - Rival shape: restart the process as single-player on leave. It keeps "role selected once at startup", but it replays the splash, loses the window and display mode, and in-app joining would discard it.
-- Rival shape: rebuild the `Session` without an endpoint. It is heavier, because the session owns the VM, audio and UI, and it buys nothing the shared derivation does not.
+- Rival shape: rebuild the `Session` without an endpoint. It would also clear, by construction, what arrived over the wire (the store, sentiment, relevel caches, the spawn-pose hint), which the brief clears through the store reload and explicit resets instead. It loses because the session owns the VM, audio and UI, and rebuilding them on every leave costs more than naming those resets.
 - First slice: the transport disconnect plus a loopback test asserting the host's close cause. This falsifies the riskiest assumption, that renet_netcode delivers the disconnect before the endpoint drops.
 
 ## Open questions

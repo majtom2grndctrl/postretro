@@ -111,16 +111,18 @@ Facts by symbol: `state_path`, `load_persisted_state`, `overlay_persisted_state`
 | Verb | Job | Single-player | Host | Connected client |
 |---|---|---|---|---|
 | `navigate(destination)` (working name) | navigation | any destination | session destinations only (the lobby, if declared, and levels), with clients following | dropped and warned: the host leads |
-| `leaveSession()` | membership | warn | warn: a host ends the session instead | close cleanly, then frontend |
-| `endSession()` | membership | warn | close every slot, notify clients, then frontend | dropped and warned |
+| `leaveSession()` | membership | no-op | warn: a host ends the session instead | close cleanly, then land at the declared frontend |
+| `endSession()` | membership | no-op | close every slot and notify clients; stay where it is, now single-player | no-op: the host's copy ends it |
 | `evictPlayer(player)` | membership | n/a | close that player's slot with a cause | lands at the frontend |
-| `ui.quitToMenu` (engine action) | resolves by role | navigate to the frontend | `endSession()` | `leaveSession()` |
+| `ui.quitToMenu` (engine action) | resolves by role | navigate to the frontend | `endSession()`, then frontend | `leaveSession()` |
 
 **Decided (owner, this session):** `leaveSession`, `endSession` and `evictPlayer` are explicit membership verbs. Evicting and ending are host-executed closes, because the host owns admission. Navigation is one generalized function.
 
 **Open, for the brief that ships it:** the navigation function's name and destination shape. Also whether `loadLevel` and `restartLevel` fold into it.
 
-**Leaning:** `navigate(frontend)` inside a session is refused with a warning that names `leaveSession` / `endSession`. Navigation stays explicit, and a mod chooses what its co-op end of run does.
+**Decided (owner, this session):** `endSession` only ends the session, and navigation is a separate step. A run's end composes them (`endSession()` then a navigation step), which runs in every role. A mod may declare more than one frontend; nothing assumes there is only one.
+
+**Leaning:** navigating to a frontend inside a session is refused with a warning that names `leaveSession` / `endSession`.
 
 ## 6. Target: session lifecycle, with an optional lobby
 
@@ -158,7 +160,7 @@ stateDiagram-v2
     SP --> F: navigate(frontend)
     F --> Hosting: host game
     F --> Connected: join
-    Hosting --> F: endSession
+    Hosting --> F: endSession, then navigate
     Connected --> F: leaveSession, evicted, host lost or ended
     class Lobby,CLobby new
     classDef new fill:#e0ecff,stroke:#1f4fb4,color:#000

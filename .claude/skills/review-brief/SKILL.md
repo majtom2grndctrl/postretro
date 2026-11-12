@@ -71,7 +71,7 @@ Every prompt carries: the confirmed absolute paths of the brief and `research.md
 - One mechanism this brief carries that could be deleted, and what deleting it costs. "None" is allowed and must say what was considered.
 - Each Decision sentence: if the executor disagreed with it and were still right, it is Path. Name the sentences.
 - Each non-goal: would a reader assume the brief owed it? If so, does it carry a warrant?
-- Restated facts and bare counts in prose; length against the selected mode's target, excluding required boundary and wire tables. Locate any excess by section.
+- Restated facts and bare counts in prose; length against the selected mode's target, excluding required boundary and wire tables. Locate any excess by section. Excess is restatement and derivation to move or cut, not grounds to split off a feature's first consumers (`/draft-brief`).
 
 **Finding contract.** Every finding, every field:
 

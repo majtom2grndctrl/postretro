@@ -108,7 +108,7 @@ fn moving_a_middle_waypoint_changes_the_domain_keeps_the_termini_and_equals_cold
 fn a_light_bounces_change_rebakes_every_pose_of_that_mover_and_warm_equals_cold() {
     let warm_high = |scene: &Scene| {
         let cache = tempfile::tempdir().expect("create warm cache");
-        copy_dir(high_base().0.path(), cache.path());
+        copy_dir(&high_base().0, cache.path());
         warm_over_with(scene, cache.path(), HIGH)
     };
     assert_eq!(

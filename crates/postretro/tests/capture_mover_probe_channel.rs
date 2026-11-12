@@ -9,9 +9,12 @@
 // Means are Rec. 709 luma of the post-tonemap sRGB capture (0–255). Captures
 // compare on one adapter; no golden images.
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
+use postretro_level_format::mover_probe_channel::MOVER_PROBE_CHANNEL_EPOCH;
+use postretro_level_format::{SectionId, read_container};
 
 // Shared by every capture target; the mover rows compile through
 // `compile_dev_map_with` and `compile_dev_map_using` alone.
@@ -35,9 +38,10 @@ fn compile_release(workspace: &Path, map_name: &str) -> tempfile::TempPath {
 
 /// Names the baseline compiler C10's frame row judges against: a `prl-build`
 /// from before mid-travel light poses, the same binary
-/// `mover_probe_channel_prl_parity` takes. The engine refuses older PRL
-/// epochs, so the baseline is a compiler whose bake matches that build's and
-/// writes the current epoch.
+/// `mover_probe_channel_prl_parity` takes. Its bake matches that build's;
+/// it writes id 57 at epoch 5, which the engine refuses, so each baseline
+/// PRL has that one byte rewritten to the current epoch, as the parity test
+/// does.
 const BASELINE_ENV: &str = "POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN";
 
 /// The baseline compiler, or a failure naming the variable.
@@ -59,9 +63,26 @@ fn baseline_compiler() -> PathBuf {
     path
 }
 
-/// [`compile_release`] through the baseline compiler.
+/// The baseline compiler's id-57 epoch: epoch 6's bytes, read under the
+/// through-base depth rule.
+const BASELINE_EPOCH: u8 = 5;
+
+/// [`compile_release`] through the baseline compiler, id 57's epoch byte
+/// rewritten from [`BASELINE_EPOCH`] to the current epoch.
 fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> tempfile::TempPath {
-    compile_dev_map_using(compiler, workspace, map_name, &["--release"])
+    let prl = compile_dev_map_using(compiler, workspace, map_name, &["--release"]);
+    let mut bytes = std::fs::read(&prl).expect("read the baseline PRL");
+    let meta = read_container(&mut Cursor::new(bytes.as_slice())).expect("read the container");
+    if let Some(section) = meta.find_section(SectionId::MoverProbeChannel as u32) {
+        let at = section.offset as usize;
+        assert_eq!(
+            bytes[at], BASELINE_EPOCH,
+            "the baseline compiler writes id 57 at epoch 5"
+        );
+        bytes[at] = MOVER_PROBE_CHANNEL_EPOCH;
+    }
+    std::fs::write(&prl, bytes).expect("write the baseline PRL");
+    prl
 }
 
 const RESOLUTION: [u32; 2] = [960, 540];

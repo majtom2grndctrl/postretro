@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::OnceLock;
 
-use prl_build_support::{REACH_VERIFY_ENV, prl_build};
+use prl_build_support::{REACH_VERIFY_ENV, fixture_dir, prl_build};
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 
@@ -246,16 +246,11 @@ fn report(logs: &str) -> Vec<String> {
 
 /// The base map's cold build with a cache: the cache every warm edit starts
 /// from (copied, so edits never see each other's entries) and its log.
-fn base() -> &'static (tempfile::TempDir, String) {
-    static BASE: OnceLock<(tempfile::TempDir, String)> = OnceLock::new();
+fn base() -> &'static (PathBuf, String) {
+    static BASE: OnceLock<(PathBuf, String)> = OnceLock::new();
     BASE.get_or_init(|| {
-        let cache = tempfile::tempdir().expect("create base cache");
-        let logs = build(
-            &map(&Scene::default()),
-            CacheMode::Fill(cache.path()),
-            JOBS,
-            &[],
-        );
+        let cache = fixture_dir("base-cache");
+        let logs = build(&map(&Scene::default()), CacheMode::Fill(&cache), JOBS, &[]);
         (cache, logs)
     })
 }
@@ -277,7 +272,7 @@ fn copy_dir(from: &Path, to: &Path) {
 /// build it; assert the reports match. The warm log.
 fn warm_equals_cold(scene: &Scene, flags: &[&str]) -> String {
     let cache = tempfile::tempdir().expect("create warm cache");
-    copy_dir(base().0.path(), cache.path());
+    copy_dir(&base().0, cache.path());
     let text = map(scene);
     let warm = build(&text, CacheMode::Warm(cache.path()), JOBS, flags);
     let cold = build(&text, CacheMode::Cold, JOBS, flags);

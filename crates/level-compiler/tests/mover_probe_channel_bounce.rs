@@ -12,12 +12,13 @@ mod prl_build_support;
 use std::sync::OnceLock;
 
 use mover_bounce_support::{
-    Built, Cache, Volume, bounce_states_in, build, channel, depth_tiles, dev_map, display_levels,
-    f16_close, max_abs, round_trip_error, staticize, with_worldspawn_key,
+    Built, Cache, Volume, bounce_states_in, build, build_in, channel, depth_tiles, dev_map,
+    display_levels, f16_close, max_abs, round_trip_error, staticize, with_worldspawn_key,
 };
 use postretro_level_format::SectionId;
 use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
+use prl_build_support::BuildDir;
 
 const UNCOMPRESSED: &[&str] = &["--uncompressed-irradiance"];
 /// The ship bake: high fidelity, whatever the interactive default.
@@ -53,9 +54,22 @@ fn closet() -> &'static Closet {
     BUILT.get_or_init(|| {
         let map = uniform(&dev_map("mover-closet.map"));
         Closet {
-            channel: build(&map, "mover-closet", Cache::Cold, RELEASE),
-            today: build(&map, "mover-closet", Cache::Cold, UNCOMPRESSED),
-            reference: build(
+            channel: build_in(
+                BuildDir::fixture("closet-channel"),
+                &map,
+                "mover-closet",
+                Cache::Cold,
+                RELEASE,
+            ),
+            today: build_in(
+                BuildDir::fixture("closet-today"),
+                &map,
+                "mover-closet",
+                Cache::Cold,
+                UNCOMPRESSED,
+            ),
+            reference: build_in(
+                BuildDir::fixture("closet-reference"),
                 &uniform(&dev_map("mover-closet-static-door.map")),
                 "mover-closet-static-door",
                 Cache::Cold,
@@ -237,9 +251,22 @@ fn setpiece() -> &'static Setpiece {
         let map = uniform(&dev_map("mover-setpiece.map"));
         let raised = staticize(&map, "setpiece_room", "setpiece_room_raised");
         Setpiece {
-            channel: build(&map, "mover-setpiece", Cache::Cold, RELEASE),
-            today: build(&map, "mover-setpiece", Cache::Cold, UNCOMPRESSED),
-            reference: build(
+            channel: build_in(
+                BuildDir::fixture("setpiece-channel"),
+                &map,
+                "mover-setpiece",
+                Cache::Cold,
+                RELEASE,
+            ),
+            today: build_in(
+                BuildDir::fixture("setpiece-today"),
+                &map,
+                "mover-setpiece",
+                Cache::Cold,
+                UNCOMPRESSED,
+            ),
+            reference: build_in(
+                BuildDir::fixture("setpiece-reference"),
                 &raised,
                 "mover-setpiece-room-raised",
                 Cache::Cold,

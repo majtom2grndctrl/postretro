@@ -15,7 +15,7 @@ use postretro_level_format::mover_probe_channel::{MoverLightNamespace, MoverProb
 use postretro_level_format::sh_reconstruct::local_xyz;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
-use prl_build_support::{REACH_VERIFY_ENV, prl_build};
+use prl_build_support::{REACH_VERIFY_ENV, fixture_dir, prl_build};
 
 /// Quake map units to engine meters.
 const UNIT: f64 = 0.0254;
@@ -63,7 +63,6 @@ fn quake(engine: [f64; 3]) -> [f64; 3] {
 }
 
 struct Setpiece {
-    _dir: tempfile::TempDir,
     prl: PathBuf,
 }
 
@@ -72,8 +71,8 @@ fn setpiece() -> &'static Setpiece {
     static BUILT: OnceLock<Setpiece> = OnceLock::new();
     BUILT.get_or_init(|| {
         let workspace = workspace_root();
-        let dir = tempfile::tempdir().expect("create output directory");
-        let prl = dir.path().join("mover-setpiece.prl");
+        let dir = fixture_dir("setpiece");
+        let prl = dir.join("mover-setpiece.prl");
         let output = prl_build()
             .env(REACH_VERIFY_ENV, "0")
             .arg(workspace.join("content/dev/maps/mover-setpiece.map"))
@@ -81,7 +80,7 @@ fn setpiece() -> &'static Setpiece {
             .arg(&prl)
             .args(["--no-cache", "--no-tui", "--jobs", "6"])
             .arg("--baked-root")
-            .arg(dir.path().join("baked"))
+            .arg(dir.join("baked"))
             .current_dir(&workspace)
             .output()
             .expect("spawn prl-build");
@@ -91,7 +90,7 @@ fn setpiece() -> &'static Setpiece {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        Setpiece { _dir: dir, prl }
+        Setpiece { prl }
     })
 }
 

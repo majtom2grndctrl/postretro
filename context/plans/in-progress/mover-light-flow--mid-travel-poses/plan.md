@@ -78,6 +78,12 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 - **New and restated ACs.** New: ACs 34–37 and M9. Restated: AC 4 and AC 5 (even poses plus geometry knots), AC 15 (depth mix rule) and AC 18 (MP8 wording).
 - **Build here, this session** (owner: "once the pause is over, let's build it here").
 
+## Open owner questions
+
+- **C10 per-probe bar on BC6H builds (raised 2026-11-12, task 18).** The per-probe C10 gate compares streaming-off against sync-proof compose. It now misses its 1-f16-step bar in one class: one mover reading id 34 at t′ 0.5 on the setpiece, worst 1.28 steps over 283,531 of 1,120,023 halves. On an `--uncompressed-irradiance` build the same gate is bit for bit in every class at every t′, so the channel composes identically in both modes. The miss is BC6H's mode difference in the base, carried through two f16 roundings. That is the family of the frame-level restatement and `drafts/sh-streaming-mode-bc6h-parity.md`. Options:
+  - **(1) Recommended:** run the per-probe C10 gate on `--uncompressed-irradiance` builds, where it must be bit for bit. BC6H's mode gap stays judged by the frame gate as restated.
+  - **(2)** Derive the per-probe bound for base-reading classes (about 2 steps) and pin it.
+
 ## Owner rulings, AC 7 and AC 36 (2026-11-11)
 
 The owner agreed with both recommendations ("I think I agree with your recommendations on the two questions you asked"). Recorded in the brief:
@@ -243,7 +249,19 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 • Note: Metal flushes subnormal t′, as before; unaffected.
 • Gates: fmt, workspace clippy (with and without capture), renderer GPU 126, loader 52, C9 on the epoch-6 closet PRL. |
 | 19 | **AC 7 and AC 36 per the owner's rulings.** Widen the sweeper reference's set-aside to probes within one patch of a plane along which the reference cuts the floor off the patch grid, and pin it with a check that it catches probe 2267's case. Implement AC 36's restated bars (share mean, room per-knot, faces reported; values within 3 levels or within 1.5 of the pre-amendment miss). Both tests pass `--ignored`. | integrating executor | 18 | |
-| 18 | **Regressions, docs and IP.**<br>• Re-run AC 1, 2, 3 (C9, C10), 7, 8, 19 and 28, plus parity.<br>• `ip-372` question 9 wording.<br>• `docs/level_design.md` and the FGD: `light_poses` places even poses only, geometry knots are automatic.<br>• `build_pipeline.md` and `rendering_pipeline.md` updates queued for landing. | integrating executor | 15, 16, 17 | |
+| 18 | **Regressions, docs and IP.**<br>• Re-run AC 1, 2, 3 (C9, C10), 7, 8, 19 and 28, plus parity.<br>• `ip-372` question 9 wording.<br>• `docs/level_design.md` and the FGD: `light_poses` places even poses only, geometry knots are automatic.<br>• `build_pipeline.md` and `rendering_pipeline.md` updates queued for landing. | integrating executor | 15, 16, 17 | done, with one owner question:
+• **Docs and IP:** `ip-372` question 9 rewritten; `docs/level_design.md` (`light_poses` table row, extra poses, a set count places even poses only, Build Summary split); FGD help and its pinned test.
+• **Leak fix:** four fixtures held a `TempDir` in a `static OnceLock` (bounce `closet`/`setpiece`, setpiece `setpiece`, `mover_cache_support` `base`/`high_base` plus fidelity `low_cold`/`release`, light-gate cache `base`), leaking 566 dirs (~25 GB) since Nov 10. Now `fixture_dir` under `$CARGO_TARGET_TMPDIR/<binary>/<name>`, recreated at init (`prl_build_support`). The leaked dirs are left for the owner.
+• **C10 harness:** `compile_release_using` rewrites the parent's epoch byte to 6, as task 14 did for parity.
+• **Gates:**
+  - AC 1: pass, bit for bit, 3 maps, both modes.
+  - AC 2: parity 3/3.
+  - AC 3: K1, K2, D2, K3, C7, C9 both halves and C10 frames pass (setpiece st3 mask 8: 21 vs 22). **C10 per-probe fails**: 'one mover reading id 34' class at t′ 0.5, setpiece, 1.28 f16 steps against a 1-step bar. Bit for bit under `--uncompressed-irradiance`, so it is the BC6H base difference across two f16 roundings; it surfaced as base-reading pairs grew with geometry knots. Owner question.
+  - AC 7/8: room passes (0.87 / 1.51); sweeper fails at probe 2267 (bounce one 4.01, full 3.51), task 19.
+  - AC 19: pass (1.72; 2.06; 1.94).
+  - AC 28: pass (11.42 ≤ 12).
+  - AC 36: fails as before, task 19.
+• **Preflight:** fmt, clippy (workspace and capture), `cargo test --workspace` GPU 15,849 passed, 1 failed (`line_c_names_staged_marks_and_adds_up`, a timing flake under suite load, passes 3/3 alone, untouched by this branch), 133 ignored; release check; crate graph. |
 
 Execution is sequential on the main checkout's warm `target/`. Every task crosses the compiler ↔ format ↔ renderer seam, so worktree workers would each build the engine cold for little parallelism. Tasks 3 and 4 touch disjoint crates once task 2 lands, and may run as one worktree worker if disk stays above 15 GB plus a debug build.
 

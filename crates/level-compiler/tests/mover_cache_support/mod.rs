@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
-use crate::prl_build_support::{REACH_VERIFY_ENV, prl_build};
+use crate::prl_build_support::{BuildDir, REACH_VERIFY_ENV, fixture_dir, prl_build};
 
 pub const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 /// The floor top's texture after a retexture: another albedo.
@@ -202,7 +202,7 @@ pub enum CacheMode<'a> {
 }
 
 pub struct Built {
-    _dir: tempfile::TempDir,
+    _dir: BuildDir,
     pub prl: PathBuf,
     pub logs: String,
 }
@@ -213,7 +213,17 @@ pub fn build(scene: &Scene, mode: CacheMode<'_>, jobs: u32) -> Built {
 
 /// [`build`] with extra `prl-build` flags.
 pub fn build_with(scene: &Scene, mode: CacheMode<'_>, jobs: u32, flags: &[&str]) -> Built {
-    let dir = tempfile::tempdir().expect("create build directory");
+    build_in(BuildDir::temp(), scene, mode, jobs, flags)
+}
+
+/// [`build_with`] into `dir`.
+pub fn build_in(
+    dir: BuildDir,
+    scene: &Scene,
+    mode: CacheMode<'_>,
+    jobs: u32,
+    flags: &[&str],
+) -> Built {
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
     // The dev textures, so a retexture changes the floor's bounce albedo.
@@ -273,12 +283,19 @@ pub fn section(prl: &Path, id: SectionId) -> Option<Vec<u8>> {
 pub const JOBS: u32 = 6;
 
 /// The base map's cold build with a cache, at the interactive default
-/// (`low`) fidelity: what every warm edit starts from.
-pub fn base() -> &'static (tempfile::TempDir, Built) {
-    static BASE: OnceLock<(tempfile::TempDir, Built)> = OnceLock::new();
+/// (`low`) fidelity: what every warm edit starts from. Its cache directory,
+/// then the build.
+pub fn base() -> &'static (PathBuf, Built) {
+    static BASE: OnceLock<(PathBuf, Built)> = OnceLock::new();
     BASE.get_or_init(|| {
-        let cache = tempfile::tempdir().expect("create base cache");
-        let built = build(&Scene::default(), CacheMode::Fill(cache.path()), JOBS);
+        let cache = fixture_dir("base-cache");
+        let built = build_in(
+            BuildDir::fixture("base-build"),
+            &Scene::default(),
+            CacheMode::Fill(&cache),
+            JOBS,
+            &[],
+        );
         (cache, built)
     })
 }
@@ -287,11 +304,17 @@ pub fn base() -> &'static (tempfile::TempDir, Built) {
 pub const HIGH: &[&str] = &["--bake-fidelity", "high"];
 
 /// [`base`] built `--bake-fidelity high`: its cache holds `high` entries.
-pub fn high_base() -> &'static (tempfile::TempDir, Built) {
-    static BASE: OnceLock<(tempfile::TempDir, Built)> = OnceLock::new();
+pub fn high_base() -> &'static (PathBuf, Built) {
+    static BASE: OnceLock<(PathBuf, Built)> = OnceLock::new();
     BASE.get_or_init(|| {
-        let cache = tempfile::tempdir().expect("create high base cache");
-        let built = build_with(&Scene::default(), CacheMode::Fill(cache.path()), JOBS, HIGH);
+        let cache = fixture_dir("high-base-cache");
+        let built = build_in(
+            BuildDir::fixture("high-base-build"),
+            &Scene::default(),
+            CacheMode::Fill(&cache),
+            JOBS,
+            HIGH,
+        );
         (cache, built)
     })
 }
@@ -330,7 +353,7 @@ pub fn copy_dir(from: &Path, to: &Path) {
 /// assert the PRLs are byte-identical. The warm log.
 pub fn warm_equals_cold(scene: &Scene) -> String {
     let cache = tempfile::tempdir().expect("create warm cache");
-    copy_dir(base().0.path(), cache.path());
+    copy_dir(&base().0, cache.path());
     warm_over(scene, cache.path())
 }
 

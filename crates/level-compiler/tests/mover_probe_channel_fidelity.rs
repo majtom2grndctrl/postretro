@@ -15,17 +15,34 @@ use std::sync::OnceLock;
 use mover_cache_support::*;
 use postretro_level_format::SectionId;
 use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
+use prl_build_support::BuildDir;
 
 /// The default map built cold at `low`, the interactive default.
 fn low_cold() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
-    BUILT.get_or_init(|| build(&Scene::default(), CacheMode::Cold, JOBS))
+    BUILT.get_or_init(|| {
+        build_in(
+            BuildDir::fixture("low-cold"),
+            &Scene::default(),
+            CacheMode::Cold,
+            JOBS,
+            &[],
+        )
+    })
 }
 
 /// The default map built `--release`.
 fn release() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
-    BUILT.get_or_init(|| build_with(&Scene::default(), CacheMode::Cold, JOBS, &["--release"]))
+    BUILT.get_or_init(|| {
+        build_in(
+            BuildDir::fixture("release"),
+            &Scene::default(),
+            CacheMode::Cold,
+            JOBS,
+            &["--release"],
+        )
+    })
 }
 
 fn channel(built: &Built) -> MoverProbeChannelSection {
@@ -249,7 +266,7 @@ fn per_fidelity_warm_equals_no_cache_and_two_low_builds_over_one_cache_are_alike
     let builds: Vec<Built> = (0..2)
         .map(|_| {
             let cache = tempfile::tempdir().expect("create cache copy");
-            copy_dir(high_base().0.path(), cache.path());
+            copy_dir(&high_base().0, cache.path());
             build(&edited, CacheMode::Warm(cache.path()), JOBS)
         })
         .collect();
@@ -266,7 +283,7 @@ fn per_fidelity_warm_equals_no_cache_and_two_low_builds_over_one_cache_are_alike
 fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_release() {
     let warm_low_over_high = |scene: &Scene| {
         let cache = tempfile::tempdir().expect("create cache copy");
-        copy_dir(high_base().0.path(), cache.path());
+        copy_dir(&high_base().0, cache.path());
         build(scene, CacheMode::Warm(cache.path()), JOBS).logs
     };
 
@@ -332,7 +349,7 @@ fn low_after_high_serves_high_and_high_after_low_rebakes_every_pose_and_equals_r
     );
 
     let cache = tempfile::tempdir().expect("create low cache");
-    copy_dir(base().0.path(), cache.path());
+    copy_dir(&base().0, cache.path());
     let high_after_low = build_with(&Scene::default(), CacheMode::Warm(cache.path()), JOBS, HIGH);
     assert_eq!(
         pose_share(&high_after_low.logs),

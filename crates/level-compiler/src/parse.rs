@@ -4548,7 +4548,7 @@ mod tests {
             "light_ramp_start(float) : \"Travel fraction (0 to 1) where baked light starts changing as the mover leaves its first waypoint; below it the first waypoint's lighting holds\" : \"0\"",
             "light_ramp_end(float) : \"Travel fraction (0 to 1, above light_ramp_start) where baked light reaches its last-waypoint state\" : \"1\"",
             "light_bounces(integer) : \"Static light bounces this mover's poses re-bake (0 or more); blank re-bakes every bounce, 0 re-bakes no bounce; its direct light and probe depth still follow the mover\"",
-            "light_poses(integer) : \"Lighting states baked along this mover's path (2 or more, 2 = its two ends only); blank places about one per probe spacing, up to 16\"",
+            "light_poses(integer) : \"Lighting states baked along this mover's path (2 or more, 2 = its two ends only); blank places about one per probe spacing (up to 16) plus poses where the mover meets probes; a set count places only evenly spaced poses\"",
         ] {
             assert!(
                 mover_class.contains(property),

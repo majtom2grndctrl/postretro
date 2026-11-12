@@ -22,7 +22,7 @@ use postretro_level_format::probe_depth_tiles::{
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
-use crate::prl_build_support::{REACH_VERIFY_ENV, prl_build};
+use crate::prl_build_support::{BuildDir, REACH_VERIFY_ENV, prl_build};
 
 /// Quake map units to engine meters.
 pub const UNIT: f64 = 0.0254;
@@ -48,7 +48,7 @@ pub fn quake(engine: [f64; 3]) -> [f64; 3] {
 
 /// One build's output, kept with its directory.
 pub struct Built {
-    pub dir: tempfile::TempDir,
+    pub dir: BuildDir,
     pub prl: PathBuf,
     pub logs: String,
 }
@@ -64,7 +64,18 @@ pub enum Cache<'a> {
 /// Build `map_text` as `<name>.map` in a fresh content root whose textures
 /// are the dev tree's (where the platform links them), with `flags`.
 pub fn build(map_text: &str, name: &str, cache: Cache<'_>, flags: &[&str]) -> Built {
-    try_build(map_text, name, cache, flags)
+    build_in(BuildDir::temp(), map_text, name, cache, flags)
+}
+
+/// [`build`] into `dir`.
+pub fn build_in(
+    dir: BuildDir,
+    map_text: &str,
+    name: &str,
+    cache: Cache<'_>,
+    flags: &[&str],
+) -> Built {
+    try_build_in(dir, map_text, name, cache, flags)
         .unwrap_or_else(|logs| panic!("prl-build failed\n{logs}"))
 }
 
@@ -75,7 +86,17 @@ pub fn try_build(
     cache: Cache<'_>,
     flags: &[&str],
 ) -> Result<Built, String> {
-    let dir = tempfile::tempdir().expect("create build directory");
+    try_build_in(BuildDir::temp(), map_text, name, cache, flags)
+}
+
+/// [`try_build`] into `dir`.
+pub fn try_build_in(
+    dir: BuildDir,
+    map_text: &str,
+    name: &str,
+    cache: Cache<'_>,
+    flags: &[&str],
+) -> Result<Built, String> {
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
     #[cfg(unix)]

@@ -247,7 +247,7 @@ fn a_ramp_edit_re_decides_skips_over_the_memoized_states_and_warm_equals_cold() 
 #[test]
 fn edits_and_their_revert_over_one_cache_build_warm_equal_to_cold() {
     let cache = tempfile::tempdir().expect("create edit-order cache");
-    copy_dir(base().0.path(), cache.path());
+    copy_dir(&base().0, cache.path());
     let moved = Scene {
         plate_last: [0, 128, 104],
         ..Scene::default()

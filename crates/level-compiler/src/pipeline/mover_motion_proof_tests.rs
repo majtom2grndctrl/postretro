@@ -1,6 +1,6 @@
 // The motion proof: a swept surface lit through the mover probe channel, read
 // at every knot of a fine-pose truth bake (`light_poses` 41 on the rising
-// room, 57 on em_sweeper), against the default build composed at the same
+// room, 113 on em_sweeper), against the default build composed at the same
 // t′. Per receiver on the surface, the forward shader's probe weights
 // (trilinear × smooth backface × Chebyshev on the composed depth tile) give
 // the far-side share (the normalised weight on probes behind the surface),
@@ -36,10 +36,13 @@ use crate::mover_probe_channel::fixture_scene::SPACING;
 use crate::mover_probe_channel::reference_maps::quake_offset;
 use crate::mover_probe_channel::{MoverAbsentDepth, direct_display_levels, display_levels};
 
-/// Far-side share bars, read
-/// per truth knot: the mean over the trip's knots of |share − truth's| within
-/// 0.01, and on the room's layers the largest at any knot within 0.05. On
-/// the sweeper's faces the largest is reported, not gated.
+/// Far-side share bars, read per truth knot: the trip's time-weighted mean of
+/// |share − truth's| within 0.01, and on the room's layers the largest at any
+/// knot within 0.05. On the sweeper's faces the largest is reported, not
+/// gated. The mean integrates over travel by the trapezoid rule on the
+/// truth's knot t′ (each mover runs at constant speed in t′), so a short
+/// geometry-knot window weighs its share of the trip, not one knot's
+/// (owner, 2026-11-12).
 const SHARE_MEAN_BAR: f64 = 0.01;
 const SHARE_WORST_BAR: f64 = 0.05;
 /// Composed values at every knot within three display levels of the truth,
@@ -468,9 +471,27 @@ fn interval_kind(knots: &[f32], even: u32, t: f32) -> String {
     )
 }
 
+/// The trapezoid rule's weight of each knot over the trip `knots[0]..=last`,
+/// summing to one.
+fn trapezoid_weights(knots: &[f32]) -> Vec<f64> {
+    let n = knots.len();
+    assert!(n >= 2, "a trip has two knots");
+    let span = f64::from(knots[n - 1] - knots[0]);
+    (0..n)
+        .map(|i| {
+            let lo = f64::from(knots[i.saturating_sub(1)]);
+            let hi = f64::from(knots[(i + 1).min(n - 1)]);
+            (hi - lo) / 2.0 / span
+        })
+        .collect()
+}
+
 /// One candidate's reading of one surface against the truth.
 struct Verdict {
+    /// |share − truth's|, time-weighted over the trip: the gated mean.
     share_mean: f64,
+    /// The same, unweighted over the truth's knots: reported.
+    share_knot_mean: f64,
     share_worst: (f64, f32),
     values_worst: (f32, f32),
     /// At the worst value: the bounce alone's and the direct alone's
@@ -490,12 +511,13 @@ impl Verdict {
 
     fn line(&self, worst: WorstShare) -> String {
         format!(
-            "far-side share {:.3} mean | {:.3} worst; |Δ share| from truth {:.4} mean, {:.4} \
-             worst (t′ {:.3}, {}); values worst {:.2} levels (t′ {:.3}; bounce {:.2}, direct \
-             {:.2} at {:?}) → share {}",
+            "far-side share {:.3} mean | {:.3} worst; |Δ share| from truth {:.4} time-weighted \
+             mean ({:.4} over knots), {:.4} worst (t′ {:.3}, {}); values worst {:.2} levels (t′ \
+             {:.3}; bounce {:.2}, direct {:.2} at {:?}) → share {}",
             self.own_share.0,
             self.own_share.1,
             self.share_mean,
+            self.share_knot_mean,
             self.share_worst.0,
             self.share_worst.1,
             match worst {
@@ -603,6 +625,28 @@ fn motion_proof(
         "{map} {mover}: shipped {} knots, truth {}, pre-amendment {}",
         shipped.pose_count, truth.pose_count, pre.pose_count
     );
+    // How finely the truth resolves the shipped build's intervals: those
+    // with no truth knot strictly inside, and the shortest such.
+    let truth_t: Vec<f32> = truth.knots.iter().map(|knot| knot.t).collect();
+    let unresolved: Vec<f32> = shipped
+        .knots
+        .windows(2)
+        .filter(|pair| {
+            !truth_t
+                .iter()
+                .any(|&t| t > pair[0].t + 1e-6 && t < pair[1].t - 1e-6)
+        })
+        .map(|pair| pair[1].t - pair[0].t)
+        .collect();
+    eprintln!(
+        "  {} of {} shipped interval(s) hold no truth knot inside; the shortest spans {:.4} t′ \
+         ({:.2} Quake units)",
+        unresolved.len(),
+        shipped.pose_count - 1,
+        unresolved.iter().copied().fold(f32::INFINITY, f32::min),
+        f64::from(unresolved.iter().copied().fold(f32::INFINITY, f32::min))
+            * travel_quake.iter().map(|v| v * v).sum::<f64>().sqrt(),
+    );
     let reads = [
         Read::new(&truth, DepthRule::Shipped),
         Read::new(&shipped, DepthRule::Shipped),
@@ -616,19 +660,22 @@ fn motion_proof(
             .iter()
             .map(|&t| sample(&reads, &mut terms, surface, travel, t))
             .collect();
+        let weights = trapezoid_weights(&knots);
         let verdict = |b: usize| {
             let mut share_mean = 0.0;
+            let mut share_knot_mean = 0.0;
             let mut share_worst = (0.0, 0.0);
             let mut values_worst = (0.0f32, 0.0);
             let mut values_split = (0.0f32, 0.0f32, [0.0; 3]);
             let mut own = (0.0, 0.0f64);
-            for (&t, at) in knots.iter().zip(&samples) {
+            for ((&t, at), weight) in knots.iter().zip(&samples).zip(&weights) {
                 let delta = (at[b].share - at[0].share).abs();
-                share_mean += delta / knots.len() as f64;
+                share_mean += delta * weight;
+                share_knot_mean += delta / knots.len() as f64;
                 if delta > share_worst.0 {
                     share_worst = (delta, t);
                 }
-                own.0 += at[b].share / knots.len() as f64;
+                own.0 += at[b].share * weight;
                 own.1 = own.1.max(at[b].share);
                 for ((candidate, truth), q) in at[b]
                     .values
@@ -649,6 +696,7 @@ fn motion_proof(
             }
             Verdict {
                 share_mean,
+                share_knot_mean,
                 share_worst,
                 values_worst,
                 values_split,
@@ -794,9 +842,11 @@ fn the_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_ba
 }
 
 // em_sweeper's east and west faces (x 1312 and 1280 at t′ 0, 256 units east
-// over the trip), half a unit off each face, over y 72–440 and z 8–88.
+// over the trip), half a unit off each face, over y 72–440 and z 8–88. The
+// truth bakes 113 poses, one per 2.3 units, so the time-weighted share mean
+// reads inside each geometry-knot window (owner, 2026-11-12).
 #[test]
-#[ignore = "three bakes of enemy-movers (as authored, light_poses 57, light_poses 8); \
+#[ignore = "three bakes of enemy-movers (as authored, light_poses 113, light_poses 8); \
             cargo test -p postretro-level-compiler --bin prl-build \
             the_sweepers_faces_stay_within_the_motion_bars_of_the_fine_bake -- --ignored \
             --nocapture"]
@@ -824,7 +874,7 @@ fn the_sweepers_faces_stay_within_the_motion_bars_of_the_fine_bake() {
     let rows = motion_proof(
         "enemy-movers",
         "em_sweeper",
-        57,
+        113,
         &surfaces,
         [256.0, 0.0, 0.0],
     );

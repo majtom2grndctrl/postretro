@@ -253,17 +253,48 @@ fn sh_trilinear_weight(corner_offset: vec3<u32>, gfrac: vec3<f32>) -> f32 {
 const SH_BACKFACE_NONE: u32 = 0u;
 // Static world receivers: a probe behind the plane weighs 0 (`max(dot, 0)`).
 const SH_BACKFACE_HARD: u32 = 1u;
-// Mover receivers: DDGI's smooth wrap over the unit direction, sharpened to
-// ((dot + 1) / 2)⁸, plus a floor, so no probe ever weighs 0 (ip-372 lever 5;
-// owner rulings, mover-light-flow--probe-channel). The eighth power, chosen
-// by capture over the fourth, keeps dark probes behind a mover surface from
-// mottling it: the square lit a rising room's floor in a lattice of dots as
-// it passed a probe layer. Static geometry, never mover or light state,
-// decides it.
+// Mover receivers (owner Ruling A, mover-light-flow--mid-travel-poses
+// Amendment 2; ip-372 lever 5, counsel question 6): a smooth ramp of the
+// probe's signed distance from the SURFACE point along the receiver's
+// geometric normal, floored so no probe ever weighs 0. Behind the surface and
+// at it a probe weighs the floor; it rises by smoothstep to 1 + floor at
+// SH_MOVER_BACKFACE_RAMP_CELLS in front. The term reads only the fragment's
+// own position and geometric normal, never mover, probe-flag or light state.
+//
+// Why the surface point: the form it replaces, ((dot + 1) / 2)⁸ of the unit
+// direction from the lookup point 0.1 cell off the face, fell to the floor for
+// a probe layer exactly where the lookup crossed it, which is where that
+// layer's trilinear weight peaks. Renormalisation then handed a moving face to
+// the next layer within 1-3 frames, a visible step at every lattice crossing.
+// Measured from the surface, a probe's weight moves continuously as the face
+// travels, and the hand-over spreads over the ramp's width of travel. With the
+// lookup at 0.4 cell the largest per-frame step fell from 11.2 to 4.3 levels on
+// em_sweeper's east face and from 19.9 to 8.7 on the wall door's end face,
+// tracking dense truth as well or better; the ramp at the old 0.1-cell offset
+// was worse than the old form, and the larger offset alone only moved the step
+// (captures/amendment2/results.md). Near-face probes still need the low end:
+// posed rays that start inside a posed brush bake dark values a hair off the
+// face, and those must not darken the face itself.
 const SH_BACKFACE_SMOOTH: u32 = 2u;
 // The smooth form's floor: the same 0.03 every valid probe keeps under depth
-// visibility, so a probe behind the receiver still contributes.
+// visibility, so a probe behind the receiver still contributes (ip-372
+// lever 3: never 0).
 const SH_BACKFACE_SMOOTH_FLOOR: f32 = 0.03;
+// How far the mover pass lifts its SH lookup off the surface, in cells, along
+// the (normal-mapped) offset normal (`kinematic_brush.wgsl`). Static receivers
+// keep 0.1.
+const SH_MOVER_LOOKUP_OFFSET_CELLS: f32 = 0.4;
+// The smooth form's ramp width, in cells of the grid's largest axis. It ends at
+// the lookup offset by design: a probe beyond the lookup point weighs in full,
+// one behind the surface weighs the floor, and one between is ramped.
+const SH_MOVER_BACKFACE_RAMP_CELLS: f32 = SH_MOVER_LOOKUP_OFFSET_CELLS;
+// The current SH lookup point's height above the receiver's geometric plane,
+// in world units: dot(lookup - surface, geometric normal). Only the smooth
+// (mover) form reads it, to measure each probe from the surface point while
+// the shared corner helpers carry only the lookup point. The mover pass sets
+// it before each SH read; every other pass leaves it at 0 and passes the hard
+// or no backface form.
+var<private> sh_receiver_lookup_lift: f32 = 0.0;
 
 fn sh_backface_weight(
     corner_offset: vec3<u32>,
@@ -275,18 +306,14 @@ fn sh_backface_weight(
         return 1.0;
     }
 
+    // From the lookup point to the probe.
     let dir_to_probe = (vec3<f32>(corner_offset) - gfrac) * sh_grid.cell_size;
     if (backface_mode == SH_BACKFACE_SMOOTH) {
-        let distance = length(dir_to_probe);
-        // A probe at the shaded point faces it.
-        var cosine = 1.0;
-        if (distance > 1e-6) {
-            cosine = clamp(dot(dir_to_probe / distance, geo_normal), -1.0, 1.0);
-        }
-        let wrap = (cosine + 1.0) * 0.5;
-        let wrap_2 = wrap * wrap;
-        let wrap_4 = wrap_2 * wrap_2;
-        return wrap_4 * wrap_4 + SH_BACKFACE_SMOOTH_FLOOR;
+        let cell = max(max(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
+        // The probe's signed distance from the surface point, in cells.
+        let height_cells = (dot(dir_to_probe, geo_normal) + sh_receiver_lookup_lift) / cell;
+        let r = clamp(height_cells / SH_MOVER_BACKFACE_RAMP_CELLS, 0.0, 1.0);
+        return r * r * (3.0 - 2.0 * r) + SH_BACKFACE_SMOOTH_FLOOR;
     }
     return max(dot(dir_to_probe, geo_normal), 0.0);
 }

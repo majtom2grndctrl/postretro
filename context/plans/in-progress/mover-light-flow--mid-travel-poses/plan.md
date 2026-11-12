@@ -99,6 +99,13 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
   - All three are recorded in `index.md` Decisions and Acceptance.
   - The dark-state prototype: `POSTRETRO_PROTO_ENCLOSED_DARK`, `AMEND2-PROTO-B` in `mover_probe_channel/{mid_pose,direct,across}.rs`. Results are in `captures/amendment2/results.md` §Ruling B option (ii).
   - The wall truth at 267 is clean by the exact band predicate.
+- **Terminus knot struck (owner, 2026-11-12).** A Fable review (read-only, from the existing captures) and a 60 fps capture over t′ 0.94–1.0 (`door_ceiling`, `head` and `dark` under r40) found:
+  - the 8.7 step is the lintel leaving layer z 123.0 at t′ 0.9716;
+  - the west band re-lights at most 0.92 per frame;
+  - a knot just inside the terminus would put the whole re-light in one frame.
+
+  "Re-light into rest" stays as a measured row with a 1.5 bar.
+- **Enclosure-exit dip: investigate in this brief (owner, with Fable weighing in).** At the 0.9716 lintel exit, dark + r40 dips, then rises (worst 4.88 per frame). The ramp alone rises smoothly (worst 2.68). Fable is diagnosing read-only, and the 25b worker is reading the compose code. Fix after both report.
 - **Tasks 22–23 calls: keep both.** A set count too dense to clear a band fails by name. The long stored-interval exception is read per probe.
 
 ## Owner rulings after the playtest diagnosis (2026-11-12)

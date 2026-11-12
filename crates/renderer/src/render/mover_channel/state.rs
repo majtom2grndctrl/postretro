@@ -1,11 +1,29 @@
 // Mover probe channel per-frame state: each mover slot's t′ as the game
-// handed it over, and which slots changed since the GPU blocks, the streamed
-// planner, and each legacy compose pass last saw them. Sized once per level;
-// a frame allocates nothing.
+// handed it over with its knot bracket, and which slots changed since the GPU
+// blocks, the streamed planner, and each legacy compose pass last saw them.
+// Sized once per level; a frame allocates nothing.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
+//
+// The bracket is a per-mover lookup acceleration, a function of t′ and the
+// mover's knots alone: it never flags, zeroes or excludes a probe.
 
+use super::knots::MoverKnots;
 use super::layout::NO_STATE;
 use crate::render::MoverTravel;
+
+/// Words per mover slot in both tables' t′ block: its t′ bits, then its
+/// knot bracket ([`MoverKnots::bracket`]), which compose starts each probe's
+/// interval walk from instead of scanning every knot.
+pub(super) const T_SLOT_WORDS: usize = 2;
+
+/// Fill a table's t′ block (`words`, [`T_SLOT_WORDS`] per slot) as it reads
+/// before any hand-over: no state, bracket 0, as [`MoverTBlock::set_states`]
+/// writes a slot with no state.
+pub(super) fn write_no_state(words: &mut [u32]) {
+    let (slots, rest) = words.as_chunks_mut::<T_SLOT_WORDS>();
+    debug_assert!(rest.is_empty(), "whole slots");
+    slots.fill([NO_STATE.to_bits(), 0]);
+}
 
 /// `depth_written` for a slot whose last planned write did not land: a NaN
 /// pattern, which [`MoverTBlock::set_states`] never stores (a non-finite t′
@@ -24,9 +42,12 @@ pub(in crate::render) enum LegacyPass {
 pub(super) struct MoverTBlock {
     /// Slot → mover id, ascending (the layout's).
     ids: Vec<u32>,
+    /// Each slot's knots through its ramp, for its bracket.
+    knots: MoverKnots,
     /// This frame's t′ per slot; `NO_STATE` where the game handed over none.
     values: Vec<f32>,
-    /// `values` as little-endian bytes, the GPU block's image.
+    /// `values` and each slot's bracket as little-endian bytes,
+    /// [`T_SLOT_WORDS`] words per slot: the GPU block's image.
     bytes: Vec<u8>,
     /// Bits the GPU block holds.
     uploaded: Vec<u32>,
@@ -46,12 +67,16 @@ pub(super) struct MoverTBlock {
 }
 
 impl MoverTBlock {
-    pub(super) fn new(ids: &[u32]) -> Self {
+    /// The block of the movers `ids` (slot order), whose knots are `knots`.
+    pub(super) fn new(ids: &[u32], knots: &MoverKnots) -> Self {
         let none = vec![NO_STATE.to_bits(); ids.len()];
+        let mut words = vec![0; ids.len() * T_SLOT_WORDS];
+        write_no_state(&mut words);
         Self {
             ids: ids.to_vec(),
+            knots: knots.clone(),
             values: vec![NO_STATE; ids.len()],
-            bytes: none.iter().flat_map(|bits| bits.to_le_bytes()).collect(),
+            bytes: words.iter().flat_map(|word| word.to_le_bytes()).collect(),
             uploaded: none.clone(),
             observed: none.clone(),
             composed: [none.clone(), none.clone()],
@@ -69,11 +94,12 @@ impl MoverTBlock {
         }
     }
 
-    /// Take this frame's states. A mover the section does not name is
-    /// ignored; a slot no state names, or one whose t′ is not finite, reads
-    /// as no state and composes ungated. Each mover appears at most once in
-    /// one frame's list. Change detection compares bits, so −0.0 is stored
-    /// as +0.0: the same position never reads as a move.
+    /// Take this frame's states, and each slot's knot bracket at its t′. A
+    /// mover the section does not name is ignored; a slot no state names,
+    /// or one whose t′ is not finite, reads as no state and composes
+    /// ungated. Each mover appears at most once in one frame's list. Change
+    /// detection compares bits, so −0.0 is stored as +0.0: the same
+    /// position never reads as a move.
     pub(super) fn set_states(&mut self, states: &[MoverTravel]) {
         debug_assert!(
             states.iter().enumerate().all(|(at, state)| {
@@ -93,7 +119,13 @@ impl MoverTBlock {
             }
         }
         for (slot, value) in self.values.iter().enumerate() {
-            self.bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            // Once per mover per frame: every probe's interval walk starts
+            // here. A pure function of t′, so the bits' change detection
+            // covers it.
+            let bracket = self.knots.bracket(slot, *value);
+            let at = slot * T_SLOT_WORDS * 4;
+            self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            self.bytes[at + 4..at + 8].copy_from_slice(&bracket.to_le_bytes());
         }
     }
 
@@ -202,13 +234,18 @@ impl MoverTBlock {
 mod tests {
     use super::*;
 
+    /// A block of two-pose movers `ids`.
+    fn block_of(ids: &[u32]) -> MoverTBlock {
+        MoverTBlock::new(ids, &MoverKnots::termini(ids.len()))
+    }
+
     fn state(mover_id: u32, t: f32) -> MoverTravel {
         MoverTravel { mover_id, t }
     }
 
     #[test]
     fn unnamed_movers_are_ignored_and_absent_ones_read_as_no_state() {
-        let mut block = MoverTBlock::new(&[3, 9]);
+        let mut block = block_of(&[3, 9]);
         block.set_states(&[state(9, 0.25), state(4, 0.5)]);
         assert_eq!(block.values(), &[NO_STATE, 0.25]);
         block.set_states(&[state(3, f32::NAN), state(9, 2.0)]);
@@ -221,13 +258,15 @@ mod tests {
 
     #[test]
     fn uploads_only_when_the_block_moved() {
-        let mut block = MoverTBlock::new(&[1]);
+        let mut block = block_of(&[1]);
         assert!(
             block.take_upload().is_none(),
             "the initial block is resident"
         );
         block.set_states(&[state(1, 0.5)]);
-        assert_eq!(block.take_upload(), Some(&0.5f32.to_le_bytes()[..]));
+        let mut slot = 0.5f32.to_le_bytes().to_vec();
+        slot.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(block.take_upload(), Some(&slot[..]), "t′, then its bracket");
         block.set_states(&[state(1, 0.5)]);
         assert!(block.take_upload().is_none());
     }
@@ -237,7 +276,7 @@ mod tests {
     /// since observation and commit are separate from upload.
     #[test]
     fn observation_reports_each_change_once() {
-        let mut block = MoverTBlock::new(&[1, 2]);
+        let mut block = block_of(&[1, 2]);
         block.set_states(&[state(1, 0.5), state(2, 0.0)]);
         assert_eq!(block.observe_changes(), &[0, 1]);
         block.commit_observed();
@@ -256,7 +295,7 @@ mod tests {
     /// the live tiles alike.
     #[test]
     fn a_change_is_kept_until_a_successful_plan_commits_it() {
-        let mut block = MoverTBlock::new(&[1, 2]);
+        let mut block = block_of(&[1, 2]);
         block.set_states(&[state(1, 0.5)]);
         assert_eq!(block.observe_changes(), &[0]);
         assert_eq!(block.depth_changes().1, &[0]);
@@ -283,7 +322,7 @@ mod tests {
     /// frame reported are forgotten.
     #[test]
     fn a_forgotten_depth_change_is_reported_whatever_t_comes_next() {
-        let mut block = MoverTBlock::new(&[1, 2]);
+        let mut block = block_of(&[1, 2]);
         block.set_states(&[state(2, 1.0)]);
         let _ = block.depth_changes();
         block.commit_depth_changes();
@@ -302,7 +341,7 @@ mod tests {
     /// other is no change, and the block holds +0.0.
     #[test]
     fn negative_zero_is_the_same_position_as_zero() {
-        let mut block = MoverTBlock::new(&[1]);
+        let mut block = block_of(&[1]);
         block.set_states(&[state(1, 0.0)]);
         let _ = block.observe_changes();
         block.commit_observed();
@@ -321,7 +360,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "each mover at most once")]
     fn a_mover_handed_over_twice_in_one_frame_is_a_bug() {
-        let mut block = MoverTBlock::new(&[1]);
+        let mut block = block_of(&[1]);
         block.set_states(&[state(1, 0.25), state(1, 0.5)]);
     }
 
@@ -329,7 +368,7 @@ mod tests {
     /// pass encodes, whatever the other pass did.
     #[test]
     fn the_legacy_trigger_holds_until_an_encode_commits_it() {
-        let mut block = MoverTBlock::new(&[7]);
+        let mut block = block_of(&[7]);
         for pass in [LegacyPass::Direct, LegacyPass::Indirect] {
             assert!(!block.changed_since_composed(pass));
         }
@@ -353,7 +392,7 @@ mod tests {
     /// hands over unchanged (a ramp holding it at 0 or 1) is no change.
     #[test]
     fn depth_changes_report_each_t_change_once_on_their_own_trigger() {
-        let mut block = MoverTBlock::new(&[1, 2]);
+        let mut block = block_of(&[1, 2]);
         let take = |block: &mut MoverTBlock| {
             let (values, changed) = block.depth_changes();
             let taken = (values.to_vec(), changed.to_vec());
@@ -377,7 +416,7 @@ mod tests {
     /// never recomposes the other.
     #[test]
     fn a_mover_recomposes_only_the_passes_its_entries_feed() {
-        let mut block = MoverTBlock::new(&[3, 9]);
+        let mut block = block_of(&[3, 9]);
         block.set_feeds(LegacyPass::Direct, |slot| slot == 0);
         block.set_feeds(LegacyPass::Indirect, |slot| slot == 1);
         block.set_states(&[state(9, 0.5)]);
@@ -390,7 +429,7 @@ mod tests {
     /// The per-frame path allocates nothing after warm-up.
     #[test]
     fn a_frame_keeps_every_buffer_at_its_capacity() {
-        let mut block = MoverTBlock::new(&[1, 2]);
+        let mut block = block_of(&[1, 2]);
         let capacities = |block: &MoverTBlock| {
             (
                 block.values.capacity(),

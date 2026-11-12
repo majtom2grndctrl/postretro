@@ -210,9 +210,9 @@ fn records_lay_out_static_lights_first_with_their_light_keys_and_mover_slots() {
     assert_eq!(layout.mover_ids(), &[3, 7]);
     let t = layout.t_byte_offset() as usize / 4;
     assert_eq!(
-        &words[t..t + 2],
-        &[NO_STATE.to_bits(); 2],
-        "no state until handed over"
+        &words[t..t + 4],
+        &[NO_STATE.to_bits(), 0, NO_STATE.to_bits(), 0],
+        "no state, bracket 0, until handed over"
     );
     // Mover 7 (slot 1) gates both static records in cell 0; mover 3 (slot 0)
     // one. Pass B rows hold none: no animated light is gated.

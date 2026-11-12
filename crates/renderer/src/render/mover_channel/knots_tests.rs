@@ -115,3 +115,38 @@ fn the_knot_block_lays_out_one_run_per_slot() {
         "a mover with no record"
     );
 }
+
+/// The knot bracket the t′ block carries: the last knot at or below t′
+/// for t′ in [0, 1), squeezed knots never counted, and always below the
+/// last knot so the shaders' knot above it exists.
+#[test]
+fn the_knot_bracket_is_the_last_knot_at_or_below_t() {
+    let section = MoverProbeChannelSection {
+        mover_records: vec![record(&[0.0, 0.2, 0.4, 0.6, 0.8, 1.0], (0.0, 1.0)), {
+            // MP1: poses 1–3 squeeze onto t′ 0; knots 0, 2/3 (pose 4), 1.
+            MoverRecord {
+                mover_id: 2,
+                ..record(&[0.0, 0.2, 0.4, 0.6, 0.8, 1.0], (0.6, 0.9))
+            }
+        }],
+        ..super::super::tests::fixture_section([1, 1, 1], &[])
+    };
+    let knots = MoverKnots::new(Some(&section), &[1, 2]).unwrap();
+    for (t, bracket) in [
+        (-1.0, 0),
+        (0.0, 0),
+        (0.1, 0),
+        (0.2, 1),
+        (0.2f32.next_down(), 0),
+        (0.5, 2),
+        (0.8, 4),
+        (0.99, 4),
+        (1.0, 4),
+    ] {
+        assert_eq!(knots.bracket(0, t), bracket, "t′ {t}");
+    }
+    let squeezed = ramped(0.8, 0.6, 0.9);
+    for (t, bracket) in [(0.0, 0), (squeezed.next_down(), 0), (squeezed, 1), (1.0, 1)] {
+        assert_eq!(knots.bracket(1, t), bracket, "ramped t′ {t}");
+    }
+}

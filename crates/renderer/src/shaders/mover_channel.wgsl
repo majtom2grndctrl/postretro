@@ -5,11 +5,12 @@
 // table of `render/mover_channel/layout.rs`: listed affinity cells, one term
 // record per (cell, gated light) with its probe mask, its gating movers, each
 // mover's knots through its ramp, each (cell, mover)'s across marks, and one
-// t′ per mover (negative while the game hands over no state). Each listed
-// cell's payload (the light's term T per masked probe, then each mover's q at
-// each of its N poses) is one run its base word points at. A streamed level
-// places that run per resident cell; while it is not resident the base reads
-// `MC_NONE` and the cell composes as with no section. That is residency, not
+// t′ per mover (negative while the game hands over no state) with its knot
+// bracket. Each listed cell's payload (the light's term T per masked probe,
+// then each mover's q at each of its N poses) is one run its base word
+// points at. A streamed level places that run per resident cell; while it is
+// not resident the base reads `MC_NONE` and the cell composes as with no
+// section. That is residency, not
 // a visibility switch: a row composes only with its cluster resident, and
 // every cluster covering a cell carries its payload.
 //
@@ -23,6 +24,9 @@ const MC_HEADER_CELLS: u32 = 1u;
 const MC_HEADER_CELL_RECORDS: u32 = 2u;
 const MC_HEADER_RECORDS: u32 = 3u;
 const MC_HEADER_MOVER_ENTRIES: u32 = 4u;
+// Two words per mover slot: its t′ bits, then its knot bracket, the knot
+// the interval walk starts from (`MoverKnots::bracket`), found once per mover
+// per frame on the CPU so no probe scans the knots.
 const MC_HEADER_MOVER_T: u32 = 5u;
 const MC_HEADER_DESCRIPTORS: u32 = 6u;
 const MC_HEADER_DESCRIPTOR_COUNT: u32 = 7u;
@@ -144,28 +148,34 @@ fn mc_across(run: u32, knot: u32, across: u32, local_probe: u32) -> bool {
     return ((word >> (local_probe % 32u)) & 1u) != 0u;
 }
 
+/// Slot `mover`'s t′: negative (or non-finite) while it has no state.
+fn mc_mover_t(mover: u32) -> f32 {
+    return bitcast<f32>(mover_channel[mover_channel[MC_HEADER_MOVER_T] + 2u * mover]);
+}
+
+/// Slot `mover`'s knot bracket at its t′: below t′ 1, the last knot at or
+/// below it.
+fn mc_mover_bracket(mover: u32) -> u32 {
+    return mover_channel[mover_channel[MC_HEADER_MOVER_T] + 2u * mover + 1u];
+}
+
 /// Poses `lo` and `hi` around a stated `t` (≥ 0) in the knot run at `run`,
-/// and the weight of `hi`: zero reads `lo` exactly. Direct stores q at
-/// every pose, but a pose the across run marks for `local_probe` is not
-/// defined: the interval blends across it. Mirrors `knots::interval`.
+/// and the weight of `hi`: zero reads `lo` exactly. `at` is the mover's
+/// knot bracket at `t` (`mc_mover_bracket`), so the cost is flat in knot
+/// count. Direct stores q at every pose, but a pose the across run marks
+/// for `local_probe` is not defined: the interval blends across it, walking
+/// outward from the bracket. Mirrors `knots::interval`.
 struct McInterval {
     lo: u32,
     hi: u32,
     weight: f32,
 }
 
-fn mc_interval(run: u32, t: f32, across: u32, local_probe: u32) -> McInterval {
+fn mc_interval(run: u32, t: f32, at: u32, across: u32, local_probe: u32) -> McInterval {
     let last = mover_channel[run + 1u] - 1u;
     if (t >= 1.0) {
         let pose = mc_knot_pose(run, last);
         return McInterval(pose, pose, 0.0);
-    }
-    var at = 0u;
-    for (var knot = 1u; knot < last; knot = knot + 1u) {
-        if (mc_knot_t(run, knot) > t) {
-            break;
-        }
-        at = knot;
     }
     // Knot 0 and knot `last` are the termini, always defined.
     var lo = at;
@@ -201,20 +211,19 @@ fn mc_interval(run: u32, t: f32, across: u32, local_probe: u32) -> McInterval {
 /// 1). Runs once per (record, probe), never per texel.
 fn mc_record_visibility(record: u32, slot: u32, local_probe: u32) -> f32 {
     let entries = mover_channel[MC_HEADER_MOVER_ENTRIES];
-    let mover_t = mover_channel[MC_HEADER_MOVER_T];
     let base_byte = mc_record_base(record) * 4u;
     var visibility = 1.0;
     let end = mc_record_word(record, MC_RECORD_MOVERS_END);
     for (var entry = mc_record_word(record, MC_RECORD_MOVERS_START); entry < end; entry = entry + 1u) {
         let at = entries + entry * MC_MOVER_ENTRY_WORDS;
         let mover = mover_channel[at];
-        let t = bitcast<f32>(mover_channel[mover_t + mover]);
+        let t = mc_mover_t(mover);
         // Negative (or non-finite) t: no state handed over this frame.
         if (!(t >= 0.0)) {
             continue;
         }
         let run = mover_channel[mover_channel[MC_HEADER_KNOTS] + mover];
-        let span = mc_interval(run, t, mover_channel[at + 2u], local_probe);
+        let span = mc_interval(run, t, mc_mover_bracket(mover), mover_channel[at + 2u], local_probe);
         // N q bytes per masked probe, probe-major.
         let q_byte = base_byte + mover_channel[at + 1u] + slot * mover_channel[run];
         var q = f32(mc_byte(q_byte + span.lo)) / 255.0;

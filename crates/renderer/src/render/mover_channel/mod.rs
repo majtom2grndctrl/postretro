@@ -25,6 +25,8 @@ mod terms;
 #[cfg(test)]
 mod bounce_compose_tests;
 #[cfg(test)]
+mod bracket_tests;
+#[cfg(test)]
 mod compose_tests;
 #[cfg(test)]
 pub(in crate::render) mod depth_test_support;

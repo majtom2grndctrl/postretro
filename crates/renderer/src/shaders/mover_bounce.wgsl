@@ -6,13 +6,13 @@
 // the listed cells, each cell's bounce entries (mover slot, per-pose stored
 // and base masks with each pose's first tile rank, the probes a read pose
 // stores, first tile half in the cell's payload), each mover's knots through
-// its ramp, one t′ per mover (negative while the game hands over no state),
-// and each cell's payload run of stored tiles, pose-major then probe by
-// stored rank, that its base word points at. A streamed level places that
-// run per resident cell; while it is not resident the base reads `MB_NONE`
-// and the cell composes id 34 as with no section. That is residency, not a
-// visibility switch: a row composes only with its cluster resident, and
-// every cluster covering a cell carries its payload.
+// its ramp, one t′ per mover (negative while the game hands over no state)
+// with its knot bracket, and each cell's payload run of stored tiles,
+// pose-major then probe by stored rank, that its base word points at. A
+// streamed level places that run per resident cell; while it is not resident
+// the base reads `MB_NONE` and the cell composes id 34 as with no section.
+// That is residency, not a visibility switch: a row composes only with its
+// cluster resident, and every cluster covering a cell carries its payload.
 //
 // The masks are storage sparsity only: an unmasked probe composes id 34
 // exactly as with no section; a terminus an affected probe stores no state
@@ -28,6 +28,9 @@ const MB_HEADER_CELLS: u32 = 2u;
 const MB_HEADER_CELL_ENTRIES: u32 = 3u;
 const MB_HEADER_CELL_BASES: u32 = 4u;
 const MB_HEADER_ENTRIES: u32 = 5u;
+// Two words per mover slot: its t′ bits, then its knot bracket, the knot
+// the interval walk starts from (`MoverKnots::bracket`), found once per mover
+// per frame on the CPU so no probe scans the knots.
 const MB_HEADER_MOVER_T: u32 = 6u;
 // Word per mover slot: the absolute word of its knot run, `[N, E, (t′ bits,
 // pose) × E]` (`render/mover_channel/knots.rs`).
@@ -111,7 +114,13 @@ fn mb_entry_word(entry: u32, field: u32) -> u32 {
 
 /// The entry's mover t′; negative (or non-finite) while it has no state.
 fn mb_entry_t(entry: u32) -> f32 {
-    return bitcast<f32>(mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + mb_entry_word(entry, MB_ENTRY_SLOT)]);
+    return bitcast<f32>(mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + 2u * mb_entry_word(entry, MB_ENTRY_SLOT)]);
+}
+
+/// The entry's mover knot bracket at its t′: below t′ 1, the last knot at
+/// or below it.
+fn mb_entry_bracket(entry: u32) -> u32 {
+    return mover_bounce[mover_bounce[MB_HEADER_MOVER_T] + 2u * mb_entry_word(entry, MB_ENTRY_SLOT) + 1u];
 }
 
 /// Whether `local_probe`'s bit is set in the 64-bit mask at table words
@@ -174,7 +183,9 @@ struct MbBlend {
 /// The interval lookup, once per (entry, probe), never per texel: the
 /// defined poses around t′ among the mover's knots (the termini always; a
 /// mid pose where it stores a state or reads id 34) and the blend weight.
-/// Mirrors `knots::interval`.
+/// It starts from the mover's knot bracket (`mb_entry_bracket`), so its cost
+/// is flat in knot count, and walks outward only across poses blended
+/// across. Mirrors `knots::interval`.
 fn mb_entry_blend(cell: MbCellEntries, entry: u32, local_probe: u32, t: f32) -> MbBlend {
     if (!mb_mask_bit(mover_bounce[MB_HEADER_ENTRIES] + entry * MB_ENTRY_WORDS + MB_ENTRY_READ_MASK, local_probe).hit) {
         return MbBlend(false, MB_NONE, MB_NONE, 0.0);
@@ -187,13 +198,7 @@ fn mb_entry_blend(cell: MbCellEntries, entry: u32, local_probe: u32, t: f32) -> 
         let state = mb_pose_state(poses, mover_bounce[run] - 1u, true, local_probe, first_half);
         return MbBlend(true, state, state, 0.0);
     }
-    var at = 0u;
-    for (var knot = 1u; knot < last; knot = knot + 1u) {
-        if (mb_knot_t(run, knot) > t) {
-            break;
-        }
-        at = knot;
-    }
+    let at = mb_entry_bracket(entry);
     var lo = at;
     var lo_state = mb_pose_state(poses, mover_bounce[run + 3u + 2u * lo], lo == 0u, local_probe, first_half);
     while (lo > 0u && lo_state == MB_ACROSS) {

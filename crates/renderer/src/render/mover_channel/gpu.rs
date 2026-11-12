@@ -20,6 +20,7 @@ use postretro_level_format::mover_probe_channel::{
 
 use super::bounce::BounceLayout;
 use super::depth::{DepthBases, MoverDepthTiles, ReferenceChange};
+use super::knots::MoverKnots;
 use super::layout::{
     CellWrite, MoverChannelError, MoverChannelInputs, MoverChannelLayout, MoverChannelRows,
     NO_BASE, TermRow, check_direct_cell,
@@ -323,7 +324,7 @@ impl MoverChannelResources {
             ],
         );
         let depth = MoverDepthTiles::new(inputs.section, layout.mover_ids())?;
-        let mut t = MoverTBlock::new(layout.mover_ids());
+        let mut t = MoverTBlock::new(layout.mover_ids(), layout.knots());
         let mut rows = layout.rows().clone();
         rows.bounce_by_mover = bounce_layout.rows_by_mover().clone();
         t.set_feeds(LegacyPass::Direct, |slot| {
@@ -381,7 +382,7 @@ impl MoverChannelResources {
             bounce_layout,
             rows: MoverChannelRows::default(),
             streamed: None,
-            t: MoverTBlock::new(&[]),
+            t: MoverTBlock::new(&[], &MoverKnots::default()),
             depth: MoverDepthTiles::default(),
         }
     }

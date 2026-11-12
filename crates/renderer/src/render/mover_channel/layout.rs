@@ -18,6 +18,7 @@ use super::knots::MoverKnots;
 #[cfg(test)]
 pub(in crate::render) use super::rows::NO_MOVER_ROWS;
 pub(in crate::render) use super::rows::{MoverChannelRows, MoverRows};
+use super::state::{T_SLOT_WORDS, write_no_state};
 pub(in crate::render) use super::terms::{TermFamily, TermRow, WholeTermRows};
 use postretro_level_format::mover_probe_channel::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MoverLightNamespace, MoverProbeChannelSection,
@@ -327,7 +328,7 @@ impl MoverChannelLayout {
         });
         let across_word = knots_word + knots.table_word_count();
         let t_word = across_word + across.word_count();
-        let payload_word = t_word + mover_ids.len();
+        let payload_word = t_word + T_SLOT_WORDS * mover_ids.len();
         let whole_payload: usize = cells.iter().map(CellPlan::payload_words).sum();
         let total_words = payload_word + if pooled { 0 } else { whole_payload };
         // The shader addresses q bytes and tile halves within the table, a
@@ -411,7 +412,7 @@ impl MoverChannelLayout {
         }
         words[cell_records_word + 2 * cells.len()] = records.len() as u32;
         words[descriptors_word..knots_word].copy_from_slice(inputs.animation_descriptor_indices);
-        words[t_word..payload_word].fill(NO_STATE.to_bits());
+        write_no_state(&mut words[t_word..payload_word]);
         promotable.dedup();
         animated_cells.dedup();
         Ok(Self {
@@ -481,7 +482,8 @@ impl MoverChannelLayout {
         &self.knots
     }
 
-    /// Byte offset of the t′ block: one f32 per mover slot.
+    /// Byte offset of the t′ block: per mover slot, its t′ then its knot
+    /// bracket ([`T_SLOT_WORDS`]).
     pub(in crate::render) fn t_byte_offset(&self) -> u64 {
         self.t_word as u64 * 4
     }

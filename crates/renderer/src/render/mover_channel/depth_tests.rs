@@ -13,6 +13,7 @@ use crate::render::mover_channel::depth_test_support::{
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_volume::OctahedralShProbe;
 
+use super::super::knots::MoverKnots;
 use super::super::state::MoverTBlock;
 
 struct Plan {
@@ -397,7 +398,9 @@ fn a_partial_landing_then_no_state_returns_every_probe_to_its_base() {
         (1, 9, uniform_tile(1.0, 2.0), uniform_tile(2.0, 5.0)),
     ]);
     let mut plan = Plan::new(&section, &[]);
-    let mut block = MoverTBlock::new(&section.mover_ids());
+    let ids = section.mover_ids();
+    let knots = MoverKnots::new(Some(&section), &ids).expect("every mover has a record");
+    let mut block = MoverTBlock::new(&ids, &knots);
     // Each probe's reference in the moment texels; absent is its base.
     let mut texels = std::collections::BTreeMap::new();
     let state = [MoverTravel {

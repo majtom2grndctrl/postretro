@@ -23,7 +23,8 @@ use postretro_level_format::mover_probe_channel::{
 };
 
 use super::knots::MoverKnots;
-use super::layout::{CellWrite, MoverChannelError, MoverRows, NO_BASE, NO_STATE, first_non_finite};
+use super::layout::{CellWrite, MoverChannelError, MoverRows, NO_BASE, first_non_finite};
+use super::state::{T_SLOT_WORDS, write_no_state};
 
 /// Header words, in `mover_bounce.wgsl`'s `MB_HEADER_*` order. Id 27's
 /// descriptor map starts right after it, so the compose reads a light's
@@ -118,7 +119,7 @@ impl BounceLayout {
         let poses_word = entries_word + entry_count * ENTRY_WORDS;
         let knots_word = poses_word + pose_count * POSE_WORDS;
         let t_word = knots_word + knots.table_word_count();
-        let payload_word = t_word + mover_ids.len();
+        let payload_word = t_word + T_SLOT_WORDS * mover_ids.len();
         let whole_payload: usize = cells.iter().map(|cell| cell.halves / 2).sum();
         let total_words = payload_word + if pooled { 0 } else { whole_payload };
         u32::try_from((payload_word + whole_payload) * 4).map_err(|_| {
@@ -191,7 +192,7 @@ impl BounceLayout {
             }
         }
         words[cell_entries_word + cells.len()] = entry as u32;
-        words[t_word..payload_word].fill(NO_STATE.to_bits());
+        write_no_state(&mut words[t_word..payload_word]);
         Ok(Self {
             initial_words: words,
             t_word,
@@ -213,6 +214,8 @@ impl BounceLayout {
         &self.initial_words
     }
 
+    /// Byte offset of the t′ block: per mover slot, its t′ then its knot
+    /// bracket ([`T_SLOT_WORDS`]).
     pub(super) fn t_byte_offset(&self) -> u64 {
         self.t_word as u64 * 4
     }

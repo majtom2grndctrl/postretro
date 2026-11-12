@@ -74,6 +74,33 @@ impl MoverKnots {
         self.pose_counts[slot] as usize
     }
 
+    /// Slot `slot`'s knot bracket at `t`: how many of its interior knots (1
+    /// to E − 2) sit at or below `t`. For a stated `t` below 1 that is the
+    /// index of the last knot at or below it, where the linear scan
+    /// `mc_interval` and `mb_entry_blend` once ran per probe stopped; the
+    /// shaders read it from the t′ block and walk outward from it only
+    /// across poses a probe blends across. Always below E − 1, so the knot
+    /// above it exists. A per-mover lookup acceleration: no probe, light or
+    /// residency reaches it. The compare is the scan's, so it matches a GPU
+    /// that flushes subnormals for every t′ while no interior knot's t′ is
+    /// itself subnormal, which knot placement (merged within centimetres of
+    /// travel) never produces.
+    pub(in crate::render) fn bracket(&self, slot: usize, t: f32) -> u32 {
+        let knots = self.slot(slot);
+        knots[1..knots.len() - 1].partition_point(|knot| knot.t <= t) as u32
+    }
+
+    /// `slots` two-pose movers: knots (0, pose 0) and (1, pose 1).
+    #[cfg(test)]
+    pub(in crate::render) fn termini(slots: usize) -> Self {
+        let termini = [Knot { t: 0.0, pose: 0 }, Knot { t: 1.0, pose: 1 }];
+        Self {
+            offsets: (0..=slots as u32).map(|slot| 2 * slot).collect(),
+            knots: (0..slots).flat_map(|_| termini).collect(),
+            pose_counts: vec![2; slots],
+        }
+    }
+
     /// Words of the GPU knot block: one run word per slot, then each slot's
     /// run.
     pub(in crate::render) fn table_word_count(&self) -> usize {

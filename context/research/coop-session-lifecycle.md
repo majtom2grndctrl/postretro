@@ -101,21 +101,22 @@ Facts by symbol: `state_path`, `load_persisted_state`, `overlay_persisted_state`
 | G6 | No in-app host, join, leave or kick, and no player-facing connection state | reserved `ui.*` actions; `session.hosting` is display only |
 | G7 | Globals save only at clean exit; a crash loses a whole session's progress | `scripting.md` §5 |
 | G8 | No run save: a session cannot resume its map or loadouts later | `CarriedState` has no serde; `player_options.md` §1 "Game saves: TBD" |
+| G10 | Character and world progress share one `state.json`: per-owner rows under the player id beside the global slots. Character progress already moves between single-player and co-op, because the single-player and host exit save writes the local player's rows and a joining client's `JoinSeed` reads the same rows. The two kinds of progress just have no separate home | `collect_per_owner_state`, `join_seed_from_persisted_state` |
 | G9 | Stale docs: `coop-session-lobby.md` §3 and `research/netcode/index.md` non-goals deny client saves, but per-player persistence shipped | `done/E16--per-player-persistence` |
 
 ## 5. Target: verbs say intent
 
-`returnToFrontend` mixes two jobs: **navigating** to the frontend scene and **membership** in a session. The target separates them, so no origin has to guess which one an author meant.
+`returnToFrontend` mixes two jobs: **navigating** to the frontend scene and **membership** in a session. The target separates them, so no origin has to guess which one an author meant. Names are working names; the SDK shape is designed in the brief that ships each verb.
 
 | Verb | Job | Host / single-player | Connected client |
 |---|---|---|---|
-| `returnToFrontend` | navigation | unload to menu (host: to the lobby, clients follow) | follow the host's lead; never ends the session |
-| leave (new) | membership | n/a, or host ends the session | close cleanly → single-player frontend |
-| `ui.quitToMenu` | both | return to the frontend (the host's open question: lobby or end) | leave, then frontend |
-| kick (new, host) | membership | close a seat's slot with a cause | lands at single-player frontend |
-| end session (new, host) | membership | close every slot, return to frontend | lands at single-player frontend |
+| `returnToFrontend` | navigation | unload to the menu (a host goes to its lobby, and clients follow) | follow the host's lead; never ends the session |
+| `leaveSession` (new) | membership | not offered: a host ends the session instead | close cleanly, then single-player frontend |
+| `ui.quitToMenu` | both | return to the frontend | leave, then frontend |
+| `evictClient` (new, host) | membership | close one player's slot with a cause | lands at single-player frontend |
+| `endSession` (new, host) | membership | close every slot, then frontend | lands at single-player frontend |
 
-Leaning: kick and end session are host-executed closes, because the host owns admission (owner, this session). Open: verb names and SDK shape, which are the owner's to design.
+**Decided (owner, this session):** evicting a player and ending the session are host-executed closes, because the host owns admission. "Evict" replaces "kick". **Open:** whether `evictClient` takes a player (`on.player`, as other player-addressed verbs do) under that name or as `evictPlayer`. Also whether a host's `ui.quitToMenu` goes to its lobby or ends the session.
 
 ## 6. Target: session lifecycle
 
@@ -143,56 +144,78 @@ stateDiagram-v2
     SP --> F: return to frontend
     F --> Hosting: host game [3.75]
     F --> Connected: join [new]
-    Hosting --> F: end session [new]
-    Connected --> F: leave or host-side ending
+    Hosting --> F: endSession [new]
+    Connected --> F: leaveSession, evicted, host lost or ended
     class Lobby,CWait new
     classDef new fill:#e0ecff,stroke:#1f4fb4,color:#000
 ```
 
-- **Transitions:** clients follow the host into a level by Relevel, and the ledger carries across level changes. "Back to menu" is a host-sent signal clients follow while staying connected (G2). "End session" notifies every client. "Leave or host-side ending" covers the player's own leave plus a lost host, a refusal, a kick and an ended session: all land at a single-player frontend through the leave brief. Hosting and joining happen in-app.
+- **Transitions:** clients follow the host into a level by Relevel, and the ledger carries across level changes. "Back to menu" is a host-sent signal clients follow while staying connected (G2). `endSession` notifies every client. A client's own `leaveSession`, an eviction, a refusal, a lost host and an ended session all land at a single-player frontend through the leave brief. Hosting and joining happen in-app.
 - **Decided:** direct connect only (no discovery, relay or matchmaking); the engine owns admission, seats and map authority; the mod owns lobby policy (`coop-session-lobby.md` §2).
 - **Leaning:** a lobby is the frontend with a live endpoint, not a new app state; session phase is a mod-declared slot.
 - **Open:** whether the host boots into a lobby by default or the mod opts in (`coop-session-lobby.md` §5). Also whether a host's quit-to-menu goes to the lobby or ends the session.
 
-## 7. Target: save data across a session's life
+## 7. Target: character and world progress, saved separately
+
+**Decided (owner, this session):** character progress and world progress are saved separately. A player can take one character from host to host without losing progress, and progress made in single-player carries into co-op and back.
+
+```mermaid
+flowchart LR
+    CS[("Character save<br/>one per player id, on that player's device")]
+    WS[("World save<br/>on the device that runs the world")]
+    SP["Single-player"]
+    HO["Hosting"]
+    CL["Connected client"]
+    CS <--> SP
+    CS <--> HO
+    CS <-- "JoinSeed up, own rows back down" --> CL
+    WS <--> SP
+    WS <--> HO
+    CL -. "never" .-x WS
+```
+
+| | Character save | World save |
+|---|---|---|
+| Holds | the mod's per-owner `persist` slots (XP, unlocks, stats), keyed by player id | global `persist` slots and faction sentiment (shipped). Run state is **open**: current map, carried loadouts, revisited maps |
+| Lives | on the player's own device | on the device of whoever runs the world: the single-player machine, or the host |
+| Written by | its owner only, in every role (shipped; a host never writes a guest's character) | the world's runner only. A connected client never writes one |
+| Read | at boot, then sent up to any host in `JoinSeed` (shipped) | at boot. **Open:** a frontend "Continue" also reads run state |
+| Today | rows inside `state.json` | the same `state.json` (G10) |
+
+- **Proposed:** separate files, one per kind. A character file then has an obvious identity (player id and mod) and can be backed up or moved on its own. A world save can grow into save slots without touching characters.
+- **Open, recommended:** the engine's carried loadout (`CarriedState`: health, ammo, weapons) is run state and belongs to the world save. The host validates it, and it already resets when a run does. A mod that wants inventory to travel with the character declares it as per-owner `persist` slots: the engine offers both scopes, and the mod chooses (mechanism vs policy).
+- **Leaning:** a run save, the revisited-map record (`roadmap.md` Future) and a host-migration handoff (Epic 15) share one serialization of the session-state ledger, decided before any of them ships.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CD as Client disk
+    participant CD as Client device
     participant C as Client
     participant H as Host
-    participant HD as Host disk
+    participant HD as Host device
     Note over C,CD: Boot
-    CD->>C: state.json → own globals + own per-owner rows
-    HD->>H: state.json → host globals (+ run save, if Continue) [open]
+    CD->>C: character save + own world save
+    HD->>H: character save + world save
     Note over C,H: Join
-    C->>H: JoinSeed: own per-owner persist values (shipped)
-    H-->>C: replicated globals + own per-owner values
+    C->>H: JoinSeed: character values (shipped)
+    H-->>C: host's world values + own character values
     Note over C,H: Play
-    C->>CD: own per-owner rows every 60 s (shipped)
-    H->>HD: globals at level boundary (+ run save) [proposed]
+    C->>CD: character every 60 s (shipped)
+    H->>HD: character + world at level boundaries [proposed, G7]
     Note over C,H: Leave or any host-side ending
-    C->>CD: own per-owner rows, while the seat is still known [leave brief]
-    CD->>C: re-read own state.json: drop host's replicated values [leave brief, fixes G5]
-    Note over C: Single-player frontend: its saves are its own again
+    C->>CD: character, while the seat is still known [leave brief]
+    CD->>C: reload own world save, dropping the host's values [leave brief, G5]
+    Note over C: Single-player frontend with its own world
     Note over H,HD: Host ends session or exits
-    H->>HD: globals (+ run save) (exit save shipped)
+    H->>HD: character + world (exit save shipped)
 ```
-
-- **Shipped:** per-player progression is portable across hosts. Each player's per-owner `persist` slots live on their own device and travel up in `JoinSeed`. A host's globals live on the host's device.
-- **Leave brief owes (fixes G5):** before dropping the endpoint, save the client's own per-owner rows. Then restore the client's store from its own `state.json`, so the host's replicated values never reach the ex-client's saves or its single-player world.
-- **Proposed, open (G7):** the host also saves globals at level boundaries and at session end, not only at process exit.
-- **Open owner decision (G8): does a co-op run resume across sessions?**
-  - *Progression only* (Vermintide-style; shipped today): players keep unlocks and stats, and each session starts from a map the host picks.
-  - *Run save* (campaign-style): at each level boundary the host serializes the session-state ledger: current map, each seat's `CarriedState` keyed by player id, and globals. A frontend "Continue" hosts from it. Rejoining players rebind by player id through the existing reclaim path. One format could serve three consumers: a run save, the revisited-map record (`roadmap.md` Future), and a host-migration handoff (Epic 15), since each packages the same enumerable ledger. Leaning: one format, decided before any of the three ships.
 
 ## 8. Proposed brief boundaries
 
-| Brief | Owns | Depends on |
-|---|---|---|
-| `coop--client-leave-session` (reshape) | leave verb; `ui.quitToMenu` / exit-to-desktop leave on a client; any host-side ending → single-player frontend; save-then-restore on leave (G1, G3, G4, G5) | none |
-| Host returns to lobby (new) | host-sent "at frontend" signal; clients follow to their menu, connected; host end-session verb (G2) | leave (end-session lands clients through it) |
-| Phase 3.75 lobby authoring surface | in-app host, session phase, join predicate, joined/left/phase reactions, kick verb and policy | host returns to lobby |
-| In-app join (new, small) | direct-connect UI: address entry, connecting and refused states, notice on host-side ending | leave (for the role change back) |
-| Run save (new; the open decision in §7) | ledger serialization, level-boundary host saves, Continue | the owner's progression-vs-run decision |
+| Order | Brief | Owns | Depends on |
+|---|---|---|---|
+| 1 | `coop--client-leave-session` (reshape) | `leaveSession`; `ui.quitToMenu` and exit-to-desktop leave on a client; any host-side ending lands at a single-player frontend; save the character, then reload the player's own world (G1, G3, G4, G5) | none |
+| 2 | Host returns to lobby (new) | host-sent "at frontend" signal: clients follow to their menus and stay connected; `endSession` (G2) | leave: an ended session lands clients through it |
+| 3 | Phase 3.75 lobby authoring surface | in-app hosting, session phase, join predicate, joined, left and phase-changed reactions, `evictClient` and its policy | host returns to lobby |
+| 3 | In-app join (new, small) | direct-connect UI: address entry, connecting and refused states, notice on a host-side ending | leave: the role change back |
+| 4 | Character and world saves (new) | separate files; level-boundary world saves (G7); run state and Continue, if the open run-save decision lands | none; best before saves gain more data |

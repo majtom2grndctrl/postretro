@@ -165,6 +165,13 @@ impl DepthSegment {
     pub fn texel(&self, from: [f32; 2], to: [f32; 2]) -> [f32; 2] {
         mix_depth_moments(from, to, self.weight, self.mix)
     }
+
+    /// This blend over a tile of means, then second moments
+    /// ([`mix_depth_tile`]).
+    #[inline]
+    pub fn tile(&self, from: &[f32], to: &[f32], out: &mut [f32]) {
+        mix_depth_tile(from, to, self.weight, self.mix, out);
+    }
 }
 
 /// The depth rule: what interval `span` of a mover with `pose_count` poses
@@ -225,66 +232,123 @@ const F16_MAX: f32 = 65504.0;
 /// each end, then rebuilds `E[d²] = σ² + μ²` from the rounded mean, capped
 /// at the largest finite binary16. So the result's variance is never
 /// negative against the mean it stores, and a saturated far texel (`E[d²]`
-/// stored as 65504, below `E[d]²`) blends to 65504 again. A few flops per
-/// texel: the renderer runs it on every live texel a travelling mover
-/// changes, every frame.
+/// stored as 65504, below `E[d]²`) blends to 65504 again.
+/// [`mix_depth_tile`] applies the same rule to a whole tile, texel for
+/// texel through the same arithmetic.
 #[inline]
 pub fn mix_depth_moments(from: [f32; 2], to: [f32; 2], s: f32, mix: DepthMix) -> [f32; 2] {
     if s <= 0.0 {
-        return from;
-    }
-    if s >= 1.0 {
-        return to;
-    }
-    match mix {
-        DepthMix::Raw => [lerp(from[0], to[0], s), lerp(from[1], to[1], s)],
-        DepthMix::MeanVariance => {
-            if from == to {
-                return from;
-            }
-            // Plain compares rather than `f32::max`/`min`, which spend extra
-            // work on NaN the finite moments never hold: this runs per texel.
-            let variance = |[mean, mean_sq]: [f32; 2]| {
-                let variance = mean_sq - mean * mean;
-                if variance > 0.0 { variance } else { 0.0 }
-            };
-            let mean = round_to_f16(lerp(from[0], to[0], s));
-            // A lerp of two non-negative variances is non-negative.
-            let mean_sq = lerp(variance(from), variance(to), s) + mean * mean;
-            [mean, if mean_sq < F16_MAX { mean_sq } else { F16_MAX }]
+        from
+    } else if s >= 1.0 {
+        to
+    } else {
+        match mix {
+            DepthMix::Raw => raw_texel(from, to, s),
+            DepthMix::MeanVariance => mean_variance_texel(from, to, s),
         }
     }
 }
 
-/// `a + s·(b − a)`, for `s` strictly inside (0, 1).
+/// [`mix_depth_moments`] over a tile held as its texels' means, then their
+/// second moments (`from`, `to` and `out` each `2·n` values for `n`
+/// texels): texel `i` of `out` is texel `i` of `from` blended toward `to`'s
+/// by `s`, by `mix`. The renderer's live tiles and the compiler's skip judge
+/// both blend through this. The weight's ends and the mix are decided once
+/// per tile, and each moment runs contiguous, so each per-texel loop is a
+/// straight line of selects across full vector lanes: the renderer runs it
+/// on every live texel a travelling mover changes, every frame.
 #[inline]
+pub fn mix_depth_tile(from: &[f32], to: &[f32], s: f32, mix: DepthMix, out: &mut [f32]) {
+    assert!(
+        from.len() == out.len() && to.len() == out.len() && out.len().is_multiple_of(2),
+        "one tile: means, then second moments"
+    );
+    if s <= 0.0 {
+        out.copy_from_slice(from);
+        return;
+    }
+    if s >= 1.0 {
+        out.copy_from_slice(to);
+        return;
+    }
+    let texels = out.len() / 2;
+    let (from_mean, from_sq) = from.split_at(texels);
+    let (to_mean, to_sq) = to.split_at(texels);
+    let (out_mean, out_sq) = out.split_at_mut(texels);
+    match mix {
+        DepthMix::Raw => {
+            for (out, (&a, &b)) in out_mean.iter_mut().zip(from_mean.iter().zip(to_mean)) {
+                *out = lerp(a, b, s);
+            }
+            for (out, (&a, &b)) in out_sq.iter_mut().zip(from_sq.iter().zip(to_sq)) {
+                *out = lerp(a, b, s);
+            }
+        }
+        DepthMix::MeanVariance => {
+            for i in 0..texels {
+                [out_mean[i], out_sq[i]] =
+                    mean_variance_texel([from_mean[i], from_sq[i]], [to_mean[i], to_sq[i]], s);
+            }
+        }
+    }
+}
+
+/// [`DepthMix::Raw`] for `s` strictly inside (0, 1).
+#[inline(always)]
+fn raw_texel(from: [f32; 2], to: [f32; 2], s: f32) -> [f32; 2] {
+    [lerp(from[0], to[0], s), lerp(from[1], to[1], s)]
+}
+
+/// [`DepthMix::MeanVariance`] for `s` strictly inside (0, 1): a straight
+/// line of selects, and plain compares rather than `f32::max`/`min` (which
+/// spend work on NaN the finite moments never hold).
+#[inline(always)]
+fn mean_variance_texel(from: [f32; 2], to: [f32; 2], s: f32) -> [f32; 2] {
+    let variance = |[mean, mean_sq]: [f32; 2]| {
+        let variance = mean_sq - mean * mean;
+        if variance > 0.0 { variance } else { 0.0 }
+    };
+    let mean = round_to_f16(lerp(from[0], to[0], s));
+    // A lerp of two non-negative variances is non-negative.
+    let mean_sq = lerp(variance(from), variance(to), s) + mean * mean;
+    let mean_sq = if mean_sq < F16_MAX { mean_sq } else { F16_MAX };
+    // Blending a moment set with itself returns it, as the raw lerp does.
+    let same = from[0] == to[0] && from[1] == to[1];
+    [
+        if same { from[0] } else { mean },
+        if same { from[1] } else { mean_sq },
+    ]
+}
+
+/// `a + s·(b − a)`, for `s` strictly inside (0, 1).
+#[inline(always)]
 fn lerp(a: f32, b: f32, s: f32) -> f32 {
     a + s * (b - a)
 }
 
 /// `value` rounded to the nearest binary16 (ties to even), as an f32:
-/// exactly what a live tile's f16 store keeps. The normal binary16 range by
-/// integer rounding of the f32 bits, everything else through the shared
-/// converters.
-#[inline]
+/// exactly what a live tile's f16 store keeps, overflow to infinity
+/// included. Branch-free, so a texel loop calling it vectorises: each range
+/// is computed and the right one selected. The normal binary16 range rounds
+/// the f32 bits to 11 significant bits; below 2^-14, adding and removing 0.5
+/// rounds to the subnormal grid (2^-24), since 0.5's f32 step is 2^-24.
+#[inline(always)]
 fn round_to_f16(value: f32) -> f32 {
     let bits = value.to_bits();
+    let sign = bits & 0x8000_0000;
     let magnitude = bits & 0x7fff_ffff;
-    // [2^-14, 65520): normal binary16 results, no overflow to infinity.
-    if (0x3880_0000..0x477f_f000).contains(&magnitude) {
-        let rounded = bits.wrapping_add(0x0fff + ((bits >> 13) & 1)) & !0x1fff;
-        return f32::from_bits(rounded);
-    }
-    round_to_f16_outside_normal(value)
-}
-
-/// [`round_to_f16`] past the normal binary16 range: zero, subnormals,
-/// overflow and non-finite values. Out of line, so the per-texel path stays
-/// small.
-#[cold]
-#[inline(never)]
-fn round_to_f16_outside_normal(value: f32) -> f32 {
-    crate::probe_depth_tiles::f16_bits_to_f32(crate::lightmap::f32_to_f16_bits(value))
+    let normal = bits.wrapping_add(0x0fff + ((bits >> 13) & 1)) & !0x1fff;
+    let subnormal = ((f32::from_bits(magnitude) + 0.5) - 0.5).to_bits() | sign;
+    let rounded = if magnitude < 0x3880_0000 {
+        subnormal
+    } else if magnitude < 0x477f_f000 {
+        normal
+    } else if magnitude <= 0x7f80_0000 {
+        sign | 0x7f80_0000
+    } else {
+        bits
+    };
+    f32::from_bits(rounded)
 }
 
 #[cfg(test)]

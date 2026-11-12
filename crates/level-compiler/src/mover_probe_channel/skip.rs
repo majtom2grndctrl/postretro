@@ -269,14 +269,26 @@ fn skip_depth(
     }
     let tiles = std::mem::take(&mut probe.tiles);
     let by_pose = stored_tiles(&probe.marks, &tiles, PROBE_DEPTH_TILE_TEXELS);
-    let base = bars.depth.base_moments(probe.probe);
-    let moments: Vec<Option<Vec<[f32; 2]>>> = by_pose
+    // Each tile as the shared blend reads it: its texels' means, then their
+    // second moments.
+    let split = |pairs: &mut dyn Iterator<Item = [f32; 2]>| -> Vec<f32> {
+        let pairs: Vec<[f32; 2]> = pairs.collect();
+        pairs
+            .iter()
+            .map(|m| m[0])
+            .chain(pairs.iter().map(|m| m[1]))
+            .collect()
+    };
+    let base = split(&mut bars.depth.base_moments(probe.probe).into_iter());
+    let moments: Vec<Option<Vec<f32>>> = by_pose
         .iter()
         .map(|tile| {
             tile.map(|tile| {
-                tile.iter()
-                    .map(|&[mean, mean_sq]| [f16_bits_to_f32(mean), f16_bits_to_f32(mean_sq)])
-                    .collect()
+                split(
+                    &mut tile
+                        .iter()
+                        .map(|&[mean, mean_sq]| [f16_bits_to_f32(mean), f16_bits_to_f32(mean_sq)]),
+                )
             })
         })
         .collect();
@@ -291,10 +303,13 @@ fn skip_depth(
         // The renderer's live-tile blend of this interval, by the format's
         // depth rule, packed as the live tile packs it.
         let segment = depth_segment(span, pose_count);
-        let composed: Vec<[u16; 2]> = source(segment.from)
+        let mut blended = vec![0.0f32; 2 * PROBE_DEPTH_TILE_TEXELS];
+        segment.tile(source(segment.from), source(segment.to), &mut blended);
+        let (means, second) = blended.split_at(PROBE_DEPTH_TILE_TEXELS);
+        let composed: Vec<[u16; 2]> = means
             .iter()
-            .zip(source(segment.to))
-            .map(|(&from, &to)| segment.texel(from, to).map(f32_to_f16_bits))
+            .zip(second)
+            .map(|(&mean, &mean_sq)| [mean, mean_sq].map(f32_to_f16_bits))
             .collect();
         let own = by_pose[pose as usize].expect("a skipped pose stored a tile");
         bars.depth.score_against(probe_index, &composed, own) < DEPTH_SIGNIFICANCE_FLOOR

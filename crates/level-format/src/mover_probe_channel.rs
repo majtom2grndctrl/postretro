@@ -17,7 +17,7 @@ pub use assemble::{
 pub use error::MoverProbeChannelError;
 pub use knots::{
     DepthMix, DepthSegment, DepthSource, Knot, PoseInterval, depth_segment, effective_knots,
-    mix_depth_moments, pose_interval, ramped_knot,
+    mix_depth_moments, mix_depth_tile, pose_interval, ramped_knot,
 };
 pub use poses::{
     BouncePoseMasks, MoverAcrossEntry, MoverBounceEntry, MoverDepthRecord, MoverRecord, PoseMark,

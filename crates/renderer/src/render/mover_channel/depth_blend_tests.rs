@@ -4,12 +4,24 @@
 
 use super::*;
 use crate::render::mover_channel::depth_test_support::ramp_tile;
+use postretro_level_format::mover_probe_channel::mix_depth_moments;
 
-/// A tile as the plan holds it: decoded f32 moment pairs.
-fn decoded(base: f32) -> Vec<[f32; 2]> {
+/// A tile's decoded f32 moment pairs, texel by texel.
+fn pairs(base: f32) -> Vec<[f32; 2]> {
     ramp_tile(base)
         .iter()
         .map(|&[mean, mean_sq]| [f16_to_f32(mean), f16_to_f32(mean_sq)])
+        .collect()
+}
+
+/// A tile as the plan holds it: its texels' means, then their second
+/// moments.
+fn decoded(base: f32) -> Vec<f32> {
+    let pairs = pairs(base);
+    pairs
+        .iter()
+        .map(|m| m[0])
+        .chain(pairs.iter().map(|m| m[1]))
         .collect()
 }
 
@@ -40,10 +52,10 @@ fn one_movers_live_tile_is_the_formats_texel_mix() {
             };
             let mut out = Vec::new();
             blend_probe(&base, std::iter::once(blend), &mut out);
-            let expected: Vec<[u16; 2]> = from
-                .iter()
-                .zip(&to)
-                .map(|(&a, &b)| mix_depth_moments(a, b, weight, mix).map(f32_to_f16))
+            let expected: Vec<[u16; 2]> = pairs(1.0)
+                .into_iter()
+                .zip(pairs(3.5))
+                .map(|(a, b)| mix_depth_moments(a, b, weight, mix).map(f32_to_f16))
                 .collect();
             assert_eq!(texels(&out), expected, "{mix:?} at {weight}");
         }
@@ -55,7 +67,7 @@ fn one_movers_live_tile_is_the_formats_texel_mix() {
         };
         let mut out = Vec::new();
         blend_probe(&base, std::iter::once(same), &mut out);
-        let stored: Vec<[u16; 2]> = from.iter().map(|m| m.map(f32_to_f16)).collect();
+        let stored: Vec<[u16; 2]> = pairs(1.0).iter().map(|m| m.map(f32_to_f16)).collect();
         assert_eq!(texels(&out), stored, "{mix:?}: one tile at both ends");
     }
 }
@@ -64,8 +76,10 @@ fn one_movers_live_tile_is_the_formats_texel_mix() {
 /// `--release` bake): a room-sized live-tile set.
 const ROOM_PROBES: usize = 843;
 
-/// The epoch-5 single-mover blend loop, kept as the timing baseline: each
-/// moment lerped, `a + s·(b − a)`, then packed.
+/// The epoch-5 single-mover blend loop over interleaved moment pairs, kept
+/// as a timing baseline: each moment lerped, `a + s·(b − a)`, then packed
+/// by today's conversion (the epoch-5 build's own converter branched per
+/// texel, so this is a lower bound on its cost).
 fn epoch_5_blend(from: &[[f32; 2]], to: &[[f32; 2]], s: f32, out: &mut Vec<u8>) {
     let at = out.len();
     out.resize(at + TILE_BYTES, 0);
@@ -79,9 +93,9 @@ fn epoch_5_blend(from: &[[f32; 2]], to: &[[f32; 2]], s: f32, out: &mut Vec<u8>) 
 /// two stated movers mid-interval, under `mix`, or (`None`, one mover) the
 /// epoch-5 loop.
 fn frame_ms(movers: usize, mix: Option<DepthMix>, frames: u32) -> f64 {
-    let tiles: Vec<Vec<[f32; 2]>> = (0..ROOM_PROBES * 3)
-        .map(|k| decoded(0.5 + (k % 97) as f32 * 0.37))
-        .collect();
+    let base_of = |k: usize| 0.5 + (k % 97) as f32 * 0.37;
+    let tiles: Vec<Vec<f32>> = (0..ROOM_PROBES * 3).map(|k| decoded(base_of(k))).collect();
+    let pair_tiles: Vec<Vec<[f32; 2]>> = (0..ROOM_PROBES * 3).map(|k| pairs(base_of(k))).collect();
     let mut out = Vec::with_capacity(ROOM_PROBES * TILE_BYTES);
     let started = std::time::Instant::now();
     for frame in 0..frames {
@@ -90,6 +104,7 @@ fn frame_ms(movers: usize, mix: Option<DepthMix>, frames: u32) -> f64 {
         for probe in 0..ROOM_PROBES {
             let [base, a, b] = [0, 1, 2].map(|k| tiles[probe * 3 + k].as_slice());
             let Some(mix) = mix else {
+                let [a, b] = [1, 2].map(|k| pair_tiles[probe * 3 + k].as_slice());
                 epoch_5_blend(a, b, weight, &mut out);
                 continue;
             };

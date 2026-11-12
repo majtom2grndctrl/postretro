@@ -78,6 +78,14 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 - **New and restated ACs.** New: ACs 34–37 and M9. Restated: AC 4 and AC 5 (even poses plus geometry knots), AC 15 (depth mix rule) and AC 18 (MP8 wording).
 - **Build here, this session** (owner: "once the pause is over, let's build it here").
 
+## Open owner questions
+
+- **AC 7, reference floor cut (raised 2026-11-11, task 14b).** The sweeper reference test fails at its middle mid pose: bounce one 4.01 levels (bar 3) at a probe 0.91 m ahead of the slab, which lies beyond the exception's "within one patch of a posed face". The reference's static slab splits the floor along its off-grid north end-face plane, extended 2+ m past the slab; the posed bake keeps whole patches. Options:
+  - **(1) Widen the exception** to probes within one patch of a plane along which the reference cuts the floor off the patch grid. Recommended: the reference is a diagnostic, and it is the outlier here.
+  - **(2) Keep the reference floor uncut** beyond the slab's footprint.
+
+  The test stays strict and failing until the owner rules.
+
 ## Resolved questions
 
 - **AC 7, em_sweeper bounce one (raised 2026-11-10, task 3; resolved by the restatement above).** At em_sweeper's mid poses, bounce one reads up to 4.69 display levels off the static-brush reference (bar 3), in one probe column 0.21 m before the slab's west face. Cause: the posed bake's existing patch handling. The slab's face lands part-way into a 0.5 m static floor patch, which the posed slab partly buries, while the reference cuts the floor at the face. The error follows each pose's phase in the patch grid (1.72–4.69 levels over mid poses 1–6). The termini read 1.78 and 2.01 only because their offsets land on patch boundaries. A fix in the posed bake would move terminus bytes, which AC 1 forbids. The test stays strict and `#[ignore]`d with the reason.
@@ -184,7 +192,14 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 • Gates: fmt, workspace clippy, format 49, loader 52, compiler mover 186, `tests/mover_*`, renderer GPU 124, parity, AC 19.
 • **Open, CPU cost:** live depth tiles cost 0.53 → 0.70 ms per frame on the setpiece room and 0.26 → 0.29 on the wall, against M7's no-measurable-cost rule (task 14b).
 • **Open, AC 7:** the sweeper reference fails, bounce one 4.01 levels at mid pose 12 of 25 (bar 3). The tested pose moved with task 13's knots; undiagnosed (task 14b). |
-| 14b | **Task 14's open items.** (a) Diagnose the AC 7 sweeper reference failure at the new mid pose: patch-grid exception, or a new error at outside knots? (b) Bring the mean-and-variance CPU mix to the old rule's cost on the setpiece room, or report the floor reached and the levers left. | integrating executor | 14 | |
+| 14b | **Task 14's open items.** (a) Diagnose the AC 7 sweeper reference failure at the new mid pose: patch-grid exception, or a new error at outside knots? (b) Bring the mean-and-variance CPU mix to the old rule's cost on the setpiece room, or report the floor reached and the levers left. | integrating executor | 14 | done:
+• **(b) CPU cost.** Rebaked setpiece, per frame: room 0.53 (old rule) → 0.70 (task 14) → 0.36 ms; wall 0.26 → 0.29 → 0.18 ms.
+  - How: CPU-held tiles stored as moment planes (means, then second moments; same bytes, same ledger); one per-tile `mix_depth_tile` in level-format, shared by the renderer and skip; branch-free f16 rounding and packing, so the loops vectorise.
+  - Test: `the_tile_blend_is_the_texel_blend_texel_for_texel`, bit for bit.
+• **(a) AC 7 sweeper.** Probe 2267 reads 4.01 levels at pose 12, an even pose; the test's `len/2` pick moved from t 4/7 to t 3/7 with task 13's knots. The probe sits 0.91 m ahead of the leading face.
+  - Cause: the reference's static slab cuts the floor along its off-grid north end-face plane, extended 2+ m past the slab, into 0.060 and 0.190 m² slivers, while the posed bake keeps whole patches. The reference is the outlier, beyond the exception's "within one patch of a posed face".
+  - **Owner question below**; nothing loosened.
+• Gates: fmt, workspace clippy, format 50, loader 52, renderer GPU 124, C9 closet, compiler mover 186, `tests/mover_*`, parity 3/3, AC 19 2/2. |
 | 15 | **Slice proof.**<br>• Bake setpiece and enemy-movers `--release` with tasks 13 and 14.<br>• GPU motion recapture (`captures/motion-harness/`) beside the pre-amendment build and the 41/57 truth bakes.<br>• Port the offline metric to the AC 36 `--ignored` test.<br>• Measure id-57 bytes, bake times and M7's A/B.<br>• From the data, decide whether inside knots become depth-only (task 16) and whether the GPU needs a per-mover bracket (task 17).<br>ACs 36, M8, M9 data. | integrating executor | 13, 14 | |
 | 16 | **(If task 15's bytes or bake time call for it) depth-only inside knots.** A per-pose kind in the mover record; values blend across a depth-only pose for every probe; no direct q or bounce stored there; loader refusals; memos per pose kind; SH gate and Build Summary estimate count it. | integrating executor | 15 | |
 | 17 | **(If M7 shows cost) per-mover knot bracket.** One word per mover slot with the bracketing value-knot index, so `mc_interval` and `mover_bounce.wgsl` skip the linear knot loop. M7 A/B re-run. | integrating executor | 15 | |

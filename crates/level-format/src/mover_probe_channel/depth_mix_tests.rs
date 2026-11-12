@@ -228,3 +228,44 @@ fn rounding_to_f16_matches_the_shared_converters() {
         );
     }
 }
+
+// The tile form (means, then second moments) is the texel rule applied
+// texel for texel, bit for bit, at every weight and under either mix, the
+// ends and texels whose two moment sets agree included.
+#[test]
+fn the_tile_blend_is_the_texel_blend_texel_for_texel() {
+    let from: Vec<[f32; 2]> = (0..37)
+        .map(|i| [0.25 * i as f32, 0.0625 * (i * i) as f32 + 0.5])
+        .chain([[300.0, 65504.0], [10.0, 99.0], [2.0, 4.0]])
+        .collect();
+    let to: Vec<[f32; 2]> = (0..37)
+        .map(|i| [1.5 + 0.125 * i as f32, 0.03 * (i * i) as f32 + 3.0])
+        .chain([[310.0, 65504.0], [10.0, 99.0], [6.0, 36.0]])
+        .collect();
+    let split = |tile: &[[f32; 2]]| -> Vec<f32> {
+        tile.iter()
+            .map(|m| m[0])
+            .chain(tile.iter().map(|m| m[1]))
+            .collect()
+    };
+    let (from_tile, to_tile) = (split(&from), split(&to));
+    for mix in [DepthMix::Raw, DepthMix::MeanVariance] {
+        for s in [0.0, 0.2, 0.5, 0.85, 1.0] {
+            let mut out = vec![0.0; from_tile.len()];
+            mix_depth_tile(&from_tile, &to_tile, s, mix, &mut out);
+            let expected: Vec<[f32; 2]> = from
+                .iter()
+                .zip(&to)
+                .map(|(&a, &b)| mix_depth_moments(a, b, s, mix))
+                .collect();
+            assert_eq!(
+                out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                split(&expected)
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                "{mix:?} at {s}"
+            );
+        }
+    }
+}

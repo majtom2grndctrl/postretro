@@ -9,9 +9,8 @@
 // sets, and several movers combine by adding differences, never by selecting
 // one. It never flags a probe occluded, zeroes a weight or excludes a probe.
 
-use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::mover_probe_channel::{
-    DepthMix, DepthSource, depth_segment, mix_depth_moments,
+    DepthMix, DepthSource, depth_segment, mix_depth_tile,
 };
 use postretro_level_format::probe_depth_tiles::{
     PROBE_DEPTH_TILE_TEXEL_BYTES, PROBE_DEPTH_TILE_TEXELS, f16_bits_to_f32,
@@ -21,6 +20,9 @@ use super::knots::{Knot, interval};
 
 const TEXEL_BYTES: usize = PROBE_DEPTH_TILE_TEXEL_BYTES as usize;
 const TILE_BYTES: usize = PROBE_DEPTH_TILE_TEXELS * TEXEL_BYTES;
+/// Values one CPU-held tile spans: its texels' means, then their second
+/// moments, so each moment runs contiguous for the blend's vector lanes.
+pub(super) const TILE_MOMENTS: usize = 2 * PROBE_DEPTH_TILE_TEXELS;
 /// A record pose that stores no tile but reads the base (a terminus, or a
 /// mid pose marked base), before [`super::depth::MoverDepthTiles::bind`]
 /// points it at its probe's base tile. CPU-side only; never on the wire.
@@ -33,11 +35,12 @@ pub(super) const ACROSS: u32 = u32::MAX - 1;
 const F16_MAX: f64 = 65504.0;
 
 /// One stated mover's depth blend at a probe: `from` toward `to` by
-/// `weight`, each texel mixed by `mix` ([`mix_depth_moments`]).
+/// `weight`, each texel mixed by `mix` ([`mix_depth_tile`]).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DepthBlend<'a> {
-    pub(super) from: &'a [[f32; 2]],
-    pub(super) to: &'a [[f32; 2]],
+    /// A tile of [`TILE_MOMENTS`] values: means, then second moments.
+    pub(super) from: &'a [f32],
+    pub(super) to: &'a [f32],
     pub(super) weight: f32,
     pub(super) mix: DepthMix,
 }
@@ -51,10 +54,10 @@ pub(super) struct DepthBlend<'a> {
 /// variance. Exact at every read knot. The compiler's skipping judges by the
 /// same rule.
 pub(super) fn segment<'a>(
-    tiles: &'a [[f32; 2]],
+    tiles: &'a [f32],
     poses: &[u32],
     knots: &[Knot],
-    base: &'a [[f32; 2]],
+    base: &'a [f32],
     t: f32,
 ) -> DepthBlend<'a> {
     let span = interval(knots, t, |pose| poses[pose as usize] != ACROSS);
@@ -63,7 +66,7 @@ pub(super) fn segment<'a>(
         DepthSource::Pose(pose) => {
             let at = poses[pose as usize];
             debug_assert!(at < ACROSS, "a bound level points every read pose");
-            &tiles[at as usize..at as usize + PROBE_DEPTH_TILE_TEXELS]
+            &tiles[at as usize..at as usize + TILE_MOMENTS]
         }
         DepthSource::Base => base,
     };
@@ -89,7 +92,7 @@ pub(super) fn segment<'a>(
 /// and a single non-zero difference returns that mover's blend bit for bit
 /// wherever the blend is itself a valid moment set.
 pub(super) fn blend_probe<'a>(
-    base: &[[f32; 2]],
+    base: &[f32],
     mut stated: impl Iterator<Item = DepthBlend<'a>>,
     out: &mut Vec<u8>,
 ) {
@@ -97,49 +100,35 @@ pub(super) fn blend_probe<'a>(
     let at = out.len();
     out.resize(at + TILE_BYTES, 0);
     let (tile, _) = out[at..].as_chunks_mut::<TEXEL_BYTES>();
+    let mut blended = [0.0f32; TILE_MOMENTS];
     let Some(second) = stated.next() else {
         let blend = first;
-        if blend.weight <= 0.0 || blend.weight >= 1.0 || std::ptr::eq(blend.from, blend.to) {
-            let source = if blend.weight >= 1.0 {
-                blend.to
-            } else {
-                blend.from
-            };
-            for (texel, &moments) in tile.iter_mut().zip(source) {
-                *texel = texel_bytes(moments);
-            }
+        let source = if blend.weight <= 0.0 || std::ptr::eq(blend.from, blend.to) {
+            blend.from
+        } else if blend.weight >= 1.0 {
+            blend.to
         } else {
-            // One loop per mix, so each inlines its own arithmetic.
-            let s = blend.weight;
-            let texels = tile.iter_mut().zip(blend.from).zip(blend.to);
-            match blend.mix {
-                DepthMix::Raw => {
-                    for ((texel, &a), &b) in texels {
-                        *texel = texel_bytes(mix_depth_moments(a, b, s, DepthMix::Raw));
-                    }
-                }
-                DepthMix::MeanVariance => {
-                    for ((texel, &a), &b) in texels {
-                        *texel = texel_bytes(mix_depth_moments(a, b, s, DepthMix::MeanVariance));
-                    }
-                }
-            }
+            mix_depth_tile(blend.from, blend.to, blend.weight, blend.mix, &mut blended);
+            &blended
+        };
+        let (means, second) = source.split_at(PROBE_DEPTH_TILE_TEXELS);
+        for ((texel, &mean), &mean_sq) in tile.iter_mut().zip(means).zip(second) {
+            *texel = texel_bytes([mean, mean_sq]);
         }
         return;
     };
-    let mut sum = [[0.0f64; 2]; PROBE_DEPTH_TILE_TEXELS];
+    let mut sum = [0.0f64; TILE_MOMENTS];
     for blend in [first, second].into_iter().chain(stated) {
-        let (s, mix) = (blend.weight, blend.mix);
-        for (((texel, base), &a), &b) in sum.iter_mut().zip(base).zip(blend.from).zip(blend.to) {
-            let blended = mix_depth_moments(a, b, s, mix);
-            for moment in 0..2 {
-                texel[moment] += f64::from(blended[moment]) - f64::from(base[moment]);
-            }
+        mix_depth_tile(blend.from, blend.to, blend.weight, blend.mix, &mut blended);
+        for ((sum, &blended), &base) in sum.iter_mut().zip(&blended).zip(base) {
+            *sum += f64::from(blended) - f64::from(base);
         }
     }
-    for ((texel, difference), base) in tile.iter_mut().zip(&sum).zip(base) {
-        let mean = (f64::from(base[0]) + difference[0]).clamp(0.0, F16_MAX);
-        let mean_sq = (f64::from(base[1]) + difference[1])
+    let (mean_sums, second_sums) = sum.split_at(PROBE_DEPTH_TILE_TEXELS);
+    let (base_means, base_second) = base.split_at(PROBE_DEPTH_TILE_TEXELS);
+    for (texel, i) in tile.iter_mut().zip(0..) {
+        let mean = (f64::from(base_means[i]) + mean_sums[i]).clamp(0.0, F16_MAX);
+        let mean_sq = (f64::from(base_second[i]) + second_sums[i])
             .max(mean * mean)
             .min(F16_MAX);
         *texel = texel_bytes([mean as f32, mean_sq as f32]);
@@ -164,18 +153,30 @@ pub(super) fn f16_to_f32(bits: u16) -> f32 {
     )
 }
 
-/// f32 → binary16 bits, round to nearest even; the normal range by integer
-/// rounding, everything else through the shared converter.
+/// f32 → binary16 bits, round to nearest even, branch-free so the live
+/// tile's texel loops vectorise: each range is computed and the right one
+/// selected. The normal range by integer rounding of the f32 bits; below
+/// 2^-14, adding 0.5 (whose f32 step is 2^-24, the subnormal step) leaves
+/// the subnormal mantissa in the low bits; past 65520 infinity, NaN quiet.
 pub(super) fn f32_to_f16(value: f32) -> u16 {
     let bits = value.to_bits();
     let sign = (bits >> 16) & 0x8000;
     let magnitude = bits & 0x7fff_ffff;
-    // [2^-14, 65520): normal binary16 results, no overflow to infinity.
-    if (0x3880_0000..0x477f_f000).contains(&magnitude) {
-        let rounded = magnitude.wrapping_add(0x0fff + ((magnitude >> 13) & 1)) >> 13;
-        return (sign | rounded.wrapping_sub(112 << 10)) as u16;
-    }
-    f32_to_f16_bits(value)
+    let normal =
+        (magnitude.wrapping_add(0x0fff + ((magnitude >> 13) & 1)) >> 13).wrapping_sub(112 << 10);
+    let subnormal = (f32::from_bits(magnitude) + 0.5)
+        .to_bits()
+        .wrapping_sub(0.5f32.to_bits());
+    let half = if magnitude < 0x3880_0000 {
+        subnormal
+    } else if magnitude < 0x477f_f000 {
+        normal
+    } else if magnitude <= 0x7f80_0000 {
+        0x7c00
+    } else {
+        0x7e00
+    };
+    (sign | half) as u16
 }
 
 #[cfg(test)]

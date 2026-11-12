@@ -39,7 +39,7 @@ use postretro_render_cpu::sh_depth_tiles::ProbeDepthTileReferences;
 
 #[cfg(test)]
 use super::depth_blend::f32_to_f16;
-use super::depth_blend::{ACROSS, UNBOUND_BASE, blend_probe, f16_to_f32, segment};
+use super::depth_blend::{ACROSS, TILE_MOMENTS, UNBOUND_BASE, blend_probe, f16_to_f32, segment};
 use super::knots::MoverKnots;
 use super::layout::{MoverChannelError, first_non_finite};
 
@@ -82,12 +82,12 @@ pub(in crate::render) struct MoverDepthTiles {
     probe_offsets: Vec<u32>,
     /// Each record's mover slot, in probe order.
     record_slots: Vec<u32>,
-    /// Each probe's base tile as a texel offset into `tiles` once bound,
+    /// Each probe's base tile as an offset into `tiles` once bound,
     /// [`UNBOUND_BASE`] before: a blend between two termini passes through
     /// it.
     base_tiles: Vec<u32>,
     /// Each record's poses (CSR over `record_poses`, in `record_slots`
-    /// order), each a texel offset into `tiles`: its stored tile, or once
+    /// order), each an offset into `tiles`: its stored tile, or once
     /// bound its probe's base tile where it reads the base
     /// ([`UNBOUND_BASE`] before), or [`ACROSS`] where a mid pose is
     /// blended across.
@@ -97,8 +97,10 @@ pub(in crate::render) struct MoverDepthTiles {
     knots: MoverKnots,
     /// The CPU-held tiles, decoded once from f16 (exactly) so a frame's blend
     /// converts only its result: every stored closed-pose tile, every pose's,
-    /// then, from [`Self::bind`], one base tile per probe.
-    tiles: Vec<[f32; 2]>,
+    /// then, from [`Self::bind`], one base tile per probe. Each tile spans
+    /// [`TILE_MOMENTS`] values, its texels' means then their second moments,
+    /// so the blend runs each moment across full vector lanes.
+    tiles: Vec<f32>,
     /// Probes per mover slot (CSR over `slot_probes`), as indices into
     /// `probes`, ascending.
     slot_offsets: Vec<u32>,
@@ -173,7 +175,7 @@ impl MoverDepthTiles {
         let mut record_pose_offsets = Vec::with_capacity(records + 1);
         record_pose_offsets.push(0u32);
         let mut record_poses = Vec::new();
-        let mut tiles = Vec::with_capacity(stored_texels);
+        let mut tiles = Vec::with_capacity(2 * stored_texels);
         let mut slot_lists = vec![Vec::new(); mover_ids.len()];
         probe_offsets.push(0u32);
         for (k, group) in per_probe.iter().enumerate() {
@@ -186,11 +188,7 @@ impl MoverDepthTiles {
                     record_poses.push(match (mark, view.pose_tile(pose)) {
                         (PoseMark::Stored, Some(tile)) => {
                             let at = tiles.len() as u32;
-                            tiles.extend(
-                                tile.iter().map(|&[mean, mean_sq]| {
-                                    [f16_to_f32(mean), f16_to_f32(mean_sq)]
-                                }),
-                            );
+                            push_tile(&mut tiles, tile);
                             at
                         }
                         (PoseMark::Unmarked, _) if !is_terminus(pose, poses) => ACROSS,
@@ -243,7 +241,7 @@ impl MoverDepthTiles {
     /// Bytes of tiles held on the CPU, the ledger's host row: the stored
     /// closed-pose tiles, and once bound one base tile per probe.
     pub(in crate::render) fn host_bytes(&self) -> u64 {
-        (self.tiles.len() * size_of::<[f32; 2]>()) as u64
+        (self.tiles.len() * size_of::<f32>()) as u64
     }
 
     /// Bind the live tiles to the installed tile texture: they follow id
@@ -267,18 +265,15 @@ impl MoverDepthTiles {
             return Ok(());
         }
         // Exactly the base tiles, so the host ledger row is what is held.
-        self.tiles
-            .reserve_exact(self.probes.len() * PROBE_DEPTH_TILE_TEXELS);
+        self.tiles.reserve_exact(self.probes.len() * TILE_MOMENTS);
         for (k, &probe) in self.probes.iter().enumerate() {
             let records = self.probe_offsets[k] as usize..self.probe_offsets[k + 1] as usize;
             let at = self.tiles.len() as u32;
             self.base_tiles[k] = at;
             match (references.tile_of(probe), bases.id59) {
-                (Some(tile), Some(id59)) => self.tiles.extend(
-                    id59.tile(usize::from(tile))
-                        .iter()
-                        .map(|&[mean, mean_sq]| [f16_to_f32(mean), f16_to_f32(mean_sq)]),
-                ),
+                (Some(tile), Some(id59)) => {
+                    push_tile(&mut self.tiles, id59.tile(usize::from(tile)))
+                }
                 _ => {
                     let Some(base) = bases.probes.get(probe as usize) else {
                         return Err(MoverChannelError(format!(
@@ -286,12 +281,12 @@ impl MoverDepthTiles {
                             bases.probes.len()
                         )));
                     };
-                    let moments = [
-                        f16_to_f32(base.mean_distance),
-                        f16_to_f32(base.mean_sq_distance),
-                    ];
-                    self.tiles
-                        .extend(std::iter::repeat_n(moments, PROBE_DEPTH_TILE_TEXELS));
+                    for moment in [base.mean_distance, base.mean_sq_distance] {
+                        self.tiles.extend(std::iter::repeat_n(
+                            f16_to_f32(moment),
+                            PROBE_DEPTH_TILE_TEXELS,
+                        ));
+                    }
                 }
             }
             let poses = self.record_pose_offsets[records.start] as usize
@@ -401,7 +396,7 @@ impl MoverDepthTiles {
                 run_first = Some(tile);
             }
             let base_at = self.base_tiles[k as usize] as usize;
-            let base = &self.tiles[base_at..base_at + PROBE_DEPTH_TILE_TEXELS];
+            let base = &self.tiles[base_at..base_at + TILE_MOMENTS];
             let (tiles, poses, offsets) =
                 (&self.tiles, &self.record_poses, &self.record_pose_offsets);
             let (slots, knots) = (&self.record_slots, &self.knots);
@@ -465,6 +460,14 @@ impl MoverDepthTiles {
             self.run_bytes.capacity(),
             self.tiles.capacity(),
         ]
+    }
+}
+
+/// Append one f16 tile to `tiles` as the blend holds it: its texels'
+/// means, then their second moments, decoded exactly.
+fn push_tile(tiles: &mut Vec<f32>, tile: &[[u16; 2]]) {
+    for moment in 0..2 {
+        tiles.extend(tile.iter().map(|texel| f16_to_f32(texel[moment])));
     }
 }
 

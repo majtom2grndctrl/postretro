@@ -601,7 +601,7 @@ fn a_probe_with_no_base_refuses_the_bind() {
 
     let plan = Plan::with_bases(&section, &id59, &[averaged(1.0, 1.0); 10]);
     assert_eq!(
-        (plan.depth.capacities()[4] * size_of::<[f32; 2]>()) as u64,
+        (plan.depth.capacities()[4] * size_of::<f32>()) as u64,
         plan.depth.host_bytes(),
         "the CPU-held tiles are reserved exactly"
     );

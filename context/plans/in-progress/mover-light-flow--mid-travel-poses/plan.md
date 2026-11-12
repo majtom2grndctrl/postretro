@@ -80,6 +80,59 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 
 ## Open owner questions
 
+- Amendment 2's two rulings (backface form; in-wall layer approach) are asked once its captures exist; see §Amendment 2.
+
+## Owner rulings after the playtest diagnosis (2026-11-12)
+
+The owner played a Windows `--release` rebake. Most flat edges no longer pulse. What remains: a pulsing leak on the rising room's ceiling above the door, a pulse on the wall door's edge, a patch on its upper-right white square, and the sweeper's crusher-side shimmer now "jumps from one frame to the next". An Opus agent, a Fable agent and the lead each diagnosed independently, then reached consensus (`captures/playtest-diagnosis/consensus.md`, write-ups, scripts and charts beside it).
+
+**Findings:**
+- **No new channel defect.** HEAD tracks dense truth bakes: the wall at 0.02 luma, the sweeper at 0.51 (pre-amendment 4.51), the room ceiling at ~0.05. The late-trip ceiling excess was a truth artifact. The 177-pose truth parks poses 123, 139 and 171 within 1 mm of layer z 122.96; a 178-pose truth matches HEAD (8.18 vs 8.20 at t′ 0.818).
+- **Lattice hand-over.** This causes the sweeper jumps, the wall-edge pulse and part of the ceiling pulse. It predates the brief: the strip column shows it.
+  - The mover backface cosine is taken from the lookup point (`sh_sample.wgsl` `sh_backface_weight`), 0.1 cell off the face.
+  - When the lookup crosses a probe layer, which is where that layer's trilinear weight peaks, its weight falls to the 0.03 floor. Renormalisation then hands the face to the next layer in 1–3 frames.
+  - The amendment removed the knot blinks and drift that hid it.
+  - A larger offset only moves the flip.
+- **In-wall layer.** Plane x = 846.93 lies 1.07 u inside the room's west wall. Its enclosed and above-roof probes carry arena bounce into the dark room through the 0.03 floors. Moving the lattice 32 u drops the band from 6–13.5 luma to under 2 until t′ 0.56.
+- **White square.** It is static, not the amendment. The back-room spot `150 1420 290` lands a world-fixed footprint at probe resolution, and the upper-right square slides under it at t′ ≈ 0.2–0.5. Removing the spot removes it.
+- **Seam hazard.** An authored `light_poses` count can park a pose's brush face or seam within the enclosure band of a probe layer, which stores an in-solid dark state. Room 41 has one such pose (pose 19, 0.24 mm), room 78 one (pose 71, 1.14 mm) and room 177 three. Room 76 and sweeper 113 are clean. The 78-pose per-knot failures (t′ 0.117, 0.805) are HEAD's 1.4 u windows, not band poses; t′ 0.831 is a genuine long-interval miss.
+- **M9 ("no stepping") is not met in motion.** The cause predates the brief, and Amendment 2 takes it on.
+
+**Rulings** (the owner agreed with the recommendations and asked for the hand-over and in-wall fixes as soon as possible, as an amendment to this brief):
+- **AC 36:** option 1, with the room truth at **76** poses. The room's worst knot is reported, not gated. Time-weighted means are gated. Values are gated except at knots inside a stored interval longer than one even step, which go to the long-interval follow-up. The truth test asserts that no truth pose parks a mover brush plane within the enclosure band of a probe layer. Task 22.
+- **Authored `light_poses` near probe layers:** fixed in this branch. An authored pose whose brush plane falls within the enclosure band of a domain probe layer moves the least distance out of it. Task 23.
+- **Hand-over and in-wall fixes:** Amendment 2, below, in this branch. Work moves to the owner's Windows machine (`HANDOFF-windows.md`).
+
+## Amendment 2 (owner, 2026-11-12): mover-receiver hand-over and in-wall probe layers
+
+**Goal.** M9 met in motion: no per-layer stepping on mover faces and no pulsing band from a probe layer inside a thin mover wall. Rest frames may change; AC 1's per-probe channel comparison should still hold.
+
+The executor drafts the amendment's Decisions and Acceptance rows into `index.md` (the "Geometry knots" amendment is the model) and asks the owner the two rulings below with captures in hand, before building.
+
+- **Ruling A, backface form (ip-372 lever 5, counsel question 6).** Consensus candidate: measure the mover backface term from the *surface point*, not the lookup point, as a smooth signed-distance ramp along the receiver's geometric normal, scaled by the cell and floored at 0.03. It may combine with a 0.25–0.4-cell lookup offset.
+  - Capture A/B on the sweeper east face, the wall's trailing end face and north face, and the room ceiling, against the current form.
+  - Redo the eighth-power capture (rising room floor lattice dots) under the new form.
+- **Ruling B, in-wall layer.** Measure and present the options:
+  - (i) an authoring warning when a probe layer lies inside a mover slab or within the lookup offset of its face, plus a lattice-phase key;
+  - (ii) a dark value state for enclosed mid poses. This reverses the 2026-11-10 enclosing rule and carries a dark-sphere risk;
+  - (iii) the larger lookup offset alone, which cuts the above-roof share (0.49 → 0.19) but not the in-wall column's.
+
+  The split between in-wall and above-roof probes is unmeasured; measure it first.
+
+**IP.** Every candidate must keep every valid probe at a continuous weight of at least 0.03. Nothing may flag, zero or exclude a probe. The rules in `HANDOFF-windows.md` bind verbatim.
+
+| # | Task | Depends | Status |
+|---|---|---|---|
+| 22 | AC 36 restated (option 1, room truth 76) in `index.md` and `pipeline/mover_motion_proof_tests.rs`; truth-band assertion; re-run `--ignored` | — | todo |
+| 23 | Authored `light_poses` poses moved out of probe-layer enclosure bands; unit test (a slab whose authored pose lands within 1 mm of a layer); `light_poses` Decision note | — | todo |
+| 24 | Amendment 2 drafted into `index.md` (Decisions, ACs, M9 restated if needed); hand-over and in-wall measurements; owner rulings A and B | 22 | todo |
+| 25 | Build the ruled fixes; capture A/B against dense truth (seam-free counts); rest baselines re-cut where the ruling changes rest frames; AC 1 re-run | 24 | todo |
+| 26 | Review round, fix pass, preflight; owner in-engine M9 check on Windows; M7 re-measured on the Mac when it is free, if the shader changed | 25 | todo |
+
+Then land the plane (`HANDOFF-windows.md` §Land the plane).
+
+## Superseded: AC 36 question (resolved above)
+
 - **AC 36, room truth density (raised 2026-11-12, task 20).** The ruling names `light_poses 113` for the sweeper so the truth resolves each geometry-knot window. The room's truth is still 41, which samples none of its 1 u windows. At 78:
   - the time-weighted means pass (0.0074, 0.0069);
   - the room's per-knot share gate fails on single-knot spikes (ceiling 0.44, floor 0.52), which the GPU shows as at most 2.0 luma on one sample;

@@ -6,11 +6,11 @@
 // the far-side share (the normalised weight on probes behind the surface),
 // and the truth's weights light the composed bounce and direct of each build.
 // The truth reads its own stored states at its knots, where either depth rule
-// is exact. A pre-amendment build (even poses alone, depth through the base
-// on every interval) is read the same way: it must fail the share bar, and
-// its value miss at each knot bounds the shipped build's there (AC 36 as
-// restated by the owner, 2026-11-11). Only the tested mover's channel
-// entries are read; the map's other movers stay absent.
+// is exact. An even-pose build read by `DepthRule::ThroughBase` (even poses
+// alone, depth through the base on every interval) is read the same way: it
+// must fail the share bar, and its value miss at each knot bounds the
+// shipped build's there. Only the tested mover's channel entries are read;
+// the map's other movers stay absent.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting) ·
 // context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
@@ -36,14 +36,15 @@ use crate::mover_probe_channel::fixture_scene::SPACING;
 use crate::mover_probe_channel::reference_maps::quake_offset;
 use crate::mover_probe_channel::{MoverAbsentDepth, direct_display_levels, display_levels};
 
-/// Far-side share bars (brief AC 36, restated by the owner 2026-11-11), read
+/// Far-side share bars, read
 /// per truth knot: the mean over the trip's knots of |share − truth's| within
 /// 0.01, and on the room's layers the largest at any knot within 0.05. On
 /// the sweeper's faces the largest is reported, not gated.
 const SHARE_MEAN_BAR: f64 = 0.01;
 const SHARE_WORST_BAR: f64 = 0.05;
 /// Composed values at every knot within three display levels of the truth,
-/// or within 1.5 levels of the pre-amendment build's miss at that knot.
+/// or within 1.5 levels of the even-pose, through-base build's miss at that
+/// knot.
 const VALUE_BAR_LEVELS: f32 = 3.0;
 const VALUE_SHARED_MISS_LEVELS: f32 = 1.5;
 
@@ -64,8 +65,8 @@ enum DepthRule {
     /// The format's rule ([`depth_segment`]): mean and variance between
     /// poses, raw through the base between termini.
     Shipped,
-    /// The pre-amendment rule: raw moments through the base on every
-    /// interval.
+    /// Raw moments through the base on every interval, the rule before the
+    /// mean-and-variance blend.
     ThroughBase,
 }
 
@@ -134,7 +135,7 @@ impl<'a> Read<'a> {
     }
 }
 
-/// The pre-amendment depth rule for one interval: D_lo → base → D_hi in raw
+/// [`DepthRule::ThroughBase`] for one interval: D_lo → base → D_hi in raw
 /// moments, the base at the interval's midpoint.
 fn through_base(lo: u32, hi: u32, weight: f32) -> DepthSegment {
     let (from, to, weight) = if weight <= 0.0 {
@@ -517,7 +518,8 @@ impl Verdict {
 
 /// The value bar at one truth knot: the shipped build's worst receiver
 /// within [`VALUE_BAR_LEVELS`] of the truth, or within
-/// [`VALUE_SHARED_MISS_LEVELS`] of the pre-amendment build's worst there.
+/// [`VALUE_SHARED_MISS_LEVELS`] of the even-pose, through-base build's worst
+/// there.
 struct KnotValue {
     t: f32,
     shipped: f32,
@@ -534,8 +536,8 @@ impl KnotValue {
     }
 }
 
-/// One surface's reading: the shipped and pre-amendment verdicts, and the
-/// shipped build's value bar at every truth knot.
+/// One surface's reading: the shipped and even-pose, through-base verdicts,
+/// and the shipped build's value bar at every truth knot.
 struct Row {
     surface: &'static str,
     worst_share: WorstShare,
@@ -547,7 +549,7 @@ struct Row {
 /// Bake the map as authored, with `light_poses truth_poses` on `mover`, and
 /// with `light_poses` at its even count; read each surface at every truth
 /// knot. Returns, per surface, the default build's verdict then the
-/// pre-amendment build's.
+/// even-pose build's read by [`DepthRule::ThroughBase`].
 fn motion_proof(
     map: &str,
     mover: &str,
@@ -584,7 +586,7 @@ fn motion_proof(
         (0..3).all(|a| (quake[a] - travel_quake[a]).abs() < 1e-3),
         "{map}: {mover} travels {quake:?}"
     );
-    // The pre-amendment placement: even poses only, one per probe spacing.
+    // The even-pose placement: even poses only, one per probe spacing.
     let even = ((travel.length() / f64::from(SPACING)).ceil() as u32 + 1).clamp(2, 16);
     let truth = Build::bake(&write(&format!("{map}-truth"), Some(truth_poses)), mover);
     let pre = Build::bake(&write(&format!("{map}-even"), Some(even)), mover);
@@ -740,12 +742,12 @@ fn assert_shipped_passes_and_pre_amendment_misses(map: &str, rows: &[Row]) {
         "{map}: the shipped build misses the motion proof's bars:\n{}",
         misses.join("\n")
     );
-    // The guard: the pre-amendment build (even poses, depth through the
-    // base) fails the share bar on every surface.
+    // The guard: the even-pose, through-base build fails the share bar on
+    // every surface.
     for row in rows {
         assert!(
             !row.pre_amendment.share_passes(row.worst_share),
-            "{map} {}: the pre-amendment build must fail the far-side share bar: {}",
+            "{map} {}: the even-pose, through-base build must fail the far-side share bar: {}",
             row.surface,
             row.pre_amendment.line(row.worst_share)
         );
@@ -758,8 +760,9 @@ fn assert_shipped_passes_and_pre_amendment_misses(map: &str, rows: &[Row]) {
 #[test]
 #[ignore = "three bakes of mover-setpiece (as authored, light_poses 41, light_poses 6); \
             cargo test -p postretro-level-compiler --bin prl-build \
-            the_rising_rooms_ceiling_and_floor_read_the_fine_bake_in_motion -- --ignored --nocapture"]
-fn the_rising_rooms_ceiling_and_floor_read_the_fine_bake_in_motion() {
+            the_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_bake -- \
+            --ignored --nocapture"]
+fn the_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_bake() {
     let surfaces = [
         plane(
             "ceiling",
@@ -795,8 +798,9 @@ fn the_rising_rooms_ceiling_and_floor_read_the_fine_bake_in_motion() {
 #[test]
 #[ignore = "three bakes of enemy-movers (as authored, light_poses 57, light_poses 8); \
             cargo test -p postretro-level-compiler --bin prl-build \
-            the_sweepers_faces_read_the_fine_bake_in_motion -- --ignored --nocapture"]
-fn the_sweepers_faces_read_the_fine_bake_in_motion() {
+            the_sweepers_faces_stay_within_the_motion_bars_of_the_fine_bake -- --ignored \
+            --nocapture"]
+fn the_sweepers_faces_stay_within_the_motion_bars_of_the_fine_bake() {
     let surfaces = [
         plane(
             "east face",

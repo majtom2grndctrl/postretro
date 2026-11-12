@@ -183,12 +183,15 @@ pub(super) fn skip_mid_poses(
 }
 
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved
-/// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room and
-/// logs its counts once against the shrunk cap. A bake past the range has
-/// already failed, before skipping ([`skip_mid_poses`]), and skipping only
-/// removes records, so every mover's depth is whole here and the count exact.
-/// The reservation's own refusal of live tiles past the range is a backstop
-/// that earlier refusal makes unreachable.
+/// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room,
+/// keeping those of the probes still carrying mover depth, the bases their
+/// skips read, and logs its counts once against the shrunk cap. A bake past
+/// the range has already failed, before skipping ([`skip_mid_poses`]), and
+/// skipping only removes records, so every mover's depth is whole here and
+/// the count exact. The reservation's own refusal of live tiles past the
+/// range is a backstop that earlier refusal makes unreachable. Where the
+/// range cannot hold the carrying probes' own id-59 tiles beside the live
+/// tiles, the build warns and drops the lowest-ranked of them.
 pub(super) fn finish_bounce_half(
     movers: &[MoverBounceStates],
     base: &OctahedralShVolumeSection,
@@ -203,8 +206,9 @@ pub(super) fn finish_bounce_half(
         base.probes[probe].validity != 0
     });
     let blocks = BounceBlocks::new(movers, &cells);
-    let carried = CarriedDepth::exact(blocks.live_tile_count());
-    let reservation = reserve_mover_tiles(depth_tiles, base, carried, tile_cap)?;
+    let carrying = blocks.live_probes();
+    let carried = CarriedDepth::exact(carrying.len());
+    let reservation = reserve_mover_tiles(depth_tiles, base, carried, &carrying, tile_cap)?;
     if reservation.live > 0 {
         log::info!(
             "[MoverLight] probe depth tiles: {} live tile(s) reserved for mover depth ahead of id \
@@ -213,6 +217,19 @@ pub(super) fn finish_bounce_half(
             effective_tile_cap(tile_cap),
             reservation.shrunk_cap,
             reservation.trimmed,
+        );
+    }
+    if reservation.carrying_trimmed > 0 {
+        log::warn!(
+            "[MoverLight] probe depth tiles: the {}-tile range leaves id 59 {} tile(s) beside the \
+             live tiles, too few for the {} probe(s) carrying mover depth that hold one; {} of \
+             them drop, so those probes' live tiles blend through their averaged moments rather \
+             than the tile their mover states were judged against. Raise \
+             `--probe-depth-tile-cap`",
+            effective_tile_cap(tile_cap),
+            reservation.shrunk_cap,
+            reservation.shrunk_cap as usize + reservation.carrying_trimmed,
+            reservation.carrying_trimmed,
         );
     }
     depth_tiles.log(reservation.shrunk_cap);

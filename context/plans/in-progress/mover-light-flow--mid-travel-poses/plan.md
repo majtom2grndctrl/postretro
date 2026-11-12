@@ -320,3 +320,59 @@ One reviewer (opus, tracer + adversarial), read-only. No 🔴; round-2 fixes con
 - 🟡 fixed: authored `light_poses` are priced per pose from the mover's first terminus as the bake actually allocates it before the SH base gate (knot, placed pose, `PosedSolid` with its sides' geometry, `PosedScene` patches; `cost.rs` `pose_held_bytes`): a unit box costs 4,784 B a pose, so `MAX_POSES` on one is refused at the 16 GiB default. The refusal is worded as the mover poses' own working set, before the SH base gate.
 - 🟢 fixed: `finish_bounce_half`'s tile-range refusal documented as an unreachable backstop.
 - Gates: fmt; clippy (workspace and `postretro --features capture`); full `cargo test --workspace` (GPU) 15,828 passed, 0 failed; parity 3/3; release check; crate graph. Review loop closed: round 3 raised no new defect class.
+
+## Review panel, round 4 (2026-11-12, over ebb65f313..e2758fd33)
+
+**Panel:** 9 read-only reviewers plus a Fable check of the build against the consensus.
+- 3 correctness tracers (placement; depth compose and skip; the knot seam compiler → pixel);
+- 1 contract verifier (id 57 epoch 6, `light_poses`, IP wording);
+- 2 adversarial testers (placement, GPU bracket);
+- 3 hygiene and drift sweeps (compiler, format and renderer, tests).
+
+**Verdict:** request changes. The core is faithful (Fable): interval rule, f16, tile = texel, multi-mover, the skip judging compose, and the bracket ≡ linear scan. The seam and bracket are clean.
+
+**Findings:**
+- 🔴 `ip-372` question 9 is not the owner-approved wording (expanded, the Lever 7 sentence dropped), and "raw-linear between termini" misstates the code (raw moments through the probe's static tile). Owner question.
+- 🔴 Drift in `context/lib`: `rendering_pipeline.md` §4 and `build_pipeline.md` step 12 describe the old rules. Landing work.
+- 🟡 Outside-knot clearance was measured in travel, not along the face normal, so oblique faces can put an outside knot in the lift band or inside the brush. Raised by 3 reviewers.
+- 🟡 The sliver fallback places in-band knots near termini and in narrow gaps. Seam join used exact float compares.
+- 🟡 Geometry poses were allocated before admission.
+- 🟡 Scale was unmeasured at the new counts (skip roughly K², placement roughly legs²).
+- 🟡 Fixture-dir cross-process race; harness relabel without a two-pose assert.
+- 🟡 Skip against an id-59 tile the trim could drop (predates this branch).
+- 🟡 The cap warning hid that an authored count turns geometry knots off; "extra" vs "geometry" naming.
+- 🟢 A duplicated `F16_MAX`, the WGSL stride literal, the bounce bracket parameter, a missing construction assert, ignore-reason commands, test names, `copy_dir`, and about a dozen comments narrating removed code or citing plan paths, dates or "epoch-5 layout".
+
+### Fix pass A (compiler)
+**Geometry knots**
+- Interval ends carry the binding face's rate, so the margin, outside distance and guard are measured along the face normal.
+- Outside knots stay out of a band span (brushes grown by lift + inset + 1 mm) and are verified by `clear_of_band`, failing by name.
+- A clear side with no room is held by its terminus, and gaps that never leave the band join; the slivers are gone.
+- The seam join goes through the band, so a few-ulp gap on a sloped seam joins.
+- Each (leg, brush) is prefiltered by its swept hull.
+- New tests: diagonal slab, bevelled face, diagonal two-wedge seam, faces 1.5/2.5 mm off a layer at both termini, brushes 2 mm apart. The band invariant is checked on every knot. Mutation: reverting the rate scaling fails the diagonal test, and the old placement fails 4 of 5.
+
+**Admission:** `admit_placed_poses` runs after placement and before resolve, over every mover's final count, naming the movers largest first. Tested.
+
+**Scale**
+- Counts: hallway doors 18–23, warren lifts 140 and 142; others unchanged.
+- `skip_marks` walks farthest-first and stops at the first holding end, proven identical to the old walk over 3,000 random cases (3–140 poses, ramps).
+- Setpiece skip: wall 0.48 → 0.10 s, room 0.74 → 0.17 s.
+- At 140 poses × 8k probe-states: linear 0.76 s (was ~41 s), crossings 2.0 s (was ~15.5 s), zigzag worst case 40.6 s (was ~62 s), still K² with no exact pruning found.
+
+**Tests and harnesses**
+- Fixtures sit in a per-process dir under an advisory lock, with dead dirs reaped.
+- Parity asserts two knots per record, baseline named as 27c92488f (task 2's epoch-5 two-pose compiler; the binary was built 9 minutes after it).
+- Ignore reasons carry commands; the motion tests are renamed `…_stay_within_the_motion_bars_of_the_fine_bake`.
+- The floor-cut doc says it is narrower than the ruling; plan tags are out of test comments; `copy_dir` is shared.
+
+**Id-59 trim:** `reserve_mover_tiles` keeps carrying probes' id-59 tiles first. When they can't fit, the lowest drop as before and the build warns, naming `--probe-depth-tile-cap`. A refusal broke `mover_probe_channel_depth_cap`, and the bake's own significance choices also read the pre-trim id 59. Tested.
+
+**Wording:** the cap warning says an authored count places no geometry poses; the docs define "geometry poses"; stale comments fixed.
+
+**Result:** `--release` rebakes are byte-identical to HEAD's on setpiece and enemy-movers.
+
+**Gates:** fmt, clippy, `--bin prl-build mover` 194, `tests/mover_*`, parity 3/3, AC 7/8 references, AC 19 (now un-ignored).
+
+**Left:** the zigzag skip worst case (follow-up candidate); the trim warning instead of a refusal; the `build_pipeline.md` trim note at landing; and old test names cited in `captures/`.
+

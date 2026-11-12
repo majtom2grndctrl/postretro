@@ -11,12 +11,14 @@
 //! Opt-in and `#[ignore]`: it runs a second compiler. A missing baseline fails the test, so a
 //! green run always means both maps were compared.
 //!
-//! Baseline: the parent commit's `prl-build`, named by
-//! `POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN`. Both compilers build the same map files from
-//! this checkout with the same flags, so no path differs between them. Build the binary at the
-//! parent in this checkout, copy it out, then return (`development_guide.md` §Worktree builds):
+//! Baseline: the mid-travel-poses brief's parent compiler, `prl-build` at 27c92488f, the commit
+//! that moved id 57 to epoch 5 while every mover still baked its two termini alone. It is named
+//! by `POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN`. Both compilers build the same map files from
+//! this checkout with the same flags, so no path differs between them. Build the binary there in
+//! this checkout, copy it out, then return (`development_guide.md` §Worktree builds):
 //!
 //! ```text
+//! PARENT=27c92488f
 //! git switch --detach "$PARENT"
 //! cargo build --release -p postretro-level-compiler --bin prl-build
 //! cp target/release/prl-build "$BASE/prl-build-parent"
@@ -151,13 +153,23 @@ const PARENT_EPOCH: u8 = 5;
 
 /// `prl` (the parent compiler's packed PRL) with id 57's epoch byte, the one difference these
 /// tests allow, rewritten to this branch's epoch. Fails unless the parent wrote [`PARENT_EPOCH`]
-/// there.
+/// there and every mover record stores two poses: only a two-pose section reads the same under
+/// both epochs' depth rules, since a blend between termini runs through the base under either.
 fn at_this_epoch(mut prl: Vec<u8>) -> Vec<u8> {
     let meta = read_container(&mut Cursor::new(prl.as_slice())).expect("read the container");
     if let Some(section) = meta.find_section(SectionId::MoverProbeChannel as u32) {
         let at = section.offset as usize;
         assert_eq!(prl[at], PARENT_EPOCH, "the parent writes id 57 at epoch 5");
         prl[at] = MOVER_PROBE_CHANNEL_EPOCH;
+        let channel = channel_of(&prl).expect("id 57");
+        for record in &channel.mover_records {
+            assert_eq!(
+                record.knots.len(),
+                2,
+                "mover #{}: the parent's section relabels to this epoch only with two poses",
+                record.mover_id
+            );
+        }
     }
     prl
 }

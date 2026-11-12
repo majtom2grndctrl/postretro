@@ -96,6 +96,13 @@ impl SkipCounts {
 /// interval compose reads once every skip is applied, and a run of adjacent
 /// skips never adds up past the bars. Termini and poses that read the base
 /// are never skipped. Returns how many stored poses the ramp squeezed out.
+///
+/// Far ends are tried farthest first, so the first that holds is the
+/// farthest; and the pose that failed the last far end tried is judged first
+/// at the next, since a conjunction reads the same in any order. Neither
+/// changes which poses skip; together they keep the work near one judgement
+/// per (interval start, far end) where states change pose to pose, and one
+/// pass where they blend.
 fn skip_marks(
     marks: &mut [PoseMark],
     knots: &[Knot],
@@ -103,53 +110,65 @@ fn skip_marks(
 ) -> usize {
     let count = marks.len();
     let mut squeezed = 0;
-    let mut read = vec![false; count];
-    for knot in knots {
-        read[knot.pose as usize] = true;
+    // Each read pose's knot; a pose the ramp squeezes out has none.
+    let mut knot_of = vec![usize::MAX; count];
+    for (k, knot) in knots.iter().enumerate() {
+        debug_assert_eq!(knot_of[knot.pose as usize], usize::MAX, "one knot per pose");
+        knot_of[knot.pose as usize] = k;
     }
     for pose in 1..count.saturating_sub(1) {
-        if !read[pose] && marks[pose] == PoseMark::Stored {
+        if knot_of[pose] == usize::MAX && marks[pose] == PoseMark::Stored {
             marks[pose] = PoseMark::Unmarked;
             squeezed += 1;
         }
     }
     let last = knots.len() - 1;
-    let mark = |marks: &[PoseMark], k: usize| marks[knots[k].pose as usize];
     let mut lo = 0;
     while lo < last {
+        let marks_now: &[PoseMark] = marks;
+        let stored = |k: usize| marks_now[knots[k].pose as usize] == PoseMark::Stored;
         // Knots up to the next that must stay defined; a stored one may end
         // the interval or be skipped, an unmarked one is blended across
         // already.
         let reach = (lo + 1..=last)
-            .find(|&k| k == last || mark(marks, k) == PoseMark::Base)
+            .find(|&k| k == last || marks_now[knots[k].pose as usize] == PoseMark::Base)
             .expect("the last knot ends every reach");
-        let mut best = None;
-        for hi in lo + 1..=reach {
-            if hi < reach && mark(marks, hi) != PoseMark::Stored {
+        let mut failed: Option<usize> = None;
+        let mut far = None;
+        for hi in (lo + 1..=reach).rev() {
+            if hi < reach && !stored(hi) {
                 continue;
             }
-            let between: Vec<usize> = (lo + 1..hi)
-                .filter(|&k| mark(marks, k) == PoseMark::Stored)
-                .collect();
-            for &k in &between {
-                marks[knots[k].pose as usize] = PoseMark::Unmarked;
-            }
-            let holds = between.iter().all(|&k| {
-                let span = pose_interval(knots, knots[k].t, |pose| {
-                    marks[pose as usize] != PoseMark::Unmarked
-                });
-                within(knots[k].pose, span)
+            // Compose with every stored pose strictly between `lo` and `hi`
+            // blended across.
+            let defined = |pose: u32| {
+                let k = knot_of[pose as usize];
+                marks_now[pose as usize] != PoseMark::Unmarked && !(lo < k && k < hi)
+            };
+            let fails = |k: usize| {
+                let span = pose_interval(knots, knots[k].t, defined);
+                !within(knots[k].pose, span)
+            };
+            let first = failed.filter(|&k| k < hi && fails(k));
+            let failing = first.or_else(|| {
+                (lo + 1..hi)
+                    .filter(|&k| Some(k) != failed && stored(k))
+                    .find(|&k| fails(k))
             });
-            for &k in &between {
-                marks[knots[k].pose as usize] = PoseMark::Stored;
-            }
-            if holds {
-                best = Some((hi, between));
+            match failing {
+                Some(k) => failed = Some(k),
+                None => {
+                    far = Some(hi);
+                    break;
+                }
             }
         }
-        let (hi, between) = best.expect("the next defined knot always holds");
-        for k in between {
-            marks[knots[k].pose as usize] = PoseMark::Unmarked;
+        let hi = far.expect("the next defined knot always holds");
+        for knot in &knots[lo + 1..hi] {
+            let mark = &mut marks[knot.pose as usize];
+            if *mark == PoseMark::Stored {
+                *mark = PoseMark::Unmarked;
+            }
         }
         lo = hi;
     }

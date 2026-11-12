@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::OnceLock;
 
-use prl_build_support::{REACH_VERIFY_ENV, fixture_dir, prl_build};
+use prl_build_support::{REACH_VERIFY_ENV, copy_dir, fixture_dir, prl_build};
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 
@@ -253,19 +253,6 @@ fn base() -> &'static (PathBuf, String) {
         let logs = build(&map(&Scene::default()), CacheMode::Fill(&cache), JOBS, &[]);
         (cache, logs)
     })
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).expect("create cache copy");
-    for entry in std::fs::read_dir(from).expect("list cache") {
-        let entry = entry.expect("cache entry");
-        let target = to.join(entry.file_name());
-        if entry.file_type().expect("cache entry type").is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).expect("copy cache entry");
-        }
-    }
 }
 
 /// Warm-build `scene` with `flags` over a copy of the base cache, then cold-

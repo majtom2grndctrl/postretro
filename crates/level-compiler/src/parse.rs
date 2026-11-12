@@ -641,9 +641,11 @@ fn parse_kinematic_light_bounces(
     }
 }
 
-/// The mover's `light_poses` key: how many poses the mover probe channel
-/// bakes along its path, termini included, an integer of at least 2. Absent
-/// or blank places them automatically, about one probe spacing apart. Reads
+/// The mover's `light_poses` key: how many even poses the mover probe
+/// channel bakes along its path, termini included, an integer of at least 2,
+/// and no geometry poses. Absent or blank places them automatically: even
+/// poses about one probe spacing apart, up to a cap, plus geometry poses
+/// where the mover's brushes start or stop enclosing a probe. Reads
 /// as `light_bounces` does, with an optional sign; anything else fails the
 /// build naming the mover, as does a count past the most poses a path can
 /// place ([`MAX_POSES`]), which says it is too large. Placement refuses that

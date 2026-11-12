@@ -34,7 +34,7 @@ use crate::mover_probe_channel::{
 use crate::sh_bake::pack_octahedral_irradiance_tile;
 use crate::surface_radiance::{DEFAULT_BOUNCE_FILL, ShBase};
 
-/// The bar: three display levels (brief AC 19).
+/// The bar: three display levels.
 const BAR_LEVELS: f32 = 3.0;
 
 /// Quake map units per engine metre.

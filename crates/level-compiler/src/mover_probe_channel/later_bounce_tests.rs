@@ -2,7 +2,7 @@
 // terminus re-traces them over every static patch; a mid pose over the
 // static patches of its near-field domain and its posed sides, where a
 // gather ray leaving the domain reads the mover-absent bounce; both keep id
-// 34's bounces past their `light_bounces` (brief AC 8).
+// 34's bounces past their `light_bounces`.
 
 use std::sync::Arc;
 

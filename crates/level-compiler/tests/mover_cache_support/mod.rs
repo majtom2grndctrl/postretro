@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
+pub use crate::prl_build_support::copy_dir;
 use crate::prl_build_support::{BuildDir, REACH_VERIFY_ENV, fixture_dir, prl_build};
 
 pub const TEXTURE: &str = "50-free-textures/concrete_stone_021";
@@ -334,19 +335,6 @@ pub fn assert_same_prl(a: &Built, b: &Built, what: &str) {
         b.len(),
         a.iter().zip(&b).position(|(a, b)| a != b)
     );
-}
-
-pub fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).expect("create cache copy");
-    for entry in std::fs::read_dir(from).expect("list cache") {
-        let entry = entry.expect("cache entry");
-        let target = to.join(entry.file_name());
-        if entry.file_type().expect("cache entry type").is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).expect("copy cache entry");
-        }
-    }
 }
 
 /// Warm-build `scene` over a copy of the base cache, then cold-build it;

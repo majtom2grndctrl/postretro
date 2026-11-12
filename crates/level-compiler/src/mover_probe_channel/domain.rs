@@ -66,7 +66,30 @@ pub(crate) fn clears_bounce_bars(
     b: &[OctahedralAtlasTexel],
     bar: f32,
 ) -> bool {
-    max_abs_difference(a, b) > bar && display_levels(a, b) > BOUNCE_FLOOR_LEVELS
+    // [`max_abs_difference`] and [`display_levels`] against their bars,
+    // stopping at the first texel past each: skipping runs this per
+    // candidate interval.
+    let pairs = || a.iter().zip(b);
+    exceeds(
+        pairs().flat_map(|(a, b)| {
+            (0..3).map(|c| (f16_bits_to_f32(a.rgba[c]) - f16_bits_to_f32(b.rgba[c])).abs())
+        }),
+        bar,
+    ) && exceeds(
+        pairs().flat_map(|(a, b)| {
+            let (a, b) = (
+                display_rgb(a, DEFAULT_INDIRECT_SCALE),
+                display_rgb(b, DEFAULT_INDIRECT_SCALE),
+            );
+            (0..3).map(move |c| (a[c] - b[c]).abs())
+        }),
+        BOUNCE_FLOOR_LEVELS,
+    )
+}
+
+/// `values.fold(0.0, f32::max) > bar`, stopping at the first value past it.
+fn exceeds(mut values: impl Iterator<Item = f32>, bar: f32) -> bool {
+    values.any(|value| value > bar) || 0.0 > bar
 }
 
 /// The perceptual floor (an owner value): a probe's bounce is

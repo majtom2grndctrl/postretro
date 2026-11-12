@@ -195,7 +195,7 @@ struct BounceMatch {
     by_floor_cut: Vec<(u32, f32)>,
 }
 
-/// Whether AC 7's second patch-grid rule, the reference's floor cuts, sets
+/// Whether the second patch-grid rule, the reference's floor cuts, sets
 /// probes aside.
 #[derive(Clone, Copy, PartialEq)]
 enum FloorCuts {
@@ -223,7 +223,7 @@ fn off_grid(plane: f64) -> bool {
     (cells - cells.round()).abs() > 1.0e-4
 }
 
-/// AC 7's patch-grid exception (owner, 2026-11-10): whether `probe` lies
+/// The patch-grid exception for posed faces: whether `probe` lies
 /// within one patch of a face of `brushes` (posed, axis-aligned bounds) whose
 /// plane lands off the static patch grid. There the posed bake's partly
 /// buried floor patch differs from the reference's floor cut at the face.
@@ -253,8 +253,13 @@ struct FloorCut {
 }
 
 impl FloorCut {
-    /// AC 7's second patch-grid exception (owner, 2026-11-11): within one
-    /// patch of the plane, beside the cut.
+    /// The patch-grid exception for the reference's floor cuts: within one
+    /// patch of the plane, beside the cut. Deliberately narrower than "a
+    /// plane along which the reference cuts the floor off the patch grid":
+    /// only along the cut's span, and only planes of the static slab's own
+    /// faces that also edge a floor face beyond the slab's footprint
+    /// ([`reference_floor_cuts`]), so a probe beside a cut that reaches no
+    /// floor past the slab stays compared.
     fn sets_aside(&self, probe: DVec3) -> bool {
         let along = 2 - self.axis;
         (probe[self.axis] - self.plane).abs() <= PATCH_M
@@ -367,10 +372,10 @@ fn reference_floor_cuts(
 /// mover made static there, then compare: direct q at every probe a light
 /// reaches, valid in both, within one q step (B7's direct bar); at each
 /// domain probe valid in both and not enclosed, the mid pose's bounce one
-/// against the reference's first bounce alone (`_bounce_fill 0`, AC 7) and
-/// its full bounce against the reference's full bake (AC 8); and its
+/// against the reference's first bounce alone (`_bounce_fill 0`) and its
+/// full bounce against the reference's full bake; and its
 /// closed-pose depth tile against the reference's id-59 tile where both
-/// exist, texel by texel within f16 (B4's bar). Bounce probes AC 7's
+/// exist, texel by texel within f16 (B4's bar). Bounce probes the
 /// patch-grid rules cover are set aside from both bounce bars; the
 /// reference's floor cuts only under [`FloorCuts::SetAside`].
 fn mid_pose_against_its_reference(
@@ -628,14 +633,14 @@ fn mid_pose_against_its_reference(
     }
 }
 
-/// The sweeper probe task 14b traced to the reference's floor cut: 0.91 m
+/// The sweeper probe traced to the reference's floor cut: 0.91 m
 /// ahead of the slab's leading face, inside one patch of its north end-face
 /// plane, which the reference extends across the floor into 0.060 and
 /// 0.190 m² slivers. It reads 4.01 levels in bounce one and 3.51 in the full
 /// bounce at the middle mid pose.
 const SWEEPER_FLOOR_CUT_PROBE: u32 = 2267;
 
-/// Assert AC 7 and AC 8 at the mover's middle mid pose; returns the
+/// Assert the reference bars at the mover's middle mid pose; returns the
 /// comparison for the caller's own checks.
 fn assert_mid_pose_matches(map: &str, mover: &str, floor_cuts: FloorCuts) -> MidPoseReference {
     let reference = mid_pose_against_its_reference(map, mover, floor_cuts);
@@ -669,24 +674,27 @@ fn assert_mid_pose_matches(map: &str, mover: &str, floor_cuts: FloorCuts) -> Mid
     reference
 }
 
-// AC 7 (bounce one, direct, depth) and AC 8 (full bounce) at the rising
-// room's middle mid pose, with the posed-face exception alone.
+// Bounce one, direct, depth and full bounce at the rising room's middle mid
+// pose, with the posed-face exception alone.
 #[test]
-#[ignore = "cold bakes of mover-setpiece and its static-room reference at two fills; run on demand"]
+#[ignore = "cold bakes of mover-setpiece and its static-room reference at two fills: cargo test \
+            -p postretro-level-compiler --bin prl-build \
+            the_rising_rooms_mid_pose_matches_its_static_brush_reference -- --ignored --nocapture"]
 fn the_rising_rooms_mid_pose_matches_its_static_brush_reference() {
     assert_mid_pose_matches("mover-setpiece", "setpiece_room", FloorCuts::Compared);
 }
 
-// AC 7 and AC 8 at the sweeper's middle mid pose. Its west face lands
+// The same bars at the sweeper's middle mid pose. Its west face lands
 // part-way into a 0.5 m floor patch, which the posed slab buries part way
 // where the reference's floor is cut at the face; the probes within one
-// patch of that face are the patch-grid exception (owner, 2026-11-10). The
-// reference's static slab also cuts the floor off the patch grid along its
-// own face planes, past its footprint; the probes within one patch of such
-// a cut are the second exception (owner, 2026-11-11), and it must catch the
-// probe that cut was traced to.
+// patch of that face are the posed-face exception. The reference's static
+// slab also cuts the floor off the patch grid along its own face planes,
+// past its footprint; the probes within one patch of such a cut are the
+// floor-cut exception, and it must catch the probe that cut was traced to.
 #[test]
-#[ignore = "cold bakes of enemy-movers and its static-sweeper reference at two fills; run on demand"]
+#[ignore = "cold bakes of enemy-movers and its static-sweeper reference at two fills: cargo test \
+            -p postretro-level-compiler --bin prl-build \
+            the_sweepers_mid_pose_matches_its_static_brush_reference -- --ignored --nocapture"]
 fn the_sweepers_mid_pose_matches_its_static_brush_reference() {
     let reference = assert_mid_pose_matches("enemy-movers", "em_sweeper", FloorCuts::SetAside);
     for (label, matched, read) in [

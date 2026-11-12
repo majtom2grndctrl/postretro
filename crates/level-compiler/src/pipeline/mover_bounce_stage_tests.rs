@@ -311,7 +311,7 @@ fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
     }
 }
 
-// AC 30, in process: on the setpiece, whose wall bakes 15 poses and whose
+// In process, on the setpiece, whose wall bakes 15 poses and whose
 // room 6, at `low` and at `high`, on four workers, the SH base gate's
 // prediction with the mover channel priced covers the measured peak cold,
 // warm over an empty cache, and on a full memo hit. Every pose is priced:
@@ -714,10 +714,9 @@ fn fat_door(text: String) -> String {
         )
 }
 
-// AC 12, the enclosing rule per pose kind (owner, 2026-11-09; mid poses
-// restated 2026-11-10): a pose whose posed brushes enclose a probe's
-// position, inside one brush by at least the gather's lift, stores no
-// bounce state there. At a terminus the probe is unmarked and reads id 34.
+// The enclosing rule per pose kind: a pose whose posed brushes enclose a
+// probe's position, inside one brush by at least the gather's lift, stores
+// no bounce state there. At a terminus the probe is unmarked and reads id 34.
 // At a mid pose it is unmarked too, so it blends across, and the section's
 // across marks name exactly those enclosed (probe, mid pose) pairs among
 // the probes the mover's entries name, so direct blends across them alike.

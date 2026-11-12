@@ -735,9 +735,10 @@ fn run_after_parsing(
         args.working_set_max_bytes,
         delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
     )?;
-    // Mover poses depend only on map data. They resolve ahead of the SH
-    // gates and every SH bake, so the probe channel's bakes, and the storage
-    // classifiers its cells cap, all read one set.
+    // Mover poses depend on map data and the probe grid's layout, never on a
+    // ray. They resolve ahead of the SH gates and every SH bake, so the probe
+    // channel's bakes, and the storage classifiers its cells cap, all read
+    // one set.
     let mut mover_poses = crate::mover_light_gate::MoverPoses::resolve(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
@@ -765,6 +766,14 @@ fn run_after_parsing(
         &map_data.kinematic_movers,
         sh_config.probe_spacing,
         &probe_layout,
+    )?;
+    // Geometry poses first have a count here: every mover's placed poses,
+    // automatic ones included, are admitted before each is posed as a solid
+    // and a scene, by the movers' names.
+    mover_poses.admit_placed_poses(
+        &map_data.kinematic_movers,
+        &geo_result.texture_names,
+        args.working_set_max_bytes,
     )?;
     // Every analysed mover posed at each of its poses, once: the bounce
     // half's scenes and the direct half's occluders share these solids.

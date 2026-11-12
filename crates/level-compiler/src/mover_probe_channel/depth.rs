@@ -90,9 +90,9 @@ impl<'a> MoverAbsentDepth<'a> {
     /// What compose reads as `probe`'s base, texel by texel: its id-59 tile
     /// where id 59 keeps one, else its averaged id-34 moments in every texel.
     /// The skip judges against id 59 before the mover-tile reservation trims
-    /// it, so where the trim drops a probe's tile compose blends through the
-    /// averaged moments instead. The difference is small: a trimmed tile is,
-    /// by ranking, the closest to them.
+    /// it, and the reservation keeps the tile of every probe still carrying
+    /// mover depth after skipping ([`reserve_mover_tiles`]), so compose
+    /// blends through the base the skip read.
     pub(crate) fn base_moments(&self, probe: u32) -> Vec<[f32; 2]> {
         match self.tiles.get(&probe) {
             Some(tile) => tile
@@ -221,20 +221,34 @@ pub(crate) struct DepthReservation {
     pub(crate) shrunk_cap: u32,
     /// Id 59 tiles the reservation dropped, on top of the bake's own drops.
     pub(crate) trimmed: u64,
+    /// Of those, tiles of probes carrying mover depth: the bases their
+    /// states were judged against, dropped only where the range cannot hold
+    /// them beside the live tiles.
+    pub(crate) carrying_trimmed: usize,
 }
 
 /// Reserve one live tile per `carried` probe of the range `cap`, ahead of id
-/// 59: id 59 keeps at most `cap − live` tiles, dropping its lowest-ranked as
-/// its own selection ranks them (score descending, then probe index
-/// ascending), the scores recomputed against the probes' averaged id-34
-/// moments since the cached tiles keep none. So id 59 keeps exactly what a
-/// selection at the shrunk cap keeps. Live tiles alone past the range are a
-/// named error, never a dropped mover tile. A count within the range is
-/// exact: below it, the range cuts no mover and stops no bake.
+/// 59: id 59 keeps at most `cap − live` tiles. It keeps first the tiles of
+/// `carrying`, the probes whose live tiles blend through them: their
+/// mid-pose skips were judged against id 59 before this trim
+/// ([`MoverAbsentDepth`]), so dropping one would leave compose blending
+/// through the averaged id-34 moments the skips never read. Past those it
+/// drops its lowest-ranked as its own selection ranks them (score
+/// descending, then probe index ascending), the scores recomputed against
+/// the probes' averaged id-34 moments since the cached tiles keep none. With
+/// no carrying probe among the dropped, id 59 keeps exactly what a selection
+/// at the shrunk cap keeps. Where even the carrying probes' tiles pass what
+/// the range leaves, the lowest-ranked of them drop too, counted in
+/// [`DepthReservation::carrying_trimmed`] for the caller to warn: a range
+/// that tight is an author's explicit `--probe-depth-tile-cap`, and the
+/// drift is id 59's own trim, bounded by its rank. Live tiles alone past
+/// the range are a named error, never a dropped mover tile. A count within
+/// the range is exact: below it, the range cuts no mover and stops no bake.
 pub(crate) fn reserve_mover_tiles(
     tiles: &mut ProbeDepthTiles,
     base: &OctahedralShVolumeSection,
     carried: CarriedDepth,
+    carrying: &BTreeSet<u32>,
     cap: u32,
 ) -> Result<DepthReservation, MoverTileRangeExceeded> {
     let cap = effective_tile_cap(cap);
@@ -249,8 +263,15 @@ pub(crate) fn reserve_mover_tiles(
             live,
             shrunk_cap,
             trimmed: 0,
+            carrying_trimmed: 0,
         });
     }
+    let based = tiles
+        .section
+        .probe_indices
+        .iter()
+        .filter(|probe| carrying.contains(probe))
+        .count();
     let validity: Vec<u8> = base.probes.iter().map(|probe| probe.validity).collect();
     let bias = probe_depth_bias(base.cell_size);
     let section = &tiles.section;
@@ -272,7 +293,14 @@ pub(crate) fn reserve_mover_tiles(
             (score, probe, index)
         })
         .collect();
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    // Carrying probes' tiles first, then id 59's own rank.
+    ranked.sort_by(|a, b| {
+        carrying
+            .contains(&b.1)
+            .cmp(&carrying.contains(&a.1))
+            .then(b.0.total_cmp(&a.0))
+            .then(a.1.cmp(&b.1))
+    });
     ranked.truncate(shrunk_cap as usize);
     ranked.sort_unstable_by_key(|&(_, probe, _)| probe);
     let mut texels = Vec::with_capacity(ranked.len() * PROBE_DEPTH_TILE_TEXELS);
@@ -289,6 +317,7 @@ pub(crate) fn reserve_mover_tiles(
         live,
         shrunk_cap,
         trimmed,
+        carrying_trimmed: based.saturating_sub(shrunk_cap as usize),
     })
 }
 

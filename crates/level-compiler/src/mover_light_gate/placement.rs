@@ -151,34 +151,82 @@ fn log_knots(analysed: &AnalysedMover, knots: &[PlacedKnot], geometry: &Geometry
     );
 }
 
-/// One authored `light_poses` count and what its poses hold, for the
-/// refusal's list.
-struct AuthoredPoses<'a> {
+/// One mover's poses and what they hold, for a refusal's list.
+struct PricedPoses<'a> {
     label: &'a str,
-    count: u32,
+    count: u64,
     bytes: u64,
+}
+
+/// What a mover's poses hold before the SH base gate runs: each priced from
+/// the mover's first terminus ([`crate::mover_probe_channel::pose_held_bytes`]):
+/// its knot, the pose as placed, its posed solid and the bounce plan's posed
+/// scene.
+fn priced(
+    analysed: &AnalysedMover,
+    mover: &MapKinematicMover,
+    count: u64,
+    texture_names: &TextureNamesSection,
+) -> u64 {
+    let per_pose = crate::mover_probe_channel::pose_held_bytes(
+        mover,
+        analysed.pose(Terminus::First),
+        texture_names,
+    );
+    per_pose.saturating_mul(count)
+}
+
+/// Refuse `movers`' poses, summed, past `working_set_max_bytes`, naming each
+/// contributing mover, largest first. Every mover's poses live together
+/// until the SH base gate, so their bytes sum. `what` names the poses and
+/// `remedy` the way out.
+fn refuse_past_budget(
+    mut movers: Vec<PricedPoses<'_>>,
+    working_set_max_bytes: u64,
+    what: &str,
+    remedy: &str,
+) -> anyhow::Result<()> {
+    let total = movers
+        .iter()
+        .fold(0u64, |sum, poses| sum.saturating_add(poses.bytes));
+    if total <= working_set_max_bytes {
+        return Ok(());
+    }
+    // Stable, so equal costs keep mover-id order.
+    movers.sort_by_key(|poses| std::cmp::Reverse(poses.bytes));
+    let named = movers
+        .iter()
+        .map(|poses| {
+            format!(
+                "{} ({} poses, {} bytes)",
+                poses.label, poses.count, poses.bytes
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "mover poses' working set refused before the SH base gate: {what} hold an estimated \
+         {total} bytes, past the `--working-set-max-size` budget of {working_set_max_bytes} \
+         bytes: {named}. {remedy}, or raise `--working-set-max-size`"
+    );
 }
 
 impl MoverPoses {
     /// Refuse authored `light_poses` counts placement cannot honour, naming
     /// the movers, before [`Self::place_poses`] allocates anything in
     /// proportion to them: a count past [`MAX_POSES`], or counts whose poses'
-    /// own working set, summed over every authored mover, passes
-    /// `working_set_max_bytes`. Each pose is priced from the mover's first
-    /// terminus ([`crate::mover_probe_channel::pose_held_bytes`]): its knot,
-    /// the pose as placed, its posed solid and the bounce plan's posed scene,
-    /// all held before the SH base gate runs. Every mover's poses live
-    /// together until then, so the movers' bytes sum; the refusal lists each
-    /// contributing mover, largest first. Never places fewer poses. An
-    /// automatic count is at most [`AUTO_POSE_CAP`] and is priced by the SH
-    /// base gate with the rest of the channel.
+    /// own working set ([`priced`]), summed over every authored mover, passes
+    /// `working_set_max_bytes`. Never places fewer poses. Automatic counts
+    /// are known only once placement adds their geometry poses, and are
+    /// admitted then, with every other mover's
+    /// ([`Self::admit_placed_poses`]).
     pub(crate) fn admit_pose_counts(
         &self,
         movers: &[MapKinematicMover],
         texture_names: &TextureNamesSection,
         working_set_max_bytes: u64,
     ) -> anyhow::Result<()> {
-        let mut authored: Vec<AuthoredPoses<'_>> = Vec::new();
+        let mut authored: Vec<PricedPoses<'_>> = Vec::new();
         for analysed in &self.analysed {
             let Some(mover) = movers.iter().find(|m| m.mover_id == analysed.mover_id) else {
                 continue;
@@ -194,41 +242,54 @@ impl MoverPoses {
                     analysed.label,
                 );
             }
-            let per_pose = crate::mover_probe_channel::pose_held_bytes(
-                mover,
-                analysed.pose(Terminus::First),
-                texture_names,
-            );
-            authored.push(AuthoredPoses {
+            authored.push(PricedPoses {
                 label: &analysed.label,
-                count,
-                bytes: per_pose.saturating_mul(u64::from(count)),
+                count: u64::from(count),
+                bytes: priced(analysed, mover, u64::from(count), texture_names),
             });
         }
-        let total = authored
+        refuse_past_budget(
+            authored,
+            working_set_max_bytes,
+            "the authored `light_poses` poses",
+            "Lower `light_poses`",
+        )
+    }
+
+    /// Refuse every mover's placed poses, even and geometry poses alike,
+    /// past `working_set_max_bytes` before any of them is posed as a solid
+    /// or a scene: overage is a named error, never fewer poses. Runs after
+    /// [`Self::place_poses`], where geometry poses first have a count, and
+    /// before `PosedMovers::resolve` allocates each pose's solid. Each pose
+    /// is priced as [`Self::admit_pose_counts`] prices an authored one
+    /// ([`priced`]); a mover posed at its termini alone is priced too, since
+    /// its solids are held as well.
+    pub(crate) fn admit_placed_poses(
+        &self,
+        movers: &[MapKinematicMover],
+        texture_names: &TextureNamesSection,
+        working_set_max_bytes: u64,
+    ) -> anyhow::Result<()> {
+        let placed = self
+            .analysed
             .iter()
-            .fold(0u64, |sum, poses| sum.saturating_add(poses.bytes));
-        if total <= working_set_max_bytes {
-            return Ok(());
-        }
-        // Stable, so equal costs keep mover-id order.
-        authored.sort_by_key(|poses| std::cmp::Reverse(poses.bytes));
-        let named = authored
-            .iter()
-            .map(|poses| {
-                format!(
-                    "{} ({} poses, {} bytes)",
-                    poses.label, poses.count, poses.bytes
-                )
+            .filter_map(|analysed| {
+                let mover = movers.iter().find(|m| m.mover_id == analysed.mover_id)?;
+                let count = analysed.poses.len() as u64;
+                Some(PricedPoses {
+                    label: &analysed.label,
+                    count,
+                    bytes: priced(analysed, mover, count, texture_names),
+                })
             })
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!(
-            "mover poses' working set refused before the SH base gate: the authored \
-             `light_poses` poses hold an estimated {total} bytes, past the \
-             `--working-set-max-size` budget of {working_set_max_bytes} bytes: {named}. \
-             Lower `light_poses`, or raise `--working-set-max-size`"
-        );
+            .collect();
+        refuse_past_budget(
+            placed,
+            working_set_max_bytes,
+            "the movers' placed poses (even and geometry poses)",
+            "Set a lower `light_poses` on the named movers, which also places no geometry \
+             poses on them",
+        )
     }
 
     /// The one placement chokepoint: add each analysed mover's mid poses
@@ -240,10 +301,11 @@ impl MoverPoses {
     /// enclosing a near-field probe of `probes`. An authored `light_poses`
     /// places exactly that many even poses and no geometry knot: the
     /// author's trade of exactness for cost. Termini keep their exact poses
-    /// as knots 0 and 1. Warns once per mover whose automatic even count
-    /// passed [`AUTO_POSE_CAP`]; geometry knots never count against it, and
-    /// none is dropped to meet a count. Authored counts are admitted first
-    /// ([`Self::admit_pose_counts`]).
+    /// as the knots at t = 0 and t = 1. Warns once per mover whose automatic
+    /// even count passed [`AUTO_POSE_CAP`]; geometry knots never count
+    /// against it, and none is dropped to meet a count. Authored counts are
+    /// admitted first ([`Self::admit_pose_counts`]), and every mover's
+    /// placed count after ([`Self::admit_placed_poses`]).
     ///
     /// Fails by the mover's name only where a placed geometry knot's pose
     /// disagrees with the bake's enclosing rule, which placement checks at
@@ -266,7 +328,8 @@ impl MoverPoses {
                     "[MoverLight] {}: its {length:.2} m path wants {wanted} even poses at the \
                      {probe_spacing} m probe spacing, past the cap of {AUTO_POSE_CAP}; baking \
                      {AUTO_POSE_CAP} even poses {:.2} m apart instead. Set `light_poses` on the \
-                     mover to bake more",
+                     mover to bake more even poses; a set count places no geometry poses where \
+                     the mover meets probes",
                     analysed.label,
                     length / (AUTO_POSE_CAP - 1) as f32,
                 );

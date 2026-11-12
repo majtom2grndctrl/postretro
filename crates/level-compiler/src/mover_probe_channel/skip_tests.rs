@@ -200,7 +200,7 @@ fn next_f16(value: f32) -> f32 {
     f16_bits_to_f32(f32_to_f16_bits(value) + 1)
 }
 
-// AC 10: a probe whose states run linear in t between its termini stores
+// A probe whose states run linear in t between its termini stores
 // none of its mid poses; compose reads the termini blend, which lands on
 // every mid state.
 #[test]
@@ -218,7 +218,7 @@ fn a_gentle_curve_skips_every_mid_pose_and_composes_within_its_bars() {
     assert_skipped_compose_within_bars(&raw, &probe.marks, &effective_knots(&knots, 0.0, 1.0));
 }
 
-// AC 10: a mid pose whose state sits one f16 step past its neighbours'
+// A mid pose whose state sits one f16 step past its neighbours'
 // blend by the perceptual floor stores it; one step nearer, it skips.
 #[test]
 fn a_mid_pose_missing_its_bars_by_a_step_stores_and_within_them_skips() {
@@ -241,7 +241,7 @@ fn a_mid_pose_missing_its_bars_by_a_step_stores_and_within_them_skips() {
     }
 }
 
-// AC 10, MP2: states curving gently (v = a + c·k²) sit within the bars of
+// States curving gently (v = a + c·k²) sit within the bars of
 // their immediate neighbours' blend at every mid pose, yet the termini
 // alone miss. Skips are judged against the interval compose reads after
 // every other skip, so enough states stay, and compose at every skipped
@@ -295,7 +295,7 @@ fn adjacent_skips_stay_within_the_bars_at_every_skipped_pose() {
     assert!(worst <= BOUNCE_FLOOR_LEVELS, "{worst}");
 }
 
-// AC 11, MP9: on poses at t 0, 0.2, 0.4, 0.6, 0.8 and 1 under ramp (0.6,
+// On poses at t 0, 0.2, 0.4, 0.6, 0.8 and 1 under ramp (0.6,
 // 0.9), compose reads knots t′ 0 (pose 0), 0.667 (pose 4) and 1 (pose 5).
 // Poses 1 to 3 are squeezed out and never read, so they skip whatever they
 // store; pose 4 is judged against pose 0 → pose 5 at t′ 0.667, and skips.
@@ -339,7 +339,7 @@ fn skips_are_judged_after_the_ramp_and_a_ramp_edit_re_decides_them() {
     assert_skipped_compose_within_bars(&raw, marks, &effective_knots(&knots, 0.0, 1.0));
 }
 
-// MP11, AC 11: a probe whose only stored mid state sits at a pose the ramp
+// A probe whose only stored mid state sits at a pose the ramp
 // squeezes out reads id 34 wherever compose reads, so it leaves the bounce
 // states; one carrying depth only there leaves the depth states and no
 // longer carries depth.
@@ -383,7 +383,7 @@ fn tile_moments(tile: &[[u16; 2]]) -> [f32; 2] {
     tile[0].map(f16_bits_to_f32)
 }
 
-// AC 18, MP8: a depth probe whose mid tiles lie on its termini's
+// A depth probe whose mid tiles lie on its termini's
 // through-base blend skips every mid pose, so its interval runs terminus to
 // terminus through the base, a two-pose mover's blend at every t′. A probe
 // outside the near-field domain (no mid state) keeps its marks and composes
@@ -479,7 +479,7 @@ fn a_base_reading_mid_pose_bounds_every_interval() {
     assert_eq!(counts.bounce_skipped, 0);
 }
 
-// AC 18 under the mean-and-variance rule: a texel watching one occluder
+// Under the mean-and-variance rule, a texel watching one occluder
 // translate along its ray holds a mean moving linearly with the mover and
 // a fixed spread. An interval with a mid pose at either end blends mean and
 // variance, which lands on every state between, so the skip keeps a single
@@ -528,4 +528,198 @@ fn a_translating_occluder_keeps_one_mid_pose_and_skips_the_rest_against_mean_and
         worst >= DEPTH_SIGNIFICANCE_FLOOR,
         "precondition: the termini's through-base blend misses ({worst})"
     );
+}
+
+/// The skip walk as first written: every far end tried nearest first, the
+/// stored poses between marked across in place and restored after each
+/// try. Kept as the reference [`skip_marks`] must match mark for mark.
+fn reference_skip_marks(
+    marks: &mut [PoseMark],
+    knots: &[Knot],
+    within: impl Fn(u32, PoseInterval) -> bool,
+) -> usize {
+    let count = marks.len();
+    let mut squeezed = 0;
+    let mut read = vec![false; count];
+    for knot in knots {
+        read[knot.pose as usize] = true;
+    }
+    for pose in 1..count.saturating_sub(1) {
+        if !read[pose] && marks[pose] == PoseMark::Stored {
+            marks[pose] = PoseMark::Unmarked;
+            squeezed += 1;
+        }
+    }
+    let last = knots.len() - 1;
+    let mark = |marks: &[PoseMark], k: usize| marks[knots[k].pose as usize];
+    let mut lo = 0;
+    while lo < last {
+        let reach = (lo + 1..=last)
+            .find(|&k| k == last || mark(marks, k) == PoseMark::Base)
+            .expect("the last knot ends every reach");
+        let mut best = None;
+        for hi in lo + 1..=reach {
+            if hi < reach && mark(marks, hi) != PoseMark::Stored {
+                continue;
+            }
+            let between: Vec<usize> = (lo + 1..hi)
+                .filter(|&k| mark(marks, k) == PoseMark::Stored)
+                .collect();
+            for &k in &between {
+                marks[knots[k].pose as usize] = PoseMark::Unmarked;
+            }
+            let holds = between.iter().all(|&k| {
+                let span = pose_interval(knots, knots[k].t, |pose| {
+                    marks[pose as usize] != PoseMark::Unmarked
+                });
+                within(knots[k].pose, span)
+            });
+            for &k in &between {
+                marks[knots[k].pose as usize] = PoseMark::Stored;
+            }
+            if holds {
+                best = Some((hi, between));
+            }
+        }
+        let (hi, between) = best.expect("the next defined knot always holds");
+        for k in between {
+            marks[knots[k].pose as usize] = PoseMark::Unmarked;
+        }
+        lo = hi;
+    }
+    squeezed
+}
+
+/// A small deterministic generator for the randomized cases.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+// The farthest-first walk skips exactly what the nearest-first walk skipped,
+// over random marks, curves, bars and ramps, from 3 poses to 140.
+#[test]
+fn the_farthest_first_skip_walk_skips_exactly_what_the_nearest_first_walk_did() {
+    let mut rng = Lcg(0x5eed);
+    for case in 0..3_000 {
+        let count = match case % 10 {
+            0 => 140,
+            1 => 71,
+            _ => 3 + rng.below(30) as usize,
+        };
+        let marks: Vec<PoseMark> = (0..count)
+            .map(|_| match rng.below(10) {
+                0 => PoseMark::Base,
+                1 => PoseMark::Unmarked,
+                _ => PoseMark::Stored,
+            })
+            .collect();
+        // A curve with gentle drift and occasional steps, so some far ends
+        // hold and some fail.
+        let mut value = 0.0f32;
+        let values: Vec<f32> = (0..count)
+            .map(|_| {
+                value += if rng.below(6) == 0 {
+                    rng.below(100) as f32 / 10.0
+                } else {
+                    rng.below(10) as f32 / 100.0
+                };
+                value
+            })
+            .collect();
+        let base = rng.below(50) as f32 / 10.0;
+        let bar = 0.05 + rng.below(40) as f32 / 100.0;
+        let state = |pose: u32| {
+            if marks[pose as usize] == PoseMark::Stored {
+                values[pose as usize]
+            } else {
+                base
+            }
+        };
+        let within = |pose: u32, span: PoseInterval| {
+            let composed = state(span.lo) + (state(span.hi) - state(span.lo)) * span.weight;
+            (composed - values[pose as usize]).abs() <= bar
+        };
+        let ramp = if rng.below(3) == 0 {
+            (0.2, 0.8)
+        } else {
+            (0.0, 1.0)
+        };
+        let knots = effective_knots(&even(count), ramp.0, ramp.1);
+        let (mut walked, mut reference) = (marks.clone(), marks.clone());
+        let squeezed = skip_marks(&mut walked, &knots, within);
+        let reference_squeezed = reference_skip_marks(&mut reference, &knots, within);
+        assert_eq!(
+            (walked, squeezed),
+            (reference, reference_squeezed),
+            "case {case}: {count} poses, ramp {ramp:?}"
+        );
+    }
+}
+
+/// `count` poses at even knots, one probe's curve per `shape`, for the skip
+/// timing.
+fn timing_curve(count: usize, shape: &str) -> Vec<At> {
+    (0..count)
+        .map(|k| {
+            let value = match shape {
+                // Every pose a step off its neighbours' blend: nothing skips.
+                "zigzag" => BASE_BOUNCE + if k % 2 == 0 { 0.0 } else { 0.5 },
+                // A step every twenty poses, as a probe's layer crossings.
+                "crossings" => BASE_BOUNCE + 0.5 * (k / 20) as f32,
+                // Linear: every mid pose skips.
+                _ => BASE_BOUNCE + 0.002 * k as f32,
+            };
+            At::Stored(value)
+        })
+        .collect()
+}
+
+// Times the skip pass at 140 poses over `PROBES` probes per shape, bounce
+// and depth alike. Prints; gates nothing.
+#[test]
+#[ignore = "timing: cargo test -p postretro-level-compiler --release --bin prl-build \
+            skip_pass_timing_at_140_poses -- --ignored --nocapture"]
+fn skip_pass_timing_at_140_poses() {
+    const POSES: usize = 140;
+    const PROBES: usize = 4_000;
+    let knots = even(POSES);
+    for shape in ["linear", "crossings", "zigzag"] {
+        let curve = timing_curve(POSES, shape);
+        let bounce = vec![bounce_probe(&curve); PROBES];
+        let depth = (0..PROBES)
+            .map(|_| {
+                let tiles = curve
+                    .iter()
+                    .map(|at| match at {
+                        At::Stored(value) => depth_tile(moments(20.0 * value)),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                depth_probe(marks_of(&curve), tiles)
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let (_, counts) = skip(bounce, depth, &knots, (0.0, 1.0));
+        eprintln!(
+            "{shape}: {PROBES} bounce + {PROBES} depth probes at {POSES} poses: {:.3} s; bounce \
+             keeps {} skips {}, depth keeps {} skips {}",
+            started.elapsed().as_secs_f64(),
+            counts.bounce_stored,
+            counts.bounce_skipped,
+            counts.depth_stored,
+            counts.depth_skipped,
+        );
+    }
 }

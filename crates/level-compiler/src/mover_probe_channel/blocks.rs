@@ -159,11 +159,15 @@ impl BounceBlocks {
     /// Distinct probes carrying mover depth: one live tile each, however many
     /// movers change the probe.
     pub(crate) fn live_tile_count(&self) -> usize {
+        self.live_probes().len()
+    }
+
+    /// The probes carrying mover depth, each composing a live tile.
+    pub(crate) fn live_probes(&self) -> BTreeSet<u32> {
         self.depth
             .iter()
             .map(|part| part.record.probe_index)
-            .collect::<BTreeSet<_>>()
-            .len()
+            .collect()
     }
 
     /// Log the blocks once per build. Where each payload is placed is

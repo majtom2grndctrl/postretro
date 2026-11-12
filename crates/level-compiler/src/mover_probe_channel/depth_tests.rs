@@ -7,6 +7,8 @@ use postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
 use postretro_level_format::mover_probe_channel::PoseMark;
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
+use std::collections::BTreeSet;
+
 use super::{CarriedDepth, MoverTileRangeExceeded, refuse_cut_short, reserve_mover_tiles};
 use crate::mover_probe_channel::{DepthProbe, MoverBounceStates};
 use crate::sh_bake::depth_tiles_test_fixtures::DepthTileFixture;
@@ -32,6 +34,7 @@ fn reserving_mover_tiles_keeps_what_a_selection_at_the_shrunk_cap_keeps() {
             &mut tiles,
             &full.section,
             CarriedDepth::exact(live as usize),
+            &BTreeSet::new(),
             kept,
         )
         .expect("the live tiles fit the range");
@@ -62,9 +65,14 @@ fn the_tile_range_holds_live_tiles_first_and_refuses_them_past_it_by_name() {
     let cap = (kept + live) as u32;
 
     let mut at_cap = full.depth_tiles.clone();
-    let reservation =
-        reserve_mover_tiles(&mut at_cap, &full.section, CarriedDepth::exact(live), cap)
-            .expect("fits");
+    let reservation = reserve_mover_tiles(
+        &mut at_cap,
+        &full.section,
+        CarriedDepth::exact(live),
+        &BTreeSet::new(),
+        cap,
+    )
+    .expect("fits");
     assert_eq!(reservation.trimmed, 0);
     assert_eq!(
         at_cap, full.depth_tiles,
@@ -72,15 +80,20 @@ fn the_tile_range_holds_live_tiles_first_and_refuses_them_past_it_by_name() {
     );
 
     let mut over = full.depth_tiles.clone();
-    let reservation =
-        reserve_mover_tiles(&mut over, &full.section, CarriedDepth::exact(live + 1), cap)
-            .expect("fits");
+    let reservation = reserve_mover_tiles(
+        &mut over,
+        &full.section,
+        CarriedDepth::exact(live + 1),
+        &BTreeSet::new(),
+        cap,
+    )
+    .expect("fits");
     assert_eq!(reservation.trimmed, 1);
     assert_eq!(over.section.tile_count(), kept - 1);
 
     let mut refused = full.depth_tiles.clone();
     let carried = CarriedDepth::exact(cap as usize + 1);
-    let error = reserve_mover_tiles(&mut refused, &full.section, carried, cap)
+    let error = reserve_mover_tiles(&mut refused, &full.section, carried, &BTreeSet::new(), cap)
         .expect_err("live tiles alone past the range");
     assert_eq!(error, MoverTileRangeExceeded { carried, cap });
     let message = error.to_string();
@@ -94,7 +107,7 @@ fn the_tile_range_holds_live_tiles_first_and_refuses_them_past_it_by_name() {
         exact: false,
         ..carried
     };
-    let message = reserve_mover_tiles(&mut refused, &full.section, partial, cap)
+    let message = reserve_mover_tiles(&mut refused, &full.section, partial, &BTreeSet::new(), cap)
         .expect_err("a partial count past the range")
         .to_string();
     assert!(
@@ -104,6 +117,92 @@ fn the_tile_range_holds_live_tiles_first_and_refuses_them_past_it_by_name() {
     assert_eq!(
         refused, full.depth_tiles,
         "a refused reservation changes nothing"
+    );
+}
+
+// A probe still carrying mover depth after skipping blends its live tile
+// through its id-59 tile, the base its skips were judged against, so the
+// reservation keeps that tile even where id 59's own rank would drop it, and
+// drops the next-lowest instead. Where the carrying probes' tiles cannot all
+// fit beside the live tiles, the lowest-ranked of them drop and are counted.
+#[test]
+fn the_reservation_keeps_the_id_59_tiles_carrying_probes_blend_through() {
+    let fixture = DepthTileFixture::load(STATIC_DOOR);
+    let full = fixture.bake(MAX_PROBE_DEPTH_TILES, None);
+    let kept = full.depth_tiles.section.tile_count();
+    assert!(kept >= 4, "the closet tiles its door probes: {kept}");
+    let probes: BTreeSet<u32> = full
+        .depth_tiles
+        .section
+        .probe_indices
+        .iter()
+        .copied()
+        .collect();
+    let cap = kept as u32;
+    let reserve = |carrying: &BTreeSet<u32>| {
+        let mut tiles = full.depth_tiles.clone();
+        let reservation = reserve_mover_tiles(
+            &mut tiles,
+            &full.section,
+            CarriedDepth::exact(1),
+            carrying,
+            cap,
+        )
+        .expect("one live tile fits the range")
+        .trimmed;
+        (reservation, tiles)
+    };
+    // By rank alone, one live tile drops id 59's lowest-ranked tile.
+    let (trimmed, by_rank) = reserve(&BTreeSet::new());
+    assert_eq!(trimmed, 1);
+    let kept_by_rank: BTreeSet<u32> = by_rank.section.probe_indices.iter().copied().collect();
+    let lowest = *probes
+        .difference(&kept_by_rank)
+        .next()
+        .expect("rank drops one tile");
+    // That probe carrying mover depth keeps its tile; another drops.
+    let carrying = BTreeSet::from([lowest]);
+    let (trimmed, exempt) = reserve(&carrying);
+    assert_eq!(trimmed, 1);
+    assert_eq!(exempt.section.tile_count(), kept - 1);
+    assert!(
+        exempt.section.probe_indices.contains(&lowest),
+        "the carrying probe's base tile stays"
+    );
+    let at = exempt
+        .section
+        .probe_indices
+        .iter()
+        .position(|&probe| probe == lowest)
+        .expect("kept");
+    let was = full
+        .depth_tiles
+        .section
+        .probe_indices
+        .iter()
+        .position(|&probe| probe == lowest)
+        .expect("baked");
+    assert_eq!(
+        exempt.section.tile(at),
+        full.depth_tiles.section.tile(was),
+        "its bytes are the bake's"
+    );
+    // Every tile's probe carrying depth, one live tile past what id 59 holds:
+    // the carrying tiles cannot all stay, so the lowest-ranked drops by id
+    // 59's own rank and the reservation counts it for the warning.
+    let mut tiles = full.depth_tiles.clone();
+    let reservation = reserve_mover_tiles(
+        &mut tiles,
+        &full.section,
+        CarriedDepth::exact(1),
+        &probes,
+        cap,
+    )
+    .expect("the live tile fits the range");
+    assert_eq!(reservation.carrying_trimmed, 1);
+    assert_eq!(
+        tiles, by_rank,
+        "with every probe carrying, rank alone decides"
     );
 }
 

@@ -32,8 +32,8 @@ fn tile(coefficients: &[f32; 27]) -> Vec<OctahedralAtlasTexel> {
 // A mid pose stores its own gathered state, packed as id 34 packs a tile,
 // where it leaves id 34 by more than the round-trip bar and the perceptual
 // floor; reads the base where it stays within either; and stores nothing,
-// so it blends across, where it encloses the probe (AC 12), whatever its
-// gather read.
+// so it blends across, where it encloses the probe, whatever its gather
+// read.
 #[test]
 fn a_mid_pose_stores_its_gather_past_the_bars_reads_the_base_within_and_blends_across_enclosed() {
     let base = tile(&dc(0.5));

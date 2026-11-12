@@ -1,54 +1,83 @@
 // Geometry knots: poses placed where a mover's brushes start or stop
 // enclosing a near-field probe along its path, by the bake's own enclosing
-// rule, one just inside and one clear outside each end.
+// rule, one just inside and one clear of the gather's lift band outside
+// each end.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 
 use super::pose::{AnalysedMover, Pose};
 use super::travel::{PathTravel, TravelLeg};
+use crate::lightmap_bake::RAY_EPSILON;
 use crate::map_data::{BrushVolume, MapKinematicMover};
 use crate::mover_probe_channel::{NearFieldDomain, enclosure_inset};
+use crate::partition::Aabb;
 use crate::sh_bake::{ProbeGridLayout, vec3_from};
 
 /// How far past each end of an enclosure interval its outside knot sits, in
-/// metres of travel: one map unit. An enclosed inside knot blends values
-/// across, so between an outside knot and its inside knot the probe is out
-/// of the mover yet its values are still mid-lerp; this distance is that
-/// window. Source: the task 15b sweep (`mover-light-flow--mid-travel-poses`
-/// `captures/t15b-results.md`) of 4.4, 2, 1 and 0.2 units against the
-/// fine-pose truth bake: the rising room's ceiling residual fell 2.18 →
-/// 1.46 → 0.45 → 0.23 luma and em_sweeper's west face passed from 1 unit
-/// down, while 1 unit keeps the knot 8× clear of the gather lift's band
-/// ([`OUTSIDE_KNOT_CLEARANCE_M`]) and four fewer room knots than 0.2 units.
+/// metres along the face the probe crosses there: one map unit. An enclosed
+/// inside knot blends values across, so between an outside knot and its
+/// inside knot the probe is out of the mover yet its values are still
+/// mid-lerp; this distance is that window. Source: a sweep of 4.4, 2, 1 and
+/// 0.2 units against fine-pose truth bakes (`light_poses` 41 on
+/// `mover-setpiece`'s rising room, 57 on `enemy-movers`' em_sweeper), on
+/// faces the movers cross square: the room's ceiling residual fell 2.18 →
+/// 1.46 → 0.45 → 0.23 luma and em_sweeper's west face came within its
+/// 3-level bar from 1 unit down, while 1 unit stays about six times clear
+/// of the lift band ([`lift_band`]) and places four fewer room knots than
+/// 0.2 units.
 pub(crate) const OUTSIDE_KNOT_DISTANCE_M: f64 = 1.0 / 39.37;
 
 /// How far inside each end of an enclosure interval its inside knot sits,
-/// in metres of travel: just inside, so the pose there encloses the probe
-/// by the bake's rule and stores the enclosed depth. Source: the same
-/// evidence, where knots placed one fine step (4.4 units) loose brought the
-/// depth spikes back; this keeps them well inside that slack. GPU captures
-/// tune it.
+/// in metres along the face the probe crosses there: just inside, so the
+/// pose there encloses the probe by the bake's rule and stores the enclosed
+/// depth. Knots placed one fine step (4.4 units) loose brought the depth
+/// spikes back against the truth bakes; this keeps them well inside that
+/// slack.
 pub(crate) const INSIDE_KNOT_MARGIN_M: f64 = 0.01;
 
 /// How far, in metres of travel, a knot may move to merge with another, so
 /// knots whose targets lie within twice it can share one pose; a merge
 /// never moves a knot to the wrong side of its own probe's interval. A
-/// quarter of the 4.4-unit (0.11 m) slack the offline evidence shows fails.
-/// GPU captures tune it.
+/// quarter of the 4.4-unit (0.11 m) slack the truth bakes show fails.
 pub(crate) const KNOT_MERGE_TOLERANCE_M: f64 = 0.025;
 
-/// The least travel, in metres, by which an outside knot clears its
-/// enclosure interval's end: the enclosing inset (about the gather lift,
-/// `RAY_EPSILON`, 1 mm) plus the lift, so every lifted gather ray of the
-/// probe starts outside the posed brush, plus [`SIDE_GUARD_M`]. Merging
-/// never pulls an outside knot nearer than this.
-pub(crate) const OUTSIDE_KNOT_CLEARANCE_M: f64 = 0.003;
-
-/// The least travel, in metres, by which a knot stays on its side of an
-/// interval end: far above the `f32` rounding of a posed offset, so the
-/// pose placed at a knot reads the side the exact interval gives it.
+/// The least distance, along the face a knot's probe crosses, by which a
+/// knot keeps its side: inside the enclosure by this past the enclosing
+/// inset, or outside the lift band by this. Far above the `f32` rounding of
+/// t and of a posed offset, so the pose placed at a knot reads the side the
+/// exact interval gives it.
 const SIDE_GUARD_M: f64 = 0.001;
+
+/// How far outside a posed brush a probe's lifted gather rays can start
+/// inside it: one [`RAY_EPSILON`] lift plus the enclosing inset
+/// ([`enclosure_inset`]), itself a lift plus the lifted origin's `f32`
+/// rounding. The direct half lifts its segments twice, so this covers both
+/// halves.
+pub(crate) fn lift_band(probe: Vec3) -> f64 {
+    f64::from(RAY_EPSILON) + enclosure_inset(probe)
+}
+
+/// Whether `pose` leaves `probe` clear of the lift band ([`lift_band`]): for
+/// every posed brush, the probe lies past one of its planes by more than the
+/// band, or outside its bounds grown by the band. Either way no lifted
+/// origin of the probe starts inside that brush, so the pose stores the
+/// probe's open-air state. The rule every outside knot is checked against.
+pub(crate) fn clear_of_band(pose: &Pose, probe: Vec3) -> bool {
+    let band = lift_band(probe);
+    let point = probe.as_dvec3();
+    !pose.brushes.iter().any(|brush| {
+        within_grown(&brush.bounds, point, band)
+            && brush
+                .planes
+                .iter()
+                .all(|&(normal, distance)| normal.dot(point) - distance <= band)
+    })
+}
+
+fn within_grown(bounds: &Aabb, point: DVec3, by: f64) -> bool {
+    point.cmpge(bounds.min - by).all() && point.cmple(bounds.max + by).all()
+}
 
 /// A mover's geometry knots: strictly ascending travel fractions strictly
 /// between its termini, distinct in `f32`.
@@ -58,8 +87,8 @@ pub(super) struct GeometryKnots {
     /// Near-field probes the mover's brushes enclose somewhere along the
     /// path.
     pub(super) enclosed_probes: usize,
-    /// Their enclosures, seams joined ([`Enclosure`]), over every such
-    /// probe.
+    /// Their enclosures, joined across the lift band ([`Enclosure`]), over
+    /// every such probe.
     pub(super) intervals: usize,
 }
 
@@ -68,7 +97,7 @@ pub(super) struct GeometryKnots {
 enum Side {
     /// The pose there encloses the probe.
     Inside,
-    /// The pose there does not.
+    /// The pose there leaves the probe clear of the lift band.
     Outside,
 }
 
@@ -84,20 +113,24 @@ struct KnotWindow {
 }
 
 /// The mover's geometry knots: at each end of each enclosure of each valid
-/// probe in its near-field domain, an inside knot just inside and an
-/// outside knot [`OUTSIDE_KNOT_DISTANCE_M`] of travel outside, merged where
-/// they lie within [`KNOT_MERGE_TOLERANCE_M`]. Enclosure intervals the
-/// probe passes between through a seam of the mover's own solid join into
-/// one enclosure ([`Enclosure`]). An end at a terminus places nothing: the
-/// terminus already holds that side. Every placed knot's pose is checked
-/// against the bake's enclosing rule ([`Pose::encloses`]) for each knot it
-/// stands for; a disagreement fails by the mover's name, since it would
+/// probe in its near-field domain, an inside knot [`INSIDE_KNOT_MARGIN_M`]
+/// inside and an outside knot [`OUTSIDE_KNOT_DISTANCE_M`] outside, both
+/// along the face the probe crosses at that end, merged where they lie
+/// within [`KNOT_MERGE_TOLERANCE_M`] of travel. Outside knots sit only where
+/// the pose leaves the probe clear of the lift band ([`clear_of_band`]), so
+/// enclosures whose gap lies inside the band join into one ([`Enclosure`])
+/// and the probe blends across the gap, as it does across a seam of the
+/// mover's own solid. An end at a terminus, or one whose clear side lies
+/// within the band all the way to a terminus, places no outside knot: the
+/// terminus holds that side. Every placed knot's pose is checked against
+/// the bake's enclosing rule ([`Pose::encloses`]) or the band for each knot
+/// it stands for; a disagreement fails by the mover's name, since it would
 /// store the wrong state.
 ///
-/// A probe enclosed for less than twice [`SIDE_GUARD_M`] of travel, or clear
-/// between two enclosures for less, gets its knot at that sliver's middle
-/// only when the pose there reads the sliver's side; the sliver is below
-/// what an `f32` pose can resolve otherwise, and logged.
+/// A probe enclosed by less than [`SIDE_GUARD_M`] past the inset either side
+/// gets its inside knot at the enclosure's middle only when the pose there
+/// encloses it; the enclosure is below what an `f32` pose can resolve
+/// otherwise, and logged.
 pub(super) fn geometry_knots(
     analysed: &AnalysedMover,
     mover: &MapKinematicMover,
@@ -109,20 +142,8 @@ pub(super) fn geometry_knots(
     if legs.is_empty() || probes.is_empty() {
         return Ok(GeometryKnots::default());
     }
-    let length = f64::from(travel.length());
-    let scale = Scale {
-        outside: OUTSIDE_KNOT_DISTANCE_M / length,
-        inside: INSIDE_KNOT_MARGIN_M / length,
-        tolerance: travel.merge_tolerance(),
-        guard: SIDE_GUARD_M / length,
-        clearance: OUTSIDE_KNOT_CLEARANCE_M / length,
-    };
-    // `Pose` keeps the brushes with bounds, so the intervals read the same.
-    let brushes: Vec<&BrushVolume> = mover
-        .brush_volumes
-        .iter()
-        .filter(|brush| brush.aabb.is_valid())
-        .collect();
+    let sweep = Sweep::new(mover, legs, f64::from(travel.length()));
+    let tolerance = travel.merge_tolerance();
     let posed_at = |t: f32| Pose::new("", &mover.brush_volumes, travel.mid_offset(t));
     let domain = NearFieldDomain::new(analysed, probe_spacing);
     let mut placed = GeometryKnots::default();
@@ -130,21 +151,20 @@ pub(super) fn geometry_knots(
     let mut slivers = 0usize;
     for index in domain.valid_probes(probes) {
         let probe = vec3_from(probes.probe_positions[index as usize]);
-        let enclosures = enclosures(&brushes, &legs, probe);
+        let enclosures = sweep.enclosures(probe);
         if enclosures.is_empty() {
             continue;
         }
         placed.enclosed_probes += 1;
         placed.intervals += enclosures.len();
-        for window in end_windows(&enclosures, probe, &scale) {
+        for window in end_windows(&enclosures, probe, tolerance) {
             if window.lo < window.hi {
                 windows.push(window);
                 continue;
             }
-            // A sliver: keep its middle only where a pose there reads its
-            // side.
-            let reads = posed_at(window.lo as f32).encloses(probe) == (window.side == Side::Inside);
-            if reads {
+            // An enclosure too shallow to hold a window: keep its middle
+            // only where a pose there encloses the probe.
+            if posed_at(window.lo as f32).encloses(probe) {
                 windows.push(window);
             } else {
                 slivers += 1;
@@ -153,8 +173,8 @@ pub(super) fn geometry_knots(
     }
     if slivers > 0 {
         log::debug!(
-            "[MoverLight] {}: {slivers} enclosure end(s) narrower than an `f32` pose resolves \
-             place no knot",
+            "[MoverLight] {}: {slivers} enclosure(s) shallower than an `f32` pose resolves \
+             place no inside knot",
             analysed.label,
         );
     }
@@ -174,19 +194,23 @@ pub(super) fn geometry_knots(
             mid = posed_at(t);
             (Some(t), &mid)
         };
-        if let Some(window) = members
-            .iter()
-            .find(|window| pose.encloses(window.probe) != (window.side == Side::Inside))
-        {
+        if let Some(window) = members.iter().find(|window| match window.side {
+            Side::Inside => !pose.encloses(window.probe),
+            Side::Outside => !clear_of_band(pose, window.probe),
+        }) {
+            let should = match window.side {
+                Side::Inside => format!(
+                    "enclose the probe at {} by the bake's enclosing rule",
+                    window.probe
+                ),
+                Side::Outside => format!(
+                    "leave the probe at {} clear of the gather's lift band",
+                    window.probe
+                ),
+            };
             anyhow::bail!(
-                "{}: the geometry knot at t {point:.6} should {} the probe at {} by the \
-                 bake's enclosing rule, and its pose does not",
+                "{}: the geometry knot at t {point:.6} should {should}, and its pose does not",
                 analysed.label,
-                match window.side {
-                    Side::Inside => "enclose",
-                    Side::Outside => "leave clear",
-                },
-                window.probe,
             );
         }
         placed.knots.extend(t);
@@ -195,192 +219,274 @@ pub(super) fn geometry_knots(
     Ok(placed)
 }
 
-/// The placement constants as travel fractions of one path.
-struct Scale {
-    outside: f64,
-    inside: f64,
-    tolerance: f64,
-    guard: f64,
-    clearance: f64,
+/// A mover's brushes along its path: the legs, and per (leg, brush) the
+/// hull its bounds sweep over the leg, which a probe the brush encloses, or
+/// holds within the band, lies inside once grown by the band.
+struct Sweep<'m> {
+    brushes: Vec<&'m BrushVolume>,
+    legs: Vec<TravelLeg>,
+    /// (leg, brush, hull), one per leg and bounded brush.
+    sweeps: Vec<(usize, usize, Aabb)>,
+    /// The path's length: the rate an end falls back to when no face sets
+    /// it.
+    length: f64,
 }
 
-/// One stretch of travel over which a probe stays inside the mover: its
-/// enclosure intervals by the bake's rule, joined across any gap the probe
-/// spends inside the mover's solid. Such a gap is a seam where two of the
-/// mover's brushes meet: the inset leaves the probe unenclosed within it,
-/// but no face passes the probe there, so no outside knot belongs in it,
-/// and one would store the solid's dark values mid-enclosure.
-#[derive(Debug, Clone, Copy)]
-struct Enclosure {
-    /// The first and last enclosure intervals of the stretch; one interval
-    /// where no seam splits it. Inside knots stay within these.
-    first: (f64, f64),
-    last: (f64, f64),
-}
+/// Slack on the sweep prefilter, in metres: far above the rounding of a
+/// brush's bounds against its planes.
+const SWEEP_SLACK_M: f64 = 1.0e-6;
 
-impl Enclosure {
-    fn start(&self) -> f64 {
-        self.first.0
-    }
-
-    fn end(&self) -> f64 {
-        self.last.1
-    }
-}
-
-/// `probe`'s enclosures by the mover's `brushes` posed along `legs`,
-/// ascending and disjoint ([`Enclosure`]).
-fn enclosures(brushes: &[&BrushVolume], legs: &[TravelLeg], probe: Vec3) -> Vec<Enclosure> {
-    let enclosed = inside_intervals(brushes, legs, probe, enclosure_inset(probe));
-    if enclosed.is_empty() {
-        return Vec::new();
-    }
-    let solid = inside_intervals(brushes, legs, probe, 0.0);
-    let mut stretches: Vec<Enclosure> = Vec::with_capacity(enclosed.len());
-    for interval in enclosed {
-        if let Some(stretch) = stretches.last_mut() {
-            let gap = (stretch.end(), interval.0);
-            if solid.iter().any(|&(lo, hi)| lo <= gap.0 && gap.1 <= hi) {
-                stretch.last = interval;
-                continue;
+impl<'m> Sweep<'m> {
+    fn new(mover: &'m MapKinematicMover, legs: Vec<TravelLeg>, length: f64) -> Self {
+        // `Pose` keeps the brushes with bounds, so the spans read the same.
+        let brushes: Vec<&BrushVolume> = mover
+            .brush_volumes
+            .iter()
+            .filter(|brush| brush.aabb.is_valid())
+            .collect();
+        let mut sweeps = Vec::with_capacity(legs.len() * brushes.len());
+        for (at, leg) in legs.iter().enumerate() {
+            let end = leg.offset0 + leg.per_t * (leg.t1 - leg.t0);
+            for (index, brush) in brushes.iter().enumerate() {
+                let mut hull = Aabb {
+                    min: brush.aabb.min + leg.offset0,
+                    max: brush.aabb.max + leg.offset0,
+                };
+                hull.expand_aabb(&Aabb {
+                    min: brush.aabb.min + end,
+                    max: brush.aabb.max + end,
+                });
+                sweeps.push((at, index, hull));
             }
         }
-        stretches.push(Enclosure {
-            first: interval,
-            last: interval,
-        });
+        Self {
+            brushes,
+            legs,
+            sweeps,
+            length,
+        }
     }
-    stretches
-}
 
-/// The travel fractions at which the mover's `brushes`, posed along `legs`,
-/// hold `probe` inside one brush by at least `inset` on every plane, the
-/// half-space test [`Pose::contains_by`] reads; at
-/// [`enclosure_inset`] it is the bake's enclosing rule
-/// ([`Pose::encloses`]). Disjoint closed intervals, ascending. A posed
-/// brush's planes move by the offset, so on one leg each plane's test is
-/// linear in t: a brush's interval is the intersection over its planes, and
-/// the pose's is their union over brushes, leg by leg. Intervals that meet,
-/// at a waypoint or where two brushes touch, join.
-fn inside_intervals(
-    brushes: &[&BrushVolume],
-    legs: &[TravelLeg],
-    probe: Vec3,
-    inset: f64,
-) -> Vec<(f64, f64)> {
-    let point = probe.as_dvec3();
-    let mut intervals = Vec::new();
-    for leg in legs {
-        for brush in brushes {
-            let (mut lo, mut hi) = (leg.t0, leg.t1);
-            for plane in &brush.planes {
+    /// `probe`'s enclosures, ascending and disjoint ([`Enclosure`]).
+    fn enclosures(&self, probe: Vec3) -> Vec<Enclosure> {
+        let enclosed = self.spans(probe, enclosure_inset(probe));
+        if enclosed.is_empty() {
+            return Vec::new();
+        }
+        let band = self.spans(probe, -(lift_band(probe) + SIDE_GUARD_M));
+        let mut stretches: Vec<Enclosure> = Vec::with_capacity(enclosed.len());
+        for span in enclosed {
+            // The band holds every enclosure; the fallback only keeps a
+            // rounding miss from losing one.
+            let zone = band
+                .iter()
+                .find(|zone| zone.lo <= span.lo && span.lo <= zone.hi)
+                .map_or((span.lo, span.hi), |zone| {
+                    (zone.lo.min(span.lo), zone.hi.max(span.hi))
+                });
+            if let Some(stretch) = stretches.last_mut()
+                && stretch.band.1 >= zone.0
+            {
+                stretch.last = span;
+                stretch.band.1 = stretch.band.1.max(zone.1);
+                continue;
+            }
+            stretches.push(Enclosure {
+                first: span,
+                last: span,
+                band: zone,
+            });
+        }
+        stretches
+    }
+
+    /// The travel fractions at which the mover's brushes hold `probe` inside
+    /// one brush by at least `inset` on every plane, the half-space test
+    /// [`Pose::contains_by`] reads; at [`enclosure_inset`] it is the bake's
+    /// enclosing rule ([`Pose::encloses`]). A negative inset grows each brush
+    /// by its magnitude, and then also clips it to its bounds grown as much,
+    /// as [`clear_of_band`] reads the band. Disjoint closed spans,
+    /// ascending. A posed brush's planes move by the offset, so on one leg
+    /// each plane's test is linear in t: a brush's span is the intersection
+    /// over its planes, and the pose's is their union over brushes, leg by
+    /// leg. Spans that meet, at a waypoint or where two brushes touch, join.
+    fn spans(&self, probe: Vec3, inset: f64) -> Vec<Span> {
+        let point = probe.as_dvec3();
+        let grow = (-inset).max(0.0) + SWEEP_SLACK_M;
+        let mut spans = Vec::new();
+        for &(at, index, ref hull) in &self.sweeps {
+            if !within_grown(hull, point, grow) {
+                continue;
+            }
+            let (leg, brush) = (&self.legs[at], self.brushes[index]);
+            let mut span = Span {
+                lo: leg.t0,
+                hi: leg.t1,
+                lo_rate: self.length,
+                hi_rate: self.length,
+            };
+            let planes = brush
+                .planes
+                .iter()
+                .map(|plane| (plane.normal, plane.distance));
+            let bounds = (inset < 0.0)
+                .then(|| bound_planes(&brush.aabb))
+                .into_iter()
+                .flatten();
+            for (normal, distance) in planes.chain(bounds) {
                 // Posed at offset o, the plane is (n, d + n · o); the probe
                 // is inside it by the inset where n · o ≥ n · p − d + inset.
-                let need = plane.normal.dot(point) - plane.distance + inset;
-                let at_start = plane.normal.dot(leg.offset0);
-                let rate = plane.normal.dot(leg.per_t);
+                let need = normal.dot(point) - distance + inset;
+                let at_start = normal.dot(leg.offset0);
+                let rate = normal.dot(leg.per_t);
                 if rate > 0.0 {
-                    lo = lo.max(leg.t0 + (need - at_start) / rate);
+                    let t = leg.t0 + (need - at_start) / rate;
+                    if t > span.lo {
+                        (span.lo, span.lo_rate) = (t, rate);
+                    }
                 } else if rate < 0.0 {
-                    hi = hi.min(leg.t0 + (need - at_start) / rate);
+                    let t = leg.t0 + (need - at_start) / rate;
+                    if t < span.hi {
+                        (span.hi, span.hi_rate) = (t, -rate);
+                    }
                 } else if at_start < need {
-                    hi = f64::NEG_INFINITY;
+                    span.hi = f64::NEG_INFINITY;
                 }
-                if lo > hi {
+                if span.lo > span.hi {
                     break;
                 }
             }
-            if lo <= hi {
-                intervals.push((lo, hi));
+            if span.lo <= span.hi {
+                spans.push(span);
             }
         }
-    }
-    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut joined: Vec<(f64, f64)> = Vec::with_capacity(intervals.len());
-    for (lo, hi) in intervals {
-        match joined.last_mut() {
-            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
-            _ => joined.push((lo, hi)),
+        spans.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+        let mut joined: Vec<Span> = Vec::with_capacity(spans.len());
+        for span in spans {
+            match joined.last_mut() {
+                Some(last) if span.lo <= last.hi => {
+                    if span.hi > last.hi {
+                        (last.hi, last.hi_rate) = (span.hi, span.hi_rate);
+                    }
+                }
+                _ => joined.push(span),
+            }
         }
+        joined
     }
-    joined
+}
+
+/// A brush's bounds as six half-spaces `n · p ≤ d`.
+fn bound_planes(bounds: &Aabb) -> [(DVec3, f64); 6] {
+    let (min, max) = (bounds.min, bounds.max);
+    [
+        (DVec3::X, max.x),
+        (DVec3::NEG_X, -min.x),
+        (DVec3::Y, max.y),
+        (DVec3::NEG_Y, -min.y),
+        (DVec3::Z, max.z),
+        (DVec3::NEG_Z, -min.z),
+    ]
+}
+
+/// One closed span of travel fractions, and at each end the rate, in metres
+/// per unit of t, at which the probe's distance to the face that ends the
+/// span there changes: |n · d(offset)/dt| for that face's plane. Turns a
+/// distance along the face into travel. An end no face sets (a leg's start
+/// or end) falls back to the path's length, a square crossing.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    lo: f64,
+    hi: f64,
+    lo_rate: f64,
+    hi_rate: f64,
+}
+
+/// One stretch of travel over which a probe stays inside the mover or
+/// within its lift band: its enclosure spans by the bake's rule, joined
+/// across any gap that never leaves the band. Such a gap is a seam where
+/// two of the mover's brushes meet, or a sliver between brushes or past a
+/// face resting just off the probe: no pose there leaves the probe clear,
+/// so no outside knot belongs in it, and one would store values the mover's
+/// solid darkens mid-enclosure.
+#[derive(Debug, Clone, Copy)]
+struct Enclosure {
+    /// The first and last enclosure spans of the stretch; one span where
+    /// nothing splits it. Inside knots stay within these.
+    first: Span,
+    last: Span,
+    /// The band's span around the stretch, grown by [`SIDE_GUARD_M`]:
+    /// outside knots stay outside it.
+    band: (f64, f64),
 }
 
 /// The knot windows at each end of `enclosures`, one probe's ascending
-/// disjoint enclosures. At an end strictly inside the path: an inside
-/// window around [`INSIDE_KNOT_MARGIN_M`] inside, within the enclosure
-/// interval at that end, and an outside window around
-/// [`OUTSIDE_KNOT_DISTANCE_M`] outside, but no farther than the middle of
-/// the gap to a neighbouring enclosure. Each spans the merge tolerance
-/// either side of its target, cut to stay [`SIDE_GUARD_M`] on its side, and
-/// an outside window [`OUTSIDE_KNOT_CLEARANCE_M`] clear of the end. A
-/// side narrower than that guard leaves a zero-width window at its middle,
-/// which the caller checks.
-fn end_windows(enclosures: &[Enclosure], probe: Vec3, scale: &Scale) -> Vec<KnotWindow> {
+/// disjoint enclosures. At an end more than [`SIDE_GUARD_M`] of the face
+/// from a terminus: an inside window around [`INSIDE_KNOT_MARGIN_M`] inside,
+/// within the enclosure span at that end, and an outside window around
+/// [`OUTSIDE_KNOT_DISTANCE_M`] outside, no farther than the middle of the
+/// gap to a neighbouring enclosure, within the stretch of travel clear of
+/// the band on that side. Distances run along the face the probe crosses at
+/// that end, so a face met at a slant gets the same clearance as one met
+/// square. Each window spans the merge tolerance either side of its target,
+/// cut to its side. Where the clear side is empty, the terminus beyond holds
+/// it and no outside window is placed. An enclosure too shallow for an
+/// inside window leaves a zero-width one at its middle, which the caller
+/// checks.
+fn end_windows(enclosures: &[Enclosure], probe: Vec3, tolerance: f64) -> Vec<KnotWindow> {
     let mut windows = Vec::new();
-    let mut push = |target: f64, (lo, hi): (f64, f64), sliver: f64, side: Side| {
-        let (lo, hi) = (
-            lo.max(target - scale.tolerance),
-            hi.min(target + scale.tolerance),
-        );
-        let (lo, hi, target) = if lo < hi {
-            (lo, hi, target.clamp(lo, hi))
-        } else {
-            (sliver, sliver, sliver)
-        };
+    let mut push = |target: f64, (lo, hi): (f64, f64), side: Side| {
+        let target = target.clamp(lo, hi);
         windows.push(KnotWindow {
-            lo,
-            hi,
+            lo: lo.max(target - tolerance),
+            hi: hi.min(target + tolerance),
             target,
             probe,
             side,
         });
     };
-    let inside = |(a, b): (f64, f64)| ((a + scale.guard, b - scale.guard), 0.5 * (a + b));
     for (index, enclosure) in enclosures.iter().enumerate() {
-        let (a, b) = (enclosure.start(), enclosure.end());
-        if a > scale.guard {
-            let before = index.checked_sub(1).map_or(0.0, |i| enclosures[i].end());
-            let clear = (
-                if index == 0 {
-                    0.0
-                } else {
-                    before + scale.guard
-                },
-                a - scale.clearance,
-            );
-            let gap_middle = 0.5 * (before + a);
-            let (span, middle) = inside(enclosure.first);
-            push(a + scale.inside, span, middle, Side::Inside);
-            // With no enclosure before, the clear side runs back to t = 0.
-            let floor = if index == 0 { 0.0 } else { gap_middle };
-            push(
-                (a - scale.outside).max(floor),
-                clear,
-                gap_middle,
-                Side::Outside,
-            );
+        let (start, end) = (enclosure.first, enclosure.last);
+        let previous = index.checked_sub(1).map(|i| &enclosures[i]);
+        let next = enclosures.get(index + 1);
+        if start.lo > SIDE_GUARD_M / start.lo_rate {
+            let (target, deep) = inside(start, start.lo + INSIDE_KNOT_MARGIN_M / start.lo_rate);
+            push(target, deep, Side::Inside);
+            let clear = (previous.map_or(0.0, |p| p.band.1), enclosure.band.0);
+            if clear.0 < clear.1 {
+                let floor = previous.map_or(0.0, |p| 0.5 * (p.last.hi + start.lo));
+                let target = (start.lo - OUTSIDE_KNOT_DISTANCE_M / start.lo_rate).max(floor);
+                push(target, clear, Side::Outside);
+            }
         }
-        if b < 1.0 - scale.guard {
-            let after = enclosures.get(index + 1).map_or(1.0, Enclosure::start);
-            let last = index + 1 == enclosures.len();
-            let clear = (
-                b + scale.clearance,
-                if last { 1.0 } else { after - scale.guard },
-            );
-            let gap_middle = 0.5 * (b + after);
-            let (span, middle) = inside(enclosure.last);
-            push(b - scale.inside, span, middle, Side::Inside);
-            let ceiling = if last { 1.0 } else { gap_middle };
-            push(
-                (b + scale.outside).min(ceiling),
-                clear,
-                gap_middle,
-                Side::Outside,
-            );
+        if end.hi < 1.0 - SIDE_GUARD_M / end.hi_rate {
+            let (target, deep) = inside(end, end.hi - INSIDE_KNOT_MARGIN_M / end.hi_rate);
+            push(target, deep, Side::Inside);
+            let clear = (enclosure.band.1, next.map_or(1.0, |n| n.band.0));
+            if clear.0 < clear.1 {
+                let ceiling = next.map_or(1.0, |n| 0.5 * (end.hi + n.first.lo));
+                let target = (end.hi + OUTSIDE_KNOT_DISTANCE_M / end.hi_rate).min(ceiling);
+                push(target, clear, Side::Outside);
+            }
         }
     }
     windows
+}
+
+/// An inside knot's target and the stretch of `span` it may take: the
+/// span less [`SIDE_GUARD_M`] of each face, or, where that leaves nothing,
+/// the span's middle alone.
+fn inside(span: Span, target: f64) -> (f64, (f64, f64)) {
+    let deep = (
+        span.lo + SIDE_GUARD_M / span.lo_rate,
+        span.hi - SIDE_GUARD_M / span.hi_rate,
+    );
+    if deep.0 < deep.1 {
+        (target, deep)
+    } else {
+        let middle = 0.5 * (span.lo + span.hi);
+        (middle, (middle, middle))
+    }
 }
 
 /// Merge knot windows into the fewest points, each point inside every

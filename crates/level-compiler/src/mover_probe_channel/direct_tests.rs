@@ -1612,7 +1612,7 @@ fn a_light_only_a_mid_pose_blocks_is_gated_at_that_pose_alone() {
     assert_eq!(decoded, section);
 }
 
-// MP11: a ramp of (0.6, 0.9) maps the only blocking pose's knot (t 0.5) onto
+// A ramp of (0.6, 0.9) maps the only blocking pose's knot (t 0.5) onto
 // t′ 0, so compose never reads it. The bake still bakes it (no pose is
 // skipped), and the section id 57 writes from it loads: its record mask is
 // the probes some pose gates, and no mover entry stores 255 at every masked

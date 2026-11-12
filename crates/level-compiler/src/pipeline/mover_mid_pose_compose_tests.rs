@@ -199,6 +199,55 @@ impl Build {
         interval(&self.knots, t, |pose| !self.across(cell, local, pose))
     }
 
+    /// The longer, in t′, of the two intervals compose blends the probe
+    /// across at `t`: direct's (every pose but those the across marks name),
+    /// where a gated static light's record masks the probe, and bounce's
+    /// (stored or base marks), where an entry of this mover stores it. Zero
+    /// on a defined knot, and for a term the mover never changes there.
+    fn stored_span(&self, probe: usize, t: f32) -> f32 {
+        let (cell, local) = self.local[&probe];
+        let bit = 1u64 << local;
+        let knot_t = |pose: usize| {
+            self.knots
+                .iter()
+                .find(|knot| knot.pose as usize == pose)
+                .map(|knot| knot.t)
+                .expect("an interval ends on a read knot")
+        };
+        let span = |(lo, hi, weight): (usize, usize, f32)| {
+            if weight > 0.0 {
+                knot_t(hi) - knot_t(lo)
+            } else {
+                0.0
+            }
+        };
+        let gated = self.section.direct_record_views().any(|record| {
+            record.cell == cell
+                && record.record.namespace == MoverLightNamespace::StaticLight
+                && record.record.probe_mask & bit != 0
+                && record.movers().any(|mover| mover.mover_id == self.mover_id)
+        });
+        let direct = if gated {
+            span(self.direct_interval(cell, local, t))
+        } else {
+            0.0
+        };
+        let bounce = self
+            .section
+            .bounce_entry_views()
+            .find(|view| {
+                view.cell == cell
+                    && view.entry.mover_id == self.mover_id
+                    && view.entry.affected_probe_mask() & bit != 0
+            })
+            .map_or(0.0, |view| {
+                span(interval(&self.knots, t, |pose| {
+                    view.entry.mark(pose, local) != PoseMark::Unmarked
+                }))
+            });
+        direct.max(bounce)
+    }
+
     /// Each gated light's surviving visibility at the probe at `t`
     /// (`mc_record_visibility`, this mover's entry alone): q at the two
     /// defined poses around t′, lerped, blending across a pose the across

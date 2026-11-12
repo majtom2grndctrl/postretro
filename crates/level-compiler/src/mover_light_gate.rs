@@ -6,6 +6,7 @@ mod cache;
 #[cfg(test)]
 mod geometry_knot_tests;
 mod geometry_knots;
+mod layer_bands;
 mod lights;
 mod mid_pose_only;
 mod placement;
@@ -29,6 +30,10 @@ pub(crate) use cache::{
 };
 pub(crate) use lights::{GateLight, GateLights};
 pub(crate) use mid_pose_only::MidPoseOnlyLights;
+#[cfg(test)]
+pub(crate) use layer_bands::poses_in_band;
+#[cfg(test)]
+pub(crate) use placement::even_knots;
 pub(crate) use placement::{KnotCounts, MAX_POSES};
 #[cfg(test)]
 pub(crate) use pose::Terminus;

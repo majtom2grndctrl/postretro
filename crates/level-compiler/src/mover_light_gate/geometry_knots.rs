@@ -48,7 +48,7 @@ pub(crate) const KNOT_MERGE_TOLERANCE_M: f64 = 0.025;
 /// inset, or outside the lift band by this. Far above the `f32` rounding of
 /// t and of a posed offset, so the pose placed at a knot reads the side the
 /// exact interval gives it.
-const SIDE_GUARD_M: f64 = 0.001;
+pub(super) const SIDE_GUARD_M: f64 = 0.001;
 
 /// How far outside the mover's solid, in metres, a gap between two
 /// enclosures may lie and still join them as a seam: far above the `f32`
@@ -232,7 +232,7 @@ pub(super) fn geometry_knots(
 /// A mover's brushes along its path: the legs, and per (leg, brush) the
 /// hull its bounds sweep over the leg, which a probe the brush encloses, or
 /// holds within the band, lies inside once grown by the band.
-struct Sweep<'m> {
+pub(super) struct Sweep<'m> {
     brushes: Vec<&'m BrushVolume>,
     legs: Vec<TravelLeg>,
     /// (leg, brush, hull), one per leg and bounded brush.
@@ -247,7 +247,7 @@ struct Sweep<'m> {
 const SWEEP_SLACK_M: f64 = 1.0e-6;
 
 impl<'m> Sweep<'m> {
-    fn new(mover: &'m MapKinematicMover, legs: Vec<TravelLeg>, length: f64) -> Self {
+    pub(super) fn new(mover: &'m MapKinematicMover, legs: Vec<TravelLeg>, length: f64) -> Self {
         // `Pose` keeps the brushes with bounds, so the spans read the same.
         let brushes: Vec<&BrushVolume> = mover
             .brush_volumes
@@ -344,7 +344,7 @@ impl<'m> Sweep<'m> {
     /// the intersection over its planes, and the pose's is their union over
     /// brushes, leg by leg. Spans that meet, at a waypoint or where two
     /// brushes touch, join.
-    fn spans(&self, probe: Vec3, inset: f64, clip: bool) -> Vec<Span> {
+    pub(super) fn spans(&self, probe: Vec3, inset: f64, clip: bool) -> Vec<Span> {
         let point = probe.as_dvec3();
         // A grown brush left unclipped reaches past its grown bounds near a
         // sharp edge; the seam test's growth is small, so a wide margin
@@ -436,9 +436,9 @@ fn bound_planes(bounds: &Aabb) -> [(DVec3, f64); 6] {
 /// distance along the face into travel. An end no face sets (a leg's start
 /// or end) falls back to the path's length, a square crossing.
 #[derive(Debug, Clone, Copy)]
-struct Span {
-    lo: f64,
-    hi: f64,
+pub(super) struct Span {
+    pub(super) lo: f64,
+    pub(super) hi: f64,
     lo_rate: f64,
     hi_rate: f64,
 }

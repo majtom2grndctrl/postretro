@@ -1,5 +1,5 @@
 // The motion proof: a swept surface lit through the mover probe channel, read
-// at every knot of a fine-pose truth bake (`light_poses` 41 on the rising
+// at every knot of a fine-pose truth bake (`light_poses` 76 on the rising
 // room, 113 on em_sweeper), against the default build composed at the same
 // t′. Per receiver on the surface, the forward shader's probe weights
 // (trilinear × smooth backface × Chebyshev on the composed depth tile) give
@@ -32,24 +32,31 @@ use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use super::{Build, rgb, sh_tile, texel};
 use crate::bc6h::f16_bits_to_f32;
 use crate::fixture_pipeline::fixture_path;
+use crate::mover_light_gate::{even_knots, poses_in_band};
 use crate::mover_probe_channel::fixture_scene::SPACING;
 use crate::mover_probe_channel::reference_maps::quake_offset;
 use crate::mover_probe_channel::{MoverAbsentDepth, direct_display_levels, display_levels};
 
-/// Far-side share bars, read per truth knot: the trip's time-weighted mean of
-/// |share − truth's| within 0.01, and on the room's layers the largest at any
-/// knot within 0.05. On the sweeper's faces the largest is reported, not
-/// gated. The mean integrates over travel by the trapezoid rule on the
-/// truth's knot t′ (each mover runs at constant speed in t′), so a short
-/// geometry-knot window weighs its share of the trip, not one knot's
-/// (owner, 2026-11-12).
+/// The far-side share bar, read per truth knot: the trip's time-weighted
+/// mean of |share − truth's| within 0.01. The largest at any knot is
+/// reported, not gated, on every surface (owner, 2026-11-12). The mean
+/// integrates over travel by the trapezoid rule on the truth's knot t′ (each
+/// mover runs at constant speed in t′), so a short geometry-knot window
+/// weighs its share of the trip, not one knot's (owner, 2026-11-12).
 const SHARE_MEAN_BAR: f64 = 0.01;
-const SHARE_WORST_BAR: f64 = 0.05;
 /// Composed values at every knot within three display levels of the truth,
 /// or within 1.5 levels of the even-pose, through-base build's miss at that
-/// knot.
+/// knot, except at receivers that read through a long stored interval
+/// ([`LONG_SHARE`]), which are reported for the long-interval follow-up
+/// (owner, 2026-11-12).
 const VALUE_BAR_LEVELS: f32 = 3.0;
 const VALUE_SHARED_MISS_LEVELS: f32 = 1.5;
+/// A receiver reads through a long stored interval when at least this share
+/// of its light, by the truth's probe weights, comes from probes whose
+/// stored interval at that t′ (`Build::stored_span`) is longer than one
+/// even step of the shipped build: most of its value is then a blend over a
+/// long interval, the follow-up's ground.
+const LONG_SHARE: f64 = 0.5;
 
 /// The runtime's Chebyshev constants (`sh_sample.wgsl`).
 const MIN_VARIANCE: f32 = 1.0e-4;
@@ -217,22 +224,12 @@ fn toward(tile: &[OctahedralAtlasTexel], normal: [f32; 3]) -> [f32; 3] {
     })
 }
 
-/// Whether a surface's worst far-side share knot is gated or reported.
-#[derive(Clone, Copy, PartialEq)]
-enum WorstShare {
-    /// The room's layers: every knot within [`SHARE_WORST_BAR`].
-    Gated,
-    /// The sweeper's faces: the worst knot is reported.
-    Reported,
-}
-
 /// One swept surface: receivers at t′ = 0, offset along the mover's travel,
 /// and the surface normal, both in Quake units and axes.
 struct Surface {
     name: &'static str,
     receivers: Vec<[f64; 3]>,
     normal: [f64; 3],
-    worst_share: WorstShare,
 }
 
 /// A `RECEIVERS²` grid over `a` × `b` on the plane `axis = at`.
@@ -243,7 +240,6 @@ fn plane(
     a: [f64; 2],
     b: [f64; 2],
     normal: [f64; 3],
-    worst_share: WorstShare,
 ) -> Surface {
     let step = |range: [f64; 2], i: usize| {
         range[0] + (range[1] - range[0]) * i as f64 / (RECEIVERS - 1) as f64
@@ -264,7 +260,6 @@ fn plane(
         name,
         receivers,
         normal,
-        worst_share,
     }
 }
 
@@ -281,6 +276,9 @@ struct Sample {
     /// Each receiver's composed bounce and direct toward the normal, lit
     /// with the truth's weights.
     values: Vec<([f32; 3], [f32; 3])>,
+    /// Each receiver's share of light, by the truth's weights, from probes
+    /// whose stored interval in this build is longer than `long_span`.
+    long: Vec<f64>,
 }
 
 /// Static direct terms per probe, shared by every build of one map (they
@@ -288,12 +286,15 @@ struct Sample {
 type Terms = HashMap<usize, Vec<(u32, [f32; 27])>>;
 
 /// Every build read at truth knot `t` over `surface`, the truth first.
+/// `long_span` is the stored interval, in t′, past which a probe reads
+/// through a long interval.
 fn sample(
     reads: &[Read<'_>],
     terms: &mut Terms,
     surface: &Surface,
     travel: DVec3,
     t: f32,
+    long_span: f32,
 ) -> Vec<Sample> {
     let truth = reads[0].build;
     let section = &truth.base.section;
@@ -305,6 +306,7 @@ fn sample(
     let offset = quake_offset(travel * f64::from(t));
     let mut out: Vec<Sample> = reads.iter().map(|_| Sample::default()).collect();
     let mut value_cache: HashMap<(usize, usize), ([f32; 3], [f32; 3])> = HashMap::new();
+    let mut span_cache: HashMap<(usize, usize), f32> = HashMap::new();
     for q in &surface.receivers {
         let receiver = engine(std::array::from_fn(|a| q[a] + offset[a]));
         let grid = (receiver - origin) / cell;
@@ -373,17 +375,25 @@ fn sample(
                 .sum();
             out[b].share += far / sum / surface.receivers.len() as f64;
             let (mut bounce, mut direct) = ([0.0f32; 3], [0.0f32; 3]);
+            let mut long = 0.0;
             for (probe, _, w) in &corners {
                 let (b_value, d_value) = *value_cache
                     .entry((b, *probe))
                     .or_insert_with(|| probe_value(read.build, terms, *probe, t, normal));
-                let share = (w[0] / truth_sum) as f32;
+                let share = w[0] / truth_sum;
                 for c in 0..3 {
-                    bounce[c] += share * b_value[c];
-                    direct[c] += share * d_value[c];
+                    bounce[c] += share as f32 * b_value[c];
+                    direct[c] += share as f32 * d_value[c];
+                }
+                let span = *span_cache
+                    .entry((b, *probe))
+                    .or_insert_with(|| read.build.stored_span(*probe, t));
+                if span > long_span {
+                    long += share;
                 }
             }
             out[b].values.push((bounce, direct));
+            out[b].long.push(long);
         }
     }
     out
@@ -427,14 +437,17 @@ fn combined((bounce, direct): ([f32; 3], [f32; 3])) -> OctahedralAtlasTexel {
     }))
 }
 
-/// Build `b`'s worst receiver value at one truth knot, in display levels
-/// against the truth: combined, then the bounce alone and the direct alone
-/// at that receiver.
-fn worst_value(at: &[Sample], b: usize) -> (f32, f32, f32) {
+/// Build `b`'s worst value at one truth knot over the receivers `keep`
+/// selects by their long share, in display levels against the truth:
+/// combined, then the bounce alone and the direct alone at that receiver.
+fn worst_value(at: &[Sample], b: usize, keep: impl Fn(f64) -> bool) -> (f32, f32, f32) {
     at[b]
         .values
         .iter()
         .zip(&at[0].values)
+        .zip(&at[b].long)
+        .filter(|(_, long)| keep(**long))
+        .map(|(values, _)| values)
         .fold((0.0, 0.0, 0.0), |worst, (candidate, truth)| {
             let levels = display_levels(&[combined(*candidate)], &[combined(*truth)]);
             if levels > worst.0 {
@@ -502,50 +515,46 @@ struct Verdict {
 }
 
 impl Verdict {
-    /// The far-side share bar: the trip's mean, and every knot where `worst`
-    /// gates it.
-    fn share_passes(&self, worst: WorstShare) -> bool {
+    /// The far-side share bar: the trip's time-weighted mean.
+    fn share_passes(&self) -> bool {
         self.share_mean <= SHARE_MEAN_BAR
-            && (worst == WorstShare::Reported || self.share_worst.0 <= SHARE_WORST_BAR)
     }
 
-    fn line(&self, worst: WorstShare) -> String {
+    fn line(&self) -> String {
         format!(
             "far-side share {:.3} mean | {:.3} worst; |Δ share| from truth {:.4} time-weighted \
-             mean ({:.4} over knots), {:.4} worst (t′ {:.3}, {}); values worst {:.2} levels (t′ \
-             {:.3}; bounce {:.2}, direct {:.2} at {:?}) → share {}",
+             mean ({:.4} over knots), {:.4} worst (t′ {:.3}, reported); values worst {:.2} \
+             levels over every receiver (t′ {:.3}; bounce {:.2}, direct {:.2} at {:?}) → share \
+             {}",
             self.own_share.0,
             self.own_share.1,
             self.share_mean,
             self.share_knot_mean,
             self.share_worst.0,
             self.share_worst.1,
-            match worst {
-                WorstShare::Gated => "gated",
-                WorstShare::Reported => "reported",
-            },
             self.values_worst.0,
             self.values_worst.1,
             self.values_split.0,
             self.values_split.1,
             self.values_split.2,
-            if self.share_passes(worst) {
-                "pass"
-            } else {
-                "MISS"
-            }
+            if self.share_passes() { "pass" } else { "MISS" }
         )
     }
 }
 
 /// The value bar at one truth knot: the shipped build's worst receiver
-/// within [`VALUE_BAR_LEVELS`] of the truth, or within
-/// [`VALUE_SHARED_MISS_LEVELS`] of the even-pose, through-base build's worst
-/// there.
+/// outside long stored intervals within [`VALUE_BAR_LEVELS`] of the truth,
+/// or within [`VALUE_SHARED_MISS_LEVELS`] of the even-pose, through-base
+/// build's worst there. Receivers that read through a long stored interval
+/// ([`LONG_SHARE`]) are reported only.
 struct KnotValue {
     t: f32,
+    /// The gated worst: receivers outside long stored intervals.
     shipped: f32,
     pre: f32,
+    /// The reported worst: receivers that read through a long stored
+    /// interval, with their bounce and direct alone.
+    long: (f32, f32, f32),
 }
 
 impl KnotValue {
@@ -562,10 +571,44 @@ impl KnotValue {
 /// and the shipped build's value bar at every truth knot.
 struct Row {
     surface: &'static str,
-    worst_share: WorstShare,
     shipped: Verdict,
     pre_amendment: Verdict,
     knots: Vec<KnotValue>,
+}
+
+/// The truth's count is clean on its own: none of its `truth_poses` even
+/// poses, unmoved, parks a mover face or seam within the enclosure band of a
+/// near-field probe, where it would store the solid's dark state (owner,
+/// 2026-11-12). So placement moved none, and the truth's knots are the even
+/// ones bit for bit.
+fn assert_truth_poses_clear_every_band(map: &str, truth: &Build, truth_poses: u32) {
+    let even = even_knots(truth_poses);
+    let poses = truth.scene.mover_poses();
+    let analysed = poses
+        .analysed
+        .iter()
+        .find(|analysed| analysed.mover_id == truth.mover_id)
+        .expect("the mover");
+    let mover = truth
+        .scene
+        .fixture
+        .kinematic_movers
+        .iter()
+        .find(|mover| mover.mover_id == truth.mover_id)
+        .expect("the map's mover");
+    let layout = truth.scene.fixture.probe_layout(SPACING);
+    let in_band = poses_in_band(analysed, mover, &even, &layout, SPACING);
+    assert!(
+        in_band.is_empty(),
+        "{map}: `light_poses {truth_poses}` parks a mover plane within a probe's enclosure band \
+         at {in_band:?}; choose a clean truth count"
+    );
+    let knots: Vec<u32> = truth.knots.iter().map(|knot| knot.t.to_bits()).collect();
+    assert_eq!(
+        knots,
+        even.iter().map(|t| t.to_bits()).collect::<Vec<_>>(),
+        "{map}: the truth bakes its even knots"
+    );
 }
 
 /// Bake the map as authored, with `light_poses truth_poses` on `mover`, and
@@ -611,11 +654,12 @@ fn motion_proof(
     // The even-pose placement: even poses only, one per probe spacing.
     let even = ((travel.length() / f64::from(SPACING)).ceil() as u32 + 1).clamp(2, 16);
     let truth = Build::bake(&write(&format!("{map}-truth"), Some(truth_poses)), mover);
-    let pre = Build::bake(&write(&format!("{map}-even"), Some(even)), mover);
     assert_eq!(
         truth.pose_count, truth_poses as usize,
         "{map}: the truth's poses"
     );
+    assert_truth_poses_clear_every_band(map, &truth, truth_poses);
+    let pre = Build::bake(&write(&format!("{map}-even"), Some(even)), mover);
     assert_eq!(pre.pose_count, even as usize, "{map}: the even poses");
     assert!(
         shipped.pose_count > even as usize,
@@ -654,11 +698,13 @@ fn motion_proof(
     ];
     let mut terms = Terms::new();
     let mut out = Vec::new();
+    // One even step of the shipped build, in t′.
+    let even_step = 1.0 / (even - 1) as f32;
     for surface in surfaces {
         let knots: Vec<f32> = truth.knots.iter().map(|knot| knot.t).collect();
         let samples: Vec<Vec<Sample>> = knots
             .iter()
-            .map(|&t| sample(&reads, &mut terms, surface, travel, t))
+            .map(|&t| sample(&reads, &mut terms, surface, travel, t, even_step))
             .collect();
         let weights = trapezoid_weights(&knots);
         let verdict = |b: usize| {
@@ -712,19 +758,18 @@ fn motion_proof(
             truth_own.1,
             knots.len()
         );
-        eprintln!("  shipped:       {}", with_knots.line(surface.worst_share));
-        eprintln!(
-            "  pre-amendment: {}",
-            pre_amendment.line(surface.worst_share)
-        );
+        eprintln!("  shipped:       {}", with_knots.line());
+        eprintln!("  pre-amendment: {}", pre_amendment.line());
         let shipped_knots: Vec<f32> = shipped.knots.iter().map(|knot| knot.t).collect();
         let mut values = Vec::new();
         for (&t, at) in knots.iter().zip(&samples) {
-            let (miss, pre) = (worst_value(at, 1), worst_value(at, 2));
+            let miss = worst_value(at, 1, |long| long < LONG_SHARE);
+            let pre = worst_value(at, 2, |_| true);
             let value = KnotValue {
                 t,
                 shipped: miss.0,
                 pre: pre.0,
+                long: worst_value(at, 1, |long| long >= LONG_SHARE),
             };
             if !value.within_three() {
                 eprintln!(
@@ -748,7 +793,6 @@ fn motion_proof(
         }
         out.push(Row {
             surface: surface.name,
-            worst_share: surface.worst_share,
             shipped: with_knots,
             pre_amendment,
             knots: values,
@@ -758,8 +802,10 @@ fn motion_proof(
 }
 
 fn assert_shipped_passes_and_pre_amendment_misses(map: &str, rows: &[Row]) {
-    // Every knot that passes by the shared-miss clause alone: the follow-up
-    // on direct interpolation over long intervals and the skip bar's reach.
+    // Every knot that passes by the shared-miss clause alone, and every
+    // receiver past three levels inside a long stored interval: the
+    // follow-up on direct interpolation over long intervals and the skip
+    // bar's reach.
     for row in rows {
         for knot in row.knots.iter().filter(|k| !k.within_three() && k.passes()) {
             eprintln!(
@@ -768,15 +814,18 @@ fn assert_shipped_passes_and_pre_amendment_misses(map: &str, rows: &[Row]) {
                 row.surface, knot.t, knot.shipped, knot.pre
             );
         }
+        for knot in row.knots.iter().filter(|k| k.long.0 > VALUE_BAR_LEVELS) {
+            eprintln!(
+                "{map} {}: t′ {:.3} reported, inside a long stored interval: shipped {:.2} \
+                 levels (bounce {:.2}, direct {:.2}), pre-amendment {:.2}",
+                row.surface, knot.t, knot.long.0, knot.long.1, knot.long.2, knot.pre
+            );
+        }
     }
     let mut misses = Vec::new();
     for row in rows {
-        if !row.shipped.share_passes(row.worst_share) {
-            misses.push(format!(
-                "{}: share {}",
-                row.surface,
-                row.shipped.line(row.worst_share)
-            ));
+        if !row.shipped.share_passes() {
+            misses.push(format!("{}: share {}", row.surface, row.shipped.line()));
         }
         for knot in row.knots.iter().filter(|knot| !knot.passes()) {
             misses.push(format!(
@@ -794,10 +843,10 @@ fn assert_shipped_passes_and_pre_amendment_misses(map: &str, rows: &[Row]) {
     // every surface.
     for row in rows {
         assert!(
-            !row.pre_amendment.share_passes(row.worst_share),
+            !row.pre_amendment.share_passes(),
             "{map} {}: the even-pose, through-base build must fail the far-side share bar: {}",
             row.surface,
-            row.pre_amendment.line(row.worst_share)
+            row.pre_amendment.line()
         );
     }
 }
@@ -806,7 +855,7 @@ fn assert_shipped_passes_and_pre_amendment_misses(map: &str, rows: &[Row]) {
 // (inner box x 848–1136, y 176–464; ceiling z −16, floor z −176 at t′ 0;
 // 176 units up the trip), half a unit off each surface.
 #[test]
-#[ignore = "three bakes of mover-setpiece (as authored, light_poses 41, light_poses 6); \
+#[ignore = "three bakes of mover-setpiece (as authored, light_poses 76, light_poses 6); \
             cargo test -p postretro-level-compiler --bin prl-build \
             the_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_bake -- \
             --ignored --nocapture"]
@@ -819,7 +868,6 @@ fn the_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_ba
             [860.0, 1124.0],
             [188.0, 452.0],
             [0.0, 0.0, -1.0],
-            WorstShare::Gated,
         ),
         plane(
             "floor",
@@ -828,13 +876,12 @@ fn the_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_ba
             [860.0, 1124.0],
             [188.0, 452.0],
             [0.0, 0.0, 1.0],
-            WorstShare::Gated,
         ),
     ];
     let rows = motion_proof(
         "mover-setpiece",
         "setpiece_room",
-        41,
+        76,
         &surfaces,
         [0.0, 0.0, 176.0],
     );
@@ -859,7 +906,6 @@ fn the_sweepers_faces_stay_within_the_motion_bars_of_the_fine_bake() {
             [72.0, 440.0],
             [8.0, 88.0],
             [1.0, 0.0, 0.0],
-            WorstShare::Reported,
         ),
         plane(
             "west face",
@@ -868,7 +914,6 @@ fn the_sweepers_faces_stay_within_the_motion_bars_of_the_fine_bake() {
             [72.0, 440.0],
             [8.0, 88.0],
             [-1.0, 0.0, 0.0],
-            WorstShare::Reported,
         ),
     ];
     let rows = motion_proof(

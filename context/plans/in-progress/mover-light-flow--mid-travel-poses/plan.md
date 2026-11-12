@@ -88,6 +88,12 @@ A Fable reviewer and I went four rounds, with offline evidence in `captures/advi
 
 - Amendment 2's two rulings (backface form; in-wall layer approach) are asked once its captures exist; see §Amendment 2.
 
+## Owner answers on the Amendment 2 captures (2026-11-12)
+
+- **Ruling A: leaning toward the recommendation** (surface-point ramp, 0.4-cell offset), but the owner wants to see it in action before committing. Next: A/B motion clips from the capture series, and an in-engine toggle (`POSTRETRO_PROTO_MOVER_SH`) for the Windows playtest.
+- **Ruling B: prototype the dark value state first.** Option (ii) is built behind a switch and captured, sweeper faces included for the dark-sphere risk, alone and combined with Ruling A's ramp, before the owner rules.
+- **Tasks 22–23 calls: keep both.** A set count too dense to clear a band fails by name. The long stored-interval exception is read per probe.
+
 ## Owner rulings after the playtest diagnosis (2026-11-12)
 
 The owner played a Windows `--release` rebake. Most flat edges no longer pulse. What remains: a pulsing leak on the rising room's ceiling above the door, a pulse on the wall door's edge, a patch on its upper-right white square, and the sweeper's crusher-side shimmer now "jumps from one frame to the next". An Opus agent, a Fable agent and the lead each diagnosed independently, then reached consensus (`captures/playtest-diagnosis/consensus.md`, write-ups, scripts and charts beside it).

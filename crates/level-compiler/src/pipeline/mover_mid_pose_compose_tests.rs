@@ -84,7 +84,7 @@ impl Build {
         let mover_id = analysed
             .analysed
             .iter()
-            .find(|analysed| analysed.label.contains(mover))
+            .find(|analysed| analysed.label.contains(&format!("'{mover}'")))
             .unwrap_or_else(|| panic!("no mover {mover}"))
             .mover_id;
         let cells = ProbeCells::of_layout(&scene.layout);

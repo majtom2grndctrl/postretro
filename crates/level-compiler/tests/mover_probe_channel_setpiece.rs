@@ -1,5 +1,5 @@
 //! Mover probe channel on `mover-setpiece`: which lights `setpiece_wall` closed
-//! and `setpiece_room` raised gate, at which probes, read from the packed id 57, which the
+//! and each rising room raised gate, at which probes, read from the packed id 57, which the
 //! runtime loader accepts.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
@@ -47,6 +47,12 @@ const BACK_ROOM_EDGE_Y: f64 = 1088.0;
 /// roof, the authored lowered brushes lifted 176 units.
 const ROOM_INTERIOR_MIN: [f64; 3] = [848.0, 176.0, 0.0];
 const ROOM_INTERIOR_MAX: [f64; 3] = [1136.0, 464.0, 160.0];
+/// The chamber's point above the big room's shaft.
+const BIG_SHAFT_LIGHT: [f64; 3] = [1728.0, 1576.0, 288.0];
+/// The raised big room's interior, Quake units: inside its 64-unit walls,
+/// floor and roof, the authored lowered brushes lifted 272 units.
+const BIG_ROOM_INTERIOR_MIN: [f64; 3] = [1536.0, 1360.0, 0.0];
+const BIG_ROOM_INTERIOR_MAX: [f64; 3] = [1920.0, 1792.0, 160.0];
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -197,19 +203,20 @@ fn the_setpiece_channel_loads() {
         .expect("the runtime loads the packed channel");
     let channel = world.mover_probe_channel().expect("id 57 is present");
     assert!(!channel.direct_records.is_empty());
-    assert_eq!(channel.mover_records.len(), 2, "both movers gate a light");
+    assert_eq!(channel.mover_records.len(), 3, "every mover gates a light");
 }
 
 // `setpiece_wall` closed stores q < 1 at back-room probes for
 // every arena light that reaches the wall and at arena probes for every
 // back-room light, and stores no entry for the two spots that never reach
-// it; `setpiece_room` raised stores q < 1 at its interior probes for the
-// shaft light.
+// it; each rising room raised stores q < 1 at its interior probes for the
+// light above its shaft, and the other room stores nothing there.
 #[test]
-fn setpiece_wall_and_room_gate_the_lights_that_reach_them() {
+fn setpiece_wall_and_rooms_gate_the_lights_that_reach_them() {
     let (gates, names) = gates();
     let wall = mover_id(&names, "setpiece_wall");
     let room = mover_id(&names, "setpiece_room");
+    let big_room = mover_id(&names, "setpiece_room_big");
     let closed = |light: [f64; 3], probe_side: fn(f64) -> bool| {
         gates.iter().any(|gate| {
             gate.mover == wall
@@ -239,24 +246,46 @@ fn setpiece_wall_and_room_gate_the_lights_that_reach_them() {
         );
     }
 
-    let inside = |probe: [f64; 3]| {
-        (0..3).all(|axis| {
-            ROOM_INTERIOR_MIN[axis] < probe[axis] && probe[axis] < ROOM_INTERIOR_MAX[axis]
-        })
-    };
-    let interior: Vec<&Gate> = gates
-        .iter()
-        .filter(|gate| {
-            gate.mover == room && same_light(gate.light, SHAFT_LIGHT) && inside(gate.probe)
-        })
-        .collect();
-    assert!(
-        !interior.is_empty(),
-        "the raised room stores the shaft light inside it"
-    );
-    let open: Vec<&&Gate> = interior.iter().filter(|gate| gate.q[1] == 255).collect();
-    assert!(
-        open.is_empty(),
-        "every interior probe the room stores reads the shaft light gated raised: {open:?}"
-    );
+    for (name, mover, other, light, min, max) in [
+        (
+            "setpiece_room",
+            room,
+            big_room,
+            SHAFT_LIGHT,
+            ROOM_INTERIOR_MIN,
+            ROOM_INTERIOR_MAX,
+        ),
+        (
+            "setpiece_room_big",
+            big_room,
+            room,
+            BIG_SHAFT_LIGHT,
+            BIG_ROOM_INTERIOR_MIN,
+            BIG_ROOM_INTERIOR_MAX,
+        ),
+    ] {
+        let inside =
+            |probe: [f64; 3]| (0..3).all(|axis| min[axis] < probe[axis] && probe[axis] < max[axis]);
+        let interior: Vec<&Gate> = gates
+            .iter()
+            .filter(|gate| {
+                gate.mover == mover && same_light(gate.light, light) && inside(gate.probe)
+            })
+            .collect();
+        assert!(
+            !interior.is_empty(),
+            "raised {name} stores the light above its shaft inside it"
+        );
+        let open: Vec<&&Gate> = interior.iter().filter(|gate| gate.q[1] == 255).collect();
+        assert!(
+            open.is_empty(),
+            "every interior probe {name} stores reads that light gated raised: {open:?}"
+        );
+        assert!(
+            !gates
+                .iter()
+                .any(|gate| gate.mover == other && inside(gate.probe) && gate.q != [255, 255]),
+            "the other room gates nothing inside raised {name}"
+        );
+    }
 }

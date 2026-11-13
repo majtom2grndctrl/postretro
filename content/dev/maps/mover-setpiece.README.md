@@ -1,17 +1,18 @@
 # Mover Set-Piece Fixture
 
-Measurement and proof surface for **large** theatrical movers. Two movers that
+Measurement and proof surface for **large** theatrical movers. Three movers that
 each fill a big share of the screen cycle unattended in a small, quick-to-bake
-two-room map. Intended uses:
+map: two rooms, an L-shaped hallway and a lift chamber. Intended uses:
 
 1. A/B the GPU cost of the mover pass on the Mac target. Timing setup and
    the `kinematic_brush` pass are in `context/lib/rendering_pipeline.md` §12.
 2. Prove enemies on movers: the sliding wall stops the chaser until it opens,
    and the rising room carries its riders (see Enemy checks). Movers do not yet
    block shots and sight.
-3. Prove mover rest-state lighting (baked lights reach across both movers at
-   both ends of their travel). Verifiable once mover light flow's probe and
-   world-surface channels land (roadmap, Lighting and GI).
+3. Prove mover lighting through the probe channel, at rest and in motion:
+   baked lights reach across every mover at both ends of its travel, and the
+   rising rooms' faces cross probe layers as they move. The big rising room is
+   the thick-walled case: its 64-unit walls and slabs hold whole probe layers.
 
 Build a local artifact on demand:
 
@@ -34,6 +35,16 @@ TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
 - **Back room (north):** x 0–1280, y 1088–1600 (32.5 × 13 m).
 - **Rising-room shaft:** a 320 × 320 hole in the arena floor at x 832–1152,
   y 160–480, sealed below by shaft walls and a bottom at z −192.
+- **Hallway (east):** an L, 128 wide and 160 tall (3.3 × 4.1 m). Its mouth is
+  in the arena's east wall at y 640–768, z 0–160. Leg 1 runs east to x 1792;
+  leg 2 runs north over x 1664–1792 to y 1136, where a 128 × 160 opening in
+  the chamber's south wall lets it in.
+- **Lift chamber:** x 1344–2112, y 1152–1984, z 0–320 (19.5 × 21.1 m).
+- **Big rising-room shaft:** a 512 × 560 hole in the chamber floor at x
+  1472–1984, y 1296–1856, sealed below by shaft walls and a bottom at z −336.
+
+Every brush is convex. All are axis-aligned boxes except the big room's ten
+arch voussoirs.
 
 ## Movers
 
@@ -41,6 +52,7 @@ TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
 |---|---|---|---|---|---|---|---|
 | `setpiece_wall` | 8 (4 columns × 2 rows, alternating metal) | `setpiece_wall_closed` (368, 1056, 112) | `setpiece_wall_open` (912, 1056, 112) | +x 544 (13.8 m) | 2 m/s | 8000 | `ping_pong`, `start_on_spawn 1` |
 | `setpiece_room` | 8 (floor, roof, 3 walls, doorway wall in 3 pieces) | `setpiece_room_lowered` (992, 320, −96) | `setpiece_room_raised` (992, 320, 80) | +z 176 (4.5 m) | 1 m/s | 6000 | `ping_pong`, `start_on_spawn 1` |
+| `setpiece_room_big` | 17 (floor, roof, 3 walls, doorway wall in 2 pieces, 10 arch voussoirs) | `setpiece_room_big_lowered` (1728, 1576, −192) | `setpiece_room_big_raised` (1728, 1576, 80) | +z 272 (6.9 m) | 1 m/s | 6000 | `ping_pong`, `start_on_spawn 1` |
 
 - **Sliding wall.** A 13.8 × 5.7 × 0.8 m slab, authored closed in the opening.
   The floor and lintel frame its top and bottom, so prl-build recognizes it as
@@ -57,19 +69,32 @@ TrenchBroom units (1 unit = 0.0254 m, z up). Floor top is z 0, ceiling z 320
   rests on the shaft floor and fronts no open space. Its lowered roof still
   covers the portals between the arena and the shaft, so the compiler logs
   `kinematic mover 1 seals generated portal …` for them.
+- **Big rising room.** A 13 × 14.2 m room outside, its walls, floor and roof
+  64 units (1.6 m) thick, so a probe layer can sit wholly inside one. Inside
+  it is 9.8 × 11 × 4.1 m. A round-arch doorway, 100 wide (2.5 m) and 130 tall
+  (3.3 m) at its apex, faces south toward the hallway. It is authored lowered,
+  its roof top 48 units below the chamber floor, so the roof is the floor of a
+  pit. It rises until its floor is level with the chamber floor. One cycle
+  takes about 26 s.
 - **Carried lights.** Two dynamic lights have `carrier setpiece_room` and ride
   with the room. Both are authored at the lowered pose. `light_dynamic`
   `setpiece_room_lamp` (warm, intensity 10, falloff 4) is at (992, 320, −56),
   near the lowered room's ceiling. `light_dynamic_spot`
   `setpiece_room_corner_spot` (warm, intensity 150, cone 20/40, falloff
   600) is at (900, 220, −40), aimed at the north-east inside corner. A carried
-  spot keeps its authored direction; only its position follows the room.
+  spot keeps its authored direction; only its position follows the room. The
+  big room carries the same pair, authored at its lowered pose:
+  `setpiece_room_big_lamp` at (1728, 1576, −152) and
+  `setpiece_room_big_corner_spot` (intensity 150, cone 20/40, falloff 700) at
+  (1600, 1424, −136), aimed at its north-east inside corner.
 
 ## Lights
 
-Five baked point lights, five baked spots and two carried dynamic lights. Point lights
-are dim (intensity 75) with wide falloff (double the earlier values); the spots
-add contrast and angle. Every baked falloff crosses the wall or the room. More
+Seven baked point lights, nine baked spots and four carried dynamic lights. The
+arena and back-room point lights are dim (intensity 75) with wide falloff
+(double the earlier values), and the chamber's two are dimmer still (intensity
+5); the spots add contrast and angle. Every arena and back-room falloff crosses
+the wall or the room. The hallway is lit by spots alone. More
 than four baked lights reach some large faces, such as the single ceiling brush.
 On those faces the lowest-ranked lights lose their shadowmask specular channel,
 and the compiler warns once per light and face. Those faces show no static
@@ -87,8 +112,16 @@ highlight from the losing lights. Diffuse lighting is unaffected.
 | `light_spot` (cone 12/28, angles −44 319 0) | (150, 1420, 290) | 300 | 650 | A tight pool on the enemy plinth |
 | `light_spot` (cone 14/32, angles −59 319 0) | (560, 760, 305) | 300 | 700 | A cool shaft landing in the arena, off the station 1 sightline |
 | `light_spot` (cone 18/38, angles −28 44 0) | (560, 60, 300) | 200 | 700 | Rakes across the rising room's doorway wall |
+| `light_spot` (cone 20/40, angles −36 131 0) | (1424, 660, 144) | 250 | 400 | Rakes the hallway mouth's north jamb, so the opening reads from the arena |
+| `light_spot` (cone 16/34, angles −48 135 0) | (1770, 662, 144) | 250 | 350 | A pool at the hallway's corner |
+| `light_spot` (cone 12/26, angles −10 95 0) | (1776, 784, 150) | 400 | 750 | Down leg 2, through the chamber opening, toward the arched doorway |
+| `light` | (1728, 1576, 288) | 5 | 1280 | The chamber over the big shaft, the big room's roof |
+| `light` | (1440, 1232, 192) | 5 | 1000 | The chamber's south-west corner |
+| `light_spot` (cone 18/38, angles −32 20 0) | (1400, 1180, 300) | 200 | 700 | Rakes across the big room's arched doorway wall from the south-west |
 | `light_dynamic` `setpiece_room_lamp` (carried) | (992, 320, −56) | 10 | 4 | A faint glow at the lamp, at every height |
 | `light_dynamic_spot` `setpiece_room_corner_spot` (carried, cone 20/40, angles −22 46 0) | (900, 220, −40) | 150 | 600 | The room's north-east inside corner |
+| `light_dynamic` `setpiece_room_big_lamp` (carried) | (1728, 1576, −152) | 10 | 4 | A faint glow at the big room's lamp |
+| `light_dynamic_spot` `setpiece_room_big_corner_spot` (carried, cone 20/40, angles −18 49 0) | (1600, 1424, −136) | 150 | 700 | The big room's north-east inside corner |
 
 ## Stations
 
@@ -111,6 +144,11 @@ wakes at spawn.
 - **Station 3 — behind the wall.** (368, 1536, 48), yaw 270 (facing −y,
   south). The north face of the wall is centred ahead, with the enemy spot in the
   foreground.
+- **Station 4 — big room from the hallway.** (1728, 880, 48), yaw 90 (facing
+  +y, north), in the hallway's second leg. Through the chamber opening, the big
+  room's arched south wall is 10.6 m ahead: lowered, only the pit shows; raised,
+  the arch is centred in the opening. Reach it through the hallway mouth in the
+  arena's east wall.
 
 **Enemy spot.** A red 64 × 64 × 8 plinth (`debug_floor_red`) at x
 336–400, y 1200–1264 in the back room; its centre is 4.1 m behind the closed wall. It

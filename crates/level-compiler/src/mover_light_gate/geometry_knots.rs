@@ -23,7 +23,8 @@ use crate::sh_bake::{ProbeGridLayout, vec3_from};
 /// dark one. The 1 u figure comes from a sweep measured before the dark state
 /// and edge copy existed. Source: a sweep of 4.4, 2, 1 and 0.2 units against
 /// fine-pose truth bakes (`light_poses` 41 on `mover-setpiece`'s rising room,
-/// 57 on `enemy-movers`' em_sweeper), on faces the movers cross square: the
+/// before the map gained its hallway and big room, 57 on `enemy-movers`'
+/// em_sweeper), on faces the movers cross square: the
 /// room's ceiling residual fell 2.18 → 1.46 → 0.45 → 0.23 luma and
 /// em_sweeper's west face came within its 3-level bar from 1 unit down, while
 /// 1 unit stays about six times clear of the lift band ([`lift_band`]) on a

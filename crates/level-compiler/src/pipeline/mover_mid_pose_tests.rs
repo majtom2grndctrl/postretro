@@ -147,7 +147,7 @@ fn a_mid_pose_gathers_its_domain_alone_and_direct_reaches_past_it() {
     let room = analysed
         .analysed
         .iter()
-        .find(|mover| mover.label.contains("setpiece_room"))
+        .find(|mover| mover.label.contains("'setpiece_room'"))
         .expect("the rising room");
     let domain = crate::mover_probe_channel::NearFieldDomain::new(room, CONFIG.probe_spacing);
     let lights = scene.static_channel_lights();
@@ -389,7 +389,7 @@ fn mid_pose_against_its_reference(
     let posed = analysed
         .analysed
         .iter()
-        .find(|analysed| analysed.label.contains(mover))
+        .find(|analysed| analysed.label.contains(&format!("'{mover}'")))
         .unwrap_or_else(|| panic!("{map}: no mover {mover}"));
     let pose = posed.poses.len() / 2;
     assert!(

@@ -311,8 +311,9 @@ fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
     }
 }
 
-// In process, on the setpiece, whose wall bakes 15 poses and whose
-// room 6, at `low` and at `high`, on four workers, the SH base gate's
+// In process, on the setpiece, whose three movers each bake mid poses (the
+// big room's thick slabs among them), at `low` and at `high`, on four
+// workers, the SH base gate's
 // prediction with the mover channel priced covers the measured peak cold,
 // warm over an empty cache, and on a full memo hit. Every pose is priced:
 // the posed scenes, one pose's posed bounce and later-bounce buffers, a mid
@@ -327,10 +328,10 @@ fn the_sh_base_gate_covers_every_poses_bake_on_the_setpiece_at_either_fidelity()
     // setpiece bake costs minutes.
     let threads = 4;
     for mode in [BakeMode::Interactive(BakeFidelity::Low), BakeMode::Release] {
-        let cold = bake_at(&fixture, DEFAULT_BOUNCE_FILL, None, threads, mode, 2);
+        let cold = bake_at(&fixture, DEFAULT_BOUNCE_FILL, None, threads, mode, 3);
         let empty = tempfile::tempdir().expect("cache");
         let warm = |cache: &StageCache| {
-            bake_at(&fixture, DEFAULT_BOUNCE_FILL, Some(cache), threads, mode, 2)
+            bake_at(&fixture, DEFAULT_BOUNCE_FILL, Some(cache), threads, mode, 3)
         };
         let warm_empty = warm(&open(empty.path()));
         let full_hit = warm(&open(empty.path()));
@@ -339,7 +340,7 @@ fn the_sh_base_gate_covers_every_poses_bake_on_the_setpiece_at_either_fidelity()
                 .logs
                 .iter()
                 .any(|line| line.contains("mover_probe_bounce hit (")
-                    && line.ends_with("of 2 mover(s))")),
+                    && line.ends_with("of 3 mover(s))")),
             "{:?}",
             full_hit.logs
         );

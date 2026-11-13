@@ -1,6 +1,6 @@
 //! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks closed and open
 //! and `setpiece_room` blocks at either end, the texels and probes they gate and where; each
-//! mover's side count.
+//! mover's side count, `setpiece_room_big`'s included.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 mod prl_build_support;
@@ -112,6 +112,10 @@ const ARENA_EAST_WALL_X: f64 = 1280.0;
 /// lights `setpiece_room` carries.
 const ROOM_LAMP: &str = "'light_dynamic' at origin \"992 320 -56\"";
 const ROOM_CORNER_SPOT: &str = "'light_dynamic_spot' at origin \"900 220 -40\"";
+/// `setpiece_room_big_lamp` and `setpiece_room_big_corner_spot`, the dynamic
+/// lights `setpiece_room_big` carries.
+const BIG_ROOM_LAMP: &str = "'light_dynamic' at origin \"1728 1576 -152\"";
+const BIG_ROOM_CORNER_SPOT: &str = "'light_dynamic_spot' at origin \"1600 1424 -136\"";
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -552,49 +556,79 @@ fn side_count_line<'a>(logs: &'a str, name: &str) -> &'a str {
 }
 
 #[test]
-fn setpiece_room_side_count_is_its_carried_lights_and_the_wall_has_none() {
+fn each_room_counts_its_carried_lights_and_the_wall_counts_the_big_rooms_spot_as_other() {
     let logs = setpiece_logs();
     assert_gate_never_warns(logs);
 
-    let room = side_count_line(logs, "setpiece_room");
-    let carried = room
-        .split("side count: ")
-        .nth(1)
-        .expect("counts follow the label");
-    assert!(
-        carried.starts_with("2 carried dynamic light(s): ")
-            && carried.contains(ROOM_LAMP)
-            && carried.contains(ROOM_CORNER_SPOT)
-            && carried.ends_with("; 0 other dynamic light(s)"),
-        "{room}"
-    );
+    // Each room counts the two lights it carries and neither of the other
+    // room's.
+    for (name, own, other) in [
+        (
+            "setpiece_room",
+            [ROOM_LAMP, ROOM_CORNER_SPOT],
+            [BIG_ROOM_LAMP, BIG_ROOM_CORNER_SPOT],
+        ),
+        (
+            "setpiece_room_big",
+            [BIG_ROOM_LAMP, BIG_ROOM_CORNER_SPOT],
+            [ROOM_LAMP, ROOM_CORNER_SPOT],
+        ),
+    ] {
+        let room = side_count_line(logs, name);
+        let carried = room
+            .split("side count: ")
+            .nth(1)
+            .expect("counts follow the label");
+        assert!(
+            carried.starts_with("2 carried dynamic light(s): ")
+                && own.iter().all(|light| carried.contains(light))
+                && !other.iter().any(|light| carried.contains(light))
+                && carried.ends_with("; 0 other dynamic light(s)"),
+            "{room}"
+        );
+    }
+    // The wall carries nothing. The big room's corner spot, authored at the
+    // room's lowered pose, reaches the wall's swept bounds by its 700-unit
+    // falloff (562 units from the pocket's east end), so the wall counts it
+    // as another mover's light; no other dynamic light comes within reach.
     let wall = side_count_line(logs, "setpiece_wall");
     assert!(
-        wall.ends_with("side count: 0 carried dynamic light(s); 0 other dynamic light(s)"),
+        wall.ends_with(&format!(
+            "side count: 0 carried dynamic light(s); 1 other dynamic light(s): entity 27 \
+             {BIG_ROOM_CORNER_SPOT}"
+        )),
         "{wall}"
     );
 
-    // The Build Summary totals both movers' side counts, every mover analysed.
+    // The Build Summary totals the three movers' side counts, every mover
+    // analysed.
     let summary: Vec<&str> = logs
         .lines()
         .filter(|line| line.starts_with("Mover lighting: ") || line.starts_with("  side count: "))
         .collect();
     assert_eq!(summary.len(), 2, "{logs}");
     assert!(
-        summary[0].starts_with("Mover lighting: 2 mover(s) analysed, 0 not analysed;"),
+        summary[0].starts_with("Mover lighting: 3 mover(s) analysed, 0 not analysed;"),
         "{}",
         summary[0]
     );
     assert_eq!(
         summary[1],
-        "  side count: 2 carried dynamic light(s), 0 other"
+        "  side count: 4 carried dynamic light(s), 1 other"
     );
 
     let elsewhere: Vec<&str> = logs
         .lines()
         .filter(|line| {
             line.contains("[MoverLight]")
-                && (line.contains(ROOM_LAMP) || line.contains(ROOM_CORNER_SPOT))
+                && [
+                    ROOM_LAMP,
+                    ROOM_CORNER_SPOT,
+                    BIG_ROOM_LAMP,
+                    BIG_ROOM_CORNER_SPOT,
+                ]
+                .iter()
+                .any(|light| line.contains(light))
         })
         .filter(|line| !line.contains(" side count: "))
         .collect();

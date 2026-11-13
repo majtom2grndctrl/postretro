@@ -1,10 +1,11 @@
 // The motion proof: a swept surface lit through the mover probe channel, read
 // at every knot of a fine-pose truth bake (`light_poses` 76 on the rising
-// room, 113 on em_sweeper), against the default build composed at the same
-// t′. Per receiver on the surface, the forward shader's probe weights
-// (trilinear × smooth backface × Chebyshev on the composed depth tile) give
-// the far-side share (the normalised weight on probes behind the surface),
-// and the truth's weights light the composed bounce and direct of each build.
+// room, 98 on the big rising room, 113 on em_sweeper), against the default
+// build composed at the same t′. Per receiver on the surface, the forward
+// shader's probe weights (trilinear × smooth backface × Chebyshev on the
+// composed depth tile) give the far-side share (the normalised weight on
+// probes behind the surface), and the truth's weights light the composed
+// bounce and direct of each build.
 // The truth reads its own stored states at its knots, where either depth rule
 // is exact. An even-pose build read by `DepthRule::ThroughBase` (even poses
 // alone, depth through the base on every interval) is read the same way: it
@@ -653,7 +654,7 @@ fn motion_proof(
         .expect("the mover");
     let first = analysed.poses[0].bounds.min;
     let travel = analysed.poses[analysed.poses.len() - 1].bounds.min - first;
-    // Both movers run a straight two-waypoint path with no ramp: the
+    // Every tested mover runs a straight two-waypoint path with no ramp: the
     // receivers ride `travel` × t′.
     let quake = quake_offset(travel);
     assert!(
@@ -893,6 +894,48 @@ fn the_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_ba
         76,
         &surfaces,
         [0.0, 0.0, 176.0],
+    );
+    assert_shipped_passes_and_pre_amendment_misses("mover-setpiece", &rows);
+}
+
+// The big rising room's ceiling underside and floor top, ridden by the room
+// (inner box x 1536–1920, y 1360–1792; ceiling z −112, floor z −272 at t′ 0;
+// 272 units up the trip), half a unit off each surface. Its 64-unit walls
+// and slabs hold whole probe layers, where the small room's 16-unit slabs
+// hold at most one: the thick-walled case. The truth bakes 98 poses, one per
+// 2.8 units, near the small room's 2.3: on this lattice the densest count
+// to 400 that parks no plane in a layer's band (the clean counts past 50 are
+// 52, 56, 84 and 98).
+#[test]
+#[ignore = "three bakes of mover-setpiece's big room (as authored, light_poses 98, light_poses \
+            8); cargo test -p postretro-level-compiler --bin prl-build \
+            the_big_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_bake \
+            -- --ignored --nocapture"]
+fn the_big_rising_rooms_ceiling_and_floor_stay_within_the_motion_bars_of_the_fine_bake() {
+    let surfaces = [
+        plane(
+            "big ceiling",
+            2,
+            -112.5,
+            [1548.0, 1908.0],
+            [1372.0, 1780.0],
+            [0.0, 0.0, -1.0],
+        ),
+        plane(
+            "big floor",
+            2,
+            -271.5,
+            [1548.0, 1908.0],
+            [1372.0, 1780.0],
+            [0.0, 0.0, 1.0],
+        ),
+    ];
+    let rows = motion_proof(
+        "mover-setpiece",
+        "setpiece_room_big",
+        98,
+        &surfaces,
+        [0.0, 0.0, 272.0],
     );
     assert_shipped_passes_and_pre_amendment_misses("mover-setpiece", &rows);
 }

@@ -540,11 +540,12 @@ pub fn host_handle_transport_disconnect(
 /// participated, held between levels included, first receives its final
 /// character, then every live slot receives the session-ended cause. Each
 /// remote pawn is torn down as a closed slot's is, but no seat is held: the
-/// caller releases them with the role change. Returns the closing transport,
-/// which the caller pumps until it reports `closing_done`; every other part
-/// of the host endpoint is dropped. Not a host endpoint: returned unchanged.
+/// caller releases them with the role change. Takes the host endpoint out of
+/// `endpoint` and returns its closing transport, which the caller pumps until
+/// it reports `closing_done`; every other part of the endpoint is dropped.
+/// Any other endpoint is left in place and `None` returned.
 pub fn end_host_session(
-    endpoint: NetEndpoint,
+    endpoint: &mut Option<NetEndpoint>,
     registry: &mut EntityRegistry,
     mut seat_table: Option<&mut SeatTable>,
     life_state_names: &[String],
@@ -554,8 +555,11 @@ pub fn end_host_session(
         String,
         postretro_net::wire::JoinSeedValue,
     >,
-) -> Result<Box<NetServer>, NetEndpoint> {
-    let NetEndpoint::Host {
+) -> Option<Box<NetServer>> {
+    if !matches!(endpoint, Some(NetEndpoint::Host { .. })) {
+        return None;
+    }
+    let Some(NetEndpoint::Host {
         mut server,
         mut allocator,
         mut replicable,
@@ -571,9 +575,9 @@ pub fn end_host_session(
         mut last_sent_tuning,
         join_seeds,
         ..
-    } = endpoint
+    }) = endpoint.take()
     else {
-        return Err(endpoint);
+        unreachable!("checked to be a host endpoint above");
     };
     let mut clients = server.connected_clients();
     for client_id in slot_pawns.client_ids() {
@@ -628,7 +632,7 @@ pub fn end_host_session(
         "[Net] session ended; closing {} connection(s)",
         server.connected_clients().len()
     );
-    Ok(server)
+    Some(server)
 }
 
 #[cfg(test)]

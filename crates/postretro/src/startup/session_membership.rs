@@ -99,9 +99,6 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let Some(endpoint) = session.net_endpoint.take() else {
-            return;
-        };
         let script_ctx = session.scripting.script_ctx.clone();
         let identity = session.scripting.script_runtime.store_identity().cloned();
         let committed = session
@@ -113,7 +110,7 @@ impl App {
         let closing = {
             let mut registry = script_ctx.registry.borrow_mut();
             netcode::end_host_session(
-                endpoint,
+                &mut session.net_endpoint,
                 &mut registry,
                 session.seat_table.as_mut(),
                 &life_state_names,
@@ -132,12 +129,8 @@ impl App {
                 },
             )
         };
-        let closing = match closing {
-            Ok(server) => server,
-            Err(endpoint) => {
-                session.net_endpoint = Some(endpoint);
-                return;
-            }
+        let Some(closing) = closing else {
+            return;
         };
         session.closing_host_transport = Some(closing);
         let released = {

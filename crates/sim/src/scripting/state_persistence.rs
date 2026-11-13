@@ -651,9 +651,10 @@ pub fn restore_store_after_session(
                 record.clear_per_seat_value(seat);
                 value
             });
-            let kept = if !replicated {
-                own
-            } else if character_on_seat && is_persisted_per_owner_slot(record) {
+            // The client's own write, or its latest character; the host's
+            // other replicated per-owner values return to their defaults.
+            let kept = if !replicated || (character_on_seat && is_persisted_per_owner_slot(record))
+            {
                 own
             } else {
                 None

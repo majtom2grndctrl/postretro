@@ -15,7 +15,8 @@ pub enum CloseCause {
     Timeout,
     /// The host ended the session. No seat is held for it.
     SessionEnded,
-    /// Reserved for a future graceful host migration/departure path.
+    /// Reserved for a future graceful host migration path, distinct from
+    /// `SessionEnded`: a host that ends its session closes as that.
     HostInitiatedLeave,
 }
 

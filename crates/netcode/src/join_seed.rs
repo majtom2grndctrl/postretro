@@ -15,8 +15,9 @@ pub struct HostJoinSeeds {
     pending: HashMap<u64, BTreeMap<String, JoinSeedValue>>,
     consumed: HashSet<u64>,
     reclaimed: HashSet<u64>,
-    /// Connections that have participated, held between levels since
-    /// included. A closing host returns their final character.
+    /// Connections that have participated on this connection, including one
+    /// held between levels since. A closing host returns their final
+    /// character.
     participated: HashSet<u64>,
 }
 

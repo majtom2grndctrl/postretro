@@ -283,7 +283,9 @@ pub(crate) struct Session {
     /// `None` for single-player (net inert); `Host`/`Client` once a
     /// `--host`/`--connect` role's transport is constructed. A malformed net flag
     /// or a failed transport construction degrades to single-player rather than
-    /// blocking boot. The net subsystem never touches the registry —
+    /// blocking boot. A client's leave and a host's end also reset it to
+    /// `None`: a role moves one way, to single-player. The net subsystem never
+    /// touches the registry —
     /// `postretro-netcode` owns that seam. See: context/lib/networking.md.
     pub(crate) net_endpoint: Option<netcode::NetEndpoint>,
     /// An ended host's transport, kept only to deliver each slot's closing

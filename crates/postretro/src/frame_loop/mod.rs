@@ -1564,13 +1564,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     app.update_player_options(frame_dt, options_menu_was_open);
     app.commit_render_extents();
 
-    // Connected-client per-owner persistence runs exactly after the
-    // second command drain: every fixed tick and same-frame crossing
-    // write has settled, and neither the SlotTable nor registry
-    // RefCell is borrowed. Keep this synchronous on the main thread
-    // so it cannot race clean exit or the retained state document.
-    // A client that has participated holds a character its host sent; its
-    // leave saves it.
+    // A client that has participated holds a character its host sent, so
+    // its leave saves it; one that never did keeps its saved character.
     if app
         .session
         .as_ref()
@@ -1580,6 +1575,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     {
         app.client_participated = true;
     }
+
+    // Connected-client per-owner persistence runs exactly after the
+    // second command drain: every fixed tick and same-frame crossing
+    // write has settled, and neither the SlotTable nor registry
+    // RefCell is borrowed. Keep this synchronous on the main thread
+    // so it cannot race clean exit or the retained state document.
     if let Some(session) = app.session.as_mut() {
         maybe_save_connected_client_per_owner_state(
             session,

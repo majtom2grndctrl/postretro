@@ -1928,13 +1928,6 @@ fn update_debug_chase_agent_destination(
     set_debug_agent_destination(registry, agent, target);
 }
 
-/// Whether clean exit should save the global persistent-slot projection. A
-/// connected client skips this path because those values are host-authoritative;
-/// its device-local per-owner values use the separate private save path.
-fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> bool {
-    can_save && !is_connected_client
-}
-
 /// Apply one host-validated join seed to an admitted seat. The host registry is
 /// authoritative: unknown durable keys and any schema-incompatible entries are
 /// warned and skipped before owner-private replication observes the values.
@@ -1971,10 +1964,11 @@ fn apply_host_join_seed(
     }
 }
 
-/// Save a connected client's own persistent per-owner values. This is kept
-/// separate from `should_save_persisted_state`: global slots remain
-/// host-authoritative, while the durable player-owned values belong in the
-/// local device's document.
+/// Save a connected client's own persistent per-owner values, periodically
+/// and at its leave. Its document keeps the world it booted with
+/// (`collected_per_owner_only_state`): the host's replicated globals are the
+/// host's, while the durable player-owned values belong in the local device's
+/// document.
 fn save_connected_client_per_owner_state(session: &mut crate::session::Session) {
     if !session.state_store_lifecycle.can_save() {
         return;
@@ -2537,27 +2531,14 @@ impl ApplicationHandler for App {
         }
 
         // Saving before declarations commit and restore completes could replace
-        // a valid state file with an empty or default-only snapshot.
-        //
-        // A connected client must NOT persist replicated global slot writes to
-        // `state.json`: its `player.health` /
-        // `player.maxHealth` and shared mod slots are server-authoritative
-        // values applied through the replicated-state path. Its own
-        // per-owner values are the narrow exception below, keyed by its
-        // durable player identity and saved without global slots.
+        // a valid state file with an empty or default-only snapshot. The leave
+        // or end above made every role single-player, and a client's leave
+        // restored its own world, so this save never writes a host's values.
         let can_save = self
             .session
             .as_ref()
             .is_some_and(|session| session.state_store_lifecycle.can_save());
-        let is_connected_client = self.is_connected_client();
-        if is_connected_client {
-            if let Some(session) = self.session.as_mut() {
-                // Private owner values are intentionally outside the legacy
-                // global-save gate: a client never writes global slots, but it
-                // does retain its own durable progression on clean exit.
-                save_connected_client_per_owner_state(session);
-            }
-        } else if should_save_persisted_state(can_save, is_connected_client) {
+        if can_save {
             let session = self
                 .session
                 .as_mut()
@@ -5325,8 +5306,8 @@ impl App {
     }
 
     /// Whether this app drops a host-only level verb: true on a client role.
-    /// Warns once per `(firing source, verb)` for the session. The gate follows
-    /// the session's client role, not live connection state.
+    /// Warns once per `(firing source, verb)` for the current role. The gate
+    /// follows the session's client role, not live connection state.
     /// See: context/lib/scripting.md §10.4.
     fn refuse_client_level_verb(&mut self, verb: &'static str, dispatch_source: String) -> bool {
         if !self.is_connected_client() {
@@ -6498,25 +6479,6 @@ mod tests {
             "gameplay and world-less paths must consume the renderer-owned signal"
         );
         assert!(!world_less.contains("present_handle.is_some())"));
-    }
-
-    // A connected client skips the global clean-exit save; its private
-    // per-owner path remains enabled. Single-player and the host save both.
-    #[test]
-    fn connected_client_skips_global_state_save_while_single_player_and_host_save() {
-        // Single-player (no endpoint) and host (not a connected client) save.
-        assert!(
-            should_save_persisted_state(true, false),
-            "single-player / host saves when the lifecycle permits"
-        );
-        // A connected client never saves the global projection.
-        assert!(
-            !should_save_persisted_state(true, true),
-            "a connected client skips the global clean-exit save"
-        );
-        // The lifecycle gate still suppresses the save before commit/restore.
-        assert!(!should_save_persisted_state(false, false));
-        assert!(!should_save_persisted_state(false, true));
     }
 
     #[test]

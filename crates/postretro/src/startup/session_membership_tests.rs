@@ -1,6 +1,7 @@
 //! Session membership: a client's leave, every host-side ending, a host's
 //! end, and the role-resolved membership and navigation verbs.
-//! See: context/plans/in-progress/coop--client-leave-session (Acceptance)
+//! See: context/lib/networking.md §Slot lifecycle (Leaving and ending a
+//! session) · context/lib/scripting.md §10.4 (Session membership)
 
 use super::lifecycle_test_fixtures::{
     catalog_map, connect_test_app_as_client, script_ctx, test_app,

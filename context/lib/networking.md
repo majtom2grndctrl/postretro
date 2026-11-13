@@ -165,6 +165,17 @@ An uncatalogued host level sends no relevel, so its reinstall is not followed an
 
 A held slot is bounded by the transport, not by the gate: a peer that never reaches parity holds an admitted slot for as long as its keepalive survives. Accepted, because the case it covers is a peer on the *right* mod whose content diverged, which is recoverable by construction. A genuinely wrong mod still closes, on the id, at admission.
 
+### Leaving and ending a session (decided, not yet built)
+
+Membership changes only through its own verbs (`scripting.md` §10.4). Navigation never changes it, and the frontend is outside every session.
+
+- **Leave.** A client closes its connection cleanly. The host closes that slot as a disconnect, not a timeout, and holds the seat. The client unloads and presents its mod's frontend as single-player: the one membership change that lands somewhere, because a client cannot keep a world it never owned.
+- **End.** The host closes every slot with a session-ended cause, tears down every remote pawn and holds no seats. It becomes single-player at once, and its level keeps running with its own seat, pawn and carried loadout. Its transport survives only to deliver the closes, for at most 2 s, admitting no one and sending nothing after a slot's cause.
+- **Every host-side ending lands a client where a leave does.** That covers a session-ended cause, a refusal at admission, a lost host, a connect whose last attempt fails, and any later host close. From the moment its session ends, the client's level runs no tick, crossing or command drain, and nothing the host named loads.
+- **Final character.** Before closing a slot that has participated on this connection, including one held between levels, the host sends that client its own persisted per-owner values on Control: the join seed's mirror. A reward written before the end reaches the player.
+- **Exit.** On every exit path a client leaves and a host ends first, so peers learn at once rather than at the keepalive timeout.
+- **Role state.** Leave and end re-derive every role-bound value through the derivation a session uses at build, so a machine that left or ended matches one started without network flags. An ended host keeps its own seat. Nothing a client received from its host survives a leave: no relevel record, spawn-pose hint or host-named load.
+
 ## What gates, and what replicates instead
 
 **Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — the host resolves that slot's pawn tuning at the participation transition and resends it whenever it changes, and the client installs it instead of reading its own registry.
@@ -321,7 +332,7 @@ Despawn records carry tombstone metadata only, never component payloads.
 
 ## Role model
 
-Role is selected once at startup from CLI flags; default is **single-player with net fully inert** — no endpoint is constructed, serialize/apply never run.
+Role is selected at startup from CLI flags; default is **single-player with net fully inert** — no endpoint is constructed, serialize/apply never run. Afterwards a role moves one way only: a client that leaves and a host that ends become single-player (§Slot lifecycle, *Leaving and ending a session*; decided, not yet built). Hosting or joining again needs a relaunch.
 
 | Flag | Role |
 |------|------|
@@ -335,7 +346,7 @@ Role is selected once at startup from CLI flags; default is **single-player with
 
 **IPv4 only:** the host binds IPv4, and `--connect` refuses an IPv6 address at parse time with a clear message. Joining loses nothing by this — players on IPv6 networks almost always keep an outbound IPv4 path (dual-stack, or NAT64/464XLAT, DS-Lite, MAP-E translation). The reachability limit that matters is inbound IPv4 to a host behind carrier-grade NAT, DS-Lite, or MAP-E; IPv6 alone does not fix it, since home routers block unsolicited inbound IPv6 by default and the joiner needs IPv6 too, so a relay outranks dual-stack when host reachability becomes the complaint. MAP-E hosts can only forward ports in their assigned block, which `--host <port>` covers.
 
-**Client connect lifecycle.** The client endpoint is built on the boot's logo frame, but the main thread then runs full renderer init and mod init before the next poll, so the connect clock starts at the **first poll**, not at construction; that first poll's `dt` is not counted. netcode times an unanswered attempt out after 15 s; a client that has **never connected** retries with a fresh socket, token, and client id, for a bounded number of attempts, which covers a host started after its client. A denial or an expired token ends the connect without a retry, and a connection that was established is never silently rejoined. Windows reports a send to an unbound port as a `ConnectionReset` on the next receive; the client skips those, as renet_netcode's server transport does, and lets the timeout decide. The transport logs the ending of a connection once, naming the host address (renetcode also logs each attempt's timeout). Nothing above the transport reacts to that ending: the endpoint stays a client and keeps polling, with no player-facing connection state.
+**Client connect lifecycle.** The client endpoint is built on the boot's logo frame, but the main thread then runs full renderer init and mod init before the next poll, so the connect clock starts at the **first poll**, not at construction; that first poll's `dt` is not counted. netcode times an unanswered attempt out after 15 s; a client that has **never connected** retries with a fresh socket, token, and client id, for a bounded number of attempts, which covers a host started after its client. A denial or an expired token ends the connect without a retry, and a connection that was established is never silently rejoined. Windows reports a send to an unbound port as a `ConnectionReset` on the next receive; the client skips those, as renet_netcode's server transport does, and lets the timeout decide. The transport logs the ending of a connection once, naming the host address (renetcode also logs each attempt's timeout). Today nothing above the transport reacts to that ending: the endpoint stays a client and keeps polling, with no player-facing connection state. Decided, not yet built: that ending, a host close and a last failed connect attempt all take the client to a single-player frontend (*Leaving and ending a session*).
 
 ## Testing the conditioned link
 

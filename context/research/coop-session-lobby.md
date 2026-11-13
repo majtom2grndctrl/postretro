@@ -80,8 +80,10 @@ lobby at all are validly different games; a Rust enum picks a winner among them.
 machinery already ships, so this costs nothing.
 
 **The lobby UI is mostly already shipped.** The frontend hub gives a menu tree, a menu camera,
-and an optional background level (`boot_sequence.md` §4). A lobby is the Frontend state with a
-live endpoint accepting connections — not a new top-level app state.
+and an optional background level (`boot_sequence.md` §4). A lobby is not a new top-level app
+state. Superseded: it is no longer the Frontend state with a live endpoint. The frontend sits
+outside every session, and a lobby is an optional mod-declared scene the host navigates to
+(`coop-session-lifecycle.md` §5–§6).
 
 ---
 
@@ -90,9 +92,10 @@ live endpoint accepting connections — not a new top-level app state.
 - **The IR cannot iterate**, and slots hold only numbers and booleans. A roster is a list.
   Nothing in the authoring surface can loop over players, so any per-player fan-out goes
   through tag/activators targeting or an engine-owned projection — never an authored loop.
-- **Clients do not write the save file**, and client-authored writes to server slots are a
-  stated Phase 3.5 non-goal. A guest's progression reaching their own device reverses a
-  shipped rule and is deliberate work, not an assumption a lobby spec may smuggle.
+- **Clients never write the host's world.** Client-authored writes to server slots stay a
+  non-goal. Superseded: per-player persistence shipped (`done/E16--per-player-persistence`).
+  Each player saves their own character on their own device, and character and world progress
+  save separately (`coop-session-lifecycle.md` §7).
 - **Networked mod sync and mid-level mod hot-swap are non-goals** (`boot_sequence.md` §8).
   Matching mods is in scope; shipping them to a client is not. Scripts are small enough to
   send (160K against 337M of art in the dev mod) but sending them fixes only the script-side

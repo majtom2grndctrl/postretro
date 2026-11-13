@@ -235,7 +235,7 @@ sequenceDiagram
 
 | Order | Brief | Owns | Depends on |
 |---|---|---|---|
-| 1 | `coop--client-leave-session` (reshape) | `leaveSession()` and `endSession()`; `ui.quitToMenu` resolving by role; exit to desktop disconnecting; any host-side ending landing at a single-player frontend; on leave, saving the character and then reloading the player's own world; keeping a client's own world on disk while connected; inside a session, `returnToFrontend` refused with a warning (G1–G5, G11) | none |
+| 1 | `coop--client-leave-session` (ready) | `leaveSession()` and `endSession()`; `ui.quitToMenu` resolving by role; exit to desktop disconnecting; any host-side ending landing at a single-player frontend; on leave, saving the character and then reloading the player's own world; keeping a client's own world on disk while connected; inside a session, `returnToFrontend` refused with a warning (G1–G5, G11) | none |
 | 2 | Optional lobby and navigation (new) | the mod-declared lobby; the generalized `navigate(destination)` that replaces `returnToFrontend`; clients following the host's navigation | leave |
 | 3 | Phase 3.75 lobby authoring surface | in-app hosting, including setting a session password; session phase, join predicate, joined, left and phase-changed reactions, `evictPlayer` and its policy | optional lobby |
 | 3 | In-app join (new, small) | direct-connect UI: address and password entry, connecting and refused states, notice on a host-side ending | leave |

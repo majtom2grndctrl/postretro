@@ -22,22 +22,23 @@ When this is done:
 - **Attacks are typed handles.** `defineAttack(params)` declares an attack; in TypeScript the binding names it, as `defineAttackToken` and `defineDamageType` do (`scripting.md` §2), and Luau passes the name explicitly. Every reference takes the handle: a row's `to`, `action: { attack }`, `attackTurn`, `attackTurnFree` and `attackTurnHeld`.
   - The string form retires. Shipped content, `sdk/behaviors/reference` and `docs/` move to handles in this brief.
   - A handle carries its declaration: it crosses as `{ kind, name, ...declaration }`, with an attack's stances nested in it. Load-time lowering in `scripting-core` resolves handles, builds the name-keyed `attacks` map, and expands stances and strikes. It runs once per mod load and staged reload, on every entity, whether it reached the mod through `defineEntity` or as a bare `defineMod` entry, and rejects a bare string with a pathed error: one route for TypeScript and Luau.
-  - `attackTurnFree` and `attackTurnHeld` cross as guard reads, so their builders reject a string or `nil` when called, and they register no attack.
+  - `attackTurnFree` and `attackTurnHeld` cross as guard reads, so `attackTurnFree` and `attackTurnHeld` themselves reject a string or `nil` when called, and they register no attack.
   - One handle may serve several archetypes. Two handles of one name in one archetype load only if their declarations are equal, since a Luau re-`require` makes copies; unequal declarations reject load.
-  - A misspelled handle must be observable to agents. In Luau a misspelled global reads `nil`, so a nil where a handle is expected rejects with a pathed error, and a nil table field, which reads as absent, is caught by a check agents run.
-- **The attacks list.** Absent, a behavior's attacks are those its rows, actions and marks reference. Present, `attacks: [...]` is exhaustive: only listed attacks exist, lowering drops every row to an unlisted attack and logs each, and any other reference to one rejects load. So a variant reuses its parent's graph with a shorter list. Gating attacks on equipped weapons is a follow-up (roadmap, Epic 10).
-- **A stance is authoring vocabulary.** `defineStance(options)` declares a pose: its animation state, its sound, its hold range and its `breakOn`. It is named by its binding like `defineAttack`. The runtime sees activities, with two new fields this brief adds (`pose`, and a row's queued attack). This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
+  - A misspelled name must be observable to agents. In Luau a misspelled global reads `nil`, so a nil where a handle is expected rejects with a pathed error, and a nil table field, which reads as absent (a handle, or a guard now that `when` is optional), is caught by a check agents run over every misspelled global.
+- **The attacks list.** Absent, a behavior's attacks are those its rows, actions and marks reference. Present, `attacks: [...]` is exhaustive: only listed attacks exist, and any non-row reference to an unlisted attack rejects load. Lowering then drops, logging each, every row to an unlisted attack, then the authored rows of any rest no longer reached; only then does it reject a reached rest left with no way out. So a variant reuses its parent's graph with a shorter list. Gating attacks on equipped weapons is a follow-up (roadmap, Epic 10).
+- **A stance lowers to a pose.** `defineStance(options)` declares a pose: its animation state, its sound, its hold range and its `breakOn`. It is named by its binding like `defineAttack`. Lowering turns it into plain activities carrying a runtime `pose` field, and rows to its attacks carry a runtime `queue` field. Both fields are lowering-only: an authored `pose` or `queue` rejects load with a pathed error. This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
 - **An attack begins and ends in a stance.** An attack's optional `beginningStance` names the pose it starts from, and the attack owns its strike: `release` and `recover`. `release` is required exactly when `beginningStance` is set; either alone rejects load. `endingStance` names the pose it rests in once its recovery ends, and defaults to `beginningStance`, so a slam can land coiled, ready for a lunge. Several attacks may share a beginning stance, so the pose names the threat and the strike stays a mix-up.
 - **Rows target stances and attacks directly.** A row's `to` takes a `Stance` or an `Attack` as well as an activity name, and a level's `initial` may be a `Stance`. `{ to: overhead }` takes the pose; `{ to: slam }` strikes. Lowering expands each targeted stance, and the attacks struck from it, into activities in that level. Authors key a rest's rows by the stance's name and never name the rest's holds, releases or recovers; a string `to` or `initial` naming one rejects load.
 - **A row's `when` is optional.** Omitted, the row is always enabled, on every row, not just rows to stances and attacks.
-- **A stance is a rest.** A stance's rest is an unmarked activity holding the pose; it holds no turn. An enemy waits in line in its rest, so the release stays only partly predictable: a basic enemy's rows strike as soon as a turn is granted, a higher-ranked enemy's add their own conditions. A rest with no way out (no row of its own, and no `"*"` or ancestor row) rejects load.
+- **A stance is a rest.** A stance's rest is an unmarked activity holding the pose; it holds no turn. An enemy waits in line in its rest, so the release stays only partly predictable. A rest with no way out (no row of its own, and no `"*"` or ancestor row) rejects load.
 - **Strikes come only from rests.** A row to an attack is legal only out of the rest of its `beginningStance`; anywhere else it rejects load.
 - **A row to an attack waits in line.** Lowering marks a row to an attack with that attack, a new optional runtime field. While its `when` passes and the target is within the attack's `maxRange` (when it declares one), the resting enemy requests the attack's turn and keeps the pose; the row passes once the turn reads held. Requesting from the rest keeps the budget's wait order and reservations, so a costly attack is never starved by cheaper ones sharing its tokens.
   - One request per enemy: the first such row, in order. A marked activity's request outranks a rest's, and a rest's outranks a pending unmarked attack.
   - A rest's grant lives as a mark's does: it survives into the next evaluation, where its row passes and the hold's mark keeps it. If that evaluation takes another row, the turn ends and its refresh starts.
   - The enemy keeps its place in line as it does today: across a change of requested attack, and across leaving and re-entering a rest on the same target.
-- **A pose is one activity to the engine.** Lowering gives a stance's rest and its holds a shared `pose`, a new optional activity field. Moving between activities of one pose restarts no clip, plays no second sound, and carries `timeInActivityMs`, the roll and the damage sum across, so `breakOn` counts every hit in the pose and the hold time is time in the pose. A row into the pose the enemy is already in is skipped, as a row to the current activity is today. A pose retains its target and aim like an engaging activity.
-- **The enemy commits when it strikes.** Each attack gets its own hold, `<attack>_<stance>` (so `slam_overhead` names the tell in traces), in its stance's pose, then `<attack>_release` and `<attack>_recover`. A hold is entered holding its turn and releases once the pose has been held its rolled time. If the turn ends mid-tell (a target switch), the hold leaves for its rest on the next evaluation. Two enemies queued for one shared stance's attacks keep resting until each is granted (pin P24).
+- **A pose is one activity to the engine.** Lowering gives a stance's rest and its holds a shared `pose`, a new optional activity field. Moving between activities of one pose restarts no clip, plays no second sound, and carries `timeInActivityMs`, `activityRoll` and the damage sum across, so `breakOn` counts every hit in the pose, and steady chip fire on a waiting enemy eventually breaks it. Entering the pose from outside it starts all of that fresh. A `"*"` or ancestor row into the pose the enemy is already in is skipped, as a row to the current activity is today; the pose's own rows between rest and holds are not. A pose retains its target and aim like an engaging activity.
+- **A hidden release draw.** Each hold draws its release time on entry from its own value, uncorrelated with `activityRoll` and unreadable by guards, so branching on the roll in a rest never leaks which strike is coming. The hold releases once the pose has lasted that time.
+- **The enemy commits when it strikes.** Each attack gets its own hold, `<attack>_<stance>` (so `slam_overhead` names the tell in traces), in its stance's pose, then `<attack>_release` and `<attack>_recover`. A hold is entered holding its turn. If its target switches mid-tell, the hold's mark requests the turn against the new target, and the tell carries on when it is granted; the hold returns to its rest only when the new target has no room or no target remains.
 - **A stance can set the body's stance.** An optional `stance: "stand" | "crouch"` on `defineStance` sets the activity property `stance` (`drafts/E10--enemy-cover`) on the rest, the holds and the releases; a recover always stands. Whichever of the two briefs lands second wires the option.
 - **Defaults for novices.** `holdMs` and `recover` are optional, and experts override them.
   - An omitted `holdMs` takes a default range above the co-op floor.
@@ -57,14 +58,14 @@ When this is done:
   - **A strike works wherever it sits.** While an activity marked `attackTurn` is on the path, the enemy keeps its target and committed aim as it does under an engaging ancestor, so a strike outside `engage` still releases (`index.md` §2, Designers over structure).
   - **Chains land in a rest.** Every attack ends in its `endingStance`'s rest, which holds no turn, so none is held across a chain or a repeat.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
-  - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity is left.
+  - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity, or pose, is left.
   - It is a fact the engine computes, not an IR node.
   - Its reach is intended: any guard at that level reads it, including outgoing rows. So chance-based branching, random patrol and chance-based pain are authorable.
 - **The roll is a second exception to the randomness posture** (`networking.md`), and the owner approved it.
   - Rolls are drawn on the host only. No roll or seed crosses the wire. Clients see only what follows from it: animation states and cues.
   - The seed survives a reversed spawn order of same-descriptor enemies, and two such enemies on one entry roll differently.
   - It lands in `networking.md` at promotion, described at its full reach.
-- **Per-activity damage fact: `@brain.damageInActivity`.** It is scope-relative: damage drained from layers and health since that level's activity was entered, for every producer, `applyDamage` included.
+- **Per-activity damage fact: `@brain.damageInActivity`.** It is scope-relative: damage drained from layers and health since that level's activity, or pose, was entered, for every producer, `applyDamage` included.
 - **Stagger is authored on that fact.** It suits a short activity or a pose; on a long chase the sum grows without limit (non-goal below).
   - A stance's optional `breakOn` adds a row leaving its pose for a sibling activity, counting damage across the whole pose. The same guard works on any short activity, such as an aim.
   - Release is committed: it has no break row. Only its own timer, the level's `"*"` rows and ancestor levels' rows leave it; the latter two outrank the generated rows, as they do every activity's, so a `"*"` row to a stance abandons a strike in progress.
@@ -88,6 +89,7 @@ When this is done:
   - **Stagger mid-chase.** On a long activity the sum grows without limit; a recency-windowed damage fact can be appended later.
   - **Player guard and parry.** "For Honor–style" here means the enemy's tell, not a directional player defense.
   - **An engine-drawn release indicator.** The release activity's own sound and animation are the last-instant cue.
+  - **Queueing for hand-written marks.** Only rows lowered from `{ to: attack }` wait in line; a hand-written `attackTurn` activity requests and is granted as today.
   - **Typed activity, state and sound names.** `breakOn.to`, an activity-name `to`, `animation` and `sound` stay strings: activities are keys in the same file's maps, and states and sounds resolve against content. Attacks cross files and archetypes, which is where a typo hid.
 
 ### Scripting surface
@@ -101,7 +103,7 @@ import { heavy, melee } from "./attack-tokens";
 const overhead = defineStance({
   animation: "smash_windup",             // the held pose names the threat
   sound: "brute/stance_overhead",        // heard by every peer, once per pose
-  holdMs: [500, 1200],                   // optional; release moment re-rolled each strike
+  holdMs: [500, 1200],                   // optional; release time drawn per strike, hidden from guards
   breakOn: { damage: 25, to: "flinch" }, // optional; rest and holds
 });
 const coil = defineStance({ animation: "swipe_windup" });
@@ -145,7 +147,7 @@ offense: {
     ],
     // Rows out of each rest. A row to an attack also waits for its turn and its range.
     overhead: [
-      { to: slam, when: brain.activityRoll.lt(0.5) },        // one roll per entry of the rest
+      { to: slam, when: brain.activityRoll.lt(0.5) },        // one roll per entry of the pose
       { to: sweep },
       { to: "approach", when: brain.targetDistance.gt(4.5) },
     ],
@@ -168,9 +170,10 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 **Typed attacks**
 - [ ] In TypeScript, `const slam = defineAttack({ ... })` compiles to `defineAttack("slam", { ... })`, and an explicit name is kept; `defineStance` compiles the same way, and its name appears in its holds' keys. A `defineAttack` or `defineStance` call outside a direct top-level binding throws the binding-name diagnostic. Luau passes the name and produces the identical descriptor.
 - [ ] A handle crosses with its declaration; lowering builds from it the same name-keyed `attacks` map a hand-written descriptor carries today. Lowering runs once per mod load and staged reload, not per level or tick.
-- [ ] Without an `attacks` list, a behavior that references `jab` and `slam` by row, `action` or `attackTurn` has exactly those attacks. With `attacks: [jab]`, a row to `slam` is dropped with one log naming it, and an `action` or `attackTurn` naming `slam` rejects load.
+- [ ] Without an `attacks` list, a behavior that references `jab` and `slam` by row, `action` or `attackTurn` has exactly those attacks. With `attacks: [jab]`, a row to `slam` is dropped with one log naming it, and an `action` or `attackTurn` naming `slam` rejects load. A rest reached only through a dropped attack's `endingStance` is not generated, and its authored rows are dropped with a log; a reached rest whose only row was dropped rejects load naming it (pin P37).
 - [ ] A string where an attack handle is expected (the behavior's `attacks` list or a name-keyed `attacks` map, `action.attack`, `attackTurn`, a row's `to` meant as an attack, an attack's `beginningStance` or `endingStance`) fails type-checking in TypeScript and, in both runtimes, rejects load with a pathed error, through `defineEntity` and through a bare entity in `defineMod`, by the one `scripting-core` lowering. Two handles sharing a name load when their declarations are equal and reject otherwise.
-- [ ] `attackTurnFree` and `attackTurnHeld` given a string or `nil` throw at the call with a pathed message, in both runtimes; a misspelled Luau handle in a table field is reported by the check agents run.
+- [ ] `attackTurnFree` and `attackTurnHeld` given a string or `nil` throw at the call with a pathed message, in both runtimes; a misspelled Luau global in a table field, whether a handle or a `when` guard, is reported by the check agents run.
+- [ ] An authored `pose` or `queue` field rejects load with a pathed error.
 - [ ] One handle used by two archetypes loads in both, and each resolves it by name.
 - [ ] Every shipped enemy, `sdk/behaviors/reference` and `docs/` use handles; grep gate: no shipped script, `docs/` page or generated typedef comment passes or shows an attack as a string.
 
@@ -208,11 +211,15 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - [ ] A marked activity's request outranks a rest's, and a rest's outranks a pending unmarked attack from an ancestor's action.
 - [ ] A resting enemy keeps its target and aim through a co-op re-rank and one tick out of sight, before and while it requests, as a marked activity does.
 - [ ] Two enemies resting in one shared stance and queued under one token: the first granted strikes; the other keeps resting, pose and sound unbroken, until granted (pin P24).
+- [ ] A rest's grant on tick N whose next evaluation takes no row (target out of range, `when` false, or the first row now naming another attack) ends the turn and starts its refresh; the next request queues behind earlier waiters (pin P36).
+- [ ] When a granted strike row and `breakOn` pass on one evaluation in the rest, the break wins and the turn ends (pin P35).
 
 **Pose**
 - [ ] Moving between a rest and its holds, either way, restarts no clip, plays no second stance sound, and carries `timeInActivityMs`, the roll and the damage sum: 20 damage in the rest plus 20 in a hold trips `breakOn: 25`, and a hold releases once the pose, not the hold, has lasted its rolled time (pin P30).
-- [ ] A hold whose turn ends mid-tell (a target switch) returns to its rest on the next evaluation, with no clip restart, no stance sound, and the pose's timer, roll and damage sum unbroken.
-- [ ] A `"*"` or ancestor row into the pose the enemy is already in is skipped in the rest and every hold; the same row abandons a release or recover, which are outside the pose.
+- [ ] A hold whose target switches mid-tell keeps its tell when the new target has room and is granted; when the new target has no room or no target remains, it returns to its rest on the next evaluation, with no clip restart, no stance sound, and the pose's timer, roll and damage sum unbroken (pin P33).
+- [ ] Entering a pose from outside it (a recover or `"*"` row back into the rest, an ancestor transition that reseats the level, or the same stance's copy in another level) plays the stance sound and starts the timer, damage sum and roll fresh (pin P34).
+- [ ] Across many strikes from a rest that branches on `activityRoll`, each attack's release times span its whole hold range, independent of the roll; no guard can read the release draw (pin P32).
+- [ ] A `"*"` or ancestor row into the pose the enemy is already in is skipped in the rest and every hold; the same row abandons a release or recover, which are outside the pose. The rest's rows into its holds and each hold's row back to its rest still pass.
 - [ ] A strike at the root level beside a chase, outside any engaging ancestor, keeps its target and committed aim through a co-op target re-rank and one tick out of sight, and releases (pin P23).
 - [ ] When the break threshold and the missing turn pass on one evaluation, the hold leaves for `breakOn.to` (pin P22).
 - [ ] When the pose's timer and a missing turn pass on one evaluation, the hold leaves for its rest and the release is never entered (pin P16).
@@ -220,7 +227,7 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 
 **Floor**
 - [ ] A test fails if the co-op floor falls below the remote interpolation buffer ceiling, and passes when the floor is above it.
-- [ ] A stance without `holdMs` lowers to a hold range starting at or above the engine floor; one whose authored minimum is below it loads with exactly one warning naming the stance, `holdMs: 0` included; one at or above loads silently.
+- [ ] A stance without `holdMs` lowers to a hold range starting at or above the engine floor; one whose authored minimum is below it loads with exactly one warning per mod load naming the stance, `holdMs: 0` included; one at or above loads silently.
 
 **Roll**
 - [ ] Across many entries, the hold's threshold varies within [min, max], and the hold ends on the first tick at or past it. A fixed `holdMs` never varies.

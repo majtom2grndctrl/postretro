@@ -84,13 +84,19 @@ Read at 5932287f; refreshed at 2cb88013. Findings that inform the brief but do n
 | P22 | Break and turn-lost rows both pass | On the first evaluation that sees the missing turn, the damage sum also reaches `breakOn.damage`. | Break wins: the hold leaves for `breakOn.to`. Lowering emits the break row before the turn-lost row, and that before the release row. |
 | P23 | Stance outside an engaging ancestor | A stance sits at root level beside a chase. During its planted hold a co-op re-rank changes the best target, or the target leaves sight for one tick. | The marked path keeps its target and committed aim; the turn holds and the release fires. |
 | P24 | Two enemies queued for one shared stance | Under one free token, enemies A and B rest in `overhead`; both request `slam` on tick N; A is granted. | A strikes on N+1. B keeps resting with its request pending, no pose drop and no second stance sound, and is granted in wait order. Accepted (owner). |
-| P25 | Costly attack under cheap pressure | Limit 3 on `melee`. Brute X sweeps (`melee` cost 1) every time its turn frees; brute Y rests in `overhead`, requesting `slam` (`melee` cost 2 plus `heavy`). | Y's request reserves `melee` as head of line; X's later sweep requests wait behind it; Y is granted once room frees, never starved. |
+| P25 | Retired | Superseded by P28; its setup cannot starve. | — |
 | P26 | Grant in the rest | A rest's queued request is granted on tick N. (a) On N+1 its row passes. (b) On N+1 another row passes first. | (a) The enemy enters the hold; the hold's mark keeps the turn. (b) The turn ends on N+1 and its refresh starts; nothing fired. |
 | P27 | Re-rank between grant and hold | Granted on N; on N+1 a co-op re-rank would prefer another target. | The resting enemy keeps its target, enters the hold, and the turn survives. |
 | P28 | Costly attack under cheap pressure | Limit 3 on `melee`, no refresh. Two sweepers hold two `melee` turns and re-request as they end; brute Y rests in `overhead`, slam first (`melee` cost 2 plus `heavy`), later wait slot. | Y becomes head of line and reserves `melee`; sweeper requests wait behind it; Y is granted once two `melee` free. Under a turn-free gate with no request, Y waits forever. |
 | P29 | Place in line across changes | Y requests `slam`, then its slam `when` fails and `sweep`'s passes; later Y leaves `overhead` for `approach` and returns on the same target. | Y's wait clock is kept throughout: it neither moves behind later waiters nor restarts. |
 | P30 | Facts across a pose | 20 damage in `overhead`'s rest, then `slam`'s hold entered, then 20 more. Separately, a hold loses its turn and returns to the rest. | `breakOn: 25` trips on the second hit. The return keeps the pose's timer, roll and damage sum. |
 | P31 | First row refreshing | `slam` first, its `heavy` refreshing for 4 s; `sweep` second, free. | The brute keeps requesting `slam` and rests; `sweep` is not requested while `slam`'s `when` and range pass. |
+| P32 | Release time vs roll | A rest branches `slam` on `activityRoll < 0.5`, else `sweep`; both share `holdMs: [500, 1200]`. | Each attack's release times span [500, 1200] across many strikes, independent of the roll that chose it. |
+| P33 | Target switch mid-tell | A hold holds its turn; on tick N its target switches. (a) The new target has room. (b) It has none, or no target remains. | (a) The mark is granted against the new target; the tell carries on and strikes it. (b) The hold returns to its rest on N+1, pose unbroken. |
+| P34 | Fresh entry into a pose | The rest is entered from a recover, from a `"*"` row, after an ancestor reseat, or as the same stance's copy in another level. | Each plays the stance sound and starts timer, damage sum and roll fresh. |
+| P35 | Break vs granted strike in the rest | On one evaluation the rest's granted strike row and `breakOn` both pass. | Break wins; the turn ends and its refresh starts. |
+| P36 | Grant then no row | A rest's request is granted on N; on N+1 no row passes. | The turn ends on N+1 and its refresh starts; the next request queues behind earlier waiters. |
+| P37 | Exhaustive list drops | `attacks: [jab]`. (a) A rest's only row strikes `slam`. (b) `coil` is reached only through `slam`'s `endingStance`. | (a) The row drops, and the reached rest with no way out rejects load naming it. (b) `coil` is not generated; its authored rows drop with a log. |
 
 ## Review round 2 corrections
 - `WeaponCuesMessage` sends one cue per message and carries a `participation_epoch`. `MAX_WEAPON_CUES` is 64 (`WeaponCuesMessage::is_valid`, `crates/net/src/wire.rs`), and `send_weapon_cues` silently skips an invalid (over-cap) message. So the enemy cue goes one per message.
@@ -165,3 +171,9 @@ Read at 5932287f; refreshed at 2cb88013. Findings that inform the brief but do n
 - **`when` optional** on every row; **floor** read by lowering, with a load warning below it; **`initial` may be a Stance**; strings naming generated activities reject.
 - **Attacks list** exhaustive when present (variants with fewer attacks); weapon-gated attacks are a follow-up brief.
 - Turn facts register no attack and reject string or `nil` at the builder.
+
+## Review round 5 (2026-11-13): owner resolutions
+- **Roll leak.** A shared pose roll set both a rest's branch and the hold's release time, so timing named the strike. Owner: each hold draws a hidden release time (P32).
+- **Target switch mid-tell** keeps the tell when the new target has room (P33). **Chip damage** across a pose breaking a waiting enemy is intended.
+- Authored `pose`/`queue` reject; the agent check covers every misspelled Luau global; the exhaustive list drops in a fixed order (P37); hand-written marks do not queue (non-goal).
+- **Superseded in this file:** earlier rounds' "builder", `stanceCycles`/`merge`/`enter`/`after`/`then`, `holdForTurn`, the silent rest copy, and "the floor bounds the seeded default only" describe retired shapes; the brief's Decisions are current.

@@ -314,6 +314,11 @@ Invariants the evaluator upholds:
 - **Reload.** A reload that drops a token an attack draws warns on that reload and ignores the draw. A load or reload that drops a profile a placed pool names warns, and the pool uses `default`.
 - **Host-only, outside the co-op compatibility digest.** Clients never read the budget, and turns never replicate.
 
+**Stances and strikes (decided, not yet built).** Stances and attacks are authoring vocabulary that load-time lowering turns into activities (`scripting.md` §2). The runtime gains three things:
+- **Pose.** Activities sharing a `pose` act as one: moving between them restarts no clip, plays no second sound, and keeps time in activity, the roll and the damage sum. Entering from outside starts them fresh. A `"*"` or ancestor row into the current pose is skipped. A pose retains its target like an engaging activity, and so does any activity marked for an attack.
+- **Queued rows.** A row carrying `queue` requests its attack's turn from an unmarked activity while its guard and the attack's reach pass, and passes once the turn reads held; the grant lives as a mark's. One request per enemy: a mark's outranks a queued row's, which outranks a pending unmarked attack. Rows into hand-written marks do not queue.
+- **Release draw.** A strike's hold releases once its pose has lasted a hidden per-hold draw that no guard reads, so branching on the roll never leaks timing (`networking.md`, randomness posture).
+
 Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
 
 ---

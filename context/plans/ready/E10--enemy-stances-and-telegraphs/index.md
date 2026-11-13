@@ -64,7 +64,7 @@ When this is done:
 - **The roll is a second exception to the randomness posture** (`networking.md`), and the owner approved it.
   - Rolls and hold release draws are drawn on the host only, on separate streams of one seed. Neither crosses the wire. Clients see only what follows: animation states and cues.
   - The seed survives a reversed spawn order of same-descriptor enemies, and two such enemies on one entry draw differently; both hold for rolls and release draws.
-  - It lands in `networking.md` at promotion, described at its full reach, release draws included.
+  - `networking.md` records it at its full reach, release draws included.
 - **Per-activity damage fact: `@brain.damageInActivity`.** It is scope-relative: damage drained from layers and health since that level's activity, or pose, was entered, for every producer, `applyDamage` included.
 - **Stagger is authored on that fact.** It suits a short activity or a pose; on a long chase the sum grows without limit (non-goal below).
   - A stance's optional `breakOn` adds a row leaving its pose for a sibling activity, counting damage across the whole pose. The same guard works on any short activity, such as an aim.

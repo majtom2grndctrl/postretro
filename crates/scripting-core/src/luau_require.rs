@@ -531,6 +531,8 @@ mod tests {
                 "loadLevel",
                 "restartLevel",
                 "returnToFrontend",
+                "leaveSession",
+                "endSession",
                 "setSentiment",
                 "adjustSentiment",
                 "updateState",

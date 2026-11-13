@@ -194,6 +194,8 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "loadLevel",
         "restartLevel",
         "returnToFrontend",
+        "leaveSession",
+        "endSession",
         "setSentiment",
         "adjustSentiment",
         "openTextEntry",
@@ -371,6 +373,9 @@ fn typescript_ui_module_declaration_is_generated() {
             && ui_module.contains("export function showDialog(")
             && ui_module.contains("export function setSentiment(from: string, to: string, value: number): SystemReactionStep;")
             && ui_module.contains("export function adjustSentiment(from: string, to: string, delta: number): SystemReactionStep;")
+            && ui_module.contains("export function returnToFrontend(): SystemReactionStep;")
+            && ui_module.contains("export function leaveSession(): SystemReactionStep;")
+            && ui_module.contains("export function endSession(): SystemReactionStep;")
             && ui_module.contains("export function getGameState(): GameStateRefs;")
             && ui_module.contains(
                 "export type ThemeToken<Category extends \"color\" | \"font\" | \"spacing\">"

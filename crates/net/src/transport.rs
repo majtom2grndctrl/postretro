@@ -88,12 +88,37 @@ pub fn connection_config() -> ConnectionConfig {
     }
 }
 
-fn close_cause_from(reason: DisconnectReason) -> CloseCause {
+/// netcode's keepalive timeout. renetcode hardcodes it into every connect
+/// token an `Unsecure` client generates.
+const NETCODE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How a slot's connection ended, from renet's reason and the time since the
+/// host last heard from that client before this poll's transport advance.
+///
+/// renet_netcode reports a netcode disconnect packet and a keepalive timeout
+/// alike as `Transport`: it removes the connection without recording why. A
+/// timeout needs the last packet to be older than the timeout window, so a
+/// `Transport` end from a client heard within it can only be the client's own
+/// disconnect. Every other ending carries its own reason.
+fn close_cause_from(
+    reason: DisconnectReason,
+    heard_before_advance: Option<Duration>,
+    dt: Duration,
+) -> CloseCause {
     match reason {
         DisconnectReason::DisconnectedByClient => CloseCause::Disconnect,
+        DisconnectReason::Transport
+            if heard_before_advance.is_some_and(|silence| silence + dt <= NETCODE_TIMEOUT) =>
+        {
+            CloseCause::Disconnect
+        }
         _ => CloseCause::Timeout,
     }
 }
+
+/// How long an ended host keeps its transport to deliver the session-ended
+/// cause: until every slot acknowledges it, or this much host time.
+pub const SESSION_END_CLOSE_WINDOW: Duration = Duration::from_secs(2);
 
 /// A verdict about a Control message. Lifecycle effects are reported separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +179,13 @@ pub struct NetServer {
     /// sent. They are not reported as new disconnects a second time.
     pending_disconnects: Vec<ClientId>,
     holding_diagnostics: HashMap<ClientId, HoldingCause>,
+    /// Per connected client, the time since the host last heard from it,
+    /// sampled before each transport advance. Classifies a `Transport` end
+    /// (`close_cause_from`).
+    heard_before_advance: HashMap<ClientId, Duration>,
+    /// Host time since [`NetServer::end_session`], or `None` while the session
+    /// runs. A closing transport admits no one and sends nothing new.
+    closing_elapsed: Option<Duration>,
     next_participation_epoch: u64,
     participation_epochs: HashMap<ClientId, u64>,
     mod_identity: Option<(String, String)>,
@@ -208,6 +240,8 @@ impl NetServer {
             pending_slot_disconnects: Vec::new(),
             pending_disconnects: Vec::new(),
             holding_diagnostics: HashMap::new(),
+            heard_before_advance: HashMap::new(),
+            closing_elapsed: None,
             next_participation_epoch: 1,
             participation_epochs: HashMap::new(),
             mod_identity: None,
@@ -315,8 +349,10 @@ impl NetServer {
 
     pub fn update(&mut self, dt: Duration) -> Result<ServerPoll, NetcodeTransportError> {
         self.server.update(dt);
+        self.sample_heard_before_advance();
         self.transport.update(dt, &mut self.server)?;
-        self.collect_server_events();
+        self.collect_server_events(dt);
+        self.advance_closing(dt);
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
         let (handshakes, join_seeds) = self.process_control_messages();
@@ -364,9 +400,94 @@ impl NetServer {
         }
     }
 
-    fn collect_server_events(&mut self) {
+    /// End the session: send every live slot the session-ended cause, close
+    /// it, and from now on admit no one and send nothing new. Each connection
+    /// drops once its cause is acknowledged; [`NetServer::closing_done`]
+    /// reports when none remain or [`SESSION_END_CLOSE_WINDOW`] has passed.
+    ///
+    /// The engine sends any `FinalCharacter` before calling this, and tears
+    /// down every slot's game state itself, so the closes report no lifecycle
+    /// edges or disconnects. Idempotent.
+    pub fn end_session(&mut self) {
+        if self.closing_elapsed.is_some() {
+            return;
+        }
+        self.closing_elapsed = Some(Duration::ZERO);
+        self.transport.set_max_clients(0);
+        for client_id in self.server.clients_id() {
+            if !self.slots.is_closed(client_id) {
+                self.send_control(
+                    client_id,
+                    wire::encode(&ServerControlMessage::Divergence(
+                        DivergenceReason::Closing(ClosingCause::SessionEnded),
+                    )),
+                );
+                let _ = self.close_slot(client_id, CloseCause::SessionEnded);
+            }
+            if !self.pending_disconnects.contains(&client_id) {
+                self.pending_disconnects.push(client_id);
+            }
+        }
+        self.pending_lifecycle.clear();
+        self.pending_slot_disconnects.clear();
+        self.relevel = None;
+    }
+
+    /// Disconnect every remaining connection at once, sending netcode's
+    /// disconnect packet, before a closing transport is dropped: dropping
+    /// sends nothing, and a peer would otherwise wait out its keepalive.
+    pub fn disconnect_remaining(&mut self) {
+        self.transport.disconnect_all(&mut self.server);
+        while self.server.get_event().is_some() {}
+        self.pending_disconnects.clear();
+    }
+
+    /// Whether [`NetServer::end_session`] has run.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        self.closing_elapsed.is_some()
+    }
+
+    /// Whether a closing transport has finished: every connection has
+    /// acknowledged its cause or been disconnected, or the close window has
+    /// passed. Call [`NetServer::disconnect_remaining`] before dropping it:
+    /// netcode's disconnect for the last acknowledged peer is still unsent.
+    #[must_use]
+    pub fn closing_done(&self) -> bool {
+        self.closing_elapsed.is_some() && self.server.clients_id().is_empty()
+    }
+
+    fn advance_closing(&mut self, dt: Duration) {
+        let Some(elapsed) = self.closing_elapsed.as_mut() else {
+            return;
+        };
+        *elapsed += dt;
+        if *elapsed >= SESSION_END_CLOSE_WINDOW {
+            // A peer that never acknowledged its cause.
+            self.disconnect_remaining();
+        }
+    }
+
+    fn sample_heard_before_advance(&mut self) {
+        self.heard_before_advance.clear();
+        for client_id in self.server.clients_id() {
+            if let Some(silence) = self.transport.time_since_last_received_packet(client_id) {
+                self.heard_before_advance.insert(client_id, silence);
+            }
+        }
+    }
+
+    fn collect_server_events(&mut self, dt: Duration) {
         while let Some(event) = self.server.get_event() {
             match event {
+                ServerEvent::ClientConnected { client_id } if self.closing_elapsed.is_some() => {
+                    // A connect already past netcode's request stage when
+                    // the session ended: closed at once, and sent nothing.
+                    self.slots.on_connect(client_id);
+                    let _ = self.close_slot(client_id, CloseCause::SessionEnded);
+                    self.pending_slot_disconnects.retain(|id| *id != client_id);
+                    self.server.disconnect(client_id);
+                }
                 ServerEvent::ClientConnected { client_id } => {
                     self.slots.on_connect(client_id);
                     if let Some(user_data) = self.transport.user_data(client_id)
@@ -376,7 +497,10 @@ impl NetServer {
                     }
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
-                    if let Some(event) = self.close_slot(client_id, close_cause_from(reason)) {
+                    let heard = self.heard_before_advance.get(&client_id).copied();
+                    if let Some(event) =
+                        self.close_slot(client_id, close_cause_from(reason, heard, dt))
+                    {
                         self.pending_lifecycle.push(event);
                     }
                 }
@@ -770,8 +894,12 @@ impl NetServer {
     }
 
     /// Control may be sent to an admitted/closed slot to deliver a hold/reject
-    /// diagnostic before socket teardown. Payload semantics remain engine-owned.
+    /// diagnostic before socket teardown, except on a closing transport, which
+    /// sends nothing after a slot's cause. Payload semantics remain engine-owned.
     pub fn send_control(&mut self, client_id: ClientId, payload: Vec<u8>) {
+        if self.closing_elapsed.is_some() && self.slots.is_closed(client_id) {
+            return;
+        }
         self.server.send_message(
             client_id,
             Channel::Control,
@@ -783,6 +911,9 @@ impl NetServer {
     }
 
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
+        if self.closing_elapsed.is_some() {
+            return;
+        }
         self.server.send_message(client_id, Channel::Input, payload);
     }
 
@@ -905,7 +1036,9 @@ impl NetServer {
     }
 
     pub fn poll_handshakes(&mut self) -> ServerPoll {
-        self.collect_server_events();
+        // A relay connection has no netcode transport, so no silence sample:
+        // its `Transport` ends stay timeouts.
+        self.collect_server_events(Duration::ZERO);
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
         let (handshakes, join_seeds) = self.process_control_messages();
@@ -1020,6 +1153,20 @@ pub enum ControlArrival {
     Message(ServerControlMessage),
 }
 
+/// Why a client's connection is over, once it is. A client still retrying an
+/// unanswered first connect has not ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionEnd {
+    /// This client left: [`NetClient::disconnect`].
+    Left,
+    /// An established connection ended without this client leaving: the host
+    /// closed it, went silent, or the transport failed.
+    Lost,
+    /// No connect attempt was answered within the attempt budget, or the host
+    /// refused the connect.
+    NeverConnected,
+}
+
 /// Synchronous client transport. It declares values but never compares them.
 pub struct NetClient {
     client: RenetClient,
@@ -1038,6 +1185,13 @@ pub struct NetClient {
     polled: bool,
     connect_attempt: u32,
     ever_connected: bool,
+    /// Set by [`NetClient::disconnect`]: the ending is this client's own.
+    left: bool,
+    /// Control drained when the connection ended, ahead of the next drain.
+    /// Messages that arrived with the host's disconnect stay readable only
+    /// until the next update, and a closing cause among them is why the
+    /// connection ended.
+    held_control: Vec<ControlArrival>,
     failure_reported: bool,
     transient_error_logged: bool,
     admission_sent: bool,
@@ -1102,6 +1256,8 @@ impl NetClient {
             polled: false,
             connect_attempt: 1,
             ever_connected: false,
+            left: false,
+            held_control: Vec::new(),
             failure_reported: false,
             transient_error_logged: false,
             admission_sent: false,
@@ -1258,7 +1414,22 @@ impl NetClient {
         } else if !self.failure_reported {
             self.failure_reported = true;
             if self.ever_connected {
-                log::error!("[Net] lost connection to host {}: {err}", self.server_addr);
+                // A host that closed this slot sent its cause first; read it
+                // before it is lost, and leave the ending to the engine.
+                self.held_control = self.drain_control_arrivals();
+                let host_closed = self.held_control.iter().any(|arrival| {
+                    matches!(
+                        arrival,
+                        ControlArrival::Message(ServerControlMessage::Divergence(
+                            DivergenceReason::Closing(_)
+                        ))
+                    )
+                });
+                if host_closed {
+                    log::debug!("[Net] host {} closed this connection", self.server_addr);
+                } else {
+                    log::error!("[Net] lost connection to host {}: {err}", self.server_addr);
+                }
             } else {
                 log::error!(
                     "[Net] could not connect to host {} after {} attempt(s): {err}",
@@ -1357,6 +1528,39 @@ impl NetClient {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.client.is_connected()
+    }
+
+    /// Leave the session: send netcode's disconnect packet to the host now,
+    /// so it closes this slot as a disconnect rather than waiting out the
+    /// keepalive timeout. The packet is a single unacknowledged datagram; if
+    /// it is lost the host times the slot out instead. Idempotent, and quiet:
+    /// a left connection logs no lost-host error.
+    pub fn disconnect(&mut self) {
+        if self.left {
+            return;
+        }
+        self.left = true;
+        self.failure_reported = true;
+        self.client.disconnect();
+        self.transport.disconnect();
+    }
+
+    /// Why this connection is over, or `None` while it is live or still
+    /// connecting, a retry of an unanswered first connect included. Read it
+    /// after [`NetClient::update`], which starts any retry.
+    #[must_use]
+    pub fn connection_end(&self) -> Option<ConnectionEnd> {
+        if self.left {
+            return Some(ConnectionEnd::Left);
+        }
+        if self.transport.disconnect_reason().is_none() && !self.client.is_disconnected() {
+            return None;
+        }
+        Some(if self.ever_connected {
+            ConnectionEnd::Lost
+        } else {
+            ConnectionEnd::NeverConnected
+        })
     }
 
     /// Whether the host has activated the current participation generation.
@@ -1479,41 +1683,45 @@ impl NetClient {
     }
 
     fn drain_control_arrivals(&mut self) -> Vec<ControlArrival> {
-        drain_client_channel(&mut self.client, Channel::Control)
-            .into_iter()
-            .filter_map(|bytes| {
-                let frame: ServerControlFrame = match wire::decode(&bytes) {
-                    Ok(frame) => frame,
-                    Err(err) => {
-                        log::warn!("[Net] dropping unframed server Control message: {err}");
-                        return None;
-                    }
-                };
-                let Some(payload) = frame.payload else {
-                    let Some(epoch) = frame.participation_epoch else {
-                        log::warn!("[Net] dropping participation marker without an epoch");
-                        return None;
+        let mut arrivals = std::mem::take(&mut self.held_control);
+        let received: Vec<ControlArrival> =
+            drain_client_channel(&mut self.client, Channel::Control)
+                .into_iter()
+                .filter_map(|bytes| {
+                    let frame: ServerControlFrame = match wire::decode(&bytes) {
+                        Ok(frame) => frame,
+                        Err(err) => {
+                            log::warn!("[Net] dropping unframed server Control message: {err}");
+                            return None;
+                        }
                     };
-                    self.activate_participation(epoch);
-                    return Some(ControlArrival::ParticipationMarker { epoch });
-                };
-                let message: ServerControlMessage = match wire::decode(&payload) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        log::warn!("[Net] dropping malformed server Control message: {err}");
-                        return None;
+                    let Some(payload) = frame.payload else {
+                        let Some(epoch) = frame.participation_epoch else {
+                            log::warn!("[Net] dropping participation marker without an epoch");
+                            return None;
+                        };
+                        self.activate_participation(epoch);
+                        return Some(ControlArrival::ParticipationMarker { epoch });
+                    };
+                    let message: ServerControlMessage = match wire::decode(&payload) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            log::warn!("[Net] dropping malformed server Control message: {err}");
+                            return None;
+                        }
+                    };
+                    if matches!(
+                        message,
+                        ServerControlMessage::Divergence(DivergenceReason::Holding(_))
+                    ) && let Some(epoch) = frame.participation_epoch
+                    {
+                        self.retire_participation(epoch);
                     }
-                };
-                if matches!(
-                    message,
-                    ServerControlMessage::Divergence(DivergenceReason::Holding(_))
-                ) && let Some(epoch) = frame.participation_epoch
-                {
-                    self.retire_participation(epoch);
-                }
-                Some(ControlArrival::Message(message))
-            })
-            .collect()
+                    Some(ControlArrival::Message(message))
+                })
+                .collect();
+        arrivals.extend(received);
+        arrivals
     }
 
     fn accept_snapshot_epoch(&self, epoch: u64) -> bool {
@@ -1716,6 +1924,11 @@ mod tests {
             .update(Duration::from_secs(16))
             .expect("the timed-out attempt is retried, not reported");
         assert_eq!(client.connect_attempt, 2);
+        assert_eq!(
+            client.connection_end(),
+            None,
+            "a retrying connect has not ended"
+        );
 
         let socket = UdpSocket::bind(server_addr).expect("host binds the reserved port");
         let mut server = NetServer::new(socket, server_addr, 8, Duration::from_secs(1), None)
@@ -1745,11 +1958,325 @@ mod tests {
         );
         assert_eq!(client.connect_attempt, CONNECT_ATTEMPTS);
         assert!(!client.is_connected());
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::NeverConnected));
         capture.assert_logged_once(
             log::Level::Error,
             &format!("could not connect to host {silent} after {CONNECT_ATTEMPTS} attempt(s)"),
         );
         drop(silent_socket);
+    }
+
+    fn connected_slot(server: &NetServer) -> ClientId {
+        let ids = server.connected_clients();
+        assert_eq!(ids.len(), 1, "exactly one connected client");
+        ids[0]
+    }
+
+    /// Advance the host alone, in frame steps, until `client_id`'s slot closes
+    /// or `budget` of host time passes. Returns the host time spent.
+    fn pump_host_until_closed(
+        server: &mut NetServer,
+        client_id: ClientId,
+        budget: Duration,
+    ) -> Duration {
+        let step = Duration::from_millis(16);
+        let mut elapsed = Duration::ZERO;
+        while elapsed < budget && !server.is_closed(client_id) {
+            let _ = server.update(step).expect("server update");
+            elapsed += step;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        elapsed
+    }
+
+    // The riskiest premise of `coop--client-leave-session`: renet_netcode
+    // reports a client's disconnect packet as a `Transport` end, exactly like
+    // a keepalive timeout, so the host must classify it itself.
+    #[test]
+    fn a_leaving_client_closes_its_host_slot_as_a_disconnect_within_one_second() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        let client_id = connected_slot(&server);
+
+        client.disconnect();
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Left));
+        let elapsed = pump_host_until_closed(&mut server, client_id, Duration::from_secs(1));
+
+        assert!(elapsed < Duration::from_secs(1), "closed after {elapsed:?}");
+        assert_eq!(
+            server.slot_state(client_id),
+            Some(SlotState::Closed {
+                cause: CloseCause::Disconnect
+            })
+        );
+    }
+
+    #[test]
+    fn a_silent_client_still_closes_its_host_slot_as_a_timeout() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        let client_id = connected_slot(&server);
+
+        // The client never polls again: no keepalive reaches the host.
+        let elapsed = pump_host_until_closed(&mut server, client_id, Duration::from_secs(20));
+
+        // The silence began a poll or two before this loop.
+        assert!(
+            elapsed + Duration::from_millis(100) >= NETCODE_TIMEOUT,
+            "closed early, after {elapsed:?}"
+        );
+        assert_eq!(
+            server.slot_state(client_id),
+            Some(SlotState::Closed {
+                cause: CloseCause::Timeout
+            })
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn a_transport_end_is_a_disconnect_only_inside_the_timeout_window() {
+        let frame = Duration::from_millis(16);
+        let cases = [
+            (
+                DisconnectReason::Transport,
+                Some(Duration::ZERO),
+                CloseCause::Disconnect,
+            ),
+            (
+                DisconnectReason::Transport,
+                Some(NETCODE_TIMEOUT - frame),
+                CloseCause::Disconnect,
+            ),
+            (
+                DisconnectReason::Transport,
+                Some(NETCODE_TIMEOUT - frame + Duration::from_millis(1)),
+                CloseCause::Timeout,
+            ),
+            (DisconnectReason::Transport, None, CloseCause::Timeout),
+            (
+                DisconnectReason::DisconnectedByClient,
+                None,
+                CloseCause::Disconnect,
+            ),
+            (
+                DisconnectReason::DisconnectedByServer,
+                Some(Duration::ZERO),
+                CloseCause::Timeout,
+            ),
+        ];
+        for (reason, heard, expected) in cases {
+            assert_eq!(
+                close_cause_from(reason, heard, frame),
+                expected,
+                "{reason:?} {heard:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_reports_its_connection_lost_once_the_host_closes_it() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        assert_eq!(client.connection_end(), None);
+        let client_id = connected_slot(&server);
+
+        server.server.disconnect(client_id);
+        let step = Duration::from_millis(16);
+        for _ in 0..60 {
+            let _ = server.update(step).expect("server update");
+            let _ = client.update(step);
+            if client.connection_end().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Lost));
+        capture.assert_logged_once(log::Level::Error, "lost connection to host");
+    }
+
+    #[test]
+    fn a_left_client_logs_no_lost_connection() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+
+        client.disconnect();
+        client.disconnect();
+        for _ in 0..4 {
+            assert!(client.update(Duration::from_millis(16)).is_err());
+        }
+
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Left));
+        capture.assert_not_logged(log::Level::Error, "lost connection");
+    }
+
+    fn session_ended() -> ServerControlMessage {
+        ServerControlMessage::Divergence(DivergenceReason::Closing(ClosingCause::SessionEnded))
+    }
+
+    fn loopback_client_with_id(server_addr: SocketAddr, client_id: u64) -> NetClient {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind client socket");
+        NetClient::new(
+            socket,
+            server_addr,
+            client_id,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .expect("construct client")
+    }
+
+    /// Pump the host and `live` clients one frame. Returns each live client's
+    /// drained Control.
+    fn pump_frame(
+        server: &mut NetServer,
+        live: &mut [&mut NetClient],
+    ) -> Vec<Vec<ServerControlMessage>> {
+        let step = Duration::from_millis(16);
+        let mut drained = Vec::new();
+        for client in live.iter_mut() {
+            let _ = client.update(step);
+            drained.push(client.drain_control());
+        }
+        let _ = server.update(step).expect("server update");
+        std::thread::sleep(Duration::from_millis(1));
+        drained
+    }
+
+    // AC 14's transport half (pin P12): an acknowledging client gets the
+    // cause and drops at once; one that never acknowledges is dropped when
+    // the close window passes.
+    #[test]
+    fn an_ended_host_drops_its_transport_within_the_close_window() {
+        let (mut server, server_addr) = loopback_server();
+        let mut acking = loopback_client_with_id(server_addr, 7);
+        let mut silent = loopback_client_with_id(server_addr, 8);
+        assert!(pump_until_connected(&mut acking, &mut server));
+        assert!(pump_until_connected(&mut silent, &mut server));
+        assert_eq!(server.connected_clients().len(), 2);
+
+        server.end_session();
+        assert!(server.is_closing());
+        let mut received = Vec::new();
+        let mut host_time = Duration::ZERO;
+        while !server.closing_done() && host_time < Duration::from_secs(3) {
+            for messages in pump_frame(&mut server, &mut [&mut acking]) {
+                received.extend(messages);
+            }
+            host_time += Duration::from_millis(16);
+        }
+
+        assert!(
+            server.closing_done(),
+            "transport still open after {host_time:?}"
+        );
+        assert!(host_time <= SESSION_END_CLOSE_WINDOW + Duration::from_millis(16));
+        assert_eq!(received, vec![session_ended()]);
+        assert_eq!(acking.connection_end(), Some(ConnectionEnd::Lost));
+        assert_eq!(
+            server.slot_state(8),
+            Some(SlotState::Closed {
+                cause: CloseCause::SessionEnded
+            })
+        );
+    }
+
+    // Review: a client that misses the close window receives the cause and
+    // the host's disconnect in one update. The cause still drains, and the
+    // client logs no lost host.
+    #[test]
+    fn a_cause_arriving_with_the_disconnect_drains_without_a_lost_host_error() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+
+        server.end_session();
+        let mut host_time = Duration::ZERO;
+        while !server.closing_done() && host_time < Duration::from_secs(3) {
+            let _ = server
+                .update(Duration::from_millis(16))
+                .expect("server update");
+            host_time += Duration::from_millis(16);
+        }
+        assert!(server.closing_done());
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(client.update(Duration::from_millis(16)).is_err());
+
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Lost));
+        assert!(client.drain_control().contains(&session_ended()));
+        capture.assert_not_logged(log::Level::Error, "lost connection");
+    }
+
+    #[test]
+    fn an_acknowledged_end_drops_the_transport_before_the_window() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+
+        server.end_session();
+        let mut frames = 0;
+        while !server.closing_done() && frames < 200 {
+            let _ = pump_frame(&mut server, &mut [&mut client]);
+            frames += 1;
+        }
+        assert!(server.closing_done());
+        assert!(
+            Duration::from_millis(16) * frames < SESSION_END_CLOSE_WINDOW,
+            "dropped only at the window, after {frames} frames"
+        );
+    }
+
+    // AC 15's transport half (pin P14): the closing transport admits no one,
+    // sends nothing after a slot's cause, and reports no slot edges.
+    #[test]
+    fn a_closing_transport_admits_no_one_and_sends_nothing_after_the_cause() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        let first = connected_slot(&server);
+
+        // Sent before the end, so it precedes the cause.
+        server.send_control(
+            first,
+            wire::encode(&ServerControlMessage::FinalCharacter {
+                slots: BTreeMap::from([("hp".to_owned(), JoinSeedValue::Number(40.0))]),
+            }),
+        );
+        server.end_session();
+        server.send_control(first, wire::encode(&ServerControlMessage::Tuning(vec![1])));
+        server.set_relevel_catalog_id(Some("e1m1".to_owned()));
+        let mut late = loopback_client_with_id(server_addr, 99);
+
+        let mut received = Vec::new();
+        for _ in 0..60 {
+            for messages in pump_frame(&mut server, &mut [&mut client, &mut late]) {
+                received.extend(messages);
+            }
+            let poll = server.update(Duration::ZERO).expect("server update");
+            assert!(poll.lifecycle.is_empty() && poll.disconnects.is_empty());
+            assert!(poll.handshakes.is_empty());
+        }
+
+        assert_eq!(
+            received,
+            vec![
+                ServerControlMessage::FinalCharacter {
+                    slots: BTreeMap::from([("hp".to_owned(), JoinSeedValue::Number(40.0))]),
+                },
+                session_ended(),
+            ]
+        );
+        assert!(!late.is_connected(), "a closing host admits no one");
+        assert!(server.connected_clients().is_empty());
     }
 
     fn relay_pair() -> (NetServer, NetClient) {
@@ -2613,16 +3140,24 @@ mod tests {
     // declaration kind, a wire-35 peer the snapshot's host level tick, and a
     // wire-36 peer the host level life on `Relevel` and `Revealed`, a wire-37
     // peer the player life-state record, and a wire-38 peer the assist fields.
-    // A PRLC peer predates the spawn-pose hint. The admission gate refuses each
-    // declaration with a typed cause and admits a PRLD / 39 one.
+    // A PRLC peer predates the spawn-pose hint and a PRLD peer the session-ended
+    // cause. The admission gate refuses each declaration with a typed cause,
+    // logging the protocol mismatch, and admits a PRLE / 39 one.
     #[test]
-    fn admission_refuses_prlb_prlc_or_wire_32_to_38_and_admits_prld_39() {
+    fn admission_refuses_prlb_to_prld_or_wire_32_to_38_and_admits_prle_39() {
         let current = wire::ProtocolVersion {
-            app_protocol_id: 0x_5052_4C44,
+            app_protocol_id: 0x_5052_4C45,
             wire_version: 39,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C44,
+                    ..current
+                },
+                false,
+            ),
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C43,
@@ -2688,6 +3223,7 @@ mod tests {
             ),
             (current, true),
         ];
+        let capture = postretro_test_log_capture::LogCapture::start();
         for (declared, admitted) in cases {
             let (mut server, mut client) = relay_pair();
             server.set_mod_identity("postretro.test".to_string(), "1".to_string());
@@ -2711,6 +3247,7 @@ mod tests {
                 }) => {
                     assert!(!admitted, "{declared:?} must be admitted");
                     assert_eq!((*expected, *received), (current, declared));
+                    capture.assert_logged(log::Level::Warn, "protocol mismatch");
                 }
                 other => panic!("{declared:?}: expected an admission verdict, got {other:?}"),
             }

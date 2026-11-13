@@ -1,6 +1,7 @@
 // Frame-end landing drain for the timed-reaction scheduler (E18).
 // See: context/lib/scripting.md §12 (Steps after a `wait`)
 
+use postretro_entities::reactions::system_commands::SystemReactionKind;
 use postretro_entities::{
     ClientLanding, DataRegistry, EntityRegistry, FireOrigin, FireSubject, ReactionDescriptor,
     ScriptCtx,
@@ -212,6 +213,7 @@ impl ReactionScheduler {
     /// reaction body until level teardown, suspend, hot reload or a role
     /// change; every other drop is routine and stays at debug. `owner` is the
     /// reaction whose step dropped: the landing's own, or a `fire` target's.
+    /// A dropped `endSession` names `leaveSession`, the client's membership verb.
     fn report_client_drop(
         &self,
         address: &str,
@@ -232,8 +234,16 @@ impl ReactionScheduler {
                 .warned_own_state_drops
                 .insert((address.to_string(), body_ordinal));
         if first {
+            let hint = if step == SystemReactionKind::EndSession.primitive_name() {
+                format!(
+                    "; a client leaves with `{}`",
+                    SystemReactionKind::LeaveSession.primitive_name()
+                )
+            } else {
+                String::new()
+            };
             log::warn!(
-                "[Scheduler] reaction `{address}`{via}: step `{step}` after a `wait` lands only on the host, and this own-state tail fires for this machine's player; it is dropped here"
+                "[Scheduler] reaction `{address}`{via}: step `{step}` after a `wait` lands only on the host, and this own-state tail fires for this machine's player; it is dropped here{hint}"
             );
         } else {
             log::debug!(

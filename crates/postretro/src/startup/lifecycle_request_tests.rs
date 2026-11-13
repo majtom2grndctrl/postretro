@@ -966,9 +966,14 @@ fn return_to_frontend_system_command_queues_unload_then_backdrop_load() {
         },
     });
 
-    script_ctx(&app)
-        .system_commands
-        .push(postretro_entities::SystemReactionCommand::ReturnToFrontend);
+    script_ctx(&app).system_commands.push(
+        postretro_entities::SystemReactionCommand::ReturnToFrontend {
+            dispatch_source: "ui:quit".to_string(),
+            origin: postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::OwnState,
+            ),
+        },
+    );
     app.dispatch_system_commands();
 
     assert_eq!(

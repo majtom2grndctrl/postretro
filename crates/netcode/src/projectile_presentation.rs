@@ -80,6 +80,14 @@ pub(crate) struct GameplayProjectilePresentationSource<'a> {
 }
 
 impl HostProjectilePresentations {
+    /// Despawn every presentation flight: the host ended its session, so no
+    /// remote peer watches them and nothing will advance them again.
+    pub fn despawn_all(&mut self, registry: &mut EntityRegistry) {
+        for (id, _) in self.flights.drain() {
+            let _ = registry.despawn(id);
+        }
+    }
+
     /// Retain a validated contact endpoint on the matching remote-fire visual.
     /// Unknown or already-retired shots are ignored, so contact state cannot leak
     /// forward into a later presentation.

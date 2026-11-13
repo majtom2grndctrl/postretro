@@ -54,6 +54,7 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 pub(crate) mod level_streaming;
 pub(crate) mod lightmap_residency;
 mod lightmap_streaming_diagnostics;
+pub(crate) mod role_state;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;
@@ -282,9 +283,16 @@ pub(crate) struct Session {
     /// `None` for single-player (net inert); `Host`/`Client` once a
     /// `--host`/`--connect` role's transport is constructed. A malformed net flag
     /// or a failed transport construction degrades to single-player rather than
-    /// blocking boot. The net subsystem never touches the registry —
+    /// blocking boot. A client's leave and a host's end also reset it to
+    /// `None`: a role moves one way, to single-player. The net subsystem never
+    /// touches the registry —
     /// `postretro-netcode` owns that seam. See: context/lib/networking.md.
     pub(crate) net_endpoint: Option<netcode::NetEndpoint>,
+    /// An ended host's transport, kept only to deliver each slot's closing
+    /// cause: pumped every frame until every slot acknowledges or the close
+    /// window passes, then dropped. It admits no one and sends nothing new.
+    /// The session is already single-player while it lives.
+    pub(crate) closing_host_transport: Option<Box<postretro_net::transport::NetServer>>,
 
     /// Durable local/listen-host player seats. Connected clients intentionally
     /// own no table: the host is the authority that mints session identities.
@@ -447,10 +455,11 @@ pub(crate) struct ScriptingCore {
     /// See: context/lib/input.md §7.
     pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
 
-    /// `(firing source, verb)` pairs a connected client already warned about
-    /// when it dropped a host-only level verb. Role is fixed for the session,
-    /// so the latch lives as long as the session. See: context/lib/scripting.md §10.4.
-    pub(crate) client_level_verb_warnings: std::collections::HashSet<(String, &'static str)>,
+    /// `(firing source, verb)` pairs this machine already warned about when
+    /// its role refused a level, membership or navigation verb. A role change
+    /// clears it with the role's other derived state. See:
+    /// context/lib/scripting.md §10.4.
+    pub(crate) refused_verb_warnings: std::collections::HashSet<(String, &'static str)>,
 }
 
 /// Publish owner-local health and evaluate the damage call's pending impact in
@@ -539,7 +548,7 @@ impl Session {
         //    `build_scripting_core` and shared verbatim with the headless
         //    observability path so the two paths cannot drift. Runs behind first
         //    pixels; records `script_runtime_ctor`. See: context/lib/scripting.md.
-        let (scripting, classname_dispatch) = build_scripting_core(boot_timings)?;
+        let (mut scripting, classname_dispatch) = build_scripting_core(boot_timings)?;
 
         let mut input_system = input::InputSystem::new(input::default_bindings());
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
@@ -682,63 +691,32 @@ impl Session {
             }
             Some(seats)
         };
-        scripting
-            .spawn_context
-            .set_runtime_spawn_authority(!matches!(
-                &net_endpoint,
-                Some(netcode::NetEndpoint::Client { .. })
-            ));
-        scripting.auto_close_timers.set_enabled(!matches!(
-            &net_endpoint,
-            Some(netcode::NetEndpoint::Client { .. })
-        ));
-        // A connected client parks only every-machine tails and lands only their
-        // machine-local steps. Named fires run there too, so the role lives at
-        // the scheduler, not at a call site.
-        scripting.scheduler.set_role(
-            if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
-                scripting_systems::reaction_scheduler::SchedulerRole::Client
-            } else {
-                scripting_systems::reaction_scheduler::SchedulerRole::Host
-            },
+        // Every role-bound value derives in one place, which a client's
+        // leave and a host's end reuse. Identity setup above can still have
+        // demoted the endpoint to single-player, so the role reads it after.
+        // A listen host publishes the address players should dial, for the
+        // frontend to show.
+        let role = role_state::SessionRole::of(net_endpoint.as_ref());
+        let published = published_host_address(
+            &net_role,
+            role == role_state::SessionRole::Host,
+            netcode::probe_lan_address,
         );
-        scripting
-            .script_ctx
-            .owner_slot_writes_enabled
-            .set(!matches!(
-                &net_endpoint,
-                Some(netcode::NetEndpoint::Client { .. })
-            ));
+        if let Some(address) = published {
+            log::info!("[Net] players join with --connect {address}");
+        }
+        let mut seat_table = seat_table;
+        {
+            let registry = scripting.script_ctx.registry.clone();
+            let _ = role_state::apply_role(
+                &mut scripting,
+                &mut seat_table,
+                &mut registry.borrow_mut(),
+                &role_state::RoleBoundState::derive(role, published),
+            );
+        }
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         let trigger_spawn_context = scripting.spawn_context.clone();
-        // A listen host publishes the address players should dial, for the
-        // frontend to show. Written after identity setup, which can still
-        // demote the endpoint to single-player.
-        if let Some(address) = published_host_address(
-            &net_role,
-            matches!(&net_endpoint, Some(netcode::NetEndpoint::Host { .. })),
-            netcode::probe_lan_address,
-        ) {
-            log::info!("[Net] players join with --connect {address}");
-            for (slot, value) in [
-                (
-                    HOST_ADDRESS_SLOT,
-                    postretro_entities::slot_table::SlotValue::String(address.to_string()),
-                ),
-                (
-                    HOSTING_SLOT,
-                    postretro_entities::slot_table::SlotValue::Boolean(true),
-                ),
-            ] {
-                if let Err(err) = postretro_scripting_core::store_bridge::write_store_slot(
-                    &scripting.script_ctx,
-                    slot,
-                    value,
-                ) {
-                    log::warn!("[Net] failed to write `{slot}`: {err}");
-                }
-            }
-        }
         boot_timings.record("net_endpoint_complete");
 
         // Seed every accessibility working copy and `accessibility.*` slot once,
@@ -815,6 +793,7 @@ impl Session {
             frontend: None,
             accessibility_entry_check: Default::default(),
             net_endpoint,
+            closing_host_transport: None,
             seat_table,
             audio,
             // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
@@ -834,9 +813,6 @@ fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
         .finish()
         .0
 }
-
-const HOST_ADDRESS_SLOT: &str = "session.hostAddress";
-const HOSTING_SLOT: &str = "session.hosting";
 
 /// The address a live listen host publishes, else `None` (both slots keep
 /// their empty/false defaults). A host role whose endpoint failed setup has
@@ -1041,7 +1017,7 @@ fn build_scripting_core(
         vignette_decay,
         shake_decay,
         input_mode_tracker,
-        client_level_verb_warnings: Default::default(),
+        refused_verb_warnings: Default::default(),
     };
     Ok((scripting, classname_dispatch))
 }

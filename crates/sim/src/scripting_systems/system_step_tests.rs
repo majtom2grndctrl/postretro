@@ -38,7 +38,7 @@ fn sample_args(kind: SystemReactionKind) -> serde_json::Value {
         ScreenShake => json!({ "amplitude": 4, "durationMs": 100 }),
         ShowDialog => json!({ "tree": "dialog" }),
         OpenMenu => json!({ "tree": "menu" }),
-        CloseDialog | RestartLevel | ReturnToFrontend => json!({}),
+        CloseDialog | RestartLevel | ReturnToFrontend | LeaveSession | EndSession => json!({}),
         LoadLevel => json!({ "map": "next" }),
         SetState => json!({ "slot": "step.flag", "value": 1 }),
         SetSentiment => json!({ "from": "a", "to": "b", "value": 0.5 }),
@@ -294,9 +294,11 @@ fn every_system_reaction_kind_as_a_step_does_what_its_body_does_from_every_sourc
 
 // Drift guard for the shared machine-local predicate, by exhaustive match: it
 // holds for exactly presentation and machine-local kinds, a `setState` on a
-// slot that does not replicate and, on a client only, `returnToFrontend`. A
-// client landing keeps exactly those; a player event refuses exactly those
-// minus presentation, which it forwards.
+// slot that does not replicate and, on a client only, `returnToFrontend` and
+// `leaveSession`; never `endSession`. A client landing keeps exactly those, a
+// late joiner's converging landing those minus presentation, `returnToFrontend`
+// and `leaveSession`; a player event refuses exactly those minus presentation,
+// which it forwards.
 #[test]
 fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_kind() {
     use postretro_entities::{
@@ -328,10 +330,9 @@ fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_ki
                     ShowDialog | OpenMenu | CloseDialog | CellWrite | AppendText
                     | BackspaceText | ClearText => true,
                     SetState => !replicated,
-                    ReturnToFrontend => role == MachineRole::Client,
-                    LoadLevel | RestartLevel | SetSentiment | AdjustSentiment | SetGhostAudio => {
-                        false
-                    }
+                    ReturnToFrontend | LeaveSession => role == MachineRole::Client,
+                    LoadLevel | RestartLevel | EndSession | SetSentiment | AdjustSentiment
+                    | SetGhostAudio => false,
                 };
                 let label = format!("`{}` {slot_name} on {role:?}", kind.primitive_name());
                 assert_eq!(
@@ -339,17 +340,24 @@ fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_ki
                     expected,
                     "predicate: {label}"
                 );
+                let presentation = matches!(
+                    kind,
+                    PlaySound | Rumble | FlashScreen | Vignette | ScreenShake
+                );
                 if role == MachineRole::Client {
                     assert_eq!(
                         ClientLanding::Land.keeps(kind.primitive_name(), &args, &slot_table),
                         expected,
                         "client tail filter: {label}"
                     );
-                } else {
-                    let presentation = matches!(
-                        kind,
-                        PlaySound | Rumble | FlashScreen | Vignette | ScreenShake
+                    assert_eq!(
+                        ClientLanding::Converge.keeps(kind.primitive_name(), &args, &slot_table),
+                        expected
+                            && !presentation
+                            && !matches!(kind, ReturnToFrontend | LeaveSession),
+                        "late-joiner convergence: {label}"
                     );
+                } else {
                     assert_eq!(
                         crate::player_events::player_event_refuses(kind, &args, &slot_table),
                         expected && !presentation,

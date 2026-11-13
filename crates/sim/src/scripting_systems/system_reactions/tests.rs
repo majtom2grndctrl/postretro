@@ -686,17 +686,56 @@ fn restart_level_dispatch_enqueues_argumentless_command() {
     );
 }
 
+// `returnToFrontend`, `leaveSession` and `endSession` are argumentless and
+// carry the fire's source and origin, so the app drain can refuse one by role
+// and choose warn or debug from the origin (`scripting.md` §10.4).
 #[test]
-fn return_to_frontend_dispatch_enqueues_argumentless_command() {
+fn navigation_and_membership_dispatch_enqueue_fire_source_and_origin() {
+    use postretro_entities::{FireOrigin, MachineSource};
     let mut r = SystemReactionRegistry::new();
     register_system_reaction_primitives(&mut r);
     let queue = SystemCommandQueue::new();
+    let ui = FireOrigin::EveryMachine(MachineSource::OwnState);
+    let level_load = FireOrigin::EveryMachine(MachineSource::HostTimeline);
 
+    queue.replace_fire_context(postretro_entities::SystemCommandFireContext {
+        source: "ui:pause".to_string(),
+        origin: ui.clone(),
+        ..fire_context("", None)
+    });
+    for primitive in ["returnToFrontend", "leaveSession"] {
+        assert!(
+            r.dispatch(primitive, &serde_json::json!({}), &queue)
+                .unwrap()
+        );
+    }
+    queue.replace_fire_context(postretro_entities::SystemCommandFireContext {
+        source: "levelLoad".to_string(),
+        origin: level_load.clone(),
+        ..fire_context("", None)
+    });
     assert!(
-        r.dispatch("returnToFrontend", &serde_json::json!({}), &queue)
+        r.dispatch("endSession", &serde_json::json!({}), &queue)
             .unwrap()
     );
-    assert_eq!(queue.take(), vec![SystemReactionCommand::ReturnToFrontend]);
+
+    assert_eq!(
+        queue.take(),
+        vec![
+            SystemReactionCommand::ReturnToFrontend {
+                dispatch_source: "ui:pause".to_string(),
+                origin: ui.clone(),
+            },
+            SystemReactionCommand::LeaveSession {
+                dispatch_source: "ui:pause".to_string(),
+                origin: ui,
+            },
+            SystemReactionCommand::EndSession {
+                dispatch_source: "levelLoad".to_string(),
+                origin: level_load,
+            },
+        ]
+    );
 }
 
 #[test]

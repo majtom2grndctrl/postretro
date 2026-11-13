@@ -334,10 +334,11 @@ UiReactionsSdk.CLOSE_DIALOG_ACTION = "ui.closeDialog"
 --- App intercepts this exact wire value before named-reaction dispatch.
 UiReactionsSdk.EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop"
 
---- Reserved button `onPress` action that returns to the frontend menu. The App
---- intercepts this exact wire value before named-reaction dispatch. Same
---- lifecycle path as `returnToFrontend()`: unload gameplay, show the declared
---- frontend menu, and reload its optional backdrop level.
+--- Reserved button `onPress` action that quits to the frontend menu. The App
+--- intercepts this exact wire value before named-reaction dispatch and resolves
+--- it by role: in single-player it unloads gameplay, shows the declared frontend
+--- menu and reloads its optional backdrop level; a host ends the session first;
+--- a connected client leaves the session.
 UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
 
 --- Reserved button `onPress` action that opens the engine accessibility panel.
@@ -406,10 +407,35 @@ end
 
 --- Return to the frontend menu, including its optional declared backdrop level.
 --- Pure: returns a system reaction (a body on its own or a step in a sequence or
---- array body), no FFI. Use from authored reactions; use `QUIT_TO_MENU_ACTION`
---- for direct button `onPress` values that should take the same lifecycle path.
+--- array body), no FFI. Navigation outside a session: a host and a connected
+--- client refuse it, naming the membership verb to use, so end a co-op
+--- run with `{ UI.endSession(), UI.returnToFrontend() }`, which runs in every
+--- role. Use `QUIT_TO_MENU_ACTION` for a button that quits to the menu in any
+--- role.
 function UiReactionsSdk.returnToFrontend(): SystemReactionStep
   return { primitive = "returnToFrontend", args = {} }
+end
+
+--- Leave the co-op session. Pure: returns a system reaction (a body on its own
+--- or a step in a sequence or array body), no FFI. Membership only: it never
+--- navigates. A connected client closes its connection and, holding no world of
+--- its own, lands at the frontend as single-player. The rest of the frame's
+--- queued steps drop, those after it in the same reaction and the `fire`
+--- targets it reaches included; store writes and grants already applied. A host
+--- warns and stays (a host ends with `UI.endSession()`).
+--- Single-player ignores it.
+function UiReactionsSdk.leaveSession(): SystemReactionStep
+  return { primitive = "leaveSession", args = {} }
+end
+
+--- End the co-op session. Pure: returns a system reaction (a body on its own or
+--- a step in a sequence or array body), no FFI. Membership only: it never
+--- navigates. A host closes every client's connection and stays in its level as
+--- single-player, so a later `returnToFrontend()` in the same reaction runs as
+--- single-player. A connected client refuses it (a client leaves with
+--- `leaveSession()`); single-player ignores it.
+function UiReactionsSdk.endSession(): SystemReactionStep
+  return { primitive = "endSession", args = {} }
 end
 
 --- Set the live sentiment from faction `from` toward faction `to` at the

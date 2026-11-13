@@ -125,7 +125,7 @@ pub(crate) fn test_app() -> App {
                 input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
                     script_ctx.clone(),
                 ),
-                client_level_verb_warnings: Default::default(),
+                refused_verb_warnings: Default::default(),
             },
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             presentation_pool: crate::presentation_pool::PresentationPool::default(),
@@ -162,6 +162,7 @@ pub(crate) fn test_app() -> App {
             frontend: None,
             accessibility_entry_check: Default::default(),
             net_endpoint: None,
+            closing_host_transport: None,
             seat_table: None,
             audio: None,
             #[cfg(feature = "dev-tools")]
@@ -250,6 +251,10 @@ pub(crate) fn test_app() -> App {
         active_level_tags: Vec::new(),
         active_level_source: None,
         active_level_host_named: false,
+        level_stopped_by_session_end: false,
+        client_left_in_control_drain: false,
+        client_participated: false,
+        received_final_character: None,
         boot_host_level_missing: false,
         last_relevel: None,
         level_load: None,

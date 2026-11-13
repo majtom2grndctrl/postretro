@@ -476,7 +476,7 @@ fn backdrop_the_client_loads_of_its_own_accord_keeps_the_menu_even_when_it_is_th
 
     // The player quits to the menu; its backdrop is the host's level, and the
     // last relevel and the stored hint still name it.
-    client.app.return_to_frontend();
+    client.app.navigate_to_frontend();
     client.install();
     assert_eq!(client.app.published_level_identity.as_deref(), Some(LEVEL));
     assert_eq!(client.stored_hint(), Some(hint));

@@ -243,7 +243,14 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     // A spawn-pose hint the reveal frame held moves a Running, unarmed
     // stand-in before this drain and its snapshots.
     app.apply_held_spawn_pose_hint();
+    app.client_left_in_control_drain = false;
     for control in controls {
+        // A host-side ending lands this client where a leave does; nothing
+        // after it in the batch, such as a relevel, may steer it.
+        if app.client_left_in_control_drain {
+            log::debug!("[Net] {control:?} dropped: the session already ended");
+            continue;
+        }
         match control {
             ServerControlMessage::Relevel {
                 catalog_id,
@@ -261,12 +268,23 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 log::error!(
                     "[Net] incompatible host: host runs mod {expected} ({expected_version}), this client runs {received} ({received_version}); relaunch with --mod <folder>, where content/<folder> declares mod id {expected}"
                 );
+                app.client_left_in_control_drain =
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused);
+            }
+            ServerControlMessage::Divergence(DivergenceReason::Closing(
+                ClosingCause::SessionEnded,
+            )) => {
+                app.client_left_in_control_drain = app.leave_session(
+                    startup::lifecycle::session_membership::LeaveCause::SessionEnded,
+                );
             }
             ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
                 log::error!(
                     "[Net] incompatible host: {}",
                     DivergenceReason::Closing(cause)
                 );
+                app.client_left_in_control_drain =
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused);
             }
             ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
                 if cause.is_revealed_hold() {
@@ -335,6 +353,11 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.refresh_environment_fluids();
             }
             ServerControlMessage::SpawnPoseHint(hint) => app.receive_spawn_pose_hint(hint),
+            // Held until the leave saves it: a snapshot the host sent before
+            // its end may still apply after this, and must not win.
+            ServerControlMessage::FinalCharacter { slots } => {
+                app.received_final_character = Some(slots);
+            }
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;
@@ -392,6 +415,10 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     // The reveal frame drains Control once, after the reveal edge, so a hint
     // that drain brought waits for the next one.
     app.end_reveal_frame_spawn_pose_hold();
+    app.client_left_in_control_drain = false;
+    // A connection that ended without a cause in this drain (a lost host,
+    // or a connect whose attempts all failed) takes the leave path too.
+    app.follow_client_connection_end();
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -1192,6 +1219,24 @@ pub(crate) struct App {
     /// with `active_level_source`, cleared with it.
     active_level_host_named: bool,
 
+    /// A client's session ended with a level still installed: from that
+    /// moment the level runs no tick, crossing or command drain, and the
+    /// frame returns before them, until the leave's queued unload drains.
+    /// Cleared by `unload_level`.
+    level_stopped_by_session_end: bool,
+
+    /// A connected client has participated on this connection, so the host
+    /// has sent it a character. Cleared by the leave.
+    client_participated: bool,
+
+    /// Set while a client's Control drain runs once a host-side ending in it
+    /// left the session, so the rest of that batch is dropped.
+    client_left_in_control_drain: bool,
+
+    /// The final character values a closing host returned to this client,
+    /// held until its leave saves them. Cleared by the leave.
+    received_final_character: Option<BTreeMap<String, postretro_net::wire::JoinSeedValue>>,
+
     /// Before boot left the splash or the first-launch hold, the host named
     /// a catalog level this client lacks. The boot-destination step consumes
     /// it: a frontend boot presents the menu with no backdrop load.
@@ -1883,13 +1928,6 @@ fn update_debug_chase_agent_destination(
     set_debug_agent_destination(registry, agent, target);
 }
 
-/// Whether clean exit should save the global persistent-slot projection. A
-/// connected client skips this path because those values are host-authoritative;
-/// its device-local per-owner values use the separate private save path.
-fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> bool {
-    can_save && !is_connected_client
-}
-
 /// Apply one host-validated join seed to an admitted seat. The host registry is
 /// authoritative: unknown durable keys and any schema-incompatible entries are
 /// warned and skipped before owner-private replication observes the values.
@@ -1926,10 +1964,11 @@ fn apply_host_join_seed(
     }
 }
 
-/// Save a connected client's own persistent per-owner values. This is kept
-/// separate from `should_save_persisted_state`: global slots remain
-/// host-authoritative, while the durable player-owned values belong in the
-/// local device's document.
+/// Save a connected client's own persistent per-owner values, periodically
+/// and at its leave. Its document keeps the world it booted with
+/// (`collected_per_owner_only_state`): the host's replicated globals are the
+/// host's, while the durable player-owned values belong in the local device's
+/// document.
 fn save_connected_client_per_owner_state(session: &mut crate::session::Session) {
     if !session.state_store_lifecycle.can_save() {
         return;
@@ -2480,6 +2519,11 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Every exit path reaches here, `ui.exitToDesktop`, window close and
+        // the quit chord alike: a client leaves and a host ends first, so
+        // peers learn now rather than at their keepalive timeout, and the
+        // saves below run as single-player.
+        self.leave_or_end_for_exit();
         if let Some(session) = self.session.as_mut() {
             session
                 .options_bridge
@@ -2487,27 +2531,14 @@ impl ApplicationHandler for App {
         }
 
         // Saving before declarations commit and restore completes could replace
-        // a valid state file with an empty or default-only snapshot.
-        //
-        // A connected client must NOT persist replicated global slot writes to
-        // `state.json`: its `player.health` /
-        // `player.maxHealth` and shared mod slots are server-authoritative
-        // values applied through the replicated-state path. Its own
-        // per-owner values are the narrow exception below, keyed by its
-        // durable player identity and saved without global slots.
+        // a valid state file with an empty or default-only snapshot. The leave
+        // or end above made every role single-player, and a client's leave
+        // restored its own world, so this save never writes a host's values.
         let can_save = self
             .session
             .as_ref()
             .is_some_and(|session| session.state_store_lifecycle.can_save());
-        let is_connected_client = self.is_connected_client();
-        if is_connected_client {
-            if let Some(session) = self.session.as_mut() {
-                // Private owner values are intentionally outside the legacy
-                // global-save gate: a client never writes global slots, but it
-                // does retain its own durable progression on clean exit.
-                save_connected_client_per_owner_state(session);
-            }
-        } else if should_save_persisted_state(can_save, is_connected_client) {
+        if can_save {
             let session = self
                 .session
                 .as_mut()
@@ -2742,6 +2773,9 @@ impl App {
         }
         if let netcode::WorldLessPoll::Client(controls) = &poll {
             client_drain_control(self, controls.clone());
+        }
+        if matches!(poll, netcode::WorldLessPoll::Failed) {
+            self.follow_client_connection_end();
         }
         if matches!(poll, netcode::WorldLessPoll::Failed)
             && let Some(session) = self.session.as_mut()
@@ -3179,7 +3213,11 @@ impl App {
         }
     }
 
-    fn return_to_frontend(&mut self) {
+    /// Present the frontend menu and queue the unload, then the declared
+    /// backdrop: navigation alone, which changes no membership. The
+    /// `returnToFrontend` verb reaches it only in single-player; a leave and
+    /// `ui.quitToMenu` reach it through their own membership change.
+    fn navigate_to_frontend(&mut self) {
         self.present_frontend_menu();
         let requests = self
             .session
@@ -3647,7 +3685,9 @@ impl App {
             return;
         };
         // Presentation a player event fired for one player goes to that
-        // player's machine; whatever stays here joins this drain.
+        // player's machine; whatever stays here joins this drain. It routes
+        // before the drain, so a step queued after an `endSession` in this
+        // frame still reaches its player: on Control ahead of the cause.
         if let Some(session) = self.session.as_mut() {
             let server = match session.net_endpoint.as_mut() {
                 Some(netcode::NetEndpoint::Host { server, .. }) => Some(server.as_mut()),
@@ -3659,7 +3699,18 @@ impl App {
                 session.seat_table.as_ref(),
             );
         }
+        // Once a leave lands, the rest of this drain drops: the steps queued
+        // after it, the `fire` targets they reach, and whatever else this
+        // frame queued in the level the leave is unloading. Store writes and
+        // grants applied at dispatch, ahead of the leave.
+        let mut left_this_drain = false;
         for command in script_ctx.system_commands.take() {
+            if left_this_drain {
+                log::debug!(
+                    "[Scripting] {command:?} dropped: this machine left its session earlier in this drain"
+                );
+                continue;
+            }
             match command {
                 SystemReactionCommand::PlaySound { sound, bus, at, .. } => {
                     // Place an `at: on.emitter` anchor now, at fire time, so an
@@ -3815,9 +3866,19 @@ impl App {
                         self.enqueue_level_request(LevelRequest::Load(source));
                     }
                 }
-                SystemReactionCommand::ReturnToFrontend => {
-                    self.return_to_frontend();
+                SystemReactionCommand::ReturnToFrontend {
+                    dispatch_source,
+                    origin,
+                } => self.run_return_to_frontend_verb(dispatch_source, origin),
+                SystemReactionCommand::LeaveSession {
+                    dispatch_source, ..
+                } => {
+                    left_this_drain = self.run_leave_session_verb(dispatch_source);
                 }
+                SystemReactionCommand::EndSession {
+                    dispatch_source,
+                    origin,
+                } => self.run_end_session_verb(dispatch_source, origin),
                 SystemReactionCommand::PopTree => {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.pop();
@@ -5247,8 +5308,8 @@ impl App {
     }
 
     /// Whether this app drops a host-only level verb: true on a client role.
-    /// Warns once per `(firing source, verb)` for the session. The gate follows
-    /// the session's client role, not live connection state.
+    /// Warns once per `(firing source, verb)` for the current role. The gate
+    /// follows the session's client role, not live connection state.
     /// See: context/lib/scripting.md §10.4.
     fn refuse_client_level_verb(&mut self, verb: &'static str, dispatch_source: String) -> bool {
         if !self.is_connected_client() {
@@ -5257,7 +5318,7 @@ impl App {
         if let Some(session) = self.session.as_mut()
             && session
                 .scripting
-                .client_level_verb_warnings
+                .refused_verb_warnings
                 .insert((dispatch_source.clone(), verb))
         {
             log::warn!(
@@ -6420,25 +6481,6 @@ mod tests {
             "gameplay and world-less paths must consume the renderer-owned signal"
         );
         assert!(!world_less.contains("present_handle.is_some())"));
-    }
-
-    // A connected client skips the global clean-exit save; its private
-    // per-owner path remains enabled. Single-player and the host save both.
-    #[test]
-    fn connected_client_skips_global_state_save_while_single_player_and_host_save() {
-        // Single-player (no endpoint) and host (not a connected client) save.
-        assert!(
-            should_save_persisted_state(true, false),
-            "single-player / host saves when the lifecycle permits"
-        );
-        // A connected client never saves the global projection.
-        assert!(
-            !should_save_persisted_state(true, true),
-            "a connected client skips the global clean-exit save"
-        );
-        // The lifecycle gate still suppresses the save before commit/restore.
-        assert!(!should_save_persisted_state(false, false));
-        assert!(!should_save_persisted_state(false, true));
     }
 
     #[test]

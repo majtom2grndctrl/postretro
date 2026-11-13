@@ -13,8 +13,10 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// presentation commands advance it to protocol 11, "PRLB". The gameplay
 /// channel layout, with weapon switches moving from Control to Input, advances
 /// it to protocol 12, "PRLC". The appended spawn-pose hint advances it to
-/// protocol 13, "PRLD". Independent of the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C44; // "PRLD"
+/// protocol 13, "PRLD". The appended session-ended closing cause and final
+/// character message advance it to protocol 14, "PRLE". Independent of the
+/// baked PRL file format.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C45; // "PRLE"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -115,6 +117,37 @@ mod tests {
         Tuning(Vec<u8>),
         Relevel { catalog_id: String, level_life: u64 },
         SessionRoster(crate::wire::SessionRosterMessage),
+    }
+
+    /// Closing causes before `SessionEnded`.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreSessionEndClosingCause {
+        Protocol {
+            expected: ProtocolVersion,
+            received: ProtocolVersion,
+        },
+        ModId {
+            expected: String,
+            received: String,
+            expected_version: String,
+            received_version: String,
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreSessionEndDivergenceReason {
+        Closing(PreSessionEndClosingCause),
+        Holding(HoldingCause),
+    }
+
+    /// Server Control variants before `FinalCharacter`, in the current layout.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreSessionEndServerControlMessage {
+        Divergence(PreSessionEndDivergenceReason),
+        Tuning(Vec<u8>),
+        Relevel { catalog_id: String, level_life: u64 },
+        SessionRoster(crate::wire::SessionRosterMessage),
+        SpawnPoseHint(crate::wire::SpawnPoseHint),
     }
 
     /// Client Control variants before `JoinSeed`, in the current layout (the
@@ -337,6 +370,104 @@ mod tests {
             transport_protocol_id(),
             ((PRE_HINT_PROTOCOL_ID as u64) << 32) | u64::from(WIRE_VERSION),
             "gate 1 refuses a peer that predates the spawn-pose hint"
+        );
+    }
+
+    #[test]
+    fn session_end_append_preserves_shipped_control_encodings() {
+        use crate::wire::{ServerControlMessage, SpawnPoseHint};
+
+        let protocol = |app_protocol_id| ProtocolVersion {
+            app_protocol_id,
+            wire_version: WIRE_VERSION,
+        };
+        let hint = SpawnPoseHint {
+            level_identity: "campaign-test".to_owned(),
+            level_life: Some(3),
+            eye: [1.0, 2.0, 3.0],
+            yaw: 0.5,
+            pitch: -0.25,
+        };
+        let cases = [
+            (
+                PreSessionEndServerControlMessage::Divergence(
+                    PreSessionEndDivergenceReason::Closing(PreSessionEndClosingCause::Protocol {
+                        expected: protocol(PROTOCOL_ID),
+                        received: protocol(0x_5052_4C44),
+                    }),
+                ),
+                ServerControlMessage::Divergence(DivergenceReason::Closing(
+                    ClosingCause::Protocol {
+                        expected: protocol(PROTOCOL_ID),
+                        received: protocol(0x_5052_4C44),
+                    },
+                )),
+            ),
+            (
+                PreSessionEndServerControlMessage::Divergence(
+                    PreSessionEndDivergenceReason::Closing(PreSessionEndClosingCause::ModId {
+                        expected: "host".to_owned(),
+                        received: "client".to_owned(),
+                        expected_version: "1".to_owned(),
+                        received_version: "2".to_owned(),
+                    }),
+                ),
+                ServerControlMessage::Divergence(DivergenceReason::Closing(ClosingCause::ModId {
+                    expected: "host".to_owned(),
+                    received: "client".to_owned(),
+                    expected_version: "1".to_owned(),
+                    received_version: "2".to_owned(),
+                })),
+            ),
+            (
+                PreSessionEndServerControlMessage::Divergence(
+                    PreSessionEndDivergenceReason::Holding(HoldingCause::HostLevelAbsent),
+                ),
+                ServerControlMessage::Divergence(DivergenceReason::Holding(
+                    HoldingCause::HostLevelAbsent,
+                )),
+            ),
+            (
+                PreSessionEndServerControlMessage::Tuning(vec![1, 2]),
+                ServerControlMessage::Tuning(vec![1, 2]),
+            ),
+            (
+                PreSessionEndServerControlMessage::SpawnPoseHint(hint.clone()),
+                ServerControlMessage::SpawnPoseHint(hint),
+            ),
+        ];
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending SessionEnded or FinalCharacter changed a shipped control encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    // A previous-build peer cannot decode `SessionEnded` or `FinalCharacter`,
+    // so both gates must refuse it before any decode.
+    #[test]
+    fn session_end_refuses_the_previous_protocol_id() {
+        const PRE_SESSION_END_PROTOCOL_ID: u32 = 0x_5052_4C44; // "PRLD"
+        const {
+            assert!(
+                PROTOCOL_ID > PRE_SESSION_END_PROTOCOL_ID,
+                "the session-ended cause advances the application protocol"
+            );
+        };
+        let previous = ProtocolVersion {
+            app_protocol_id: PRE_SESSION_END_PROTOCOL_ID,
+            wire_version: WIRE_VERSION,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PRE_SESSION_END_PROTOCOL_ID as u64) << 32) | u64::from(WIRE_VERSION),
+            "gate 1 refuses a peer that predates the session-ended cause"
         );
     }
 

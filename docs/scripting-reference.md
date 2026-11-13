@@ -2492,16 +2492,18 @@ A `wait` changes when a step happens, never who sees or hears it.
   the wait. A step routed to a player who has left presents nowhere. A
   trigger's or teleport's default-audience sound still plays everywhere.
 - After a `wait`, steps that change shared state (member and group verbs,
-  `setState` on a replicated slot, `loadLevel`, `restartLevel`, sentiment,
-  `setGhostAudio`) apply on the host only and reach clients by replication.
+  `setState` on a replicated slot, `loadLevel`, `restartLevel`, `endSession`,
+  sentiment, `setGhostAudio`) apply on the host only and reach clients by
+  replication or level control.
 - Steps that touch only one machine (sounds, flashes, shakes, rumble,
   vignettes, dialogs and menus, cell and text edits, `setState` on a slot
   that does not replicate) land on each machine the reaction fired on:
   - `levelLoad` runs on every machine. Its waits count on the host's
     timeline, so each connected machine lands them when the host does. A
     player who joins after a step was due skips its sounds, screen effects,
-    rumble and `returnToFrontend`, but still gets its dialogs and menus, text
-    and cell edits, and `setState` on a slot that does not replicate. "Joins"
+    rumble, `returnToFrontend` and `leaveSession`, so it stays connected, but
+    still gets its dialogs and menus, text and cell edits, and `setState` on a
+    slot that does not replicate. "Joins"
     means the moment that client's level was revealed: a client revealed
     before a step was due lands it, a moment late if its connection is slow.
   - A crossing over shared slots fires on every machine, and each counts its
@@ -2516,9 +2518,11 @@ A `wait` changes when a step happens, never who sees or hears it.
   - Triggers, teleports, per-player events, movers, NPC thinking (brains and
     AI), deaths and kill-progress thresholds fire on the host; their tails park
     there, and their landings route as above.
-  - `returnToFrontend()` after a `wait` returns only the client that runs it to
-    the frontend, and nothing the host owns changes. On the host it is a host
-    consequence, like `loadLevel`.
+  - `leaveSession()` and `returnToFrontend()` after a `wait` land on each
+    client the reaction fired on, and do there what they do in that client's
+    role (see [Session membership](#session-membership)). `endSession()` is
+    the host's: a client drops it after a `wait`, and when its own input or
+    state fired the reaction, the warning names `leaveSession`.
 - `fire(r)` after a `wait` runs `r` on the same terms, and `r`'s own waits
   count on the same clock.
 - A `wait(ms, { interruptible: true })` needs a trigger-Enter binding, and that
@@ -3371,7 +3375,9 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `closeDialog()` | `{ primitive: "closeDialog", args: {} }` | Pops the top UI tree off the modal stack. |
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
-| `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
+| `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. Navigation outside a session: a host and a connected client refuse it (see [Session membership](#session-membership)). |
+| `leaveSession()` | `{ primitive: "leaveSession", args: {} }` | Leaves the co-op session on a connected client, which lands at the frontend as single-player. Membership only. See [Session membership](#session-membership). |
+| `endSession()` | `{ primitive: "endSession", args: {} }` | Ends the co-op session on a host, which stays in its level as single-player. Membership only. See [Session membership](#session-membership). |
 | `setSentiment(from, to, value)` | `{ primitive: "setSentiment", args: { from, to, value } }` | Sets the live directional `from` → `to` relationship. Negative values degrade it; positive values bond it. |
 | `setGhostAudio({ volume?, highPassHz?, lowPassHz?, drive?, periodMs? })` | `{ primitive: "setGhostAudio", args: { volume?, highPassHz?, lowPassHz?, drive?, periodMs? } }` | Changes the mod-wide Ghost bus mix. Import it from `postretro/audio` (`require("postretro/audio")` in Luau), not from the root module. Names no target: a whole body or a step. Each named field ramps on its own over `periodMs` (default 0); at least one of `volume`, `highPassHz`, `lowPassHz` or `drive` is required. See [ghost-links.md](ghost-links.md). |
 | `adjustSentiment(from, to, delta)` | `{ primitive: "adjustSentiment", args: { from, to, delta } }` | Adds `delta` to the live directional `from` → `to` relationship, starting from the authored baseline when unchanged. Negative deltas degrade it; positive deltas bond it. |
@@ -3524,11 +3530,69 @@ on every connected machine, so `levelLoad` reactions run again everywhere and no
 `wait` from the previous attempt carries over. A level loaded by file path
 outside the catalog is not followed.
 
-`returnToFrontend()` and the reserved `QUIT_TO_MENU_ACTION` button action land on
-the same engine routine. Use the reserved button action for fallback or engine
-menus that should quit without depending on a registered reaction; use
-`returnToFrontend()` when an authored event should route through the reaction
-system.
+In single-player, `returnToFrontend()` and the reserved `QUIT_TO_MENU_ACTION`
+button action land on the same engine routine. In co-op they differ: the button
+action quits to the menu in every role, while `returnToFrontend()` is
+navigation outside a session (see [Session membership](#session-membership)).
+Use the reserved button action for a quit button that should work in any role
+without depending on a registered reaction; use `returnToFrontend()` when an
+authored event should route through the reaction system.
+
+### Session membership
+
+`leaveSession()` and `endSession()` change who is in a co-op session. They never
+navigate on their own, and navigation never changes membership: the frontend
+menu is outside every session. Each takes no arguments and imports from
+`postretro/ui` (`require("postretro/ui")` in Luau).
+
+```typescript
+import { defineReaction } from "postretro";
+import { endSession, leaveSession, returnToFrontend } from "postretro/ui";
+
+// A client's "Leave game" button.
+export const leave = defineReaction("pause.leaveSession", leaveSession());
+// A run's end on a map-end crossing: every role runs the same steps.
+export const runEnd = defineReaction("run.end", [endSession(), returnToFrontend()]);
+```
+
+```lua
+local Postretro = require("postretro")
+local UI = require("postretro/ui")
+
+local leave = Postretro.defineReaction("pause.leaveSession", UI.leaveSession())
+local runEnd = Postretro.defineReaction("run.end", { UI.endSession(), UI.returnToFrontend() })
+```
+
+What each step does depends only on the role of the machine that runs it:
+
+| Role | `leaveSession()` | `endSession()` | `returnToFrontend()` | `QUIT_TO_MENU_ACTION` |
+|---|---|---|---|---|
+| Single-player | nothing | nothing | returns to the frontend | returns to the frontend |
+| Host | nothing; warns, since a host ends instead | ends the session and stays in its level, now single-player | refused, with a warning | ends the session, then returns to the frontend |
+| Connected client | leaves the session | refused | refused | leaves the session |
+
+- **Leave.** The client closes its connection, then unloads to the frontend menu
+  as single-player. It is the one membership change that lands somewhere,
+  because a client cannot keep a world the host owns. The rest of that frame's
+  queued steps drop at debug: those after it in the same reaction, the `fire`
+  targets the reaction reaches, and anything else queued in the level it is
+  leaving. Store writes (`setState`) and grants have already applied when
+  their reaction ran. After a `wait`, the steps after it drop the same way.
+- **End.** The host closes every client's connection and keeps running its
+  level as single-player. A step after `endSession()` in the same reaction runs
+  as single-player, so `[endSession(), returnToFrontend()]` ends a co-op run at
+  the frontend in every role: the host ends and returns, a client is refused
+  both and returns when the host's end reaches it, and single-player returns.
+- **Warnings.** A host warns once per firing source and verb. A client warns
+  when its own input or own state fired a step only its host can take (a UI
+  press, a crossing over its own slots) and logs at debug when the host fires
+  the same step (`levelLoad`, a crossing over shared slots). A refused
+  `returnToFrontend()` names the membership verb to use; a client's refused
+  `endSession()` names `leaveSession()`, also after a `wait` when it is the
+  first step the landing drops. Single-player no-ops log at debug only.
+- **After a `wait`.** A client lands `leaveSession()` and `returnToFrontend()`
+  after a `wait`, and drops `endSession()`, which only the host lands. A player
+  who joins after a `leaveSession()` was due skips it and stays connected.
 
 ### Firing system reactions on a state crossing
 
@@ -3993,7 +4057,12 @@ export function setupLevel(): LevelManifest {
 
 For a death screen, bind `playerDied` to `openMenu("deathScreen")`, then put
 buttons in the registered `deathScreen` UI tree that fire `restartLevel()` or
-`returnToFrontend()` reactions. The tree must be registered like any other mod UI
+`returnToFrontend()` reactions. In co-op both are refused (`restartLevel()` on a
+client, `returnToFrontend()` on a host and a client), so a quit button there
+uses `QUIT_TO_MENU_ACTION`, which resolves by role. A reaction running
+`[endSession(), returnToFrontend()]` ends a run from the host's timeline, such
+as a map-end crossing; from a client's own button press both steps are
+refused. The tree must be registered like any other mod UI
 tree; an unknown tree name warns and no-ops. Level-complete flows use the same
 reaction vocabulary through `onStateCrossing`; there is no built-in
 `levelComplete` event.

@@ -31,6 +31,8 @@ pub(super) struct TextureBundlePaths {
 /// Every sibling suffix a bundle can be spelled with, including the bare
 /// diffuse (`""`). A qualified base stays selected when *any* of these exists,
 /// so a height-only or sibling-only bundle never falls back to the bare stem.
+/// Each non-empty suffix must also appear in `materials.excludes` of
+/// `sdk/TrenchBroom/GameConfig.cfg`, or TrenchBroom lists that sibling as a texture.
 const BUNDLE_SUFFIXES: [&str; 5] = ["", "_s", "_n", "_e", "_h"];
 
 pub(super) fn resolve_texture_bundle_paths(

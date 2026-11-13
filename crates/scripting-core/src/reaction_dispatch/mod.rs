@@ -366,9 +366,14 @@ fn client_landing_drops(
         return false;
     };
     if mode.keeps(primitive, args, &script_ctx.slot_table.borrow()) {
+        script_ctx.landing.note_kept(primitive);
         return false;
     }
-    script_ctx.landing.note_dropped(reaction, primitive);
+    if !script_ctx.landing.note_dropped(reaction, primitive) {
+        log::debug!(
+            "[Scheduler] reaction `{reaction}`: client landing did not apply `{primitive}` after `leaveSession`"
+        );
+    }
     true
 }
 

@@ -296,6 +296,7 @@ impl App {
         self.active_level_tags.clear();
         self.active_level_source = None;
         self.active_level_host_named = false;
+        self.level_stopped_by_session_end = false;
 
         self.pending_level_log = false;
         // An unload during Settling abandons the settle: no reveal edge fires,

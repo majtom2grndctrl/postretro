@@ -3573,9 +3573,11 @@ What each step does depends only on the role of the machine that runs it:
 
 - **Leave.** The client closes its connection, then unloads to the frontend menu
   as single-player. It is the one membership change that lands somewhere,
-  because a client cannot keep a world the host owns. Steps queued after it in
-  the same reaction drop; `setState` writes and grants before or after it have
-  already applied when the reaction ran.
+  because a client cannot keep a world the host owns. The rest of that frame's
+  queued steps drop at debug: those after it in the same reaction, the `fire`
+  targets the reaction reaches, and anything else queued in the level it is
+  leaving. Store writes (`setState`) and grants have already applied when
+  their reaction ran. After a `wait`, the steps after it drop the same way.
 - **End.** The host closes every client's connection and keeps running its
   level as single-player. A step after `endSession()` in the same reaction runs
   as single-player, so `[endSession(), returnToFrontend()]` ends a co-op run at
@@ -3585,8 +3587,9 @@ What each step does depends only on the role of the machine that runs it:
   when its own input or own state fired a step only its host can take (a UI
   press, a crossing over its own slots) and logs at debug when the host fires
   the same step (`levelLoad`, a crossing over shared slots). A refused
-  `returnToFrontend()` names the membership verbs; a client's refused
-  `endSession()` names `leaveSession()`. Single-player no-ops log at debug only.
+  `returnToFrontend()` names the membership verb to use; a client's refused
+  `endSession()` names `leaveSession()`, also after a `wait` when it is the
+  first step the landing drops. Single-player no-ops log at debug only.
 - **After a `wait`.** A client lands `leaveSession()` and `returnToFrontend()`
   after a `wait`, and drops `endSession()`, which only the host lands. A player
   who joins after a `leaveSession()` was due skips it and stays connected.
@@ -4054,7 +4057,10 @@ export function setupLevel(): LevelManifest {
 
 For a death screen, bind `playerDied` to `openMenu("deathScreen")`, then put
 buttons in the registered `deathScreen` UI tree that fire `restartLevel()` or
-`returnToFrontend()` reactions. The tree must be registered like any other mod UI
+`returnToFrontend()` reactions. In co-op both are refused (`restartLevel()` on a
+client, `returnToFrontend()` on a host and a client), so a quit button there
+uses `QUIT_TO_MENU_ACTION`, which resolves by role, or a reaction running
+`[endSession(), returnToFrontend()]`. The tree must be registered like any other mod UI
 tree; an unknown tree name warns and no-ops. Level-complete flows use the same
 reaction vocabulary through `onStateCrossing`; there is no built-in
 `levelComplete` event.

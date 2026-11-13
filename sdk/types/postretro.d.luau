@@ -3895,7 +3895,7 @@ export type PostretroUiModule = {
   returnToFrontend: () -> SystemReactionStep,
   --- Leave the co-op session. Membership only, never navigates: a connected client closes its connection and lands at the frontend as single-player; a host warns and stays; single-player ignores it.
   leaveSession: () -> SystemReactionStep,
-  --- End the co-op session. Membership only, never navigates: a host closes every client's connection and stays in its level as single-player; a connected client refuses it (it leaves with `leaveSession()`); single-player ignores it.
+  --- End the co-op session. Membership only, never navigates: a host closes every client's connection and stays in its level as single-player; a connected client refuses it (it leaves with `UI.leaveSession()`); single-player ignores it.
   endSession: () -> SystemReactionStep,
   --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
   setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,

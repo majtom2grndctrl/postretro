@@ -619,7 +619,7 @@ pub fn overlay_client_local_per_owner_state(
         &authored_by_key,
         local_player_id,
         local_seat,
-        |record| record.schema.network == ReplicationScope::None,
+        |_, record| record.schema.network == ReplicationScope::None,
     )
 }
 
@@ -643,22 +643,29 @@ pub fn restore_store_after_session(
     local_player_id: Option<[u8; 16]>,
 ) -> Vec<String> {
     const SINGLE_PLAYER_SEAT: Seat = Seat(0);
-    for (_, record) in table.iter_mut() {
+    // Per-owner slots whose single-player value comes from `boot`'s rows: a
+    // replicated character this client never received, and a local-only
+    // value it never held on a session seat (no roster ever seated it).
+    let mut from_boot = BTreeSet::new();
+    for (name, record) in table.iter_mut() {
         let replicated = record.schema.network != ReplicationScope::None;
         if record.schema.per_owner {
             let own = session_seat.and_then(|seat| {
-                let value = record.per_seat_value(seat).cloned();
+                let value = record.written_per_seat_value(seat).cloned();
                 record.clear_per_seat_value(seat);
                 value
             });
-            // The client's own write, or its latest character; the host's
-            // other replicated per-owner values return to their defaults.
-            let kept = if !replicated || (character_on_seat && is_persisted_per_owner_slot(record))
-            {
-                own
+            let kept = if replicated {
+                own.filter(|_| character_on_seat && is_persisted_per_owner_slot(record))
             } else {
-                None
+                own
             };
+            if kept.is_none()
+                && is_persisted_per_owner_slot(record)
+                && (!replicated || !character_on_seat)
+            {
+                from_boot.insert(name.to_owned());
+            }
             let value = kept.or_else(|| record.schema.default.clone());
             match value.clone() {
                 Some(value) => record.set_per_seat_value(SINGLE_PLAYER_SEAT, value),
@@ -697,22 +704,18 @@ pub fn restore_store_after_session(
             Err(warning) => warnings.push(warning),
         }
     }
-    if !character_on_seat {
-        warnings.extend(overlay_per_owner_state(
-            table,
-            boot,
-            &authored_by_key,
-            local_player_id,
-            SINGLE_PLAYER_SEAT,
-            |record| record.schema.network != ReplicationScope::None,
-        ));
-        for (_, record) in table.iter_mut() {
-            if record.schema.per_owner && record.schema.network != ReplicationScope::None {
-                let value = record.per_seat_value(SINGLE_PLAYER_SEAT).cloned();
-                if value.is_some() {
-                    record.write_value(value);
-                }
-            }
+    warnings.extend(overlay_per_owner_state(
+        table,
+        boot,
+        &authored_by_key,
+        local_player_id,
+        SINGLE_PLAYER_SEAT,
+        |name, _| from_boot.contains(name),
+    ));
+    for name in &from_boot {
+        if let Some(record) = table.get_mut(name) {
+            let value = record.per_seat_value(SINGLE_PLAYER_SEAT).cloned();
+            record.write_value(value);
         }
     }
     warnings
@@ -780,7 +783,7 @@ pub fn overlay_persisted_state(
         &authored_by_key,
         local_player_id,
         local_seat,
-        |_| true,
+        |_, _| true,
     ));
     warnings
 }
@@ -807,7 +810,7 @@ fn overlay_per_owner_state(
     authored_by_key: &BTreeMap<&str, &str>,
     local_player_id: Option<[u8; 16]>,
     local_seat: Seat,
-    applies_to: impl Fn(&SlotRecord) -> bool,
+    applies_to: impl Fn(&str, &SlotRecord) -> bool,
 ) -> Vec<String> {
     let Some(local_player_id) = local_player_id else {
         return Vec::new();
@@ -834,7 +837,7 @@ fn overlay_per_owner_state(
             ));
             continue;
         }
-        if !applies_to(record) {
+        if !applies_to(name, record) {
             continue;
         }
 
@@ -2156,6 +2159,46 @@ mod tests {
         let xp = table.get("game.xp").unwrap();
         assert_eq!(xp.per_seat_value(Seat(0)), Some(&SlotValue::Number(7.0)));
         assert_eq!(xp.value, Some(SlotValue::Number(7.0)));
+    }
+
+    // Regression (review): a client that ends with no seat (every connect
+    // failed, refused at admission, lost before its first roster) never had
+    // its local-only rows overlaid, and the restore wrote their defaults,
+    // which the single-player exit save then put on disk.
+    #[test]
+    fn restore_without_a_session_seat_keeps_the_saved_local_only_values() {
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+        let local_id = player_id(0x44);
+        let mut boot = boot_world(local_id, 7.0);
+        boot.per_owner.insert(
+            "k0000000000000011".to_string(),
+            BTreeMap::from([(
+                encode_player_claim_id(&PlayerClaimId(local_id)),
+                PersistedValue::String("veteran".to_string()),
+            )]),
+        );
+        let mut table = client_session_table();
+
+        let warnings = restore_store_after_session(
+            &mut table,
+            Some(&boot),
+            Some(&identity),
+            &membership,
+            None,
+            false,
+            Some(local_id),
+        );
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        for (name, expected) in [
+            ("game.xp", SlotValue::Number(7.0)),
+            ("game.rank", SlotValue::Enum("veteran".to_string())),
+        ] {
+            let record = table.get(name).unwrap();
+            assert_eq!(record.per_seat_value(Seat(0)), Some(&expected), "{name}");
+            assert_eq!(record.value.as_ref(), Some(&expected), "{name} scalar");
+        }
     }
 
     #[test]

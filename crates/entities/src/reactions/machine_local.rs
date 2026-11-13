@@ -107,6 +107,9 @@ pub struct LandingScope {
     /// reaction that holds it (the landing's own, or a `fire` target's) and
     /// its primitive.
     first_dropped: RefCell<Option<DroppedStep>>,
+    /// The landing kept a `leaveSession`: the client leaves when it drains,
+    /// so what the landing drops after it is routine, never a mistake.
+    left: Cell<bool>,
 }
 
 impl LandingScope {
@@ -126,18 +129,31 @@ impl LandingScope {
             self.host_capture.replace(host_capture),
             self.client.replace(client),
             self.first_dropped.take(),
+            self.left.replace(false),
         );
         LandingScopeGuard {
             scope: self,
             previous: Some(previous),
         }
     }
-    /// Record a step a client landing did not apply.
-    pub fn note_dropped(&self, reaction: &str, primitive: &str) {
+    /// Record a step a client landing kept.
+    pub fn note_kept(&self, primitive: &str) {
+        if primitive == SystemReactionKind::LeaveSession.primitive_name() {
+            self.left.set(true);
+        }
+    }
+    /// Record a step a client landing did not apply. Returns `false` for a
+    /// step after a kept `leaveSession`, which is not reported: the steps
+    /// after a leave drop on every path (`scripting.md` §10.4).
+    pub fn note_dropped(&self, reaction: &str, primitive: &str) -> bool {
+        if self.left.get() {
+            return false;
+        }
         let mut first = self.first_dropped.borrow_mut();
         if first.is_none() {
             *first = Some((reaction.to_string(), primitive.to_string()));
         }
+        true
     }
     /// The first dropped step of the landing in scope.
     pub fn first_dropped(&self) -> Option<DroppedStep> {
@@ -147,15 +163,16 @@ impl LandingScope {
 
 pub struct LandingScopeGuard<'a> {
     scope: &'a LandingScope,
-    previous: Option<(bool, Option<ClientLanding>, Option<DroppedStep>)>,
+    previous: Option<(bool, Option<ClientLanding>, Option<DroppedStep>, bool)>,
 }
 
 impl Drop for LandingScopeGuard<'_> {
     fn drop(&mut self) {
-        if let Some((host_capture, client, first_dropped)) = self.previous.take() {
+        if let Some((host_capture, client, first_dropped, left)) = self.previous.take() {
             self.scope.host_capture.set(host_capture);
             self.scope.client.set(client);
             *self.scope.first_dropped.borrow_mut() = first_dropped;
+            self.scope.left.set(left);
         }
     }
 }

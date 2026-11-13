@@ -3685,7 +3685,9 @@ impl App {
             return;
         };
         // Presentation a player event fired for one player goes to that
-        // player's machine; whatever stays here joins this drain.
+        // player's machine; whatever stays here joins this drain. It routes
+        // before the drain, so a step queued after an `endSession` in this
+        // frame still reaches its player: on Control ahead of the cause.
         if let Some(session) = self.session.as_mut() {
             let server = match session.net_endpoint.as_mut() {
                 Some(netcode::NetEndpoint::Host { server, .. }) => Some(server.as_mut()),

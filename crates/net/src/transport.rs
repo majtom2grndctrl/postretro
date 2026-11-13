@@ -433,14 +433,25 @@ impl NetServer {
         self.relevel = None;
     }
 
+    /// Disconnect every remaining connection at once, sending netcode's
+    /// disconnect packet, before a closing transport is dropped: dropping
+    /// sends nothing, and a peer would otherwise wait out its keepalive.
+    pub fn disconnect_remaining(&mut self) {
+        self.transport.disconnect_all(&mut self.server);
+        while self.server.get_event().is_some() {}
+        self.pending_disconnects.clear();
+    }
+
     /// Whether [`NetServer::end_session`] has run.
     #[must_use]
     pub fn is_closing(&self) -> bool {
         self.closing_elapsed.is_some()
     }
 
-    /// Whether a closing transport has finished: every connection has gone,
-    /// or the close window has passed and the rest were disconnected.
+    /// Whether a closing transport has finished: every connection has
+    /// acknowledged its cause or been disconnected, or the close window has
+    /// passed. Call [`NetServer::disconnect_remaining`] before dropping it:
+    /// netcode's disconnect for the last acknowledged peer is still unsent.
     #[must_use]
     pub fn closing_done(&self) -> bool {
         self.closing_elapsed.is_some() && self.server.clients_id().is_empty()
@@ -452,11 +463,8 @@ impl NetServer {
         };
         *elapsed += dt;
         if *elapsed >= SESSION_END_CLOSE_WINDOW {
-            // Sends netcode's disconnect packet at once and removes every
-            // remaining connection: a peer that never acknowledged its cause.
-            self.transport.disconnect_all(&mut self.server);
-            while self.server.get_event().is_some() {}
-            self.pending_disconnects.clear();
+            // A peer that never acknowledged its cause.
+            self.disconnect_remaining();
         }
     }
 
@@ -886,7 +894,8 @@ impl NetServer {
     }
 
     /// Control may be sent to an admitted/closed slot to deliver a hold/reject
-    /// diagnostic before socket teardown. Payload semantics remain engine-owned.
+    /// diagnostic before socket teardown, except on a closing transport, which
+    /// sends nothing after a slot's cause. Payload semantics remain engine-owned.
     pub fn send_control(&mut self, client_id: ClientId, payload: Vec<u8>) {
         if self.closing_elapsed.is_some() && self.slots.is_closed(client_id) {
             return;
@@ -1178,6 +1187,11 @@ pub struct NetClient {
     ever_connected: bool,
     /// Set by [`NetClient::disconnect`]: the ending is this client's own.
     left: bool,
+    /// Control drained when the connection ended, ahead of the next drain.
+    /// Messages that arrived with the host's disconnect stay readable only
+    /// until the next update, and a closing cause among them is why the
+    /// connection ended.
+    held_control: Vec<ControlArrival>,
     failure_reported: bool,
     transient_error_logged: bool,
     admission_sent: bool,
@@ -1243,6 +1257,7 @@ impl NetClient {
             connect_attempt: 1,
             ever_connected: false,
             left: false,
+            held_control: Vec::new(),
             failure_reported: false,
             transient_error_logged: false,
             admission_sent: false,
@@ -1399,7 +1414,22 @@ impl NetClient {
         } else if !self.failure_reported {
             self.failure_reported = true;
             if self.ever_connected {
-                log::error!("[Net] lost connection to host {}: {err}", self.server_addr);
+                // A host that closed this slot sent its cause first; read it
+                // before it is lost, and leave the ending to the engine.
+                self.held_control = self.drain_control_arrivals();
+                let host_closed = self.held_control.iter().any(|arrival| {
+                    matches!(
+                        arrival,
+                        ControlArrival::Message(ServerControlMessage::Divergence(
+                            DivergenceReason::Closing(_)
+                        ))
+                    )
+                });
+                if host_closed {
+                    log::debug!("[Net] host {} closed this connection", self.server_addr);
+                } else {
+                    log::error!("[Net] lost connection to host {}: {err}", self.server_addr);
+                }
             } else {
                 log::error!(
                     "[Net] could not connect to host {} after {} attempt(s): {err}",
@@ -1653,41 +1683,45 @@ impl NetClient {
     }
 
     fn drain_control_arrivals(&mut self) -> Vec<ControlArrival> {
-        drain_client_channel(&mut self.client, Channel::Control)
-            .into_iter()
-            .filter_map(|bytes| {
-                let frame: ServerControlFrame = match wire::decode(&bytes) {
-                    Ok(frame) => frame,
-                    Err(err) => {
-                        log::warn!("[Net] dropping unframed server Control message: {err}");
-                        return None;
-                    }
-                };
-                let Some(payload) = frame.payload else {
-                    let Some(epoch) = frame.participation_epoch else {
-                        log::warn!("[Net] dropping participation marker without an epoch");
-                        return None;
+        let mut arrivals = std::mem::take(&mut self.held_control);
+        let received: Vec<ControlArrival> =
+            drain_client_channel(&mut self.client, Channel::Control)
+                .into_iter()
+                .filter_map(|bytes| {
+                    let frame: ServerControlFrame = match wire::decode(&bytes) {
+                        Ok(frame) => frame,
+                        Err(err) => {
+                            log::warn!("[Net] dropping unframed server Control message: {err}");
+                            return None;
+                        }
                     };
-                    self.activate_participation(epoch);
-                    return Some(ControlArrival::ParticipationMarker { epoch });
-                };
-                let message: ServerControlMessage = match wire::decode(&payload) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        log::warn!("[Net] dropping malformed server Control message: {err}");
-                        return None;
+                    let Some(payload) = frame.payload else {
+                        let Some(epoch) = frame.participation_epoch else {
+                            log::warn!("[Net] dropping participation marker without an epoch");
+                            return None;
+                        };
+                        self.activate_participation(epoch);
+                        return Some(ControlArrival::ParticipationMarker { epoch });
+                    };
+                    let message: ServerControlMessage = match wire::decode(&payload) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            log::warn!("[Net] dropping malformed server Control message: {err}");
+                            return None;
+                        }
+                    };
+                    if matches!(
+                        message,
+                        ServerControlMessage::Divergence(DivergenceReason::Holding(_))
+                    ) && let Some(epoch) = frame.participation_epoch
+                    {
+                        self.retire_participation(epoch);
                     }
-                };
-                if matches!(
-                    message,
-                    ServerControlMessage::Divergence(DivergenceReason::Holding(_))
-                ) && let Some(epoch) = frame.participation_epoch
-                {
-                    self.retire_participation(epoch);
-                }
-                Some(ControlArrival::Message(message))
-            })
-            .collect()
+                    Some(ControlArrival::Message(message))
+                })
+                .collect();
+        arrivals.extend(received);
+        arrivals
     }
 
     fn accept_snapshot_epoch(&self, epoch: u64) -> bool {
@@ -2153,6 +2187,33 @@ mod tests {
                 cause: CloseCause::SessionEnded
             })
         );
+    }
+
+    // Review: a client that misses the close window receives the cause and
+    // the host's disconnect in one update. The cause still drains, and the
+    // client logs no lost host.
+    #[test]
+    fn a_cause_arriving_with_the_disconnect_drains_without_a_lost_host_error() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+
+        server.end_session();
+        let mut host_time = Duration::ZERO;
+        while !server.closing_done() && host_time < Duration::from_secs(3) {
+            let _ = server
+                .update(Duration::from_millis(16))
+                .expect("server update");
+            host_time += Duration::from_millis(16);
+        }
+        assert!(server.closing_done());
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(client.update(Duration::from_millis(16)).is_err());
+
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Lost));
+        assert!(client.drain_control().contains(&session_ended()));
+        capture.assert_not_logged(log::Level::Error, "lost connection");
     }
 
     #[test]

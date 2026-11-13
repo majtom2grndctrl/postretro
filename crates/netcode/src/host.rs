@@ -574,6 +574,7 @@ pub fn end_host_session(
         mut weaponless_fire_logged,
         mut last_sent_tuning,
         join_seeds,
+        mut projectile_presentations,
         ..
     }) = endpoint.take()
     else {
@@ -604,6 +605,7 @@ pub fn end_host_session(
         );
     }
     server.end_session();
+    projectile_presentations.despawn_all(registry);
     for &client_id in &clients {
         let durable_pawn = seat_table
             .as_deref()

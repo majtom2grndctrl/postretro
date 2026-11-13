@@ -345,10 +345,12 @@ pub enum ServerControlMessage {
     /// to that client alone so it settles at its own spawn view. Advisory: the
     /// first baseline stays the only authority on the pawn's pose.
     SpawnPoseHint(SpawnPoseHint),
-    /// The client's own persisted per-owner values, sent immediately before
-    /// the host closes a slot that has participated on this connection: the
-    /// mirror of `ClientControlMessage::JoinSeed`, with the same durable-key
-    /// strings and values, and an empty map when the player has none. The
+    /// The client's own persisted per-owner values that the host replicates
+    /// to it, sent immediately before the host ends a session's slot that has
+    /// participated on this connection: the mirror of
+    /// `ClientControlMessage::JoinSeed`, with the same durable-key strings and
+    /// values, and an empty map when the player has none. A per-owner slot
+    /// that never replicates is the client's own, so it is left out. The
     /// client applies only keys its own declarations persist per owner.
     FinalCharacter {
         slots: BTreeMap<String, JoinSeedValue>,

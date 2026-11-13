@@ -8,6 +8,7 @@ use postretro_entities::reactions::system_commands::{FireOrigin, MachineSource};
 use crate::App;
 use crate::netcode;
 use crate::session::role_state::{RoleBoundState, SessionRole, apply_role};
+use crate::startup::BootState;
 
 /// Why a connected client's session ends. Every cause lands it where its own
 /// leave does; only its own leave sends the disconnect.
@@ -81,7 +82,15 @@ impl App {
         if self.level_is_installed_state() {
             self.level_stopped_by_session_end = true;
         }
-        self.navigate_to_frontend();
+        // Before boot clears the splash or the first-launch hold, the boot
+        // destination presents the frontend; presenting it now would tear
+        // down the accessibility panel the player has not closed.
+        if !matches!(
+            self.boot_state,
+            BootState::Splash | BootState::FirstLaunchHold
+        ) {
+            self.navigate_to_frontend();
+        }
         log::info!("[Net] returned to the frontend as single-player");
         true
     }
@@ -144,6 +153,10 @@ impl App {
         };
         netcode::clear_released_seat_slot_values(&mut script_ctx.slot_table.borrow_mut(), released);
         self.published_level_identity = None;
+        // The departed seats no longer reserve respawn starts.
+        if self.level_is_installed_state() {
+            self.refresh_respawn_placements();
+        }
         log::info!("[Net] the session ended; continuing as single-player");
     }
 
@@ -175,8 +188,10 @@ impl App {
             last = now;
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        if let Some(session) = self.session.as_mut() {
-            session.closing_host_transport = None;
+        if let Some(session) = self.session.as_mut()
+            && let Some(mut server) = session.closing_host_transport.take()
+        {
+            server.disconnect_remaining();
         }
     }
 
@@ -196,6 +211,7 @@ impl App {
             return;
         }
         if server.closing_done() {
+            server.disconnect_remaining();
             session.closing_host_transport = None;
             log::info!("[Net] closing transport dropped");
         }

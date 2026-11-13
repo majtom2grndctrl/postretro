@@ -492,6 +492,30 @@ fn client_run_end_tail_logs_by_origin() {
     );
 }
 
+// Review: after a `wait`, a client's own `leaveSession` drops the host-only
+// steps after it quietly, as the frame-end drain does in the direct form.
+#[test]
+fn own_state_tail_drops_steps_after_its_leave_quietly() {
+    let mut client = Machine::client(vec![body(
+        "pause.leave",
+        vec![
+            wait(300.0),
+            system("leaveSession", json!({})),
+            system("loadLevel", json!({ "map": "e1m2" })),
+            system("endSession", json!({})),
+        ],
+    )]);
+    let capture = LogCapture::start();
+    client.fire("pause.leave", own_state());
+    client.own_ticks(30);
+    assert_eq!(client.kinds(), ["leave"]);
+    assert!(warnings(&capture).is_empty(), "{:?}", warnings(&capture));
+    capture.assert_logged(
+        log::Level::Debug,
+        "client landing did not apply `loadLevel` after `leaveSession`",
+    );
+}
+
 // AC 11: a movement event's tail warns once naming the first dropped step,
 // the mover, not the later replicated write; it re-arms at a level change.
 #[test]

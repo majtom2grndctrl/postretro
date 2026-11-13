@@ -72,7 +72,9 @@ pub enum SystemReactionCommand {
         origin: FireOrigin,
     },
     /// `leaveSession()`: a connected client leaves its session. Membership
-    /// only; role decides what it does, origin only how loudly a no-op logs.
+    /// only; role alone decides what it does and how it logs: a host always
+    /// warns and single-player logs at debug, so `origin` is carried for
+    /// symmetry with the other membership verbs, not read.
     LeaveSession {
         /// Stable identity of the firing source for once-per-source diagnostics.
         /// It is runtime queue context only, never persistent or on the wire.

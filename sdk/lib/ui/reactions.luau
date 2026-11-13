@@ -408,7 +408,7 @@ end
 --- Return to the frontend menu, including its optional declared backdrop level.
 --- Pure: returns a system reaction (a body on its own or a step in a sequence or
 --- array body), no FFI. Navigation outside a session: a host and a connected
---- client refuse it with a warning naming the membership verbs, so end a co-op
+--- client refuse it, naming the membership verb to use, so end a co-op
 --- run with `{ UI.endSession(), UI.returnToFrontend() }`, which runs in every
 --- role. Use `QUIT_TO_MENU_ACTION` for a button that quits to the menu in any
 --- role.
@@ -419,8 +419,10 @@ end
 --- Leave the co-op session. Pure: returns a system reaction (a body on its own
 --- or a step in a sequence or array body), no FFI. Membership only: it never
 --- navigates. A connected client closes its connection and, holding no world of
---- its own, lands at the frontend as single-player; later steps of the same
---- reaction drop. A host warns and stays (a host ends with `endSession()`).
+--- its own, lands at the frontend as single-player. The rest of the frame's
+--- queued steps drop, those after it in the same reaction and the `fire`
+--- targets it reaches included; store writes and grants already applied. A host
+--- warns and stays (a host ends with `UI.endSession()`).
 --- Single-player ignores it.
 function UiReactionsSdk.leaveSession(): SystemReactionStep
   return { primitive = "leaveSession", args = {} }

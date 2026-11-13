@@ -123,6 +123,12 @@ impl SlotRecord {
         self.write_generation = self.write_generation.wrapping_add(1);
     }
 
+    /// This seat's own value, with no fallback to the declared default:
+    /// `None` when nothing was ever written for it.
+    pub fn written_per_seat_value(&self, seat: Seat) -> Option<&SlotValue> {
+        self.per_seat_values.get(&seat)
+    }
+
     /// Remove one durable player's authoritative value at seat release.
     pub fn clear_per_seat_value(&mut self, seat: Seat) {
         self.per_seat_values.remove(&seat);

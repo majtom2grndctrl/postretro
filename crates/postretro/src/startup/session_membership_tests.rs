@@ -439,6 +439,13 @@ fn host_side_endings_take_the_leave_path() {
 #[test]
 fn left_and_ended_role_state_matches_single_player() {
     let mut client = client_app();
+    // A roster the client received is role-bound too.
+    script_ctx(&client)
+        .slot_table
+        .borrow_mut()
+        .get_mut("session.openSeats")
+        .unwrap()
+        .write_value(Some(postretro_entities::SlotValue::Number(3.0)));
     assert_ne!(observe(&client), single_player_state());
     assert!(client.leave_session(LeaveCause::Own));
     assert_eq!(observe(&client), single_player_state());
@@ -507,6 +514,31 @@ fn ended_client_level_stops_before_unload() {
 
     client.unload_level();
     assert!(!client.level_stopped_by_session_end());
+
+    // Review: a suspend drops the queued unload, so it clears the stop too.
+    let mut suspended = client_app();
+    suspended.boot_state = BootState::Running;
+    crate::client_drain_control(&mut suspended, vec![session_ended()]);
+    suspended.reset_boot_state_after_suspend();
+    assert!(!suspended.level_stopped_by_session_end());
+}
+
+// Review: an ending during the first-launch hold leaves the session but does
+// not present the frontend over the accessibility panel; the boot
+// destination presents it once the player closes the panel.
+#[test]
+fn a_leave_during_the_first_launch_hold_keeps_the_panel_up() {
+    for (name, state) in [
+        ("first-launch hold", BootState::FirstLaunchHold),
+        ("splash", BootState::Splash),
+    ] {
+        let mut client = client_app();
+        client.boot_state = state;
+        crate::client_drain_control(&mut client, vec![session_ended()]);
+        assert_eq!(client.session_role(), SessionRole::SinglePlayer, "{name}");
+        assert!(!client.frontend_menu_is_present(), "{name}");
+        assert!(requests(&client).is_empty(), "{name}");
+    }
 }
 
 // AC 11, 13 and the host half of pins P13 and P18: an ended host stays in its
@@ -618,7 +650,7 @@ fn exit_paths_leave_or_end_before_exit() {
         .find("self.leave_or_end_for_exit();")
         .expect("`exiting` leaves or ends");
     let save = exiting
-        .find("save_connected_client_per_owner_state")
+        .find("save_persisted_state(&state_path")
         .expect("`exiting` saves");
     assert!(leave < save, "the leave or end runs before the exit saves");
 }

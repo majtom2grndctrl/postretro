@@ -14,6 +14,8 @@ use crate::scripting_systems::reaction_scheduler::SchedulerRole;
 
 pub(crate) const HOST_ADDRESS_SLOT: &str = "session.hostAddress";
 pub(crate) const HOSTING_SLOT: &str = "session.hosting";
+/// A client's projection of its host's roster; absent hides it.
+pub(crate) const OPEN_SEATS_SLOT: &str = "session.openSeats";
 
 /// The role a session runs as. Selected at startup; afterwards it moves one
 /// way only, to single-player, when a client leaves or a host ends.
@@ -40,7 +42,7 @@ impl SessionRole {
 /// says what a role holds, [`apply_role`] writes it, and
 /// [`RoleBoundState::observe`] reads it back, so a test comparing two
 /// observations compares a field added here without being edited.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RoleBoundState {
     /// Runtime spawns materialize only on the authority.
     pub(crate) runtime_spawn_authority: bool,
@@ -53,6 +55,8 @@ pub(crate) struct RoleBoundState {
     pub(crate) hosting: bool,
     /// `session.hostAddress`: the address players dial, else empty.
     pub(crate) host_address: String,
+    /// `session.openSeats`: absent until a client's first roster names it.
+    pub(crate) open_seats: Option<SlotValue>,
     /// The seat ledger's seats. The authority keeps a ledger; a client has
     /// none. An ended host keeps only its own seat.
     pub(crate) seats: Option<Vec<Seat>>,
@@ -74,6 +78,7 @@ impl RoleBoundState {
             },
             owner_slot_writes_enabled: authority,
             hosting: published.is_some(),
+            open_seats: None,
             host_address: published
                 .map(|address| address.to_string())
                 .unwrap_or_default(),
@@ -108,6 +113,9 @@ impl RoleBoundState {
             owner_slot_writes_enabled: scripting.script_ctx.owner_slot_writes_enabled.get(),
             hosting,
             host_address,
+            open_seats: slots
+                .get(OPEN_SEATS_SLOT)
+                .and_then(|record| record.value.clone()),
             seats: seat_table.map(netcode::SeatTable::seats),
         }
     }
@@ -149,6 +157,14 @@ pub(crate) fn apply_role(
         ) {
             log::warn!("[Net] failed to write `{slot}`: {err}");
         }
+    }
+    if let Some(record) = scripting
+        .script_ctx
+        .slot_table
+        .borrow_mut()
+        .get_mut(OPEN_SEATS_SLOT)
+    {
+        record.write_value(state.open_seats.clone());
     }
     // Once-per-source refusal latches belong to the role that warned.
     scripting.refused_verb_warnings.clear();

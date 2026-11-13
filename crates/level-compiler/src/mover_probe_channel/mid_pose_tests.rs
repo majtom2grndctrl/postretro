@@ -60,10 +60,10 @@ fn a_mid_pose_stores_its_gather_past_the_bars_and_reads_the_base_within() {
 
 // A probe the mid pose encloses gathers zero radiance (every lifted ray
 // starts in solid; the gather side is pinned by
-// `an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dark_state`), and that
-// state classifies like any other (Amendment 2, Ruling B): stored as the
-// zero tile where id 34 is lit past the bars, the base where id 34 is
-// already within them of zero. Nothing blends across.
+// `an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dark_state`),
+// and that state classifies like any other: stored as the zero tile where
+// id 34 is lit past the bars, the base where id 34 is already within them
+// of zero. Nothing blends across.
 #[test]
 fn an_enclosed_mid_pose_stores_its_zero_bounce_past_the_bars_and_reads_a_dark_base_within() {
     let dark = [0.0; 27];

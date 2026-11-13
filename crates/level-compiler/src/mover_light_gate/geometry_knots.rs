@@ -16,18 +16,18 @@ use crate::sh_bake::{ProbeGridLayout, vec3_from};
 
 /// How far past each end of an enclosure interval its outside knot sits, in
 /// metres of travel: one map unit, or farther where a face met at a slant
-/// keeps the probe in the lift band longer ([`clear_of_band`]). An enclosed
-/// inside knot stores its dark state, so between an outside knot and its
-/// inside knot the probe is out of the mover yet its values are still
-/// mid-lerp from dark; this distance is that window. (The sweep below was
-/// measured when an enclosed inside knot blended across instead.) Source: a
-/// sweep of 4.4, 2, 1 and 0.2 units against fine-pose truth bakes (`light_poses` 41 on
-/// `mover-setpiece`'s rising room, 57 on `enemy-movers`' em_sweeper), on
-/// faces the movers cross square: the room's ceiling residual fell 2.18 →
-/// 1.46 → 0.45 → 0.23 luma and em_sweeper's west face came within its
-/// 3-level bar from 1 unit down, while 1 unit stays about six times clear
-/// of the lift band ([`lift_band`]) on a square crossing and places four
-/// fewer room knots than 0.2 units.
+/// keeps the probe in the lift band longer ([`clear_of_band`]). An enclosure
+/// run's first and last enclosing poses carry the outside knot's value state
+/// under the dark depth tile (the probe channel's edge copy), so across this
+/// distance the value holds while the depth goes from the clear tile to the
+/// dark one. The 1 u figure comes from a sweep measured before the dark state
+/// and edge copy existed. Source: a sweep of 4.4, 2, 1 and 0.2 units against
+/// fine-pose truth bakes (`light_poses` 41 on `mover-setpiece`'s rising room,
+/// 57 on `enemy-movers`' em_sweeper), on faces the movers cross square: the
+/// room's ceiling residual fell 2.18 → 1.46 → 0.45 → 0.23 luma and
+/// em_sweeper's west face came within its 3-level bar from 1 unit down, while
+/// 1 unit stays about six times clear of the lift band ([`lift_band`]) on a
+/// square crossing and places four fewer room knots than 0.2 units.
 pub(crate) const OUTSIDE_KNOT_DISTANCE_M: f64 = 1.0 / 39.37;
 
 /// How far inside each end of an enclosure interval its inside knot sits,
@@ -139,7 +139,7 @@ struct KnotWindow {
 /// every brush ([`clear_of_band`]), in the clear stretch nearest the end on
 /// its side and short of the neighbouring enclosure. An end with no such
 /// stretch places no outside knot: a terminus holds that side, or the
-/// probe blends across to the neighbouring enclosure. An end at a terminus
+/// neighbouring enclosure's edge pose is the next stored state. An end at a terminus
 /// places nothing. Every placed knot's pose is checked against
 /// the bake's enclosing rule ([`Pose::encloses`]) or the band for each knot
 /// it stands for; a disagreement fails by the mover's name, since it would

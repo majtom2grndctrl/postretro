@@ -350,9 +350,11 @@ fn skip_depth(
 /// resolved, from its memo or its bake: the memo holds every pose's states
 /// unskipped and never keys on the ramp, so a ramp edit re-decides skips
 /// over the same states and warm equals cold. Outside-domain mid poses
-/// already blend across. An enclosed mid pose's dark state is skipped by
-/// the same bars as any other: within a run of dark poses it skips, and the
-/// poses where the probe leaves or enters the brush store theirs.
+/// already blend across. Edge copy has already run, so the first and last
+/// read pose of a run of enclosing poses is judged on the clear
+/// neighbour's value it carries. The dark states inside a run are skipped
+/// by the same bars as any other: they skip between dark neighbours, and
+/// those beside the run's copied edges store theirs.
 pub(crate) fn skip_redundant_mid_poses(
     states: &mut MoverBounceStates,
     knots: &[Knot],

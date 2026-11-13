@@ -13,8 +13,11 @@ use crate::mover_light_gate::MidPoseOnlyLights;
 /// mid pose for some probe and 255 at both termini for every probe. Each
 /// light is named by its source index, read from the `lights` the bake
 /// gated. A mid pose that encloses a probe stores its traced q, so a light
-/// whose only block is an enclosing mid pose counts here; an enclosing
-/// terminus keeps 255, so it never makes a light terminus-gated.
+/// whose only block is an enclosing mid pose counts here, unless edge copy
+/// replaced that q: the first and last read pose of a run of enclosing
+/// poses carry their clear neighbours' q, so a light blocked only by a run
+/// of one or two read poses is not counted. An enclosing terminus keeps
+/// 255, so it never makes a light terminus-gated.
 pub(crate) fn mid_pose_only_lights(
     bake: &MoverDirectBake,
     lights: &[ChannelLight<'_>],

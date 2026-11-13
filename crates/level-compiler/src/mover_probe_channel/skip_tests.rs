@@ -728,24 +728,57 @@ fn skip_pass_timing_at_140_poses() {
 // lit, dark, dark, dark, lit run between lit poses has its entry and exit
 // carry the lit neighbours' states, and every pose skipping drops composes
 // within its bars of the copied curve, not the dark one. The run's inside
-// pose keeps its dark state, and compose at the entry's t′ reads lit.
+// pose keeps its dark state, and compose at the entry's t′ reads lit. Depth
+// is not copied: the entry and exit keep their dark depth tiles through
+// skipping.
 #[test]
 fn skipping_judges_the_copied_edges_of_an_enclosure_run() {
     let knots = even(7);
+    let effective = effective_knots(&knots, 0.0, 1.0);
     let (lit, dark) = (At::Stored(0.8), At::Stored(0.0));
     let raw = [lit, lit, dark, dark, dark, lit, lit];
     let enclosed = [false, false, true, true, true, false, false];
     let copied = [lit, lit, lit, dark, lit, lit, lit];
-    let mut states = MoverBounceStates::new(1, knots.len(), vec![bounce_probe(&raw)], Vec::new());
+    let (open, shut) = (depth_tile(moments(BASE_DEPTH[0])), depth_tile([0.0, 0.0]));
+    let depth = depth_probe(
+        vec![PoseMark::Stored; knots.len()],
+        enclosed
+            .iter()
+            .map(|&enclosed| if enclosed { shut.clone() } else { open.clone() })
+            .collect(),
+    );
+    let mut states = MoverBounceStates::new(
+        1,
+        knots.len(),
+        vec![bounce_probe(&raw)],
+        vec![depth.clone()],
+    );
     let moved =
-        super::super::edge_copy::copy_bounce_edges(&mut states, &knots, |_| enclosed.to_vec());
+        super::super::edge_copy::copy_bounce_edges(&mut states, &effective, |_| enclosed.to_vec());
     assert_eq!(moved, 2);
     assert_eq!(states.bounce, [bounce_probe(&copied)]);
+    assert_eq!(states.depth, [depth], "edge copy leaves depth alone");
 
     let (section, tiles) = fixture();
     let bars = SkipBars::new(&section, MoverAbsentDepth::new(&section, &tiles), true);
-    let effective = effective_knots(&knots, 0.0, 1.0);
     let counts = skip_redundant_mid_poses(&mut states, &effective, &bars);
+    let [depth] = states.depth.as_slice() else {
+        panic!("the probe keeps its depth");
+    };
+    let (depth_tiles, rest) = depth.tiles.as_chunks::<PROBE_DEPTH_TILE_TEXELS>();
+    assert!(rest.is_empty(), "depth holds whole tiles");
+    let mut depth_tiles = depth_tiles.iter();
+    for (pose, &mark) in depth.marks.iter().enumerate() {
+        let tile = (mark == PoseMark::Stored)
+            .then(|| depth_tiles.next().expect("a stored tile").as_slice());
+        if pose == 2 || pose == 4 {
+            assert_eq!(
+                tile,
+                Some(shut.as_slice()),
+                "the run's edge pose {pose} keeps its dark depth tile"
+            );
+        }
+    }
     let [probe] = states.bounce.as_slice() else {
         panic!("the probe keeps its states");
     };

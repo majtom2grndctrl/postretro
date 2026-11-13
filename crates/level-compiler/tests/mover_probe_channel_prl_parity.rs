@@ -3,10 +3,10 @@
 //! A map whose every mover bakes `light_poses 2` packs byte-identical too but for id 57's epoch
 //! byte, and with mid poses every terminus state equals the parent's.
 //!
-//! The parent writes id 57 at epoch 5. Epoch 6 is epoch 5's byte layout under the
-//! mean-and-variance depth rule, so a two-pose section, which never reads that rule and skips
-//! nothing, is epoch 5's bytes with its first byte 6. That byte is the one difference these tests
-//! allow: they rewrite the parent's to this branch's epoch and compare everything else.
+//! The parent writes id 57 at epoch 5. A two-pose section has no across block at any epoch and
+//! never reads the mean-and-variance depth rule or skips anything, so it is epoch 5's bytes with
+//! only its first byte changed. That byte is the one difference these tests allow: they relabel
+//! the parent's to the current epoch and compare everything else.
 //!
 //! Opt-in and `#[ignore]`: it runs a second compiler. A missing baseline fails the test, so a
 //! green run always means both maps were compared.

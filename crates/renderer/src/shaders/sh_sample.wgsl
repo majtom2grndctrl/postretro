@@ -253,8 +253,7 @@ fn sh_trilinear_weight(corner_offset: vec3<u32>, gfrac: vec3<f32>) -> f32 {
 const SH_BACKFACE_NONE: u32 = 0u;
 // Static world receivers: a probe behind the plane weighs 0 (`max(dot, 0)`).
 const SH_BACKFACE_HARD: u32 = 1u;
-// Mover receivers (owner Ruling A, mover-light-flow--mid-travel-poses
-// Amendment 2; ip-372 lever 5, counsel question 6): a smooth ramp of the
+// Mover receivers: a smooth ramp of the
 // probe's signed distance from the SURFACE point along the receiver's
 // geometric normal, floored so no probe ever weighs 0. Behind the surface and
 // at it a probe weighs the floor; it rises by smoothstep to 1 + floor at
@@ -267,12 +266,10 @@ const SH_BACKFACE_HARD: u32 = 1u;
 // layer's trilinear weight peaks. Renormalisation then handed a moving face to
 // the next layer within 1-3 frames, a visible step at every lattice crossing.
 // Measured from the surface, a probe's weight moves continuously as the face
-// travels, and the hand-over spreads over the ramp's width of travel. With the
-// lookup at 0.4 cell the largest per-frame step fell from 11.2 to 4.3 levels on
-// em_sweeper's east face and from 19.9 to 8.7 on the wall door's end face,
-// tracking dense truth as well or better; the ramp at the old 0.1-cell offset
-// was worse than the old form, and the larger offset alone only moved the step
-// (captures/amendment2/results.md). Near-face probes still need the low end:
+// travels, so a moving face no longer steps at each lattice crossing, and the
+// hand-over spreads over the ramp's width of travel. The ramp at the old
+// 0.1-cell offset was worse than the old form, and the larger offset alone only
+// moved the step. Near-face probes still need the low end:
 // posed rays that start inside a posed brush bake dark values a hair off the
 // face, and those must not darken the face itself.
 const SH_BACKFACE_SMOOTH: u32 = 2u;
@@ -286,7 +283,10 @@ const SH_BACKFACE_SMOOTH_FLOOR: f32 = 0.03;
 const SH_MOVER_LOOKUP_OFFSET_CELLS: f32 = 0.4;
 // The smooth form's ramp width, in cells of the grid's largest axis. It ends at
 // the lookup offset by design: a probe beyond the lookup point weighs in full,
-// one behind the surface weighs the floor, and one between is ramped.
+// one behind the surface weighs the floor, and one between is ramped. That holds
+// for cubic cells (the ramp uses the largest axis, the lift each axis). At the
+// grid border the clamped lookup makes the height approximate; the floor still
+// holds.
 const SH_MOVER_BACKFACE_RAMP_CELLS: f32 = SH_MOVER_LOOKUP_OFFSET_CELLS;
 // The current SH lookup point's height above the receiver's geometric plane,
 // in world units: dot(lookup - surface, geometric normal). Only the smooth

@@ -17,9 +17,11 @@ pub enum PoseMark {
     /// The pose stores a state: one tile in its block's payload.
     Stored,
     /// A mid pose reads the probe's base: the pose leaves the probe within
-    /// its bars. An enclosing mid pose classifies its own posed state like
-    /// any other: its zero bounce is `Stored`, or `Base` where the base is
-    /// already within the bars of zero. Never at a terminus, where an
+    /// its bars. An interior enclosing mid pose classifies its own posed
+    /// state like any other: its zero bounce is `Stored`, or `Base` where the
+    /// base is already within the bars of zero. The first and last enclosing
+    /// pose of an enclosure run classify the adjoining clear pose's value
+    /// state instead (edge copy). Never at a terminus, where an
     /// unmarked probe already reads the base.
     Base,
 }

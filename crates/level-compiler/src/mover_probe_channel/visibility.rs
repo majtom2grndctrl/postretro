@@ -28,9 +28,8 @@ const SUN_CONE_SLACK_RAD: f64 = 1.0e-3;
 /// keeps 255 and reads the light's mover-absent term, since a dark terminus
 /// state, lerped toward the other terminus, would stay mostly black once
 /// the face swept past the probe. A mid pose that encloses it traces like
-/// any other pose, every lifted segment starting in solid, and stores the
-/// q that leaves: its neighbouring poses bound how far that dark state
-/// reaches.
+/// any other pose and stores the q that leaves: its neighbouring poses
+/// bound how far that dark state reaches.
 #[derive(Clone)]
 pub(crate) struct PosedOccluder {
     solid: Arc<PosedSolid>,

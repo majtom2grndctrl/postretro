@@ -744,6 +744,8 @@ fn direct_reads_a_dark_mid_pose_q_like_any_other_pose() {
 /// masks local probes 5, 33 and 63, and probes 33 and 63 store a dark q (0)
 /// at mid poses 2 and 3, as enclosed mid poses do. Every probe reads its
 /// own pose exactly at each knot and lerps the two poses around t′ between.
+/// A second mover with three poses gates the same light, so its q bytes sit
+/// past every masked probe of the first mover's run.
 #[test]
 fn direct_reads_each_poses_q_for_probes_in_the_high_mask_word() {
     let Some(ctx) = gpu("direct_reads_each_poses_q_for_probes_in_the_high_mask_word") else {
@@ -755,9 +757,17 @@ fn direct_reads_each_poses_q_for_probes_in_the_high_mask_word() {
     let q33: [u8; 5] = [255, 102, 0, 204, 0];
     let q63: [u8; 5] = [0, 255, 51, 0, 153];
     let q: Vec<u8> = [q5, q33, q63].concat();
+    // Mover 9: 3 poses at t′ 0, 0.5, 1, q per masked probe in the same order.
+    let p5: [u8; 3] = [255, 102, 204];
+    let p33: [u8; 3] = [51, 255, 153];
+    let p63: [u8; 3] = [204, 0, 255];
+    let q_9: Vec<u8> = [p5, p33, p63].concat();
     let section = posed_light_masked(
         (1 << 5) | (1 << 33) | (1 << 63),
-        &[(7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 0.75, 1.0], q)],
+        &[
+            (7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 0.75, 1.0], q),
+            (9, (0.0, 1.0), vec![0.0, 0.5, 1.0], q_9),
+        ],
     );
     let mut scene = build_scene(&ctx, Some(&section), false);
     let (ungated, ungated_handoff) = compose(&ctx, &mut scene, frame(&[]));
@@ -781,12 +791,21 @@ fn direct_reads_each_poses_q_for_probes_in_the_high_mask_word() {
         (1.0, (4, 4, 0.0)),
     ];
     for (t, (lo, hi, w)) in rows {
-        let (free, handoff) = compose(&ctx, &mut scene, frame(&[state(7, t)]));
-        for (probe, q) in [(5, &q5), (33, &q33), (63, &q63)] {
+        let (free, handoff) = compose(&ctx, &mut scene, frame(&[state(7, t), state(9, t)]));
+        // Mover 9's pose pair at t′: poses 0, 1, 2 at t′ 0, 0.5, 1.
+        let (lo_9, hi_9, w_9) = if t < 0.5 {
+            (0, 1, t / 0.5)
+        } else {
+            (1, 2, (t - 0.5) / 0.5)
+        };
+        for (probe, q, p) in [(5, &q5, &p5), (33, &q33, &p33), (63, &q63, &p63)] {
             let (x, y) = origin(probe);
             // The static light's term T = 0.25 at the tile origin is scaled by
-            // the surviving visibility: base - T * (1 - q).
-            let expected = |atlas: &[u8]| red(atlas, x, y) - 0.25 * (1.0 - lerp(q, lo, hi, w));
+            // the surviving visibility, the product of both movers' q:
+            // base - T * (1 - q7 * q9).
+            let (a, b) = (f32::from(p[lo_9]) / 255.0, f32::from(p[hi_9]) / 255.0);
+            let visibility = lerp(q, lo, hi, w) * (a + (b - a) * w_9);
+            let expected = |atlas: &[u8]| red(atlas, x, y) - 0.25 * (1.0 - visibility);
             assert_near(
                 red(&free, x, y),
                 expected(&ungated),

@@ -1,7 +1,6 @@
 // Mover probe channel direct payload checks, as a cell loads or arrives:
 // every term record's mask tight against its q bytes, and every own tile
-// finite. A PRL is accepted or refused alike
-// in every mode.
+// finite. A PRL is accepted or refused alike in every mode.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
 use postretro_level_format::mover_probe_channel::{

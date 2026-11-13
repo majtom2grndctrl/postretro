@@ -43,7 +43,7 @@ const STAGE_ID: &str = "mover_probe_bounce";
 /// 11: a mid pose folds its domain's static patches only where it traces a
 /// posed later bounce over them.
 /// 12: a mid pose that encloses the probe classifies its own gathered
-/// state, zero bounce, like any other probe (Amendment 2, Ruling B).
+/// state, zero bounce, like any other probe.
 const STAGE_VERSION: u32 = 12;
 
 /// What a pose bakes: a terminus gathers every valid probe, a mid pose its

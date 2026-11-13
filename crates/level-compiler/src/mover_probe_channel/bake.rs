@@ -5,6 +5,7 @@
 
 use std::time::Instant;
 
+use postretro_level_format::mover_probe_channel::Knot;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::absent_bounces::AbsentLaterBounces;
@@ -48,10 +49,11 @@ pub(crate) struct MoverBounceJob {
     /// The mover posed at each pose, in path order: the first and last are
     /// its termini.
     pub(crate) scenes: Vec<PosedScene>,
-    /// Each pose's travel fraction, one per scene: where an enclosure run's
-    /// one-pose edge finds its nearer clear pose
+    /// The knots compose reads, as the posed mover holds them
+    /// ([`super::posed_solid::PosedMover::read_knots`]): where enclosure
+    /// runs and their clear neighbours are found
     /// ([`super::edge_copy::value_sources`]).
-    pub(crate) knots: Vec<f32>,
+    pub(crate) read_knots: Vec<Knot>,
     /// What a mid pose gathers over: the swept brushes widened by the
     /// gather's lift and one probe spacing. Its probes take the mid pose's
     /// gather, its static patches the mid pose's posed later bounces.

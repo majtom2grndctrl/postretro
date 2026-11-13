@@ -29,7 +29,7 @@ const STAGE_ID: &str = "mover_probe_direct";
 /// 7: a mid pose that encloses the probe keeps q = 255, never read: the
 /// section marks it across.
 /// 8: a mid pose that encloses the probe stores its traced q, like any
-/// other pose (Amendment 2, Ruling B); only a terminus keeps 255.
+/// other pose; only a terminus keeps 255.
 const STAGE_VERSION: u32 = 8;
 
 /// What every light's key shares: the occluding world, the probe grid and

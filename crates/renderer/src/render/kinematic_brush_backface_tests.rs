@@ -1,12 +1,11 @@
-// GPU sweep of the mover SH backface ramp across a mover face: the mover pass's
-// lookup setup and `sh_backface_weight`, extracted verbatim from the shaders.
-// See: context/lib/rendering_pipeline.md §4 (Mover backface) · context/lib/testing_guide.md §3
+// GPU sweep of the mover SH backface ramp across a mover face, running the mover
+// pass's lookup setup and `sh_backface_weight` extracted from the shaders.
+// See: context/lib/rendering_pipeline.md §4 (Mover state lighting) · context/lib/testing_guide.md
 //
 // The ramp is WGSL, so proving it means running it. A compute pass evaluates
 // one fragment per invocation and writes, for each of its eight corners, the
 // probe's world position and its backface weight. The CPU then measures every
-// probe from the fragment's SURFACE point, the quantity the owner's Ruling A
-// (mover-light-flow--mid-travel-poses Amendment 2) defines the weight by.
+// probe from the fragment's SURFACE point, the quantity the ramp is defined by.
 
 use postretro_render_cpu::sh_depth_tiles::DepthTileGridWords;
 use postretro_render_cpu::sh_volume::{ShGridInfoParams, build_grid_info_bytes};
@@ -274,9 +273,10 @@ fn sweep(
         .collect()
 }
 
-/// Ruling A's Floor row (Amendment 2): across a sweep of surface distances on
-/// both sides of a mover face, the backface ramp is continuous and every valid
-/// probe's weight stays at least 0.03. Nothing zeroes or excludes a probe:
+/// Across a sweep of surface distances on both sides of a mover face, the
+/// backface ramp is continuous and every probe's backface factor (what the
+/// floor bounds, not the full weight product) stays at least 0.03. Nothing
+/// zeroes or excludes a probe:
 /// every corner of every fragment keeps a weight. The weight is measured from
 /// the surface point, not the lookup point, with the lookup lifted 0.4 cell,
 /// so it holds full weight where the lookup crosses a probe layer.

@@ -388,7 +388,10 @@ fn sample(
                 let span = *span_cache
                     .entry((b, *probe))
                     .or_insert_with(|| read.build.stored_span(*probe, t));
-                if span > long_span {
+                // Spans are f32 fractions: an interval of exactly one even
+                // step can differ from `long_span` by rounding alone, so it
+                // must not count as long.
+                if span > long_span * (1.0 + 1e-3) {
                     long += share;
                 }
             }
@@ -438,14 +441,20 @@ fn combined((bounce, direct): ([f32; 3], [f32; 3])) -> OctahedralAtlasTexel {
 }
 
 /// Build `b`'s worst value at one truth knot over the receivers `keep`
-/// selects by their long share, in display levels against the truth:
-/// combined, then the bounce alone and the direct alone at that receiver.
-fn worst_value(at: &[Sample], b: usize, keep: impl Fn(f64) -> bool) -> (f32, f32, f32) {
+/// selects by their long share in build `gate` (so two builds are compared
+/// over the same receivers), in display levels against the truth: combined,
+/// then the bounce alone and the direct alone at that receiver.
+fn worst_value(
+    at: &[Sample],
+    b: usize,
+    gate: usize,
+    keep: impl Fn(f64) -> bool,
+) -> (f32, f32, f32) {
     at[b]
         .values
         .iter()
         .zip(&at[0].values)
-        .zip(&at[b].long)
+        .zip(&at[gate].long)
         .filter(|(_, long)| keep(**long))
         .map(|(values, _)| values)
         .fold((0.0, 0.0, 0.0), |worst, (candidate, truth)| {
@@ -763,13 +772,13 @@ fn motion_proof(
         let shipped_knots: Vec<f32> = shipped.knots.iter().map(|knot| knot.t).collect();
         let mut values = Vec::new();
         for (&t, at) in knots.iter().zip(&samples) {
-            let miss = worst_value(at, 1, |long| long < LONG_SHARE);
-            let pre = worst_value(at, 2, |_| true);
+            let miss = worst_value(at, 1, 1, |long| long < LONG_SHARE);
+            let pre = worst_value(at, 2, 1, |long| long < LONG_SHARE);
             let value = KnotValue {
                 t,
                 shipped: miss.0,
                 pre: pre.0,
-                long: worst_value(at, 1, |long| long >= LONG_SHARE),
+                long: worst_value(at, 1, 1, |long| long >= LONG_SHARE),
             };
             if !value.within_three() {
                 eprintln!(

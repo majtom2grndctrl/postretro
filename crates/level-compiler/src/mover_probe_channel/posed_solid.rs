@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+use postretro_level_format::mover_probe_channel::{Knot, effective_knots};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::geometry::{FaceIndexRange, GeometryResult};
@@ -146,9 +147,11 @@ impl PosedSolid {
     /// starts in solid and its depth is the dark tile. A terminus that
     /// encloses a probe stores no value state for it and reads the base; a
     /// mid pose stores the dark state its own trace gives (zero bounce, its
-    /// traced q). A probe on a face or less than the inset inside
-    /// it is not enclosed: its rays keep the per-ray rule, and those whose
-    /// lift escapes read past the face.
+    /// traced q), except the first and last read pose of a run of enclosing
+    /// poses, which store the adjoining clear pose's value
+    /// ([`super::edge_copy`]). A probe on a face or less than the inset
+    /// inside it is not enclosed: its rays keep the per-ray rule, and those
+    /// whose lift escapes read past the face.
     ///
     /// The inset holds inside one brush. Where the mover's brushes touch, a
     /// probe within the inset of the seam is not enclosed even though each
@@ -294,8 +297,11 @@ impl PosedSolid {
 pub(crate) struct PosedMover {
     pub(crate) mover_id: u32,
     pub(crate) solids: Vec<Arc<PosedSolid>>,
-    /// Each pose's travel fraction, as [`crate::mover_light_gate::AnalysedMover::knots`].
-    pub(crate) knots: Vec<f32>,
+    /// The knots compose reads: each pose's travel fraction
+    /// ([`crate::mover_light_gate::AnalysedMover::knots`]) through the
+    /// mover's author ramp, poses the ramp squeezes out left out
+    /// ([`effective_knots`]).
+    pub(crate) read_knots: Vec<Knot>,
 }
 
 /// Every analysed mover posed at each of its poses as solids, ascending by
@@ -327,7 +333,11 @@ impl PosedMovers {
                         .iter()
                         .map(|pose| Arc::new(PosedSolid::new(mover, pose, texture_names)))
                         .collect(),
-                    knots: analysed.knots.clone(),
+                    read_knots: effective_knots(
+                        &analysed.knots,
+                        mover.light_ramp_start,
+                        mover.light_ramp_end,
+                    ),
                 })
             })
             .collect::<anyhow::Result<_>>()
@@ -360,8 +370,9 @@ impl PosedMovers {
 /// that on all three axes. So a probe this deep has every lifted gather ray
 /// inside the brush, toward the nearest face included. The direct half's
 /// segments lift twice, along the light's direction and then the segment's,
-/// up to two lifts in all; an enclosed probe traces none, since it keeps
-/// q = 255.
+/// up to two lifts in all. An enclosed terminus traces none (it keeps
+/// q = 255); an enclosed mid pose traces, and a segment whose second lift
+/// escapes the brush may count clear.
 pub(crate) fn enclosure_inset(probe: Vec3) -> f64 {
     let lift = f64::from(RAY_EPSILON);
     let magnitude = f64::from(probe.abs().max_element()) + lift;

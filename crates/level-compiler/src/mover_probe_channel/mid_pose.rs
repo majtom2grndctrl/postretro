@@ -44,18 +44,18 @@ pub(crate) fn classify(
 /// (`slots` maps a dense probe to its compact slot), and its depth tile
 /// where some ray met the pose, else its base.
 ///
-/// A probe the pose encloses is classified like every other (Amendment 2,
-/// Ruling B): it stores the state its own posed gather gives. Every lifted
-/// ray starts in solid and reads black, so its bounce is zero radiance,
-/// stored where that leaves its bars against id 34 and the base where id 34
-/// is already within them; every ray meets the pose at distance 0, so it
-/// stores the dark depth tile. Enclosure decides nothing here: the gather
-/// traces it, no rule writes it. Blending such a probe across, as before,
-/// lit a probe layer inside a thin mover wall from its lit neighbours and
-/// pulsed a band into the room behind it. Termini still read the base
+/// A probe the pose encloses is classified like every other: it stores the
+/// state its own posed gather gives. Every lifted ray starts in solid and
+/// reads black, so its bounce is zero radiance, stored where that leaves
+/// its bars against id 34 and the base where id 34 is already within them;
+/// every ray meets the pose at distance 0, so it stores the dark depth
+/// tile. Enclosure decides nothing here: the gather
+/// traces it, no rule writes it. Blending such a probe across would light a
+/// probe layer inside a thin mover wall from its lit neighbours and pulse a
+/// band into the room behind it. Termini read the base
 /// ([`super::gather::PosedProbe::changed`]). Once the mover's poses reduce,
-/// the first and last poses of each run of enclosing poses take their clear
-/// neighbour's value state instead ([`super::edge_copy`]).
+/// the first and last read pose of each run of enclosing poses take their
+/// clear neighbour's value state instead ([`super::edge_copy`]).
 pub(crate) fn classify_mid_pose(
     gathered: Vec<DomainProbe>,
     base: &OctahedralShVolumeSection,

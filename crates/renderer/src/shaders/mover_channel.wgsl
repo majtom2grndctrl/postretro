@@ -4,10 +4,10 @@
 // The including shader binds `mover_channel: array<u32>`, the renderer-built
 // table of `render/mover_channel/layout.rs`: listed affinity cells, one term
 // record per (cell, gated light) with its probe mask, its gating movers, each
-// mover's knots through its ramp, and one t′ per mover (negative while the game hands over no state) with its knot
-// bracket. Each listed cell's payload (the light's term T per masked probe,
-// then each mover's q at each of its N poses) is one run its base word
-// points at. A streamed level places that run per resident cell; while it is
+// mover's knots through its ramp, and one t′ per mover (negative while the
+// game hands over no state) with its knot bracket. Each listed cell's payload
+// (the light's term T per masked probe, then each mover's q at each of its N
+// poses) is one run its base word points at. A streamed level places that run per resident cell; while it is
 // not resident the base reads `MC_NONE` and the cell composes as with no
 // section. That is residency, not a visibility switch: a row composes only
 // with its cluster resident, and every cluster covering a cell carries its
@@ -15,7 +15,8 @@
 //
 // A record's probe mask is storage sparsity only: an unmasked probe composes
 // as with no section. Every pose stores q, a mid pose that encloses the probe
-// included (its traced q), so compose blends the two poses around t′. Mover
+// included (its traced q or, at the first and last pose of an enclosure, its
+// clear neighbour's), so compose blends the two poses around t′. Mover
 // state blends visibility; it never flags, zeroes or excludes a probe.
 
 const MC_HEADER_CELL_COUNT: u32 = 0u;
@@ -24,8 +25,9 @@ const MC_HEADER_CELL_RECORDS: u32 = 2u;
 const MC_HEADER_RECORDS: u32 = 3u;
 const MC_HEADER_MOVER_ENTRIES: u32 = 4u;
 // `MC_T_SLOT_WORDS` words per mover slot: its t′ bits, then its knot
-// bracket, the knot the interval walk starts from (`MoverKnots::bracket`),
-// found once per mover per frame on the CPU so no probe scans the knots.
+// bracket, the knot the direct pair and the bounce walk start from
+// (`MoverKnots::bracket`), found once per mover per frame on the CPU so no
+// probe scans the knots.
 const MC_HEADER_MOVER_T: u32 = 5u;
 const MC_HEADER_DESCRIPTORS: u32 = 6u;
 const MC_HEADER_DESCRIPTOR_COUNT: u32 = 7u;
@@ -146,17 +148,17 @@ fn mc_mover_bracket(mover: u32) -> u32 {
     return mover_channel[mover_channel[MC_HEADER_MOVER_T] + MC_T_SLOT_WORDS * mover + 1u];
 }
 
-/// Poses `lo` and `hi` around a stated `t` (≥ 0) in the knot run at `run`,
-/// and the weight of `hi`: zero reads `lo` exactly. `at` is the mover's
-/// knot bracket at `t` (`mc_mover_bracket`), so the cost is flat in knot
-/// count. Direct stores q at every pose, so the interval is the bracket's
-/// knot and the next. Mirrors `knots::interval` with every pose defined.
 struct McInterval {
     lo: u32,
     hi: u32,
     weight: f32,
 }
 
+/// Poses `lo` and `hi` around a stated `t` (≥ 0) in the knot run at `run`,
+/// and the weight of `hi`: zero reads `lo` exactly. `at` is the mover's
+/// knot bracket at `t` (`mc_mover_bracket`), so the cost is flat in knot
+/// count. Direct stores q at every pose, so the interval is the bracket's
+/// knot and the next. Mirrors `knots::interval` with every pose defined.
 fn mc_interval(run: u32, t: f32, at: u32) -> McInterval {
     let last = mover_channel[run + 1u] - 1u;
     if (t >= 1.0) {
@@ -177,9 +179,9 @@ fn mc_interval(run: u32, t: f32, at: u32) -> McInterval {
     );
 }
 
-/// The light's surviving visibility at the record's masked `slot`, local
-/// probe `local_probe`: the product over its gating movers of each one's q,
-/// blended between the two defined poses around its t′ (exact at a knot). A
+/// The light's surviving visibility at the record's masked `slot`: the
+/// product over its gating movers of each one's q,
+/// blended between the two poses around its t′ (exact at a knot). A
 /// mover the game handed over no state for leaves the light ungated (factor
 /// 1). Runs once per (record, probe), never per texel.
 fn mc_record_visibility(record: u32, slot: u32) -> f32 {

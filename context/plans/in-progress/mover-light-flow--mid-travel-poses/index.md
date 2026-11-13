@@ -243,7 +243,7 @@ Loader rejects: a pose count below 2; knots out of order, out of [0, 1], non-fin
 
 **Epoch 6 (plan task 14)** is epoch 5's byte layout under the mean-and-variance depth rule; the loader refuses epoch 5 by name, as it does epoch 4.
 
-**Epoch 7 (plan task 25b)** is epoch 6's byte layout without the across block (Amendment 2, Ruling B). An enclosed mid pose stores its own posed state, so no pose is marked across. A section of two-pose movers differs from epoch 6 only in the epoch byte. The loader refuses epochs 6, 5 and 4 by name, and the across refusals (`MoverProbeChannelAcross*`) are gone.
+**Epoch 7 (plan task 25b)** is epoch 6's byte layout without the across block (Amendment 2, Ruling B). An enclosed mid pose stores its own posed state, except that the first and last enclosing pose of a run carry the adjoining clear pose's value state under the dark depth tile (edge copy). So no pose is marked across. A section of two-pose movers differs from epoch 6 only in the epoch byte. The loader refuses epochs 6, 5 and 4 by name, and the across refusals (`MoverProbeChannelAcross*`) are gone.
 
 | Part | Epoch 5 bytes |
 |---|---|

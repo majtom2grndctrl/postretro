@@ -1,7 +1,8 @@
 //! Compiled maps: at rest, mid poses change no probe's channel contribution.
 //! Each pair names a map built `--release` with two poses per mover by the
-//! parity baseline compiler, its id-57 epoch byte rewritten from 5 to 6
-//! (safe for a two-pose section only, which the test asserts; why:
+//! parity baseline compiler, its id-57 epoch byte rewritten in code from 5 to
+//! the current `MOVER_PROBE_CHANNEL_EPOCH` (safe for a two-pose section only,
+//! which the test asserts; why:
 //! `mover_probe_channel_prl_parity`'s module doc), and by this one, with mid
 //! poses. Each build loads under `off` and under `sync-proof` with every
 //! cluster resident, hands every mover no state, then t′ = 0 and t′ = 1, and
@@ -42,6 +43,35 @@ struct Channel {
     mid_only_depth: BTreeSet<u32>,
     /// Each mover record's id and pose count.
     pose_counts: Vec<(u32, usize)>,
+}
+
+/// The parity baseline compiler's id-57 epoch: the same bytes, read under the
+/// through-base depth rule.
+const PARENT_EPOCH: u8 = 5;
+
+/// A copy of the baseline PRL at `path` with id 57's epoch byte rewritten to the
+/// current epoch, and its path. Fails unless the baseline wrote [`PARENT_EPOCH`].
+fn at_this_epoch(path: &str) -> std::path::PathBuf {
+    use postretro_level_format::mover_probe_channel::MOVER_PROBE_CHANNEL_EPOCH;
+    use postretro_level_format::{SectionId, read_container};
+    let mut prl = std::fs::read(path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let meta =
+        read_container(&mut std::io::Cursor::new(prl.as_slice())).expect("read the container");
+    if let Some(section) = meta.find_section(SectionId::MoverProbeChannel as u32) {
+        let at = section.offset as usize;
+        assert_eq!(
+            prl[at], PARENT_EPOCH,
+            "{path}: the baseline writes id 57 at epoch 5"
+        );
+        prl[at] = MOVER_PROBE_CHANNEL_EPOCH;
+    }
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("baseline");
+    let out = std::env::temp_dir().join(format!("{stem}-at-current-epoch.prl"));
+    std::fs::write(&out, prl).expect("write the relabelled baseline");
+    out
 }
 
 fn channel(path: &str) -> Option<Channel> {
@@ -134,13 +164,15 @@ fn output(atlas: usize, with: f32, none: f32, c: f32) -> f32 {
 
 #[test]
 #[ignore = "requires MOVER_REST_PAIRS: `:`-separated `old.prl=new.prl` pairs, each a map built \
-            `--release` by the parity baseline compiler (id-57 epoch byte rewritten to 6) and \
-            by this one (mover-closet, mover-setpiece, enemy-movers)"]
+            `--release` by the parity baseline compiler (its id-57 epoch byte, 5, is \
+            relabelled to the current epoch in code) and by this one (mover-closet, mover-setpiece, enemy-movers)"]
 fn rest_channel_output_equals_the_pre_change_build() {
     let pairs = std::env::var("MOVER_REST_PAIRS").expect("set MOVER_REST_PAIRS");
     let mut misses = Vec::new();
     for pair in pairs.split(':').filter(|pair| !pair.is_empty()) {
-        let (old_path, new_path) = pair.split_once('=').expect("an `old=new` pair");
+        let (old_file, new_path) = pair.split_once('=').expect("an `old=new` pair");
+        let relabelled = at_this_epoch(old_file);
+        let old_path = relabelled.to_str().expect("utf-8 temp path");
         let name = std::path::Path::new(new_path)
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -151,7 +183,7 @@ fn rest_channel_output_equals_the_pre_change_build() {
         for &(mover, poses) in &old.pose_counts {
             assert_eq!(
                 poses, 2,
-                "{old_path} mover #{mover}: the baseline relabels to epoch 6 only with two poses"
+                "{old_path} mover #{mover}: the baseline relabels to the current epoch only with two poses"
             );
         }
         let new = channel(new_path).expect("adapter present");

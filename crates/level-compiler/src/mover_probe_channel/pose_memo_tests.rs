@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use postretro_level_format::mover_probe_channel::effective_knots;
+
 use super::*;
 use crate::fixture_pipeline::{fixture_path, load_map};
 use crate::mover_probe_channel::posed_solid::PosedMovers;
@@ -45,7 +47,14 @@ fn a_pose_key_folds_what_its_kind_bakes_from_and_nothing_else() {
                 PosedScene::new(Arc::clone(&solids.solids[solid]), pose).expect("posed sides")
             })
             .collect(),
-        knots: keep.iter().map(|&solid| analysed.knots[solid]).collect(),
+        read_knots: effective_knots(
+            &keep
+                .iter()
+                .map(|&solid| analysed.knots[solid])
+                .collect::<Vec<_>>(),
+            0.0,
+            1.0,
+        ),
         domain: NearFieldDomain::new(analysed, 1.0),
         domain_probes: domain_probes.to_vec(),
     };

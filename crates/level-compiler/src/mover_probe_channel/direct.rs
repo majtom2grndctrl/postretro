@@ -232,16 +232,16 @@ pub(crate) struct DirectScene<'a> {
 /// Output follows `lights`' order, holding only lights with an entry, so the
 /// bytes never depend on the worker count.
 pub(crate) fn bake_direct(
-    movers: &PosedMovers,
+    posed: &PosedMovers,
     lights: &[ChannelLight<'_>],
     scene: &DirectScene<'_>,
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<MoverDirectBake> {
-    let posed = movers;
+    // Per light, the movers it may meet.
     let movers: Vec<Vec<LightMover>> = lights
         .iter()
-        .map(|light| light_movers(&light.baked, movers))
+        .map(|light| light_movers(&light.baked, posed))
         .collect();
     let mut baked: Vec<Option<Vec<DirectEntry>>> = vec![None; lights.len()];
     let memo = cache.map(|cache| DirectMemo::new(cache, MemoPrefix::new(scene)));
@@ -371,15 +371,17 @@ impl StaticSamples {
 ///
 /// Enclosure decides only at a terminus: a terminus that encloses the probe
 /// keeps q = 1 and reads the light's mover-absent term there, so rest
-/// lighting is the base's (`index.md`, "The enclosing rule, per pose kind").
-/// A mid pose that encloses the probe runs the same joint trace as every
-/// other pose and stores the q it leaves (Amendment 2, Ruling B): every
-/// lifted segment starts in solid, so q is 0 wherever the light is
-/// statically clear. That is a traced value, never a flag or a weight: the
+/// lighting is the base's. A mid pose that encloses the probe runs the same
+/// joint trace as every other pose and stores the q it leaves. Each segment
+/// lifts twice, along the light's direction and then the segment's, while
+/// the enclosure inset covers one lift: a segment starting in solid is
+/// blocked, so q is 0 where the light is statically clear, except that a
+/// probe within two lifts of a face may keep the samples whose second lift
+/// escapes the brush. That is a traced value, never a flag or a weight: the
 /// probe stays in the blend at its full weight and darkens it, so a probe
 /// layer inside a thin mover wall carries no light into the room behind it
-/// mid-travel. After the memo, the first and last poses of each run of
-/// enclosing poses take their clear neighbour's q instead
+/// mid-travel. After the memo, the first and last read poses of each run of
+/// enclosing poses take their read clear neighbour's q instead
 /// ([`super::edge_copy`]).
 ///
 /// Every pose bakes, mid poses included, and wherever the light reaches:

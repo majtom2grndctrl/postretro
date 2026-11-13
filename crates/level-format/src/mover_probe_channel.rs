@@ -51,14 +51,16 @@ pub fn depth_tile_texture_count(
 /// poses per mover. Mover records carry each mover's ramp and pose knots;
 /// direct, bounce and depth store per pose, and a mid pose marks a probe as
 /// stored, reading the base, or blending across; per (cell, mover) across
-/// marks name the probes each mid pose encloses, which direct blends across.
+/// marks (removed at epoch 7) named the probes each mid pose encloses.
 /// Epoch 6: epoch 5's bytes under the mean-and-variance depth rule
 /// ([`depth_segment`]): an interval with a mid pose at either end blends its
 /// poses' mean and variance, and redundant mid poses are skipped against
 /// that blend, so an epoch-5 section's skips no longer match what compose
 /// reads. Epoch 7: epoch 6's layout without the across block. An enclosed
-/// mid pose stores the state its own posed bake gives (zero bounce, its
-/// traced q, the dark depth tile), so nothing is marked across; an epoch-6
+/// interior mid pose stores the state its own posed bake gives (zero bounce,
+/// its traced q, the dark depth tile); the first and last enclosing pose of
+/// an enclosure run instead carry the adjoining clear pose's value state under
+/// the dark depth tile (edge copy). Nothing is marked across; an epoch-6
 /// section's enclosed mid poses would blend across where compose now reads
 /// a stored state.
 pub const MOVER_PROBE_CHANNEL_EPOCH: u8 = 7;

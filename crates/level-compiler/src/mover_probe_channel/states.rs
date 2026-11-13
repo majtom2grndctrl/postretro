@@ -200,7 +200,9 @@ impl MoverPoseStates {
 /// pose reads id 34 where it leaves the probe within its bars, and blends
 /// across where it lists nothing (outside the near-field domain, or
 /// skipped). An enclosing mid pose stores its own zero bounce, or reads id
-/// 34 where that is within the bars.
+/// 34 where that is within the bars, except the first and last read pose
+/// of a run of enclosing poses, which carry what compose reads at the
+/// adjoining clear pose ([`super::edge_copy`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BounceProbe {
     pub(crate) probe: u32,

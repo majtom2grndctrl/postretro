@@ -714,7 +714,7 @@ fn fat_door(text: String) -> String {
         )
 }
 
-// The enclosing rule per pose kind (Amendment 2, Ruling B): a pose whose
+// The enclosing rule per pose kind: a pose whose
 // posed brushes enclose a probe's position, inside one brush by at least
 // the gather's lift, gathers zero bounce there (every lifted ray starts in
 // solid). A terminus stores no bounce state for it: the probe is unmarked
@@ -723,8 +723,9 @@ fn fat_door(text: String) -> String {
 // against id 34, and reads the base where id 34 is already within them; it
 // never leaves the probe unmarked, so nothing blends across an enclosed mid
 // pose (and epoch 7 writes no across marks). Inside a run of enclosing
-// poses that is; the run's first and last mid poses store what compose reads
-// at the adjoining clear pose instead (edge copy). One enclosed at both termini
+// poses that is; the run's first and last mid poses compose reads (after the
+// ramp) store what compose reads at the adjoining clear pose instead (edge
+// copy), and the fixture copies some. One enclosed at both termini
 // stores, if anything, only mid poses' states. Enclosure is recomputed here
 // from the solids' own half-spaces, never read from the bake. Every lifted
 // ray of an enclosed probe starts inside the pose, so its depth is the dark
@@ -737,7 +738,7 @@ fn fat_door(text: String) -> String {
 fn an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dark_state() {
     use std::collections::BTreeMap;
 
-    use postretro_level_format::mover_probe_channel::PoseMark;
+    use postretro_level_format::mover_probe_channel::{PoseMark, effective_knots};
     use postretro_level_format::probe_depth_tiles::bordered_tile;
 
     use crate::mover_probe_channel::{
@@ -776,10 +777,20 @@ fn an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dar
         let depth: BTreeMap<u32, _> = states.depth.iter().map(|p| (p.probe, p)).collect();
         let (mut both, mut one, mut other_stored, mut deep) = (0, 0, 0, 0);
         let (mut mid_enclosed, mut mid_dark, mut mid_base, mut mid_copied) = (0, 0, 0, 0);
-        let knots = &poses
-            .mover(states.mover_id)
-            .expect("the door is analysed")
-            .knots;
+        // Runs and their sources are found over the knots compose reads.
+        let door = fixture
+            .kinematic_movers
+            .iter()
+            .find(|mover| mover.mover_id == states.mover_id)
+            .expect("the door is a map mover");
+        let read = effective_knots(
+            &poses
+                .mover(states.mover_id)
+                .expect("the door is analysed")
+                .knots,
+            door.light_ramp_start,
+            door.light_ramp_end,
+        );
         let (mut band, mut band_dark) = (0, 0);
         for (probe, position) in layout.probe_positions.iter().enumerate() {
             if layout.validity[probe] == 0 {
@@ -826,7 +837,7 @@ fn an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dar
                     .iter()
                     .map(|&mark| (mark == PoseMark::Stored).then(|| stored.next().expect("a tile")))
                     .collect();
-                let sources = value_sources(&enclosed, knots);
+                let sources = value_sources(&enclosed, &read);
                 for (k, (&enclosed, &mark)) in enclosed.iter().zip(&entry.marks).enumerate() {
                     let tile = tiles[k];
                     if !enclosed {
@@ -900,8 +911,8 @@ fn an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dar
              pair(s) inside within the lift, {band_dark} with every lifted ray inside"
         );
         assert!(
-            both > 0 && one > 0 && deep > 0 && mid_enclosed > 0 && mid_dark > 0,
-            "the fixture encloses probes, at mid poses too, some storing their dark state"
+            both > 0 && one > 0 && deep > 0 && mid_enclosed > 0 && mid_dark > 0 && mid_copied > 0,
+            "the fixture encloses probes, at mid poses too, some storing their dark state and              some copied at a run edge"
         );
 
         let cells = ProbeCells::of_layout(&layout);
@@ -1381,8 +1392,8 @@ fn a_full_re_bake_differs_from_id_34_beyond_the_bar_only_where_the_domain_admits
                 for probe in &pose.probes {
                     let position = vec3_from(layout.probe_positions[probe.probe as usize]);
                     if solid.contains_by(position, enclosure_inset(position)) {
-                        // An enclosing terminus reads id 34 (owner,
-                        // 2026-11-09): its dark re-bake is never a state.
+                        // An enclosing terminus reads id 34: its dark
+                        // re-bake is never a state.
                         assert!(
                             directions
                                 .iter()

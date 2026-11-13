@@ -546,16 +546,17 @@ fn an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask() {
     );
 }
 
-// Direct half, Amendment 2's Ruling B and its edge copy: a mid pose inside
-// a run of poses that enclose a probe runs the same joint trace as every
-// other pose and stores the q it leaves. Every lifted segment starts in
-// solid, so q is 0 where the light is statically clear: a traced value,
-// never a flag, and nothing is marked across (epoch 7 has no across block).
-// The run's first and last poses store their clear neighbour's q instead
-// (the enclosure-exit dip fix). The termini keep their own: here the box
-// shadows the probe at the first pose and has sunk below it at the last. And
-// the termini's q is the bake's at `light_poses 2` exactly, so the dark mid
-// poses leave rest bytes untouched.
+// Direct half, enclosed mid poses and edge copy: a mid pose inside a run of
+// poses that enclose a probe runs the same joint trace as every other pose
+// and stores the q it leaves, 0 here where the light is statically clear: a
+// traced value, never a flag, and nothing is marked across (epoch 7 has no
+// across block). The run's first and last poses compose reads store their
+// read clear neighbour's q instead: under the helper's ramp (0.25, 0.75)
+// compose reads poses 0, 3, 4, 5 and 8, so the run's entry, pose 3, takes
+// terminus 0's q and its exit, pose 5, terminus 8's. The termini keep their
+// own: here the box shadows the probe at the first pose and has sunk below
+// it at the last. And the termini's q is the bake's at `light_poses 2`
+// exactly, so the dark mid poses leave rest bytes untouched.
 #[test]
 fn a_probe_a_mid_pose_encloses_stores_its_traced_q_and_the_termini_are_unchanged() {
     let world = world();
@@ -620,11 +621,27 @@ fn a_probe_a_mid_pose_encloses_stores_its_traced_q_and_the_termini_are_unchanged
         "the box shadows the probe at the first pose: {q:?}"
     );
     assert_eq!(q[4], 0, "inside the run: traced, every sample blocked");
+    let records = MoverRecords::new(&movers, &mover_poses);
+    let read: Vec<u32> = records
+        .get(0)
+        .expect("the sinker's record")
+        .effective_knots()
+        .iter()
+        .map(|knot| knot.pose)
+        .collect();
     assert_eq!(
-        q[3], q[2],
-        "the run's entry copies the clear pose before it"
+        read,
+        [0, 3, 4, 5, 8],
+        "the ramp squeezes out poses 1, 2, 6 and 7"
     );
-    assert_eq!(q[5], q[6], "the run's exit copies the clear pose after it");
+    assert_eq!(
+        q[3], q[0],
+        "the run's entry copies the read clear pose before it"
+    );
+    assert_eq!(
+        q[5], q[8],
+        "the run's exit copies the read clear pose after it"
+    );
     assert_eq!(q[8], 255, "sunk below the probe at the last pose");
 
     // Rest: every probe's terminus q equals the two-pose bake's.
@@ -648,7 +665,7 @@ fn a_probe_a_mid_pose_encloses_stores_its_traced_q_and_the_termini_are_unchanged
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRecords::new(&movers, &mover_poses),
+        &records,
         &super::section::MoverPayloadBars::default(),
         |_, _, _| false,
         |_| true,

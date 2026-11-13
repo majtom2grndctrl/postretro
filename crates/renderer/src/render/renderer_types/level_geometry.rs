@@ -99,7 +99,7 @@ pub struct LevelGeometry<'a> {
     >,
     /// Id 57: what each mover changes in the probe data at each of its poses
     /// (termini plus mid poses). Its cell indexes, direct records and their
-    /// probe masks, mover entries, across marks, mover records, bounce entry
+    /// probe masks, mover entries, mover records, bounce entry
     /// masks and depth records are whole-resident in either SH storage mode;
     /// only the q, own-tile and bounce-tile payloads stream, arriving with
     /// id 50's cells.

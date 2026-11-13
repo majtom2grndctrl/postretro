@@ -1,7 +1,7 @@
 # coop--client-leave-session — plan of record
 
 mode: resumable
-status: approved (build complete; awaiting land the plane)
+status: done
 read at: ae8152c
 
 No source changed between the brief's `read at` (514b5944) and ae8152c: the 8 commits between them touch only `context/`. Every symbol cited by Decisions and Path was re-read at ae8152c and exists as described, except as corrected below.
@@ -61,8 +61,8 @@ Rows follow the brief's Acceptance order. Test names are the planned names; the 
 | 34 | `FinalCharacter` in frame k, cause later, a pre-end snapshot applied between them → the `FinalCharacter` values save (P20) | `final_character_outranks_stale_snapshot` | achievable as stated | outstanding: no test; by construction FinalCharacter is held on the App until the leave applies it |
 | 35 | Connected client exits to desktop with no prior leave → save holds its own global, sentiment and rows (P5) | `client_exit_saves_own_world` | achievable as stated | pass at the seam (exit leaves first, source guard; restore tests) |
 | 36 | Crossing watcher whose host value differs from the client's saved value: the restore fires no crossing, by leave and by host-side ending (P2) | `store_restore_fires_no_crossing` | achievable as stated | pass at the seam (`rebaseline_arms_on_restored_values_without_firing`) |
-| 37 | Manual: two-process loopback; the client quits to the menu, stays there through a host level change, and starts a local game; the host's player list drops it at once | owner, two-process loopback | manual | manual: owner |
-| 38 | Manual: two-process loopback; the host quits to the menu; the client lands at its frontend, logs that the host ended the session, and starts a local game | owner, two-process loopback | manual | manual: owner |
+| 37 | Manual: two-process loopback; the client quits to the menu, stays there through a host level change, and starts a local game; the host's player list drops it at once | owner, two-process loopback | manual | pass (owner, two-process loopback) |
+| 38 | Manual: two-process loopback; the host quits to the menu; the client lands at its frontend, logs that the host ended the session, and starts a local game | owner, two-process loopback | manual | pass (owner, two-process loopback) |
 
 ## Tasks
 

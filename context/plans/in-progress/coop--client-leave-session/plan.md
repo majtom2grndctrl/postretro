@@ -1,7 +1,7 @@
 # coop--client-leave-session — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: ae8152c
 
 No source changed between the brief's `read at` (514b5944) and ae8152c: the 8 commits between them touch only `context/`. Every symbol cited by Decisions and Path was re-read at ae8152c and exists as described, except as corrected below.

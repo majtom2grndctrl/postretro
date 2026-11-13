@@ -32,7 +32,7 @@ Four channels, fixed layout, agreed by both peers (the layout is folded into the
 
 | Channel | Delivery | Carries |
 |---------|----------|---------|
-| Control | reliable-ordered | join traffic both ways: compatibility declarations, the revealed-level declaration and join seed client→server; level changes, divergence causes, holding markers, participation-start markers, the session roster and the replicated tuning payload server→client |
+| Control | reliable-ordered | join traffic both ways: compatibility declarations, the revealed-level declaration and join seed client→server; level changes, divergence causes, holding markers, participation-start markers, the session roster, the replicated tuning payload and the final character server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
 | Input | reliable-ordered | client input/activation commands, weapon-switch declarations, HIT declarations, repair/acks and time sync; host activation outcomes, switch outcomes, shot verdicts, HIT refusals, time-sync echoes and observer weapon cues |
 | Presentation | unreliable | participation-epoch-framed host presentation: disposable damage-number spawns, recoverable damaged-enemy rosters, and player-addressed presentation commands |
@@ -165,16 +165,18 @@ An uncatalogued host level sends no relevel, so its reinstall is not followed an
 
 A held slot is bounded by the transport, not by the gate: a peer that never reaches parity holds an admitted slot for as long as its keepalive survives. Accepted, because the case it covers is a peer on the *right* mod whose content diverged, which is recoverable by construction. A genuinely wrong mod still closes, on the id, at admission.
 
-### Leaving and ending a session (decided, not yet built)
+### Leaving and ending a session
 
 Membership changes only through its own verbs (`scripting.md` §10.4). Navigation never changes it, and the frontend is outside every session.
 
-- **Leave.** A client closes its connection cleanly. The host closes that slot as a disconnect, not a timeout, and holds the seat. The client unloads and presents its mod's frontend as single-player: the one membership change that lands somewhere, because a client cannot keep a world it never owned.
-- **End.** The host closes every slot with a session-ended cause, tears down every remote pawn and holds no seats. It becomes single-player at once, and its level keeps running with its own seat, pawn and carried loadout. Its transport survives only to deliver the closes, for at most 2 s, admitting no one and sending nothing after a slot's cause.
-- **Every host-side ending lands a client where a leave does.** That covers a session-ended cause, a refusal at admission, a lost host, a connect whose last attempt fails, and any later host close. From the moment its session ends, the client's level runs no tick, crossing or command drain, and nothing the host named loads.
-- **Final character.** Before closing a slot that has participated on this connection, including one held between levels, the host sends that client its own persisted per-owner values on Control: the join seed's mirror. A reward written before the end reaches the player.
-- **Exit.** On every exit path a client leaves and a host ends first, so peers learn at once rather than at the keepalive timeout.
-- **Role state.** Leave and end re-derive every role-bound value through the derivation a session uses at build, so a machine that left or ended matches one started without network flags. An ended host keeps its own seat. Nothing a client received from its host survives a leave: no relevel record, spawn-pose hint or host-named load.
+- **Leave.** A client sends netcode's disconnect, drops its endpoint, and lands at its mod's frontend as single-player: the one membership change that lands somewhere, because a client cannot keep a world it never owned. renet_netcode reports a client's disconnect packet and a keepalive timeout as the same transport ending, so the host reads one from a client it heard within netcode's 15 s timeout window as a disconnect, not a timeout, and holds the seat. The disconnect is one unacknowledged datagram: if it is lost, the slot times out.
+- **Every host-side ending lands a client where a leave does**, minus the disconnect: a session-ended cause, a refusal at admission, a lost host, a connect whose attempts all fail, and any later host close. A first connect still retrying has not ended. A cause that arrives in the same update as the host's disconnect still drains, because the transport reads Control at the connection's end. An ending before boot clears lands at the frontend (`boot_sequence.md` §First-launch hold).
+- **The client's level stops at once.** From the role change to its unload, that level runs no tick, crossing or command drain. Nothing the host named outlives the leave: no relevel record, spawn-pose hint, or host-named load, queued, in flight or installed.
+- **End.** The host sends each connection that has participated, held between levels included, its final character, then every slot the session-ended cause. It tears down every remote pawn and projectile presentation, holds no seats, and becomes single-player at once. Its level keeps running.
+- **Final character.** The persisted per-owner slots the host replicates to that client, on Control: the join seed's mirror. A slot that never replicates is the client's own, and the host's copy is only what the join seed carried, so it stays out. A reward written before the end reaches the player. What the client does with it: `scripting.md` §5.
+- **Closing transport.** An ended host keeps its server only to deliver the closes. It admits no one, sends nothing after a slot's cause, and is pumped every frame, in every boot state, until every slot acknowledges or 2 s of host time pass. It then sends netcode's disconnect to any remainder and drops.
+- **Exit.** On every exit path a client leaves and a host ends first, so peers learn at once rather than at the keepalive timeout. The host then pumps its closing transport for at most 2 s of wall time.
+- **Role state.** Session build, leave and end share one derivation of role-bound state (`crates/postretro/src/session/role_state.rs`): spawn authority, mover auto-close timers, scheduler role, owner-slot writes, `session.hosting`, `session.hostAddress`, `session.openSeats` and the seat ledger. A machine that left or ended therefore holds what a session started without network flags holds, except that an ended host keeps seat 0, with its pawn binding and carried loadout.
 
 ## What gates, and what replicates instead
 
@@ -332,7 +334,7 @@ Despawn records carry tombstone metadata only, never component payloads.
 
 ## Role model
 
-Role is selected at startup from CLI flags; default is **single-player with net fully inert** — no endpoint is constructed, serialize/apply never run. Afterwards a role moves one way only: a client that leaves and a host that ends become single-player (§Slot lifecycle, *Leaving and ending a session*; decided, not yet built). Hosting or joining again needs a relaunch.
+Role is selected at startup from CLI flags; default is **single-player with net fully inert** — no endpoint is constructed, serialize/apply never run. Afterwards a role moves one way only: a client that leaves and a host that ends become single-player (§Slot lifecycle, *Leaving and ending a session*). Hosting or joining again needs a relaunch.
 
 | Flag | Role |
 |------|------|
@@ -346,7 +348,7 @@ Role is selected at startup from CLI flags; default is **single-player with net 
 
 **IPv4 only:** the host binds IPv4, and `--connect` refuses an IPv6 address at parse time with a clear message. Joining loses nothing by this — players on IPv6 networks almost always keep an outbound IPv4 path (dual-stack, or NAT64/464XLAT, DS-Lite, MAP-E translation). The reachability limit that matters is inbound IPv4 to a host behind carrier-grade NAT, DS-Lite, or MAP-E; IPv6 alone does not fix it, since home routers block unsolicited inbound IPv6 by default and the joiner needs IPv6 too, so a relay outranks dual-stack when host reachability becomes the complaint. MAP-E hosts can only forward ports in their assigned block, which `--host <port>` covers.
 
-**Client connect lifecycle.** The client endpoint is built on the boot's logo frame, but the main thread then runs full renderer init and mod init before the next poll, so the connect clock starts at the **first poll**, not at construction; that first poll's `dt` is not counted. netcode times an unanswered attempt out after 15 s; a client that has **never connected** retries with a fresh socket, token, and client id, for a bounded number of attempts, which covers a host started after its client. A denial or an expired token ends the connect without a retry, and a connection that was established is never silently rejoined. Windows reports a send to an unbound port as a `ConnectionReset` on the next receive; the client skips those, as renet_netcode's server transport does, and lets the timeout decide. The transport logs the ending of a connection once, naming the host address (renetcode also logs each attempt's timeout). Today nothing above the transport reacts to that ending: the endpoint stays a client and keeps polling, with no player-facing connection state. Decided, not yet built: that ending, a host close and a last failed connect attempt all take the client to a single-player frontend (*Leaving and ending a session*).
+**Client connect lifecycle.** The client endpoint is built on the boot's logo frame, but the main thread then runs full renderer init and mod init before the next poll, so the connect clock starts at the **first poll**, not at construction; that first poll's `dt` is not counted. netcode times an unanswered attempt out after 15 s; a client that has **never connected** retries with a fresh socket, token, and client id, for a bounded number of attempts, which covers a host started after its client. A denial or an expired token ends the connect without a retry, and a connection that was established is never silently rejoined. Windows reports a send to an unbound port as a `ConnectionReset` on the next receive; the client skips those, as renet_netcode's server transport does, and lets the timeout decide. The transport reports why a connection is over: the client left, an established connection was lost, or no attempt connected. It logs a lost host or a failed connect once as an error, naming the host address (renetcode also logs each attempt's timeout); a host close that carried its cause, and the client's own leave, log no error. Every ending lands the client at a single-player frontend (*Leaving and ending a session*).
 
 ## Testing the conditioned link
 
@@ -1227,6 +1229,8 @@ pair radius that is non-finite or outside [0, 16], a required tick count above t
 60 s cap's, and a pair table not strictly ascending by network id. Peers at 38 are refused at handshake. PRLC is unchanged.
 
 The spawn-pose hint, appended to `ServerControlMessage` after `SessionRoster`, advances the application protocol to 13, `PRLD`. The append-layout guard shows no shipped Control encoding changed, so `WIRE_VERSION` stays 39; `SNAPSHOT_VERSION` (25) and the tuning epoch are unchanged. Peers on PRLC are refused at handshake.
+
+The session-ended closing cause and the final-character message (*Leaving and ending a session*), appended to `ClosingCause` and `ServerControlMessage`, advance the application protocol to 14, `PRLE`. The append-layout guard shows no shipped Control encoding changed, so `WIRE_VERSION` stays 39; `SNAPSHOT_VERSION` (25) and the tuning epoch are unchanged. Peers on PRLD are refused at handshake.
 
 Defense layers add an owner-private pair per registered layer. Like the weapon samples, they change only the state-schema fingerprint, so `WIRE_VERSION` is unchanged.
 

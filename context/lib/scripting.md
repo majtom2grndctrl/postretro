@@ -14,6 +14,14 @@
 
 When adding a feel detail, design to the spectrum: name its axis, expose it as a tunable or scriptable parameter, seed the default. Expose the axis, not a catalog of points along it — breadth grows with demand, not ahead of it. The spectrum is bounded by quality: every point is a valid feel, not a degenerate one. A jitter bug is not the low end of a sway range. This governs taste, not correctness: the floor above has no spectrum — owned, not exposed.
 
+**Authoring API style.** An author writes intent once, in their own terms:
+- **Handles over strings.** A name shared across files or archetypes is a `define*` handle named by its binding, as damage types and attack tokens are (§2). Strings remain where a map or content resolves the name: activity keys, animation states, sounds, map-referenced styles.
+- **The dependent names its prerequisite.** An attack lists the tokens it draws; a token never lists its attacks. One prerequisite then serves many dependents.
+- **References carry their obvious rules.** A reference implies the gates any author would write beside it. A list the SDK can infer from references is optional; an explicit one narrows, so a variant reuses its parent with less.
+- **No assembly steps.** Authors point at what they mean; the SDK and load-time lowering build the plumbing. A builder, a merge and a lookup for one idea is the smell.
+- **Paired options read as a pair**, and the second defaults to the first where that is the common case.
+- **Names work in both runtimes.** No Luau keywords, such as `then`.
+
 Two runtimes run side by side: **QuickJS** (TypeScript/JavaScript, via rquickjs) and **Luau** (via mlua). Each serves the same primitive surface. Scripts dispatch by file extension: `.ts`/`.js` → QuickJS, `.luau` → Luau. Both runtimes are always present; no runtime selection. The QuickJS and Luau descriptor parsers are behavioral twins — same validation, same degradation: a malformed field that warns-and-degrades on one must never abort on the other. An optional block whose loss leaves a legitimate design may drop alone: a `movement.swim` or `movement.vault` block failing validation is dropped with a warning naming the field, and the player wades or cannot vault while the rest of the descriptor loads (`movement.md` §4). Both lower authored values through one JSON bridge, which rejects non-finite numbers (`Infinity`, `-Infinity`, `NaN`) and names the path to the field. JSON cannot spell them, so degrading would emit null — indistinguishable from an unauthored optional field, and a silent default where every other bad number is a clean error.
 
 All engine capabilities are exposed through a **primitive registry** — a shared table of registered Rust functions. Register a primitive once and it installs in every future QuickJS and Luau context. Scripts call primitives as global functions.

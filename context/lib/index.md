@@ -66,6 +66,7 @@
 - **Texture memory accounting / per-slot or per-mip byte cost / what a level's textures cost** → `build_pipeline.md` §Baked texture mips (Byte accounting)
 - **3D model / glTF import (scale, pivot, material format, shared clip libraries, Mixamo licence)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
+- **SDK API style / typed handles vs strings / naming authoring options** → `scripting.md` §1 (Authoring API style)
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
 - **System reactions / system steps in a sequence** → `scripting.md` §10.4
 - **Per-player events / `players().on` / discrete `assistReceived` / `assistGiven` sources / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state

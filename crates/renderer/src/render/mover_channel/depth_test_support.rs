@@ -53,7 +53,6 @@ pub(in crate::render) fn stored_depth_section(
         MoverProbeChannelParts {
             affinity_dims: [1, 1, 1],
             direct: Vec::new(),
-            across: Vec::new(),
             bounce: Vec::new(),
             depth: records
                 .into_iter()
@@ -97,7 +96,6 @@ pub(in crate::render) fn posed_depth_section(
         MoverProbeChannelParts {
             affinity_dims: [1, 1, 1],
             direct: Vec::new(),
-            across: Vec::new(),
             bounce: Vec::new(),
             depth: records
                 .into_iter()

@@ -1,6 +1,7 @@
-// Mid-pose states: what each mid pose stores, reads from the base or blends
-// across at each near-field probe, from its own posed gather (an enclosed
-// probe's bounce blends across; its depth keeps the dark tile).
+// Mid-pose states: what each mid pose stores or reads from the base at each
+// near-field probe, from its own posed gather. A probe the pose encloses
+// stores the state that gather gives, as any other probe does: zero bounce
+// and the dark depth tile.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel, Poses)
 
 use postretro_level_format::octahedral::{
@@ -19,37 +20,42 @@ use crate::sh_bake::pack_octahedral_irradiance_tile;
 /// `coefficients`, against the probe's id-34 tile `base` and that tile's
 /// round-trip bar: its state, as id 27's compact RGB tile, where it clears
 /// both bars against id 34 (the round-trip bar and the perceptual floor, as
-/// an affected terminus's must); the base where it stays within them; and
-/// nothing, so it blends across, where the pose encloses the probe (the
-/// section marks it across for direct too).
+/// an affected terminus's must), and the base where it stays within them.
 pub(crate) fn classify(
     coefficients: &[f32; 27],
-    enclosed: bool,
     base: &[OctahedralAtlasTexel],
     bar: f32,
-) -> Option<MidState<Vec<u16>>> {
-    if enclosed {
-        return None;
-    }
+) -> MidState<Vec<u16>> {
     let tile = pack_octahedral_irradiance_tile(
         coefficients,
         true,
         DEFAULT_IRRADIANCE_TILE_DIMENSION,
         DEFAULT_IRRADIANCE_TILE_BORDER,
     );
-    Some(if clears_bounce_bars(&tile, base, bar) {
+    if clears_bounce_bars(&tile, base, bar) {
         MidState::Stored(compact_rgb(&tile))
     } else {
         MidState::Base
-    })
+    }
 }
 
 /// A mid pose from its near-field gather `gathered` (ascending by probe):
 /// each probe's bounce by [`classify`] against its id-34 tile in `base`
 /// (`slots` maps a dense probe to its compact slot), and its depth tile
-/// where some ray met the pose, else its base. A probe the pose encloses
-/// meets every ray at distance 0, so it stores the dark tile while its
-/// bounce blends across.
+/// where some ray met the pose, else its base.
+///
+/// A probe the pose encloses is classified like every other (Amendment 2,
+/// Ruling B): it stores the state its own posed gather gives. Every lifted
+/// ray starts in solid and reads black, so its bounce is zero radiance,
+/// stored where that leaves its bars against id 34 and the base where id 34
+/// is already within them; every ray meets the pose at distance 0, so it
+/// stores the dark depth tile. Enclosure decides nothing here: the gather
+/// traces it, no rule writes it. Blending such a probe across, as before,
+/// lit a probe layer inside a thin mover wall from its lit neighbours and
+/// pulsed a band into the room behind it. Termini still read the base
+/// ([`super::gather::PosedProbe::changed`]). Once the mover's poses reduce,
+/// the first and last poses of each run of enclosing poses take their clear
+/// neighbour's value state instead ([`super::edge_copy`]).
 pub(crate) fn classify_mid_pose(
     gathered: Vec<DomainProbe>,
     base: &OctahedralShVolumeSection,
@@ -62,21 +68,15 @@ pub(crate) fn classify_mid_pose(
         .into_par_iter()
         .map(|probe| {
             let _permit = control.governor().enter();
-            let bounce = (!probe.enclosed)
-                .then(|| {
-                    let tile = compact_tile(base, slots[probe.probe as usize] as usize);
-                    let bar = round_trip_error(&tile, dim, uncompressed);
-                    classify(&probe.coefficients, false, &tile, bar)
-                })
-                .flatten();
+            let tile = compact_tile(base, slots[probe.probe as usize] as usize);
+            let bar = round_trip_error(&tile, dim, uncompressed);
+            let bounce = classify(&probe.coefficients, &tile, bar);
             (probe.probe, bounce, depth_state(probe.depth))
         })
         .collect();
     let mut states = MidPoseStates::default();
     for (probe, bounce, depth) in classified {
-        if let Some(bounce) = bounce {
-            states.bounce.push((probe, bounce));
-        }
+        states.bounce.push((probe, bounce));
         states.depth.push((probe, depth));
     }
     states

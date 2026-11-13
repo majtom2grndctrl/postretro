@@ -243,6 +243,8 @@ Loader rejects: a pose count below 2; knots out of order, out of [0, 1], non-fin
 
 **Epoch 6 (plan task 14)** is epoch 5's byte layout under the mean-and-variance depth rule; the loader refuses epoch 5 by name, as it does epoch 4.
 
+**Epoch 7 (plan task 25b)** is epoch 6's byte layout without the across block (Amendment 2, Ruling B). An enclosed mid pose stores its own posed state, so no pose is marked across. A section of two-pose movers differs from epoch 6 only in the epoch byte. The loader refuses epochs 6, 5 and 4 by name, and the across refusals (`MoverProbeChannelAcross*`) are gone.
+
 | Part | Epoch 5 bytes |
 |---|---|
 | Header, cell index | Unchanged from epoch 4. |
@@ -251,9 +253,9 @@ Loader rejects: a pose count below 2; knots out of order, out of [0, 1], non-fin
 | Bounce | Per-cell entry-count CSR unchanged, then `u32 × (E+1)` entry byte offsets from 0, ascending (an entry spans `8 + 16N` bytes). Entry: `mover_id u32, reserved u32 = 0`, then N `(stored u64, base u64)`. Base is 0 at a terminus, and every base bit lies inside the entry's stored union. Tiles pose-major, then probe by `stored` rank. |
 | Depth | u32 record count. Records by (mover, probe): `mover_id u32, probe_index u32`, then `4·⌈N/16⌉` bytes of two-bit marks low-first (bit 0 stored, bit 1 base), padding bits 0. Tiles per record, its stored poses in pose order. |
 | Streaming | Unchanged; lengths come from each mover's N. |
-| Across marks (task 6a) | In the direct block, right after the mover entries and before the q payload; always resident. Present only when some mover record has N > 2, so a section of two-pose movers packs byte-identical to before. `u32` A, then per entry, ascending by (listed cell, mover) with no repeats: `listed_cell_position u32, mover_id u32, mid_pose_count u32 (= N − 2)`, then N − 2 `u64` masks of the local probes mid poses 1 … N − 2 enclose. Only pairs with some mark. The q stored at a marked (pose, probe) is 255 and never read; the bounce entry neither stores nor reads the base there. |
+| Across marks (task 6a; removed at epoch 7, task 25b) | None since epoch 7. The direct block's mover ids are followed directly by the q payload, whatever the movers' pose counts. Every pose stores q, an enclosed mid pose included, so nothing is marked across, and direct compose blends the two poses around t′. *Epoch 5–6 text:* In the direct block, right after the mover entries and before the q payload; always resident. Present only when some mover record has N > 2, so a section of two-pose movers packs byte-identical to before. `u32` A, then per entry, ascending by (listed cell, mover) with no repeats: `listed_cell_position u32, mover_id u32, mid_pose_count u32 (= N − 2)`, then N − 2 `u64` masks of the local probes mid poses 1 … N − 2 enclose. Only pairs with some mark. The q stored at a marked (pose, probe) is 255 and never read; the bounce entry neither stores nor reads the base there. |
 
-**Across marks (owner, 2026-11-10; pinned at plan task 6a).** Enclosure is geometric: it depends on (mover, probe, mid pose), never on the light. The section records it once per (cell, mover), not per direct record: which probes each mid pose encloses. Compose blends direct across a marked pose, after the ramp. A mark at a terminus is refused, as is a mark on a probe no direct record or bounce entry of that mover names at that cell.
+**Across marks (owner, 2026-11-10; pinned at plan task 6a).** Enclosure is geometric: it depends on (mover, probe, mid pose), never on the light. The section records it once per (cell, mover), not per direct record: which probes each mid pose encloses. Compose blends direct across a marked pose, after the ramp. A mark at a terminus is refused, as is a mark on a probe no direct record or bounce entry of that mover names at that cell. *(Superseded at epoch 7: no across marks are written or read.)*
 
 The loader also refuses a base mark at a terminus, a base mark outside the entry's stored union (it would only restate the blend), a mover record that no block names, and a block naming a mover with no record.
 

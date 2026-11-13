@@ -518,7 +518,7 @@ fn animated_compose_main(
             if (slot == MC_NONE) {
                 continue;
             }
-            let loss = 1.0 - mc_record_visibility(record, slot, local_probe);
+            let loss = 1.0 - mc_record_visibility(record, slot);
             if (loss <= 0.0) {
                 continue;
             }
@@ -538,7 +538,7 @@ fn animated_compose_main(
         if (slot == MC_NONE) {
             continue;
         }
-        let loss = 1.0 - mc_record_visibility(record, slot, local_probe);
+        let loss = 1.0 - mc_record_visibility(record, slot);
         if (loss <= 0.0) {
             continue;
         }

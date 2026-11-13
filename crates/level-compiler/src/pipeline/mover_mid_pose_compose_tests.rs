@@ -184,23 +184,14 @@ impl Build {
             .collect()
     }
 
-    /// Whether the section's across marks name mid pose `pose` of this
-    /// mover for local probe `local` of `cell`: direct blends across it.
-    fn across(&self, cell: u32, local: u32, pose: usize) -> bool {
-        self.section
-            .listed_position(cell as usize)
-            .and_then(|position| self.section.across_entry(position, self.mover_id))
-            .is_some_and(|across| across.is_across(pose, local))
-    }
-
-    /// The direct interval at `t` for local probe `local` of `cell`: every
-    /// pose defined but those the across marks name.
-    fn direct_interval(&self, cell: u32, local: u32, t: f32) -> (usize, usize, f32) {
-        interval(&self.knots, t, |pose| !self.across(cell, local, pose))
+    /// The direct interval at `t`: every pose stores q (an enclosed mid pose
+    /// its traced q), so every pose is defined.
+    fn direct_interval(&self, t: f32) -> (usize, usize, f32) {
+        interval(&self.knots, t, |_| true)
     }
 
     /// The longer, in t′, of the two intervals compose blends the probe
-    /// across at `t`: direct's (every pose but those the across marks name),
+    /// across at `t`: direct's (every pose),
     /// where a gated static light's record masks the probe, and bounce's
     /// (stored or base marks), where an entry of this mover stores it. Zero
     /// on a defined knot, and for a term the mover never changes there.
@@ -228,7 +219,7 @@ impl Build {
                 && record.movers().any(|mover| mover.mover_id == self.mover_id)
         });
         let direct = if gated {
-            span(self.direct_interval(cell, local, t))
+            span(self.direct_interval(t))
         } else {
             0.0
         };
@@ -250,12 +241,11 @@ impl Build {
 
     /// Each gated light's surviving visibility at the probe at `t`
     /// (`mc_record_visibility`, this mover's entry alone): q at the two
-    /// defined poses around t′, lerped, blending across a pose the across
-    /// marks name. A light no record masks there keeps 1.
+    /// poses around t′, lerped. A light no record masks there keeps 1.
     fn visibility(&self, probe: usize, t: f32) -> BTreeMap<u32, f32> {
         let (cell, local) = self.local[&probe];
         let bit = 1u64 << local;
-        let (lo, hi, weight) = self.direct_interval(cell, local, t);
+        let (lo, hi, weight) = self.direct_interval(t);
         let mut out = BTreeMap::new();
         for record in self.section.direct_record_views().filter(|record| {
             record.cell == cell
@@ -284,7 +274,7 @@ impl Build {
     fn explain(&self, probe: usize, t: f32) -> String {
         let (cell, local) = self.local[&probe];
         let bit = 1u64 << local;
-        let span = self.direct_interval(cell, local, t);
+        let span = self.direct_interval(t);
         let marks: Vec<char> = self
             .section
             .bounce_entry_views()

@@ -28,7 +28,9 @@ const STAGE_ID: &str = "mover_probe_direct";
 /// names each entry's pose count.
 /// 7: a mid pose that encloses the probe keeps q = 255, never read: the
 /// section marks it across.
-const STAGE_VERSION: u32 = 7;
+/// 8: a mid pose that encloses the probe stores its traced q, like any
+/// other pose (Amendment 2, Ruling B); only a terminus keeps 255.
+const STAGE_VERSION: u32 = 8;
 
 /// What every light's key shares: the occluding world, the probe grid and
 /// the reach decomposition's inputs. Only occlusion enters: vertex

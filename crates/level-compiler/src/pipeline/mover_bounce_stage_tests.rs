@@ -714,30 +714,34 @@ fn fat_door(text: String) -> String {
         )
 }
 
-// The enclosing rule per pose kind: a pose whose posed brushes enclose a
-// probe's position, inside one brush by at least the gather's lift, stores
-// no bounce state there. At a terminus the probe is unmarked and reads id 34.
-// At a mid pose it is unmarked too, so it blends across, and the section's
-// across marks name exactly those enclosed (probe, mid pose) pairs among
-// the probes the mover's entries name, so direct blends across them alike.
-// A probe enclosed at every pose joins no bounce entry; one enclosed at
-// both termini stores, if anything, only a mid pose's own state. Enclosure is
-// recomputed here from the solids' own half-spaces, never read from the
-// bake. Every lifted ray of an enclosed probe starts inside the pose, so
-// its depth is the dark tile (every ray at distance 0) at that pose, stored
-// at either pose kind, and Chebyshev still rejects it. A probe on a face,
-// inside within the lift, keeps the per-ray rule. The bounce masks stay
-// tight: each entry's stored masks are exactly its probes' stored poses,
-// non-empty, within the valid mask, and its base marks lie inside them.
+// The enclosing rule per pose kind (Amendment 2, Ruling B): a pose whose
+// posed brushes enclose a probe's position, inside one brush by at least
+// the gather's lift, gathers zero bounce there (every lifted ray starts in
+// solid). A terminus stores no bounce state for it: the probe is unmarked
+// and reads id 34, so rest is unchanged. A mid pose stores the state its own
+// posed bake gives, zero radiance, wherever that leaves the probe's bars
+// against id 34, and reads the base where id 34 is already within them; it
+// never leaves the probe unmarked, so nothing blends across an enclosed mid
+// pose (and epoch 7 writes no across marks). Inside a run of enclosing
+// poses that is; the run's first and last mid poses store what compose reads
+// at the adjoining clear pose instead (edge copy). One enclosed at both termini
+// stores, if anything, only mid poses' states. Enclosure is recomputed here
+// from the solids' own half-spaces, never read from the bake. Every lifted
+// ray of an enclosed probe starts inside the pose, so its depth is the dark
+// tile (every ray at distance 0) at that pose, stored at either pose kind,
+// and Chebyshev still rejects it. A probe on a face, inside within the
+// lift, keeps the per-ray rule. The bounce masks stay tight: each entry's
+// stored masks are exactly its probes' stored poses, non-empty, within the
+// valid mask, and its base marks lie inside them.
 #[test]
-fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
+fn an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dark_state() {
     use std::collections::BTreeMap;
 
     use postretro_level_format::mover_probe_channel::PoseMark;
     use postretro_level_format::probe_depth_tiles::bordered_tile;
 
     use crate::mover_probe_channel::{
-        BounceBlocks, EnclosedMidPoses, MoverDirectBake, ProbeCells, enclosure_inset,
+        BounceBlocks, MoverDirectBake, ProbeCells, enclosure_inset, value_sources,
     };
     use crate::ray_traversal::RAY_EPSILON;
     use crate::sh_bake::{TileRayTable, probe_gather_directions, vec3_from};
@@ -771,7 +775,11 @@ fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
         let bounce: BTreeMap<u32, _> = states.bounce.iter().map(|p| (p.probe, p)).collect();
         let depth: BTreeMap<u32, _> = states.depth.iter().map(|p| (p.probe, p)).collect();
         let (mut both, mut one, mut other_stored, mut deep) = (0, 0, 0, 0);
-        let (mut mid_enclosed, mut mid_across) = (0, 0);
+        let (mut mid_enclosed, mut mid_dark, mut mid_base, mut mid_copied) = (0, 0, 0, 0);
+        let knots = &poses
+            .mover(states.mover_id)
+            .expect("the door is analysed")
+            .knots;
         let (mut band, mut band_dark) = (0, 0);
         for (probe, position) in layout.probe_positions.iter().enumerate() {
             if layout.validity[probe] == 0 {
@@ -807,28 +815,62 @@ fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
                 continue;
             }
             if let Some(entry) = bounce.get(&probe) {
+                use postretro_level_format::mover_probe_channel::MOVER_IRRADIANCE_TILE_F16_COUNT;
+                let mut stored = entry
+                    .tiles
+                    .as_chunks::<MOVER_IRRADIANCE_TILE_F16_COUNT>()
+                    .0
+                    .iter();
+                let tiles: Vec<_> = entry
+                    .marks
+                    .iter()
+                    .map(|&mark| (mark == PoseMark::Stored).then(|| stored.next().expect("a tile")))
+                    .collect();
+                let sources = value_sources(&enclosed, knots);
                 for (k, (&enclosed, &mark)) in enclosed.iter().zip(&entry.marks).enumerate() {
-                    assert!(
-                        !(enclosed && mark == PoseMark::Stored),
-                        "probe {probe}: enclosed at pose {k} yet stores its state"
-                    );
-                    if enclosed && k != 0 && k != last {
+                    let tile = tiles[k];
+                    if !enclosed {
+                        continue;
+                    }
+                    if k == 0 || k == last {
                         assert_eq!(
                             mark,
                             PoseMark::Unmarked,
-                            "probe {probe} pose {k}: blends across"
+                            "probe {probe}: enclosing terminus {k} reads the base"
                         );
-                        mid_across += 1;
+                        continue;
+                    }
+                    let from = sources[k];
+                    if from != k {
+                        // A run edge: the adjoining clear pose's value, what
+                        // compose reads there.
+                        let expected = match entry.marks[from] {
+                            PoseMark::Unmarked if from == 0 || from == last => PoseMark::Base,
+                            other => other,
+                        };
+                        assert_eq!(mark, expected, "probe {probe} pose {k}: copies pose {from}");
+                        assert_eq!(tile, tiles[from], "probe {probe} pose {k}: its tile");
+                        mid_copied += 1;
+                        continue;
+                    }
+                    match mark {
+                        PoseMark::Stored => {
+                            assert!(
+                                tile.expect("stored").iter().all(|&half| half == 0),
+                                "probe {probe} pose {k}: the stored state is zero bounce"
+                            );
+                            mid_dark += 1;
+                        }
+                        PoseMark::Base => mid_base += 1,
+                        PoseMark::Unmarked => {
+                            panic!("probe {probe} pose {k}: an enclosed mid pose blends across")
+                        }
                     }
                 }
                 other_stored += 1;
             }
             if enclosed[0] && enclosed[last] {
                 both += 1;
-                assert!(
-                    !(enclosed.iter().all(|&e| e) && bounce.contains_key(&probe)),
-                    "probe {probe}: enclosed at every pose joins no bounce entry"
-                );
             } else if enclosed[0] || enclosed[last] {
                 one += 1;
             }
@@ -851,14 +893,15 @@ fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
         }
         eprintln!(
             "fat door: {both} probe(s) enclosed at both termini, {one} at one, \
-             {other_stored} of them storing another pose, {deep} dark tile(s), \
-             {mid_enclosed} enclosed (probe, mid pose) pair(s), {mid_across} blending across \
-             in an entry; {band} (probe, pose) pair(s) inside within the lift, {band_dark} \
-             with every lifted ray inside"
+             {other_stored} of them in a bounce entry, {deep} dark tile(s), \
+             {mid_enclosed} enclosed (probe, mid pose) pair(s), in an entry {mid_dark} \
+             storing zero bounce, {mid_base} reading the base and {mid_copied} copied at a \
+             run edge; {band} (probe, pose) \
+             pair(s) inside within the lift, {band_dark} with every lifted ray inside"
         );
         assert!(
-            both > 0 && one > 0 && deep > 0 && mid_enclosed > 0 && mid_across > 0,
-            "the fixture encloses probes, at mid poses too, some in a bounce entry"
+            both > 0 && one > 0 && deep > 0 && mid_enclosed > 0 && mid_dark > 0,
+            "the fixture encloses probes, at mid poses too, some storing their dark state"
         );
 
         let cells = ProbeCells::of_layout(&layout);
@@ -877,12 +920,8 @@ fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
                 assert_eq!(masks.base & masks.stored, 0, "cell {}", part.cell);
             }
         }
-        let direct = MoverDirectBake {
-            enclosed: EnclosedMidPoses::find(&posed, &layout),
-            ..MoverDirectBake::default()
-        };
         let section = crate::mover_probe_channel::channel_section(
-            &direct,
+            &MoverDirectBake::default(),
             &blocks,
             &cells,
             &crate::mover_probe_channel::MoverRecords::new(&fixture.kinematic_movers, poses),
@@ -898,34 +937,6 @@ fn an_enclosing_pose_stores_no_bounce_state_and_keeps_its_dark_depth() {
             )
             .expect("decodes"),
             section
-        );
-        // The across marks: exactly the enclosed (probe, mid pose) pairs of
-        // the probes the door's bounce entries name, where they blend across.
-        let mut marked = 0;
-        for (position, listed) in section.cells.iter().enumerate() {
-            let cell = listed.cell as usize;
-            let entries = section.bounce_offsets[position] as usize
-                ..section.bounce_offsets[position + 1] as usize;
-            let named = section.bounce_entries[entries]
-                .iter()
-                .fold(0u64, |mask, entry| mask | entry.affected_probe_mask());
-            let across = section.across_entry(position, section.mover_records[0].mover_id);
-            for (local, probe) in cells.valid_locals(cell) {
-                let point = vec3_from(layout.probe_positions[probe]);
-                for (k, solid) in solids.iter().enumerate().take(last).skip(1) {
-                    let expected = named & (1 << local) != 0 && solid.encloses(point);
-                    assert_eq!(
-                        across.is_some_and(|across| across.is_across(k, local as u32)),
-                        expected,
-                        "probe {probe} pose {k}: marked across exactly where enclosed and named"
-                    );
-                    marked += usize::from(expected);
-                }
-            }
-        }
-        assert_eq!(
-            marked, mid_across,
-            "every enclosed mid pose in an entry is marked"
         );
     });
 }

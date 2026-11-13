@@ -9,7 +9,7 @@ use std::sync::Arc;
 use glam::Vec3;
 use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
 use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverLightNamespace,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverLightNamespace, is_terminus,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -17,8 +17,8 @@ use postretro_level_format::octahedral::{
 use postretro_level_format::sh_reconstruct::local_xyz;
 use rayon::prelude::*;
 
-use super::across::EnclosedMidPoses;
 use super::direct_memo::{DirectMemo, MemoPrefix};
+use super::edge_copy::copy_direct_edges;
 use super::posed_solid::PosedMovers;
 use super::visibility::{PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{
@@ -134,12 +134,10 @@ pub(crate) struct LightEntries {
     pub(crate) entries: Vec<DirectEntry>,
 }
 
-/// The direct half of a build: every gated light's entries, and the probes
-/// each mover's mid poses enclose, which the section marks across.
+/// The direct half of a build: every gated light's entries.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MoverDirectBake {
     pub(crate) lights: Vec<LightEntries>,
-    pub(crate) enclosed: EnclosedMidPoses,
 }
 
 impl DirectEntry {
@@ -240,7 +238,7 @@ pub(crate) fn bake_direct(
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<MoverDirectBake> {
-    let enclosed = EnclosedMidPoses::find(movers, scene.layout);
+    let posed = movers;
     let movers: Vec<Vec<LightMover>> = lights
         .iter()
         .map(|light| light_movers(&light.baked, movers))
@@ -332,21 +330,22 @@ pub(crate) fn bake_direct(
         }
     }
 
-    Ok(MoverDirectBake {
-        enclosed,
-        lights: lights
-            .iter()
-            .zip(baked)
-            .filter_map(|(light, entries)| {
-                let entries = entries.expect("every light baked or hit");
-                (!entries.is_empty()).then_some(LightEntries {
-                    namespace: light.namespace,
-                    light_index: light.light_index,
-                    entries,
-                })
+    let mut lights: Vec<LightEntries> = lights
+        .iter()
+        .zip(baked)
+        .filter_map(|(light, entries)| {
+            let entries = entries.expect("every light baked or hit");
+            (!entries.is_empty()).then_some(LightEntries {
+                namespace: light.namespace,
+                light_index: light.light_index,
+                entries,
             })
-            .collect(),
-    })
+        })
+        .collect();
+    // The memo keeps the traced q; each build copies enclosure-run edges
+    // over it, before the section reads the q.
+    copy_direct_edges(&mut lights, posed, scene.cells, scene.layout);
+    Ok(MoverDirectBake { lights })
 }
 
 /// Static-trace results for one probe and light, by sample target. The
@@ -368,10 +367,21 @@ impl StaticSamples {
 
 /// `light`'s entries at `cell`: one per mover whose posed brushes meet a
 /// static-clear sample at some valid probe at some pose. A probe where the
-/// light's term is zero keeps q = 1, as does one no pose can meet, and one
-/// a pose encloses keeps q = 1 at that pose: at a terminus it reads the
-/// light's mover-absent term there; at a mid pose the
-/// section marks it across and compose never reads it.
+/// light's term is zero keeps q = 1, as does one no pose can meet.
+///
+/// Enclosure decides only at a terminus: a terminus that encloses the probe
+/// keeps q = 1 and reads the light's mover-absent term there, so rest
+/// lighting is the base's (`index.md`, "The enclosing rule, per pose kind").
+/// A mid pose that encloses the probe runs the same joint trace as every
+/// other pose and stores the q it leaves (Amendment 2, Ruling B): every
+/// lifted segment starts in solid, so q is 0 wherever the light is
+/// statically clear. That is a traced value, never a flag or a weight: the
+/// probe stays in the blend at its full weight and darkens it, so a probe
+/// layer inside a thin mover wall carries no light into the room behind it
+/// mid-travel. After the memo, the first and last poses of each run of
+/// enclosing poses take their clear neighbour's q instead
+/// ([`super::edge_copy`]).
+///
 /// Every pose bakes, mid poses included, and wherever the light reaches:
 /// never only the near-field domain, and never skipping a pose the author
 /// ramp squeezes out.
@@ -407,7 +417,11 @@ pub(crate) fn bake_cell(
                 let Some(occluder) = occluder else {
                     continue;
                 };
-                if occluder.encloses(point) || !occluder.may_meet(point, &light.baked) {
+                // An enclosing terminus reads the base; an enclosing mid pose
+                // traces like any other pose.
+                if (is_terminus(pose, pose_count) && occluder.encloses(point))
+                    || !occluder.may_meet(point, &light.baked)
+                {
                     continue;
                 }
                 let joint = joint_soft_visibility(

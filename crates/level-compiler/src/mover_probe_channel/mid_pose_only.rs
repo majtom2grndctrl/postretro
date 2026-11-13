@@ -12,8 +12,9 @@ use crate::mover_light_gate::MidPoseOnlyLights;
 /// Per mover, the lights in `bake` whose entries hold q below 255 at some
 /// mid pose for some probe and 255 at both termini for every probe. Each
 /// light is named by its source index, read from the `lights` the bake
-/// gated. A pose marked across stores 255, so enclosure alone counts
-/// nothing.
+/// gated. A mid pose that encloses a probe stores its traced q, so a light
+/// whose only block is an enclosing mid pose counts here; an enclosing
+/// terminus keeps 255, so it never makes a light terminus-gated.
 pub(crate) fn mid_pose_only_lights(
     bake: &MoverDirectBake,
     lights: &[ChannelLight<'_>],
@@ -108,7 +109,6 @@ mod tests {
                 // Mover 2: its only mid pose.
                 light(2, vec![entry(2, 3, &[&[255, 128, 255]])]),
             ],
-            ..MoverDirectBake::default()
         };
         let pairs = mid_pose_only_pairs(&bake, |_, light_index| 10 + light_index as usize);
         assert_eq!(pairs, [(1, 10), (2, 12)]);

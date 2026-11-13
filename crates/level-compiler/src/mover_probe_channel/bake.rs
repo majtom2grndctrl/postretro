@@ -10,6 +10,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use super::absent_bounces::AbsentLaterBounces;
 use super::bounce::{light_terms, posed_later_progress_units};
 use super::depth::MoverAbsentDepth;
+use super::edge_copy::copy_job_bounce_edges;
 use super::gather::valid_probes;
 use super::near_field::NearFieldDomain;
 use super::pose_bake::{PoseBaker, PosedBounce};
@@ -47,6 +48,10 @@ pub(crate) struct MoverBounceJob {
     /// The mover posed at each pose, in path order: the first and last are
     /// its termini.
     pub(crate) scenes: Vec<PosedScene>,
+    /// Each pose's travel fraction, one per scene: where an enclosure run's
+    /// one-pose edge finds its nearer clear pose
+    /// ([`super::edge_copy::value_sources`]).
+    pub(crate) knots: Vec<f32>,
     /// What a mid pose gathers over: the swept brushes widened by the
     /// gather's lift and one probe spacing. Its probes take the mid pose's
     /// gather, its static patches the mid pose's posed later bounces.
@@ -328,7 +333,8 @@ pub(crate) fn bake_mover_bounce(
         };
         let baked = resolved.baked;
         let poses = MoverPoseStates::from_poses(resolved.poses);
-        let states = reduce_poses(job.mover_id, &poses, &shared.absent, request.depth_cap);
+        let mut states = reduce_poses(job.mover_id, &poses, &shared.absent, request.depth_cap);
+        copy_job_bounce_edges(&mut states, job, inputs.layout);
         if let Some(memo) = memo
             && !states.depth_past_range(request.depth_cap)
         {

@@ -145,7 +145,8 @@ impl PosedSolid {
     /// at [`enclosure_inset`], so every lifted gather ray from the probe
     /// starts in solid and its depth is the dark tile. A terminus that
     /// encloses a probe stores no value state for it and reads the base; a
-    /// mid pose blends across. A probe on a face or less than the inset inside
+    /// mid pose stores the dark state its own trace gives (zero bounce, its
+    /// traced q). A probe on a face or less than the inset inside
     /// it is not enclosed: its rays keep the per-ray rule, and those whose
     /// lift escapes read past the face.
     ///
@@ -293,6 +294,8 @@ impl PosedSolid {
 pub(crate) struct PosedMover {
     pub(crate) mover_id: u32,
     pub(crate) solids: Vec<Arc<PosedSolid>>,
+    /// Each pose's travel fraction, as [`crate::mover_light_gate::AnalysedMover::knots`].
+    pub(crate) knots: Vec<f32>,
 }
 
 /// Every analysed mover posed at each of its poses as solids, ascending by
@@ -324,6 +327,7 @@ impl PosedMovers {
                         .iter()
                         .map(|pose| Arc::new(PosedSolid::new(mover, pose, texture_names)))
                         .collect(),
+                    knots: analysed.knots.clone(),
                 })
             })
             .collect::<anyhow::Result<_>>()

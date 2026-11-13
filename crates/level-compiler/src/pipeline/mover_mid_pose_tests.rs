@@ -514,12 +514,19 @@ fn mid_pose_against_its_reference(
         cuts.iter()
             .any(|cut| cut.sets_aside(today.layout.probe_positions[probe]))
     };
+    // A probe the pose encloses stores its dark posed state, which a static
+    // reference holding the brush has no valid probe to compare against.
+    let encloses = |probe: usize| {
+        posed.poses[pose].encloses(crate::sh_bake::vec3_from(
+            today.layout.probe_positions[probe],
+        ))
+    };
     let compare = |gathered: &[DomainProbe], reference: &ShBase, label: &str| {
         let dim = reference.section.tile_dimension as usize;
         let mut matched = BounceMatch::default();
         for probe in gathered {
             let at = probe.probe as usize;
-            if probe.enclosed || !both_valid(at) {
+            if encloses(probe.probe as usize) || !both_valid(at) {
                 continue;
             }
             let tile = pack_octahedral_irradiance_tile(
@@ -574,7 +581,7 @@ fn mid_pose_against_its_reference(
         .collect();
     let (mut depth_compared, mut depth_misses) = (0, 0);
     for probe in &kept.domain {
-        if probe.enclosed || !both_valid(probe.probe as usize) {
+        if encloses(probe.probe as usize) || !both_valid(probe.probe as usize) {
             continue;
         }
         if let (Some(tile), Some(reference_tile)) =

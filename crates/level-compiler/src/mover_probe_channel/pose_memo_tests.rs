@@ -45,6 +45,7 @@ fn a_pose_key_folds_what_its_kind_bakes_from_and_nothing_else() {
                 PosedScene::new(Arc::clone(&solids.solids[solid]), pose).expect("posed sides")
             })
             .collect(),
+        knots: keep.iter().map(|&solid| analysed.knots[solid]).collect(),
         domain: NearFieldDomain::new(analysed, 1.0),
         domain_probes: domain_probes.to_vec(),
     };

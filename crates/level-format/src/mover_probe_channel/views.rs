@@ -4,11 +4,10 @@
 // the counts a renderer sizes its buffers by.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use super::wire::across_entry;
 use super::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverAcrossEntry, MoverBounceEntry, MoverCellSlices,
-    MoverChannelBlock, MoverDepthRecord, MoverDirectRecord, MoverProbeChannelError,
-    MoverProbeChannelSection, MoverStreamedRow, bounce_entry_f16_count, entry_positions,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverCellSlices, MoverChannelBlock,
+    MoverDepthRecord, MoverDirectRecord, MoverProbeChannelError, MoverProbeChannelSection,
+    MoverStreamedRow, bounce_entry_f16_count, entry_positions,
 };
 use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
@@ -134,7 +133,6 @@ impl<'a> DirectCellView<'a> {
             let view = DirectRecordView {
                 section,
                 index,
-                position: self.position,
                 cell,
                 valid_probe_mask,
                 record,
@@ -161,8 +159,6 @@ pub struct DirectRecordView<'a> {
     section: &'a MoverProbeChannelSection,
     /// The record's index in the section.
     index: usize,
-    /// Its cell's position among the listed cells.
-    position: usize,
     /// Dense affinity cell index.
     pub cell: u32,
     pub valid_probe_mask: u64,
@@ -199,7 +195,7 @@ impl<'a> DirectRecordView<'a> {
     /// Each gating mover with its `q` per pose, ascending by mover id.
     pub fn movers(&self) -> impl Iterator<Item = MoverVisibilityView<'a>> + 'a {
         let probes = self.record.masked_probe_count();
-        let (section, visibility, position) = (self.section, self.visibility, self.position);
+        let (section, visibility) = (self.section, self.visibility);
         let mut at = 0usize;
         self.mover_ids.iter().map(move |&mover_id| {
             let pose_count = section.pose_count_of(mover_id);
@@ -208,7 +204,6 @@ impl<'a> DirectRecordView<'a> {
                 mover_id,
                 pose_count,
                 visibility: &visibility[at..at + len],
-                across: across_entry(&section.across_entries, position, mover_id),
             };
             at += len;
             view
@@ -233,9 +228,6 @@ pub struct MoverVisibilityView<'a> {
     /// Per masked probe, x-fastest, the `q` byte at each pose: masked slot
     /// `slot`'s pose `k` is byte `slot · pose_count + k`; `q = byte / 255`.
     pub visibility: &'a [u8],
-    /// The mover's across marks at the record's cell, if it has any: a
-    /// marked (pose, probe) stores 255 and compose blends across it.
-    pub across: Option<&'a MoverAcrossEntry>,
 }
 
 impl<'a> MoverVisibilityView<'a> {
@@ -321,9 +313,6 @@ pub struct MoverChannelBytes {
     pub direct_index: usize,
     /// Term records and mover ids.
     pub direct_records: usize,
-    /// Across entry count and the across entries; 0 when no mover has a mid
-    /// pose and the block is absent. Always resident.
-    pub across: usize,
     /// Resident visibility; 0 when the direct payload streams.
     pub visibility: usize,
     /// Resident own tiles; 0 when the direct payload streams.
@@ -348,7 +337,6 @@ impl MoverChannelBytes {
             + self.mover_records
             + self.direct_index
             + self.direct_records
-            + self.across
             + self.visibility
             + self.own_tiles
             + self.bounce_index
@@ -356,10 +344,10 @@ impl MoverChannelBytes {
             + self.depth
     }
 
-    /// The direct block's own bytes in the section: its index, records,
-    /// across marks and resident payload; the shared cell index is apart.
+    /// The direct block's own bytes in the section: its index, records and
+    /// resident payload; the shared cell index is apart.
     pub fn direct_block(&self) -> usize {
-        self.direct_index + self.direct_records + self.across + self.visibility + self.own_tiles
+        self.direct_index + self.direct_records + self.visibility + self.own_tiles
     }
 }
 

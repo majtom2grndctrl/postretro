@@ -159,7 +159,16 @@ The executor drafts the amendment's Decisions and Acceptance rows into `index.md
   - Renderer lib: 1380 passed. `dx12_fxc` passed. Clippy clean.
   - There were no committed frame goldens to re-cut: every capture row compares frames from the same run. The capture rows K1, K2, D2 and C10 run in 25c.
   - The `rendering_pipeline.md` §4 mover-backface text changes at landing.
-  - The thin static occluder 15.7 u in front of a mover face is unmeasured; **25b** compiler and format, the dark state as the rule (across marks removed, epoch decided by the implementer, terminus-adjacent knot, tests); **25c** after both, the `--release` capture A/B against dense truths under the new rule, proposed bars for the Amendment 2 rows, and the AC 1 re-run |
+  - The thin static occluder 15.7 u in front of a mover face is unmeasured; **25b** compiler and format, the dark state as the rule (across marks removed, epoch decided by the implementer, terminus-adjacent knot, tests). **Done:**
+  - **Dark state.** It is the rule, with no switch. Every mid pose traces direct, enclosed ones included, and the enclosed bounce gather is stored. Pose memo goes to v12 and direct memo to v8, so warm builds can't serve prototype-era states.
+  - **Across marks.** Removed from compiler, format, loader and renderer; id 57 is at **epoch 7**.
+  - **Edge copy.** In `mover_probe_channel/edge_copy.rs`. Bounce copies after `reduce_poses` and before skipping; direct copies after the per-light memo. The bounding-pose hook is `INSIDE_KNOT_MARGINS_M` in `geometry_knots.rs`. **No terminus knot.**
+  - **Tests.**
+    - Compiler `mover`: 208 passed. Format id-57: 40. Loader `mover`: 52. Renderer `mover`: 130, including 87 GPU tests on the 1660. Clippy is clean on five crates.
+    - Motion proof under `--ignored`: 2 passed, every share the same as task 22.
+    - New: the floor at t′ 0.987 (11.52 against pre-amendment 20.92) passes by the 1.5 clause alone. Ceiling and west values rose 0.4–0.5 levels, now 2.54 and 1.67.
+  - **For landing.** `build_pipeline.md` :246 and :557 still describe across marks. The gate report's `mid_pose_only_lights` can rise, since an enclosing mid pose now counts.
+  - **Build note.** The worker's `git rm` of `wire/across.rs` was swept into e6d763eda while staged. So e6d763eda, c16032f55 and 3761fed68 don't build alone; the 25b commit restores the build; **25c** after both, the `--release` capture A/B against dense truths under the new rule, proposed bars for the Amendment 2 rows, and the AC 1 re-run |
 | 26 | Review round, fix pass, preflight; owner in-engine M9 check on Windows; M7 re-measured on the Mac when it is free, if the shader changed | 25 | todo |
 
 Then land the plane (`HANDOFF-windows.md` §Land the plane).

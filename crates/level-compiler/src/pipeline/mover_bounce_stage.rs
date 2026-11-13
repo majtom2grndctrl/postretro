@@ -87,6 +87,7 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
                 bounces: inputs.mode.fidelity().bounces(high_bounces),
                 high_bounces,
                 scenes,
+                knots: analysed.knots.clone(),
                 domain_probes: domain.valid_probes(layout),
                 domain,
             });

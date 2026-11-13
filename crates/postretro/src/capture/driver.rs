@@ -590,7 +590,6 @@ mod tests {
             ],
             mover_offsets: Vec::new(),
             direct_movers: Vec::new(),
-            across_entries: Vec::new(),
             visibility: Vec::new(),
             own_tiles: Vec::new(),
             bounce_offsets: Vec::new(),

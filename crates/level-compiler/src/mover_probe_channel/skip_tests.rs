@@ -723,3 +723,38 @@ fn skip_pass_timing_at_140_poses() {
         );
     }
 }
+
+// Edge copy runs before skipping, so skipping judges what compose reads: a
+// lit, dark, dark, dark, lit run between lit poses has its entry and exit
+// carry the lit neighbours' states, and every pose skipping drops composes
+// within its bars of the copied curve, not the dark one. The run's inside
+// pose keeps its dark state, and compose at the entry's t′ reads lit.
+#[test]
+fn skipping_judges_the_copied_edges_of_an_enclosure_run() {
+    let knots = even(7);
+    let (lit, dark) = (At::Stored(0.8), At::Stored(0.0));
+    let raw = [lit, lit, dark, dark, dark, lit, lit];
+    let enclosed = [false, false, true, true, true, false, false];
+    let copied = [lit, lit, lit, dark, lit, lit, lit];
+    let mut states = MoverBounceStates::new(1, knots.len(), vec![bounce_probe(&raw)], Vec::new());
+    let moved =
+        super::super::edge_copy::copy_bounce_edges(&mut states, &knots, |_| enclosed.to_vec());
+    assert_eq!(moved, 2);
+    assert_eq!(states.bounce, [bounce_probe(&copied)]);
+
+    let (section, tiles) = fixture();
+    let bars = SkipBars::new(&section, MoverAbsentDepth::new(&section, &tiles), true);
+    let effective = effective_knots(&knots, 0.0, 1.0);
+    let counts = skip_redundant_mid_poses(&mut states, &effective, &bars);
+    let [probe] = states.bounce.as_slice() else {
+        panic!("the probe keeps its states");
+    };
+    assert!(counts.bounce_skipped > 0, "the lit run either side skips");
+    assert_eq!(probe.marks[3], PoseMark::Stored, "the dark inside stays");
+    assert_skipped_compose_within_bars(&copied, &probe.marks, &effective);
+    let at_entry = compose_bounce(&copied, &probe.marks, &effective, knots[2]);
+    assert!(
+        !clears_bounce_bars(&at_entry, &value_tile(0.8), 0.0),
+        "the entry's t′ reads the lit copy"
+    );
+}

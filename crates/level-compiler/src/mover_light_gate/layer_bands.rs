@@ -27,8 +27,8 @@ pub(crate) struct BandPose {
 /// Whether `pose` holds `probe` within the enclosure band: neither enclosed
 /// by the bake's rule ([`Pose::encloses`]) nor clear of the lift band
 /// ([`clear_of_band`]). Some of the probe's lifted gather rays then start in
-/// the posed solid, so a mid pose there stores a dark in-solid state where
-/// an enclosed pose would blend across and a clear one would store open air.
+/// the posed solid, so a mid pose there stores a partly dark in-solid state,
+/// neither the enclosed pose's zero bounce nor a clear one's open air.
 /// A probe within the inset of a seam between two touching brushes is in
 /// the band too: inside the solid, but enclosed by neither brush.
 pub(crate) fn holds_in_band(pose: &Pose, probe: Vec3) -> bool {

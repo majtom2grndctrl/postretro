@@ -50,7 +50,6 @@ pub(super) fn fixture_section(
         direct_records: Vec::new(),
         mover_offsets: vec![0],
         direct_movers: Vec::new(),
-        across_entries: Vec::new(),
         visibility: Vec::new(),
         own_tiles: Vec::new(),
         bounce_offsets: vec![0; cells.len() + 1],
@@ -381,12 +380,9 @@ fn a_cell_whose_mask_is_not_tight_is_refused_at_write() {
 }
 
 /// A three-pose bake-only light at local probes 0 and 33 of cell 0, gated
-/// by mover 7 with q `q` (probe-major, three poses a probe), its mid pose
-/// marked across at `across`.
-fn across_section(q: Vec<u8>, across: u64) -> MoverProbeChannelSection {
-    use postretro_level_format::mover_probe_channel::{
-        AcrossEntryParts, DirectRecordParts, MoverProbeChannelParts,
-    };
+/// by mover 7 with q `q` (probe-major, three poses a probe).
+fn three_pose_section(q: Vec<u8>) -> MoverProbeChannelSection {
+    use postretro_level_format::mover_probe_channel::{DirectRecordParts, MoverProbeChannelParts};
     MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
             affinity_dims: [1, 1, 1],
@@ -401,15 +397,6 @@ fn across_section(q: Vec<u8>, across: u64) -> MoverProbeChannelSection {
                 movers: vec![(7, q)],
                 own_tiles: vec![F16_QUARTER; 2 * TILE],
             }],
-            // A (cell, mover) with no mark writes no entry.
-            across: (across != 0)
-                .then(|| AcrossEntryParts {
-                    cell: 0,
-                    mover_id: 7,
-                    mid_poses: vec![across],
-                })
-                .into_iter()
-                .collect(),
             bounce: Vec::new(),
             depth: Vec::new(),
         },
@@ -427,41 +414,27 @@ fn across_section(q: Vec<u8>, across: u64) -> MoverProbeChannelSection {
     .expect("a record")
 }
 
-/// The across marks reach the table once per (cell, mover): the mover entry
-/// points at its run of mid-pose mask words. A streamed cell is checked as
-/// it arrives, as a decode checks a resident one: a pose its across marks
-/// name stores 255, never read, so any other q there is refused.
+/// A mover entry is two words, its slot and its first q byte past the
+/// cell's terms: id 57 epoch 7 has no across marks, so the table carries no
+/// across run. A mid pose's q is an ordinary stored byte, the 0 an enclosed
+/// mid pose traces included, and the cell writes.
 #[test]
-fn across_marks_reach_the_table_and_an_across_pose_storing_q_is_refused_at_write() {
-    // Probe 33 is enclosed at the mid pose.
-    let section = across_section(vec![0, 40, 255, 0, 255, 255], 1 << 33);
+fn a_mover_entry_is_its_slot_and_first_q_byte_and_a_dark_mid_pose_q_writes() {
+    // Probe 33 is enclosed at the mid pose: its traced q there is 0.
+    let section = three_pose_section(vec![0, 40, 255, 255, 0, 255]);
     let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
     let words = layout.initial_words();
-    let entry = words[4] as usize;
-    let run = words[entry + 2] as usize;
-    assert_eq!(&words[run..run + 2], &[0, 1 << 1], "low word, then high");
+    let (entries, descriptors) = (words[4] as usize, words[6] as usize);
+    assert_eq!(descriptors - entries, 2, "one mover entry of two words");
+    assert_eq!(words[entries], 0, "the mover's slot");
+    assert_eq!(
+        words[entries + 1] as usize,
+        2 * TILE * 2,
+        "its q bytes follow the cell's two own tiles"
+    );
     layout
         .held_writes(&section, &section.cell_slices(), |_, _| None)
-        .expect("255 at the across pose writes");
-
-    let stored = across_section(vec![0, 40, 255, 0, 30, 255], 1 << 33);
-    let layout = MoverChannelLayout::build(&inputs(&stored, None), false).unwrap();
-    let error = layout
-        .held_writes(&stored, &stored.cell_slices(), |_, _| None)
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("which its across marks name"),
-        "{error}"
-    );
-
-    let unmarked = across_section(vec![0, 40, 255, 0, 255, 255], 0);
-    let layout = MoverChannelLayout::build(&inputs(&unmarked, None), false).unwrap();
-    let words = layout.initial_words();
-    assert_eq!(
-        words[words[4] as usize + 2],
-        super::across::NO_ACROSS,
-        "an entry with no marks points nowhere"
-    );
+        .expect("a dark mid-pose q writes");
 }
 
 /// Every direct term is checked finite, as bounce tiles are: an own tile

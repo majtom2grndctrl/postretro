@@ -287,8 +287,6 @@ pub(crate) struct DomainProbe {
     /// The closed-pose bordered depth tile, when a gather ray meets the pose
     /// and depth is binned.
     pub(crate) depth: Option<Vec<[u16; 2]>>,
-    /// Whether the pose encloses the probe ([`PosedScene::encloses`]).
-    pub(crate) enclosed: bool,
 }
 
 impl DomainProbe {
@@ -344,7 +342,6 @@ pub(crate) fn gather_domain_probes(
                 probe,
                 coefficients: baked.coefficients,
                 depth: (bin_depth && met).then(|| bordered_tile(&rays.interior(&distances))),
-                enclosed: gather.encloses(position),
             }
         })
         .collect()

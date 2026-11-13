@@ -78,8 +78,9 @@ impl MoverKnots {
     /// to E − 2) sit at or below `t`. For a stated `t` below 1 that is the
     /// index of the last knot at or below it. Found once per mover per frame
     /// and carried in the t′ block, so the shaders' interval walk
-    /// (`mc_interval`, `mb_entry_blend`) starts there and steps outward only
-    /// across poses a probe blends across, at a cost flat in knot count.
+    /// (`mc_interval`, `mb_entry_blend`) starts there; direct reads the
+    /// knot pair around it, and bounce steps outward only across poses a
+    /// probe blends across, at a cost flat in knot count.
     /// Always below E − 1, so the knot above it exists. A per-mover lookup,
     /// never a per-probe flag: no probe, light or residency reaches it. A
     /// subnormal t′ gets the same bracket whether or not a GPU flushes it to

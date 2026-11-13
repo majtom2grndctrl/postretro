@@ -32,7 +32,8 @@ pub(crate) struct BounceBlockCounts {
     /// Σ affected probes over bounce entries.
     pub(crate) affected_probes: usize,
     /// Affected probes storing a state at some poses only: the others read
-    /// id 34 (at a terminus) or blend across (at a mid pose).
+    /// id 34 (at a terminus or a mid pose that marks the base) or blend
+    /// across (at a mid pose that marks nothing).
     pub(crate) one_sided_probes: usize,
     pub(crate) bounce_payload_bytes: u64,
     pub(crate) depth_records: usize,

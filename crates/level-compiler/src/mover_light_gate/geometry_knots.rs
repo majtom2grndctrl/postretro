@@ -17,10 +17,11 @@ use crate::sh_bake::{ProbeGridLayout, vec3_from};
 /// How far past each end of an enclosure interval its outside knot sits, in
 /// metres of travel: one map unit, or farther where a face met at a slant
 /// keeps the probe in the lift band longer ([`clear_of_band`]). An enclosed
-/// inside knot blends values across, so between an outside knot and its
+/// inside knot stores its dark state, so between an outside knot and its
 /// inside knot the probe is out of the mover yet its values are still
-/// mid-lerp; this distance is that window. Source: a sweep of 4.4, 2, 1 and
-/// 0.2 units against fine-pose truth bakes (`light_poses` 41 on
+/// mid-lerp from dark; this distance is that window. (The sweep below was
+/// measured when an enclosed inside knot blended across instead.) Source: a
+/// sweep of 4.4, 2, 1 and 0.2 units against fine-pose truth bakes (`light_poses` 41 on
 /// `mover-setpiece`'s rising room, 57 on `enemy-movers`' em_sweeper), on
 /// faces the movers cross square: the room's ceiling residual fell 2.18 →
 /// 1.46 → 0.45 → 0.23 luma and em_sweeper's west face came within its
@@ -36,6 +37,16 @@ pub(crate) const OUTSIDE_KNOT_DISTANCE_M: f64 = 1.0 / 39.37;
 /// units) loose brought the depth spikes back against the truth bakes; this
 /// keeps them well inside that slack.
 pub(crate) const INSIDE_KNOT_MARGIN_M: f64 = 0.01;
+
+/// The inside knots each end of an enclosure interval places, by their
+/// margin inside it in metres of travel: one, [`INSIDE_KNOT_MARGIN_M`]. The
+/// probe channel's edge copy (`mover_probe_channel::edge_copy`) gives an
+/// enclosure run's first and last enclosing poses the adjoining clear pose's
+/// value state and keeps the poses between them dark, so a deeper margin
+/// added here (a bounding pose about 1 u inside, should the owner's whole-
+/// trip measurement call for one) is a dark interior pose with no change
+/// there.
+const INSIDE_KNOT_MARGINS_M: [f64; 1] = [INSIDE_KNOT_MARGIN_M];
 
 /// How far, in metres of travel, a knot may move to merge with another, so
 /// knots whose targets lie within twice it can share one pose; a merge
@@ -465,8 +476,8 @@ struct Scale {
 
 /// The knot windows at each end of `enclosures`, one probe's ascending
 /// disjoint enclosures, strictly inside the path. An inside window around
-/// [`INSIDE_KNOT_MARGIN_M`] of travel inside, within the enclosure span at
-/// that end less [`SIDE_GUARD_M`] along the face that ends it. An outside
+/// each of [`INSIDE_KNOT_MARGINS_M`] of travel inside, within the enclosure
+/// span at that end less [`SIDE_GUARD_M`] along the face that ends it. An outside
 /// window around [`OUTSIDE_KNOT_DISTANCE_M`] of travel outside, no farther
 /// than the middle of the gap to a neighbouring enclosure, within the
 /// `clear` stretch nearest the end on its side, between it and that
@@ -494,17 +505,17 @@ fn end_windows(
             side,
         });
     };
-    let (outside, inward) = (
-        OUTSIDE_KNOT_DISTANCE_M / scale.length,
-        INSIDE_KNOT_MARGIN_M / scale.length,
-    );
+    let outside = OUTSIDE_KNOT_DISTANCE_M / scale.length;
+    let inward = INSIDE_KNOT_MARGINS_M.map(|margin| margin / scale.length);
     for (index, enclosure) in enclosures.iter().enumerate() {
         let (start, end) = (enclosure.first, enclosure.last);
         let previous = index.checked_sub(1).map(|i| &enclosures[i]);
         let next = enclosures.get(index + 1);
         if start.lo > 0.0 {
-            let (target, deep) = inside(start, start.lo + inward);
-            push(target, deep, Side::Inside);
+            for inward in inward {
+                let (target, deep) = inside(start, start.lo + inward);
+                push(target, deep, Side::Inside);
+            }
             let after = previous.map_or(0.0, |p| p.last.hi);
             if let Some(&piece) = clear
                 .iter()
@@ -516,8 +527,10 @@ fn end_windows(
             }
         }
         if end.hi < 1.0 {
-            let (target, deep) = inside(end, end.hi - inward);
-            push(target, deep, Side::Inside);
+            for inward in inward {
+                let (target, deep) = inside(end, end.hi - inward);
+                push(target, deep, Side::Inside);
+            }
             let before = next.map_or(1.0, |n| n.first.lo);
             if let Some(&piece) = clear
                 .iter()

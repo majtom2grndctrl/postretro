@@ -7,7 +7,6 @@
 
 mod absent_bounces;
 mod absent_memo;
-mod across;
 mod bake;
 mod blocks;
 mod bounce;
@@ -16,6 +15,7 @@ mod depth;
 mod direct;
 mod direct_memo;
 mod domain;
+mod edge_copy;
 mod gather;
 mod lights;
 mod mid_pose;
@@ -50,8 +50,6 @@ mod tests;
 
 pub(crate) use absent_bounces::AbsentLaterBounces;
 pub(crate) use absent_memo::AbsentBounceMemo;
-#[cfg(test)]
-pub(crate) use across::EnclosedMidPoses;
 pub(crate) use bake::{
     MoverBounceBake, MoverBounceJob, MoverBounceRequest, StaticBounce, bake_mover_bounce,
     poses_progress_units, sh_base_bounce_count,
@@ -68,6 +66,8 @@ pub(crate) use domain::direct_display_levels;
 pub(crate) use domain::{
     BOUNCE_FLOOR_LEVELS, compact_tile, display_levels, max_abs_difference, round_trip_error,
 };
+#[cfg(test)]
+pub(crate) use edge_copy::value_sources;
 pub(crate) use gather::PosedGather;
 #[cfg(test)]
 pub(crate) use gather::{DomainProbe, compact_slots};

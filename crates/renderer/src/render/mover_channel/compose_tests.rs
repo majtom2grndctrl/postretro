@@ -12,8 +12,8 @@
 // animated light 0.125 × base colour red 2.0.
 
 use postretro_level_format::mover_probe_channel::{
-    AcrossEntryParts, DirectRecordParts, MoverDirectRecord, MoverLightNamespace,
-    MoverProbeChannelParts, MoverProbeChannelSection, MoverRecord,
+    DirectRecordParts, MoverDirectRecord, MoverLightNamespace, MoverProbeChannelParts,
+    MoverProbeChannelSection, MoverRecord,
 };
 use postretro_render_cpu::frame_uniforms::{LightTermMask, UNIFORM_SIZE};
 use wgpu::util::DeviceExt;
@@ -589,24 +589,12 @@ type PosedGate = (u32, (f32, f32), Vec<f32>, Vec<u8>);
 
 /// The selected light at probe 0, its term from id 41, gated by `movers`.
 fn posed_light(movers: &[PosedGate]) -> MoverProbeChannelSection {
-    posed_light_across(movers, &[])
+    posed_light_masked(0b1, movers)
 }
 
-/// [`posed_light`] with across marks: per (mover, its mid-pose masks).
-fn posed_light_across(
-    movers: &[PosedGate],
-    across: &[(u32, Vec<u64>)],
-) -> MoverProbeChannelSection {
-    posed_light_masked(0b1, movers, across)
-}
-
-/// [`posed_light_across`] over the probes `probe_mask` names. Each mover's q
-/// bytes run probe-major: every masked probe's poses, in x-fastest probe order.
-fn posed_light_masked(
-    probe_mask: u64,
-    movers: &[PosedGate],
-    across: &[(u32, Vec<u64>)],
-) -> MoverProbeChannelSection {
+/// [`posed_light`] over the probes `probe_mask` names. Each mover's q bytes
+/// run probe-major: every masked probe's poses, in x-fastest probe order.
+fn posed_light_masked(probe_mask: u64, movers: &[PosedGate]) -> MoverProbeChannelSection {
     MoverProbeChannelSection::assemble(
         MoverProbeChannelParts {
             affinity_dims: [1, 1, 1],
@@ -624,14 +612,6 @@ fn posed_light_masked(
                     .collect(),
                 own_tiles: Vec::new(),
             }],
-            across: across
-                .iter()
-                .map(|(mover_id, mid_poses)| AcrossEntryParts {
-                    cell: 0,
-                    mover_id: *mover_id,
-                    mid_poses: mid_poses.clone(),
-                })
-                .collect(),
             bounce: Vec::new(),
             depth: Vec::new(),
         },
@@ -694,30 +674,26 @@ fn piecewise_direct_reads_each_poses_q_and_lerps_between() {
     );
 }
 
-/// A mid pose the across marks name for the probe
-/// encloses it and is never read: direct blends between the defined poses
-/// around it, exact at each defined knot, as bounce blends across an
-/// unmarked pose. Under ramp (0.3, 1) a defined neighbour of the marked pose
-/// is squeezed onto t′ 0, so the blend runs from the first pose. A second
-/// mover on the light, unmarked, still reads its own poses.
+/// A mid pose that encloses the probe stores its traced q, 0 (Amendment 2,
+/// Ruling B), and direct reads it as it reads any pose: exactly at its knot
+/// and lerped toward its neighbours between, never blended across. Under
+/// ramp (0.3, 1) the squeezed pose 1 is never read, the dark pose 2 reads
+/// exactly at its t′, and a second mover on the light reads its own poses.
 #[test]
-fn direct_blends_across_a_pose_the_across_marks_name() {
-    let Some(ctx) = gpu("direct_blends_across_a_pose_the_across_marks_name") else {
+fn direct_reads_a_dark_mid_pose_q_like_any_other_pose() {
+    let Some(ctx) = gpu("direct_reads_a_dark_mid_pose_q_like_any_other_pose") else {
         return;
     };
     let byte = |q: u8| f32::from(q) / 255.0;
-    // Mover 7: pose 1 (t′ 0.25) encloses probe 0 and stores 255, never read.
-    let q7 = [0u8, 255, 51, 204];
-    let section = posed_light_across(
-        &[(7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0], q7.to_vec())],
-        &[(7, vec![0b1, 0])],
-    );
+    // Mover 7: pose 1 (t′ 0.25) encloses probe 0 and stores its traced 0.
+    let q7 = [204u8, 0, 51, 204];
+    let section = posed_light(&[(7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0], q7.to_vec())]);
     let mut scene = build_scene(&ctx, Some(&section), false);
     for (t, expected) in [
-        (0.0, byte(0)),
-        (0.125, byte(51) * 0.25),
-        (0.25, byte(51) * 0.5),
-        (0.375, byte(51) * 0.75),
+        (0.0, byte(204)),
+        (0.125, byte(204) * 0.5),
+        (0.25, 0.0),
+        (0.375, byte(51) * 0.5),
         (0.5, byte(51)),
         (0.875, byte(51) + (byte(204) - byte(51)) * 0.75),
         (1.0, byte(204)),
@@ -732,23 +708,21 @@ fn direct_blends_across_a_pose_the_across_marks_name() {
     }
 
     // Ramp (0.3, 1): knots t 0, 0.2, 0.5, 0.8, 1 map to t′ 0, 0 (squeezed),
-    // 2/7, 5/7, 1. Pose 2 is marked, so t′ in (0, 5/7) blends pose 0 → 3;
-    // the squeezed pose 1 is never read. Mover 9 shares the light unmarked.
+    // 2/7, 5/7, 1. Pose 2 is dark (q 0); pose 1, squeezed, is never read.
+    // Mover 9 shares the light.
     let ramp = |t: f32| ((t - 0.3) / (1.0 - 0.3)).clamp(0.0, 1.0);
     let knots = vec![0.0, 0.2, 0.5, 0.8, 1.0];
-    let section = posed_light_across(
-        &[
-            (7, (0.3, 1.0), knots.clone(), vec![0, 153, 255, 102, 255]),
-            (9, (0.3, 1.0), knots, vec![255, 255, 255, 255, 51]),
-        ],
-        &[(7, vec![0, 0b1, 0])],
-    );
+    let section = posed_light(&[
+        (7, (0.3, 1.0), knots.clone(), vec![255, 153, 0, 102, 255]),
+        (9, (0.3, 1.0), knots, vec![255, 255, 255, 255, 51]),
+    ]);
     let mut scene = build_scene(&ctx, Some(&section), false);
-    let pose3 = ramp(0.8);
+    let (pose2, pose3) = (ramp(0.5), ramp(0.8));
     for (t, q7, q9) in [
-        (0.2, 0.0, 1.0),
-        (0.5, 0.4 * ramp(0.5) / pose3, 1.0),
-        (0.65, 0.4 * ramp(0.65) / pose3, 1.0),
+        (0.2, 1.0, 1.0),
+        (0.4, 1.0 - ramp(0.4) / pose2, 1.0),
+        (0.5, 0.0, 1.0),
+        (0.65, 0.4 * (ramp(0.65) - pose2) / (pose3 - pose2), 1.0),
         (0.8, 0.4, 1.0),
         (
             0.9,
@@ -765,32 +739,25 @@ fn direct_blends_across_a_pose_the_across_marks_name() {
     }
 }
 
-/// Probes with local index 32 or more keep their across marks in the high
-/// word of each mid pose's mask pair, so the shader reads
-/// `across + 2 * (pose - 1) + 1` for them. Five poses at t′ 0, 0.25, 0.5,
-/// 0.75, 1; the record masks local probes 5, 33 and 63. Probe 33 is marked at
-/// pose 2 and probe 63 at pose 3, each blending across its marked pose between
-/// the defined poses around it; probe 5, in the low word and unmarked, reads
-/// its own q at every pose. Were the high-word term dropped, probes 33 and 63
-/// would test bits 1 and 31 of the low word of their pose's pair, find no mark,
-/// and read the sentinel q stored at their marked pose, which is far from the
-/// blend and fails the exact comparisons at t′ 0.5 and 0.75.
+/// Probes with local index 32 or more read their own q bytes by masked
+/// slot like any other. Five poses at t′ 0, 0.25, 0.5, 0.75, 1; the record
+/// masks local probes 5, 33 and 63, and probes 33 and 63 store a dark q (0)
+/// at mid poses 2 and 3, as enclosed mid poses do. Every probe reads its
+/// own pose exactly at each knot and lerps the two poses around t′ between.
 #[test]
-fn direct_blends_across_marked_poses_for_probes_in_the_high_mask_word() {
-    let Some(ctx) = gpu("direct_blends_across_marked_poses_for_probes_in_the_high_mask_word")
-    else {
+fn direct_reads_each_poses_q_for_probes_in_the_high_mask_word() {
+    let Some(ctx) = gpu("direct_reads_each_poses_q_for_probes_in_the_high_mask_word") else {
         return;
     };
     // Per masked probe, q at each of the 5 poses, in local probe order
-    // (5, 33, 63). The marked poses hold 255, never read.
+    // (5, 33, 63).
     let q5: [u8; 5] = [0, 51, 255, 102, 204];
-    let q33: [u8; 5] = [255, 102, 255, 204, 0];
-    let q63: [u8; 5] = [0, 255, 51, 255, 153];
+    let q33: [u8; 5] = [255, 102, 0, 204, 0];
+    let q63: [u8; 5] = [0, 255, 51, 0, 153];
     let q: Vec<u8> = [q5, q33, q63].concat();
     let section = posed_light_masked(
         (1 << 5) | (1 << 33) | (1 << 63),
         &[(7, (0.0, 1.0), vec![0.0, 0.25, 0.5, 0.75, 1.0], q)],
-        &[(7, vec![0, 1 << 33, 1 << 63])],
     );
     let mut scene = build_scene(&ctx, Some(&section), false);
     let (ungated, ungated_handoff) = compose(&ctx, &mut scene, frame(&[]));
@@ -800,23 +767,22 @@ fn direct_blends_across_marked_poses_for_probes_in_the_high_mask_word() {
         let (lo, hi) = (f32::from(q[lo]) / 255.0, f32::from(q[hi]) / 255.0);
         lo + (hi - lo) * w
     };
-    // Per t′: each probe's (lo pose, hi pose, weight of hi), probes 5, 33, 63.
-    // A defined knot reads its pose exactly (weight 0).
-    type Read = (usize, usize, f32);
-    let rows: [(f32, [Read; 3]); 9] = [
-        (0.0, [(0, 0, 0.0); 3]),
-        (0.125, [(0, 1, 0.5); 3]),
-        (0.25, [(1, 1, 0.0); 3]),
-        (0.375, [(1, 2, 0.5), (1, 3, 0.25), (1, 2, 0.5)]),
-        (0.5, [(2, 2, 0.0), (1, 3, 0.5), (2, 2, 0.0)]),
-        (0.625, [(2, 3, 0.5), (1, 3, 0.75), (2, 4, 0.25)]),
-        (0.75, [(3, 3, 0.0), (3, 3, 0.0), (2, 4, 0.5)]),
-        (0.875, [(3, 4, 0.5), (3, 4, 0.5), (2, 4, 0.75)]),
-        (1.0, [(4, 4, 0.0); 3]),
+    // Per t′: (lo pose, hi pose, weight of hi), the same for every probe. A
+    // knot reads its pose exactly (weight 0).
+    let rows: [(f32, (usize, usize, f32)); 9] = [
+        (0.0, (0, 0, 0.0)),
+        (0.125, (0, 1, 0.5)),
+        (0.25, (1, 1, 0.0)),
+        (0.375, (1, 2, 0.5)),
+        (0.5, (2, 2, 0.0)),
+        (0.625, (2, 3, 0.5)),
+        (0.75, (3, 3, 0.0)),
+        (0.875, (3, 4, 0.5)),
+        (1.0, (4, 4, 0.0)),
     ];
-    for (t, reads) in rows {
+    for (t, (lo, hi, w)) in rows {
         let (free, handoff) = compose(&ctx, &mut scene, frame(&[state(7, t)]));
-        for ((probe, q), (lo, hi, w)) in [(5, &q5), (33, &q33), (63, &q63)].into_iter().zip(reads) {
+        for (probe, q) in [(5, &q5), (33, &q33), (63, &q63)] {
             let (x, y) = origin(probe);
             // The static light's term T = 0.25 at the tile origin is scaled by
             // the surviving visibility: base - T * (1 - q).

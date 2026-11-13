@@ -206,7 +206,6 @@ impl Level {
                     vec![(3, vec![1, 2, 3, 4])],
                 ),
             ],
-            across: Vec::new(),
             bounce: vec![bounce(1, 3, 0b11)],
             depth: vec![depth(9, 4), depth(9, 70)],
         }
@@ -259,12 +258,15 @@ fn a_record_borrowing_from_an_absent_family_is_refused_naming_the_family() {
     );
 }
 
-// Epoch 4 stored termini only, and epoch 5 skipped mid poses against the
-// through-base depth rule; their bytes are refused by name, not read.
+// Epoch 4 stored termini only, epoch 5 skipped mid poses against the
+// through-base depth rule, and epoch 6 carried across marks where an
+// enclosed mid pose now stores its dark state; their bytes are refused by
+// name, not read.
 #[test]
 fn a_wrong_epoch_is_refused_by_name() {
     let level = Level::new();
-    for epoch in [4, 5, MOVER_PROBE_CHANNEL_EPOCH + 1] {
+    assert_eq!(MOVER_PROBE_CHANNEL_EPOCH, 7);
+    for epoch in [4, 5, 6, MOVER_PROBE_CHANNEL_EPOCH + 1] {
         let mut bytes = level.sample().to_bytes();
         bytes[0] = epoch;
         assert_eq!(
@@ -1049,7 +1051,6 @@ fn fixture_section() -> MoverProbeChannelSection {
                 record(MoverLightNamespace::StaticLight, 0, false, 1),
                 vec![(7, vec![128, 128])],
             )],
-            across: Vec::new(),
             bounce: vec![bounce(5, 7, 1)],
             depth: vec![depth(7, 17)],
         },
@@ -1126,7 +1127,6 @@ fn three_pose_section(knots: Vec<f32>) -> MoverProbeChannelSection {
                 record(MoverLightNamespace::StaticLight, 0, false, 1),
                 vec![(7, vec![255, 128, 255])],
             )],
-            across: Vec::new(),
             bounce: vec![BounceEntryParts {
                 cell: 5,
                 entry,
@@ -1173,8 +1173,8 @@ fn a_section_with_mid_poses_loads_and_hands_the_mover_its_ramp_alone() {
     }
 }
 
-// A malformed pose table, and an epoch-4 or epoch-5 section, fail the whole
-// load by name on every id-34 path.
+// A malformed pose table, and an epoch-4, epoch-5 or epoch-6 section, fail
+// the whole load by name on every id-34 path.
 #[test]
 fn a_malformed_pose_table_or_an_old_epoch_fails_the_load_by_name_on_every_id_34_path() {
     let reversed = three_pose_section(vec![0.0, 0.5, 0.25]);
@@ -1188,7 +1188,7 @@ fn a_malformed_pose_table_or_an_old_epoch_fails_the_load_by_name_on_every_id_34_
             other => panic!("expected the knot order refusal, got {other:?}"),
         }
     }
-    for epoch in [4, 5] {
+    for epoch in [4, 5, 6] {
         let mut old = fixture_section().to_bytes();
         old[0] = epoch;
         for result in load_every_way(Some(old)) {
@@ -1355,7 +1355,6 @@ fn a_prl_whose_id_59_and_live_tiles_fill_the_range_exactly_loads_and_one_more_is
             MoverProbeChannelParts {
                 affinity_dims: expected_affinity_dims(grid, AFFINITY_FACTOR),
                 direct: Vec::new(),
-                across: Vec::new(),
                 bounce: Vec::new(),
                 depth: (0..live)
                     .map(|probe_index| DepthRecordParts {

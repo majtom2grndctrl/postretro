@@ -189,7 +189,7 @@ fn table_buffer(
 }
 
 /// Id 57's structure a streamed level keeps to write cells as clusters
-/// arrive: indexes, mover entries, across marks and mover records, and each
+/// arrive: indexes, mover entries and mover records, and each
 /// resident block's payload. Bounce entries stay only while the bounce
 /// payload streams; the depth block is never kept here.
 #[derive(Debug)]
@@ -1069,7 +1069,6 @@ fn structure(section: &MoverProbeChannelSection) -> MoverProbeChannelSection {
         direct_records: section.direct_records.clone(),
         mover_offsets: section.mover_offsets.clone(),
         direct_movers: section.direct_movers.clone(),
-        across_entries: section.across_entries.clone(),
         visibility: section.visibility.clone(),
         own_tiles: section.own_tiles.clone(),
         bounce_offsets: if bounce_streams {

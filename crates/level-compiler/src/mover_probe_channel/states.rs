@@ -74,8 +74,9 @@ pub(crate) enum MidState<T> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct MidPoseStates {
     /// The domain probes whose bounce the pose stores, as id 27's compact
-    /// RGB tile ([`compact_rgb`]), or reads from the base; any other blends
-    /// across.
+    /// RGB tile ([`compact_rgb`]), or reads from the base: every domain
+    /// probe when the pose gathers bounce, enclosed ones included, and none
+    /// for a depth-only pose. Any other blends across.
     pub(crate) bounce: Vec<(u32, MidState<Vec<u16>>)>,
     /// Every domain probe: its closed-pose tile where some gather ray met
     /// the pose, else its base.
@@ -197,8 +198,9 @@ impl MoverPoseStates {
 /// in pose order, each id 27's compact RGB tile. A terminus whose state is
 /// within the round-trip bar of id 34 stores none and composes id 34; a mid
 /// pose reads id 34 where it leaves the probe within its bars, and blends
-/// across where it lists nothing. An enclosing mid pose stores nothing and
-/// blends across.
+/// across where it lists nothing (outside the near-field domain, or
+/// skipped). An enclosing mid pose stores its own zero bounce, or reads id
+/// 34 where that is within the bars.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BounceProbe {
     pub(crate) probe: u32,

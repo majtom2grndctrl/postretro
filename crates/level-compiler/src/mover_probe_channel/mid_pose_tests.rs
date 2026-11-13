@@ -1,7 +1,6 @@
 // What a mid pose holds for a near-field probe from its own posed gather:
-// its state where that clears the probe's bars against id 34, the base where
-// it stays within them, and nothing, so it blends across, where the pose
-// encloses the probe.
+// its state where that clears the probe's bars against id 34 and the base
+// where it stays within them, the probe enclosed or not.
 
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -31,21 +30,19 @@ fn tile(coefficients: &[f32; 27]) -> Vec<OctahedralAtlasTexel> {
 
 // A mid pose stores its own gathered state, packed as id 34 packs a tile,
 // where it leaves id 34 by more than the round-trip bar and the perceptual
-// floor; reads the base where it stays within either; and stores nothing,
-// so it blends across, where it encloses the probe, whatever its gather
-// read.
+// floor, and reads the base where it stays within either.
 #[test]
-fn a_mid_pose_stores_its_gather_past_the_bars_reads_the_base_within_and_blends_across_enclosed() {
+fn a_mid_pose_stores_its_gather_past_the_bars_and_reads_the_base_within() {
     let base = tile(&dc(0.5));
     let bright = dc(4.0);
     assert_eq!(
-        classify(&bright, false, &base, 0.0),
-        Some(MidState::Stored(compact_rgb(&tile(&bright)))),
+        classify(&bright, &base, 0.0),
+        MidState::Stored(compact_rgb(&tile(&bright))),
         "past both bars: its own gather, packed"
     );
     assert_eq!(
-        classify(&bright, false, &base, 10.0),
-        Some(MidState::Base),
+        classify(&bright, &base, 10.0),
+        MidState::Base,
         "within the round-trip bar"
     );
     let near = dc(0.505);
@@ -55,13 +52,34 @@ fn a_mid_pose_stores_its_gather_past_the_bars_reads_the_base_within_and_blends_a
         "the near state leaves the f16 tile but not the floor"
     );
     assert_eq!(
-        classify(&near, false, &base, 0.0),
-        Some(MidState::Base),
+        classify(&near, &base, 0.0),
+        MidState::Base,
         "past the round-trip bar, within the perceptual floor"
     );
+}
+
+// A probe the mid pose encloses gathers zero radiance (every lifted ray
+// starts in solid; the gather side is pinned by
+// `an_enclosing_terminus_reads_the_base_and_an_enclosing_mid_pose_stores_its_dark_state`), and that
+// state classifies like any other (Amendment 2, Ruling B): stored as the
+// zero tile where id 34 is lit past the bars, the base where id 34 is
+// already within them of zero. Nothing blends across.
+#[test]
+fn an_enclosed_mid_pose_stores_its_zero_bounce_past_the_bars_and_reads_a_dark_base_within() {
+    let dark = [0.0; 27];
+    let lit = tile(&dc(0.5));
     assert_eq!(
-        classify(&bright, true, &base, 0.0),
-        None,
-        "enclosed: blends across"
+        classify(&dark, &lit, 0.0),
+        MidState::Stored(compact_rgb(&tile(&dark))),
+        "a lit base: the dark state is stored"
+    );
+    assert!(
+        compact_rgb(&tile(&dark)).iter().all(|&half| half == 0),
+        "the stored state is zero radiance"
+    );
+    assert_eq!(
+        classify(&dark, &tile(&dark), 0.0),
+        MidState::Base,
+        "a base already dark: it reads the base"
     );
 }

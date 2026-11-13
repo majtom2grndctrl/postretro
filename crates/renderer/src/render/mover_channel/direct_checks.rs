@@ -1,6 +1,6 @@
 // Mover probe channel direct payload checks, as a cell loads or arrives:
-// every term record's mask tight against its q bytes, each across pose
-// storing 255, and every own tile finite. A PRL is accepted or refused alike
+// every term record's mask tight against its q bytes, and every own tile
+// finite. A PRL is accepted or refused alike
 // in every mode.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 
@@ -42,8 +42,6 @@ pub(in crate::render) fn check_direct_cell(
 
 /// A record's probe mask must be exactly the probes where some gating mover
 /// leaves q below 255 at some pose, and each mover must store one such q.
-/// A pose the mover's across marks name for a probe stores 255 there: it is
-/// never read, so its byte is canonical.
 fn check_tight(
     record: usize,
     cell: u32,
@@ -60,20 +58,8 @@ fn check_tight(
     let mut touched = 0u64;
     for mover in view.movers() {
         let mut stores = false;
-        let mut bits = view.record.probe_mask;
         for slot in 0..probes {
-            let local = bits.trailing_zeros();
-            bits &= bits - 1;
             let q = mover.probe_q(slot);
-            if let Some(across) = mover.across
-                && let Some(pose) = (1..mover.pose_count - 1)
-                    .find(|&pose| across.is_across(pose, local) && q[pose] != u8::MAX)
-            {
-                return fail(format!(
-                    "affinity cell {cell}'s direct record {record} stores q {} for mover {} at local probe {local}, pose {pose}, which its across marks name",
-                    q[pose], mover.mover_id
-                ));
-            }
             if q.iter().any(|&q| q < u8::MAX) {
                 touched |= 1 << slot;
                 stores = true;

@@ -42,7 +42,9 @@ const STAGE_ID: &str = "mover_probe_bounce";
 /// reduce; the depth floor and the tile range apply after every read.
 /// 11: a mid pose folds its domain's static patches only where it traces a
 /// posed later bounce over them.
-const STAGE_VERSION: u32 = 11;
+/// 12: a mid pose that encloses the probe classifies its own gathered
+/// state, zero bounce, like any other probe (Amendment 2, Ruling B).
+const STAGE_VERSION: u32 = 12;
 
 /// What a pose bakes: a terminus gathers every valid probe, a mid pose its
 /// mover's near-field domain. Folded into the key, so the two never share

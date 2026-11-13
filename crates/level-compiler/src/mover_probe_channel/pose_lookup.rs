@@ -5,6 +5,7 @@
 
 use super::bake::{MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, PoseSlot};
 use super::depth::MoverAbsentDepth;
+use super::edge_copy::copy_job_bounce_edges;
 use super::pose_memo::{PoseKind, PoseMemo};
 use super::states::{MoverBounceStates, MoverPoseStates, reduce_poses};
 use crate::sh_bake::ProbeGridLayout;
@@ -163,12 +164,10 @@ impl<'r, 'c> PoseLookup<'r, 'c> {
             let found = match reduce {
                 Some(reduce) if all_hit => {
                     let poses = MoverPoseStates::from_poses(states.into_iter().flatten().collect());
-                    Some(reduce_poses(
-                        job.mover_id,
-                        &poses,
-                        &reduce.absent,
-                        reduce.depth_cap,
-                    ))
+                    let mut states =
+                        reduce_poses(job.mover_id, &poses, &reduce.absent, reduce.depth_cap);
+                    copy_job_bounce_edges(&mut states, job, layout);
+                    Some(states)
                 }
                 _ => {
                     drop(states);

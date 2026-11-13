@@ -1,8 +1,7 @@
 // Mover probe channel table: id 57's direct block laid out for the two
 // direct-SH compose passes, each gated light's term T resolved once per
-// masked probe, each (cell, mover)'s across marks expanded once
-// (`across.rs`), and the per-mover row lists the streamed planner
-// recomposes (`rows.rs`).
+// masked probe, and the per-mover row lists the streamed planner recomposes
+// (`rows.rs`).
 // Each listed cell's payload is one run of words its base word points at:
 // fixed in a whole table, placed per resident cell in a pooled one.
 // wgpu-free; `gpu.rs` owns the buffer this lays out.
@@ -11,7 +10,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::across::AcrossRuns;
 pub(in crate::render) use super::cell_writes::CellWrite;
 pub(in crate::render) use super::direct_checks::check_direct_cell;
 use super::knots::MoverKnots;
@@ -30,11 +28,10 @@ const HEADER_WORDS: usize = 10;
 /// key, mover entry range, first term half within the cell's payload, and
 /// the cell's listed position.
 const RECORD_WORDS: usize = 8;
-/// Words per (record, mover) entry: mover slot, its first q byte within the
-/// cell's payload, and the absolute word of its (cell, mover) across run
-/// (`across::NO_ACROSS` without one). The mover's N q bytes per masked probe
-/// follow probe-major, as id 57 stores them; its knot run gives N.
-const MOVER_ENTRY_WORDS: usize = 3;
+/// Words per (record, mover) entry: mover slot and its first q byte within
+/// the cell's payload. The mover's N q bytes per masked probe follow
+/// probe-major, as id 57 stores them; its knot run gives N.
+const MOVER_ENTRY_WORDS: usize = 2;
 /// A cell base word while its payload is not resident: the cell composes as
 /// with no section.
 pub(super) const NO_BASE: u32 = u32::MAX;
@@ -320,14 +317,7 @@ impl MoverChannelLayout {
         let entries_word = records_word + records.len() * RECORD_WORDS;
         let descriptors_word = entries_word + mover_entries * MOVER_ENTRY_WORDS;
         let knots_word = descriptors_word + inputs.animation_descriptor_indices.len();
-        // Cells are planned in listed order, so their positions ascend.
-        let across = AcrossRuns::new(section, |position| {
-            cells
-                .binary_search_by_key(&position, |cell: &CellPlan| cell.position)
-                .is_ok()
-        });
-        let across_word = knots_word + knots.table_word_count();
-        let t_word = across_word + across.word_count();
+        let t_word = knots_word + knots.table_word_count();
         let payload_word = t_word + T_SLOT_WORDS * mover_ids.len();
         let whole_payload: usize = cells.iter().map(CellPlan::payload_words).sum();
         let total_words = payload_word + if pooled { 0 } else { whole_payload };
@@ -350,7 +340,6 @@ impl MoverChannelLayout {
         words[8] = bases_word as u32;
         words[9] = knots_word as u32;
         knots.write_table(&mut words, knots_word);
-        across.write(&mut words, across_word);
         let mut whole_bases = (!pooled).then(|| Vec::with_capacity(cells.len()));
         let mut static_rows = vec![Vec::new(); mover_ids.len()];
         let mut animated_rows = vec![Vec::new(); mover_ids.len()];
@@ -392,7 +381,6 @@ impl MoverChannelLayout {
                     let at_entry = entries_word + entry * MOVER_ENTRY_WORDS;
                     words[at_entry] = slot;
                     words[at_entry + 1] = q_at as u32;
-                    words[at_entry + 2] = across.run_word(across_word, cell.position, mover);
                     q_at += probes * knots.pose_count(slot as usize);
                     entry += 1;
                     if at < static_ends[index] {

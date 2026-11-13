@@ -2,6 +2,8 @@
 // and `mb_entry_blend`, started from the bracket the real t′ block carries,
 // return bit for bit what the linear knot scan they replaced returns, over
 // many-knot, ramped, squeezed, on-knot and every-mid-pose-across cases.
+// Direct stores q at every pose, so its lookup is the bracket's knot pair;
+// bounce walks outward across unmarked mid poses.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)
 //
 // The harness self-skips without an adapter and says so; set
@@ -10,8 +12,8 @@
 // Each (knot set, t′) pair is its own mover slot, so one dispatch reads every
 // t′ through the per-frame path: `MoverTBlock::set_states` finds each slot's
 // bracket and `take_upload` hands over the bytes both tables carry. Each
-// slot then runs 64 probes, whose across and bounce marks grow denser with
-// the probe index: probe 0 defines every mid pose, probe 63 none.
+// slot then runs 64 probes, whose unmarked bounce poses grow denser with the
+// probe index: probe 0 defines every mid pose, probe 63 none.
 
 use postretro_level_format::mover_probe_channel::{
     MoverProbeChannelSection, MoverRecord, pose_interval,
@@ -25,7 +27,6 @@ use crate::render::MoverTravel;
 use crate::render::gpu_test_harness::gpu_or_skip;
 
 const PROBES: u32 = 64;
-const NONE: u32 = u32::MAX;
 /// Words per (slot, probe) result: direct bracketed then linear (lo, hi,
 /// weight bits), bounce bracketed then linear (affected, lo, hi, weight
 /// bits).
@@ -37,7 +38,7 @@ const MB_POSE_WORDS: usize = 5;
 
 /// The linear scans the bracket replaced, verbatim but for their names.
 const LINEAR_WGSL: &str = r#"
-fn linear_mc_interval(run: u32, t: f32, across: u32, local_probe: u32) -> McInterval {
+fn linear_mc_interval(run: u32, t: f32) -> McInterval {
     let last = mover_channel[run + 1u] - 1u;
     if (t >= 1.0) {
         let pose = mc_knot_pose(run, last);
@@ -50,25 +51,12 @@ fn linear_mc_interval(run: u32, t: f32, across: u32, local_probe: u32) -> McInte
         }
         at = knot;
     }
-    var lo = at;
-    loop {
-        if (lo == 0u || !mc_across(run, lo, across, local_probe)) {
-            break;
-        }
-        lo = lo - 1u;
-    }
-    let lo_pose = mc_knot_pose(run, lo);
-    let t_lo = mc_knot_t(run, lo);
+    let lo_pose = mc_knot_pose(run, at);
+    let t_lo = mc_knot_t(run, at);
     if (t <= t_lo) {
         return McInterval(lo_pose, lo_pose, 0.0);
     }
-    var hi = at + 1u;
-    loop {
-        if (hi >= last || !mc_across(run, hi, across, local_probe)) {
-            break;
-        }
-        hi = hi + 1u;
-    }
+    let hi = at + 1u;
     return McInterval(
         lo_pose,
         mc_knot_pose(run, hi),
@@ -121,10 +109,9 @@ fn main(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     let slot = group.x;
     let out = (slot * 64u + probe) * 14u;
     let run = mover_channel[mover_channel[MC_HEADER_KNOTS] + slot];
-    let across = across_runs[slot];
     let t = mc_mover_t(slot);
-    let found = mc_interval(run, t, mc_mover_bracket(slot), across, probe);
-    let linear = linear_mc_interval(run, t, across, probe);
+    let found = mc_interval(run, t, mc_mover_bracket(slot));
+    let linear = linear_mc_interval(run, t);
     results[out] = found.lo;
     results[out + 1u] = found.hi;
     results[out + 2u] = bitcast<u32>(found.weight);
@@ -240,9 +227,8 @@ fn slots(rng: &mut Rng) -> Vec<Slot> {
     slots
 }
 
-/// What a probe defines at each pose of one slot: across (direct marks it,
-/// or the bounce entry stores and reads nothing there), and the bounce
-/// pose state.
+/// What a probe's bounce entry holds at each pose of one slot: a stored
+/// state, the base, or nothing (an unmarked mid pose, blended across).
 #[derive(Clone, Copy, PartialEq)]
 enum PoseState {
     Stored,
@@ -250,7 +236,7 @@ enum PoseState {
     Across,
 }
 
-/// Probe `probe`'s state at mid pose: across with probability `probe / 63`,
+/// Probe `probe`'s state at mid pose: unmarked with probability `probe / 63`,
 /// otherwise stored or base evenly. A terminus is stored or reads the base.
 fn pose_state(rng: &mut Rng, probe: u32, terminus: bool) -> PoseState {
     let roll = rng.unit();
@@ -266,8 +252,6 @@ fn pose_state(rng: &mut Rng, probe: u32, terminus: bool) -> PoseState {
 struct Tables {
     direct: Vec<u32>,
     bounce: Vec<u32>,
-    /// Per slot: its direct across run's word, or `NONE`.
-    across_runs: Vec<u32>,
     /// Per slot, per pose, per probe.
     states: Vec<Vec<[PoseState; PROBES as usize]>>,
     knots: MoverKnots,
@@ -321,23 +305,11 @@ fn tables(rng: &mut Rng, slots: &[Slot]) -> Tables {
         [bits as u32, (bits >> 32) as u32]
     };
 
-    // Direct: header, knot block, across runs (one slot in five has none),
-    // t′ block.
+    // Direct: header, knot block, t′ block.
     let knots_word = MC_HEADER_WORDS;
     let mut direct = vec![0u32; knots_word + knots.table_word_count()];
     direct[9] = knots_word as u32;
     knots.write_table(&mut direct, knots_word);
-    let mut across_runs = Vec::with_capacity(slots.len());
-    for (slot, poses) in states.iter().enumerate() {
-        if slot % 5 == 4 {
-            across_runs.push(NONE);
-            continue;
-        }
-        across_runs.push(direct.len() as u32);
-        for row in &poses[1..poses.len() - 1] {
-            direct.extend(mask(row, PoseState::Across));
-        }
-    }
     direct[5] = direct.len() as u32;
     direct.extend(&t_block);
 
@@ -379,7 +351,6 @@ fn tables(rng: &mut Rng, slots: &[Slot]) -> Tables {
     Tables {
         direct,
         bounce,
-        across_runs,
         states,
         knots,
     }
@@ -393,8 +364,7 @@ fn run(tables: &Tables, slots: u32) -> Vec<u32> {
     let source = format!(
         "@group(0) @binding(0) var<storage, read> mover_channel: array<u32>;\n\
          @group(0) @binding(1) var<storage, read> mover_bounce: array<u32>;\n\
-         @group(0) @binding(2) var<storage, read> across_runs: array<u32>;\n\
-         @group(0) @binding(3) var<storage, read_write> results: array<u32>;\n\
+         @group(0) @binding(2) var<storage, read_write> results: array<u32>;\n\
          {MOVER_CHANNEL_WGSL}\n{MOVER_BOUNCE_WGSL}\n{LINEAR_WGSL}\n{ENTRY_WGSL}"
     );
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -418,7 +388,6 @@ fn run(tables: &Tables, slots: u32) -> Vec<u32> {
     };
     let direct = storage("knot bracket direct table", &tables.direct);
     let bounce = storage("knot bracket bounce table", &tables.bounce);
-    let across = storage("knot bracket across runs", &tables.across_runs);
     let size = (slots as usize * PROBES as usize * RESULT_WORDS * 4) as u64;
     let results = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("knot bracket results"),
@@ -435,12 +404,12 @@ fn run(tables: &Tables, slots: u32) -> Vec<u32> {
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("knot bracket harness"),
         layout: &pipeline.get_bind_group_layout(0),
-        entries: &[(0, &direct), (1, &bounce), (2, &across), (3, &results)].map(
-            |(binding, buffer)| wgpu::BindGroupEntry {
+        entries: &[(0, &direct), (1, &bounce), (2, &results)].map(|(binding, buffer)| {
+            wgpu::BindGroupEntry {
                 binding,
                 resource: buffer.as_entire_binding(),
-            },
-        ),
+            }
+        }),
     });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("knot bracket harness"),
@@ -473,9 +442,10 @@ fn run(tables: &Tables, slots: u32) -> Vec<u32> {
 /// The bracket is a lookup acceleration only: for every t′, ramp, squeezed
 /// knot and mark pattern, both shaders' lookups started from it return bit
 /// for bit what their linear scans returned, and the direct lookup agrees
-/// with the format's interval rule. The cases reach brackets past 60 knots,
-/// walks of several across poses on both sides, t′ exactly on interior
-/// knots, and probes whose every mid pose is blended across.
+/// with the format's interval rule with every pose defined. The cases reach
+/// brackets past 60 knots, bounce walks of several unmarked poses on both
+/// sides, t′ exactly on interior knots, and probes whose every mid pose
+/// bounce blends across.
 #[test]
 fn the_knot_bracket_reads_what_the_linear_knot_scan_read() {
     let mut rng = Rng(0x005e_edb4_ace7);
@@ -508,11 +478,7 @@ fn the_knot_bracket_reads_what_the_linear_knot_scan_read() {
             let Some(t) = stated.filter(|t| !t.is_subnormal()) else {
                 continue;
             };
-            let across = |pose: u32| {
-                tables.across_runs[slot] != NONE
-                    && tables.states[slot][pose as usize][probe as usize] == PoseState::Across
-            };
-            let expected = pose_interval(knots, t, |pose| !across(pose));
+            let expected = pose_interval(knots, t, |_| true);
             assert_eq!(
                 (words[0], words[1]),
                 (expected.lo, expected.hi),
@@ -523,19 +489,20 @@ fn the_knot_bracket_reads_what_the_linear_knot_scan_read() {
                 "direct weight: {what}"
             );
 
+            // Coverage of bounce's walk, which the linear-scan check above
+            // proves: the bounce interval over the probe's defined poses.
+            let across =
+                |pose: u32| tables.states[slot][pose as usize][probe as usize] == PoseState::Across;
+            let walk = pose_interval(knots, t, |pose| !across(pose));
             let bracket = tables.knots.bracket(slot, t) as usize;
             deepest_bracket = deepest_bracket.max(bracket);
             if t < 1.0 {
                 on_interior_knot += usize::from(bracket > 0 && knots[bracket].t == t);
-                walked_down += usize::from(knots[bracket].pose != expected.lo);
-                walked_up +=
-                    usize::from(expected.weight > 0.0 && knots[bracket + 1].pose != expected.hi);
+                walked_down += usize::from(knots[bracket].pose != walk.lo);
+                walked_up += usize::from(walk.weight > 0.0 && knots[bracket + 1].pose != walk.hi);
             }
-            all_across += usize::from(
-                tables.across_runs[slot] != NONE
-                    && last > 1
-                    && knots[1..last].iter().all(|knot| across(knot.pose)),
-            );
+            all_across +=
+                usize::from(last > 1 && knots[1..last].iter().all(|knot| across(knot.pose)));
         }
     }
     assert!(
@@ -545,7 +512,7 @@ fn the_knot_bracket_reads_what_the_linear_knot_scan_read() {
     assert!(on_interior_knot > 0, "t′ exactly on an interior knot");
     assert!(
         walked_down > 0 && walked_up > 0,
-        "walks across poses both ways"
+        "bounce walks across poses both ways"
     );
     assert!(
         all_across > 0,

@@ -23,11 +23,14 @@ const SUN_CONE_SLACK_RAD: f64 = 1.0e-3;
 /// One mover posed at one terminus as an occluder of probe-point shadow rays.
 /// Every brush occludes, so a segment whose lifted start lies inside a posed
 /// brush starts in solid and is blocked: a probe a hair off a face loses
-/// only the samples whose lift crosses it. A probe the pose encloses, by at
-/// least the lift ([`Self::encloses`]), stores no q for that pose: it keeps
-/// 255 and reads the light's mover-absent term there at a terminus; at a mid
-/// pose the section marks it across. A dark enclosed state, lerped over the
-/// whole travel, would stay mostly black once the face swept past the probe.
+/// only the samples whose lift crosses it. A terminus that encloses the
+/// probe, by at least the lift ([`Self::encloses`]), stores no q there: it
+/// keeps 255 and reads the light's mover-absent term, since a dark terminus
+/// state, lerped toward the other terminus, would stay mostly black once
+/// the face swept past the probe. A mid pose that encloses it traces like
+/// any other pose, every lifted segment starting in solid, and stores the
+/// q that leaves: its neighbouring poses bound how far that dark state
+/// reaches.
 #[derive(Clone)]
 pub(crate) struct PosedOccluder {
     solid: Arc<PosedSolid>,
@@ -107,7 +110,7 @@ impl PosedOccluder {
 
     /// Whether the pose encloses `probe`: inside one posed brush by at
     /// least the gather's lift ([`PosedSolid::encloses`]). Such a terminus
-    /// stores q = 255, the mover-absent term.
+    /// stores q = 255, the mover-absent term; a mid pose ignores it.
     pub(crate) fn encloses(&self, probe: Vec3) -> bool {
         self.solid.encloses(probe)
     }

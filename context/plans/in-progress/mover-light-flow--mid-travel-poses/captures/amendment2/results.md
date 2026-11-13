@@ -426,3 +426,153 @@ A temporary `#[cfg(test)]` check placed `light_poses 267` on `setpiece_wall` and
   - `mid_pose.rs`: the switch, and enclosed probes classifying their own gathered state;
   - `direct.rs`: enclosed mid poses traced;
   - `across.rs`: no across marks under the switch.
+
+## Final build (task 25c, Windows, 2026-11-12)
+
+Verification of the ruled build at f0bd37f9b: the ramp at 0.4 is the only mover backface, and the dark state with edge copy is the only compiler rule (id 57 epoch 7). Same machine and capture settings as above (GTX 1660 SUPER, Vulkan, offscreen 960×540, `sync-proof`, `force_full_resident_sh_compose`, reflections off, one forced mover).
+
+### Answers first
+
+- **Edge copy passes its gate; no bounding pose is needed.** Over the whole trip at 60 fps frame spacing, the west band B (mask 02) reads a mean of 1.40 against 1.53 for the prototype dark + r40 without edge copy. Its largest per-frame block step is 0.93 against 1.00. It is never brighter than the prototype by more than +0.05 mean (at t′ 0.265), and its worst block differs from the prototype by 1.0. Against its own dense truth, it reads a block mean of 0.09 and a worst block of 1.3.
+- **Edge copy removes the exit dip.** At the t′ 0.9716 lintel exit, the prototype's above-door band falls 3.51 below its inside-pose value, with a 6.12 block step over one frame span. The final build rises monotonically (dip 0.00) with a 3.91 step, against 4.33 for the ramp alone. The 0.524 and 0.748 exits behave the same way. No entry undershoots more than the ramp alone does, beyond one 8-bit level.
+- **Hand-over is unchanged from the prototype ramp.** Sweeper east 4.34, wall end 8.77, wall north 6.53, ceiling A 3.80 and ceiling B 0.86 per frame, against 11.2, 19.9, 7.4, 5.5 and 4.7 pre-amendment.
+- **No dark blotches.** Against the ramp-alone build, no mover face darkens a block by more than 0.34. On the sweeper, edge copy leaves no dark state visible at all: each thin-slab enclosure run is two knots, and both carry clear values. Against the dense truth, the worst darkening (−13.1 on the fixed east view at t′ 0.98, −9.6 on the wall's north face at 0.317) is identical in the ramp-alone and pre-amendment builds, so it is a knot-interpolation miss, not a dark state.
+- **Re-light into rest:** 0.93 per frame at t′ 0.985, under the 1.5 bar.
+- **Rest frames** are pixel-identical to the ramp-alone captures in all 24 view × terminus frames, so every rest change against pre-amendment is the ramp's (table below).
+- **Every gate passes:** K1, K2, K3, D2, C7, C10 (frame, BC6H per-probe, uncompressed per-probe) and AC 1.
+
+### Build and bakes
+
+- `cargo check --workspace --all-targets`: clean, with no warnings and no fixes needed.
+- Release `prl-build` and `postretro --features capture` at f0bd37f9b, kept in scratch `amend2\final\bin\`.
+- Cold `--release` bakes, each with a fresh cache dir. The scratch ws needs junctions to the repo's `content/dev/{textures,models,sounds,ui,scripts}` and `baked/`. Without them, the truths bake without texture albedo and the engine renders placeholder checkers. The earlier ws had lost those junctions, and they were restored.
+
+| Bake | Wall time | Poses (even + geometry) | id 57 |
+|---|---|---|---|
+| `enemy-movers` HEAD | 16.5 s | lift 11 (3+8), sweeper 31 (7+24), crusher_open 26 (6+20), crusher_wall 39 (9+30) | 4,551,545 B |
+| `mover-setpiece` HEAD | 54.5 s | wall 71 (15+56), room 45 (5+40) | 12,243,232 B |
+| `enemy-movers` truth, sweeper `light_poses 113` | 23.9 s | sweeper 113 (113+0) | 5,864,676 B |
+| `mover-setpiece` truth, room 76, wall 267 | 115.1 s | wall 267, room 76 | 16,593,246 B |
+
+- No band nudges were logged on any bake (the `held the probe … within the band` line is absent). The knots equal the prototype's bit for bit on both maps.
+- id 57 against the prototype dark bake (no edge copy) and the pre-dark HEAD:
+  - setpiece: −4,756 B (−0.04 %), and +1.8 % over pre-dark. Direct payload is 3,259,212 B, the same as the prototype. Bounce is 4,277,880 B, against 4,282,632 for the prototype and 4,175,496 pre-dark.
+  - enemy-movers: −121,620 B (−2.6 %), and +0.8 % over pre-dark. Direct payload is 657,097 B, the pre-dark size, where the prototype was 697,929 B: edge copy restores every sweeper and crusher enclosure's q. Bounce is 1,970,568 B, against 2,051,136 for the prototype and 1,930,608 pre-dark.
+- Bounce states kept after skipping: wall 1,984 (prototype 1,968), room 1,647 (1,685), sweeper 1,447 (1,627), lift 208 (284), crusher_open 371 (415), crusher_wall 483 (556).
+- Bake time is unchanged within noise. The prototype's paired runs were 14.3 s and 51 s, and these runs had captures beside them.
+
+### a. Hand-over (largest 8×8-block step per 60 fps frame; vs truth = mean / worst block |HEAD − truth|)
+
+| Surface | Final | Final − truth step, worst | Final vs new-rule truth | Prototype dark + r40 | Ramp alone | Pre-amendment |
+|---|---|---|---|---|---|---|
+| Sweeper east (t′ 0–0.5) | 4.34 (13 > 3) | +1.92 at 0.043 | 0.66 / 9.2 (the truth's own t′ 0.027 artifact) | 4.34 | 4.34 | 11.23 |
+| Wall end (0.10–0.45) | 8.77 (12) | +2.00 at 0.151 | 0.35 / 4.1 | 8.72 | 8.73 | 19.89 |
+| Wall north | 6.53 (4) | +3.16 at 0.450 | 0.11 / 9.6 | 6.53 | 6.53 | 7.37 |
+| Ceiling A (0.10–0.60) | 3.80 (1) | +0.72 at 0.302 | 0.25 / 3.0 | 4.29 | 4.90 | 5.52 |
+| Ceiling B | 0.86 (0) | +0.49 at 0.428 | 0.07 / 1.0 | 1.00 | 1.19 | 4.71 |
+
+- The truth's own steps are larger than the final build's on every surface: 10.8, 10.4, 10.3, 3.2 and 0.9.
+- Pre-amendment, the step over its truth reached +10.57 on the wall end, +5.81 on the north face, +3.95 on B and +2.65 on A.
+
+### b. In-wall band and the edge-copy gate (whole trip, one sample per 60 fps frame, 269 frames)
+
+| Band B, mask 02 | Mean (0.10–0.56 / 0.56–0.94) | Max | Step max | vs new-rule truth (block mean / worst) | Mean − prototype (max / min) |
+|---|---|---|---|---|---|
+| **Final** | 1.40 (0.67 / 2.09) | 6.30 (rest, t′ 1) | 0.93 at 0.985 | 0.09 / 1.3 | +0.05 at 0.265 / −0.56 at 0.228 |
+| Dense truth, final rule | 1.46 (0.73 / 2.21) | 6.30 | 1.16 | — | — |
+| Prototype dark + r40 | 1.53 (0.77 / 2.31) | 6.30 | 1.00 at 0.250 | 0.07 / 1.3 | — |
+| Ramp alone | 5.36 (5.34 / 6.56) | 6.84 | 1.17 | 3.80 / 15.2 | — |
+
+- The full-frame band B matches mask 02 to 0.01, since the band is all static indirect.
+- **Verdict:** edge copy did not regress band B anywhere in t′. The edge pose's lit value leaking at the 0.03 floor never shows above +0.05 mean. The second dark pose about 1 u inside is not needed.
+
+### c. Dark blotches (most negative 8×8 block; frames with any block < −3)
+
+| View | Final vs truth | Final vs ramp alone | Prototype vs ramp alone |
+|---|---|---|---|
+| Sweeper east (rides) | −2.97 at 0.277 (0) | −0.17 | −1.01 |
+| Sweeper west (rides) | −1.63 at 0.500 (0) | −0.07 | −2.16 |
+| Wall end | −4.13 at 0.317 (12) | −0.21 | −1.62 |
+| Wall north | −9.57 at 0.317 (17) | −0.04 | −0.09 |
+| Fixed east | −13.13 at 0.980 (19) | −0.34 | −1.88 |
+| Fixed west | −2.44 at 0.530 (0) | −0.28 | −2.42 |
+
+The vs-truth worsts on the wall end and north face and the fixed east view are present in the pre-dark builds against their own truth too. At the same frames, ramp alone against its truth reads −4.13, −9.56 and −13.13, and pre-amendment against its truth −3.77, −9.68 and −15.3. A truth-relative bar therefore cannot separate a dark-state blotch from the existing interpolation miss, and the prototype's −16.9 spheres were in its dense truth too.
+
+### d. Enclosure exits and entries (above-door band A; samples every 1/8 frame, one-frame span = 0.00373 t′ at every phase)
+
+Windows run from 0.0035 before the first geometry knot to 0.0035 after the second. The knots come from the room's id 57. Reference: the ramp alone (prototype engine, r40, pre-dark bake), which matches the old `head-r40` captures pixel for pixel. Dip: the worst block below its inside-pose value (exit) or below the window's last, settled value (entry).
+
+| Crossing (knots) | Final dip / step | Ramp alone dip / step | Prototype dark dip / step | Final − ramp alone (dip, step) |
+|---|---|---|---|---|
+| entry 0.0221–0.0300 | 0.00 / 0.05 | −0.77 / 0.34 | 0.00 / 0.05 | +0.77, −0.29 |
+| exit 0.0741–0.0820 | −1.00 / 1.00 | 0.00 / 0.00 | −1.00 / 1.00 | −1.00, +1.00 |
+| entry 0.2458–0.2537 | −0.94 / 0.66 | −0.13 / 0.24 | −0.60 / 0.33 | −0.81, +0.42 |
+| exit 0.2978–0.3057 | −1.00 / 1.00 | −3.41 / 2.40 | −1.00 / 1.00 | +2.41, −1.40 |
+| entry 0.4695–0.4774 | −0.72 / 0.69 | −0.72 / 0.38 | −0.72 / 0.66 | 0.00, +0.31 |
+| exit 0.5215–0.5294 | 0.00 / 3.53 | 0.00 / 4.81 | −1.11 / 4.29 | 0.00, −1.29 |
+| entry 0.6932–0.7011 | −0.93 / 0.69 | −0.98 / 0.57 | −0.91 / 0.54 | +0.05, +0.12 |
+| exit 0.7452–0.7531 | 0.00 / 3.80 | 0.00 / 3.63 | −2.60 / 5.50 | 0.00, +0.16 |
+| entry 0.9169–0.9248 | −0.97 / 0.66 | −0.82 / 0.41 | −0.96 / 0.66 | −0.15, +0.25 |
+| exit 0.9689–0.9768 | **0.00 / 3.91** | 0.00 / 4.33 | **−3.51 / 6.12** | 0.00, −0.43 |
+
+- The −0.7 to −1.0 entries and the two early exits are one 8-bit level on a band whose mean is 0.2–1.5 luma there, and the ramp alone shows the same −0.7 to −3.4. At 0.0741 and 0.2978 the band settles about 0.25–0.8 mean lower, a level change rather than a dip (`a2-final-exits-A.png`).
+- The 0.0741 exit leaves the run that holds the t′ 0 terminus. There the final build equals the prototype, and the ramp alone holds a flat 1.0.
+- **Against Fable's proposed bars:** the step bar (≤ 1.0 above ramp alone) is met, exactly at the 0.0741 exit (+1.00) and with ≥ 0.58 headroom everywhere else. The 0.75 dip bar is missed by one quantum at five dark crossings (0.72–1.00), which the ramp alone misses too.
+
+### e. Re-light into rest (band B, t′ 0.95–1.0, 60 fps)
+
+Final 0.93 at t′ 0.985 (no frame over 1.5), prototype 0.92, dense truth 1.16. Bar 1.5: **pass**.
+
+### f. Rest frames (final HEAD at t′ 0 and 1 against pre-amendment, `head-cur`)
+
+| View | t′ 0: mean d / worst block | t′ 1: mean d / worst block |
+|---|---|---|
+| Ceiling, whole frame | −0.37 / 13.8 | −0.07 / 14.7 |
+| Ceiling band A | −3.34 / 9.9 | −0.21 / 1.0 |
+| Ceiling band B | −4.70 / 11.0 | −0.92 / 4.0 |
+| Sweeper east (rides) | −0.16 / 3.4 | +0.83 / 7.3 |
+| Sweeper west (rides) | −0.09 / 5.6 | −0.15 / 4.1 |
+| Wall end | 0.00 / 0.0 | +0.11 / 2.6 |
+| Wall north | −0.07 / 3.6 | 0.00 / 0.0 |
+| Room floor | +0.01 / 1.0 | −0.43 / 10.6 |
+| Fixed east | −0.03 / 3.5 | +0.34 / 13.8 |
+| Fixed west | −0.18 / 9.2 | −0.02 / 4.3 |
+| `wall_owner` | +0.20 / 10.5 | 0.00 / 0.0 |
+| `sweeper_east` | −0.13 / 2.8 | +0.99 / 6.5 |
+
+Against the ramp-alone captures, all 24 frames are pixel-identical. The rest changes are the ramp's alone: the dark state and edge copy leave terminus states untouched, as AC 1 confirms below.
+
+### Test rows (`--release` PRLs from the final `prl-build`; baseline `prl-build` at 27c92488f)
+
+| Row | Result | Key numbers |
+|---|---|---|
+| AC 1 `rest_channel_output_equals_the_pre_change_build` | pass, bit for bit | 36 atlas × mode × t′ comparisons with 0 differing halves on closet, setpiece and enemy-movers. Probes 157, 11,403 (pre-change 11,401) and 3,887 (3,885). Pairs stored by mid poses alone: bounce 0, 60 and 45; depth 0, 257 and 279 |
+| C7 `c7_a_lagging_channel_row_…` | pass | Closet: 144 probes; setpiece (resident bar 0): 11,359. 0 halves off on re-entry and on every install frame |
+| C10 per-probe, BC6H | pass | Worst fraction of the derived bound: setpiece 0.901 (was 0.968), enemy-movers 0.927, closet 0.493 |
+| C10 per-probe, `--uncompressed-irradiance` | pass | Bit for bit in every class on all three maps |
+| C10 frame | pass | Setpiece st3 mask 8: 17 against bar 19 (baseline gap 15); st2 mask 8: 11 against 15; mask 2: 2–5 against 6–11 |
+| K1 | pass | Closed st2 0.0097 against the static door's 0.0100; open equals stripped (0–1 px) |
+| K2 | pass | Receiver: wall closed 27.48, static-wall reference 28.97, open 31.09 (stripped 31.09) |
+| K3 | pass | Setpiece pop 5.03 at t 0 against ungated 5.59 + 12; animated 0.00 |
+| D2 | pass | Stripped against none: delta 0; without state against depth stripped: 0 |
+
+### Proposed bars (the owner sets them)
+
+| Row | Proposed | Final build | Headroom and discrimination |
+|---|---|---|---|
+| Hand-over | Largest per-frame step ≤ the truth's step at the same t′ + **4.0** | +3.16 worst (wall north, t′ 0.45, the window end; ramp alone the same) | 0.84 headroom. Pre-amendment fails: wall end +10.57, north +5.81 |
+| In-wall band | Band B whole-trip block mean \|d\| ≤ **0.25** and worst block ≤ **2.5** against the same-rule dense truth | 0.09 / 1.3 | About 2× headroom. The ramp alone fails (3.80 / 15.2) |
+| Dark blotch | No mover-face block darker than the same build without the dark state (the ramp-alone bake) by more than **3.0** | 0.34 | The prototype under today's backface reached −16.9. A truth-relative bar is not proposed: the existing interpolation misses (−4.1 to −13.1) share it |
+| Exits and entries, dip | ≤ **1.5** below the inside-pose or settled value | 1.00, one quantum | The prototype dark fails at 3.51 (0.9716) and 2.60 (0.748). Fable's 0.75 fails here and on the ramp alone at dark crossings |
+| Exits and entries, step | ≤ ramp alone + **1.5** over any one-frame span | +1.00 at 0.0741, ≤ +0.42 elsewhere | The prototype dark fails at +1.87 (0.748) and +1.79 (0.9716). Fable's 1.0 is met exactly, with no headroom |
+| Re-light into rest | 1.5 (set) | 0.93 | — |
+
+### Files (task 25c)
+
+- Here:
+  - charts: `a2-final-band.png`, `a2-final-exits-A.png`, `a2-final-handover.png`;
+  - clip: `clips/a2-final-exit-0.9689.mp4`, the 0.9716 exit at 1/8-frame steps, 16× slow, final | ramp alone | prototype dark;
+  - tables: `final-band.txt`, `final-exits.txt`, `final-handover-blotch.txt`, `final-rest.txt`;
+  - tools: `tools/fcap.py`, `flib.py`, `fanalyze.py`, `fexit.py`, `fcharts.py`, `fclip.py`, `knots.py`, `relabel.py`, `fbake.sh`, `fcaps.sh`, `ftestbakes.sh`.
+- Scratch `amend2\final\`: `bin\`, `ws\` (PRLs, logs in `logs\`), `cap\` (about 5,100 frames, 1.3 GB), `base\prl-build-parent.exe`.

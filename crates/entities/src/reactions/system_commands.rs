@@ -62,7 +62,32 @@ pub enum SystemReactionCommand {
         /// It is runtime queue context only, never persistent or on the wire.
         dispatch_source: String,
     },
-    ReturnToFrontend,
+    /// `returnToFrontend()`: navigation outside a session. The drain refuses
+    /// it on a host and a connected client; source and origin choose only how
+    /// loudly that refusal logs.
+    ReturnToFrontend {
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `leaveSession()`: a connected client leaves its session. Membership
+    /// only; role decides what it does, origin only how loudly a no-op logs.
+    LeaveSession {
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `endSession()`: a host ends its session and stays where it is.
+    /// Membership only; role decides what it does, origin only how loudly a
+    /// refusal logs.
+    EndSession {
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
     PopTree,
     /// A `setState` queued for the frame-end drain. Only a queue with no
     /// [`StateWriteSink`] installed produces one; with a sink, the write lands
@@ -471,6 +496,8 @@ pub enum SystemReactionKind {
     LoadLevel,
     RestartLevel,
     ReturnToFrontend,
+    LeaveSession,
+    EndSession,
     SetState,
     SetSentiment,
     AdjustSentiment,
@@ -497,6 +524,8 @@ impl SystemReactionKind {
         Self::LoadLevel,
         Self::RestartLevel,
         Self::ReturnToFrontend,
+        Self::LeaveSession,
+        Self::EndSession,
         Self::SetState,
         Self::SetSentiment,
         Self::AdjustSentiment,
@@ -520,6 +549,8 @@ impl SystemReactionKind {
             Self::LoadLevel => "loadLevel",
             Self::RestartLevel => "restartLevel",
             Self::ReturnToFrontend => "returnToFrontend",
+            Self::LeaveSession => "leaveSession",
+            Self::EndSession => "endSession",
             Self::SetState => "setState",
             Self::SetSentiment => "setSentiment",
             Self::AdjustSentiment => "adjustSentiment",
@@ -555,6 +586,8 @@ impl SystemReactionKind {
             Self::LoadLevel
             | Self::RestartLevel
             | Self::ReturnToFrontend
+            | Self::LeaveSession
+            | Self::EndSession
             | Self::SetSentiment
             | Self::AdjustSentiment
             | Self::SetGhostAudio => SystemReactionClass::HostConsequence,
@@ -612,7 +645,9 @@ impl SystemReactionCommand {
             | Self::ClearText { .. } => SystemReactionClass::MachineLocal,
             Self::LoadLevel { .. }
             | Self::RestartLevel { .. }
-            | Self::ReturnToFrontend
+            | Self::ReturnToFrontend { .. }
+            | Self::LeaveSession { .. }
+            | Self::EndSession { .. }
             | Self::SetSentiment { .. }
             | Self::AdjustSentiment { .. }
             | Self::SetGhostAudio(_) => SystemReactionClass::HostConsequence,

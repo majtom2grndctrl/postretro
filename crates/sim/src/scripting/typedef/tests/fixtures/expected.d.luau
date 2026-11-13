@@ -3891,8 +3891,12 @@ export type PostretroUiModule = {
   loadLevel: (id: string) -> SystemReactionStep,
   --- Reload the active level from retained catalog id or raw dev path. No active level means no-op.
   restartLevel: () -> SystemReactionStep,
-  --- Return to the frontend menu and reload its optional backdrop level.
+  --- Return to the frontend menu and reload its optional backdrop level. Navigation outside a session: a host and a connected client refuse it, so end a co-op run with `{ UI.endSession(), UI.returnToFrontend() }`.
   returnToFrontend: () -> SystemReactionStep,
+  --- Leave the co-op session. Membership only, never navigates: a connected client closes its connection and lands at the frontend as single-player; a host warns and stays; single-player ignores it.
+  leaveSession: () -> SystemReactionStep,
+  --- End the co-op session. Membership only, never navigates: a host closes every client's connection and stays in its level as single-player; a connected client refuses it (it leaves with `leaveSession()`); single-player ignores it.
+  endSession: () -> SystemReactionStep,
   --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
   setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,
   --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.
@@ -3902,7 +3906,7 @@ export type PostretroUiModule = {
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
-  --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
+  --- Reserved button `onPress` action for quitting to the frontend menu, resolved by role: single-player returns to the frontend, a host ends the session then returns, a connected client leaves the session.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",

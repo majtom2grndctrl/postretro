@@ -1243,10 +1243,11 @@ declare OPEN_CONTROLS_ACTION: "ui.openControls"
 --- inside the stripped UI range, while the two type aliases must survive it.
 declare accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string)
 
---- Reserved button `onPress` action that returns to the frontend menu. The App
---- intercepts this exact wire value before named-reaction dispatch. Same
---- lifecycle path as `returnToFrontend()`: unload gameplay, show the declared
---- frontend menu, and reload its optional backdrop level.
+--- Reserved button `onPress` action that quits to the frontend menu. The App
+--- intercepts this exact wire value before named-reaction dispatch and resolves
+--- it by role: in single-player it unloads gameplay, shows the declared frontend
+--- menu and reloads its optional backdrop level; a host ends the session first;
+--- a connected client leaves the session.
 declare QUIT_TO_MENU_ACTION: "ui.quitToMenu"
 
 --- System reaction (M13 Text Entry): open the engine-shipped on-screen
@@ -1281,10 +1282,24 @@ declare function loadLevel(id: string): SystemReactionStep
 declare function restartLevel(): SystemReactionStep
 
 --- System reaction: return to the frontend menu, including its optional
---- declared backdrop level. Use from authored reactions; use
---- `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
---- the same lifecycle path. Pure: returns a SystemReactionStep.
+--- declared backdrop level. Navigation outside a session: a host and a
+--- connected client refuse it, so end a co-op run with `endSession()` then
+--- `returnToFrontend()`. Use `QUIT_TO_MENU_ACTION` for a button that quits to
+--- the menu in any role. Pure: returns a SystemReactionStep.
 declare function returnToFrontend(): SystemReactionStep
+
+--- System reaction: leave the co-op session. Membership only, never
+--- navigates: a connected client closes its connection and lands at the
+--- frontend as single-player; a host warns and stays; single-player ignores
+--- it. Pure: returns a SystemReactionStep.
+declare function leaveSession(): SystemReactionStep
+
+--- System reaction: end the co-op session. Membership only, never navigates:
+--- a host closes every client's connection and stays in its level as
+--- single-player; a connected client refuses it (it leaves with
+--- `leaveSession()`); single-player ignores it. Pure: returns a
+--- SystemReactionStep.
+declare function endSession(): SystemReactionStep
 
 --- Set the live sentiment from faction `from` toward faction `to` at frame end.
 --- The pair is directional and baseline content remains immutable. Negative

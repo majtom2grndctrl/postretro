@@ -374,10 +374,11 @@ export const CLOSE_DIALOG_ACTION = "ui.closeDialog";
 export const EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop";
 
 /**
- * Reserved button `onPress` action that returns to the frontend menu. The App
- * intercepts this exact wire value before named-reaction dispatch. Same
- * lifecycle path as `returnToFrontend()`: unload gameplay, show the declared
- * frontend menu, and reload its optional backdrop level.
+ * Reserved button `onPress` action that quits to the frontend menu. The App
+ * intercepts this exact wire value before named-reaction dispatch and resolves
+ * it by role: in single-player it unloads gameplay, shows the declared frontend
+ * menu and reloads its optional backdrop level; a host ends the session first;
+ * a connected client leaves the session.
  */
 export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
 
@@ -493,11 +494,37 @@ export function restartLevel(): import("../data_script").SystemReactionStep {
 /**
  * Return to the frontend menu, including its optional declared backdrop level.
  * Pure — returns a system reaction (a body on its own or a step in a sequence or
- * array body), no FFI. Use from authored reactions; use `QUIT_TO_MENU_ACTION`
- * for direct button `onPress` values that should take the same lifecycle path.
+ * array body), no FFI. Navigation outside a session: a host and a connected
+ * client refuse it with a warning naming the membership verbs, so end a co-op
+ * run with `[endSession(), returnToFrontend()]`, which runs in every role. Use
+ * `QUIT_TO_MENU_ACTION` for a button that quits to the menu in any role.
  */
 export function returnToFrontend(): import("../data_script").SystemReactionStep {
   return { primitive: "returnToFrontend", args: {} };
+}
+
+/**
+ * Leave the co-op session. Pure — returns a system reaction (a body on its own
+ * or a step in a sequence or array body), no FFI. Membership only: it never
+ * navigates. A connected client closes its connection and, holding no world of
+ * its own, lands at the frontend as single-player; later steps of the same
+ * reaction drop. A host warns and stays (a host ends with `endSession()`).
+ * Single-player ignores it.
+ */
+export function leaveSession(): import("../data_script").SystemReactionStep {
+  return { primitive: "leaveSession", args: {} };
+}
+
+/**
+ * End the co-op session. Pure — returns a system reaction (a body on its own or
+ * a step in a sequence or array body), no FFI. Membership only: it never
+ * navigates. A host closes every client's connection and stays in its level as
+ * single-player, so a later `returnToFrontend()` in the same reaction runs as
+ * single-player. A connected client refuses it (a client leaves with
+ * `leaveSession()`); single-player ignores it.
+ */
+export function endSession(): import("../data_script").SystemReactionStep {
+  return { primitive: "endSession", args: {} };
 }
 
 /**

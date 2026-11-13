@@ -3817,9 +3817,12 @@ impl App {
                         self.enqueue_level_request(LevelRequest::Load(source));
                     }
                 }
-                SystemReactionCommand::ReturnToFrontend => {
+                SystemReactionCommand::ReturnToFrontend { .. } => {
                     self.return_to_frontend();
                 }
+                // Role-resolved leave and end arms land with the leave and end tasks.
+                SystemReactionCommand::LeaveSession { .. }
+                | SystemReactionCommand::EndSession { .. } => {}
                 SystemReactionCommand::PopTree => {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.pop();

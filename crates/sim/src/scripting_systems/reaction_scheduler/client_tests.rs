@@ -347,7 +347,9 @@ impl Machine {
                 SystemReactionCommand::PopTree => "close".into(),
                 SystemReactionCommand::SetState { slot, .. } => format!("set {slot}"),
                 SystemReactionCommand::LoadLevel { .. } => "load".into(),
-                SystemReactionCommand::ReturnToFrontend => "frontend".into(),
+                SystemReactionCommand::ReturnToFrontend { .. } => "frontend".into(),
+                SystemReactionCommand::LeaveSession { .. } => "leave".into(),
+                SystemReactionCommand::EndSession { .. } => "end".into(),
                 other => format!("{other:?}"),
             })
             .collect()
@@ -382,7 +384,8 @@ fn tail_quiet(capture: &LogCapture) {
 // AC 10: a UI press plays its click, drops the host-only load after the wait
 // and warns once, naming the reaction and step; a second press warns no
 // further. Fired by a shared-state crossing it warns nothing above debug.
-// `returnToFrontend` in its place lands on the client 300 ms later.
+// `leaveSession` and `returnToFrontend` in its place land on the client 300 ms
+// later, where the app drain decides what each does by role.
 #[test]
 fn ui_press_tail_drops_a_level_load_and_warns_once() {
     let press = || {
@@ -428,17 +431,64 @@ fn ui_press_tail_drops_a_level_load_and_warns_once() {
         vec![
             sound("click"),
             wait(300.0),
+            system("leaveSession", json!({})),
             system("returnToFrontend", json!({})),
         ],
     )]);
+    let capture = LogCapture::start();
     client.fire("press", own_state());
     client.own_ticks(17);
     assert_eq!(client.kinds(), ["play click"]);
     client.own_ticks(2);
     assert_eq!(
         client.kinds(),
-        ["play click", "frontend"],
-        "the client returns itself"
+        ["play click", "leave", "frontend"],
+        "the client lands its own membership and navigation steps"
+    );
+    tail_quiet(&capture);
+}
+
+// AC 8 (scheduler half, pin P21): a run's end `[wait(500), endSession(),
+// returnToFrontend()]` on a client. `endSession` is the host's, so the client
+// landing drops it and lands `returnToFrontend` for the app drain to refuse.
+// Fired by `levelLoad` the drop logs at debug only; fired by a UI press it
+// warns once, naming `leaveSession`, the client's own membership verb.
+#[test]
+fn client_run_end_tail_logs_by_origin() {
+    let run_end = |name: &str| {
+        body(
+            name,
+            vec![
+                wait(500.0),
+                system("endSession", json!({})),
+                system("returnToFrontend", json!({})),
+            ],
+        )
+    };
+
+    let mut client = Machine::client(vec![run_end("levelLoad")]);
+    let capture = LogCapture::start();
+    client.reveal_at(0);
+    client.level_load();
+    client.host_ticks(0, 40);
+    assert_eq!(client.kinds(), ["frontend"]);
+    capture.assert_logged(
+        log::Level::Debug,
+        "client landing did not apply `endSession`",
+    );
+    tail_quiet(&capture);
+    drop(capture);
+
+    let mut client = Machine::client(vec![run_end("run.end")]);
+    let capture = LogCapture::start();
+    client.fire("run.end", own_state());
+    client.own_ticks(40);
+    assert_eq!(client.kinds(), ["frontend"]);
+    assert_eq!(
+        warnings(&capture),
+        [
+            "[Scheduler] reaction `run.end`: step `endSession` after a `wait` lands only on the host, and this own-state tail fires for this machine's player; it is dropped here; a client leaves with `leaveSession`"
+        ]
     );
 }
 
@@ -637,6 +687,49 @@ fn s26_late_joiner_converges_state_and_skips_presentation() {
     assert_eq!(client.kinds(), ["show d"], "the joiner's install opens `d`");
     client.host_ticks(600, 601);
     assert_eq!(client.kinds(), ["show d", "close"], "`k` never plays");
+}
+
+// AC 6: a late joiner whose catch-up holds a due `leaveSession` stays
+// connected: Converge skips it and `returnToFrontend` at debug, and still
+// closes the dialog. A client live before the beat lands all three.
+#[test]
+fn late_joiner_converge_skips_due_leave_session() {
+    let level = || {
+        vec![body(
+            "levelLoad",
+            vec![
+                show("d"),
+                wait(1000.0),
+                system("leaveSession", json!({})),
+                system("returnToFrontend", json!({})),
+                close(),
+            ],
+        )]
+    };
+
+    let mut client = Machine::client(level());
+    client.reveal_at(600);
+    client.level_load();
+    let capture = LogCapture::start();
+    client.host_ticks(600, 601);
+    assert_eq!(
+        client.kinds(),
+        ["show d", "close"],
+        "the joiner never leaves"
+    );
+    assert_eq!(client.scheduler.pending_len(), 0);
+    capture.assert_logged(
+        log::Level::Debug,
+        "client landing did not apply `leaveSession`",
+    );
+    tail_quiet(&capture);
+    drop(capture);
+
+    let mut client = Machine::client(level());
+    client.reveal_at(0);
+    client.level_load();
+    client.host_ticks(0, 61);
+    assert_eq!(client.kinds(), ["show d", "leave", "frontend", "close"]);
 }
 
 // S29: a joiner between two waits writes the due local slot at its reading,

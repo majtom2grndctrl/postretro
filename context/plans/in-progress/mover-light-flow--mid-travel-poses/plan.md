@@ -533,3 +533,37 @@ One reviewer (opus, tracer + adversarial), read-only. No 🔴; round-2 fixes con
 - **Gates:** fmt, clippy (with and without capture), compiler mover 197, `tests/mover_*` 64, `surface_radiance` + geometry knots + AC 19 86, parity 3/3, AC 7/8, knot counts, renderer C10 tests.
 - **Disk:** the agent deleted 9.6 GB of `target/debug/deps` artifacts over 2 days old to stay above 15 GB.
 
+
+## Review panel, round 5 (2026-11-13, over f712cfc14..86440432e, Amendment 2)
+
+**Panel.** Ten reviewers over three slices plus a seam pass:
+- Correctness tracers: band nudge; dark state and edge copy; renderer compose; seam.
+- Contract verifiers: id 57 at epoch 7; IP and the ruled Decisions.
+- One adversarial tester.
+- Three hygiene and drift reviewers.
+
+The verdict was "request changes". Wire bytes agree across every layer, and the IP rules and ruled Decisions hold at runtime.
+
+**Preflight** (86440432e) passed: fmt (one reorder fixed), clippy, workspace tests (15,857 passed), the release check and the crate graph.
+
+**Fixed (3fd1111f0):**
+- **Edge copy over read knots.** Three reviewers found it independently; see Corrections. Runs and sources now come from `effective_knots`. New tests cover ramped runs and squeezed sources.
+- **Tests and gates.**
+  - One-pose-run ties use a tolerance.
+  - The stage test asserts `mid_copied > 0`, and the skip test checks depth after skipping.
+  - A GPU test covers two movers over several masked probes.
+  - The rest test relabels baselines to the current epoch in code.
+  - The AC 36 long-interval gate tolerates f32 rounding, and its shared-miss clause compares the same receivers.
+- **Comment drift.** Fixed across compiler, format and renderer (🔴 `OUTSIDE_KNOT_DISTANCE_M`; the stale edge-copy and across-mark text). Durable comments no longer cite the plan.
+
+**Gate:** check clean; compiler `mover` 210 passed, format 40, loader 52, renderer `mover` 130 plus `kinematic_brush` 21; clippy clean after one test lint fix.
+
+**Waiting on the owner:**
+- **Grazing bands.** A face parallel to travel that grazes a layer keeps a probe in band for the whole pass. The nudge then moves a pose far, or refuses with advice that can't succeed. Recommended: nudge crossings only, warn on grazes (authored and automatic), and a bake-side follow-up for band probes' ray origins.
+- **Short enclosure runs.** A run of one or two poses is all edge copy, so it gets no dark pose; that is the ruled rule, word for word. The owner is reviewing it in-engine.
+
+**Left:**
+- The `SH_NORMAL_OFFSET_M` rename: the name is shared across four shaders and three tests, all already in cell units.
+- Per-run enclosure caching beyond (mover, cell).
+- `KnotCounts.even` still labels moved authored poses "even".
+- The neighbour-blocked nudge test: it's in `layer_bands.rs`, which is held for the grazing ruling.

@@ -19,19 +19,19 @@ When this is done:
 - Enough damage during a stance or another short activity staggers the enemy.
 
 ## Decisions
-- **Attacks are typed handles.** `defineAttack(params)` declares an attack; in TypeScript the binding names it, as `defineAttackToken` and `defineDamageType` do (`scripting.md` §2), and Luau passes the name explicitly. A behavior lists its attacks, `attacks: [jab, slam]`, and every reference takes the handle: `action: { attack }`, `attackTurn`, `attackTurnFree`, `attackTurnHeld`, and an attack's `stance`.
+- **Attacks are typed handles.** `defineAttack(params)` declares an attack; in TypeScript the binding names it, as `defineAttackToken` and `defineDamageType` do (`scripting.md` §2), and Luau passes the name explicitly. Every reference takes the handle: a row's `to`, `action: { attack }`, `attackTurn`, `attackTurnFree` and `attackTurnHeld`. A behavior registers every attack it references, so an `attacks: [...]` list is optional.
   - The string form retires. Shipped content, `sdk/behaviors/reference` and `docs/` move to handles in this brief.
   - A handle crosses as its name. The SDK builds the descriptor's name-keyed `attacks` map, so the wire and the runtime are unchanged; only the SDK, its generated types and its Rust-side type registry change.
   - Handles lower to names wherever an entity enters the mod: `defineEntity` and `defineMod`'s `entities` both lower them, and both reject a bare string with a pathed error, in TypeScript as in Luau.
   - One handle may serve several archetypes. Two handles of one name in one archetype load only if their declarations are equal, since a Luau re-`require` makes copies; unequal declarations reject load.
   - A misspelled handle must be observable to agents. In Luau a misspelled global reads `nil`, so a nil where a handle is expected rejects with a pathed error, and a nil table field, which reads as absent, is caught by a check agents run.
 - **A stance is SDK vocabulary, not an engine noun.** `defineStance(options)` declares a pose: its animation state, its sound, its hold range and its `breakOn`. It is named by its binding like `defineAttack`. The engine sees only activities. This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
-- **An attack names its stance.** A stance is a prerequisite of an attack. An attack's optional `stance` names the pose it starts from, and the attack owns its strike: `release`, `recover` and `after`. `release` is required exactly when `stance` is set; either alone rejects load. Several attacks may share one stance, so the pose names the threat and the strike stays a mix-up.
-- **An attack may land in another stance.** An attack's optional `after` names where it lands when its recovery ends: a sibling activity, or a `Stance`, whose pose it then rests in. So a slam can land coiled, ready for a lunge. Omitted, the attack returns to the activity that started it.
-- **Rows target attacks and stances directly.** A row's `to` takes an `Attack` or a `Stance` as well as an activity name: `{ to: slam }` strikes, and `{ to: overhead }` rests in the pose without committing to an attack. `defineEntity` and `defineMod` expand each targeted attack and stance into activities in the level that targets it; authors never write or name them.
-- **Resting in a stance.** A stance's rest is an unmarked activity holding the pose. Rows leaving it are authored under the stance's name, as any activity's are, and a row from it to an attack on that stance commits from the same pose. A higher-ranked enemy rests to wait for its turn, so the release stays only partly predictable; a basic enemy strikes straight from its approach. A rest with no way out (no row of its own, and no `"*"` or ancestor row) rejects load.
-- **The enemy commits when it strikes.** An attack's turn must be held through its tell (below), so a strike commits on entry. Each struck attack gets its own hold, `<attack>_<stance>` (so `slam_overhead` names the tell in traces), posed identically to that stance's rest and every other attack on it, then `<attack>_release` and `<attack>_recover`. A pose plays its clip and sound once: moving from a rest into an attack on the same stance restarts neither. Two enemies racing for a shared stance can drop the pose for a tick and re-enter through the sibling attack, playing its sound twice; that is accepted (pin P24).
-- **Return is per start.** An attack with no `after` returns to the activity that started it. When several activities strike it, the SDK generates one cycle per starting activity; traces still read `<attack>_<stance>`.
+- **An attack begins and ends in a stance.** An attack's optional `beginningStance` names the pose it starts from, and the attack owns its strike: `release` and `recover`. `release` is required exactly when `beginningStance` is set; either alone rejects load. `endingStance` names the pose it rests in once its recovery ends, and defaults to `beginningStance`, so a slam can land coiled, ready for a lunge. Several attacks may share a beginning stance, so the pose names the threat and the strike stays a mix-up.
+- **Rows target stances and attacks directly.** A row's `to` takes a `Stance` or an `Attack` as well as an activity name. `{ to: overhead }` takes the pose; `{ to: slam }` strikes. `defineEntity` and `defineMod` expand each targeted stance, and the attacks struck from it, into activities in that level; authors never write or name them.
+- **A stance is a rest.** A stance's rest is an unmarked activity holding the pose; it holds no turn. Rows leaving it are authored under the stance's name, as any activity's are. A higher-ranked enemy rests a while to wait for its turn, so the release stays only partly predictable; a basic enemy's rest strikes on its first evaluation. A rest with no way out (no row of its own, and no `"*"` or ancestor row) rejects load.
+- **Strikes come only from rests.** A row to an attack is legal only out of the rest of its `beginningStance`; anywhere else it rejects load. So every strike starts from its pose, and every exit from a strike lands in a pose.
+- **A row to an attack carries its gates.** It is enabled only while that attack's turn is free and the target is within the attack's `maxRange`, when it declares one; `when` adds only the author's own conditions. `attackTurnFree` stays for guards elsewhere.
+- **The enemy commits when it strikes.** An attack's turn must be held through its tell (below), so a strike commits on entry. Each attack gets its own hold, `<attack>_<stance>` (so `slam_overhead` names the tell in traces), posed as its stance's rest, then `<attack>_release` and `<attack>_recover`. A pose plays its clip and sound once: moving between a stance's rest and its holds restarts neither. Two enemies racing for a shared stance can lose the race; the loser drops back into the rest, keeping the pose, and may strike again through the sibling attack (pin P24).
 - **A stance can set the body's stance.** An optional `stance: "stand" | "crouch"` on `defineStance` sets the activity property `stance` (`drafts/E10--enemy-cover`) on the rest, the holds and the releases; a recover always stands. Whichever of the two briefs lands second wires the option.
 - **Defaults for novices.** `holdMs` and `recover` are optional, and experts override them.
   - An omitted `holdMs` takes a seeded range above the co-op floor.
@@ -48,10 +48,9 @@ When this is done:
 - **Per-activity speed is an engine field.** Any activity takes an optional `speed`, a positive multiplier on the archetype's `moveSpeed` while it is the innermost activity that sets one. Omitted everywhere, it is 1. The builder writes `release.speed` onto the release only.
   - **Witting divergence.** `done/E10--hierarchical-behavior-statecharts` and `done/E10--enemy-behavior-descriptor-syntax/sample.ts` placed an absolute per-activity `speed` that graph-wide `moveSpeed` would migrate into. A multiplier lets one attack's release serve archetypes of different speeds, so the owner chose it (2026-11-11) and gave up that endpoint.
 - **A strike takes an attack turn.** The SDK marks an attack's hold, release and recover `attackTurn` with that attack (`done/E10--enemy-combat-movement`), so one turn spans the cycle and holds its draws. A rest is unmarked and holds no turn.
-  - A strike never releases without its turn. So each hold also leaves when `attackTurnHeld` for its attack is false one tick after entry, the facts' lag, back to where the strike started: the activity or the rest. The turn is the whole promise: cooldown, range, sight and facing still gate the strike, and `docs/` says a release can whiff.
-  - Authors gate each `{ to: attack }` row on `attackTurnFree(attack)`.
+  - A strike never releases without its turn. So each hold also leaves when `attackTurnHeld` for its attack is false one tick after entry, the facts' lag, back to its stance's rest. The turn is the whole promise: cooldown, range, sight and facing still gate the strike, and `docs/` says a release can whiff.
   - **A strike works wherever it sits.** While an activity marked `attackTurn` is on the path, the enemy keeps its target and committed aim as it does under an engaging ancestor, so a strike outside `engage` still releases (`index.md` §2, Designers over structure).
-  - **Chains land in a rest.** An `after` may name the attack's own stance or another; the enemy lands in that rest, unmarked, so no turn is held across a chain. An `after` naming an activity the SDK generates rejects load.
+  - **Chains land in a rest.** Every attack ends in its `endingStance`'s rest, unmarked, so no turn is held across a chain or a repeat of the same attack.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
   - It is scope-relative like `timeInActivityMs`, drawn on that level's entry and fixed until that level's activity is left.
   - It is a fact the engine computes, not an IR node.
@@ -84,13 +83,13 @@ When this is done:
   - **Stagger mid-chase.** On a long activity the sum grows without limit; a recency-windowed damage fact can be appended later.
   - **Player guard and parry.** "For Honor–style" here means the enemy's tell, not a directional player defense.
   - **An engine-drawn release indicator.** The release activity's own sound and animation are the last-instant cue.
-  - **Typed activity, state and sound names.** `after`, `breakOn.to`, `animation` and `sound` stay strings: activities are keys in the same file's maps, and states and sounds resolve against content. Attacks cross files and archetypes, which is where a typo hid.
+  - **Typed activity, state and sound names.** `breakOn.to`, an activity-name `to`, `animation` and `sound` stay strings: activities are keys in the same file's maps, and states and sounds resolve against content. Attacks cross files and archetypes, which is where a typo hid.
 
 ### Scripting surface
 ```ts
 // Proposed design. Illustrative: a brute-like offense; the shipped brute's graph is the executor's.
 // Each `animation` names a state the archetype declares, here each playing its namesake clip.
-import { attackTurnFree, brain, defineAttack, defineStance } from "postretro";
+import { brain, defineAttack, defineStance } from "postretro";
 import { heavy, melee } from "./attack-tokens";
 
 // Poses. Each is named by its binding: "overhead", "coil", "bellow".
@@ -103,33 +102,31 @@ const overhead = defineStance({
 const coil = defineStance({ animation: "swipe_windup" });
 const bellow = defineStance({ animation: "roar" });
 
-// Strikes. Two start from `overhead`: same pose, different hit.
+// Strikes. Two begin in `overhead`: same pose, different hit.
 const slam = defineAttack({
   draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800,
-  stance: overhead,
+  beginningStance: overhead,
+  endingStance: coil,                    // lands coiled, ready to lunge
   release: { animation: "smash", ms: 150 },
-  recover: { animation: "idle", ms: 300 },
-  after: coil,                           // lands coiled, ready to lunge
 });
 const sweep = defineAttack({
   draws: [melee], damage: 8, maxRange: 3.5, cooldownMs: 1200,
-  stance: overhead,
-  release: { animation: "swipe", ms: 120 }, // after omitted: back where it started
+  beginningStance: overhead,             // ends back in `overhead`
+  release: { animation: "swipe", ms: 120 },
 });
 const lunge = defineAttack({
   draws: [melee], damage: 10, maxRange: 3.5, cooldownMs: 1500,
-  stance: coil,
+  beginningStance: coil,
   release: { animation: "swipe", ms: 120 },
 });
 const charge = defineAttack({
-  draws: [heavy], damage: 18, maxRange: 1.5, cooldownMs: 4000,
-  stance: bellow,
+  draws: [heavy], damage: 18, maxRange: 12, cooldownMs: 4000,
+  beginningStance: bellow,
   release: { animation: "run", motion: "chaseTarget", speed: 2, ms: 1500 },
   recover: { animation: "idle", ms: 600 }, // required after a moving release
 });
 
-// behavior: { attacks: [slam, sweep, lunge, charge], ... }
-// behavior.activities.engage.layers.offense
+// behavior.activities.engage.layers.offense; the behavior registers every attack its rows strike
 offense: {
   initial: "approach",
   activities: {
@@ -138,32 +135,35 @@ offense: {
   },
   transitions: {
     approach: [
-      // one roll per entry of `approach`
-      { to: slam, when: attackTurnFree(slam).and(brain.targetDistance.le(3.5)).and(brain.activityRoll.lt(0.4)) },
-      { to: overhead, when: brain.targetDistance.le(3.5) },  // rest in the pose: dread
-      { to: charge, when: attackTurnFree(charge).and(brain.targetDistance.ge(8)) },
+      { to: overhead, when: brain.targetDistance.le(3.5) },  // take the pose
+      { to: bellow, when: brain.targetDistance.ge(8) },
     ],
-    overhead: [                          // rows out of the rest, under the stance's name
-      { to: slam, when: attackTurnFree(slam).and(brain.activityRoll.lt(0.5)) },
-      { to: sweep, when: attackTurnFree(sweep) },
+    // Rows out of each rest. A row to an attack also waits for its turn and its range.
+    overhead: [
+      { to: slam, when: brain.activityRoll.lt(0.5) },        // one roll per entry of the rest
+      { to: sweep },
       { to: "approach", when: brain.targetDistance.gt(4.5) },
     ],
     coil: [
-      { to: lunge, when: attackTurnFree(lunge) },
+      { to: lunge },
       { to: "approach", when: brain.timeInActivityMs.ge(800) },
+    ],
+    bellow: [
+      { to: charge },
+      { to: "approach", when: brain.timeInActivityMs.ge(1500) },
     ],
     flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(450) }],
   },
 },
 ```
-The Luau twin passes names explicitly (`local overhead = defineStance("overhead", { ... })`, `defineAttack("slam", { ... })`) and writes guards with Luau syntax (`brain.targetDistance:le(3.5)`). A stance's rest is keyed by its name in `transitions`, as any activity is. `after` and `breakOn.to` take sibling activity names, and `after` also a `Stance`; `then` is avoided because it is a Luau keyword.
+The Luau twin passes names explicitly (`local overhead = defineStance("overhead", { ... })`, `defineAttack("slam", { ... })`) and writes guards with Luau syntax (`brain.targetDistance:le(3.5)`). A stance's rest is keyed by its name in `transitions`, as any activity is. `breakOn.to` takes a sibling activity name.
 
 ## Acceptance
 ### Automated
 **Typed attacks**
 - [ ] In TypeScript, `const slam = defineAttack({ ... })` compiles to `defineAttack("slam", { ... })`, and an explicit name is kept; `defineStance` compiles the same way, and its name appears in its holds' keys. A `defineAttack` or `defineStance` call outside a direct top-level binding throws the binding-name diagnostic. Luau passes the name and produces the identical descriptor.
-- [ ] A behavior listing `attacks: [jab, slam]` serializes to the same name-keyed `attacks` map a hand-written descriptor carries today; the engine-side descriptor is unchanged.
-- [ ] A string where an attack handle is expected (the behavior's `attacks` list or a name-keyed `attacks` map, `action.attack`, `attackTurn`, `attackTurnFree`, `attackTurnHeld`, an attack's `stance`, a row's `to` naming an attack) fails type-checking in TypeScript and, in both runtimes, rejects load with a pathed error, through `defineEntity` and through a bare entity in `defineMod`. A handle not listed in the archetype's `attacks` rejects load naming it. Two listed handles sharing a name load when their declarations are equal and reject otherwise.
+- [ ] A behavior that references `jab` and `slam` (by row, `action`, `attackTurn` or turn fact) serializes to the same name-keyed `attacks` map a hand-written descriptor carries today, with or without an `attacks: [...]` list; the engine-side descriptor is unchanged. An explicit list may also carry an attack no row references.
+- [ ] A string where an attack handle is expected (the behavior's `attacks` list or a name-keyed `attacks` map, `action.attack`, `attackTurn`, `attackTurnFree`, `attackTurnHeld`, an attack's `beginningStance` or `endingStance`) fails type-checking in TypeScript and, in both runtimes, rejects load with a pathed error, through `defineEntity` and through a bare entity in `defineMod`. A handle not listed in the archetype's `attacks` rejects load naming it. Two listed handles sharing a name load when their declarations are equal and reject otherwise.
 - [ ] A `nil` passed where a handle is expected (`attackTurnFree`, `attackTurnHeld`) rejects with a pathed error, and a misspelled Luau handle in a table field is reported by the check agents run.
 - [ ] One handle listed by two archetypes loads in both, and each resolves it by name.
 - [ ] Every shipped enemy, `sdk/behaviors/reference` and `docs/` use handles; grep gate: no shipped script, `docs/` page or generated typedef comment passes or shows an attack as a string.
@@ -171,33 +171,33 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 **Expansion**
 - [ ] `defineStance`, `defineAttack` and the expanded behavior emit identical canonical descriptors in TypeScript and Luau, and the Scripting surface example runs as `content/dev` content.
 - [ ] With a fixed `holdMs` and a `breakOn`, a level whose row targets one attack expands to a checked-in hand-written fixture of its rest-free cycle (hold, release, recover) and their rows, row order included; a level whose row targets a stance adds that stance's rest.
-- [ ] `{ to: slam }` enters `slam`'s hold; `{ to: overhead }` enters `overhead`'s rest, which holds no turn; a row from the rest to an attack on that stance enters its hold with no clip restart and no second play of the stance sound.
-- [ ] A level gains only the rests and cycles its own rows (and its attacks' `after`s) reach; a level that targets nothing gains nothing. An authored activity whose name collides with a generated one rejects load naming both.
+- [ ] `{ to: overhead }` enters `overhead`'s rest, which holds no turn; `{ to: slam }` out of that rest enters `slam`'s hold. Moving between a rest and its holds, either way, restarts no clip and plays no second stance sound.
+- [ ] A row to an attack is enabled only while that attack's turn would be granted and the target is within its `maxRange` (when declared), and also needs its `when`: with the turn free and the target one metre out of range, it never passes; with both met and `when` false, it never passes. An attack with no `maxRange` adds no range gate.
+- [ ] A level gains only the rests its rows reach (directly, or through an attack's `endingStance`) and the strikes rows out of them reach; a level that targets nothing gains nothing. An authored activity whose name collides with a generated one rejects load naming both.
 - [ ] Two attacks sharing a stance get separate holds with the same animation state, sound, hold range, `breakOn` row and body `stance` as the stance's rest; each hold carries its own attack's `attackTurn`.
 - [ ] Two enemies racing for a shared stance under one token: the loser leaves its hold, re-enters through the sibling attack when that turn is free, and plays the stance sound once per entry (pin P24).
-- [ ] An attack with `after: coil` lands in `coil`'s rest when its recovery ends, holding no turn; one with `after: "approach"` lands there; one with no `after` returns to the activity that started it. Struck from two activities, it gets one cycle per start and each returns to its own.
-- [ ] An attack whose `after` names its own stance lands in that rest, and its turn ends there: a waiter for the same token is granted once the refresh lapses, though the enemy re-strikes from the rest.
+- [ ] An attack with `endingStance: coil` rests in `coil` when its recovery ends, holding no turn; one with no `endingStance` rests in its `beginningStance`, and its turn ends there: a waiter for the same token is granted once the refresh lapses, though the enemy may re-strike from the rest.
 - [ ] A rest with no row of its own and no `"*"` or ancestor row rejects load naming the stance.
 - [ ] Once `E10--enemy-cover` has landed, `stance: "crouch"` sets `stance` on the rest, the holds and the releases. Recovers stand even under an outer crouch. Before then, the option rejects load with a pathed error.
 - [ ] These reject load with a pathed error:
-  - an `after` or `breakOn.to` naming no sibling activity, or naming an activity the SDK generates;
-  - a row targeting an attack with no `stance`, or an attack or stance not declared by the archetype;
+  - a `breakOn.to` naming no sibling activity, or naming an activity the SDK generates;
+  - a row to an attack from anywhere but its `beginningStance`'s rest, or to an attack with no `beginningStance`;
   - `holdMs` with min > max, or a negative bound;
   - a `breakOn.damage` of zero or below;
   - a negative `release.ms` or `recover.ms`;
   - an activity or `release` `speed` of zero or below;
   - a `release.motion` other than `hold`, `chaseTarget`, `strafe` or `reposition`, naming `release.motion`;
   - a moving `release` without `recover`;
-  - an attack with `stance` and no `release`, or `release` and no `stance`;
+  - an attack with `beginningStance` and no `release`, `release` and no `beginningStance`, or `endingStance` without `beginningStance`;
   - any non-finite value.
-- [ ] An attack whose `after` lands in another stance's rest ends its turn on that transition's tick, or when its weapon execution ends if still running; a strike from that rest requests the second attack's turn, and without a grant its hold returns to the rest and its release never fires.
+- [ ] An attack whose `endingStance` is another stance ends its turn on the tick it enters that rest, or when its weapon execution ends if still running; a strike from that rest requests the second attack's turn, and without a grant its hold returns to the rest and its release never fires.
 - [ ] A strike at the root level beside a chase, outside any engaging ancestor, keeps its target and committed aim through a co-op target re-rank and one tick out of sight, and releases (pin P23).
 - [ ] Every generated rest, hold, release and recover carries `motion: "hold"`. `release.motion` and `release.speed` replace it on the release only; omitted, the release holds at speed 1. A strike entered from a chasing level stays planted.
 - [ ] A test fails if the co-op floor falls below the remote interpolation buffer ceiling, and passes when the floor is above it.
 - [ ] A test fails if the builder's default hold minimum, read from `defineStance` in each runtime, falls below the co-op floor.
-- [ ] A stance given only `animation`, and an attack given only its engine fields, `stance` and `release`, load silently. The hold gets the seeded range, above the floor, and the recover holds the release's state for the seeded duration.
-- [ ] A strike's hold, release and recover carry `attackTurn`, naming their attack; a rest carries none. A strike entered without a turn, having lost a same-tick grant, leaves its hold for where it started (the activity or the rest) on the first evaluation that can see the missing turn. Its release never fires.
-- [ ] When the hold's timer and its missing turn pass on one evaluation, the hold leaves for where it started and the release is never entered (pin P16).
+- [ ] A stance given only `animation`, and an attack given only its engine fields, `beginningStance` and `release`, load silently. The hold gets the seeded range, above the floor, and the recover holds the release's state for the seeded duration.
+- [ ] A strike's hold, release and recover carry `attackTurn`, naming their attack; a rest carries none. A strike entered without a turn, having lost a same-tick grant, leaves its hold for its stance's rest on the first evaluation that can see the missing turn. Its release never fires.
+- [ ] When the hold's timer and its missing turn pass on one evaluation, the hold leaves for its stance's rest and the release is never entered (pin P16).
 - [ ] When the break threshold and the missing turn pass on one evaluation, the hold leaves for `breakOn.to` (pin P22).
 - [ ] A strike hold seated by a spawn or a reseat, with a hold threshold of 0, does not enter its release before its turn reads held (pin P21).
 - [ ] `release.ms: 0` and `recover.ms: 0` load. The release fires at most once, on its entry tick, and each leaves on its first evaluation after entry (pin P20).
@@ -279,12 +279,13 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | attack declaration | binding-name sugar list (`crates/script-compiler`); Luau export list (`luau_prelude.rs`); serializes to `BehaviorGraphDescriptor::attacks` by name | `"attacks": { "<name>": { ... } }` unchanged | `defineAttack(params): Attack`, binding-named; `defineAttack(name, params)` | `defineAttack(name, params)` | n/a |
-| attack fields (SDK only) | none | stripped before the descriptor | `stance: Stance`, `release { animation, ms, motion, speed }` (motion: `hold` \| `chaseTarget` \| `strafe` \| `reposition`), `recover { animation, ms }`, `after: string \| Stance` | same | n/a |
-| row targets | none (expanded to activity names) | the generated activity's name | `to: string \| Attack \| Stance` | same | n/a |
-| attack references | SDK type registry (`crates/sim`) and typedef templates (`crates/scripting-core`) take handle types; runtime unchanged | the attack's name | `attacks: Attack[]`; `action: { attack: Attack }`; `attackTurn: Attack`; `attackTurnFree(a)`, `attackTurnHeld(a)` take a handle | same | n/a |
+| attack fields (SDK only) | none | stripped before the descriptor | `beginningStance: Stance`, `endingStance?: Stance` (defaults to `beginningStance`), `release { animation, ms, motion, speed }` (motion: `hold` \| `chaseTarget` \| `strafe` \| `reposition`), `recover { animation, ms }` | same | n/a |
+| row targets | none (expanded to activity names) | the generated activity's name | `to: string \| Stance \| Attack`; a row to an `Attack` only out of its `beginningStance`'s rest, gated on its turn and `maxRange` | same | n/a |
+| attacks list | none | the name-keyed map | `attacks?: Attack[]`, inferred from references when omitted | same | n/a |
+| attack references | SDK type registry (`crates/sim`) and typedef templates (`crates/scripting-core`) take handle types; runtime unchanged | the attack's name | `action: { attack: Attack }`; `attackTurn: Attack`; `attackTurnFree(a)`, `attackTurnHeld(a)` take a handle | same | n/a |
 | stance declaration | binding-name sugar list; Luau export list | — | `defineStance(options): Stance`, binding-named; `defineStance(name, options)` | `defineStance(name, options)` | n/a |
 | stance options | none | — | `animation`, `sound`, `stance`, `holdMs`, `breakOn { damage, to }` | same | n/a |
-| generated names | none | activity keys `<stance>` (rest), `<attack>_<stance>`, `<attack>_release`, `<attack>_recover`; per-start copies are the executor's to name | same | same | n/a |
+| generated names | none | activity keys `<stance>` (rest), `<attack>_<stance>`, `<attack>_release`, `<attack>_recover`; generated once per level | same | same | n/a |
 | activity speed | `BehaviorActivityDescriptor::speed: Option<f32>` | `"speed"` | `speed?: number` | `speed` | n/a |
 | roll fact | `BRAIN_INPUTS` tail | `"@brain.activityRoll"` | `brain.activityRoll` | `brain.activityRoll` | n/a |
 | damage fact | `BRAIN_INPUTS` tail, after the roll | `"@brain.damageInActivity"` | `brain.damageInActivity` | `brain.damageInActivity` | n/a |

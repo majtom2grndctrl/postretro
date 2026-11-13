@@ -31,6 +31,8 @@ read at: 83dfb5317 (no source change since the brief's 1f24e7926; every cited sy
 
 - **A 178-pose room truth is not clean (task 23 scan).** Consensus and the handoff cite 178 as clean. The exact band scan puts poses 21, 84 and 172 in a layer's band. The consensus conclusion survives: 178's band poses fall away from the late-trip ceiling. Only 76 is cited as clean from here.
 
+- **Edge copy reads the ramp (review round 5, three reviewers).** The Decision says "the first and last enclosing knots" of each run. The code found runs over raw path knots. Compose reads only the knots that survive the author ramp (`effective_knots`). So a run edge squeezed onto t′ 0 or 1 carried a copy nobody read, and the dip came back at a ramped edge. The fix finds runs and their clear neighbours over the knots compose reads, which keeps the Decision's meaning. No dev map sets `light_ramp`, so shipped bytes and task 25c's captures are unchanged.
+
 ## Delegated answers
 
 - **Band, for authored poses (task 23).** A pose holds a probe in the band when it neither encloses it (`Pose::encloses` at `enclosure_inset`) nor clears it (`clear_of_band`, lift band `RAY_EPSILON + enclosure_inset`). Seams count as band, since a probe in a seam sliver is in solid but enclosed by neither brush. Such a pose moves until one brush encloses it, matching the "Enclosure seams" correction.

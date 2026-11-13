@@ -28,10 +28,10 @@ pub(crate) use animated::{AnimatedScene, gate_animated};
 pub(crate) use cache::{
     ANIMATED_MEMO, GateMemo, PROBE_MEMO, TEXEL_MEMO, fold_gate_light, gate_key_hasher,
 };
-pub(crate) use lights::{GateLight, GateLights};
-pub(crate) use mid_pose_only::MidPoseOnlyLights;
 #[cfg(test)]
 pub(crate) use layer_bands::poses_in_band;
+pub(crate) use lights::{GateLight, GateLights};
+pub(crate) use mid_pose_only::MidPoseOnlyLights;
 #[cfg(test)]
 pub(crate) use placement::even_knots;
 pub(crate) use placement::{KnotCounts, MAX_POSES};

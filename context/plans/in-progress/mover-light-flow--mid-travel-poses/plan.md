@@ -168,7 +168,16 @@ The executor drafts the amendment's Decisions and Acceptance rows into `index.md
     - Motion proof under `--ignored`: 2 passed, every share the same as task 22.
     - New: the floor at t′ 0.987 (11.52 against pre-amendment 20.92) passes by the 1.5 clause alone. Ceiling and west values rose 0.4–0.5 levels, now 2.54 and 1.67.
   - **For landing.** `build_pipeline.md` :246 and :557 still describe across marks. The gate report's `mid_pose_only_lights` can rise, since an enclosing mid pose now counts.
-  - **Build note.** The worker's `git rm` of `wire/across.rs` was swept into e6d763eda while staged. So e6d763eda, c16032f55 and 3761fed68 don't build alone; the 25b commit restores the build; **25c** after both, the `--release` capture A/B against dense truths under the new rule, proposed bars for the Amendment 2 rows, and the AC 1 re-run |
+  - **Build note.** The worker's `git rm` of `wire/across.rs` was swept into e6d763eda while staged. So e6d763eda, c16032f55 and 3761fed68 don't build alone; the 25b commit restores the build; **25c** after both, the `--release` capture A/B against dense truths under the new rule, proposed bars for the Amendment 2 rows, and the AC 1 re-run. **Done (ce37a7921):**
+  - **Checks and bakes.** Workspace check clean. Cold `--release` bakes: setpiece 54.5 s, enemy-movers 16.5 s. No band nudges.
+  - **Edge-copy gate.** No regression against the prototype dark state, so no bounding pose.
+  - **Exits and entries.** No dip at 1/8-frame sampling: the worst is −1.0, against −3.5 for the prototype.
+  - **Re-light into rest.** 0.93 per frame.
+  - **Rest.** Frames identical to ramp alone.
+  - **Test rows.** AC 1 is bit for bit on all three maps (baseline `prl-build` at 27c92488f). K1, K2, K3, D2, C7 and C10 pass: BC6H at worst 0.901 of the bound, uncompressed bit for bit, frame row 17 against a bar of 19.
+  - **Bars.** The owner accepted all the proposed bars and both wording fixes; they're recorded in `index.md`.
+  - **Scratch.** The worker added junctions in scratch `amend2\ws` and `final\ws` that point into the repo. Remove them with `rmdir`, never `rm -rf`.
+  - **Git config.** `extensions.worktreeconfig = true` was left in `.git/config` by the parity worktree's sparse checkout. It's harmless |
 | 26 | Review round, fix pass, preflight; owner in-engine M9 check on Windows; M7 re-measured on the Mac when it is free, if the shader changed | 25 | todo |
 
 Then land the plane (`HANDOFF-windows.md` §Land the plane).

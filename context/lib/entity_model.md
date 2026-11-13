@@ -276,6 +276,8 @@ Enemy behavior is an **authored hierarchical statechart**, not an engine-closed 
 
 **Ownership split.** The author owns which activities and layers exist, what each one does, the ordered guards between them, and — through an optional per-graph candidacy predicate — which of the candidates the engine offers are worth engaging. The engine owns everything else: which entities are offered as candidates at all, ranking and retention among the eligible ones, think-stride time-slicing of acquisition, target-switch hysteresis, combat-slot resolution, steering, facing, damage application through the chokepoint, and the aggro gate. Motion and action verbs are closed vocabularies — an activity selects an engine behavior, it does not describe one.
 
+**Smarter and dumber enemies.** The authoring surface makes either equally direct to design: how smart an enemy is comes from its guards and options on one vocabulary, not from a different mechanism.
+
 The line between the two halves of targeting is **perceivable vs. worth engaging**. The floor decides what an enemy could possibly perceive — a question with one right answer, so it is correctness. Whether a perceivable pawn is worth attacking is taste: a blind grunt, a psychic boss, and an enemy that ignores the wounded are all valid designs. Candidacy can only narrow the offer set, never widen it.
 
 **One brain authoring surface.** `components.behavior` is the sole enemy-brain authoring surface. The descriptor materializes one retained graph component.

@@ -278,6 +278,8 @@ Enemy behavior is an **authored hierarchical statechart**, not an engine-closed 
 
 The line between the two halves of targeting is **perceivable vs. worth engaging**. The floor decides what an enemy could possibly perceive — a question with one right answer, so it is correctness. Whether a perceivable pawn is worth attacking is taste: a blind grunt, a psychic boss, and an enemy that ignores the wounded are all valid designs. Candidacy can only narrow the offer set, never widen it.
 
+**Smarter and dumber enemies author alike.** Intelligence comes from guards and options on one vocabulary, never a separate mechanism.
+
 **One brain authoring surface.** `components.behavior` is the sole enemy-brain authoring surface. The descriptor materializes one retained graph component.
 
 Invariants the evaluator upholds:
@@ -311,6 +313,12 @@ Invariants the evaluator upholds:
 - **Held enemies.** A held enemy leaves the AI set and its turns end. Held ownership keeps its weapon execution, but arbitration cancels any execution of a drawn attack whose holder holds no turn for it, so a dropped enemy never resumes a drawn burst. An undrawn burst may resume.
 - **Reload.** A reload that drops a token an attack draws warns on that reload and ignores the draw. A load or reload that drops a profile a placed pool names warns, and the pool uses `default`.
 - **Host-only, outside the co-op compatibility digest.** Clients never read the budget, and turns never replicate.
+
+**Stances and attacks (decided, not yet built).** Stances and attacks are authoring vocabulary. Load-time lowering turns them into activities and sets `pose` and `queue` itself; authors never write either (`scripting.md` §2). The runtime gains three things:
+
+- **Pose.** Activities sharing a `pose` act as one: moving between them restarts no clip, plays no second sound, and keeps time in activity, `activityRoll` and `damageInActivity`. Entering from outside starts them fresh. A `"*"` or ancestor row into the current pose is skipped. A pose retains its target like an engaging activity. So does any activity marked for an attack.
+- **Queued rows.** A row carrying `queue` requests its attack's turn from an unmarked activity while its guard and the attack's reach pass. A grant survives into the next evaluation, as a mark's does, and the row passes once the turn reads held. One request per enemy: a mark's outranks a queued row's, which outranks a pending unmarked attack. Rows into hand-written marks do not queue.
+- **Release draw.** An attack's hold releases once its pose has lasted a hidden per-hold draw. No guard reads it, so branching on the roll never leaks timing (`networking.md` §Current contract, engine randomness).
 
 Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
 

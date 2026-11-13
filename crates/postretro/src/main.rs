@@ -335,6 +335,8 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.refresh_environment_fluids();
             }
             ServerControlMessage::SpawnPoseHint(hint) => app.receive_spawn_pose_hint(hint),
+            // Retained for the leave path's character save (task 6).
+            ServerControlMessage::FinalCharacter { .. } => {}
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;

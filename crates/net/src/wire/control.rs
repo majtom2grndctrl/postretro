@@ -167,7 +167,10 @@ impl RevealedLevel {
     }
 }
 
-/// A terminal immutable-admission mismatch.
+/// Why the host closed a slot: an immutable-admission mismatch, or the end of
+/// its session.
+///
+/// Variant order is wire layout only, so new variants must be appended.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum ClosingCause {
     Protocol {
@@ -180,6 +183,9 @@ pub enum ClosingCause {
         expected_version: String,
         received_version: String,
     },
+    /// The host ended the session (`endSession`). Lets a client tell an ended
+    /// session from a lost host.
+    SessionEnded,
 }
 
 /// A recoverable reason a slot is held below participating: a content
@@ -258,6 +264,7 @@ impl std::fmt::Display for DivergenceReason {
                 f,
                 "mod id mismatch: expected {expected} ({expected_version}), received {received} ({received_version})"
             ),
+            Self::Closing(ClosingCause::SessionEnded) => write!(f, "the host ended the session"),
             Self::Holding(HoldingCause::ModDigest { expected, received }) => write!(
                 f,
                 "mod digest differs: expected {}, received {}",
@@ -310,7 +317,8 @@ fn digest_hex(digest: &[u8; 32]) -> String {
 
 /// Tagged server -> client Control envelope for divergence causes, opaque
 /// engine-serialized tuning, host-selected catalog map ids, the session
-/// roster, and the spawn-pose hint. `PartialEq` only: the hint carries `f32`.
+/// roster, the spawn-pose hint, and a closing slot's final character.
+/// `PartialEq` only: the hint carries `f32`.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerControlMessage {
     Divergence(DivergenceReason),
@@ -337,6 +345,14 @@ pub enum ServerControlMessage {
     /// to that client alone so it settles at its own spawn view. Advisory: the
     /// first baseline stays the only authority on the pawn's pose.
     SpawnPoseHint(SpawnPoseHint),
+    /// The client's own persisted per-owner values, sent immediately before
+    /// the host closes a slot that has participated on this connection: the
+    /// mirror of `ClientControlMessage::JoinSeed`, with the same durable-key
+    /// strings and values, and an empty map when the player has none. The
+    /// client applies only keys its own declarations persist per owner.
+    FinalCharacter {
+        slots: BTreeMap<String, JoinSeedValue>,
+    },
 }
 
 /// Host-resolved spawn pose for one seat on one host install.

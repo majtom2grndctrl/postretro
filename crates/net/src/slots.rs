@@ -13,6 +13,8 @@ use crate::wire::HoldingCause;
 pub enum CloseCause {
     Disconnect,
     Timeout,
+    /// The host ended the session. No seat is held for it.
+    SessionEnded,
     /// Reserved for a future graceful host migration/departure path.
     HostInitiatedLeave,
 }

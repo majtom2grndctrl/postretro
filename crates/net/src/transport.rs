@@ -116,6 +116,10 @@ fn close_cause_from(
     }
 }
 
+/// How long an ended host keeps its transport to deliver the session-ended
+/// cause: until every slot acknowledges it, or this much host time.
+pub const SESSION_END_CLOSE_WINDOW: Duration = Duration::from_secs(2);
+
 /// A verdict about a Control message. Lifecycle effects are reported separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandshakeOutcome {
@@ -179,6 +183,9 @@ pub struct NetServer {
     /// sampled before each transport advance. Classifies a `Transport` end
     /// (`close_cause_from`).
     heard_before_advance: HashMap<ClientId, Duration>,
+    /// Host time since [`NetServer::end_session`], or `None` while the session
+    /// runs. A closing transport admits no one and sends nothing new.
+    closing_elapsed: Option<Duration>,
     next_participation_epoch: u64,
     participation_epochs: HashMap<ClientId, u64>,
     mod_identity: Option<(String, String)>,
@@ -234,6 +241,7 @@ impl NetServer {
             pending_disconnects: Vec::new(),
             holding_diagnostics: HashMap::new(),
             heard_before_advance: HashMap::new(),
+            closing_elapsed: None,
             next_participation_epoch: 1,
             participation_epochs: HashMap::new(),
             mod_identity: None,
@@ -344,6 +352,7 @@ impl NetServer {
         self.sample_heard_before_advance();
         self.transport.update(dt, &mut self.server)?;
         self.collect_server_events(dt);
+        self.advance_closing(dt);
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
         let (handshakes, join_seeds) = self.process_control_messages();
@@ -391,6 +400,66 @@ impl NetServer {
         }
     }
 
+    /// End the session: send every live slot the session-ended cause, close
+    /// it, and from now on admit no one and send nothing new. Each connection
+    /// drops once its cause is acknowledged; [`NetServer::closing_done`]
+    /// reports when none remain or [`SESSION_END_CLOSE_WINDOW`] has passed.
+    ///
+    /// The engine sends any `FinalCharacter` before calling this, and tears
+    /// down every slot's game state itself, so the closes report no lifecycle
+    /// edges or disconnects. Idempotent.
+    pub fn end_session(&mut self) {
+        if self.closing_elapsed.is_some() {
+            return;
+        }
+        self.closing_elapsed = Some(Duration::ZERO);
+        self.transport.set_max_clients(0);
+        for client_id in self.server.clients_id() {
+            if !self.slots.is_closed(client_id) {
+                self.send_control(
+                    client_id,
+                    wire::encode(&ServerControlMessage::Divergence(
+                        DivergenceReason::Closing(ClosingCause::SessionEnded),
+                    )),
+                );
+                let _ = self.close_slot(client_id, CloseCause::SessionEnded);
+            }
+            if !self.pending_disconnects.contains(&client_id) {
+                self.pending_disconnects.push(client_id);
+            }
+        }
+        self.pending_lifecycle.clear();
+        self.pending_slot_disconnects.clear();
+        self.relevel = None;
+    }
+
+    /// Whether [`NetServer::end_session`] has run.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        self.closing_elapsed.is_some()
+    }
+
+    /// Whether a closing transport has finished: every connection has gone,
+    /// or the close window has passed and the rest were disconnected.
+    #[must_use]
+    pub fn closing_done(&self) -> bool {
+        self.closing_elapsed.is_some() && self.server.clients_id().is_empty()
+    }
+
+    fn advance_closing(&mut self, dt: Duration) {
+        let Some(elapsed) = self.closing_elapsed.as_mut() else {
+            return;
+        };
+        *elapsed += dt;
+        if *elapsed >= SESSION_END_CLOSE_WINDOW {
+            // Sends netcode's disconnect packet at once and removes every
+            // remaining connection: a peer that never acknowledged its cause.
+            self.transport.disconnect_all(&mut self.server);
+            while self.server.get_event().is_some() {}
+            self.pending_disconnects.clear();
+        }
+    }
+
     fn sample_heard_before_advance(&mut self) {
         self.heard_before_advance.clear();
         for client_id in self.server.clients_id() {
@@ -403,6 +472,14 @@ impl NetServer {
     fn collect_server_events(&mut self, dt: Duration) {
         while let Some(event) = self.server.get_event() {
             match event {
+                ServerEvent::ClientConnected { client_id } if self.closing_elapsed.is_some() => {
+                    // A connect already past netcode's request stage when
+                    // the session ended: closed at once, and sent nothing.
+                    self.slots.on_connect(client_id);
+                    let _ = self.close_slot(client_id, CloseCause::SessionEnded);
+                    self.pending_slot_disconnects.retain(|id| *id != client_id);
+                    self.server.disconnect(client_id);
+                }
                 ServerEvent::ClientConnected { client_id } => {
                     self.slots.on_connect(client_id);
                     if let Some(user_data) = self.transport.user_data(client_id)
@@ -811,6 +888,9 @@ impl NetServer {
     /// Control may be sent to an admitted/closed slot to deliver a hold/reject
     /// diagnostic before socket teardown. Payload semantics remain engine-owned.
     pub fn send_control(&mut self, client_id: ClientId, payload: Vec<u8>) {
+        if self.closing_elapsed.is_some() && self.slots.is_closed(client_id) {
+            return;
+        }
         self.server.send_message(
             client_id,
             Channel::Control,
@@ -822,6 +902,9 @@ impl NetServer {
     }
 
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
+        if self.closing_elapsed.is_some() {
+            return;
+        }
         self.server.send_message(client_id, Channel::Input, payload);
     }
 
@@ -2000,6 +2083,141 @@ mod tests {
         capture.assert_not_logged(log::Level::Error, "lost connection");
     }
 
+    fn session_ended() -> ServerControlMessage {
+        ServerControlMessage::Divergence(DivergenceReason::Closing(ClosingCause::SessionEnded))
+    }
+
+    fn loopback_client_with_id(server_addr: SocketAddr, client_id: u64) -> NetClient {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind client socket");
+        NetClient::new(
+            socket,
+            server_addr,
+            client_id,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .expect("construct client")
+    }
+
+    /// Pump the host and `live` clients one frame. Returns each live client's
+    /// drained Control.
+    fn pump_frame(
+        server: &mut NetServer,
+        live: &mut [&mut NetClient],
+    ) -> Vec<Vec<ServerControlMessage>> {
+        let step = Duration::from_millis(16);
+        let mut drained = Vec::new();
+        for client in live.iter_mut() {
+            let _ = client.update(step);
+            drained.push(client.drain_control());
+        }
+        let _ = server.update(step).expect("server update");
+        std::thread::sleep(Duration::from_millis(1));
+        drained
+    }
+
+    // AC 14's transport half (pin P12): an acknowledging client gets the
+    // cause and drops at once; one that never acknowledges is dropped when
+    // the close window passes.
+    #[test]
+    fn an_ended_host_drops_its_transport_within_the_close_window() {
+        let (mut server, server_addr) = loopback_server();
+        let mut acking = loopback_client_with_id(server_addr, 7);
+        let mut silent = loopback_client_with_id(server_addr, 8);
+        assert!(pump_until_connected(&mut acking, &mut server));
+        assert!(pump_until_connected(&mut silent, &mut server));
+        assert_eq!(server.connected_clients().len(), 2);
+
+        server.end_session();
+        assert!(server.is_closing());
+        let mut received = Vec::new();
+        let mut host_time = Duration::ZERO;
+        while !server.closing_done() && host_time < Duration::from_secs(3) {
+            for messages in pump_frame(&mut server, &mut [&mut acking]) {
+                received.extend(messages);
+            }
+            host_time += Duration::from_millis(16);
+        }
+
+        assert!(
+            server.closing_done(),
+            "transport still open after {host_time:?}"
+        );
+        assert!(host_time <= SESSION_END_CLOSE_WINDOW + Duration::from_millis(16));
+        assert_eq!(received, vec![session_ended()]);
+        assert_eq!(acking.connection_end(), Some(ConnectionEnd::Lost));
+        assert_eq!(
+            server.slot_state(8),
+            Some(SlotState::Closed {
+                cause: CloseCause::SessionEnded
+            })
+        );
+    }
+
+    #[test]
+    fn an_acknowledged_end_drops_the_transport_before_the_window() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+
+        server.end_session();
+        let mut frames = 0;
+        while !server.closing_done() && frames < 200 {
+            let _ = pump_frame(&mut server, &mut [&mut client]);
+            frames += 1;
+        }
+        assert!(server.closing_done());
+        assert!(
+            Duration::from_millis(16) * frames < SESSION_END_CLOSE_WINDOW,
+            "dropped only at the window, after {frames} frames"
+        );
+    }
+
+    // AC 15's transport half (pin P14): the closing transport admits no one,
+    // sends nothing after a slot's cause, and reports no slot edges.
+    #[test]
+    fn a_closing_transport_admits_no_one_and_sends_nothing_after_the_cause() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        let first = connected_slot(&server);
+
+        // Sent before the end, so it precedes the cause.
+        server.send_control(
+            first,
+            wire::encode(&ServerControlMessage::FinalCharacter {
+                slots: BTreeMap::from([("hp".to_owned(), JoinSeedValue::Number(40.0))]),
+            }),
+        );
+        server.end_session();
+        server.send_control(first, wire::encode(&ServerControlMessage::Tuning(vec![1])));
+        server.set_relevel_catalog_id(Some("e1m1".to_owned()));
+        let mut late = loopback_client_with_id(server_addr, 99);
+
+        let mut received = Vec::new();
+        for _ in 0..60 {
+            for messages in pump_frame(&mut server, &mut [&mut client, &mut late]) {
+                received.extend(messages);
+            }
+            let poll = server.update(Duration::ZERO).expect("server update");
+            assert!(poll.lifecycle.is_empty() && poll.disconnects.is_empty());
+            assert!(poll.handshakes.is_empty());
+        }
+
+        assert_eq!(
+            received,
+            vec![
+                ServerControlMessage::FinalCharacter {
+                    slots: BTreeMap::from([("hp".to_owned(), JoinSeedValue::Number(40.0))]),
+                },
+                session_ended(),
+            ]
+        );
+        assert!(!late.is_connected(), "a closing host admits no one");
+        assert!(server.connected_clients().is_empty());
+    }
+
     fn relay_pair() -> (NetServer, NetClient) {
         let server_socket =
             UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind server socket");
@@ -2861,16 +3079,24 @@ mod tests {
     // declaration kind, a wire-35 peer the snapshot's host level tick, and a
     // wire-36 peer the host level life on `Relevel` and `Revealed`, a wire-37
     // peer the player life-state record, and a wire-38 peer the assist fields.
-    // A PRLC peer predates the spawn-pose hint. The admission gate refuses each
-    // declaration with a typed cause and admits a PRLD / 39 one.
+    // A PRLC peer predates the spawn-pose hint and a PRLD peer the session-ended
+    // cause. The admission gate refuses each declaration with a typed cause,
+    // logging the protocol mismatch, and admits a PRLE / 39 one.
     #[test]
-    fn admission_refuses_prlb_prlc_or_wire_32_to_38_and_admits_prld_39() {
+    fn admission_refuses_prlb_to_prld_or_wire_32_to_38_and_admits_prle_39() {
         let current = wire::ProtocolVersion {
-            app_protocol_id: 0x_5052_4C44,
+            app_protocol_id: 0x_5052_4C45,
             wire_version: 39,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C44,
+                    ..current
+                },
+                false,
+            ),
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C43,
@@ -2936,6 +3162,7 @@ mod tests {
             ),
             (current, true),
         ];
+        let capture = postretro_test_log_capture::LogCapture::start();
         for (declared, admitted) in cases {
             let (mut server, mut client) = relay_pair();
             server.set_mod_identity("postretro.test".to_string(), "1".to_string());
@@ -2959,6 +3186,7 @@ mod tests {
                 }) => {
                     assert!(!admitted, "{declared:?} must be admitted");
                     assert_eq!((*expected, *received), (current, declared));
+                    capture.assert_logged(log::Level::Warn, "protocol mismatch");
                 }
                 other => panic!("{declared:?}: expected an admission verdict, got {other:?}"),
             }

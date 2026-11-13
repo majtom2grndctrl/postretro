@@ -567,3 +567,11 @@ The verdict was "request changes". Wire bytes agree across every layer, and the 
 - Per-run enclosure caching beyond (mover, cell).
 - `KnotCounts.even` still labels moved authored poses "even".
 - The neighbour-blocked nudge test: it's in `layer_bands.rs`, which is held for the grazing ruling.
+
+## Landing notes (owner, 2026-11-13)
+- After landing, hand the owner a ready-to-paste `/draft-session` prompt for "probes that ride the mover". It should cover:
+  - the slideshow cross-fade observation, and the dense-truth A/B that tests whether pose density alone cures it;
+  - Fable's sketch in `captures/playtest-diagnosis/fable-diagnosis.md` item 5;
+  - the lattice hand-over residue;
+  - the IP constraints (N absolute states blended by position; levers 2, 6, 7).
+- File it on the roadmap under "door and mover light flow" at landing.

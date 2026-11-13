@@ -15,6 +15,9 @@ pub struct HostJoinSeeds {
     pending: HashMap<u64, BTreeMap<String, JoinSeedValue>>,
     consumed: HashSet<u64>,
     reclaimed: HashSet<u64>,
+    /// Connections that have participated, held between levels since
+    /// included. A closing host returns their final character.
+    participated: HashSet<u64>,
 }
 
 pub enum JoinSeedArrival {
@@ -114,6 +117,7 @@ impl HostJoinSeeds {
     /// first real seed received after defaults is still applied, then duplicates
     /// are rejected.
     pub fn on_participating(&mut self, client_id: u64) -> ParticipationSeed {
+        self.participated.insert(client_id);
         if self.reclaimed.contains(&client_id) {
             self.pending.remove(&client_id);
             self.consumed.insert(client_id);
@@ -126,8 +130,16 @@ impl HostJoinSeeds {
         ParticipationSeed::Apply(slots)
     }
 
+    /// Whether this connection has participated, whether or not it is held
+    /// now. A host closing it sends its final character first.
+    #[must_use]
+    pub fn has_participated(&self, client_id: u64) -> bool {
+        self.participated.contains(&client_id)
+    }
+
     /// Transport ids are short-lived. Never retain their seed state after close.
     pub fn remove_client(&mut self, client_id: u64) {
+        self.participated.remove(&client_id);
         self.pending.remove(&client_id);
         self.consumed.remove(&client_id);
         self.reclaimed.remove(&client_id);

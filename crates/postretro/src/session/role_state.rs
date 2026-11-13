@@ -82,6 +82,7 @@ impl RoleBoundState {
     }
 
     /// The role-bound values a session holds now.
+    #[cfg(test)]
     pub(crate) fn observe(
         scripting: &ScriptingCore,
         seat_table: Option<&netcode::SeatTable>,
@@ -150,7 +151,7 @@ pub(crate) fn apply_role(
         }
     }
     // Once-per-source refusal latches belong to the role that warned.
-    scripting.client_level_verb_warnings.clear();
+    scripting.refused_verb_warnings.clear();
 
     let Some(keep) = state.seats.as_ref() else {
         *seat_table = None;

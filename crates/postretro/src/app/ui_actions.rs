@@ -344,7 +344,7 @@ impl App {
                 UiButtonAction::CommitTextEntry => self.commit_text_entry(),
                 UiButtonAction::CloseDialog => {}
                 UiButtonAction::ExitToDesktop => self.pending_exit_to_desktop = true,
-                UiButtonAction::QuitToMenu => self.return_to_frontend(),
+                UiButtonAction::QuitToMenu => self.quit_to_menu(),
                 UiButtonAction::NamedReaction => {
                     if let Some(session) = self.session.as_ref() {
                         let script_ctx = &session.scripting.script_ctx;

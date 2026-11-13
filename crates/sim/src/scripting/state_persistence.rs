@@ -409,6 +409,49 @@ pub fn join_seed_from_persisted_state(
     slots
 }
 
+/// The final character a host returns to a closing client: the seat's
+/// persisted per-owner values the host replicates to its owner, keyed by
+/// durable key, the join seed's mirror. A slot that never replicates is the
+/// client's own, and the host's copy is only what its join seed carried, so
+/// it is left out. Values a bitcode payload cannot carry, and slots without
+/// durable identity, are omitted with a warning.
+pub fn final_character_for_seat(
+    table: &SlotTable,
+    identity: Option<&StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+    seat: Seat,
+) -> (BTreeMap<String, JoinSeedValue>, Vec<String>) {
+    let mut slots = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for (name, record) in table.iter() {
+        if !is_persisted_per_owner_slot(record)
+            || record.schema.network == ReplicationScope::None
+            || !committed_store_slots.contains(name)
+        {
+            continue;
+        }
+        let Some(value) = record.per_seat_value(seat) else {
+            continue;
+        };
+        let Some(durable_key) = identity.and_then(|ledger| ledger.durable_key(name)) else {
+            warnings.push(format!(
+                "persistent per-owner state slot `{name}` has no durable identity; omitting it from the final character"
+            ));
+            continue;
+        };
+        match value_for_save(name, record, value).map(JoinSeedValue::try_from) {
+            Ok(Ok(value)) => {
+                slots.insert(durable_key.to_owned(), value);
+            }
+            Ok(Err(())) => warnings.push(format!(
+                "final character omits unsupported value of `{name}`"
+            )),
+            Err(warning) => warnings.push(warning),
+        }
+    }
+    (slots, warnings)
+}
+
 /// What [`apply_join_seed`] did: how many seed entries it wrote, and a
 /// warning for each one it rejected.
 #[derive(Debug, Default)]
@@ -477,8 +520,11 @@ pub fn apply_join_seed(
     JoinSeedOutcome { applied, warnings }
 }
 
-/// Build the client-only document. It preserves retained player entries while
-/// replacing this player's freshly collected values, and never carries globals.
+/// Build a connected client's save document. It replaces this player's
+/// freshly collected values and keeps everything else the retained boot
+/// document holds: other players' entries and the client's own world, its
+/// globals and faction sentiment, unchanged. The host's replicated world
+/// never reaches it.
 pub fn collected_per_owner_only_state(
     retained: Option<&PersistedState>,
     collected: BTreeMap<String, BTreeMap<String, PersistedValue>>,
@@ -495,11 +541,14 @@ pub fn collected_per_owner_only_state(
 
     PersistedState {
         version: CURRENT_STATE_VERSION,
-        // A client must never write the host-authoritative global projection,
-        // even if it loaded those entries during an earlier single-player run.
-        slots: BTreeMap::new(),
+        // The world it booted with, never the host's projection in its store.
+        slots: retained
+            .map(|state| state.slots.clone())
+            .unwrap_or_default(),
         per_owner,
-        faction_sentiment: BTreeMap::new(),
+        faction_sentiment: retained
+            .map(|state| state.faction_sentiment.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -570,8 +619,102 @@ pub fn overlay_client_local_per_owner_state(
         &authored_by_key,
         local_player_id,
         local_seat,
-        true,
+        |record| record.schema.network == ReplicationScope::None,
     )
+}
+
+/// Restore a client's store when its session ends, as single-player on
+/// `Seat(0)`. Every slot the host replicated returns to what a fresh boot
+/// from `boot` would hold: its declared default, then `boot`'s persisted
+/// global value. Per-owner values move from `session_seat` to `Seat(0)`: a
+/// slot that never replicates keeps the client's own write, and a replicated
+/// persisted one keeps the latest character there when `character_on_seat`.
+/// Otherwise (a client that never participated) the character comes from
+/// `boot`'s rows for `local_player_id`. Replicated non-persisted per-owner
+/// slots return to their defaults; non-replicated globals keep the client's
+/// writes. Faction sentiment is the caller's.
+pub fn restore_store_after_session(
+    table: &mut SlotTable,
+    boot: Option<&PersistedState>,
+    identity: Option<&StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+    session_seat: Option<Seat>,
+    character_on_seat: bool,
+    local_player_id: Option<[u8; 16]>,
+) -> Vec<String> {
+    const SINGLE_PLAYER_SEAT: Seat = Seat(0);
+    for (_, record) in table.iter_mut() {
+        let replicated = record.schema.network != ReplicationScope::None;
+        if record.schema.per_owner {
+            let own = session_seat.and_then(|seat| {
+                let value = record.per_seat_value(seat).cloned();
+                record.clear_per_seat_value(seat);
+                value
+            });
+            let kept = if !replicated {
+                own
+            } else if character_on_seat && is_persisted_per_owner_slot(record) {
+                own
+            } else {
+                None
+            };
+            let value = kept.or_else(|| record.schema.default.clone());
+            match value.clone() {
+                Some(value) => record.set_per_seat_value(SINGLE_PLAYER_SEAT, value),
+                None => record.clear_per_seat_value(SINGLE_PLAYER_SEAT),
+            }
+            record.write_value(value);
+        } else if replicated {
+            record.write_value(record.schema.default.clone());
+        }
+    }
+
+    let Some(boot) = boot else {
+        return Vec::new();
+    };
+    if !persisted_state_version_is_supported(boot) {
+        return vec![unsupported_state_version_warning(boot.version)];
+    }
+    let authored_by_key = authored_names_by_durable_key(identity, committed_store_slots);
+    let mut warnings = Vec::new();
+    for (durable_key, persisted_value) in &boot.slots {
+        let Some(record) = authored_by_key
+            .get(durable_key.as_str())
+            .and_then(|name| table.get_mut(name))
+        else {
+            continue;
+        };
+        if record.schema.network == ReplicationScope::None || !is_persisted_mod_slot(record) {
+            continue;
+        }
+        let name = authored_by_key[durable_key.as_str()];
+        match restored_value(name, record, persisted_value) {
+            Ok((value, warning)) => {
+                record.write_value(Some(value));
+                warnings.extend(warning);
+            }
+            Err(warning) => warnings.push(warning),
+        }
+    }
+    if !character_on_seat {
+        warnings.extend(overlay_per_owner_state(
+            table,
+            boot,
+            &authored_by_key,
+            local_player_id,
+            SINGLE_PLAYER_SEAT,
+            |record| record.schema.network != ReplicationScope::None,
+        ));
+        for (_, record) in table.iter_mut() {
+            if record.schema.per_owner && record.schema.network != ReplicationScope::None {
+                let value = record.per_seat_value(SINGLE_PLAYER_SEAT).cloned();
+                if value.is_some() {
+                    record.write_value(value);
+                }
+            }
+        }
+    }
+    warnings
 }
 
 pub fn persisted_state_version_is_supported(persisted: &PersistedState) -> bool {
@@ -636,7 +779,7 @@ pub fn overlay_persisted_state(
         &authored_by_key,
         local_player_id,
         local_seat,
-        false,
+        |_| true,
     ));
     warnings
 }
@@ -663,7 +806,7 @@ fn overlay_per_owner_state(
     authored_by_key: &BTreeMap<&str, &str>,
     local_player_id: Option<[u8; 16]>,
     local_seat: Seat,
-    local_only: bool,
+    applies_to: impl Fn(&SlotRecord) -> bool,
 ) -> Vec<String> {
     let Some(local_player_id) = local_player_id else {
         return Vec::new();
@@ -690,7 +833,7 @@ fn overlay_per_owner_state(
             ));
             continue;
         }
-        if local_only && record.schema.network != ReplicationScope::None {
+        if !applies_to(record) {
             continue;
         }
 
@@ -1642,9 +1785,9 @@ mod tests {
             faction_sentiment: BTreeMap::new(),
         };
         let client_document = collected_per_owner_only_state(Some(&retained), collected.per_owner);
-        assert!(
-            client_document.slots.is_empty(),
-            "clients never save globals"
+        assert_eq!(
+            client_document.slots, retained.slots,
+            "a client saves its own boot world, never the host's"
         );
         assert_eq!(
             client_document.per_owner["k0000000000000010"]
@@ -1846,7 +1989,9 @@ mod tests {
     }
 
     #[test]
-    fn client_private_document_merges_retained_entries_without_global_slots() {
+    // Regression: each connected-client save wrote an empty world section,
+    // erasing the single-player world the client would return to (pin P9).
+    fn client_save_document_keeps_its_boot_world_and_replaces_its_own_rows() {
         let local_id = player_id(0x44);
         let other_id = player_id(0x55);
         let retained = PersistedState {
@@ -1878,7 +2023,8 @@ mod tests {
             )]),
         );
 
-        assert!(saved.slots.is_empty());
+        assert_eq!(saved.slots, retained.slots, "the boot world stays on disk");
+        assert_eq!(saved.faction_sentiment, retained.faction_sentiment);
         assert_eq!(
             saved.per_owner["k0000000000000010"][&encode_player_claim_id(&PlayerClaimId(local_id))],
             PersistedValue::Number(12.0)
@@ -1894,7 +2040,147 @@ mod tests {
         assert_eq!(
             retained.slots.get("k0000000000000001"),
             Some(&PersistedValue::Number(6.0)),
-            "the retained boot document keeps globals in memory even though the client file does not"
+            "the retained boot document keeps its globals"
+        );
+    }
+
+    /// The fixture as a connected client sees it: `score` and `xp` replicate,
+    /// `session_xp` replicates without persisting, `label` and `rank` never
+    /// replicate.
+    fn client_session_table() -> SlotTable {
+        let mut table = SlotTable::new();
+        declare_fixture(&mut table);
+        table.get_mut("game.score").unwrap().schema.network = ReplicationScope::SharedGlobal;
+        for name in ["game.xp", "game.session_xp"] {
+            table.get_mut(name).unwrap().schema.network = ReplicationScope::OwnerPrivatePlayer;
+        }
+        table
+    }
+
+    fn boot_world(local_id: [u8; 16], xp: f64) -> PersistedState {
+        PersistedState {
+            version: CURRENT_STATE_VERSION,
+            slots: BTreeMap::from([("k0000000000000001".to_string(), PersistedValue::Number(6.0))]),
+            per_owner: BTreeMap::from([(
+                "k0000000000000010".to_string(),
+                BTreeMap::from([(
+                    encode_player_claim_id(&PlayerClaimId(local_id)),
+                    PersistedValue::Number(xp),
+                )]),
+            )]),
+            faction_sentiment: BTreeMap::new(),
+        }
+    }
+
+    // Pins P9 and P19: the host's world leaves the store, the client's own
+    // writes stay, and its character lands on the single-player seat.
+    #[test]
+    fn restore_after_session_returns_the_host_world_to_the_boot_world() {
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+        let local_id = player_id(0x44);
+        let session_seat = Seat(2);
+        let mut table = client_session_table();
+        let write = |table: &mut SlotTable, name: &str, value: SlotValue| {
+            table.get_mut(name).unwrap().write_value(Some(value));
+        };
+        write(&mut table, "game.score", SlotValue::Number(50.0));
+        write(
+            &mut table,
+            "game.label",
+            SlotValue::String("mine".to_string()),
+        );
+        for (name, value) in [
+            ("game.xp", SlotValue::Number(40.0)),
+            ("game.rank", SlotValue::Enum("veteran".to_string())),
+            ("game.session_xp", SlotValue::Number(5.0)),
+        ] {
+            table
+                .get_mut(name)
+                .unwrap()
+                .set_per_seat_value(session_seat, value);
+        }
+
+        let warnings = restore_store_after_session(
+            &mut table,
+            Some(&boot_world(local_id, 3.0)),
+            Some(&identity),
+            &membership,
+            Some(session_seat),
+            true,
+            Some(local_id),
+        );
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let value = |name: &str| table.get(name).unwrap().value.clone();
+        assert_eq!(
+            value("game.score"),
+            Some(SlotValue::Number(6.0)),
+            "boot world"
+        );
+        assert_eq!(
+            value("game.label"),
+            Some(SlotValue::String("mine".to_string()))
+        );
+        for (name, expected) in [
+            ("game.xp", SlotValue::Number(40.0)),
+            ("game.rank", SlotValue::Enum("veteran".to_string())),
+            ("game.session_xp", SlotValue::Number(0.0)),
+        ] {
+            let record = table.get(name).unwrap();
+            assert_eq!(record.per_seat_value(Seat(0)), Some(&expected), "{name}");
+            assert_eq!(record.value.as_ref(), Some(&expected), "{name} scalar");
+        }
+    }
+
+    // Pin P13: a client that never participated received no character, so
+    // its saved one returns to the single-player seat.
+    #[test]
+    fn restore_for_a_non_participant_takes_its_saved_character() {
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+        let local_id = player_id(0x44);
+        let mut table = client_session_table();
+
+        let _ = restore_store_after_session(
+            &mut table,
+            Some(&boot_world(local_id, 7.0)),
+            Some(&identity),
+            &membership,
+            Some(Seat(2)),
+            false,
+            Some(local_id),
+        );
+
+        let xp = table.get("game.xp").unwrap();
+        assert_eq!(xp.per_seat_value(Seat(0)), Some(&SlotValue::Number(7.0)));
+        assert_eq!(xp.value, Some(SlotValue::Number(7.0)));
+    }
+
+    #[test]
+    fn final_character_carries_only_the_persisted_per_owner_values_the_host_replicates() {
+        let identity = fixture_identity();
+        let membership = identity_membership(Some(&identity));
+        let mut table = client_session_table();
+        for (name, value) in [
+            ("game.xp", SlotValue::Number(25.0)),
+            ("game.session_xp", SlotValue::Number(5.0)),
+        ] {
+            table
+                .get_mut(name)
+                .unwrap()
+                .set_per_seat_value(Seat(3), value);
+        }
+
+        let (slots, warnings) =
+            final_character_for_seat(&table, Some(&identity), &membership, Seat(3));
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // `rank` never replicates: it is the client's own (pin P19), and
+        // `session_xp` does not persist.
+        assert_eq!(
+            slots,
+            BTreeMap::from([("k0000000000000010".to_string(), JoinSeedValue::Number(25.0))])
         );
     }
 

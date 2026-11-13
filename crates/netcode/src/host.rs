@@ -536,6 +536,101 @@ pub fn host_handle_transport_disconnect(
     closed.and_then(|closed| closed.network_id)
 }
 
+/// A listen host ends its session (`endSession`): every connection that has
+/// participated, held between levels included, first receives its final
+/// character, then every live slot receives the session-ended cause. Each
+/// remote pawn is torn down as a closed slot's is, but no seat is held: the
+/// caller releases them with the role change. Returns the closing transport,
+/// which the caller pumps until it reports `closing_done`; every other part
+/// of the host endpoint is dropped. Not a host endpoint: returned unchanged.
+pub fn end_host_session(
+    endpoint: NetEndpoint,
+    registry: &mut EntityRegistry,
+    mut seat_table: Option<&mut SeatTable>,
+    life_state_names: &[String],
+    mut final_character: impl FnMut(
+        postretro_foundation::Seat,
+    ) -> std::collections::BTreeMap<
+        String,
+        postretro_net::wire::JoinSeedValue,
+    >,
+) -> Result<Box<NetServer>, NetEndpoint> {
+    let NetEndpoint::Host {
+        mut server,
+        mut allocator,
+        mut replicable,
+        mut replication,
+        mut state_slots,
+        mut slot_pawns,
+        mut command_queues,
+        mut owners,
+        mut weapon_owners,
+        mut open_shots,
+        mut pending_hit_declarations,
+        mut weaponless_fire_logged,
+        mut last_sent_tuning,
+        join_seeds,
+        ..
+    } = endpoint
+    else {
+        return Err(endpoint);
+    };
+    let mut clients = server.connected_clients();
+    for client_id in slot_pawns.client_ids() {
+        if !clients.contains(&client_id) {
+            clients.push(client_id);
+        }
+    }
+    clients.sort_unstable();
+    for &client_id in &clients {
+        if server.is_closed(client_id) || !join_seeds.has_participated(client_id) {
+            continue;
+        }
+        let Some(seat) = seat_table
+            .as_deref()
+            .and_then(|seats| seats.seat_for_client(client_id))
+        else {
+            continue;
+        };
+        server.send_control(
+            client_id,
+            postretro_net::wire::encode(&ServerControlMessage::FinalCharacter {
+                slots: final_character(seat),
+            }),
+        );
+    }
+    server.end_session();
+    for &client_id in &clients {
+        let durable_pawn = seat_table
+            .as_deref()
+            .and_then(|seats| seats.pawn_for_client(client_id));
+        let _ = host_handle_transport_disconnect(
+            registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &mut state_slots,
+            &mut slot_pawns,
+            &mut command_queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
+            &mut last_sent_tuning,
+            seat_table.as_deref_mut(),
+            client_id,
+            durable_pawn,
+            life_state_names,
+        );
+    }
+    log::info!(
+        "[Net] session ended; closing {} connection(s)",
+        server.connected_clients().len()
+    );
+    Ok(server)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -286,6 +286,11 @@ pub(crate) struct Session {
     /// blocking boot. The net subsystem never touches the registry —
     /// `postretro-netcode` owns that seam. See: context/lib/networking.md.
     pub(crate) net_endpoint: Option<netcode::NetEndpoint>,
+    /// An ended host's transport, kept only to deliver each slot's closing
+    /// cause: pumped every frame until every slot acknowledges or the close
+    /// window passes, then dropped. It admits no one and sends nothing new.
+    /// The session is already single-player while it lives.
+    pub(crate) closing_host_transport: Option<Box<postretro_net::transport::NetServer>>,
 
     /// Durable local/listen-host player seats. Connected clients intentionally
     /// own no table: the host is the authority that mints session identities.
@@ -448,10 +453,11 @@ pub(crate) struct ScriptingCore {
     /// See: context/lib/input.md §7.
     pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
 
-    /// `(firing source, verb)` pairs a connected client already warned about
-    /// when it dropped a host-only level verb. Role is fixed for the session,
-    /// so the latch lives as long as the session. See: context/lib/scripting.md §10.4.
-    pub(crate) client_level_verb_warnings: std::collections::HashSet<(String, &'static str)>,
+    /// `(firing source, verb)` pairs this machine already warned about when
+    /// its role refused a level, membership or navigation verb. A role change
+    /// clears it with the role's other derived state. See:
+    /// context/lib/scripting.md §10.4.
+    pub(crate) refused_verb_warnings: std::collections::HashSet<(String, &'static str)>,
 }
 
 /// Publish owner-local health and evaluate the damage call's pending impact in
@@ -785,6 +791,7 @@ impl Session {
             frontend: None,
             accessibility_entry_check: Default::default(),
             net_endpoint,
+            closing_host_transport: None,
             seat_table,
             audio,
             // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
@@ -1008,7 +1015,7 @@ fn build_scripting_core(
         vignette_decay,
         shake_decay,
         input_mode_tracker,
-        client_level_verb_warnings: Default::default(),
+        refused_verb_warnings: Default::default(),
     };
     Ok((scripting, classname_dispatch))
 }

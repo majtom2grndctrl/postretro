@@ -1407,7 +1407,7 @@ fn load_then_return_to_frontend_installs_backdrop() {
     use_case(&mut app, &case, |_| {});
     let exit = TestExit::default();
     app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog("x".into())));
-    app.return_to_frontend();
+    app.navigate_to_frontend();
     run_to_commit(&mut app, &exit, "the backdrop");
     assert_eq!(dispatched(&app).len(), 1, "X never dispatched");
     assert_eq!(

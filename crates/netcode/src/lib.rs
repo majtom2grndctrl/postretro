@@ -208,10 +208,10 @@ pub use endpoint::{
     apply_client_session_roster,
 };
 pub use host::{
-    DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, host_drive_demo_mover,
-    host_handle_accept, host_handle_accept_descriptor_at_placement, host_handle_lifecycle,
-    host_handle_transport_disconnect, host_register_own_pawn, host_replicate,
-    host_unregister_own_pawn,
+    DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, end_host_session,
+    host_drive_demo_mover, host_handle_accept, host_handle_accept_descriptor_at_placement,
+    host_handle_lifecycle, host_handle_transport_disconnect, host_register_own_pawn,
+    host_replicate, host_unregister_own_pawn,
 };
 #[cfg(test)]
 pub(crate) use host_input::host_handle_client_message_inner;

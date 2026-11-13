@@ -163,6 +163,54 @@ impl BuildDir {
     }
 }
 
+/// Link the workspace's dev textures into the content root `root` as
+/// `root/textures`, where `prl-build` looks for a map's textures beside its
+/// `maps/` directory. Unix links them; Windows makes a directory junction,
+/// which needs no privilege. Removing `root` removes the link, never the
+/// textures: `std::fs::remove_dir_all` does not follow links or junctions.
+///
+/// Fails unless the link reads back the textures: a build without them
+/// bakes every face with the missing-diffuse checkerboard (magenta and
+/// black), whose bounce light no shipped map has.
+// Regression: the mover suites linked the textures on Unix only, so every
+// Windows bake read the checkerboard and the low-against-high rest gate
+// measured 65 levels on `mover-closet` (10.75 with the textures).
+pub fn link_dev_textures(root: &Path) {
+    let textures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root")
+        .join("content")
+        .join("dev")
+        .join("textures");
+    let link = root.join("textures");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&textures, &link).expect("link the dev textures");
+    #[cfg(windows)]
+    {
+        let output = Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&link)
+            .arg(&textures)
+            .output()
+            .expect("spawn mklink");
+        assert!(
+            output.status.success(),
+            "junction the dev textures at {}: {}{}",
+            link.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(
+        std::fs::read_dir(&link).is_ok_and(|mut entries| entries.next().is_some()),
+        "the dev textures read back through {}",
+        link.display()
+    );
+}
+
 /// Copy the directory tree `from` into `to`, as a warm build's cache copy.
 pub fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("create cache copy");

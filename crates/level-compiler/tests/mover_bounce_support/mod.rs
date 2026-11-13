@@ -22,7 +22,7 @@ use postretro_level_format::probe_depth_tiles::{
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
-use crate::prl_build_support::{BuildDir, REACH_VERIFY_ENV, prl_build};
+use crate::prl_build_support::{BuildDir, REACH_VERIFY_ENV, link_dev_textures, prl_build};
 
 /// Quake map units to engine meters.
 pub const UNIT: f64 = 0.0254;
@@ -99,12 +99,7 @@ pub fn try_build_in(
 ) -> Result<Built, String> {
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(
-        workspace_root().join("content/dev/textures"),
-        dir.path().join("textures"),
-    )
-    .expect("link the dev textures");
+    link_dev_textures(dir.path());
     let input = maps.join(format!("{name}.map"));
     std::fs::write(&input, map_text).expect("write map");
     let prl = dir.path().join(format!("{name}.prl"));

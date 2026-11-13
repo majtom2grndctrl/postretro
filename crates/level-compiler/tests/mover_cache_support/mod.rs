@@ -13,7 +13,9 @@ use std::sync::OnceLock;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
 pub use crate::prl_build_support::copy_dir;
-use crate::prl_build_support::{BuildDir, REACH_VERIFY_ENV, fixture_dir, prl_build};
+use crate::prl_build_support::{
+    BuildDir, REACH_VERIFY_ENV, fixture_dir, link_dev_textures, prl_build,
+};
 
 pub const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 /// The floor top's texture after a retexture: another albedo.
@@ -228,12 +230,7 @@ pub fn build_in(
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
     // The dev textures, so a retexture changes the floor's bounce albedo.
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/textures"),
-        dir.path().join("textures"),
-    )
-    .expect("link the dev textures");
+    link_dev_textures(dir.path());
     let input = maps.join("mover-probe-channel-cache.map");
     std::fs::write(&input, map(scene)).expect("write fixture map");
     let prl = dir.path().join("mover-probe-channel-cache.prl");

@@ -88,9 +88,30 @@ pub fn connection_config() -> ConnectionConfig {
     }
 }
 
-fn close_cause_from(reason: DisconnectReason) -> CloseCause {
+/// netcode's keepalive timeout. renetcode hardcodes it into every connect
+/// token an `Unsecure` client generates.
+const NETCODE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How a slot's connection ended, from renet's reason and the time since the
+/// host last heard from that client before this poll's transport advance.
+///
+/// renet_netcode reports a netcode disconnect packet and a keepalive timeout
+/// alike as `Transport`: it removes the connection without recording why. A
+/// timeout needs the last packet to be older than the timeout window, so a
+/// `Transport` end from a client heard within it can only be the client's own
+/// disconnect. Every other ending carries its own reason.
+fn close_cause_from(
+    reason: DisconnectReason,
+    heard_before_advance: Option<Duration>,
+    dt: Duration,
+) -> CloseCause {
     match reason {
         DisconnectReason::DisconnectedByClient => CloseCause::Disconnect,
+        DisconnectReason::Transport
+            if heard_before_advance.is_some_and(|silence| silence + dt <= NETCODE_TIMEOUT) =>
+        {
+            CloseCause::Disconnect
+        }
         _ => CloseCause::Timeout,
     }
 }
@@ -154,6 +175,10 @@ pub struct NetServer {
     /// sent. They are not reported as new disconnects a second time.
     pending_disconnects: Vec<ClientId>,
     holding_diagnostics: HashMap<ClientId, HoldingCause>,
+    /// Per connected client, the time since the host last heard from it,
+    /// sampled before each transport advance. Classifies a `Transport` end
+    /// (`close_cause_from`).
+    heard_before_advance: HashMap<ClientId, Duration>,
     next_participation_epoch: u64,
     participation_epochs: HashMap<ClientId, u64>,
     mod_identity: Option<(String, String)>,
@@ -208,6 +233,7 @@ impl NetServer {
             pending_slot_disconnects: Vec::new(),
             pending_disconnects: Vec::new(),
             holding_diagnostics: HashMap::new(),
+            heard_before_advance: HashMap::new(),
             next_participation_epoch: 1,
             participation_epochs: HashMap::new(),
             mod_identity: None,
@@ -315,8 +341,9 @@ impl NetServer {
 
     pub fn update(&mut self, dt: Duration) -> Result<ServerPoll, NetcodeTransportError> {
         self.server.update(dt);
+        self.sample_heard_before_advance();
         self.transport.update(dt, &mut self.server)?;
-        self.collect_server_events();
+        self.collect_server_events(dt);
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
         let (handshakes, join_seeds) = self.process_control_messages();
@@ -364,7 +391,16 @@ impl NetServer {
         }
     }
 
-    fn collect_server_events(&mut self) {
+    fn sample_heard_before_advance(&mut self) {
+        self.heard_before_advance.clear();
+        for client_id in self.server.clients_id() {
+            if let Some(silence) = self.transport.time_since_last_received_packet(client_id) {
+                self.heard_before_advance.insert(client_id, silence);
+            }
+        }
+    }
+
+    fn collect_server_events(&mut self, dt: Duration) {
         while let Some(event) = self.server.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
@@ -376,7 +412,10 @@ impl NetServer {
                     }
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
-                    if let Some(event) = self.close_slot(client_id, close_cause_from(reason)) {
+                    let heard = self.heard_before_advance.get(&client_id).copied();
+                    if let Some(event) =
+                        self.close_slot(client_id, close_cause_from(reason, heard, dt))
+                    {
                         self.pending_lifecycle.push(event);
                     }
                 }
@@ -905,7 +944,9 @@ impl NetServer {
     }
 
     pub fn poll_handshakes(&mut self) -> ServerPoll {
-        self.collect_server_events();
+        // A relay connection has no netcode transport, so no silence sample:
+        // its `Transport` ends stay timeouts.
+        self.collect_server_events(Duration::ZERO);
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
         let (handshakes, join_seeds) = self.process_control_messages();
@@ -1020,6 +1061,20 @@ pub enum ControlArrival {
     Message(ServerControlMessage),
 }
 
+/// Why a client's connection is over, once it is. A client still retrying an
+/// unanswered first connect has not ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionEnd {
+    /// This client left: [`NetClient::disconnect`].
+    Left,
+    /// An established connection ended without this client leaving: the host
+    /// closed it, went silent, or the transport failed.
+    Lost,
+    /// No connect attempt was answered within the attempt budget, or the host
+    /// refused the connect.
+    NeverConnected,
+}
+
 /// Synchronous client transport. It declares values but never compares them.
 pub struct NetClient {
     client: RenetClient,
@@ -1038,6 +1093,8 @@ pub struct NetClient {
     polled: bool,
     connect_attempt: u32,
     ever_connected: bool,
+    /// Set by [`NetClient::disconnect`]: the ending is this client's own.
+    left: bool,
     failure_reported: bool,
     transient_error_logged: bool,
     admission_sent: bool,
@@ -1102,6 +1159,7 @@ impl NetClient {
             polled: false,
             connect_attempt: 1,
             ever_connected: false,
+            left: false,
             failure_reported: false,
             transient_error_logged: false,
             admission_sent: false,
@@ -1357,6 +1415,39 @@ impl NetClient {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.client.is_connected()
+    }
+
+    /// Leave the session: send netcode's disconnect packet to the host now,
+    /// so it closes this slot as a disconnect rather than waiting out the
+    /// keepalive timeout. The packet is a single unacknowledged datagram; if
+    /// it is lost the host times the slot out instead. Idempotent, and quiet:
+    /// a left connection logs no lost-host error.
+    pub fn disconnect(&mut self) {
+        if self.left {
+            return;
+        }
+        self.left = true;
+        self.failure_reported = true;
+        self.client.disconnect();
+        self.transport.disconnect();
+    }
+
+    /// Why this connection is over, or `None` while it is live or still
+    /// connecting, a retry of an unanswered first connect included. Read it
+    /// after [`NetClient::update`], which starts any retry.
+    #[must_use]
+    pub fn connection_end(&self) -> Option<ConnectionEnd> {
+        if self.left {
+            return Some(ConnectionEnd::Left);
+        }
+        if self.transport.disconnect_reason().is_none() && !self.client.is_disconnected() {
+            return None;
+        }
+        Some(if self.ever_connected {
+            ConnectionEnd::Lost
+        } else {
+            ConnectionEnd::NeverConnected
+        })
     }
 
     /// Whether the host has activated the current participation generation.
@@ -1716,6 +1807,11 @@ mod tests {
             .update(Duration::from_secs(16))
             .expect("the timed-out attempt is retried, not reported");
         assert_eq!(client.connect_attempt, 2);
+        assert_eq!(
+            client.connection_end(),
+            None,
+            "a retrying connect has not ended"
+        );
 
         let socket = UdpSocket::bind(server_addr).expect("host binds the reserved port");
         let mut server = NetServer::new(socket, server_addr, 8, Duration::from_secs(1), None)
@@ -1745,11 +1841,163 @@ mod tests {
         );
         assert_eq!(client.connect_attempt, CONNECT_ATTEMPTS);
         assert!(!client.is_connected());
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::NeverConnected));
         capture.assert_logged_once(
             log::Level::Error,
             &format!("could not connect to host {silent} after {CONNECT_ATTEMPTS} attempt(s)"),
         );
         drop(silent_socket);
+    }
+
+    fn connected_slot(server: &NetServer) -> ClientId {
+        let ids = server.connected_clients();
+        assert_eq!(ids.len(), 1, "exactly one connected client");
+        ids[0]
+    }
+
+    /// Advance the host alone, in frame steps, until `client_id`'s slot closes
+    /// or `budget` of host time passes. Returns the host time spent.
+    fn pump_host_until_closed(
+        server: &mut NetServer,
+        client_id: ClientId,
+        budget: Duration,
+    ) -> Duration {
+        let step = Duration::from_millis(16);
+        let mut elapsed = Duration::ZERO;
+        while elapsed < budget && !server.is_closed(client_id) {
+            let _ = server.update(step).expect("server update");
+            elapsed += step;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        elapsed
+    }
+
+    // The riskiest premise of `coop--client-leave-session`: renet_netcode
+    // reports a client's disconnect packet as a `Transport` end, exactly like
+    // a keepalive timeout, so the host must classify it itself.
+    #[test]
+    fn a_leaving_client_closes_its_host_slot_as_a_disconnect_within_one_second() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        let client_id = connected_slot(&server);
+
+        client.disconnect();
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Left));
+        let elapsed = pump_host_until_closed(&mut server, client_id, Duration::from_secs(1));
+
+        assert!(elapsed < Duration::from_secs(1), "closed after {elapsed:?}");
+        assert_eq!(
+            server.slot_state(client_id),
+            Some(SlotState::Closed {
+                cause: CloseCause::Disconnect
+            })
+        );
+    }
+
+    #[test]
+    fn a_silent_client_still_closes_its_host_slot_as_a_timeout() {
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        let client_id = connected_slot(&server);
+
+        // The client never polls again: no keepalive reaches the host.
+        let elapsed = pump_host_until_closed(&mut server, client_id, Duration::from_secs(20));
+
+        // The silence began a poll or two before this loop.
+        assert!(
+            elapsed + Duration::from_millis(100) >= NETCODE_TIMEOUT,
+            "closed early, after {elapsed:?}"
+        );
+        assert_eq!(
+            server.slot_state(client_id),
+            Some(SlotState::Closed {
+                cause: CloseCause::Timeout
+            })
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn a_transport_end_is_a_disconnect_only_inside_the_timeout_window() {
+        let frame = Duration::from_millis(16);
+        let cases = [
+            (
+                DisconnectReason::Transport,
+                Some(Duration::ZERO),
+                CloseCause::Disconnect,
+            ),
+            (
+                DisconnectReason::Transport,
+                Some(NETCODE_TIMEOUT - frame),
+                CloseCause::Disconnect,
+            ),
+            (
+                DisconnectReason::Transport,
+                Some(NETCODE_TIMEOUT - frame + Duration::from_millis(1)),
+                CloseCause::Timeout,
+            ),
+            (DisconnectReason::Transport, None, CloseCause::Timeout),
+            (
+                DisconnectReason::DisconnectedByClient,
+                None,
+                CloseCause::Disconnect,
+            ),
+            (
+                DisconnectReason::DisconnectedByServer,
+                Some(Duration::ZERO),
+                CloseCause::Timeout,
+            ),
+        ];
+        for (reason, heard, expected) in cases {
+            assert_eq!(
+                close_cause_from(reason, heard, frame),
+                expected,
+                "{reason:?} {heard:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_reports_its_connection_lost_once_the_host_closes_it() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+        assert_eq!(client.connection_end(), None);
+        let client_id = connected_slot(&server);
+
+        server.server.disconnect(client_id);
+        let step = Duration::from_millis(16);
+        for _ in 0..60 {
+            let _ = server.update(step).expect("server update");
+            let _ = client.update(step);
+            if client.connection_end().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Lost));
+        capture.assert_logged_once(log::Level::Error, "lost connection to host");
+    }
+
+    #[test]
+    fn a_left_client_logs_no_lost_connection() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let (mut server, server_addr) = loopback_server();
+        let mut client = loopback_client(server_addr);
+        assert!(pump_until_connected(&mut client, &mut server));
+
+        client.disconnect();
+        client.disconnect();
+        for _ in 0..4 {
+            assert!(client.update(Duration::from_millis(16)).is_err());
+        }
+
+        assert_eq!(client.connection_end(), Some(ConnectionEnd::Left));
+        capture.assert_not_logged(log::Level::Error, "lost connection");
     }
 
     fn relay_pair() -> (NetServer, NetClient) {

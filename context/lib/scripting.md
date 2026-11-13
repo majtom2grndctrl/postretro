@@ -180,7 +180,7 @@ Each successful commit also replaces current declaration membership. Persistence
 
 Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.
 
-Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connected client saves its per-owner values periodically and at clean exit; it never saves global slots. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts.
+Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connected client saves its per-owner values periodically and at clean exit; it never saves global slots. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts. Character progress (per-owner rows) and world progress (globals and faction sentiment) stay separate. Decided, not yet built: a client's saves keep the world it booted with unchanged on disk (today each writes an empty world section). A client whose session ends saves its character, using the final values its host returns, then restores its store: host-replicated slots and faction sentiment return to its boot world, its latest character applies, and slots that never replicate keep the client's writes.
 
 Live faction sentiment persists beside the slot store as a directional sparse
 set. Authored factions use their names. The player and default-enemy indices use
@@ -493,12 +493,32 @@ built-in death policy.
 
 `loadLevel` and `restartLevel` are host-only. A session started as a client
 (`--connect`) drops them from every source it runs (levelLoad, crossings, UI
-presses), including after its connection has ended or before it establishes,
-leaves its modal stack untouched, and warns once per firing source and verb for
-the session. The client still changes level, but only by following the host's
-relevel (`networking.md` §Slot lifecycle). A client whose host is gone stays a
-client until relaunch. `returnToFrontend` is not gated yet: on a client it
-unloads locally and keeps the connection.
+presses), including before its connection establishes, leaves its modal stack
+untouched, and warns once per firing source and verb for the session. The
+client still changes level, but only by following the host's relevel
+(`networking.md` §Slot lifecycle).
+
+**Session membership (decided, not yet built).** `leaveSession()` and
+`endSession()` change membership and never navigate. Navigation never changes
+membership, and the frontend is outside every session, so a run's end composes
+the two: `endSession()` then `returnToFrontend()` runs in every role.
+
+| Role | `leaveSession` | `endSession` | `returnToFrontend` | `ui.quitToMenu` |
+|---|---|---|---|---|
+| Single-player | no-op | no-op | frontend | frontend |
+| Host | warned no-op | end; stays in its level as single-player | refused | end, then frontend |
+| Connected client | leave | refused | refused | leave |
+
+Role alone decides what a step does. Single-player no-ops log at debug. A host
+warns once per source and verb, naming the membership verbs. A client follows
+the rule its tail landings already use (§12, Steps after a `wait`): it warns
+when its own input or own state fired a step only its host can take, and logs
+at debug when its host fires the same step. On a client, queued steps after
+`leaveSession`, and the `fire` targets they reach, drop; store writes and
+grants have already applied at dispatch (§12, Body order). What leave and end do
+to the connection: `networking.md` §Slot lifecycle. Until built, a client's
+`returnToFrontend` unloads locally and keeps the connection, and a client whose
+host is gone stays a client until relaunch.
 
 Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions
@@ -506,8 +526,8 @@ intercepted before named-reaction dispatch; they are not reactions a mod
 registers. `CLOSE_DIALOG_ACTION` exports the exact wire value
 `"ui.closeDialog"` for the "close the active modal" button pattern,
 `EXIT_TO_DESKTOP_ACTION` exports `"ui.exitToDesktop"` for UI-initiated clean
-shutdown, and `QUIT_TO_MENU_ACTION` exports `"ui.quitToMenu"` for returning to
-the frontend through the same path as `returnToFrontend()`.
+shutdown, and `QUIT_TO_MENU_ACTION` exports `"ui.quitToMenu"` for quitting to
+the frontend menu, resolved by role (membership table above).
 
 ### 10.5 Damage
 
@@ -690,12 +710,12 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | Host-mirrored: the host decides, each machine fires | `levelLoad`; crossings reading only shared slots; weapon events, NPC shots and observer cues | `levelLoad`: host timeline; the rest: each machine's own |
 | Own-state: each machine fires for its own player | crossings reading any own, owner-private or local slot; movement events; UI presses | each machine's own |
 
-- **Machine-local** is one shared predicate: never replicated and not consequential. It holds for presentation and machine-local system reactions, cell writes included, for `setState` on a non-replicated slot, and on a client for `returnToFrontend`. Level flow, sentiment and `setGhostAudio` are otherwise never machine-local. The client tail filter and the player-event install rule share it.
+- **Machine-local** is one shared predicate: never replicated and not consequential. It holds for presentation and machine-local system reactions, cell writes included, for `setState` on a non-replicated slot, and on a client for `returnToFrontend` and, once built, `leaveSession`. Level flow, sentiment and `setGhostAudio` are otherwise never machine-local. The client tail filter and the player-event install rule share it.
 - **Where tails land.** An own-state tail parks on every machine its source fires on. A host-mirrored or host-timeline tail parks on a client only when it holds a machine-local step or a `fire`; otherwise the host lands it alone. The host lands every step. A client lands only machine-local steps, dispatches a post-wait `fire` through the same filter, and treats an interruptible wait as non-interruptible. A segment enrolled during a landing is due at its parent's due tick plus its wait, on the parent's clock, and lands in the same drain if already overdue, so chain timing follows the tick timeline, not frame rate; a drain takes landings in (due tick, enrollment id) order, and a client lands a reading's host-timeline catch-up first, then the frame's other landings in enrollment order. Only an own-state landing's drop warns: once per reaction, naming the first dropped step and the `fire` target holding it, re-armed at level teardown, suspend, hot reload and role change. Every other client tail path logs at debug.
 - **Audience.** A landing presents to the audience the same step reaches before the wait. A step routed to the host's own player presents on the host; one routed to a departed player presents nowhere, though a trigger's or teleport's default-audience sound still plays everywhere. On the host, host-only and host-mirrored landings record light, fog and emitter steps as host-only overrides; an own-state landing captures a networked target and applies a client-local one uncaptured on the host; a client that crossed drops a non-machine-local step and warns once.
 - **Context.** A wait drops subject tokens, `on.emitter` and dispatch inputs and keeps the origin, which routes the landing. Install drops a reaction whose post-wait step, its own or a `fire` target's, reads any of them.
 - **Host timeline.** A `levelLoad`-class tail counts the host's fixed ticks since the current level installed, where `levelLoad` fires, never the previous level's. A client reads that count from the level tick every snapshot carries, plus its own time since the newest snapshot and half the RTT, that extrapolation capped at three snapshot intervals (`networking.md` §Presentation state). A host stall longer than that cap therefore holds the client too: its reading runs at most the cap past the host's stamped tick plus transit, and the next snapshot re-anchors it, so only a beat due within that margin of the stall can land early. Otherwise a client lands a beat on the host's landing tick, off by about the error of its half-RTT transit estimate.
-- **Late joiner.** A client that revealed after a segment's due host tick converges state and skips presentation. Its reveal tick is fixed once per level, at its first host-clock reading less its level clock (unclamped time since its reveal, the clock the reading extrapolates on) in ticks, so a client live before a beat lands it even when that reading comes after the beat fell due, or after a hitch cost it fixed ticks. Because the join subtracts the client's wall-clock time since reveal, a host stall past the tick clamp between this client's reveal and its first reading puts the join early by the ticks the host lost, and beats the host landed just before the reveal replay live. A late joiner applies due UI-stack verbs, text and cell edits and non-replicated `setState` in authored order; due sounds, screen effects, rumbles and `returnToFrontend` skip at debug. Later segments land on schedule. Pre-wait steps run at the joiner's own install.
+- **Late joiner.** A client that revealed after a segment's due host tick converges state and skips presentation. Its reveal tick is fixed once per level, at its first host-clock reading less its level clock (unclamped time since its reveal, the clock the reading extrapolates on) in ticks, so a client live before a beat lands it even when that reading comes after the beat fell due, or after a hitch cost it fixed ticks. Because the join subtracts the client's wall-clock time since reveal, a host stall past the tick clamp between this client's reveal and its first reading puts the join early by the ticks the host lost, and beats the host landed just before the reveal replay live. A late joiner applies due UI-stack verbs, text and cell edits and non-replicated `setState` in authored order; due sounds, screen effects, rumbles, `returnToFrontend` and `leaveSession` skip at debug. Later segments land on schedule. Pre-wait steps run at the joiner's own install.
 - **Teardown.** Level teardown, suspend and hot reload drop client tails at debug; a role change drops every tail without a log. Teardown, suspend and role change restart the level tick and the join tick; a hot reload keeps the level, so its tick keeps counting. A host `restartLevel` on a catalog map tears each connected client's level down and reinstalls it too, so no tail or join tick crosses into the new life; an uncatalogued host level is not followed (`networking.md` §Slot lifecycle). Exit cancel and re-fire restart cover system steps.
 
 **Group wire.** A primitive descriptor or sequence entry may carry `kind` (`npc` or `player`) beside an optional `tag`. Parse rejects, naming the reaction, an entry carrying both `id` and `kind`, or any other `kind` — in both runtimes. A kindless tag-keyed descriptor stays valid raw wire data and resolves over every tagged entity, as before; the SDK emits none. The NPC state primitive is `updateNpcState`. The net wire is unchanged: group commands are host-side manifest data, and `NetworkId` never reaches scripts.

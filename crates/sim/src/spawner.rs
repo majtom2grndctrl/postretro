@@ -103,6 +103,11 @@ impl SpawnContext {
         };
     }
 
+    /// Whether this session materializes runtime spawns: the authority's role.
+    pub fn runtime_spawn_authority(&self) -> bool {
+        self.state.borrow().can_materialize_runtime_spawns
+    }
+
     pub fn set_runtime_spawn_authority(&self, enabled: bool) {
         self.state.borrow_mut().can_materialize_runtime_spawns = enabled;
     }

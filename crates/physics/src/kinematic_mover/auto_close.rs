@@ -42,6 +42,11 @@ impl MoverAutoCloseTimers {
     /// Enable only for the host/single-player session. Connected clients retain
     /// no active observer even though their long-lived command registries share
     /// the same construction path.
+    /// Whether this session runs auto-close countdowns: the authority's role.
+    pub fn is_enabled(&self) -> bool {
+        self.state.borrow().enabled
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
         let mut state = self.state.borrow_mut();
         state.enabled = enabled;

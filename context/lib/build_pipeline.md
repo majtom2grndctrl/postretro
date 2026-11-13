@@ -89,7 +89,7 @@ A material name with a space (e.g. a collection dir `Level Eleven Games Sci-Fi T
 
 ## Custom FGD
 
-Project deliverable alongside the engine. Defines Postretro-specific entities for TrenchBroom.
+Project deliverable alongside the engine. Defines Postretro-specific entities for TrenchBroom. TrenchBroom's FGD parser has no backslash escapes, so a description never contains `\"`; quote examples inside it with single quotes. `sdk/TrenchBroom/GameConfig.cfg` hides surface-map files from the texture browser through `materials.excludes`; it lists every surface-map suffix (`_n`, `_s`, `_e`, `_h`), matching `BUNDLE_SUFFIXES` in the compiler's `texture_mips/resolution.rs`.
 
 | Entity | Type | Purpose | Key Properties |
 |--------|------|---------|----------------|

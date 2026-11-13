@@ -14,7 +14,7 @@
 
 When adding a feel detail, design to the spectrum: name its axis, expose it as a tunable or scriptable parameter, seed the default. Expose the axis, not a catalog of points along it — breadth grows with demand, not ahead of it. The spectrum is bounded by quality: every point is a valid feel, not a degenerate one. A jitter bug is not the low end of a sway range. This governs taste, not correctness: the floor above has no spectrum — owned, not exposed.
 
-**Authoring API style.** An author writes intent once, in their own terms:
+**Authoring API style.** The shape follows Vue 3's Composition API. A `define*` call returns a typed value that editors, type checkers and agents all see. An entry point reads as setup: typed inputs, room for the author's own logic, then a typed return, so only valid values reach the next consumer. `defineMod` takes `ModManifestInput` and returns `ModManifest`; `setupLevel(ctx)` returns its bundle the same way. It guides new surfaces; it does not bind every one. Within it, an author writes intent once, in their own terms:
 - **Handles over strings.** A name shared across files or archetypes is a `define*` handle named by its binding, as damage types and attack tokens are (§2). Strings remain where a map or content resolves the name: activity keys, animation states, sounds, map-referenced styles.
 - **The dependent names its prerequisite.** An attack lists the tokens it draws; a token never lists its attacks. One prerequisite then serves many dependents.
 - **References carry their obvious rules.** A reference implies the gates any author would write beside it. A list the SDK can infer from references is optional; an explicit one narrows, so a variant reuses its parent with less.

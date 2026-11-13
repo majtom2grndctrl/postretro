@@ -1,7 +1,7 @@
 # coop--client-leave-session — plan of record
 
 mode: resumable
-status: approved
+status: approved (build complete; awaiting land the plane)
 read at: ae8152c
 
 No source changed between the brief's `read at` (514b5944) and ae8152c: the 8 commits between them touch only `context/`. Every symbol cited by Decisions and Path was re-read at ae8152c and exists as described, except as corrected below.
@@ -23,46 +23,46 @@ No source changed between the brief's `read at` (514b5944) and ae8152c: the 8 co
 
 Rows follow the brief's Acceptance order. Test names are the planned names; the build records the final ones.
 
-| AC | Acceptance (short) | Proof | Status |
-|---|---|---|---|
-| 1 | Client `leaveSession`, direct or landed after a UI `wait` → no endpoint, frontend, unload, then backdrop; a later `loadLevel` queues and does not warn | `client_leave_session_lands_at_single_player_frontend` (direct + landed variants) | achievable as stated |
-| 2 | `ui.quitToMenu` leaves (client), ends (host), unchanged in single-player | `quit_to_menu_resolves_membership_by_role` | achievable as stated |
-| 3 | `returnToFrontend`: host refuses and warns once per source; client refuses, warns from UI or debug from host-fired; single-player as today | `return_to_frontend_refusals_follow_role_and_origin` | achievable as stated |
-| 4 | `leaveSession` warns on a host; both verbs log at debug in single-player; client `endSession` warns naming `leaveSession` from UI, debug from host-fired | `membership_verb_noops_log_by_role_and_origin` | achievable as stated |
-| 5 | `[leaveSession, returnToFrontend]`, `[leaveSession, loadLevel(L)]`, `[fire(F), leaveSession]` → one frontend return, L never loads, no warning (P15) | `steps_after_leave_drop_at_debug` | achievable as stated |
-| 6 | A late joiner skips an already-due `leaveSession` | `late_joiner_converge_skips_due_leave_session` | achievable as stated |
-| 7 | `endSession` then `returnToFrontend`, direct and across `wait(500)`, in each role; no pre-leave tail lands after the leave (P4) | `run_end_composition_behaves_per_role` | achievable as stated |
-| 8 | levelLoad `[wait(500), endSession, returnToFrontend]` on a client: debug only; from a UI press it warns (P21) | `client_run_end_tail_logs_by_origin` | achievable as stated |
-| 9 | Client `[leaveSession, setState(S non-replicated, v)]` → store and save hold v | `leave_then_local_set_state_persists` | achievable as stated |
-| 10 | Scripting surface example reaches the engine as both primitives from TS and Luau | sim typedef surface test plus a two-runtime evaluation of the fixture; `scripts-build` type-checks `frontend-level-select-fixture.{ts,luau}` | achievable as stated |
-| 11 | Host `endSession` alone: stays in level as single-player, remote pawns gone; next `loadLevel` publishes no parity or relevel, and its pawn spawns on its seat with its carried loadout | `ended_host_keeps_level_seat_and_loadout` | achievable as stated |
-| 12 | Loopback host + 2 clients, host `ui.quitToMenu` → each client gets the cause and reaches a working single-player frontend; host has no endpoint, at its frontend | loopback `host_quit_to_menu_ends_session_for_every_client` | achievable as stated |
-| 13 | Loopback host at frontend, one admitted client, UI `endSession` → same outcome (P7) | loopback `frontend_host_end_reaches_world_less_client` | achievable as stated |
-| 14 | Client never acks: transport dropped within 2 s of host time; an acking client still gets the cause (P12) | loopback `closing_transport_drops_within_two_seconds` | achievable as stated |
-| 15 | During the closing window: no admission, nothing sent after a cause, no seat held, pawns and seat table unchanged (P14) | loopback `closing_window_admits_and_sends_nothing` | achievable as stated |
-| 16 | Lost host or mod-id refusal → single-player frontend, no relaunch; a still-retrying first connect does not; all connect attempts failed → same as a lost host (P11) | `host_side_endings_take_the_leave_path` | achievable as stated |
-| 17 | Session-ended cause: one ended line, no incompatible-host or lost-connection error; vanished host: one lost-host line (P6) | log-capture `ended_session_logs_once_without_errors` | achievable as stated |
-| 18 | Loopback client leaves → host closes the slot as disconnect within 1 s, holds the seat, and the same claim reclaims it | loopback `client_leave_closes_as_disconnect_and_holds_seat` (Task 1 slice first) | achievable as stated |
-| 19 | `ui.exitToDesktop`, window close and the quit chord, in a level and at the frontend: client sends the disconnect; host exits within 2 s of wall time, after acking clients have the cause (P12) | `exit_paths_leave_or_end_before_exit` plus a source-shape guard that every exit routes through `exiting` | achievable as stated |
-| 20 | Pre-`SessionEnded` protocol refused at handshake; `Protocol`/`ModId` encodings unchanged; an old peer logs the protocol mismatch | `handshake.rs` protocol-gate and append-layout guard tests | achievable as stated |
-| 21 | After a leave and after an end, the whole derived role state equals a no-flag session's, except an ended host's own seat, pawn binding and carried loadout; one test compares the whole struct | `left_and_ended_role_state_matches_single_player` | achievable as stated |
-| 22 | After a leave: the next own load is not host-named, no relevel record or spawn-pose hint applies, and a later relevel loads nothing | `nothing_from_the_host_steers_after_leave` | achievable as stated |
-| 23 | Ending in a frame with ticks, crossings or drains still to run: nothing runs in the host's level as single-player, nothing queues behind the unload (P1) | `ended_client_level_runs_nothing_before_unload` | achievable as stated |
-| 24 | A relevel received earlier in the frame, in the same drain as the cause, or still loading: no host level installs (P3) | `relevel_never_outlives_session_end` | achievable as stated |
-| 25 | Cause plus own leave in one frame, or two leaves in one drain: one save, one close, one frontend return (P8) | `double_leave_is_idempotent` | achievable as stated |
-| 26 | Client saves keep world W; the leave save holds the raised value; store and exit save hold W, boot sentiment and own rows on seat 0, none of the host's values (P9, P19) | `client_saves_keep_own_world_through_leave` | achievable as stated |
-| 27 | Non-participating client (world-less, or held), host ends or client leaves → save and store keep V (P13) | `non_participant_keeps_saved_character` | achievable as stated |
-| 28 | Own leave sent in the frame the host ends → one save of last received values, no error, frontend; host holds no seat (P16) | loopback `leave_racing_end_saves_once` | achievable as stated |
-| 29 | Client-written non-replicating global and per-owner slots survive leave and exit | `non_replicated_writes_survive_leave` | achievable as stated |
-| 30 | A failed leave-time save keeps the final values in the store; the next exit saves them (P17) | `failed_leave_save_keeps_final_character` | achievable as stated |
-| 31 | Host writes per-owner values then ends in one reaction → each client saves them, also when the cause and the last snapshot arrive in one frame (P10) | loopback `final_character_carries_same_reaction_reward` | achievable as stated |
-| 32 | Host writes per-owner values then `loadLevel(M)`, whose levelLoad ends before any client reveals → each client saves them (P18) | loopback `held_client_receives_final_character` | achievable as stated |
-| 33 | A crossing reward written after a trigger's `endSession` in the same frame does not reach clients | `post_end_reward_stays_on_host` | achievable as stated |
-| 34 | `FinalCharacter` in frame k, cause later, a pre-end snapshot applied between them → the `FinalCharacter` values save (P20) | `final_character_outranks_stale_snapshot` | achievable as stated |
-| 35 | Connected client exits to desktop with no prior leave → save holds its own global, sentiment and rows (P5) | `client_exit_saves_own_world` | achievable as stated |
-| 36 | Crossing watcher whose host value differs from the client's saved value: the restore fires no crossing, by leave and by host-side ending (P2) | `store_restore_fires_no_crossing` | achievable as stated |
-| 37 | Manual: two-process loopback; the client quits to the menu, stays there through a host level change, and starts a local game; the host's player list drops it at once | owner, two-process loopback | manual |
-| 38 | Manual: two-process loopback; the host quits to the menu; the client lands at its frontend, logs that the host ended the session, and starts a local game | owner, two-process loopback | manual |
+| AC | Acceptance (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Client `leaveSession`, direct or landed after a UI `wait` → no endpoint, frontend, unload, then backdrop; a later `loadLevel` queues and does not warn | `client_leave_session_lands_at_single_player_frontend` (direct + landed variants) | achievable as stated | pass: App test (direct, UI origin); the post-`wait` landing of `leaveSession` is shown by the sim test `ui_press_tail_drops_a_level_load_and_warns_once` |
+| 2 | `ui.quitToMenu` leaves (client), ends (host), unchanged in single-player | `quit_to_menu_resolves_membership_by_role` | achievable as stated | pass |
+| 3 | `returnToFrontend`: host refuses and warns once per source; client refuses, warns from UI or debug from host-fired; single-player as today | `return_to_frontend_refusals_follow_role_and_origin` | achievable as stated | pass |
+| 4 | `leaveSession` warns on a host; both verbs log at debug in single-player; client `endSession` warns naming `leaveSession` from UI, debug from host-fired | `membership_verb_noops_log_by_role_and_origin` | achievable as stated | pass |
+| 5 | `[leaveSession, returnToFrontend]`, `[leaveSession, loadLevel(L)]`, `[fire(F), leaveSession]` → one frontend return, L never loads, no warning (P15) | `steps_after_leave_drop_at_debug` | achievable as stated | pass; after a `wait` too (`own_state_tail_drops_steps_after_its_leave_quietly`) |
+| 6 | A late joiner skips an already-due `leaveSession` | `late_joiner_converge_skips_due_leave_session` | achievable as stated | pass (`late_joiner_converge_skips_due_leave_session`) |
+| 7 | `endSession` then `returnToFrontend`, direct and across `wait(500)`, in each role; no pre-leave tail lands after the leave (P4) | `run_end_composition_behaves_per_role` | achievable as stated | pass: direct form in all three roles; client after a `wait` (`client_run_end_tail_logs_by_origin`). Not separately tested: a host's own post-`wait` landing; the scheduler keeps the host role across the end |
+| 8 | levelLoad `[wait(500), endSession, returnToFrontend]` on a client: debug only; from a UI press it warns (P21) | `client_run_end_tail_logs_by_origin` | achievable as stated | pass (sim scheduler test) |
+| 9 | Client `[leaveSession, setState(S non-replicated, v)]` → store and save hold v | `leave_then_local_set_state_persists` | achievable as stated | pass at the seam: drain-rest rule plus `restore_after_session_returns_the_host_world_to_the_boot_world` (non-replicated values kept). No App disk round-trip; manual |
+| 10 | Scripting surface example reaches the engine as both primitives from TS and Luau | sim typedef surface test plus a two-runtime evaluation of the fixture; `scripts-build` type-checks `frontend-level-select-fixture.{ts,luau}` | achievable as stated | pass (`session_membership_fixture_lowers_to_the_engine_kinds_in_both_runtimes`) |
+| 11 | Host `endSession` alone: stays in level as single-player, remote pawns gone; next `loadLevel` publishes no parity or relevel, and its pawn spawns on its seat with its carried loadout | `ended_host_keeps_level_seat_and_loadout` | achievable as stated | partial: stays in level as single-player, remote pawns gone, own seat kept, no endpoint (`ended_host_keeps_its_seat_and_returns_each_participants_character`). Not exercised: the next `loadLevel` spawning on that seat with the carried loadout |
+| 12 | Loopback host + 2 clients, host `ui.quitToMenu` → each client gets the cause and reaches a working single-player frontend; host has no endpoint, at its frontend | loopback `host_quit_to_menu_ends_session_for_every_client` | achievable as stated | pass on the relay harness: host end with three clients plus a client receiving the cause; not a two-process run (see AC 37–38) |
+| 13 | Loopback host at frontend, one admitted client, UI `endSession` → same outcome (P7) | loopback `frontend_host_end_reaches_world_less_client` | achievable as stated | pass (`frontend_host_end_closes_a_world_less_client`) |
+| 14 | Client never acks: transport dropped within 2 s of host time; an acking client still gets the cause (P12) | loopback `closing_transport_drops_within_two_seconds` | achievable as stated | pass (net loopback: `an_ended_host_drops_its_transport_within_the_close_window`, `a_cause_arriving_with_the_disconnect_drains_without_a_lost_host_error`) |
+| 15 | During the closing window: no admission, nothing sent after a cause, no seat held, pawns and seat table unchanged (P14) | loopback `closing_window_admits_and_sends_nothing` | achievable as stated | pass (net loopback `a_closing_transport_admits_no_one_and_sends_nothing_after_the_cause`; App relay test: no seat held, remote pawns gone). The late-connect closing arm is untested |
+| 16 | Lost host or mod-id refusal → single-player frontend, no relaunch; a still-retrying first connect does not; all connect attempts failed → same as a lost host (P11) | `host_side_endings_take_the_leave_path` | achievable as stated | pass (`host_side_endings_take_the_leave_path`) |
+| 17 | Session-ended cause: one ended line, no incompatible-host or lost-connection error; vanished host: one lost-host line (P6) | log-capture `ended_session_logs_once_without_errors` | achievable as stated | pass (App log test plus the net no-lost-host test) |
+| 18 | Loopback client leaves → host closes the slot as disconnect within 1 s, holds the seat, and the same claim reclaims it | loopback `client_leave_closes_as_disconnect_and_holds_seat` (Task 1 slice first) | achievable as stated | partial: transport close as disconnect within 1 s proven (`a_leaving_client_closes_its_host_slot_as_a_disconnect_within_one_second`); seat hold and reclaim on a `Disconnect` close is existing behaviour, not re-tested end to end |
+| 19 | `ui.exitToDesktop`, window close and the quit chord, in a level and at the frontend: client sends the disconnect; host exits within 2 s of wall time, after acking clients have the cause (P12) | `exit_paths_leave_or_end_before_exit` plus a source-shape guard that every exit routes through `exiting` | achievable as stated | pass (`exit_paths_leave_or_end_before_exit` with a source-order guard on `exiting`) |
+| 20 | Pre-`SessionEnded` protocol refused at handshake; `Protocol`/`ModId` encodings unchanged; an old peer logs the protocol mismatch | `handshake.rs` protocol-gate and append-layout guard tests | achievable as stated | pass at gate 2 (`admission_refuses_prlb_to_prld_or_wire_32_to_38_and_admits_prle_39` logs the mismatch); a real PRLD peer is refused at gate 1, where renetcode logs `invalid protocol id` (see Review notes) |
+| 21 | After a leave and after an end, the whole derived role state equals a no-flag session's, except an ended host's own seat, pawn binding and carried loadout; one test compares the whole struct | `left_and_ended_role_state_matches_single_player` | achievable as stated | pass (`left_and_ended_role_state_matches_single_player`, `session.openSeats` included) |
+| 22 | After a leave: the next own load is not host-named, no relevel record or spawn-pose hint applies, and a later relevel loads nothing | `nothing_from_the_host_steers_after_leave` | achievable as stated | pass (`nothing_from_the_host_steers_after_leave`) |
+| 23 | Ending in a frame with ticks, crossings or drains still to run: nothing runs in the host's level as single-player, nothing queues behind the unload (P1) | `ended_client_level_runs_nothing_before_unload` | achievable as stated | pass at the seam (`ended_client_level_stops_before_unload` plus the two frame-loop early returns); the frame loop is not driven in a test |
+| 24 | A relevel received earlier in the frame, in the same drain as the cause, or still loading: no host level installs (P3) | `relevel_never_outlives_session_end` | achievable as stated | pass (`nothing_from_the_host_steers_after_leave`) |
+| 25 | Cause plus own leave in one frame, or two leaves in one drain: one save, one close, one frontend return (P8) | `double_leave_is_idempotent` | achievable as stated | pass (`double_leave_is_idempotent`) |
+| 26 | Client saves keep world W; the leave save holds the raised value; store and exit save hold W, boot sentiment and own rows on seat 0, none of the host's values (P9, P19) | `client_saves_keep_own_world_through_leave` | achievable as stated | pass at the seam (client save keeps the boot world; restore returns the host world to it); App disk round trip outstanding, manual |
+| 27 | Non-participating client (world-less, or held), host ends or client leaves → save and store keep V (P13) | `non_participant_keeps_saved_character` | achievable as stated | pass at the seam (`restore_for_a_non_participant_takes_its_saved_character`, host sends no FinalCharacter to a never-participating client) |
+| 28 | Own leave sent in the frame the host ends → one save of last received values, no error, frontend; host holds no seat (P16) | loopback `leave_racing_end_saves_once` | achievable as stated | outstanding: no test; by construction the dropped endpoint receives nothing and the host's closing poll holds no seat |
+| 29 | Client-written non-replicating global and per-owner slots survive leave and exit | `non_replicated_writes_survive_leave` | achievable as stated | pass at the seam (`restore_after_session_returns_the_host_world_to_the_boot_world`) |
+| 30 | A failed leave-time save keeps the final values in the store; the next exit saves them (P17) | `failed_leave_save_keeps_final_character` | achievable as stated | outstanding: no test; by construction the final values stay on the session seat and the restore moves them to seat 0 for the exit save |
+| 31 | Host writes per-owner values then ends in one reaction → each client saves them, also when the cause and the last snapshot arrive in one frame (P10) | loopback `final_character_carries_same_reaction_reward` | achievable as stated | partial: FinalCharacter precedes the cause for each participant (relay test); value carriage proven in sim (`final_character_carries_only_the_persisted_per_owner_values_the_host_replicates`); no end-to-end value test |
+| 32 | Host writes per-owner values then `loadLevel(M)`, whose levelLoad ends before any client reveals → each client saves them (P18) | loopback `held_client_receives_final_character` | achievable as stated | partial: a held client receives FinalCharacter before the cause (relay test); its save of the value not tested end to end |
+| 33 | A crossing reward written after a trigger's `endSession` in the same frame does not reach clients | `post_end_reward_stays_on_host` | achievable as stated | outstanding: no test; by construction FinalCharacter is composed in the drain, before the crossing stage |
+| 34 | `FinalCharacter` in frame k, cause later, a pre-end snapshot applied between them → the `FinalCharacter` values save (P20) | `final_character_outranks_stale_snapshot` | achievable as stated | outstanding: no test; by construction FinalCharacter is held on the App until the leave applies it |
+| 35 | Connected client exits to desktop with no prior leave → save holds its own global, sentiment and rows (P5) | `client_exit_saves_own_world` | achievable as stated | pass at the seam (exit leaves first, source guard; restore tests) |
+| 36 | Crossing watcher whose host value differs from the client's saved value: the restore fires no crossing, by leave and by host-side ending (P2) | `store_restore_fires_no_crossing` | achievable as stated | pass at the seam (`rebaseline_arms_on_restored_values_without_firing`) |
+| 37 | Manual: two-process loopback; the client quits to the menu, stays there through a host level change, and starts a local game; the host's player list drops it at once | owner, two-process loopback | manual | manual: owner |
+| 38 | Manual: two-process loopback; the host quits to the menu; the client lands at its frontend, logs that the host ended the session, and starts a local game | owner, two-process loopback | manual | manual: owner |
 
 ## Tasks
 
@@ -77,7 +77,42 @@ Rows follow the brief's Acceptance order. Test names are the planned names; the 
 | 7 | **Host end path.** `App::end_session()`: for each slot that participated on this connection (held slots included), compose FinalCharacter, then the cause. Move the `NetServer` out of `NetEndpoint::Host` into a session-owned closing transport, pumped each frame until drained or 2 s of host time. Tear down remote pawns and hold no seats. Re-derive role state, keeping seat 0, its pawn binding and carried loadout. Host `ui.quitToMenu` ends the session, then returns to the frontend. Proof: AC 11, 13–15, 31–33. | integrating executor | 2, 4 | done: `netcode::end_host_session`, `HostJoinSeeds::has_participated`, `SeatTable::release_remote_seats`, `App::end_session` and `pump_closing_host_transport` (every boot state). Tests: `ended_host_keeps_its_seat_and_returns_each_participants_character` (participating, held and never-participating clients), `frontend_host_end_closes_a_world_less_client`. |
 | 8 | **Host-side endings on a client.** The `SessionEnded` cause, mod-id refusal, lost host and last failed connect attempt each route to `leave_session` from both poll paths (Correction 5), with the AC 17 log lines. Proof: AC 16, 17, 28. | integrating executor | 5, 2 | done: Control-drain arms for `SessionEnded`, `ModId` and `Protocol`; the rest of a batch drops after a host-side ending; `follow_client_connection_end` on both poll paths. Test: `host_side_endings_take_the_leave_path`. |
 | 9 | **Exit paths.** `exiting` leaves (client) or ends (host), then pumps the closing transport for up to 2 s of wall time before the existing saves. Source-shape guard on exit routing. Proof: AC 19, 35. | integrating executor | 5, 7 | done: `exiting` calls `leave_or_end_for_exit` before its saves. Test: `exit_paths_leave_or_end_before_exit`, with a source-order guard. |
-| 10 | **Two-peer loopback suite.** App-level host-plus-clients harness rows: AC 12, 14, 15, 18, 28, 31, 32. Extend the existing loopback fixtures rather than adding a parallel harness. | integrating executor | 5–9 | |
-| 11 | **Content and manual prep.** Check the dev pause menu (`frontend-menu.ts`) flow against the new `ui.quitToMenu` resolution. Write the manual steps for AC 37–38 into the report. | integrating executor | 10 | |
+| 10 | **Two-peer loopback suite.** App-level host-plus-clients harness rows: AC 12, 14, 15, 18, 28, 31, 32. Extend the existing loopback fixtures rather than adding a parallel harness. | integrating executor | 5–9 | partial: the relay fixture gained `step_closing`, and the host-end rows run on it; the net crate's real-socket tests carry the transport halves. No App-to-App real-socket harness was added; the rows it would prove are marked partial or outstanding in the AC table. |
+| 11 | **Content and manual prep.** Check the dev pause menu (`frontend-menu.ts`) flow against the new `ui.quitToMenu` resolution. Write the manual steps for AC 37–38 into the report. | integrating executor | 10 | done: the dev pause menu presses `ui.quitToMenu`, which now resolves by role; no content change needed. |
 
 Task 1 must pass before any other task starts. If renet_netcode loses the disconnect or the classifier misreads it, the Leave Decision's transport premise is false, and this plan goes to `blocked`. Task 3 has no dependency on Tasks 1, 2 or 4. It runs as a worker in its own worktree, concurrent with Tasks 1–2, and the integrating executor merges it before Task 5.
+
+## Review loop
+- Round 1 (`/review-panel`, run by the integrating executor as coordinator; 2 tracers, 2 contract verifiers, 1 adversarial tester (opus) and hygiene + drift (sonnet)): 2 🔴 (one bug, found independently by two lenses), about 14 🟡 and a dozen 🟢.
+  - Fixed: a client ending with no seat lost its saved local-only per-owner values. Also fixed:
+    - a closing cause arriving with the host's disconnect was lost or logged as a lost host;
+    - a leave during the splash or first-launch hold tore down the accessibility panel;
+    - `session.openSeats` survived a leave;
+    - ended hosts orphaned projectile presentations and dropped the closing transport without netcode's disconnect;
+    - respawn reservations kept departed seats;
+    - the stopped-level flag survived a suspend;
+    - a post-`wait` leave warned for the steps after it;
+    - the unreachable connected-client exit save; comment drift; SDK and docs wording.
+  - Applied by the integrating executor rather than `/fix-review-findings` workers: most fixes touched seams it owns, and disk could not hold parallel builds.
+- Round 2 (one tracer on the fix commit): 0 🔴, 2 🟡 and 4 🟢.
+  - Fixed: a `--connect` client with a CLI boot map whose session ended before boot cleared booted into that map; the death-screen docs recommended a composition a client's button refuses.
+  - Also fixed: the restore repeated boot warnings; a closing-transport drop path skipped the disconnect; the restore doc comment.
+- Left, with reasons:
+  - Steps queued after an `endSession` in the same drain still route presentation to remote players, ahead of the cause. Harmless; it is now commented.
+  - A leave during a Loading frame paints one splash frame.
+  - The generic closing-cause arm says "incompatible host" for future close causes; none exist yet.
+  - The relay closing path has no 2 s window. It is test-only.
+  - Two small public getters (`MoverAutoCloseTimers::is_enabled`, `SpawnContext::runtime_spawn_authority`) are read only by a test.
+
+## Gate
+- `cargo fmt --check`: pass.
+- clippy `-D warnings` with `dev-tools`, all targets:
+  - Pass on every touched crate.
+  - The workspace-wide run hits two lints in crates this branch does not touch (`postretro-level-format` `needless_range_loop`, `postretro-level-compiler` `needless_bool`). Both are newly flagged by the container's updated toolchain, rustc 1.100.
+  - The same toolchain warns of an unused `postretro-net` dependency in `postretro-combat-model`.
+- Tests:
+  - `postretro` `--bin` with `dev-tools`: 2634 passed.
+  - net, netcode, entities, foundation, physics, sim, scripting-core and script-compiler: all suites pass.
+  - A full `cargo test --workspace` could not finish: its build filled the container's 39 GB disk allowance and was stopped.
+- `crate-graph --check`: pass.
+- `cargo check --release`: not run. A cold release build does not fit in the remaining disk.

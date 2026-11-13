@@ -539,6 +539,20 @@ fn a_leave_during_the_first_launch_hold_keeps_the_panel_up() {
         assert!(!client.frontend_menu_is_present(), "{name}");
         assert!(requests(&client).is_empty(), "{name}");
     }
+
+    // A client launched with a CLI boot map lands at the frontend instead.
+    let mut client = client_app();
+    client.boot_state = BootState::FirstLaunchHold;
+    client.map_path = Some(std::path::PathBuf::from("maps/e1m1.prl"));
+    client.boot_destination = Some(crate::startup::BootDestination::BootMap(
+        std::path::PathBuf::from("maps/e1m1.prl"),
+    ));
+    crate::client_drain_control(&mut client, vec![session_ended()]);
+    assert_eq!(client.map_path, None);
+    assert!(matches!(
+        client.boot_destination,
+        Some(crate::startup::BootDestination::Frontend)
+    ));
 }
 
 // AC 11, 13 and the host half of pins P13 and P18: an ended host stays in its

@@ -629,8 +629,9 @@ pub fn overlay_client_local_per_owner_state(
 /// global value. Per-owner values move from `session_seat` to `Seat(0)`: a
 /// slot that never replicates keeps the client's own write, and a replicated
 /// persisted one keeps the latest character there when `character_on_seat`.
-/// Otherwise (a client that never participated) the character comes from
-/// `boot`'s rows for `local_player_id`. Replicated non-persisted per-owner
+/// A replicated character the client never received (it never participated),
+/// and a local-only value it never held on a session seat (no roster seated
+/// it), come from `boot`'s rows for `local_player_id`. Replicated non-persisted per-owner
 /// slots return to their defaults; non-replicated globals keep the client's
 /// writes. Faction sentiment is the caller's.
 pub fn restore_store_after_session(
@@ -704,9 +705,25 @@ pub fn restore_store_after_session(
             Err(warning) => warnings.push(warning),
         }
     }
+    // Only the rows this restore needs: boot already warned about the rest.
+    let needed = PersistedState {
+        per_owner: boot
+            .per_owner
+            .iter()
+            .filter(|(durable_key, _)| {
+                authored_by_key
+                    .get(durable_key.as_str())
+                    .is_some_and(|name| from_boot.contains(*name))
+            })
+            .map(|(durable_key, rows)| (durable_key.clone(), rows.clone()))
+            .collect(),
+        slots: BTreeMap::new(),
+        faction_sentiment: BTreeMap::new(),
+        version: boot.version,
+    };
     warnings.extend(overlay_per_owner_state(
         table,
-        boot,
+        &needed,
         &authored_by_key,
         local_player_id,
         SINGLE_PLAYER_SEAT,

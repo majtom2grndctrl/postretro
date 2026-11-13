@@ -8,6 +8,7 @@ use postretro_entities::reactions::system_commands::{FireOrigin, MachineSource};
 use crate::App;
 use crate::netcode;
 use crate::session::role_state::{RoleBoundState, SessionRole, apply_role};
+use crate::startup::BootDestination;
 use crate::startup::BootState;
 
 /// Why a connected client's session ends. Every cause lands it where its own
@@ -85,12 +86,20 @@ impl App {
         // Before boot clears the splash or the first-launch hold, the boot
         // destination presents the frontend; presenting it now would tear
         // down the accessibility panel the player has not closed.
-        if !matches!(
+        if matches!(
             self.boot_state,
             BootState::Splash | BootState::FirstLaunchHold
         ) {
-            self.navigate_to_frontend();
+            // An ended session lands at the frontend, never at a CLI boot
+            // map the client meant to play beside its host.
+            self.map_path = None;
+            if matches!(self.boot_destination, Some(BootDestination::BootMap(_))) {
+                self.boot_destination = Some(BootDestination::Frontend);
+            }
+            log::info!("[Net] the session ended before boot cleared; the frontend follows boot");
+            return true;
         }
+        self.navigate_to_frontend();
         log::info!("[Net] returned to the frontend as single-player");
         true
     }
@@ -207,6 +216,7 @@ impl App {
         };
         if let Err(err) = server.update(frame_dt) {
             log::warn!("[Net] closing transport failed ({err}); dropping it");
+            server.disconnect_remaining();
             session.closing_host_transport = None;
             return;
         }

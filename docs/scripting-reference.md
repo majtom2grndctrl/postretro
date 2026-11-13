@@ -4059,8 +4059,10 @@ For a death screen, bind `playerDied` to `openMenu("deathScreen")`, then put
 buttons in the registered `deathScreen` UI tree that fire `restartLevel()` or
 `returnToFrontend()` reactions. In co-op both are refused (`restartLevel()` on a
 client, `returnToFrontend()` on a host and a client), so a quit button there
-uses `QUIT_TO_MENU_ACTION`, which resolves by role, or a reaction running
-`[endSession(), returnToFrontend()]`. The tree must be registered like any other mod UI
+uses `QUIT_TO_MENU_ACTION`, which resolves by role. A reaction running
+`[endSession(), returnToFrontend()]` ends a run from the host's timeline, such
+as a map-end crossing; from a client's own button press both steps are
+refused. The tree must be registered like any other mod UI
 tree; an unknown tree name warns and no-ops. Level-complete flows use the same
 reaction vocabulary through `onStateCrossing`; there is no built-in
 `levelComplete` event.

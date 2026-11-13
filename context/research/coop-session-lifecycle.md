@@ -102,6 +102,7 @@ Facts by symbol: `state_path`, `load_persisted_state`, `overlay_persisted_state`
 | G7 | Globals save only at clean exit; a crash loses a whole session's progress | `scripting.md` §5 |
 | G8 | No run save: a session cannot resume its map or loadouts later | `CarriedState` has no serde; `player_options.md` §1 "Game saves: TBD" |
 | G10 | Character and world progress share one `state.json`: per-owner rows under the player id beside the global slots. Character progress already moves between single-player and co-op, because the single-player and host exit save writes the local player's rows and a joining client's `JoinSeed` reads the same rows. The two kinds of progress just have no separate home | `collect_per_owner_state`, `join_seed_from_persisted_state` |
+| G11 | **In-session world erasure.** Every save a connected client makes writes an empty world section, so playing co-op as a client erases the player's own single-player world on disk | `collected_per_owner_only_state` |
 | G9 | Stale docs: `coop-session-lobby.md` §3 and `research/netcode/index.md` non-goals deny client saves, but per-player persistence shipped | `done/E16--per-player-persistence` |
 
 ## 5. Target: navigation and membership are separate verbs
@@ -112,7 +113,7 @@ Facts by symbol: `state_path`, `load_persisted_state`, `overlay_persisted_state`
 |---|---|---|---|---|
 | `navigate(destination)` (working name) | navigation | any destination | session destinations only (the lobby, if declared, and levels), with clients following | dropped and warned: the host leads |
 | `leaveSession()` | membership | no-op | warn: a host ends the session instead | close cleanly, then land at the declared frontend |
-| `endSession()` | membership | no-op | close every slot and notify clients; stay where it is, now single-player | no-op: the host's copy ends it |
+| `endSession()` | membership | no-op | close every slot and notify clients; stay where it is, now single-player | refused: only the host ends a session |
 | `evictPlayer(player)` | membership | n/a | close that player's slot with a cause | lands at the frontend |
 | `ui.quitToMenu` (engine action) | resolves by role | navigate to the frontend | `endSession()`, then frontend | `leaveSession()` |
 
@@ -234,7 +235,7 @@ sequenceDiagram
 
 | Order | Brief | Owns | Depends on |
 |---|---|---|---|
-| 1 | `coop--client-leave-session` (reshape) | `leaveSession()` and `endSession()`; `ui.quitToMenu` resolving by role; exit to desktop disconnecting; any host-side ending landing at a single-player frontend; on leave, saving the character and then reloading the player's own world; inside a session, `returnToFrontend` refused with a warning (G1–G5) | none |
+| 1 | `coop--client-leave-session` (reshape) | `leaveSession()` and `endSession()`; `ui.quitToMenu` resolving by role; exit to desktop disconnecting; any host-side ending landing at a single-player frontend; on leave, saving the character and then reloading the player's own world; keeping a client's own world on disk while connected; inside a session, `returnToFrontend` refused with a warning (G1–G5, G11) | none |
 | 2 | Optional lobby and navigation (new) | the mod-declared lobby; the generalized `navigate(destination)` that replaces `returnToFrontend`; clients following the host's navigation | leave |
 | 3 | Phase 3.75 lobby authoring surface | in-app hosting, including setting a session password; session phase, join predicate, joined, left and phase-changed reactions, `evictPlayer` and its policy | optional lobby |
 | 3 | In-app join (new, small) | direct-connect UI: address and password entry, connecting and refused states, notice on a host-side ending | leave |

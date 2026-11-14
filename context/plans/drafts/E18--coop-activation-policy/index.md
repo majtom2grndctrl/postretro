@@ -19,12 +19,11 @@ Owner-raised, reopened. Co-op puzzles need "both plates held at once" and "every
 - **`occupancy.tag(tag)`**: a family of readonly Numbers, host-computed and shared. `occupiedCount`: player-occupied volumes, those carrying the tag with at least one effective player inside. `occupants`: distinct effective players inside any volume carrying the tag. Membership ignores armed and latched state, as the occupant map does. Volumes are trigger volumes, `switch` included, since a switch is a trigger volume at the component layer.
 - **All-players condition.** `occupants <= inPlay` on every tick. "Everyone is in" is `loading == 0 && inPlay > 0 && occupants >= inPlay`: it waits for loading teammates, is not blocked by a downed one, and is false with nobody in play. The docs and the reference fixture carry exactly this pattern.
 - **`forEach(list, (row, i) => widget)`**: a UI helper that unrolls a widget once per row up to the list's capacity, shows a row only while `present`, and makes authored ids unique per row. Trees stay static: rows appearing or leaving never rebuild them. Both runtimes. The HUD player list is a reference implementation; rendering stays the mod's.
-- **Occupancy lifetime.** The host's level install declares the family at 0 for every tag on a trigger volume, before reactions, crossings and accumulators rebuild; unload removes it on every machine. Engine-written, script-readonly: a script write warns and changes nothing.
-- **The host sends the tag set** (`networking.md` §What gates: hash only what cannot be replicated). A client never derives it from its own map. The set rides the ordered control channel at host install and at admission, so it precedes the client's first accepted snapshot of the level, and applies only to the install it names. A set that arrives after install, or a new set for the same install, replaces the family; crossings bind and state batches apply from then. The content digest is unchanged.
+- **Referenced tags.** A family exists for each tag the mod's scripts reference through `occupancy.tag`, collected from the evaluated descriptors (crossings, accumulators, reactions, UI binds), never from source text, so a tag built at run time counts. Mod-scope references are declared at each mod commit and live as long as the mod's other store slots (`scripting.md` §5). A level's `setupLevel` references are declared at its install, before binds, crossings and accumulators bind, and removed at unload. Host and clients run the same scripts, so each derives the same set at the same point, a late joiner included; no message carries it. A family reads 0 where no trigger volume in the level carries its tag. Engine-written, script-readonly: a script write warns and changes nothing.
+- **A level reference to an absent tag warns.** A `setupLevel` reference to a tag no trigger volume in that level carries warns once at install; a mod-scope reference reads 0 silently on levels without the tag.
 - **`occupancy` is a reserved engine namespace.** A mod store declaring it, or one overlapping it, is rejected at load whether or not a level is loaded.
-- **A tag that cannot form a slot name** (one containing `.` or `:`) warns once at install and gets no family. Its volumes still fire events.
+- **A tag that cannot form a slot name** (one containing `.` or `:`) warns once where it is collected and gets no family.
 - **Write order.** Counts and occupancy are written once per authoritative host tick, from that tick's trigger-stage capture and the seat table, after the trigger stage settles and before accumulators and crossing detection. A set that completes on a tick crosses in that tick's frame (`plans/done/E18--dispatch-scope-params/` ordering); a hold that starts and breaks inside one catch-up frame may not cross.
-- **Unknown tag degrades.** `occupancy.tag(name)` for a tag with no family in the current level is a ref to an undeclared slot: a crossing or accumulator over it warns and skips. No load failure.
 - **First consumers ship here:** the two-button co-op puzzle, today a design spike on a store workaround; an all-players room gate; the King-of-the-Hill accumulator `E18--dispatch-scope-params` promised; a HUD player list showing who is loading and who is down; all on one dev map; and an effective-occupancy column in the dev-tools Triggers tab.
 - **Modder docs ship here.** `docs/scripting-reference.md` documents `session.players`, `session.playerCounts`, the `occupancy` family, `forEach` and the co-op patterns.
 - **Non-goals.**
@@ -36,6 +35,7 @@ Owner-raised, reopened. Co-op puzzles need "both plates held at once" and "every
   - Counting the dead or non-player entities. A mod that wants a downed state counted declares `occupancy: true` on it.
   - Per-volume occupancy. Addressing stays tags-only, as for trigger commands.
   - Seams: E25 U2 adds them to the volume set.
+  - Level-script parity. `networking.md` §What gates leaves level-local script content unhashed; a host and client running different scripts diverge here as they do elsewhere.
 
 ### Scripting surface
 ```typescript
@@ -123,18 +123,17 @@ Luau mirrors it: `game.occupancy:tag("airlock").occupants`, `game.session.player
 **Catalog and lifetime**
 - [ ] A script `setState` on any count, row field or occupancy slot warns and leaves it unchanged.
 - [ ] A mod store named `occupancy`, or one overlapping it, is rejected at load with and without a level loaded; a store named `occupancyBoard` loads; the engine's own family insert succeeds (pin P5).
-- [ ] A tag containing `.` or `:` warns once at install and gets no family; the level's other tags get theirs, and its volumes still fire.
-- [ ] A crossing or accumulator over a tag with no volume in the level warns and is skipped; the level loads.
-- [ ] After a level change, the new level's tags have families and the old level's tags absent from it have none (pin P2).
+- [ ] A referenced tag containing `.` or `:` warns once and gets no family; the other referenced tags get theirs.
+- [ ] A `setupLevel` reference to a tag no volume in the level carries reads 0 and warns once at install; the King-of-the-Hill accumulator, a mod-scope reference, reads 0 on a level without a hill and warns nothing.
+- [ ] A tag built at run time from `getMapEntities` in `setupLevel` gets its family.
+- [ ] After a level change, the families are the mod-scope ones plus the new level's references; the old level's references absent from both have none (pin P2).
+- [ ] A staged reload that changes the mod-scope references redeclares them on host and clients, and state batches keep applying (pin P20).
 - [ ] Typedefs for the counts, the player list and the `occupancy` family are generated from the catalog; the drift guards cover them; a data script calling `occupancy.tag` at module scope evaluates in the build-time bridge and at install alike (pin P4).
 
 **Co-op (two-endpoint)**
 - [ ] A client's counts and occupancy converge to the host's; its host-mirrored crossing fires once when the set completes; the solve's mover reaches it by replicated phase.
 - [ ] A client joining mid-hold reads the current values from its baseline; its crossing fires once in that frame and the host's does not fire again (pin P10).
-- [ ] A client whose tag set for the next level, or a same-map restart, lands in the same control drain as the relevel declares that install's family and applies state batches from its first snapshot (pin P8).
-- [ ] On an uncatalogued level, a host reinstall with a changed tag set leaves the client holding exactly the host's new families (pin P9); a set arriving after install declares the family then and batches resume (pin P3).
-- [ ] A client whose map differs from the host's only in trigger tags joins and reads the host's families, not its own.
-- [ ] A client demoted and re-promoted within a level keeps its families; after a level change it holds only the new level's (pin P2).
+- [ ] A client joining after the host has visited other levels derives exactly the host's families, and its state batches apply from its first snapshot (pin P8).
 
 **Surface**
 - [ ] The scripting-surface example compiles in TypeScript and Luau, and TS and Luau fixtures of the two-button puzzle and the HUD list behave identically.
@@ -150,16 +149,14 @@ Luau mirrors it: `game.occupancy:tag("airlock").occupants`, `game.session.player
 - Status: derive in one host function from `SeatTable` (`client_bindings`, `pawn_bindings`, `hold_deadlines`) and the life-state rule. Hold causes in transport mean level load or parity, not the seat-level reconnect hold.
 - Roster: `RosterEntry` / `SessionRosterMessage`, `publish_dirty_roster`, `apply_client_session_roster` (the client keeps the message in `ClientSessionStatus`); mark dirty on pawn bind and unbind and life-state change. Appending fields changes positional bitcode: bump `WIRE_VERSION` (39); update `roster_entry_fields_stay_claim_free`. Names: `ConnectClaim.display_name`, capped at `DISPLAY_NAME_MAX_BYTES`; the host's seat has no claim.
 - `forEach`: `Switch` in `sdk/lib/ui/state.ts` is the unroll precedent; `repeat` is already a container prop. Row capacity is the session seat limit (`MAX_CLIENTS` plus the host).
-- Occupancy: `TriggerStageCapabilities::capture`, `TriggerSystem::effective_occupants`; aggregate per tag. Families: `replace_player_defense_slots` (retain by prefix, reinsert). Insert after `trigger_volume_bridge.populate_from_level`, before `rebuild_reaction_subscribers` and `slot_accumulator_bindings.rebuild`; the host's pawn spawns after both, so the install count comes from seats. Reservation goes on the mod-declaration paths (`StoreDeclarationSet::add`, `plan_reconcile`), not `validate_namespace_records`, which also serves engine inserts.
-- Tag set: an appended `ServerControlMessage` variant sent beside the spawn-pose hint (`send_install_spawn_pose_hints`, admission), held as `ClientSpawnPoseHint` is; a late set redeclares, then `reset_state_slot_schema` and `rebuild_active_reaction_subscribers`.
-- Phases: (1) shared catalog entries, status and counts, replicated; (2) roster names and statuses, the player list and `forEach`, with the HUD reference; (3) occupancy families, the tag set and the puzzles; (4) docs, dev-tools, manual check. Each phase ends green and committed.
+- Occupancy: `TriggerStageCapabilities::capture`, `TriggerSystem::effective_occupants`; aggregate per tag. Families: `replace_player_defense_slots` (retain by prefix, reinsert), called at mod commit (`defense_vocabulary.rs`). Collect references from lowered descriptors: crossing `slot` and `IrNode::slot_read_names`, accumulator IR, reaction `for_each_input`, and UI bind JSON as `warn_unknown_slot_binds` walks it. At mod commit walk every committed global and the store accumulators, not the level-filtered active set. Insert level references after the data script runs and before `rebuild_reaction_subscribers` and `slot_accumulator_bindings.rebuild`; the host's pawn spawns after both, so the install count comes from seats. The state schema already resets at level end and declaration change (`reset_schema`). Reservation goes on the mod-declaration paths (`StoreDeclarationSet::add`, `plan_reconcile`), not `validate_namespace_records`, which also serves engine inserts.
+- Phases: (1) shared catalog entries, status and counts, replicated; (2) roster names and statuses, the player list and `forEach`, with the HUD reference; (3) occupancy families and the puzzles; (4) docs, dev-tools, manual check. Each phase ends green and committed.
 - Split first: `trigger_system.rs` is past ~800 lines; move occupant tracking out, behavior-preserving, own commit.
-- Docs at promotion: §5 states families, lists and level-scoped engine slots; §12 the occupancy and player contracts; `networking.md` the roster's names and statuses, the tag-set message and level-scoped shared slots; `ui.md` `forEach`.
+- Docs at promotion: §5 states families, lists and level-scoped engine slots; §12 the occupancy and player contracts; `networking.md` the roster's names and statuses and level-scoped shared slots; `ui.md` `forEach`.
 - Research: `research.md`.
 
 ## Wire format
 - `RosterEntry` appends `name` (UTF-8 string, at most `DISPLAY_NAME_MAX_BYTES`, empty when unknown) and `status` (`u8`: 0 loading, 1 inPlay, 2 down, 3 reconnecting) after `connected`, encoded as its siblings are; `WIRE_VERSION` bumps.
-- One `ServerControlMessage` variant appended: level identity (catalog id or path), level life (`Option<u64>`), then the tags as a length-prefixed list of UTF-8 strings in the host's sorted order; an empty list means the level has no family.
 - No snapshot or PRL change.
 
 ## Boundary inventory
@@ -169,10 +166,10 @@ Luau mirrors it: `game.occupancy:tag("airlock").occupants`, `game.session.player
 | player list | catalog list, each machine writes, readonly | `"session.players.<row>.present"`, `.name`, `.status`, `.isLocal`; roster `name`, `status` | `getGameState().session.players`, row `p.name` etc. | `game.session.players` | n/a |
 | status values | enum | `"loading"`, `"inPlay"`, `"down"`, `"reconnecting"` | same strings | same | n/a |
 | row repeat | — | — | `forEach(list, (row, i) => widget)` from `"postretro/ui"` | `forEach(list, function(row, i) … end)` | n/a |
-| occupancy family | catalog family, level-scoped, `SharedGlobal`, readonly | `"occupancy.<tag>.occupiedCount"`, `"occupancy.<tag>.occupants"` | `getGameState().occupancy.tag(tag).occupants: ComputedRef<number>` | `game.occupancy:tag(tag)` | n/a |
+| occupancy family | catalog family keyed by referenced tag, `SharedGlobal`, readonly | `"occupancy.<tag>.occupiedCount"`, `"occupancy.<tag>.occupants"` | `getGameState().occupancy.tag(tag).occupants: ComputedRef<number>` | `game.occupancy:tag(tag)` | n/a |
 | namespace | reserved `occupancy` | — | store name rejected | same | n/a |
 
 ## Open questions
 - The status-only roster rate limit's value — **delegated**.
 - Whether the dev map is new or extends an existing co-op test map — **delegated**.
-- Whether a level with no tagged trigger volume declares an empty `occupancy` namespace — **delegated**.
+- Whether a mod with no occupancy reference declares an empty `occupancy` namespace — **delegated**.

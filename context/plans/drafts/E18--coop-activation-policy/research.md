@@ -39,14 +39,12 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 | Pin | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
 | P1 | Players already on the plates at install | install declares the family at 0 and writes the player counts → crossings initialize → first authoritative tick writes the counts | The crossing fires in the first authoritative frame; the set needs no exit and re-entry |
-| P2 | Level change across tags | level A declares `occupancy.a.*` → unload → level B declares `occupancy.b.*` | Only B's tags have slots on every machine; a crossing over `a` in B warns and skips |
-| P3 | Tag set after client install | client reveals an uncatalogued level and promotes in its admission batch → participation marker → snapshots → tag set arrives | Batches drop until the family is declared; then the schema matches, the host's baseline applies, and crossings over occupancy bind |
+| P2 | Level change across references | level A's script references `a` → unload → level B's script references `b`; the mod references `hill` | Every machine holds `hill` and `b`, not `a` |
+| P8 | Late joiner after other levels | host visits A then B → a client joins in B | The client derives the mod-scope set plus B's references, the host's exact set; batches apply from its first snapshot |
 | P4 | Data script calls `occupancy.tag(t)` at module scope | scripts-build evaluates the script against the build-time bridge → runtime VM evaluates it at install | Both trees serve `occupancy.tag` from installers a drift test compares, as `build_time_by_player_installers_match_runtime_bridge` does for `byPlayer`; the leaf guard keeps path = slot for static entries only |
 | P5 | Mod declares `occupancy` or `occupancy.x` with no level loaded, then a level installs a family | mod declaration validates (`StoreDeclarationSet::add`, `plan_reconcile`) → level install inserts `occupancy.<tag>` | Both mod spellings rejected on the mod-declaration paths; the engine family insert succeeds; `occupancyBoard` loads |
 | P6 | Headless determinism run | observability batch driver ticks with no trigger stage | Determinism and puzzle rows run on a harness that drives the trigger stage |
 | P7 | A counted player dies after the trigger stage's capture on tick T | capture → trigger reactions → damage → write both facts → accumulators | Both facts on T come from the one capture: the dead player still counts in both on T and leaves both on T+1; with player A outside and player B dying inside, `occupants >= inPlay` is never 1 >= 1 on T |
-| P8 | Tag set for the next install arrives before the client unloads the current one | host installs B (or restarts, life L2) → one control drain: relevel, tag set naming B → client unloads A → client installs B | B's set survives A's unload and declares B's family at B's install; only a set naming another install is dropped. A same-map restart declares the family again at 0 |
-| P9 | A second set names the client's current install with a different list | host reinstalls an uncatalogued level (no life) with edited tags → client keeps its install → set arrives → re-promotion → baseline | The family becomes exactly the new list: absent tags removed, new tags declared, schema and crossings rebuilt; batches apply. A merge would mismatch the fingerprint for good |
 | P10 | Client joins while a set is held | client install declares the family at 0 → crossings arm at 0 → baseline applies the held counts → crossing pass | The joiner's host-mirrored crossing fires once in the baseline frame; the host fires nothing again |
 | P11 | One volume lists the same tag twice | install declares the tag once → a player stands in that volume | `occupiedCount` counts the volume once and `occupants` the player once |
 | P12 | Nobody in play | a lone player dies outside the room, or every co-op player is downed outside it | `inPlay` 0 and `occupants` 0; the all-players predicate stays false |
@@ -57,6 +55,7 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 | P17 | Dead client seat | an undeclared client pawn reaches zero health | It reads `down` and leaves `inPlay`; the row needs a client case, not only the host's pawn |
 | P18 | Joiner after the gate opened | gate crossed → a new seat is admitted, `loading` rises → it spawns outside → enters | The predicate turns false on admission and fires again when the joiner enters |
 | P19 | Flapping life state | a script toggles a pawn's state every tick | Status-only roster updates go out no faster than the rate limit; the last status lands |
+| P20 | Staged reload changes mod-scope references | a mod commit adds or drops an `occupancy.tag` reference | Host and clients redeclare the mod-scope family and reset the state schema at the same commit; batches keep applying |
 
 ## 7. Engine-state catalog
 
@@ -83,3 +82,12 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 - "Down" already reaches clients per pawn in the movement record's life-state id; the roster status is a second, display-only path.
 - UI: trees are static descriptors, rebuilt only when the descriptor changes (a rebuild snaps tweens); no list or repeat widget exists; `visibleWhen` hides a node without removing it, and focus skips hidden nodes. `Switch` in `sdk/lib/ui/state.ts` unrolls cases at authoring time. Presentation overlays instance a template per entity but are passive, world-anchored and outside tree layout. `repeat` is an existing container prop (hold-to-repeat). Catalog value types include `String` and `Enum`.
 - Seat numbers increase monotonically up to a u16 namespace, so list rows are dense indices, not seats. `MAX_CLIENTS` is 8.
+
+## 10. Referenced-tag collection
+
+- No point sees every reference before a level loads: `scripts-build` only compiles; mod init evaluates the start script; each map's `setupLevel` is embedded in its PRL and evaluated at every install on every role (`run_data_script`).
+- Lowered slot names live in crossing descriptors (`CrossingDescriptor.slot`, `IrNode::slot_read_names`), store accumulators (`SlotSchema.accumulate`, mod-scope only, since stores are declared only in the mod manifest), reaction inputs (`for_each_input`) and UI bind objects (walked by `warn_unknown_slot_binds`). No unified walker exists.
+- A set that only grows as levels install would diverge for a late joiner, so level references are removed at unload. The schema resets at level end and on declaration change (`reset_schema`).
+- Tags can be computed at run time (`getMapEntities(...).flatMap((t) => t.tags)`, factory parameters in `trap-pools.ts`, `a11y-strobe-test.ts`), so collection reads evaluated descriptors, never source.
+- The mod digest does not hash reaction or event lanes, and level-local script content is unhashed (`networking.md` §What gates); a divergent set drops every replicated slot at the fingerprint check, as any schema divergence does.
+- §8 (host-sent tag set) describes a superseded design; its facts about the control channel and fingerprint still hold.

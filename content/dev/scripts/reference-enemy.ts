@@ -46,13 +46,18 @@ const PUNCH_HIT_MS = 767;
 const SLAM_WINDUP_MS = PUNCH_DRAWN_BACK_MS;
 const SLAM_COMMIT_MS = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100;
 // A jab fires at the punch's `hit`, leaves once the punch has played through,
-// then rests. Punch plus rest, fire to fire, is about 1,270 ms, past the jab's
-// 1,200 ms cooldown, so the next jab's moment never meets its cooldown.
+// then rests JAB_REST_MS before it may jab again. A target stepping out of
+// reach can end a jab on the tick after its fire; it then rests and plays a
+// fresh punch to `hit`, so the soonest a re-entered jab's moment follows a
+// fire is 1 + 9 + 47 = 57 ticks (950 ms) on whole 60 Hz ticks. The cooldown
+// sits below JAB_REST_MS + PUNCH_HIT_MS (917 ms), so no jab's moment meets it.
 const JAB_REST_MS = 150;
+const JAB_COOLDOWN_MS = 900;
 // After its own slam the brute only jabs, longer than `heavy`'s 4 s refresh,
 // so a second brute on the same target takes the next slam, and far longer
 // than the slam's 1,800 ms cooldown, so a slam is always ready when its turn
-// comes round.
+// comes round. `press`'s exit is an outer row, so one passing during a jab's
+// punch cuts that jab before `hit`, and it never fires.
 const PRESS_MS = 5000;
 
 // The jab loop both fighting phases run: close to jab reach, jab when a
@@ -165,7 +170,12 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
       initial: "idle",
       moveSpeed: 3,
       attacks: {
-        jab: { draws: [melee], damage: 8, maxRange: JAB_RANGE, cooldownMs: 1200 },
+        jab: {
+          draws: [melee],
+          damage: 8,
+          maxRange: JAB_RANGE,
+          cooldownMs: JAB_COOLDOWN_MS,
+        },
         slam: {
           draws: [melee.with({ cost: 2 }), heavy],
           damage: 14,

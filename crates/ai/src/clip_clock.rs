@@ -16,9 +16,9 @@ use crate::scripting_systems::hit_zones::{HitZoneStore, instance_phase};
 
 /// Slack, far below one tick, on every comparison of clip time against a
 /// moment or a clip's end. Clip time sums `dt × rate` in floating point, so a
-/// moment on a tick boundary must still land on that tick (P1). Every test
-/// shifts the reached window `(previous, time]` by the same slack, so
-/// consecutive ticks' windows stay contiguous.
+/// moment on a tick boundary must still land on that tick rather than the
+/// next. Every test shifts the reached window `(previous, time]` by the same
+/// slack, so consecutive ticks' windows stay contiguous.
 const CLIP_TIME_SLACK: f64 = 1.0e-4;
 
 /// Where the clock reads an enemy's clips: its mesh's declared states and the
@@ -33,8 +33,10 @@ pub(super) struct ClipSource<'a> {
 /// Whether the active path's attack may form a proposal this tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Moment {
-    /// No clip-timed attack on the path, or its event cannot time it (a clip
-    /// that did not resolve or lacks the event): today's first-dwell-tick rule.
+    /// No clip-timed attack on the path, or one its drawn clip cannot time
+    /// (the clip did not resolve or lacks the event) while this entry's moment
+    /// is unspent. The untimed rule: the attack may propose from its first
+    /// dwell tick.
     Untimed,
     /// The moment falls on this tick and its once-per-entry latch was open.
     Reached,
@@ -52,12 +54,17 @@ impl Moment {
 ///
 /// A switch of the mesh that the brain's own apply did not make closes the
 /// pending moment (an impact effect, a reaction), even one switched off and
-/// back since the last AI tick (P8). The check precedes transitions, so an
-/// entry this tick opens its latch afresh after it (P6).
+/// back since the last AI tick. The check precedes transitions, so an entry
+/// this tick opens its latch afresh after it: a projectile flinch landing
+/// before the AI stage never cancels the swing the enemy is only now
+/// starting.
 ///
 /// Then the clock advances by `dt` at the rate the previous tick's pose stage
-/// set, when the mesh plays the tracked state (P2). A clock tracking nothing
-/// binds to the drawn state instead, without advancing.
+/// set, when the mesh plays the tracked state: the pose stage runs after the
+/// AI, so that rate is the one presentation drew the last tick at. The rate is
+/// runtime-only on the mesh, so the first tick after a restore advances at 1.
+/// A clock tracking nothing binds to the drawn state instead, without
+/// advancing.
 pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, tick_dt: f32) {
     let mesh = source
         .registry
@@ -66,11 +73,22 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
         .and_then(|mesh| mesh.animation.as_ref());
     if let Some(animation) = mesh {
         let switches = animation.switches.get();
-        if brain
-            .clip_clock
-            .mesh_switches
-            .is_some_and(|seen| seen != switches)
-        {
+        let foreign = match brain.clip_clock.mesh_switches {
+            Some(seen) if switches >= seen => switches != seen,
+            // A count below the one seen is a replaced mesh: a held enemy's
+            // drop attaches a fresh one, which counts from zero, so only the
+            // switches it made since are foreign.
+            Some(_) => switches != 0,
+            // A restore keeps no count. A mesh drawing neither the tracked
+            // state nor the launch's airborne clip was switched off it before
+            // the save, as by a hitscan flinch after the last compute.
+            None => brain.clip_clock.state.as_deref().is_some_and(|state| {
+                animation.current_state != state
+                    && launch::airborne_clip(source.registry, source.id, &brain.launch)
+                        != Some(animation.current_state.as_str())
+            }),
+        };
+        if foreign {
             brain.clip_clock.moment_open = false;
         }
         brain.clip_clock.mesh_switches = Some(switches);
@@ -89,18 +107,32 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
     clock.time += f64::from(tick_dt.max(0.0)) * rate;
     if clock.clip.is_none() {
         clock.clip = clip_facts(source, state_name(clock));
+        if clock.unphased
+            && let Some(facts) = clock.clip
+        {
+            // A loop restarted while its model was still loading: move it to
+            // the drawn phase once, so its moments sit where the renderer and
+            // hit zones draw them.
+            clock.unphased = false;
+            if facts.looping {
+                let phase = f64::from(instance_phase(source.id.to_raw(), facts.duration));
+                clock.time += phase;
+                clock.previous_time += phase;
+            }
+        }
     }
 }
 
 /// `brain.animationDone`: the drawn non-looping clip reached its duration on
-/// an earlier tick, so a moment on its last tick fires before an exit on it
-/// (P4). Always false on a loop; true when the clip did not resolve, or the
-/// path draws no state.
+/// an earlier tick, so a moment on its last tick fires before an exit on it.
+/// Always false on a loop; true when the clip did not resolve, or the path
+/// draws no state.
 pub(super) fn animation_done(clock: &ClipClock, source: &ClipSource<'_>) -> bool {
     let Some(state) = clock.state.as_deref() else {
         return true;
     };
-    // Unresolved facts are not cached, so they are read again.
+    // Unresolved facts are not cached, because a model may load after the
+    // brain binds; they are read again.
     let (looping, duration) = match clock.clip {
         Some(facts) => (facts.looping, Some(facts.duration)),
         None => read_clip(source, state, None)
@@ -111,83 +143,126 @@ pub(super) fn animation_done(clock: &ClipClock, source: &ClipSource<'_>) -> bool
             .is_none_or(|duration| f64::from(duration) <= clock.previous_time + CLIP_TIME_SLACK)
 }
 
-/// The depth of the activity whose own action is `action`, when it fires at a
-/// clip event. Load rejects `at` on a selector row, so an `at` action always
-/// belongs to an activity on the path; identity, not equality, finds it.
-pub(super) fn at_owner(brain: &BrainComponent, action: &ActionVerb) -> Option<usize> {
-    let ActionVerb::Attack { at: Some(_), .. } = action else {
-        return None;
+/// `brain.animationDone` for the rest of a tick whose path now draws another
+/// state than the clock tracks: the value the clock reads once [`settle`]
+/// restarts it. A resolved clip starts short of its end, and a loop never
+/// reads done; a clip that did not resolve counts as played through. `None`
+/// when the drawn state is unchanged.
+///
+/// An entered path's selectors, and a reseated path's rows, read this rather
+/// than the predecessor's clip.
+pub(super) fn entered_animation_done(
+    brain: &BrainComponent,
+    source: &ClipSource<'_>,
+) -> Option<bool> {
+    let read = match drawn_state(brain, source, brain.presented_travel_variant) {
+        None => return brain.clip_clock.state.is_some().then_some(true),
+        Some((base, variant)) if brain.clip_clock.tracks(base, variant.suffix()) => return None,
+        Some((base, TravelVariant::Base)) => read_clip(source, base, None),
+        Some((base, variant)) => read_clip(source, &format!("{base}{}", variant.suffix()), None),
     };
-    (0..brain.active_depth()).rev().find(|&depth| {
+    Some(read.is_none_or(|read| !read.looping && read.duration.is_none()))
+}
+
+/// The depth of the activity on the path whose own action fires at a clip
+/// event. Read from the path's activities, not the action a selector resolves
+/// this tick: a `move` selector resolving a position goal suppresses the action
+/// for that tick, and must neither close the latch on entry nor defer the
+/// moment past its tick. Only leaves author an action, so the deepest one owns
+/// the path's.
+fn timed_owner(brain: &BrainComponent) -> Option<usize> {
+    let (depth, action) = (0..brain.active_depth()).rev().find_map(|depth| {
         brain
             .activity_at_depth(depth)
             .and_then(|(_, activity)| activity.action.as_ref())
-            .is_some_and(|own| std::ptr::eq(own, action))
-    })
+            .map(|action| (depth, action))
+    })?;
+    matches!(action, ActionVerb::Attack { at: Some(_), .. }).then_some(depth)
 }
 
 /// The Attack block's clip work, after transitions and heading: the moment
-/// latch opens on its activity's entry; a knockback launch closes it (P15);
-/// the clock restarts when the drawn state changed; then the moment is read,
-/// and reaching it spends the latch whether or not this tick's gates pass.
+/// latch opens on its activity's entry; a knockback launch closes it; the
+/// clock restarts when the drawn state changed; then the moment is read, and
+/// reaching it spends the latch whether or not this tick's gates pass or a
+/// selector resolves the action.
 pub(super) fn settle(
     brain: &mut BrainComponent,
     source: &ClipSource<'_>,
     entry_depth: Option<usize>,
-    at_owner: Option<usize>,
     travel_variant: TravelVariant,
 ) -> Moment {
-    match (entry_depth, at_owner) {
-        (Some(entry), Some(owner)) if entry <= owner => brain.clip_clock.moment_open = true,
-        (Some(_), None) => brain.clip_clock.moment_open = false,
+    let owner = timed_owner(brain);
+    let clock = &mut brain.clip_clock;
+    match (entry_depth, owner) {
+        (Some(entry), Some(owner)) if entry <= owner => {
+            clock.moment_open = true;
+            clock.moment_timed = false;
+        }
+        (Some(_), None) => {
+            clock.moment_open = false;
+            clock.moment_timed = false;
+        }
         _ => {}
     }
-    // Launched means knockback velocity remains: whatever clip shows, the
-    // swing never connects.
-    if brain.launch.impact_yaw.is_some() {
+    // Whatever clip shows, a launched swing never connects, including one
+    // entered mid-air after drag spent the knockback.
+    if launch::launched(&brain.launch) {
         brain.clip_clock.moment_open = false;
     }
     sync_drawn_state(brain, source, travel_variant);
 
-    let moment = moment(brain, source, at_owner);
-    if moment == Moment::Reached {
-        brain.clip_clock.moment_open = false;
-    }
-    moment
-}
-
-fn moment(brain: &BrainComponent, source: &ClipSource<'_>, at_owner: Option<usize>) -> Moment {
-    let Some(event) = at_owner
-        .and_then(|owner| brain.activity_at_depth(owner))
-        .and_then(|(_, activity)| match activity.action.as_ref() {
-            Some(ActionVerb::Attack {
-                at: Some(event), ..
-            }) => Some(event.as_str()),
-            _ => None,
-        })
-    else {
+    let Some(owner) = owner else {
         return Moment::Untimed;
     };
-    let clock = &brain.clip_clock;
-    let Some((event_time, facts)) = clock
-        .state
-        .as_deref()
-        .and_then(|state| event_time(source, state, event))
-    else {
-        return Moment::Untimed;
+    let timing = event_timing(brain, source, owner);
+    let clock = &mut brain.clip_clock;
+    let Some((event, facts)) = timing else {
+        // A clip that cannot time the moment fires as without `at`, unless
+        // this entry already spent a moment a clip timed.
+        return if clock.moment_timed && !clock.moment_open {
+            Moment::Pending
+        } else {
+            Moment::Untimed
+        };
     };
-    if clock.moment_open
-        && reached(
-            clock.previous_time,
-            clock.time,
-            f64::from(event_time),
-            facts,
-        )
-    {
+    clock.moment_timed = true;
+    if clock.moment_open && reached(clock.previous_time, clock.time, f64::from(event), facts) {
+        clock.moment_open = false;
         Moment::Reached
     } else {
         Moment::Pending
     }
+}
+
+/// The brain's own switch drew the tracked state again after the mesh had left
+/// it (an impact effect, a reaction, the launch's airborne clip, a dropped
+/// enemy's fresh mesh). The drawn clip starts over, so clip time does too, as
+/// on a change of state. The latch is untouched: a restart reopens no moment.
+pub(super) fn redrawn(clock: &mut ClipClock, id: EntityId) {
+    let facts = clock.clip;
+    restart(clock, id, facts);
+}
+
+/// The owner's event time in the drawn state's resolved clip, with the clip's
+/// facts. `None` when the clip did not resolve or lacks the event.
+fn event_timing(
+    brain: &BrainComponent,
+    source: &ClipSource<'_>,
+    owner: usize,
+) -> Option<(f32, ClipFacts)> {
+    let (_, activity) = brain.activity_at_depth(owner)?;
+    let Some(ActionVerb::Attack {
+        at: Some(event), ..
+    }) = activity.action.as_ref()
+    else {
+        return None;
+    };
+    let read = read_clip(
+        source,
+        brain.clip_clock.state.as_deref()?,
+        Some(event.as_str()),
+    )?;
+    Some((read.event?, read.facts()?))
 }
 
 /// Whether a moment at `event` seconds falls in this tick's window. A loop
@@ -205,39 +280,42 @@ fn reached(previous: f64, time: f64, event: f64, facts: ClipFacts) -> bool {
 
 /// Track the drawn state: the path's animation state with the travel variant
 /// the mesh can present, or the base state while an airborne launch clip
-/// shows, as apply requests them. A different state restarts the clock: at 0
-/// for a one-shot, at the enemy's drawn phase on a loop (the seed its renderer
-/// and hit zones use), the window opening just below the start so a moment
-/// exactly there is reached on the restart tick. The same state keeps its
-/// time, so activities sharing a state share its clip.
+/// shows, as apply requests them. A different state restarts the clock. The
+/// same state keeps its time, so activities sharing a state share its clip.
 fn sync_drawn_state(brain: &mut BrainComponent, source: &ClipSource<'_>, wanted: TravelVariant) {
-    let mut clock = std::mem::take(&mut brain.clip_clock);
-    match drawn_state(brain, source, wanted) {
-        None => {
-            clock.state = None;
-            clock.clip = None;
-        }
-        Some((base, variant)) if !clock.tracks(base, variant.suffix()) => {
-            let name: Arc<str> = match variant {
-                TravelVariant::Base => Arc::from(base),
-                _ => Arc::from(format!("{base}{}", variant.suffix())),
-            };
-            let facts = clip_facts(source, &name);
-            let start = match facts {
-                Some(ClipFacts {
-                    duration,
-                    looping: true,
-                }) => f64::from(instance_phase(source.id.to_raw(), duration)),
-                _ => 0.0,
-            };
-            clock.clip = facts;
-            clock.state = Some(name);
-            clock.time = start;
-            clock.previous_time = start - 2.0 * CLIP_TIME_SLACK;
-        }
-        Some(_) => {}
-    }
-    brain.clip_clock = clock;
+    let name: Option<Arc<str>> = match drawn_state(brain, source, wanted) {
+        None => None,
+        Some((base, variant)) if brain.clip_clock.tracks(base, variant.suffix()) => return,
+        Some((base, TravelVariant::Base)) => Some(Arc::from(base)),
+        Some((base, variant)) => Some(Arc::from(format!("{base}{}", variant.suffix()))),
+    };
+    let clock = &mut brain.clip_clock;
+    let Some(name) = name else {
+        clock.state = None;
+        clock.clip = None;
+        return;
+    };
+    let facts = clip_facts(source, &name);
+    clock.state = Some(name);
+    restart(clock, source.id, facts);
+}
+
+/// Start the tracked state's clip over: at 0 for a one-shot, at the enemy's
+/// drawn phase on a loop (the seed its renderer and hit zones use), the window
+/// opening just below the start so a moment exactly there is reached on the
+/// restart tick. A clip not yet resolved starts at 0 and owes its phase.
+fn restart(clock: &mut ClipClock, id: EntityId, facts: Option<ClipFacts>) {
+    let start = match facts {
+        Some(ClipFacts {
+            duration,
+            looping: true,
+        }) => f64::from(instance_phase(id.to_raw(), duration)),
+        _ => 0.0,
+    };
+    clock.clip = facts;
+    clock.unphased = facts.is_none();
+    clock.time = start;
+    clock.previous_time = start - 2.0 * CLIP_TIME_SLACK;
 }
 
 fn drawn_state<'b>(
@@ -308,13 +386,6 @@ fn clip_facts(source: &ClipSource<'_>, state: &str) -> Option<ClipFacts> {
     read_clip(source, state, None).and_then(ClipRead::facts)
 }
 
-/// The time of `event` in the drawn state's resolved clip, with the clip's
-/// facts. `None` when the clip did not resolve or lacks the event.
-fn event_time(source: &ClipSource<'_>, state: &str, event: &str) -> Option<(f32, ClipFacts)> {
-    let read = read_clip(source, state, Some(event))?;
-    Some((read.event?, read.facts()?))
-}
-
 /// Prefix of the warn-once keys for a clip-timed attack whose clip cannot time
 /// it, keyed by entity class, drawn state and event: content, not entities.
 const UNCLIPPED_MOMENT_WARNING: &str = "clip-event:";
@@ -336,7 +407,7 @@ pub(super) fn clips_bound(
 /// Warn once per entity class and drawn state for every clip-timed attack its
 /// clip cannot time: the clip did not resolve, or lacks the event. Checks each
 /// activity whose own action fires `at` an event, in its own state and every
-/// travel variant of it the mesh declares. The attack then fires as without
+/// travel variant of it the mesh can draw. The attack then fires as without
 /// `at`. A state the mesh does not declare is spawn validation's warning.
 pub(super) fn warn_unclipped_moments(
     graph: &postretro_foundation::BehaviorGraphDescriptor,
@@ -366,6 +437,11 @@ pub(super) fn warn_unclipped_moments(
             else {
                 continue;
             };
+            // A variant whose clip never resolved is never drawn: the base
+            // clip plays in its place, as `travel_variants::presentable` picks.
+            if variant != TravelVariant::Base && declared.clip_index.is_none() {
+                continue;
+            }
             let clip = clips
                 .get_by_name(&mesh.model)
                 .and_then(|model| model.state_clip(declared.clip_index, &declared.clip));

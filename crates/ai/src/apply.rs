@@ -3,6 +3,7 @@ pub(super) fn should_switch_animation(state_changed: bool, moving: bool, latch: 
 }
 
 use super::attack_turns;
+use super::clip_clock;
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
 use super::graph_eval::animation_for_path;
@@ -371,7 +372,7 @@ where
                 outcome.travel_variant,
             )
         };
-        let mut switched_to = None;
+        let mut own_switch = None;
         if should_switch_animation(
             outcome.state_changed,
             locomotion_intent.moving,
@@ -385,8 +386,15 @@ where
                 .filter(|_| travel_variant != TravelVariant::Base)
                 .map(|name| format!("{name}{}", travel_variant.suffix()));
             if let Some(name) = variant_name.as_deref().or(animation_name) {
+                let before = mesh_switches(registry, outcome.id);
                 match switch_animation_state(registry, outcome.id, name) {
-                    SwitchResult::Switched => switched_to = mesh_switches(registry, outcome.id),
+                    SwitchResult::Switched => {
+                        own_switch = Some(OwnSwitch {
+                            before,
+                            after: mesh_switches(registry, outcome.id),
+                            redrawn: outcome.brain.clip_clock.state.as_deref() == Some(name),
+                        });
+                    }
                     SwitchResult::AlreadyInState => {}
                     SwitchResult::UnknownState | SwitchResult::NotAnimated => {
                         if warned.insert(format!("anim:{name}")) {
@@ -419,11 +427,24 @@ where
             brain.locomotion_moving = locomotion_intent.moving;
             brain.launch.airborne_presented = airborne_clip.is_some();
             brain.presented_travel_variant = travel_variant;
-            // The brain's own switch replaced whatever an earlier outcome in
-            // this batch switched to, so it is no foreign switch. Without one,
-            // a later switch this tick reaches the next compute's check (P7).
-            if switched_to.is_some() {
-                brain.clip_clock.mesh_switches = switched_to;
+            // The brain's own switch overwrites the count a foreign switch
+            // left, so it reads a switch absorbed since compute here: an
+            // earlier outcome's contact hit playing an impact clip flinched
+            // the swing under way, though this switch drew over it. On an
+            // entry tick the entry's own clip replaced it before the swing
+            // began. Without an own switch, the next compute's check reads
+            // any later switch this tick.
+            if let Some(own) = own_switch {
+                if !outcome.state_changed
+                    && let (Some(seen), Some(before)) = (brain.clip_clock.mesh_switches, own.before)
+                    && seen != before
+                {
+                    brain.clip_clock.moment_open = false;
+                }
+                brain.clip_clock.mesh_switches = own.after;
+                if own.redrawn {
+                    clip_clock::redrawn(&mut brain.clip_clock, outcome.id);
+                }
             }
             let _ = registry.set_component(outcome.id, brain);
         }
@@ -435,7 +456,18 @@ where
     }
 }
 
-/// The mesh's switch count, read right after the brain's own switch.
+/// The brain's own animation switch this tick, as the clip clock accounts it.
+struct OwnSwitch {
+    /// The mesh's switch count just before the switch.
+    before: Option<u32>,
+    /// The mesh's switch count the switch left.
+    after: Option<u32>,
+    /// The switch drew the clock's tracked state again, which the mesh had
+    /// left.
+    redrawn: bool,
+}
+
+/// The mesh's switch count, read around the brain's own switch.
 fn mesh_switches(
     registry: &postretro_entities::EntityRegistry,
     id: postretro_entities::EntityId,

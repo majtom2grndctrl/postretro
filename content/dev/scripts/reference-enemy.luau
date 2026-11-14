@@ -28,9 +28,13 @@ local PUNCH_HIT_MS = 767
 -- The slam's phases share one punch; the commit holds 100 ms past `hit`.
 local SLAM_WINDUP_MS = PUNCH_DRAWN_BACK_MS
 local SLAM_COMMIT_MS = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100
--- Punch plus rest, fire to fire, outlasts the jab's 1,200 ms cooldown.
+-- A jab re-entered the tick after its fire rests, then plays a fresh punch to
+-- `hit`: 57 ticks (950 ms) at the soonest. The cooldown sits below rest plus
+-- `hit` (917 ms), so no jab's moment meets it.
 local JAB_REST_MS = 150
+local JAB_COOLDOWN_MS = 900
 -- Longer than `heavy`'s 4 s refresh, so a second brute takes the next slam.
+-- An outer row: passing during a jab's punch, it cuts that jab before `hit`.
 local PRESS_MS = 5000
 
 -- `and` is a Luau keyword, so composition uses bracket spelling; bind the left
@@ -138,7 +142,12 @@ M.referenceEnemyEntity = defineEntity({
       initial = "idle",
       moveSpeed = 3,
       attacks = {
-        jab = { draws = { AttackTokens.melee }, damage = 8, maxRange = JAB_RANGE, cooldownMs = 1200 },
+        jab = {
+          draws = { AttackTokens.melee },
+          damage = 8,
+          maxRange = JAB_RANGE,
+          cooldownMs = JAB_COOLDOWN_MS,
+        },
         slam = {
           draws = { AttackTokens.melee:with({ cost = 2 }), AttackTokens.heavy },
           damage = 14,

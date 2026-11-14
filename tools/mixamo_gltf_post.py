@@ -679,7 +679,13 @@ def bind_gltf_to_clip_library(gltf_path, clip_library):
 
 
 def stamp_events_in_library(gltf_path, events, trims=()):
-    """Add events to an already-exported library, with no Blender run.
+    """Stamp events into a committed library from Python, with no Blender run.
+
+    A maintenance helper, not a converter flag: maintainers run it against a
+    committed library to add events without re-exporting. It matches a full
+    re-export only when the trimmed clips carry no events yet and no `--event`
+    targets a trimmed clip; a rebuild rejects an event on a trim, since events
+    attach before trims run.
 
     `events` are parse_event tuples and `trims` the parse_trim tuples the library
     was built with; mixamo_clip_events.stamp_library_events documents the result.

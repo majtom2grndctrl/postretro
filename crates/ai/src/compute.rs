@@ -227,7 +227,14 @@ pub(super) fn evaluate(
             id: snap.id,
         };
         clip_clock::begin_tick(&mut brain, &clip_source, tick_dt);
-        let animation_done = clip_clock::animation_done(&brain.clip_clock, &clip_source);
+        let mut animation_done = clip_clock::animation_done(&brain.clip_clock, &clip_source);
+        // A path seated before this tick's rows run (a reseat) evaluates them
+        // against the clip it is about to restart, not its predecessor's.
+        if brain.entry_pending
+            && let Some(entered) = clip_clock::entered_animation_done(&brain, &clip_source)
+        {
+            animation_done = entered;
+        }
 
         // Stride bookkeeping advances every tick so the gate is deterministic.
         brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
@@ -374,27 +381,24 @@ pub(super) fn evaluate(
             // type-correct zero cooldown first, resolve that action without
             // cloning it, then refresh the one action-relative cooldown fact
             // the transition planner is allowed to observe.
-            programs.scope_mut().refresh(
-                registry,
-                snap.id,
-                BrainFacts {
-                    target: selected_target,
-                    attack_cooldown_ms: 0.0,
-                    time_since_damage_ms: brain.time_since_damage_ms,
-                    time_since_target_visible: brain.time_since_target_visible,
-                    distance_to_last_known,
-                    damage_bearing: brain.damage_bearing,
-                    damage_source_known: brain.damage_source_known,
-                    acquisition_due: evaluate_acquisition,
-                    distance_from_anchor,
-                    target_hostile,
-                    target_reachable,
-                    target_visible,
-                    attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
-                    has_attack_turn,
-                    animation_done,
-                },
-            );
+            let facts = BrainFacts {
+                target: selected_target,
+                attack_cooldown_ms: 0.0,
+                time_since_damage_ms: brain.time_since_damage_ms,
+                time_since_target_visible: brain.time_since_target_visible,
+                distance_to_last_known,
+                damage_bearing: brain.damage_bearing,
+                damage_source_known: brain.damage_source_known,
+                acquisition_due: evaluate_acquisition,
+                distance_from_anchor,
+                target_hostile,
+                target_reachable,
+                target_visible,
+                attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                has_attack_turn,
+                animation_done,
+            };
+            programs.scope_mut().refresh(registry, snap.id, facts);
             let attack_cooldown_ms = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     action_for_path(bound, scope, &brain).and_then(|action| match action {
@@ -405,27 +409,11 @@ pub(super) fn evaluate(
                 })
                 .flatten()
                 .unwrap_or(0.0);
-            programs.scope_mut().refresh(
-                registry,
-                snap.id,
-                BrainFacts {
-                    target: selected_target,
-                    attack_cooldown_ms,
-                    time_since_damage_ms: brain.time_since_damage_ms,
-                    time_since_target_visible: brain.time_since_target_visible,
-                    distance_to_last_known,
-                    damage_bearing: brain.damage_bearing,
-                    damage_source_known: brain.damage_source_known,
-                    acquisition_due: evaluate_acquisition,
-                    distance_from_anchor,
-                    target_hostile,
-                    target_reachable,
-                    target_visible,
-                    attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
-                    has_attack_turn,
-                    animation_done,
-                },
-            );
+            let facts = BrainFacts {
+                attack_cooldown_ms,
+                ..facts
+            };
+            programs.scope_mut().refresh(registry, snap.id, facts);
             prior_standoff_distance = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     action_for_path(bound, scope, &brain)
@@ -438,6 +426,22 @@ pub(super) fn evaluate(
                     select_transition_path(bound, scope, &mut brain)
                 })
                 .unwrap_or(false);
+            // The entered path's selectors read the clip `settle` is about to
+            // restart, not its predecessor's. The rows above read one value
+            // and the selectors below another, one per evaluation pass.
+            if transitioned
+                && let Some(entered) = clip_clock::entered_animation_done(&brain, &clip_source)
+                && entered != facts.animation_done
+            {
+                programs.scope_mut().refresh(
+                    registry,
+                    snap.id,
+                    BrainFacts {
+                        animation_done: entered,
+                        ..facts
+                    },
+                );
+            }
             let resolved = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     resolved_motion(bound, scope, &brain)
@@ -524,17 +528,10 @@ pub(super) fn evaluate(
         // A clip-timed attack proposes only on its moment's tick, its one
         // chance per entry: a gate failing there is a whiff.
         let entry_depth = brain.take_entry_pending();
-        let at_owner = programs
-            .with_entry_scope(snap.id, |bound, scope| {
-                action_for_path(bound, scope, &brain)
-                    .and_then(|action| clip_clock::at_owner(&brain, action))
-            })
-            .flatten();
         let moment = clip_clock::settle(
             &mut brain,
             &clip_source,
             entry_depth,
-            at_owner,
             tick_heading.travel_variant,
         );
         let mut attack_outcome = None;

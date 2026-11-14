@@ -20,6 +20,10 @@ read at: eb444995a
 - `ghost_link_coop_return_reunites_and_starts_the_final_wave` failed with the new limitator timing: a closet limitator's shot turns a brute on it, 3 units short of the closet line → the closet assertion exempts a brute whose target is a monster, extending the crossfire allowance the test's doc already states.
 - Shipped-content tick tests ran the brute on a looping fixture mesh, so `animationDone` never turned true → they now load the descriptor's real mesh and clip library.
 
+- Review: clip time restarts when the brain's own switch redraws its tracked state after a foreign switch moved the mesh off it. This applies the Decision's "time since the animation its path selects began playing"; P11's keep-running holds while the mesh stays off.
+- Review: a re-entered attack's moment could meet its cooldown and whiff while holding a turn → brute jab `cooldownMs` 900 (below `JAB_REST_MS` + `hit` = 917 ms); limitator `WAIT_MS` = rifle recovery 1000 + three-shot span 267 = 1267 ms (a started burst finishes its shots after `burst` leaves, each restarting the recovery). Pacing change for the owner's playtest: first limitator burst ~1.3 s after reaching range, steady cycle longer.
+- Review: a swing entered while a knockback slide is still running is cancelled ("launched" means knockback velocity remains; P15) — kept, flagged for the owner.
+
 ## Delegated answers
 - Event name rules beyond non-empty and unique — a name matches `[A-Za-z_][A-Za-z0-9_]*`, case-sensitive; the converter rejects others, the loader treats them as malformed (warn, no events), and descriptor load rejects an `at` outside the rule. It keeps names valid as script string literals and unambiguous in log lines, and an `at` that cannot match any event is a typo worth rejecting at load.
 

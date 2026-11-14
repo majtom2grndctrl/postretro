@@ -1133,6 +1133,32 @@ class ClipEventTests(unittest.TestCase):
         self.assertEqual(stamped["animations"], rebuilt["animations"])
         self.assertIsNotNone(events_of(stamped, "swipe_late"), "a trim of a trim carries")
 
+    def test_stamping_rejects_an_event_on_a_trims_new_clip(self):
+        trims = [("punch_strike", "punch", 467.0, None)]
+        gltf, data = event_document(punch=31)
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, bytes(data))
+            CONVERTER.postprocess_gltf(path, tag=False, trims=trims)
+            with self.assertRaisesRegex(ValueError, "punch_strike.*trimmed clip"):
+                CONVERTER.stamp_events_in_library(
+                    path, [("punch_strike", "hit", 100.0)], trims)
+
+    def test_existing_events_a_loader_would_reject_fail_naming_the_clip(self):
+        bad = {
+            "malformed name": [{"name": "9hit", "time": 0.1}],
+            "duplicate name": [{"name": "hit", "time": 0.1}, {"name": "hit", "time": 0.2}],
+            "out of bounds": [{"name": "hit", "time": 5.0}],
+        }
+        for case, events in bad.items():
+            gltf, data = event_document(punch=31)
+            gltf["animations"][0]["extras"] = {"events": events}
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                path = write_model(directory, gltf, bytes(data))
+                with self.assertRaisesRegex(ValueError, "clip 'punch'"):
+                    CONVERTER.postprocess_gltf(
+                        path, tag=False,
+                        trims=[("punch_strike", "punch", 467.0, None)])
+
 
 def fcurve(bone, channel="rotation_quaternion"):
     return types.SimpleNamespace(data_path=f'pose.bones["{bone}"].{channel}')

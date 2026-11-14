@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 
 /// The clip time an enemy's AI tick accumulates for its drawn animation state.
 ///
-/// The serialized half (tracked state, clip time, moment latch) is simulation
-/// state: a restore resumes mid-entry and fires on the same tick. The cached
-/// clip facts and the accounted mesh switch count are runtime-only and rebind
-/// lazily, so they stay out of serde and out of equality.
+/// The serialized half (tracked state, clip time, moment latch, owed phase) is
+/// simulation state: a restore resumes mid-entry and fires on the same tick.
+/// The cached clip facts and the accounted mesh switch count are runtime-only
+/// and rebind lazily, so they stay out of serde and out of equality.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClipClock {
     /// The drawn animation state the clock times: the path-selected state with
@@ -35,13 +35,21 @@ pub struct ClipClock {
     /// foreign animation switch closes it.
     #[serde(default)]
     pub moment_open: bool,
+    /// This entry drew a clip that times its moment. Once it has, a closed
+    /// latch is spent: a later clip lacking the event (a travel variant's)
+    /// does not fire the attack as without `at`.
+    #[serde(default)]
+    pub moment_timed: bool,
+    /// The tracked state restarted before its clip resolved, at 0: a loop
+    /// still owes its drawn phase once the clip resolves.
+    #[serde(default)]
+    pub unphased: bool,
     /// The tracked state's resolved clip, cached on first use. `None` when not
     /// yet looked up or when the clip did not resolve, which is looked up again.
     #[serde(skip)]
     pub clip: Option<ClipFacts>,
-    /// The mesh's switch count the brain last accounted for. `None` binds to
-    /// the mesh's current count without cancelling, so a fresh or restored
-    /// brain never sees a phantom switch.
+    /// The mesh's switch count the brain last accounted for. `None` on a fresh
+    /// or restored brain, which rebinds to the mesh's current count.
     #[serde(skip)]
     pub mesh_switches: Option<u32>,
 }
@@ -75,6 +83,8 @@ impl PartialEq for ClipClock {
             && self.time == other.time
             && self.previous_time == other.previous_time
             && self.moment_open == other.moment_open
+            && self.moment_timed == other.moment_timed
+            && self.unphased == other.unphased
     }
 }
 
@@ -89,6 +99,8 @@ mod tests {
             time: 1.25,
             previous_time: 1.25 - 1.0 / 60.0,
             moment_open: true,
+            moment_timed: true,
+            unphased: true,
             clip: Some(ClipFacts {
                 duration: 2.0,
                 looping: true,

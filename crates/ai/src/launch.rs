@@ -38,6 +38,13 @@ pub(super) fn advance(launch: &mut LaunchState, path: Option<&AgentPathState>, r
     };
 }
 
+/// Whether a knockback launch is under way: knockback velocity remains, or the
+/// body is still in the airborne stretch a launch began, though drag spent the
+/// knockback.
+pub(super) fn launched(launch: &LaunchState) -> bool {
+    launch.impact_yaw.is_some() || launch.air_ticks > 0
+}
+
 /// The clip an airborne launch presents this tick: `jump_loop` once the stretch
 /// passes the player's fall delay, when the mesh can play it. `None` leaves the
 /// activity's clip in charge, so a mesh without `jump_loop` keeps its state.

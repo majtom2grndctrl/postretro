@@ -9145,6 +9145,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const SLAM_WINDUP_MS: f32 = PUNCH_DRAWN_BACK_MS;
     const SLAM_COMMIT_MS: f32 = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100.0;
     const JAB_REST_MS: f32 = 150.0;
+    const JAB_COOLDOWN_MS: f32 = 900.0;
     const PRESS_MS: f32 = 5000.0;
 
     let activity = |animation: Option<&str>,
@@ -9503,7 +9504,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(JAB_RANGE),
-                    cooldown_ms: Some(1200.0),
+                    cooldown_ms: Some(JAB_COOLDOWN_MS),
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,

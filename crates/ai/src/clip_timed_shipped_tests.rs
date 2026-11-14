@@ -1,8 +1,4 @@
-// Clip-timed attacks in the shipped content (Surf 2, Surf 3): the dev mod's
-// reference brute and limitator, initialized from `content/dev` as at boot,
-// meshed from their descriptors and ticked with their models' committed clip
-// libraries, `mixamo_brute` and `mixamo_rifle`, so their moments come from the
-// libraries' events.
+// Clip-timed attacks in the shipped dev brute and limitator, on their committed clip libraries.
 // See: context/lib/entity_model.md §7c (Clip-timed attacks)
 
 use postretro_model::skeleton::AnimationClip;
@@ -97,6 +93,20 @@ impl Shipped {
             .attack_turns
             .holds_any()
     }
+
+    fn place_player(&mut self, at: Vec3) {
+        let mut transform = *self.reg.get_component::<Transform>(self.player).unwrap();
+        transform.position = at;
+        self.reg.set_component(self.player, transform).unwrap();
+    }
+
+    /// The spot `distance` from `enemy` on the ground, straight away from it
+    /// through `from`.
+    fn away_from(&self, enemy: EntityId, from: Vec3, distance: f32) -> Vec3 {
+        let at = self.reg.get_component::<Transform>(enemy).unwrap().position;
+        let away = Vec3::new(from.x - at.x, 0.0, from.z - at.z).normalize_or_zero();
+        Vec3::new(at.x, from.y, at.z) + away * distance
+    }
 }
 
 /// Ticks from a one-shot's restart until its clip time, a whole number of
@@ -126,7 +136,7 @@ fn entry_tick(paths: &[String], leaf: &str, from: usize) -> Option<usize> {
     })
 }
 
-// Surf 2: the reference brute's slam and jabs land as `punch` reaches its
+// The reference brute's slam and jabs land as `punch` reaches its
 // `hit`, timed from each one's entry onto the punch.
 #[test]
 fn shipped_brute_jab_and_slam_fire_at_the_punch_hit() {
@@ -197,6 +207,70 @@ fn shipped_brute_jab_and_slam_fire_at_the_punch_hit() {
     );
 }
 
+// A jab cut short the tick after it fires, by its target stepping out of
+// reach, and re-entered as soon as `stalk`'s rest allows still fires at its
+// punch's `hit`: the soonest re-entered moment falls after the jab's cooldown.
+#[test]
+fn shipped_brute_jab_re_entered_right_after_a_fire_fires_at_the_punch_hit() {
+    let near = Vec3::new(1.5, 0.0, 0.0);
+    let mut shipped = Shipped::new(dev_manifest(), near);
+    let brute = shipped.spawn("reference_enemy");
+    give_reference_armor(&mut shipped.reg, brute);
+    let hit = shipped
+        .clip(brute, "attack_jab")
+        .event_time("hit")
+        .expect("`punch` carries its `hit`");
+    let moment = one_shot_moment_tick(hit);
+
+    let (mut paths, mut jabs, mut hurt) = (Vec::new(), Vec::<usize>::new(), Vec::new());
+    for tick in 0..(6.0 / DT) as usize {
+        // Out of jab reach for the one tick after the first jab fires.
+        let stepped_out = jabs.first().is_some_and(|&fired| fired + 1 == tick);
+        let at = if stepped_out {
+            shipped.away_from(brute, near, 3.0)
+        } else {
+            near
+        };
+        shipped.place_player(at);
+        let (jab, hp) = (
+            shipped.cooldown(brute, "jab"),
+            player_hp(&shipped.reg, shipped.player),
+        );
+        shipped.tick();
+        if shipped.cooldown(brute, "jab") > jab {
+            jabs.push(tick);
+        }
+        if player_hp(&shipped.reg, shipped.player) < hp {
+            hurt.push(tick);
+        }
+        paths.push(shipped.path(brute));
+        if jabs.len() == 2 {
+            break;
+        }
+    }
+
+    let fired = *jabs.first().expect("the brute jabs");
+    assert!(
+        paths[fired + 1].ends_with("/stalk"),
+        "stepping out of reach ends the jab the tick after it fires: {paths:?}"
+    );
+    let reentered = entry_tick(&paths, "jab", fired + 1).expect("the brute jabs again");
+    // `stalk`'s 150 ms rest, nine or ten whole ticks.
+    assert!(
+        reentered <= fired + 1 + 10,
+        "fixture: the jab re-enters as soon as the rest allows: {paths:?}"
+    );
+    assert_eq!(
+        jabs.get(1).copied(),
+        Some(reentered + moment),
+        "the re-entered jab fires as its punch reaches `hit` ({hit} s), not a cooldown whiff"
+    );
+    assert!(
+        hurt.contains(&(reentered + moment)),
+        "the re-entered jab lands on the player"
+    );
+}
+
 /// A shipped rifle enemy six meters from the player, with `fillers` entities
 /// spawned first so its id, and so its drawn phase, differs.
 fn rifle_scene(manifest: ModManifestResult, name: &str, fillers: usize) -> (Shipped, EntityId) {
@@ -259,7 +333,7 @@ fn first_burst(
     panic!("the burst ends within 6 s; entered: {entered:?}, shots: {shots:?}");
 }
 
-// Surf 2: the limitator's first burst shot leaves on `firing_rifle`'s `kick`,
+// The limitator's first burst shot leaves on `firing_rifle`'s `kick`,
 // the loop's first pass of it from the enemy's drawn phase.
 #[test]
 fn shipped_limitator_first_burst_shot_fires_at_the_rifle_kick() {
@@ -281,7 +355,7 @@ fn shipped_limitator_first_burst_shot_fires_at_the_rifle_kick() {
     );
 }
 
-// Surf 3: a limitator whose `shoot` misses its `kick` (its rifle still
+// A limitator whose `shoot` misses its `kick` (its rifle still
 // recovering at the moment) fires nothing that entry, even once the rifle is
 // ready, then leaves `burst` on its timer and frees its `ranged` turn.
 #[test]
@@ -323,7 +397,7 @@ fn shipped_limitator_whiffing_its_kick_leaves_burst_and_frees_its_turn() {
     );
 }
 
-// Surf 3: at every drawn phase, a limitator that fires leaves `burst` after its
+// At every drawn phase, a limitator that fires leaves `burst` after its
 // third shot. `rifle_trooper` and `rifle_warrior` run the same graph.
 #[test]
 fn shipped_limitator_leaves_burst_after_its_third_shot_at_every_phase() {
@@ -359,5 +433,52 @@ fn shipped_limitator_leaves_burst_after_its_third_shot_at_every_phase() {
         waits.len() >= 6 && waits.iter().any(|&wait| wait + 2 >= pass_ticks),
         "fixture: the sweep draws phases across the {pass_ticks}-tick pass, \
          a near-full wait for the kick included: {waits:?}"
+    );
+}
+
+// A limitator whose target slips past `BREAK_RANGE` the tick after its first
+// shot leaves `burst` for `close`, and back in range re-enters `burst` the
+// short way, through `wait` rather than its reposition. That burst still
+// fires at its `kick`: `wait` spends the rifle's recovery.
+#[test]
+fn shipped_limitator_burst_re_entered_through_wait_after_a_fire_fires_at_the_rifle_kick() {
+    let near = Vec3::new(6.0, 0.0, 0.0);
+    let (mut shipped, limitator) = rifle_scene(dev_manifest(), "limitator", 0);
+    let kick = loop_moment_tick(limitator, shipped.clip(limitator, "shoot"), "kick");
+
+    let (mut paths, mut shots) = (Vec::new(), Vec::<usize>::new());
+    for tick in 0..(6.0 / DT) as usize {
+        // Past the break range, inside the rifle's, for the one tick after
+        // the first shot. The strafe has moved the limitator off its spawn.
+        let stepped_out = shots.first().is_some_and(|&fired| fired + 1 == tick);
+        let at = if stepped_out {
+            shipped.away_from(limitator, near, 10.0)
+        } else {
+            near
+        };
+        shipped.place_player(at);
+        let result = shipped.tick();
+        if !result.projectile_spawns.is_empty() {
+            shots.push(tick);
+        }
+        paths.push(shipped.path(limitator));
+    }
+
+    let fired = *shots.first().expect("the first burst fires");
+    assert!(
+        paths[fired].ends_with("/burst") && paths[fired + 1].ends_with("/close"),
+        "stepping past the break range ends the burst the tick after its first shot: {paths:?}"
+    );
+    let reentered = entry_tick(&paths, "burst", fired + 1).expect("the limitator bursts again");
+    assert!(
+        paths[fired + 1..reentered]
+            .iter()
+            .all(|path| !path.ends_with("/move")),
+        "fixture: it comes back through `wait`, not its reposition: {paths:?}"
+    );
+    assert_eq!(
+        shots.iter().copied().find(|&shot| shot >= reentered),
+        Some(reentered + kick),
+        "the re-entered burst fires at its `kick`, not a cooldown whiff: {shots:?}"
     );
 }

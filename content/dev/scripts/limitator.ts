@@ -49,14 +49,24 @@ const RETURN_ARRIVAL_EPSILON = 1;
 // three shots (240 ms, 267 ms on whole 60 Hz ticks), with a few ticks to
 // spare, so none spills into `move`; a burst whose shot missed its kick leaves
 // on the same timer. Then reposition to a slot 60-120 degrees around the
-// target from where it fired, for MOVE_MS. BURST_MS + MOVE_MS outlasts the
-// weapon's 1 s recovery, so the next burst is ready to fire.
+// target from where it fired, for MOVE_MS.
+// Each shot commits the rifle's recovery as the attack's cooldown, and a
+// started burst finishes its three shots even when the activity leaves on the
+// tick after the first (its target slipping out of sight or range sends it to
+// `close`). So the rifle is ready 16 + 60 = 76 ticks after a burst's first
+// shot. Every route back into `burst` runs through `wait`, so WAIT_MS alone
+// covers that: a re-entered burst's kick comes at least 1 + 77 = 78 ticks
+// after the previous burst's first shot, with the rifle ready.
 // No reload beat — the available reload clip
 // is a crouching animation that swings the right hand through a wide arc, which
 // tips the rigidly-mounted rifle upside-down and into the chest. A reload that
 // reads correctly needs a clip that keeps the gun hand steady, or a weapon
 // animated as a skinned part rather than a rigid socket attachment.
-const WAIT_MS = 400;
+// `enemy_rifle_burst`'s `recoveryMs`, restarted by each shot, and the span of
+// its three shots on whole 60 Hz ticks; `wait` must cover both.
+const RIFLE_RECOVERY_MS = 1000;
+const RIFLE_BURST_SPAN_MS = 267;
+const WAIT_MS = RIFLE_RECOVERY_MS + RIFLE_BURST_SPAN_MS;
 const BURST_MS = 600;
 const MOVE_MS = 1500;
 // A burst whose turn went to a squadmate asking on the same tick gives up.

@@ -147,7 +147,7 @@ mod tests {
         assert!(error.to_string().contains("when"), "{error}");
     }
 
-    // Fire 19: the implied mark is the activity's own `attackTurn` after load.
+    // The implied mark is the activity's own `attackTurn` after load.
     #[test]
     fn action_at_implies_its_attacks_turn_mark_after_load() {
         let graph = load(jab_at_hit()).expect("loads");

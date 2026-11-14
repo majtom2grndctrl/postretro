@@ -1720,7 +1720,7 @@ An activity is either a leaf or a composite:
 |-------|------|-------------|
 | `animation` | `string` | Required on a leaf; optional locomotion animation on a composite. Names `components.mesh.animations`. |
 | `motion` | `MotionVerb` (leaf sugar) | A one-entry `move` selector. |
-| `action` | `{ attack: string, at?: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. With `at`, it fires at a clip event instead; see [Firing at a clip event](#firing-at-a-clip-event). |
+| `action` | `{ attack: string, at?: string }` (leaf sugar) | A one-entry `offense` selector (with `at` there is no selector equivalent; selector rows reject `at`). In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. With `at`, it fires at a clip event instead; see [Firing at a clip event](#firing-at-a-clip-event). |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
 | `facing` | `"target"` \| `"travel"` (optional) | Which way the enemy faces while this activity is active, including the motion its own `move` layer picks. Omitted, the motion's default applies. |
@@ -1892,9 +1892,8 @@ reads `brain.animationDone`.
 - **`at` holds the attack's turn from entry,** as `attackTurn` would, so the
   attack budget is asked before the swing plays. An explicit `attackTurn` for
   the same attack is allowed; one for another attack fails load.
-- **A missing event warns.** If the clip lacks the event, or the animation's
-  clip did not load, the engine warns once and the attack fires on entry, as
-  without `at`.
+- **A missing event warns.** If the clip lacks the event, or the state's clip
+  did not resolve, the engine warns once and the attack fires as without `at`.
 
 Load rejects `at` on a selector row's action, since a row plays no animation of
 its own. An event name starts with a letter or underscore and holds only

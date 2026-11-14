@@ -426,7 +426,9 @@ macro_rules! test_tick_runner {
 ///    state restarts the clip clock first.
 /// 5. On an activity change, locomotion stop/resume, or an airborne launch's
 ///    `jump_loop` starting or ending, request the one animation state resolved
-///    from the active nested path, or `jump_loop` while it plays.
+///    from the active nested path, or `jump_loop` while it plays. A switch
+///    absorbed since compute closes a pending moment off an entry tick, and
+///    switching the mesh back onto the clip clock's state restarts the clock.
 ///
 /// Between compute and apply run the batch stages, across all enemies: combat
 /// slots, then attack-turn arbitration (releases, requests, grants, the hard

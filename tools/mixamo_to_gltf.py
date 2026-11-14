@@ -81,8 +81,8 @@ from mathutils import Matrix, Vector
 # Blender runs this script by path, so its folder is not importable by default.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Names beyond the ones this script calls are re-exported for the Blender-free
-# test suite, which loads this script by path.
+# Names beyond the ones this script calls (including `carried_events` below) are
+# re-exported for the Blender-free test suite, which loads this script by path.
 from mixamo_gltf_post import (  # noqa: E402
     MIXAMO_PREFIX,
     bind_gltf_to_clip_library,

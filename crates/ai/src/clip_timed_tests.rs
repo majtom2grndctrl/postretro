@@ -82,7 +82,7 @@ fn blocker_graph() -> BehaviorGraphDescriptor {
     )
 }
 
-// Fire 1 (P1).
+// Fire 1.
 #[test]
 fn fire1_at_attack_fires_on_the_tick_its_clip_reaches_the_event() {
     let hits = |event, action| jab_scene(event, action, vec![]).0.hits(45);
@@ -128,7 +128,7 @@ fn fire3_out_of_range_at_the_moment_whiffs_until_a_fresh_entry() {
     assert_eq!(scene.hits(45), vec![30]);
 }
 
-// Fire 4 (P9).
+// Fire 4.
 #[test]
 fn fire4_no_turn_at_the_moment_whiffs_and_a_turn_granted_that_tick_fires() {
     for release_on in [40, 30] {
@@ -166,7 +166,7 @@ fn fire4_no_turn_at_the_moment_whiffs_and_a_turn_granted_that_tick_fires() {
     }
 }
 
-// Fire 5 (P3).
+// Fire 5.
 #[test]
 fn fire5_leaving_before_the_moment_fires_nothing() {
     // Leaving 200 ms in, long before the moment.
@@ -190,7 +190,7 @@ fn fire5_leaving_before_the_moment_fires_nothing() {
     );
 }
 
-// Fire 6 (P4).
+// Fire 6.
 #[test]
 fn fire6_a_last_tick_moment_fires_before_an_animation_done_exit() {
     let mut scene = Scene::new(vec![one_shot("attack_jab", 0.5, &[("hit", 0.5)])]);
@@ -230,7 +230,7 @@ fn windup_scene(ms: f32) -> (Scene, EntityId) {
     (scene, enemy)
 }
 
-// Fire 7 (P5).
+// Fire 7.
 #[test]
 fn fire7_entry_on_a_shared_one_shot_past_the_moment_fires_nothing_and_on_it_fires() {
     // Entered on tick 36, 0.6 s into the clip: past the moment.
@@ -255,9 +255,10 @@ fn fire8_a_second_activity_on_one_state_measures_from_the_first_entry() {
     );
 }
 
-// Fire 9: a loop entered past the moment fires at its next pass.
-#[test]
-fn fire9_a_loop_entered_past_the_moment_fires_at_the_next_pass() {
+/// `aim` and `shoot` share the one-second `aim_loop` carrying `kick` at
+/// 0.25 s; `aim` enters `shoot` on tick 72. Returns the scene, the enemy, and
+/// the first tick after the entry on which the loop passes the moment.
+fn aim_scene() -> (Scene, EntityId, usize) {
     let mut scene = Scene::new(vec![looping("aim_loop", 1.0, &[("kick", 0.25)])]);
     let graph = clip_graph(
         "aim",
@@ -270,11 +271,17 @@ fn fire9_a_loop_entered_past_the_moment_fires_at_the_next_pass() {
     );
     let enemy = scene.spawn(0, &graph, "aim");
     let passes = loop_pass_ticks(instance_phase(enemy.to_raw(), 1.0), 0.25, 1.0, 200);
-    let entry = 72;
-    assert!(passes[0] < entry, "fixture: `aim` plays past the moment");
-    let next = *passes.iter().find(|&&tick| tick >= entry).unwrap();
-    assert_ne!(next, entry, "fixture: no pass on the entry tick");
+    assert!(passes[0] < 72, "fixture: `aim` plays past the moment");
+    let next = *passes.iter().find(|&&tick| tick >= 72).unwrap();
+    assert_ne!(next, 72, "fixture: no pass on the entry tick");
+    (scene, enemy, next)
+}
 
+// Fire 9: a loop entered past the moment fires at its next pass.
+#[test]
+fn fire9_a_loop_entered_past_the_moment_fires_at_the_next_pass() {
+    let (mut scene, enemy, next) = aim_scene();
+    let entry = 72;
     let mut states = Vec::new();
     let hits = scene.hits_with(200, |scene, _| states.push(scene.state(enemy)));
     assert_eq!(
@@ -289,19 +296,23 @@ fn fire9_a_loop_entered_past_the_moment_fires_at_the_next_pass() {
     );
 }
 
-/// A target-facing `shoot` on `strike_loop`, whose `_right` travel variant
-/// plays its own loop with its own moment.
-fn strafing_scene(specs: Vec<ClipSpec>, base: &'static str) -> (Scene, EntityId) {
-    let mut scene = Scene::new(specs);
+/// A target-facing `shoot` on `base` firing `hit_jab()`, whose travel variants
+/// play their own clips.
+fn strafing_graph(base: &str) -> BehaviorGraphDescriptor {
     let mut shoot = act(base, Some(hit_jab()));
     shoot.facing = Some(FacingPolicy::Target);
-    let graph = clip_graph(
+    clip_graph(
         "shoot",
         vec![("shoot", shoot)],
         vec![],
         vec![(JAB, contact_attack(10.0))],
-    );
-    let enemy = scene.spawn(0, &graph, "shoot");
+    )
+}
+
+/// One enemy seated in [`strafing_graph`]'s `shoot`.
+fn strafing_scene(specs: Vec<ClipSpec>, base: &'static str) -> (Scene, EntityId) {
+    let mut scene = Scene::new(specs);
+    let enemy = scene.spawn(0, &strafing_graph(base), "shoot");
     (scene, enemy)
 }
 
@@ -335,7 +346,7 @@ fn fire9_a_looping_travel_variant_restarts_at_its_drawn_phase() {
     );
 }
 
-// Fire 10 (P8).
+// Fire 10.
 #[test]
 fn fire10_an_impact_switch_cancels_the_moment_even_once_restored() {
     // Switched off and back within one gap between AI ticks.
@@ -363,11 +374,11 @@ fn fire10_an_impact_switch_cancels_the_moment_even_once_restored() {
     assert_eq!(scene.hits(45), vec![30]);
 }
 
-// Fire 11 (P6, P7).
+// Fire 11.
 #[test]
 fn fire11_switches_before_the_entry_or_after_the_moment_compute_keep_the_swing() {
-    // P6: an impact switch before AI on the entry tick (6) cancels only the
-    // entry being left.
+    // An impact switch before AI on the entry tick (6) cancels only the
+    // entry being left: the entry's own switch draws over it.
     let mut scene = Scene::new(vec![one_shot("attack_jab", 1.0, &[("hit", 0.5)])]);
     let graph = jab_graph(hit_jab(), vec![]);
     let mut graph = graph;
@@ -386,8 +397,8 @@ fn fire11_switches_before_the_entry_or_after_the_moment_compute_keep_the_swing()
     assert_eq!(states[6], "stalk", "fixture: the jab is entered on tick 6");
     assert_eq!(hits, vec![36], "the entry's moment still fires");
 
-    // P7: an earlier slot's contact hit switches the enemy after its compute
-    // on the moment tick.
+    // An earlier slot's contact hit switches the enemy after its compute on
+    // the moment tick.
     let mut scene = Scene::new(vec![one_shot("attack_jab", 1.0, &[("hit", 0.5)])]);
     let striker = clip_graph(
         "wait",
@@ -422,7 +433,7 @@ fn fire11_switches_before_the_entry_or_after_the_moment_compute_keep_the_swing()
         "both swings land on tick 30: the jabber's fire stands"
     );
 
-    // P7: a hitscan in the weapon stage, after the AI stage of the moment tick.
+    // A hitscan in the weapon stage, after the AI stage of the moment tick.
     let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
     let hits = scene.hits_with(45, |scene, tick| {
         if tick == 31 {
@@ -462,7 +473,7 @@ fn launched_hits(jump_loop: bool, launched: usize, airborne: bool) -> (Vec<usize
     (hits, clips)
 }
 
-// Fire 12 (P15).
+// Fire 12.
 #[test]
 fn fire12_a_knockback_launch_cancels_the_moment() {
     let (hits, clips) = launched_hits(true, 20, true);
@@ -496,7 +507,7 @@ fn fire12_a_knockback_launch_cancels_the_moment() {
     assert_eq!(hits, vec![30], "fixture: unlaunched, the swing fires");
 }
 
-// Fire 13 (P14).
+// Fire 13.
 #[test]
 fn fire13_a_travel_variant_switch_restarts_at_the_variant_clips_event() {
     let specs = || {
@@ -523,7 +534,7 @@ fn fire13_a_travel_variant_switch_restarts_at_the_variant_clips_event() {
     assert_eq!(mesh_state(&scene, enemy), "strike");
 }
 
-// Fire 14 (P2).
+// Fire 14.
 #[test]
 fn fire14_clip_time_runs_at_the_rate_the_previous_pose_stage_set() {
     let rate_hits = |rate: fn(usize) -> f32| {
@@ -761,7 +772,7 @@ fn end1_animation_done_turns_true_the_tick_after_the_clip_reaches_its_duration()
     );
 }
 
-// End 2 (P10).
+// End 2.
 #[test]
 fn end2_an_entered_one_shot_reads_not_done_and_fires_its_own_moment() {
     let mut scene = Scene::new(vec![
@@ -797,7 +808,7 @@ fn end2_an_entered_one_shot_reads_not_done_and_fires_its_own_moment() {
     );
 }
 
-// End 3 (P11).
+// End 3.
 #[test]
 fn end3_a_cancelled_moment_still_reaches_clip_end() {
     let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![edge("stalk", guard_done())]);
@@ -876,7 +887,8 @@ fn end4_a_parent_and_its_leaf_read_one_animation_done_on_a_tick() {
     );
 }
 
-// Surf 1, runtime half: the brief's Scripting surface example as a fixture.
+// The brief's Scripting surface example as a fixture: its descriptor parses
+// to the graph the runtime fires and leaves on.
 #[test]
 fn surf1_the_surface_example_jab_fires_at_hit_and_leaves_on_animation_done() {
     const SOURCE: &str = r#"({ components: { behavior: {
@@ -926,7 +938,9 @@ fn surf1_the_surface_example_jab_fires_at_hit_and_leaves_on_animation_done() {
     );
 }
 
-// P12: a held enemy's clip time freezes with its activity clocks.
+// A held enemy leaves the AI set, so its clip time freezes with its activity
+// clocks; its drop's fresh mesh is no foreign switch. Regression: that mesh's
+// switch count, back at zero, read as a foreign switch and cancelled the swing.
 #[test]
 fn held_enemy_freezes_clip_time_and_fires_on_release() {
     let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
@@ -936,23 +950,36 @@ fn held_enemy_freezes_clip_time_and_fires_on_release() {
             let mut inventory = postretro_entities::components::inventory::Inventory::default();
             inventory.wieldables[9] = Some(enemy);
             scene.reg.set_component(holder, inventory).unwrap();
+            // Pickup takes the mesh out of the world.
+            scene.reg.remove_component::<MeshComponent>(enemy).unwrap();
         }
         30 => {
             scene
                 .reg
                 .remove_component::<postretro_entities::components::inventory::Inventory>(holder)
                 .unwrap();
+            // A drop attaches a fresh mesh, drawing its default state with a
+            // switch count back at zero.
+            scene.reg.set_component(enemy, scene.mesh.clone()).unwrap();
         }
         _ => {}
     });
     assert_eq!(hits, vec![50], "20 held ticks later, on clip time");
 }
 
-// P13: a restore mid-entry fires on the same tick.
+// Clip time serializes with the activity clocks, so a restore mid-entry fires
+// on the same tick.
 #[test]
 fn restored_brain_fires_on_the_same_tick() {
     let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
     assert!(scene.hits(15).is_empty());
+    save_and_restore(&mut scene, enemy);
+    assert_eq!(scene.hits(30), vec![15], "tick 30 after entry, as unsaved");
+}
+
+/// Round-trip `enemy`'s brain and mesh through serde into a fresh runtime, as
+/// a save and load do.
+fn save_and_restore(scene: &mut Scene, enemy: EntityId) {
     let brain: BrainComponent =
         serde_json::from_value(serde_json::to_value(scene.brain(enemy)).unwrap()).unwrap();
     let mesh: MeshComponent = serde_json::from_value(
@@ -962,7 +989,337 @@ fn restored_brain_fires_on_the_same_tick() {
     scene.reg.set_component(enemy, brain).unwrap();
     scene.reg.set_component(enemy, mesh).unwrap();
     scene.runtime = AiRuntime::new();
-    assert_eq!(scene.hits(30), vec![15], "tick 30 after entry, as unsaved");
+}
+
+// A flinch after the last compute, then a save: the switch count does not
+// survive the save, but the mesh still draws the impact clip. Regression: the
+// restore rebound without a cancel and the saved open latch fired.
+#[test]
+fn a_restore_after_a_flinch_keeps_the_moment_cancelled() {
+    let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
+    assert!(scene.hits(15).is_empty());
+    // A hitscan in the weapon stage, after this tick's AI stage.
+    scene.switch(enemy, "hit_reaction");
+    save_and_restore(&mut scene, enemy);
+    assert!(
+        scene.brain(enemy).clip_clock.moment_open,
+        "fixture: the save carries the open latch"
+    );
+    let hits = scene.hits(30);
+    assert!(
+        hits.is_empty(),
+        "the flinched swing never connects: {hits:?}"
+    );
+}
+
+// An earlier slot's contact hit plays an impact clip, and the enemy's own
+// travel-variant switch draws over it in the same batch: the swing under way
+// was still flinched. Regression: the own switch's count masked the foreign one.
+#[test]
+fn a_foreign_switch_under_the_enemys_own_switch_cancels_the_moment() {
+    let run = |flinch: bool| {
+        let mut scene = Scene::new(vec![
+            one_shot("strike", 1.0, &[("hit", 0.5)]),
+            one_shot("strike_right", 1.0, &[("hit", 0.3)]),
+        ]);
+        let striker = clip_graph(
+            "wait",
+            vec![
+                ("wait", act("idle", None)),
+                ("strike", act("idle", Some(untimed("slam")))),
+            ],
+            vec![("wait", vec![edge("strike", after_ms(165.0))])],
+            vec![("slam", contact_attack(10.0))],
+        );
+        scene.spawn(0, &striker, "wait");
+        let jabber = scene.spawn(1, &strafing_graph("strike"), "shoot");
+        let mut hits = Vec::new();
+        for tick in 0..60 {
+            if tick == 10 {
+                travel_right(&mut scene, jabber);
+            }
+            let hp = player_hp(&scene.reg, scene.pawn);
+            scene.tick_with_impact(|reg| {
+                if flinch && tick == 10 {
+                    let _ = switch_animation_state(reg, jabber, "hit_reaction");
+                }
+            });
+            if player_hp(&scene.reg, scene.pawn) < hp {
+                hits.push(tick);
+            }
+            if tick == 10 {
+                assert_eq!(
+                    mesh_state(&scene, jabber),
+                    "strike_right",
+                    "fixture: the jabber's own variant switch drew last"
+                );
+            }
+        }
+        hits
+    };
+    assert_eq!(
+        run(false),
+        vec![10, 28],
+        "fixture: the striker hits on tick 10 and the variant's moment fires"
+    );
+    assert_eq!(run(true), vec![10], "the flinched swing never connects");
+}
+
+/// The tick `play`, on the one-second one-shot `attack_jab`, leaves on
+/// `animationDone`. An impact clip takes the mesh off it on tick 10; with
+/// `redraw`, stepping off on tick 20 makes the enemy's own switch draw it
+/// again.
+fn redrawn_leave_tick(redraw: bool) -> Option<usize> {
+    let mut scene = Scene::new(vec![one_shot("attack_jab", 1.0, &[])]);
+    let graph = clip_graph(
+        "play",
+        vec![
+            ("play", act("attack_jab", None)),
+            ("done", act("idle", None)),
+        ],
+        vec![("play", vec![edge("done", guard_done())])],
+        vec![],
+    );
+    let enemy = scene.spawn(0, &graph, "play");
+    (0..200).find(|&tick| {
+        if tick == 10 {
+            scene.switch(enemy, "hit_reaction");
+        }
+        if redraw && tick == 20 {
+            // The locomotion edge re-requests the activity's clip.
+            scene.set_agent(enemy, |agent| agent.velocity = Vec3::new(0.0, 0.0, 2.0));
+        }
+        scene.tick();
+        if tick == 20 {
+            let drawn = if redraw { "attack_jab" } else { "hit_reaction" };
+            assert_eq!(mesh_state(&scene, enemy), drawn, "fixture: the drawn clip");
+        }
+        scene.state(enemy) == "done"
+    })
+}
+
+// Clip time is the time since the drawn clip began playing, and the enemy's
+// own switch back onto it starts it over. Regression: clip time ran on from the
+// state's first start while the drawn clip restarted at 0.
+#[test]
+fn the_enemys_own_switch_back_onto_its_clip_restarts_clip_time() {
+    assert_eq!(
+        redrawn_leave_tick(false),
+        Some(61),
+        "off its clip, clip time runs on from the state's start"
+    );
+    assert_eq!(
+        redrawn_leave_tick(true),
+        Some(81),
+        "done one second after the redraw on tick 20"
+    );
+}
+
+/// `strike` on `state` firing `hit_jab()` with no motion of its own: its
+/// `move` selector resolves a position goal while `@state.retreat` is set,
+/// which suppresses the action for that tick, and holds otherwise.
+fn retreating_graph(state: &str) -> BehaviorGraphDescriptor {
+    let mut strike = act(state, Some(hit_jab()));
+    strike.motion = None;
+    strike.layers = BTreeMap::from([(
+        "move".to_string(),
+        BehaviorLayerDescriptor::Selector(vec![
+            BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+                when: Some(IrNode::Ge {
+                    a: Box::new(brain_input("@state.retreat")),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(1.0),
+                    }),
+                }),
+                motion: Some(MotionVerb::MoveToAnchor),
+                action: None,
+            }),
+            BehaviorSelectorEntry::Motion(MotionVerb::Hold),
+        ]),
+    )]);
+    clip_graph(
+        "strike",
+        vec![("strike", strike)],
+        vec![],
+        vec![(JAB, contact_attack(10.0))],
+    )
+}
+
+fn set_retreat(scene: &mut Scene, enemy: EntityId, retreat: bool) {
+    scene
+        .reg
+        .entity_state_mut(enemy)
+        .expect("spawned enemy carries entity state")
+        .set("retreat", if retreat { 1.0 } else { 0.0 });
+}
+
+// The latch belongs to the activity whose action carries `at`, not to the
+// action a selector resolves on one tick. Regression: a position goal on the
+// entry tick closed the latch for the entry, and one on the moment's tick
+// deferred the moment to the loop's next pass.
+#[test]
+fn a_position_goal_suppressing_the_action_neither_closes_nor_defers_the_moment() {
+    // A position goal on the entry tick.
+    let mut scene = Scene::new(vec![one_shot("attack_jab", 1.0, &[("hit", 0.5)])]);
+    let enemy = scene.spawn(0, &retreating_graph("attack_jab"), "strike");
+    let hits = scene.hits_with(45, |scene, tick| set_retreat(scene, enemy, tick == 0));
+    assert_eq!(hits, vec![30], "the entry's moment still fires");
+
+    // A position goal on the moment's tick: reached and spent, a whiff.
+    let run = |retreat_at_moment: bool| {
+        let mut scene = Scene::new(vec![looping("fire_loop", 1.0, &[("hit", 0.25)])]);
+        let enemy = scene.spawn(0, &retreating_graph("fire_loop"), "strike");
+        let first = loop_pass_ticks(instance_phase(enemy.to_raw(), 1.0), 0.25, 1.0, 200)[0];
+        let hits = scene.hits_with(200, |scene, tick| {
+            set_retreat(scene, enemy, retreat_at_moment && tick == first)
+        });
+        (first, hits)
+    };
+    let (first, hits) = run(false);
+    assert_eq!(
+        hits,
+        vec![first],
+        "fixture: unsuppressed, the first pass fires"
+    );
+    let (_, hits) = run(true);
+    assert!(
+        hits.is_empty(),
+        "not deferred to the loop's next pass: {hits:?}"
+    );
+}
+
+// Once an entry's timed moment is spent, a travel variant whose clip lacks the
+// event no longer fires the attack as without `at`. Regression: a whiffed or
+// cancelled swing fired later in the entry through the untimed variant.
+#[test]
+fn a_spent_moment_does_not_fire_through_an_untimed_travel_variant() {
+    let specs = || {
+        vec![
+            one_shot("strike", 1.0, &[("hit", 0.5)]),
+            one_shot("strike_right", 1.0, &[]),
+        ]
+    };
+    // Out of reach at the moment, then back in reach on the variant.
+    let (mut scene, enemy) = strafing_scene(specs(), "strike");
+    let pawn = scene.pawn;
+    let hits = scene.hits_with(60, |scene, tick| match tick {
+        25 => set_enemy_position(&mut scene.reg, pawn, Vec3::new(5.0, 0.0, 0.0)),
+        35 => {
+            set_enemy_position(&mut scene.reg, pawn, player_spot());
+            travel_right(scene, enemy);
+        }
+        _ => {}
+    });
+    assert_eq!(mesh_state(&scene, enemy), "strike_right", "fixture");
+    assert!(hits.is_empty(), "whiffed: {hits:?}");
+
+    // Cancelled by an impact clip, then drawn on the variant.
+    let (mut scene, enemy) = strafing_scene(specs(), "strike");
+    let hits = scene.hits_with(60, |scene, tick| match tick {
+        10 => scene.switch(enemy, "hit_reaction"),
+        20 => travel_right(scene, enemy),
+        _ => {}
+    });
+    assert_eq!(mesh_state(&scene, enemy), "strike_right", "fixture");
+    assert!(hits.is_empty(), "cancelled: {hits:?}");
+}
+
+// The entered activity's selector reads its own clip's `animationDone` on its
+// entry tick, not the predecessor's that has played through. Regression: the
+// fact lagged a tick, and the selector fired on entry.
+#[test]
+fn an_entered_one_shots_selector_reads_its_own_clip_on_entry() {
+    let mut scene = Scene::new(vec![
+        one_shot("flinch", 0.2, &[]),
+        one_shot("attack_jab", 0.5, &[]),
+    ]);
+    let mut jab = act("attack_jab", None);
+    jab.layers = BTreeMap::from([(
+        "offense".to_string(),
+        BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+            when: Some(guard_done()),
+            motion: None,
+            action: Some(untimed(JAB)),
+        })]),
+    )]);
+    let graph = clip_graph(
+        "flinch",
+        vec![("flinch", act("flinch", None)), ("jab", jab)],
+        vec![("flinch", vec![edge("jab", guard_done())])],
+        vec![(JAB, contact_attack(10.0))],
+    );
+    let enemy = scene.spawn(0, &graph, "flinch");
+    let mut after = Vec::new();
+    let hits = scene.hits_with(60, |scene, _| after.push(scene.state(enemy)));
+    after.push(scene.state(enemy));
+    assert_eq!(after[13], "flinch");
+    assert_eq!(after[14], "jab", "fixture: entered on tick 13");
+    assert_eq!(
+        hits,
+        vec![44],
+        "not on the entry tick: once the jab's own clip has played through"
+    );
+}
+
+/// The jab scene seated in `stalk` and entered into `jab` on tick 14. With
+/// `launch`, a knockback on tick 2 is spent by tick 4 while the body stays
+/// airborne until tick 50.
+fn mid_air_entry_hits(launch: bool) -> (Vec<usize>, Vec<String>) {
+    let mut scene = Scene::new(vec![
+        one_shot("attack_jab", 1.0, &[("hit", 0.5)]),
+        looping("jump_loop", 1.0, &[]),
+    ]);
+    let enemy = scene.spawn(0, &jab_graph(hit_jab(), vec![]), "stalk");
+    let mut clips = Vec::new();
+    let hits = scene.hits_with(60, |scene, tick| {
+        match tick {
+            2 if launch => scene.set_agent(enemy, |agent| {
+                agent.knockback_velocity = Vec3::new(2.0, 0.0, 0.0);
+                agent.ground = postretro_foundation::GroundRef::Airborne;
+            }),
+            4 if launch => scene.set_agent(enemy, |agent| agent.knockback_velocity = Vec3::ZERO),
+            14 => scene.enter(enemy, "jab"),
+            50 => scene.set_agent(enemy, |agent| {
+                agent.ground = postretro_foundation::GroundRef::World;
+            }),
+            _ => {}
+        }
+        clips.push(mesh_state(scene, enemy));
+    });
+    (hits, clips)
+}
+
+// An entry mid-air, after drag spent the knockback but before the body lands,
+// is a launched swing. Regression: it fired while `jump_loop` showed.
+#[test]
+fn an_entry_mid_air_after_a_spent_knockback_never_connects() {
+    let (hits, _) = mid_air_entry_hits(false);
+    assert_eq!(
+        hits,
+        vec![44],
+        "fixture: grounded, the entry's moment fires"
+    );
+    let (hits, clips) = mid_air_entry_hits(true);
+    assert!(
+        clips[15..50].iter().any(|clip| clip == "jump_loop"),
+        "fixture: `jump_loop` shows after the entry"
+    );
+    assert!(hits.is_empty(), "airborne or after landing: {hits:?}");
+}
+
+// A loop restarted while its model was still loading takes its drawn phase
+// once the clip resolves, so its moments sit where the renderer draws them.
+// Regression: it kept phase 0.
+#[test]
+fn a_loop_whose_clip_resolves_late_keeps_its_drawn_phase() {
+    let (mut scene, _, next) = aim_scene();
+    let mut loaded = Some(std::mem::replace(&mut scene.clips, HitZoneStore::new()));
+    let hits = scene.hits_with(200, |scene, tick| {
+        if tick == 5 {
+            scene.clips = loaded.take().expect("loads once");
+        }
+    });
+    assert_eq!(hits, vec![next], "the pass a phased start draws");
 }
 
 // No per-tick allocation: the clip clock's steady-state work allocates nothing.
@@ -987,7 +1344,7 @@ fn clip_clock_steady_state_allocates_nothing() {
     let clock = brain.clip_clock.clone();
     crate::clip_clock::begin_tick(&mut brain, &source, DT);
     let done = crate::clip_clock::animation_done(&brain.clip_clock, &source);
-    let moment = crate::clip_clock::settle(&mut brain, &source, None, Some(0), TravelVariant::Base);
+    let moment = crate::clip_clock::settle(&mut brain, &source, None, TravelVariant::Base);
     scene
         .runtime
         .programs

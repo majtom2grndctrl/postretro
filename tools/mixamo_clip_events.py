@@ -12,6 +12,7 @@ KEY_TOLERANCE = 1e-4
 
 def parse_event(spec):
     """Parse `SOURCE:NAME=MS` into (source, name, ms)."""
+    # No sign or exponent: a time is non-negative milliseconds, as `--trim`.
     number = r"[0-9]+(?:\.[0-9]+)?"
     match = re.fullmatch(rf"([^=:]+):([^=:]+)=({number})", spec)
     if not match:
@@ -40,11 +41,13 @@ def clip_end(track_times):
     return max((times[-1] for times in track_times if times), default=0.0)
 
 
-def clip_events(animation):
+def clip_events(animation, track_times):
     """Return a clip's `extras.events`, empty when it has none.
 
-    Raises ValueError for extras that are not an object or events that are not a
-    list of `{ name, time }` objects.
+    Raises ValueError for extras that are not an object, events that are not a
+    list of `{ name, time }` objects, or events add_event would reject: a bad or
+    repeated name, or a time outside the clip. `track_times` lists the clip's
+    tracks' key times in seconds.
     """
     clip = animation.get("name")
     extras = animation.get("extras", {})
@@ -57,6 +60,17 @@ def clip_events(animation):
             and not isinstance(event.get("time"), bool)
             for event in events):
         raise ValueError(f"clip '{clip}': extras.events is not a list of {{ name, time }}")
+    end = clip_end(track_times)
+    seen = set()
+    for event in events:
+        name, time = event["name"], event["time"]
+        check_event_name(name, f"clip '{clip}'")
+        if name in seen:
+            raise ValueError(f"clip '{clip}': duplicate event named '{name}'")
+        seen.add(name)
+        if time < 0 or time > end + KEY_TOLERANCE:
+            raise ValueError(f"clip '{clip}': event '{name}' at {time * 1000:g} ms is outside "
+                             f"the clip (0 to {end * 1000:.0f} ms)")
     return events
 
 
@@ -83,9 +97,11 @@ def add_event(animation, name, ms, track_times, context):
     if time < 0 or time > end + KEY_TOLERANCE:
         raise ValueError(f"{context}: {ms:g} ms is outside '{clip}' "
                          f"(0 to {end * 1000:.0f} ms)")
-    events = clip_events(animation)
+    events = clip_events(animation, track_times)
     if any(event["name"] == name for event in events):
         raise ValueError(f"{context}: '{clip}' already has an event named '{name}'")
+    # A time within the key tolerance past the last key is the last key; the
+    # loader bounds events by the clip's duration.
     set_clip_events(animation, events + [{"name": name, "time": min(time, end)}])
 
 
@@ -156,7 +172,7 @@ def trim_events(source, track_times, start_ms, end_ms, context):
     end = last if end_ms is None else cut_key(track_times, end_ms / 1000.0)
     if start is None or end is None:
         raise ValueError(f"{context}: the cut starts or ends before the first key")
-    return carried_events(clip_events(source), start, end, end >= last - KEY_TOLERANCE)
+    return carried_events(clip_events(source, track_times), start, end, end >= last - KEY_TOLERANCE)
 
 
 def stamp_library_events(gltf, track_times, events, trims=()):
@@ -168,16 +184,23 @@ def stamp_library_events(gltf, track_times, events, trims=()):
     `track_times` maps each clip name to its tracks' key times in seconds; read
     them with mixamo_gltf_post.document_track_times.
 
-    When the trimmed clips carry no events yet, the result matches a re-export
-    with the same `--event` and `--trim` flags.
+    A maintenance helper for committed libraries, not a converter flag. The result
+    matches a full re-export only when the trimmed clips carry no events yet and
+    no event targets a trim's new clip: a rebuild attaches events before trims
+    run, so it rejects one, and so does this.
     """
+    new_clips = {new for new, *_ in trims}
+    for source, name, ms in events:
+        if source in new_clips:
+            raise ValueError(f"--event {source}:{name}={ms:g}: '{source}' is a trimmed clip; "
+                             "events attach before trims run")
     attach_events(gltf, track_times, events)
     for new, source, start_ms, end_ms in trims:
         context = f"--trim {new}"
         carried = trim_events(find_animation(gltf, source, context), track_times[source],
                               start_ms, end_ms, context)
         clip = find_animation(gltf, new, context)
-        existing = clip_events(clip)
+        existing = clip_events(clip, track_times[new])
         clash = {event["name"] for event in existing} & {event["name"] for event in carried}
         if clash:
             raise ValueError(f"{context}: '{new}' already has events named {sorted(clash)}")

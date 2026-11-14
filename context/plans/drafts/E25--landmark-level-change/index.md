@@ -26,7 +26,7 @@ When done, an author builds a **seam**: a volume at the same spot in both maps, 
 - **Arrival event.** The destination seam fires `arrive` once per arriving pawn, host-only, inside the first fixed tick after the spawn, as teleport events dispatch inside their tick. Params: opaque `activators` and `seam` tokens.
 - **Who may activate: as a teleporter.** A seam moves the whole party, so its default matches the teleporter's: a pawn at zero health that declares no life states cannot activate it. A pawn with declared life states follows E18's `touch` and `use` capabilities, so the author decides, per state, whether a downed player can trigger the exit.
 - **Life state crosses as a level change.** A pawn inside the seam crosses landmark-relative in any life state. The seam changes where it arrives, never its life or health; those follow the level-change rule (E18 O7).
-- **A seam is an occupancy volume.** `occupiedCount(tag)` and `occupants(tag)` (`E18--coop-activation-policy`) count seams carrying the tag by the seam's own inside test, armed or not, through the effective-occupant rule triggers use. A wait-for-everyone policy arms a disarmed seam from a crossing on those refs, and reads exactly the test the engine moves players by. No new SDK name beyond that brief's.
+- **A seam is an occupancy volume.** The `getGameState().occupancy` family (`E18--coop-activation-policy`) counts seams carrying the tag by the seam's own inside test, armed or not, through the effective-occupant rule triggers use. A wait-for-everyone policy arms a disarmed seam from a crossing of `occupants` against `session.activePlayers`, and reads exactly the test the engine moves players by. No new SDK name beyond that brief's.
 - **Non-goals.**
   - A seam argument on `loadLevel`. A script transition arms a disarmed touch seam, which fires for its standing occupants on the next trigger tick. That cannot send back players latched in the seam they arrived by; the argument is cheap to add later.
   - Moving `trigger_volume` to the brush-union test. Triggers keep their union AABB, documented as a known limitation; changing every shipped trigger is separate work.
@@ -83,7 +83,7 @@ Luau mirrors it as teleporters do: `s:arm()`, `s:disarm()`, `s:on("arrive", { re
 - [ ] A pawn whose capsule overlaps the seam's union AABB but none of its brushes is outside: it neither activates the seam nor arrives landmark-relative.
 - [ ] Arming a disarmed touch seam with a player inside starts the transition on the next trigger tick.
 - [ ] A pawn at zero health that declares no life states cannot touch or use a seam into firing, as it cannot teleport. A declared pawn follows its state's `touch` and `use` capabilities.
-- [ ] `occupants(tag)` counts a player in a bent seam's brushes, armed or not, and not one beside the bend inside its bounding box. It skips an undeclared pawn at zero health and counts a declared pawn by its state's `occupancy` capability. A disarmed seam armed from `onStateCrossing(occupants(tag), …)` when every player is inside moves every player landmark-relative.
+- [ ] `occupancy.tag(tag).occupants` counts a player in a bent seam's brushes, armed or not, and not one beside the bend inside its bounding box. It skips an undeclared pawn at zero health and counts a declared pawn by its state's `occupancy` capability. A disarmed seam armed from a crossing of `occupants` against `session.activePlayers` when every player is inside moves every player landmark-relative.
 
 **Latch and events**
 - [ ] The latch follows every row of the hub D11 table, including an arrival whose capsule overlaps the seam with its body point outside, and a capsule that leaves while the body point is already out (pin P4).
@@ -146,7 +146,7 @@ New PRL section `Seams`, next free id, packed only when the map has a seam; mirr
 | Landmark | `landmark` key → `teleport_destination` | `landmark_origin`, `landmark_yaw` | — | — | — |
 | Arm / disarm | `enabled_on_spawn` | `enabled_on_spawn` | `armSeam` / `disarmSeam` primitives | `s.arm()`, `s.disarm()`, `on.seam` | `s:arm()`, `s:disarm()` |
 | Arrival event | `on_arrive` | `on_arrive` | seam binding table | `s.on("arrive", …)` under `seamEvents`; `SeamEventParams` | `s:on("arrive", …)` |
-| Occupancy | `_tags` | tags | per-tag occupancy slots | `occupiedCount(tag)`, `occupants(tag)` (`E18--coop-activation-policy`) | same |
+| Occupancy | `_tags` | tags | per-tag occupancy slots | `getGameState().occupancy.tag(tag)` (`E18--coop-activation-policy`) | same |
 
 ## Open questions
 - Event key spellings beyond the Boundary inventory's — **delegated**.

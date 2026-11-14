@@ -40,3 +40,12 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 |---|---|---|---|
 | P1 | Players already on the plates at install | install declares slots at 0 → crossings initialize at 0 → first authoritative tick writes the count | The crossing fires on the first tick; the set needs no exit and re-entry |
 | P2 | Level change across tags | level A declares `occupancy.a.*` → unload → level B declares `occupancy.b.*` | Only B's tags have slots; a crossing over `a` in B warns and skips |
+
+## 7. Engine-state catalog
+
+- `BUILTIN_ENGINE_STATE` (`crates/entities/src/engine_state_catalog.rs`) owns every engine slot's wire name, SDK path, type, default and capability (`scripting.md` §5). Namespaces: `accessibility`, `player`, `session`, `screen`, `input`, `options`, `window`, `loading`, `ui`. Scopes: `None` (each machine writes its own) or `OwnerPrivatePlayer` (host-authoritative, per player, to the owner). No entry is `SharedGlobal`; only mod stores (`defineStore` with `network: "shared"`) reach that scope.
+- Authors read engine state one way: `getGameState()` returns a frozen tree of `{ slot, kind }` refs per catalog namespace (`ComputedRef<T>` readonly, `Ref<T>` writable), consumed by `bindState`, `stateEquals`, `onStateCrossing`, `runtime.read`. Examples: `content/dev/scripts/hud.ts` (`player.ammo`), `frontend-menu.ts` (`session.hostAddress`, `session.hosting`), `player-events.luau`.
+- Typedefs and runtime trees generate from the catalog: `emit_ts_game_state_refs` and its Luau twin, `game_state_refs.rs`. Guards: `build_time_game_state_mirror.rs` (`MIRRORED_GAME_STATE_LEAVES`), `BY_PLAYER_OWNER_TOKENS`, the committed-typedef drift test.
+- `session.*`: `hosting` is computed locally from role; `openSeats` arrives on a client through the roster Control message (`apply_client_session_roster`) and is absent on the host. Neither is host-computed shared state.
+- Keyed slots exist only outside the catalog: `player.defense.<name>` (`replace_player_defense_slots`), owner-private, reached through `defineDefenseLayer(name).current` built on `storeRef`.
+- No player-count fact exists. A mod cannot derive one: player events fire nothing when a player stops being observed, and the `occupancy` capability is not readable as a slot.

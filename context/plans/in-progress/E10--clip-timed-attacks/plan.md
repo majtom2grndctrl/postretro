@@ -1,0 +1,79 @@
+# E10--clip-timed-attacks — plan of record
+
+mode: compact
+status: active
+read at: eb444995a
+
+## Corrections
+- Path is silent on how the AI tick reaches clips → model clips live only in sim's `HitZoneStore`, which `AiTickInputs` does not carry; planning around it by adding the store to `AiTickInputs` and reading a state's clip (duration, events) through `ModelHitZones::state_clip`, the lookup the playback-rate and jump one-shot paths already share.
+- `ActionVerb::Attack(String)` cannot carry a sibling `at` key in its externally tagged serde shape → `ActionVerb::Attack` becomes a struct variant `{ name, at }` with a hand-written `{ attack, at? }` (de)serializer; every `Attack(name)` match updates in the same pass (pre-release API policy).
+- "A switch of the mesh off the path's animation … cancels the pending moment", including a switch off and back between AI ticks (P8), is not observable from `current_state` alone → `MeshAnimation` gains a runtime-only switch counter bumped by `switch_animation_state` on `Switched`; the brain records the count its own apply produced, and compute cancels the open moment when the mesh count moved.
+
+## Delegated answers
+- Event name rules beyond non-empty and unique — a name matches `[A-Za-z_][A-Za-z0-9_]*`, case-sensitive; the converter rejects others, the loader treats them as malformed (warn, no events), and descriptor load rejects an `at` outside the rule. It keeps names valid as script string literals and unambiguous in log lines, and an `at` that cannot match any event is a typo worth rejecting at load.
+
+## Design notes (for resumption)
+- **Clip clock on `BrainComponent`** (serialized with the activity clocks, P13): tracked drawn state (path-selected state plus presented travel variant), unwrapped clip time and the previous tick's time (f64), and runtime-only cached clip facts (duration, looping, resolved) rebound lazily after a restore.
+- **Advance** at the top of `compute::evaluate`, beside `tick_activity_timers`: `prev = time; time += dt × rate`, rate = the mesh's `rate` when the mesh plays the tracked state, else 1 (P2). `brain.animationDone` = non-looping and `prev ≥ duration` (P4), or clip unresolved; false on a loop.
+- **Rebind** after heading resolve, before the Attack block: when the path-selected state or the presentable travel variant differs from the tracked one, restart (time = 0, or `instance_phase(id, duration)` on a loop; prev just below start so a moment at the start counts as reached).
+- **Moment reached** = crossing `prev < event ≤ time` (with whole-tick epsilon; loops test every pass `event + k·duration`). Checked only while the active action carries `at` and the per-entry moment latch is open; reaching it consumes the latch whatever the gates say (whiff). Latch opens on entry of the activity owning the action.
+- **Cancel** (closes the latch): mesh switch counter moved since the brain's own last switch (checked before transitions, so an entry this tick is untouched — P6), or a knockback launch (`launch.impact_yaw` set after heading resolve — P15).
+- **Implied mark**: descriptor normalization sets `attack_turn` from an activity's own `action.at` before `validate_attack_turn_marks`, so mark agreement is the existing rule.
+- **Missing event**: warn once per (entity class, state) when `BrainPrograms::sync` first binds an entity; the runtime then fires as without `at`.
+
+## AC-to-proof
+
+| AC | Proof | Status |
+|---|---|---|
+| Conv 1 `--event punch:hit=620` writes, other clip only | `tools/tests/test_mixamo_to_gltf.py` event write tests | achievable as stated |
+| Conv 2 range trim carries/shifts; windup none; start-key rounding | `test_mixamo_to_gltf.py` trim-carry tests | achievable as stated |
+| Conv 3 past-end, duplicate, `--clip-library` reject naming flag | `test_mixamo_to_gltf.py` reject tests | achievable as stated |
+| Conv 4 suite passes unchanged across split | suite run on the split commit, before event code | achievable as stated |
+| Load 1 `mixamo_brute` → `punch_strike` shifted `hit` | `crates/model` library binding test on the committed library | achievable as stated |
+| Load 2 own same-named clip keeps own events or none | `crates/model` clip_library test | achievable as stated |
+| Load 3 malformed events warn once, keys load | `crates/model` gltf_clips test with log capture | achievable as stated |
+| Load 4 event with `end` loads name and time | `crates/model` gltf_clips test | achievable as stated |
+| Fire 1 0.5 s → tick 30, 0.51 s → 31, no `at` → entry | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 2 event at 0 fires on entry | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 3 out of range whiff, fresh entry fires | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 4 no turn whiff; grant on moment tick fires | `crates/ai` clip-timed tests (arbitration) | achievable as stated |
+| Fire 5 leaving before moment / exit on moment tick | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 6 last-tick event fires, `animationDone` next tick | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 7 shared non-looping clip past / reaching on entry | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 8 two activities on one state | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 9 looping past moment → next pass; variant restart at phase | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 10 impact switch cancels, off-and-back too | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 11 impact before AI on entry tick / after compute on moment tick | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 12 knockback launch cancels | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 13 travel variant switch restarts | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 14 rate 1.5 → 2/3 wall time, previous tick's rate | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 15 loop fires once per entry, phases differ | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 16 weapon attack starts at the moment | `crates/ai` clip-timed tests | achievable as stated |
+| Fire 17 missing event warns once, fires on entry | `crates/ai` clip-timed tests with log capture | achievable as stated |
+| Fire 18 implied mark holds turn from entry | `crates/ai` clip-timed tests (arbitration) | achievable as stated |
+| Fire 19 mark agreement and load rejects | `crates/foundation` behavior descriptor tests | achievable as stated |
+| Fire 20 same ticks at 1/2/4 ticks per frame, time scale 1/0.25 | `crates/sim` determinism test | achievable as stated |
+| End 1 `animationDone` false through duration tick, true next; loop false; unresolved true | `crates/ai` clip-timed tests | achievable as stated |
+| End 2 non-loop → non-loop entry reads false, moment fires | `crates/ai` clip-timed tests | achievable as stated |
+| End 3 cancelled moment, clip end still turns true | `crates/ai` clip-timed tests | achievable as stated |
+| End 4 parent and leaf guards read one value | `crates/ai` clip-timed tests | achievable as stated |
+| Surf 1 example lowers identically TS/Luau, runs | `crates/scripting-core` surface example test + `crates/ai` fixture | achievable as stated |
+| Surf 2 brute jab/slam at `hit`, limitator at `kick` | shipped-content test over `content/dev` scripts and libraries | achievable as stated |
+| Surf 3 limitator whiff leaves and frees turn; fire leaves after third shot | shipped-content test | achievable as stated |
+| Surf 4 grep gate: no wire/version/digest change | `git diff origin/main` over net/netcode/digest sources, empty | achievable as stated |
+| Man 1 re-export reproduces libraries apart from events | owner, with source FBXs | manual |
+| Man 2 single player timing | owner, in-engine | manual |
+| Man 3 loopback co-op timing, no new warnings | owner, in-engine | manual |
+
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | Converter: split post-processing into a sibling module, behavior-preserving, own commit | worker (Python) | — | |
+| 2 | Converter: `--event`, trim carry, rejects, tests, `docs/character-animation.md` | worker (Python) | 1 | |
+| 3 | Loader: `AnimationClip` events, `parse_clip` extras, library carry and override, malformed warn | integrating executor | — | |
+| 4 | Thin slice: clip clock, `at` on contact attacks, `AiTickInputs` clip access, jab fixture on `punch` | integrating executor | 3 | |
+| 5 | Descriptor and surface: `ActionVerb` `at`, implied mark, load rejects, `animationDone` fact, TS/Luau types and prelude, typedef | integrating executor | 4 | |
+| 6 | Runtime completion: cancellation, loops and phase, travel variants, weapon `at`, missing-event warn, rate | integrating executor | 4, 5 | |
+| 7 | Content: events in `mixamo_brute`/`mixamo_rifle`, brute and limitator scripts, `license.txt`, script comment | integrating executor | 2, 6 | |
+| 8 | Remaining AC tests (determinism, shipped content, surface example), docs | integrating executor | 7 | |

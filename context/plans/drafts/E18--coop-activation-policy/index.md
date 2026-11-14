@@ -16,7 +16,6 @@ Owner-raised, reopened. Co-op puzzles need "both plates held at once" and "every
 - **Replicated `SharedGlobal`**, through the existing slot replication, late-join baseline included. A crossing reading only these slots is host-mirrored (`scripting.md` §12). No new wire section.
 - **Trigger tags join the level content digest** (epoch bump). The slot schema derives from the level's tags on each side; a pair whose tags differ is refused at admission instead of dropping every replicated slot at the schema fingerprint check.
 - **Unknown tag degrades.** A ref to a tag with no slot in the current level reads an undeclared slot: a crossing or accumulator over it warns and skips, as for any undeclared slot. No load failure.
-- **Policy stays in script** (`scripting.md` §12). No activation-policy brush key, PRL field or component field, now or later; the never-add rule lands in §12 at promotion.
 - **First consumers ship here:** the two-button co-op puzzle (`content/dev/scripts/coop-two-button-puzzles.ts`, today a design spike on a store workaround) and the King-of-the-Hill accumulator `E18--dispatch-scope-params` promised, on one dev map; and an effective-occupancy column beside the raw count in the dev-tools Triggers tab.
 - **Non-goals.**
   - Hard-disarm-cancels-pending-exit. `E18--timed-reaction-steps` filed it under this plan's surface; it changes exit obligations, not occupancy.
@@ -84,7 +83,7 @@ Luau mirrors it: `Postretro.occupiedCount(tag)`, `Postretro.occupants(tag)`. Bot
 - [ ] Two-player session on the dev map: each puzzle opens only with both players on its plates; the hill drains faster with both players on it.
 
 ## Path
-- Shape: engine slots declared per level from the trigger tag set. Rival: mod stores fed by `defineTriggerEvent` enter and exit reactions writing `on.occupancy`; no engine change, but script-writable, per-volume rather than per-tag, and every mod re-derives it.
+- Shape: engine slots declared per level from the trigger tag set. Rival: mod stores fed by `defineTriggerEvent` enter and exit reactions writing `on.occupancy`. It goes stale: exit fires on physical overlap, so a player downed on a plate fires no exit and the store keeps counting them.
 - Who counts: `TriggerStageCapabilities::capture` builds the effective set each tick; `TriggerSystem::effective_occupants` filters a volume's occupants through it. Aggregate per tag from those sets.
 - Declaration: `SlotTable` has no teardown; `replace_player_defense_slots` (retain by prefix, reinsert) is the precedent. Insert after `trigger_volume_bridge.populate_from_level` and before `rebuild_reaction_subscribers` and `slot_accumulator_bindings.rebuild` in install; later, watchers skip the slot silently. Both sides already reset the replicated schema at unload (`reset_level_scoped_host_state`, `reset_level_scoped_client_state`).
 - Reservation: `validate_namespace_records` rejects `@` today; `occupancy` joins it beside `namespaces_overlap`.
@@ -94,7 +93,7 @@ Luau mirrors it: `Postretro.occupiedCount(tag)`, `Postretro.occupants(tag)`. Bot
 - Dev-tools: `collect_trigger_diagnostics_rows`, `TriggerDiagnosticsRow`.
 - First slice: per-tag aggregation and level-scoped slots on the host with the headless two-button test; then replication and the digest.
 - Split first: `trigger_system.rs` is past ~800 lines; move occupant tracking out, behavior-preserving, own commit.
-- Docs: `docs/scripting-reference.md` gains the refs and the co-op pattern; §12 states the contract at promotion.
+- Docs: `docs/scripting-reference.md` gains the refs and the co-op pattern. At promotion: §12 states the contract; §5 notes level-scoped engine slots beside the engine-global store; `networking.md`'s digest rule covers inputs that shape the replicated slot schema, not only prediction inputs.
 - Research: `research.md`.
 
 ## Boundary inventory

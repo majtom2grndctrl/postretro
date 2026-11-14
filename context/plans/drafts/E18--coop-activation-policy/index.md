@@ -65,6 +65,8 @@ Luau mirrors it: `local game = Postretro.getGameState()`, `game.occupancy.tag("a
 - [ ] An undeclared pawn at zero health counts in neither `occupants` nor `activePlayers`; a pawn with no health component counts in both; a declared pawn counts in both by its state's `occupancy` capability.
 - [ ] A disarmed or latched volume still counts its occupants.
 - [ ] A player on a `switch` press volume carrying the tag counts.
+- [ ] A volume whose tags repeat one tag counts once in that tag's `occupiedCount`, and its occupant once in `occupants` (pin P11).
+- [ ] A player killed inside the room on a tick, with another player outside, leaves `activePlayers` and `occupants` on the same later tick; the all-players gate never crosses (pin P7).
 - [ ] `activePlayers` excludes a held or disconnected seat and counts a player the tick their pawn spawns.
 
 **Puzzles (headless)**
@@ -75,26 +77,29 @@ Luau mirrors it: `local game = Postretro.getGameState()`, `game.occupancy.tag("a
 - [ ] A player joining while the others wait inside holds the gate closed until they enter; a player disconnecting while outside opens it on the tick their seat stops counting.
 - [ ] A set completing on a tick crosses on that tick. Players standing in place at level install cross on the first authoritative tick (pin P1).
 - [ ] King-of-the-Hill: control drains at `dt` per tick with one player on the hill, twice that with two, and not at all when empty.
-- [ ] Two identical headless runs with scripted inputs produce identical timelines for both facts.
+- [ ] Two identical headless runs with scripted inputs, on a harness that drives the trigger stage, produce identical timelines for both facts (pin P6).
 
 **Catalog and lifetime**
 - [ ] A script `setState` on `session.activePlayers` or an occupancy slot warns and leaves it unchanged.
-- [ ] A mod store named `occupancy`, or one overlapping it, is rejected at load with and without a level loaded; a store named `occupancyBoard` loads.
+- [ ] A mod store named `occupancy`, or one overlapping it, is rejected at load with and without a level loaded; a store named `occupancyBoard` loads; the engine's own family insert succeeds (pin P5).
 - [ ] A tag containing `.` or `:` warns once at install and gets no family; the level's other tags get theirs, and its volumes still fire.
 - [ ] A crossing or accumulator over a tag with no volume in the level warns and is skipped; the level loads.
 - [ ] After a level change, the new level's tags have families and the old level's tags absent from it have none (pin P2).
 - [ ] Typedefs for `session.activePlayers` and the `occupancy` family are generated from the catalog; the catalog drift guards cover both, and the typedef drift check passes.
+- [ ] A data script calling `occupancy.tag` at module scope evaluates in the build-time bridge and at install alike, and a drift test holds the two `tag` installers equal (pin P4).
 
 **Co-op (two-endpoint)**
 - [ ] A client's `activePlayers` and occupancy values converge to the host's; its host-mirrored crossing fires once when the set completes; the solve's mover reaches it by replicated phase.
-- [ ] A client joining mid-hold reads the current values from its baseline.
+- [ ] A client joining mid-hold reads the current values from its baseline; its crossing over them fires once in that frame and the host's does not fire again (pin P10).
+- [ ] A client whose tag set for the next level, or for a same-map restart, lands in the same control drain as the relevel declares that install's family and applies state batches from its first snapshot (pin P8).
+- [ ] On an uncatalogued level, a host reinstall with a changed tag set leaves the client holding exactly the host's new families, and its state batches apply (pin P9).
 - [ ] A client whose map differs from the host's only in trigger tags joins and reads the host's families, not its own.
 - [ ] A client whose tag set arrives after its install declares the family then: its crossings over occupancy bind, and state batches resume applying (pin P3).
 - [ ] A client demoted and re-promoted within a level keeps its families; after a level change it holds only the new level's (pin P2).
 
 **Surface**
 - [ ] The scripting-surface example compiles in TypeScript and Luau, and a TS and a Luau fixture of the two-button puzzle behave identically.
-- [ ] With `dev-tools`, the Triggers tab shows effective occupancy beside raw; without it, no occupancy-exposure UI compiles.
+- [ ] With `dev-tools`, the Triggers tab shows effective occupancy beside raw; without it, no occupancy-exposure UI compiles (build gate: a build without `dev-tools` succeeds and no non-dev-tools module names the column).
 
 ### Manual
 - [ ] Two-player session on the dev map: each puzzle opens only with both players on its plates; the room gate opens only with both inside; the hill drains faster with both on it.

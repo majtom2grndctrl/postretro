@@ -19,11 +19,11 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 ## 3. Slots and replication
 
 - Engine slots come from `BUILTIN_ENGINE_STATE` (`crates/entities/src/engine_state_catalog.rs`), installed by `SlotTable::default` at process start. `SlotTable` has no teardown; mod stores only grow (`plan_reconcile`). The one runtime replace is `replace_player_defense_slots` (retain by prefix, reinsert), driven by the mod vocabulary. No slot lives for one level today.
-- Namespace rules: `validate_namespace_records` rejects `@` and `:`; `namespaces_overlap` rejects equal and dotted-prefix overlap. Engine catalog namespaces: `player.`, `session.`, `screen.`, `input.`, `ui.`, `accessibility.`. Nothing reserves `occupancy` or `trigger`; a sim test writes a store slot `trigger.flag`.
+- Namespace rules: `validate_namespace_records` rejects `@` and `:`; `namespaces_overlap` rejects equal and dotted-prefix overlap. Engine catalog namespaces are listed in §7. Nothing reserves `occupancy` or `trigger`; a sim test writes a store slot `trigger.flag`.
 - Engine writes: `write_store_slot` / `apply_store_slot_batch` (`store_bridge.rs`) validate type and range but skip readonly. Script writes (`write_state_slot_json`, `write_script_store_slot`, `apply_text_edit`) warn and drop on readonly.
 - `ReplicationScope::{None, SharedGlobal, OwnerPrivatePlayer}`; no engine slot is `SharedGlobal` today, but the path is generic: `ReplicatedSlotSchema::build` (`crates/netcode/src/state_slots.rs`) includes engine slots by dotted name, `HostStateReplication::ingest_frame` reads them, `ClientStateApply::apply_snapshot_state` writes them. Late join starts from baseline 0.
 - Schema lifetime: built lazily on each side; reset at unload (`reset_level_scoped_host_state` via `clear_net_level_parity`; `reset_level_scoped_client_state`) and at each staged manifest commit (`reset_state_slot_schema`). A fingerprint mismatch (`validate_state_records` → `SchemaFingerprintMismatch`) drops the client's whole state batch, health included, with no refresh.
-- Content parity: `level_content_digest` (`crates/postretro/src/runtime_movers.rs`, `FINGERPRINT_EPOCH` 4) hashes movers, waypoints, static collision, environment volumes, push forces and teleporters. Trigger volumes are absent, so differing tags would surface only as the fingerprint drop.
+- Content parity: `level_content_digest` (`crates/postretro/src/runtime_movers.rs`, `FINGERPRINT_EPOCH` 4) hashes movers, waypoints, static collision, environment volumes, push forces and teleporters. Trigger volumes are absent, so differing tags would surface only as the fingerprint drop. Under referenced-tag collection, scripts, not map tags, decide the family set.
 
 ## 4. Install order
 
@@ -40,16 +40,16 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 |---|---|---|---|
 | P1 | Players already on the plates at install | install declares the family at 0 and writes the player counts → crossings initialize → first authoritative tick writes the counts | The crossing fires in the first authoritative frame; the set needs no exit and re-entry |
 | P2 | Level change across references | level A's script references `a` → unload → level B's script references `b`; the mod references `hill` | Every machine holds `hill` and `b`, not `a` |
-| P8 | Late joiner after other levels | host visits A then B → a client joins in B | The client derives the mod-scope set plus B's references, the host's exact set; batches apply from its first snapshot |
 | P4 | Data script calls `occupancy.tag(t)` at module scope | scripts-build evaluates the script against the build-time bridge → runtime VM evaluates it at install | Both trees serve `occupancy.tag` from installers a drift test compares, as `build_time_by_player_installers_match_runtime_bridge` does for `byPlayer`; the leaf guard keeps path = slot for static entries only |
 | P5 | Mod declares `occupancy` or `occupancy.x` with no level loaded, then a level installs a family | mod declaration validates (`StoreDeclarationSet::add`, `plan_reconcile`) → level install inserts `occupancy.<tag>` | Both mod spellings rejected on the mod-declaration paths; the engine family insert succeeds; `occupancyBoard` loads |
 | P6 | Headless determinism run | observability batch driver ticks with no trigger stage | Determinism and puzzle rows run on a harness that drives the trigger stage |
 | P7 | A counted player dies after the trigger stage's capture on tick T | capture → trigger reactions → damage → write both facts → accumulators | Both facts on T come from the one capture: the dead player still counts in both on T and leaves both on T+1; with player A outside and player B dying inside, `occupants >= inPlay` is never 1 >= 1 on T |
+| P8 | Late joiner after other levels | host visits A then B → a client joins in B | The client derives the mod-scope set plus B's references, the host's exact set; batches apply from its first snapshot |
 | P10 | Client joins while a set is held | client install declares the family at 0 → crossings arm at 0 → baseline applies the held counts → crossing pass | The joiner's host-mirrored crossing fires once in the baseline frame; the host fires nothing again |
 | P11 | One volume lists the same tag twice | install declares the tag once → a player stands in that volume | `occupiedCount` counts the volume once and `occupants` the player once |
 | P12 | Nobody in play | a lone player dies outside the room, or every co-op player is downed outside it | `inPlay` 0 and `occupants` 0; the all-players predicate stays false |
 | P13 | Level change or same-map restart with a party | host installs B, spawns its player inside the room → clients demoted, loading B → each client spawns inside and re-promotes | `loading` counts the clients from install, so the gate stays closed until the last client's pawn counts inside |
-| P14 | Client leaves mid-level | role change → level stops → frontend | every `session.playerCounts` entry reads 0, not the host's last replicated value |
+| P14 | Client leaves mid-level | role change → level stops → frontend, a backdrop installing or not | every `session.playerCounts` entry reads 0 and every list row `present` false, not the host's last values; a backdrop is not a session level |
 | P15 | Client never loads, or disconnects while loading | admitted → relevel sent → never reveals; or disconnects mid-load | It stays `loading` until it disconnects; a disconnect leaves `loading` and `connected` on the next tick, not after the reconnect hold |
 | P16 | Joiner before its first command | pawn spawns at promotion → first command arrives about a round trip later | With the first-command presence fix, the pawn counts `inPlay` and occupies from spawn |
 | P17 | Dead client seat | an undeclared client pawn reaches zero health | It reads `down` and leaves `inPlay`; the row needs a client case, not only the host's pawn |
@@ -72,7 +72,7 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 - Keyed slots exist only outside the catalog: `player.defense.<name>` (`replace_player_defense_slots`), owner-private, reached through `defineDefenseLayer(name).current` built on `storeRef`.
 - No player-count fact exists. A mod cannot derive one: player events fire nothing when a player stops being observed, and the `occupancy` capability is not readable as a slot.
 
-## 8. Host-sent tag set
+## 8. Control channel and fingerprint
 
 - Control is the one ordered, reliable channel (`ServerControlFrame { participation_epoch, payload }`, resent every 100 ms); snapshots are unreliable and epoch-gated. A client accepts a snapshot only after draining the participation marker, and control drains before snapshot apply, so a control message sent before the marker lands before the epoch's first accepted snapshot. A level change always demotes, so every level starts a new epoch.
 - `SpawnPoseHint` is sent at host install (`send_install_spawn_pose_hints`) and at admission, after `Relevel` and before the marker, gated on a `player_spawn`; the client holds it tagged with identity and life (`ClientSpawnPoseHint`). Exception: a client that already revealed an uncatalogued level and promotes in its admission batch gets the marker first. `Tuning` lands after the marker.
@@ -96,4 +96,3 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 - A set that only grows as levels install would diverge for a late joiner, so level references are removed at unload. The schema resets at level end and on declaration change (`reset_schema`).
 - Tags can be computed at run time (`getMapEntities(...).flatMap((t) => t.tags)`, factory parameters in `trap-pools.ts`, `a11y-strobe-test.ts`), so collection reads evaluated descriptors, never source.
 - The mod digest does not hash reaction or event lanes, and level-local script content is unhashed (`networking.md` §What gates); a divergent set drops every replicated slot at the fingerprint check, as any schema divergence does.
-- §8 (host-sent tag set) describes a superseded design; its facts about the control channel and fingerprint still hold.

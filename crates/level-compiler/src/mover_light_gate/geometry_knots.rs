@@ -357,6 +357,52 @@ impl<'m> Sweep<'m> {
     /// brushes, leg by leg. Spans that meet, at a waypoint or where two
     /// brushes touch, join.
     pub(super) fn spans(&self, probe: Vec3, inset: f64, clip: bool) -> Vec<Span> {
+        join_spans(
+            self.leg_spans(probe, inset, clip, false)
+                .into_iter()
+                .map(|(_, span)| span)
+                .collect(),
+        )
+    }
+
+    /// [`Self::spans`] brush by brush: each bounded brush that holds `probe`
+    /// somewhere along the path, by its index among the bounded brushes,
+    /// with its own spans joined across the legs. Ascending by brush. With
+    /// `past_ends`, the first leg runs on before t 0 and the last past t 1
+    /// along their lines, so a span the path's end cuts short reads whole.
+    pub(super) fn spans_by_brush(
+        &self,
+        probe: Vec3,
+        inset: f64,
+        clip: bool,
+        past_ends: bool,
+    ) -> Vec<(usize, Vec<Span>)> {
+        let mut spans = self.leg_spans(probe, inset, clip, past_ends);
+        // Stable, so each brush keeps its legs in order.
+        spans.sort_by_key(|&(brush, _)| brush);
+        let mut by_brush: Vec<(usize, Vec<Span>)> = Vec::new();
+        for (brush, span) in spans {
+            match by_brush.last_mut() {
+                Some((last, own)) if *last == brush => own.push(span),
+                _ => by_brush.push((brush, vec![span])),
+            }
+        }
+        by_brush
+            .into_iter()
+            .map(|(brush, own)| (brush, join_spans(own)))
+            .collect()
+    }
+
+    /// Each (leg, brush) span of [`Self::spans`], unjoined, with its brush's
+    /// index among the bounded brushes; with `past_ends`, the first and last
+    /// legs unbounded before t 0 and past t 1 ([`Self::spans_by_brush`]).
+    fn leg_spans(
+        &self,
+        probe: Vec3,
+        inset: f64,
+        clip: bool,
+        past_ends: bool,
+    ) -> Vec<(usize, Span)> {
         let point = probe.as_dvec3();
         // A grown brush left unclipped reaches past its grown bounds near a
         // sharp edge; the seam test's growth is small, so a wide margin
@@ -368,13 +414,15 @@ impl<'m> Sweep<'m> {
         } + SWEEP_SLACK_M;
         let mut spans = Vec::new();
         for &(at, index, ref hull) in &self.sweeps {
-            if !within_grown(hull, point, grow) {
+            // The hull bounds the leg as travelled, not its line.
+            let (first, last) = (past_ends && at == 0, past_ends && at + 1 == self.legs.len());
+            if !(first || last) && !within_grown(hull, point, grow) {
                 continue;
             }
             let (leg, brush) = (&self.legs[at], self.brushes[index]);
             let mut span = Span {
-                lo: leg.t0,
-                hi: leg.t1,
+                lo: if first { f64::NEG_INFINITY } else { leg.t0 },
+                hi: if last { f64::INFINITY } else { leg.t1 },
                 lo_rate: self.length,
                 hi_rate: self.length,
             };
@@ -410,23 +458,28 @@ impl<'m> Sweep<'m> {
                 }
             }
             if span.lo <= span.hi {
-                spans.push(span);
+                spans.push((index, span));
             }
         }
-        spans.sort_by(|a, b| a.lo.total_cmp(&b.lo));
-        let mut joined: Vec<Span> = Vec::with_capacity(spans.len());
-        for span in spans {
-            match joined.last_mut() {
-                Some(last) if span.lo <= last.hi => {
-                    if span.hi > last.hi {
-                        (last.hi, last.hi_rate) = (span.hi, span.hi_rate);
-                    }
-                }
-                _ => joined.push(span),
-            }
-        }
-        joined
+        spans
     }
+}
+
+/// `spans` sorted and joined where they meet: ascending, disjoint, closed.
+fn join_spans(mut spans: Vec<Span>) -> Vec<Span> {
+    spans.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+    let mut joined: Vec<Span> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match joined.last_mut() {
+            Some(last) if span.lo <= last.hi => {
+                if span.hi > last.hi {
+                    (last.hi, last.hi_rate) = (span.hi, span.hi_rate);
+                }
+            }
+            _ => joined.push(span),
+        }
+    }
+    joined
 }
 
 /// A brush's bounds as six half-spaces `n · p ≤ d`.

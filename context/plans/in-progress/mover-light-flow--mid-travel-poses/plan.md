@@ -559,15 +559,23 @@ The verdict was "request changes". Wire bytes agree across every layer, and the 
 
 **Gate:** check clean; compiler `mover` 210 passed, format 40, loader 52, renderer `mover` 130 plus `kinematic_brush` 21; clippy clean after one test lint fix.
 
+**Grazing (owner, 2026-11-13: nudge crossings only, warn on grazes, bake-side follow-up).** Built after the ruling; recorded in `index.md` §Authored pose bands.
+- **Classification, per brush.** For each probe and brush, that brush's band span minus its own enclosure span; a piece touching that enclosure is a crossing, the rest is graze (`Sweep::spans_by_brush`, joined across legs). A per-probe rule ("touches any enclosure") merged a lift wall's grazes into one 0–1 crossing; the lift-wall test fails under it.
+- **Past the ends (executor's call).** The first and last legs read on past t 0 and t 1, so `setpiece_room_big`, resting with a face on a layer and rising off it, is a crossing, as before, and warns nothing. On a straight line a convex brush whose face runs along a probe never encloses it, so this never turns a graze into a crossing. On a bent path, a graze adjoining its own brush's enclosure across a joint reads as a crossing (conservative; named in a comment, untested).
+- **Warning** fires only where a graze holds the probe by the bake's own rule, guard left out. Positions print in engine metres, as every `[MoverLight]` line does (`build_pipeline.md` §Source-format neutrality: shared compiler stages hold no editor coordinates); `docs/level_design.md` gives the conversion to map units.
+- **Refusal advice** now names what can succeed: a lower count, `2`, or automatic placement.
+- **Tests** (`geometry_knot_tests.rs`): graze, mixed, lift car at `light_poses 7`, neighbour-blocked nudge (both ends and refusal), terminus-resting room. Mutation-checked: per-probe classification, graze never returned, `<` to `<=` at the neighbour check, warning off, no extension past the ends.
+- **Gates.** fmt; clippy clean; `mover` 215 passed, 9 ignored; `parse` 301; `mover_light_gate_setpiece` 5 of 5; `mover-setpiece` cold `--release` bake byte-identical to `dbacdfdf2`'s `prl-build` (87,369,750 B), no graze warning.
+- `poses_in_band` (test only) still reports both kinds, so the motion-proof truth check bars grazes too: placement would not move one out of a truth bake.
+
 **Waiting on the owner:**
-- **Grazing bands.** A face parallel to travel that grazes a layer keeps a probe in band for the whole pass. The nudge then moves a pose far, or refuses with advice that can't succeed. Recommended: nudge crossings only, warn on grazes (authored and automatic), and a bake-side follow-up for band probes' ray origins.
 - **Short enclosure runs.** A run of one or two poses is all edge copy, so it gets no dark pose; that is the ruled rule, word for word. The owner is reviewing it in-engine.
 
 **Left:**
 - The `SH_NORMAL_OFFSET_M` rename: the name is shared across four shaders and three tests, all already in cell units.
 - Per-run enclosure caching beyond (mover, cell).
 - `KnotCounts.even` still labels moved authored poses "even".
-- The neighbour-blocked nudge test: it's in `layer_bands.rs`, which is held for the grazing ruling.
+- Bake-side graze fix: band probes' ray origins, so a graze stores no solid (roadmap at landing).
 
 ## Landing notes (owner, 2026-11-13)
 - After landing, hand the owner a ready-to-paste `/draft-session` prompt for "probes that ride the mover". It should cover:

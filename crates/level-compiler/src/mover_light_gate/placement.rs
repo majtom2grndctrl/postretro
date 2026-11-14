@@ -5,7 +5,7 @@
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use super::geometry_knots::{GeometryKnots, geometry_knots};
-use super::layer_bands::clear_authored_knots;
+use super::layer_bands::LayerBands;
 use super::pose::{AnalysedMover, MoverPoses, Pose, Terminus};
 use super::travel::PathTravel;
 use crate::map_data::MapKinematicMover;
@@ -303,8 +303,11 @@ impl MoverPoses {
     /// places exactly that many even poses and no geometry knot: the
     /// author's trade of exactness for cost. An authored mid pose that
     /// holds a near-field probe within the enclosure band of a face or seam
-    /// moves the least travel out of every probe's band
-    /// ([`clear_authored_knots`]). Termini keep their exact poses
+    /// crossing it moves the least travel out of every probe's crossing
+    /// ([`LayerBands::clear_authored`]); one held there only by a face
+    /// running along the probe stays. Warns once per mover with a face
+    /// running along a near-field probe within its band, authored or not
+    /// ([`LayerBands::warn_grazes`]). Termini keep their exact poses
     /// as the knots at t = 0 and t = 1. Warns once per mover whose automatic
     /// even count passed [`AUTO_POSE_CAP`]; geometry knots never count
     /// against it, and none is dropped to meet a count. Authored counts are
@@ -313,8 +316,8 @@ impl MoverPoses {
     ///
     /// Fails by the mover's name where a placed geometry knot's pose
     /// disagrees with the bake's enclosing rule, which placement checks at
-    /// every knot, or where an authored pose in a band has no clean spot
-    /// between its neighbours.
+    /// every knot, or where an authored pose in a crossing's band has no
+    /// clean spot between its neighbours.
     pub(crate) fn place_poses(
         &mut self,
         movers: &[MapKinematicMover],
@@ -346,9 +349,11 @@ impl MoverPoses {
                 placed.count,
             );
             let even = even_knots(placed.count);
+            let bands = LayerBands::new(analysed, mover, &travel, probes, probe_spacing);
+            bands.warn_grazes(&analysed.label);
             let (even, geometry) = match mover.light_poses {
                 Some(_) => (
-                    clear_authored_knots(analysed, mover, &travel, probes, probe_spacing, even)?,
+                    bands.clear_authored(&analysed.label, even)?,
                     GeometryKnots::default(),
                 ),
                 None => (

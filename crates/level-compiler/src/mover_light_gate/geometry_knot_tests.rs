@@ -12,7 +12,7 @@ use postretro_test_log_capture::LogCapture;
 use super::geometry_knots::{
     INSIDE_KNOT_MARGIN_M, KNOT_MERGE_TOLERANCE_M, OUTSIDE_KNOT_DISTANCE_M, clear_of_band,
 };
-use super::layer_bands::poses_in_band;
+use super::layer_bands::{BandKind, clear_authored_knots, poses_in_band};
 use super::placement::{AUTO_POSE_CAP, KnotCounts, even_knots, pose_count};
 use super::pose::{AnalysedMover, MoverPoses, Pose, Terminus};
 use super::tests::{box_brush, mover, waypoint};
@@ -843,6 +843,15 @@ fn a_shallow_ramp_keeps_its_knots_one_unit_of_travel_out_and_its_inside_knot_nea
     );
 }
 
+/// A lift car: a floor slab (y 0.4–0.5) and a ceiling slab (y 2.25–2.35)
+/// reaching past a wall (x 0.9–1.0) to x 1.2. Probe column x 1 of a lattice
+/// from −2 sits on the wall's outer face.
+fn lift_car() -> Vec<BrushVolume> {
+    let reach = |y0: f64| box_brush(DVec3::new(0.5, y0, -1.5), DVec3::new(1.2, y0 + 0.1, 1.5));
+    let wall = box_brush(DVec3::new(0.9, 0.5, -1.5), DVec3::new(1.0, 2.25, 1.5));
+    vec![reach(0.4), wall, reach(2.25)]
+}
+
 #[test]
 fn a_probe_grazing_a_lift_wall_keeps_knots_at_the_floor_and_ceiling_it_passes() {
     // A lift car travelling 3 m down: a floor slab (y 0.4–0.5) and a ceiling
@@ -855,14 +864,8 @@ fn a_probe_grazing_a_lift_wall_keeps_knots_at_the_floor_and_ceiling_it_passes() 
     // that faces the other.
     // Only the probe column at x 1 lies under the floor and ceiling, so no
     // other column's knots stand in for its own.
-    let reach = |y0: f64| box_brush(DVec3::new(0.5, y0, -1.5), DVec3::new(1.2, y0 + 0.1, 1.5));
-    let wall = box_brush(DVec3::new(0.9, 0.5, -1.5), DVec3::new(1.0, 2.25, 1.5));
     let probes = lattice(DVec3::new(-2.0, -2.0, -2.0), [5, 5, 5]);
-    let (car, waypoints) = on_path(
-        vec![reach(0.4), wall, reach(2.25)],
-        &[DVec3::ZERO, DVec3::new(0.0, -3.0, 0.0)],
-        None,
-    );
+    let (car, waypoints) = on_path(lift_car(), &[DVec3::ZERO, DVec3::new(0.0, -3.0, 0.0)], None);
     let poses = placed(&car, &waypoints, &probes);
     assert_every_enclosure_end_is_bracketed(&car, &poses, &probes, 1.0);
     let analysed = &poses.analysed[0];
@@ -1148,7 +1151,290 @@ fn an_authored_count_too_dense_to_clear_a_band_is_refused_by_name() {
         "`light_poses` pose",
         "within the band of a face or seam",
         "neighbouring poses",
-        "Choose another `light_poses`",
+        "Set a lower `light_poses` that leaves this pose room outside that stretch",
+        "set it to 2 to bake the ends alone",
+        "remove it for automatic placement",
+    ] {
+        assert!(error.contains(named), "{named:?} in {error}");
+    }
+}
+
+/// How far a grazing face runs off a probe layer, in metres: inside the
+/// lift band (about 2 mm), outside the probe.
+const GRAZE_M: f64 = 0.0015;
+
+/// A plate 3.2 m long along x, 3 m deep and just under 0.5 m tall: its top
+/// face runs [`GRAZE_M`] under probe layer y 0.5 the whole way, and no probe
+/// layer lies inside it, so it encloses none.
+fn grazing_plate() -> BrushVolume {
+    box_brush(
+        DVec3::new(-3.0, 0.0, 0.0),
+        DVec3::new(0.2, 0.5 - GRAZE_M, 3.0),
+    )
+}
+
+/// The kind of each mid pose among `knots` that holds a probe in a band.
+fn band_kinds(
+    analysed: &AnalysedMover,
+    mover: &MapKinematicMover,
+    knots: &[f32],
+    probes: &ProbeGridLayout,
+) -> Vec<(usize, BandKind)> {
+    poses_in_band(analysed, mover, knots, probes, SPACING)
+        .iter()
+        .map(|band| (band.pose, band.kind))
+        .collect()
+}
+
+fn bits(knots: &[f32]) -> Vec<u32> {
+    knots.iter().map(|t| t.to_bits()).collect()
+}
+
+// Regression: a face running along a probe layer kept a probe in band over
+// the whole trip, and every authored count of 3 or more was refused.
+#[test]
+fn a_face_running_along_a_probe_layer_warns_once_and_moves_no_pose() {
+    let capture = LogCapture::start();
+    // Over 4 m, probes of layer y 0.5 at x −1.5 … 3.5 sit 1.5 mm over the
+    // plate's top from t 0 to t 1. Every authored mid pose holds some in the
+    // band, by a graze only: it keeps its even knot.
+    let (plate, poses, probes) = authored(vec![grazing_plate()], 4.0, 5);
+    let analysed = &poses.analysed[0];
+    assert_eq!(bits(&analysed.knots), bits(&even_knots(5)));
+    assert_eq!(
+        band_kinds(analysed, &plate, &analysed.knots, &probes),
+        vec![
+            (1, BandKind::Graze),
+            (2, BandKind::Graze),
+            (3, BandKind::Graze)
+        ],
+    );
+    capture.assert_not_logged(log::Level::Info, "`light_poses` pose");
+    capture.assert_logged_once(log::Level::Warn, "[MoverLight] kinematic_mover 'slab'");
+    for named in [
+        "runs along 18 lighting probe(s)",
+        "1.5 mm off the face",
+        "over t 0.000 to 1.000 (4.00 m of travel)",
+        "bake part of the mover's solid into those probes",
+        "Move that face at least 3.0 mm off the probe layer",
+    ] {
+        capture.assert_logged_once(log::Level::Warn, named);
+    }
+    // Automatic placement places the same even poses, no geometry pose, and
+    // warns the same way.
+    capture.clear();
+    let (plate, waypoints) = on_path(
+        vec![grazing_plate()],
+        &[DVec3::ZERO, DVec3::new(4.0, 0.0, 0.0)],
+        None,
+    );
+    let poses = placed(&plate, &waypoints, &probes);
+    assert_eq!(bits(&poses.analysed[0].knots), bits(&even_knots(5)));
+    assert_eq!(geometry_count(&poses), 0);
+    capture.assert_logged_once(log::Level::Warn, "[MoverLight] kinematic_mover 'slab'");
+    capture.assert_logged_once(log::Level::Warn, "runs along 18 lighting probe(s)");
+}
+
+// Regression: mover-setpiece's big room rests with a face on a probe layer
+// and rises away from it; the probes it leaves read as a graze and warned.
+#[test]
+fn a_face_leaving_a_probe_layer_it_rests_on_at_a_terminus_is_a_crossing_and_never_warns() {
+    let capture = LogCapture::start();
+    // The slab's trailing face rests on layer x 1.5 at the first terminus
+    // and moves 1 m away along +x: the layer is in its band only for the
+    // first millimetres, and the slab would enclose it just before t 0.
+    let slab = box_brush(DVec3::new(1.5, 0.0, 0.0), DVec3::new(1.6, 3.0, 3.0));
+    let probes = lattice(DVec3::new(-1.5, -1.5, -1.5), [7, 7, 7]);
+    for light_poses in [None, Some(5)] {
+        let (slab, waypoints) = on_path(
+            vec![slab.clone()],
+            &[DVec3::ZERO, DVec3::new(1.0, 0.0, 0.0)],
+            light_poses,
+        );
+        let poses = placed(&slab, &waypoints, &probes);
+        // A pose a millimetre out holds the layer in its band, as a
+        // crossing, which an authored pose would move out of.
+        assert_eq!(
+            band_kinds(&poses.analysed[0], &slab, &[0.0, 0.001, 1.0], &probes),
+            vec![(1, BandKind::Crossing)],
+        );
+    }
+    capture.assert_not_logged(log::Level::Warn, "runs along");
+}
+
+#[test]
+fn a_pose_crossing_one_probe_while_grazing_another_moves_out_of_the_crossing_only() {
+    use super::geometry_knots::SIDE_GUARD_M;
+    let capture = LogCapture::start();
+    // The grazing plate, and a slab above it (y 1–3) whose leading face pose
+    // 2 of `light_poses 5` parks 0.5 mm past layer x 1.5: there the slab
+    // crosses probes y 1.5 and 2.5 of that layer while the plate grazes
+    // probe y 0.5. It moves ahead into the slab, as without the plate.
+    let ahead = 0.0005;
+    let upper = box_brush(DVec3::new(-0.1, 1.0, 0.0), DVec3::new(0.0, 3.0, 3.0));
+    let (pair, poses, probes) = authored(vec![grazing_plate(), upper], 2.0 * (1.5 + ahead), 5);
+    let analysed = &poses.analysed[0];
+    let even = even_knots(5);
+    assert_eq!(
+        band_kinds(analysed, &pair, &even, &probes),
+        vec![
+            (1, BandKind::Graze),
+            (2, BandKind::Crossing),
+            (3, BandKind::Graze)
+        ],
+    );
+    for k in [0, 1, 3, 4] {
+        assert_eq!(analysed.knots[k].to_bits(), even[k].to_bits(), "pose {k}");
+    }
+    let length = f64::from(PathTravel::new(&analysed.path).length());
+    let travelled = f64::from(analysed.knots[2] - even[2]) * length;
+    let want = enclosure_inset(Vec3::new(1.5, 2.5, 2.5)) + SIDE_GUARD_M - ahead;
+    assert!(
+        (travelled - want).abs() < SLOP_M / 10.0,
+        "pose 2 moved {travelled:.6} m, not {want:.6} m"
+    );
+    for y in [1.5, 2.5] {
+        for z in [0.5, 1.5, 2.5] {
+            let probe = Vec3::new(1.5, y, z);
+            assert!(analysed.poses[2].encloses(probe), "{probe}");
+        }
+    }
+    // The moved pose still holds the grazed probe in its band: that is left
+    // for the warning.
+    assert_eq!(
+        band_kinds(analysed, &pair, &analysed.knots, &probes),
+        vec![
+            (1, BandKind::Graze),
+            (2, BandKind::Graze),
+            (3, BandKind::Graze)
+        ],
+    );
+    capture.assert_logged_once(log::Level::Info, "`light_poses` pose 2");
+    capture.assert_logged_once(log::Level::Warn, "runs along");
+}
+
+#[test]
+fn an_authored_count_on_a_lift_moves_out_of_floor_and_ceiling_crossings_and_warns_on_the_wall() {
+    use super::geometry_knots::SIDE_GUARD_M;
+    let capture = LogCapture::start();
+    // `light_poses 7` over the 3 m drop parks poses 1, 3 and 5 where the
+    // floor's top passes probe rows y 0, −1 and −2 of column x 1: crossings,
+    // each moved back into the floor, its nearer clean end. Every mid pose
+    // also holds some probe on the wall's outer face, which the wall never
+    // encloses, between the floor and the ceiling: grazes, which move
+    // nothing even where they meet the floor's or ceiling's enclosure.
+    let probes = lattice(DVec3::new(-2.0, -2.0, -2.0), [5, 5, 5]);
+    let (car, waypoints) = on_path(
+        lift_car(),
+        &[DVec3::ZERO, DVec3::new(0.0, -3.0, 0.0)],
+        Some(7),
+    );
+    let poses = placed(&car, &waypoints, &probes);
+    let analysed = &poses.analysed[0];
+    let even = even_knots(7);
+    assert_eq!(
+        band_kinds(analysed, &car, &even, &probes),
+        vec![
+            (1, BandKind::Crossing),
+            (2, BandKind::Graze),
+            (3, BandKind::Crossing),
+            (4, BandKind::Graze),
+            (5, BandKind::Crossing),
+        ],
+    );
+    for k in [0, 2, 4, 6] {
+        assert_eq!(analysed.knots[k].to_bits(), even[k].to_bits(), "pose {k}");
+    }
+    for (k, row) in [(1, 0.0), (3, -1.0), (5, -2.0)] {
+        let travelled = f64::from(analysed.knots[k] - even[k]) * 3.0;
+        let want = -(enclosure_inset(Vec3::new(1.0, row, 1.0)) + SIDE_GUARD_M);
+        assert!(
+            (travelled - want).abs() < SLOP_M / 10.0,
+            "pose {k} moved {travelled:.6} m, not {want:.6} m"
+        );
+        assert!(analysed.poses[k].encloses(Vec3::new(1.0, row, 0.0)));
+        capture.assert_logged_once(log::Level::Info, &format!("`light_poses` pose {k} "));
+    }
+    assert!(
+        band_kinds(analysed, &car, &analysed.knots, &probes)
+            .iter()
+            .all(|&(_, kind)| kind == BandKind::Graze),
+        "no placed pose holds a crossed probe: {:?}",
+        analysed.knots
+    );
+    capture.assert_logged_once(log::Level::Warn, "[MoverLight] kinematic_mover 'slab'");
+    capture.assert_logged_once(log::Level::Warn, "0.0 mm off the face");
+}
+
+/// A slab whose leading face runs from 10 mm short of probe layer x 1.5 to
+/// 10 mm past it over a 20 mm path, unplaced: a pose holds the layer in its
+/// band from about t 0.4 to 0.55, and the band's guarded ends lie about t
+/// 0.35 and 0.6. Returns those ends in metres of travel past the first
+/// terminus: clear of the lift band, and enclosed, each by the guard, for
+/// the layer probe that needs the most.
+fn crossing_a_layer_in_twenty_millimetres() -> (MapKinematicMover, MoverPoses, (f64, f64)) {
+    use super::geometry_knots::{SIDE_GUARD_M, lift_band};
+    let slab = box_brush(DVec3::new(1.39, 0.0, 0.0), DVec3::new(1.49, 3.0, 3.0));
+    let (slab, waypoints) = on_path(
+        vec![slab],
+        &[DVec3::ZERO, DVec3::new(0.02, 0.0, 0.0)],
+        Some(5),
+    );
+    let poses = MoverPoses::resolve(std::slice::from_ref(&slab), &waypoints);
+    let far = Vec3::new(1.5, 2.5, 2.5);
+    let ends = (
+        0.01 - (lift_band(far) + SIDE_GUARD_M),
+        0.01 + enclosure_inset(far) + SIDE_GUARD_M,
+    );
+    (slab, poses, ends)
+}
+
+#[test]
+fn a_crossing_pose_whose_nearer_end_a_neighbour_blocks_goes_to_the_farther_end() {
+    // Even authored knots never leave a neighbour between a pose and the
+    // nearer end of its crossing without that neighbour being in it too, so
+    // these knots are set by hand.
+    let probes = lattice(DVec3::new(-1.5, -1.5, -1.5), [7, 7, 7]);
+    let (slab, poses, (lo, hi)) = crossing_a_layer_in_twenty_millimetres();
+    let analysed = &poses.analysed[0];
+    let length = f64::from(PathTravel::new(&analysed.path).length());
+    let at = |t: f32| f64::from(t) * length;
+    let near = |placed: f32, want: f64| (at(placed) - want).abs() < SLOP_M / 10.0;
+    // Pose 1 takes the near end behind; pose 2's nearer end is then pose 1's
+    // knot, so it goes ahead, short of pose 3.
+    let knots = vec![0.0, 0.42, 0.44, 0.70, 1.0];
+    let placed =
+        clear_authored_knots(analysed, &slab, &probes, SPACING, knots).expect("pose 2 fits ahead");
+    assert!(near(placed[1], lo), "pose 1 at {} m", at(placed[1]));
+    assert!(near(placed[2], hi), "pose 2 at {} m", at(placed[2]));
+    assert_eq!(
+        bits(&[placed[0], placed[3], placed[4]]),
+        bits(&[0.0, 0.70, 1.0])
+    );
+    // Pose 2's nearer end lies past pose 3, so it goes behind; pose 3 then
+    // goes ahead.
+    let knots = vec![0.0, 0.20, 0.53, 0.54, 1.0];
+    let placed =
+        clear_authored_knots(analysed, &slab, &probes, SPACING, knots).expect("pose 2 fits behind");
+    assert!(near(placed[2], lo), "pose 2 at {} m", at(placed[2]));
+    assert!(near(placed[3], hi), "pose 3 at {} m", at(placed[3]));
+    assert_eq!(
+        bits(&[placed[0], placed[1], placed[4]]),
+        bits(&[0.0, 0.20, 1.0])
+    );
+    // Pose 1 blocks the end behind and pose 3 sits short of the end ahead:
+    // no clean spot between, so the build stops rather than reorder poses.
+    let knots = vec![0.0, 0.42, 0.44, 0.58, 1.0];
+    let error = clear_authored_knots(analysed, &slab, &probes, SPACING, knots)
+        .expect_err("neither end fits")
+        .to_string();
+    for named in [
+        "kinematic_mover 'slab'",
+        "`light_poses` pose 2 at t 0.440000",
+        "neighbouring poses at t",
+        "Set a lower `light_poses` that leaves this pose room outside that stretch",
+        "set it to 2 to bake the ends alone",
+        "remove it for automatic placement",
     ] {
         assert!(error.contains(named), "{named:?} in {error}");
     }

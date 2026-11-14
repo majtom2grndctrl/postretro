@@ -588,9 +588,11 @@ struct Row {
 
 /// The truth's count is clean on its own: none of its `truth_poses` even
 /// poses, unmoved, parks a mover face or seam within the enclosure band of a
-/// near-field probe, where it would store the solid's dark state (owner,
-/// 2026-11-12). So placement moved none, and the truth's knots are the even
-/// ones bit for bit.
+/// near-field probe, crossing it or running along it, where it would store
+/// part of the solid's dark state (owner, 2026-11-12). Placement moves poses
+/// out of crossings only, so a graze would stay in the truth unseen; with
+/// neither, placement moved none, and the truth's knots are the even ones
+/// bit for bit.
 fn assert_truth_poses_clear_every_band(map: &str, truth: &Build, truth_poses: u32) {
     let even = even_knots(truth_poses);
     let poses = truth.scene.mover_poses();

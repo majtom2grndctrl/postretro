@@ -70,17 +70,20 @@ Luau mirrors it as teleporters do: `s:arm()`, `s:disarm()`, `s:on("arrive", { re
 **Activation**
 - [ ] Touch and use activation each start the transition. Use without overlap does not; a disarmed seam does not. A seam activation and a script `loadLevel` on one frame load exactly one level, and only a seam load writes arrivals (pin P3).
 - [ ] An unknown target catalog id warns once at activation, requests no load, and leaves the level running.
-- [ ] Two seams with different targets activating on one frame load the first in map order's target; the other seam's occupants arrive at player starts (pin P11).
+- [ ] Two seams with different targets activating on one frame load the first in map order's target, whichever activated first; the other seam's occupants arrive at player starts (pins P11, P15).
+- [ ] When the first seam in map order with an unknown target and a valid seam activate on one frame, the first warns and the valid seam's target loads (pin P16).
 - [ ] A pawn whose capsule overlaps the seam's union AABB but none of its brushes is outside: it neither activates the seam nor arrives landmark-relative.
 - [ ] Arming a disarmed touch seam with a player standing inside starts the transition on the next trigger tick.
 - [ ] A pawn at zero health that declares no life states neither touches nor uses a seam into firing, as it cannot teleport. A declared pawn follows its state's `touch` and `use` capabilities.
-- [ ] `occupants(tag)` counts a player in a bent seam's brushes and not one beside the bend inside its bounding box, armed or not, and not an undeclared pawn at zero health inside it. A disarmed seam armed from `onStateCrossing(occupants(tag), …)` when every player is inside moves every player landmark-relative.
+- [ ] `occupants(tag)` counts a player in a bent seam's brushes and not one beside the bend inside its bounding box, armed or not; not an undeclared pawn at zero health inside it, and a declared pawn by its state's `occupancy` capability. A disarmed seam armed from `onStateCrossing(occupants(tag), …)` when every player is inside moves every player landmark-relative.
 
 **Latch and events**
 - [ ] The latch follows the hub D11 table on every row, including an arrival whose capsule overlaps the seam with its body point outside, and a capsule that leaves while the body point is already out (pin P4).
 - [ ] The destination seam fires `arrive` once per arriving pawn, on the host only, inside the first fixed tick after the pawn spawns, and fires none for a pawn of the same load placed at a player start, a blocked arrival included. A brush `on_arrive` and a script `seamEvents` binding both run.
 - [ ] A teleporter whose destination lies inside a touch seam fires that seam on the teleport's tick (pin P9).
-- [ ] A pawn respawned onto a player start inside a touch seam is latched and does not fire until its capsule leaves and re-enters (pin P14).
+- [ ] A pawn respawned onto a player start inside a touch seam is latched and does not fire until its capsule leaves and re-enters (pin P14), including a disarmed seam armed on the respawn's tick or a later one (pin P19).
+- [ ] A pawn latched in a disarmed seam that leaves and re-enters while it stays disarmed is unlatched: arming the seam fires it on the next trigger tick (pin P18).
+- [ ] A pawn that spawns beside a bent seam's bend, inside its bounding box but outside its brushes, is not latched: walking into the seam fires it.
 - [ ] A disarmed destination seam fires `arrive` for each arriving pawn, as an armed one does.
 - [ ] A seam whose target is its own map reloads it once, and each occupant spawns where it stood, latched (pin P10).
 - [ ] The scripting-surface example compiles in TypeScript and Luau and, on the dev pair, disarms the destination seam on arrival.
@@ -89,7 +92,8 @@ Luau mirrors it as teleporters do: `s:arm()`, `s:disarm()`, `s:on("arrive", { re
 - [ ] A client pawn inside the seam arrives landmark-relative at participation entry; one outside arrives at its assigned player start.
 - [ ] A crossing client settles, reveals and arms at its arrival eye, yaw and pitch, and its seat holds no player start. A client whose arrival is blocked resolves to a player start, and its hint names that start. A client whose arrival fit at resolve but is blocked at promotion, by a mover or the host's pawn, spawns at its player start with one warning and a resent hint (pin P13).
 - [ ] A crossing client with no resolved command at the harvest arrives with its pawn's own facing.
-- [ ] A host level change before a crossing client spawns clears that client's arrival; it arrives at a player start (pin P5).
+- [ ] A host level change before a crossing client spawns clears that client's arrival, including a seam change into a map holding a seam of the first crossing's name; it arrives at a player start (pins P5, P20).
+- [ ] A crossing client whose arrival was blocked, at resolve or at promotion, and that later re-promotes or rejoins within the hold re-enters at a player start, not at its arrival (pin P17).
 - [ ] A crossing client demoted or reconnected after its arrival spawn re-enters at a player start, and its hint names that start; one that reconnects before any spawn in the destination spawns at its arrival (pin P7).
 
 **Compiler and surface**

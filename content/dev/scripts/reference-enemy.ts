@@ -33,29 +33,39 @@ const CLOSE_STANDOFF = 1.5;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// The committed slam cycle is 1,850 ms, longer than the slam's 1,800 ms
-// cooldown, so a slam is always ready when its turn comes round.
-const SLAM_WINDUP_MS = 250;
-const SLAM_COMMIT_MS = 150;
-const SLAM_RECOVER_MS = 1450;
-// A jab plays its punch, whose strike lands about 250 ms in, then rests;
-// strike plus rest covers the jab's 1,200 ms cooldown.
-const JAB_STRIKE_MS = 450;
-const JAB_REST_MS = 750;
+// `punch`, on the `mixamo_brute` library, runs 1,100 ms. Its fist is drawn
+// back at 467 ms, where `punch_windup` cuts it, and connects at its `hit`
+// event, 767 ms in. The jab and the slam fire at `hit`.
+const PUNCH_DRAWN_BACK_MS = 467;
+const PUNCH_HIT_MS = 767;
+// The slam's three phases share `attack_slam`, so its punch runs on from the
+// windup's entry: the windup draws the fist back, the commit fires at `hit`
+// and holds 100 ms past it, and the recovery leaves once the punch has played
+// through. The commit must still be active when the punch reaches `hit`, or
+// the slam never fires.
+const SLAM_WINDUP_MS = PUNCH_DRAWN_BACK_MS;
+const SLAM_COMMIT_MS = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100;
+// A jab fires at the punch's `hit`, leaves once the punch has played through,
+// then rests. Punch plus rest, fire to fire, is about 1,270 ms, past the jab's
+// 1,200 ms cooldown, so the next jab's moment never meets its cooldown.
+const JAB_REST_MS = 150;
 // After its own slam the brute only jabs, longer than `heavy`'s 4 s refresh,
-// so a second brute on the same target takes the next slam.
+// so a second brute on the same target takes the next slam, and far longer
+// than the slam's 1,800 ms cooldown, so a slam is always ready when its turn
+// comes round.
 const PRESS_MS = 5000;
 
 // The jab loop both fighting phases run: close to jab reach, jab when a
-// `melee` turn is free, recover the punch, rest, and jab again. The jab
-// activity is marked, so its turn ends as it returns to `stalk`.
+// `melee` turn is free, play the punch through, rest, and jab again. The jab
+// activity is marked, so its turn ends as it returns to `stalk`. A target that
+// steps out of reach before `hit` ends the jab, and it misses.
 const jabs: BehaviorGraphEnvelope = {
   initial: "stalk",
   activities: {
     stalk: { animation: "walk" },
     jab: {
       animation: "attack_jab",
-      action: { attack: "jab" },
+      action: { attack: "jab", at: "hit" },
       attackTurn: "jab",
     },
   },
@@ -70,12 +80,7 @@ const jabs: BehaviorGraphEnvelope = {
       },
     ],
     jab: [
-      {
-        to: "stalk",
-        when: brain.attacksFiredInActivity
-          .ge(1)
-          .and(brain.timeInActivityMs.ge(JAB_STRIKE_MS)),
-      },
+      { to: "stalk", when: brain.animationDone },
       { to: "stalk", when: brain.targetDistance.gt(JAB_RANGE) },
     ],
   },
@@ -88,9 +93,9 @@ const jabs: BehaviorGraphEnvelope = {
  * - `engage` runs a selector movement layer and a nested offense graph.
  * - `hunt` and `press` each nest the jab loop. `hunt` starts a slam the
  *   moment `attackTurnFree("slam")` says its turn would be granted.
- * - the slam is a marked windup → commit → recover chain holding one turn;
- *   it draws two `melee` and the `heavy`, so jabs keep drawing the third
- *   `melee` while one brute slams.
+ * - the slam is a marked windup → commit → recover chain holding one turn,
+ *   one punch across all three; it draws two `melee` and the `heavy`, so jabs
+ *   keep drawing the third `melee` while one brute slams.
  * - after its slam the brute presses with jabs only, so with two brutes on
  *   one target the slams alternate as `heavy` refreshes.
  */
@@ -132,8 +137,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           crossfadeMs: 80,
           interrupt: "snap",
         },
-        // The punch's strike lands about 250 ms in, with the slam's commit.
-        // Stances replace this cycle with `smash` and `swipe`.
+        // The punch's fist connects at its `hit`, 767 ms in, during the
+        // slam's commit. Stances replace this cycle with `smash` and `swipe`.
         attack_slam: {
           clip: "punch",
           loop: false,
@@ -194,13 +199,25 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
               activities: {
                 hunt: { layers: { offense: jabs } },
                 press: { layers: { offense: jabs } },
-                windup: { animation: "attack_slam", attackTurn: "slam" },
-                commit: {
+                // The slam stands its ground through the whole punch rather
+                // than chasing, so the brute does not walk off its target
+                // before `hit`.
+                windup: {
                   animation: "attack_slam",
-                  action: { attack: "slam" },
+                  motion: "hold",
                   attackTurn: "slam",
                 },
-                recover: { animation: "attack_slam", attackTurn: "slam" },
+                commit: {
+                  animation: "attack_slam",
+                  motion: "hold",
+                  action: { attack: "slam", at: "hit" },
+                  attackTurn: "slam",
+                },
+                recover: {
+                  animation: "attack_slam",
+                  motion: "hold",
+                  attackTurn: "slam",
+                },
               },
               transitions: {
                 hunt: [
@@ -224,9 +241,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
                 commit: [
                   { to: "recover", when: brain.timeInActivityMs.ge(SLAM_COMMIT_MS) },
                 ],
-                recover: [
-                  { to: "press", when: brain.timeInActivityMs.ge(SLAM_RECOVER_MS) },
-                ],
+                recover: [{ to: "press", when: brain.animationDone }],
                 press: [{ to: "hunt", when: brain.timeInActivityMs.ge(PRESS_MS) }],
               },
             },

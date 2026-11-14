@@ -349,6 +349,11 @@ macro_rules! tick_runner {
 #[macro_export]
 macro_rules! test_tick_runner {
     ($runtime:expr) => {
+        $crate::test_tick_runner!($runtime, None)
+    };
+    // `$clips` is an `Option<&HitZoneStore>` of AI's own sim build, loaded
+    // from the same models as the caller's store, for clip-timed attacks.
+    ($runtime:expr, $clips:expr) => {
         |registry, tick_dt, inputs, host| {
             let rebuilt_nav = inputs.nav_graph.map(|graph| {
                 $crate::__postretro_sim::nav::NavGraph::from_section(&graph.to_section_for_test())
@@ -364,9 +369,9 @@ macro_rules! test_tick_runner {
                 factions: inputs.factions,
                 faction_sentiment: inputs.faction_sentiment,
                 // The clip store is a type of the other `postretro_sim` build,
-                // so it cannot cross this bridge: sim's unit tests run every
-                // clip unresolved. Clip-timed attacks are proven in `ai`.
-                clips: None,
+                // so the caller's cannot cross this bridge: without one built
+                // in AI's build, every clip runs unresolved.
+                clips: $clips,
             };
             let mut on_impact = |registry: &mut $crate::__postretro_entities::EntityRegistry| {
                 host.on_impact(registry)

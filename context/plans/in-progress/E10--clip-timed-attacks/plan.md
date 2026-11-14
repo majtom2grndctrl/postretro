@@ -15,6 +15,11 @@ read at: eb444995a
 - Design note "reuse the tracked name's `String`" → the brain clones twice per enemy per tick, so a `String` would allocate per tick; the tracked state is an `Arc<str>`, allocated only on restart. A fresh clock binds to the drawn state on its first tick without advancing, so `animationDone` does not read true on a fresh brain.
 - Switch counter equality → `MeshAnimation.switches` is a `SwitchCount` whose `PartialEq` is always true and is `serde(skip)`, so component equality, round-trips and the held-enemy check are unaffected; replication sends only the state name.
 
+- Brute slam with one chance at 767 ms (was a retried fire at 250 ms) missed on facing while the commit kept chasing a slot → the slam's windup, commit and recover hold position (`motion: "hold"`); content judgment within the brief's timer latitude, flagged for the owner's playtest.
+- Limitator burst: the authored 240 ms between three shots runs to 267 ms on whole ticks → `BURST_MS` 600 covers a full 16-tick `firing_rifle` pass plus the burst with four ticks spare.
+- `ghost_link_coop_return_reunites_and_starts_the_final_wave` failed with the new limitator timing: a closet limitator's shot turns a brute on it, 3 units short of the closet line → the closet assertion exempts a brute whose target is a monster, extending the crossfire allowance the test's doc already states.
+- Shipped-content tick tests ran the brute on a looping fixture mesh, so `animationDone` never turned true → they now load the descriptor's real mesh and clip library.
+
 ## Delegated answers
 - Event name rules beyond non-empty and unique — a name matches `[A-Za-z_][A-Za-z0-9_]*`, case-sensitive; the converter rejects others, the loader treats them as malformed (warn, no events), and descriptor load rejects an `at` outside the rule. It keeps names valid as script string literals and unambiguous in log lines, and an `at` that cannot match any event is a typo worth rejecting at load.
 
@@ -81,5 +86,5 @@ read at: eb444995a
 | 4 | Thin slice: clip clock, `at` on contact attacks, `AiTickInputs` clip access, jab fixture on `punch` | worker (Rust) | 3 | done with 6 |
 | 5 | Descriptor and surface: `ActionVerb` `at`, implied mark, load rejects, `animationDone` fact, TS/Luau types and prelude, typedef | worker (Rust) | — | done: `clip_timed_actions.rs`; foundation 197, scripting-core 1050, ai 367 pass |
 | 6 | Runtime completion: cancellation, loops and phase, travel variants, weapon `at`, missing-event warn, rate | worker (Rust) | 4, 5 | done: `ai/src/clip_clock.rs`, `entities/.../brain/clip_clock.rs`; 28 clip-timed tests (`ai_tests::clip_timed`), ai 395, entities 315, sim lib 1980, netcode lib 1023 pass |
-| 7 | Content: events in `mixamo_brute`/`mixamo_rifle`, brute and limitator scripts, `license.txt`, script comment | integrating executor | 2, 6 | |
-| 8 | Remaining AC tests (determinism, shipped content, surface example), docs | integrating executor | 7 | |
+| 7 | Content: events in `mixamo_brute`/`mixamo_rifle`, brute and limitator scripts, `license.txt`, script comment | worker (content) | 2, 6 | done: jab exit and slam recover on `animationDone`; slam windup 467 ms, commit 400 ms; `BURST_MS` 600 |
+| 8 | Remaining AC tests (determinism, shipped content, surface example), docs | worker (content) | 7 | done: `clip_timed_shipped_tests.rs` (4), sim determinism Fire 20; ai 399, sim lib 1981, postretro bin ghost_link 143 |

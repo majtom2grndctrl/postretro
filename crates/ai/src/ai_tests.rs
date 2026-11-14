@@ -9140,11 +9140,11 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const CLOSE_STANDOFF: f32 = 1.5;
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
-    const SLAM_WINDUP_MS: f32 = 250.0;
-    const SLAM_COMMIT_MS: f32 = 150.0;
-    const SLAM_RECOVER_MS: f32 = 1450.0;
-    const JAB_STRIKE_MS: f32 = 450.0;
-    const JAB_REST_MS: f32 = 750.0;
+    const PUNCH_DRAWN_BACK_MS: f32 = 467.0;
+    const PUNCH_HIT_MS: f32 = 767.0;
+    const SLAM_WINDUP_MS: f32 = PUNCH_DRAWN_BACK_MS;
+    const SLAM_COMMIT_MS: f32 = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100.0;
+    const JAB_REST_MS: f32 = 150.0;
     const PRESS_MS: f32 = 5000.0;
 
     let activity = |animation: Option<&str>,
@@ -9155,9 +9155,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             sound: None,
             animation: animation.map(str::to_string),
             motion: None,
+            // Both shipped attacks fire at their punch's `hit`.
             action: action.map(|attack| ActionVerb::Attack {
                 name: attack.to_string(),
-                at: None,
+                at: Some("hit".to_string()),
             }),
             on_enter: None,
             facing: None,
@@ -9168,6 +9169,11 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     };
     let leaf = |animation: &str, action: Option<&str>, attack_turn: Option<&str>| {
         activity(Some(animation), action, attack_turn, BTreeMap::new())
+    };
+    // The slam's phases stand their ground.
+    let planted = |action: Option<&str>| BehaviorActivityDescriptor {
+        motion: Some(MotionVerb::Hold),
+        ..leaf("attack_slam", action, Some("slam"))
     };
     let and = |a: IrNode, b: IrNode| IrNode::And {
         a: Box::new(a),
@@ -9215,10 +9221,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 vec![
                     edge(
                         "stalk",
-                        and(
-                            at_least(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, 1.0),
-                            in_activity_ms(JAB_STRIKE_MS),
-                        ),
+                        brain_input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
                     ),
                     edge("stalk", target_beyond(JAB_RANGE)),
                 ],
@@ -9238,18 +9241,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         activities: BTreeMap::from([
             ("hunt".to_string(), jabbing()),
             ("press".to_string(), jabbing()),
-            (
-                "windup".to_string(),
-                leaf("attack_slam", None, Some("slam")),
-            ),
-            (
-                "commit".to_string(),
-                leaf("attack_slam", Some("slam"), Some("slam")),
-            ),
-            (
-                "recover".to_string(),
-                leaf("attack_slam", None, Some("slam")),
-            ),
+            ("windup".to_string(), planted(None)),
+            ("commit".to_string(), planted(Some("slam"))),
+            ("recover".to_string(), planted(None)),
         ]),
         transitions: BTreeMap::from([
             (
@@ -9281,7 +9275,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             ),
             (
                 "recover".to_string(),
-                vec![edge("press", in_activity_ms(SLAM_RECOVER_MS))],
+                vec![edge(
+                    "press",
+                    brain_input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
+                )],
             ),
             (
                 "press".to_string(),
@@ -10135,6 +10132,14 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     give_reference_armor(&mut reg, enemy);
+    // The shipped mesh plays its attacks once. With no clip store their clips
+    // do not resolve, so each has played through (`brain.animationDone`).
+    let mut mesh = reg.get_component::<MeshComponent>(enemy).unwrap().clone();
+    let states = &mut mesh.animation.as_mut().unwrap().states;
+    for attack in ["attack_jab", "attack_slam"] {
+        states.get_mut(attack).unwrap().looping = false;
+    }
+    reg.set_component(enemy, mesh).unwrap();
 
     (0..TICKS)
         .map(|tick| {

@@ -43,17 +43,21 @@ const LEASH_RANGE = 70;
 const RETURN_ARRIVAL_EPSILON = 1;
 
 // Firing rhythm: strafe at least WAIT_MS, then burst when a `ranged` turn is
-// free. The burst activity holds the turn; BURST_MS covers the weapon's three
-// shots (240 ms), so none spills into `move`. Then reposition to a slot 60-120
-// degrees around the target from where it fired, for MOVE_MS. BURST_MS + MOVE_MS
-// outlasts the weapon's 1 s recovery, so the next burst is ready to fire.
+// free. The burst activity holds the turn and fires at `firing_rifle`'s `kick`,
+// so its first shot waits for the loop's next kick from where the clip is
+// drawn: up to one 267 ms pass. BURST_MS covers that pass plus the weapon's
+// three shots (240 ms, 267 ms on whole 60 Hz ticks), with a few ticks to
+// spare, so none spills into `move`; a burst whose shot missed its kick leaves
+// on the same timer. Then reposition to a slot 60-120 degrees around the
+// target from where it fired, for MOVE_MS. BURST_MS + MOVE_MS outlasts the
+// weapon's 1 s recovery, so the next burst is ready to fire.
 // No reload beat — the available reload clip
 // is a crouching animation that swings the right hand through a wide arc, which
 // tips the rigidly-mounted rifle upside-down and into the chest. A reload that
 // reads correctly needs a clip that keeps the gun hand steady, or a weapon
 // animated as a skinned part rather than a rigid socket attachment.
 const WAIT_MS = 400;
-const BURST_MS = 450;
+const BURST_MS = 600;
 const MOVE_MS = 1500;
 // A burst whose turn went to a squadmate asking on the same tick gives up.
 const TURN_LOST_MS = 100;
@@ -120,7 +124,7 @@ export const limitatorEntity = defineEntity({
           travelSpeed: 4,
         },
         // Attack pose (Basic Shooter Pack): a fast recoil kick, looped through
-        // the burst.
+        // the burst. Its `kick` event marks the recoil, at the clip's start.
         shoot: {
           clip: "firing_rifle",
           loop: true,
@@ -202,11 +206,12 @@ export const limitatorEntity = defineEntity({
                 close: { animation: "run" },
                 // Strafe around the target, facing it, while a squadmate shoots.
                 wait: { animation: "walk", motion: "strafe" },
-                // Holds the `ranged` turn for the whole burst.
+                // Holds the `ranged` turn for the whole burst, which starts on
+                // the clip's recoil kick.
                 burst: {
                   animation: "shoot",
                   motion: "hold",
-                  action: { attack: "shoot" },
+                  action: { attack: "shoot", at: "kick" },
                   attackTurn: "shoot",
                 },
                 // Fire, then relocate: a slot to the side of where it fired.
@@ -240,12 +245,7 @@ export const limitatorEntity = defineEntity({
                   },
                 ],
                 burst: [
-                  {
-                    to: "move",
-                    when: brain.attacksFiredInActivity
-                      .ge(1)
-                      .and(brain.timeInActivityMs.ge(BURST_MS)),
-                  },
+                  { to: "move", when: brain.timeInActivityMs.ge(BURST_MS) },
                   {
                     to: "wait",
                     when: brain.hasAttackTurn

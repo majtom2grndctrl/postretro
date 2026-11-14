@@ -21,13 +21,15 @@ local SLAM_RANGE = 3.5
 local CLOSE_STANDOFF = 1.5
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
-local SLAM_WINDUP_MS = 250
-local SLAM_COMMIT_MS = 150
--- The 1,850 ms phase cycle is longer than slam's 1,800 ms cooldown.
-local SLAM_RECOVER_MS = 1450
--- Strike plus rest covers the jab's 1,200 ms cooldown.
-local JAB_STRIKE_MS = 450
-local JAB_REST_MS = 750
+-- `punch` (1,100 ms) draws its fist back by 467 ms and connects at its `hit`,
+-- 767 ms in.
+local PUNCH_DRAWN_BACK_MS = 467
+local PUNCH_HIT_MS = 767
+-- The slam's phases share one punch; the commit holds 100 ms past `hit`.
+local SLAM_WINDUP_MS = PUNCH_DRAWN_BACK_MS
+local SLAM_COMMIT_MS = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100
+-- Punch plus rest, fire to fire, outlasts the jab's 1,200 ms cooldown.
+local JAB_REST_MS = 150
 -- Longer than `heavy`'s 4 s refresh, so a second brute takes the next slam.
 local PRESS_MS = 5000
 
@@ -52,7 +54,7 @@ local jabs = {
     stalk = { animation = "walk" },
     jab = {
       animation = "attack_jab",
-      action = { attack = "jab" },
+      action = { attack = "jab", at = "hit" },
       attackTurn = "jab",
     },
   },
@@ -64,13 +66,7 @@ local jabs = {
       },
     },
     jab = {
-      {
-        to = "stalk",
-        when = brain.attacksFiredInActivity:ge(1)["and"](
-          brain.attacksFiredInActivity:ge(1),
-          brain.timeInActivityMs:ge(JAB_STRIKE_MS)
-        ),
-      },
+      { to = "stalk", when = brain.animationDone },
       { to = "stalk", when = brain.targetDistance:gt(JAB_RANGE) },
     },
   },
@@ -114,8 +110,8 @@ M.referenceEnemyEntity = defineEntity({
           crossfadeMs = 80,
           interrupt = "snap",
         },
-        -- The punch's strike lands about 250 ms in, with the slam's commit.
-        -- Stances replace this cycle with `smash` and `swipe`.
+        -- The punch's fist connects at its `hit`, 767 ms in, during the
+        -- slam's commit. Stances replace this cycle with `smash` and `swipe`.
         attack_slam = {
           clip = "punch",
           loop = false,
@@ -174,13 +170,25 @@ M.referenceEnemyEntity = defineEntity({
               activities = {
                 hunt = { layers = { offense = jabs } },
                 press = { layers = { offense = jabs } },
-                windup = { animation = "attack_slam", attackTurn = "slam" },
-                commit = {
+                -- The slam stands its ground through the whole punch rather
+                -- than chasing, so the brute does not walk off its target
+                -- before `hit`.
+                windup = {
                   animation = "attack_slam",
-                  action = { attack = "slam" },
+                  motion = "hold",
                   attackTurn = "slam",
                 },
-                recover = { animation = "attack_slam", attackTurn = "slam" },
+                commit = {
+                  animation = "attack_slam",
+                  motion = "hold",
+                  action = { attack = "slam", at = "hit" },
+                  attackTurn = "slam",
+                },
+                recover = {
+                  animation = "attack_slam",
+                  motion = "hold",
+                  attackTurn = "slam",
+                },
               },
               transitions = {
                 hunt = {
@@ -200,9 +208,7 @@ M.referenceEnemyEntity = defineEntity({
                 commit = {
                   { to = "recover", when = brain.timeInActivityMs:ge(SLAM_COMMIT_MS) },
                 },
-                recover = {
-                  { to = "press", when = brain.timeInActivityMs:ge(SLAM_RECOVER_MS) },
-                },
+                recover = { { to = "press", when = brain.animationDone } },
                 press = { { to = "hunt", when = brain.timeInActivityMs:ge(PRESS_MS) } },
               },
             },

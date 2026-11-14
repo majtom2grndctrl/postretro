@@ -6,6 +6,9 @@
 #[path = "clip_timed_test_fixtures.rs"]
 mod fixtures;
 
+#[path = "clip_timed_shipped_tests.rs"]
+mod shipped;
+
 use super::*;
 use crate::alloc_probe::AllocSnapshot;
 use crate::attack_turns::{AttackBudgets, BudgetTable, TokenBudget, attack_index};

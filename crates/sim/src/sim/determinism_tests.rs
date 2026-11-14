@@ -4489,6 +4489,220 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     );
 }
 
+/// A standing jab on the reference brute's `punch`: `jab` fires `attack` at
+/// the clip's `hit` and leaves once the punch has played through; `rest`
+/// re-enters it after 200 ms.
+fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
+    let mut graph = enemy_graph(0.0, "locomotion");
+    let activity = |animation: &str, action| BehaviorActivityDescriptor {
+        sound: None,
+        animation: Some(animation.to_string()),
+        motion: Some(MotionVerb::Hold),
+        action,
+        on_enter: None,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
+        layers: BTreeMap::new(),
+    };
+    let mut jab = activity(
+        "attack",
+        Some(ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: Some("hit".to_string()),
+        }),
+    );
+    // The mark descriptor load implies for an `at` action.
+    jab.attack_turn = Some("attack".to_string());
+    let input = |name: &str| IrNode::Input {
+        name: name.into(),
+        owner: None,
+    };
+    graph.envelope = BehaviorGraphEnvelope {
+        initial: "jab".to_string(),
+        activities: BTreeMap::from([
+            ("jab".to_string(), jab),
+            ("rest".to_string(), activity("idle", None)),
+        ]),
+        transitions: BTreeMap::from([
+            (
+                "jab".to_string(),
+                vec![postretro_foundation::GuardedRow {
+                    to: "rest".to_string(),
+                    when: input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
+                }],
+            ),
+            (
+                "rest".to_string(),
+                vec![postretro_foundation::GuardedRow {
+                    to: "jab".to_string(),
+                    when: IrNode::Ge {
+                        a: Box::new(input(postretro_foundation::BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(200.0),
+                        }),
+                    },
+                }],
+            ),
+        ]),
+    };
+    graph
+}
+
+/// The ticks, of `ticks`, on which a brute jabbing at `punch`'s `hit` hurts
+/// the player, with `ticks_per_frame` ticks sharing each frame's animation
+/// clock and that clock running at `time_scale`. The mutant model's clips are
+/// loaded into the sim's store and into one of AI's own sim build, so the AI
+/// stage times the moment on the real clip.
+fn clip_timed_fire_ticks(ticks_per_frame: usize, time_scale: f64, ticks: usize) -> Vec<usize> {
+    use crate::scripting_systems::hit_zones::{ModelHitZones, ModelLoadWarningOwner};
+    use postretro_ai::__postretro_sim::scripting_systems::hit_zones as ai_hit_zones;
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/models/mutant/model.gltf");
+    let model =
+        postretro_model::gltf_loader::load_model(&path).expect("the reference brute model loads");
+    let key = path.to_string_lossy().into_owned();
+    let mut sim_clips = HitZoneStore::new();
+    sim_clips.insert_built(
+        &key,
+        &path,
+        Ok(ModelHitZones::build(&model)),
+        ModelLoadWarningOwner::GameSide,
+    );
+    let mut ai_clips = ai_hit_zones::HitZoneStore::new();
+    ai_clips.insert_built(
+        &key,
+        &path,
+        Ok(ai_hit_zones::ModelHitZones::build(&model)),
+        ai_hit_zones::ModelLoadWarningOwner::GameSide,
+    );
+    let state = |clip: &str, looping: bool| AnimationState {
+        clip: clip.to_string(),
+        looping,
+        crossfade_ms: 0.0,
+        interrupt: InterruptPolicy::Smooth,
+        travel_speed: None,
+        clip_index: model.clips.iter().position(|loaded| loaded.name == clip),
+    };
+    let states = HashMap::from([
+        ("idle".to_string(), state("idle", true)),
+        ("attack".to_string(), state("punch", false)),
+    ]);
+
+    let world = floor_world();
+    let nav_graph = open_floor_nav_graph();
+    let mut progress = ProgressTracker::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let player = {
+        let mut registry = registry.borrow_mut();
+        let player = spawn_player(&mut registry, Vec3::new(5.0, 1.21, 6.5));
+        let enemy = registry.spawn(Transform {
+            position: Vec3::new(5.0, 1.21, 5.0),
+            ..Transform::default()
+        });
+        let mut brain = brain_in_state(&clip_timed_jab_graph(), "jab");
+        brain.home_anchor = Vec3::new(5.0, 1.21, 5.0);
+        registry.set_component(enemy, brain).unwrap();
+        registry.entity_state_mut(enemy).unwrap().set(
+            postretro_foundation::FACTION_STATE_FIELD,
+            postretro_entities::DEFAULT_ENEMY_FACTION_INDEX,
+        );
+        registry
+            .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
+            .unwrap();
+        registry
+            .set_component(
+                enemy,
+                MeshComponent::animated(key.clone(), MeshAnimation::new(states, "idle".into())),
+            )
+            .unwrap();
+        player
+    };
+
+    // The player stands still and never fires: no pose-dependent hit.
+    let idle = RecordedCommand {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: false,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+        fire_pressed: false,
+        fire_active: false,
+    }
+    .to_sim_command();
+    let mut fired = Vec::new();
+    for tick in 0..ticks {
+        let frame = tick / ticks_per_frame;
+        let anim_time = (frame * ticks_per_frame) as f64 * f64::from(DT) * time_scale;
+        let hp = registry
+            .borrow()
+            .get_component::<HealthComponent>(player)
+            .unwrap()
+            .current;
+        let _ = simulate_tick(
+            registry.clone(),
+            &world,
+            &sim_clips,
+            Some(&nav_graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            None,
+            anim_time,
+            &mut progress,
+            postretro_ai::test_tick_runner!(&mut ai_runtime, Some(&ai_clips)),
+            &[],
+            &mut mover_states,
+            &[],
+            &idle,
+            |_| super::PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::Z,
+            },
+            DT,
+            None,
+            |_| {},
+        );
+        let after = registry
+            .borrow()
+            .get_component::<HealthComponent>(player)
+            .unwrap()
+            .current;
+        if after < hp {
+            fired.push(tick);
+        }
+    }
+    fired
+}
+
+// Fire 20: a clip-timed attack fires on the game tick, never the animation
+// clock, so the same seed and inputs fire on the same ticks however frames
+// split the ticks and however fast the animation clock runs.
+#[test]
+fn clip_timed_attacks_fire_on_the_same_ticks_at_any_frame_split_and_animation_time_scale() {
+    const TICKS: usize = 240;
+    let baseline = clip_timed_fire_ticks(1, 1.0, TICKS);
+    // `punch` reaches its `hit` (0.767 s) 47 ticks after the jab's entry on
+    // tick 0; the jab leaves at its end (tick 67) and rests 200 ms.
+    assert_eq!(
+        baseline.first().copied(),
+        Some(47),
+        "the AI stage times the jab on the clip's `hit`: {baseline:?}"
+    );
+    assert!(baseline.len() >= 2, "the jab repeats: {baseline:?}");
+    for ticks_per_frame in [1, 2, 4] {
+        for time_scale in [1.0, 0.25] {
+            assert_eq!(
+                clip_timed_fire_ticks(ticks_per_frame, time_scale, TICKS),
+                baseline,
+                "{ticks_per_frame} ticks per frame at animation time scale {time_scale}"
+            );
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 32,

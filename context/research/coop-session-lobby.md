@@ -114,11 +114,9 @@ reaction addresses, and the reference lobby in the dev mod.
 
 ## 5. Open questions
 
-- **Roster display has no expressible shape.** Slots are scalars and the IR cannot iterate, so
-  a variable-length player list cannot be read by any authoring surface that exists. Either
-  the engine publishes indexed projections (capped, and ugly) or the UI gains a repeated-row
-  construct fed by an engine-owned collection. This is likely a `ui.md` question, not a
-  netcode one, and it is unsolved.
+- **Roster display.** Planned in `plans/drafts/E18--coop-activation-policy/`: a
+  `session.players` list (capped rows of present, name, status, isLocal) rendered through a
+  `forEach` UI helper, and `session.playerCounts` as the session scope's player-count fact.
 - **Where a session starts.** Whether a host boots into a lobby by default, or the lobby is a
   frontend menu the mod opts into. Affects whether session phase is engine-mandatory.
 - **Dedicated server with no local player.** A headless server has no seat 0. Whether the

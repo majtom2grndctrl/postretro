@@ -586,3 +586,8 @@ The verdict was "request changes". Wire bytes agree across every layer, and the 
   - the lattice hand-over residue;
   - the IP constraints (N absolute states blended by position; levers 2, 6, 7).
 - File it on the roadmap under "door and mover light flow" at landing.
+- Also after landing (owner, 2026-11-13), a ready-to-paste `/draft-session` prompt for the **World-surface channel** leg of "door and mover light flow" (`roadmap.md`), in the same form. It should cover:
+  - the roadmap leg: the same blend for lightmap texels, shadowmask and id-25 animated weights, baked from the lightmap bake's own sample set per terminus, paged with lightmap cell blocks, reusing the direct-SH channel's mover-state input;
+  - this brief's non-goal: the channel picks its own state spacing, since lattice spacing suits probes, not dense texels;
+  - what transfers from here: geometry knots at enclosure crossings, the dark state and edge copy, fidelity and cache reuse, the SH memory gate's per-pose pricing, and the IP constraints (levers 2, 3, 5, 6, 7; no per-probe flag, zeroed weight or excluded probe);
+  - the per-terminus columns of the mover light gate report, which size it.

@@ -38,7 +38,7 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 
 | Pin | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| P1 | Players already on the plates at install | install declares slots at 0 → crossings initialize at 0 → first authoritative tick writes the count | The crossing fires on the first tick; the set needs no exit and re-entry |
+| P1 | Players already on the plates at install | install declares the family at 0 and writes `activePlayers` → crossings initialize → first authoritative tick writes the counts | The crossing fires in the first authoritative frame; the set needs no exit and re-entry |
 | P2 | Level change across tags | level A declares `occupancy.a.*` → unload → level B declares `occupancy.b.*` | Only B's tags have slots on every machine; a crossing over `a` in B warns and skips |
 | P3 | Tag set after client install | client reveals an uncatalogued level and promotes in its admission batch → participation marker → snapshots → tag set arrives | Batches drop until the family is declared; then the schema matches, the host's baseline applies, and crossings over occupancy bind |
 | P4 | Data script calls `occupancy.tag(t)` at module scope | scripts-build evaluates the script against the build-time bridge → runtime VM evaluates it at install | Both trees serve `occupancy.tag` from installers a drift test compares, as `build_time_by_player_installers_match_runtime_bridge` does for `byPlayer`; the leaf guard keeps path = slot for static entries only |
@@ -49,6 +49,9 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 | P9 | A second set names the client's current install with a different list | host reinstalls an uncatalogued level (no life) with edited tags → client keeps its install → set arrives → re-promotion → baseline | The family becomes exactly the new list: absent tags removed, new tags declared, schema and crossings rebuilt; batches apply. A merge would mismatch the fingerprint for good |
 | P10 | Client joins while a set is held | client install declares the family at 0 → crossings arm at 0 → baseline applies the held counts → crossing pass | The joiner's host-mirrored crossing fires once in the baseline frame; the host fires nothing again |
 | P11 | One volume lists the same tag twice | install declares the tag once → a player stands in that volume | `occupiedCount` counts the volume once and `occupants` the player once |
+| P12 | Nobody counted | a lone player dies outside the room, or every co-op player is downed outside it | `activePlayers` 0 and `occupants` 0; the guarded all-players predicate stays false |
+| P13 | Level change with a party | host installs B, spawns its player inside the room → clients demoted, loading B → each client spawns inside and re-promotes | `activePlayers` counts the loading seats from install, so the gate stays closed until the last client's pawn counts inside |
+| P14 | Client leaves mid-level | role change → level stops → frontend | `session.activePlayers` reads 0, not the host's last replicated count |
 
 ## 7. Engine-state catalog
 

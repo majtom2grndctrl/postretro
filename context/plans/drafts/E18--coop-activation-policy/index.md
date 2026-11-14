@@ -95,6 +95,7 @@ Luau mirrors it: `game.occupancy:tag("airlock").occupants`, `game.session.player
 - [ ] An undeclared client pawn at zero health reads `down` and is no occupant; a pawn with no health component counts; a declared pawn counts by its state's `occupancy` capability (pin P17).
 - [ ] Single player reads `inPlay` 1, or `down` with `inPlay` 0 when dead; a client that leaves reads every count 0 at the frontend (pin P14).
 - [ ] Every tick, each tag's `occupants` is at most `inPlay`.
+- [ ] A client demoted mid-level reads `loading` from its pawn's despawn until its new pawn spawns; the host's seat reads `loading` between install and its pawn spawning (pin P26).
 
 **Occupancy**
 - [ ] Two players on one plate: `occupiedCount` 1, `occupants` 2. One player on each of two plates sharing a tag: 2 and 2.
@@ -115,10 +116,11 @@ Luau mirrors it: `game.occupancy:tag("airlock").occupants`, `game.session.player
 - [ ] Two identical headless runs with scripted inputs, on a harness that drives the trigger stage, produce identical timelines for every count (pin P6).
 
 **Player list**
-- [ ] Each machine's `session.players` rows match the session's seats in seat order: `present`, `status` and `isLocal` correct, absent rows `present` false; a seat leaving shifts later rows up.
+- [ ] Each machine's `session.players` rows match the session's seats in seat order: `present`, `status` and `isLocal` correct, absent rows `present` false; a seat leaving shifts later rows up, and `isLocal` follows the local seat to its new row (pin P25).
 - [ ] An empty name reads `Player N` by row; a non-empty name reads as sent.
-- [ ] A life state flipping every tick publishes status-only roster updates no faster than the rate limit, and the final status lands (pin P19).
-- [ ] `forEach` over `session.players` builds one row per capacity index, shows only present rows, gives each row's authored ids a unique suffix, and never rebuilds the tree as players join and leave.
+- [ ] A life state flipping every tick publishes status-only roster updates no faster than the rate limit; every client's row shows the final status within one interval of the last flip, and another seat's status change during the flapping reaches clients within one interval (pin P19).
+- [ ] While a level is installed, the list's rows by status equal the counts on the host every tick, and on each client within one rate-limit interval of the last status change; this holds after an undeclared client pawn dies at zero health and respawns, and after a joiner's pawn binds (pin P24).
+- [ ] `forEach` over `session.players` builds one row per capacity index, shows only present rows, gives each row's authored ids a unique suffix, resolves a `labelledBy` or `focusNeighbors` reference to an id inside the same row to that row's copy, and never rebuilds the tree as players join and leave.
 
 **Catalog and lifetime**
 - [ ] A script `setState` on any count, row field or occupancy slot warns and leaves it unchanged.
@@ -126,8 +128,12 @@ Luau mirrors it: `game.occupancy:tag("airlock").occupants`, `game.session.player
 - [ ] A referenced tag containing `.` or `:` warns once and gets no family; the other referenced tags get theirs.
 - [ ] A `setupLevel` reference to a tag no volume in the level carries reads 0 and warns once at install; the King-of-the-Hill accumulator, a mod-scope reference, reads 0 on a level without a hill and warns nothing.
 - [ ] A tag built at run time from `getMapEntities` in `setupLevel` gets its family.
+- [ ] A level UI tree binding a tag only its `setupLevel` references installs without an unknown-slot warning, and its bind reads the family.
 - [ ] After a level change, the families are the mod-scope ones plus the new level's references; the old level's references absent from both have none (pin P2).
 - [ ] A staged reload that changes the mod-scope references redeclares them on host and clients, and state batches keep applying (pin P20).
+- [ ] A staged reload mid-level keeps the installed level's families and every kept family's value; a mod reference the reload adds is declared before crossings rebind and its crossing binds; a crossing held true across the commit does not fire again (pin P22).
+- [ ] A tag that both the mod and the unloaded level reference keeps its family after unload, and the King-of-the-Hill accumulator binds on the next level (pin P23).
+- [ ] After a level change and after a same-map restart, every family, mod-scope included, reads 0 at install on host and client, and every count reads 0 from unload until the host's install writes it; a threshold crossing over a family with the lone host on its volume crosses in the first authoritative frame, and a below crossing over an empty mod-scope family does not fire (pin P21).
 - [ ] Typedefs for the counts, the player list and the `occupancy` family are generated from the catalog; the drift guards cover them; a data script calling `occupancy.tag` at module scope evaluates in the build-time bridge and at install alike (pin P4).
 
 **Co-op (two-endpoint)**

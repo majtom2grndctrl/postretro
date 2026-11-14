@@ -35,8 +35,9 @@ a key. A state that plays it without looping holds its last pose, which is how
 a held windup is made from an attack. A START-END or START- range copies a span
 instead, its start also rounded down to a key and its keys shifted to begin at
 zero: `--trim smash_strike=smash:400-` is the rest of the attack after a
-`smash:400` windup, starting on the windup's last pose. Trims copy the clip
-after --in-place.
+`smash:400` windup, starting on the windup's last pose. A range's root (Hips)
+starts at the source's first ground-plane position, where the engine holds
+that windup. Trims copy the clip after --in-place, in the order given.
 
 After export the script tags the Mixamo skeleton with engine extras
 (poseMask, aimBendWeight, socket, hitZone) and sets the skin skeleton root.
@@ -233,8 +234,8 @@ def parse_args():
              "rounded down to a key. Played without looping, it holds its last "
              "pose (e.g. --trim smash_windup=smash:400). A START_MS- range "
              "copies from START_MS, rounded down to a key and shifted to zero, "
-             "to END_MS or the clip's end (e.g. --trim smash_strike=smash:400-). "
-             "Repeatable."
+             "to END_MS or the clip's end, its Hips starting at SOURCE's first "
+             "ground position (e.g. --trim smash_strike=smash:400-). Repeatable."
     )
     args = parser.parse_args(argv)
     try:
@@ -1490,10 +1491,12 @@ def sample_track(times, values, at, interpolation, rotation, context):
         return values[prev]
     nxt = prev + 1
     weight = (at - times[prev]) / (times[nxt] - times[prev])
-    blend = [a + (b - a) * weight for a, b in zip(values[prev], values[nxt])]
+    later = values[nxt]
+    if rotation and sum(a * b for a, b in zip(values[prev], later)) < 0:
+        # q and -q are the same rotation; blend toward the nearer sign.
+        later = [-c for c in later]
+    blend = [a + (b - a) * weight for a, b in zip(values[prev], later)]
     if rotation:
-        if sum(a * b for a, b in zip(values[prev], values[nxt])) < 0:
-            blend = [a - (b + a) * weight for a, b in zip(values[prev], values[nxt])]
         length = sum(c * c for c in blend) ** 0.5
         blend = [c / length for c in blend]
     return tuple(blend)
@@ -1504,11 +1507,14 @@ def trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms=0.0):
     down to a key, shifted to begin at zero. An `end_ms` of None runs to the
     end of `source`.
 
-    The start rounds down to the latest key of any track, so the copy begins
-    on the last pose of a windup cut at the same time. A track with no key
-    there (Blender's exporter thins still tracks to their first and last keys)
-    gets one sampled from its neighbours; a track keyed only before the start
-    holds its last value.
+    The start rounds down to the latest key of any track, the key a windup cut
+    at the same time ends on. A track with no key there gets one sampled from
+    its neighbours; a track keyed only before the start holds its last value.
+    The copy begins on the windup's last pose when every track still moving at
+    the cut has a key there, as Blender's resampled exports do: its exporter
+    thins only still tracks, to their first and last keys. A track moving
+    between keys at the cut would start the copy off the windup, which holds
+    that track's last key.
 
     A copy that starts after zero moves its root (Hips) on the ground plane to
     start where `source` starts. The engine removes each clip's net ground
@@ -1541,12 +1547,15 @@ def trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms=0.0):
                      if t <= start_ms / 1000.0 + 1e-4), default=None)
         if start is None:
             raise ValueError(f"--trim {new}: {start_ms:g} ms is before the first key")
+        if not any(start + 1e-4 < t <= end for times in tracks.values() for t in times):
+            raise ValueError(f"--trim {new}: the range has no key after its start "
+                             f"({start * 1000:.0f} ms), so it would hold one pose")
     rotations = {c["sampler"] for c in animation["channels"]
                  if c["target"].get("path") == "rotation"}
     root = next((i for i, node in enumerate(gltf.get("nodes", []))
                  if node.get("name") == MIXAMO_PREFIX + "Hips"), None)
     root_moves = {c["sampler"] for c in animation["channels"]
-                  if c["target"].get("node") == root
+                  if root is not None and c["target"].get("node") == root
                   and c["target"].get("path") == "translation"}
     inputs = {}
     samplers = []
@@ -1565,14 +1574,11 @@ def trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms=0.0):
                                    index in rotations, f"--trim {new}")]
             values += [all_values[i] for i in after]
             if index in root_moves:
-                # Start the copy's root where the source starts on the ground
-                # plane: the engine holds each clip's first root key over the
-                # entity, so this is where the windup held, not a pop.
                 dx = all_values[0][0] - values[0][0]
                 dz = all_values[0][2] - values[0][2]
                 values = [(x + dx, y, z + dz) for x, y, z in values]
         if sampler["input"] not in inputs:
-            shifted = [(max(t - start, 0.0),) for t in span]
+            shifted = [(t - start,) for t in span]
             inputs[sampler["input"]] = append_floats(
                 gltf, bin_bytes, shifted, "SCALAR", bounds=True)
         output = gltf["accessors"][sampler["output"]]
@@ -1624,9 +1630,9 @@ def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False,
             pin_root_in_place(gltf, bin_bytes, clip)
             print(f"\nPinned '{clip}' in place")
         for new, source, start_ms, end_ms in trims:
-            trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms)
-            span = (f"at {end_ms:g} ms" if not start_ms else
-                    f"from {start_ms:g} ms to {'its end' if end_ms is None else f'{end_ms:g} ms'}")
+            trim_clip(gltf, bin_bytes, new, source, end_ms=end_ms, start_ms=start_ms)
+            end = "its end" if end_ms is None else f"{end_ms:g} ms"
+            span = f"at {end}" if not start_ms else f"from {start_ms:g} ms to {end}"
             print(f"\nTrimmed '{source}' {span} into '{new}'")
         bin_path.write_bytes(bytes(bin_bytes))
 

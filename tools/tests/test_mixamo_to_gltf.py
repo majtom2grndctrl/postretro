@@ -858,15 +858,16 @@ class ClipEditTests(unittest.TestCase):
 
     def test_trim_range_refusals(self):
         for new, end_ms, start_ms in (("past", None, 100), ("late", None, 150),
-                                      ("backwards", 30, 60), ("empty", 50, 50)):
+                                      ("backwards", 30, 60), ("empty", 50, 50),
+                                      ("one_pose", 50, 40)):
             with self.subTest(new=new):
                 gltf, data = clip_document()
                 with self.assertRaises(ValueError):
                     CONVERTER.trim_clip(gltf, data, new, "smash", end_ms, start_ms)
 
     def test_trim_range_samples_a_track_with_no_key_at_its_start(self):
-        # Blender thins still tracks to their first and last keys; the copy's
-        # first pose samples them between their neighbours.
+        # The root keys off the other track's 30 fps grid, so it has no key at
+        # the start; the copy's first pose samples it between its neighbours.
         import struct
         gltf, data = clip_document()
         offset = gltf["bufferViews"][0]["byteOffset"]
@@ -891,20 +892,33 @@ class ClipEditTests(unittest.TestCase):
 
     def test_sample_track_blends_steps_and_renormalizes_rotations(self):
         times = [0.0, 1.0]
-        half_turn = (0.0, 0.7071068, 0.0, 0.7071068)
-        rotations = [(0.0, 0.0, 0.0, 1.0), half_turn]
+        quarter_turn = (0.0, 0.7071068, 0.0, 0.7071068)
+        rotations = [(0.0, 0.0, 0.0, 1.0), quarter_turn]
 
         blended = CONVERTER.sample_track(times, rotations, 0.5, "LINEAR", True, "test")
-        self.assertAlmostEqual(sum(c * c for c in blended), 1.0, places=6)
+        self.assertEqual(rounded([blended]), [(0.0, 0.3827, 0.0, 0.9239)], "an eighth turn")
         self.assertEqual(CONVERTER.sample_track(times, rotations, 0.5, "STEP", True, "test"),
                          rotations[0])
         self.assertEqual(CONVERTER.sample_track(times, rotations, 1.0, "LINEAR", True, "test"),
-                         half_turn)
-        flipped = [rotations[0], tuple(-c for c in half_turn)]
+                         quarter_turn)
+        flipped = [rotations[0], tuple(-c for c in quarter_turn)]
         same = CONVERTER.sample_track(times, flipped, 0.5, "LINEAR", True, "test")
         self.assertEqual(rounded([same]), rounded([blended]), "takes the short way round")
         with self.assertRaises(ValueError):
             CONVERTER.sample_track([0.5, 1.0], rotations, 0.25, "LINEAR", True, "test")
+
+    def test_trim_range_shifts_only_the_hips_translation(self):
+        # Without a Hips joint nothing is the root, not even a channel that names
+        # no node (an animation pointer): the copy keeps the source's values.
+        gltf, data = clip_document()
+        gltf["nodes"][1]["name"] = "Pelvis"
+        del gltf["animations"][0]["channels"][0]["target"]["node"]
+
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 1000 / 30)
+
+        moves = gltf["animations"][1]["samplers"][0]["output"]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, moves)),
+                         [(0.1, 0.9, -0.2), (0.2, 1.1, -0.4), (0.3, 0.8, -0.6)])
 
     def test_main_pins_before_trimming(self):
         gltf, data = clip_document()
@@ -926,6 +940,28 @@ class ClipEditTests(unittest.TestCase):
         windup = result["animations"][1]["samplers"][0]["output"]
         self.assertEqual(rounded(CONVERTER.read_floats(result, out, windup)),
                          [(0.0, 0.8, 0.0), (0.0, 0.9, 0.0)])
+
+    def test_main_writes_open_ranges(self):
+        gltf, data = clip_document()
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, bytes(data))
+            argv = ["blender", "--", "--input-dir", "clips", "--base", "rig.fbx",
+                    "--output", str(path), "--library",
+                    "--trim", "smash_copy=smash:0-", "--trim", "smash_strike=smash:40-"]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(CONVERTER, "clean_scene"), \
+                    mock.patch.object(CONVERTER, "merge_animations"), \
+                    mock.patch.object(CONVERTER, "validate_model"), \
+                    mock.patch.object(CONVERTER, "export_gltf"):
+                CONVERTER.main()
+            result = json.loads(path.read_text(encoding="utf-8"))
+            out = path.with_suffix(".bin").read_bytes()
+
+        self.assertEqual([a["name"] for a in result["animations"]],
+                         ["smash", "smash_copy", "smash_strike"])
+        copy_times = result["animations"][1]["samplers"][0]["input"]
+        self.assertEqual(len(CONVERTER.read_floats(result, out, copy_times)), 4,
+                         "a range from 0 with no end copies the whole clip")
 
 
 def fcurve(bone, channel="rotation_quaternion"):

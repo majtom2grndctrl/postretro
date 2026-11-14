@@ -77,6 +77,17 @@ impl MovementOwners {
         self.owners.remove(&pawn);
     }
 
+    /// Every owned remote pawn as `(client_id, pawn)`, sorted by client id. The
+    /// host's per-tick player set reads this, not the tick's resolved commands: a
+    /// pawn whose client has sent no command yet is still present for triggers and
+    /// touch while it holds its pose (`networking.md` §Host input command queue).
+    pub fn present_remote_pawns(&self) -> Vec<(u64, EntityId)> {
+        let mut present: Vec<(u64, EntityId)> =
+            self.owners.iter().map(|(&pawn, &client)| (client, pawn)).collect();
+        present.sort_unstable();
+        present
+    }
+
     /// Iterate `(pawn, client_id)` owner pairs. Used by snapshot production to stamp
     /// authority metadata onto each owned pawn.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (EntityId, u64)> + '_ {
@@ -1115,6 +1126,19 @@ fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
 mod tests {
     use super::*;
     use postretro_net::wire::{WireFireButtonState, WireMovementInput};
+
+    #[test]
+    fn present_remote_pawns_lists_every_owner_sorted_by_client_id() {
+        let mut owners = MovementOwners::new();
+        let mut registry = postretro_entities::EntityRegistry::new();
+        let late = registry.spawn(postretro_entities::Transform::default());
+        let early = registry.spawn(postretro_entities::Transform::default());
+        owners.set(late, 9);
+        owners.set(early, 3);
+        assert_eq!(owners.present_remote_pawns(), vec![(3, early), (9, late)]);
+        owners.remove_pawn(early);
+        assert_eq!(owners.present_remote_pawns(), vec![(9, late)]);
+    }
 
     const EPSILON: f32 = 1e-6;
     const CLIENT: u64 = 7;

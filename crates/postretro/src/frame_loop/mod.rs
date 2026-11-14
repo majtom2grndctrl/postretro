@@ -879,6 +879,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let environment_fluid_viscosity = app.environment_fluids.viscosities();
             let session = app.session.as_mut().expect("running session installed");
             let net_endpoint = &mut session.net_endpoint;
+            let remote_present = match net_endpoint.as_ref() {
+                Some(netcode::NetEndpoint::Host { owners, .. }) => owners.present_remote_pawns(),
+                _ => Vec::new(),
+            };
             let hit_zone_store = &session.hit_zone_store;
             let progress_tracker = &mut session.progress_tracker;
             let scripting = &mut session.scripting;
@@ -933,6 +937,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &app.kinematic_mover_colliders,
                 &mut app.kinematic_mover_tick_states,
                 &remote_pawn_commands,
+                &remote_present,
                 &command,
                 |registry| {
                     // Camera follows the selected local pawn before

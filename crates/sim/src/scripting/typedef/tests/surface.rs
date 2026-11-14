@@ -1096,6 +1096,10 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
         !luau.contains("points: {{number}},"),
         "patrol points must retain their fixed `[x, z]` arity"
     );
+    assert!(
+        ts.contains("at?: string;") && luau.contains("at: string?,"),
+        "emitted `ActionVerb` must carry its optional clip event `at`"
+    );
     assert!(ts.contains("arc?: readonly [number, number];"));
     assert!(
         luau.contains("arc: {number, number}?,"),
@@ -1103,7 +1107,10 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     );
     assert_eq!(
         ActionVerb::all(),
-        [ActionVerb::Attack("attack".to_string())],
+        [ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: None,
+        }],
         "`ActionVerb::all()` must retain its representative named payload"
     );
 }

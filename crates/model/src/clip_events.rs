@@ -3,6 +3,9 @@
 
 use serde_json::Value;
 
+// One name rule for the loader and descriptor `action.at` alike.
+pub use postretro_foundation::is_clip_event_name;
+
 /// A named moment in a clip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipEvent {
@@ -10,16 +13,6 @@ pub struct ClipEvent {
     pub name: String,
     /// Seconds from the clip's start, within `0..=duration`.
     pub time: f32,
-}
-
-/// Whether `name` is a valid clip event name: `[A-Za-z_][A-Za-z0-9_]*`,
-/// case-sensitive. The descriptor's `action.at` check shares it.
-pub fn is_clip_event_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Slack on the `time ≤ duration` bound: exporters write key times through
@@ -142,15 +135,5 @@ mod tests {
                 time: 0.5
             }]
         );
-    }
-
-    #[test]
-    fn clip_event_names_follow_the_identifier_rule() {
-        for valid in ["hit", "_kick", "Hit2", "a_b"] {
-            assert!(is_clip_event_name(valid), "{valid}");
-        }
-        for invalid in ["", "2hit", "hit-1", "hit point", "é"] {
-            assert!(!is_clip_event_name(invalid), "{invalid}");
-        }
     }
 }

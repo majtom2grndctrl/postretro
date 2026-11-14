@@ -149,7 +149,10 @@ fn striking(attack: &str) -> BehaviorActivityDescriptor {
     authored_state(
         "attack",
         MotionVerb::Hold,
-        Some(ActionVerb::Attack(attack.to_string())),
+        Some(ActionVerb::Attack {
+            name: attack.to_string(),
+            at: None,
+        }),
     )
 }
 

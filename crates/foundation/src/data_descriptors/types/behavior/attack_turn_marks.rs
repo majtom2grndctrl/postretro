@@ -59,9 +59,17 @@ fn walk_activity(
             if let Some(outer) = enclosing
                 && outer.attack != attack
             {
+                // The mark may be one `action.at` implied rather than one the
+                // author wrote, so name the `at` the author can see.
+                let implied = match activity.action.as_ref() {
+                    Some(ActionVerb::Attack { at: Some(_), .. }) => {
+                        format!(" (`{path}.action.at` implies it)")
+                    }
+                    _ => String::new(),
+                };
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
-                        "`{mark_path}` marks \"{attack}\" inside `{}`, which marks \"{}\"; a mark cannot nest inside a mark for another attack",
+                        "`{mark_path}` marks \"{attack}\"{implied} inside `{}`, which marks \"{}\"; a mark cannot nest inside a mark for another attack",
                         outer.path, outer.attack
                     ),
                 });
@@ -121,7 +129,7 @@ fn reject_foreign_action(
     path: &str,
     mark: &Mark<'_>,
 ) -> Result<(), DescriptorError> {
-    let ActionVerb::Attack(fired) = action;
+    let ActionVerb::Attack { name: fired, .. } = action;
     if fired != mark.attack {
         return Err(DescriptorError::InvalidShape {
             reason: format!(

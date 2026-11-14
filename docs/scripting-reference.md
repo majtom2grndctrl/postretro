@@ -1720,12 +1720,12 @@ An activity is either a leaf or a composite:
 |-------|------|-------------|
 | `animation` | `string` | Required on a leaf; optional locomotion animation on a composite. Names `components.mesh.animations`. |
 | `motion` | `MotionVerb` (leaf sugar) | A one-entry `move` selector. |
-| `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. |
+| `action` | `{ attack: string, at?: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. With `at`, it fires at a clip event instead; see [Firing at a clip event](#firing-at-a-clip-event). |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
 | `facing` | `"target"` \| `"travel"` (optional) | Which way the enemy faces while this activity is active, including the motion its own `move` layer picks. Omitted, the motion's default applies. |
 | `reposition` | `{ arc?, minTravel? }` (optional) | Bounds for this activity's own `"reposition"` motion; see below. Only valid when `motion` is `"reposition"`. |
-| `attackTurn` | `string` (optional) | Marks the activity for one of `attacks`. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a windup → commit → recover chain holds a single turn. Checked at load: the name must be declared, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
+| `attackTurn` | `string` (optional) | Marks the activity for one of `attacks`. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a windup → commit → recover chain holds a single turn. An `action` with `at` marks its activity for its attack without this field. Checked at load: the name must be declared, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
 
 A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
 activity in its own envelope. Unknown sources or destinations, cross-boundary
@@ -1823,7 +1823,9 @@ ready, the target is in range, and the other applicable gates are open. Its
 firing latch stays armed until it fires, so temporarily closed gates can open
 later in the same dwell. Holding `commit` does not repeatedly fire it after it
 has fired. A later firing-leaf dwell can fire again only after cooldown permits
-it. A graph with no `attacks` entries never attacks.
+it. A graph with no `attacks` entries never attacks. An action with `at` fires
+at a moment in its clip instead; see
+[Firing at a clip event](#firing-at-a-clip-event).
 
 **Engagement** — the engine's "this brain is fighting" test — is a selected
 `"chaseTarget"`, `"strafe"` or `"reposition"` motion or any active action. This current-tick engagement
@@ -1842,6 +1844,61 @@ animation `X` plays `X_left`, `X_right` or `X_backward` when it travels that way
 and plays `X` when the mesh declares no such state. A directional state's walk
 cycle follows the enemy's speed exactly as `X`'s does, against its own
 `travelSpeed`.
+
+### Firing at a clip event
+
+An attack can land on a moment in its clip instead of on entry. A clip carries
+named events, such as the `hit` where a fist connects; see
+[character-animation.md](character-animation.md) for adding them with
+`--event`. An activity's own
+action names one with `at`:
+
+```typescript
+import { attackTurnFree, brain } from "postretro";
+
+const behavior = {
+  initial: "stalk",
+  moveSpeed: 3,
+  attacks: { jab: { damage: 8, maxRange: 2, cooldownMs: 1200 } },
+  activities: {
+    stalk: { animation: "walk" },
+    jab: {
+      animation: "attack_jab",                   // a state playing clip "punch"
+      action: { attack: "jab", at: "hit" },      // fires when punch reaches `hit`;
+    },                                           // holds the jab's turn from entry
+  },
+  transitions: {
+    stalk: [{ to: "jab", when: brain.targetDistance.le(2).and(attackTurnFree("jab")) }],
+    jab: [{ to: "stalk", when: brain.animationDone }], // the punch has played through
+  },
+};
+```
+
+In Luau the action is `action = { attack = "jab", at = "hit" }`, and the exit
+reads `brain.animationDone`.
+
+- **One chance per entry.** The attack fires on the tick the activity's clip
+  reaches the event. Every usual gate applies on that tick: range, sight,
+  facing, cooldown and the attack turn. A gate that fails is a miss, and nothing
+  fires later in that entry. Leaving before the moment fires nothing.
+- **The clip is the animation the activity plays.** Activities that share an
+  animation state share its clip, so a second activity entered partway through
+  meets the moment where the clip already is. Entering a non-looping clip that
+  has passed the moment fires nothing; a looping clip fires at its next pass.
+- **Interruptions cancel it.** A knockback launch, or an impact or reaction that
+  switches the enemy to another animation, cancels the moment for that entry.
+- **A weapon attack starts at the moment.** Its later shots keep the weapon's
+  own timing.
+- **`at` holds the attack's turn from entry,** as `attackTurn` would, so the
+  attack budget is asked before the swing plays. An explicit `attackTurn` for
+  the same attack is allowed; one for another attack fails load.
+- **A missing event warns.** If the clip lacks the event, or the animation's
+  clip did not load, the engine warns once and the attack fires on entry, as
+  without `at`.
+
+Load rejects `at` on a selector row's action, since a row plays no animation of
+its own. An event name starts with a letter or underscore and holds only
+letters, digits and underscores; any other `at` fails load.
 
 ### Evaluation rules
 
@@ -1894,6 +1951,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.damageBearing` | `@brain.damageBearing` | `number` | Signed XZ yaw in radians from this enemy's visual `+Z` forward toward the attacker that landed its most recent damage. `0` is ahead and the two sides have opposite signs. Meaningful only when damage is recent **and** `damageSourceKnown` is true. |
 | `brain.damageSourceKnown` | `@brain.damageSourceKnown` | `boolean` | Whether the most recent damaging hit supplied an attacker world position. Pair it with damage recency before treating shared last-known-position memory or bearing as belonging to that hit. |
 | `brain.hasAttackTurn` | `@brain.hasAttackTurn` | `boolean` | Whether the enemy holds an attack turn for any attack, as of the previous tick: it reads `true` from the tick after the grant. See [Attack turn reads](#attack-turn-reads) for `attackTurnHeld` and `attackTurnFree`. |
+| `brain.animationDone` | `@brain.animationDone` | `boolean` | Whether the animation the active activities play has played through: `true` from the tick after a non-looping clip reaches its end, so an event on the clip's last tick fires first. Always `false` on a looping animation, and `true` when the animation's clip did not load. It is one value for the whole enemy: parent and nested rows read the same answer, unlike `timeInActivityMs`. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;

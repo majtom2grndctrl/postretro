@@ -1610,7 +1610,10 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
-                        action: Some(ActionVerb::Attack("attack".to_string())),
+                        action: Some(ActionVerb::Attack {
+                            name: "attack".to_string(),
+                            at: None,
+                        }),
                         on_enter: None,
                         facing: None,
                         reposition: None,

@@ -797,6 +797,8 @@ export type RepositionParams = {
 export type ActionVerb = {
   --- Name of the root graph attack this activity fires.
   attack: string,
+  --- Names a clip event, matching `[A-Za-z_][A-Za-z0-9_]*`. The attack fires on the tick the activity's clip reaches it, once per entry, instead of on entry. Only an activity's own action may carry it; a selector row's rejects at load. It implies the attack's turn mark, as `attackTurn` would.
+  at: string?,
 }
 
 --- One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once.
@@ -3736,6 +3738,8 @@ export type BrainInputs = {
   damageSourceKnown: RuntimeGuardNode,
   --- `true` while the enemy holds an attack turn, for any attack, as of the previous tick: it reads true from the tick after the grant (boolean).
   hasAttackTurn: RuntimeGuardNode,
+  --- `true` from the tick after the selected non-looping animation's clip reaches its duration; false on a looping state; true for a state whose clip did not resolve. Entity-wide: parent and nested rows read one value, unlike `timeInActivityMs` (boolean).
+  animationDone: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

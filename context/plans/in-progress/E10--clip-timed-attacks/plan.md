@@ -9,6 +9,9 @@ read at: eb444995a
 - `ActionVerb::Attack(String)` cannot carry a sibling `at` key in its externally tagged serde shape → `ActionVerb::Attack` becomes a struct variant `{ name, at }` with a hand-written `{ attack, at? }` (de)serializer; every `Attack(name)` match updates in the same pass (pre-release API policy).
 - "A switch of the mesh off the path's animation … cancels the pending moment", including a switch off and back between AI ticks (P8), is not observable from `current_state` alone → `MeshAnimation` gains a runtime-only switch counter bumped by `switch_animation_state` on `Switched`; the brain records the count its own apply produced, and compute cancels the open moment when the mesh count moved.
 
+- `context/lib/scripting.md` §11 has `animationDone` appending after `activityRoll` and `damageInActivity`, neither built → it appends after `hasAttackTurn` (slot 21); the stances brief's facts append after it. Fix the line at landing.
+- Decision "Load rejects `at` … on an activity whose path selects no animation" → unreachable: only leaves author `action`, every leaf requires `animation`, and an action-bearing leaf is never a locomotion leaf, so its own animation is selected. Proven by `action_at_on_a_leaf_without_an_animation_rejects` (the existing leaf rule rejects); no dead check added.
+
 ## Delegated answers
 - Event name rules beyond non-empty and unique — a name matches `[A-Za-z_][A-Za-z0-9_]*`, case-sensitive; the converter rejects others, the loader treats them as malformed (warn, no events), and descriptor load rejects an `at` outside the rule. It keeps names valid as script string literals and unambiguous in log lines, and an `at` that cannot match any event is a typo worth rejecting at load.
 
@@ -73,7 +76,7 @@ read at: eb444995a
 | 2 | Converter: `--event`, trim carry, rejects, tests, `docs/character-animation.md` | worker (Python) | 1 | done: `tools/mixamo_clip_events.py`, 97/97 |
 | 3 | Loader: `AnimationClip` events, `parse_clip` extras, library carry and override, malformed warn | integrating executor | — | done: `crates/model/src/clip_events.rs`; model lib 220 pass. Libraries stamped via `stamp_events_in_library` (content part of task 7) |
 | 4 | Thin slice: clip clock, `at` on contact attacks, `AiTickInputs` clip access, jab fixture on `punch` | integrating executor | 3 | |
-| 5 | Descriptor and surface: `ActionVerb` `at`, implied mark, load rejects, `animationDone` fact, TS/Luau types and prelude, typedef | integrating executor | 4 | |
+| 5 | Descriptor and surface: `ActionVerb` `at`, implied mark, load rejects, `animationDone` fact, TS/Luau types and prelude, typedef | worker (Rust) | — | done: `clip_timed_actions.rs`; foundation 197, scripting-core 1050, ai 367 pass |
 | 6 | Runtime completion: cancellation, loops and phase, travel variants, weapon `at`, missing-event warn, rate | integrating executor | 4, 5 | |
 | 7 | Content: events in `mixamo_brute`/`mixamo_rifle`, brute and limitator scripts, `license.txt`, script comment | integrating executor | 2, 6 | |
 | 8 | Remaining AC tests (determinism, shipped content, surface example), docs | integrating executor | 7 | |

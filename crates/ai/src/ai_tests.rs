@@ -152,7 +152,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 authored_state(
                     "attack",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -679,6 +679,7 @@ fn step_graph(
             target_visible: true,
             attacks_fired_in_activity: 0,
             has_attack_turn: false,
+            animation_done: false,
         },
     );
 
@@ -4563,7 +4564,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -7583,7 +7584,10 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
     let mut strike = authored_state(
         "attack",
         MotionVerb::ChaseTarget,
-        Some(ActionVerb::Attack("attack".to_string())),
+        Some(ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: None,
+        }),
     );
     strike.on_enter = Some("gruntSwings".to_string());
     test_behavior_graph!({
@@ -8322,7 +8326,10 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(BehaviorSelectorRow {
             when: None,
             motion: None,
-            action: Some(ActionVerb::Attack("attack".to_string())),
+            action: Some(ActionVerb::Attack {
+                name: "attack".to_string(),
+                at: None,
+            }),
         })]);
     let graph = test_behavior_graph!({
         initial: "engage".to_string(),
@@ -8968,7 +8975,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack_jab",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("jab".to_string())),
+                    Some(ActionVerb::Attack { name: "jab".to_string(), at: None }),
                 ),
             ),
             (
@@ -8976,7 +8983,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack_slam",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("slam".to_string())),
+                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
                 ),
             ),
             (
@@ -9133,7 +9140,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             sound: None,
             animation: animation.map(str::to_string),
             motion: None,
-            action: action.map(|attack| ActionVerb::Attack(attack.to_string())),
+            action: action.map(|attack| ActionVerb::Attack {
+                name: attack.to_string(),
+                at: None,
+            }),
             on_enter: None,
             facing: None,
             reposition: None,
@@ -9737,6 +9747,7 @@ fn step_reference_enemy_graph_with_hostility(
             target_visible,
             attacks_fired_in_activity: 0,
             has_attack_turn: false,
+            animation_done: false,
         },
     );
 
@@ -10385,7 +10396,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_jab",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("jab".to_string())),
+                    Some(ActionVerb::Attack { name: "jab".to_string(), at: None }),
                 ),
             ),
             (
@@ -10393,7 +10404,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_slam",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("slam".to_string())),
+                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
                 ),
             ),
             (
@@ -10413,7 +10424,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_slam",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("slam".to_string())),
+                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
                 ),
             ),
         ]),
@@ -10922,7 +10933,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
             authored_state(
                 "attack",
                 MotionVerb::Hold,
-                Some(ActionVerb::Attack("attack".to_string())),
+                Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
             ),
         )]),
         transitions: BTreeMap::new(),
@@ -11082,7 +11093,10 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 authored_state(
                     "shoot",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("shoot".to_string())),
+                    Some(ActionVerb::Attack {
+                        name: "shoot".to_string(),
+                        at: None,
+                    }),
                 ),
             ),
         ]),
@@ -12318,7 +12332,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -12326,7 +12340,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
         ]),
@@ -12767,7 +12781,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -12932,7 +12946,10 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
             .activities
             .get_mut("position")
             .unwrap()
-            .action = Some(ActionVerb::Attack("attack".to_string()));
+            .action = Some(ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: None,
+        });
         graph.attacks.insert(
             "attack".to_string(),
             AttackParams {
@@ -12963,10 +12980,13 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         .activities
         .get_mut("position")
         .unwrap()
-        .action = Some(ActionVerb::Attack("attack".to_string()));
+        .action = Some(ActionVerb::Attack {
+        name: "attack".to_string(),
+        at: None,
+    });
     assert!(matches!(
         chase.envelope.activities["position"].action,
-        Some(ActionVerb::Attack(ref name)) if name == "attack"
+        Some(ActionVerb::Attack { ref name, .. }) if name == "attack"
     ));
 }
 
@@ -13000,7 +13020,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                             BehaviorSelectorRow {
                                 when: None,
                                 motion: None,
-                                action: Some(ActionVerb::Attack("attack".to_string())),
+                                action: Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                             },
                         )]),
                     ),

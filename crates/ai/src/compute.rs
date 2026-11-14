@@ -384,12 +384,14 @@ pub(super) fn evaluate(
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                     has_attack_turn,
+                    // The clip clock supplies this once it runs.
+                    animation_done: false,
                 },
             );
             let attack_cooldown_ms = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     action_for_path(bound, scope, &brain).and_then(|action| match action {
-                        ActionVerb::Attack(name) => {
+                        ActionVerb::Attack { name, .. } => {
                             brain.attack_cooldown_remaining_ms.get(name).copied()
                         }
                     })
@@ -414,6 +416,8 @@ pub(super) fn evaluate(
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                     has_attack_turn,
+                    // The clip clock supplies this once it runs.
+                    animation_done: false,
                 },
             );
             prior_standoff_distance = programs
@@ -522,7 +526,7 @@ pub(super) fn evaluate(
             && let Some((attack_name, cooldown_ms, outcome)) = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     let action = action_for_path(bound, scope, &brain)?;
-                    let ActionVerb::Attack(name) = action;
+                    let ActionVerb::Attack { name, .. } = action;
                     let attack = brain.graph.attacks.get(name)?;
 
                     if brain
